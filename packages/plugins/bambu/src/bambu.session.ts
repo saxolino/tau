@@ -1129,7 +1129,8 @@ export const openBambuSession = async (input: BambuSessionInput): Promise<Machin
     activities: activities(),
     checks: checks(),
     availability: availability(),
-    alerts: status?.alerts ?? [],
+    // The cancellation code is the run's outcome (`run.state` 'cancelled'), not a fault to raise.
+    alerts: status?.alerts?.filter((alert) => alert.code !== cancelledCode) ?? [],
   });
 
   /** Publish the report to observers: a `changed` delta when only component readings moved. */

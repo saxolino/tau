@@ -555,11 +555,12 @@ describe('Simulated X1C jobs and run control', () => {
     await expect(simulator.session.reconcile({ operationId: 'stop-1', kind: 'stop', signal })).resolves.toMatchObject({
       status: 'accepted',
     });
-    // An X1C ends a stopped print in FAILED with 0500-400E, which reads as a cancelled run.
+    // An X1C ends a stopped print in FAILED with 0500-400E, which reads as a cancelled run. The code is the run's
+    // outcome, not a fault, so it raises no alert.
     const stopped = await simulator.session.getSnapshot({ signal });
     expect(stopped.run).toMatchObject({ state: 'cancelled' });
     expect(stopped.state.status).toBe('ready');
-    expect(stopped.alerts).toContainEqual(expect.objectContaining({ code: '0500-400E' }));
+    expect(stopped.alerts).not.toContainEqual(expect.objectContaining({ code: '0500-400E' }));
     // Stop alone ends a print, as Bambu Studio sends it; the AMS abort is only for a filament change outside one.
     expect(lastRequest(simulator, 'ams_control')).toBeUndefined();
   });
