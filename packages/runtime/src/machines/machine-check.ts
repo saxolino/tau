@@ -73,12 +73,35 @@ const unavailable = (
 const recovers: ReadonlySet<string> = new Set(['motion.home', 'controller.wake', 'controller.unlock']);
 
 const statusWords: Readonly<Record<string, string>> = {
-  ready: 'only while a job runs',
   active: 'not while the machine is busy',
   held: 'not while the job is paused',
   alarm: 'not while the machine is in alarm',
   asleep: 'not while the machine is asleep',
   unknown: 'not until the machine reports its state',
+};
+
+/** What a ready machine must become for an action that excludes ready. */
+const awaitedWords: Readonly<Partial<Record<MachineStatus, string>>> = {
+  active: 'a job runs',
+  held: 'a job is paused',
+  alarm: 'the machine is in alarm',
+  asleep: 'the machine is asleep',
+};
+
+/**
+ * Why an action is refused in this state; from ready, the states the action waits for.
+ * @param status - The machine's state now.
+ * @param when - The states the action allows.
+ * @returns The reason after the action's label.
+ */
+const refusalWords = (status: MachineStatus, when: readonly MachineStatus[]): string => {
+  if (status !== 'ready') {
+    return statusWords[status] ?? 'not now';
+  }
+  // A job that runs includes one that is paused.
+  const states: readonly MachineStatus[] = when.includes('active') ? ['active'] : when;
+  const awaited = states.flatMap((state) => awaitedWords[state] ?? []);
+  return awaited.length === 0 ? 'not now' : `only while ${awaited.join(' or ')}`;
 };
 
 /**
@@ -150,7 +173,7 @@ export const checkMachineAction = (input: MachineActionCheckInput): MachineActio
       'scope' in descriptor && descriptor.scope === 'idle' && snapshot.run !== undefined
         ? 'MACHINE_ACTION_RUN_ACTIVE'
         : 'MACHINE_ACTION_PRECONDITION_FAILED',
-      `${descriptor.label}: ${statusWords[snapshot.state.status] ?? 'not now'}.`,
+      `${descriptor.label}: ${refusalWords(snapshot.state.status, when)}.`,
       {
         descriptor,
         ...(blocking?.remedies?.[0] === undefined ? {} : { remedy: blocking.remedies[0] }),

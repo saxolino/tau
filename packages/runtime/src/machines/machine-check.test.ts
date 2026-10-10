@@ -45,6 +45,24 @@ const capabilities: MachineActionCheckEntry['descriptor']['capabilities'] = {
         qualification: qualified,
       }),
     ),
+    machineActionDescriptorOf(
+      standardMachineAction({
+        id: 'controller.unlock',
+        componentId: 'controller',
+        label: 'Unlock',
+        when: ['alarm'],
+        qualification: qualified,
+      }),
+    ),
+    machineActionDescriptorOf(
+      standardMachineAction({
+        id: 'run.resume',
+        componentId: 'controller',
+        label: 'Resume',
+        when: ['held'],
+        qualification: qualified,
+      }),
+    ),
   ],
 };
 
@@ -96,6 +114,18 @@ describe('checkMachineAction', () => {
     expect(check({ ...pause, entry: { snapshot: printing, descriptor: { capabilities: router } } })).toMatchObject({
       status: 'approval-required',
     });
+  });
+
+  it('names the states an action waits for while the machine is ready', () => {
+    const refusal = (action: string) => check({ componentId: 'controller', action });
+    expect(refusal('run.pause')).toMatchObject({
+      code: 'MACHINE_ACTION_PRECONDITION_FAILED',
+      message: 'Pause: only while a job runs.',
+    });
+    expect(refusal('run.cancel')).toMatchObject({ message: 'Cancel: only while a job runs.' });
+    expect(refusal('run.resume')).toMatchObject({ message: 'Resume: only while a job is paused.' });
+    expect(refusal('controller.unlock')).toMatchObject({ message: 'Unlock: only while the machine is in alarm.' });
+    expect(refusal('controller.wake')).toMatchObject({ message: 'Wake: only while the machine is asleep.' });
   });
 
   it('fences a run action to the run the caller saw', () => {
