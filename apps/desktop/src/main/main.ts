@@ -104,7 +104,12 @@ import {
   slicersChannels,
 } from '#shared/desktop-bootstrap.js';
 import type { AppIconTheme } from '#shared/desktop-bootstrap.js';
-import { generatedImageIpcChannel, openFilesIpcChannel, quickLookIpcChannels } from '#shared/quick-look.js';
+import {
+  generatedImageIpcChannel,
+  isQuickLookEnabled,
+  openFilesIpcChannel,
+  quickLookIpcChannels,
+} from '#shared/quick-look.js';
 import type { QuickLookResult } from '#shared/quick-look.js';
 import quickLookManifest from '#macos/quick-look-formats.json' with { type: 'json' };
 
@@ -371,7 +376,9 @@ const bootstrapElectronApp = async (): Promise<void> => {
   const log = createDiagnosticsLog({ directory: logDirectory, echo: isDevelopment });
   log.log('info', 'main.ready', { electron: process.versions.electron, packaged: app.isPackaged, isDevelopment });
   if (loginShell !== undefined) {
-    log.log('info', 'main.login-shell-path', loginShell);
+    /* A fallback means the shell timed out or failed: only well-known CLI
+     * directories were added, and nothing from its rc files applied. */
+    log.log(loginShell.fallback ? 'warn' : 'info', 'main.login-shell-path', loginShell);
   }
 
   /* L2's contract: the home root must exist before the renderer's first mount,
@@ -941,25 +948,27 @@ const bootstrapElectronApp = async (): Promise<void> => {
     }
   };
 
-  ipcMain.handle(quickLookIpcChannels.previewPath, (event, payload: unknown) =>
-    handleQuickLook(event, (controller) => {
-      controller.previewPath(payload);
-    }),
-  );
-  ipcMain.handle(quickLookIpcChannels.previewUsdz, (event, payload: unknown) =>
-    handleQuickLook(event, (controller) => {
-      controller.previewUsdz(payload);
-    }),
-  );
-  ipcMain.on(quickLookIpcChannels.close, (event) => {
-    if (!trusted(event.senderFrame)) {
-      return;
-    }
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (window !== null) {
-      quickLookControllers.get(window.id)?.close();
-    }
-  });
+  if (isQuickLookEnabled()) {
+    ipcMain.handle(quickLookIpcChannels.previewPath, (event, payload: unknown) =>
+      handleQuickLook(event, (controller) => {
+        controller.previewPath(payload);
+      }),
+    );
+    ipcMain.handle(quickLookIpcChannels.previewUsdz, (event, payload: unknown) =>
+      handleQuickLook(event, (controller) => {
+        controller.previewUsdz(payload);
+      }),
+    );
+    ipcMain.on(quickLookIpcChannels.close, (event) => {
+      if (!trusted(event.senderFrame)) {
+        return;
+      }
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (window !== null) {
+        quickLookControllers.get(window.id)?.close();
+      }
+    });
+  }
   ipcMain.handle(openFilesIpcChannel, async (event) => {
     if (!trusted(event.senderFrame)) {
       return [];
@@ -1145,13 +1154,17 @@ const bootstrapElectronApp = async (): Promise<void> => {
         ],
       },
     });
-    const quickLook = createQuickLookController({
-      maxOutputBytes: quickLookManifest.limits.maxOutputBytes,
-      registry: roots,
-      temporaryRoot: quickLookTemporaryRoot,
-      window,
-    });
-    quickLookControllers.set(window.id, quickLook);
+    if (isQuickLookEnabled()) {
+      quickLookControllers.set(
+        window.id,
+        createQuickLookController({
+          maxOutputBytes: quickLookManifest.limits.maxOutputBytes,
+          registry: roots,
+          temporaryRoot: quickLookTemporaryRoot,
+          window,
+        }),
+      );
+    }
     window.once('close', () => {
       try {
         writeWindowState(windowStatePath, {
@@ -1162,7 +1175,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
       } catch (error) {
         log.log('warn', 'window-state.write-failed', { message: String(error) });
       }
-      quickLook.dispose();
+      quickLookControllers.get(window.id)?.dispose();
       quickLookControllers.delete(window.id);
     });
     forwardRendererDiagnostics(window.webContents, log, () => {
