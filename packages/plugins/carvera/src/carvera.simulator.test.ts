@@ -638,6 +638,52 @@ describe('carvera simulator through the real session', () => {
     },
   );
 
+  it(
+    'should resume a job paused while the probe is in the spindle before the program',
+    { timeout: 60_000 },
+    async () => {
+      const machine = await connect();
+      await machine.waitFor(ready, 'the boot homing');
+      await machine.runJob(options);
+      await machine.waitFor(
+        (report) => report.run !== undefined && componentValue(report.components, 'tools', 'tools')?.current === 0,
+        'the probe in the spindle',
+      );
+      const pause = await machine.act('controller', 'run.pause');
+      expect(await pause.settled()).toEqual({ status: 'confirmed' });
+      const paused = await machine.waitFor((report) => report.run?.state === 'paused', 'the pause');
+      // No cutter, so a stopped spindle drives nothing into the stock.
+      expect(componentValue(paused.components, 'tools', 'tools')?.current).toBe(0);
+      expect(componentValue(paused.components, 'spindle', 'spindle')?.mode).toBe('off');
+      expect(paused.availability.find(({ id }) => id === 'run.resume')).toMatchObject({ state: 'available' });
+      const resume = await machine.act('controller', 'run.resume');
+      expect(await resume.settled()).toEqual({ status: 'confirmed' });
+      const cutting = await machine.waitFor(
+        (report) => (report.run?.progress.counters[0]?.current ?? 0) > 0,
+        'the program to start',
+      );
+      expect(cutting.activities.find((activity) => activity.kind === 'before-program')?.state).toBe('succeeded');
+    },
+  );
+
+  it('should fail the before-program activity when the job is stopped during it', { timeout: 60_000 }, async () => {
+    const machine = await connect();
+    await machine.waitFor(ready, 'the boot homing');
+    await machine.runJob(options);
+    await machine.waitFor(
+      (report) => report.run !== undefined && componentValue(report.components, 'tools', 'tools')?.current === 0,
+      'the probe in the spindle',
+    );
+    const cancel = await machine.act('controller', 'run.cancel');
+    expect(await cancel.settled()).toEqual({ status: 'confirmed' });
+    const cancelled = await machine.waitFor((report) => report.run?.state === 'cancelled', 'the cancel');
+    expect(cancelled.state.status).toBe('ready');
+    expect(cancelled.activities.find((activity) => activity.kind === 'before-program')).toMatchObject({
+      state: 'failed',
+      message: 'Stopped before the program began.',
+    });
+  });
+
   it('should keep a start the machine showed late as Tau’s run', { timeout: 30_000 }, async () => {
     // Four real seconds of a busy machine before `P:`: longer than the session waits for the run to show.
     const machine = await connect(createCarveraSimulator({ speed: 25, tickInterval: 10, playDelay: 100_000 }));

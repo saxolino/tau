@@ -363,6 +363,13 @@ export const connectCarveraSession = async (input: CarveraSessionInput): Promise
       procedure.state = 'succeeded';
       procedure.index = procedure.steps.length;
       procedure.endedAt = now();
+      return;
+    }
+    // The file is open (`P:` shows) through its automation, so idle with none after it was busy means it was stopped.
+    if (procedure.kind === 'before-program' && procedure.busySeen && idle && next.playing === undefined) {
+      procedure.state = 'failed';
+      procedure.endedAt = now();
+      procedure.message = 'Stopped before the program began.';
     }
   };
 
@@ -1183,7 +1190,13 @@ export const connectCarveraSession = async (input: CarveraSessionInput): Promise
           remedy: { type: 'person', instruction: 'Restart the machine at its main button, or switch it off and on.' },
         };
       }
-      if (id === 'run.resume' && current.state === 'Pause' && (current.spindle?.current ?? 0) === 0) {
+      // Only a cutter can be driven into the stock: the probe rides a stopped spindle before the program.
+      if (
+        id === 'run.resume' &&
+        current.state === 'Pause' &&
+        current.tool.active >= 1 &&
+        (current.spindle?.current ?? 0) === 0
+      ) {
         return {
           componentId,
           id,
