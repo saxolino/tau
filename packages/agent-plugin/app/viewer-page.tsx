@@ -373,7 +373,8 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
           interactedAt: interactedAt.current,
         });
       },
-      follows: () => latest.current.view.composition === 'tab',
+      follows: () => latest.current.view.follows,
+      toolCallId: () => latest.current.view.toolCallId,
       show(result) {
         showRef.current?.(result);
       },

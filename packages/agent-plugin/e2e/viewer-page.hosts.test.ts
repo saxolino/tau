@@ -218,16 +218,16 @@ const viewerFrame = (page: Page): Frame => {
 };
 
 /**
- * Mount the page in the basic-host harness with one tool result.
+ * Mount the page in the basic-host harness with one tool result, or as a view the person opened.
  *
  * @param client - The MCP Apps client.
- * @param result - The `show_model` result the host hands the page.
+ * @param result - The `show_model` result the host hands the page; `undefined` for a view without one (a thread tab).
  * @param displayMode - The host's display mode.
  * @returns The harness page.
  */
 const mountInHarness = async (
   client: Client,
-  result: CallToolResult,
+  result: CallToolResult | undefined,
   displayMode: 'inline' | 'fullscreen',
 ): Promise<Page> => {
   const { tools } = await client.listTools();
@@ -260,8 +260,8 @@ const mountInHarness = async (
       availableDisplayModes: ['inline', 'fullscreen'],
       containerDimensions: { maxHeight: 640 },
       platform: 'desktop',
-      /* A view opened by a tool call knows that call (ext-apps `toolInfo`). */
-      toolInfo: { tool: showModel },
+      /* A view opened by a tool call knows that call (ext-apps `toolInfo`); one the person opened does not. */
+      ...(result === undefined ? {} : { toolInfo: { id: 'show-call', tool: showModel } }),
     },
     toolArguments: {},
     toolResult: result,
@@ -447,10 +447,35 @@ describe('the live view (W6)', () => {
   });
 
   it(
+    'should keep a card on its model in fullscreen when another show_model follows',
+    async () => {
+      const cardClient = await connect('claude-ai', mcpAppsCapabilities);
+      const first = await callTool(cardClient, 'show_model', { targetFile: 'main.ts' });
+      const page = await mountInHarness(cardClient, first, 'fullscreen');
+      await drawn(viewerFrame(page), 'Add to chat');
+
+      /* Another conversation of the same server shows a model; a capture round trip proves the card synced since. */
+      await callTool(cardClient, 'show_model', { targetFile: 'surface.glb' });
+      const captured = await callTool(cardClient, 'view_state', { capture: true });
+      expect(captured.isError).toBeFalsy();
+      expect(captured.content.some((block) => block.type === 'image')).toBe(true);
+      const { view } = captured.structuredContent as { view: TauViewerViewState };
+      expect(view.model).toMatchObject({ sourceFile: 'main.ts' });
+      const calls = await recorded(page, 'toolCalls');
+      const reads = calls.filter((call) => call.name === 'app_read');
+      expect(new Set(reads.map((call) => call.arguments['modelId']))).toEqual(new Set([shown(first).model.id]));
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
     "should follow show_model in the tab, report the selection, apply the agent's selection and capture the view",
     async () => {
-      const first = await callTool(client, 'show_model', { targetFile: 'main.ts' });
-      const page = await mountInHarness(client, first, 'fullscreen');
+      await callTool(client, 'show_model', { targetFile: 'main.ts' });
+      /* A thread tab opens without a tool result and follows what the agent shows. */
+      const page = await mountInHarness(client, undefined, 'fullscreen');
       const frame = viewerFrame(page);
       await drawn(frame, 'Add to chat');
 

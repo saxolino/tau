@@ -109,8 +109,10 @@ export const captureLiveView = (root: ParentNode): TauViewerImage | Readonly<{ e
 export type LiveLinkPage = Readonly<{
   /** The view to report, or `undefined` before a model is shown. */
   view(): TauViewerViewState | undefined;
-  /** Whether the page follows `show_model` (a tab does; a card keeps its model). */
+  /** Whether the page follows `show_model` (a page the person opened does; a card keeps its model). */
   follows(): boolean;
+  /** The `tools/call` whose result opened the page, which tells the server the page's conversation. */
+  toolCallId(): string | undefined;
   /** A model `show_model` handed over that this page has not seen. */
   show(result: TauViewerShowResult): void;
   /** Capture the live view once its model is drawn. */
@@ -170,12 +172,14 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
 
   const sync = async (wait: boolean): Promise<void> => {
     const view = page.view();
+    const toolCallId = page.toolCallId();
     const result = await callTool(tauViewerToolName.appSync, {
       pageId,
       version,
       follow: page.follows(),
       wait,
       ...(view === undefined ? {} : { view }),
+      ...(toolCallId === undefined ? {} : { toolCallId }),
     });
     if (isSyncResult(result)) {
       await handle(result);

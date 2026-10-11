@@ -27,6 +27,14 @@ export type ViewerComposition = 'inline' | 'tab';
 export type HostView = Readonly<{
   kind: 'mcp-app' | 'loopback';
   composition: ViewerComposition;
+  /**
+   * Whether the page follows `show_model`: one the person opened (a thread tab, the sidebar, the loopback page) does;
+   * a card keeps the model its tool result named in every display mode, fullscreen included, so another
+   * conversation's show never replaces it.
+   */
+  follows: boolean;
+  /** The id of the `tools/call` whose result opened the page (`toolInfo.id`), when a tool result did. */
+  toolCallId: string | undefined;
   colorScheme: 'light' | 'dark';
   /** Whether the page may offer its own fullscreen action: Claude hosts want one, Codex draws its own (E3). */
   canRequestFullscreen: boolean;
@@ -139,9 +147,12 @@ const connectMcpApp = async (): Promise<HostBridge> => {
     const host = app.getHostVersion()?.name ?? '';
     const isCodex = /codex|openai|chatgpt/iu.test(host);
     const capabilities = app.getHostCapabilities();
+    const toolCallId = context?.toolInfo?.id;
     return {
       kind: 'mcp-app',
       composition: context?.displayMode === 'inline' ? 'inline' : 'tab',
+      follows: context?.toolInfo === undefined,
+      toolCallId: toolCallId === undefined ? undefined : String(toolCallId),
       colorScheme: context?.theme === 'dark' ? 'dark' : 'light',
       canRequestFullscreen:
         !isCodex && context?.displayMode === 'inline' && (context.availableDisplayModes ?? []).includes('fullscreen'),
@@ -246,6 +257,8 @@ const connectLoopback = (): HostBridge => {
   const view = (): HostView => ({
     kind: 'loopback',
     composition: 'tab',
+    follows: true,
+    toolCallId: undefined,
     colorScheme: prefersDark.matches ? 'dark' : 'light',
     canRequestFullscreen: false,
     canAddToChat: false,

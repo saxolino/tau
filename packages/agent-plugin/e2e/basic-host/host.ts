@@ -32,7 +32,8 @@ export type TauHost = {
     csp: McpUiResourceCsp | undefined;
     hostContext: McpUiHostContext;
     toolArguments: Record<string, unknown>;
-    toolResult: CallToolResult;
+    /** The tool result that opened the view; absent for a view the person opened (a thread tab, the sidebar). */
+    toolResult: CallToolResult | undefined;
     width: number;
     height: number;
   }): Promise<void>;
@@ -115,8 +116,10 @@ globalThis.tauHost = {
     };
     bridge.addEventListener('initialized', () => {
       record.initialized = true;
-      void bridge?.sendToolInput({ arguments: toolArguments });
-      void bridge?.sendToolResult(toolResult);
+      if (toolResult !== undefined) {
+        void bridge?.sendToolInput({ arguments: toolArguments });
+        void bridge?.sendToolResult(toolResult);
+      }
     });
     await bridge.connect(new PostMessageTransport(view, view));
   },
