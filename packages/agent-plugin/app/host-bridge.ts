@@ -18,6 +18,7 @@ import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { tauViewerToolName } from '@taucad/mcp/viewer-protocol';
 import type { TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
+import type { ChatReference } from '#app/chat-reference.js';
 
 /** Which composition the page draws (blueprint "Composition per presentation"). */
 export type ViewerComposition = 'inline' | 'tab';
@@ -49,9 +50,10 @@ export type HostBridge = Readonly<{
   callTool(name: string, args: Readonly<Record<string, unknown>>): Promise<unknown>;
   /**
    * Hand the person's reference to the conversation (E8): into the model's
-   * context where the host takes it, otherwise onto the clipboard.
+   * context where the host takes it (the text, with the structured references
+   * as `structuredContent`), otherwise its text onto the clipboard.
    */
-  addToChat(text: string): Promise<'added' | 'copied'>;
+  addToChat(reference: ChatReference): Promise<'added' | 'copied'>;
   requestFullscreen(): Promise<void>;
 }>;
 
@@ -213,12 +215,15 @@ const connectMcpApp = async (): Promise<HostBridge> => {
       return () => listeners.delete(listener);
     },
     callTool,
-    async addToChat(text) {
+    async addToChat({ text, references }) {
       if (app.getHostCapabilities()?.updateModelContext === undefined) {
         await navigator.clipboard.writeText(text);
         return 'copied';
       }
-      await app.updateModelContext({ content: [{ type: 'text', text }] });
+      await app.updateModelContext({
+        content: [{ type: 'text', text }],
+        ...(references.length === 0 ? {} : { structuredContent: { references } }),
+      });
       return 'added';
     },
     async requestFullscreen() {
@@ -284,7 +289,7 @@ const connectLoopback = (): HostBridge => {
       return () => listeners.delete(listener);
     },
     callTool,
-    async addToChat(text) {
+    async addToChat({ text }) {
       await navigator.clipboard.writeText(text);
       return 'copied';
     },

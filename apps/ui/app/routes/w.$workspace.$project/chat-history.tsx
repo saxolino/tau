@@ -225,9 +225,9 @@ const ExpandedChatHistory = memo(function ({
   // Memoising the call site avoids re-rendering tooltip-heavy children.
   const submitChat = cadChat.submit;
   const onSubmit: ChatTextareaProperties['onSubmit'] = useCallback(
-    async ({ content, attachments }) => {
+    async ({ content, attachments, references }) => {
       // Pending until the message lands, so the composer stays busy through admission (R8).
-      await submitChat({ text: content, attachments });
+      await submitChat({ text: content, attachments, ...(references === undefined ? {} : { references }) });
     },
     [submitChat],
   );

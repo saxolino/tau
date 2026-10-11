@@ -74,6 +74,7 @@
     "@modelcontextprotocol/sdk": "catalog:",
     "@react-three/fiber": "^9.6.1",
     "@tailwindcss/vite": "^4.3.1",
+    "@taucad/chat": "workspace:*",
     "@taucad/mcp": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/types": "workspace:*",

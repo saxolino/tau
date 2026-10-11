@@ -30,6 +30,7 @@ import { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import { ModelViewer } from '@taucad/viewer/model-viewer';
 import type { HostBridge, HostView } from '#app/host-bridge.js';
 import { loadModel } from '#app/model-loader.js';
+import { chatReferenceOf } from '#app/chat-reference.js';
 
 type Loaded = Readonly<{ model: TauViewerModel; artifact: Artifact }>;
 
@@ -41,12 +42,6 @@ type PageState =
 
 const previousOf = (state: PageState): Loaded | undefined =>
   state.kind === 'ready' ? state.current : state.kind === 'waiting' ? undefined : state.previous;
-
-/** The text a reference carries into the conversation: the label, then the `@cad` token the agent resolves. */
-const referenceText = (model: TauViewerModel, reference: GeometryComponentReference | undefined): string =>
-  reference === undefined
-    ? `${model.title} (${model.sourceFile ?? model.path})`
-    : `${reference.label} in ${model.title} @cad[${reference.filePath}#${reference.componentId}]`;
 
 /** Follows the bridge: shows each model it hands over, keeping the last one on screen while the next loads. */
 function useShownModel(bridge: HostBridge): readonly [PageState, HostView] {
@@ -270,7 +265,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
     }
     const add = async (): Promise<void> => {
       try {
-        const outcome = await bridge.addToChat(referenceText(shown.model, selected));
+        const outcome = await bridge.addToChat(chatReferenceOf(shown.model, selected));
         setNotice(outcome === 'added' ? 'Added to chat' : 'Copied; paste it into your chat');
       } catch {
         setNotice('Could not add to chat');

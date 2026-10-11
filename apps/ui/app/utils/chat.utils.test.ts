@@ -1041,6 +1041,37 @@ describe('buildUserMessage', () => {
     expect(first.parts).toEqual([]);
     expect(first.id).not.toBe(second.id);
   });
+
+  describe('geometry references', () => {
+    const picked = {
+      resource: { kind: 'workspace-file', path: 'gears/main.ts', revision: 'hash-1' },
+      target: {
+        kind: 'component',
+        componentId: 'component:sun_gear',
+        selector: 'node/3',
+        label: 'Sun gear',
+        componentKind: 'part',
+      },
+    } as const;
+
+    it('should carry the chip reference for each token in the text, and a bare one for a typed token', () => {
+      const message = buildUserMessage({
+        text: 'Widen @cad[gears/main.ts#component:sun_gear] and @cad[b.ts#x], again @cad[gears/main.ts#component:sun_gear]',
+        references: [picked],
+      });
+      expect(message.metadata?.references).toEqual([
+        picked,
+        {
+          resource: { kind: 'workspace-file', path: 'b.ts' },
+          target: { kind: 'component', componentId: 'x', label: 'x', componentKind: 'unknown' },
+        },
+      ]);
+    });
+
+    it('should drop a chip reference whose token left the text, and stamp nothing without tokens', () => {
+      expect(buildUserMessage({ text: 'Plain text', references: [picked] }).metadata).not.toHaveProperty('references');
+    });
+  });
 });
 
 describe('stampMessageCreatedAt', () => {

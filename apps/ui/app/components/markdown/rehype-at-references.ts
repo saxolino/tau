@@ -44,22 +44,33 @@ function visitTextNodes(children: Array<RootContent | ElementContent>, parentTag
 
     const replacementNodes: ElementContent[] = [];
     for (const segment of segments) {
-      if (segment.type === 'text') {
-        replacementNodes.push({ type: 'text', value: segment.value });
-      } else if (segment.type === 'atReference') {
-        replacementNodes.push({
-          type: 'element',
-          tagName: 'mark',
-          properties: { 'data-at-reference': segment.path },
-          children: [{ type: 'text', value: `@${segment.path}` }],
-        } satisfies Element);
-      } else {
-        replacementNodes.push({
-          type: 'element',
-          tagName: 'mark',
-          properties: { 'data-invocation': segment.token },
-          children: [{ type: 'text', value: segment.token }],
-        } satisfies Element);
+      switch (segment.type) {
+        case 'text': {
+          replacementNodes.push({ type: 'text', value: segment.value });
+          break;
+        }
+        case 'cadReference': {
+          replacementNodes.push({ type: 'text', value: segment.token });
+          break;
+        }
+        case 'atReference': {
+          replacementNodes.push({
+            type: 'element',
+            tagName: 'mark',
+            properties: { 'data-at-reference': segment.path },
+            children: [{ type: 'text', value: `@${segment.path}` }],
+          } satisfies Element);
+          break;
+        }
+        case 'invocation': {
+          replacementNodes.push({
+            type: 'element',
+            tagName: 'mark',
+            properties: { 'data-invocation': segment.token },
+            children: [{ type: 'text', value: segment.token }],
+          } satisfies Element);
+          break;
+        }
       }
     }
 
