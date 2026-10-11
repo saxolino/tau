@@ -17,7 +17,7 @@ import {
 } from '#components/ui/floating-panel.js';
 import { Dropzone, DropzoneEmptyState } from '#components/ui/dropzone.js';
 import { FormatsList } from '#routes/convert/formats-list.js';
-import { InfoTooltip } from '#components/ui/info-tooltip.js';
+import { InfoTooltip } from '@taucad/ui/components/info-tooltip';
 import {
   getFormatFromFilename,
   formatDisplayName,
@@ -29,7 +29,7 @@ import { ChatViewerControls } from '#routes/w.$workspace.$project/chat-viewer-co
 import { useCookie } from '#hooks/use-cookie.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { cn } from '@taucad/ui/utils/cn';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { ProjectProvider, useProject } from '#hooks/use-project.js';
 import { GraphicsProvider, useGraphicsSelector } from '#hooks/use-graphics.js';
 import { PageContent } from '#components/layout/page-content.js';

@@ -15,7 +15,7 @@ import {
 } from '#components/geometry/graphics/three/react/kinematics-drag-controls.js';
 import type { KinematicsDragGestureOptions } from '#components/geometry/graphics/three/react/kinematics-drag-controls.js';
 import { setModelComponentOwner } from '#components/geometry/graphics/three/utils/model-component-owner.js';
-import { KeyboardProvider, useKeybinding } from '#hooks/use-keyboard.js';
+import { KeyboardProvider, useKeybinding } from '@taucad/ui/components/keyboard';
 import { getKinematicsUnitState, kinematicsMachine } from '#machines/kinematics.machine.js';
 
 type ViewerState = Readonly<{

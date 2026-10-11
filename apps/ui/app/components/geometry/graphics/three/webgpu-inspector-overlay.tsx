@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { lazy, Suspense } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useThreeGraphicsBackend } from '#components/geometry/graphics/three/three-graphics-backend-context.js';
-import { ClientOnly } from '#components/ui/utils/client-only.js';
+import { ClientOnly } from '@taucad/ui/components/client-only';
 
 const ThreeWebGpuInspectorBootstrapLazy = lazy(async () => {
   const bootstrapModule = await import('#components/geometry/graphics/three/three-webgpu-inspector-bootstrap.js');

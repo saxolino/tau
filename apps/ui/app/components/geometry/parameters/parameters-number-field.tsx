@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { SliderInput } from '#components/ui/slider-input.js';
+import { SliderInput } from '@taucad/ui/components/slider-input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { cn } from '@taucad/ui/utils/cn';
 

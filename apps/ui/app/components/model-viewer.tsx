@@ -5,7 +5,7 @@ import { AlertTriangle } from 'lucide-react';
 import { asKnownArtifact } from '@taucad/runtime';
 import type { Artifact, DocumentStatus } from '@taucad/runtime';
 import { CadViewer } from '#components/geometry/cad/cad-viewer.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { GraphicsProvider } from '#hooks/use-graphics.js';
 import { graphicsMachine } from '#machines/graphics.machine.js';
 import { defaultGraphicsSettings } from '#constants/editor.constants.js';

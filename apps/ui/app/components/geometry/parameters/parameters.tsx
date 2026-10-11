@@ -3,7 +3,7 @@ import { Info } from 'lucide-react';
 import React, { useCallback, useDeferredValue, useMemo, useState } from 'react';
 import Form from '@rjsf/core';
 import type { RJSFSchema } from '@rjsf/utils';
-import { SearchInput } from '#components/search-input.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
 import { cn } from '@taucad/ui/utils/cn';
 import { templates, uiSchema, widgets } from '#components/geometry/parameters/rjsf-theme.js';
 import { rjsfFields } from '#components/geometry/parameters/rjsf-field-path.js';
@@ -17,7 +17,7 @@ import {
   rjsfIdSeparator,
 } from '#components/geometry/parameters/rjsf-utils.js';
 import { extractModifiedProperties } from '#utils/object.utils.js';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { rjsfValidator } from '#lib/rjsf-validator.js';
 import type { ParameterManifest } from '@taucad/parameters';
 import type { ParameterGroup } from '@taucad/types';

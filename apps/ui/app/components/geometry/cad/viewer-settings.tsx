@@ -26,12 +26,12 @@ import {
 } from '@taucad/ui/components/dropdown-menu';
 import { cn } from '@taucad/ui/utils/cn';
 import { AxisLabel } from '#components/geometry/cad/section-tool-row.js';
-import { InfoTooltip } from '#components/ui/info-tooltip.js';
+import { InfoTooltip } from '@taucad/ui/components/info-tooltip';
 import {
   DropdownMenuSelectItem,
   DropdownMenuSliderItem,
   preventMenuSliderEscapeDismissal,
-} from '#components/ui/menu-slider-item.js';
+} from '@taucad/ui/components/menu-slider-item';
 import { defaultOperationTimeout } from '#constants/editor.constants.js';
 import { useCameraRig, useCameraSelector, useGraphics, useGraphicsSelector } from '#hooks/use-graphics.js';
 import { useCad, useCadSelector } from '#hooks/use-cad.js';

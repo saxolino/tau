@@ -9,7 +9,7 @@ import type { GeometryComponentManifest, GeometryComponentNode } from '@taucad/t
 import type { graphicsMachine } from '#machines/graphics.machine.js';
 import { createSourceModelInteractionUnitId, modelInteractionMachine } from '#machines/model-interaction.machine.js';
 import type { PartThumbnailState } from '#services/part-thumbnail.service.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { PartGalleryProvider, useOpenPartGallery } from '#components/geometry/cad/part-gallery.js';
 import type { PartGalleryRequest } from '#components/geometry/cad/part-gallery.js';
 

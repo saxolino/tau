@@ -1,9 +1,9 @@
 import { Check, Focus } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { useGraphics } from '#hooks/use-graphics.js';
-import { useTickAnimation } from '#hooks/use-tick-animation.js';
+import { useTickAnimation } from '@taucad/ui/hooks/use-tick-animation';
 
 type FitViewControlProps = Readonly<{
   /** The formatted shortcut the tooltip shows. */

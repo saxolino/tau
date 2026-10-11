@@ -24,10 +24,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/
 import { cn } from '@taucad/ui/utils/cn';
 import { nestedActionVariants } from '@taucad/ui/components/nested-action.variants';
 import { formatDisplayLabel } from '#utils/string.utils.js';
-import { ModifiedIndicator } from '#components/ui/modified-indicator.js';
-import { HighlightText } from '#components/highlight-text.js';
-import { PaneVirtualList } from '#components/panes/pane-virtual-list.js';
-import { paneFieldGroupSpacingClassName } from '#components/panes/pane-spacing.styles.js';
+import { ModifiedIndicator } from '@taucad/ui/components/modified-indicator';
+import { HighlightText } from '@taucad/ui/components/highlight-text';
+import { PaneVirtualList } from '@taucad/ui/components/pane-virtual-list';
+import { paneFieldGroupSpacingClassName } from '@taucad/ui/components/pane-spacing.variants';
 import { ParameterGroupCard } from '#components/geometry/parameters/parameter-group-card.js';
 import {
   FieldLabelContext,
@@ -41,8 +41,8 @@ import {
   isObjectLikeSchema,
 } from '#components/geometry/parameters/rjsf-utils.js';
 import { hasCustomValue } from '#utils/object.utils.js';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
-import { InlineCode } from '#components/code/code-block.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
+import { InlineCode } from '@taucad/ui/components/inline-code';
 import { rjsfLayoutContext, useRjsfLayoutContext } from '#components/geometry/parameters/rjsf-context.js';
 import { toInstancePointer, useRenderedFieldPath } from '#components/geometry/parameters/rjsf-field-path.js';
 import type { RJSFContext, RjsfLayoutContextValue } from '#components/geometry/parameters/rjsf-context.js';

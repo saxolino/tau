@@ -8,7 +8,7 @@ import { cn } from '@taucad/ui/utils/cn';
 import { MaterialSwatch } from '#components/geometry/cad/material-swatch.js';
 import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
-import { StringColorPicker } from '#components/ui/string-color-picker.js';
+import { StringColorPicker } from '@taucad/ui/components/string-color-picker';
 import {
   actionAvailability,
   describeWaits,

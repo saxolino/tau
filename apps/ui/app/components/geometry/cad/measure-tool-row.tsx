@@ -6,7 +6,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/
 import { Popover, PopoverContent, PopoverTrigger } from '@taucad/ui/components/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { AxisLabel } from '#components/geometry/cad/section-tool-row.js';
-import { CopyButton } from '#components/copy-button.js';
+import { CopyButton } from '@taucad/ui/components/copy-button';
 import { SvgIcon } from '#components/icons/svg-icon.js';
 import type { MeasurementOperation } from '#constants/measurement.types.js';
 import { useGraphics, useGraphicsSelector } from '#hooks/use-graphics.js';

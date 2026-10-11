@@ -34,7 +34,7 @@ vi.mock('#components/geometry/cad/cad-viewer.js', () => ({
   ),
 }));
 
-vi.mock('#components/ui/loader.js', () => ({
+vi.mock('@taucad/ui/components/loader', () => ({
   Loader: ({ className }: { readonly className?: string }) => <div data-testid='loader' className={className} />,
 }));
 

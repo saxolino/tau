@@ -16,9 +16,9 @@ import {
 import type { StoredAttachmentRef } from '#utils/attachment.utils.js';
 import { homeComposerAttachmentDirectory, useChatAttachmentDirectories } from '#components/chat/attachment-preview.js';
 import type { ResolvedModel } from '#hooks/use-models.js';
-import type { KeyCombination } from '#utils/keys.utils.js';
+import type { KeyCombination } from '@taucad/ui/utils/keys';
 import { toast } from '#components/ui/sonner.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import {
   getClipboardImageFiles,
   handleClipboardImagePaste,

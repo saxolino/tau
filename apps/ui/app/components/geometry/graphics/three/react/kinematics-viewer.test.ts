@@ -8,7 +8,7 @@ import type { Mechanism } from '@taucad/kinematics';
 import type { GeometryComponentManifest } from '@taucad/types';
 import { useKinematicsViewer } from '#components/geometry/graphics/three/react/kinematics-viewer.js';
 import { setModelComponentOwner } from '#components/geometry/graphics/three/utils/model-component-owner.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { getKinematicsUnitState, kinematicsMachine } from '#machines/kinematics.machine.js';
 
 const hooks = vi.hoisted(() => ({

@@ -19,7 +19,7 @@ import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { ErrorPage } from '#components/error-page.js';
 import { ProjectManagerProvider } from '#hooks/use-project-manager.js';
 import { HomeFileManagerProvider } from '#hooks/use-file-manager.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { UnloadProvider } from '#hooks/use-flush-on-close.js';
 import { RevisionActorIdentity } from '#components/revision-actor-identity.js';
 import { ChatSessionStoreProvider } from '#hooks/chat-session-store-provider.js';

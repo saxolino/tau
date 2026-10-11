@@ -33,11 +33,11 @@ import { BambuStudioPresets, shortPresetName } from '#components/print/bambu-stu
 import type { BambuTray } from '#components/print/bambu-studio-presets.js';
 import { FilamentSlots } from '#components/print/filament-slots.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
-import { SearchInput } from '#components/search-input.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
 import { isRealBambuPrinter, useBambuStudio } from '#components/print/use-bambu-studio.js';
 import type { BambuQualityPreset, BambuStudioChosen, BambuStudioMode } from '#components/print/use-bambu-studio.js';
 import { useMachineSettings } from '#components/print/use-machine-settings.js';
-import { ModifiedIndicator } from '#components/ui/modified-indicator.js';
+import { ModifiedIndicator } from '@taucad/ui/components/modified-indicator';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
 import { compileExportConfigurationManifest } from '#routes/w.$workspace.$project/chat-converter.js';

@@ -9,7 +9,7 @@ import { useCad } from '#hooks/use-cad.js';
 import { useProject } from '#hooks/use-project.js';
 import { useChatActions } from '#hooks/use-chat.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { useTickAnimation } from '#hooks/use-tick-animation.js';
+import { useTickAnimation } from '@taucad/ui/hooks/use-tick-animation';
 import { toast } from '#components/ui/sonner.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
 import { captureCadImages, captureFilesToDataUrls, omittedSectionCutsNotice } from '#services/headless-capture.js';

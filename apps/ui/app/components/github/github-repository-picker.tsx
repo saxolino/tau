@@ -21,7 +21,7 @@ import {
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import {
   configureGithubAccess,
   GithubRequestError,

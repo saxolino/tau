@@ -34,7 +34,7 @@ import type {
   SectionCutPatch,
   SectionPlane,
 } from '#components/geometry/graphics/section-cuts.js';
-import { SliderInput } from '#components/ui/slider-input.js';
+import { SliderInput } from '@taucad/ui/components/slider-input';
 import { axesColors } from '#constants/color.constants.js';
 import { useCameraRig, useGraphics, useGraphicsSelector } from '#hooks/use-graphics.js';
 import type { AddSectionCutPayload, graphicsMachine } from '#machines/graphics.machine.js';

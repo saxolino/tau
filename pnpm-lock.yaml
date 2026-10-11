@@ -4889,6 +4889,9 @@ importers:
       cmdk:
         specifier: 1.0.4
         version: 1.0.4(@types/react-dom@19.0.4(@types/react@19.0.12))(@types/react@19.0.12)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      culori:
+        specifier: 'catalog:'
+        version: 4.0.2
       embla-carousel-react:
         specifier: ^8.6.0
         version: 8.6.0(react@19.2.7)
@@ -4898,12 +4901,18 @@ importers:
       radix-ui:
         specifier: 'catalog:'
         version: 1.6.0(@types/react-dom@19.0.4(@types/react@19.0.12))(@types/react@19.0.12)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      react-colorful:
+        specifier: ^5.7.0
+        version: 5.7.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       react-day-picker:
         specifier: 'catalog:'
         version: 10.0.1(@types/react@19.0.12)(react@19.2.7)
       react-resizable-panels:
         specifier: ^2.1.9
         version: 2.1.9(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      react-virtuoso:
+        specifier: ^4.18.7
+        version: 4.18.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       recharts:
         specifier: ^3.8.1
         version: 3.8.1(@types/react@19.0.12)(react-dom@19.2.7(react@19.2.7))(react-is@19.2.8)(react@19.2.7)(redux@5.0.1)
@@ -4923,6 +4932,9 @@ importers:
       '@testing-library/react':
         specifier: 'catalog:'
         version: 16.2.0(@testing-library/dom@10.4.1)(@types/react-dom@19.0.4(@types/react@19.0.12))(@types/react@19.0.12)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@types/culori':
+        specifier: ^4.0.1
+        version: 4.0.1
       '@types/react':
         specifier: 'catalog:'
         version: 19.0.12
@@ -4941,6 +4953,8 @@ importers:
       '@lhncbc/ucum-lhc':
         specifier: 'catalog:'
         version: 7.1.9
+
+  packages/viewer: {}
 
   packages/warehouse:
     dependencies:

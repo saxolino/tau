@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import { FlipHorizontal } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { useCameraRig, useGraphics, useGraphicsSelector } from '#hooks/use-graphics.js';
 
 type ToolToggleProps = Readonly<{

@@ -7,7 +7,7 @@ import { createActor, createAsyncLogic } from 'xstate';
 import type { Actor } from 'xstate';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type * as ButtonModule from '@taucad/ui/components/button';
-import type * as SliderInputModule from '#components/ui/slider-input.js';
+import type * as SliderInputModule from '@taucad/ui/components/slider-input';
 import {
   AxisLabel,
   SectionEditor,
@@ -33,7 +33,7 @@ vi.mock('@taucad/ui/components/button', async (importOriginal) => {
   };
 });
 
-vi.mock('#components/ui/slider-input.js', async (importOriginal) => {
+vi.mock('@taucad/ui/components/slider-input', async (importOriginal) => {
   const actual = await importOriginal<typeof SliderInputModule>();
   return {
     ...actual,

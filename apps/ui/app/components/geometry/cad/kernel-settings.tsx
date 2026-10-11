@@ -1,7 +1,7 @@
 import { Cpu } from 'lucide-react';
 import { DropdownMenuItem, DropdownMenuSwitchItem } from '@taucad/ui/components/dropdown-menu';
-import { DropdownMenuDisclosureItem } from '#components/ui/menu-disclosure-item.js';
-import { DropdownMenuSliderItem } from '#components/ui/menu-slider-item.js';
+import { DropdownMenuDisclosureItem } from '@taucad/ui/components/menu-disclosure-item';
+import { DropdownMenuSliderItem } from '@taucad/ui/components/menu-slider-item';
 
 /** A JSON Schema node, as far as the kernel settings read one. */
 type SchemaNode = Readonly<{

@@ -51,7 +51,7 @@ vi.mock('#providers/headless-image-provider.js', () => ({
   useOptionalHeadlessImageService: () => mocks.imageService,
 }));
 
-vi.mock('#hooks/use-keyboard.js', () => ({
+vi.mock('@taucad/ui/components/keyboard', () => ({
   useKeybinding: () => ({ formattedKeyCombination: 'Ctrl+A' }),
 }));
 

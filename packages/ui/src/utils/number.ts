@@ -1,0 +1,11 @@
+/**
+ * Clamp a value into an inclusive range.
+ *
+ * @param value - The value to clamp.
+ * @param min - The lower bound.
+ * @param max - The upper bound.
+ * @returns `value`, raised to `min` or lowered to `max` when it falls outside.
+ */
+export function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}

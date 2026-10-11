@@ -9,10 +9,10 @@
 import { useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { waitFor } from 'xstate';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useProject } from '#hooks/use-project.js';
 import { useRevisionCommands } from '#hooks/use-revision-status.js';
-import type { KeyCombination } from '#utils/keys.utils.js';
+import type { KeyCombination } from '@taucad/ui/utils/keys';
 import { toast } from '#components/ui/sonner.js';
 
 /** The workbench-wide *Save revision* gesture. @public */

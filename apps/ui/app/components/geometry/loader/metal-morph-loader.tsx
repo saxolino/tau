@@ -13,7 +13,7 @@ import type {
 } from '#components/geometry/loader/metal-morph-controller.js';
 import type { MetalMorphShapeId } from '#components/geometry/loader/metal-morph-shapes.js';
 import type { ResolvedGraphicsBackend } from '#constants/editor.constants.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { useTheme } from '#hooks/use-theme.js';
 
 export type MetalMorphLoaderStatus = 'pending' | 'ready' | 'failed';

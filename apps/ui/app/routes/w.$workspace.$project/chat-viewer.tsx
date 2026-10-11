@@ -23,7 +23,7 @@ import { useProject } from '#hooks/use-project.js';
 import { useFileTreeSelector } from '#hooks/use-file-tree.js';
 import { useFileContent } from '#hooks/use-file-content.js';
 import { useRevisionStatus } from '#hooks/use-revision-status.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { useWorkbenchViewCommands } from '#workbench-records/view-actions.js';
 import { useLiveViewOptions } from '#workbench-records/live-view-options.js';
 import { setLocalInstanceChoice, useLocalInstanceChoice } from '#workbench-records/local-instance.js';

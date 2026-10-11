@@ -30,7 +30,7 @@ import type { GraphicsViewSettings } from '#constants/editor.constants.js';
 import { ChatViewer } from '#routes/w.$workspace.$project/chat-viewer.js';
 import { chooseProjection } from '#routes/w.$workspace.$project/chat-viewer-projection-picker.js';
 import { Dockview } from '#components/panes/dockview.js';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { DockviewEmptyAction, DockviewEmptyCloseAction } from '#components/panes/dockview-empty-action.js';
 import { getViewerTabIcon, ViewerDockviewTab } from '#components/panes/viewer-tab-context-menu.js';
 import { DockviewLeftActions, DockviewFileActionProvider } from '#components/panes/dockview-open-file-action.js';

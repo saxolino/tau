@@ -1,14 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
-import { PaneVirtualList } from '#components/panes/pane-virtual-list.js';
+import { PaneVirtualList } from '@taucad/ui/components/pane-virtual-list';
 import { Box, ChevronDown, CircleAlert, CircleHelp, LoaderCircle } from 'lucide-react';
 import type { GeometryComponentNode } from '@taucad/types';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import { cn } from '@taucad/ui/utils/cn';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { MaterialSwatch } from '#components/geometry/cad/material-swatch.js';
 import { appearanceLabel, statusOf, volumeLabel, weightLabel } from '#components/geometry/cad/part-quantities.js';
 import type { PartQuantity } from '#components/geometry/cad/part-quantities.js';
-import { DetailsToggle, disclosureMotion } from '#components/revisions/revision-actions.js';
+import { DetailsToggle, disclosureMotion } from '@taucad/ui/components/actions';
 import { PartPreviewFrame } from '#components/geometry/cad/part-preview-image.js';
 import type { PartThumbnailState } from '#services/part-thumbnail.service.js';
 

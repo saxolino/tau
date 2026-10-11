@@ -20,7 +20,7 @@ import { SceneOverlay } from '#components/geometry/graphics/three/scene-overlay.
 import { useThreeGraphicsBackend } from '#components/geometry/graphics/three/three-graphics-backend-context.js';
 import { createRafCoalescer } from '#components/geometry/graphics/three/utils/raf-coalescer.js';
 import { setRaycasterFromCamera } from '#components/geometry/graphics/three/utils/raycaster-from-camera.js';
-import { capturePointer, releasePointer } from '#utils/pointer-capture.utils.js';
+import { capturePointer, releasePointer } from '@taucad/ui/utils/pointer-capture';
 import {
   useCameraRig,
   useCameraSelector,

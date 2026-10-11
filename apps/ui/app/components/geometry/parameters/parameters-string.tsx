@@ -1,6 +1,6 @@
 import type { JSONValue } from '@taucad/types';
 import { Input } from '@taucad/ui/components/input';
-import { isValidColor, StringColorPicker } from '#components/ui/string-color-picker.js';
+import { isValidColor, StringColorPicker } from '@taucad/ui/components/string-color-picker';
 import { cn } from '@taucad/ui/utils/cn';
 
 type ParametersStringProps = {

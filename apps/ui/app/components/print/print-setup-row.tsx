@@ -1,5 +1,5 @@
 import { MaterialSwatch } from '#components/geometry/cad/material-swatch.js';
-import { ModifiedIndicator } from '#components/ui/modified-indicator.js';
+import { ModifiedIndicator } from '@taucad/ui/components/modified-indicator';
 import { cn } from '@taucad/ui/utils/cn';
 
 /** Match the Parameters label, control and reset columns in the Print pane. */

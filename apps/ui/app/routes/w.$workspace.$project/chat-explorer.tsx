@@ -6,10 +6,10 @@ import type { PaneviewApi, PaneviewPanelApi } from 'dockview-react';
 import { Paneview } from '#components/panes/paneview.js';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import type { GeometryComponentManifest, GeometryComponentNode } from '@taucad/types';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
-import { SearchInput } from '#components/search-input.js';
-import { HighlightText } from '#components/highlight-text.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
+import { SearchInput } from '@taucad/ui/components/search-input';
+import { HighlightText } from '@taucad/ui/components/highlight-text';
 import {
   FloatingPanel,
   FloatingPanelClose,
@@ -34,7 +34,7 @@ import { useOptionalPartThumbnailService } from '#providers/part-thumbnail-provi
 import { PartThumbnailService } from '#services/part-thumbnail.service.js';
 import type { PartThumbnailRequest, PartThumbnailState } from '#services/part-thumbnail.service.js';
 import { canonicalPartPreviews, sourceGlbDigest } from '#services/part-thumbnail-visual.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useProject } from '#hooks/use-project.js';
 import type { graphicsMachine } from '#machines/graphics.machine.js';
 import { deriveModelInteractionUnitId, getModelInteractionUnitState } from '#machines/model-interaction.machine.js';
@@ -54,7 +54,7 @@ import {
   getInitialPanelOptions,
   usePaneviewPersistence,
 } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
-import { PaneVirtualList } from '#components/panes/pane-virtual-list.js';
+import { PaneVirtualList } from '@taucad/ui/components/pane-virtual-list';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 const keyCombinationEditor = projectWorkspaceKeyCombinations.model;

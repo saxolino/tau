@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActor, createAsyncLogic } from 'xstate';
 import type { Actor } from 'xstate';
 import { GraphicsProvider, useCameraSelector } from '#hooks/use-graphics.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { useViewerShortcuts } from '#hooks/use-viewer-shortcuts.js';
 import { graphicsMachine } from '#machines/graphics.machine.js';
 

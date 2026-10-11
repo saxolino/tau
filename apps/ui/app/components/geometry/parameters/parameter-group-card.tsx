@@ -2,8 +2,8 @@ import type { ComponentProps, ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import { cn } from '@taucad/ui/utils/cn';
-import { HighlightText } from '#components/highlight-text.js';
-import { disclosureMotion } from '#components/revisions/revision-actions.js';
+import { HighlightText } from '@taucad/ui/components/highlight-text';
+import { disclosureMotion } from '@taucad/ui/components/actions';
 
 /**
  * The Parameters pane's group card: a header row with the title, a trailing status such as a count and a chevron

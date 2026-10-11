@@ -46,7 +46,7 @@ vi.mock('#hooks/use-graphics.js', () => ({
   GraphicsProvider: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-vi.mock('#components/ui/loader.js', () => ({
+vi.mock('@taucad/ui/components/loader', () => ({
   Loader: () => <div data-testid='loader' />,
 }));
 

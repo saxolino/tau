@@ -37,7 +37,7 @@ import { ChatMessageContextCompaction } from '#routes/w.$workspace.$project/chat
 import { ChatMessageToolUseSkill } from '#routes/w.$workspace.$project/chat-message-tool-use-skill.js';
 import { ChatMessageText } from '#routes/w.$workspace.$project/chat-message-text.js';
 import { ChatMessageMedia } from '#routes/w.$workspace.$project/chat-message-media.js';
-import { CopyButton } from '#components/copy-button.js';
+import { CopyButton } from '@taucad/ui/components/copy-button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { formatAbsoluteTime, formatRelativeTime } from '#utils/date.utils.js';
 import { cn } from '@taucad/ui/utils/cn';
@@ -75,7 +75,7 @@ import { useChatAttachmentDirectories } from '#components/chat/attachment-previe
 import { ChatMessagePlanning } from '#routes/w.$workspace.$project/chat-message-planning.js';
 import { ChatStreamingStopButton } from '#components/chat/chat-textarea-submit-button.js';
 import { cancelChatStreamKeyCombination } from '#components/chat/chat-textarea-types.js';
-import { formatKeyCombination } from '#utils/keys.utils.js';
+import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import { FileLink } from '#components/files/file-link.js';
 import { isSafeRelativePath } from '@taucad/utils/path';
 import { isRecord } from '@taucad/utils/schema';

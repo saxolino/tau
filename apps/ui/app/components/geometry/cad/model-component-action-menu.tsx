@@ -35,13 +35,13 @@ import {
   DropdownMenuSliderItem,
   MenuSliderItem,
   preventMenuSliderEscapeDismissal,
-} from '#components/ui/menu-slider-item.js';
+} from '@taucad/ui/components/menu-slider-item';
 import {
   ContextMenuDisclosureItem,
   DropdownMenuDisclosureItem,
   MenuDisclosureItem,
-} from '#components/ui/menu-disclosure-item.js';
-import type { MenuDisclosureItemProperties } from '#components/ui/menu-disclosure-item.js';
+} from '@taucad/ui/components/menu-disclosure-item';
+import type { MenuDisclosureItemProperties } from '@taucad/ui/components/menu-disclosure-item';
 import { menuItemVariants, menuSeparatorVariants } from '@taucad/ui/components/menu.variants';
 import { cn } from '@taucad/ui/utils/cn';
 import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';

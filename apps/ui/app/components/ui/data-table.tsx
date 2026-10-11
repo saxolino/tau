@@ -28,7 +28,7 @@ import {
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
 import { toTitleCase } from '#utils/string.utils.js';
-import { SearchInput } from '#components/search-input.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
 import { cn } from '@taucad/ui/utils/cn';
 
 // =============================================================================

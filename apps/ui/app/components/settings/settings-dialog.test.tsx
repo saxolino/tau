@@ -65,7 +65,7 @@ vi.mock('#components/settings/compute-reuse-settings.js', () => ({
 vi.mock('#components/settings/settings-auth-gate.js', () => ({
   SettingsAuthGate: ({ children }: { readonly children: React.JSX.Element }): React.JSX.Element => children,
 }));
-vi.mock('#hooks/use-keyboard.js', () => ({ useKeybinding: vi.fn() }));
+vi.mock('@taucad/ui/components/keyboard', () => ({ useKeybinding: vi.fn() }));
 
 function SettingsTestSurface(): React.JSX.Element {
   return (

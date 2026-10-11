@@ -6,7 +6,7 @@ import { Allotment } from '#components/panes/allotment.js';
 import { Code, PanelBottom, Play } from 'lucide-react';
 import { getActiveGroupValues } from '@taucad/types';
 import { Button } from '@taucad/ui/components/button';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { Drawer, DrawerContent, DrawerDescription, DrawerTitle, DrawerTrigger } from '@taucad/ui/components/drawer';
 import { ChatContextInsertionProvider } from '#components/chat/chat-context-insertion.js';
 import { FileManagerProvider, useFileManager } from '#hooks/use-file-manager.js';

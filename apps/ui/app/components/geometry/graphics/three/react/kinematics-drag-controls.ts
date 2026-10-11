@@ -29,7 +29,7 @@ import {
 import type { KinematicsPointerPoint } from '#components/geometry/graphics/three/utils/kinematics-drag-math.js';
 import { resolveSectionViewRaycastClip } from '#components/geometry/graphics/three/use-section-view.js';
 import { useGraphics, useKinematicsRef, useRenderFrame } from '#hooks/use-graphics.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { getKinematicsUnitState, isGroundedKinematicsLink } from '#machines/kinematics.machine.js';
 import type { KinematicsMachineEvent } from '#machines/kinematics.machine.js';
 
