@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -115,5 +115,46 @@ describe('createMcpViewerWorkbench', () => {
 
     expect(await readFile(join(root, workbenchPaths.layout), 'utf8')).toBe('{"version":1}');
     await expect(readFile(join(root, workbenchPaths.entries))).rejects.toThrow();
+  });
+
+  it("should leave another writer's component display alone when the page re-reports an unchanged view", async () => {
+    const keeper = createMcpViewerWorkbench({ settle: 10 });
+    keeper.report({ root, pageId: 'page-1', view: viewOf() });
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 5, hidden: ['gear'] }) });
+    await keeper.flush();
+    const entriesText = workbenchRecords.entries.serialize({
+      version: 1,
+      entries: { 'plate.ts': { components: { hidden: ['housing'], isolated: [], opacity: [] } } },
+    });
+    await writeFile(join(root, workbenchPaths.entries), entriesText);
+
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 5, hidden: ['gear'] }) });
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 7, hidden: ['gear'] }) });
+    await keeper.close();
+
+    expect(await readFile(join(root, workbenchPaths.entries), 'utf8')).toBe(entriesText);
+  });
+
+  it("should write only the camera when the person orbits after another writer's component change", async () => {
+    const keeper = createMcpViewerWorkbench({ settle: 10 });
+    keeper.report({ root, pageId: 'page-1', view: viewOf() });
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 5, hidden: ['gear'] }) });
+    await keeper.flush();
+    const entriesText = workbenchRecords.entries.serialize({
+      version: 1,
+      entries: { 'plate.ts': { components: { hidden: ['housing'], isolated: [], opacity: [] } } },
+    });
+    await writeFile(join(root, workbenchPaths.entries), entriesText);
+
+    const orbited = { ...viewOf().camera!, direction: [0, 1, 0] as const };
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 9, hidden: ['gear'], camera: orbited }) });
+    await keeper.close();
+
+    expect(await readFile(join(root, workbenchPaths.entries), 'utf8')).toBe(entriesText);
+    const views = await readdir(join(root, '.tau/workbench/views'));
+    expect(views).toHaveLength(1);
+    expect(await readRecord(root, `.tau/workbench/views/${views[0]}`)).toMatchObject({
+      camera: { direction: [0, 1, 0] },
+    });
   });
 });
