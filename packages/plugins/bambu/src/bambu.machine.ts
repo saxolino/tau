@@ -17,6 +17,8 @@ const bindingConfiguration = defineConfiguration({
     serial: z.string().min(1).max(64).optional(),
     wireForm: z.enum(['a', 'b', 'c']).optional().meta({
       title: 'Command forms (testing)',
+      // The session sends (a) when none is set; a saved binding is never re-parsed, so this is the form's default only.
+      default: 'a',
       description:
         'Which form to send where Bambu Studio, OrcaSlicer and bambuddy disagree: the external spool and clearing a slot (testing program rows T6, T7, T10, T17). (a) is Bambu Studio’s everywhere; for a load (b) is OrcaSlicer’s and (c) bambuddy’s, for a slot setting (b) is a probe and (c) 254/254, for a clear (b) and (c) are bambuddy’s, for a profile (b) is bambuddy’s.',
     }),

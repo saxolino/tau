@@ -1349,6 +1349,8 @@ const simulatorBindingConfiguration = defineConfiguration({
     }),
     wireForm: z.enum(['a', 'b', 'c']).optional().meta({
       title: 'Command forms (testing)',
+      // The session sends (a) when none is set; a saved binding is never re-parsed, so this is the form's default only.
+      default: 'a',
       description: 'Which form to send where the clients disagree (testing program rows T6, T7, T10, T17).',
     }),
   }),
