@@ -478,6 +478,20 @@ describe('GithubService concurrent completion', () => {
     expect(database.database.insert).toHaveBeenCalledOnce();
     expect(database.database.update).not.toHaveBeenCalled();
   });
+
+  it('should refuse another Tau account as the wrong owner and keep the attempt for its own', async () => {
+    stubGithub(() => json(tokenBody));
+    const { github, database } = harness();
+    const started = await github.start('tau-user', 'session-1', '/import', 'browser');
+    await github.callback({ state: stateOf(started.authorizationUrl), code: 'a'.repeat(32) });
+
+    await expect(github.complete('other-user', 'session-9', started.attemptId)).rejects.toMatchObject({
+      status: 401,
+      response: { code: 'GITHUB_COMPLETION_OWNER_MISMATCH' },
+    });
+    expect(database.database.insert).not.toHaveBeenCalled();
+    await expect(github.complete('tau-user', 'session-1', started.attemptId)).resolves.toMatchObject({ subject: 42 });
+  });
 });
 
 describe('GithubService refresh token retention', () => {
