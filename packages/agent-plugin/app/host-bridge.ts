@@ -89,15 +89,21 @@ const isShowResult = (value: unknown): value is TauViewerShowResult =>
   typeof value === 'object' && value !== null && 'model' in value && typeof value.model === 'object';
 
 /**
- * Ask the server for the model it showed last, as `show_model` with no target
- * returns it, and report the outcome as an event.
+ * Ask the server for a model through `show_model` and report the outcome as an
+ * event: with no arguments, the model it showed last; on the loopback page,
+ * the model its link names.
  *
  * @param callTool - The bridge's tool call.
+ * @param args - The call's arguments.
  * @param listener - Receives the `show` or `error` event.
  */
-const showLast = async (callTool: HostBridge['callTool'], listener: (event: HostEvent) => void): Promise<void> => {
+const showModel = async (
+  callTool: HostBridge['callTool'],
+  args: Readonly<Record<string, unknown>>,
+  listener: (event: HostEvent) => void,
+): Promise<void> => {
   try {
-    const result = await callTool(tauViewerToolName.showModel, {});
+    const result = await callTool(tauViewerToolName.showModel, args);
     if (isShowResult(result)) {
       listener({ type: 'show', result });
     }
@@ -200,7 +206,7 @@ const connectMcpApp = async (): Promise<HostBridge> => {
    * show; it asks for the model shown last (or the project's main file). */
   if (app.getHostContext()?.toolInfo === undefined) {
     // async-iife: bootstrap — the page opens with nothing to show; the outcome is an event.
-    void showLast(callTool, emit);
+    void showModel(callTool, {}, emit);
   }
 
   return {
@@ -275,11 +281,11 @@ const connectLoopback = (): HostBridge => {
     view,
     subscribe(listener) {
       listeners.add(listener);
-      /* The server linked to one shown model; ask for it as `show_model` would
-       * have handed it to an MCP Apps page. */
+      /* The server linked to one shown model; ask for that model by id, as
+       * `show_model` handed it to the agent, without rendering it again. */
       if (modelId !== null) {
         // async-iife: bootstrap — the outcome reaches this listener as an event.
-        void showLast(callTool, listener);
+        void showModel(callTool, { modelId }, listener);
       }
       return () => listeners.delete(listener);
     },

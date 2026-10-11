@@ -180,6 +180,40 @@ describe('createLocalMcpViewer', () => {
       });
     });
 
+    it('should answer the model a link names, from the project it was shown in, without rendering again', async () => {
+      const elsewhere = await mkdtemp(join(tmpdir(), 'tau-viewer-start-'));
+      /* A host that names the project per call (Codex `_meta`); without it, the server's start folder. */
+      const perCall = createLocalMcpViewer({
+        page,
+        rootOf: (meta) => (meta?.['project'] === 'a' ? root : elsewhere),
+        renderGlb,
+      });
+      try {
+        const projectA: TauMcpViewerCallOptions = { ...text, meta: { project: 'a' } };
+        const first = shownModel(await perCall.show({ targetFile: 'src/bracket.ts' }, projectA));
+        await perCall.show({ targetFile: 'models/part.glb' }, projectA);
+        expect(renderGlb).toHaveBeenCalledTimes(1);
+        const { origin, token, modelId } = loopbackOf(first.viewerUrl);
+        const call = async (args: Record<string, unknown>) =>
+          fetch(`${origin}/api/tools/call`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-tau-viewer-token': token },
+            body: JSON.stringify({ name: 'show_model', arguments: args }),
+          });
+
+        const linked = await call({ modelId });
+        expect(linked.status).toBe(200);
+        expect(await linked.json()).toEqual({ model: first.model });
+        expect(renderGlb).toHaveBeenCalledTimes(1);
+        const unknown = await call({ modelId: 'unknown' });
+        expect(unknown.status).toBe(422);
+        expect(await unknown.json()).toMatchObject({ errorCode: 'UNKNOWN_MODEL' });
+      } finally {
+        await perCall.close();
+        await rm(elsewhere, { recursive: true, force: true });
+      }
+    });
+
     it('should show a model without a link when the loopback server cannot start, then retry', async () => {
       const listen = vi.spyOn(Server.prototype, 'listen').mockImplementationOnce(function (this: Server) {
         process.nextTick(() => this.emit('error', new Error('listen EPERM: operation not permitted')));

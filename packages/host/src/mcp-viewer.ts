@@ -64,7 +64,12 @@ export type LocalMcpViewer = TauMcpViewer &
     close(): Promise<void>;
   }>;
 
-type Shown = Readonly<{ model: TauViewerModel; absolutePath: string }>;
+/**
+ * One model a tool showed, under the id its link and its reads name. The
+ * entry is the single record of what was shown and for which project: the
+ * loopback page asks for it by id and never resolves a folder of its own.
+ */
+type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string }>;
 
 const failure = (errorCode: string, message: string): TauMcpViewerFailure => ({ errorCode, message });
 
@@ -242,7 +247,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       byteLength: bytes.length,
       sha256,
     };
-    shown.set(id, { model, absolutePath });
+    shown.set(id, { model, absolutePath, root });
     return model;
   };
 
@@ -326,6 +331,14 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     return { model, ...(url === undefined ? {} : { viewerUrl: url }) };
   };
 
+  const browseIn = async (root: string): Promise<{ files: TauViewerFile[] }> => {
+    const main = await mainEntry(root);
+    const paths = await renderableFiles(root);
+    const ordered =
+      main !== undefined && paths.includes(main) ? [main, ...paths.filter((path) => path !== main)] : paths;
+    return { files: ordered.map((path) => ({ path, title: titleOf(path) })) };
+  };
+
   const port: LocalMcpViewer = {
     page: options.page,
     async show(input, callOptions) {
@@ -343,13 +356,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       return showPath(options.rootOf(callOptions.meta), input.path, callOptions);
     },
     async browse(callOptions) {
-      const root = options.rootOf(callOptions.meta);
-      const main = await mainEntry(root);
-      const paths = await renderableFiles(root);
-      const ordered =
-        main !== undefined && paths.includes(main) ? [main, ...paths.filter((path) => path !== main)] : paths;
-      const files: TauViewerFile[] = ordered.map((path) => ({ path, title: titleOf(path) }));
-      return { files };
+      return browseIn(options.rootOf(callOptions.meta));
     },
     async read(input) {
       const entry = shown.get(input.modelId);
@@ -385,19 +392,31 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
 
   /* The loopback API runs the same port functions a host would reach through
    * `tools/call`, for the page served at `/`. The token rides the URL fragment,
-   * which the browser never sends, and the page returns it in a header. */
+   * which the browser never sends, and the page returns it in a header.
+   * `show_model` here answers the model the link names, as it was shown: the
+   * page's call carries no host `_meta`, so it cannot name a project folder
+   * (the server's start folder is not the conversation's project), and the
+   * model was already rendered. */
+  const linkedModel = (args: Record<string, unknown>): Shown | undefined =>
+    typeof args['modelId'] === 'string' ? shown.get(args['modelId']) : undefined;
+  const unlinked = (): TauMcpViewerFailure =>
+    failure('UNKNOWN_MODEL', 'This link names no model this session showed; show it again.');
+
   const loopbackTools: Readonly<Record<string, (args: Record<string, unknown>) => Promise<unknown>>> = {
     [tauViewerToolName.appRead]: async (args) =>
       port.read(
         { modelId: String(args['modelId']), offset: Number(args['offset']), length: Number(args['length']) },
         { toolCallId: 'loopback', presentation: 'text' },
       ),
-    [tauViewerToolName.showModel]: async (args) =>
-      port.show(
-        { targetFile: typeof args['targetFile'] === 'string' ? args['targetFile'] : undefined },
-        { toolCallId: 'loopback', presentation: 'text' },
-      ),
-    [tauViewerToolName.browseModels]: async () => port.browse({ toolCallId: 'loopback', presentation: 'text' }),
+    [tauViewerToolName.showModel]: async (args) => {
+      const entry = linkedModel(args);
+      return entry === undefined ? unlinked() : { model: entry.model };
+    },
+    /* Files of the project the linked model came from. */
+    [tauViewerToolName.browseModels]: async (args) => {
+      const entry = linkedModel(args);
+      return entry === undefined ? unlinked() : browseIn(entry.root);
+    },
   };
 
   const handleLoopback = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {

@@ -277,6 +277,7 @@ beforeAll(async () => {
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
   );
   await writeFile(join(project, 'surface.glb'), surfaceGlb(540));
+  await writeFile(join(project, 'small.glb'), surfaceGlb(8));
   const output = await build({
     configFile: false,
     logLevel: 'silent',
@@ -385,10 +386,13 @@ describe('the viewer page from a text host', () => {
       const client = await connect('claude-code', claudeCodeCapabilities);
       const { viewerUrl } = shown(await callTool(client, 'show_model', { targetFile: 'main.ts' }));
       expect(viewerUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?model=/u);
+      /* A later show does not change what the first link opens. */
+      shown(await callTool(client, 'show_model', { targetFile: 'small.glb' }));
       const page = await browser.newPage({ viewport: { width: 900, height: 640 } });
       await page.goto(viewerUrl ?? '');
 
       await drawn(page, 'Copy prompt');
+      expect(await page.getByText('main', { exact: true }).count()).toBe(1);
       await page.getByRole('group', { name: 'Viewer controls' }).waitFor();
       await capture(page, 'loopback');
       await page.close();
