@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 
 import { describe, expect, it } from 'vitest';
@@ -13,7 +14,7 @@ const model: TauViewerModel = {
   path: 'surface.glb',
   mimeType: 'model/gltf-binary',
   byteLength: bytes.length,
-  sha256: 'a'.repeat(64),
+  sha256: createHash('sha256').update(bytes).digest('hex'),
 };
 
 describe('loadModel', () => {
@@ -47,6 +48,21 @@ describe('loadModel', () => {
       model,
     );
     await expect(short).rejects.toThrow('changed while it was loading');
+  });
+
+  it('should refuse ranges that assemble bytes other than the digest it was shown', async () => {
+    const rewritten = bytes.map((value, index) => (index === bytes.length - 1 ? value + 1 : value));
+    const mixed = loadModel(async (_name, args) => {
+      const input = args as TauViewerReadInput;
+      const slice = rewritten.subarray(input.offset, input.offset + input.length);
+      return {
+        offset: input.offset,
+        byteLength: slice.length,
+        totalBytes: rewritten.length,
+        data: Buffer.from(slice).toString('base64'),
+      };
+    }, model);
+    await expect(mixed).rejects.toThrow('changed while it was loading');
   });
 });
 

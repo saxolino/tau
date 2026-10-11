@@ -82,6 +82,21 @@ const sliceOf = async (result: TauViewerReadResult): Promise<Uint8Array<ArrayBuf
   return new Uint8Array(await new Response(stream).arrayBuffer());
 };
 
+/**
+ * Hex SHA-256 of the assembled model, where the page runs in a secure context that has Web Crypto.
+ *
+ * @param bytes - The model.
+ * @returns The digest, or `undefined` without `crypto.subtle`.
+ */
+const digestOf = async (bytes: Uint8Array<ArrayBuffer>): Promise<string | undefined> => {
+  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
+  if (subtle === undefined) {
+    return undefined;
+  }
+  const digest = new Uint8Array(await subtle.digest('SHA-256', bytes));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+};
+
 /** The encodings this page can undo: gzip wherever the browser decompresses streams. */
 const encodings = typeof DecompressionStream === 'function' ? (['gzip'] as const) : undefined;
 
@@ -92,7 +107,9 @@ const encodings = typeof DecompressionStream === 'function' ? (['gzip'] as const
  * @param model - The model `show_model` returned.
  * @param onProgress - Receives the bytes read so far.
  * @returns The model as the artifact the viewer draws.
- * @throws Error when a reply does not continue where the last one stopped, or the size changes.
+ * @throws Error when a reply does not continue where the last one stopped, the size changes, or the assembled bytes
+ *   are not the digest `show_model` gave: the server pins a range to the file's size, mtime and inode, which a
+ *   same-size rewrite within a coarse mtime can keep.
  */
 export const loadModel = async (
   callTool: CallTool,
@@ -123,6 +140,10 @@ export const loadModel = async (
     bytes.set(chunk, offset);
     offset += chunk.length;
     onProgress?.(offset, model.byteLength);
+  }
+  const digest = await digestOf(bytes);
+  if (digest !== undefined && digest !== model.sha256) {
+    throw new Error(`${model.path} changed while it was loading.`);
   }
   return model.mimeType === 'image/svg+xml'
     ? { mimeType: model.mimeType, content: new TextDecoder().decode(bytes) }
