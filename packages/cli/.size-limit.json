@@ -1,7 +1,7 @@
 [
   {
-    "name": "total (ESM JS) — measured 43.7 kB brotli on 2026-10-10 (adds `tau mcp`)",
+    "name": "total (ESM JS) — measured 45.04 kB brotli on 2026-10-11 (adds per-call print projects in `tau mcp`)",
     "path": "dist/**/*.mjs",
-    "limit": "45 kB"
+    "limit": "46 kB"
   }
 ]
