@@ -101,7 +101,7 @@ The page stays live with the agent. It long-polls `app_sync`, a tool only the pa
 
 The tab and fullscreen page have a side panel (Panels in the bottom bar): the component tree, where a click selects a component and the eye hides or shows it; the model's parameters, where an edit is written to the project and the page shows the model rendered with it; the selected part's properties; and switches for the grid, axes, edges and surfaces. When you move the camera or hide a part, `tau mcp` saves that view in the project's `.tau/workbench` records, so Tau opens the project with the same camera and hidden parts.
 
-The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The browser link carries a per-session token and answers only on `127.0.0.1`.
+The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The server reads only the range asked for, gzips a range that shrinks by a tenth or more, and refuses a range once the file has changed, so the page shows the new file instead of a mix of two. A 50 MB GLB streams in thirteen calls. The browser link carries a per-session token and answers only on `127.0.0.1`.
 
 The launcher hands the page to the CLI in `TAU_VIEWER_PAGE`. To run the viewer from Claude Desktop, add the launcher to `claude_desktop_config.json` (Settings → Developer → Edit config):
 

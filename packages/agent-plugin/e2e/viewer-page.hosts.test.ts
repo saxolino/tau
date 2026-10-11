@@ -3,7 +3,7 @@
  *
  * An MCP Apps host (the basic-host harness: `AppBridge` in Chromium, the page
  * in a sandboxed frame under its declared CSP) shows a CAD source rendered to
- * GLB and a 10 MB GLB read in ranges; a text host follows the loopback link.
+ * GLB and a 50 MB GLB streamed in gzipped ranges; a text host follows the loopback link.
  * Screenshots land in `TAU_E2E_EVIDENCE_DIR` when it is set.
  */
 
@@ -311,7 +311,7 @@ beforeAll(async () => {
     join(project, 'plate.ts'),
     `import { drawRectangle } from 'replicad';\n\nexport const defaultParams = { width: 20 };\n\nexport default function main(params: typeof defaultParams) {\n  return drawRectangle(params.width, 10).sketchOnPlane('XY').extrude(2);\n}\n`,
   );
-  await writeFile(join(project, 'surface.glb'), surfaceGlb(540));
+  await writeFile(join(project, 'surface.glb'), surfaceGlb(850));
   /* Exchange formats the server converts to GLB (W7). */
   await copyFile(
     join(repoRoot, 'packages/geospec-engine/src/model/__fixtures__/intersecting-cylinders.step'),
@@ -400,11 +400,11 @@ describe('the viewer page in an MCP Apps host', () => {
   );
 
   it(
-    'should read a 10 MB GLB in ranges no larger than one reply',
+    'should stream a 50 MB GLB in gzipped ranges no larger than one reply',
     async () => {
       const result = await callTool(client, 'show_model', { targetFile: 'surface.glb' });
       const { model } = shown(result);
-      expect(model.byteLength).toBeGreaterThan(10 * 1024 * 1024);
+      expect(model.byteLength).toBeGreaterThan(50 * 1000 * 1000);
       const page = await mountInHarness(client, result, 'fullscreen');
       const frame = viewerFrame(page);
 
@@ -413,7 +413,8 @@ describe('the viewer page in an MCP Apps host', () => {
       const reads = calls.filter((call) => call.name === 'app_read');
       expect(reads.length).toBe(Math.ceil(model.byteLength / tauViewerReadLimit));
       expect(reads.every((call) => Number(call.arguments['length']) <= tauViewerReadLimit)).toBe(true);
-      await capture(page, 'basic-host-10mb');
+      expect(reads.every((call) => JSON.stringify(call.arguments['encodings']) === '["gzip"]')).toBe(true);
+      await capture(page, 'basic-host-50mb');
       expect(pageErrors).toEqual([]);
       await page.close();
     },

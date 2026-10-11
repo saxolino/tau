@@ -55,7 +55,7 @@ The viewer stays in step with the agent. A tab or fullscreen viewer switches to 
 
 In a tab or full view, **Panels** opens a side panel with the model's parts, its parameters, the selected part's properties and display switches. Changing a parameter saves it to the project, so Tau shows the same value, and the viewer redraws the model with it. The agent can read and change the same parameters with `get_parameters` and `apply_parameter_operation`. When you move the camera or hide a part, the plugin saves that view in the project, so opening the project in Tau shows the same camera and hidden parts.
 
-The viewer makes no network request. Model files reach it through a tool only the page can call, and the browser link answers only on your machine, with a token for that session.
+The viewer makes no network request. Model files reach it through a tool only the page can call, a few megabytes at a time and compressed where that helps, so a large mesh loads without the host dropping the connection. The browser link answers only on your machine, with a token for that session.
 
 ## Where files go
 
