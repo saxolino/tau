@@ -482,6 +482,23 @@ describe('createFileSystemBridgeProxy', () => {
     channel.port1.close();
   });
 
+  /* React's development render log diffs old props by reading `$$typeof`; a
+   * client disposed on a re-root is still the old prop, and a throw there aborts
+   * the commit that brings the new client in. */
+  it('should answer a disposed proxy probed for `$$typeof` with undefined', () => {
+    const channel = new MessageChannel();
+    const proxy = createFileSystemBridgeProxy({
+      port: fsBridgePort(channel.port2, 'fs-bridge-disposed-probe-client'),
+      dispose: () => {
+        channel.port2.close();
+      },
+    });
+    proxy.dispose();
+
+    expect(Reflect.get(proxy, '$$typeof')).toBeUndefined();
+    channel.port1.close();
+  });
+
   it('rejects malformed method arguments before a mutating handler runs', async () => {
     const channel = new MessageChannel();
     const writeFile = vi.fn();
