@@ -92,7 +92,7 @@ The tools load with the session in both hosts rather than waiting behind tool se
 | Claude Desktop         | An inline card in the conversation, with Add to chat and Open full view                                                         |
 | Claude Code, Codex CLI | A `http://127.0.0.1` link to the same page, served by `tau mcp` for its session; screenshots still come back inline             |
 
-The card shows the canvas and two actions. The tab, fullscreen and the browser page add the control bar: grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the host as context: the part's name and its `@cad[<file>#<component>]` token as text, and the same structured reference Tau's own chat chip carries as `structuredContent`. Where a host takes none (the browser page) it becomes Copy prompt. Colours and font follow the host.
+The card shows the canvas and two actions. The tab, fullscreen and the browser page add the control bar: grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the host as context: the part's name and its `@cad[<file>#<component>]` token as text, and the same structured reference Tau's own chat chip carries as `structuredContent`. A host that takes only messages gets Send to chat, with the text; where a host takes neither (the browser page) it becomes Copy prompt. Colours and font follow the host.
 
 The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The browser link carries a per-session token and answers only on `127.0.0.1`.
 

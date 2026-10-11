@@ -186,19 +186,24 @@ const viewerFrame = (page: Page): Frame => {
   return frame;
 };
 
+/** The harness host: its display mode, and how it differs from the default (what it declares, the height it allows). */
+type HarnessHost = Readonly<{
+  displayMode: 'inline' | 'fullscreen';
+  hostCapabilities?: Parameters<TauHost['mount']>[0]['hostCapabilities'];
+  maxHeight?: number;
+}>;
+
 /**
  * Mount the page in the basic-host harness with one tool result.
  *
  * @param client - The MCP Apps client.
  * @param result - The `show_model` result the host hands the page.
- * @param displayMode - The host's display mode.
+ * @param host - The host's display mode, what it declares and the height it allows.
  * @returns The harness page.
  */
-const mountInHarness = async (
-  client: Client,
-  result: CallToolResult,
-  displayMode: 'inline' | 'fullscreen',
-): Promise<Page> => {
+const mountInHarness = async (client: Client, result: CallToolResult, host: HarnessHost): Promise<Page> => {
+  const { displayMode } = host;
+  const maxHeight = host.maxHeight ?? 640;
   const { tools } = await client.listTools();
   const showModel = tools.find((tool) => tool.name === 'show_model');
   if (showModel === undefined) {
@@ -227,15 +232,17 @@ const mountInHarness = async (
       theme: 'light',
       displayMode,
       availableDisplayModes: ['inline', 'fullscreen'],
-      containerDimensions: { maxHeight: 640 },
+      containerDimensions: { maxHeight },
       platform: 'desktop',
       /* A view opened by a tool call knows that call (ext-apps `toolInfo`). */
       toolInfo: { tool: showModel },
     },
+    ...(host.hostCapabilities === undefined ? {} : { hostCapabilities: host.hostCapabilities }),
     toolArguments: {},
     toolResult: result,
     width: 860,
-    height: 420,
+    /* The frame is as tall as the card or the host's cap, whichever is lower. */
+    height: Math.min(420, maxHeight),
   };
   await page.evaluate(async (mount) => {
     await globalThis.tauHost.mount(mount);
@@ -277,6 +284,7 @@ beforeAll(async () => {
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
   );
   await writeFile(join(project, 'surface.glb'), surfaceGlb(540));
+  await writeFile(join(project, 'small.glb'), surfaceGlb(8));
   const output = await build({
     configFile: false,
     logLevel: 'silent',
@@ -320,7 +328,7 @@ describe('the viewer page in an MCP Apps host', () => {
     async () => {
       const result = await callTool(client, 'show_model', { targetFile: 'main.ts' });
       expect(shown(result).model).toMatchObject({ sourceFile: 'main.ts', mimeType: 'model/gltf-binary' });
-      const page = await mountInHarness(client, result, 'inline');
+      const page = await mountInHarness(client, result, { displayMode: 'inline' });
       const frame = viewerFrame(page);
 
       await drawn(frame, 'Add to chat');
@@ -357,12 +365,56 @@ describe('the viewer page in an MCP Apps host', () => {
   );
 
   it(
+    'should send the reference as a message on a host that takes no model context',
+    async () => {
+      const result = await callTool(client, 'show_model', { targetFile: 'small.glb' });
+      const page = await mountInHarness(client, result, {
+        displayMode: 'inline',
+        hostCapabilities: { serverTools: {}, message: { text: {} } },
+      });
+      const frame = viewerFrame(page);
+
+      await drawn(frame, 'Send to chat');
+      await frame.getByRole('button', { name: 'Send to chat' }).click();
+      await expect.poll(async () => recorded(page, 'messages')).toHaveLength(1);
+      await frame.getByRole('status').filter({ hasText: 'Sent to chat' }).waitFor();
+      expect(JSON.stringify(await recorded(page, 'messages'))).toContain('small');
+      expect(await recorded(page, 'modelContext')).toEqual([]);
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should keep both card actions inside a host height cap below the card height',
+    async () => {
+      const result = await callTool(client, 'show_model', { targetFile: 'small.glb' });
+      const page = await mountInHarness(client, result, { displayMode: 'inline', maxHeight: 300 });
+      const frame = viewerFrame(page);
+
+      await drawn(frame, 'Add to chat');
+      const frameBox = await page.locator('iframe').boundingBox();
+      expect(frameBox).not.toBeNull();
+      for (const name of ['Add to chat', 'Open full view']) {
+        // oxlint-disable-next-line no-await-in-loop -- one action at a time.
+        const box = await frame.getByRole('button', { name }).boundingBox();
+        expect(box).not.toBeNull();
+        expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual((frameBox?.y ?? 0) + (frameBox?.height ?? 0));
+      }
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
     'should read a 10 MB GLB in ranges no larger than one reply',
     async () => {
       const result = await callTool(client, 'show_model', { targetFile: 'surface.glb' });
       const { model } = shown(result);
       expect(model.byteLength).toBeGreaterThan(10 * 1024 * 1024);
-      const page = await mountInHarness(client, result, 'fullscreen');
+      const page = await mountInHarness(client, result, { displayMode: 'fullscreen' });
       const frame = viewerFrame(page);
 
       await drawn(frame, 'Add to chat');
@@ -385,10 +437,13 @@ describe('the viewer page from a text host', () => {
       const client = await connect('claude-code', claudeCodeCapabilities);
       const { viewerUrl } = shown(await callTool(client, 'show_model', { targetFile: 'main.ts' }));
       expect(viewerUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?model=/u);
+      /* A later show does not change what the first link opens. */
+      shown(await callTool(client, 'show_model', { targetFile: 'small.glb' }));
       const page = await browser.newPage({ viewport: { width: 900, height: 640 } });
       await page.goto(viewerUrl ?? '');
 
       await drawn(page, 'Copy prompt');
+      expect(await page.getByText('main', { exact: true }).count()).toBe(1);
       await page.getByRole('group', { name: 'Viewer controls' }).waitFor();
       await capture(page, 'loopback');
       await page.close();

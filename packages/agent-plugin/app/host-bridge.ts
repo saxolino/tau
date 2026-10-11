@@ -14,7 +14,7 @@ import {
   applyHostFonts,
   applyHostStyleVariables,
 } from '@modelcontextprotocol/ext-apps';
-import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps';
+import type { McpUiHostCapabilities, McpUiHostContext } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { tauViewerToolName } from '@taucad/mcp/viewer-protocol';
 import type { TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
@@ -23,6 +23,13 @@ import type { ChatReference } from '#app/chat-reference.js';
 /** Which composition the page draws (blueprint "Composition per presentation"). */
 export type ViewerComposition = 'inline' | 'tab';
 
+/**
+ * How "Add to chat" reaches the conversation (E8), best first: into the
+ * model's context (`ui/update-model-context`), as a message in the
+ * conversation (`ui/message`), or onto the clipboard for the person to paste.
+ */
+export type ChatRoute = 'context' | 'message' | 'clipboard';
+
 /** What the page knows about its surroundings. */
 export type HostView = Readonly<{
   kind: 'mcp-app' | 'loopback';
@@ -30,8 +37,10 @@ export type HostView = Readonly<{
   colorScheme: 'light' | 'dark';
   /** Whether the page may offer its own fullscreen action: Claude hosts want one, Codex draws its own (E3). */
   canRequestFullscreen: boolean;
-  /** Whether the host takes context from the page (`ui/update-model-context`); text hosts copy instead. */
-  canAddToChat: boolean;
+  /** The route "Add to chat" takes on this host; text hosts copy. */
+  chatRoute: ChatRoute;
+  /** The tallest the host lets the frame grow, in CSS pixels (E5: it clips the rest). */
+  maxHeight: number | undefined;
   /** Insets the host asks the page to keep clear (E5). */
   safeArea: Readonly<{ top: number; right: number; bottom: number; left: number }>;
 }>;
@@ -49,11 +58,13 @@ export type HostBridge = Readonly<{
   /** Call a Tau tool and return its structured result, or throw its error text. */
   callTool(name: string, args: Readonly<Record<string, unknown>>): Promise<unknown>;
   /**
-   * Hand the person's reference to the conversation (E8): into the model's
-   * context where the host takes it (the text, with the structured references
-   * as `structuredContent`), otherwise its text onto the clipboard.
+   * Hand the person's reference to the conversation (E8) along the view's
+   * {@link ChatRoute}: as model context, its text with the structured
+   * references as `structuredContent`; as a message or on the clipboard, its text.
+   *
+   * @returns The route it took.
    */
-  addToChat(reference: ChatReference): Promise<'added' | 'copied'>;
+  addToChat(reference: ChatReference): Promise<ChatRoute>;
   requestFullscreen(): Promise<void>;
 }>;
 
@@ -91,15 +102,21 @@ const isShowResult = (value: unknown): value is TauViewerShowResult =>
   typeof value === 'object' && value !== null && 'model' in value && typeof value.model === 'object';
 
 /**
- * Ask the server for the model it showed last, as `show_model` with no target
- * returns it, and report the outcome as an event.
+ * Ask the server for a model through `show_model` and report the outcome as an
+ * event: with no arguments, the model it showed last; on the loopback page,
+ * the model its link names.
  *
  * @param callTool - The bridge's tool call.
+ * @param args - The call's arguments.
  * @param listener - Receives the `show` or `error` event.
  */
-const showLast = async (callTool: HostBridge['callTool'], listener: (event: HostEvent) => void): Promise<void> => {
+const showModel = async (
+  callTool: HostBridge['callTool'],
+  args: Readonly<Record<string, unknown>>,
+  listener: (event: HostEvent) => void,
+): Promise<void> => {
   try {
-    const result = await callTool(tauViewerToolName.showModel, {});
+    const result = await callTool(tauViewerToolName.showModel, args);
     if (isShowResult(result)) {
       listener({ type: 'show', result });
     }
@@ -107,6 +124,33 @@ const showLast = async (callTool: HostBridge['callTool'], listener: (event: Host
     listener({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
 };
+
+/**
+ * The height the host's container allows: its fixed height, else its maximum.
+ *
+ * @param context - The host context.
+ * @returns The cap in CSS pixels, or `undefined` when the host sets none.
+ */
+const heightCapOf = (context: McpUiHostContext | undefined): number | undefined => {
+  const dimensions = context?.containerDimensions;
+  if (dimensions === undefined) {
+    return undefined;
+  }
+  return 'height' in dimensions ? dimensions.height : dimensions.maxHeight;
+};
+
+/**
+ * Pick "Add to chat"'s route from what the host declared at `ui/initialize`.
+ *
+ * @param capabilities - The host's capabilities.
+ * @returns The best route they offer.
+ */
+const chatRouteOf = (capabilities: McpUiHostCapabilities | undefined): ChatRoute =>
+  capabilities?.updateModelContext === undefined
+    ? capabilities?.message === undefined
+      ? 'clipboard'
+      : 'message'
+    : 'context';
 
 const errorText = (result: CallToolResult): string =>
   result.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n') || 'The Tau tool failed.';
@@ -138,14 +182,14 @@ const connectMcpApp = async (): Promise<HostBridge> => {
   const viewOf = (context: McpUiHostContext | undefined): HostView => {
     const host = app.getHostVersion()?.name ?? '';
     const isCodex = /codex|openai|chatgpt/iu.test(host);
-    const capabilities = app.getHostCapabilities();
     return {
       kind: 'mcp-app',
       composition: context?.displayMode === 'inline' ? 'inline' : 'tab',
       colorScheme: context?.theme === 'dark' ? 'dark' : 'light',
       canRequestFullscreen:
         !isCodex && context?.displayMode === 'inline' && (context.availableDisplayModes ?? []).includes('fullscreen'),
-      canAddToChat: capabilities?.updateModelContext !== undefined,
+      chatRoute: chatRouteOf(app.getHostCapabilities()),
+      maxHeight: heightCapOf(context),
       safeArea: context?.safeAreaInsets ?? noInsets,
     };
   };
@@ -202,7 +246,7 @@ const connectMcpApp = async (): Promise<HostBridge> => {
    * show; it asks for the model shown last (or the project's main file). */
   if (app.getHostContext()?.toolInfo === undefined) {
     // async-iife: bootstrap — the page opens with nothing to show; the outcome is an event.
-    void showLast(callTool, emit);
+    void showModel(callTool, {}, emit);
   }
 
   return {
@@ -216,15 +260,21 @@ const connectMcpApp = async (): Promise<HostBridge> => {
     },
     callTool,
     async addToChat({ text, references }) {
-      if (app.getHostCapabilities()?.updateModelContext === undefined) {
+      const route = chatRouteOf(app.getHostCapabilities());
+      if (route === 'context') {
+        await app.updateModelContext({
+          content: [{ type: 'text', text }],
+          ...(references.length === 0 ? {} : { structuredContent: { references } }),
+        });
+      } else if (route === 'message') {
+        const { isError } = await app.sendMessage({ role: 'user', content: [{ type: 'text', text }] });
+        if (isError === true) {
+          throw new Error('The host did not take the message.');
+        }
+      } else {
         await navigator.clipboard.writeText(text);
-        return 'copied';
       }
-      await app.updateModelContext({
-        content: [{ type: 'text', text }],
-        ...(references.length === 0 ? {} : { structuredContent: { references } }),
-      });
-      return 'added';
+      return route;
     },
     async requestFullscreen() {
       await app.requestDisplayMode({ mode: 'fullscreen' });
@@ -248,7 +298,8 @@ const connectLoopback = (): HostBridge => {
     composition: 'tab',
     colorScheme: prefersDark.matches ? 'dark' : 'light',
     canRequestFullscreen: false,
-    canAddToChat: false,
+    chatRoute: 'clipboard',
+    maxHeight: undefined,
     safeArea: noInsets,
   });
   applyTheme(view().colorScheme);
@@ -280,18 +331,18 @@ const connectLoopback = (): HostBridge => {
     view,
     subscribe(listener) {
       listeners.add(listener);
-      /* The server linked to one shown model; ask for it as `show_model` would
-       * have handed it to an MCP Apps page. */
+      /* The server linked to one shown model; ask for that model by id, as
+       * `show_model` handed it to the agent, without rendering it again. */
       if (modelId !== null) {
         // async-iife: bootstrap — the outcome reaches this listener as an event.
-        void showLast(callTool, listener);
+        void showModel(callTool, { modelId }, listener);
       }
       return () => listeners.delete(listener);
     },
     callTool,
     async addToChat({ text }) {
       await navigator.clipboard.writeText(text);
-      return 'copied';
+      return 'clipboard';
     },
     async requestFullscreen() {
       await document.documentElement.requestFullscreen();
