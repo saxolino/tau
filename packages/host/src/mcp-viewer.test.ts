@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { Server } from 'node:http';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -177,6 +178,37 @@ describe('createLocalMcpViewer', () => {
         totalBytes: glb.length,
         data: glb.subarray(0, 4).toString('base64'),
       });
+    });
+
+    it('should show a model without a link when the loopback server cannot start, then retry', async () => {
+      const listen = vi.spyOn(Server.prototype, 'listen').mockImplementationOnce(function (this: Server) {
+        process.nextTick(() => this.emit('error', new Error('listen EPERM: operation not permitted')));
+        return this;
+      });
+      try {
+        const failed = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
+        expect(failed.model.path).toBe('models/part.glb');
+        expect(failed.viewerUrl).toBeUndefined();
+
+        const retried = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
+        expect(retried.viewerUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?model=/u);
+        expect(listen).toHaveBeenCalledTimes(2);
+      } finally {
+        listen.mockRestore();
+      }
+    });
+
+    it('should close after a loopback start that failed', async () => {
+      const listen = vi.spyOn(Server.prototype, 'listen').mockImplementationOnce(function (this: Server) {
+        process.nextTick(() => this.emit('error', new Error('listen EPERM: operation not permitted')));
+        return this;
+      });
+      try {
+        await viewer.show({ targetFile: 'models/part.glb' }, text);
+        await expect(viewer.close()).resolves.toBeUndefined();
+      } finally {
+        listen.mockRestore();
+      }
     });
 
     it('should refuse a request under another host name', async () => {

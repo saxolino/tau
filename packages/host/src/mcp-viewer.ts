@@ -262,13 +262,23 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     return { server, origin: `http://127.0.0.1:${String(port)}` };
   };
 
+  /* A text host gets a link; when the loopback server cannot start, the model
+   * is still shown without one, and the next text show tries again. */
   const viewerUrl = async (model: TauViewerModel, presentation: TauMcpViewerCallOptions['presentation']) => {
     if (presentation !== 'text') {
       return undefined;
     }
     loopback ??= startLoopback();
-    const { origin } = await loopback;
-    return `${origin}/?model=${encodeURIComponent(model.id)}#${token}`;
+    const starting = loopback;
+    try {
+      const { origin } = await starting;
+      return `${origin}/?model=${encodeURIComponent(model.id)}#${token}`;
+    } catch {
+      if (loopback === starting) {
+        loopback = undefined;
+      }
+      return undefined;
+    }
   };
 
   const showPath = async (
@@ -357,8 +367,12 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     async close() {
       const running = loopback;
       loopback = undefined;
-      if (running !== undefined) {
-        const { server } = await running;
+      /* A start that failed left nothing to stop. */
+      const server = await running?.then(
+        (started) => started.server,
+        () => undefined,
+      );
+      if (server !== undefined) {
         await new Promise<void>((resolve) => {
           server.close(() => {
             resolve();
