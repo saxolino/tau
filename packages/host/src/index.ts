@@ -73,6 +73,8 @@ export type {
   ProjectHostRuntimeClient,
 } from '#project-host.js';
 export { keyedResource } from '#keyed-resource.js';
+export { openLocalParameterActors } from '#local-parameters.js';
+export type { LocalParameterActors } from '#local-parameters.js';
 export type { KeyedIncarnation, KeyedResource } from '#keyed-resource.js';
 export {
   createMachineSecretStore,

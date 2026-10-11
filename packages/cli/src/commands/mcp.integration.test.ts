@@ -80,6 +80,16 @@ export default function main() {
 }
 `,
   },
+  plate: {
+    'plate.ts': `import { drawRectangle } from 'replicad';
+
+export const defaultParams = { width: 20 };
+
+export default function main(params: typeof defaultParams) {
+  return drawRectangle(params.width, 10).sketchOnPlane('XY').extrude(2);
+}
+`,
+  },
 } as const;
 
 /**
@@ -416,6 +426,44 @@ describe('tau mcp over stdio', () => {
           expect.objectContaining({ message: expect.stringContaining(join(scratch, 'block', 'lid.ts')) as string }),
         ]) as unknown[],
       });
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    "should read a model's parameters and write an edit to its sidecar",
+    async () => {
+      const meta = { 'codex/sandbox-state-meta': { sandboxCwd: pathToFileURL(join(scratch, 'plate')).href } };
+      const read = await call({ name: 'get_parameters', arguments: { targetFile: 'plate.ts' }, _meta: meta });
+      expect(read.isError ?? false, textOf(read)).toBe(false);
+      const parameters = JSON.parse(textOf(read)) as {
+        status: string;
+        current?: { identity: { manifestRevision: string }; entry: { activeGroup: string } };
+      };
+      expect(parameters, textOf(read)).toMatchObject({
+        status: 'resolved',
+        current: { entry: { activeGroup: 'default' } },
+      });
+
+      const proposed = await call({
+        name: 'apply_parameter_operation',
+        arguments: {
+          action: 'propose',
+          targetFile: 'plate.ts',
+          requestId: 'widen-1',
+          expected: { manifestRevision: parameters.current?.identity.manifestRevision },
+          pressure: 'final',
+          operation: { kind: 'native-value', group: 'default', pointer: '/width', value: 30 },
+        },
+        _meta: meta,
+      });
+      expect(proposed.isError ?? false, textOf(proposed)).toBe(false);
+      expect(JSON.parse(textOf(proposed))).toMatchObject({ outcome: { status: 'committed', write: 'applied' } });
+      const after = await call({ name: 'get_parameters', arguments: { targetFile: 'plate.ts' }, _meta: meta });
+      expect(JSON.parse(textOf(after))).toMatchObject({
+        current: { entry: { groups: { default: { values: { width: 30 } } } } },
+      });
+      expect(await readFile(join(scratch, 'plate', '.tau/parameters/plate.ts.json'), 'utf8')).toContain('30');
     },
     kernelCallLimit,
   );

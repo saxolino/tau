@@ -82,7 +82,8 @@ export const hostMcpCapabilityPrefix = 'tau-mcp-host-v1';
 /**
  * The exact tool grant a host capability carries.
  *
- * The four CAD tools, the workbench record tool, and the print tools (blueprint D5, Bambu Studio D13): an
+ * The four CAD tools, the workbench record tool, the parameter tools (agent plugin UI blueprint G22), and the print
+ * tools (blueprint D5, Bambu Studio D13): an
  * external agent may read the slicing profiles a machine offers, and open,
  * read, list and stop a print request through the same ledger a Tau turn
  * uses, and is told to wait for the person — nothing here starts a print. Every name is dispatched into the daemon's own registry by tool name.
@@ -95,6 +96,8 @@ export const hostMcpAllowedTools = [
   toolName.screenshot,
   toolName.exportModel,
   toolName.arrangeWorkbench,
+  toolName.getParameters,
+  toolName.applyParameterOperation,
   toolName.getPrintProfiles,
   toolName.requestPrint,
   toolName.getPrintRequest,
@@ -114,6 +117,8 @@ export type HostMcpAllowedTool = (typeof hostMcpAllowedTools)[number];
  */
 const hostMcpRegistryTools: ReadonlySet<HostMcpAllowedTool> = new Set<HostMcpAllowedTool>([
   toolName.arrangeWorkbench,
+  toolName.getParameters,
+  toolName.applyParameterOperation,
   toolName.askQuestions,
   toolName.getPrintProfiles,
   toolName.requestPrint,
@@ -124,6 +129,7 @@ const hostMcpRegistryTools: ReadonlySet<HostMcpAllowedTool> = new Set<HostMcpAll
 
 /** The registry tools that change nothing, here or on a machine. */
 const readOnlyRegistryTools: ReadonlySet<string> = new Set<string>([
+  toolName.getParameters,
   toolName.getPrintProfiles,
   toolName.getPrintRequest,
   toolName.listPrintRequests,
@@ -133,6 +139,19 @@ const readOnlyRegistryTools: ReadonlySet<string> = new Set<string>([
 const hostMcpAnnotationOverrides: Readonly<Partial<Record<string, NonNullable<TauMcpHostTool['annotations']>>>> = {
   [toolName.arrangeWorkbench]: {
     readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  /* Writes the entry's parameter sidecar in the project, through a checked write. */
+  [toolName.applyParameterOperation]: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  },
+  [toolName.getParameters]: {
+    readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
     openWorldHint: false,

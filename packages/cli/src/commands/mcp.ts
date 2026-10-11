@@ -4,7 +4,7 @@ import { resolve as resolvePath } from 'node:path';
 import { Writable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { serveLocalHostMcp } from '@taucad/host';
+import { openLocalParameterActors, serveLocalHostMcp } from '@taucad/host';
 import { createHostGeoSpecRunner, createHostToolRegistry } from '@taucad/host/agent-tools';
 import type { AnyRuntimeDefinition } from '@taucad/runtime/worker';
 import { systemSkillBundles } from '@taucad/skills/resources';
@@ -16,8 +16,8 @@ const shutdownGrace = 5000;
 /**
  * `tau mcp` command.
  *
- * Serves Tau's CAD tools — evaluate, test, screenshot, export and the
- * workbench record — over stdio (MCP) to the agent that launched it. The
+ * Serves Tau's CAD tools — evaluate, test, screenshot, export, parameters
+ * and the workbench record — over stdio (MCP) to the agent that launched it. The
  * `@taucad/agent-plugin` launcher runs it for Codex and Claude Code; any MCP
  * client may run `tau mcp` itself.
  *
@@ -130,10 +130,13 @@ export const mcpCommand = defineCommand({
       return client;
     };
     const checkouts = new Map<string, { readonly cwd: string }>();
+    /* `get_parameters` and `apply_parameter_operation`: one actor per entry, writing its sidecar. */
+    const parameters = openLocalParameterActors({ runtimeClient: clientFor });
     const registry = createHostToolRegistry({
       workspaceRoot,
       checkouts,
       runtimeClient: clientFor,
+      parameterActor: parameters.parameterActor,
       /* `test_model` borrows the project's runtime and runs on the native
        * engine. Delete once taucad/tau#410 makes this the registry default. */
       geospecRunner: async (projectPath) => createHostGeoSpecRunner(projectPath, await clientFor(projectPath)),
@@ -152,6 +155,11 @@ export const mcpCommand = defineCommand({
       /* The server and its evidence folder go first, so a kernel that ignores
        * shutdown cannot keep the folder past the grace. */
       await local.close();
+      try {
+        await parameters.close();
+      } catch (error) {
+        process.stderr.write(`tau mcp: a parameter write did not close: ${String(error)}\n`);
+      }
       await Promise.allSettled(
         [...clients.values()].map(async (pending) => {
           const client = await pending;
