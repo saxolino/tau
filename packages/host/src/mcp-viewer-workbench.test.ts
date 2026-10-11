@@ -1,12 +1,30 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type { TauViewerViewState } from '@taucad/mcp/viewer-protocol';
 import { workbenchPaths, workbenchRecords } from '@taucad/workbench';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMcpViewerWorkbench } from '#mcp-viewer-workbench.js';
+
+/** Runs before the keeper stages a replacement for a record, so a test can play another writer in between. */
+const beforeStaging = vi.hoisted(() => ({ hook: undefined as ((record: string) => Promise<void>) | undefined }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return {
+    ...actual,
+    async writeFile(...args: Parameters<typeof actual.writeFile>): Promise<void> {
+      const [path] = args;
+      if (beforeStaging.hook !== undefined && typeof path === 'string' && path.endsWith('.tmp')) {
+        await beforeStaging.hook(path.replace(/\.[\da-f]{12}\.tmp$/, ''));
+      }
+      await actual.writeFile(...args);
+    },
+  };
+});
 
 const viewOf = (overrides: Partial<TauViewerViewState> = {}): TauViewerViewState => ({
   model: { id: 'm1', title: 'plate', path: '.tau/artifacts/plate.glb', sourceFile: 'plate.ts' },
@@ -32,6 +50,7 @@ describe('createMcpViewerWorkbench', () => {
   });
 
   afterEach(async () => {
+    beforeStaging.hook = undefined;
     await rm(root, { recursive: true, force: true });
   });
 
@@ -156,5 +175,53 @@ describe('createMcpViewerWorkbench', () => {
     expect(await readRecord(root, `.tau/workbench/views/${views[0]}`)).toMatchObject({
       camera: { direction: [0, 1, 0] },
     });
+  });
+
+  it('should leave one view, named by the layout, when entries writes keep conflicting', async () => {
+    let conflicts = 0;
+    beforeStaging.hook = async (record) => {
+      if (basename(record) === basename(workbenchPaths.entries)) {
+        conflicts += 1;
+        await writeFile(
+          record,
+          workbenchRecords.entries.serialize({ version: 1, entries: { [`other-${conflicts}.ts`]: {} } }),
+        );
+      }
+    };
+    const keeper = createMcpViewerWorkbench({ settle: 10 });
+    keeper.report({ root, pageId: 'page-1', view: viewOf() });
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 5, hidden: ['gear'] }) });
+    await keeper.flush();
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 6, hidden: ['housing'] }) });
+    await keeper.close();
+
+    expect(conflicts).toBe(2);
+    const views = await readdir(join(root, '.tau/workbench/views'));
+    expect(views).toHaveLength(1);
+    const layout = workbenchRecords.layout.read(new Uint8Array(await readFile(join(root, workbenchPaths.layout))));
+    const viewer = layout.status === 'current' ? layout.record.viewer : undefined;
+    expect(viewer).toMatchObject({ kind: 'group', tabs: [{ kind: 'view', view: basename(views[0]!, '.json') }] });
+  });
+
+  it('should remove the view it created when the layout write conflicts', async () => {
+    beforeStaging.hook = async (record) => {
+      if (basename(record) === basename(workbenchPaths.layout)) {
+        await writeFile(
+          record,
+          workbenchRecords.layout.serialize({
+            version: 1,
+            lanes: { chat: true, workbench: true },
+            viewer: { kind: 'group', tabs: [] },
+            workbench: { kind: 'group', tabs: [] },
+          }),
+        );
+      }
+    };
+    const keeper = createMcpViewerWorkbench({ settle: 10 });
+    keeper.report({ root, pageId: 'page-1', view: viewOf() });
+    keeper.report({ root, pageId: 'page-1', view: viewOf({ interactedAt: 5, hidden: ['gear'] }) });
+    await keeper.close();
+
+    expect(await readdir(join(root, '.tau/workbench/views'))).toEqual([]);
   });
 });

@@ -6,9 +6,10 @@
  * reported a model, its reports of that model are ignored, so opening a model or an agent's selection writes nothing.
  * Only what changed since the page's previous report is written, the camera or the component display, so a page that
  * merely keeps polling never reverts what `arrange_workbench` or Tau wrote meanwhile. Writes settle for a moment,
- * then go out in the order Tau's own writer uses (view, entries, layout). Each one replaces the file only if it still
- * holds the bytes it was computed from; a record another writer changed meanwhile wins, and the next report computes
- * against it. A record that is invalid or from a newer Tau is left untouched, and nothing is written for it.
+ * then go out view first, then the layout that names a view this writer created, then entries. Each one replaces the
+ * file only if it still holds the bytes it was computed from; a record another writer changed meanwhile wins, and the
+ * next report computes against it. A view created for a layout write that is refused is removed again. A record that
+ * is invalid or from a newer Tau is left untouched, and nothing is written for it.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -21,6 +22,9 @@ import type { ViewerNode, WorkbenchEntries, WorkbenchLayout, WorkbenchView } fro
 
 /** The frame a page reports its camera in when it names none. */
 const rootFrame = 'tau:root';
+
+/** The folder Tau keeps view records in, relative to the project. */
+const viewsFolder = `${dirname(workbenchPaths.view('v'))}/`;
 
 /** Timing knobs; tests shorten them. */
 export type McpViewerWorkbenchOptions = Readonly<{
@@ -157,8 +161,8 @@ const poseOf = (camera: NonNullable<TauViewerViewState['camera']>): NonNullable<
 });
 
 /**
- * The writes that keep one view: the page's pose in a view of its entry, its component display in `entries.json`,
- * and a viewer tab for a view this writer had to create. Only the parts the page changed are written; a view this
+ * The writes that keep one view: the page's pose in a view of its entry, a viewer tab for a view this writer had to
+ * create, and its component display in `entries.json`. Only the parts the page changed are written; a view this
  * writer creates takes the page's pose regardless.
  *
  * @param root - The project folder.
@@ -217,9 +221,7 @@ const plan = async (root: string, view: TauViewerViewState, changed: Changed): P
   });
 
   const writes: Write[] = [{ ...viewRead, next: nextView }];
-  if (changed.components) {
-    writes.push({ path: workbenchPaths.entries, text: entriesText, next: nextEntries });
-  }
+  /* The layout goes before entries, so a refused entries write leaves no view the layout does not name. */
   if (found === undefined) {
     const nextLayout: WorkbenchLayout = layout ?? {
       version: 1,
@@ -233,7 +235,34 @@ const plan = async (root: string, view: TauViewerViewState, changed: Changed): P
       next: workbenchRecords.layout.serialize({ ...nextLayout, viewer: withViewTab(nextLayout.viewer, id) }),
     });
   }
+  if (changed.components) {
+    writes.push({ path: workbenchPaths.entries, text: entriesText, next: nextEntries });
+  }
   return writes.filter((write) => write.next !== write.text);
+};
+
+/**
+ * Make one plan's writes in order, stopping at the first that is refused. A view file the plan created is removed again
+ * when the layout that would name it is refused, so no view is left that nothing names.
+ *
+ * @param root - The project folder.
+ * @param writes - The plan's writes, in order.
+ */
+const writeInOrder = async (root: string, writes: readonly Write[]): Promise<void> => {
+  let created: string | undefined;
+  for (const write of writes) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Tau adopts a view before the layout that names it, so the order holds.
+    if (!(await writeChecked(root, write))) {
+      if (created !== undefined && write.path === workbenchPaths.layout) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- The loop ends here.
+        await rm(join(root, created), { force: true });
+      }
+      return;
+    }
+    if (write.text === undefined && write.path.startsWith(viewsFolder)) {
+      created = write.path;
+    }
+  }
 };
 
 /**
@@ -263,12 +292,8 @@ export const createMcpViewerWorkbench = (options: McpViewerWorkbenchOptions = {}
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- One project's records are written in order, one view at a time.
         const writes = await plan(root, view, changed);
-        for (const write of writes ?? []) {
-          // oxlint-disable-next-line eslint/no-await-in-loop -- Tau adopts a view before the layout that names it, so the order holds.
-          if (!(await writeChecked(root, write))) {
-            break;
-          }
-        }
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Ditto.
+        await writeInOrder(root, writes ?? []);
       } catch (error) {
         onError(error);
       }
