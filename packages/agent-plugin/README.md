@@ -11,6 +11,7 @@ Tau CAD plugin for Codex and Claude Code: skills and the tau mcp launcher
 
 - **One plugin for both hosts.** This package's folder is a Codex plugin and a Claude Code plugin; each host reads its own manifest and MCP server config.
 - **The agent sees the part it builds.** Five Tau tools evaluate a model, run its GeoSpec tests, return screenshots as images, export STEP, STL, 3MF or glTF, and arrange the Tau workbench.
+- **You see it too.** `show_model` opens the Tau viewer: inside Codex desktop and Claude Desktop as an MCP App, and as a local browser link in the CLIs.
 - **Kernel knowledge when a task needs it.** An onboarding skill, `tau`, plus API skills for replicad, OpenSCAD, JSCAD, Manifold, PicoVoxel, tscircuit, GeoSpec and the workbench.
 - **Nothing to install inside the plugin.** It has no dependencies: a small launcher finds your Tau CLI, or fetches the matching release with `npx`.
 - **Your project stays clean.** Screenshots and large test reports live in a per-session temporary folder; only exports and workbench records land under the project's `.tau/`.
@@ -77,8 +78,38 @@ The same prompt works in `codex` after the Codex install. The agent writes `main
 | `screenshot`        | Renders views of a model and returns the images in the result               | The images, in the session folder            |
 | `export_model`      | Exports STEP, STL, 3MF, glTF or another format the model offers             | `.tau/artifacts/` in the project             |
 | `arrange_workbench` | Opens views and panes for a person who has the project open in the Tau app  | `.tau/workbench/` in the project             |
+| `show_model`        | Shows a model in the Tau viewer; a CAD source is rendered to GLB first      | The GLB, under `.tau/artifacts/`             |
 
-The tools load with the session in both hosts rather than waiting behind tool search.
+The tools load with the session in both hosts rather than waiting behind tool search. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
+
+## Viewer
+
+`show_model` puts the model in front of you. How depends on what the host declares when it connects:
+
+| Host                   | What you get                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Codex desktop          | A Tau tab in the thread, Tau in the sidebar (`browse_models`) and Open with Tau for `.glb` and `.svg` files (`open_model_file`) |
+| Claude Desktop         | An inline card in the conversation, with Add to chat and Open full view                                                         |
+| Claude Code, Codex CLI | A `http://127.0.0.1` link to the same page, served by `tau mcp` for its session; screenshots still come back inline             |
+
+The card shows the canvas and two actions. The tab, fullscreen and the browser page add the control bar: grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the host as context; where a host takes none (the browser page) it becomes Copy prompt. Colours and font follow the host.
+
+The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The browser link carries a per-session token and answers only on `127.0.0.1`.
+
+The launcher hands the page to the CLI in `TAU_VIEWER_PAGE`. To run the viewer from Claude Desktop, add the launcher to `claude_desktop_config.json` (Settings → Developer → Edit config):
+
+```json
+{
+  "mcpServers": {
+    "tau": {
+      "command": "node",
+      "args": ["/path/to/node_modules/@taucad/agent-plugin/dist/launch.mjs", "--project", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+Running `tau mcp` without the plugin serves no viewer unless you pass `--viewer-page <app.html>`.
 
 ## Skills
 
@@ -158,13 +189,14 @@ claude plugin validate --strict packages/agent-plugin
 
 ## Environment matrix
 
-| Component    | Support                                                                      |
-| ------------ | ---------------------------------------------------------------------------- |
-| Node.js      | 24 or later; on an older Node the launcher says so and starts the CLI anyway |
-| Claude Code  | Verified with 2.1.295                                                        |
-| Codex CLI    | Verified with 0.157.1                                                        |
-| macOS, Linux | Supported; verified on macOS                                                 |
-| Windows      | The launcher runs `tau.cmd` and `npx.cmd`; not yet verified in a host        |
+| Component    | Support                                                                                                         |
+| ------------ | --------------------------------------------------------------------------------------------------------------- |
+| Node.js      | 24 or later; on an older Node the launcher says so and starts the CLI anyway                                    |
+| Claude Code  | Verified with 2.1.295                                                                                           |
+| Codex CLI    | Verified with 0.157.1                                                                                           |
+| Viewer       | MCP Apps hosts per the ext-apps specification 2026-01-26; covered by an ext-apps basic-host harness in Chromium |
+| macOS, Linux | Supported; verified on macOS                                                                                    |
+| Windows      | The launcher runs `tau.cmd` and `npx.cmd`; not yet verified in a host                                           |
 
 ## Versioning & stability
 
