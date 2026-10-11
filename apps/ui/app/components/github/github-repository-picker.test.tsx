@@ -257,6 +257,61 @@ describe('GithubRepositoryPicker', () => {
     expect(await screen.findByRole('button', { name: 'Branch main' })).toBeInTheDocument();
   });
 
+  it('should explain an installation that GitHub suspended and keep it from being chosen', async () => {
+    github.installations.mockResolvedValue({
+      totalCount: 2,
+      page: 1,
+      installations: [
+        {
+          id: 20,
+          owner: { id: 20, login: 'acme', avatarUrl: null, type: 'Organization' },
+          repositorySelection: 'selected',
+          suspended: true,
+          permissions: { contents: 'write' },
+        },
+        {
+          id: 10,
+          owner: { id: 10, login: 'octo', avatarUrl: null, type: 'User' },
+          repositorySelection: 'all',
+          suspended: false,
+          permissions: { contents: 'write' },
+        },
+      ],
+    });
+
+    await act(async () => {
+      renderPicker(<GithubRepositoryPicker onSelect={vi.fn()} />);
+    });
+    await vi.waitFor(() => {
+      expect(github.repositories).toHaveBeenCalledWith('connection-1', 10);
+    });
+    await userEvent.click(screen.getByRole('button', { name: /^Personal account or organization /u }));
+
+    const option = await screen.findByRole('option', { name: /acme/u });
+    expect(option).toHaveAttribute('aria-disabled', 'true');
+    expect(option).toHaveTextContent('Suspended on GitHub. An owner must unsuspend the Tau app for this account.');
+    expect(github.repositories).not.toHaveBeenCalledWith('connection-1', 20);
+  });
+
+  it('should offer to install Tau on GitHub when the account has no installation', async () => {
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...globalThis.location, assign });
+    github.installations.mockResolvedValue({ totalCount: 0, page: 1, installations: [] });
+
+    await act(async () => {
+      renderPicker(<GithubRepositoryPicker onSelect={vi.fn()} />);
+    });
+
+    expect(
+      await screen.findByText('No personal or organization installation is available for this account.'),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Install Tau on GitHub' }));
+    await vi.waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('https://github.com/apps/tau/installations/new');
+    });
+    expect(github.repositories).not.toHaveBeenCalled();
+  });
+
   it('should name each picker by its label and explain a repository that cannot be chosen', async () => {
     github.repositories.mockResolvedValue({
       totalCount: 1,

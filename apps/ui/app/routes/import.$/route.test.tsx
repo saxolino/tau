@@ -5,8 +5,11 @@ import { MemoryRouter } from 'react-router';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { projectToManifest, serializeProjectManifest } from '@taucad/types';
 import type { GithubRepositorySelection } from '#components/github/github-repository-picker.js';
+import type { getGitHubClient } from '#lib/github-api.js';
 import ImportRoute from '#routes/import.$/route.js';
 import type * as ReactRouterModule from 'react-router';
+
+type GitHubApiClient = ReturnType<typeof getGitHubClient>;
 
 const existingProjectId = 'proj_existing0000000000000';
 const picker = vi.hoisted(() => ({ available: true as boolean | undefined }));
@@ -15,9 +18,12 @@ const slugs = vi.hoisted(() => ({
 }));
 const linkedImport = vi.hoisted(() => ({ prepare: vi.fn() }));
 const getRepository = vi.hoisted(() =>
-  vi.fn(async () => {
+  vi.fn<GitHubApiClient['getRepository']>(async () => {
     throw Object.assign(new Error('Not Found - https://docs.github.com/rest/repos/repos'), { status: 404 });
   }),
+);
+const listBranches = vi.hoisted(() =>
+  vi.fn<GitHubApiClient['listBranches']>(async () => ({ branches: [], hasMore: false, endCursor: undefined })),
 );
 
 /* The route's `clientLoader`, evaluated against the router's own location so navigation re-derives it. */
@@ -35,7 +41,7 @@ vi.mock('react-router', async (importOriginal) => {
 vi.mock('#lib/github-api.js', () => ({
   getGitHubClient: () => ({
     getRepository,
-    listBranches: vi.fn(async () => ({ branches: [], hasMore: false, endCursor: undefined })),
+    listBranches,
     listFiles: vi.fn(async () => []),
   }),
 }));
@@ -172,6 +178,28 @@ describe('ImportRoute GitHub card', () => {
 
     expect(await screen.findByRole('button', { name: 'Pick linked repository' })).toBeInTheDocument();
     expect(screen.queryByText('Desktop handoff offer')).not.toBeInTheDocument();
+  });
+
+  it('should name the default branch the import falls back to when the public branch list fails', async () => {
+    getRepository.mockResolvedValueOnce({
+      avatarUrl: undefined,
+      description: undefined,
+      stars: 0,
+      forks: 0,
+      watchers: 0,
+      license: undefined,
+      defaultBranch: 'trunk',
+      isPrivate: false,
+      lastUpdated: '2026-10-01T00:00:00Z',
+    });
+    listBranches.mockRejectedValueOnce(new Error('GitHub answered 502'));
+
+    await renderImport('/import/github.com/octo/part');
+
+    expect(
+      await screen.findByText(/^Could not fetch branches\. Import will use the/u, {}, { timeout: 3000 }),
+    ).toHaveTextContent('Could not fetch branches. Import will use the trunk branch.');
+    expect(listBranches).toHaveBeenCalledWith(expect.objectContaining({ owner: 'octo', repo: 'part' }));
   });
 
   it('should review a URL only on submission and restore its draft and focus after cancellation', async () => {
