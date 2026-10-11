@@ -654,7 +654,11 @@ export const remoteTransportError = (error: unknown, context: RemoteTransportCon
                        retryable, 503 race-lost included. */
                     'REMOTE_DAMAGED'
                   : 'REMOTE_UNAVAILABLE';
-  return new RevisionPortError(code, answered.message ?? refusalSentence(code), {
+  /* D77: a 401 to a minted credential is the grant withdrawn, and GitHub's body
+   * for it ("Invalid username or token. Password authentication is not
+   * supported…") describes a password nobody typed. A 403 keeps its words. */
+  const sentence = code === 'REMOTE_REAUTHORIZATION_REQUIRED' && status === 401 ? undefined : answered.message;
+  return new RevisionPortError(code, sentence ?? refusalSentence(code), {
     cause: error,
     ...(status === 429
       ? { retryAfterMilliseconds: retryAfterMilliseconds(context.retryAfter) ?? defaultRateLimitWaitMilliseconds }

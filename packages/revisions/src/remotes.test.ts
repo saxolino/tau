@@ -281,6 +281,24 @@ describe('remoteTransportError', () => {
     expect(refused('<!DOCTYPE html><html>…</html>').message).toBe('The remote rejected the saved credentials.');
   });
 
+  /* D77: GitHub answers a revoked grant with a sentence about passwords. */
+  it('does not show a remote’s 401 body for a credential Tau minted', () => {
+    const error = remoteTransportError(
+      Object.assign(new Error('HTTP Error: 401 Unauthorized'), {
+        data: {
+          statusCode: 401,
+          response: 'Invalid username or token. Password authentication is not supported for Git operations.\n',
+        },
+      }),
+      { remote: 'github-1' },
+    );
+
+    expect(error).toMatchObject({
+      code: 'REMOTE_REAUTHORIZATION_REQUIRED',
+      message: 'The remote rejected the saved credentials.',
+    });
+  });
+
   /* Contract §4: the server refuses a rewind or a deletion on *every* ref
    * family from its `pre-receive` hook, which answers over the sideband and
    * never with an HTTP status — so the status rule alone read a refusal every
