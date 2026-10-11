@@ -51,6 +51,7 @@ import {
   strictConsumerCompilerOptions,
   vendoredAssetIssues,
   vendoredNodeModulesIssues,
+  workerUrlIssues,
   workspaceRangeIssues,
 } from './pkgcheck-metadata.js';
 import type { AssetFile, CopyEntry, UpstreamExport } from './pkgcheck-metadata.js';
@@ -804,6 +805,17 @@ async function validateDistributionAssets(): Promise<CheckResult> {
         status: 'fail',
         details: [`${String(issues.length)} distribution asset issue(s) found`, ...issues],
       };
+}
+
+/** Every `new Worker(new URL(…, import.meta.url))` in `dist` names a file the build emitted beside its module. */
+function validateWorkerUrls(): CheckResult {
+  const distributionRoot = join(absoluteRoot, 'dist');
+  const emitted = walkDirectory(distributionRoot).map((path) => relative(distributionRoot, path).split(sep).join('/'));
+  const modules = emitted
+    .filter((path) => path.endsWith('.mjs') || path.endsWith('.js'))
+    .map((path) => ({ path, source: readFileSync(join(distributionRoot, path), 'utf8') }));
+  const issues = workerUrlIssues(modules, new Set(emitted));
+  return checkResult('tau-worker-urls', issues, 'every emitted worker URL names an emitted file');
 }
 
 /** `react` -> `@types/react`, `@scope/name` -> `@types/scope__name`. */
@@ -1635,6 +1647,9 @@ async function main(): Promise<void> {
   printResult(results.at(-1)!);
 
   results.push(await validateDistributionAssets());
+  printResult(results.at(-1)!);
+
+  results.push(validateWorkerUrls());
   printResult(results.at(-1)!);
 
   results.push(validateBundledArtifact());
