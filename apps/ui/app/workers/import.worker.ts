@@ -1,5 +1,6 @@
 import { extractRepositoryArchiveFiles } from '@taucad/share/repository-archive';
 import { shareArtifactLimits } from '@taucad/share/artifact';
+import { isShareError } from '@taucad/share/provider';
 
 /**
  * Messages sent TO the import worker.
@@ -20,7 +21,27 @@ export type ImportWorkerResponse =
       /** Same paths + contents so the main thread can populate `context.files` for the review UI and createProject. */
       files: Array<{ path: string; content: Uint8Array<ArrayBuffer> }>;
     }
-  | { type: 'error'; message: string; phase: 'download' | 'extract' };
+  | {
+      type: 'error';
+      message: string;
+      phase: 'download' | 'extract';
+      /** Set when the repository exceeds an import limit, so retrying the same branch cannot succeed. */
+      reason?: 'tooLarge';
+    };
+
+/** The archive route's 413 and this worker's own size checks share one sentence. */
+class ArchiveTooLargeError extends Error {
+  public constructor() {
+    super(
+      `The repository download is larger than the ${shareArtifactLimits.maxArchiveBytes / 1024 / 1024} MB import limit.`,
+    );
+    this.name = 'ArchiveTooLargeError';
+  }
+}
+
+/* Extraction enforces the file-count and expanded-size limits with `SHARE_ARTIFACT_LIMIT`. */
+const isTooLarge = (error: unknown): boolean =>
+  error instanceof ArchiveTooLargeError || (isShareError(error) && error.code === 'SHARE_ARTIFACT_LIMIT');
 
 /**
  * The sentence a refused archive download carries, so the import says why (E14).
@@ -58,13 +79,16 @@ async function handleDownloadAndExtract(url: string, headers?: Record<string, st
       headers,
     });
 
+    if (response.status === 413) {
+      throw new ArchiveTooLargeError();
+    }
     if (!response.ok) {
       throw new Error(await downloadRefusal(response));
     }
 
     const contentLength = Number(response.headers.get('content-length') ?? 0);
     if (contentLength > shareArtifactLimits.maxArchiveBytes) {
-      throw new Error('Repository archive exceeds the import limit');
+      throw new ArchiveTooLargeError();
     }
     const reader = response.body?.getReader();
     if (!reader) {
@@ -96,7 +120,7 @@ async function handleDownloadAndExtract(url: string, headers?: Record<string, st
         if (receivedLength > shareArtifactLimits.maxArchiveBytes) {
           // oxlint-disable-next-line no-await-in-loop -- need to cancel the oversized stream before failing
           await reader.cancel();
-          throw new Error('Repository archive exceeds the import limit');
+          throw new ArchiveTooLargeError();
         }
 
         const now = Date.now();
@@ -144,7 +168,7 @@ async function handleDownloadAndExtract(url: string, headers?: Record<string, st
     }
 
     const message = error instanceof Error ? error.message : String(error);
-    postResponse({ type: 'error', message, phase: 'download' });
+    postResponse({ type: 'error', message, phase: 'download', ...(isTooLarge(error) ? { reason: 'tooLarge' } : {}) });
   }
 }
 

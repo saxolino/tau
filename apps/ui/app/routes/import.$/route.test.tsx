@@ -1,11 +1,12 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { projectToManifest, serializeProjectManifest } from '@taucad/types';
 import type { GithubRepositorySelection } from '#components/github/github-repository-picker.js';
 import type { getGitHubClient } from '#lib/github-api.js';
+import type { ImportWorkerRequest, ImportWorkerResponse } from '#workers/import.worker.js';
 import ImportRoute from '#routes/import.$/route.js';
 import type * as ReactRouterModule from 'react-router';
 
@@ -17,6 +18,7 @@ const slugs = vi.hoisted(() => ({
   byId: new Map<string, { workspaceSlug: string; projectSlug: string }>(),
 }));
 const linkedImport = vi.hoisted(() => ({ prepare: vi.fn() }));
+type RepositoryMetadata = Awaited<ReturnType<ReturnType<typeof getGitHubClient>['getRepository']>>;
 const getRepository = vi.hoisted(() =>
   vi.fn<GitHubApiClient['getRepository']>(async () => {
     throw Object.assign(new Error('Not Found - https://docs.github.com/rest/repos/repos'), { status: 404 });
@@ -25,6 +27,49 @@ const getRepository = vi.hoisted(() =>
 const listBranches = vi.hoisted(() =>
   vi.fn<GitHubApiClient['listBranches']>(async () => ({ branches: [], hasMore: false, endCursor: undefined })),
 );
+const repositoryMetadata: RepositoryMetadata = {
+  avatarUrl: undefined,
+  description: undefined,
+  stars: 1,
+  forks: 0,
+  watchers: 0,
+  license: undefined,
+  defaultBranch: 'main',
+  isPrivate: false,
+  lastUpdated: '2026-10-01T00:00:00Z',
+};
+
+/** Stands in for the import worker: every download answers with the archive route's size refusal. */
+class TooLargeArchiveWorker {
+  #listener: ((event: MessageEvent<ImportWorkerResponse>) => void) | undefined;
+
+  public addEventListener(type: string, listener: (event: MessageEvent<ImportWorkerResponse>) => void): void {
+    if (type === 'message') {
+      this.#listener = listener;
+    }
+  }
+
+  public postMessage(request: ImportWorkerRequest): void {
+    if (request.type === 'startDownload') {
+      queueMicrotask(() => {
+        this.#listener?.(
+          new MessageEvent('message', {
+            data: {
+              type: 'error',
+              message: 'The repository download is larger than the 8 MB import limit.',
+              phase: 'download',
+              reason: 'tooLarge',
+            } satisfies ImportWorkerResponse,
+          }),
+        );
+      });
+    }
+  }
+
+  public terminate(): void {
+    this.#listener = undefined;
+  }
+}
 
 /* The route's `clientLoader`, evaluated against the router's own location so navigation re-derives it. */
 vi.mock('react-router', async (importOriginal) => {
@@ -43,6 +88,8 @@ vi.mock('#lib/github-api.js', () => ({
     getRepository,
     listBranches,
     listFiles: vi.fn(async () => []),
+    getArchiveUrl: () => 'https://api.tau.test/v1/repositories/archive',
+    getAuthHeaders: () => ({}),
   }),
 }));
 vi.mock('#hooks/use-project-manager.js', () => ({ useProjectManager: () => ({ createProject: vi.fn() }) }));
@@ -132,6 +179,10 @@ describe('ImportRoute GitHub card', () => {
     slugs.byId.clear();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('should describe the picker and the public copy when GitHub connection is available', async () => {
     await renderImport();
 
@@ -174,6 +225,9 @@ describe('ImportRoute GitHub card', () => {
     expect(
       await screen.findByText("Tau couldn't find a public repository at this address.", {}, { timeout: 3000 }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText('Check the public repository address or choose a repository from your GitHub account.'),
+    ).toBeVisible();
     await userEvent.click(screen.getByRole('button', { name: 'Choose a private repository from GitHub' }));
 
     expect(await screen.findByRole('button', { name: 'Pick linked repository' })).toBeInTheDocument();
@@ -200,6 +254,79 @@ describe('ImportRoute GitHub card', () => {
       await screen.findByText(/^Could not fetch branches\. Import will use the/u, {}, { timeout: 3000 }),
     ).toHaveTextContent('Could not fetch branches. Import will use the trunk branch.');
     expect(listBranches).toHaveBeenCalledWith(expect.objectContaining({ owner: 'octo', repo: 'part' }));
+  });
+
+  it('should not offer the account picker for a missing repository when the deployment has no GitHub App', async () => {
+    picker.available = false;
+    await renderImport('/import/github.com/octo/missing');
+
+    expect(
+      await screen.findByRole('alert', { name: 'Couldn’t open this repository' }, { timeout: 3000 }),
+    ).toHaveTextContent('Check the public repository address.');
+    expect(screen.queryByText(/choose a repository from your GitHub account/u)).not.toBeInTheDocument();
+  });
+
+  it('should not blame the address when GitHub rate-limits public reads', async () => {
+    getRepository.mockRejectedValueOnce(
+      Object.assign(new Error('API rate limit exceeded for 203.0.113.7.'), { status: 403 }),
+    );
+    await renderImport('/import/github.com/octo/part');
+
+    const notice = await screen.findByRole('alert', { name: 'Couldn’t open this repository' }, { timeout: 3000 });
+
+    expect(
+      screen.getByText(
+        'GitHub’s limit for public reads was reached. Try again in a few minutes, or choose a repository from your GitHub account.',
+      ),
+    ).toBeVisible();
+    expect(notice).not.toHaveTextContent(/repository address/u);
+  });
+
+  it('should explain a branch list this server is not configured to provide', async () => {
+    getRepository.mockResolvedValueOnce(repositoryMetadata);
+    listBranches.mockRejectedValueOnce(
+      Object.assign(new Error('GitHub branch listing is not configured on this server.'), {
+        status: 503,
+        code: 'GITHUB_API_TOKEN_UNAVAILABLE',
+      }),
+    );
+    await renderImport('/import/github.com/octo/part');
+
+    const status = await screen.findByText(/isn’t set up to list branches/u, {}, { timeout: 3000 });
+
+    expect(status).toHaveTextContent(
+      'This server isn’t set up to list branches, so import will use the main branch. Its administrator can enable branch listing with GITHUB_API_TOKEN.',
+    );
+    expect(screen.queryByRole('alert', { name: 'Couldn’t open this repository' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/repository address/u)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start import' })).toBeEnabled();
+  });
+
+  it('should explain a repository too large to import instead of asking to check the source', async () => {
+    vi.stubGlobal('Worker', TooLargeArchiveWorker);
+    const user = userEvent.setup();
+    getRepository.mockResolvedValueOnce(repositoryMetadata);
+    await renderImport('/import/github.com/KittyCAD/modeling-app');
+    const start = await screen.findByRole('button', { name: 'Start import' });
+    await waitFor(
+      () => {
+        expect(start).toBeEnabled();
+      },
+      { timeout: 3000 },
+    );
+
+    await user.click(start);
+
+    expect(await screen.findByRole('alert', { name: 'Repository too large' })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This repository exceeds the size limit for GitHub imports. Choose a smaller branch, or download the repository and import the files you need from your computer.',
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/Check the source/u)).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Import failed (download): The repository download is larger than the 8 MB import limit.'),
+    ).toBeInTheDocument();
   });
 
   it('should review a URL only on submission and restore its draft and focus after cancellation', async () => {
