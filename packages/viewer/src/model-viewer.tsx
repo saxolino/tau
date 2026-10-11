@@ -292,16 +292,21 @@ const ModelViewerWithOwnGraphics = memo(function ModelViewerWithOwnGraphics(
  * lifecycle (e.g. `CadPreviewProvider`).
  *
  * Renders via `GraphicsProvider` + `CadViewer`. No dependency on
- * `CadPreviewProvider`, `cadMachine`, or `FileManagerProvider`.
+ * `CadPreviewProvider`, `cadMachine`, or `FileManagerProvider`. Requires a
+ * `KeyboardProvider` from `@taucad/ui/components/keyboard` above it, which
+ * dispatches the viewer's shortcuts; rendering a model without one throws.
  *
  * @public
  * @example <caption>Show a runtime artifact with pan and zoom</caption>
  * ```tsx
  * import type { Artifact } from '@taucad/runtime';
+ * import { KeyboardProvider } from '@taucad/ui/components/keyboard';
  * import { ModelViewer } from '@taucad/viewer/model-viewer';
  *
  * export const Preview = ({ artifact, hash }: { readonly artifact: Artifact; readonly hash: string }): React.JSX.Element => (
- *   <ModelViewer artifact={artifact} artifactHash={hash} enablePan enableZoom />
+ *   <KeyboardProvider>
+ *     <ModelViewer artifact={artifact} artifactHash={hash} enablePan enableZoom />
+ *   </KeyboardProvider>
  * );
  * ```
  */

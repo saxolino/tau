@@ -2,7 +2,7 @@
 
 Tau's interactive CAD viewer: the React Three Fiber canvas, the graphics machines behind it, and the model controls around it (fit, fullscreen, grid, section view, measurement, viewer settings, parameters).
 
-The viewer reads nothing from cookies, URLs or application stores. An embedder describes its surroundings once through `ViewerEnvironmentProvider` (colour scheme, accent, graphics backend, developer switches) and supplies optional services through their own providers, such as `ExactMeasurementProvider` for CAD-exact distances.
+The viewer reads nothing from cookies, URLs or application stores. An embedder describes its surroundings once through `ViewerEnvironmentProvider` (colour scheme, accent, graphics backend, developer switches), mounts one `KeyboardProvider` from `@taucad/ui/components/keyboard` near its root (required: the viewer registers its shortcuts there, and throws without it), and supplies optional services through their own providers, such as `ExactMeasurementProvider` for CAD-exact distances.
 
 ## Install
 
@@ -19,6 +19,7 @@ Components use Tailwind utility classes and the `@taucad/ui` design tokens. Impo
 ```tsx
 import { useState } from 'react';
 import type { Artifact } from '@taucad/runtime';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { ViewerEnvironmentProvider, defaultViewerEnvironment } from '@taucad/viewer/environment/viewer-environment';
 import { ModelViewer } from '@taucad/viewer/model-viewer';
 
@@ -26,17 +27,19 @@ export function Preview({ artifact, hash }: { readonly artifact: Artifact; reado
   const [selected, setSelected] = useState<string>();
 
   return (
-    <ViewerEnvironmentProvider value={{ ...defaultViewerEnvironment, colorScheme: 'dark' }}>
-      <ModelViewer
-        artifact={artifact}
-        artifactHash={hash}
-        sourceFile='src/main.ts'
-        enablePan
-        enableZoom
-        onComponentReference={(reference) => setSelected(reference.label)}
-      />
-      {selected ? <p>Selected {selected}</p> : null}
-    </ViewerEnvironmentProvider>
+    <KeyboardProvider>
+      <ViewerEnvironmentProvider value={{ ...defaultViewerEnvironment, colorScheme: 'dark' }}>
+        <ModelViewer
+          artifact={artifact}
+          artifactHash={hash}
+          sourceFile='src/main.ts'
+          enablePan
+          enableZoom
+          onComponentReference={(reference) => setSelected(reference.label)}
+        />
+        {selected ? <p>Selected {selected}</p> : null}
+      </ViewerEnvironmentProvider>
+    </KeyboardProvider>
   );
 }
 ```
@@ -50,6 +53,7 @@ Each module is its own subpath, for example `@taucad/viewer/model-viewer`, `@tau
 | Seam                       | Subpath                                  | Purpose                                                       |
 | -------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
 | `ViewerEnvironment`        | `environment/viewer-environment`         | Colour scheme, contrast, accent, backend preference, switches |
+| `KeyboardProvider`         | `@taucad/ui/components/keyboard`         | Required: dispatches the viewer's shortcuts, such as Escape   |
 | `ExactMeasurementProvider` | `graphics/three/react/exact-measurement` | CAD-exact body distances for the measure tool                 |
 | `ViewerSettings` props     | `cad/viewer-settings`                    | The CAD operation timeout row, when the embedder runs CAD     |
 | `debugStageBridge`         | `environment/viewer-environment`         | A debug-only component mounted in the stage under `tauDebug`  |
