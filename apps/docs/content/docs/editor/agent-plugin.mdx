@@ -1,0 +1,58 @@
+---
+title: Agent Plugin
+description: Install the Tau plugin in Codex, Claude Code or Claude Desktop, and see what each host shows.
+docType: reference
+icon: 'lucide:puzzle text-purple'
+wordBudgetOverride: 500
+---
+
+# Agent Plugin
+
+The Tau plugin, `@taucad/agent-plugin`, gives a coding agent Tau's CAD tools and skills in the agent you already use. Its tools evaluate a model, run its GeoSpec tests, return screenshots, export files, arrange the [workbench](./workbench-records) and show the model in the Tau viewer.
+
+The plugin needs Node.js 24 or later. It starts the Tau CLI you have installed, or fetches the matching release on first use:
+
+```bash
+npm install -g @taucad/cli@beta
+```
+
+## Install
+
+| Host           | Install                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| Codex          | `codex plugin marketplace add taucad/tau`, then `codex plugin add tau@taucad`                     |
+| Claude Code    | `claude plugin marketplace add taucad/tau`, then `claude plugin install tau@taucad`               |
+| Claude Desktop | `npm install -g @taucad/agent-plugin@beta`, then add its launcher to `claude_desktop_config.json` |
+
+Claude Desktop starts the launcher with the project folder you name:
+
+```json
+{
+  "mcpServers": {
+    "tau": {
+      "command": "node",
+      "args": ["/path/to/node_modules/@taucad/agent-plugin/dist/launch.mjs", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+Start a new thread or session after installing.
+
+## What each host shows
+
+`show_model` opens the viewer. The host decides how, from what it declares when it connects:
+
+| Host                   | Viewer                                                               |
+| ---------------------- | -------------------------------------------------------------------- |
+| Codex desktop          | A Tau tab in the thread, Tau in the sidebar, Open with Tau for files |
+| Claude Desktop         | An inline card with Add to chat and Open full view                   |
+| Claude Code, Codex CLI | A link to the viewer on `127.0.0.1`; screenshots stay inline         |
+
+The card shows the model and two actions. The tab, fullscreen and the browser page add grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the conversation; the browser page copies it instead.
+
+The viewer makes no network request. Model files reach it through a tool only the page can call, and the browser link answers only on your machine, with a token for that session.
+
+## Where files go
+
+Exports and the models the viewer shows land in `.tau/artifacts/` in the project. Workbench changes land in `.tau/workbench/`. Screenshots stay in a temporary folder that the server removes when it stops.
