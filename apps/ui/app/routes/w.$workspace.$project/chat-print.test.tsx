@@ -1431,6 +1431,32 @@ describe('Print pane jobs', () => {
     expect(within(region).queryByText('Answering here also answers the chat.')).not.toBeInTheDocument();
   });
 
+  it('should request a new job for the same slice when the kept job has closed', async () => {
+    const fixture = createFixture();
+    const user = userEvent.setup();
+    renderPane(fixture.client);
+    await findMachine('Ready');
+    await user.click(prepareActions().getByRole('button', { name: 'Slice and preview' }));
+    await user.click(await reviewPrint());
+    await screen.findByRole('region', { name: /^Job awaiting you/u });
+    const [kept] = await fixture.client.listJobs({});
+    // The job ends without starting anything (cancelled, declined or withdrawn); the slice is unchanged.
+    act(() => {
+      fixture.journal({ ...kept!, state: 'withdrawn', updatedAt: later });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: /^Job awaiting you/u })).not.toBeInTheDocument();
+    });
+
+    await user.click(await reviewPrint());
+    expect(await screen.findByRole('region', { name: /^Job awaiting you/u })).toBeInTheDocument();
+    // The kept id is asked first, so a retry after a lost reply stays the same job; its closed job earns a new id.
+    const ids = fixture.requestJob.mock.calls.map(([input]) => input.jobId);
+    expect(ids).toHaveLength(3);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).not.toBe(ids[0]);
+  });
+
   it('starts an agent job with the attestation, then answers the paused chat as approved', async () => {
     const fixture = createFixture({ jobs: [agentJob()] });
     const { bridge, respond } = createBridge({
@@ -2364,12 +2390,12 @@ describe('Print pane Bambu Studio mode', () => {
     await renderStudio();
     await openGroup(user, 'Strength');
     const settings = screen.getByRole('group', { name: 'Bambu Studio settings' });
-    const wallLoops = (): HTMLElement => screen.getByRole('spinbutton', { name: 'Input for Wall Loops' });
+    const wallLoops = (): HTMLElement => screen.getByRole('spinbutton', { name: 'Input for Wall loops' });
     expect(wallLoops()).toHaveValue('2');
-    expect(screen.queryByRole('button', { name: 'Reset Wall Loops' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset Wall loops' })).not.toBeInTheDocument();
 
-    enter('Wall Loops', '3');
-    expect(await screen.findByRole('button', { name: 'Reset Wall Loops' })).toBeInTheDocument();
+    enter('Wall loops', '3');
+    expect(await screen.findByRole('button', { name: 'Reset Wall loops' })).toBeInTheDocument();
     expect(wallLoops()).toHaveValue('3');
     await expectPreferences({ settings: { wall_loops: 3 } });
     // The pane's own vocabulary is gone: no count, dot, "(changed)" or reset-all of its own.
@@ -2378,9 +2404,9 @@ describe('Print pane Bambu Studio mode', () => {
     expect(within(settings).queryByRole('button', { name: 'Reset all' })).not.toBeInTheDocument();
     expect(within(settings).getByRole('button', { name: 'Group: Strength' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Advanced settings/u })).toHaveTextContent(/^Advanced settings$/u);
-    await user.click(screen.getByRole('button', { name: 'Reset Wall Loops' }));
+    await user.click(screen.getByRole('button', { name: 'Reset Wall loops' }));
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Reset Wall Loops' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reset Wall loops' })).not.toBeInTheDocument();
     });
     await waitFor(() => {
       expect(wallLoops()).toHaveValue('2');
@@ -2391,20 +2417,20 @@ describe('Print pane Bambu Studio mode', () => {
     // Radix Select captures the pointer, which jsdom does not implement.
     Element.prototype.hasPointerCapture = vi.fn(() => false);
     Element.prototype.scrollIntoView = vi.fn();
-    await user.click(screen.getByRole('combobox', { name: 'Select for Sparse Infill Pattern' }));
+    await user.click(screen.getByRole('combobox', { name: 'Select for Sparse infill pattern' }));
     await user.click(screen.getByRole('option', { name: 'Gyroid' }));
     await openGroup(user, 'Support');
-    await user.click(screen.getByRole('switch', { name: 'Toggle for Enable Support' }));
+    await user.click(screen.getByRole('switch', { name: 'Toggle for Enable support' }));
     // Out of range: the field says why, and nothing reaches the print intent.
-    enter('Wall Loops', '-1');
+    enter('Wall loops', '-1');
 
     await expectPreferences({
       settings: { enable_support: true, sparse_infill_pattern: 'gyroid' },
     });
-    expect(screen.getByRole('button', { name: 'Reset Enable Support' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reset Enable support' })).toBeInTheDocument();
     await user.click(within(prepareRegion()).getByRole('button', { name: 'Reset print settings' }));
     await expectPreferences({});
-    expect(screen.queryByRole('button', { name: 'Reset Enable Support' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset Enable support' })).not.toBeInTheDocument();
     expect(within(prepareRegion()).queryByRole('button', { name: 'Reset print settings' })).not.toBeInTheDocument();
   });
 
@@ -2416,10 +2442,10 @@ describe('Print pane Bambu Studio mode', () => {
 
     // The filter opens every group with a match; a number-or-percent setting keeps its percent.
     await user.type(screen.getByRole('searchbox', { name: 'Filter settings' }), 'bridge');
-    expect(within(settings).queryByRole('spinbutton', { name: 'Input for Wall Loops' })).not.toBeInTheDocument();
-    enter('Bridge Flow', 'lots');
-    expect(screen.getByRole('textbox', { name: 'Input for Bridge Flow' })).toHaveValue('1');
-    enter('Bridge Flow', '95%');
+    expect(within(settings).queryByRole('spinbutton', { name: 'Input for Wall loops' })).not.toBeInTheDocument();
+    enter('Bridge flow', 'lots');
+    expect(screen.getByRole('textbox', { name: 'Input for Bridge flow' })).toHaveValue('1');
+    enter('Bridge flow', '95%');
     await expectPreferences({ settings: { bridge_flow: '95%' } });
 
     await user.click(prepareActions().getByRole('button', { name: 'Slice and preview' }));
@@ -2443,7 +2469,7 @@ describe('Print pane Bambu Studio mode', () => {
     // A changed setting after slicing makes the slice stale, as a changed option does.
     await user.clear(screen.getByRole('searchbox', { name: 'Filter settings' }));
     await openGroup(user, 'Strength');
-    enter('Wall Loops', '4');
+    enter('Wall loops', '4');
     expect(
       await screen.findByText('Options changed since this slice. Slice again to send the current settings.'),
     ).toBeInTheDocument();
@@ -2724,8 +2750,8 @@ describe('Print pane Bambu Studio mode', () => {
     const user = userEvent.setup();
     const { studio } = await renderStudio();
     await openGroup(user, 'Quality');
-    enter('Ironing Speed', '40');
-    enter('Layer Height', '0.16');
+    enter('Ironing speed', '40');
+    enter('Layer height', '0.16');
 
     await expectPreferences({
       settings: { ironing_speed: 40, layer_height: 0.16 },
@@ -2744,10 +2770,10 @@ describe('Print pane Bambu Studio mode', () => {
     expect(
       await screen.findByText('1 changed setting does not exist in these presets and was dropped.'),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Reset Layer Height' })).toBeInTheDocument();
-    expect(screen.getByRole('spinbutton', { name: 'Input for Layer Height' })).toHaveValue('0.16');
+    expect(screen.getByRole('button', { name: 'Reset Layer height' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: 'Input for Layer height' })).toHaveValue('0.16');
     await waitFor(() => {
-      expect(screen.queryByRole('spinbutton', { name: 'Input for Ironing Speed' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('spinbutton', { name: 'Input for Ironing speed' })).not.toBeInTheDocument();
     });
     // Fine lacks ironing, so the slice leaves it out; the project's file keeps it for presets that have it.
     await expectPreferences({
@@ -2775,7 +2801,7 @@ describe('Print pane Bambu Studio mode', () => {
     });
     await openGroup(user, 'Filament · Temperatures');
     await waitFor(() => {
-      expect(screen.getByRole('spinbutton', { name: 'Input for Nozzle Temperature' })).toHaveValue('255');
+      expect(screen.getByRole('spinbutton', { name: 'Input for Nozzle temperature' })).toHaveValue('255');
     });
   });
 
@@ -2951,8 +2977,8 @@ describe('Print pane print settings file', () => {
         name: 'Group: Strength',
       }),
     );
-    expect(screen.getByRole('spinbutton', { name: 'Input for Wall Loops' })).toHaveValue('3');
-    expect(reset('Wall Loops')).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: 'Input for Wall loops' })).toHaveValue('3');
+    expect(reset('Wall loops')).toBeInTheDocument();
 
     summarizeGcodeContainerMock.mockReturnValueOnce(bambuStudioSliceSummary);
     await user.click(prepareActions().getByRole('button', { name: 'Slice and preview' }));
@@ -3703,6 +3729,43 @@ describe('Print pane program files', () => {
     });
     expect(checked?.artifact.digest).toMatch(/^sha256:[0-9a-f]{64}$/u);
     expect(fixture.requestJob).not.toHaveBeenCalled();
+  });
+
+  it('should request a new job for the same program when the kept job has closed', async () => {
+    const fixture = createFixture({ entries: [router()] });
+    fixture.checkJob.mockResolvedValue({
+      status: 'ready',
+      program: { name: 'face.nc', facts: { process: 'other' } },
+      checks: [],
+      configuration: { startLine: 1 },
+    });
+    const user = userEvent.setup();
+    renderPane(fixture.client);
+    await findMachine('Ready', 'Garage LongMill');
+    const review = async (): Promise<void> => {
+      const button = within(programRegion()).getByRole('button', { name: 'Review job' });
+      await waitFor(() => {
+        expect(button).toBeEnabled();
+      });
+      await user.click(button);
+    };
+    await review();
+    const region = await screen.findByRole('region', { name: 'Job awaiting you: face.nc' });
+    expect(region).toBeInTheDocument();
+    const [kept] = await fixture.client.listJobs({});
+    act(() => {
+      fixture.journal({ ...kept!, state: 'denied', updatedAt: later });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Job awaiting you: face.nc' })).not.toBeInTheDocument();
+    });
+
+    await review();
+    expect(await screen.findByRole('region', { name: 'Job awaiting you: face.nc' })).toBeInTheDocument();
+    const ids = fixture.requestJob.mock.calls.map(([input]) => input.jobId);
+    expect(ids).toHaveLength(3);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).not.toBe(ids[0]);
   });
 
   it('asks for the job with the form the machine completed, then starts it at the machine with every attestation', async () => {

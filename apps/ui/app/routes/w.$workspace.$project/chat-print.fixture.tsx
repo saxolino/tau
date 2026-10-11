@@ -747,20 +747,23 @@ export const createFixture = ({
       input.configuration,
     ),
   }));
-  const requestJob = vi.fn<MachineClient['requestJob']>(async (input) =>
-    settle({
-      version: 1,
-      jobId: input.jobId,
-      machineId: input.machineId,
-      artifact: input.artifact,
-      configuration: input.configuration,
-      requestedBy: input.requestedBy,
-      program: { name: input.artifact.path, facts: { process: 'other' }, ...input.program },
-      checks: [],
-      state: 'awaiting-approval',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }),
+  /* As the host answers: a known id returns that job as it stands, open or closed. */
+  const requestJob = vi.fn<MachineClient['requestJob']>(
+    async (input) =>
+      records.get(input.jobId) ??
+      settle({
+        version: 1,
+        jobId: input.jobId,
+        machineId: input.machineId,
+        artifact: input.artifact,
+        configuration: input.configuration,
+        requestedBy: input.requestedBy,
+        program: { name: input.artifact.path, facts: { process: 'other' }, ...input.program },
+        checks: [],
+        state: 'awaiting-approval',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
   );
   const resolveJob = vi.fn<MachineClient['resolveJob']>(async (input) =>
     settle({

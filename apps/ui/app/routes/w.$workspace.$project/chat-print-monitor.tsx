@@ -95,8 +95,14 @@ export const describeRun = (entry: MachineDirectoryEntry): string | undefined =>
     return undefined;
   }
   const stage = readableStage(run.stage);
+  /* What the run waits for or does now: a paused run's own reason, else its stage. */
+  const reason = run.paused?.reason ?? stage;
   const state =
-    run.state === 'paused' && run.paused?.reason !== undefined ? `Paused: ${run.paused.reason}` : runWords[run.state];
+    run.state === 'paused' && reason !== undefined
+      ? `Paused: ${reason}`
+      : (run.state === 'running' || run.state === 'starting') && stage !== undefined
+        ? stage
+        : runWords[run.state];
   const counter = run.progress.counters[0];
   const counted =
     counter === undefined
@@ -104,7 +110,7 @@ export const describeRun = (entry: MachineDirectoryEntry): string | undefined =>
       : `${counter.label.toLowerCase()} ${counter.current.toLocaleString()}${counter.total === undefined ? '' : ` of ${counter.total.toLocaleString()}`}`;
   const isEnded = ['completed', 'cancelled', 'failed'].includes(run.state);
   return [
-    stage !== undefined && run.state === 'running' ? stage : state,
+    state,
     counted,
     run.progress.remaining === undefined || isEnded ? undefined : formatRemaining(run.progress.remaining / 1000),
   ]
@@ -215,15 +221,19 @@ export function MachineAlerts({ control }: { readonly control: MachineControl })
   );
 }
 
-/** A heater in whole degrees, as a printer's own screen shows it: "24 °C". */
+/** A heater in whole degrees, as a printer's own screen shows it: "24 °C"; a yes-or-no reading in words. */
 const formatReading = (value: MachineReading['value'] | NonNullable<MachineReading['target']>): string =>
-  typeof value === 'object'
-    ? formatQuantity(
-        typeof value.value === 'number'
-          ? { value: Math.round(value.value), unit: typeof value.unit === 'string' ? value.unit : value.unit.code }
-          : value,
-      )
-    : String(value);
+  typeof value === 'boolean'
+    ? value
+      ? 'Yes'
+      : 'No'
+    : typeof value === 'object'
+      ? formatQuantity(
+          typeof value.value === 'number'
+            ? { value: Math.round(value.value), unit: typeof value.unit === 'string' ? value.unit : value.unit.code }
+            : value,
+        )
+      : String(value);
 
 type ReadingsObservation = Readonly<{ componentId: string; group: string; readings: readonly MachineReading[] }>;
 
@@ -433,7 +443,7 @@ function Position({
 }
 
 /**
- * What a milling machine reports beside its position: the work offset and its revision, the spindle, the tool, the
+ * What a milling machine reports beside its position: the work offset, the spindle, the tool, the
  * overrides, the interlocks and the probes.
  *
  * @param properties - The machine.
@@ -455,9 +465,7 @@ function MillingRows({ entry }: { readonly entry: MachineDirectoryEntry }): Reac
           motions.length > 1 ? `${motion.label} ${label.toLowerCase()}` : label;
         return (
           <Fragment key={motion.id}>
-            <PrintRow label={named('Work offset')}>
-              {motionValue.workOffset.id} · revision {motionValue.workOffset.revision}
-            </PrintRow>
+            <PrintRow label={named('Work offset')}>{motionValue.workOffset.id}</PrintRow>
             {motionValue.mode === 'normal' ? null : (
               <PrintRow label={named('Mode')}>
                 {motionValue.mode === 'tool-centre-point' ? 'Tool centre point' : 'Tilted plane'}

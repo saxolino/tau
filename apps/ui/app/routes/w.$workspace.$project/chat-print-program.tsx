@@ -10,7 +10,6 @@ import type {
 import { fileExtensions, mimeTypes } from '@taucad/types/constants';
 import { Button } from '@taucad/ui/components/button';
 import { sha256Bytes } from '@taucad/utils/hash';
-import { randomUuid } from '@taucad/utils/id';
 import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
 import { describePrintError } from '#components/print/machine-facts.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
@@ -19,7 +18,13 @@ import { operator } from '#hooks/use-machine-control.js';
 import type { MachineControl } from '#hooks/use-machine-control.js';
 import { useProject } from '#hooks/use-project.js';
 import { PrintNotice, PrintRow, PrintStage } from '#routes/w.$workspace.$project/chat-print-section.js';
-import { JobChecks, describeProgram, startBlocker } from '#routes/w.$workspace.$project/chat-print-send.js';
+import {
+  JobChecks,
+  describeProgram,
+  requestKeptJob,
+  startBlocker,
+} from '#routes/w.$workspace.$project/chat-print-send.js';
+import type { KeptJobId } from '#routes/w.$workspace.$project/chat-print-send.js';
 
 /**
  * The extensions a machine's accepted containers are saved under: each container's own `extensions`, or, for one that
@@ -273,7 +278,7 @@ export function ProgramStage({
   /* Unique per pane, so two mounted panes never describe one button with the other's blocker. */
   const blockerId = useId();
   const [sendError, setSendError] = useState<string>();
-  const requestIdRef = useRef<Readonly<{ key: string; requestId: string }>>(undefined);
+  const requestIdRef = useRef<KeptJobId['current']>(undefined);
   const { machineId } = entry;
 
   const blocker = programBlocker({ entry, extensions, programs, program, check: current?.check });
@@ -287,17 +292,18 @@ export function ProgramStage({
     setSendError(undefined);
     try {
       const key = JSON.stringify([artifact.digest, machineId, check.configuration]);
-      if (requestIdRef.current?.key !== key) {
-        requestIdRef.current = { key, requestId: randomUuid() };
-      }
       /* The job waits for the person's review above the stages, with the form the machine completed. */
-      await client.requestJob({
-        machineId,
-        artifact,
-        configuration: check.configuration,
-        requestedBy: operator,
-        program: { name: artifact.path.split('/').at(-1) ?? artifact.path },
-        jobId: requestIdRef.current.requestId,
+      await requestKeptJob({
+        client,
+        kept: requestIdRef,
+        key,
+        input: {
+          machineId,
+          artifact,
+          configuration: check.configuration,
+          requestedBy: operator,
+          program: { name: artifact.path.split('/').at(-1) ?? artifact.path },
+        },
       });
     } catch (error) {
       setSendError(describePrintError(error));

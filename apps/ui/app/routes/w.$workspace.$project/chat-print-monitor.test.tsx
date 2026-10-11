@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ComponentObservation,
+  MachineActionDescriptor,
   MachineActivity,
   MachineClient,
   MachineDirectoryEntry,
@@ -26,7 +27,13 @@ import {
   isObservationStale,
 } from '#routes/w.$workspace.$project/chat-print-monitor.js';
 import { PrintStages } from '#routes/w.$workspace.$project/chat-print-section.js';
-import { machineActionDescriptorOf, machineJogHold, standardMachineAction } from '@taucad/runtime/machine';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
+import {
+  defineMachineAction,
+  machineActionDescriptorOf,
+  machineJogHold,
+  standardMachineAction,
+} from '@taucad/runtime/machine';
 import {
   carveraManifest,
   fffComponents,
@@ -90,17 +97,19 @@ function Harness({
 }
 
 const surfaces = (client: MachineClient, machine: MachineDirectoryEntry, attended: boolean): React.JSX.Element => (
-  <Harness client={client} machine={machine} isAttended={attended}>
-    {(control) => (
-      <>
-        <MachineAlerts control={control} />
-        <Activities control={control} />
-        <MonitorStage control={control} />
-        <ControlStage client={client} control={control} />
-        <PressureAdvanceStage control={control} />
-      </>
-    )}
-  </Harness>
+  <TooltipProvider>
+    <Harness client={client} machine={machine} isAttended={attended}>
+      {(control) => (
+        <>
+          <MachineAlerts control={control} />
+          <Activities control={control} />
+          <MonitorStage control={control} />
+          <ControlStage client={client} control={control} />
+          <PressureAdvanceStage control={control} />
+        </>
+      )}
+    </Harness>
+  </TooltipProvider>
 );
 
 const renderControl = (
@@ -269,7 +278,9 @@ describe('Control on a milling machine', () => {
     expect(within(table).getByRole('row', { name: /^Work G54/u })).toHaveTextContent('100.000120.0005.000');
     expect(within(table).getByRole('row', { name: /^Machine/u })).toHaveTextContent('400.000420.000-10.000');
     expect(within(monitor).getByText('Homed')).toBeInTheDocument();
-    expect(monitor).toHaveTextContent('G54 · revision wo-1');
+    // The offset's revision guards writes; a person reads only the offset.
+    expect(monitor).toHaveTextContent('Work offsetG54');
+    expect(monitor).not.toHaveTextContent('revision');
   });
 
   it('hides a position it cannot trust', () => {
@@ -326,7 +337,8 @@ describe('Control on a milling machine', () => {
     expect(within(monitor).getByRole('heading', { name: 'Axes position' })).toBeInTheDocument();
     expect(within(monitor).getByRole('heading', { name: 'Second head position' })).toBeInTheDocument();
     expect(within(monitor).getAllByRole('table')).toHaveLength(2);
-    expect(monitor).toHaveTextContent('Second head work offsetG54 · revision wo-2');
+    expect(monitor).toHaveTextContent('Second head work offsetG54');
+    expect(monitor).not.toHaveTextContent('wo-2');
     expect(screen.getByRole('button', { name: /^Monitor/u })).toHaveTextContent('Lost · Router off');
 
     const control = openStage('Control');
@@ -795,39 +807,38 @@ describe('Monitor and materials on a printer', () => {
     });
   });
 
-  it('shows the speed a fan runs at beside its name, and keeps the speed chosen in the list while it spins down', async () => {
+  it('should show the speed the machine reports in the fan list, never a choice it has not reported', async () => {
     const user = userEvent.setup();
-    const components = fffComponents().map((observation) =>
-      observation.componentId === 'part-fan'
-        ? known('part-fan', 'accessories', { kind: 'level', ratio: 0.47 })
-        : observation,
-    );
-    const { fixture, observe } = renderControl(
-      entry({ testing: true, snapshot: machineSnapshot(components, { components }) }),
-    );
+    const fanAt = (ratio: number): MachineDirectoryEntry => {
+      const components = fffComponents().map((observation) =>
+        observation.componentId === 'part-fan'
+          ? known('part-fan', 'accessories', { kind: 'level', ratio })
+          : observation,
+      );
+      return entry({ testing: true, snapshot: machineSnapshot(components, { components }) });
+    };
+    const { fixture, observe } = renderControl(fanAt(0.47));
     const control = openStage('Control');
     const speed = within(control).getByRole('combobox', { name: 'Part fan' });
-    expect(within(control).getByText('47 %')).toBeInTheDocument();
-    expect(speed).toHaveTextContent('Set speed');
+    // A speed between the list's steps is still the speed it runs at.
+    expect(speed).toHaveTextContent('47 %');
 
     await user.click(speed);
-    await user.click(screen.getByRole('option', { name: '0 %' }));
+    await user.click(screen.getByRole('option', { name: '50 %' }));
     await waitFor(() => {
       expect(fixture.applyAction).toHaveBeenCalledWith(
-        expect.objectContaining({ componentId: 'part-fan', action: 'level.set', parameters: { ratio: 0 } }),
+        expect.objectContaining({ componentId: 'part-fan', action: 'level.set', parameters: { ratio: 0.5 } }),
       );
     });
-    expect(speed).toHaveTextContent('0 %');
-    expect(within(control).getByText('47 %')).toBeInTheDocument();
+    // Accepted is not applied: the list keeps the reported speed until the machine reports another.
+    expect(speed).toHaveTextContent('47 %');
 
-    // The program sets the fan: the list follows what the machine reports, not the earlier choice.
-    const programmed = fffComponents().map((observation) =>
-      observation.componentId === 'part-fan'
-        ? known('part-fan', 'accessories', { kind: 'level', ratio: 0.75 })
-        : observation,
-    );
-    observe(entry({ testing: true, snapshot: machineSnapshot(programmed, { components: programmed }) }));
-    expect(speed).toHaveTextContent('75 %');
+    // The printer rounds to its own steps.
+    observe(fanAt(0.53));
+    expect(speed).toHaveTextContent('53 %');
+    // The program turns it off.
+    observe(fanAt(0));
+    expect(speed).toHaveTextContent('0 %');
   });
 
   it('lists the pressure-advance table, deletes a row, and saves a value by hand', async () => {
@@ -1010,6 +1021,41 @@ describe('describeRun', () => {
     expect(describeRun(printing())).toBe('Running · layer 42 of 125 · 9 min left');
     expect(describeRun(entry())).toBeUndefined();
   });
+
+  /** A streamed run, lines 3 of 12, in the given state and stage. */
+  const streamed = (
+    state: 'starting' | 'paused',
+    paused?: Readonly<{ by: 'machine'; reason: string }>,
+  ): MachineDirectoryEntry => {
+    const base = router();
+    return {
+      ...base,
+      snapshot: {
+        ...base.snapshot,
+        run: {
+          runId: 'run-1',
+          origin: 'tau',
+          delivery: 'streamed',
+          state,
+          stage: 'Waiting for Play on the controller',
+          ...(paused === undefined ? {} : { paused }),
+          program: { name: 'pocket.nc' },
+          progress: { basis: 'queued', counters: [{ id: 'lines', label: 'Lines', current: 3, total: 12 }] },
+        },
+      },
+    };
+  };
+
+  it('should say what a starting run waits for', () => {
+    expect(describeRun(streamed('starting'))).toBe('Waiting for Play on the controller · lines 3 of 12');
+  });
+
+  it('should say what a paused run waits for when the machine gives no reason', () => {
+    expect(describeRun(streamed('paused'))).toBe('Paused: Waiting for Play on the controller · lines 3 of 12');
+    expect(describeRun(streamed('paused', { by: 'machine', reason: 'Door open' }))).toBe(
+      'Paused: Door open · lines 3 of 12',
+    );
+  });
 });
 
 describe('controls read from what the machine declares', () => {
@@ -1091,6 +1137,214 @@ describe('controls read from what the machine declares', () => {
   });
 });
 
+describe("the machine's own actions", () => {
+  /** The machine with further declared actions. */
+  const withActions = (
+    machine: MachineDirectoryEntry,
+    ...actions: readonly MachineActionDescriptor[]
+  ): MachineDirectoryEntry => ({
+    ...machine,
+    descriptor: {
+      ...machine.descriptor,
+      capabilities: {
+        ...machine.descriptor.capabilities,
+        actions: [...machine.descriptor.capabilities.actions, ...actions],
+      },
+    },
+  });
+  const nobodyNeeded = { authority: 'approved-agent', attended: false, interlocks: [] } as const;
+  const filamentAbort = machineActionDescriptorOf(
+    defineMachineAction(
+      {
+        componentId: 'filament',
+        id: 'bambu.filament.abort',
+        version: 1,
+        label: 'Stop the filament change',
+        effects: ['material', 'motion'],
+        scope: 'any',
+        when: ['ready', 'active', 'held'],
+        safety: nobodyNeeded,
+        requires: [],
+        confirms: 'observation',
+      },
+      z.strictObject({}),
+    ),
+  );
+  const calibrate = machineActionDescriptorOf(
+    defineMachineAction(
+      {
+        componentId: 'controller',
+        id: 'bambu.printer.calibrate',
+        version: 1,
+        label: 'Run printer calibration',
+        effects: ['motion', 'thermal'],
+        scope: 'idle',
+        when: ['ready'],
+        safety: { authority: 'person', attended: false, interlocks: [] },
+        requires: [],
+        consequence: 'The printer homes, probes the bed and sweeps its motors; the plate must be empty.',
+        confirms: 'observation',
+      },
+      z.strictObject({
+        routines: z
+          .array(z.enum(['lidar', 'bed-levelling', 'vibration']))
+          .min(1)
+          .max(3)
+          .default(['bed-levelling'])
+          .meta({ title: 'Routines' }),
+      }),
+    ),
+  );
+
+  it("should offer a printer's own actions under their component, and a slot's own in that slot", async () => {
+    const user = userEvent.setup();
+    const machine = withActions(entry({ testing: true }), filamentAbort, calibrate);
+    const { fixture, observe } = renderControl(machine);
+    const control = openStage('Control');
+
+    const filament = within(control).getByRole('group', { name: 'Filament' });
+    await user.click(within(filament).getByRole('button', { name: /^Stop the filament change/u }));
+    await waitFor(() => {
+      expect(fixture.applyAction).toHaveBeenCalledWith(
+        expect.objectContaining({ componentId: 'filament', action: 'bambu.filament.abort', parameters: {} }),
+      );
+    });
+
+    const printer = within(control).getByRole('group', { name: 'Printer' });
+    expect(printer).toHaveTextContent(
+      'The printer homes, probes the bed and sweeps its motors; the plate must be empty.',
+    );
+    // Its parameters come from its own form.
+    expect(await within(printer).findByRole('button', { name: 'Group: Routines' })).toBeInTheDocument();
+    await user.click(within(printer).getByRole('button', { name: /^Run printer calibration/u }));
+
+    await waitFor(() => {
+      expect(fixture.applyAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          componentId: 'controller',
+          action: 'bambu.printer.calibrate',
+          parameters: { routines: ['bed-levelling'] },
+        }),
+      );
+    });
+
+    // Reading a spool's tag belongs to the slot, never to a form asking for a slot address.
+    expect(within(control).queryByRole('button', { name: /^Read spool tag/u })).not.toBeInTheDocument();
+    await user.click(within(screen.getByRole('list', { name: 'Material slots' })).getByText('A2'));
+    const slot = screen.getByRole('group', { name: 'Slot A2' });
+    await user.click(within(slot).getByRole('button', { name: /^Read spool tag/u }));
+    await waitFor(() => {
+      expect(fixture.applyAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'bambu.ams.read-tag', parameters: { unitId: 'ams-a', slotId: 'a2' } }),
+      );
+    });
+
+    // While a filament change runs, its card carries the stop as its Cancel: one control, not two.
+    observe({
+      ...machine,
+      snapshot: {
+        ...machine.snapshot,
+        activities: [
+          {
+            activityId: 'change-1',
+            componentId: 'filament',
+            kind: 'material.load',
+            label: 'Loading A2',
+            state: 'in-progress',
+            steps: [],
+            cancel: { componentId: 'filament', action: 'bambu.filament.abort' },
+          },
+        ],
+      },
+    });
+    expect(within(control).queryByRole('group', { name: 'Filament' })).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Loading A2' })).getByRole('button', { name: /^Cancel/u }),
+    ).toBeInTheDocument();
+  });
+
+  it('should keep a lid press the provider allows during a run, and leave out actions only for an idle machine', async () => {
+    const user = userEvent.setup();
+    const lid = machineActionDescriptorOf(
+      defineMachineAction(
+        {
+          componentId: 'controller',
+          id: 'grbl-simulator.lid.press',
+          version: 1,
+          label: 'Press a lid button (simulation)',
+          description: 'What a person standing at the machine would press.',
+          effects: ['run', 'motion'],
+          scope: 'any',
+          when: ['ready', 'active', 'held', 'alarm', 'unknown'],
+          safety: { authority: 'person', attended: true, interlocks: [] },
+          requires: [],
+          confirms: 'acknowledgement',
+        },
+        z.strictObject({ button: z.enum(['start', 'hold', 'reset']).meta({ title: 'Button' }) }),
+      ),
+    );
+    const idleOnly = machineActionDescriptorOf(
+      defineMachineAction(
+        {
+          componentId: 'controller',
+          id: 'grbl-simulator.settings.reset',
+          version: 1,
+          label: 'Reset settings',
+          effects: ['configuration'],
+          scope: 'idle',
+          when: ['ready'],
+          safety: nobodyNeeded,
+          requires: [],
+          confirms: 'acknowledgement',
+        },
+        z.strictObject({}),
+      ),
+    );
+    const base = router();
+    const waiting = withActions(
+      {
+        ...base,
+        snapshot: {
+          ...base.snapshot,
+          state: { status: 'held', reason: 'Waiting for Play' },
+          run: {
+            runId: 'run-1',
+            origin: 'tau',
+            delivery: 'streamed',
+            state: 'starting',
+            stage: 'Waiting for Play on the controller',
+            program: { name: 'pocket.nc' },
+            progress: { basis: 'queued', counters: [{ id: 'lines', label: 'Lines', current: 3, total: 12 }] },
+          },
+        },
+      },
+      lid,
+      idleOnly,
+    );
+    const { fixture } = renderControl(waiting, { attended: true });
+    const control = openStage('Control');
+    // The run owns motion; the simulator's lid stays, as the provider allows it now.
+    expect(within(control).queryByRole('group', { name: 'Motion' })).not.toBeInTheDocument();
+    const board = within(control).getByRole('group', { name: 'LongBoard' });
+    expect(board).toHaveTextContent('What a person standing at the machine would press.');
+    expect(within(control).queryByRole('button', { name: /^Reset settings/u })).not.toBeInTheDocument();
+
+    await user.click(await within(board).findByRole('combobox', { name: 'Select for Button' }));
+    await user.click(screen.getByRole('option', { name: 'start' }));
+    await user.click(within(board).getByRole('button', { name: /^Press a lid button/u }));
+    await waitFor(() => {
+      expect(fixture.applyAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          componentId: 'controller',
+          action: 'grbl-simulator.lid.press',
+          parameters: { button: 'start' },
+          expectedRunId: 'run-1',
+        }),
+      );
+    });
+  });
+});
+
 describe('Monitor readings', () => {
   it("shows a provider's own readings under their component, and siblings of an unknown reading", () => {
     const components = [
@@ -1114,6 +1368,24 @@ describe('Monitor readings', () => {
     // One component unknown, its siblings still read.
     expect(monitor).toHaveTextContent('Bed24 °C');
     expect(monitor).not.toHaveTextContent('Nozzle');
+  });
+
+  it('should read a yes-or-no reading in words', () => {
+    const components = [
+      ...fffComponents(),
+      known('chamber', 'bambu.storage', {
+        kind: 'readings',
+        values: [
+          { id: 'storage', label: 'Storage card', value: true },
+          { id: 'map', label: 'Levelling map', value: false },
+        ],
+      }),
+    ] satisfies readonly ComponentObservation[];
+    renderControl(entry({ snapshot: machineSnapshot(components) }));
+    const monitor = screen.getByRole('region', { name: 'Monitor' });
+    expect(monitor).toHaveTextContent('Storage cardYes');
+    expect(monitor).toHaveTextContent('Levelling mapNo');
+    expect(monitor).not.toHaveTextContent(/true|false/u);
   });
 
   it.each([

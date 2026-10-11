@@ -230,8 +230,8 @@ describe('MachineDetails', () => {
     expect(binding).toHaveTextContent('Only the simulator reads these; they are not machine settings.');
     expect(binding).toHaveTextContent('Declared by bambu.simulator.binding 2.1.0');
     /* The declaration titles the field and starts it at real time. */
-    const speed = await within(binding).findByRole('spinbutton', { name: 'Input for Demo Speed' });
-    expect(within(binding).getByLabelText('Parameter: Demo Speed')).toHaveTextContent('Demo Speed');
+    const speed = await within(binding).findByRole('spinbutton', { name: 'Input for Demo speed' });
+    expect(within(binding).getByLabelText('Parameter: Demo speed')).toHaveTextContent('Demo speed');
     expect(speed).toHaveAttribute('readonly');
     expect(speed).toHaveValue('1');
     expect(

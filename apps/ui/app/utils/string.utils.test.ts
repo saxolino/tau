@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDisplayLabel, toSnakeCase, toTitleCase } from '#utils/string.utils.js';
+import { formatDisplayLabel, formatFieldLabel, toSnakeCase, toTitleCase } from '#utils/string.utils.js';
 
 describe('toTitleCase', () => {
   describe('basic camelCase conversion', () => {
@@ -161,5 +161,16 @@ describe('toSnakeCase', () => {
 
   it('should handle empty string', () => {
     expect(toSnakeCase('')).toBe('');
+  });
+});
+
+describe('formatFieldLabel', () => {
+  it('should show a schema title as written', () => {
+    expect(formatFieldLabel('Command forms (testing)', 'Command forms (testing)')).toBe('Command forms (testing)');
+    expect(formatFieldLabel('X1C', 'X1C')).toBe('X1C');
+  });
+
+  it('should format a label made from a property key', () => {
+    expect(formatFieldLabel('nozzleDiameter', undefined)).toBe('Nozzle Diameter');
   });
 });

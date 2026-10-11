@@ -52,7 +52,6 @@ import { useMachineSettings } from '#components/print/use-machine-settings.js';
 import { ModifiedIndicator } from '#components/ui/modified-indicator.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
-import { compileExportConfigurationManifest } from '#routes/w.$workspace.$project/chat-converter.js';
 import { useFileReturn } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { listGeometryEntryPaths } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
 import { awaitFreshRender } from '#machines/await-fresh-render.js';
@@ -62,7 +61,9 @@ import {
   PrintNotice,
   PrintRow,
   PrintStage,
+  useCompiledConfigurationManifest,
 } from '#routes/w.$workspace.$project/chat-print-section.js';
+import type { ResolvedSchema } from '#routes/w.$workspace.$project/chat-print-section.js';
 import { operator } from '#hooks/use-machine-control.js';
 import {
   describePrintError,
@@ -74,7 +75,8 @@ import {
   slotKey,
 } from '#components/print/machine-facts.js';
 import type { ObservedSlot } from '#components/print/machine-facts.js';
-import { JobChecks, startBlocker } from '#routes/w.$workspace.$project/chat-print-send.js';
+import { JobChecks, requestKeptJob, startBlocker } from '#routes/w.$workspace.$project/chat-print-send.js';
+import type { KeptJobId } from '#routes/w.$workspace.$project/chat-print-send.js';
 import type { MachineControl } from '#hooks/use-machine-control.js';
 import {
   fitsPlate,
@@ -177,9 +179,6 @@ const artifactFor = ({
 
 /** How long the configuration must stay unchanged before the machine checks the job. Milliseconds. */
 const checkDelay = 300;
-
-/** A draft-7 schema and the defaults its owner declares. @public */
-export type ResolvedSchema = Readonly<{ schema: JSONSchema7; defaults: Record<string, unknown> }>;
 
 const isRecordObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -392,51 +391,6 @@ export const applyPreset = (
   return options;
 };
 
-/**
- * Compile a provider configuration schema into the parameter manifest the
- * shared Parameters renderer needs (blueprint R4). The declared defaults keep
- * the manifest stable across telemetry; observed defaults go to the form.
- *
- * @param provider - The provider or route the schema belongs to.
- * @param configuration - The configuration name inside that provider.
- * @param resolved - The draft-7 schema and its declared defaults.
- * @returns The manifest once compiled for the current schema.
- * @public
- */
-export const useCompiledConfigurationManifest = (
-  provider: string | undefined,
-  configuration: string,
-  resolved: ResolvedSchema | undefined,
-): ParameterManifest | undefined => {
-  const [compiled, setCompiled] = useState<{
-    readonly resolved: ResolvedSchema;
-    readonly manifest: ParameterManifest;
-  }>();
-  useEffect(() => {
-    if (!provider || !resolved) {
-      return;
-    }
-    let cancelled = false;
-    const compile = async (): Promise<void> => {
-      try {
-        const { manifest } = await compileExportConfigurationManifest(provider, configuration, resolved);
-        if (!cancelled) {
-          setCompiled({ resolved, manifest });
-        }
-      } catch (error) {
-        /* The form stays in its preparing state; the slice still runs on the values entered so far. */
-        console.error(`[print] Could not compile the ${configuration} form for ${provider}.`, error);
-      }
-    };
-    // async-iife: bootstrap -- the manifest is derived from the schema; a newer schema simply supersedes this compile.
-    void compile();
-    return () => {
-      cancelled = true;
-    };
-  }, [configuration, provider, resolved]);
-  return compiled !== undefined && compiled.resolved === resolved ? compiled.manifest : undefined;
-};
-
 /** Everything the Prepare step knows, owned above the pane so orientation can name the next action. @public */
 export type PrintPrepare = Readonly<{
   entryPath: string;
@@ -586,7 +540,7 @@ export const usePrintPrepare = ({
   const sliceError = failedSlice !== undefined && failedSlice.rendering === rendering ? failedSlice.message : undefined;
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string>();
-  const requestIdRef = useRef<{ readonly key: string; readonly requestId: string }>(undefined);
+  const requestIdRef = useRef<KeptJobId['current']>(undefined);
 
   const modelColors = useMemo(() => {
     if (artifact?.mimeType !== 'model/gltf-binary') {
@@ -1117,28 +1071,29 @@ export const usePrintPrepare = ({
         : undefined;
       const { configuration } = jobCheck;
       const key = JSON.stringify([slice.digest, entry.machineId, configuration, preferences]);
-      if (requestIdRef.current?.key !== key) {
-        requestIdRef.current = { key, requestId: randomUuid() };
-      }
       const facts: MachineProgramSummary['facts'] =
         fffProcessOf(provider.manifest) === undefined
           ? { process: 'other' }
           : { process: 'fff', layers: slice.summary.layers, filamentLength: slice.summary.filamentLength };
       /* The job waits for the person's review above the stages: its checks, what they vouch for, then Start. It
        * carries the configuration the machine completed when it checked the job. */
-      await client.requestJob({
-        machineId: entry.machineId,
-        artifact: reference.artifact,
-        configuration,
-        requestedBy: operator,
-        program: {
-          name: slice.fileName,
-          ...(preferences ? { preferences } : {}),
-          estimatedDuration: Math.round(slice.summary.estimatedDuration * 1000),
-          ...(slice.summary.producer === undefined ? {} : { producer: slice.summary.producer }),
-          facts,
+      await requestKeptJob({
+        client,
+        kept: requestIdRef,
+        key,
+        input: {
+          machineId: entry.machineId,
+          artifact: reference.artifact,
+          configuration,
+          requestedBy: operator,
+          program: {
+            name: slice.fileName,
+            ...(preferences ? { preferences } : {}),
+            estimatedDuration: Math.round(slice.summary.estimatedDuration * 1000),
+            ...(slice.summary.producer === undefined ? {} : { producer: slice.summary.producer }),
+            facts,
+          },
         },
-        jobId: requestIdRef.current.requestId,
       });
     } catch (error) {
       setSendError(describePrintError(error));

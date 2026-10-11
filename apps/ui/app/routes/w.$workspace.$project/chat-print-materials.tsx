@@ -32,6 +32,7 @@ import {
   Blocked,
   Consequences,
   declaredAction,
+  isSlotAction,
 } from '#routes/w.$workspace.$project/chat-print-controls.js';
 import { PrintRow, PrintStage, StaleBadge } from '#routes/w.$workspace.$project/chat-print-section.js';
 
@@ -469,6 +470,19 @@ function SlotDetail({
                 variant='ghost'
               />
             )}
+            {/* The machine's own actions on one slot, such as reading its spool's tag. */}
+            {entry.descriptor.capabilities.actions
+              .filter((descriptor) => descriptor.componentId === system.id && isSlotAction(entry, descriptor))
+              .map((descriptor) => (
+                <ActionButton
+                  key={descriptor.id}
+                  control={control}
+                  componentId={system.id}
+                  action={descriptor.id}
+                  parameters={slot.slot}
+                  variant='ghost'
+                />
+              ))}
           </div>
           {slot.editing.allowed || slot.editing.reason === undefined ? null : (
             <p className='text-xs text-muted-foreground'>{slot.editing.reason}</p>

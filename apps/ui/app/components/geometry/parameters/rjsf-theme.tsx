@@ -23,7 +23,7 @@ import { ParameterSelect } from '#components/geometry/parameters/parameter-selec
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import { cn } from '@taucad/ui/utils/cn';
 import { nestedActionVariants } from '@taucad/ui/components/nested-action.variants';
-import { formatDisplayLabel } from '#utils/string.utils.js';
+import { formatDisplayLabel, formatFieldLabel } from '#utils/string.utils.js';
 import { ModifiedIndicator } from '#components/ui/modified-indicator.js';
 import { HighlightText } from '#components/highlight-text.js';
 import { PaneVirtualList } from '#components/panes/pane-virtual-list.js';
@@ -144,7 +144,7 @@ function CompositeFieldTemplate({
   const selectedIndex = union.values.findIndex((value) => Object.is(value, selectedValue));
   const selectedBranch = union.branches[Math.max(0, selectedIndex)];
   const propertyCount = Object.keys(selectedBranch?.properties ?? {}).length;
-  const prettyTitle = formatDisplayLabel(label);
+  const prettyTitle = formatFieldLabel(label, schema.title);
   const discriminatorLabel = formatDisplayLabel(union.discriminator);
 
   return (
@@ -234,7 +234,7 @@ function FieldTemplate(props: FieldTemplateProps<Record<string, unknown>, RJSFSc
   }
 
   // Always call hooks at the very top level
-  const prettyLabel = formatDisplayLabel(label);
+  const prettyLabel = formatFieldLabel(label, schema.title);
   const descriptionText = typeof schema.description === 'string' ? schema.description : '';
 
   // Check if we need to filter this field
@@ -360,7 +360,7 @@ function ObjectFieldTemplate(
   // Check if the group should be visible by checking:
   // 1. If the group title itself matches the search term, OR
   // 2. If any child properties (or their nested children) match
-  const prettyTitle = formatDisplayLabel(title);
+  const prettyTitle = formatFieldLabel(title, schema.title);
   const groupTitleMatches = formContext.shouldShowField(prettyTitle);
 
   // Use the schema to check if any nested properties match
@@ -503,7 +503,7 @@ function ArrayFieldTemplate(
   // Check if the array should be visible by checking:
   // 1. If the array title itself matches the search term, OR
   // 2. If the array items schema matches (indicating children would match)
-  const prettyTitle = formatDisplayLabel(title);
+  const prettyTitle = formatFieldLabel(title, schema.title);
 
   // Check if the schema or its title matches the search
   const arrayPath = useRenderedFieldPath()?.path;

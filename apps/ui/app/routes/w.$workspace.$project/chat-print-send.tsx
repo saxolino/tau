@@ -20,6 +20,7 @@ import type {
   MachineJob,
   MachineOperation,
   MachineProgramSummary,
+  MachineRequestJobInput,
 } from '@taucad/runtime/machine';
 import { Button } from '@taucad/ui/components/button';
 import { Checkbox } from '@taucad/ui/components/checkbox';
@@ -73,6 +74,41 @@ export const startBlocker = (entry: MachineDirectoryEntry): string | undefined =
     return `${name} is not ready${state.reason === undefined ? '' : `: ${state.reason}`}. Wait until it reports ready.`;
   }
   return undefined;
+};
+
+/** The job id kept for one program, machine and form, so a retry after a lost reply asks for the same job. @public */
+export type KeptJobId = { current: Readonly<{ key: string; requestId: string }> | undefined };
+
+/**
+ * Ask for a job under the id kept for `key`: a retry after a lost reply gets the same job. The host returns a known
+ * id's job however it ended, so when that job has closed (started, cancelled, declined, withdrawn) this is a new
+ * request and gets a new id.
+ *
+ * @param request - The machines, the id kept across presses, what the job is for (a different key gets a new id) and
+ * the request without its id.
+ * @returns The open job.
+ * @public
+ */
+export const requestKeptJob = async ({
+  client,
+  kept,
+  key,
+  input,
+}: Readonly<{
+  client: MachineClient;
+  kept: KeptJobId;
+  key: string;
+  input: Omit<MachineRequestJobInput, 'jobId'>;
+}>): Promise<MachineJob> => {
+  if (kept.current?.key !== key) {
+    kept.current = { key, requestId: randomUuid() };
+  }
+  const job = await client.requestJob({ ...input, jobId: kept.current.requestId });
+  if (isOpenJob(job)) {
+    return job;
+  }
+  kept.current = { key, requestId: randomUuid() };
+  return client.requestJob({ ...input, jobId: kept.current.requestId });
 };
 
 /**

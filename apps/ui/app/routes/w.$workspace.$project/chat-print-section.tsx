@@ -2,8 +2,59 @@ import { useEffect, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Circle, CircleAlert, Hand, LoaderCircle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
+import type { JSONSchema7 } from '@taucad/json-schema';
+import type { ParameterManifest } from '@taucad/parameters';
 import { cn } from '@taucad/ui/utils/cn';
 import { disclosureMotion } from '#components/revisions/revision-actions.js';
+import { compileExportConfigurationManifest } from '#routes/w.$workspace.$project/chat-converter.js';
+
+/** A draft-7 schema and the defaults its owner declares. @public */
+export type ResolvedSchema = Readonly<{ schema: JSONSchema7; defaults: Record<string, unknown> }>;
+
+/**
+ * Compile a provider configuration schema into the parameter manifest the
+ * shared Parameters renderer needs (blueprint R4). The declared defaults keep
+ * the manifest stable across telemetry; observed defaults go to the form.
+ *
+ * @param provider - The provider or route the schema belongs to.
+ * @param configuration - The configuration name inside that provider.
+ * @param resolved - The draft-7 schema and its declared defaults.
+ * @returns The manifest once compiled for the current schema.
+ * @public
+ */
+export const useCompiledConfigurationManifest = (
+  provider: string | undefined,
+  configuration: string,
+  resolved: ResolvedSchema | undefined,
+): ParameterManifest | undefined => {
+  const [compiled, setCompiled] = useState<{
+    readonly resolved: ResolvedSchema;
+    readonly manifest: ParameterManifest;
+  }>();
+  useEffect(() => {
+    if (!provider || !resolved) {
+      return;
+    }
+    let cancelled = false;
+    const compile = async (): Promise<void> => {
+      try {
+        const { manifest } = await compileExportConfigurationManifest(provider, configuration, resolved);
+        if (!cancelled) {
+          setCompiled({ resolved, manifest });
+        }
+      } catch (error) {
+        /* The form stays in its preparing state; what depends on it uses the values entered so far. */
+        console.error(`[print] Could not compile the ${configuration} form for ${provider}.`, error);
+      }
+    };
+    // async-iife: bootstrap -- the manifest is derived from the schema; a newer schema simply supersedes this compile.
+    void compile();
+    return () => {
+      cancelled = true;
+    };
+  }, [configuration, provider, resolved]);
+  return compiled !== undefined && compiled.resolved === resolved ? compiled.manifest : undefined;
+};
 
 /**
  * A clock that ticks once a second while mounted, for ages and staleness.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
@@ -19,7 +19,8 @@ import {
   Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { componentValue, fffProcessOf, machineActionOf } from '@taucad/runtime/machine';
+import { getDefaultFormState } from '@rjsf/utils';
+import { componentValue, fffProcessOf, machineActionOf, standardMachineActions } from '@taucad/runtime/machine';
 import type {
   MachineActionDescriptor,
   MachineActivity,
@@ -36,9 +37,12 @@ import { Input } from '@taucad/ui/components/input';
 import { ToggleGroup, ToggleGroupItem } from '@taucad/ui/components/toggle-group';
 import { cn } from '@taucad/ui/utils/cn';
 import { isRecord } from '@taucad/utils/schema';
+import { Parameters } from '#components/geometry/parameters/parameters.js';
 import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
+import { rjsfDefaultFormStateBehavior } from '#components/geometry/parameters/rjsf-utils.js';
 import { ParametersBoolean } from '#components/geometry/parameters/parameters-boolean.js';
 import { describeOutcome, failureCodeOf } from '#components/print/machine-facts.js';
+import { rjsfValidator } from '#lib/rjsf-validator.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
 import type { MachineControl } from '#hooks/use-machine-control.js';
 import {
@@ -46,8 +50,10 @@ import {
   PrintRow,
   PrintStage,
   PrintSteps,
+  useCompiledConfigurationManifest,
   useNow,
 } from '#routes/w.$workspace.$project/chat-print-section.js';
+import type { ResolvedSchema } from '#routes/w.$workspace.$project/chat-print-section.js';
 import { formatAge } from '#routes/w.$workspace.$project/chat-print-summary.js';
 
 /** Statuses in which a run owns the machine: motion, tools and the spindle stay with it. */
@@ -969,9 +975,6 @@ function AccessoryRow({
 }): React.JSX.Element {
   const { entry } = control;
   const { componentId, id, label } = descriptor;
-  /* The level last chosen here, until the machine reports a different one: the machine reports only the speed it
-   * runs at, and a program that changes it wins. */
-  const [target, setTarget] = useState<Readonly<{ level: number; reported: number | undefined }>>();
   const check = control.check(componentId, id);
   const isDisabled = check.status !== 'available' || control.pending !== undefined;
   const description = check.status === 'unavailable' ? check.message : descriptor.consequence;
@@ -994,25 +997,21 @@ function AccessoryRow({
   if (id === 'level.set') {
     const kind = entry.descriptor.capabilities.components.find((component) => component.id === componentId)?.kind;
     const ratio = componentValue(components, componentId, 'level')?.ratio;
-    const levels: readonly number[] = kind === 'override' ? overrideLevels : fanLevels;
+    const steps: readonly number[] = kind === 'override' ? overrideLevels : fanLevels;
+    /* The list shows the level the machine reports, as a switch or an option does, even between the list's steps;
+     * a choice shows once the machine reports it. */
+    const levels = ratio === undefined || steps.includes(ratio) ? steps : [...steps, ratio].toSorted((a, b) => a - b);
     const percent = (level: number): string => `${String(Math.round(level * 100))} %`;
-    const chosen =
-      target !== undefined && target.reported === ratio
-        ? target.level
-        : ratio !== undefined && levels.includes(ratio)
-          ? ratio
-          : undefined;
     return (
-      <PrintSetupRow label={label} reading={ratio === undefined ? undefined : percent(ratio)} description={description}>
+      <PrintSetupRow label={label} description={description}>
         <QualificationBadge descriptor={descriptor} />
         <ParameterSelect
           label={label}
-          value={chosen === undefined ? '' : String(chosen)}
-          placeholder='Set speed'
+          value={ratio === undefined ? '' : String(ratio)}
+          placeholder='Not reported'
           isDisabled={isDisabled}
           groups={[{ options: levels.map((level) => ({ value: String(level), label: percent(level) })) }]}
           onChange={(value) => {
-            setTarget({ level: Number(value), reported: ratio });
             void control.apply(componentId, id, { ratio: Number(value) });
           }}
         />
@@ -1040,6 +1039,160 @@ function AccessoryRow({
 const accessoryFamilies: ReadonlySet<string> = new Set(['switch.set', 'level.set', 'option.set']);
 
 /**
+ * Whether an action is the machine's own (`<vendor>.<area>.<verb>`) rather than a standard family, which the pane
+ * renders in its own place.
+ *
+ * @param descriptor - The action.
+ * @returns True for a provider's own action.
+ * @public
+ */
+export const isOwnAction = (descriptor: MachineActionDescriptor): boolean => !(descriptor.id in standardMachineActions);
+
+/** The parameters a control's form names; none for an action that takes none. */
+const formNames = (descriptor: MachineActionDescriptor): readonly string[] => {
+  const schema: unknown = descriptor.configuration.legacyProjection.inputSchema;
+  return isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
+};
+
+/**
+ * Whether a machine's own action acts on one material slot: declared on the material system with a slot address
+ * (`unitId`, `slotId`) as its whole form. The slot's detail offers it for that slot (a spool tag read), not a form
+ * asking for an address.
+ *
+ * @param entry - The machine.
+ * @param descriptor - The action.
+ * @returns True for a slot's own action.
+ * @public
+ */
+export const isSlotAction = (entry: MachineDirectoryEntry, descriptor: MachineActionDescriptor): boolean => {
+  const names = formNames(descriptor);
+  return (
+    isOwnAction(descriptor) &&
+    entry.descriptor.capabilities.components.some(
+      (component) => component.id === descriptor.componentId && component.kind === 'material-system',
+    ) &&
+    names.length === 2 &&
+    names.includes('unitId') &&
+    names.includes('slotId')
+  );
+};
+
+/** Units the machine's own forms show: native millimetres, as manifests declare them. */
+const actionUnits = { length: { displaySymbol: 'mm' } } as const;
+const transientEdit = { kind: 'transient' } as const;
+
+/**
+ * One of the machine's own actions that takes parameters: its declared form, then its button, which sends the form's
+ * values through the one path every control takes.
+ *
+ * @param properties - The control and the action.
+ * @returns The form.
+ */
+function OwnActionForm({
+  control,
+  descriptor,
+}: {
+  readonly control: MachineControl;
+  readonly descriptor: MachineActionDescriptor;
+}): React.JSX.Element {
+  const projection = descriptor.configuration.parameters.input;
+  /* Every observation carries the form anew; an equal one keeps its compiled manifest. */
+  const formText = JSON.stringify({
+    schema: descriptor.configuration.legacyProjection.inputSchema,
+    defaults: projection.status === 'usable' ? projection.declaration.defaults : {},
+  });
+  const resolved = useMemo((): ResolvedSchema => {
+    const form = JSON.parse(formText) as ResolvedSchema;
+    /* Every value the form declares, optional fields included, as Settings shows a provider's form. */
+    const values: unknown = getDefaultFormState(rjsfValidator, form.schema, form.defaults, form.schema, false, {
+      ...rjsfDefaultFormStateBehavior,
+      emptyObjectFields: 'populateAllDefaults',
+    });
+    return { schema: form.schema, defaults: isRecord(values) ? values : {} };
+  }, [formText]);
+  const manifest = useCompiledConfigurationManifest(
+    control.entry.providerId,
+    `action/${descriptor.componentId}/${descriptor.id}`,
+    resolved,
+  );
+  const [changed, setChanged] = useState<Record<string, unknown>>({});
+  return (
+    <div className='flex min-w-0 flex-col gap-1'>
+      {manifest === undefined ? (
+        <p role='status' aria-busy='true' className='text-xs text-muted-foreground'>
+          Preparing the form…
+        </p>
+      ) : (
+        <div className='-mx-2.5 min-w-0'>
+          <Parameters
+            parameters={changed}
+            defaultParameters={resolved.defaults}
+            jsonSchema={resolved.schema}
+            enableSearch={false}
+            presentation='embedded'
+            units={actionUnits}
+            parameterManifest={manifest}
+            parameterEdit={transientEdit}
+            emptyMessage='No parameters'
+            onParametersChange={setChanged}
+          />
+        </div>
+      )}
+      <div>
+        <ActionButton
+          control={control}
+          componentId={descriptor.componentId}
+          action={descriptor.id}
+          parameters={{ ...resolved.defaults, ...changed }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The machine's own actions on one component, which no other control shows: each says why it cannot be used now,
+ * then its button, or its form and button when it takes parameters, with what it does beside it.
+ *
+ * @param properties - The control, the component and its actions.
+ * @returns The group.
+ */
+function OwnActionsGroup({
+  control,
+  component,
+  descriptors,
+}: {
+  readonly control: MachineControl;
+  readonly component: MachineComponent;
+  readonly descriptors: readonly MachineActionDescriptor[];
+}): React.JSX.Element {
+  return group(
+    component.label,
+    <>
+      {descriptors.map((descriptor) => (
+        <div key={descriptor.id} className='flex min-w-0 flex-col gap-2'>
+          <Blocked control={control} componentId={descriptor.componentId} action={descriptor.id} />
+          {formNames(descriptor).length === 0 ? (
+            <div>
+              <ActionButton control={control} componentId={descriptor.componentId} action={descriptor.id} />
+            </div>
+          ) : (
+            <OwnActionForm control={control} descriptor={descriptor} />
+          )}
+        </div>
+      ))}
+      <Consequences
+        descriptors={descriptors.map((descriptor) =>
+          descriptor.consequence === undefined && descriptor.description !== undefined
+            ? { ...descriptor, consequence: descriptor.description }
+            : descriptor,
+        )}
+      />
+    </>,
+  );
+}
+
+/**
  * The Control stage's summary while it is closed: each switch the machine reports.
  *
  * @param entry - The machine as observed.
@@ -1056,8 +1209,9 @@ export const controlSummary = (entry: MachineDirectoryEntry): string | undefined
     .join(' · ') || undefined;
 
 /**
- * Control: the camera, then motion, tools and probing, the spindle, and every switch, level and option the machine
- * declares. A run owns motion, tools and the spindle, so those leave the stage while it lasts.
+ * Control: the camera, then motion, tools and probing, the spindle, every switch, level and option the machine
+ * declares, and the machine's own actions by component. A run owns motion, tools and the spindle, so those leave the
+ * stage while it lasts, as do the machine's own actions that only an idle machine takes.
  *
  * @param properties - The client (for stills) and the control.
  * @returns The stage.
@@ -1078,6 +1232,20 @@ export function ControlStage({
   const camera = components.find((component) => component.kind === 'camera');
   const accessories = actions.filter((descriptor) => accessoryFamilies.has(descriptor.id));
   const isOwned = isRunOwned(entry);
+  /* The machine's own actions that apply now: a run hides those only an idle machine takes, and an activity's card
+   * carries its own cancel; availability says the rest. */
+  const cancels = new Set(
+    entry.snapshot.activities.flatMap(({ cancel }) =>
+      cancel === undefined ? [] : [`${cancel.componentId}:${cancel.action}`],
+    ),
+  );
+  const own = actions.filter(
+    (descriptor) =>
+      isOwnAction(descriptor) &&
+      !isSlotAction(entry, descriptor) &&
+      !cancels.has(`${descriptor.componentId}:${descriptor.id}`) &&
+      descriptor.scope !== (isOwned ? 'idle' : 'run'),
+  );
   return (
     <PrintStage icon={Move} title='Control' summary={controlSummary(entry)} isDefaultOpen={isOwned}>
       {camera === undefined ? null : <CameraView client={client} entry={entry} />}
@@ -1113,6 +1281,12 @@ export function ControlStage({
               ))}
             </div>,
           )}
+      {components.map((component) => {
+        const descriptors = own.filter((descriptor) => descriptor.componentId === component.id);
+        return descriptors.length === 0 ? null : (
+          <OwnActionsGroup key={component.id} control={control} component={component} descriptors={descriptors} />
+        );
+      })}
     </PrintStage>
   );
 }

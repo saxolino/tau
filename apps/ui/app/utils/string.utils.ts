@@ -52,6 +52,20 @@ export const toTitleCase = (string_: string): string => {
 export const formatDisplayLabel = (label: string): string => toTitleCase(label);
 
 /**
+ * Format a form field's label: a title its schema authors shows as written; a label made from a property key reads
+ * as a display label.
+ *
+ * @example formatFieldLabel('Command forms (testing)', 'Command forms (testing)') // 'Command forms (testing)'
+ * @example formatFieldLabel('nozzleDiameter', undefined) // 'Nozzle Diameter'
+ *
+ * @param label The label the form shows: the schema's title when it has one, else the property key
+ * @param title The schema's own title, if any
+ * @returns The label as shown
+ */
+export const formatFieldLabel = (label: string, title: unknown): string =>
+  title === label ? label : formatDisplayLabel(label);
+
+/**
  * Convert a string from camelCase, PascalCase, Title Case, or kebab-case to snake_case.
  *
  * @example toSnakeCase('chatTranscript') // 'chat_transcript'
