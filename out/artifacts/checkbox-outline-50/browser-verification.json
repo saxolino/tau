@@ -1,0 +1,187 @@
+{
+  "themes": [
+    {
+      "border": "oklab(0.47 0 0 / 0.5)",
+      "borderWidth": "1px",
+      "checkboxes": 26,
+      "fill": "oklch(0.9 0 none)",
+      "overflow": false,
+      "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(10, 13, 20, 0.03) 0px 1px 2px 0px",
+      "surfaces": 15,
+      "tableHeight": 1104,
+      "tableScrollHeight": 1104,
+      "theme": "light"
+    },
+    {
+      "border": "oklab(0.67 0 0 / 0.5)",
+      "borderWidth": "1px",
+      "fill": "oklch(0.315 0 none)",
+      "overflow": false,
+      "surfaces": 15,
+      "theme": "dark"
+    },
+    {
+      "border": "oklab(0.65 0 0 / 0.5)",
+      "borderWidth": "1px",
+      "fill": "oklch(0.278 0 none)",
+      "overflow": false,
+      "surfaces": 15,
+      "theme": "dark black"
+    },
+    {
+      "border": "oklab(0.82 0 0 / 0.5)",
+      "borderWidth": "1px",
+      "fill": "oklch(0.55 0 none)",
+      "overflow": false,
+      "surfaces": 15,
+      "theme": "dark high-contrast"
+    }
+  ],
+  "sourceWorktree": "/Users/rifont/.codex/worktrees/checkbox-outline/tau",
+  "sourceCommit": "12c194afbdbae434c2b8b87524ab877e14d77186",
+  "opacity": 50,
+  "states": {
+    "rows": 8,
+    "checkedBorder": "rgba(0, 0, 0, 0)",
+    "invalidBorder": "oklch(0.55 0.22 280)",
+    "disabled": true,
+    "mixed": "mixed",
+    "sizes": [
+      "16px",
+      "32px"
+    ],
+    "keyboardSpace": true,
+    "keyboardFocusOutline": "2px",
+    "resetOpacity": 50
+  },
+  "consoleErrorsAndWarnings": [],
+  "lightPositions": [
+    {
+      "height": 32,
+      "id": "pr-project-grid",
+      "width": 32,
+      "x": 612,
+      "y": 345
+    },
+    {
+      "height": 16,
+      "id": "pr-project-table",
+      "width": 16,
+      "x": 612,
+      "y": 404
+    },
+    {
+      "height": 16,
+      "id": "pr-sign-in",
+      "width": 16,
+      "x": 612,
+      "y": 481
+    },
+    {
+      "height": 16,
+      "id": "pr-account-fields",
+      "width": 16,
+      "x": 612,
+      "y": 526
+    },
+    {
+      "height": 16,
+      "id": "pr-cookies",
+      "width": 16,
+      "x": 612,
+      "y": 571
+    },
+    {
+      "height": 16,
+      "id": "pr-desktop",
+      "width": 16,
+      "x": 612,
+      "y": 648
+    },
+    {
+      "height": 16,
+      "id": "pr-overwrite",
+      "width": 16,
+      "x": 612,
+      "y": 693
+    },
+    {
+      "height": 16,
+      "id": "pr-import",
+      "width": 16,
+      "x": 612,
+      "y": 738
+    },
+    {
+      "height": 16,
+      "id": "pr-download",
+      "width": 16,
+      "x": 612,
+      "y": 783
+    },
+    {
+      "height": 16,
+      "id": "pr-format",
+      "width": 16,
+      "x": 612,
+      "y": 892
+    },
+    {
+      "height": 16,
+      "id": "pr-destination",
+      "width": 16,
+      "x": 612,
+      "y": 969
+    },
+    {
+      "height": 16,
+      "id": "pr-layer",
+      "width": 16,
+      "x": 612,
+      "y": 1078
+    },
+    {
+      "height": 16,
+      "id": "pr-toolpath",
+      "width": 16,
+      "x": 612,
+      "y": 1123
+    },
+    {
+      "height": 16,
+      "id": "pr-share",
+      "width": 16,
+      "x": 612,
+      "y": 1168
+    },
+    {
+      "height": 16,
+      "id": "pr-print",
+      "width": 16,
+      "x": 612,
+      "y": 1277
+    }
+  ],
+  "projectGridContrast": [
+    {
+      "theme": "light",
+      "borderVsSurface": 2.51,
+      "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
+    },
+    {
+      "theme": "dark",
+      "borderVsSurface": 2.79,
+      "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
+    },
+    {
+      "theme": "black",
+      "borderVsSurface": 2.77,
+      "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
+    },
+    {
+      "theme": "high-contrast",
+      "borderVsSurface": 7.05,
+      "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
+    }
+  ]
+}
