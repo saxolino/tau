@@ -1101,19 +1101,29 @@ function OwnActionForm({
     schema: descriptor.configuration.legacyProjection.inputSchema,
     defaults: projection.status === 'usable' ? projection.declaration.defaults : {},
   });
-  const resolved = useMemo((): ResolvedSchema => {
-    const form = JSON.parse(formText) as ResolvedSchema;
-    /* Every value the form declares, optional fields included, as Settings shows a provider's form. */
-    const values: unknown = getDefaultFormState(rjsfValidator, form.schema, form.defaults, form.schema, false, {
-      ...rjsfDefaultFormStateBehavior,
-      emptyObjectFields: 'populateAllDefaults',
-    });
-    return { schema: form.schema, defaults: isRecord(values) ? values : {} };
-  }, [formText]);
+  /* The compiler checks the provider's declared defaults against the schema, so it gets only those. */
+  const declared = useMemo((): ResolvedSchema => JSON.parse(formText) as ResolvedSchema, [formText]);
+  /* What the form starts from: every value the form declares, optional fields included, as Settings shows a
+   * provider's form. A list is never padded to its minimum, since an empty entry is no value to send. */
+  const initial = useMemo((): Record<string, unknown> => {
+    const values: unknown = getDefaultFormState(
+      rjsfValidator,
+      declared.schema,
+      declared.defaults,
+      declared.schema,
+      false,
+      {
+        ...rjsfDefaultFormStateBehavior,
+        emptyObjectFields: 'populateAllDefaults',
+        arrayMinItems: { populate: 'never' },
+      },
+    );
+    return isRecord(values) ? values : {};
+  }, [declared]);
   const manifest = useCompiledConfigurationManifest(
     control.entry.providerId,
     `action/${descriptor.componentId}/${descriptor.id}`,
-    resolved,
+    declared,
   );
   const [changed, setChanged] = useState<Record<string, unknown>>({});
   return (
@@ -1126,8 +1136,8 @@ function OwnActionForm({
         <div className='-mx-2.5 min-w-0'>
           <Parameters
             parameters={changed}
-            defaultParameters={resolved.defaults}
-            jsonSchema={resolved.schema}
+            defaultParameters={initial}
+            jsonSchema={declared.schema}
             enableSearch={false}
             presentation='embedded'
             units={actionUnits}
@@ -1143,7 +1153,7 @@ function OwnActionForm({
           control={control}
           componentId={descriptor.componentId}
           action={descriptor.id}
-          parameters={{ ...resolved.defaults, ...changed }}
+          parameters={{ ...initial, ...changed }}
         />
       </div>
     </div>

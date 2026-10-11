@@ -1170,21 +1170,22 @@ describe("the machine's own actions", () => {
       z.strictObject({}),
     ),
   );
+  const calibrateAction = {
+    componentId: 'controller',
+    id: 'bambu.printer.calibrate',
+    version: 1,
+    label: 'Run printer calibration',
+    effects: ['motion', 'thermal'],
+    scope: 'idle',
+    when: ['ready'],
+    safety: { authority: 'person', attended: false, interlocks: [] },
+    requires: [],
+    consequence: 'The printer homes, probes the bed and sweeps its motors; the plate must be empty.',
+    confirms: 'observation',
+  } as const;
   const calibrate = machineActionDescriptorOf(
     defineMachineAction(
-      {
-        componentId: 'controller',
-        id: 'bambu.printer.calibrate',
-        version: 1,
-        label: 'Run printer calibration',
-        effects: ['motion', 'thermal'],
-        scope: 'idle',
-        when: ['ready'],
-        safety: { authority: 'person', attended: false, interlocks: [] },
-        requires: [],
-        consequence: 'The printer homes, probes the bed and sweeps its motors; the plate must be empty.',
-        confirms: 'observation',
-      },
+      calibrateAction,
       z.strictObject({
         routines: z
           .array(z.enum(['lidar', 'bed-levelling', 'vibration']))
@@ -1195,6 +1196,25 @@ describe("the machine's own actions", () => {
       }),
     ),
   );
+
+  it('should build the form of an action whose list has a minimum and no default', async () => {
+    // As Bambu declares it: at least one routine and none chosen for the person.
+    const required = machineActionDescriptorOf(
+      defineMachineAction(
+        calibrateAction,
+        z.strictObject({
+          routines: z
+            .array(z.enum(['lidar', 'bed-levelling', 'vibration']))
+            .min(1)
+            .max(3)
+            .meta({ title: 'Routines' }),
+        }),
+      ),
+    );
+    renderControl(withActions(entry({ testing: true }), required));
+    const printer = within(openStage('Control')).getByRole('group', { name: 'Printer' });
+    expect(await within(printer).findByRole('button', { name: 'Group: Routines' })).toBeInTheDocument();
+  });
 
   it("should offer a printer's own actions under their component, and a slot's own in that slot", async () => {
     const user = userEvent.setup();
