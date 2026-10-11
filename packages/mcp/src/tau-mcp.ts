@@ -93,7 +93,9 @@ export type TauMcpDispatchOptions = {
  * One approval question asked through the MCP client (blueprint E9, W11).
  *
  * The client draws its own form with one checkbox. `approved` needs the person to tick it and accept; leaving it
- * unticked or declining is `denied`; dismissing the form, or the call being cancelled, is `cancelled`.
+ * unticked or declining is `denied`; dismissing the form, or the call being cancelled, is `cancelled`. It rejects
+ * when the client could not ask: it refused or failed the form request, or no answer came within ten minutes. That is
+ * not the person's answer, so the effect is left for them in Tau, as for a client that draws no forms.
  *
  * @public
  */
@@ -106,7 +108,7 @@ export type TauMcpConfirm = (
   }>,
 ) => Promise<'approved' | 'denied' | 'cancelled'>;
 
-/** How long a person has to answer an approval form before it counts as cancelled. */
+/** How long a person has to answer an approval form before the client counts as unable to ask. */
 const confirmLimit = 10 * 60 * 1000;
 
 /** One validated call into Tau's canonical RPC dispatcher. @public */
@@ -501,7 +503,8 @@ const toSdkHostTools = (tools: readonly TauMcpHostTool[] = []): readonly SdkHost
  *
  * @param server - The server whose client is asked.
  * @param extra - The call's request id and cancellation, so the form belongs to that call.
- * @returns The question, or `undefined` when the client declared no form elicitation.
+ * @returns The question, or `undefined` when the client declared no form elicitation. The question rejects when
+ *   the client fails to ask it.
  */
 const confirmFor = (
   server: McpServer,
@@ -526,7 +529,13 @@ const confirmFor = (
         },
         { relatedRequestId: extra.requestId, signal: extra.signal, timeout: confirmLimit },
       )
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        /* A call cancelled while the form is open is cancelled; any other failure is the client's, not the person's. */
+        if (extra.signal.aborted) {
+          return undefined;
+        }
+        throw error;
+      });
     if (answer?.action === 'accept') {
       return answer.content?.['approve'] === true ? 'approved' : 'denied';
     }

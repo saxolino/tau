@@ -389,14 +389,16 @@ describe('approval through the client (blueprint E9, W11)', () => {
    * @param answer - The client's reply to the form, if it is asked.
    * @returns What the dispatch heard, and the form the client was shown.
    */
-  const ask = async (capabilities: Record<string, unknown>, answer?: ElicitResult) => {
-    let outcome: Awaited<ReturnType<TauMcpConfirm>> | 'no form' = 'no form';
+  const ask = async (capabilities: Record<string, unknown>, answer?: ElicitResult | (() => never)) => {
+    let outcome: Awaited<ReturnType<TauMcpConfirm>> | 'no form' | 'failed' = 'no form';
     const shown: Array<ElicitRequest['params']> = [];
     const server = createTauMcpServer({
       hostTools: [{ name: 'request_print', description: 'Print.', inputSchema: { type: 'object' } }],
       dispatch: async (_call, options) => {
         if (options.confirm !== undefined) {
-          outcome = await options.confirm({ message: 'Print plate.3mf on X1C?', label: 'Approve' });
+          outcome = await options
+            .confirm({ message: 'Print plate.3mf on X1C?', label: 'Approve' })
+            .catch((): 'failed' => 'failed');
         }
         return { success: true };
       },
@@ -405,7 +407,7 @@ describe('approval through the client (blueprint E9, W11)', () => {
     if (answer !== undefined) {
       client.setRequestHandler(ElicitRequestSchema, async (request) => {
         shown.push(request.params);
-        return answer;
+        return typeof answer === 'function' ? answer() : answer;
       });
     }
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -430,6 +432,14 @@ describe('approval through the client (blueprint E9, W11)', () => {
     const declined = await ask({ elicitation: {} }, { action: 'decline' });
     const dismissed = await ask({ elicitation: {} }, { action: 'cancel' });
     expect([unticked.outcome, declined.outcome, dismissed.outcome]).toEqual(['denied', 'denied', 'cancelled']);
+  });
+
+  it('should reject, not report the person cancelling, when the client fails to ask', async () => {
+    const failed = await ask({ elicitation: { form: {} } }, () => {
+      throw new Error('elicitation is broken in this client');
+    });
+    expect(failed.shown).toHaveLength(1);
+    expect(failed.outcome).toBe('failed');
   });
 
   it('should not ask a client that cannot draw a form', async () => {
