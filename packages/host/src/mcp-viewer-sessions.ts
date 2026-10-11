@@ -69,6 +69,8 @@ type Page = {
   lastSeen: number;
   /** Capture requests this page has not answered, oldest first. */
   captures: string[];
+  /** Captures a sync already handed the page; they no longer cut a held sync short while the page works on them. */
+  delivered: Set<string>;
   wake?: () => void;
 };
 
@@ -126,7 +128,11 @@ export const createMcpViewerSessions = (options: McpViewerSessionsOptions = {}):
   };
 
   const answer = (page: Page, input: TauViewerSyncInput): TauViewerSyncResult => {
-    const [requestId] = page.captures;
+    /* A capture the page has not heard of goes first; one it works on is repeated in case a reply was lost. */
+    const requestId = page.captures.find((id) => !page.delivered.has(id)) ?? page.captures[0];
+    if (requestId !== undefined) {
+      page.delivered.add(requestId);
+    }
     const show = unseen(page, input);
     return {
       version,
@@ -135,7 +141,7 @@ export const createMcpViewerSessions = (options: McpViewerSessionsOptions = {}):
     };
   };
   const isReady = (page: Page, input: TauViewerSyncInput): boolean =>
-    page.captures.length > 0 || unseen(page, input) !== undefined;
+    page.captures.some((id) => !page.delivered.has(id)) || unseen(page, input) !== undefined;
 
   const livePages = (scope: string | undefined): Array<readonly [string, Page & { view: TauViewerViewState }]> =>
     [...pages.entries()]
@@ -162,7 +168,7 @@ export const createMcpViewerSessions = (options: McpViewerSessionsOptions = {}):
       const { scope, signal } = context;
       let page = pages.get(input.pageId);
       if (page === undefined) {
-        page = { lastSeen: now(), captures: [] };
+        page = { lastSeen: now(), captures: [], delivered: new Set() };
         pages.set(input.pageId, page);
       }
       page.lastSeen = now();
@@ -215,6 +221,7 @@ export const createMcpViewerSessions = (options: McpViewerSessionsOptions = {}):
           signal?.removeEventListener('abort', aborted);
           captures.delete(requestId);
           page.captures = page.captures.filter((id) => id !== requestId);
+          page.delivered.delete(requestId);
           resolve(value);
         };
         const aborted = (): void => {

@@ -113,6 +113,32 @@ describe('createMcpViewerSessions', () => {
     sessions.close();
   });
 
+  it('should hold the next sync while the page works on a capture it was handed', async () => {
+    const sessions = createMcpViewerSessions({ hold: 5000 });
+    await sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: false, view: viewOf('b', 1) });
+    const state = sessions.viewState({ capture: true });
+    const { capture } = await sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: true });
+    const requestId = capture?.requestId ?? '';
+    /* The page polls again while it captures: the poll waits, and still names the capture in case a reply was lost. */
+    let settled = false;
+    const next = (async () => {
+      const result = await sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: true });
+      settled = true;
+      return result;
+    })();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    expect(settled).toBe(false);
+    sessions.captureReply({ requestId, pageId: 'tab-page-1', error: 'The canvas could not be read.' });
+    await expect(state).resolves.toEqual({ view: viewOf('b', 1), captureError: 'The canvas could not be read.' });
+    await expect(sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: false })).resolves.toEqual({
+      version: 0,
+    });
+    await expect(next).resolves.toEqual({ version: 0 });
+    sessions.close();
+  });
+
   it('should give up on a capture the page never answers', async () => {
     const sessions = createMcpViewerSessions({ captureTimeout: 10 });
     await sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: false, view: viewOf('b', 1) });
