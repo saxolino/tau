@@ -161,6 +161,15 @@ export type LiveLinkPage = Readonly<{
   capture(): Promise<TauViewerImage | Readonly<{ error: string }>>;
 }>;
 
+/** Timing of the live link; tests shorten it. */
+export type LiveLinkOptions = Readonly<{
+  /**
+   * How long a card keeps its long poll after it opened, the person used it or the agent captured it. Milliseconds.
+   * A page that follows `show_model` polls for its whole life.
+   */
+  activeFor?: number;
+}>;
+
 /** The running link. */
 export type LiveLink = Readonly<{
   /** Report the view now, outside the poll (after the person changed it). */
@@ -183,17 +192,32 @@ const sleep = async (duration: number): Promise<void> =>
 /**
  * Start the page's long poll.
  *
+ * A card that nobody uses holds no call open through the host: past its active window it stops polling, drops out of
+ * `view_state` and resumes when the person uses it again. Scrolled-back history then costs nothing.
+ *
  * @param callTool - The host bridge's tool call.
  * @param page - What the link reads from and hands to the page.
+ * @param options - Timing.
  * @returns The running link.
  */
-export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPage): LiveLink => {
+export const startLiveLink = (
+  callTool: HostBridge['callTool'],
+  page: LiveLinkPage,
+  options: LiveLinkOptions = {},
+): LiveLink => {
+  /** Milliseconds. */
+  const activeFor = options.activeFor ?? 60_000;
   /* `randomUUID` needs a secure context, which a sandboxed host frame may not be. */
   const pageId = `page-${[...crypto.getRandomValues(new Uint8Array(12))].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
   let version = 0;
-  const control = { stopped: false };
+  const control: { stopped: boolean; resume?: (() => void) | undefined } = { stopped: false };
   let retry = retryFloor;
   const answered = new Set<string>();
+  let activeUntil = Date.now() + activeFor;
+  const keepActive = (): void => {
+    activeUntil = Date.now() + activeFor;
+    control.resume?.();
+  };
 
   /* A capture that throws is answered with its error, and its reply failing leaves the server to time it out: neither
    * is a failed sync, so neither puts the poll into back-off. */
@@ -224,6 +248,7 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
     const requestId = result.capture?.requestId;
     if (requestId !== undefined && !answered.has(requestId)) {
       answered.add(requestId);
+      keepActive();
       // async-iife: bootstrap — the capture runs beside the poll, so a slow or hidden frame never stalls the link.
       void answerCapture(requestId);
     }
@@ -247,6 +272,14 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
 
   const loop = async (): Promise<void> => {
     while (!control.stopped) {
+      if (!page.follows() && Date.now() >= activeUntil) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- An idle card waits for its next use before it polls again.
+        await new Promise<void>((resolve) => {
+          control.resume = resolve;
+        });
+        control.resume = undefined;
+        continue;
+      }
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- One sync at a time: each answers the version the last one saw.
         await sync(true);
@@ -265,6 +298,7 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
   return {
     nudge() {
       if (!control.stopped) {
+        keepActive();
         // async-iife: bootstrap — a report the next poll repeats if it fails.
         void (async () => {
           try {
@@ -277,6 +311,7 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
     },
     stop() {
       control.stopped = true;
+      control.resume?.();
     },
   };
 };

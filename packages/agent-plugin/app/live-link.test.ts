@@ -129,4 +129,49 @@ describe('startLiveLink', () => {
     expect(calls.map((call) => call.name)).toEqual(['app_sync', 'app_sync', 'app_capture_reply']);
     expect(calls[2]?.args).toMatchObject({ requestId: 'capture-1', image });
   });
+
+  it('should stop polling from a card nobody uses, and resume when the person uses it', async () => {
+    vi.useFakeTimers();
+    /* A server with nothing new holds each sync for 20 s. */
+    const calls: Call[] = [];
+    const callTool = vi.fn(async (name: string, args: Readonly<Record<string, unknown>>): Promise<unknown> => {
+      calls.push({ name, args });
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({ version: 0 });
+        }, 20_000);
+      });
+    });
+    const held = (): number => calls.filter((call) => call.args['wait'] === true).length;
+    const link = startLiveLink(callTool, pageOf({ follows: () => false }), { activeFor: 60_000 });
+    links.push(link);
+
+    await vi.advanceTimersByTimeAsync(80_000);
+    const whileActive = held();
+    expect(whileActive).toBe(3);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(held()).toBe(whileActive);
+
+    link.nudge();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.at(-2)?.args).toMatchObject({ wait: false });
+    expect(held()).toBe(whileActive + 1);
+  });
+
+  it('should keep polling from a page that follows show_model', async () => {
+    vi.useFakeTimers();
+    const calls: Call[] = [];
+    const callTool = vi.fn(async (name: string, args: Readonly<Record<string, unknown>>): Promise<unknown> => {
+      calls.push({ name, args });
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({ version: 0 });
+        }, 20_000);
+      });
+    });
+    links.push(startLiveLink(callTool, pageOf({ follows: () => true }), { activeFor: 60_000 }));
+
+    await vi.advanceTimersByTimeAsync(200_000);
+    expect(calls.length).toBeGreaterThanOrEqual(10);
+  });
 });
