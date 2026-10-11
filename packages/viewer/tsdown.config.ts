@@ -89,7 +89,7 @@ const baseConfig: UserConfig = {
     'src/graphics/three/utils/section-cap-polygon-types.ts',
     'src/graphics/three/utils/section-cap-region.ts',
     'src/graphics/three/utils/section-cap-render-parts.ts',
-    'src/graphics/three/utils/three-shader-debug.test-utils.ts',
+    'src/graphics/three/utils/three-shader-debug.ts',
     'src/graphics/three/utils/tsl-node-graph-snapshot.ts',
     'src/hooks/use-graphics.tsx',
     'src/hooks/use-webgl-context-tracker.tsx',
