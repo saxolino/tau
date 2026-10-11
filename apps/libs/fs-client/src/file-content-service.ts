@@ -1340,6 +1340,19 @@ export class FileContentService {
     return barrier;
   }
 
+  /**
+   * Settle every editor value handed to {@link saveEditor} so far.
+   *
+   * A revision cut reads the filesystem, so *Save revision* waits here first:
+   * keystrokes after the first one only replace a queued value, and a cut taken
+   * mid-queue records the first keystroke alone (D80).
+   *
+   * @returns Promise settled once no editor write is outstanding; a refused write still settles.
+   */
+  public async settleEditorSaves(): Promise<void> {
+    await Promise.allSettled([...this.editorSaves.values()].map(async (state) => state.completion));
+  }
+
   private async _drainEditorSavesUnder(
     prefix: string,
     barrier: EditorMutationBarrier,

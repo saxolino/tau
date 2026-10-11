@@ -517,6 +517,26 @@ describe('FileContentService', () => {
       expect(service.peek('main.ts')).toEqual(new Uint8Array([2]));
     });
 
+    /* D80: a revision cut after `/` of "// note" recorded only the `/`. */
+    it('should settle only once the latest queued value of every path is written', async () => {
+      const first = Promise.withResolvers<void>();
+      vi.mocked(proxy.writeFile).mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+      void service.saveEditor('main.ts', new Uint8Array([1]));
+      void service.saveEditor('main.ts', new Uint8Array([1, 2, 3]));
+      let settled = false;
+
+      const settling = (async () => {
+        await service.settleEditorSaves();
+        settled = true;
+      })();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      first.resolve();
+      await settling;
+
+      expect(vi.mocked(proxy.writeFile).mock.calls.at(-1)?.[1]).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
     it('should save different paths independently', async () => {
       const first = Promise.withResolvers<void>();
       const second = Promise.withResolvers<void>();
