@@ -105,6 +105,48 @@ export const captureLiveView = (root: ParentNode): TauViewerImage | Readonly<{ e
   return data === '' ? { error: 'The canvas could not be read.' } : { mimeType: 'image/png', data };
 };
 
+/** Milliseconds a capture or a selection waits for the model to be drawn. */
+const drawnTimeout = 15_000;
+
+/** Milliseconds one frame wait lasts at most: a hidden tab or an off-screen frame paints no frame at all. */
+const frameTimeout = 250;
+
+/** Resolve at the next animation frame, or after {@link frameTimeout} when the browser paints none. */
+const nextFrame = async (): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, frameTimeout);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
+/**
+ * Wait until `isDrawn` holds, checking every 100 ms, then let two frames paint (at most half a second when the page
+ * paints none).
+ *
+ * @param isDrawn - Whether the page shows its model.
+ * @returns Whether it was drawn in time.
+ */
+export const whenDrawn = async (isDrawn: () => boolean): Promise<boolean> => {
+  const started = Date.now();
+  while (!isDrawn()) {
+    if (Date.now() - started > drawnTimeout) {
+      return false;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each check waits for the one before it.
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+  await nextFrame();
+  await nextFrame();
+  return true;
+};
+
+/** Characters of a capture failure the reply carries (`app_capture_reply` takes 1000). */
+const captureErrorLimit = 500;
+
 /** What the live link asks of the page. */
 export type LiveLinkPage = Readonly<{
   /** The view to report, or `undefined` before a model is shown. */
@@ -153,7 +195,28 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
   let retry = retryFloor;
   const answered = new Set<string>();
 
-  const handle = async (result: TauViewerSyncResult): Promise<void> => {
+  /* A capture that throws is answered with its error, and its reply failing leaves the server to time it out: neither
+   * is a failed sync, so neither puts the poll into back-off. */
+  const answerCapture = async (requestId: string): Promise<void> => {
+    let captured: TauViewerImage | Readonly<{ error: string }>;
+    try {
+      captured = await page.capture();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      captured = { error: `The viewer could not capture its view: ${reason}`.slice(0, captureErrorLimit) };
+    }
+    try {
+      await callTool(tauViewerToolName.appCaptureReply, {
+        requestId,
+        pageId,
+        ...('error' in captured ? { error: captured.error } : { image: captured }),
+      });
+    } catch {
+      // The server answers view_state that the viewer did not answer in time.
+    }
+  };
+
+  const handle = (result: TauViewerSyncResult): void => {
     version = Math.max(version, result.version);
     if (result.show !== undefined && page.follows()) {
       page.show(result.show);
@@ -161,12 +224,8 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
     const requestId = result.capture?.requestId;
     if (requestId !== undefined && !answered.has(requestId)) {
       answered.add(requestId);
-      const captured = await page.capture();
-      await callTool(tauViewerToolName.appCaptureReply, {
-        requestId,
-        pageId,
-        ...('error' in captured ? { error: captured.error } : { image: captured }),
-      });
+      // async-iife: bootstrap — the capture runs beside the poll, so a slow or hidden frame never stalls the link.
+      void answerCapture(requestId);
     }
   };
 
@@ -182,7 +241,7 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
       ...(toolCallId === undefined ? {} : { toolCallId }),
     });
     if (isSyncResult(result)) {
-      await handle(result);
+      handle(result);
     }
   };
 

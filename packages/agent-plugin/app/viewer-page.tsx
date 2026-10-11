@@ -34,7 +34,7 @@ import { ModelViewer } from '@taucad/viewer/model-viewer';
 import type { HostBridge, HostView } from '#app/host-bridge.js';
 import { loadModel } from '#app/model-loader.js';
 import { chatReferenceOf } from '#app/chat-reference.js';
-import { captureLiveView, startLiveLink, viewStateOf } from '#app/live-link.js';
+import { captureLiveView, startLiveLink, viewStateOf, whenDrawn } from '#app/live-link.js';
 import type { LiveLink } from '#app/live-link.js';
 
 type Loaded = Readonly<{ model: TauViewerModel; artifact: Artifact }>;
@@ -122,39 +122,6 @@ function useShownModel(
 
 /** The agent's request to select components of one model (`show_model` with `select`). */
 type SelectRequest = Readonly<{ modelSha: string; componentIds: readonly string[] }> | undefined;
-
-/** Milliseconds a capture or a selection waits for the model to be drawn. */
-const drawnTimeout = 15_000;
-
-/** Resolve at the next animation frame. */
-const nextFrame = async (): Promise<void> =>
-  new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      resolve();
-    });
-  });
-
-/**
- * Wait until `isDrawn` holds, checking every 100 ms, then let two frames paint.
- *
- * @param isDrawn - Whether the page shows its model.
- * @returns Whether it was drawn in time.
- */
-const whenDrawn = async (isDrawn: () => boolean): Promise<boolean> => {
-  const started = Date.now();
-  while (!isDrawn()) {
-    if (Date.now() - started > drawnTimeout) {
-      return false;
-    }
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Each check waits for the one before it.
-    await new Promise((resolve) => {
-      setTimeout(resolve, 100);
-    });
-  }
-  await nextFrame();
-  await nextFrame();
-  return true;
-};
 
 /** A running tool's row: its name, its options, then Done (the app's `ToolRow`, without the app's focus hand-off). */
 function ToolRow({
