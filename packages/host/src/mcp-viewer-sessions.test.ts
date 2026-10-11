@@ -48,6 +48,36 @@ describe('createMcpViewerSessions', () => {
     sessions.close();
   });
 
+  it('should hand each conversation only its own shows and read only its own pages', async () => {
+    const sessions = createMcpViewerSessions({ hold: 5000 });
+    await sessions.sync(
+      { pageId: 'tab-page-a', version: 0, follow: true, wait: false, view: viewOf('a', 90) },
+      { scope: 'thread-a' },
+    );
+    await sessions.sync(
+      { pageId: 'tab-page-b', version: 0, follow: true, wait: false, view: viewOf('b', 10) },
+      { scope: 'thread-b' },
+    );
+    const heldA = sessions.sync({ pageId: 'tab-page-a', version: 0, follow: true, wait: true }, { scope: 'thread-a' });
+    const heldB = sessions.sync({ pageId: 'tab-page-b', version: 0, follow: true, wait: true }, { scope: 'thread-b' });
+    const heldLoopback = sessions.sync({ pageId: 'loopback-page', version: 0, follow: true, wait: true });
+
+    sessions.shown(shown('bracket'), 'thread-a');
+    await expect(heldA).resolves.toEqual({ version: 1, show: shown('bracket') });
+    await expect(heldLoopback).resolves.toEqual({ version: 1, show: shown('bracket') });
+    sessions.shown(shown('gear'), 'thread-b');
+    await expect(heldB).resolves.toEqual({ version: 2, show: shown('gear') });
+    await expect(
+      sessions.sync({ pageId: 'tab-page-a', version: 1, follow: true, wait: false }, { scope: 'thread-a' }),
+    ).resolves.toEqual({ version: 2 });
+
+    /* Page A was used last, but conversation B reads its own page; a conversation with none open reads nothing. */
+    await expect(sessions.viewState({}, { scope: 'thread-b' })).resolves.toEqual({ view: viewOf('b', 10) });
+    await expect(sessions.viewState({}, { scope: 'thread-c' })).resolves.toMatchObject({ errorCode: 'NO_VIEWER' });
+    await expect(sessions.viewState({})).resolves.toEqual({ view: viewOf('a', 90) });
+    sessions.close();
+  });
+
   it('should report the page the person used last, and say so when none is open', async () => {
     let clock = 1000;
     const sessions = createMcpViewerSessions({ live: 100, now: () => clock });
@@ -98,7 +128,12 @@ describe('createMcpViewerSessions', () => {
     await sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: false });
     await expect(first).resolves.toEqual({ version: 0 });
     const controller = new AbortController();
-    const second = sessions.sync({ pageId: 'tab-page-1', version: 0, follow: true, wait: true }, controller.signal);
+    const second = sessions.sync(
+      { pageId: 'tab-page-1', version: 0, follow: true, wait: true },
+      {
+        signal: controller.signal,
+      },
+    );
     controller.abort();
     await expect(second).resolves.toEqual({ version: 0 });
     sessions.close();

@@ -4,6 +4,11 @@
  * A page long-polls `app_sync`: it reports what the person sees and hears of models `show_model` handed over and of
  * captures the agent waits for. `view_state` reads the page the person used last and, when asked, has that page
  * capture its live view. Everything lives in memory for one server process.
+ *
+ * One process can serve several conversations (Claude Desktop runs one configured server for all of them). A call
+ * that names its conversation scopes what it touches: a show reaches the pages of that conversation, and `view_state`
+ * reads only them. A page or call without a scope (the loopback page, a host that names no conversation) shares the
+ * process scope with everyone.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -36,14 +41,21 @@ export type McpViewerViewStateResult = Readonly<{
   captureError?: string;
 }>;
 
+/** The conversation a call belongs to, and its cancellation. */
+export type McpViewerCallContext = Readonly<{
+  /** The conversation the host named for the call; `undefined` is the process scope every conversation shares. */
+  scope?: string | undefined;
+  signal?: AbortSignal | undefined;
+}>;
+
 /** The sessions of one server process. */
 export type McpViewerSessions = Readonly<{
-  /** A model was shown: pages that follow `show_model` switch to it. */
-  shown(result: TauViewerShowResult): void;
-  sync(input: TauViewerSyncInput, signal?: AbortSignal): Promise<TauViewerSyncResult>;
+  /** A model was shown in `scope`: pages of that conversation that follow `show_model` switch to it. */
+  shown(result: TauViewerShowResult, scope?: string): void;
+  sync(input: TauViewerSyncInput, context?: McpViewerCallContext): Promise<TauViewerSyncResult>;
   viewState(
     input: Readonly<{ capture?: boolean | undefined }>,
-    signal?: AbortSignal,
+    context?: McpViewerCallContext,
   ): Promise<McpViewerViewStateResult | TauMcpViewerFailure>;
   captureReply(input: TauViewerCaptureReplyInput): Readonly<{ accepted: boolean }>;
   /** Answer every held sync and fail every pending capture. */
@@ -52,11 +64,15 @@ export type McpViewerSessions = Readonly<{
 
 type Page = {
   view?: TauViewerViewState;
+  /** The conversation the page belongs to; `undefined` shares the process scope. */
+  scope?: string;
   lastSeen: number;
   /** Capture requests this page has not answered, oldest first. */
   captures: string[];
   wake?: () => void;
 };
+
+type Latest = Readonly<{ version: number; result: TauViewerShowResult }>;
 
 type CaptureOutcome = Readonly<{ image: TauViewerImage } | { error: string }>;
 
@@ -86,45 +102,73 @@ export const createMcpViewerSessions = (options: McpViewerSessionsOptions = {}):
   const pages = new Map<string, Page>();
   const captures = new Map<string, PendingCapture>();
   let version = 0;
-  let latest: TauViewerShowResult | undefined;
+  /** The model shown last in each scope; the `undefined` key is the process scope. */
+  const latestByScope = new Map<string | undefined, Latest>();
+  let newest: Latest | undefined;
   let closed = false;
+
+  /** Whether a page and a call share a conversation: either names none, or both name the same one. */
+  const sharesScope = (page: Page, scope: string | undefined): boolean =>
+    scope === undefined || page.scope === undefined || page.scope === scope;
+
+  /** The model a page should show: its conversation's or the process scope's, whichever came later. */
+  const latestFor = (page: Page): Latest | undefined => {
+    if (page.scope === undefined) {
+      return newest;
+    }
+    const own = latestByScope.get(page.scope);
+    const shared = latestByScope.get(undefined);
+    return own === undefined || (shared !== undefined && shared.version > own.version) ? shared : own;
+  };
+  const unseen = (page: Page, input: TauViewerSyncInput): TauViewerShowResult | undefined => {
+    const latest = input.follow ? latestFor(page) : undefined;
+    return latest !== undefined && latest.version > input.version ? latest.result : undefined;
+  };
 
   const answer = (page: Page, input: TauViewerSyncInput): TauViewerSyncResult => {
     const [requestId] = page.captures;
+    const show = unseen(page, input);
     return {
       version,
-      ...(input.follow && latest !== undefined && version > input.version ? { show: latest } : {}),
+      ...(show === undefined ? {} : { show }),
       ...(requestId === undefined ? {} : { capture: { requestId } }),
     };
   };
   const isReady = (page: Page, input: TauViewerSyncInput): boolean =>
-    page.captures.length > 0 || (input.follow && latest !== undefined && version > input.version);
+    page.captures.length > 0 || unseen(page, input) !== undefined;
 
-  const livePages = (): Array<readonly [string, Page & { view: TauViewerViewState }]> =>
+  const livePages = (scope: string | undefined): Array<readonly [string, Page & { view: TauViewerViewState }]> =>
     [...pages.entries()]
       .filter((entry): entry is [string, Page & { view: TauViewerViewState }] => {
         const [, page] = entry;
-        return page.view !== undefined && now() - page.lastSeen <= live;
+        return page.view !== undefined && now() - page.lastSeen <= live && sharesScope(page, scope);
       })
       .sort(
         ([, left], [, right]) => right.view.interactedAt - left.view.interactedAt || right.lastSeen - left.lastSeen,
       );
 
   const sessions: McpViewerSessions = {
-    shown(result) {
+    shown(result, scope) {
       version += 1;
-      latest = result;
+      newest = { version, result };
+      latestByScope.set(scope, newest);
       for (const page of pages.values()) {
-        page.wake?.();
+        if (sharesScope(page, scope)) {
+          page.wake?.();
+        }
       }
     },
-    async sync(input, signal) {
+    async sync(input, context = {}) {
+      const { scope, signal } = context;
       let page = pages.get(input.pageId);
       if (page === undefined) {
         page = { lastSeen: now(), captures: [] };
         pages.set(input.pageId, page);
       }
       page.lastSeen = now();
+      if (scope !== undefined) {
+        page.scope = scope;
+      }
       if (input.view !== undefined) {
         page.view = input.view;
       }
@@ -151,8 +195,9 @@ export const createMcpViewerSessions = (options: McpViewerSessionsOptions = {}):
       held.lastSeen = now();
       return answer(held, input);
     },
-    async viewState(input, signal) {
-      const [target] = livePages();
+    async viewState(input, context = {}) {
+      const { scope, signal } = context;
+      const [target] = livePages(scope);
       if (target === undefined) {
         return {
           errorCode: 'NO_VIEWER',

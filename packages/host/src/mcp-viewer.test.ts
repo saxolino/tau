@@ -88,6 +88,35 @@ describe('createLocalMcpViewer', () => {
     expect(shownModel(await viewer.show({}, inline)).model.path).toBe('models/part.glb');
   });
 
+  it('should keep the model shown last and the page read per conversation the host names', async () => {
+    const inThread = (thread: string, toolCallId: string): TauMcpViewerCallOptions => ({
+      toolCallId,
+      presentation: 'inline',
+      meta: { threadId: thread },
+    });
+    const { model } = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, inThread('thread-a', 'call-a')));
+    expect(shownModel(await viewer.show({}, inThread('thread-b', 'call-b'))).model.sourceFile).toBe('src/bracket.ts');
+    expect(shownModel(await viewer.show({}, inThread('thread-a', 'call-a2'))).model.path).toBe('models/part.glb');
+
+    /* A card's app_sync carries no thread; the show call it names does. */
+    const view = {
+      model: { id: model.id, title: model.title, path: model.path },
+      selected: [],
+      hidden: [],
+      isolated: [],
+      sectionActive: false,
+      measurementCount: 0,
+      composition: 'inline',
+      interactedAt: 5,
+    } as const;
+    await viewer.sync(
+      { pageId: 'card-page-a', version: 0, follow: false, wait: false, view, toolCallId: 'call-a' },
+      inline,
+    );
+    expect(await viewer.viewState({}, inThread('thread-b', 'call-b2'))).toMatchObject({ errorCode: 'NO_VIEWER' });
+    expect(await viewer.viewState({}, inThread('thread-a', 'call-a3'))).toEqual({ view });
+  });
+
   it('should refuse a path outside the project and a format the page cannot draw', async () => {
     expect(await viewer.show({ targetFile: '../secret.glb' }, inline)).toMatchObject({
       errorCode: 'PATH_OUTSIDE_PROJECT',

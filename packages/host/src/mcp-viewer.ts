@@ -62,6 +62,20 @@ const browseLimit = 200;
 /** Folders deep `browse_models` looks. */
 const browseDepth = 6;
 
+/** Tool calls whose conversation the server remembers for the pages they open. */
+const rememberedCalls = 1024;
+
+/**
+ * The conversation a call belongs to, when the host names one: Codex puts the thread in every call's `_meta.threadId`.
+ *
+ * @param meta - The request's `_meta`.
+ * @returns The conversation, or `undefined` (the process scope).
+ */
+const conversationOf = (meta: Readonly<Record<string, unknown>> | undefined): string | undefined => {
+  const threadId = meta?.['threadId'];
+  return typeof threadId === 'string' && threadId !== '' ? threadId : undefined;
+};
+
 /** What {@link createLocalMcpViewer} needs from the server that hosts it. */
 export type LocalMcpViewerOptions = Readonly<{
   /** The single-file page and its digest. */
@@ -234,7 +248,12 @@ const pageHeaders = {
  */
 export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpViewer => {
   const shown = new Map<string, Shown>();
+  /** The model shown last per project folder and conversation. */
   const lastShown = new Map<string, string>();
+  const lastShownKey = (root: string, scope: string | undefined): string =>
+    scope === undefined ? root : `${root}\0${scope}`;
+  /** The conversation of each show call, for a page that names the call it was opened with. */
+  const conversationByCall = new Map<string, string>();
   const token = randomBytes(24).toString('base64url');
   const sessions = createMcpViewerSessions(options.sessions);
   let loopback: Promise<{ server: Server; origin: string }> | undefined;
@@ -336,14 +355,24 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     if (isFailure(model)) {
       return model;
     }
-    lastShown.set(root, model.sourceFile ?? model.path);
+    const scope = conversationOf(callOptions.meta);
+    lastShown.set(lastShownKey(root, scope), model.sourceFile ?? model.path);
+    if (scope !== undefined) {
+      conversationByCall.set(callOptions.toolCallId, scope);
+      for (const call of conversationByCall.keys()) {
+        if (conversationByCall.size <= rememberedCalls) {
+          break;
+        }
+        conversationByCall.delete(call);
+      }
+    }
     const url = await viewerUrl(model, callOptions.presentation);
     const result: TauViewerShowResult = {
       model,
       ...(url === undefined ? {} : { viewerUrl: url }),
       ...(select === undefined || select.length === 0 ? {} : { select }),
     };
-    sessions.shown(result);
+    sessions.shown(result, scope);
     return result;
   };
 
@@ -351,7 +380,10 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     page: options.page,
     async show(input, callOptions) {
       const root = options.rootOf(callOptions.meta);
-      const target = input.targetFile ?? lastShown.get(root) ?? (await mainEntry(root));
+      const target =
+        input.targetFile ??
+        lastShown.get(lastShownKey(root, conversationOf(callOptions.meta))) ??
+        (await mainEntry(root));
       if (target === undefined) {
         return failure(
           'NO_TARGET',
@@ -386,10 +418,14 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       return { offset, byteLength: slice.length, totalBytes: bytes.length, data: slice.toString('base64') };
     },
     async sync(input, callOptions) {
-      return sessions.sync(input, callOptions.signal);
+      /* A card names the show call it was opened with; that call's conversation is the page's. */
+      const scope =
+        conversationOf(callOptions.meta) ??
+        (input.toolCallId === undefined ? undefined : conversationByCall.get(input.toolCallId));
+      return sessions.sync(input, { scope, signal: callOptions.signal });
     },
     async viewState(input, callOptions) {
-      return sessions.viewState(input, callOptions.signal);
+      return sessions.viewState(input, { scope: conversationOf(callOptions.meta), signal: callOptions.signal });
     },
     async captureReply(input) {
       return sessions.captureReply(input);
