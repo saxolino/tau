@@ -174,9 +174,10 @@ let launches = 0;
  *
  * @param projectDirectory - The `CLAUDE_PROJECT_DIR` Claude Code would set, if any.
  * @param viewerPage - The viewer page `launch.ts` hands over (`TAU_VIEWER_PAGE`), if any.
+ * @param extra - Further environment, such as the printer store a test isolates.
  * @returns The child, a transport the SDK client connects over, and its output.
  */
-const launch = (projectDirectory?: string, viewerPage?: string): Served => {
+const launch = (projectDirectory?: string, viewerPage?: string, extra: Record<string, string> = {}): Served => {
   launches += 1;
   const resolveLog = join(scratch, `resolved-${String(launches)}.log`);
   /* Built by assignment so no environment key is a source literal. */
@@ -188,6 +189,7 @@ const launch = (projectDirectory?: string, viewerPage?: string): Served => {
   if (viewerPage !== undefined) {
     env['TAU_VIEWER_PAGE'] = viewerPage;
   }
+  Object.assign(env, extra);
   const child = spawn(
     process.execPath,
     ['--import', 'tsx', '--import', pathToFileURL(join(scratch, 'register.mjs')).href, binPath, 'mcp'],
@@ -619,6 +621,41 @@ describe('tau mcp viewer presentation', () => {
       });
       expect(meta('app_read')['ui']).toEqual({ resourceUri, visibility: ['app'] });
       await client.close();
+    },
+    kernelCallLimit,
+  );
+});
+
+describe("tau mcp with this computer's printers (blueprint W11)", () => {
+  const printTools = ['get_print_profiles', 'get_print_request', 'list_print_requests', 'cancel_print'];
+
+  it(
+    'should offer the print tools over the shared store, and none from a second server while the first holds it',
+    async () => {
+      const configDirectory = join(scratch, 'config');
+      await mkdir(join(scratch, 'printing'), { recursive: true });
+      /* Built by assignment so no environment key is a source literal. */
+      const environment: Record<string, string> = {};
+      environment['TAU_CONFIG_DIR'] = configDirectory;
+      environment['TAU_HOST_MACHINES'] = 'true';
+      const first = launch(join(scratch, 'printing'), undefined, environment);
+      disposers.push(stopIfRunning(first));
+      const holder = new Client({ name: 'tau-mcp-printers', version: '1' });
+      await connect(holder, first);
+      const { tools: offered } = await holder.listTools();
+      expect(offered.map(({ name }) => name)).toEqual(expect.arrayContaining(printTools));
+      const listed = CallToolResultSchema.parse(await holder.callTool({ name: 'list_print_requests', arguments: {} }));
+      expect(listed.isError ?? false, textOf(listed)).toBe(false);
+
+      const second = launch(join(scratch, 'printing'), undefined, environment);
+      disposers.push(stopIfRunning(second));
+      const other = new Client({ name: 'tau-mcp-printers-2', version: '1' });
+      await connect(other, second);
+      const { tools: withheld } = await other.listTools();
+      expect(withheld.map(({ name }) => name).filter((name) => printTools.includes(name))).toEqual([]);
+      expect(second.stderr()).toContain('printers are in use by another Tau app');
+      await other.close();
+      await holder.close();
     },
     kernelCallLimit,
   );

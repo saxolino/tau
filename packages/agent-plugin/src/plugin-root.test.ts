@@ -67,7 +67,12 @@ describe('MCP configs', () => {
     const { tau } = mcpServers;
 
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Codex config keys keep their wire spelling
-    expect(tau).toMatchObject({ command: 'node', cwd: '.', env_vars: ['TAU_CLI'], omit_tools_from: ['deferred'] });
+    expect(tau).toMatchObject({
+      command: 'node',
+      cwd: '.',
+      env_vars: ['TAU_CLI', 'TAU_HOST_MACHINES'],
+      omit_tools_from: ['deferred'],
+    });
     expect(existsSync(join(root, tau!.cwd!, tau!.args[0]!))).toBe(true);
   });
 });

@@ -110,6 +110,35 @@ describe('serveLocalHostMcp', () => {
     }
   });
 
+  it("should ask the person through the client's form only when the client can draw one", async () => {
+    const { dispatch, invocations, local } = await serve(ready);
+    try {
+      const asked: string[] = [];
+      await dispatch(
+        { toolName: toolName.requestPrint, args: { targetFile: 'plate.ts' } },
+        {
+          toolCallId: 'print-1',
+          confirm: async ({ message }) => {
+            asked.push(message);
+            return 'denied';
+          },
+        },
+      );
+      await dispatch({ toolName: toolName.requestPrint, args: { targetFile: 'plate.ts' } }, { toolCallId: 'print-2' });
+
+      const [withForm, withoutForm] = invocations;
+      expect(await withForm?.approve?.({ prompt: 'Print plate.3mf on X1C?' })).toEqual({
+        interruptId: 'print-1',
+        outcome: 'denied',
+      });
+      expect(asked).toEqual(['Print plate.3mf on X1C?']);
+      expect(withForm?.approve?.recall).toBeUndefined();
+      expect(withoutForm?.approve).toBeUndefined();
+    } finally {
+      await local.close();
+    }
+  });
+
   it('should keep a pinned project even when a call names another folder', async () => {
     const { dispatch, invocations, local } = await serve(ready, { workspaceRoot: '/pinned', pinned: true });
     try {
