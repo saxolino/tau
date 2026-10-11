@@ -28,7 +28,7 @@ import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settin
 import { GraphicsProvider, useGraphics, useGraphicsSelector } from '@taucad/viewer/hooks/use-graphics';
 import { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import { ModelViewer } from '@taucad/viewer/model-viewer';
-import type { HostBridge, HostView } from '#app/host-bridge.js';
+import type { ChatRoute, HostBridge, HostView } from '#app/host-bridge.js';
 import { loadModel } from '#app/model-loader.js';
 
 type Loaded = Readonly<{ model: TauViewerModel; artifact: Artifact }>;
@@ -47,6 +47,20 @@ const referenceText = (model: TauViewerModel, reference: GeometryComponentRefere
   reference === undefined
     ? `${model.title} (${model.sourceFile ?? model.path})`
     : `${reference.label} in ${model.title} @cad[${reference.filePath}#${reference.componentId}]`;
+
+/** The reference action's name per route: a message starts a turn, so it says so. */
+const chatAction: Readonly<Record<ChatRoute, string>> = {
+  context: 'Add to chat',
+  message: 'Send to chat',
+  clipboard: 'Copy prompt',
+};
+
+/** What the page says once the reference went its route. */
+const chatNotice: Readonly<Record<ChatRoute, string>> = {
+  context: 'Added to chat',
+  message: 'Sent to chat',
+  clipboard: 'Copied; paste it into your chat',
+};
 
 /** Follows the bridge: shows each model it hands over, keeping the last one on screen while the next loads. */
 function useShownModel(bridge: HostBridge): readonly [PageState, HostView] {
@@ -271,7 +285,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
     const add = async (): Promise<void> => {
       try {
         const outcome = await bridge.addToChat(referenceText(shown.model, selected));
-        setNotice(outcome === 'added' ? 'Added to chat' : 'Copied; paste it into your chat');
+        setNotice(chatNotice[outcome]);
       } catch {
         setNotice('Could not add to chat');
       }
@@ -304,7 +318,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         onClick={addToChat}
       >
         <MessageSquarePlus className='size-4' />
-        {view.canAddToChat ? 'Add to chat' : 'Copy prompt'}
+        {chatAction[view.chatRoute]}
       </Button>
       {isInline && view.canRequestFullscreen ? (
         <Button

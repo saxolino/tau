@@ -186,19 +186,22 @@ const viewerFrame = (page: Page): Frame => {
   return frame;
 };
 
+/** The harness host: its display mode, and how it differs from the default (what it declares). */
+type HarnessHost = Readonly<{
+  displayMode: 'inline' | 'fullscreen';
+  hostCapabilities?: Parameters<TauHost['mount']>[0]['hostCapabilities'];
+}>;
+
 /**
  * Mount the page in the basic-host harness with one tool result.
  *
  * @param client - The MCP Apps client.
  * @param result - The `show_model` result the host hands the page.
- * @param displayMode - The host's display mode.
+ * @param host - The host's display mode and what it declares.
  * @returns The harness page.
  */
-const mountInHarness = async (
-  client: Client,
-  result: CallToolResult,
-  displayMode: 'inline' | 'fullscreen',
-): Promise<Page> => {
+const mountInHarness = async (client: Client, result: CallToolResult, host: HarnessHost): Promise<Page> => {
+  const { displayMode } = host;
   const { tools } = await client.listTools();
   const showModel = tools.find((tool) => tool.name === 'show_model');
   if (showModel === undefined) {
@@ -232,6 +235,7 @@ const mountInHarness = async (
       /* A view opened by a tool call knows that call (ext-apps `toolInfo`). */
       toolInfo: { tool: showModel },
     },
+    ...(host.hostCapabilities === undefined ? {} : { hostCapabilities: host.hostCapabilities }),
     toolArguments: {},
     toolResult: result,
     width: 860,
@@ -321,7 +325,7 @@ describe('the viewer page in an MCP Apps host', () => {
     async () => {
       const result = await callTool(client, 'show_model', { targetFile: 'main.ts' });
       expect(shown(result).model).toMatchObject({ sourceFile: 'main.ts', mimeType: 'model/gltf-binary' });
-      const page = await mountInHarness(client, result, 'inline');
+      const page = await mountInHarness(client, result, { displayMode: 'inline' });
       const frame = viewerFrame(page);
 
       await drawn(frame, 'Add to chat');
@@ -358,12 +362,34 @@ describe('the viewer page in an MCP Apps host', () => {
   );
 
   it(
+    'should send the reference as a message on a host that takes no model context',
+    async () => {
+      const result = await callTool(client, 'show_model', { targetFile: 'small.glb' });
+      const page = await mountInHarness(client, result, {
+        displayMode: 'inline',
+        hostCapabilities: { serverTools: {}, message: { text: {} } },
+      });
+      const frame = viewerFrame(page);
+
+      await drawn(frame, 'Send to chat');
+      await frame.getByRole('button', { name: 'Send to chat' }).click();
+      await expect.poll(async () => recorded(page, 'messages')).toHaveLength(1);
+      await frame.getByRole('status').filter({ hasText: 'Sent to chat' }).waitFor();
+      expect(JSON.stringify(await recorded(page, 'messages'))).toContain('small');
+      expect(await recorded(page, 'modelContext')).toEqual([]);
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
     'should read a 10 MB GLB in ranges no larger than one reply',
     async () => {
       const result = await callTool(client, 'show_model', { targetFile: 'surface.glb' });
       const { model } = shown(result);
       expect(model.byteLength).toBeGreaterThan(10 * 1024 * 1024);
-      const page = await mountInHarness(client, result, 'fullscreen');
+      const page = await mountInHarness(client, result, { displayMode: 'fullscreen' });
       const frame = viewerFrame(page);
 
       await drawn(frame, 'Add to chat');

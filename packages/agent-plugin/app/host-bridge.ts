@@ -14,13 +14,20 @@ import {
   applyHostFonts,
   applyHostStyleVariables,
 } from '@modelcontextprotocol/ext-apps';
-import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps';
+import type { McpUiHostCapabilities, McpUiHostContext } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { tauViewerToolName } from '@taucad/mcp/viewer-protocol';
 import type { TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
 
 /** Which composition the page draws (blueprint "Composition per presentation"). */
 export type ViewerComposition = 'inline' | 'tab';
+
+/**
+ * How "Add to chat" reaches the conversation (E8), best first: into the
+ * model's context (`ui/update-model-context`), as a message in the
+ * conversation (`ui/message`), or onto the clipboard for the person to paste.
+ */
+export type ChatRoute = 'context' | 'message' | 'clipboard';
 
 /** What the page knows about its surroundings. */
 export type HostView = Readonly<{
@@ -29,8 +36,8 @@ export type HostView = Readonly<{
   colorScheme: 'light' | 'dark';
   /** Whether the page may offer its own fullscreen action: Claude hosts want one, Codex draws its own (E3). */
   canRequestFullscreen: boolean;
-  /** Whether the host takes context from the page (`ui/update-model-context`); text hosts copy instead. */
-  canAddToChat: boolean;
+  /** The route "Add to chat" takes on this host; text hosts copy. */
+  chatRoute: ChatRoute;
   /** Insets the host asks the page to keep clear (E5). */
   safeArea: Readonly<{ top: number; right: number; bottom: number; left: number }>;
 }>;
@@ -48,10 +55,12 @@ export type HostBridge = Readonly<{
   /** Call a Tau tool and return its structured result, or throw its error text. */
   callTool(name: string, args: Readonly<Record<string, unknown>>): Promise<unknown>;
   /**
-   * Hand the person's reference to the conversation (E8): into the model's
-   * context where the host takes it, otherwise onto the clipboard.
+   * Hand the person's reference to the conversation (E8) along the view's
+   * {@link ChatRoute}.
+   *
+   * @returns The route it took.
    */
-  addToChat(text: string): Promise<'added' | 'copied'>;
+  addToChat(text: string): Promise<ChatRoute>;
   requestFullscreen(): Promise<void>;
 }>;
 
@@ -112,6 +121,19 @@ const showModel = async (
   }
 };
 
+/**
+ * Pick "Add to chat"'s route from what the host declared at `ui/initialize`.
+ *
+ * @param capabilities - The host's capabilities.
+ * @returns The best route they offer.
+ */
+const chatRouteOf = (capabilities: McpUiHostCapabilities | undefined): ChatRoute =>
+  capabilities?.updateModelContext === undefined
+    ? capabilities?.message === undefined
+      ? 'clipboard'
+      : 'message'
+    : 'context';
+
 const errorText = (result: CallToolResult): string =>
   result.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n') || 'The Tau tool failed.';
 
@@ -142,14 +164,13 @@ const connectMcpApp = async (): Promise<HostBridge> => {
   const viewOf = (context: McpUiHostContext | undefined): HostView => {
     const host = app.getHostVersion()?.name ?? '';
     const isCodex = /codex|openai|chatgpt/iu.test(host);
-    const capabilities = app.getHostCapabilities();
     return {
       kind: 'mcp-app',
       composition: context?.displayMode === 'inline' ? 'inline' : 'tab',
       colorScheme: context?.theme === 'dark' ? 'dark' : 'light',
       canRequestFullscreen:
         !isCodex && context?.displayMode === 'inline' && (context.availableDisplayModes ?? []).includes('fullscreen'),
-      canAddToChat: capabilities?.updateModelContext !== undefined,
+      chatRoute: chatRouteOf(app.getHostCapabilities()),
       safeArea: context?.safeAreaInsets ?? noInsets,
     };
   };
@@ -220,12 +241,18 @@ const connectMcpApp = async (): Promise<HostBridge> => {
     },
     callTool,
     async addToChat(text) {
-      if (app.getHostCapabilities()?.updateModelContext === undefined) {
+      const route = chatRouteOf(app.getHostCapabilities());
+      if (route === 'context') {
+        await app.updateModelContext({ content: [{ type: 'text', text }] });
+      } else if (route === 'message') {
+        const { isError } = await app.sendMessage({ role: 'user', content: [{ type: 'text', text }] });
+        if (isError === true) {
+          throw new Error('The host did not take the message.');
+        }
+      } else {
         await navigator.clipboard.writeText(text);
-        return 'copied';
       }
-      await app.updateModelContext({ content: [{ type: 'text', text }] });
-      return 'added';
+      return route;
     },
     async requestFullscreen() {
       await app.requestDisplayMode({ mode: 'fullscreen' });
@@ -249,7 +276,7 @@ const connectLoopback = (): HostBridge => {
     composition: 'tab',
     colorScheme: prefersDark.matches ? 'dark' : 'light',
     canRequestFullscreen: false,
-    canAddToChat: false,
+    chatRoute: 'clipboard',
     safeArea: noInsets,
   });
   applyTheme(view().colorScheme);
@@ -292,7 +319,7 @@ const connectLoopback = (): HostBridge => {
     callTool,
     async addToChat(text) {
       await navigator.clipboard.writeText(text);
-      return 'copied';
+      return 'clipboard';
     },
     async requestFullscreen() {
       await document.documentElement.requestFullscreen();
