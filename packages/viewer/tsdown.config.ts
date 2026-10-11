@@ -76,6 +76,7 @@ const baseConfig: UserConfig = {
     'src/parameters/parameter-edit.ts',
     'src/parameters/parameter-group-card.tsx',
     'src/parameters/parameter-select.tsx',
+    'src/panels/structure-section.tsx',
     'src/parameters/parameters.tsx',
     'src/parameters/parameters-boolean.tsx',
     'src/parameters/parameters-number.tsx',

@@ -3304,6 +3304,9 @@ importers:
       '@taucad/mcp':
         specifier: workspace:*
         version: link:../mcp
+      '@taucad/parameters':
+        specifier: workspace:*
+        version: link:../parameters
       '@taucad/runtime':
         specifier: workspace:*
         version: link:../runtime

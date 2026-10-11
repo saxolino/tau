@@ -307,6 +307,10 @@ beforeAll(async () => {
     join(project, 'main.ts'),
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
   );
+  await writeFile(
+    join(project, 'plate.ts'),
+    `import { drawRectangle } from 'replicad';\n\nexport const defaultParams = { width: 20 };\n\nexport default function main(params: typeof defaultParams) {\n  return drawRectangle(params.width, 10).sketchOnPlane('XY').extrude(2);\n}\n`,
+  );
   await writeFile(join(project, 'surface.glb'), surfaceGlb(540));
   /* Exchange formats the server converts to GLB (W7). */
   await copyFile(
@@ -432,6 +436,51 @@ describe('exchange formats (W7)', () => {
       const page = await mountInHarness(client, result, 'fullscreen');
       await drawn(viewerFrame(page), 'Add to chat');
       await capture(page, 'step-converted');
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+});
+
+describe("the tab's panels (W10)", () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    client = await connect('claude-ai', mcpAppsCapabilities);
+  });
+
+  it(
+    'should list the structure and write a parameter edit that Tau reads, then show the model rendered with it',
+    async () => {
+      const first = await callTool(client, 'show_model', { targetFile: 'plate.ts' });
+      const page = await mountInHarness(client, first, 'fullscreen');
+      const frame = viewerFrame(page);
+      await drawn(frame, 'Add to chat');
+      const panels = frame.getByRole('complementary', { name: 'Model panels' });
+      await panels.waitFor();
+      const before = (first.structuredContent as { model: { id: string } }).model.id;
+
+      const width = panels.getByRole('spinbutton', { name: 'Input for Width' });
+      await width.waitFor({ timeout: 60_000 });
+      await width.fill('30');
+      await width.press('Enter');
+
+      await expect
+        .poll(async () => readFile(join(project, '.tau/parameters/plate.ts.json'), 'utf8').catch(() => ''), {
+          timeout: 60_000,
+        })
+        .toContain('30');
+      await expect
+        .poll(
+          async () => {
+            const result = await callTool(client, 'view_state', {});
+            return (result.structuredContent as { view: TauViewerViewState }).view.model.id;
+          },
+          { timeout: 120_000 },
+        )
+        .not.toBe(before);
+      await capture(page, 'panels');
       expect(pageErrors).toEqual([]);
       await page.close();
     },
