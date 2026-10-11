@@ -1,7 +1,7 @@
 [
   {
-    "name": "total (ESM JS) — measured 158.44 kB brotli on 2026-10-11 (adds the MCP viewer page)",
+    "name": "total (ESM JS) — measured 162.1 kB brotli on 2026-10-11 (adds the MCP viewer page, its parameter actors and workbench keeper)",
     "path": "dist/**/*.mjs",
-    "limit": "161 kB"
+    "limit": "165 kB"
   }
 ]

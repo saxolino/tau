@@ -579,8 +579,8 @@
     },
     {
       "id": "D16",
-      "bound": "A parameter actor's last write when its desktop or daemon project host closes (10 s)",
-      "site": "packages/host/src/project-host.ts",
+      "bound": "A parameter actor's last write when its desktop, daemon or tau mcp host closes (10 s)",
+      "site": "packages/host/src/parameter-actors.ts",
       "token": "parameterCloseBound",
       "class": "External edge",
       "owner": "W6"
@@ -810,6 +810,14 @@
       "token": "captureTimeout",
       "class": "External edge",
       "owner": "agent-plugin-ui-blueprint W6"
+    },
+    {
+      "id": "D28",
+      "bound": "Viewer page view kept in .tau/workbench 1.5 s after the person's last change",
+      "site": "packages/host/src/mcp-viewer-workbench.ts",
+      "token": "void flush();",
+      "class": "Debounce",
+      "owner": "agent-plugin-ui-blueprint W10"
     }
   ]
 }
