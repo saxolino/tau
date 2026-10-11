@@ -386,6 +386,8 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
                 direction: [...cameraView.direction],
                 up: [...cameraView.up],
                 verticalSpan: cameraView.verticalSpan,
+                frameId: cameraView.frameId,
+                perspectiveZoom: cameraView.perspectiveZoom,
               };
         const { context } = graphicsRef.getSnapshot();
         return viewStateOf({

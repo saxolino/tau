@@ -114,6 +114,10 @@ export type TauViewerCamera = Readonly<{
   up: TauViewerVector;
   /** Metres of the model the frame's height spans. */
   verticalSpan: number;
+  /** The frame the vectors are in; `tau:root` when absent. */
+  frameId?: string | undefined;
+  /** The perspective camera's zoom; 1 when absent. */
+  perspectiveZoom?: number | undefined;
 }>;
 
 /** One component of the shown model, as the page's model tree names it. @public */

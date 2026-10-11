@@ -451,7 +451,7 @@ describe("the tab's panels (W10)", () => {
   });
 
   it(
-    'should list the structure and write a parameter edit that Tau reads, then show the model rendered with it',
+    "should list the structure, write a parameter edit Tau reads, and keep the page's view in the project",
     async () => {
       const first = await callTool(client, 'show_model', { targetFile: 'plate.ts' });
       const page = await mountInHarness(client, first, 'fullscreen');
@@ -480,6 +480,41 @@ describe("the tab's panels (W10)", () => {
           { timeout: 120_000 },
         )
         .not.toBe(before);
+
+      /* The person hides a component; Tau opens the project with the page's camera and that display (Q14). */
+      await panels
+        .getByRole('list', { name: 'Components' })
+        .getByRole('button', { name: /^Hide / })
+        .first()
+        .click();
+      let hidden: readonly string[] = [];
+      await expect
+        .poll(
+          async () => {
+            const result = await callTool(client, 'view_state', {});
+            ({ hidden } = (result.structuredContent as { view: TauViewerViewState }).view);
+            return hidden.length;
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(1);
+      const workbenchRecord = async (path: string): Promise<unknown> =>
+        JSON.parse(await readFile(join(project, '.tau/workbench', path), 'utf8')) as unknown;
+      await expect
+        .poll(async () => workbenchRecord('entries.json').catch(() => undefined), { timeout: 30_000 })
+        .toMatchObject({ entries: { 'plate.ts': { components: { hidden } } } });
+      const layout = (await workbenchRecord('layout.json')) as {
+        viewer: { tabs: ReadonlyArray<{ view: string }> };
+      };
+      const views = await Promise.all(
+        layout.viewer.tabs.map(async ({ view: id }) => workbenchRecord(`views/${id}.json`)),
+      );
+      expect(
+        views.map((record) => {
+          const { entryPath, camera } = record as { entryPath: string; camera: { kind: string } };
+          return { entryPath, camera: camera.kind };
+        }),
+      ).toContainEqual({ entryPath: 'plate.ts', camera: 'pose' });
       await capture(page, 'panels');
       expect(pageErrors).toEqual([]);
       await page.close();

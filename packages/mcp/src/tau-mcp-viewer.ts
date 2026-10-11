@@ -134,7 +134,14 @@ const viewSchema = z
     hidden: z.array(z.string().min(1).max(256)).max(1024),
     isolated: z.array(z.string().min(1).max(256)).max(1024),
     camera: z
-      .object({ target: vectorSchema, direction: vectorSchema, up: vectorSchema, verticalSpan: z.number().positive() })
+      .object({
+        target: vectorSchema,
+        direction: vectorSchema,
+        up: vectorSchema,
+        verticalSpan: z.number().positive(),
+        frameId: z.string().min(1).max(128).optional(),
+        perspectiveZoom: z.number().positive().optional(),
+      })
       .strict()
       .optional(),
     sectionActive: z.boolean(),

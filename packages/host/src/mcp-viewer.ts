@@ -20,6 +20,8 @@ import { tauViewerReadLimit, tauViewerToolName } from '@taucad/mcp/viewer-protoc
 
 import { createMcpViewerSessions } from '#mcp-viewer-sessions.js';
 import type { McpViewerSessionsOptions } from '#mcp-viewer-sessions.js';
+import { createMcpViewerWorkbench } from '#mcp-viewer-workbench.js';
+import type { McpViewerWorkbenchOptions } from '#mcp-viewer-workbench.js';
 import type {
   TauViewerFile,
   TauViewerMimeType,
@@ -68,6 +70,8 @@ export type LocalMcpViewerOptions = Readonly<{
   page: Readonly<{ html: string; sha256: string }>;
   /** Timing of the live link to the pages; tests shorten it. */
   sessions?: McpViewerSessionsOptions;
+  /** How the pages' camera and component display are kept in `.tau/workbench`; tests shorten it. */
+  workbench?: McpViewerWorkbenchOptions;
   /** The project folder one call works in. */
   rootOf(meta: Readonly<Record<string, unknown>> | undefined): string;
   /**
@@ -87,7 +91,7 @@ export type LocalMcpViewer = TauMcpViewer &
     close(): Promise<void>;
   }>;
 
-type Shown = Readonly<{ model: TauViewerModel; absolutePath: string }>;
+type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string }>;
 
 const failure = (errorCode: string, message: string): TauMcpViewerFailure => ({ errorCode, message });
 
@@ -237,6 +241,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
   const lastShown = new Map<string, string>();
   const token = randomBytes(24).toString('base64url');
   const sessions = createMcpViewerSessions(options.sessions);
+  const workbench = createMcpViewerWorkbench(options.workbench);
   let loopback: Promise<{ server: Server; origin: string }> | undefined;
 
   const describe = async (
@@ -267,7 +272,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       byteLength: bytes.length,
       sha256,
     };
-    shown.set(id, { model, absolutePath });
+    shown.set(id, { model, absolutePath, root });
     return model;
   };
 
@@ -386,6 +391,19 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       return { offset, byteLength: slice.length, totalBytes: bytes.length, data: slice.toString('base64') };
     },
     async sync(input, callOptions) {
+      /* Only a model this server showed names the project and entry a view is kept for; the page's own names do not. */
+      const entry = input.view === undefined ? undefined : shown.get(input.view.model.id);
+      if (input.view !== undefined && entry !== undefined) {
+        const { model } = entry;
+        workbench.report({
+          root: entry.root,
+          pageId: input.pageId,
+          view: {
+            ...input.view,
+            model: { id: model.id, title: model.title, path: model.path, sourceFile: model.sourceFile },
+          },
+        });
+      }
       return sessions.sync(input, callOptions.signal);
     },
     async viewState(input, callOptions) {
@@ -396,6 +414,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     },
     async close() {
       sessions.close();
+      await workbench.close();
       const running = loopback;
       loopback = undefined;
       if (running !== undefined) {

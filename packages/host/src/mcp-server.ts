@@ -871,6 +871,12 @@ export const serveLocalHostMcp = async (
       : createLocalMcpViewer({
           page: options.viewerPage,
           rootOf,
+          /* Stdout carries the protocol; a view the page could not keep is said on stderr, and the page works on. */
+          workbench: {
+            onError: (error) => {
+              process.stderr.write(`tau mcp: the viewer's view was not kept in .tau/workbench: ${String(error)}\n`);
+            },
+          },
           renderGlb: async ({ root, targetFile, toolCallId, signal }) => {
             const result = await invokeIn({
               workspaceRoot: root,
