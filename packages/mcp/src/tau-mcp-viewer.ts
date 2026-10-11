@@ -151,6 +151,7 @@ const appSyncInputSchema = z
     follow: z.boolean(),
     wait: z.boolean(),
     view: viewSchema.optional(),
+    toolCallId: z.string().min(1).max(128).optional(),
   })
   .strict();
 
