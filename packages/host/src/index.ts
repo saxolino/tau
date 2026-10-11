@@ -89,6 +89,7 @@ export type { CreateNodeMachineRuntimeOptions, MachineHostIdentity, MachineSecre
 export { openLocalMachines, openSharedMachineHost } from '#local-machines.js';
 export type {
   LocalMachines,
+  LocalMachinesRefusal,
   OpenLocalMachinesOptions,
   OpenSharedMachineHostOptions,
   SharedMachineHost,
