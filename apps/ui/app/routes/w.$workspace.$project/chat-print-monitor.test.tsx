@@ -1211,9 +1211,17 @@ describe("the machine's own actions", () => {
         }),
       ),
     );
-    renderControl(withActions(entry({ testing: true }), required));
+    const { fixture } = renderControl(withActions(entry({ testing: true }), required));
     const printer = within(openStage('Control')).getByRole('group', { name: 'Printer' });
     expect(await within(printer).findByRole('button', { name: 'Group: Routines' })).toBeInTheDocument();
+    // Nothing incomplete is sent: the form names what it still needs.
+    expect(within(printer).getByRole('button', { name: /^Run printer calibration/u })).toBeDisabled();
+    expect(printer).toHaveTextContent('Complete Routines first.');
+    // An entry added and not yet chosen is no value either.
+    await userEvent.setup().click(within(printer).getByRole('button', { name: 'Add item (Routines)' }));
+    expect(within(printer).getByRole('button', { name: /^Run printer calibration/u })).toBeDisabled();
+    expect(printer).toHaveTextContent('Complete Routines first.');
+    expect(fixture.applyAction).not.toHaveBeenCalled();
   });
 
   it("should offer a printer's own actions under their component, and a slot's own in that slot", async () => {

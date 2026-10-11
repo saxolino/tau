@@ -7,9 +7,40 @@ import type { ParameterManifest } from '@taucad/parameters';
 import { cn } from '@taucad/ui/utils/cn';
 import { disclosureMotion } from '#components/revisions/revision-actions.js';
 import { compileExportConfigurationManifest } from '#routes/w.$workspace.$project/chat-converter.js';
+import { rjsfValidator } from '#lib/rjsf-validator.js';
+import { formatFieldLabel } from '#utils/string.utils.js';
 
 /** A draft-7 schema and the defaults its owner declares. @public */
 export type ResolvedSchema = Readonly<{ schema: JSONSchema7; defaults: Record<string, unknown> }>;
+
+/**
+ * What a form still needs before its values may be sent: the top-level fields its schema finds wanting.
+ *
+ * @param schema - The form's draft-7 schema.
+ * @param values - The values as they would be sent.
+ * @returns A sentence naming those fields, or nothing when the values are complete.
+ * @public
+ */
+export const formIncomplete = (schema: JSONSchema7, values: Record<string, unknown>): string | undefined => {
+  const { errors } = rjsfValidator.validateFormData(values, schema);
+  if (errors.length === 0) {
+    return undefined;
+  }
+  /* Each field an error lies in; an error on the whole form only summarises those. */
+  const labels = new Set(
+    errors.flatMap(({ property }) => {
+      const segment = /^\[("(?:[^"\\]|\\.)*")\]/u.exec(property ?? '')?.[1];
+      if (segment === undefined) {
+        return [];
+      }
+      const key = JSON.parse(segment) as string;
+      const field = schema.properties?.[key];
+      const title = typeof field === 'object' ? field.title : undefined;
+      return [formatFieldLabel(title ?? key, title)];
+    }),
+  );
+  return `Complete ${labels.size === 0 ? 'the form' : [...labels].join(', ')} first.`;
+};
 
 /**
  * Compile a provider configuration schema into the parameter manifest the

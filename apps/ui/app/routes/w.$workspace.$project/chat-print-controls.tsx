@@ -50,6 +50,7 @@ import {
   PrintRow,
   PrintStage,
   PrintSteps,
+  formIncomplete,
   useCompiledConfigurationManifest,
   useNow,
 } from '#routes/w.$workspace.$project/chat-print-section.js';
@@ -206,12 +207,15 @@ export function ActionButton({
   icon: Icon,
   variant = 'outline',
   ariaLabel,
+  incomplete,
   onDone,
 }: {
   readonly control: MachineControl;
   readonly componentId: string;
   readonly action: string;
   readonly parameters?: unknown;
+  /** What its form still needs; nothing is sent until it is given. */
+  readonly incomplete?: string;
   readonly label?: string;
   readonly icon?: LucideIcon;
   readonly variant?: 'default' | 'outline' | 'ghost' | 'destructive' | 'secondary';
@@ -231,8 +235,8 @@ export function ActionButton({
       size='sm'
       variant={variant}
       aria-label={ariaLabel}
-      disabled={check.status !== 'available' || control.pending !== undefined}
-      title={check.status === 'unavailable' ? check.message : descriptor.consequence}
+      disabled={check.status !== 'available' || control.pending !== undefined || incomplete !== undefined}
+      title={check.status === 'unavailable' ? check.message : (incomplete ?? descriptor.consequence)}
       onClick={() => {
         const send = async (): Promise<void> => {
           const isAccepted = await control.apply(componentId, action, parameters);
@@ -1126,6 +1130,15 @@ function OwnActionForm({
     declared,
   );
   const [changed, setChanged] = useState<Record<string, unknown>>({});
+  /* What would be sent, as JSON: a cleared optional field drops out and a list entry not yet chosen reads as null, so
+   * the schema names it here rather than the send failing on a value JSON cannot carry. */
+  const values = useMemo(
+    (): Record<string, unknown> =>
+      // oxlint-disable-next-line unicorn/prefer-structured-clone -- JSON serialization is the point: it drops undefined.
+      JSON.parse(JSON.stringify({ ...initial, ...changed })) as Record<string, unknown>,
+    [initial, changed],
+  );
+  const incomplete = useMemo(() => formIncomplete(declared.schema, values), [values, declared]);
   return (
     <div className='flex min-w-0 flex-col gap-1'>
       {manifest === undefined ? (
@@ -1148,12 +1161,19 @@ function OwnActionForm({
           />
         </div>
       )}
+      {incomplete === undefined || manifest === undefined ? null : (
+        <p className='flex min-w-0 items-center gap-2 text-xs text-muted-foreground'>
+          <CircleAlert aria-hidden className='size-3.5 shrink-0 text-warning' />
+          {incomplete}
+        </p>
+      )}
       <div>
         <ActionButton
           control={control}
           componentId={descriptor.componentId}
           action={descriptor.id}
-          parameters={{ ...initial, ...changed }}
+          parameters={values}
+          incomplete={incomplete}
         />
       </div>
     </div>
