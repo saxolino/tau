@@ -399,6 +399,8 @@ export type RevisionActors = Readonly<{
   /** Free this root's liveness mark (RM-R8 narrowed); {@link createProjectRevisionsActor} calls it when the root stops. */
   release: () => void /** Record an editor's overlapping edit as a conflicted revision (D14); see {@link EditorConflictInput}. */;
   recordEditorConflict: (input: EditorConflictInput) => Promise<EditorConflictOutcome>;
+  /** Read one conflicted revision's files as text; see {@link RevisionConflictRead}. */
+  readConflict: (revision: string) => Promise<RevisionConflictRead>;
 }>;
 
 /**
@@ -463,6 +465,30 @@ export type EditorConflictInput = Readonly<{
 export type EditorConflictOutcome =
   | Readonly<{ status: 'recorded'; revisionId: string; line: string; into: string }>
   | Readonly<{ status: 'unchanged' }>;
+
+/**
+ * One conflicted revision's files as text, for a reader with no Revisions pane: the agent's `revisions` tool, so a
+ * chat asked to resolve a conflict reads both sides rather than guessing at the one its checkout does not hold.
+ *
+ * `ours` is the side this device's line holds, `theirs` the other side and `base` what both started from; each is
+ * `undefined` where that side has no such file. A file the pane cannot open in an editor — parametric, binary, a
+ * mode or a file-versus-directory collision — is `chooseOne` and carries no text (rule 8).
+ *
+ * @public
+ */
+export type RevisionConflictRead = Readonly<{
+  revisionId: string;
+  labels: RevisionConflictTerms['labels'];
+  files: ReadonlyArray<
+    Readonly<{
+      path: string;
+      chooseOne: boolean;
+      base: string | undefined;
+      ours: string | undefined;
+      theirs: string | undefined;
+    }>
+  >;
+}>;
 
 /**
  * One resolved conflicted path: which side won, and the bytes when a person typed them.
@@ -2582,6 +2608,37 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
     });
   };
 
+  /**
+   * The same terms the pane's *Edit manually* reads (`materialize`), decoded once for a reader with no pane.
+   *
+   * @param revision - The conflicted revision.
+   * @returns Its files as text, choose-one files without any.
+   * @throws RevisionPortError When the revision records no conflict.
+   */
+  const readConflict = async (revision: string): Promise<RevisionConflictRead> => {
+    const terms = await conflictTermsOf(revision);
+    const decoder = new TextDecoder();
+    const text = (tree: ImmutableRevisionTree, path: string): string | undefined => {
+      const bytes = tree.get(path);
+      return bytes === undefined ? undefined : decoder.decode(bytes);
+    };
+    return {
+      revisionId: revision,
+      labels: terms.labels,
+      files: terms.conflicts.map(({ type, path }) =>
+        type === 'text'
+          ? {
+              path,
+              chooseOne: false,
+              base: text(terms.base, path),
+              ours: text(terms.ours, path),
+              theirs: text(terms.theirs, path),
+            }
+          : { path, chooseOne: true, base: undefined, ours: undefined, theirs: undefined },
+      ),
+    };
+  };
+
   return {
     settled,
     turns: {
@@ -2633,6 +2690,7 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
     },
     release: releaseMark,
     recordEditorConflict,
+    readConflict,
     checkout: {
       cut: fromAuthorityPromise<CheckoutCutActorOutput, CheckoutCutActorInput>(async ({ input }) => {
         /* A comparison running when this cut was asked, over the same write
@@ -4523,6 +4581,8 @@ export type ProjectRevisions = Readonly<{
   turns: TurnStore;
   /** Record an editor's overlapping edit; the *Needs your decision* card follows (D14). */
   recordEditorConflict: (input: EditorConflictInput) => Promise<EditorConflictOutcome>;
+  /** Read one conflicted revision's files as text, for the agent's `revisions` tool. */
+  readConflict: (revision: string) => Promise<RevisionConflictRead>;
 }>;
 
 /** Options for one project's running revision actor tree. @public */
@@ -4635,7 +4695,13 @@ export const createProjectRevisionsActor = (options: ProjectRevisionActorOptions
     }
     return outcome;
   };
-  return { actor, settled: actors.settled, turns: actors.turns, recordEditorConflict };
+  return {
+    actor,
+    settled: actors.settled,
+    turns: actors.turns,
+    recordEditorConflict,
+    readConflict: actors.readConflict,
+  };
 };
 
 /* How far each wait outlasts the bound it awaits, so the inner reason always lands first (rule 9). */
