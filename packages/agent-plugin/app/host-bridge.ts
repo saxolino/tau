@@ -38,6 +38,8 @@ export type HostView = Readonly<{
   canRequestFullscreen: boolean;
   /** The route "Add to chat" takes on this host; text hosts copy. */
   chatRoute: ChatRoute;
+  /** The tallest the host lets the frame grow, in CSS pixels (E5: it clips the rest). */
+  maxHeight: number | undefined;
   /** Insets the host asks the page to keep clear (E5). */
   safeArea: Readonly<{ top: number; right: number; bottom: number; left: number }>;
 }>;
@@ -122,6 +124,20 @@ const showModel = async (
 };
 
 /**
+ * The height the host's container allows: its fixed height, else its maximum.
+ *
+ * @param context - The host context.
+ * @returns The cap in CSS pixels, or `undefined` when the host sets none.
+ */
+const heightCapOf = (context: McpUiHostContext | undefined): number | undefined => {
+  const dimensions = context?.containerDimensions;
+  if (dimensions === undefined) {
+    return undefined;
+  }
+  return 'height' in dimensions ? dimensions.height : dimensions.maxHeight;
+};
+
+/**
  * Pick "Add to chat"'s route from what the host declared at `ui/initialize`.
  *
  * @param capabilities - The host's capabilities.
@@ -171,6 +187,7 @@ const connectMcpApp = async (): Promise<HostBridge> => {
       canRequestFullscreen:
         !isCodex && context?.displayMode === 'inline' && (context.availableDisplayModes ?? []).includes('fullscreen'),
       chatRoute: chatRouteOf(app.getHostCapabilities()),
+      maxHeight: heightCapOf(context),
       safeArea: context?.safeAreaInsets ?? noInsets,
     };
   };
@@ -277,6 +294,7 @@ const connectLoopback = (): HostBridge => {
     colorScheme: prefersDark.matches ? 'dark' : 'light',
     canRequestFullscreen: false,
     chatRoute: 'clipboard',
+    maxHeight: undefined,
     safeArea: noInsets,
   });
   applyTheme(view().colorScheme);

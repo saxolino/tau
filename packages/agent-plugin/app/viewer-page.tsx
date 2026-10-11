@@ -48,6 +48,18 @@ const referenceText = (model: TauViewerModel, reference: GeometryComponentRefere
     ? `${model.title} (${model.sourceFile ?? model.path})`
     : `${reference.label} in ${model.title} @cad[${reference.filePath}#${reference.componentId}]`;
 
+/** The card's height where the host's cap allows it (E5, G21). */
+const inlineHeight = 420;
+
+/**
+ * The inline card's height: {@link inlineHeight}, or the host's cap when that is lower.
+ *
+ * @param view - What the page knows about its host.
+ * @returns The height in CSS pixels, or `undefined` for the tab, which fills the viewport.
+ */
+const cardHeight = (view: HostView): number | undefined =>
+  view.composition === 'inline' ? Math.min(inlineHeight, view.maxHeight ?? inlineHeight) : undefined;
+
 /** The reference action's name per route: a message starts a turn, so it says so. */
 const chatAction: Readonly<Record<ChatRoute, string>> = {
   context: 'Add to chat',
@@ -307,7 +319,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
   }, [notice]);
 
   /* In a card the conversation owns the wheel and vertical pan (E5, G21);
-   * controls are 44 pt there and the canvas height is fixed. */
+   * controls are 44 pt there and the card keeps one height under the host's cap. */
   const actions = (
     <>
       <Button
@@ -342,11 +354,9 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
           <GraphicsProvider graphicsRef={graphicsRef}>
             <main
               data-composition={view.composition}
-              className={cn(
-                '@container/viewer flex flex-col bg-background text-foreground',
-                isInline ? 'h-[420px]' : 'h-dvh',
-              )}
+              className={cn('@container/viewer flex flex-col bg-background text-foreground', !isInline && 'h-dvh')}
               style={{
+                height: cardHeight(view),
                 paddingTop: view.safeArea.top,
                 paddingRight: view.safeArea.right,
                 paddingBottom: view.safeArea.bottom,
