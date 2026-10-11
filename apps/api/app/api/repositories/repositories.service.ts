@@ -47,7 +47,7 @@ const repositoryRateLimited = (): HttpException =>
   new HttpException(
     {
       code: 'REPOSITORY_RATE_LIMITED',
-      message: 'Too many GitHub imports from this network in the last hour. Try again later.',
+      message: 'Too many GitHub repository requests from this network in the last hour. Try again later.',
     },
     HttpStatus.TOO_MANY_REQUESTS,
   );

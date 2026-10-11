@@ -537,6 +537,30 @@ describe('FileContentService', () => {
       expect(vi.mocked(proxy.writeFile).mock.calls.at(-1)?.[1]).toEqual(new Uint8Array([1, 2, 3]));
     });
 
+    it('should settle only once an edit made during a move is written at the destination', async () => {
+      const move = Promise.withResolvers<FileStat>();
+      vi.mocked(proxy.move).mockReturnValueOnce(move.promise);
+      const moving = service.move('main.ts', 'renamed.ts');
+      await vi.waitFor(() => {
+        expect(proxy.move).toHaveBeenCalledOnce();
+      });
+      void service.saveEditor('main.ts', new Uint8Array([3]));
+      let settled = false;
+
+      const settling = (async () => {
+        await service.settleEditorSaves();
+        settled = true;
+      })();
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(settled).toBe(false);
+      move.resolve({ type: 'file', size: 1, mtimeMs: 0, contentKind: 'binary' });
+      await Promise.all([moving, settling]);
+
+      expect(vi.mocked(proxy.writeFile).mock.calls.at(-1)).toEqual(['/project/renamed.ts', new Uint8Array([3])]);
+    });
+
     it('should save different paths independently', async () => {
       const first = Promise.withResolvers<void>();
       const second = Promise.withResolvers<void>();
