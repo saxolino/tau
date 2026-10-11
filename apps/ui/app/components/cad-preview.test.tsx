@@ -44,6 +44,7 @@ vi.mock('@taucad/viewer/cad/cad-viewer', () => ({
 
 vi.mock('@taucad/viewer/hooks/use-graphics', () => ({
   GraphicsProvider: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
+  useModelInteractionRef: () => ({ current: undefined }),
 }));
 
 vi.mock('@taucad/ui/components/loader', () => ({
