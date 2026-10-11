@@ -257,6 +257,27 @@ describe('GithubRepositoryPicker', () => {
     expect(await screen.findByRole('button', { name: 'Branch main' })).toBeInTheDocument();
   });
 
+  it('should not offer a conflict line as a branch to link', async () => {
+    github.repositories.mockResolvedValue({ totalCount: 1, page: 1, repositories: [repositoryOf()] });
+    github.branches.mockResolvedValue({
+      page: 1,
+      branches: [{ name: 'conflicts/main/0f1e2d3c' }, { name: 'feature' }, { name: 'main' }],
+    });
+
+    await act(async () => {
+      renderPicker(<GithubRepositoryPicker onSelect={vi.fn()} />);
+    });
+    await vi.waitFor(() => {
+      expect(github.repositories).toHaveBeenCalled();
+    });
+    await userEvent.click(screen.getByRole('button', { name: /^Repository /u }));
+    await userEvent.click(await screen.findByRole('option', { name: /octo\/part/u }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Branch main' }));
+
+    expect(await screen.findByRole('option', { name: 'feature' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /^conflicts\//u })).not.toBeInTheDocument();
+  });
+
   it('should explain an installation that GitHub suspended and keep it from being chosen', async () => {
     github.installations.mockResolvedValue({
       totalCount: 2,
