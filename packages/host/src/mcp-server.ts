@@ -877,10 +877,18 @@ export const serveLocalHostMcp = async (
       ...(confirm === undefined
         ? {}
         : {
-            approve: async ({ prompt }: { readonly prompt: string }) => ({
-              interruptId: call.toolCallId,
-              outcome: await confirm({ message: prompt, label: 'Approve' }),
-            }),
+            approve: async ({ prompt }: { readonly prompt: string }) => {
+              const outcome = await confirm({ message: prompt, label: 'Approve' }).catch((error: unknown) => {
+                /* Not the person's answer: the tool leaves its request for them in Tau, and the operator learns why. */
+                process.stderr.write(
+                  `tau mcp: the agent app could not ask the person to approve ${tool}, so it waits for them in Tau: ${String(error)}\n`,
+                );
+                throw Object.assign(new Error('The agent app could not ask the person.', { cause: error }), {
+                  code: 'APPROVAL_UNAVAILABLE',
+                });
+              });
+              return { interruptId: call.toolCallId, outcome };
+            },
           }),
     });
   };
