@@ -14,8 +14,12 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { basename, extname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 
+import { tauViewerPageInputSchemas } from '@taucad/mcp';
 import type { TauMcpViewer, TauMcpViewerCallOptions, TauMcpViewerFailure } from '@taucad/mcp';
 import { tauViewerReadLimit, tauViewerToolName } from '@taucad/mcp/viewer-protocol';
+
+import { createMcpViewerSessions } from '#mcp-viewer-sessions.js';
+import type { McpViewerSessionsOptions } from '#mcp-viewer-sessions.js';
 import type {
   TauViewerFile,
   TauViewerMimeType,
@@ -29,8 +33,25 @@ const drawnFormats: Readonly<Record<string, TauViewerMimeType>> = {
   '.svg': 'image/svg+xml',
 };
 
-/** Extensions `browse_models` lists as CAD sources. */
-const sourceExtensions = new Set(['.ts', '.js', '.mjs', '.jsx', '.tsx', '.scad', '.py', '.kcl']);
+/**
+ * Extensions `browse_models` lists as CAD sources, and the exchange formats the runtime converts to GLB like a
+ * source (W7: the BRep kernel imports STEP, the mesh importer STL, 3MF and OBJ).
+ */
+const sourceExtensions = new Set([
+  '.ts',
+  '.js',
+  '.mjs',
+  '.jsx',
+  '.tsx',
+  '.scad',
+  '.py',
+  '.kcl',
+  '.step',
+  '.stp',
+  '.stl',
+  '.3mf',
+  '.obj',
+]);
 
 /** Folders `browse_models` never enters. */
 const skippedFolders = new Set(['node_modules', '.git', '.tau', 'dist', 'build', 'out', '.venv', '__pycache__']);
@@ -45,6 +66,8 @@ const browseDepth = 6;
 export type LocalMcpViewerOptions = Readonly<{
   /** The single-file page and its digest. */
   page: Readonly<{ html: string; sha256: string }>;
+  /** Timing of the live link to the pages; tests shorten it. */
+  sessions?: McpViewerSessionsOptions;
   /** The project folder one call works in. */
   rootOf(meta: Readonly<Record<string, unknown>> | undefined): string;
   /**
@@ -163,7 +186,8 @@ const sameSecret = (expected: string, actual: string): boolean => {
 };
 
 /** Request bodies the loopback API accepts at most. */
-const loopbackBodyLimit = 64 * 1024;
+/** Bytes; a capture of the live view is the largest body the page sends (base64, under 8 MiB). */
+const loopbackBodyLimit = 12 * 1024 * 1024;
 
 const readBody = async (request: IncomingMessage): Promise<unknown> => {
   const chunks: Array<Uint8Array<ArrayBuffer>> = [];
@@ -212,6 +236,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
   const shown = new Map<string, Shown>();
   const lastShown = new Map<string, string>();
   const token = randomBytes(24).toString('base64url');
+  const sessions = createMcpViewerSessions(options.sessions);
   let loopback: Promise<{ server: Server; origin: string }> | undefined;
 
   const describe = async (
@@ -273,7 +298,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
 
   const showPath = async (
     root: string,
-    path: string,
+    { path, select }: Readonly<{ path: string; select?: readonly string[] | undefined }>,
     callOptions: TauMcpViewerCallOptions,
   ): Promise<TauViewerShowResult | TauMcpViewerFailure> => {
     const absolute = inside(root, path);
@@ -313,7 +338,13 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     }
     lastShown.set(root, model.sourceFile ?? model.path);
     const url = await viewerUrl(model, callOptions.presentation);
-    return { model, ...(url === undefined ? {} : { viewerUrl: url }) };
+    const result: TauViewerShowResult = {
+      model,
+      ...(url === undefined ? {} : { viewerUrl: url }),
+      ...(select === undefined || select.length === 0 ? {} : { select }),
+    };
+    sessions.shown(result);
+    return result;
   };
 
   const port: LocalMcpViewer = {
@@ -327,10 +358,10 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
           `Name the file to show: ${root} has no model shown yet and its tau.json names no main entry.`,
         );
       }
-      return showPath(root, target, callOptions);
+      return showPath(root, { path: target, select: input.select }, callOptions);
     },
     async open(input, callOptions) {
-      return showPath(options.rootOf(callOptions.meta), input.path, callOptions);
+      return showPath(options.rootOf(callOptions.meta), { path: input.path }, callOptions);
     },
     async browse(callOptions) {
       const root = options.rootOf(callOptions.meta);
@@ -354,7 +385,17 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       const slice = bytes.subarray(offset, Math.min(offset + Math.min(input.length, tauViewerReadLimit), bytes.length));
       return { offset, byteLength: slice.length, totalBytes: bytes.length, data: slice.toString('base64') };
     },
+    async sync(input, callOptions) {
+      return sessions.sync(input, callOptions.signal);
+    },
+    async viewState(input, callOptions) {
+      return sessions.viewState(input, callOptions.signal);
+    },
+    async captureReply(input) {
+      return sessions.captureReply(input);
+    },
     async close() {
+      sessions.close();
       const running = loopback;
       loopback = undefined;
       if (running !== undefined) {
@@ -372,18 +413,16 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
   /* The loopback API runs the same port functions a host would reach through
    * `tools/call`, for the page served at `/`. The token rides the URL fragment,
    * which the browser never sends, and the page returns it in a header. */
-  const loopbackTools: Readonly<Record<string, (args: Record<string, unknown>) => Promise<unknown>>> = {
-    [tauViewerToolName.appRead]: async (args) =>
-      port.read(
-        { modelId: String(args['modelId']), offset: Number(args['offset']), length: Number(args['length']) },
-        { toolCallId: 'loopback', presentation: 'text' },
-      ),
+  const loopbackCall = { toolCallId: 'loopback', presentation: 'text' } as const;
+  const loopbackTools: Readonly<Record<string, (args: unknown, signal: AbortSignal) => Promise<unknown>>> = {
+    [tauViewerToolName.appRead]: async (args) => port.read(tauViewerPageInputSchemas.appRead.parse(args), loopbackCall),
     [tauViewerToolName.showModel]: async (args) =>
-      port.show(
-        { targetFile: typeof args['targetFile'] === 'string' ? args['targetFile'] : undefined },
-        { toolCallId: 'loopback', presentation: 'text' },
-      ),
-    [tauViewerToolName.browseModels]: async () => port.browse({ toolCallId: 'loopback', presentation: 'text' }),
+      port.show(tauViewerPageInputSchemas.showModel.parse(args), loopbackCall),
+    [tauViewerToolName.browseModels]: async () => port.browse(loopbackCall),
+    [tauViewerToolName.appSync]: async (args, signal) =>
+      port.sync(tauViewerPageInputSchemas.appSync.parse(args), { ...loopbackCall, signal }),
+    [tauViewerToolName.appCaptureReply]: async (args) =>
+      port.captureReply(tauViewerPageInputSchemas.appCaptureReply.parse(args), loopbackCall),
   };
 
   const handleLoopback = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -412,11 +451,12 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
           response.writeHead(404, { 'content-type': 'application/json' }).end('{"errorCode":"UNKNOWN_TOOL"}');
           return;
         }
-        const args =
-          typeof call.arguments === 'object' && call.arguments !== null
-            ? (call.arguments as Record<string, unknown>)
-            : {};
-        const result = await tool(args);
+        // A page that goes away mid-poll closes its request; the held sync answers at once.
+        const closedByPage = new AbortController();
+        response.once('close', () => {
+          closedByPage.abort();
+        });
+        const result = await tool(call.arguments ?? {}, closedByPage.signal);
         response
           .writeHead(isFailure(result) ? 422 : 200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
           .end(JSON.stringify(result));

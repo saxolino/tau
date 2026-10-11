@@ -179,6 +179,25 @@ describe('createLocalMcpViewer', () => {
       });
     });
 
+    it('should hand the loopback page a shown model, with its selection, through app_sync and refuse malformed input', async () => {
+      const { viewerUrl } = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
+      const { origin, token } = loopbackOf(viewerUrl);
+      const call = async (name: string, args: unknown) =>
+        fetch(`${origin}/api/tools/call`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-tau-viewer-token': token },
+          body: JSON.stringify({ name, arguments: args }),
+        });
+
+      const held = call('app_sync', { pageId: 'loopback-page', version: 1, follow: true, wait: true });
+      const next = shownModel(await viewer.show({ targetFile: 'models/part.glb', select: ['component:arm'] }, text));
+      const synced = await held;
+      expect(synced.status).toBe(200);
+      expect(await synced.json()).toEqual({ version: 2, show: { ...next, select: ['component:arm'] } });
+      const malformed = await call('app_sync', { pageId: 'p' });
+      expect(malformed.status).toBe(400);
+    });
+
     it('should refuse a request under another host name', async () => {
       const { viewerUrl } = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
       const { origin } = loopbackOf(viewerUrl);

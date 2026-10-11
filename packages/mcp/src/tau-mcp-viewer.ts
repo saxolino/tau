@@ -10,10 +10,16 @@ import {
 } from '#viewer-protocol.js';
 import type {
   TauViewerBrowseResult,
+  TauViewerCaptureReplyInput,
+  TauViewerImage,
   TauViewerPresentation,
   TauViewerReadInput,
   TauViewerReadResult,
   TauViewerShowResult,
+  TauViewerSyncInput,
+  TauViewerSyncResult,
+  TauViewerViewState,
+  TauViewerViewStateInput,
 } from '#viewer-protocol.js';
 
 /** A failure a viewer port returns instead of throwing. @public */
@@ -42,9 +48,12 @@ export type TauMcpViewerCallOptions = Readonly<{
 export type TauMcpViewer = Readonly<{
   /** The single-file page and the digest that names its `ui://` URI. */
   page: Readonly<{ html: string; sha256: string }>;
-  /** Render or locate a model to show; without a target, the model shown last or the project's main file. */
+  /**
+   * Render or locate a model to show; without a target, the model shown last or the project's main file. `select`
+   * names components for the page to select once the model is drawn.
+   */
   show(
-    input: Readonly<{ targetFile?: string | undefined }>,
+    input: Readonly<{ targetFile?: string | undefined; select?: readonly string[] | undefined }>,
     options: TauMcpViewerCallOptions,
   ): Promise<TauViewerShowResult | TauMcpViewerFailure>;
   /** Show one project file a host entrypoint opened. */
@@ -56,20 +65,113 @@ export type TauMcpViewer = Readonly<{
   browse(options: TauMcpViewerCallOptions): Promise<TauViewerBrowseResult | TauMcpViewerFailure>;
   /** Read one byte range of a model `show` or `open` returned. */
   read(input: TauViewerReadInput, options: TauMcpViewerCallOptions): Promise<TauViewerReadResult | TauMcpViewerFailure>;
+  /** A page's long poll: record its view, then answer with what it has not seen. */
+  sync(input: TauViewerSyncInput, options: TauMcpViewerCallOptions): Promise<TauViewerSyncResult | TauMcpViewerFailure>;
+  /** The view of the page the person used last, with a capture of it when asked. */
+  viewState(
+    input: TauViewerViewStateInput,
+    options: TauMcpViewerCallOptions,
+  ): Promise<
+    Readonly<{ view: TauViewerViewState; image?: TauViewerImage; captureError?: string }> | TauMcpViewerFailure
+  >;
+  /** A page's answer to a capture request. */
+  captureReply(
+    input: TauViewerCaptureReplyInput,
+    options: TauMcpViewerCallOptions,
+  ): Promise<Readonly<{ accepted: boolean }> | TauMcpViewerFailure>;
 }>;
 
 const descriptions = {
   showModel:
-    'Show a CAD source file (targetFile), or a GLB or SVG file, in the Tau viewer the person sees; omit targetFile to show the model shown last or the project main file. Call it after evaluate_model succeeds when the person should look at the result.',
+    'Show a CAD source file (targetFile), a STEP, STL, 3MF or OBJ file (converted to GLB), or a GLB or SVG file, in the Tau viewer the person sees; omit targetFile to show the model shown last or the project main file. Call it after evaluate_model succeeds when the person should look at the result.',
   openModelFile:
     'Open one project model file in the Tau viewer. The host calls this when the person opens a file with Tau.',
   browseModels: "List the project's renderable model files for the Tau viewer's file list.",
   appRead: 'Read a byte range of a model the Tau viewer shows. Only the viewer page calls this.',
+  viewState:
+    'Report what the person sees in the Tau viewer: the model, the selected components (ids as @cad references and arrange_workbench take them), hidden and isolated components, and the camera. Set capture to also get an image of the live view.',
+  appSync: "The Tau viewer page's sync with the server. Only the viewer page calls this.",
+  appCaptureReply: "The Tau viewer page's answer to a capture request. Only the viewer page calls this.",
 } as const;
 
 const showModelInputSchema = z
   .object({
-    targetFile: z.string().min(1).optional().describe('Project-relative CAD source, GLB or SVG file to show.'),
+    targetFile: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Project-relative CAD source, STEP, STL, 3MF, OBJ, GLB or SVG file to show.'),
+    select: z
+      .array(z.string().min(1).max(256))
+      .max(64)
+      .optional()
+      .describe('Component ids to select in the viewer, as @cad references and view_state name them.'),
+  })
+  .strict();
+
+const vectorSchema = z.tuple([z.number(), z.number(), z.number()]);
+
+const componentSchema = z
+  .object({
+    componentId: z.string().min(1).max(256),
+    label: z.string().max(256),
+    kind: z.string().max(32),
+    selector: z.string().max(256).optional(),
+  })
+  .strict();
+
+const viewSchema = z
+  .object({
+    model: z
+      .object({
+        id: z.string().min(1).max(64),
+        title: z.string().max(256),
+        path: z.string().max(1024),
+        sourceFile: z.string().max(1024).optional(),
+      })
+      .strict(),
+    selected: z.array(componentSchema).max(64),
+    hidden: z.array(z.string().min(1).max(256)).max(1024),
+    isolated: z.array(z.string().min(1).max(256)).max(1024),
+    camera: z
+      .object({ target: vectorSchema, direction: vectorSchema, up: vectorSchema, verticalSpan: z.number().positive() })
+      .strict()
+      .optional(),
+    sectionActive: z.boolean(),
+    measurementCount: z.number().int().nonnegative(),
+    composition: z.enum(['inline', 'tab']),
+    interactedAt: z.number().nonnegative(),
+  })
+  .strict();
+
+const appSyncInputSchema = z
+  .object({
+    pageId: z.string().min(8).max(64),
+    version: z.number().int().nonnegative(),
+    follow: z.boolean(),
+    wait: z.boolean(),
+    view: viewSchema.optional(),
+  })
+  .strict();
+
+/** A capture travels base64 in one reply; 8 MiB of base64 is a 6 MiB image, far above a 1280 px frame. */
+const captureDataLimit = 8 * 1024 * 1024;
+
+const appCaptureReplyInputSchema = z
+  .object({
+    requestId: z.string().min(1).max(64),
+    pageId: z.string().min(8).max(64),
+    image: z
+      .object({ mimeType: z.enum(['image/png', 'image/jpeg']), data: z.string().min(1).max(captureDataLimit) })
+      .strict()
+      .optional(),
+    error: z.string().max(1000).optional(),
+  })
+  .strict();
+
+const viewStateInputSchema = z
+  .object({
+    capture: z.boolean().optional().describe('Also capture the live view once its model is drawn.'),
   })
   .strict();
 
@@ -91,8 +193,20 @@ const appReadInputSchema = z
   })
   .strict();
 
-/** The file extensions the file entrypoint claims; other formats wait for server-side conversion (W7). */
-const fileEntrypointExtensions = ['glb', 'svg'];
+/**
+ * The page-facing tools' input schemas, for a host's loopback server to check what the browser page sends exactly as
+ * `tools/call` checks it.
+ * @public
+ */
+export const tauViewerPageInputSchemas = {
+  showModel: showModelInputSchema,
+  appRead: appReadInputSchema,
+  appSync: appSyncInputSchema,
+  appCaptureReply: appCaptureReplyInputSchema,
+} as const;
+
+/** The file extensions the file entrypoint claims: the page's own formats and those the server converts to GLB (W7). */
+const fileEntrypointExtensions = ['glb', 'svg', 'step', 'stp', 'stl', '3mf', 'obj'];
 
 const readOnlyAnnotations = {
   readOnlyHint: true,
@@ -107,6 +221,32 @@ const failure = ({ errorCode, message }: TauMcpViewerFailure): CallToolResult =>
   isError: true,
   content: [{ type: 'text', text: `${errorCode}: ${message}` }],
 });
+
+const listed = (ids: readonly string[]): string =>
+  ids.length === 0
+    ? 'none'
+    : ids.length <= 8
+      ? ids.join(', ')
+      : `${ids.slice(0, 8).join(', ')} and ${String(ids.length - 8)} more`;
+
+const vector = (value: readonly number[]): string => `(${value.map((axis) => axis.toPrecision(3)).join(', ')})`;
+
+/**
+ * The view as the model reads it; the structured result carries the same facts.
+ *
+ * @param view - The page's reported view.
+ * @returns A few sentences.
+ */
+const describeView = (view: TauViewerViewState): string =>
+  [
+    `The Tau viewer (${view.composition === 'inline' ? 'a card in the conversation' : 'a tab'}) shows ${view.model.sourceFile ?? view.model.path}.`,
+    `Selected: ${view.selected.length === 0 ? 'nothing' : view.selected.map((component) => `${component.label} (${component.componentId})`).join(', ')}.`,
+    `Hidden: ${listed(view.hidden)}. Isolated: ${listed(view.isolated)}.`,
+    view.camera === undefined
+      ? 'The camera has not framed the model yet.'
+      : `Camera looks at ${vector(view.camera.target)} from direction ${vector(view.camera.direction)}, spanning ${view.camera.verticalSpan.toPrecision(3)} m.`,
+    `Section view ${view.sectionActive ? 'on' : 'off'}; ${String(view.measurementCount)} measurements.`,
+  ].join('\n');
 
 const shown = (result: TauViewerShowResult, presentation: TauViewerPresentation): CallToolResult => {
   const { model, viewerUrl } = result;
@@ -199,7 +339,7 @@ export const registerTauMcpViewer = (
       _meta: alwaysLoad,
     },
     async (args, extra) => {
-      const result = await viewer.show({ targetFile: args.targetFile }, callOptions(extra));
+      const result = await viewer.show({ targetFile: args.targetFile, select: args.select }, callOptions(extra));
       return isFailure(result) ? failure(result) : shown(result, presentation);
     },
   );
@@ -259,6 +399,57 @@ export const registerTauMcpViewer = (
     },
   );
 
+  const viewState = server.registerTool(
+    tauViewerToolName.viewState,
+    {
+      description: descriptions.viewState,
+      inputSchema: viewStateInputSchema,
+      annotations: readOnlyAnnotations,
+      _meta: alwaysLoad,
+    },
+    async (args, extra) => {
+      const result = await viewer.viewState(args, callOptions(extra));
+      if (isFailure(result)) {
+        return failure(result);
+      }
+      const { view, image, captureError } = result;
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              captureError === undefined ? describeView(view) : `${describeView(view)}\nNo capture: ${captureError}`,
+          },
+          ...(image === undefined ? [] : [{ type: 'image', data: image.data, mimeType: image.mimeType } as const]),
+        ],
+        structuredContent: { view, ...(captureError === undefined ? {} : { captureError }) },
+      };
+    },
+  );
+  const appSync = server.registerTool(
+    tauViewerToolName.appSync,
+    { description: descriptions.appSync, inputSchema: appSyncInputSchema, _meta: alwaysLoad },
+    async (args, extra) => {
+      const result = await viewer.sync(args, callOptions(extra));
+      return isFailure(result)
+        ? failure(result)
+        : { content: [{ type: 'text', text: `Version ${String(result.version)}.` }], structuredContent: result };
+    },
+  );
+  const appCaptureReply = server.registerTool(
+    tauViewerToolName.appCaptureReply,
+    { description: descriptions.appCaptureReply, inputSchema: appCaptureReplyInputSchema, _meta: alwaysLoad },
+    async (args, extra) => {
+      const result = await viewer.captureReply(args, callOptions(extra));
+      return isFailure(result)
+        ? failure(result)
+        : {
+            content: [{ type: 'text', text: result.accepted ? 'Capture received.' : 'No capture was waiting.' }],
+            structuredContent: result,
+          };
+    },
+  );
+
   const pageMeta = (entrypoint?: Readonly<Record<string, unknown>>): Record<string, unknown> => ({
     ...alwaysLoad,
     ui: { resourceUri },
@@ -279,6 +470,10 @@ export const registerTauMcpViewer = (
     present(openModelFile, presentation === 'openai', pageMeta({ type: 'file', extensions: fileEntrypointExtensions }));
     present(browseModels, presentation === 'openai', pageMeta({ type: 'global' }));
     present(appRead, hasPage, { ...alwaysLoad, ui: { resourceUri, visibility: ['app'] } });
+    /* A text host's loopback page syncs over HTTP, so view_state serves every presentation. */
+    present(viewState, true, { ...alwaysLoad });
+    present(appSync, hasPage, { ...alwaysLoad, ui: { resourceUri, visibility: ['app'] } });
+    present(appCaptureReply, hasPage, { ...alwaysLoad, ui: { resourceUri, visibility: ['app'] } });
   };
   applyPresentation();
 

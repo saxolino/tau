@@ -15,6 +15,12 @@ export const tauViewerToolName = {
   browseModels: 'browse_models',
   /** Read a byte range of a shown model; only the page calls it. */
   appRead: 'app_read',
+  /** What the person sees in the viewer, and optionally a capture of it (the model calls it). */
+  viewState: 'view_state',
+  /** The page's long poll: it reports its view and hears of shown models, highlights and capture requests. */
+  appSync: 'app_sync',
+  /** The page's answer to a capture request. */
+  appCaptureReply: 'app_capture_reply',
 } as const;
 
 /** Name of one viewer tool. @public */
@@ -67,6 +73,8 @@ export type TauViewerShowResult = Readonly<{
   model: TauViewerModel;
   /** The loopback page showing this model, when the server runs one. */
   viewerUrl?: string | undefined;
+  /** Component ids the agent asked the page to select, as the model tree names them. */
+  select?: readonly string[] | undefined;
 }>;
 
 /** One renderable file `browse_models` lists. @public */
@@ -94,6 +102,90 @@ export type TauViewerReadResult = Readonly<{
   totalBytes: number;
   /** The slice, base64-encoded. */
   data: string;
+}>;
+
+/** A point or direction in the model's frame, in metres. @public */
+export type TauViewerVector = readonly [number, number, number];
+
+/** The live camera: where it looks, from which direction, and how much of the model fits the frame's height. @public */
+export type TauViewerCamera = Readonly<{
+  target: TauViewerVector;
+  direction: TauViewerVector;
+  up: TauViewerVector;
+  /** Metres of the model the frame's height spans. */
+  verticalSpan: number;
+}>;
+
+/** One component of the shown model, as the page's model tree names it. @public */
+export type TauViewerComponent = Readonly<{
+  /** The id `arrange_workbench` component lists and `@cad[...]` references take. */
+  componentId: string;
+  label: string;
+  kind: string;
+  /** The renderer's node selector, when the component has one. */
+  selector?: string | undefined;
+}>;
+
+/** What the person sees in one viewer page. @public */
+export type TauViewerViewState = Readonly<{
+  model: Readonly<{ id: string; title: string; path: string; sourceFile?: string | undefined }>;
+  selected: readonly TauViewerComponent[];
+  hidden: readonly string[];
+  isolated: readonly string[];
+  camera?: TauViewerCamera | undefined;
+  sectionActive: boolean;
+  measurementCount: number;
+  /** `inline` for a card in the conversation; `tab` for a thread tab, fullscreen or the browser page. */
+  composition: 'inline' | 'tab';
+  /** Milliseconds since the epoch of the person's last pointer or keyboard input on the page. */
+  interactedAt: number;
+}>;
+
+/** Arguments of `app_sync`. @public */
+export type TauViewerSyncInput = Readonly<{
+  /** Random id the page picks once. */
+  pageId: string;
+  /** The last `version` the page saw; 0 at first. */
+  version: number;
+  /** Whether the page follows `show_model` (a tab does; a card keeps the model it was made for). */
+  follow: boolean;
+  /** Hold the reply until something changes, at most a few seconds. */
+  wait: boolean;
+  view?: TauViewerViewState | undefined;
+}>;
+
+/** Structured result of `app_sync`. @public */
+export type TauViewerSyncResult = Readonly<{
+  version: number;
+  /** The model `show_model` handed over last, for a page that follows and has not seen it. */
+  show?: TauViewerShowResult | undefined;
+  /** A capture of this page's view the agent is waiting for. */
+  capture?: Readonly<{ requestId: string }> | undefined;
+}>;
+
+/** One captured image of the live view. @public */
+export type TauViewerImage = Readonly<{ mimeType: 'image/png' | 'image/jpeg'; data: string }>;
+
+/** Arguments of `app_capture_reply`. @public */
+export type TauViewerCaptureReplyInput = Readonly<{
+  requestId: string;
+  pageId: string;
+  image?: TauViewerImage | undefined;
+  /** Why the page could not capture, instead of an image. */
+  error?: string | undefined;
+}>;
+
+/** Arguments of `view_state`. @public */
+export type TauViewerViewStateInput = Readonly<{
+  /** Also capture the live view, once its model is drawn. */
+  capture?: boolean | undefined;
+}>;
+
+/** Structured result of `view_state` (the image travels as an image block). @public */
+export type TauViewerViewStateResult = Readonly<{
+  view: TauViewerViewState;
+  /** Why the capture is missing when one was asked for. */
+  captureError?: string | undefined;
 }>;
 
 /** What `initialize` told the server about its client, as far as presentation is concerned. @public */

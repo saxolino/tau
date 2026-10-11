@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useActorRef } from '@xstate/react';
 import { FlipHorizontal, Maximize2, MessageSquarePlus, Ruler } from 'lucide-react';
-import type { TauViewerModel } from '@taucad/mcp/viewer-protocol';
+import type { TauViewerCamera, TauViewerModel, TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
 import type { Artifact } from '@taucad/runtime';
 import type { GeometryComponentReference } from '@taucad/types';
 import { Button } from '@taucad/ui/components/button';
@@ -27,10 +27,15 @@ import type { ViewerEnvironment } from '@taucad/viewer/environment/viewer-enviro
 import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settings';
 import { GraphicsProvider, useGraphics, useGraphicsSelector } from '@taucad/viewer/hooks/use-graphics';
 import { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
+import { buildGeometryComponentReference } from '@taucad/viewer/graphics/metadata/geometry-component-reference';
+import { getModelInteractionUnitState } from '@taucad/viewer/machines/model-interaction.machine';
+import { getViewCameraSession } from '@taucad/viewer/services/graphics-camera-registry';
 import { ModelViewer } from '@taucad/viewer/model-viewer';
 import type { HostBridge, HostView } from '#app/host-bridge.js';
 import { loadModel } from '#app/model-loader.js';
 import { chatReferenceOf } from '#app/chat-reference.js';
+import { captureLiveView, startLiveLink, viewStateOf } from '#app/live-link.js';
+import type { LiveLink } from '#app/live-link.js';
 
 type Loaded = Readonly<{ model: TauViewerModel; artifact: Artifact }>;
 
@@ -43,24 +48,26 @@ type PageState =
 const previousOf = (state: PageState): Loaded | undefined =>
   state.kind === 'ready' ? state.current : state.kind === 'waiting' ? undefined : state.previous;
 
-/** Follows the bridge: shows each model it hands over, keeping the last one on screen while the next loads. */
-function useShownModel(bridge: HostBridge): readonly [PageState, HostView] {
+/**
+ * Follows the bridge: shows each model it hands over, keeping the last one on screen while the next loads. The
+ * returned `show` takes a model the live link heard of; `select` is the agent's latest selection request.
+ */
+function useShownModel(
+  bridge: HostBridge,
+): readonly [PageState, HostView, React.RefObject<((result: TauViewerShowResult) => void) | undefined>, SelectRequest] {
   const [state, setState] = useState<PageState>({ kind: 'waiting' });
   const [view, setView] = useState<HostView>(() => bridge.view());
+  const [select, setSelect] = useState<SelectRequest>(undefined);
   const shownSha = useRef<string | undefined>(undefined);
+  const showRef = useRef<((result: TauViewerShowResult) => void) | undefined>(undefined);
 
   useEffect(() => {
     let current = 0;
-    return bridge.subscribe((event) => {
-      if (event.type === 'context') {
-        setView(event.view);
-        return;
+    const show = (result: TauViewerShowResult): void => {
+      const { model } = result;
+      if (result.select !== undefined) {
+        setSelect({ modelSha: model.sha256, componentIds: result.select });
       }
-      if (event.type === 'error') {
-        setState((previous) => ({ kind: 'failed', message: event.message, previous: previousOf(previous) }));
-        return;
-      }
-      const { model } = event.result;
       if (model.sha256 === shownSha.current) {
         return;
       }
@@ -91,11 +98,63 @@ function useShownModel(bridge: HostBridge): readonly [PageState, HostView] {
       };
       // async-iife: bootstrap — a host event starts the load; its outcome lands in state, and a newer model supersedes it.
       void load();
+    };
+    showRef.current = show;
+    const unsubscribe = bridge.subscribe((event) => {
+      if (event.type === 'context') {
+        setView(event.view);
+        return;
+      }
+      if (event.type === 'error') {
+        setState((previous) => ({ kind: 'failed', message: event.message, previous: previousOf(previous) }));
+        return;
+      }
+      show(event.result);
     });
+    return () => {
+      showRef.current = undefined;
+      unsubscribe();
+    };
   }, [bridge]);
 
-  return [state, view] as const;
+  return [state, view, showRef, select] as const;
 }
+
+/** The agent's request to select components of one model (`show_model` with `select`). */
+type SelectRequest = Readonly<{ modelSha: string; componentIds: readonly string[] }> | undefined;
+
+/** Milliseconds a capture or a selection waits for the model to be drawn. */
+const drawnTimeout = 15_000;
+
+/** Resolve at the next animation frame. */
+const nextFrame = async (): Promise<void> =>
+  new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      resolve();
+    });
+  });
+
+/**
+ * Wait until `isDrawn` holds, checking every 100 ms, then let two frames paint.
+ *
+ * @param isDrawn - Whether the page shows its model.
+ * @returns Whether it was drawn in time.
+ */
+const whenDrawn = async (isDrawn: () => boolean): Promise<boolean> => {
+  const started = Date.now();
+  while (!isDrawn()) {
+    if (Date.now() - started > drawnTimeout) {
+      return false;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each check waits for the one before it.
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+  await nextFrame();
+  await nextFrame();
+  return true;
+};
 
 /** A running tool's row: its name, its options, then Done (the app's `ToolRow`, without the app's focus hand-off). */
 function ToolRow({
@@ -225,7 +284,7 @@ function StatusLine({ state }: Readonly<{ state: PageState }>): React.ReactNode 
  * @returns The viewer in the composition the host asks for.
  */
 export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.JSX.Element {
-  const [state, view] = useShownModel(bridge);
+  const [state, view, showRef, select] = useShownModel(bridge);
   const [selected, setSelected] = useState<GeometryComponentReference | undefined>(undefined);
   const [notice, setNotice] = useState<string | undefined>(undefined);
   const graphicsRef = useActorRef(graphicsMachine, {
@@ -249,6 +308,8 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
       graphicsBackend: 'webgl',
       /* The page prints no status text of its own (E2). */
       showRenderFps: false,
+      /* The view_state tool captures the live canvas (W6). */
+      readableCanvas: true,
     }),
     [view.colorScheme],
   );
@@ -258,6 +319,131 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
   useEffect(() => {
     setSelected(undefined);
   }, [shown?.model.sha256]);
+
+  /* The live link (W6) reads the latest of these, not the render they were captured in. */
+  const rootRef = useRef<HTMLElement>(null);
+  const interactedAt = useRef(0);
+  const latest = useRef({ state, view, shown });
+  latest.current = { state, view, shown };
+  const isDrawn = useCallback((): boolean => {
+    const { current } = latest;
+    if (current.state.kind !== 'ready') {
+      return false;
+    }
+    const { context } = graphicsRef.getSnapshot();
+    return (
+      current.state.current.model.mimeType !== 'model/gltf-binary' || context.gltfPresentation.phase === 'presented'
+    );
+  }, [graphicsRef]);
+  const shownUnit = useCallback(() => {
+    const { context } = graphicsRef.getSnapshot();
+    const unitId = context.modelInteractionUnitId;
+    return unitId === undefined
+      ? undefined
+      : { unitId, unit: getModelInteractionUnitState(context.modelInteractionRef.getSnapshot().context, unitId) };
+  }, [graphicsRef]);
+  const linkRef = useRef<LiveLink | undefined>(undefined);
+  useEffect(() => {
+    const link = startLiveLink(bridge.callTool, {
+      view() {
+        const model = latest.current.shown?.model;
+        const unit = shownUnit();
+        if (model === undefined || unit === undefined) {
+          return undefined;
+        }
+        const session = getViewCameraSession(graphicsRef);
+        const cameraView = session?.framing.initialized ? session.rig.actorRef.getSnapshot().context.view : undefined;
+        const camera: TauViewerCamera | undefined =
+          cameraView === undefined
+            ? undefined
+            : {
+                target: [...cameraView.target],
+                direction: [...cameraView.direction],
+                up: [...cameraView.up],
+                verticalSpan: cameraView.verticalSpan,
+              };
+        const { context } = graphicsRef.getSnapshot();
+        return viewStateOf({
+          model,
+          unit: unit.unit,
+          camera,
+          sectionActive: context.isSectionViewActive,
+          measurementCount: context.measurements.length,
+          composition: latest.current.view.composition,
+          interactedAt: interactedAt.current,
+        });
+      },
+      follows: () => latest.current.view.composition === 'tab',
+      show(result) {
+        showRef.current?.(result);
+      },
+      async capture() {
+        if (!(await whenDrawn(isDrawn))) {
+          return { error: 'The viewer has not drawn a model yet.' };
+        }
+        return rootRef.current === null ? { error: 'The viewer is not on screen.' } : captureLiveView(rootRef.current);
+      },
+    });
+    linkRef.current = link;
+    return () => {
+      linkRef.current = undefined;
+      link.stop();
+    };
+  }, [bridge, graphicsRef, isDrawn, showRef, shownUnit]);
+
+  /* After the person changes the view, report it once they pause. */
+  const reportTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const noteInteraction = useCallback(() => {
+    interactedAt.current = Date.now();
+    clearTimeout(reportTimer.current);
+    reportTimer.current = setTimeout(() => {
+      linkRef.current?.nudge();
+    }, 400);
+  }, []);
+  useEffect(
+    () => () => {
+      clearTimeout(reportTimer.current);
+    },
+    [],
+  );
+
+  /* The agent's selection (show_model with select), once the model it names is drawn. */
+  useEffect(() => {
+    if (select === undefined) {
+      return;
+    }
+    let cancelled = false;
+    const apply = async (): Promise<void> => {
+      if (!(await whenDrawn(() => isDrawn() && latest.current.shown?.model.sha256 === select.modelSha)) || cancelled) {
+        return;
+      }
+      const shownNow = shownUnit();
+      const manifest = shownNow?.unit.manifest;
+      if (shownNow === undefined || manifest === undefined) {
+        return;
+      }
+      const { unitId } = shownNow;
+      const known = select.componentIds.filter((componentId) => manifest.nodesById[componentId] !== undefined);
+      graphicsRef.send({ type: 'clearModelComponentSelection', unitId, source: 'chat' });
+      for (const [index, componentId] of known.entries()) {
+        graphicsRef.send({
+          type: index === 0 ? 'selectModelComponent' : 'toggleModelComponentSelection',
+          unitId,
+          componentId,
+          source: 'chat',
+        });
+      }
+      const [first] = known;
+      const node = first === undefined ? undefined : manifest.nodesById[first];
+      setSelected(node === undefined ? undefined : buildGeometryComponentReference(manifest, node));
+      linkRef.current?.nudge();
+    };
+    // async-iife: bootstrap — the selection lands when the model is drawn; a newer request cancels it.
+    void apply();
+    return () => {
+      cancelled = true;
+    };
+  }, [graphicsRef, isDrawn, select, shownUnit]);
 
   const addToChat = useCallback(() => {
     if (shown === undefined) {
@@ -322,7 +508,11 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         <TooltipProvider>
           <GraphicsProvider graphicsRef={graphicsRef}>
             <main
+              ref={rootRef}
               data-composition={view.composition}
+              onPointerUp={noteInteraction}
+              onKeyUp={noteInteraction}
+              onWheel={noteInteraction}
               className={cn(
                 '@container/viewer flex flex-col bg-background text-foreground',
                 isInline ? 'h-[420px]' : 'h-dvh',

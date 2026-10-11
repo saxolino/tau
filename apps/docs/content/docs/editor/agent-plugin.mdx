@@ -51,6 +51,8 @@ Start a new thread or session after installing.
 
 The card shows the model and two actions. The tab, fullscreen and the browser page add grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the conversation; the browser page copies it instead.
 
+The viewer stays in step with the agent. A tab or fullscreen viewer switches to each model the agent shows, and the agent can select parts in it. `view_state` tells the agent what you are looking at: the model, the parts you selected or hid, and the camera. With `capture` it returns an image of the view as you see it. `show_model` also opens STEP, STL, 3MF and OBJ files, which the server converts to GLB.
+
 The viewer makes no network request. Model files reach it through a tool only the page can call, and the browser link answers only on your machine, with a token for that session.
 
 ## Where files go

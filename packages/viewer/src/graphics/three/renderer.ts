@@ -55,9 +55,19 @@ export type ShowcaseRendererTarget = Readonly<{
   powerPreference?: 'high-performance' | 'low-power';
 }>;
 
-const isShowcaseTarget = (
-  surface: HTMLCanvasElement | OffscreenCanvas | ShowcaseRendererTarget,
-): surface is ShowcaseRendererTarget => 'canvas' in surface;
+/**
+ * A canvas together with per-surface choices: the showcase adapter hint, or a readable WebGL canvas.
+ *
+ * @public
+ */
+export type RendererTarget = ShowcaseRendererTarget &
+  Readonly<{
+    /** Keep each WebGL frame readable after it is shown (`canvas.toDataURL`); the WebGPU backends ignore it. */
+    preserveDrawingBuffer?: boolean;
+  }>;
+
+const isShowcaseTarget = (surface: HTMLCanvasElement | OffscreenCanvas | RendererTarget): surface is RendererTarget =>
+  'canvas' in surface;
 
 async function initWebGpuIfNeeded(renderer: WebGpuRenderer): Promise<void> {
   await renderer.init();
@@ -82,28 +92,29 @@ export async function createRenderer(
  *
  * @param useCase - Viewport, offscreen or showcase preset (see {@link RendererUseCase}).
  * @param backend - `'webgl'` or `'webgpu'`.
- * @param surface - Backing canvas, or for the showcase preset the canvas together with its adapter power hint.
+ * @param surface - Backing canvas, or the canvas together with per-surface choices (the showcase adapter hint, a
+ *   readable WebGL canvas).
  * @returns The initialised renderer.
  * @public
  */
 export async function createRenderer(
   useCase: RendererUseCase,
   backend: ResolvedGraphicsBackend,
-  surface: HTMLCanvasElement | OffscreenCanvas | ShowcaseRendererTarget,
+  surface: HTMLCanvasElement | OffscreenCanvas | RendererTarget,
 ): Promise<RendererInstance>;
 /**
  * Implementation of the {@link createRenderer} overloads.
  *
  * @param useCase - Viewport, offscreen or showcase preset.
  * @param backend - `'webgl'` or `'webgpu'`.
- * @param surface - Backing canvas, or the showcase target.
+ * @param surface - Backing canvas, or the canvas with its per-surface choices.
  * @returns The initialised renderer.
  * @public
  */
 export async function createRenderer(
   useCase: RendererUseCase,
   backend: ResolvedGraphicsBackend,
-  surface: HTMLCanvasElement | OffscreenCanvas | ShowcaseRendererTarget,
+  surface: HTMLCanvasElement | OffscreenCanvas | RendererTarget,
 ): Promise<RendererInstance> {
   const target = isShowcaseTarget(surface) ? surface : { canvas: surface };
   // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- Offscreen-backed bitmap path matches upstream typing
@@ -168,6 +179,7 @@ export async function createRenderer(
     alpha: true,
     antialias: true,
     powerPreference: 'high-performance',
+    ...(isShowcaseTarget(surface) && surface.preserveDrawingBuffer === true ? { preserveDrawingBuffer: true } : {}),
   };
 
   Object.assign(webGlOptions, {

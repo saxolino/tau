@@ -78,7 +78,7 @@ export function ThreeCanvasInstance({
 }: ThreeCanvasInstanceProps): React.JSX.Element {
   const dpr = Math.min(globalThis.devicePixelRatio, 2);
   const isInspectorEnabled = useViewerFeature('webGpuInspector');
-  const { showRenderFps = true } = useViewerEnvironment();
+  const { showRenderFps = true, readableCanvas = false } = useViewerEnvironment();
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const [isContextLost, setIsContextLost] = useState(false);
   const [rendererError, setRendererError] = useState<Error>();
@@ -126,12 +126,11 @@ export function ThreeCanvasInstance({
 
   const glProperty = useMemo(
     () =>
-      createTauR3fGlProp(
-        graphicsBackend,
-        [cameraRig.perspectiveCamera, cameraRig.orthographicCamera],
-        setRendererError,
-      ),
-    [cameraRig, graphicsBackend],
+      createTauR3fGlProp(graphicsBackend, [cameraRig.perspectiveCamera, cameraRig.orthographicCamera], {
+        onCreateError: setRendererError,
+        preserveDrawingBuffer: readableCanvas,
+      }),
+    [cameraRig, graphicsBackend, readableCanvas],
   );
 
   const bindCanvas = useCallback<RefCallback<HTMLCanvasElement>>(

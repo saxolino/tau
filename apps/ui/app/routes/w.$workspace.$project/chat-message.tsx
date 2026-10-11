@@ -79,7 +79,7 @@ import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import { FileLink } from '#components/files/file-link.js';
 import { isSafeRelativePath } from '@taucad/utils/path';
 import { isRecord } from '@taucad/utils/schema';
-import { cadReferenceTokenLabel } from '@taucad/chat/references';
+import { CadReferenceChip } from '#components/chat/cad-reference-chip.js';
 
 /**
  * Split a line into chunks of `maxLen` characters without breaking `@path` or `/command` references.
@@ -158,7 +158,7 @@ function TextWithAtReferences({ text }: { readonly text: string }): React.JSX.El
           return <AtReferenceChip key={key} data-at-reference={segment.path} />;
         }
         if (segment.type === 'cadReference') {
-          return <ContextChip key={key} label={cadReferenceTokenLabel(segment.target)} chipType='geometry' />;
+          return <CadReferenceChip key={key} target={segment.target} />;
         }
         if (knownTokens.has(segment.token)) {
           return <ContextChip key={key} label={segment.token} chipType='skill' />;

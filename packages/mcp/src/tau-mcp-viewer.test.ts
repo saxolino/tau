@@ -5,7 +5,7 @@ import type { ClientCapabilities } from '@modelcontextprotocol/sdk/types.js';
 import { createTauMcpServer } from '#tau-mcp.js';
 import type { TauMcpViewer } from '#tau-mcp-viewer.js';
 import { resolveTauViewerPresentation, tauViewerResourceUri, tauViewerToolName } from '#viewer-protocol.js';
-import type { TauViewerModel } from '#viewer-protocol.js';
+import type { TauViewerModel, TauViewerViewState } from '#viewer-protocol.js';
 
 const uiExtension = { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } };
 
@@ -42,6 +42,18 @@ const model: TauViewerModel = {
   sha256: 'b'.repeat(64),
 };
 
+const view: TauViewerViewState = {
+  model: { id: 'model-1', title: 'bracket', path: '.tau/artifacts/bracket.glb', sourceFile: 'src/bracket.ts' },
+  selected: [{ componentId: 'component:arm', label: 'Arm', kind: 'part', selector: 'node/2' }],
+  hidden: ['component:bolt'],
+  isolated: [],
+  camera: { target: [0, 0, 0], direction: [1, 1, 1], up: [0, 0, 1], verticalSpan: 0.12 },
+  sectionActive: false,
+  measurementCount: 1,
+  composition: 'tab',
+  interactedAt: 1_700_000_000_000,
+};
+
 const createViewer = (): TauMcpViewer => ({
   page,
   show: vi.fn<TauMcpViewer['show']>(async (_input, options) => ({
@@ -56,6 +68,12 @@ const createViewer = (): TauMcpViewer => ({
     totalBytes: 6,
     data: Buffer.from('gl').toString('base64'),
   })),
+  sync: vi.fn<TauMcpViewer['sync']>(async () => ({ version: 1 })),
+  viewState: vi.fn<TauMcpViewer['viewState']>(async (input) => ({
+    view,
+    ...(input.capture === true ? ({ image: { mimeType: 'image/png', data: 'cG5n' } } as const) : {}),
+  })),
+  captureReply: vi.fn<TauMcpViewer['captureReply']>(async () => ({ accepted: true })),
 });
 
 const connect = async (
@@ -76,7 +94,17 @@ const viewerTools = async (client: Client) => {
   const { tools } = await client.listTools();
   return Object.fromEntries(
     tools
-      .filter((tool) => ['show_model', 'open_model_file', 'browse_models', 'app_read'].includes(tool.name))
+      .filter((tool) =>
+        [
+          'show_model',
+          'open_model_file',
+          'browse_models',
+          'app_read',
+          'view_state',
+          'app_sync',
+          'app_capture_reply',
+        ].includes(tool.name),
+      )
       .map((tool) => [tool.name, tool._meta]),
   );
 };
@@ -116,10 +144,13 @@ describe('resolveTauViewerPresentation', () => {
 });
 
 describe('Tau MCP viewer', () => {
-  it('should give a text host show_model alone, returning a loopback link', async () => {
+  it('should give a text host show_model and view_state, returning a loopback link', async () => {
     const client = await connect(clients.claudeCode);
 
-    expect(await viewerTools(client)).toEqual({ [tauViewerToolName.showModel]: { 'anthropic/alwaysLoad': true } });
+    expect(await viewerTools(client)).toEqual({
+      [tauViewerToolName.showModel]: { 'anthropic/alwaysLoad': true },
+      [tauViewerToolName.viewState]: { 'anthropic/alwaysLoad': true },
+    });
     const result = await client.callTool({ name: 'show_model', arguments: { targetFile: 'src/bracket.ts' } });
     expect(result.content).toEqual([
       { type: 'text', text: 'Open src/bracket.ts in the Tau viewer: http://127.0.0.1:4100/?model=model-1' },
@@ -130,7 +161,7 @@ describe('Tau MCP viewer', () => {
   it('should treat the Codex CLI as a text host', async () => {
     const client = await connect(clients.codexCli);
 
-    expect(Object.keys(await viewerTools(client))).toEqual(['show_model']);
+    expect(Object.keys(await viewerTools(client))).toEqual(['show_model', 'view_state']);
     await client.close();
   });
 
@@ -144,6 +175,9 @@ describe('Tau MCP viewer', () => {
         'ui/resourceUri': resourceUri,
       },
       [tauViewerToolName.appRead]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
+      [tauViewerToolName.viewState]: { 'anthropic/alwaysLoad': true },
+      [tauViewerToolName.appSync]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
+      [tauViewerToolName.appCaptureReply]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
     });
     const result = await client.callTool({ name: 'show_model', arguments: {} });
     expect(result.structuredContent).toEqual({ model });
@@ -164,7 +198,9 @@ describe('Tau MCP viewer', () => {
       [tauViewerToolName.openModelFile]: {
         'anthropic/alwaysLoad': true,
         ...openai,
-        'openai/ui': { entrypoints: [{ type: 'file', extensions: ['glb', 'svg'] }] },
+        'openai/ui': {
+          entrypoints: [{ type: 'file', extensions: ['glb', 'svg', 'step', 'stp', 'stl', '3mf', 'obj'] }],
+        },
       },
       [tauViewerToolName.browseModels]: {
         'anthropic/alwaysLoad': true,
@@ -172,6 +208,9 @@ describe('Tau MCP viewer', () => {
         'openai/ui': { entrypoints: [{ type: 'global' }] },
       },
       [tauViewerToolName.appRead]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
+      [tauViewerToolName.viewState]: { 'anthropic/alwaysLoad': true },
+      [tauViewerToolName.appSync]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
+      [tauViewerToolName.appCaptureReply]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
     });
     await client.close();
   });
@@ -227,6 +266,62 @@ describe('Tau MCP viewer', () => {
       arguments: { modelId: 'model-1', offset: 0, length: 4 * 1024 * 1024 + 1 },
     });
     expect(tooLong.isError).toBe(true);
+    await client.close();
+  });
+
+  it('should pass the components to select through show_model', async () => {
+    const viewer = createViewer();
+    const client = await connect(clients.claudeDesktop, viewer);
+
+    await client.callTool({
+      name: 'show_model',
+      arguments: { targetFile: 'src/bracket.ts', select: ['component:arm'] },
+    });
+    expect(viewer.show).toHaveBeenCalledWith(
+      { targetFile: 'src/bracket.ts', select: ['component:arm'] },
+      expect.objectContaining({ presentation: 'inline' }),
+    );
+    await client.close();
+  });
+
+  it('should describe the view and return a capture as an image block', async () => {
+    const client = await connect(clients.claudeDesktop);
+
+    const plain = await client.callTool({ name: 'view_state', arguments: {} });
+    expect(plain.structuredContent).toEqual({ view });
+    expect(plain.content).toEqual([
+      {
+        type: 'text',
+        text: [
+          'The Tau viewer (a tab) shows src/bracket.ts.',
+          'Selected: Arm (component:arm).',
+          'Hidden: component:bolt. Isolated: none.',
+          'Camera looks at (0.00, 0.00, 0.00) from direction (1.00, 1.00, 1.00), spanning 0.120 m.',
+          'Section view off; 1 measurements.',
+        ].join('\n'),
+      },
+    ]);
+    const captured = await client.callTool({ name: 'view_state', arguments: { capture: true } });
+    expect(captured.content).toContainEqual({ type: 'image', data: 'cG5n', mimeType: 'image/png' });
+    await client.close();
+  });
+
+  it('should check what the page sends to app_sync and app_capture_reply', async () => {
+    const viewer = createViewer();
+    const client = await connect(clients.claudeDesktop, viewer);
+
+    const synced = await client.callTool({
+      name: 'app_sync',
+      arguments: { pageId: 'page-0001', version: 0, follow: true, wait: false, view },
+    });
+    expect(synced.structuredContent).toEqual({ version: 1 });
+    const malformed = await client.callTool({ name: 'app_sync', arguments: { pageId: 'p', version: -1 } });
+    expect(malformed.isError).toBe(true);
+    const reply = await client.callTool({
+      name: 'app_capture_reply',
+      arguments: { requestId: 'r1', pageId: 'page-0001', image: { mimeType: 'image/png', data: 'cG5n' } },
+    });
+    expect(reply.structuredContent).toEqual({ accepted: true });
     await client.close();
   });
 

@@ -7,7 +7,7 @@
  * Screenshots land in `TAU_E2E_EVIDENCE_DIR` when it is set.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +20,7 @@ import type { Browser, Frame, Page } from 'playwright';
 import { build } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
+import type { TauViewerShowResult, TauViewerViewState } from '@taucad/mcp/viewer-protocol';
 import { tauViewerReadLimit } from '@taucad/mcp/viewer-protocol';
 
 import type { HostRecord, TauHost } from '#e2e/basic-host/host.js';
@@ -114,6 +114,37 @@ const surfaceGlb = (segments: number): Uint8Array<ArrayBuffer> => {
     binary,
   ]);
 };
+
+/** A closed four-faced wedge, as ASCII STL and as OBJ. */
+const wedgeCorners = [
+  [0, 0, 0],
+  [10, 0, 0],
+  [0, 10, 0],
+  [0, 0, 10],
+] as const;
+const wedgeFaces = [
+  [0, 2, 1],
+  [0, 1, 3],
+  [0, 3, 2],
+  [1, 2, 3],
+] as const;
+const wedgeStl = [
+  'solid wedge',
+  ...wedgeFaces.flatMap((face) => [
+    '  facet normal 0 0 0',
+    '    outer loop',
+    ...face.map((corner) => `      vertex ${wedgeCorners[corner].join(' ')}`),
+    '    endloop',
+    '  endfacet',
+  ]),
+  'endsolid wedge',
+  '',
+].join('\n');
+const wedgeObject = [
+  ...wedgeCorners.map((corner) => `v ${corner.join(' ')}`),
+  ...wedgeFaces.map((face) => `f ${face.map((corner) => String(corner + 1)).join(' ')}`),
+  '',
+].join('\n');
 
 let project = '';
 /** Uncaught errors in any harness page; each test expects none. */
@@ -277,6 +308,13 @@ beforeAll(async () => {
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
   );
   await writeFile(join(project, 'surface.glb'), surfaceGlb(540));
+  /* Exchange formats the server converts to GLB (W7). */
+  await copyFile(
+    join(repoRoot, 'packages/geospec-engine/src/model/__fixtures__/intersecting-cylinders.step'),
+    join(project, 'cylinders.step'),
+  );
+  await writeFile(join(project, 'wedge.stl'), wedgeStl);
+  await writeFile(join(project, 'wedge.obj'), wedgeObject);
   const output = await build({
     configFile: false,
     logLevel: 'silent',
@@ -331,8 +369,9 @@ describe('the viewer page in an MCP Apps host', () => {
       expect(await openFullView.isVisible()).toBe(true);
       await capture(page, 'basic-host-inline');
 
+      /* Besides its live link (app_sync), the card reads only its model. */
       const openingCalls = await recorded(page, 'toolCalls');
-      expect(openingCalls.map((call) => call.name)).toEqual(['app_read']);
+      expect(openingCalls.map((call) => call.name).filter((name) => name !== 'app_sync')).toEqual(['app_read']);
 
       await addToChat.click();
       await expect.poll(async () => recorded(page, 'modelContext')).toHaveLength(1);
@@ -371,6 +410,135 @@ describe('the viewer page in an MCP Apps host', () => {
       expect(reads.length).toBe(Math.ceil(model.byteLength / tauViewerReadLimit));
       expect(reads.every((call) => Number(call.arguments['length']) <= tauViewerReadLimit)).toBe(true);
       await capture(page, 'basic-host-10mb');
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+});
+
+describe('exchange formats (W7)', () => {
+  it(
+    'should convert STEP, STL and OBJ files to GLB on the server and draw them',
+    async () => {
+      const client = await connect('claude-ai', mcpAppsCapabilities);
+      for (const targetFile of ['cylinders.step', 'wedge.stl', 'wedge.obj']) {
+        // oxlint-disable-next-line no-await-in-loop -- one kernel conversion at a time.
+        const { model } = shown(await callTool(client, 'show_model', { targetFile }));
+        expect(model).toMatchObject({ sourceFile: targetFile, mimeType: 'model/gltf-binary' });
+        expect(model.path).toMatch(/^\.tau\/artifacts\/.+\.glb$/u);
+      }
+      const result = await callTool(client, 'show_model', { targetFile: 'cylinders.step' });
+      const page = await mountInHarness(client, result, 'fullscreen');
+      await drawn(viewerFrame(page), 'Add to chat');
+      await capture(page, 'step-converted');
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+});
+
+describe('the live view (W6)', () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    client = await connect('claude-ai', mcpAppsCapabilities);
+  });
+
+  it(
+    "should follow show_model in the tab, report the selection, apply the agent's selection and capture the view",
+    async () => {
+      const first = await callTool(client, 'show_model', { targetFile: 'main.ts' });
+      const page = await mountInHarness(client, first, 'fullscreen');
+      const frame = viewerFrame(page);
+      await drawn(frame, 'Add to chat');
+
+      /* The person picks the box in the middle of the canvas. */
+      const canvasBox = await frame.locator('canvas').first().boundingBox();
+      expect(canvasBox).not.toBeNull();
+      await page.mouse.click(
+        (canvasBox?.x ?? 0) + (canvasBox?.width ?? 0) / 2,
+        (canvasBox?.y ?? 0) + (canvasBox?.height ?? 0) / 2,
+      );
+      const viewOf = async (args: Record<string, unknown> = {}) => {
+        const result = await callTool(client, 'view_state', args);
+        expect(result.isError).toBeFalsy();
+        return result;
+      };
+      const viewNow = async (): Promise<TauViewerViewState> => {
+        const result = await viewOf();
+        return (result.structuredContent as { view: TauViewerViewState }).view;
+      };
+      await expect
+        .poll(
+          async () => {
+            const current = await viewNow();
+            return current.selected.length;
+          },
+          {
+            timeout: 30_000,
+          },
+        )
+        .toBeGreaterThan(0);
+      const view = await viewNow();
+      expect(view).toMatchObject({ composition: 'tab', model: { sourceFile: 'main.ts' } });
+      expect(view.camera?.verticalSpan).toBeGreaterThan(0);
+      const [picked] = view.selected;
+
+      /* A click on empty space clears the selection; the agent then selects the same component through show_model. */
+      await page.mouse.click((canvasBox?.x ?? 0) + 12, (canvasBox?.y ?? 0) + (canvasBox?.height ?? 0) / 2);
+      await expect
+        .poll(
+          async () => {
+            const current = await viewNow();
+            return current.selected;
+          },
+          {
+            timeout: 30_000,
+          },
+        )
+        .toEqual([]);
+      await callTool(client, 'show_model', { targetFile: 'main.ts', select: [picked?.componentId] });
+      await expect
+        .poll(
+          async () => {
+            const current = await viewNow();
+            return current.selected;
+          },
+          {
+            timeout: 30_000,
+          },
+        )
+        .toEqual([picked]);
+
+      const captured = await viewOf({ capture: true });
+      const image = captured.content.find((block) => block.type === 'image');
+      expect(image).toMatchObject({ type: 'image', mimeType: 'image/png' });
+      expect(
+        Buffer.from(image?.type === 'image' ? image.data : '', 'base64')
+          .subarray(1, 4)
+          .toString(),
+      ).toBe('PNG');
+      if (evidence !== undefined && image?.type === 'image') {
+        await mkdir(evidence, { recursive: true });
+        await writeFile(join(evidence, 'live-capture.png'), Buffer.from(image.data, 'base64'));
+      }
+
+      /* A new model replaces the one the tab shows. */
+      await callTool(client, 'show_model', { targetFile: 'surface.glb' });
+      await expect
+        .poll(
+          async () => {
+            const current = await viewNow();
+            return current.model.path;
+          },
+          {
+            timeout: 120_000,
+          },
+        )
+        .toBe('surface.glb');
+      await capture(page, 'live-follow');
       expect(pageErrors).toEqual([]);
       await page.close();
     },
