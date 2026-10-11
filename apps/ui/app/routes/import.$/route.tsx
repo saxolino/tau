@@ -962,6 +962,10 @@ export default function ImportRoute(): React.JSX.Element {
                     disabled={linkedBusy}
                     onChange={(event) => {
                       setLinkedTargetBranch(event.target.value);
+                      /* A refusal of the old name ("…already names another revision.") is not about the new one. */
+                      if (!linkedReviewBlocked) {
+                        setLinkedError(undefined);
+                      }
                     }}
                   />
                   <p className='text-xs text-muted-foreground'>

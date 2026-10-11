@@ -265,4 +265,17 @@ describe('ImportRoute GitHub card', () => {
     expect(screen.getByText('Git fetch failed: connection reset')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Import and link' })).toBeEnabled();
   });
+
+  it('should drop a refusal of the old branch name once the name is edited', async () => {
+    const user = userEvent.setup();
+    linkedImport.prepare.mockRejectedValueOnce(new Error('Remote branch main already names another revision.'));
+    await renderImport();
+    await user.click(screen.getByRole('button', { name: 'Pick linked repository' }));
+    await user.click(screen.getByRole('button', { name: 'Import and link' }));
+    expect(await screen.findByRole('alert', { name: 'Import interrupted' })).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Local and sync branch' }), '-tau');
+
+    expect(screen.queryByRole('alert', { name: 'Import interrupted' })).not.toBeInTheDocument();
+  });
 });
