@@ -165,22 +165,42 @@
   "projectGridContrast": [
     {
       "theme": "light",
-      "borderVsSurface": 2.51,
+      "borderVsSurface": 2.47,
+      "tokens": {
+        "mutedForegroundL": 0.47,
+        "inputL": 0.9,
+        "mutedL": 0.965
+      },
       "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
     },
     {
       "theme": "dark",
-      "borderVsSurface": 2.79,
+      "borderVsSurface": 2.71,
+      "tokens": {
+        "mutedForegroundL": 0.67,
+        "inputL": 0.315,
+        "mutedL": 0.245
+      },
       "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
     },
     {
       "theme": "black",
-      "borderVsSurface": 2.77,
+      "borderVsSurface": 3.1,
+      "tokens": {
+        "mutedForegroundL": 0.65,
+        "inputL": 0.278,
+        "mutedL": 0.075
+      },
       "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
     },
     {
       "theme": "high-contrast",
       "borderVsSurface": 7.05,
+      "tokens": {
+        "mutedForegroundL": 0.82,
+        "inputL": 0.55,
+        "mutedL": 0.15
+      },
       "method": "Neutral OKLCH tokens converted to sRGB; border alpha composited over input fill; WCAG luminance ratio"
     }
   ]
