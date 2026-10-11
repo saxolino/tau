@@ -42,6 +42,16 @@ const providerPaths: Readonly<Record<RepositoryProviderId, Readonly<Record<strin
   },
 };
 
+/* The code travels as `code` and the sentence as `error` (E14). */
+const repositoryRateLimited = (): HttpException =>
+  new HttpException(
+    {
+      code: 'REPOSITORY_RATE_LIMITED',
+      message: 'Too many GitHub imports from this network in the last hour. Try again later.',
+    },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
+
 class GatewayError extends Error {
   public readonly status: number;
   public readonly retryAfter?: string;
@@ -561,7 +571,7 @@ export class RepositoriesService {
     const key = `tau:repositories:branches:${hourBucket()}:${ip}`;
     const raw = await this.redisService.client.eval(incrByExpireLua, 1, key, String(rateLimitWindowSeconds));
     if (Number(raw) > branchesPerIpPerHour) {
-      throw new HttpException('REPOSITORY_RATE_LIMITED', HttpStatus.TOO_MANY_REQUESTS);
+      throw repositoryRateLimited();
     }
   }
 
@@ -569,7 +579,7 @@ export class RepositoriesService {
     const key = `tau:repositories:archive:${hourBucket()}:${ip}`;
     const raw = await this.redisService.client.eval(incrByExpireLua, 1, key, String(rateLimitWindowSeconds));
     if (Number(raw) > archivesPerIpPerHour) {
-      throw new HttpException('REPOSITORY_RATE_LIMITED', HttpStatus.TOO_MANY_REQUESTS);
+      throw repositoryRateLimited();
     }
   }
 }

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { ImportWorkerResponse } from '#workers/import.worker.js';
 
 describe('ImportWorkerResponse types', () => {
@@ -43,5 +43,33 @@ describe('ImportWorkerResponse types', () => {
     };
     expect(response.type).toBe('error');
     expect(response.phase).toBe('download');
+  });
+});
+
+describe('downloadRefusal', () => {
+  const load = async () => {
+    vi.stubGlobal('addEventListener', vi.fn());
+    const { downloadRefusal } = await import('#workers/import.worker.js');
+    return downloadRefusal;
+  };
+
+  it.each([
+    [
+      'an API refusal',
+      new Response(JSON.stringify({ error: 'Too many GitHub imports.', code: 'REPOSITORY_RATE_LIMITED' }), {
+        status: 429,
+      }),
+      'Too many GitHub imports.',
+    ],
+    [
+      "the archive gateway's sentence",
+      new Response('The repository archive could not be fetched.', { status: 404 }),
+      'The repository archive could not be fetched.',
+    ],
+    ['an empty body', new Response('', { status: 502, statusText: 'Bad Gateway' }), 'Download failed: 502 Bad Gateway'],
+  ])('should say why for %s', async (_case, response, sentence) => {
+    const downloadRefusal = await load();
+
+    await expect(downloadRefusal(response)).resolves.toBe(sentence);
   });
 });
