@@ -8,9 +8,9 @@ wordBudgetOverride: 500
 
 # Agent Plugin
 
-The Tau plugin, `@taucad/agent-plugin`, gives a coding agent Tau's CAD tools and skills in the agent you already use. Its tools evaluate a model, run its GeoSpec tests, return screenshots, export files, arrange the [workbench](./workbench-records) and show the model in the Tau viewer.
+The Tau plugin, `@taucad/agent-plugin`, gives the coding agent you already use Tau's CAD tools and skills. They evaluate a model, run its GeoSpec tests, return screenshots, export files, arrange the [workbench](./workbench-records) and show the model in the Tau viewer.
 
-The plugin needs Node.js 24 or later. It starts the Tau CLI you have installed, or fetches the matching release on first use:
+It needs Node.js 24 or later, and starts your installed Tau CLI or fetches the matching release on first use:
 
 ```bash
 npm install -g @taucad/cli@beta
@@ -18,13 +18,11 @@ npm install -g @taucad/cli@beta
 
 ## Install
 
-| Host           | Install                                                                                           |
-| -------------- | ------------------------------------------------------------------------------------------------- |
-| Codex          | `codex plugin marketplace add taucad/tau`, then `codex plugin add tau@taucad`                     |
-| Claude Code    | `claude plugin marketplace add taucad/tau`, then `claude plugin install tau@taucad`               |
-| Claude Desktop | `npm install -g @taucad/agent-plugin@beta`, then add its launcher to `claude_desktop_config.json` |
+- Codex: `codex plugin marketplace add taucad/tau`, then `codex plugin add tau@taucad`.
+- Claude Code: `claude plugin marketplace add taucad/tau`, then `claude plugin install tau@taucad`.
+- Claude Desktop: `npm install -g @taucad/agent-plugin@beta`, then add its launcher to `claude_desktop_config.json`.
 
-Claude Desktop starts the launcher with the project folder you name:
+Name the project folder in the launcher's arguments:
 
 ```json
 {
@@ -41,22 +39,20 @@ Start a new thread or session after installing.
 
 ## What each host shows
 
-`show_model` opens the viewer. The host decides how, from what it declares when it connects:
+`show_model` opens the viewer in the form the host supports:
 
-| Host                   | Viewer                                                               |
-| ---------------------- | -------------------------------------------------------------------- |
-| Codex desktop          | A Tau tab in the thread, Tau in the sidebar, Open with Tau for files |
-| Claude Desktop         | An inline card with Add to chat and Open full view                   |
-| Claude Code, Codex CLI | A link to the viewer on `127.0.0.1`; screenshots stay inline         |
+- Codex desktop: a Tau tab in the thread, Tau in the sidebar, and Open with Tau for files.
+- Claude Desktop: an inline card with Add to chat and Open full view.
+- Claude Code and Codex CLI: a link to the viewer on `127.0.0.1`; screenshots stay inline.
 
-The card shows the model and two actions. The tab, fullscreen and the browser page add grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the conversation; the browser page copies it instead.
+The tab, full view and browser page add grid, section, measure and fit. Add to chat gives the agent the model or a right-clicked part; the browser page copies it instead.
 
-The viewer stays in step with the agent. A tab or fullscreen viewer switches to each model the agent shows, and the agent can select parts in it. `view_state` tells the agent what you are looking at: the model, the parts you selected or hid, and the camera. With `capture` it returns an image of the view as you see it. `show_model` also opens STEP, STL, 3MF and OBJ files, which the server converts to GLB.
+A tab or full view follows each model the agent shows, and the agent can select parts in it. `view_state` reports the model, selected and hidden parts and camera, plus an image with `capture`. `show_model` also opens STEP, STL, 3MF and OBJ files.
 
-In a tab or full view, **Panels** opens a side panel with the model's parts, its parameters, the selected part's properties and display switches. Changing a parameter saves it to the project, so Tau shows the same value, and the viewer redraws the model with it. The agent can read and change the same parameters with `get_parameters` and `apply_parameter_operation`. When you move the camera or hide a part, the plugin saves that view in the project, so opening the project in Tau shows the same camera and hidden parts.
+**Panels** in a tab or full view lists the parts, parameters, selected part's properties and display switches. A changed parameter is saved to the project and the model redraws; the agent uses the same values through `get_parameters` and `apply_parameter_operation`. Camera and hidden parts are saved too, so Tau reopens the same view.
 
-The viewer makes no network request. Model files reach it through a tool only the page can call, and the browser link answers only on your machine, with a token for that session.
+The viewer makes no network request: model files reach it through a tool only the page can call, and the browser link answers only on your machine, with a session token.
 
 ## Where files go
 
-Exports and the models the viewer shows land in `.tau/artifacts/` in the project. Workbench changes land in `.tau/workbench/`. Screenshots stay in a temporary folder that the server removes when it stops.
+Exports and viewed models land in `.tau/artifacts/`, workbench changes in `.tau/workbench/`. Screenshots stay in a temporary folder removed when the server stops.
