@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -188,6 +188,50 @@ describe('serveLocalHostMcp', () => {
       expect(JSON.parse(await readFile(absolutePath, 'utf8'))).toEqual(verdict);
     } finally {
       await local.close();
+    }
+  });
+
+  it('should serve the viewer only with a page, rendering a shown source through export_model', async () => {
+    const { local: withoutPage } = await serve(ready);
+    expect(served.options?.viewer).toBeUndefined();
+    await withoutPage.close();
+
+    const root = await mkdtemp(join(tmpdir(), 'tau-viewer-local-'));
+    await writeFile(join(root, 'main.ts'), '');
+    const invocations: HostToolInvocation[] = [];
+    const registry: ToolRegistry = {
+      list: () => [],
+      invoke: async (invocation) => {
+        invocations.push(invocation);
+        await mkdir(join(root, '.tau', 'artifacts'), { recursive: true });
+        await writeFile(join(root, '.tau', 'artifacts', 'main.glb'), 'glb');
+        return {
+          content: {
+            success: true,
+            files: [{ artifactPath: '.tau/artifacts/main.glb', mimeType: 'model/gltf-binary' }],
+          },
+          isError: false,
+        };
+      },
+    };
+    const local = await serveLocalHostMcp({
+      workspaceRoot: root,
+      registry,
+      checkouts: new Map(),
+      viewerPage: { html: '<!doctype html>', sha256: 'd'.repeat(64) },
+    });
+    try {
+      const shown = await served.options?.viewer?.show(
+        { targetFile: 'main.ts' },
+        { toolCallId: 'show-1', presentation: 'inline' },
+      );
+      expect(invocations).toEqual([
+        expect.objectContaining({ toolName: 'export_model', input: { targetFile: 'main.ts', to: 'glb' } }),
+      ]);
+      expect(shown).toMatchObject({ model: { path: '.tau/artifacts/main.glb', sourceFile: 'main.ts' } });
+    } finally {
+      await local.close();
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

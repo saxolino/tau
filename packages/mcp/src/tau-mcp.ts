@@ -21,6 +21,8 @@ import {
 import { testModelInputSchema, testModelOutputSchema } from '@taucad/chat/schemas/tools/test-model';
 // oxlint-disable-next-line no-restricted-imports -- relative import is the only portable way to load this package's own package.json (matches `packages/runtime/src/utils/package-info.ts`).
 import packageJson from '../package.json' with { type: 'json' };
+import { registerTauMcpViewer } from '#tau-mcp-viewer.js';
+import type { TauMcpViewer } from '#tau-mcp-viewer.js';
 
 const exposedRpcNames = [
   rpcName.evaluateModel,
@@ -56,6 +58,10 @@ export const tauMcpInstructions = [
   'After edits, call evaluate_model for build diagnostics and offered views/exports, test_model for GeoSpec requirements, and screenshot for each needed view.',
   'For a design question, export_model may write text/JSON evidence only when both its declaration and every output file qualify; read and compare its pinned sourceRevision. Binary or mixed deliverables require an explicit user export request.',
 ].join(' ');
+
+/** The sentence a server with the viewer adds to {@link tauMcpInstructions}. */
+const viewerInstruction =
+  'When the person should look at a model, call show_model after evaluate_model succeeds; it shows the model in the Tau viewer, or returns a viewer link to share with them.';
 
 /** RPC names exposed to external agents through Tau MCP. @public */
 export type TauMcpRpcName = (typeof exposedRpcNames)[number];
@@ -149,6 +155,12 @@ export type TauMcpServerOptions = Readonly<{
    * no output schema; the dispatcher must then fill each image's `dataUrl`.
    */
   screenshotImages?: 'attachments' | 'inline' | undefined;
+  /**
+   * The viewer page and the host port behind its tools. With it, the server
+   * serves the page as a `ui://` resource and registers `show_model` and the
+   * page's tools, presented per client (blueprint D5).
+   */
+  viewer?: TauMcpViewer | undefined;
 }>;
 
 /** The streams {@link serveTauMcpStdio} speaks over, when not this process's own stdin and stdout. @public */
@@ -460,10 +472,13 @@ const toSdkHostTools = (tools: readonly TauMcpHostTool[] = []): readonly SdkHost
  */
 const registerTools = (
   server: McpServer,
-  options: Pick<TauMcpServerOptions, 'dispatch' | 'screenshotImages'>,
+  options: Pick<TauMcpServerOptions, 'dispatch' | 'screenshotImages' | 'viewer'>,
   hostTools: readonly SdkHostTool[],
 ): void => {
   const { dispatch } = options;
+  if (options.viewer !== undefined) {
+    registerTauMcpViewer(server, options.viewer, alwaysLoad);
+  }
   const adapter = createTauMcpAdapter(options);
 
   server.registerTool(
@@ -565,12 +580,12 @@ export const registerTauMcpTools = (server: McpServer, options: TauMcpServerOpti
  * @returns A tool-only MCP server that has not yet been connected to a transport.
  */
 const createServer = (
-  options: Pick<TauMcpServerOptions, 'dispatch' | 'screenshotImages'>,
+  options: Pick<TauMcpServerOptions, 'dispatch' | 'screenshotImages' | 'viewer'>,
   hostTools: readonly SdkHostTool[],
 ): McpServer => {
   const server = new McpServer(
     { name: packageJson.name, version: packageJson.version },
-    { instructions: tauMcpInstructions },
+    { instructions: options.viewer === undefined ? tauMcpInstructions : `${tauMcpInstructions} ${viewerInstruction}` },
   );
   registerTools(server, options, hostTools);
   return server;

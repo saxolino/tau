@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
 import { Writable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -35,6 +37,28 @@ const shutdownGrace = 5000;
  * tau mcp --project ./bracket
  * ```
  */
+/**
+ * The viewer page a launcher named, with the digest that names its `ui://` URI.
+ *
+ * A page that cannot be read leaves the CAD tools serving without the viewer,
+ * and says why on stderr: the agent keeps working either way.
+ *
+ * @param path - The page's path, if any.
+ * @returns The page, or `undefined`.
+ */
+const readViewerPage = async (path: string | undefined): Promise<{ html: string; sha256: string } | undefined> => {
+  if (path === undefined || path === '') {
+    return undefined;
+  }
+  try {
+    const html = await readFile(resolvePath(path), 'utf8');
+    return { html, sha256: createHash('sha256').update(html).digest('hex') };
+  } catch (error) {
+    process.stderr.write(`tau mcp: serving without the viewer; ${path} could not be read: ${String(error)}\n`);
+    return undefined;
+  }
+};
+
 export const mcpCommand = defineCommand({
   meta: {
     name: 'mcp',
@@ -52,6 +76,11 @@ export const mcpCommand = defineCommand({
     config: {
       type: 'string',
       description: 'Path to a tau.config module that exports plugins',
+    },
+    'viewer-page': {
+      type: 'string',
+      description:
+        'Single-file viewer page to serve with show_model (default: TAU_VIEWER_PAGE; none disables the viewer)',
     },
   },
   async run({ args }) {
@@ -110,8 +139,9 @@ export const mcpCommand = defineCommand({
       geospecRunner: async (projectPath) => createHostGeoSpecRunner(projectPath, await clientFor(projectPath)),
       systemSkillBundles,
     });
+    const viewerPage = await readViewerPage(args['viewer-page'] ?? process.env['TAU_VIEWER_PAGE']);
     const local = await serveLocalHostMcp(
-      { workspaceRoot, pinned: args.project !== undefined, registry, checkouts },
+      { workspaceRoot, pinned: args.project !== undefined, registry, checkouts, viewerPage },
       { stdout },
     );
     // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The SDK server exposes an onclose callback, not EventTarget.

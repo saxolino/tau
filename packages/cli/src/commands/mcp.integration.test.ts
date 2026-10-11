@@ -163,9 +163,10 @@ let launches = 0;
  * Launch `tau mcp` as a plugin host would, keeping every byte it writes.
  *
  * @param projectDirectory - The `CLAUDE_PROJECT_DIR` Claude Code would set, if any.
+ * @param viewerPage - The viewer page `launch.ts` hands over (`TAU_VIEWER_PAGE`), if any.
  * @returns The child, a transport the SDK client connects over, and its output.
  */
-const launch = (projectDirectory?: string): Served => {
+const launch = (projectDirectory?: string, viewerPage?: string): Served => {
   launches += 1;
   const resolveLog = join(scratch, `resolved-${String(launches)}.log`);
   /* Built by assignment so no environment key is a source literal. */
@@ -173,6 +174,9 @@ const launch = (projectDirectory?: string): Served => {
   env['TAU_TEST_RESOLVE_LOG'] = resolveLog;
   if (projectDirectory !== undefined) {
     env['CLAUDE_PROJECT_DIR'] = projectDirectory;
+  }
+  if (viewerPage !== undefined) {
+    env['TAU_VIEWER_PAGE'] = viewerPage;
   }
   const child = spawn(
     process.execPath,
@@ -449,6 +453,124 @@ describe('tau mcp on SIGTERM', () => {
 
       const { code } = await exitWithin(served, 5000);
       expect(code).toBe(0);
+    },
+    kernelCallLimit,
+  );
+});
+
+/**
+ * The `initialize` each host sends, as probed from the hosts (blueprint D5).
+ * The standard capability decides whether a host gets the page; the client
+ * name only picks Codex's entrypoints.
+ */
+const hostShapes = {
+  claudeCode: {
+    clientInfo: { name: 'claude-code', version: '2.1.296' },
+    capabilities: { roots: { listChanged: true }, elicitation: { form: {}, url: {} } },
+  },
+  codexCli: {
+    clientInfo: { name: 'codex-mcp-client', version: '0.157.1' },
+    capabilities: { experimental: { 'codex/auth-change': {} }, elicitation: { form: {}, url: {} } },
+  },
+  claudeDesktop: {
+    clientInfo: { name: 'claude-ai', version: '0.1.0' },
+    capabilities: {
+      roots: { listChanged: true },
+      extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } },
+    },
+  },
+  codexDesktop: {
+    clientInfo: { name: 'codex-mcp-client', version: '26.1007.21159' },
+    capabilities: {
+      experimental: { 'codex/auth-change': {} },
+      elicitation: { form: {}, url: {} },
+      extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } },
+    },
+  },
+} as const;
+
+describe('tau mcp viewer presentation', () => {
+  const page = '<!doctype html><title>Tau viewer fixture</title>';
+  let pagePath = '';
+
+  beforeAll(async () => {
+    pagePath = join(scratch, 'viewer-page.html');
+    await writeFile(pagePath, page);
+  });
+
+  /**
+   * Initialize one server as a host does and list what it offers, without loading a kernel.
+   *
+   * @param shape - The host's `initialize`.
+   * @returns The tools by name and the server's resources.
+   */
+  const offered = async (shape: (typeof hostShapes)[keyof typeof hostShapes]) => {
+    const served = launch(join(scratch, 'viewer-host'), pagePath);
+    disposers.push(stopIfRunning(served));
+    await mkdir(join(scratch, 'viewer-host'), { recursive: true });
+    const client = new Client(shape.clientInfo, { capabilities: shape.capabilities });
+    await connect(client, served);
+    const { tools } = await client.listTools();
+    const { resources } = await client.listResources();
+    const result = { tools: new Map(tools.map((tool) => [tool.name, tool])), resources, client, served };
+    return result;
+  };
+
+  it(
+    'should give a text host the show_model link tool and no page',
+    async () => {
+      for (const shape of [hostShapes.claudeCode, hostShapes.codexCli]) {
+        // oxlint-disable-next-line no-await-in-loop -- one server per host shape.
+        const { tools, client, served } = await offered(shape);
+        expect(tools.get('show_model')?._meta).toEqual({ 'anthropic/alwaysLoad': true });
+        expect([...tools.keys()]).not.toEqual(expect.arrayContaining(['app_read']));
+        expect(tools.has('open_model_file') || tools.has('browse_models')).toBe(false);
+        // oxlint-disable-next-line no-await-in-loop -- ditto.
+        expect(await served.kernelModules()).toEqual([]);
+        // oxlint-disable-next-line no-await-in-loop -- ditto.
+        await client.close();
+      }
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should give Claude Desktop the ui:// page on show_model and the app-only ranged read',
+    async () => {
+      const { tools, resources, client } = await offered(hostShapes.claudeDesktop);
+      const ui = tools.get('show_model')?._meta?.['ui'] as { resourceUri: string } | undefined;
+      expect(ui?.resourceUri).toMatch(/^ui:\/\/tau\/[\da-f]{16}\/app\.html$/u);
+      expect(tools.get('show_model')?._meta).not.toHaveProperty(['openai/ui']);
+      expect(tools.get('app_read')?._meta?.['ui']).toEqual({ resourceUri: ui?.resourceUri, visibility: ['app'] });
+      expect(tools.has('open_model_file') || tools.has('browse_models')).toBe(false);
+
+      const resource = resources.find(({ uri }) => uri === ui?.resourceUri);
+      expect(resource?.mimeType).toBe('text/html;profile=mcp-app');
+      expect(resource?._meta?.['ui']).toMatchObject({ csp: { connectDomains: ['data:', 'blob:'] } });
+      const { contents } = await client.readResource({ uri: ui?.resourceUri ?? '' });
+      expect(contents).toEqual([expect.objectContaining({ text: page, mimeType: 'text/html;profile=mcp-app' })]);
+      await client.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should give Codex desktop the thread, sidebar and file entrypoints',
+    async () => {
+      const { tools, client } = await offered(hostShapes.codexDesktop);
+      const meta = (name: string) => tools.get(name)?._meta ?? {};
+      const { resourceUri } = meta('show_model')['ui'] as { resourceUri: string };
+
+      expect(meta('show_model')).toMatchObject({
+        'openai/outputTemplate': resourceUri,
+        'openai/ui': { entrypoints: [{ type: 'thread' }] },
+      });
+      expect(meta('browse_models')).toMatchObject({ 'openai/ui': { entrypoints: [{ type: 'global' }] } });
+      expect(meta('open_model_file')).toMatchObject({
+        'openai/ui': { entrypoints: [{ type: 'file', extensions: expect.arrayContaining(['glb']) as unknown }] },
+      });
+      expect(meta('app_read')['ui']).toEqual({ resourceUri, visibility: ['app'] });
+      await client.close();
     },
     kernelCallLimit,
   );

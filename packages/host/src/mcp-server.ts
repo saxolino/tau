@@ -46,6 +46,7 @@ import { testModelOutputSchema } from '@taucad/chat/schemas/tools/test-model';
 
 import type { JsonObject, JsonValue, ToolRegistry } from '@taucad/agent-host';
 import { saveChatAttachment } from '#acp/media.js';
+import { createLocalMcpViewer } from '#mcp-viewer.js';
 
 /**
  * Milliseconds a host-minted capability may live.
@@ -735,6 +736,12 @@ export type LocalHostMcpOptions = {
    * is recorded here under its own run id, so the registry works in that folder.
    */
   readonly checkouts: Map<string, { readonly cwd: string }>;
+  /**
+   * The single-file viewer page and its SHA-256. With it, the server serves the
+   * page, `show_model` and the page's tools (blueprint W4); without it, the CAD
+   * tools alone.
+   */
+  readonly viewerPage?: Readonly<{ html: string; sha256: string }> | undefined;
 };
 
 /** A local MCP server serving one agent. @public */
@@ -815,8 +822,63 @@ export const serveLocalHostMcp = async (
     await writeFile(absolutePath, bytes);
     return { path, absolutePath, byteLength: bytes.length, sha256 };
   };
+  const rootOf = (meta: Readonly<Record<string, unknown>> | undefined): string =>
+    (options.pinned ? undefined : callerRoot(meta)) ?? options.workspaceRoot;
+  const invokeIn = async ({
+    workspaceRoot,
+    tool,
+    args,
+    call,
+  }: {
+    readonly workspaceRoot: string;
+    readonly tool: HostMcpAllowedTool;
+    readonly args: Readonly<Record<string, unknown>>;
+    readonly call: { readonly toolCallId: string; readonly signal?: AbortSignal | undefined };
+  }): Promise<Awaited<ReturnType<ToolRegistry['invoke']>>> => {
+    const runId = `mcp:${workspaceRoot}`;
+    options.checkouts.set(runId, { cwd: workspaceRoot });
+    return options.registry.invoke({
+      toolCallId: call.toolCallId,
+      toolName: tool,
+      runId,
+      // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- the args were validated against the tool's own schema.
+      input: args as unknown as JsonValue,
+      signal: call.signal ?? new AbortController().signal,
+    });
+  };
+  const viewer =
+    options.viewerPage === undefined
+      ? undefined
+      : createLocalMcpViewer({
+          page: options.viewerPage,
+          rootOf,
+          renderGlb: async ({ root, targetFile, toolCallId, signal }) => {
+            const result = await invokeIn({
+              workspaceRoot: root,
+              tool: toolName.exportModel,
+              args: { targetFile, to: 'glb' },
+              call: { toolCallId, signal },
+            });
+            const content: JsonObject = isJsonObject(result.content) ? result.content : {};
+            const { files } = content;
+            const listed: readonly JsonValue[] = Array.isArray(files) ? (files as readonly JsonValue[]) : [];
+            const [first] = listed;
+            const artifactPath = first !== undefined && isJsonObject(first) ? first['artifactPath'] : undefined;
+            if (result.isError || content['success'] === false || typeof artifactPath !== 'string') {
+              return {
+                errorCode: typeof content['errorCode'] === 'string' ? content['errorCode'] : 'RENDER_FAILED',
+                message:
+                  typeof content['message'] === 'string'
+                    ? content['message']
+                    : `${targetFile} could not be rendered to GLB.`,
+              };
+            }
+            return artifactPath;
+          },
+        });
   const server = await serveTauMcpStdio(
     {
+      ...(viewer === undefined ? {} : { viewer }),
       hostTools: options.registry
         .list()
         .filter(
@@ -831,16 +893,11 @@ export const serveLocalHostMcp = async (
         if ('errorCode' in route) {
           return route;
         }
-        const workspaceRoot = (options.pinned ? undefined : callerRoot(dispatchOptions.meta)) ?? options.workspaceRoot;
-        const runId = `mcp:${workspaceRoot}`;
-        options.checkouts.set(runId, { cwd: workspaceRoot });
-        const result = await options.registry.invoke({
-          toolCallId: dispatchOptions.toolCallId,
-          toolName: route.tool,
-          runId,
-          // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- `@taucad/mcp` validated these args against the tool's own schema.
-          input: route.args as unknown as JsonValue,
-          signal: dispatchOptions.signal ?? new AbortController().signal,
+        const result = await invokeIn({
+          workspaceRoot: rootOf(dispatchOptions.meta),
+          tool: route.tool,
+          args: route.args,
+          call: dispatchOptions,
         });
         return present({ save, signals: [dispatchOptions.signal] }, route.tool, result).catch((error: unknown) =>
           hostFault(route.tool, error),
@@ -853,6 +910,7 @@ export const serveLocalHostMcp = async (
     server,
     close: async () => {
       await server.close();
+      await viewer?.close();
       await rm(directory, { recursive: true, force: true });
     },
   };
