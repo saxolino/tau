@@ -71,7 +71,8 @@ const createIntegrationClient = (fileSystem = fromMemoryFs()) =>
 const expectNonEmptyGlb = (outcome: ViewUpdateOutcome): Uint8Array<ArrayBuffer> => {
   expect(outcome.superseded).toBe(false);
   if (outcome.superseded || !outcome.rendering.success) {
-    throw new Error('Expected a successful view rendering');
+    const issues = outcome.superseded ? [] : outcome.rendering.issues.map(({ message }) => message);
+    throw new Error(`Expected a successful view rendering: ${issues.join('; ') || 'no issues reported'}`);
   }
   const artifact = asKnownArtifact(outcome.rendering.artifact);
   expect(artifact?.mimeType).toBe('model/gltf-binary');
