@@ -74,6 +74,8 @@ const baseConfig: UserConfig = {
     'src/hooks/use-tick-animation.ts',
     'src/utils/cn.ts',
     'src/utils/keys.ts',
+    'src/utils/label.ts',
+    'src/utils/number.ts',
     'src/utils/platform.ts',
     'src/utils/pointer-capture.ts',
   ],

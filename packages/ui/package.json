@@ -114,6 +114,8 @@
     },
     "./utils/cn": "./src/utils/cn.ts",
     "./utils/keys": "./src/utils/keys.ts",
+    "./utils/label": "./src/utils/label.ts",
+    "./utils/number": "./src/utils/number.ts",
     "./utils/platform": "./src/utils/platform.ts",
     "./utils/pointer-capture": "./src/utils/pointer-capture.ts",
     "./package.json": "./package.json"
@@ -479,6 +481,16 @@
         "types": "./dist/utils/keys.d.mts",
         "import": "./dist/utils/keys.mjs",
         "default": "./dist/utils/keys.mjs"
+      },
+      "./utils/label": {
+        "types": "./dist/utils/label.d.mts",
+        "import": "./dist/utils/label.mjs",
+        "default": "./dist/utils/label.mjs"
+      },
+      "./utils/number": {
+        "types": "./dist/utils/number.d.mts",
+        "import": "./dist/utils/number.mjs",
+        "default": "./dist/utils/number.mjs"
       },
       "./utils/platform": {
         "types": "./dist/utils/platform.d.mts",

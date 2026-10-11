@@ -7,8 +7,8 @@ import { z } from 'zod';
 import type { DesignStoryActor } from '#components/geometry/splash/design-story.machine.js';
 import { storyFrame, partLift } from '#components/geometry/splash/design-story-timeline.js';
 import { storyColors } from '#components/geometry/splash/design-story.constants.js';
-import { createTauR3fGlProp } from '#components/geometry/graphics/three/canvas-three-gl.js';
-import { readGraphicsBackendQueryOverride } from '#components/geometry/graphics/graphics-backend.js';
+import { createTauR3fGlProp } from '@taucad/viewer/graphics/three/canvas-three-gl';
+import { readGraphicsBackendQueryOverride } from '#utils/graphics-backend-override.js';
 import {
   createMorphingPointsGeometry,
   createMorphingPointsMaterial,

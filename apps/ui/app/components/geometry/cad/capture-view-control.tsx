@@ -4,7 +4,7 @@ import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { randomUuid } from '@taucad/utils/id';
 import type { Rendering } from '@taucad/runtime';
-import { useGraphics } from '#hooks/use-graphics.js';
+import { useGraphics } from '@taucad/viewer/hooks/use-graphics';
 import { useCad } from '#hooks/use-cad.js';
 import { useProject } from '#hooks/use-project.js';
 import { useChatActions } from '#hooks/use-chat.js';

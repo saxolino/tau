@@ -31,8 +31,8 @@ import { PaneButton } from '#components/ui/pane-button.js';
 import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { SliderInput } from '@taucad/ui/components/slider-input';
 import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
-import { ParameterGroupCard } from '#components/geometry/parameters/parameter-group-card.js';
-import { ParametersNumberField } from '#components/geometry/parameters/parameters-number-field.js';
+import { ParameterGroupCard } from '@taucad/viewer/parameters/parameter-group-card';
+import { ParametersNumberField } from '@taucad/viewer/parameters/parameters-number-field';
 import { useReducedMotion } from '#components/geometry/loader/metal-morph-playback-gates.js';
 import { disclosureMotion } from '@taucad/ui/components/actions';
 import {
@@ -46,16 +46,23 @@ import {
   paneviewHeaderSize,
 } from '#components/panes/paneview-header.js';
 import type { cadMachine } from '#machines/cad.machine.js';
-import type { graphicsMachine } from '#machines/graphics.machine.js';
-import { deriveModelInteractionUnitId, getModelInteractionUnitState } from '#machines/model-interaction.machine.js';
+import type { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
+import {
+  deriveModelInteractionUnitId,
+  getModelInteractionUnitState,
+} from '@taucad/viewer/machines/model-interaction.machine';
 import {
   getKinematicsAnimation,
   getKinematicsClipTime,
   getKinematicsDragNotice,
   getKinematicsUnitState,
   sweepAnimationId,
-} from '#machines/kinematics.machine.js';
-import type { KinematicsDragNotice, KinematicsUnitState, kinematicsMachine } from '#machines/kinematics.machine.js';
+} from '@taucad/viewer/machines/kinematics.machine';
+import type {
+  KinematicsDragNotice,
+  KinematicsUnitState,
+  kinematicsMachine,
+} from '@taucad/viewer/machines/kinematics.machine';
 import {
   findKinematicsJointByComponent,
   getKinematicsRootDriver,

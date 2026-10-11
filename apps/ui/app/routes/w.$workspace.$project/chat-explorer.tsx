@@ -25,20 +25,24 @@ import {
   ModelComponentActionContextContent,
   ModelComponentActionDropdown,
 } from '#components/geometry/cad/model-component-action-menu.js';
-import { MaterialSwatch } from '#components/geometry/cad/material-swatch.js';
-import { PartPropertiesPanel } from '#components/geometry/cad/part-properties-panel.js';
-import { PartPreviewFrame } from '#components/geometry/cad/part-preview-image.js';
+import { MaterialSwatch } from '@taucad/viewer/cad/material-swatch';
+import { PartPropertiesPanel } from '@taucad/viewer/cad/part-properties-panel';
+import { PartPreviewFrame } from '@taucad/viewer/cad/part-preview-image';
 import { isPreviewablePart, useOpenPartGallery } from '#components/geometry/cad/part-gallery.js';
 import { useOptionalHeadlessImageService } from '#providers/headless-image-provider.js';
 import { useOptionalPartThumbnailService } from '#providers/part-thumbnail-provider.js';
 import { PartThumbnailService } from '#services/part-thumbnail.service.js';
-import type { PartThumbnailRequest, PartThumbnailState } from '#services/part-thumbnail.service.js';
+import type { PartThumbnailRequest } from '#services/part-thumbnail.service.js';
+import type { PartThumbnailState } from '@taucad/viewer/cad/part-thumbnail-state';
 import { canonicalPartPreviews, sourceGlbDigest } from '#services/part-thumbnail-visual.js';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useProject } from '#hooks/use-project.js';
-import type { graphicsMachine } from '#machines/graphics.machine.js';
-import { deriveModelInteractionUnitId, getModelInteractionUnitState } from '#machines/model-interaction.machine.js';
-import type { modelInteractionMachine } from '#machines/model-interaction.machine.js';
+import type { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
+import {
+  deriveModelInteractionUnitId,
+  getModelInteractionUnitState,
+} from '@taucad/viewer/machines/model-interaction.machine';
+import type { modelInteractionMachine } from '@taucad/viewer/machines/model-interaction.machine';
 import { cn } from '@taucad/ui/utils/cn';
 import { nestedActionVariants } from '@taucad/ui/components/nested-action.variants';
 import { findEntryGraphics, listGeometryEntryPaths } from '#routes/w.$workspace.$project/geometry-unit.utils.js';

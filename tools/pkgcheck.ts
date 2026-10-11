@@ -512,6 +512,11 @@ const internalImportsExceptions: Readonly<Record<string, Readonly<Record<string,
     '#components/*.variants.js': 'variant modules are .ts and share components/ with the .tsx components',
     '#components/*.js': 'components are .tsx, which the canonical #*.js -> ./src/*.ts target cannot reach',
   },
+  // React components and hooks sit beside .ts modules in every viewer directory, so a per-directory key
+  // like the design system's cannot reach them; `.jsx` names the .tsx module as `.js` names the .ts one.
+  '@taucad/viewer': {
+    '#*.jsx': '.tsx components and hooks share every directory with .ts modules; the canonical #*.js reaches only .ts',
+  },
 };
 
 /** Projects whose sources live under `src/`; `type:app` layouts are deliberately outside the rule. */

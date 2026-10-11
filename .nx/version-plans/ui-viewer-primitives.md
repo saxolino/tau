@@ -8,3 +8,4 @@ The primitives Tau's CAD viewer draws with are now part of `@taucad/ui`, so the 
 - **Panes**: `pane-virtual-list` with its `pane-spacing.variants`, and `actions` (the action button, details toggle and actions row with `disclosureMotion`).
 - **Keyboard**: `components/keyboard` (`KeyboardProvider`, `useKeybinding`, `useModifiers`), `utils/keys` and `utils/platform`.
 - **Helpers**: `hooks/use-tick-animation` and `utils/pointer-capture`.
+- **Formatting**: `utils/label` (`toTitleCase`, `formatDisplayLabel`) and `utils/number` (`clamp`).

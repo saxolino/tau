@@ -1,4 +1,4 @@
-import { MaterialSwatch } from '#components/geometry/cad/material-swatch.js';
+import { MaterialSwatch } from '@taucad/viewer/cad/material-swatch';
 import { ModifiedIndicator } from '@taucad/ui/components/modified-indicator';
 import { cn } from '@taucad/ui/utils/cn';
 

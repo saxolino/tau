@@ -7,12 +7,12 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import type CameraControlsImpl from 'camera-controls';
 import type { ToolpathProgram } from '@taucad/slicer/toolpath';
-import { createTauR3fGlProp } from '#components/geometry/graphics/three/canvas-three-gl.js';
-import { readGraphicsBackendQueryOverride } from '#components/geometry/graphics/graphics-backend.js';
+import { createTauR3fGlProp } from '@taucad/viewer/graphics/three/canvas-three-gl';
+import { readGraphicsBackendQueryOverride } from '#utils/graphics-backend-override.js';
 import {
   resolveCameraControlProps,
   TauCameraControls,
-} from '#components/geometry/graphics/three/controls/tau-camera-controls.js';
+} from '@taucad/viewer/graphics/three/controls/tau-camera-controls';
 import { applyPlateGrain, plateStandInOutline } from '#components/printer/printer-plate-surface.js';
 import { createPrinterHardware, toolheadOpacity } from '#components/printer/printer-hardware.js';
 import { printerBackground, printerBody } from '#components/printer/printer-colors.constants.js';

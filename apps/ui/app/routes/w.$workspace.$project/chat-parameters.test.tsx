@@ -300,7 +300,7 @@ vi.mock('dockview-react', () => ({
   },
 }));
 
-vi.mock('#components/geometry/parameters/parameters.js', () => ({
+vi.mock('@taucad/viewer/parameters/parameters', () => ({
   Parameters: ({
     parameters,
     className,

@@ -354,7 +354,7 @@ vi.mock('@rjsf/core', async (importOriginal) => ({
   ),
 }));
 
-vi.mock('#components/geometry/parameters/rjsf-theme.js', () => ({
+vi.mock('@taucad/viewer/parameters/rjsf-theme', () => ({
   widgets: {},
   templates: {},
 }));

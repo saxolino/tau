@@ -13,7 +13,7 @@ import { FileManagerProvider, useFileManager } from '#hooks/use-file-manager.js'
 import { ProjectProvider, useParameterSetActor } from '#hooks/use-project.js';
 import { MonacoModelServiceProvider } from '#hooks/use-monaco-model-service.js';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
-import { WebglContextTrackerProvider } from '#hooks/use-webgl-context-tracker.js';
+import { WebglContextTrackerProvider } from '@taucad/viewer/hooks/use-webgl-context-tracker';
 import { ProjectWorkspaceProvider } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { ViewerDockview } from '#routes/w.$workspace.$project/chat-viewer-dockview.js';
 import { WorkbenchDockview } from '#routes/w.$workspace.$project/chat-workbench-dockview.js';

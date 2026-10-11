@@ -6,7 +6,12 @@ import type { ActorRefFrom } from 'xstate';
 import type { cadMachine } from '#machines/cad.machine.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { GeometryUnitTiming } from '#routes/w.$workspace.$project/chat-kernel-timing.js';
-import { clearRendererSpans, recordRendererSpan, rendererSpans, telemetryJsonl } from '#lib/renderer-telemetry.js';
+import {
+  clearRendererSpans,
+  recordRendererSpan,
+  rendererSpans,
+  telemetryJsonl,
+} from '@taucad/viewer/lib/renderer-telemetry';
 
 const { downloadBlob } = vi.hoisted(() => ({ downloadBlob: vi.fn() }));
 vi.mock('@taucad/utils/file', () => ({ downloadBlob }));

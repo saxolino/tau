@@ -29,7 +29,7 @@ vi.mock('#services/headless-capture.js', () => ({
   captureFilesToDataUrls: () => ['data:image/webp;base64,AQID'],
   omittedSectionCutsNotice: 'Section cutaways narrower than 180° are not shown in captures.',
 }));
-vi.mock('#hooks/use-graphics.js', () => ({ useGraphics: () => mockGraphicsRef }));
+vi.mock('@taucad/viewer/hooks/use-graphics', () => ({ useGraphics: () => mockGraphicsRef }));
 vi.mock('#hooks/use-cad.js', () => ({ useCad: () => mockCadRef }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectRef: { send: mockProjectSend } }) }));
 vi.mock('#hooks/use-chat.js', () => ({ useChatActions: () => ({ addDraftAttachment: mockAddDraftAttachment }) }));

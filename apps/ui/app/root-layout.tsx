@@ -14,6 +14,7 @@ import { cookieName } from '#constants/cookie.constants.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { Toaster } from '#components/ui/sonner.js';
 import { ColorProvider, useColor } from '#hooks/use-color.js';
+import { AppViewerEnvironment } from '#components/geometry/app-viewer-environment.js';
 import { useFavicon } from '#hooks/use-favicon.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { ErrorPage } from '#components/error-page.js';
@@ -173,9 +174,11 @@ export function RootLayout({
         <AnalyticsBoundary>
           <ThemeProvider specifiedTheme={ssrTheme} themeAction='/action/set-theme'>
             <ColorProvider>
-              <LayoutDocument env={data?.env ?? {}} ssrTheme={ssrTheme} documentChrome={documentChrome}>
-                {application}
-              </LayoutDocument>
+              <AppViewerEnvironment>
+                <LayoutDocument env={data?.env ?? {}} ssrTheme={ssrTheme} documentChrome={documentChrome}>
+                  {application}
+                </LayoutDocument>
+              </AppViewerEnvironment>
             </ColorProvider>
           </ThemeProvider>
         </AnalyticsBoundary>

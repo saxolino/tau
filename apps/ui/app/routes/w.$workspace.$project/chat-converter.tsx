@@ -29,7 +29,7 @@ import {
 } from '#components/ui/floating-panel.js';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useMainGraphics, useProject } from '#hooks/use-project.js';
-import type { LengthSymbol } from '#constants/length-units.js';
+import type { LengthSymbol } from '@taucad/viewer/constants/length-units';
 import { toast } from '#components/ui/sonner.js';
 import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { useFileManager } from '#hooks/use-file-manager.js';
@@ -52,9 +52,9 @@ import {
   getFormatInfo,
 } from '#utils/export-formats.utils.js';
 import { groupExportFormatsByFidelity } from '#components/files/export-format-groups.js';
-import { widgets, templates as rjsfTemplates } from '#components/geometry/parameters/rjsf-theme.js';
-import type { ParameterCommit, RJSFContext } from '#components/geometry/parameters/rjsf-context.js';
-import { rjsfFields } from '#components/geometry/parameters/rjsf-field-path.js';
+import { widgets, templates as rjsfTemplates } from '@taucad/viewer/parameters/rjsf-theme';
+import type { ParameterCommit, RJSFContext } from '@taucad/viewer/parameters/rjsf-context';
+import { rjsfFields } from '@taucad/viewer/parameters/rjsf-field-path';
 import {
   getDiscriminatedUnionInfo,
   mergeFormDefaults,
@@ -63,12 +63,12 @@ import {
   rjsfDefaultFormStateBehavior,
   rjsfIdPrefix,
   rjsfIdSeparator,
-} from '#components/geometry/parameters/rjsf-utils.js';
+} from '@taucad/viewer/parameters/rjsf-utils';
 import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
 import { createExportArtifactZip, downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { downloadBlob } from '@taucad/utils/file';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
-import { isJsonSchemaValid, rjsfValidator } from '#lib/rjsf-validator.js';
+import { isJsonSchemaValid, rjsfValidator } from '@taucad/viewer/parameters/rjsf-validator';
 import type { ParameterSetService } from '#services/parameter-set-service.js';
 
 const toggleConverterKeyCombination = projectWorkspaceKeyCombinations.export;
