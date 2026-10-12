@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { Server } from 'node:http';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -86,6 +87,35 @@ describe('createLocalMcpViewer', () => {
     expect(shownModel(await viewer.show({}, inline)).model.sourceFile).toBe('src/bracket.ts');
     await viewer.show({ targetFile: 'models/part.glb' }, inline);
     expect(shownModel(await viewer.show({}, inline)).model.path).toBe('models/part.glb');
+  });
+
+  it('should keep the model shown last and the page read per conversation the host names', async () => {
+    const inThread = (thread: string, toolCallId: string): TauMcpViewerCallOptions => ({
+      toolCallId,
+      presentation: 'inline',
+      meta: { threadId: thread },
+    });
+    const { model } = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, inThread('thread-a', 'call-a')));
+    expect(shownModel(await viewer.show({}, inThread('thread-b', 'call-b'))).model.sourceFile).toBe('src/bracket.ts');
+    expect(shownModel(await viewer.show({}, inThread('thread-a', 'call-a2'))).model.path).toBe('models/part.glb');
+
+    /* A card's app_sync carries no thread; the show call it names does. */
+    const view = {
+      model: { id: model.id, title: model.title, path: model.path },
+      selected: [],
+      hidden: [],
+      isolated: [],
+      sectionActive: false,
+      measurementCount: 0,
+      composition: 'inline',
+      interactedAt: 5,
+    } as const;
+    await viewer.sync(
+      { pageId: 'card-page-a', version: 0, follow: false, wait: false, view, toolCallId: 'call-a' },
+      inline,
+    );
+    expect(await viewer.viewState({}, inThread('thread-b', 'call-b2'))).toMatchObject({ errorCode: 'NO_VIEWER' });
+    expect(await viewer.viewState({}, inThread('thread-a', 'call-a3'))).toEqual({ view });
   });
 
   it('should refuse a path outside the project and a format the page cannot draw', async () => {
@@ -196,6 +226,71 @@ describe('createLocalMcpViewer', () => {
       expect(await synced.json()).toEqual({ version: 2, show: { ...next, select: ['component:arm'] } });
       const malformed = await call('app_sync', { pageId: 'p' });
       expect(malformed.status).toBe(400);
+    });
+
+    it('should answer the model a link names, from the project it was shown in, without rendering again', async () => {
+      const elsewhere = await mkdtemp(join(tmpdir(), 'tau-viewer-start-'));
+      /* A host that names the project per call (Codex `_meta`); without it, the server's start folder. */
+      const perCall = createLocalMcpViewer({
+        page,
+        rootOf: (meta) => (meta?.['project'] === 'a' ? root : elsewhere),
+        renderGlb,
+      });
+      try {
+        const projectA: TauMcpViewerCallOptions = { ...text, meta: { project: 'a' } };
+        const first = shownModel(await perCall.show({ targetFile: 'src/bracket.ts' }, projectA));
+        await perCall.show({ targetFile: 'models/part.glb' }, projectA);
+        expect(renderGlb).toHaveBeenCalledTimes(1);
+        const { origin, token, modelId } = loopbackOf(first.viewerUrl);
+        const call = async (args: Record<string, unknown>) =>
+          fetch(`${origin}/api/tools/call`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-tau-viewer-token': token },
+            body: JSON.stringify({ name: 'show_model', arguments: args }),
+          });
+
+        const linked = await call({ modelId });
+        expect(linked.status).toBe(200);
+        expect(await linked.json()).toEqual({ model: first.model });
+        expect(renderGlb).toHaveBeenCalledTimes(1);
+        const unknown = await call({ modelId: 'unknown' });
+        expect(unknown.status).toBe(422);
+        expect(await unknown.json()).toMatchObject({ errorCode: 'UNKNOWN_MODEL' });
+      } finally {
+        await perCall.close();
+        await rm(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    it('should show a model without a link when the loopback server cannot start, then retry', async () => {
+      const listen = vi.spyOn(Server.prototype, 'listen').mockImplementationOnce(function (this: Server) {
+        process.nextTick(() => this.emit('error', new Error('listen EPERM: operation not permitted')));
+        return this;
+      });
+      try {
+        const failed = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
+        expect(failed.model.path).toBe('models/part.glb');
+        expect(failed.viewerUrl).toBeUndefined();
+
+        const retried = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
+        expect(retried.viewerUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?model=/u);
+        expect(listen).toHaveBeenCalledTimes(2);
+      } finally {
+        listen.mockRestore();
+      }
+    });
+
+    it('should close after a loopback start that failed', async () => {
+      const listen = vi.spyOn(Server.prototype, 'listen').mockImplementationOnce(function (this: Server) {
+        process.nextTick(() => this.emit('error', new Error('listen EPERM: operation not permitted')));
+        return this;
+      });
+      try {
+        await viewer.show({ targetFile: 'models/part.glb' }, text);
+        await expect(viewer.close()).resolves.toBeUndefined();
+      } finally {
+        listen.mockRestore();
+      }
     });
 
     it('should refuse a request under another host name', async () => {

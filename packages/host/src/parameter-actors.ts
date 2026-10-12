@@ -107,7 +107,7 @@ export const createParameterActors = (options: ParameterActorsOptions): KeyedRes
         watchReady: (request, onEvent) => {
           const closed = Promise.withResolvers<void>();
           /* A Node watch ends on its own only with its channel, which delivers a last `reset` and then refuses every
-           * request: that watch closed (`WATCH_CLOSED`). A reset the channel outlives lost events (`WATCH_RESET`). */
+           * request: that watch closed (`WATCH_CLOSED`). A reset the channel outlives lost events (`WATCH_RESET`), and the actor re-arms and reloads. */
           const forward = (event: Readonly<{ type: string }>): void => {
             if (event.type !== 'reset') {
               onEvent(event);

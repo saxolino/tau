@@ -4,7 +4,7 @@ import { Mesh, PerspectiveCamera, Scene } from 'three';
 import {
   getGeneratedShaderSource,
   supportedThreeShaderDebugRevision,
-} from '#graphics/three/utils/three-shader-debug.test-utils.js';
+} from '#graphics/three/utils/three-shader-debug.js';
 
 describe('Three generated shader debug adapter', () => {
   it('is pinned to r184 and forwards the public debug call exactly', async () => {

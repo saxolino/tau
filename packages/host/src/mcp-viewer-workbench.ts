@@ -3,10 +3,13 @@
  * blueprint W10, Q14), so Tau opens the project with the view the person left in the page.
  *
  * Only the person's own interaction is kept: until a page's `interactedAt` moves past what it was when that page first
- * reported a model, its reports of that model are ignored, so opening a model or an agent's selection writes nothing. Writes settle for a
- * moment, then go out in the order Tau's own writer uses (view, entries, layout). Each one replaces the file only if
- * it still holds the bytes it was computed from; a record another writer changed meanwhile wins, and the next report
- * computes against it. A record that is invalid or from a newer Tau is left untouched, and nothing is written for it.
+ * reported a model, its reports of that model are ignored, so opening a model or an agent's selection writes nothing.
+ * Only what changed since the page's previous report is written, the camera or the component display, so a page that
+ * merely keeps polling never reverts what `arrange_workbench` or Tau wrote meanwhile. Writes settle for a moment,
+ * then go out view first, then the layout that names a view this writer created, then entries. Each one replaces the
+ * file only if it still holds the bytes it was computed from; a record another writer changed meanwhile wins, and the
+ * next report computes against it. A view created for a layout write that is refused is removed again. A record that
+ * is invalid or from a newer Tau is left untouched, and nothing is written for it.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -19,6 +22,9 @@ import type { ViewerNode, WorkbenchEntries, WorkbenchLayout, WorkbenchView } fro
 
 /** The frame a page reports its camera in when it names none. */
 const rootFrame = 'tau:root';
+
+/** The folder Tau keeps view records in, relative to the project. */
+const viewsFolder = `${dirname(workbenchPaths.view('v'))}/`;
 
 /** Timing knobs; tests shorten them. */
 export type McpViewerWorkbenchOptions = Readonly<{
@@ -42,6 +48,34 @@ export type McpViewerWorkbench = Readonly<{
 type Read = Readonly<{ path: string; text: string | undefined }>;
 
 type Write = Read & Readonly<{ next: string }>;
+
+/** Which parts of a page's view changed since its previous report, and so are the person's to write. */
+type Changed = Readonly<{ camera: boolean; components: boolean }>;
+
+const sameList = <Item>(left: readonly Item[], right: readonly Item[]): boolean =>
+  left.length === right.length && left.every((item, index) => item === right[index]);
+
+const sameCamera = (left: TauViewerViewState['camera'], right: TauViewerViewState['camera']): boolean =>
+  left === undefined || right === undefined
+    ? left === right
+    : sameList(left.target, right.target) &&
+      sameList(left.direction, right.direction) &&
+      sameList(left.up, right.up) &&
+      left.verticalSpan === right.verticalSpan &&
+      left.frameId === right.frameId &&
+      left.perspectiveZoom === right.perspectiveZoom;
+
+/**
+ * Say which parts of a page's view moved between two of its reports.
+ *
+ * @param previous - The page's previous report of the model.
+ * @param next - Its new report.
+ * @returns The parts that changed.
+ */
+const changedBetween = (previous: TauViewerViewState, next: TauViewerViewState): Changed => ({
+  camera: !sameCamera(previous.camera, next.camera),
+  components: !sameList(previous.hidden, next.hidden) || !sameList(previous.isolated, next.isolated),
+});
 
 const readText = async (root: string, path: string): Promise<string | undefined> => {
   try {
@@ -111,14 +145,32 @@ const writeChecked = async (root: string, write: Write): Promise<boolean> => {
 };
 
 /**
- * The writes that keep one view: the page's pose in a view of its entry, its component display in `entries.json`,
- * and a viewer tab for a view this writer had to create.
+ * A view record's camera from the page's.
+ *
+ * @param camera - The page's camera.
+ * @returns The pose Tau restores.
+ */
+const poseOf = (camera: NonNullable<TauViewerViewState['camera']>): NonNullable<WorkbenchView['camera']> => ({
+  kind: 'pose',
+  frameId: camera.frameId ?? rootFrame,
+  target: [...camera.target],
+  direction: [...camera.direction],
+  up: [...camera.up],
+  verticalSpan: camera.verticalSpan,
+  perspectiveZoom: camera.perspectiveZoom ?? 1,
+});
+
+/**
+ * The writes that keep one view: the page's pose in a view of its entry, a viewer tab for a view this writer had to
+ * create, and its component display in `entries.json`. Only the parts the page changed are written; a view this
+ * writer creates takes the page's pose regardless.
  *
  * @param root - The project folder.
  * @param view - What the page reported.
+ * @param changed - The parts of the view the person changed.
  * @returns The writes in order, or `undefined` when a record must be left alone.
  */
-const plan = async (root: string, view: TauViewerViewState): Promise<Write[] | undefined> => {
+const plan = async (root: string, view: TauViewerViewState, changed: Changed): Promise<Write[] | undefined> => {
   const entryPath = view.model.sourceFile ?? view.model.path;
   const layoutText = await readText(root, workbenchPaths.layout);
   const layout = layoutText === undefined ? undefined : decode<WorkbenchLayout>(workbenchRecords.layout, layoutText);
@@ -140,22 +192,10 @@ const plan = async (root: string, view: TauViewerViewState): Promise<Write[] | u
   }
   const id = found?.id ?? `v-${randomBytes(4).toString('hex')}`;
   const viewRead: Read = found?.read ?? { path: workbenchPaths.view(id), text: undefined };
-  const { camera } = view;
+  const camera = found === undefined || changed.camera ? view.camera : undefined;
   const nextView = workbenchRecords.view.serialize({
     ...(found?.record ?? { version: 1, entryPath }),
-    ...(camera === undefined
-      ? {}
-      : {
-          camera: {
-            kind: 'pose',
-            frameId: camera.frameId ?? rootFrame,
-            target: [...camera.target],
-            direction: [...camera.direction],
-            up: [...camera.up],
-            verticalSpan: camera.verticalSpan,
-            perspectiveZoom: camera.perspectiveZoom ?? 1,
-          },
-        }),
+    ...(camera === undefined ? {} : { camera: poseOf(camera) }),
   });
 
   const entriesText = await readText(root, workbenchPaths.entries);
@@ -180,10 +220,8 @@ const plan = async (root: string, view: TauViewerViewState): Promise<Write[] | u
     },
   });
 
-  const writes: Write[] = [
-    { ...viewRead, next: nextView },
-    { path: workbenchPaths.entries, text: entriesText, next: nextEntries },
-  ];
+  const writes: Write[] = [{ ...viewRead, next: nextView }];
+  /* The layout goes before entries, so a refused entries write leaves no view the layout does not name. */
   if (found === undefined) {
     const nextLayout: WorkbenchLayout = layout ?? {
       version: 1,
@@ -197,7 +235,34 @@ const plan = async (root: string, view: TauViewerViewState): Promise<Write[] | u
       next: workbenchRecords.layout.serialize({ ...nextLayout, viewer: withViewTab(nextLayout.viewer, id) }),
     });
   }
+  if (changed.components) {
+    writes.push({ path: workbenchPaths.entries, text: entriesText, next: nextEntries });
+  }
   return writes.filter((write) => write.next !== write.text);
+};
+
+/**
+ * Make one plan's writes in order, stopping at the first that is refused. A view file the plan created is removed again
+ * when the layout that would name it is refused, so no view is left that nothing names.
+ *
+ * @param root - The project folder.
+ * @param writes - The plan's writes, in order.
+ */
+const writeInOrder = async (root: string, writes: readonly Write[]): Promise<void> => {
+  let created: string | undefined;
+  for (const write of writes) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Tau adopts a view before the layout that names it, so the order holds.
+    if (!(await writeChecked(root, write))) {
+      if (created !== undefined && write.path === workbenchPaths.layout) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- The loop ends here.
+        await rm(join(root, created), { force: true });
+      }
+      return;
+    }
+    if (write.text === undefined && write.path.startsWith(viewsFolder)) {
+      created = write.path;
+    }
+  }
 };
 
 /**
@@ -211,25 +276,24 @@ export const createMcpViewerWorkbench = (options: McpViewerWorkbenchOptions = {}
   const settle = options.settle ?? 1500;
   const onError = options.onError ?? (() => undefined);
   /** The newest report per project file, waiting to be written. */
-  const waiting = new Map<string, Readonly<{ root: string; view: TauViewerViewState }>>();
-  /** Each page's `interactedAt` when it first reported a model: what counts as no interaction yet. */
-  const baselines = new Map<string, number>();
+  const waiting = new Map<string, Readonly<{ root: string; view: TauViewerViewState; changed: Changed }>>();
+  /**
+   * Each page's `interactedAt` when it first reported a model (what counts as no interaction yet), and its previous
+   * report of that model (what its next report is compared with).
+   */
+  const pages = new Map<string, Readonly<{ baseline: number; previous: TauViewerViewState }>>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> = Promise.resolve();
 
   const writeWaiting = async (): Promise<void> => {
     const batch = [...waiting.values()];
     waiting.clear();
-    for (const { root, view } of batch) {
+    for (const { root, view, changed } of batch) {
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- One project's records are written in order, one view at a time.
-        const writes = await plan(root, view);
-        for (const write of writes ?? []) {
-          // oxlint-disable-next-line eslint/no-await-in-loop -- Tau adopts a view before the layout that names it, so the order holds.
-          if (!(await writeChecked(root, write))) {
-            break;
-          }
-        }
+        const writes = await plan(root, view, changed);
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Ditto.
+        await writeInOrder(root, writes ?? []);
       } catch (error) {
         onError(error);
       }
@@ -252,15 +316,26 @@ export const createMcpViewerWorkbench = (options: McpViewerWorkbenchOptions = {}
     report({ root, pageId, view }) {
       const key = `${root}\0${view.model.sourceFile ?? view.model.path}`;
       const page = `${pageId}\0${key}`;
-      const baseline = baselines.get(page);
-      if (baseline === undefined) {
-        baselines.set(page, view.interactedAt);
+      const seen = pages.get(page);
+      if (seen === undefined) {
+        pages.set(page, { baseline: view.interactedAt, previous: view });
         return;
       }
-      if (view.interactedAt <= baseline) {
+      pages.set(page, { baseline: seen.baseline, previous: view });
+      const changed = changedBetween(seen.previous, view);
+      if (view.interactedAt <= seen.baseline || (!changed.camera && !changed.components)) {
         return;
       }
-      waiting.set(key, { root, view });
+      /* A report still waiting keeps the parts it changed; this one adds its own. */
+      const queued = waiting.get(key)?.changed;
+      waiting.set(key, {
+        root,
+        view,
+        changed: {
+          camera: changed.camera || (queued?.camera ?? false),
+          components: changed.components || (queued?.components ?? false),
+        },
+      });
       clearTimeout(timer);
       timer = setTimeout(() => {
         void flush();

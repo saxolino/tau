@@ -416,6 +416,16 @@ describe('useKinematicsDragControls', () => {
     kinematics.stop();
   });
 
+  it('should name the KeyboardProvider subpath when no provider is mounted above the viewer', () => {
+    // React reports the render error to the console before rethrowing it; the assertion is the thrown message.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const renderWithoutProvider = (): void => {
+      renderHook(() => useKinematicsDragControls({ unitId, scene, getPickableMeshes }));
+    };
+
+    expect(renderWithoutProvider).toThrow('@taucad/ui/components/keyboard');
+  });
+
   describe('arming', () => {
     it('should leave every press to the camera while the pane does not arm the unit', () => {
       const { result } = renderControls();

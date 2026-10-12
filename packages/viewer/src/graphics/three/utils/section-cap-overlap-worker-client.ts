@@ -19,7 +19,7 @@ export type CreateSectionCapOverlapWorkerClientOptions = Readonly<{
 export const canUseSectionCapOverlapWorker = (): boolean => typeof Worker !== 'undefined';
 
 export const createDefaultSectionCapOverlapWorker = (): Worker =>
-  new Worker(new URL('#graphics/three/workers/section-cap-overlap.worker.js', import.meta.url), {
+  new Worker(new URL('../workers/section-cap-overlap.worker.ts', import.meta.url), {
     type: 'module',
     name: 'tau-section-cap-overlap-worker',
   });
