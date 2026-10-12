@@ -30,10 +30,10 @@ import {
   parseGitHubUrl,
   normalizeGitHubUrl,
   resolveGitHubImportTarget,
+  resolveImportRoute,
   supportedKernelExtensions,
   findMainFile,
 } from '#routes/import.$/import.utils.js';
-import type { GitHubRepoInfo } from '#routes/import.$/import.utils.js';
 import { ImportErrorView } from '#routes/import.$/import-error-view.js';
 import { ImportProcessingView } from '#routes/import.$/import-processing-view.js';
 import { ImportMainFileView } from '#routes/import.$/import-main-file-view.js';
@@ -109,12 +109,8 @@ export function meta({ params, location }: Route.MetaArgs): MetaDescriptor[] {
  */
 // oxlint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- inferred type
 export function clientLoader({ request, params }: Route.ClientLoaderArgs) {
-  const target = resolveGitHubImportTarget(readSplatPath(params), new URL(request.url).search);
-  if (!target) {
-    throw new Error('Invalid GitHub URL. Only github.com repositories are supported.');
-  }
-
-  return target satisfies GitHubRepoInfo;
+  /* An address that is not a GitHub repository opens the form holding it, never the crash page. */
+  return resolveImportRoute(readSplatPath(params), new URL(request.url).search);
 }
 
 type ImportMode = 'github' | 'disk';
@@ -142,7 +138,7 @@ const repositoryUnavailableAdvice = (error: Error | undefined, canChooseFromAcco
 
 // oxlint-disable-next-line complexity -- TODO: consider refactoring.
 export default function ImportRoute(): React.JSX.Element {
-  const { owner, repo, ref, path, mainFile } = useLoaderData<typeof clientLoader>();
+  const { owner, repo, ref, path, mainFile, rejectedUrl } = useLoaderData<typeof clientLoader>();
   const [arrivalRepository] = useState({ owner, repo });
   const navigate = useNavigate();
   const projectManager = useProjectManager();
@@ -163,7 +159,7 @@ export default function ImportRoute(): React.JSX.Element {
   // Track active import mode
   const [activeMode, setActiveMode] = useState<ImportMode | undefined>(undefined);
   const [localOperation, setLocalOperation] = useState<'read' | 'extract'>('read');
-  const [repoUrlDraft, setRepoUrlDraft] = useState<string>();
+  const [repoUrlDraft, setRepoUrlDraft] = useState<string | undefined>(rejectedUrl);
   const repoUrlInput = useRef<HTMLInputElement>(null);
   const repoUrlHintId = useId();
 
@@ -593,6 +589,7 @@ export default function ImportRoute(): React.JSX.Element {
 
   const publicRepoUrl = repoUrlDraft ?? repoUrl;
   const canReviewRepository = parseGitHubUrl(normalizeGitHubUrl(publicRepoUrl.trim())) !== undefined;
+  const isRepoUrlRejected = publicRepoUrl.trim() !== '' && !canReviewRepository;
   const cancelRepositoryReview = (): void => {
     setRepoUrlDraft(repoUrl);
     setLinkedSelection(undefined);
@@ -906,6 +903,7 @@ export default function ImportRoute(): React.JSX.Element {
                         placeholder='https://github.com/owner/repo'
                         value={publicRepoUrl}
                         aria-describedby={repoUrlHintId}
+                        aria-invalid={isRepoUrlRejected}
                         className='pr-8 font-mono text-sm'
                         onChange={(event) => {
                           setRepoUrlDraft(event.target.value);
@@ -929,7 +927,9 @@ export default function ImportRoute(): React.JSX.Element {
                       ) : undefined}
                     </div>
                     <p id={repoUrlHintId} className='text-xs text-muted-foreground'>
-                      Copies files without Git history or sync.
+                      {isRepoUrlRejected
+                        ? 'Enter a github.com repository address, like https://github.com/owner/repo.'
+                        : 'Copies files without Git history or sync.'}
                     </p>
                     <Button type='submit' variant='outline' disabled={!canReviewRepository}>
                       Review repository

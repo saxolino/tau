@@ -91,12 +91,12 @@ class RecordingWorker {
 /* The route's `clientLoader`, evaluated against the router's own location so navigation re-derives it. */
 vi.mock('react-router', async (importOriginal) => {
   const router = await importOriginal<typeof ReactRouterModule>();
-  const { resolveGitHubImportTarget } = await import('#routes/import.$/import.utils.js');
+  const { resolveImportRoute } = await import('#routes/import.$/import.utils.js');
   return {
     ...router,
     useLoaderData: () => {
       const location = router.useLocation();
-      return resolveGitHubImportTarget(location.pathname.replace(/^\/import\/?/u, ''), location.search);
+      return resolveImportRoute(location.pathname.replace(/^\/import\/?/u, ''), location.search);
     },
   };
 });
@@ -371,6 +371,19 @@ describe('ImportRoute GitHub card', () => {
     await waitFor(() => {
       expect(workerRequests).toEqual([expect.objectContaining({ type: 'startDownload', root: 'public/kcl-samples' })]);
     });
+  });
+
+  /* A link the route cannot import lands on the form holding it, never on the crash page (E11, E13). */
+  it('should hold an address it cannot import in the URL field and say why it cannot be reviewed', async () => {
+    await renderImport('/import/https://gitlab.com/gitlab-org/gitlab');
+
+    const url = screen.getByRole('textbox', { name: 'Public repository URL' });
+    expect(url).toHaveValue('https://gitlab.com/gitlab-org/gitlab');
+    expect(url).toHaveAttribute('aria-invalid', 'true');
+    expect(
+      screen.getByText('Enter a github.com repository address, like https://github.com/owner/repo.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review repository' })).toBeDisabled();
   });
 
   it('should review a URL only on submission and restore its draft and focus after cancellation', async () => {
