@@ -1155,6 +1155,8 @@ export function RevisionsPanelBody(): React.JSX.Element {
             role={projectRole}
             projectId={projectId}
             isLineKnown={line.kind !== 'unknown'}
+            /* Sync pushes every branch; an unborn one is not on GitHub yet (D92). */
+            branch={line.kind === 'branch' ? line.name : undefined}
           />
         ) : null}
       </div>

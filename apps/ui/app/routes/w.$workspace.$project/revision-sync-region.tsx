@@ -151,6 +151,8 @@ export type RevisionSyncRegionProps = {
    * only fail after the gesture.
    */
   readonly isLineKnown?: boolean;
+  /** The branch the pane is on, which *Open on GitHub* opens; the repository root when absent (D92). */
+  readonly branch?: string;
   readonly className?: string;
 };
 
@@ -481,6 +483,7 @@ export function RevisionSyncRegion({
   role,
   projectId,
   isLineKnown = true,
+  branch,
   className,
 }: RevisionSyncRegionProps): React.JSX.Element {
   const busy = remote.phase === 'connecting' || remote.phase === 'disconnecting';
@@ -584,6 +587,14 @@ export function RevisionSyncRegion({
     }
   }, [remote.phase]);
 
+  /* D92: *Open on GitHub* opens the branch, each segment encoded and its separators kept. */
+  const branchPath =
+    branch === undefined
+      ? ''
+      : `/tree/${branch
+          .split('/')
+          .map((segment) => encodeURIComponent(segment))
+          .join('/')}`;
   const connectedLabel = remote.kind === 'tau' ? 'Tau Cloud' : gitRemoteLabel(remote.url, remote.provider === 'github');
   const pendingLabel =
     pendingConnection?.kind === 'tau'
@@ -878,7 +889,11 @@ export function RevisionSyncRegion({
                         <DropdownMenuLabel>{connectedLabel}</DropdownMenuLabel>
                         {remote.provider === 'github' && remote.url !== undefined ? (
                           <DropdownMenuItem asChild>
-                            <a href={remote.url.replace(/\.git$/u, '')} target='_blank' rel='noreferrer'>
+                            <a
+                              href={`${remote.url.replace(/\.git$/u, '')}${branchPath}`}
+                              target='_blank'
+                              rel='noreferrer'
+                            >
                               <ExternalLink aria-hidden />
                               Open on GitHub
                             </a>

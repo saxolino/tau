@@ -272,6 +272,23 @@ describe('RevisionSyncRegion', () => {
     );
   });
 
+  it('should open the branch on GitHub when the pane is on one (D92)', async () => {
+    const user = userEvent.setup();
+    renderRegion(
+      facet({ kind: 'git', phase: 'connected', url: 'https://github.com/o/design.git', provider: 'github' }),
+      syncFacet({ state: 'backedUp' }),
+      { branch: 'audit/g1#2' },
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Backup settings' }));
+
+    /* Each segment encoded, the separators kept: GitHub reads `/tree/<ref>` greedily. */
+    expect(screen.getByRole('menuitem', { name: 'Open on GitHub' })).toHaveAttribute(
+      'href',
+      'https://github.com/o/design/tree/audit/g1%232',
+    );
+  });
+
   it('can change the linked repository or GitHub account without disconnecting first', async () => {
     const user = userEvent.setup();
     renderRegion(
