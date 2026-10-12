@@ -1758,8 +1758,62 @@ export type GraphicsMachine = StateMachine<
   Sources['delays']
 >;
 
+/** The parameters a written machine type must share with its definition: everything except the config. */
+type CheckedMachineParameters<Machine> =
+  Machine extends StateMachine<
+    infer TContext,
+    infer TEvent,
+    infer TChildren,
+    infer TStateValue,
+    infer TTag,
+    infer TInput,
+    infer TOutput,
+    infer TEmitted,
+    MetaObject,
+    infer _TConfig,
+    infer _TActionMap,
+    infer TActorMap,
+    infer _TGuardMap,
+    infer _TDelayMap
+  >
+    ? {
+        context: TContext;
+        event: TEvent;
+        children: TChildren;
+        stateValue: TStateValue;
+        tag: TTag;
+        input: TInput;
+        output: TOutput;
+        emitted: TEmitted;
+        actors: TActorMap;
+      }
+    : never;
+
+/** `true` when `A` and `B` are assignable to each other, so neither accepts a value the other rejects. */
+type IsSameType<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+/** The names of the parameters on which `Written` and `Definition` disagree; `never` when they agree. */
+type MachineParameterDrift<Written, Definition> = {
+  [K in keyof CheckedMachineParameters<Written>]: IsSameType<
+    CheckedMachineParameters<Written>[K],
+    K extends keyof CheckedMachineParameters<Definition> ? CheckedMachineParameters<Definition>[K] : never
+  > extends true
+    ? never
+    : K;
+}[keyof CheckedMachineParameters<Written>];
+
+/** `Definition` when the written type matches it, else a type `Definition` cannot be assigned to that names the drift. */
+type MatchingDefinition<Definition, Written> = [MachineParameterDrift<Written, Definition>] extends [never]
+  ? Definition
+  : { readonly parameterDrift: MachineParameterDrift<Written, Definition> };
+
 /* The inferred machine keeps its full config type, which is what cannot be serialized; the written type
- * drops only that config parameter, so state values, context, events and actors stay checked. */
+ * drops only that config parameter. This module-private assignment fails to compile when the written
+ * context, events, children, state value, tags, input, output, emitted events or actors drift from the
+ * definition, so the cast below never publishes an unverified type. */
+const checkedGraphicsMachineDefinition: MatchingDefinition<typeof graphicsMachineDefinition, GraphicsMachine> =
+  graphicsMachineDefinition;
+
 /**
  * Graphics Machine
  *
@@ -1786,7 +1840,7 @@ export type GraphicsMachine = StateMachine<
  * never exits and resets the other region.
  * @public
  */
-export const graphicsMachine = graphicsMachineDefinition as unknown as GraphicsMachine;
+export const graphicsMachine = checkedGraphicsMachineDefinition as unknown as GraphicsMachine;
 
 /**
  * Selects the key of the geometry currently on screen, falling back to the artifact key before any GLTF has been presented.

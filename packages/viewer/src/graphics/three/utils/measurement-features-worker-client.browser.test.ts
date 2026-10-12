@@ -5,7 +5,7 @@ import { createMeasurementFeatureWorkerClient } from '#graphics/three/utils/meas
 import { getMeshMeasurementFeatures, listMeasurementTargets } from '#graphics/three/utils/measurement-features.js';
 
 const fixture = new URL(
-  '../../../../../../../../packages/geospec-engine-native/bench/fixtures/performance-lab/generated/flanged-housing.glb',
+  '../../../../../../packages/geospec-engine-native/bench/fixtures/performance-lab/generated/flanged-housing.glb',
   import.meta.url,
 );
 

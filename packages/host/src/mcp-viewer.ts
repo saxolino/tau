@@ -101,7 +101,12 @@ export type LocalMcpViewer = TauMcpViewer &
     close(): Promise<void>;
   }>;
 
-type Shown = Readonly<{ model: TauViewerModel; absolutePath: string }>;
+/**
+ * One model a tool showed, under the id its link and its reads name. The
+ * entry is the single record of what was shown and for which project: the
+ * loopback page asks for it by id and never resolves a folder of its own.
+ */
+type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string }>;
 
 const failure = (errorCode: string, message: string): TauMcpViewerFailure => ({ errorCode, message });
 
@@ -286,7 +291,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       byteLength: bytes.length,
       sha256,
     };
-    shown.set(id, { model, absolutePath });
+    shown.set(id, { model, absolutePath, root });
     return model;
   };
 
@@ -306,13 +311,23 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     return { server, origin: `http://127.0.0.1:${String(port)}` };
   };
 
+  /* A text host gets a link; when the loopback server cannot start, the model
+   * is still shown without one, and the next text show tries again. */
   const viewerUrl = async (model: TauViewerModel, presentation: TauMcpViewerCallOptions['presentation']) => {
     if (presentation !== 'text') {
       return undefined;
     }
     loopback ??= startLoopback();
-    const { origin } = await loopback;
-    return `${origin}/?model=${encodeURIComponent(model.id)}#${token}`;
+    const starting = loopback;
+    try {
+      const { origin } = await starting;
+      return `${origin}/?model=${encodeURIComponent(model.id)}#${token}`;
+    } catch {
+      if (loopback === starting) {
+        loopback = undefined;
+      }
+      return undefined;
+    }
   };
 
   const showPath = async (
@@ -376,6 +391,14 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     return result;
   };
 
+  const browseIn = async (root: string): Promise<{ files: TauViewerFile[] }> => {
+    const main = await mainEntry(root);
+    const paths = await renderableFiles(root);
+    const ordered =
+      main !== undefined && paths.includes(main) ? [main, ...paths.filter((path) => path !== main)] : paths;
+    return { files: ordered.map((path) => ({ path, title: titleOf(path) })) };
+  };
+
   const port: LocalMcpViewer = {
     page: options.page,
     async show(input, callOptions) {
@@ -396,13 +419,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       return showPath(options.rootOf(callOptions.meta), { path: input.path }, callOptions);
     },
     async browse(callOptions) {
-      const root = options.rootOf(callOptions.meta);
-      const main = await mainEntry(root);
-      const paths = await renderableFiles(root);
-      const ordered =
-        main !== undefined && paths.includes(main) ? [main, ...paths.filter((path) => path !== main)] : paths;
-      const files: TauViewerFile[] = ordered.map((path) => ({ path, title: titleOf(path) }));
-      return { files };
+      return browseIn(options.rootOf(callOptions.meta));
     },
     async read(input) {
       const entry = shown.get(input.modelId);
@@ -434,8 +451,12 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       sessions.close();
       const running = loopback;
       loopback = undefined;
-      if (running !== undefined) {
-        const { server } = await running;
+      /* A start that failed left nothing to stop. */
+      const server = await running?.then(
+        (started) => started.server,
+        () => undefined,
+      );
+      if (server !== undefined) {
         await new Promise<void>((resolve) => {
           server.close(() => {
             resolve();
@@ -448,13 +469,30 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
 
   /* The loopback API runs the same port functions a host would reach through
    * `tools/call`, for the page served at `/`. The token rides the URL fragment,
-   * which the browser never sends, and the page returns it in a header. */
+   * which the browser never sends, and the page returns it in a header.
+   * `show_model` here answers the model the link names, as it was shown: the
+   * page's call carries no host `_meta`, so it cannot name a project folder
+   * (the server's start folder is not the conversation's project), and the
+   * model was already rendered. */
   const loopbackCall = { toolCallId: 'loopback', presentation: 'text' } as const;
+  const linkedModel = (args: unknown): Shown | undefined => {
+    const modelId = typeof args === 'object' && args !== null ? (args as { modelId?: unknown }).modelId : undefined;
+    return typeof modelId === 'string' ? shown.get(modelId) : undefined;
+  };
+  const unlinked = (): TauMcpViewerFailure =>
+    failure('UNKNOWN_MODEL', 'This link names no model this session showed; show it again.');
+
   const loopbackTools: Readonly<Record<string, (args: unknown, signal: AbortSignal) => Promise<unknown>>> = {
     [tauViewerToolName.appRead]: async (args) => port.read(tauViewerPageInputSchemas.appRead.parse(args), loopbackCall),
-    [tauViewerToolName.showModel]: async (args) =>
-      port.show(tauViewerPageInputSchemas.showModel.parse(args), loopbackCall),
-    [tauViewerToolName.browseModels]: async () => port.browse(loopbackCall),
+    [tauViewerToolName.showModel]: async (args) => {
+      const entry = linkedModel(args);
+      return entry === undefined ? unlinked() : { model: entry.model };
+    },
+    /* Files of the project the linked model came from. */
+    [tauViewerToolName.browseModels]: async (args) => {
+      const entry = linkedModel(args);
+      return entry === undefined ? unlinked() : browseIn(entry.root);
+    },
     [tauViewerToolName.appSync]: async (args, signal) =>
       port.sync(tauViewerPageInputSchemas.appSync.parse(args), { ...loopbackCall, signal }),
     [tauViewerToolName.appCaptureReply]: async (args) =>

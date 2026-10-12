@@ -13,7 +13,7 @@ import type { ChatRequest, ChatTurn, ChatTurnGesture } from '#machines/chat-sess
 import { generatePrefixedId } from '@taucad/utils/id';
 import { idPrefix } from '@taucad/types/constants';
 import { hostAdmission } from '#chat-clients/_internal/turn-body.js';
-import { commandOf, turnIntentOf, turnTriggerOf } from '#chat-clients/turn-intent.js';
+import { commandOf, turnIntentOf, turnReferencesOf, turnTriggerOf } from '#chat-clients/turn-intent.js';
 import { externalAdmissionConfig, wireAdmissionConfig } from '#services/agent-host-client.js';
 import { buildUserMessage } from '#utils/chat.utils.js';
 import { selectCaughtUp, selectCurrentRun } from '#machines/chat-projection.logic.js';
@@ -112,12 +112,6 @@ export function ChatTurnHost(): ReactNode {
           gesture.kind === 'regenerate' && gesture.requestId !== undefined
             ? gesture.requestId
             : generatePrefixedId(idPrefix.request);
-        const browserHost = hostAdmission({
-          agent: turnAgent,
-          chatId: activeChatId,
-          resolveModel: resolveModelRef.current,
-          trigger: turnTriggerOf(intent),
-        })!(runId);
         const transcript =
           gesture.kind === 'send'
             ? [...messages, gesture.message]
@@ -135,6 +129,14 @@ export function ChatTurnHost(): ReactNode {
                   ];
                 })()
               : messages;
+        const browserHost = hostAdmission({
+          agent: turnAgent,
+          chatId: activeChatId,
+          resolveModel: resolveModelRef.current,
+          trigger: turnTriggerOf(intent),
+          /* The turn's own message: the sent one, the edited one, or the one a regenerate re-runs. */
+          references: turnReferencesOf(transcript),
+        })!(runId);
         const command = commandOf(
           gesture.kind === 'send'
             ? { kind: 'send', messageId: gesture.message.id }

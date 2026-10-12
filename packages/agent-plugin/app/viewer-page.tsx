@@ -31,7 +31,7 @@ import { buildGeometryComponentReference } from '@taucad/viewer/graphics/metadat
 import { getModelInteractionUnitState } from '@taucad/viewer/machines/model-interaction.machine';
 import { getViewCameraSession } from '@taucad/viewer/services/graphics-camera-registry';
 import { ModelViewer } from '@taucad/viewer/model-viewer';
-import type { HostBridge, HostView } from '#app/host-bridge.js';
+import type { ChatRoute, HostBridge, HostView } from '#app/host-bridge.js';
 import { loadModel } from '#app/model-loader.js';
 import { chatReferenceOf } from '#app/chat-reference.js';
 import { captureLiveView, startLiveLink, viewStateOf, whenDrawn } from '#app/live-link.js';
@@ -47,6 +47,32 @@ type PageState =
 
 const previousOf = (state: PageState): Loaded | undefined =>
   state.kind === 'ready' ? state.current : state.kind === 'waiting' ? undefined : state.previous;
+
+/** The card's height where the host's cap allows it (E5, G21). */
+const inlineHeight = 420;
+
+/**
+ * The inline card's height: {@link inlineHeight}, or the host's cap when that is lower.
+ *
+ * @param view - What the page knows about its host.
+ * @returns The height in CSS pixels, or `undefined` for the tab, which fills the viewport.
+ */
+const cardHeight = (view: HostView): number | undefined =>
+  view.composition === 'inline' ? Math.min(inlineHeight, view.maxHeight ?? inlineHeight) : undefined;
+
+/** The reference action's name per route: a message starts a turn, so it says so. */
+const chatAction: Readonly<Record<ChatRoute, string>> = {
+  context: 'Add to chat',
+  message: 'Send to chat',
+  clipboard: 'Copy prompt',
+};
+
+/** What the page says once the reference went its route. */
+const chatNotice: Readonly<Record<ChatRoute, string>> = {
+  context: 'Added to chat',
+  message: 'Sent to chat',
+  clipboard: 'Copied; paste it into your chat',
+};
 
 /**
  * Follows the bridge: shows each model it hands over, keeping the last one on screen while the next loads. The
@@ -420,7 +446,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
     const add = async (): Promise<void> => {
       try {
         const outcome = await bridge.addToChat(chatReferenceOf(shown.model, selected));
-        setNotice(outcome === 'added' ? 'Added to chat' : 'Copied; paste it into your chat');
+        setNotice(chatNotice[outcome]);
       } catch {
         setNotice('Could not add to chat');
       }
@@ -442,7 +468,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
   }, [notice]);
 
   /* In a card the conversation owns the wheel and vertical pan (E5, G21);
-   * controls are 44 pt there and the canvas height is fixed. */
+   * controls are 44 pt there and the card keeps one height under the host's cap. */
   const actions = (
     <>
       <Button
@@ -453,7 +479,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         onClick={addToChat}
       >
         <MessageSquarePlus className='size-4' />
-        {view.canAddToChat ? 'Add to chat' : 'Copy prompt'}
+        {chatAction[view.chatRoute]}
       </Button>
       {isInline && view.canRequestFullscreen ? (
         <Button
@@ -481,11 +507,9 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
               onPointerUp={noteInteraction}
               onKeyUp={noteInteraction}
               onWheel={noteInteraction}
-              className={cn(
-                '@container/viewer flex flex-col bg-background text-foreground',
-                isInline ? 'h-[420px]' : 'h-dvh',
-              )}
+              className={cn('@container/viewer flex flex-col bg-background text-foreground', !isInline && 'h-dvh')}
               style={{
+                height: cardHeight(view),
                 paddingTop: view.safeArea.top,
                 paddingRight: view.safeArea.right,
                 paddingBottom: view.safeArea.bottom,
