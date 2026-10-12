@@ -7,9 +7,10 @@ import { pathToFileURL } from 'node:url';
 /**
  * Admission rules for evidence in the optional Tau Brain checkout (cloud software factory
  * blueprint, Component 2 and invariant I2): text documents and compact measurements are tracked,
- * binaries over 1 MiB go to LFS, nothing exceeds 100 MiB, and build products never enter
- * `research/artifacts/`. Only files present on disk are checked, so a sparse mount checks what an
- * agent can have touched and never downloads a blob to measure it.
+ * binaries over 1 MiB go to LFS, nothing exceeds 100 MiB, and dependency trees never enter
+ * `research/artifacts/`. By default it checks what a commit would admit (untracked and changed
+ * files), so a stale or shared checkout is judged on its own changes; `--all` checks every
+ * materialised file, which Brain CI runs on the full tree. No blob is downloaded to measure it.
  */
 
 const mebibyte = 1024 * 1024;
@@ -17,10 +18,12 @@ const binaryLimit = mebibyte;
 const fileLimit = 100 * mebibyte;
 const textWarning = 10 * mebibyte;
 
-/** Path patterns that are build products or dependency trees, never evidence. */
+/**
+ * Path patterns that are dependency trees or copies, never evidence. Single built files (a probe's
+ * `.wasm`, a model's runtime) can be cited evidence; over 1 MiB the binary rule routes them to LFS.
+ */
 const buildProducts: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /(^|\/)(node_modules|__pycache__|target\/(debug|release))\//, label: 'dependency or build tree' },
-  { pattern: /\.(node|wasm|dylib|so|dll|whl|tgz|pyc)$/, label: 'build product' },
   { pattern: /(^|\/)pnpm-lock\.yaml$/, label: 'lockfile copy' },
 ];
 
@@ -44,8 +47,15 @@ const isBinary = (path: string): boolean => {
   }
 };
 
-/** Materialised tracked files and untracked candidates, relative to the Brain root. */
-const candidatePaths = (brainRoot: string): string[] => {
+/** Untracked and changed files, or with `all` every materialised file, relative to the Brain root. */
+const candidatePaths = (brainRoot: string, all: boolean): string[] => {
+  if (!all) {
+    return git(brainRoot, ['status', '--porcelain=v1', '-z', '-uall', '--no-renames'])
+      .split('\0')
+      .filter(Boolean)
+      .map((entry) => entry.slice(3));
+  }
+
   const tracked = git(brainRoot, ['ls-files', '-t', '-z'])
     .split('\0')
     .filter((entry) => entry.length > 2 && !entry.startsWith('S '))
@@ -71,11 +81,11 @@ const lfsTracked = (brainRoot: string, paths: string[]): Set<string> => {
   return lfs;
 };
 
-/** Check every materialised Brain file against the admission rules. */
-export const checkBrainEvidence = (brainRoot: string): EvidenceDiagnostic[] => {
+/** Check Brain files against the admission rules. */
+export const checkBrainEvidence = (brainRoot: string, { all = false } = {}): EvidenceDiagnostic[] => {
   const diagnostics: EvidenceDiagnostic[] = [];
   const sized: Array<{ path: string; size: number }> = [];
-  for (const path of candidatePaths(brainRoot)) {
+  for (const path of candidatePaths(brainRoot, all)) {
     const absolute = join(brainRoot, path);
     if (!existsSync(absolute)) {
       continue;
@@ -126,7 +136,7 @@ if (entry && import.meta.url === pathToFileURL(resolve(entry)).href) {
     process.exit(0);
   }
 
-  const diagnostics = checkBrainEvidence(brainRoot);
+  const diagnostics = checkBrainEvidence(brainRoot, { all: process.argv.includes('--all') });
   for (const { level, path, message } of diagnostics) {
     console.log(
       `${level === 'ERROR' ? '  \u001B[31mERROR\u001B[0m' : '  \u001B[33mWARN\u001B[0m '}  ${path}: ${message}`,

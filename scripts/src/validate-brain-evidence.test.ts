@@ -40,19 +40,31 @@ describe('checkBrainEvidence', () => {
     expect(checkBrainEvidence(root)).toStrictEqual([]);
   });
 
-  it('refuses build products, unrouted binaries and oversized files', () => {
+  it('refuses dependency trees, lockfile copies, unrouted binaries and oversized files, not a small built file', () => {
     const root = brain({
       'research/artifacts/s/run/node_modules/x/index.js': 'x\n',
       'research/artifacts/s/run/kernel.wasm': 'x',
+      'research/artifacts/s/run/copy/pnpm-lock.yaml': 'lockfileVersion: 9\n',
       'research/artifacts/s/run/blob.bin': mebibytes(2, 0),
       'research/artifacts/s/run/log.txt': mebibytes(11),
     });
 
     expect(checkBrainEvidence(root).map(({ level, path }) => `${level} ${path}`)).toStrictEqual([
       'ERROR research/artifacts/s/run/blob.bin',
-      'ERROR research/artifacts/s/run/kernel.wasm',
+      'ERROR research/artifacts/s/run/copy/pnpm-lock.yaml',
       'WARN research/artifacts/s/run/log.txt',
       'ERROR research/artifacts/s/run/node_modules/x/index.js',
+    ]);
+  });
+
+  it('judges committed files only with all', () => {
+    const root = brain({ 'research/artifacts/s/run/blob.bin': mebibytes(2, 0) });
+    execFileSync('git', ['-C', root, 'add', '-A']);
+    execFileSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'fixture']);
+
+    expect(checkBrainEvidence(root)).toStrictEqual([]);
+    expect(checkBrainEvidence(root, { all: true }).map(({ path }) => path)).toStrictEqual([
+      'research/artifacts/s/run/blob.bin',
     ]);
   });
 });
