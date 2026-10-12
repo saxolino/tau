@@ -53,6 +53,6 @@ Keep this file limited to verified local entrypoints, invariants and checks. Put
 
 Record durable project-specific facts here after verifying them in current source. Keep task progress in its existing execution record. Route learning candidates through the learning-maintenance owner above, promoting broader rules to their narrowest canonical owner.
 
-- Nothing here imports `apps/**`. Application state reaches the viewer only through `ViewerEnvironmentProvider`, `ExactMeasurementProvider` and component props.
+- Nothing here imports `apps/**`. Application state reaches the viewer only through `ViewerEnvironmentProvider`, `ExactMeasurementProvider` and component props. Embedders must also mount `KeyboardProvider` (`@taucad/ui/components/keyboard`): the kinematics drag controls bind Escape unconditionally.
 - Internal imports name `.ts` modules `#path.js` and `.tsx` modules `#path.jsx` (the recorded `tools/pkgcheck.ts` exception).
 - Graphics changes follow `docs/policy/graphics-backend-policy.md`; shader sites stay registered in `apps/ui/app/components/geometry/shader-policy.ts`.
