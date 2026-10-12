@@ -1012,6 +1012,17 @@ const projectRevisionsMachineDefinition = setup({
           ) {
             enq.sendTo('sync', { type: 'branchChanged', branch: event.branch });
           }
+          /* D88: a card reads its files once; a head that moves under it (a chat's turn, a save) re-reads them, or
+           * every choice is refused against files that no longer fight. */
+          const priorHead = context.checkoutStatus[event.checkoutId]?.headRevisionId;
+          if (priorHead !== undefined && priorHead !== event.headRevisionId) {
+            for (const conflict of context.conflicts) {
+              const ref = context.resolutionRefs[conflict.revisionId];
+              if (ref !== undefined && conflict.into === event.branch) {
+                enq.sendTo(ref, { type: 'reload' });
+              }
+            }
+          }
           return { context: { checkoutStatus: next.checkoutStatus } };
         },
         admitTurn: (

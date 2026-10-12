@@ -2125,6 +2125,45 @@ describe('projectRevisionsMachine', () => {
     harness.actor.stop();
   });
 
+  /* D88: a head that moves under a waiting conflict (a chat's turn, a save) re-reads the card, so a choice is
+   * judged against the files that still fight rather than refused against the ones read at spawn. */
+  it('re-reads a waiting conflict when the head of the line it decides moves', async () => {
+    const harness = start();
+    const report = (headRevisionId: string): void => {
+      harness.actor.send({
+        type: 'checkoutStatusChanged',
+        checkoutId: 'checkout-live',
+        status: 'clean',
+        branch: 'main',
+        headRevisionId,
+      });
+    };
+
+    registerCheckouts(harness, [live, linked], [undecided]);
+    report('rev-5');
+    await flush();
+    harness.promises.settle('loadConflict', {
+      output: {
+        branch: conflictLine,
+        labels: { ours: 'main', theirs: 'agent/b' },
+        paths: [{ path: 'enclosure.ts', openable: true }],
+        checkoutId: 'checkout-live',
+      },
+    });
+    await flush();
+
+    report('rev-turn');
+    await flush();
+    expect(harness.promises.inputsFor('loadConflict')).toHaveLength(2);
+
+    /* The same head again is not a move. */
+    report('rev-turn');
+    await flush();
+    expect(harness.promises.inputsFor('loadConflict')).toHaveLength(2);
+
+    harness.actor.stop();
+  });
+
   it('projects the conflict card from the records and its child, and counts it as attention', async () => {
     const harness = start();
 
