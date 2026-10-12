@@ -45,6 +45,7 @@ const scriptedServer = (answers: TauViewerSyncResult[]) => {
 const pageOf = (overrides: Partial<LiveLinkPage>): LiveLinkPage => ({
   view: () => undefined,
   follows: () => true,
+  linked: () => false,
   toolCallId: () => undefined,
   show: vi.fn<LiveLinkPage['show']>(),
   capture: async () => ({ error: 'unused' }),
@@ -83,6 +84,20 @@ describe('startLiveLink', () => {
       expect(show).toHaveBeenCalledWith(shown);
     });
     expect(calls[0]?.args).not.toHaveProperty('toolCallId');
+  });
+
+  it('should keep a linked page on its model through earlier shows and follow the shows after it opened', async () => {
+    /* The server had shown two models before the page opened; a third follows. */
+    const { calls, callTool } = scriptedServer([{ version: 2 }, { version: 3, show: shown }]);
+    const show = vi.fn<LiveLinkPage['show']>();
+    links.push(startLiveLink(callTool, pageOf({ linked: () => true, show })));
+
+    await vi.waitFor(() => {
+      expect(show).toHaveBeenCalledWith(shown);
+    });
+    expect(calls[0]?.args).toMatchObject({ version: 0, follow: false, wait: false });
+    expect(calls[1]?.args).toMatchObject({ version: 2, follow: true, wait: true });
+    expect(show).toHaveBeenCalledTimes(1);
   });
 
   it('should answer a capture that throws with its error, without backing off the poll', async () => {

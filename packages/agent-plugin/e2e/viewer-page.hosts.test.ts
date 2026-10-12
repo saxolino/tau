@@ -590,6 +590,16 @@ describe('the live view (W6)', () => {
       const first = await callTool(cardClient, 'show_model', { targetFile: 'main.ts' });
       const page = await mountInHarness(cardClient, first, { displayMode: 'fullscreen' });
       await drawn(viewerFrame(page), 'Add to chat');
+      /* The card reports its view once its model is drawn, which can land after its actions are live. */
+      await expect
+        .poll(
+          async () => {
+            const state = await callTool(cardClient, 'view_state', {});
+            return state.isError;
+          },
+          { timeout: 120_000 },
+        )
+        .toBeFalsy();
 
       /* Another conversation of the same server shows a model; a capture round trip proves the card synced since. */
       await callTool(cardClient, 'show_model', { targetFile: 'surface.glb' });
