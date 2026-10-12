@@ -153,6 +153,8 @@ export type LiveLinkPage = Readonly<{
   view(): TauViewerViewState | undefined;
   /** Whether the page follows `show_model` (a page the person opened does; a card keeps its model). */
   follows(): boolean;
+  /** Whether the page opened on the model its link names, so it follows only the shows made after it opened. */
+  linked(): boolean;
   /** The `tools/call` whose result opened the page, which tells the server the page's conversation. */
   toolCallId(): string | undefined;
   /** A model `show_model` handed over that this page has not seen. */
@@ -214,6 +216,9 @@ export const startLiveLink = (
   let retry = retryFloor;
   const answered = new Set<string>();
   let activeUntil = Date.now() + activeFor;
+  /* A page that opened on its link's model first takes the server's version without following, so a show made before
+   * it opened never replaces that model; it follows every show after. */
+  let caughtUp = !page.linked();
   const keepActive = (): void => {
     activeUntil = Date.now() + activeFor;
     control.resume?.();
@@ -260,7 +265,7 @@ export const startLiveLink = (
     const result = await callTool(tauViewerToolName.appSync, {
       pageId,
       version,
-      follow: page.follows(),
+      follow: page.follows() && caughtUp,
       wait,
       ...(view === undefined ? {} : { view }),
       ...(toolCallId === undefined ? {} : { toolCallId }),
@@ -282,7 +287,8 @@ export const startLiveLink = (
       }
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- One sync at a time: each answers the version the last one saw.
-        await sync(true);
+        await sync(caughtUp);
+        caughtUp = true;
         retry = retryFloor;
       } catch {
         // A host without the tool, or a server that went away: try again later, less often.
