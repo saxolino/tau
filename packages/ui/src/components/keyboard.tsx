@@ -424,7 +424,9 @@ function useKeyboardContext(): KeyboardContextValue {
   const context = useContext(KeyboardContext);
 
   if (!context) {
-    throw new Error('useModifiers/useKeybinding must be used within a KeyboardProvider');
+    throw new Error(
+      'useModifiers/useKeybinding must be used within a KeyboardProvider (import it from @taucad/ui/components/keyboard)',
+    );
   }
 
   return context;
