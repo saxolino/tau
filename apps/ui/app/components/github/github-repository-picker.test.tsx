@@ -257,6 +257,38 @@ describe('GithubRepositoryPicker', () => {
     expect(await screen.findByRole('button', { name: 'Branch main' })).toBeInTheDocument();
   });
 
+  it('should search the repositories beyond the first page, then say when none match (D2)', async () => {
+    /* GitHub pages hold 100, so a catalog with more is a full first page. */
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      repositoryOf({ id: 100 + index, name: `part-${String(index).padStart(3, '0')}` }),
+    );
+    github.repositories.mockImplementation(async (_connection: string, _installation: number, page?: number) =>
+      page === undefined || page === 1
+        ? { totalCount: 101, page: 1, repositories: firstPage }
+        : { totalCount: 101, page, repositories: page === 2 ? [repositoryOf({ id: 31, name: 'gearbox' })] : [] },
+    );
+
+    await act(async () => {
+      renderPicker(<GithubRepositoryPicker onSelect={vi.fn()} />);
+    });
+    await vi.waitFor(() => {
+      expect(github.repositories).toHaveBeenCalled();
+    });
+    await userEvent.click(screen.getByRole('button', { name: /^Repository /u }));
+    await userEvent.type(screen.getByRole('combobox'), 'gearbox');
+
+    await vi.waitFor(() => {
+      expect(github.repositories).toHaveBeenCalledWith('connection-1', 10, 2);
+    });
+    /* The virtualized list lays out no rows in jsdom; the search filter is what proves the match. */
+    expect(screen.queryByText('Searching remaining repositories…')).not.toBeInTheDocument();
+    expect(screen.queryByText('No repository found')).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByRole('combobox'));
+    await userEvent.type(screen.getByRole('combobox'), 'nothing-like-it');
+    expect(await screen.findByText('No repository found')).toBeInTheDocument();
+  });
+
   it('should not offer a conflict line as a branch to link', async () => {
     github.repositories.mockResolvedValue({ totalCount: 1, page: 1, repositories: [repositoryOf()] });
     github.branches.mockResolvedValue({
