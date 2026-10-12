@@ -105,16 +105,69 @@ export const captureLiveView = (root: ParentNode): TauViewerImage | Readonly<{ e
   return data === '' ? { error: 'The canvas could not be read.' } : { mimeType: 'image/png', data };
 };
 
+/** Milliseconds a capture or a selection waits for the model to be drawn. */
+const drawnTimeout = 15_000;
+
+/** Milliseconds one frame wait lasts at most: a hidden tab or an off-screen frame paints no frame at all. */
+const frameTimeout = 250;
+
+/** Resolve at the next animation frame, or after {@link frameTimeout} when the browser paints none. */
+const nextFrame = async (): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, frameTimeout);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
+/**
+ * Wait until `isDrawn` holds, checking every 100 ms, then let two frames paint (at most half a second when the page
+ * paints none).
+ *
+ * @param isDrawn - Whether the page shows its model.
+ * @returns Whether it was drawn in time.
+ */
+export const whenDrawn = async (isDrawn: () => boolean): Promise<boolean> => {
+  const started = Date.now();
+  while (!isDrawn()) {
+    if (Date.now() - started > drawnTimeout) {
+      return false;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each check waits for the one before it.
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+  await nextFrame();
+  await nextFrame();
+  return true;
+};
+
+/** Characters of a capture failure the reply carries (`app_capture_reply` takes 1000). */
+const captureErrorLimit = 500;
+
 /** What the live link asks of the page. */
 export type LiveLinkPage = Readonly<{
   /** The view to report, or `undefined` before a model is shown. */
   view(): TauViewerViewState | undefined;
-  /** Whether the page follows `show_model` (a tab does; a card keeps its model). */
+  /** Whether the page follows `show_model` (a page the person opened does; a card keeps its model). */
   follows(): boolean;
+  /** The `tools/call` whose result opened the page, which tells the server the page's conversation. */
+  toolCallId(): string | undefined;
   /** A model `show_model` handed over that this page has not seen. */
   show(result: TauViewerShowResult): void;
   /** Capture the live view once its model is drawn. */
   capture(): Promise<TauViewerImage | Readonly<{ error: string }>>;
+}>;
+
+/** Timing of the live link; tests shorten it. */
+export type LiveLinkOptions = Readonly<{
+  /**
+   * How long a card keeps its long poll after it opened, the person used it or the agent captured it. Milliseconds.
+   * A page that follows `show_model` polls for its whole life.
+   */
+  activeFor?: number;
 }>;
 
 /** The running link. */
@@ -139,19 +192,55 @@ const sleep = async (duration: number): Promise<void> =>
 /**
  * Start the page's long poll.
  *
+ * A card that nobody uses holds no call open through the host: past its active window it stops polling, drops out of
+ * `view_state` and resumes when the person uses it again. Scrolled-back history then costs nothing.
+ *
  * @param callTool - The host bridge's tool call.
  * @param page - What the link reads from and hands to the page.
+ * @param options - Timing.
  * @returns The running link.
  */
-export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPage): LiveLink => {
+export const startLiveLink = (
+  callTool: HostBridge['callTool'],
+  page: LiveLinkPage,
+  options: LiveLinkOptions = {},
+): LiveLink => {
+  /** Milliseconds. */
+  const activeFor = options.activeFor ?? 60_000;
   /* `randomUUID` needs a secure context, which a sandboxed host frame may not be. */
   const pageId = `page-${[...crypto.getRandomValues(new Uint8Array(12))].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
   let version = 0;
-  const control = { stopped: false };
+  const control: { stopped: boolean; resume?: (() => void) | undefined } = { stopped: false };
   let retry = retryFloor;
   const answered = new Set<string>();
+  let activeUntil = Date.now() + activeFor;
+  const keepActive = (): void => {
+    activeUntil = Date.now() + activeFor;
+    control.resume?.();
+  };
 
-  const handle = async (result: TauViewerSyncResult): Promise<void> => {
+  /* A capture that throws is answered with its error, and its reply failing leaves the server to time it out: neither
+   * is a failed sync, so neither puts the poll into back-off. */
+  const answerCapture = async (requestId: string): Promise<void> => {
+    let captured: TauViewerImage | Readonly<{ error: string }>;
+    try {
+      captured = await page.capture();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      captured = { error: `The viewer could not capture its view: ${reason}`.slice(0, captureErrorLimit) };
+    }
+    try {
+      await callTool(tauViewerToolName.appCaptureReply, {
+        requestId,
+        pageId,
+        ...('error' in captured ? { error: captured.error } : { image: captured }),
+      });
+    } catch {
+      // The server answers view_state that the viewer did not answer in time.
+    }
+  };
+
+  const handle = (result: TauViewerSyncResult): void => {
     version = Math.max(version, result.version);
     if (result.show !== undefined && page.follows()) {
       page.show(result.show);
@@ -159,31 +248,38 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
     const requestId = result.capture?.requestId;
     if (requestId !== undefined && !answered.has(requestId)) {
       answered.add(requestId);
-      const captured = await page.capture();
-      await callTool(tauViewerToolName.appCaptureReply, {
-        requestId,
-        pageId,
-        ...('error' in captured ? { error: captured.error } : { image: captured }),
-      });
+      keepActive();
+      // async-iife: bootstrap — the capture runs beside the poll, so a slow or hidden frame never stalls the link.
+      void answerCapture(requestId);
     }
   };
 
   const sync = async (wait: boolean): Promise<void> => {
     const view = page.view();
+    const toolCallId = page.toolCallId();
     const result = await callTool(tauViewerToolName.appSync, {
       pageId,
       version,
       follow: page.follows(),
       wait,
       ...(view === undefined ? {} : { view }),
+      ...(toolCallId === undefined ? {} : { toolCallId }),
     });
     if (isSyncResult(result)) {
-      await handle(result);
+      handle(result);
     }
   };
 
   const loop = async (): Promise<void> => {
     while (!control.stopped) {
+      if (!page.follows() && Date.now() >= activeUntil) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- An idle card waits for its next use before it polls again.
+        await new Promise<void>((resolve) => {
+          control.resume = resolve;
+        });
+        control.resume = undefined;
+        continue;
+      }
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- One sync at a time: each answers the version the last one saw.
         await sync(true);
@@ -202,6 +298,7 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
   return {
     nudge() {
       if (!control.stopped) {
+        keepActive();
         // async-iife: bootstrap — a report the next poll repeats if it fails.
         void (async () => {
           try {
@@ -214,6 +311,7 @@ export const startLiveLink = (callTool: HostBridge['callTool'], page: LiveLinkPa
     },
     stop() {
       control.stopped = true;
+      control.resume?.();
     },
   };
 };

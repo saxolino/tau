@@ -5,7 +5,11 @@
  * which forwards them to a real `tau mcp` (`window.tauCallTool`).
  */
 import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
-import type { McpUiHostContext, McpUiResourceCsp } from '@modelcontextprotocol/ext-apps/app-bridge';
+import type {
+  McpUiHostCapabilities,
+  McpUiHostContext,
+  McpUiResourceCsp,
+} from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /* The harness page's two globals: the test's server call, and the host the test drives. */
@@ -20,6 +24,7 @@ declare global {
 export type HostRecord = {
   toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>;
   modelContext: unknown[];
+  messages: unknown[];
   displayModeRequests: string[];
   initialized: boolean;
 };
@@ -31,8 +36,11 @@ export type TauHost = {
     html: string;
     csp: McpUiResourceCsp | undefined;
     hostContext: McpUiHostContext;
+    /** What the host declares; by default every route the page uses. */
+    hostCapabilities?: McpUiHostCapabilities;
     toolArguments: Record<string, unknown>;
-    toolResult: CallToolResult;
+    /** The tool result that opened the view; absent for a view the person opened (a thread tab, the sidebar). */
+    toolResult: CallToolResult | undefined;
     width: number;
     height: number;
   }): Promise<void>;
@@ -63,13 +71,33 @@ const cspOf = (csp: McpUiResourceCsp | undefined): string => {
   ].join('; ');
 };
 
-const record: HostRecord = { toolCalls: [], modelContext: [], displayModeRequests: [], initialized: false };
+const record: HostRecord = {
+  toolCalls: [],
+  modelContext: [],
+  messages: [],
+  displayModeRequests: [],
+  initialized: false,
+};
+const everyCapability: McpUiHostCapabilities = {
+  serverTools: {},
+  updateModelContext: { text: {} },
+  message: { text: {} },
+};
 let bridge: AppBridge | undefined;
 let context: McpUiHostContext = {};
 
 globalThis.tauHost = {
   record,
-  async mount({ html, csp, hostContext, toolArguments, toolResult, width, height }) {
+  async mount({
+    html,
+    csp,
+    hostContext,
+    hostCapabilities = everyCapability,
+    toolArguments,
+    toolResult,
+    width,
+    height,
+  }) {
     context = hostContext;
     const frame = document.createElement('iframe');
     frame.title = 'Tau viewer';
@@ -82,12 +110,7 @@ globalThis.tauHost = {
     if (view === null) {
       throw new Error('The frame has no window.');
     }
-    bridge = new AppBridge(
-      null,
-      { name: 'tau-basic-host', version: '1.0.0' },
-      { serverTools: {}, updateModelContext: { text: {} }, message: { text: {} } },
-      { hostContext },
-    );
+    bridge = new AppBridge(null, { name: 'tau-basic-host', version: '1.0.0' }, hostCapabilities, { hostContext });
     bridge.oncalltool = async (params) => {
       const args = params.arguments ?? {};
       record.toolCalls.push({ name: params.name, arguments: args });
@@ -95,6 +118,11 @@ globalThis.tauHost = {
     };
     bridge.onupdatemodelcontext = async (params) => {
       record.modelContext.push(params);
+      return {};
+    };
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- `ui/message` is a request the host answers, not a DOM event.
+    bridge.onmessage = async (params) => {
+      record.messages.push(params);
       return {};
     };
     bridge.onrequestdisplaymode = async ({ mode }) => {
@@ -108,8 +136,10 @@ globalThis.tauHost = {
     };
     bridge.addEventListener('initialized', () => {
       record.initialized = true;
-      void bridge?.sendToolInput({ arguments: toolArguments });
-      void bridge?.sendToolResult(toolResult);
+      if (toolResult !== undefined) {
+        void bridge?.sendToolInput({ arguments: toolArguments });
+        void bridge?.sendToolResult(toolResult);
+      }
     });
     await bridge.connect(new PostMessageTransport(view, view));
     const loaded = new Promise<void>((resolve) => {
