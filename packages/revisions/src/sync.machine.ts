@@ -2044,13 +2044,39 @@ const facetStateOf = (value: string, withinPullWindow: boolean): SyncFacet['stat
 };
 
 /**
+ * The row's sentence while its lost lease is on a branch whose conflict waits (D90).
+ *
+ * A lost lease is caught up by the next pull's merge, except on a branch whose
+ * merge recorded a conflict: that branch moves only once the person decides,
+ * so "will catch up and try again" would be false. The conflicts are the
+ * root's (read from the conflict lines, so they survive a reload); this
+ * machine keeps no copy.
+ *
+ * @param context - Current sync context.
+ * @param undecided - Branches with a conflict waiting on the person.
+ * @returns The waiting sentence, or `undefined` when the row says no lost lease on one of them.
+ */
+const waitingSaid = (context: SyncMachineContext, undecided: readonly string[]): string | undefined => {
+  const waiting = undecided.find(
+    (into) => context.error === refusalSaid({ ref: historyRefOf(into), reason: 'leaseLost' }, context.branch),
+  );
+  return waiting === undefined
+    ? undefined
+    : `${waiting === context.branch ? 'This branch' : waiting} waits on your decision; its revisions back up once you choose.`;
+};
+
+/**
  * The Sync row's whole input, read where it lives.
  *
  * @param snapshot - Current sync snapshot.
+ * @param undecided - Branches whose conflict waits on the person, the root's `conflicts` (D90).
  * @returns The facet the pane, the chip and the projection carry.
  * @public
  */
-export const selectSyncFacet = (snapshot: SnapshotFrom<typeof syncMachine>): SyncFacet => {
+export const selectSyncFacet = (
+  snapshot: SnapshotFrom<typeof syncMachine>,
+  undecided: readonly string[] = [],
+): SyncFacet => {
   const value = typeof snapshot.value === 'string' ? snapshot.value : (Object.keys(snapshot.value)[0] ?? '');
   /* Only while parked: once the pull applies it, it is simply the head. */
   const arrived = value === 'awaitingLease' ? snapshot.context.arrived : undefined;
@@ -2068,7 +2094,7 @@ export const selectSyncFacet = (snapshot: SnapshotFrom<typeof syncMachine>): Syn
     pendingCount: owedPushes(snapshot.context).length,
     online: snapshot.context.online,
     conflictRef: snapshot.context.conflictRef,
-    error: snapshot.context.error,
+    error: waitingSaid(snapshot.context, undecided) ?? snapshot.context.error,
     reason: snapshot.context.reason,
     ...(arrived === undefined ? {} : { arrived }),
   };

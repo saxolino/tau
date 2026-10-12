@@ -1808,7 +1808,11 @@ const selectSyncFacetOf = (snapshot: SnapshotFrom<typeof projectRevisionsMachine
   const sync = snapshot.children.sync?.getSnapshot();
   return sync === undefined
     ? { state: 'noRemote', pendingCount: 0, online: true, conflictRef: undefined, error: undefined, reason: undefined }
-    : selectSyncFacet(sync);
+    : selectSyncFacet(
+        sync,
+        /* A lost lease on a branch whose conflict waits is the person's to clear (D90). */
+        snapshot.context.conflicts.map((conflict) => conflict.into),
+      );
 };
 
 /**

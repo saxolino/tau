@@ -2503,6 +2503,42 @@ describe('projectRevisionsMachine', () => {
     harness.actor.stop();
   });
 
+  it('says a linked branch whose conflict waits on the person waits, not that it catches up (D90)', async () => {
+    const harness = start();
+    const waiting: ConflictRecord = {
+      revisionId: 'rev-b-conflict',
+      line: 'conflicts/agent/b/device-a',
+      into: 'agent/b',
+      foreign: false,
+    };
+
+    await readyRegistry(harness, [live, linked], [waiting]);
+    harness.promises.settle('readPending', { output: { version: 1, entries: [] } });
+    await flush();
+    harness.promises.settle('readSyncRemote', { output: { remote: 'tau' } });
+    await flush();
+    harness.promises.settle('syncFetch', { output: { leases: {}, integration: 'ahead' } });
+    await flush();
+    harness.promises.settle('syncPush', {
+      output: {
+        refs: [
+          { name: 'refs/heads/main', status: 'upToDate', head: 'rev-1' },
+          { name: 'refs/heads/agent/b', status: 'rejected', head: 'rev-b', reason: 'leaseLost' },
+        ],
+      },
+    });
+    await flush();
+    harness.promises.settle('writePending', { output: undefined });
+    await flush();
+
+    expect(selectRevisionStatus(harness.actor.getSnapshot()).sync).toMatchObject({
+      state: 'queued',
+      error: 'agent/b waits on your decision; its revisions back up once you choose.',
+    });
+
+    harness.actor.stop();
+  });
+
   it('exports exactly one machine value', () => {
     const isMachine = (value: unknown): boolean =>
       typeof value === 'object' && value !== null && 'getInitialSnapshot' in value && 'transition' in value;

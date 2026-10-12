@@ -79,6 +79,7 @@
  * | 72 | `opening.fetching(merged linked) → pushing` | **D87**: another checkout's diverged branch merged on the pull re-heads its actor and the merge revision is pushed |
  * | 73 | `opening.fetching(linked conflict) → backedUp` + parent `mergeConflicted` | **D87**: another checkout's conflict is announced without entering `conflicted`; this branch stays in sync |
  * | 74 | `queued(leaseLost on another branch) --syncBackoff--> opening → pushing` offering both sets | **D87**: a lost lease never narrows the retry away from this branch's own revisions |
+ * | 75 | `selectSyncFacet(queued(leaseLost on another branch), undecided)` | **D90**: a branch whose conflict waits on the person says so instead of "will catch up and try again" |
  */
 
 import { createActor, createAsyncLogic } from 'xstate';
@@ -2637,6 +2638,39 @@ describe('syncMachine, live and automatic (W5b: D12, D13)', () => {
       { type: 'mergeConflicted', ...conflict },
     ]);
     expect(selectSyncFacet(harness.actor.getSnapshot()).conflictRef).toBeUndefined();
+
+    harness.stop();
+  });
+
+  it('row 75 (D90): a lease lost on a branch whose conflict waits says it waits on the person, not that it catches up', async () => {
+    const harness = start();
+    await openCleanly(harness);
+    harness.actor.send({
+      type: 'revisionMinted',
+      checkoutId: 'live',
+      trigger: 'close',
+      revisionId: 'r1',
+      branch: 'main',
+    });
+    await settleWhenRunning(harness.effects, 'push', {
+      output: pushResult(
+        { name: mainRef, status: 'updated', head: 'r1' },
+        { name: 'refs/heads/feature', status: 'rejected', head: 'f1', reason: 'leaseLost' },
+      ),
+    });
+    await settleWhenRunning(harness.effects, 'writePending', { output: undefined });
+    await vi.waitFor(() => {
+      expect(harness.actor.getSnapshot().matches('queued')).toBe(true);
+    });
+
+    /* Nothing catches `feature` up until the person decides its conflict. */
+    expect(selectSyncFacet(harness.actor.getSnapshot(), ['feature']).error).toBe(
+      'feature waits on your decision; its revisions back up once you choose.',
+    );
+    /* Another branch's waiting conflict says nothing about `feature`. */
+    expect(selectSyncFacet(harness.actor.getSnapshot(), ['other']).error).toBe(
+      'feature changed on the remote; this project will catch up and try again.',
+    );
 
     harness.stop();
   });
