@@ -3,7 +3,7 @@
  *
  * An MCP Apps host (the basic-host harness: `AppBridge` in Chromium, the page
  * in a sandboxed frame under its declared CSP) shows a CAD source rendered to
- * GLB and a 10 MB GLB read in ranges; a text host follows the loopback link.
+ * GLB and a 50 MB GLB streamed in gzipped ranges; a text host follows the loopback link.
  * Screenshots land in `TAU_E2E_EVIDENCE_DIR` when it is set.
  */
 
@@ -314,7 +314,11 @@ beforeAll(async () => {
     join(project, 'main.ts'),
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
   );
-  await writeFile(join(project, 'surface.glb'), surfaceGlb(540));
+  await writeFile(
+    join(project, 'plate.ts'),
+    `import { drawRectangle } from 'replicad';\n\nexport const defaultParams = { width: 20 };\n\nexport default function main(params: typeof defaultParams) {\n  return drawRectangle(params.width, 10).sketchOnPlane('XY').extrude(2);\n}\n`,
+  );
+  await writeFile(join(project, 'surface.glb'), surfaceGlb(850));
   /* Exchange formats the server converts to GLB (W7). */
   await copyFile(
     join(repoRoot, 'packages/geospec-engine/src/model/__fixtures__/intersecting-cylinders.step'),
@@ -448,11 +452,11 @@ describe('the viewer page in an MCP Apps host', () => {
   );
 
   it(
-    'should read a 10 MB GLB in ranges no larger than one reply',
+    'should stream a 50 MB GLB in gzipped ranges no larger than one reply',
     async () => {
       const result = await callTool(client, 'show_model', { targetFile: 'surface.glb' });
       const { model } = shown(result);
-      expect(model.byteLength).toBeGreaterThan(10 * 1024 * 1024);
+      expect(model.byteLength).toBeGreaterThan(50 * 1000 * 1000);
       const page = await mountInHarness(client, result, { displayMode: 'fullscreen' });
       const frame = viewerFrame(page);
 
@@ -461,7 +465,8 @@ describe('the viewer page in an MCP Apps host', () => {
       const reads = calls.filter((call) => call.name === 'app_read');
       expect(reads.length).toBe(Math.ceil(model.byteLength / tauViewerReadLimit));
       expect(reads.every((call) => Number(call.arguments['length']) <= tauViewerReadLimit)).toBe(true);
-      await capture(page, 'basic-host-10mb');
+      expect(reads.every((call) => JSON.stringify(call.arguments['encodings']) === '["gzip"]')).toBe(true);
+      await capture(page, 'basic-host-50mb');
       expect(pageErrors).toEqual([]);
       await page.close();
     },
@@ -484,6 +489,86 @@ describe('exchange formats (W7)', () => {
       const page = await mountInHarness(client, result, { displayMode: 'fullscreen' });
       await drawn(viewerFrame(page), 'Add to chat');
       await capture(page, 'step-converted');
+      expect(pageErrors).toEqual([]);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+});
+
+describe("the tab's panels (W10)", () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    client = await connect('claude-ai', mcpAppsCapabilities);
+  });
+
+  it(
+    "should list the structure, write a parameter edit Tau reads, and keep the page's view in the project",
+    async () => {
+      const first = await callTool(client, 'show_model', { targetFile: 'plate.ts' });
+      const page = await mountInHarness(client, first, { displayMode: 'fullscreen' });
+      const frame = viewerFrame(page);
+      await drawn(frame, 'Add to chat');
+      const panels = frame.getByRole('complementary', { name: 'Model panels' });
+      await panels.waitFor();
+      const before = (first.structuredContent as { model: { id: string } }).model.id;
+
+      const width = panels.getByRole('spinbutton', { name: 'Input for Width' });
+      await width.waitFor({ timeout: 60_000 });
+      await width.fill('30');
+      await width.press('Enter');
+
+      await expect
+        .poll(async () => readFile(join(project, '.tau/parameters/plate.ts.json'), 'utf8').catch(() => ''), {
+          timeout: 60_000,
+        })
+        .toContain('30');
+      await expect
+        .poll(
+          async () => {
+            const result = await callTool(client, 'view_state', {});
+            return (result.structuredContent as { view: TauViewerViewState }).view.model.id;
+          },
+          { timeout: 120_000 },
+        )
+        .not.toBe(before);
+
+      /* The person hides a component; Tau opens the project with the page's camera and that display (Q14). */
+      await panels
+        .getByRole('list', { name: 'Components' })
+        .getByRole('button', { name: /^Hide / })
+        .first()
+        .click();
+      let hidden: readonly string[] = [];
+      await expect
+        .poll(
+          async () => {
+            const result = await callTool(client, 'view_state', {});
+            ({ hidden } = (result.structuredContent as { view: TauViewerViewState }).view);
+            return hidden.length;
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(1);
+      const workbenchRecord = async (path: string): Promise<unknown> =>
+        JSON.parse(await readFile(join(project, '.tau/workbench', path), 'utf8')) as unknown;
+      await expect
+        .poll(async () => workbenchRecord('entries.json').catch(() => undefined), { timeout: 30_000 })
+        .toMatchObject({ entries: { 'plate.ts': { components: { hidden } } } });
+      const layout = (await workbenchRecord('layout.json')) as {
+        viewer: { tabs: ReadonlyArray<{ view: string }> };
+      };
+      const views = await Promise.all(
+        layout.viewer.tabs.map(async ({ view: id }) => workbenchRecord(`views/${id}.json`)),
+      );
+      expect(
+        views.map((record) => {
+          const { entryPath, camera } = record as { entryPath: string; camera: { kind: string } };
+          return { entryPath, camera: camera.kind };
+        }),
+      ).toContainEqual({ entryPath: 'plate.ts', camera: 'pose' });
+      await capture(page, 'panels');
       expect(pageErrors).toEqual([]);
       await page.close();
     },

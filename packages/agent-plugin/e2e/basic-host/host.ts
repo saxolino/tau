@@ -103,16 +103,9 @@ globalThis.tauHost = {
     frame.title = 'Tau viewer';
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.style.cssText = `width:${String(width)}px;height:${String(height)}px;border:1px solid #ccc`;
-    frame.srcdoc = html.replace(
-      '<head>',
-      `<head><meta http-equiv="Content-Security-Policy" content="${cspOf(csp).replaceAll('"', '&quot;')}">`,
-    );
     document.body.append(frame);
-    await new Promise<void>((resolve) => {
-      frame.addEventListener('load', () => {
-        resolve();
-      });
-    });
+    /* The window survives the frame's navigation to the page, so the bridge listens before the page's first message:
+     * a page whose script sends `ui/initialize` before the frame's load event is not missed. */
     const view = frame.contentWindow;
     if (view === null) {
       throw new Error('The frame has no window.');
@@ -149,6 +142,16 @@ globalThis.tauHost = {
       }
     });
     await bridge.connect(new PostMessageTransport(view, view));
+    const loaded = new Promise<void>((resolve) => {
+      frame.addEventListener('load', () => {
+        resolve();
+      });
+    });
+    frame.srcdoc = html.replace(
+      '<head>',
+      `<head><meta http-equiv="Content-Security-Policy" content="${cspOf(csp).replaceAll('"', '&quot;')}">`,
+    );
+    await loaded;
   },
   setHostContext(next) {
     context = { ...context, ...next };

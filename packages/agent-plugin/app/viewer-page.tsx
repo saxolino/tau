@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useActorRef } from '@xstate/react';
-import { FlipHorizontal, Maximize2, MessageSquarePlus, Ruler } from 'lucide-react';
+import { FlipHorizontal, Maximize2, MessageSquarePlus, PanelRight, Ruler } from 'lucide-react';
 import type { TauViewerCamera, TauViewerModel, TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
 import type { Artifact } from '@taucad/runtime';
 import type { GeometryComponentReference } from '@taucad/types';
@@ -36,6 +36,8 @@ import { loadModel } from '#app/model-loader.js';
 import { chatReferenceOf } from '#app/chat-reference.js';
 import { captureLiveView, startLiveLink, viewStateOf, whenDrawn } from '#app/live-link.js';
 import type { LiveLink } from '#app/live-link.js';
+import { SidePanel } from '#app/side-panel.jsx';
+import type { ViewOptions } from '#app/side-panel.jsx';
 
 type Loaded = Readonly<{ model: TauViewerModel; artifact: Artifact }>;
 
@@ -308,6 +310,14 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
   );
   const shown = state.kind === 'ready' ? state.current : previousOf(state);
   const isInline = view.composition === 'inline';
+  /* The tab opens with its panels beside a wide canvas; a narrow one keeps the canvas whole until asked. */
+  const [isPanelOpen, setIsPanelOpen] = useState(() => globalThis.innerWidth >= 720);
+  const [viewOptions, setViewOptions] = useState<ViewOptions>({
+    enableGrid: true,
+    enableAxes: true,
+    enableLines: true,
+    enableSurfaces: true,
+  });
 
   useEffect(() => {
     setSelected(undefined);
@@ -318,6 +328,21 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
   const interactedAt = useRef(0);
   const latest = useRef({ state, view, shown });
   latest.current = { state, view, shown };
+  const showAgain = useCallback(() => {
+    const sourceFile = latest.current.shown?.model.sourceFile;
+    if (sourceFile === undefined) {
+      return;
+    }
+    // async-iife: bootstrap — a written parameter edit asks for the model rendered with it.
+    void (async () => {
+      try {
+        const result = await bridge.callTool('show_model', { targetFile: sourceFile });
+        showRef.current?.(result as TauViewerShowResult);
+      } catch {
+        /* The status line keeps the model it shows; the next edit tries again. */
+      }
+    })();
+  }, [bridge, showRef]);
   const isDrawn = useCallback((): boolean => {
     const { current } = latest;
     if (current.state.kind !== 'ready') {
@@ -354,6 +379,8 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
                 direction: [...cameraView.direction],
                 up: [...cameraView.up],
                 verticalSpan: cameraView.verticalSpan,
+                frameId: cameraView.frameId,
+                perspectiveZoom: cameraView.perspectiveZoom,
               };
         const { context } = graphicsRef.getSnapshot();
         return viewStateOf({
@@ -503,6 +530,19 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         <MessageSquarePlus className='size-4' />
         {chatAction[view.chatRoute]}
       </Button>
+      {isInline ? null : (
+        <Button
+          variant='ghost'
+          size='xs'
+          aria-pressed={isPanelOpen}
+          onClick={() => {
+            setIsPanelOpen((open) => !open);
+          }}
+        >
+          <PanelRight className='size-4' />
+          Panels
+        </Button>
+      )}
       {isInline && view.canRequestFullscreen ? (
         <Button
           variant='ghost'
@@ -538,52 +578,61 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
                 paddingLeft: view.safeArea.left,
               }}
             >
-              <div className='relative min-h-0 flex-1'>
-                {shown === undefined && state.kind !== 'loading' ? (
-                  <div className='flex size-full items-center justify-center p-4 text-center'>
-                    {state.kind === 'failed' ? (
-                      <StatusLine state={state} />
-                    ) : (
-                      <p className='text-sm text-muted-foreground'>Waiting for a model.</p>
-                    )}
-                  </div>
-                ) : (
-                  <ModelViewer
-                    graphicsRef={graphicsRef}
-                    artifact={shown?.artifact}
-                    artifactHash={shown?.model.sha256}
-                    sourceFile={shown?.model.sourceFile}
-                    enablePan={!isInline}
-                    enableZoom={!isInline}
-                    graphicsOptions={{
-                      enableGrid: true,
-                      enableAxes: true,
-                      enableLines: true,
-                      enableSurfaces: true,
-                      /* The view cube belongs to the tab; a card shows the canvas and two actions (E2). */
-                      enableGizmo: !isInline,
-                    }}
-                    onComponentReference={setSelected}
-                  />
-                )}
-                <div className='pointer-events-none absolute inset-x-0 top-0 flex flex-col items-start gap-1 p-2'>
-                  {shown === undefined ? null : (
-                    <p className='rounded-md bg-background/80 px-2 py-1 text-xs font-medium'>
-                      {shown.model.title}
-                      {selected === undefined ? null : (
-                        <span className='text-muted-foreground'> · {selected.label}</span>
+              <div className='flex min-h-0 flex-1'>
+                <div className='relative min-w-0 flex-1'>
+                  {shown === undefined && state.kind !== 'loading' ? (
+                    <div className='flex size-full items-center justify-center p-4 text-center'>
+                      {state.kind === 'failed' ? (
+                        <StatusLine state={state} />
+                      ) : (
+                        <p className='text-sm text-muted-foreground'>Waiting for a model.</p>
                       )}
+                    </div>
+                  ) : (
+                    <ModelViewer
+                      graphicsRef={graphicsRef}
+                      artifact={shown?.artifact}
+                      artifactHash={shown?.model.sha256}
+                      sourceFile={shown?.model.sourceFile}
+                      enablePan={!isInline}
+                      enableZoom={!isInline}
+                      graphicsOptions={{
+                        ...viewOptions,
+                        /* The view cube belongs to the tab; a card shows the canvas and two actions (E2). */
+                        enableGizmo: !isInline,
+                      }}
+                      onComponentReference={setSelected}
+                    />
+                  )}
+                  <div className='pointer-events-none absolute inset-x-0 top-0 flex flex-col items-start gap-1 p-2'>
+                    {shown === undefined ? null : (
+                      <p className='rounded-md bg-background/80 px-2 py-1 text-xs font-medium'>
+                        {shown.model.title}
+                        {selected === undefined ? null : (
+                          <span className='text-muted-foreground'> · {selected.label}</span>
+                        )}
+                      </p>
+                    )}
+                    {shown === undefined ? null : <StatusLine state={state} />}
+                  </div>
+                  {notice === undefined ? null : (
+                    <p
+                      role='status'
+                      className='absolute right-2 bottom-2 rounded-md border bg-popover px-2 py-1 text-xs shadow-xs'
+                    >
+                      {notice}
                     </p>
                   )}
-                  {shown === undefined ? null : <StatusLine state={state} />}
                 </div>
-                {notice === undefined ? null : (
-                  <p
-                    role='status'
-                    className='absolute right-2 bottom-2 rounded-md border bg-popover px-2 py-1 text-xs shadow-xs'
-                  >
-                    {notice}
-                  </p>
+                {isInline || !isPanelOpen ? null : (
+                  <SidePanel
+                    bridge={bridge}
+                    model={shown?.model}
+                    selected={selected}
+                    viewOptions={viewOptions}
+                    onViewOptionsChange={setViewOptions}
+                    onParametersWritten={showAgain}
+                  />
                 )}
               </div>
               {isInline ? (

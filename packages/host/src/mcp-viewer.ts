@@ -18,8 +18,12 @@ import { tauViewerPageInputSchemas } from '@taucad/mcp';
 import type { TauMcpViewer, TauMcpViewerCallOptions, TauMcpViewerFailure } from '@taucad/mcp';
 import { tauViewerReadLimit, tauViewerToolName } from '@taucad/mcp/viewer-protocol';
 
+import { readModelRange, snapshotModelFile } from '#mcp-viewer-read.js';
+import type { ModelFileIdentity } from '#mcp-viewer-read.js';
 import { createMcpViewerSessions } from '#mcp-viewer-sessions.js';
 import type { McpViewerSessionsOptions } from '#mcp-viewer-sessions.js';
+import { createMcpViewerWorkbench } from '#mcp-viewer-workbench.js';
+import type { McpViewerWorkbenchOptions } from '#mcp-viewer-workbench.js';
 import type {
   TauViewerFile,
   TauViewerMimeType,
@@ -82,6 +86,8 @@ export type LocalMcpViewerOptions = Readonly<{
   page: Readonly<{ html: string; sha256: string }>;
   /** Timing of the live link to the pages; tests shorten it. */
   sessions?: McpViewerSessionsOptions;
+  /** How the pages' camera and component display are kept in `.tau/workbench`; tests shorten it. */
+  workbench?: McpViewerWorkbenchOptions;
   /** The project folder one call works in. */
   rootOf(meta: Readonly<Record<string, unknown>> | undefined): string;
   /**
@@ -106,7 +112,7 @@ export type LocalMcpViewer = TauMcpViewer &
  * entry is the single record of what was shown and for which project: the
  * loopback page asks for it by id and never resolves a folder of its own.
  */
-type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string }>;
+type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string; identity: ModelFileIdentity }>;
 
 const failure = (errorCode: string, message: string): TauMcpViewerFailure => ({ errorCode, message });
 
@@ -261,6 +267,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
   const conversationByCall = new Map<string, string>();
   const token = randomBytes(24).toString('base64url');
   const sessions = createMcpViewerSessions(options.sessions);
+  const workbench = createMcpViewerWorkbench(options.workbench);
   let loopback: Promise<{ server: Server; origin: string }> | undefined;
 
   const describe = async (
@@ -275,10 +282,11 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
         `The Tau viewer draws GLB and SVG; ${posix(relative(root, absolutePath))} is neither.`,
       );
     }
-    const bytes = await readFile(absolutePath).catch(() => undefined);
-    if (bytes === undefined) {
+    const snapshot = await snapshotModelFile(absolutePath);
+    if (snapshot === undefined) {
       return failure('NOT_FOUND', `${posix(relative(root, absolutePath))} could not be read.`);
     }
+    const { bytes, identity } = snapshot;
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const id = createHash('sha256').update(`${absolutePath}\0${sha256}`).digest('base64url').slice(0, 22);
     const path = posix(relative(root, absolutePath));
@@ -291,7 +299,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       byteLength: bytes.length,
       sha256,
     };
-    shown.set(id, { model, absolutePath, root });
+    shown.set(id, { model, absolutePath, root, identity });
     return model;
   };
 
@@ -426,15 +434,31 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       if (entry === undefined) {
         return failure('UNKNOWN_MODEL', 'This model is no longer shown; show it again.');
       }
-      const bytes = await readFile(entry.absolutePath).catch(() => undefined);
-      if (bytes === undefined || createHash('sha256').update(bytes).digest('hex') !== entry.model.sha256) {
-        return failure('MODEL_CHANGED', `${entry.model.path} changed since it was shown; show it again.`);
-      }
-      const offset = Math.min(input.offset, bytes.length);
-      const slice = bytes.subarray(offset, Math.min(offset + Math.min(input.length, tauViewerReadLimit), bytes.length));
-      return { offset, byteLength: slice.length, totalBytes: bytes.length, data: slice.toString('base64') };
+      const result = await readModelRange({
+        absolutePath: entry.absolutePath,
+        identity: entry.identity,
+        offset: input.offset,
+        length: Math.min(input.length, tauViewerReadLimit),
+        encodings: input.encodings,
+      });
+      return 'refused' in result
+        ? failure('MODEL_CHANGED', `${entry.model.path} changed since it was shown; show it again.`)
+        : result;
     },
     async sync(input, callOptions) {
+      /* Only a model this server showed names the project and entry a view is kept for; the page's own names do not. */
+      const entry = input.view === undefined ? undefined : shown.get(input.view.model.id);
+      if (input.view !== undefined && entry !== undefined) {
+        const { model } = entry;
+        workbench.report({
+          root: entry.root,
+          pageId: input.pageId,
+          view: {
+            ...input.view,
+            model: { id: model.id, title: model.title, path: model.path, sourceFile: model.sourceFile },
+          },
+        });
+      }
       /* A card names the show call it was opened with; that call's conversation is the page's. */
       const scope =
         conversationOf(callOptions.meta) ??
@@ -449,6 +473,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
     },
     async close() {
       sessions.close();
+      await workbench.close();
       const running = loopback;
       loopback = undefined;
       /* A start that failed left nothing to stop. */

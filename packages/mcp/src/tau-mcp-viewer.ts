@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   resolveTauViewerPresentation,
+  tauViewerReadEncodings,
   tauViewerReadLimit,
   tauViewerResourceMimeType,
   tauViewerResourceUri,
@@ -134,7 +135,14 @@ const viewSchema = z
     hidden: z.array(z.string().min(1).max(256)).max(1024),
     isolated: z.array(z.string().min(1).max(256)).max(1024),
     camera: z
-      .object({ target: vectorSchema, direction: vectorSchema, up: vectorSchema, verticalSpan: z.number().positive() })
+      .object({
+        target: vectorSchema,
+        direction: vectorSchema,
+        up: vectorSchema,
+        verticalSpan: z.number().positive(),
+        frameId: z.string().min(1).max(128).optional(),
+        perspectiveZoom: z.number().positive().optional(),
+      })
       .strict()
       .optional(),
     sectionActive: z.boolean(),
@@ -191,6 +199,7 @@ const appReadInputSchema = z
     modelId: z.string().min(1),
     offset: z.number().int().nonnegative(),
     length: z.number().int().positive().max(tauViewerReadLimit),
+    encodings: z.array(z.enum(tauViewerReadEncodings)).max(4).optional(),
   })
   .strict();
 
