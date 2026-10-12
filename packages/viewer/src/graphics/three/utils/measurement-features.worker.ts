@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { getMeshMeasurementFeatures } from '#graphics/three/utils/measurement-features.js';
 import type { MeshFeature, MeshFeatureGraph } from '#graphics/three/utils/measurement-features.js';
 import type {
+  MeasurementGraphAck,
   MeasurementGraphMessage,
   MeasurementGraphRequest,
 } from '#graphics/three/utils/measurement-features-worker-client.js';
@@ -10,14 +11,21 @@ const messageBudget = 24 * 1024;
 const pointSpan = 128;
 const triangleSpan = 2048;
 const loopSpan = 128;
+const messagesPerYield = 8;
 let sentSinceYield = 0;
+let resumeStream: (() => void) | undefined;
 
+/**
+ * Posts in windows of {@link messagesPerYield}: after each window the worker waits until the page has handled it.
+ * Without the wait the worker outpaces hydration, the page's queue backs up and its timers starve behind it.
+ */
 async function send(message: MeasurementGraphMessage): Promise<void> {
   self.postMessage(message);
-  if (++sentSinceYield >= 32) {
+  if (++sentSinceYield >= messagesPerYield) {
     sentSinceYield = 0;
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
+      resumeStream = resolve;
+      self.postMessage({ type: 'yield' } satisfies MeasurementGraphMessage);
     });
   }
 }
@@ -126,7 +134,13 @@ async function streamGraph(graph: MeshFeatureGraph): Promise<void> {
   await send({ type: 'done' });
 }
 
-self.addEventListener('message', async (event: MessageEvent<MeasurementGraphRequest>) => {
+self.addEventListener('message', async (event: MessageEvent<MeasurementGraphRequest | MeasurementGraphAck>) => {
+  if ('type' in event.data) {
+    const resume = resumeStream;
+    resumeStream = undefined;
+    resume?.();
+    return;
+  }
   try {
     const request = event.data;
     const geometry = new THREE.BufferGeometry();

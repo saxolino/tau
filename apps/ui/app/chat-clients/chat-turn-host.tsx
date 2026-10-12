@@ -15,7 +15,7 @@ import { idPrefix } from '@taucad/types/constants';
 import { hostAdmission } from '#chat-clients/_internal/turn-body.js';
 import { commandOf, turnIntentOf, turnReferencesOf, turnTriggerOf } from '#chat-clients/turn-intent.js';
 import { externalAdmissionConfig, wireAdmissionConfig } from '#services/agent-host-client.js';
-import { buildUserMessage } from '#utils/chat.utils.js';
+import { buildEditedUserMessage } from '#utils/chat.utils.js';
 import { selectCaughtUp, selectCurrentRun } from '#machines/chat-projection.logic.js';
 import { createAgentUsageTelemetry } from '#chat-clients/_internal/agent-usage-telemetry.js';
 import { usePrivacyPreferences } from '#hooks/use-privacy-preferences.js';
@@ -121,11 +121,13 @@ export function ChatTurnHost(): ReactNode {
                   if (index === -1) {
                     throw new Error('That message is no longer in this chat, so it cannot be edited.');
                   }
-                  const original = messages[index]!;
-                  const rebuilt = buildUserMessage({ text: gesture.text, attachments: gesture.attachments });
                   return [
                     ...messages.slice(0, index),
-                    { ...rebuilt, id: original.id, metadata: { ...original.metadata, ...rebuilt.metadata } },
+                    buildEditedUserMessage(messages[index]!, {
+                      text: gesture.text,
+                      ...(gesture.attachments === undefined ? {} : { attachments: gesture.attachments }),
+                      ...(gesture.references === undefined ? {} : { references: gesture.references }),
+                    }),
                   ];
                 })()
               : messages;
@@ -162,6 +164,7 @@ export function ChatTurnHost(): ReactNode {
                   messageId: gesture.messageId,
                   content: gesture.text,
                   ...(gesture.attachments === undefined ? {} : { attachments: gesture.attachments }),
+                  ...(gesture.references === undefined ? {} : { references: gesture.references }),
                   command,
                 }
               : { kind: 'regenerate', command };
