@@ -1473,6 +1473,47 @@ for (const actorSet of actorSets) {
       expect(await context.port.readRef('rename-target')).toBe(context.base);
     }, 30_000);
 
+    /* D91: a rename moves one ref. A linked checkout is named by its branch and
+     * the remote keeps the old name, so either would be left on a branch that no
+     * longer exists — refused before anything is written. */
+    it('should refuse to rename a branch a linked checkout holds, and write nothing', async () => {
+      const context = await synchronized();
+      const linked = await context.port.addCheckout?.({ branch: 'side', from: context.base });
+
+      await expect(
+        run(context.actors.branch.rename, { projectId: 'project-1', branch: 'side', name: 'side-renamed' }),
+      ).rejects.toMatchObject({ code: 'BRANCH_RENAME_LINKED' });
+      expect(await context.port.readRef('side')).toBe(context.base);
+      expect(await context.port.readRef('side-renamed')).toBeUndefined();
+      const checkouts = await context.port.listCheckouts?.();
+      expect(checkouts?.find((checkout) => checkout.id === linked?.id)?.branch).toBe('side');
+    }, 30_000);
+
+    it('should refuse to rename a branch its remote holds, and write nothing', async () => {
+      const context = await synchronized();
+      await context.port.setRemote({ name: 'tau', url: 'https://api.tau.new/v1/git/project-1.git' });
+
+      await expect(
+        run(context.actors.branch.rename, { projectId: 'project-1', branch: 'main', name: 'trunk' }),
+      ).rejects.toMatchObject({ code: 'BRANCH_RENAME_PUSHED' });
+      expect(await context.port.readRef('main')).toBe(context.base);
+      expect(await context.port.readRef('trunk')).toBeUndefined();
+      const live = await context.port.readHead();
+      expect(live?.branch).toBe('main');
+    }, 30_000);
+
+    it('should rename a branch only this device holds', async () => {
+      const context = await synchronized();
+      await context.port.setRemote({ name: 'tau', url: 'https://api.tau.new/v1/git/project-1.git' });
+      await context.port.updateRef({ name: 'solo', expectedHead: undefined, head: context.base });
+
+      await expect(
+        run(context.actors.branch.rename, { projectId: 'project-1', branch: 'solo', name: 'solo-renamed' }),
+      ).resolves.toStrictEqual({ branch: 'solo-renamed' });
+      expect(await context.port.readRef('solo')).toBeUndefined();
+      expect(await context.port.readRef('solo-renamed')).toBe(context.base);
+    }, 30_000);
+
     it('aborts a stopped apply and drains the in-flight port operation before settling', async () => {
       const context = await synchronized();
       const entered = Promise.withResolvers<void>();

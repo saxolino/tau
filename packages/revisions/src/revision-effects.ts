@@ -3317,7 +3317,13 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
       }),
       /* A rename is two ref writes, in the order that cannot lose the head: the
        * new name is born first, and only a ref that still points where we read
-       * it is removed (D29's compare-and-set). */
+       * it is removed (D29's compare-and-set).
+       *
+       * Those two writes are all it is, so a branch something else names by its
+       * old name is refused before either (D91): a linked checkout's id and
+       * record are its branch's, and a remote keeps the old name because no
+       * push removes a ref (rule 19). Renamed anyway, the checkout sat on a
+       * branch with no revision and the remote held both names. */
       rename: fromAuthorityPromise<
         BranchRenameActorOutput,
         Readonly<{ projectId: string; branch: string; name: string }>
@@ -3327,6 +3333,21 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
         const head = await port.readRef(input.branch);
         if (head === undefined) {
           throw new RevisionPortError('UNKNOWN_REVISION', `${input.branch} has no revision yet.`);
+        }
+        const places = await listPlaces();
+        if (places.some((place) => place.kind === 'linked' && place.branch === input.branch)) {
+          throw new RevisionPortError(
+            'BRANCH_RENAME_LINKED',
+            `${input.branch} has its own checkout, which is named by the branch.`,
+          );
+        }
+        // ponytail: a push already reading the old name can still land it after this check; the refusal covers every settled push.
+        const remotes = await port.listRemotes();
+        const tracked = await Promise.all(
+          remotes.map(async (remote) => port.readRef(remoteTrackingRef(remote.name, `refs/heads/${input.branch}`))),
+        );
+        if (tracked.some((remoteHead) => remoteHead !== undefined)) {
+          throw new RevisionPortError('BRANCH_RENAME_PUSHED', `A remote already holds ${input.branch}.`);
         }
         const taken = await port.readRef(input.name);
         if (taken !== undefined) {
@@ -3345,8 +3366,7 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
           throw new RevisionPortError('CHECKOUT_CONFLICT', `${input.branch} moved while the branch was renamed.`);
         }
         /* RM-R5: the checkout whose HEAD this moved re-reads its branch. */
-        const places = live?.branch === input.branch ? await listPlaces() : [];
-        const moved = places.find((place) => place.kind === 'live');
+        const moved = live?.branch === input.branch ? places.find((place) => place.kind === 'live') : undefined;
         return { branch: input.name, ...(moved === undefined ? {} : { checkoutId: moved.id }) };
       }),
     },
