@@ -179,6 +179,16 @@ describe('Tau MCP viewer', () => {
       [tauViewerToolName.appSync]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
       [tauViewerToolName.appCaptureReply]: { 'anthropic/alwaysLoad': true, ui: { resourceUri, visibility: ['app'] } },
     });
+    /* The live link's tools are classified, so a host neither prompts for nor treats them as open-world calls. */
+    const { tools } = await client.listTools();
+    for (const name of [tauViewerToolName.appSync, tauViewerToolName.appCaptureReply]) {
+      expect(tools.find((tool) => tool.name === name)?.annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      });
+    }
     const result = await client.callTool({ name: 'show_model', arguments: {} });
     expect(result.structuredContent).toEqual({ model });
     expect(result.content).toEqual([{ type: 'text', text: 'Showing src/bracket.ts in the Tau viewer.' }]);

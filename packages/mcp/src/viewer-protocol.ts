@@ -151,11 +151,16 @@ export type TauViewerSyncInput = Readonly<{
   pageId: string;
   /** The last `version` the page saw; 0 at first. */
   version: number;
-  /** Whether the page follows `show_model` (a tab does; a card keeps the model it was made for). */
+  /** Whether the page follows `show_model` (a page the person opened does; a card keeps the model it was made for). */
   follow: boolean;
   /** Hold the reply until something changes, at most a few seconds. */
   wait: boolean;
   view?: TauViewerViewState | undefined;
+  /**
+   * The id of the `tools/call` whose result opened the page (the host's `toolInfo.id`), so a server serving several
+   * conversations knows which one the page belongs to; absent for a page the person opened.
+   */
+  toolCallId?: string | undefined;
 }>;
 
 /** Structured result of `app_sync`. @public */

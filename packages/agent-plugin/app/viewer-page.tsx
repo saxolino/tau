@@ -31,10 +31,10 @@ import { buildGeometryComponentReference } from '@taucad/viewer/graphics/metadat
 import { getModelInteractionUnitState } from '@taucad/viewer/machines/model-interaction.machine';
 import { getViewCameraSession } from '@taucad/viewer/services/graphics-camera-registry';
 import { ModelViewer } from '@taucad/viewer/model-viewer';
-import type { HostBridge, HostView } from '#app/host-bridge.js';
+import type { ChatRoute, HostBridge, HostView } from '#app/host-bridge.js';
 import { loadModel } from '#app/model-loader.js';
 import { chatReferenceOf } from '#app/chat-reference.js';
-import { captureLiveView, startLiveLink, viewStateOf } from '#app/live-link.js';
+import { captureLiveView, startLiveLink, viewStateOf, whenDrawn } from '#app/live-link.js';
 import type { LiveLink } from '#app/live-link.js';
 import { SidePanel } from '#app/side-panel.jsx';
 import type { ViewOptions } from '#app/side-panel.jsx';
@@ -49,6 +49,32 @@ type PageState =
 
 const previousOf = (state: PageState): Loaded | undefined =>
   state.kind === 'ready' ? state.current : state.kind === 'waiting' ? undefined : state.previous;
+
+/** The card's height where the host's cap allows it (E5, G21). */
+const inlineHeight = 420;
+
+/**
+ * The inline card's height: {@link inlineHeight}, or the host's cap when that is lower.
+ *
+ * @param view - What the page knows about its host.
+ * @returns The height in CSS pixels, or `undefined` for the tab, which fills the viewport.
+ */
+const cardHeight = (view: HostView): number | undefined =>
+  view.composition === 'inline' ? Math.min(inlineHeight, view.maxHeight ?? inlineHeight) : undefined;
+
+/** The reference action's name per route: a message starts a turn, so it says so. */
+const chatAction: Readonly<Record<ChatRoute, string>> = {
+  context: 'Add to chat',
+  message: 'Send to chat',
+  clipboard: 'Copy prompt',
+};
+
+/** What the page says once the reference went its route. */
+const chatNotice: Readonly<Record<ChatRoute, string>> = {
+  context: 'Added to chat',
+  message: 'Sent to chat',
+  clipboard: 'Copied; paste it into your chat',
+};
 
 /**
  * Follows the bridge: shows each model it hands over, keeping the last one on screen while the next loads. The
@@ -124,39 +150,6 @@ function useShownModel(
 
 /** The agent's request to select components of one model (`show_model` with `select`). */
 type SelectRequest = Readonly<{ modelSha: string; componentIds: readonly string[] }> | undefined;
-
-/** Milliseconds a capture or a selection waits for the model to be drawn. */
-const drawnTimeout = 15_000;
-
-/** Resolve at the next animation frame. */
-const nextFrame = async (): Promise<void> =>
-  new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      resolve();
-    });
-  });
-
-/**
- * Wait until `isDrawn` holds, checking every 100 ms, then let two frames paint.
- *
- * @param isDrawn - Whether the page shows its model.
- * @returns Whether it was drawn in time.
- */
-const whenDrawn = async (isDrawn: () => boolean): Promise<boolean> => {
-  const started = Date.now();
-  while (!isDrawn()) {
-    if (Date.now() - started > drawnTimeout) {
-      return false;
-    }
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Each check waits for the one before it.
-    await new Promise((resolve) => {
-      setTimeout(resolve, 100);
-    });
-  }
-  await nextFrame();
-  await nextFrame();
-  return true;
-};
 
 /** A running tool's row: its name, its options, then Done (the app's `ToolRow`, without the app's focus hand-off). */
 function ToolRow({
@@ -400,7 +393,8 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
           interactedAt: interactedAt.current,
         });
       },
-      follows: () => latest.current.view.composition === 'tab',
+      follows: () => latest.current.view.follows,
+      toolCallId: () => latest.current.view.toolCallId,
       show(result) {
         showRef.current?.(result);
       },
@@ -479,7 +473,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
     const add = async (): Promise<void> => {
       try {
         const outcome = await bridge.addToChat(chatReferenceOf(shown.model, selected));
-        setNotice(outcome === 'added' ? 'Added to chat' : 'Copied; paste it into your chat');
+        setNotice(chatNotice[outcome]);
       } catch {
         setNotice('Could not add to chat');
       }
@@ -501,7 +495,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
   }, [notice]);
 
   /* In a card the conversation owns the wheel and vertical pan (E5, G21);
-   * controls are 44 pt there and the canvas height is fixed. */
+   * controls are 44 pt there and the card keeps one height under the host's cap. */
   const actions = (
     <>
       <Button
@@ -512,7 +506,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         onClick={addToChat}
       >
         <MessageSquarePlus className='size-4' />
-        {view.canAddToChat ? 'Add to chat' : 'Copy prompt'}
+        {chatAction[view.chatRoute]}
       </Button>
       {isInline ? null : (
         <Button
@@ -553,11 +547,9 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
               onPointerUp={noteInteraction}
               onKeyUp={noteInteraction}
               onWheel={noteInteraction}
-              className={cn(
-                '@container/viewer flex flex-col bg-background text-foreground',
-                isInline ? 'h-[420px]' : 'h-dvh',
-              )}
+              className={cn('@container/viewer flex flex-col bg-background text-foreground', !isInline && 'h-dvh')}
               style={{
+                height: cardHeight(view),
                 paddingTop: view.safeArea.top,
                 paddingRight: view.safeArea.right,
                 paddingBottom: view.safeArea.bottom,

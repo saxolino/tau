@@ -3,7 +3,7 @@ import { Color, Mesh, PerspectiveCamera, PlaneGeometry, Scene, WebGLRenderer } f
 import { WebGPURenderer } from 'three/webgpu';
 import { createInfiniteGridNodeMaterial } from '@taucad/viewer/graphics/three/materials/infinite-grid-material.node';
 import { createInfiniteGridGlMaterial } from '@taucad/viewer/graphics/three/materials/infinite-grid-material';
-import { getGeneratedShaderSource } from '@taucad/viewer/graphics/three/utils/three-shader-debug.test-utils';
+import { getGeneratedShaderSource } from '@taucad/viewer/graphics/three/utils/three-shader-debug';
 import { getEnvironment } from '#environment.config.js';
 
 type ShaderFixtureBackend = 'common-webgl' | 'webgpu';

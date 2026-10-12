@@ -158,6 +158,7 @@ const appSyncInputSchema = z
     follow: z.boolean(),
     wait: z.boolean(),
     view: viewSchema.optional(),
+    toolCallId: z.string().min(1).max(128).optional(),
   })
   .strict();
 
@@ -219,6 +220,17 @@ const readOnlyAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+/**
+ * The page's live-link tools change nothing outside the server's memory and reach no other system; hosts that prompt
+ * for or time out unannotated calls can classify them.
+ */
+const liveLinkAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: false,
   openWorldHint: false,
 } as const;
 
@@ -435,7 +447,12 @@ export const registerTauMcpViewer = (
   );
   const appSync = server.registerTool(
     tauViewerToolName.appSync,
-    { description: descriptions.appSync, inputSchema: appSyncInputSchema, _meta: alwaysLoad },
+    {
+      description: descriptions.appSync,
+      inputSchema: appSyncInputSchema,
+      annotations: liveLinkAnnotations,
+      _meta: alwaysLoad,
+    },
     async (args, extra) => {
       const result = await viewer.sync(args, callOptions(extra));
       return isFailure(result)
@@ -445,7 +462,12 @@ export const registerTauMcpViewer = (
   );
   const appCaptureReply = server.registerTool(
     tauViewerToolName.appCaptureReply,
-    { description: descriptions.appCaptureReply, inputSchema: appCaptureReplyInputSchema, _meta: alwaysLoad },
+    {
+      description: descriptions.appCaptureReply,
+      inputSchema: appCaptureReplyInputSchema,
+      annotations: liveLinkAnnotations,
+      _meta: alwaysLoad,
+    },
     async (args, extra) => {
       const result = await viewer.captureReply(args, callOptions(extra));
       return isFailure(result)

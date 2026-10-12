@@ -3,6 +3,31 @@ import { assembleBundledDeclarations } from '@taucad/nx/bundled-declarations';
 import { defineConfig } from 'tsdown';
 import type { UserConfig } from 'tsdown';
 
+/**
+ * Worker modules that `new Worker(new URL(…, import.meta.url))` sites load. They are build entries but not exports:
+ * consumers reach them only through the client modules that construct them.
+ */
+const workerEntries = [
+  'src/graphics/three/utils/measurement-features.worker.ts',
+  'src/graphics/three/utils/section-surface-topology.worker.ts',
+  'src/graphics/three/workers/section-cap-overlap.worker.ts',
+];
+
+/** Matches a worker URL literal that names a `.worker.ts` source module. */
+const workerSourceUrlPattern = /(new URL\(\s*(["'])[^"']+\.worker)\.ts\2/g;
+
+/**
+ * Rewrites worker URL literals from the `.ts` source name, which Vite resolves when `apps/ui` consumes `src`, to the
+ * `.mjs` file this build emits beside the client module, so the published `dist` constructs workers that exist.
+ */
+const workerUrlPlugin = {
+  name: 'viewer-worker-urls',
+  transform: {
+    filter: { code: /\.worker\.ts["']/ },
+    handler: (code: string) => ({ code: code.replaceAll(workerSourceUrlPattern, '$1.mjs$2') }),
+  },
+};
+
 const baseConfig: UserConfig = {
   entry: [
     'src/cad/cad-viewer.tsx',
@@ -64,7 +89,7 @@ const baseConfig: UserConfig = {
     'src/graphics/three/utils/section-cap-polygon-types.ts',
     'src/graphics/three/utils/section-cap-region.ts',
     'src/graphics/three/utils/section-cap-render-parts.ts',
-    'src/graphics/three/utils/three-shader-debug.test-utils.ts',
+    'src/graphics/three/utils/three-shader-debug.ts',
     'src/graphics/three/utils/tsl-node-graph-snapshot.ts',
     'src/hooks/use-graphics.tsx',
     'src/hooks/use-webgl-context-tracker.tsx',
@@ -88,11 +113,13 @@ const baseConfig: UserConfig = {
     'src/parameters/rjsf-validator.ts',
     'src/services/graphics-camera-registry.ts',
     'src/utils/inspect-glb.ts',
+    ...workerEntries,
   ],
   sourcemap: false,
   clean: true,
   dts: { eager: true },
   minify: true,
+  plugins: [workerUrlPlugin],
   hooks: {
     // eslint-disable-next-line @typescript-eslint/naming-convention -- tsdown's hook API uses colon-delimited names.
     'build:done': async ({ options }) => assembleBundledDeclarations(process.cwd(), options.outDir, 'viewer'),
