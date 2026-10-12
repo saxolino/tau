@@ -4995,9 +4995,6 @@ importers:
       '@taucad/three':
         specifier: workspace:*
         version: link:../three
-      '@taucad/ui':
-        specifier: workspace:*
-        version: link:../ui
       '@taucad/units':
         specifier: workspace:*
         version: link:../units
@@ -5062,6 +5059,9 @@ importers:
       '@taucad/types':
         specifier: workspace:*
         version: link:../../libs/types
+      '@taucad/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@taucad/utils':
         specifier: workspace:*
         version: link:../../libs/utils
