@@ -984,6 +984,28 @@ describe('RevisionSyncRegion with a moved GitHub repository (D11)', () => {
     expect(within(row).getByText(refused.error ?? '')).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: 'Update remote' })).not.toBeInTheDocument();
   });
+
+  /* D99: GitHub serves a renamed repository's old address without redirecting, so no sync ever fails. */
+  it('should offer the new address on a backed-up row when GitHub reports the repository renamed (D99)', async () => {
+    githubRepository.mockResolvedValue(renamed);
+    renderRegion(bound, syncFacet({ state: 'backedUp' }), { projectId: 'p1' });
+
+    const row = screen.getByRole('status', { name: 'Backup status' });
+    expect(await within(row).findByText('This repository moved to octo/renamed.')).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: 'Update remote' })).toBeInTheDocument();
+  });
+
+  it('should add nothing to a backed-up row whose address still holds (D99)', async () => {
+    githubRepository.mockResolvedValue({ ...renamed, cloneUrl: 'https://github.com/o/r.git' });
+    renderRegion(bound, syncFacet({ state: 'backedUp' }), { projectId: 'p1' });
+
+    await waitFor(() => {
+      expect(githubRepository).toHaveBeenCalledOnce();
+    });
+    const row = screen.getByRole('status', { name: 'Backup status' });
+    expect(within(row).queryByText(/moved/u)).not.toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: 'Update remote' })).not.toBeInTheDocument();
+  });
 });
 
 describe('RevisionSyncRegion refusals and plan gates', () => {

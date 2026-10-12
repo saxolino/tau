@@ -366,9 +366,14 @@ function GitRemoteForm({
  * id on the connection it was picked from. A new address is offered, and the
  * remote is re-pointed only once the person confirms it (policy rule 11).
  *
- * @param props - The project, the remote's own sentence, the re-point verb and
- *   the fallback action for when there is no new address to offer.
- * @returns The row.
+ * D99: GitHub serves a renamed repository's old address to an authorized git
+ * client without redirecting, so a rename never fails a sync. A healthy GitHub
+ * row asks too, with no sentence, and says nothing until the address differs.
+ *
+ * @param props - The project, the remote's own sentence (none on a healthy
+ *   row), the re-point verb and the fallback action for when there is no new
+ *   address to offer.
+ * @returns The row, or nothing on a healthy row whose address still holds.
  */
 function MovedRepository({
   projectId,
@@ -377,10 +382,10 @@ function MovedRepository({
   fallback,
 }: {
   readonly projectId: string | undefined;
-  readonly sentence: string;
+  readonly sentence: string | undefined;
   readonly onUpdate: (connectionId: string, repository: GithubRepository) => void;
   readonly fallback: ReactNode;
-}): React.JSX.Element {
+}): React.JSX.Element | undefined {
   const binding = projectId === undefined ? undefined : githubProjectBinding.get(projectId);
   const lookup = useQuery({
     queryKey: ['github', 'repository', binding?.connectionId, binding?.repositoryId],
@@ -394,6 +399,9 @@ function MovedRepository({
   const [kept, setKept] = useState(false);
   const moved = lookup.data !== undefined && lookup.data.cloneUrl !== binding?.repositoryUrl ? lookup.data : undefined;
   if (binding === undefined || moved === undefined) {
+    if (sentence === undefined) {
+      return undefined;
+    }
     return (
       <span className='flex flex-wrap items-center gap-2 text-xs'>
         <span className='min-w-0 flex-1'>{lookup.isError ? githubErrorMessage(lookup.error) : sentence}</span>
@@ -822,7 +830,18 @@ export function RevisionSyncRegion({
         </span>
         {role === 'revoked' ? (
           <span className='text-muted-foreground'>{accessRemovedSentence}</span>
-        ) : failureSentence === undefined ? undefined : failureAction === 'moved' ? (
+        ) : failureSentence === undefined ? (
+          remote.provider === 'github' ? (
+            <MovedRepository
+              projectId={projectId}
+              sentence={undefined}
+              fallback={undefined}
+              onUpdate={(connectionId, repository) => {
+                void commitConnection({ kind: 'github', connectionId, repository });
+              }}
+            />
+          ) : undefined
+        ) : failureAction === 'moved' ? (
           <MovedRepository
             projectId={projectId}
             sentence={failureSentence}
