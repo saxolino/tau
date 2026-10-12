@@ -32,13 +32,18 @@ export type TauR3fGlFactory = ((defaults: TauR3fGlDefaults) => Promise<FiberComp
  *
  * @param graphicsBackend - Backend the viewport renderer is created for.
  * @param cameras - Retained cameras whose projection convention must follow the new renderer.
- * @param onCreateError - Receives the renderer creation failure so the owner can render its fallback.
+ * @param options - The owner's choices.
+ * @param options.onCreateError - Receives the renderer creation failure so the owner can render its fallback.
+ * @param options.preserveDrawingBuffer - Keep each WebGL frame readable after it is shown (a live capture).
  * @public
  */
 export function createTauR3fGlProp(
   graphicsBackend: ResolvedGraphicsBackend,
   cameras: readonly ThreeCamera[] = [],
-  onCreateError?: (error: Error) => void,
+  {
+    onCreateError,
+    preserveDrawingBuffer = false,
+  }: Readonly<{ onCreateError?: (error: Error) => void; preserveDrawingBuffer?: boolean }> = {},
 ): TauR3fGlFactory {
   let initialization: Promise<FiberCompatibleGl> | undefined;
   let ownedRenderer: RendererInstance | undefined;
@@ -75,7 +80,11 @@ export function createTauR3fGlProp(
   const initialize = async (canvas: HTMLCanvasElement): Promise<FiberCompatibleGl> => {
     let renderer: RendererInstance;
     try {
-      renderer = await createRenderer('viewport', graphicsBackend, canvas);
+      renderer = await createRenderer(
+        'viewport',
+        graphicsBackend,
+        preserveDrawingBuffer ? { canvas, preserveDrawingBuffer } : canvas,
+      );
     } catch (error) {
       if (isRetired()) {
         return pending();

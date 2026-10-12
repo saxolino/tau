@@ -50,6 +50,16 @@ describe('createTauR3fGlProp', () => {
     expect(hoisted.createRenderer).toHaveBeenCalledWith('viewport', 'webgpu', canvas);
   });
 
+  it('asks for a readable WebGL canvas when the owner captures it', async () => {
+    const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
+    const glFactory = createTauR3fGlProp('webgl', [], { preserveDrawingBuffer: true });
+
+    const canvas = document.createElement('canvas');
+    await glFactory({ canvas, alpha: true });
+
+    expect(hoisted.createRenderer).toHaveBeenCalledWith('viewport', 'webgl', { canvas, preserveDrawingBuffer: true });
+  });
+
   it('delegates WebGL canvases to createRenderer viewport presets', async () => {
     const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
     const glFactory = createTauR3fGlProp('webgl');
@@ -173,7 +183,7 @@ describe('createTauR3fGlProp', () => {
     hoisted.createRenderer.mockRejectedValue(failure);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const onCreateError = vi.fn();
-    const glFactory = createTauR3fGlProp('webgl', [], onCreateError);
+    const glFactory = createTauR3fGlProp('webgl', [], { onCreateError });
     if (typeof glFactory !== 'function') {
       throw new TypeError('Expected the R3F renderer factory.');
     }
@@ -203,7 +213,7 @@ describe('createTauR3fGlProp', () => {
 
     const replacement = { setPixelRatio: vi.fn(), getPixelRatio: () => 1 };
     hoisted.createRenderer.mockResolvedValue(replacement);
-    const retryFactory = createTauR3fGlProp('webgl', [], onCreateError);
+    const retryFactory = createTauR3fGlProp('webgl', [], { onCreateError });
     if (typeof retryFactory !== 'function') {
       throw new TypeError('Expected fresh renderer factory');
     }
@@ -222,7 +232,7 @@ describe('createTauR3fGlProp', () => {
         }),
     );
     const onCreateError = vi.fn();
-    const factory = createTauR3fGlProp('webgpu', [], onCreateError);
+    const factory = createTauR3fGlProp('webgpu', [], { onCreateError });
     const canvas = document.createElement('canvas');
     document.body.append(canvas);
     factory.bindCanvas(canvas);
@@ -245,7 +255,7 @@ describe('createTauR3fGlProp', () => {
     expect(hoisted.createRenderer).toHaveBeenCalledOnce();
     const replacement = { setPixelRatio: vi.fn(), getPixelRatio: () => 1 };
     hoisted.createRenderer.mockResolvedValueOnce(replacement);
-    const fresh = createTauR3fGlProp('webgl', [], onCreateError);
+    const fresh = createTauR3fGlProp('webgl', [], { onCreateError });
     expect(await fresh({ canvas: document.createElement('canvas') })).toBe(replacement);
     expect(hoisted.createRenderer).toHaveBeenCalledTimes(2);
   });

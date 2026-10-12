@@ -9,6 +9,7 @@ const skipParentTags = new Set(['code', 'pre', 'a']);
  *
  * - `@path` produces `<mark data-at-reference="path">`
  * - `/skill`, `$skill` produce `<mark data-invocation="token">`; the chip renders text unless the chat knows the token
+ * - `@cad[<file>#<component>]` produces `<mark data-cad-reference="token">`
  *
  * `<mark>` is used instead of `<span>` because markdown rendering produces
  * hundreds of `<span>` elements (especially in code blocks). Using `<mark>`
@@ -50,7 +51,12 @@ function visitTextNodes(children: Array<RootContent | ElementContent>, parentTag
           break;
         }
         case 'cadReference': {
-          replacementNodes.push({ type: 'text', value: segment.token });
+          replacementNodes.push({
+            type: 'element',
+            tagName: 'mark',
+            properties: { 'data-cad-reference': segment.token },
+            children: [{ type: 'text', value: segment.token }],
+          } satisfies Element);
           break;
         }
         case 'atReference': {

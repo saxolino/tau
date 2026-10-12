@@ -295,7 +295,7 @@ export function DesignStoryCanvas({ actor, isPlaying, onReady }: StoryProperties
   const [error, setError] = useState<Error>();
   // Public viewers stay on WebGL; the existing internal override is used for parity checks.
   const backend = readGraphicsBackendQueryOverride() ?? 'webgl';
-  const gl = useMemo(() => createTauR3fGlProp(backend, [], setError), [backend]);
+  const gl = useMemo(() => createTauR3fGlProp(backend, [], { onCreateError: setError }), [backend]);
   const parts = useGearboxParts(onReady, setError);
   if (error) {
     throw error;

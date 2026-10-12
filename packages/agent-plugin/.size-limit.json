@@ -5,9 +5,9 @@
     "limit": "2 kB"
   },
   {
-    "name": "viewer page (single file) \u2014 measured 1.39 MB gzip on 2026-10-11",
+    "name": "viewer page (single file) \u2014 measured 1.53 MB gzip on 2026-10-11 (the side panel adds the parameters form and model tree)",
     "path": "dist-app/app.html",
     "gzip": true,
-    "limit": "1.5 MB"
+    "limit": "1.6 MB"
   }
 ]

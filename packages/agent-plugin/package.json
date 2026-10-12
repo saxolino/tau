@@ -76,6 +76,7 @@
     "@tailwindcss/vite": "^4.3.1",
     "@taucad/chat": "workspace:*",
     "@taucad/mcp": "workspace:*",
+    "@taucad/parameters": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/types": "workspace:*",
     "@taucad/ui": "workspace:*",
