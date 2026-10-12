@@ -173,7 +173,8 @@ const reconnectCopy = (remote: RemoteFacet): string => {
   if (isGithubRemote(remote)) {
     return 'GitHub needs a connected account to reach this repository. Reconnect GitHub, then pick it from your repositories.';
   }
-  return remote.error ?? 'The remote rejected the saved credentials.';
+  /* D94: every other Git remote is anonymous, so it had no saved credentials to reject. */
+  return remote.error ?? 'This remote asked for a sign-in Tau does not have, or has no repository at this address.';
 };
 
 /**

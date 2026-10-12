@@ -520,6 +520,10 @@ describe('RevisionSyncRegion', () => {
       }),
     );
 
+    /* D94: a connected GitHub account did save a credential, so its sentence stands. */
+    expect(screen.getByRole('alert', { name: 'GitHub connection' })).toHaveTextContent(
+      'The remote rejected the saved credentials.',
+    );
     await user.click(screen.getByRole('button', { name: 'Reconnect GitHub' }));
     await user.click(screen.getByRole('button', { name: 'Pick GitHub repository' }));
 
@@ -699,15 +703,19 @@ describe('RevisionSyncRegion', () => {
     expect(screen.queryByText(/^Replace /u)).not.toBeInTheDocument();
   });
 
-  /* D18: a host that is not GitHub is offered neither GitHub nor Tau copy. */
-  it('should say the remote rejected the credentials, and retry, for a host that is not GitHub', async () => {
+  /* D18: a host that is not GitHub is offered neither GitHub nor Tau copy.
+   * D94: and, being anonymous, is never told it had saved credentials. */
+  it('should say the remote asked for a sign-in Tau does not have, and retry, for a host that is not GitHub', async () => {
     const user = userEvent.setup();
     const region = renderRegion(
       facet({ kind: 'git', phase: 'reconnectRequired', url: 'https://gitlab.example.com/o/r.git' }),
     );
 
     const alert = screen.getByRole('alert', { name: 'Remote credentials' });
-    expect(alert).toHaveTextContent('The remote rejected the saved credentials.');
+    expect(alert).toHaveTextContent(
+      'This remote asked for a sign-in Tau does not have, or has no repository at this address.',
+    );
+    expect(alert).not.toHaveTextContent(/saved credentials/u);
     expect(screen.queryByRole('button', { name: 'Reconnect GitHub' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
