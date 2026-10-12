@@ -32,6 +32,7 @@ import { z } from 'zod';
 
 import { createTauMcpHttpHandler, serveTauMcpStdio } from '@taucad/mcp';
 import type {
+  TauMcpConfirm,
   TauMcpDispatch,
   TauMcpHostCall,
   TauMcpHostTool,
@@ -86,7 +87,9 @@ export const hostMcpCapabilityPrefix = 'tau-mcp-host-v1';
  * tools (blueprint D5, Bambu Studio D13): an
  * external agent may read the slicing profiles a machine offers, and open,
  * read, list and stop a print request through the same ledger a Tau turn
- * uses, and is told to wait for the person — nothing here starts a print. Every name is dispatched into the daemon's own registry by tool name.
+ * uses. A print starts only on the person's answer: in the client's own approval form when it declares form
+ * elicitation (`tau mcp`), otherwise in Tau, while the agent is told to wait. Every name is dispatched into the
+ * daemon's own registry by tool name.
  *
  * @public
  */
@@ -852,10 +855,15 @@ export const serveLocalHostMcp = async (
     readonly workspaceRoot: string;
     readonly tool: HostMcpAllowedTool;
     readonly args: Readonly<Record<string, unknown>>;
-    readonly call: { readonly toolCallId: string; readonly signal?: AbortSignal | undefined };
+    readonly call: {
+      readonly toolCallId: string;
+      readonly signal?: AbortSignal | undefined;
+      readonly confirm?: TauMcpConfirm | undefined;
+    };
   }): Promise<Awaited<ReturnType<ToolRegistry['invoke']>>> => {
     const runId = `mcp:${workspaceRoot}`;
     options.checkouts.set(runId, { cwd: workspaceRoot });
+    const { confirm } = call;
     return options.registry.invoke({
       toolCallId: call.toolCallId,
       toolName: tool,
@@ -863,6 +871,25 @@ export const serveLocalHostMcp = async (
       // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- the args were validated against the tool's own schema.
       input: args as unknown as JsonValue,
       signal: call.signal ?? new AbortController().signal,
+      /* A client that draws forms asks the person inside this call, so a print starts only on their answer (E9,
+       * W11). Without one the tool leaves its request awaiting approval in Tau. Nothing pauses here, so there is
+       * no later attempt to recall an answer. */
+      ...(confirm === undefined
+        ? {}
+        : {
+            approve: async ({ prompt }: { readonly prompt: string }) => {
+              const outcome = await confirm({ message: prompt, label: 'Approve' }).catch((error: unknown) => {
+                /* Not the person's answer: the tool leaves its request for them in Tau, and the operator learns why. */
+                process.stderr.write(
+                  `tau mcp: the agent app could not ask the person to approve ${tool}, so it waits for them in Tau: ${String(error)}\n`,
+                );
+                throw Object.assign(new Error('The agent app could not ask the person.', { cause: error }), {
+                  code: 'APPROVAL_UNAVAILABLE',
+                });
+              });
+              return { interruptId: call.toolCallId, outcome };
+            },
+          }),
     });
   };
   const viewer =

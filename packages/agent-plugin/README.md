@@ -83,7 +83,11 @@ The same prompt works in `codex` after the Codex install. The agent writes `main
 | `show_model`                | Shows a model in the Tau viewer; a CAD source or STEP/STL/3MF/OBJ becomes GLB first           | The GLB, under `.tau/artifacts/`             |
 | `view_state`                | Reports what the viewer shows: model, selection, visibility, camera; with `capture`, an image | Nothing                                      |
 
-The tools load with the session in both hosts rather than waiting behind tool search. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
+The tools load with the session in both hosts rather than waiting behind tool search.
+
+### Printing
+
+With `TAU_HOST_MACHINES=true` in the server's environment (the Codex manifest passes it through), `tau mcp` also offers the print tools (`get_print_profiles`, `request_print`, `get_print_request`, `list_print_requests`, `cancel_print`) over the printers you bound in the Tau app. `request_print` slices the model in the folder the agent is working in, which must be a Tau project (it holds `tau.json`), and asks you to approve the print in the agent app's own form; the print starts only if you tick Approve and accept. An agent app that cannot show a form gets the request back waiting, and you approve it in Tau's Print pane. Printers are shared by every Tau app on the computer and only one can use them at a time, so while the Tau desktop app has them the server offers no print tools, and while the server has them the desktop app waits. That is why printing is off unless you turn it on, and why a server whose one folder is not a Tau project (Claude Code's project folder, or `--project`) leaves the printers alone and says so on stderr. Codex names the folder with each call, so its server prints from whichever project the thread works in. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
 
 ## Viewer
 
@@ -101,7 +105,7 @@ The page stays live with the agent. It long-polls `app_sync`, a tool only the pa
 
 The tab and fullscreen page have a side panel (Panels in the bottom bar): the component tree, where a click selects a component and the eye hides or shows it; the model's parameters, where an edit is written to the project and the page shows the model rendered with it; the selected part's properties; and switches for the grid, axes, edges and surfaces. When you move the camera or hide a part, `tau mcp` saves that view in the project's `.tau/workbench` records, so Tau opens the project with the same camera and hidden parts.
 
-The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The browser link carries a per-session token and answers only on `127.0.0.1`.
+The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The server reads only the range asked for, gzips a range that shrinks by a tenth or more, and refuses a range once the file has changed, so the page shows the new file instead of a mix of two. A 50 MB GLB streams in thirteen calls. The browser link carries a per-session token and answers only on `127.0.0.1`.
 
 The launcher hands the page to the CLI in `TAU_VIEWER_PAGE`. To run the viewer from Claude Desktop, add the launcher to `claude_desktop_config.json` (Settings → Developer → Edit config):
 

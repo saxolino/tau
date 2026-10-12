@@ -18,6 +18,8 @@ import { tauViewerPageInputSchemas } from '@taucad/mcp';
 import type { TauMcpViewer, TauMcpViewerCallOptions, TauMcpViewerFailure } from '@taucad/mcp';
 import { tauViewerReadLimit, tauViewerToolName } from '@taucad/mcp/viewer-protocol';
 
+import { readModelRange, snapshotModelFile } from '#mcp-viewer-read.js';
+import type { ModelFileIdentity } from '#mcp-viewer-read.js';
 import { createMcpViewerSessions } from '#mcp-viewer-sessions.js';
 import type { McpViewerSessionsOptions } from '#mcp-viewer-sessions.js';
 import { createMcpViewerWorkbench } from '#mcp-viewer-workbench.js';
@@ -110,7 +112,7 @@ export type LocalMcpViewer = TauMcpViewer &
  * entry is the single record of what was shown and for which project: the
  * loopback page asks for it by id and never resolves a folder of its own.
  */
-type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string }>;
+type Shown = Readonly<{ model: TauViewerModel; absolutePath: string; root: string; identity: ModelFileIdentity }>;
 
 const failure = (errorCode: string, message: string): TauMcpViewerFailure => ({ errorCode, message });
 
@@ -280,10 +282,11 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
         `The Tau viewer draws GLB and SVG; ${posix(relative(root, absolutePath))} is neither.`,
       );
     }
-    const bytes = await readFile(absolutePath).catch(() => undefined);
-    if (bytes === undefined) {
+    const snapshot = await snapshotModelFile(absolutePath);
+    if (snapshot === undefined) {
       return failure('NOT_FOUND', `${posix(relative(root, absolutePath))} could not be read.`);
     }
+    const { bytes, identity } = snapshot;
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const id = createHash('sha256').update(`${absolutePath}\0${sha256}`).digest('base64url').slice(0, 22);
     const path = posix(relative(root, absolutePath));
@@ -296,7 +299,7 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       byteLength: bytes.length,
       sha256,
     };
-    shown.set(id, { model, absolutePath, root });
+    shown.set(id, { model, absolutePath, root, identity });
     return model;
   };
 
@@ -431,13 +434,16 @@ export const createLocalMcpViewer = (options: LocalMcpViewerOptions): LocalMcpVi
       if (entry === undefined) {
         return failure('UNKNOWN_MODEL', 'This model is no longer shown; show it again.');
       }
-      const bytes = await readFile(entry.absolutePath).catch(() => undefined);
-      if (bytes === undefined || createHash('sha256').update(bytes).digest('hex') !== entry.model.sha256) {
-        return failure('MODEL_CHANGED', `${entry.model.path} changed since it was shown; show it again.`);
-      }
-      const offset = Math.min(input.offset, bytes.length);
-      const slice = bytes.subarray(offset, Math.min(offset + Math.min(input.length, tauViewerReadLimit), bytes.length));
-      return { offset, byteLength: slice.length, totalBytes: bytes.length, data: slice.toString('base64') };
+      const result = await readModelRange({
+        absolutePath: entry.absolutePath,
+        identity: entry.identity,
+        offset: input.offset,
+        length: Math.min(input.length, tauViewerReadLimit),
+        encodings: input.encodings,
+      });
+      return 'refused' in result
+        ? failure('MODEL_CHANGED', `${entry.model.path} changed since it was shown; show it again.`)
+        : result;
     },
     async sync(input, callOptions) {
       /* Only a model this server showed names the project and entry a view is kept for; the page's own names do not. */

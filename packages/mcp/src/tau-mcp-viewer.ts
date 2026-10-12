@@ -3,6 +3,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   resolveTauViewerPresentation,
+  tauViewerReadEncodings,
   tauViewerReadLimit,
   tauViewerResourceMimeType,
   tauViewerResourceUri,
@@ -198,6 +199,7 @@ const appReadInputSchema = z
     modelId: z.string().min(1),
     offset: z.number().int().nonnegative(),
     length: z.number().int().positive().max(tauViewerReadLimit),
+    encodings: z.array(z.enum(tauViewerReadEncodings)).max(4).optional(),
   })
   .strict();
 

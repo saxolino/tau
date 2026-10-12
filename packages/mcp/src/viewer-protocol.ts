@@ -88,18 +88,29 @@ export type TauViewerBrowseResult = Readonly<{
   files: readonly TauViewerFile[];
 }>;
 
+/** Content encodings a page can undo on an `app_read` slice. @public */
+export const tauViewerReadEncodings = ['gzip'] as const;
+
+/** One content encoding of an `app_read` slice. @public */
+export type TauViewerReadEncoding = (typeof tauViewerReadEncodings)[number];
+
 /** Arguments of `app_read`. @public */
 export type TauViewerReadInput = Readonly<{
   modelId: string;
   offset: number;
   length: number;
+  /** Encodings the page can undo; the server uses one only when it makes the reply smaller (blueprint W9). */
+  encodings?: readonly TauViewerReadEncoding[] | undefined;
 }>;
 
 /** Structured result of `app_read`: one base64 slice of the model. @public */
 export type TauViewerReadResult = Readonly<{
   offset: number;
+  /** Bytes of the model this slice covers, before any encoding. */
   byteLength: number;
   totalBytes: number;
+  /** How `data` is encoded beneath its base64; absent for the bytes as they are. */
+  encoding?: TauViewerReadEncoding | undefined;
   /** The slice, base64-encoded. */
   data: string;
 }>;
