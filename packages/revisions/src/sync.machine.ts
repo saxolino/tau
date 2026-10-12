@@ -370,8 +370,12 @@ export type SyncFetchActorOutput = Readonly<{
   branches?: ReadonlyArray<Readonly<{ name: string; head: string }>>;
   /** Independent record projections attempted after the fetch. */
   records?: readonly SyncRefOutcome[];
-  /** Other checkouts this pull moved onto their remote heads (D60). */
+  /** Other checkouts this pull moved onto their remote heads (D60), or onto a merge with them (D87). */
   advanced?: ReadonlyArray<SyncMovedCheckout & Readonly<{ branch: string }>>;
+  /** Other checkouts' branches this pull merged with their remote heads: unsent merge revisions (D87). */
+  merged?: readonly string[];
+  /** Conflicts this pull newly recorded for other checkouts' branches, each announced once (D87). */
+  conflicts?: ReadonlyArray<Readonly<{ branch: string; into: string; paths: readonly string[] }>>;
 }>;
 
 /** What applying the fetched head is asked for. @public */
@@ -640,14 +644,17 @@ const isHistoryRef = (ref: string): boolean => ref.startsWith('refs/heads/') || 
  * set. An owed *record* ref never narrows: offering it alone left every new
  * revision of this branch unpushed for as long as the remote refused it, and a
  * record's refusal never blocks history (rule 10, W13c). A queued history ref
- * is the synthetic marker for a thrown full-set push, so it cannot narrow.
+ * is the synthetic marker for a thrown full-set push, so it cannot narrow. Nor
+ * does a lost lease, for the same reason as a record: the push itself keeps a
+ * branch that has not integrated its lease out of the atomic set (D54), and
+ * narrowing to it held every other branch's revisions back (D87).
  *
  * @param context - Current context.
  * @returns The narrowed ref list, or `undefined` when both sets are offered.
  */
 const narrowedOffer = (context: SyncMachineContext): readonly string[] | undefined => {
   const owed = owedPushes(context);
-  const history = owed.filter((entry) => isHistoryRef(entry.ref));
+  const history = owed.filter((entry) => isHistoryRef(entry.ref) && entry.reason !== 'leaseLost');
   return history.length > 0 &&
     context.failure !== 'none' &&
     history.every((entry) => entry.ref !== historyRefOf(context.branch))
@@ -868,7 +875,15 @@ const rememberFetch = (
       enq.sendTo(context.parentRef, { type: 'checkoutChanged', ...moved });
     }
   }
+  /* Another checkout's conflict is that branch's decision: this branch still syncs (D87). */
+  for (const conflict of output.conflicts ?? []) {
+    if (context.parentRef !== undefined) {
+      enq.sendTo(context.parentRef, { type: 'mergeConflicted', ...conflict });
+    }
+  }
   return {
+    /* A merge on another checkout's branch is this device's own and unsent, as `merging`'s is. */
+    pendingMint: context.pendingMint || output.merged !== undefined,
     leases: output.leases,
     pending,
     retryAfterMilliseconds: undefined,

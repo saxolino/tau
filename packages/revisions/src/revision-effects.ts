@@ -2503,6 +2503,21 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
   };
 
   /**
+   * The checkout a landed merge moved, for its actor to re-head (D3).
+   *
+   * @param outcome - What `mergeBranches` landed.
+   * @returns The moved checkout, or `undefined` when nothing moved.
+   */
+  const movedOf = async (
+    outcome: Readonly<{ revisionId: string; checkoutId?: string }>,
+  ): Promise<SyncMovedCheckout | undefined> => {
+    const treeId = outcome.checkoutId === undefined ? undefined : await treeIdOf(outcome.revisionId);
+    return outcome.checkoutId === undefined || treeId === undefined
+      ? undefined
+      : { checkoutId: outcome.checkoutId, revisionId: outcome.revisionId, treeId };
+  };
+
+  /**
    * The newest revision on `head`'s first-parent line an editor's text can be
    * said to be made from: the one whose `path` holds `base`, else the first
    * whose `path` is not yet the other writer's bytes, else the oldest walked.
@@ -4189,23 +4204,69 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
           places.flatMap((place) => (place.branch === undefined ? [] : [`refs/heads/${place.branch}`])),
         );
         const advanced: Array<SyncMovedCheckout & Readonly<{ branch: string }>> = [];
+        const merged: string[] = [];
+        const conflicts: Array<Readonly<{ branch: string; into: string; paths: readonly string[] }>> = [];
+        /*
+         * D87: another checkout's branch that diverged composes with its remote
+         * head as the live one does in `merge` (rule 9). The merge revision is
+         * this device's unsent work, so the pull's exit pushes it; a conflict
+         * is announced only when this pull recorded it, not when it is the one
+         * already waiting on the line (D55). A held checkout stays where it is.
+         */
+        const mergeLinked = async (branch: `refs/heads/${string}`, name: string): Promise<void> => {
+          const waiting = await port.readRef(await ownConflictLine(name));
+          let outcome: Awaited<ReturnType<typeof mergeBranches>>;
+          try {
+            outcome = await mergeBranches({
+              branch: remoteTrackingRef(input.remote, branch),
+              into: name,
+              sourceLabel: `${input.remote}/${name}`,
+            });
+          } catch (error) {
+            /* Unsaved or leased files, or a branch that moved meanwhile: the next pull tries again. */
+            if (
+              error instanceof CheckoutHeld ||
+              (error instanceof RevisionPortError && error.code === 'CHECKOUT_CONFLICT')
+            ) {
+              return;
+            }
+            throw error;
+          }
+          if (outcome.status === 'conflicted') {
+            if ((await port.readRef(outcome.line)) !== waiting) {
+              conflicts.push({ branch: outcome.line, into: name, paths: outcome.paths });
+            }
+            return;
+          }
+          localByName.set(branch, outcome.revisionId);
+          merged.push(name);
+          const moved = await movedOf(outcome);
+          if (moved !== undefined) {
+            advanced.push({ ...moved, branch: name });
+          }
+        };
         /* D60: another checkout's branch the remote moved on, with no work of
          * its own, follows as the live one does. Left behind, every push
          * offered it under a lease it could never integrate — `leaseLost` on
-         * each retry, for ever. Unsaved or leased files, or local work, keep it
-         * where it is. Ancestry, not the tracking ref before this fetch: an
-         * earlier fetch that moved the tracking ref while the files were
-         * unsaved must not strand the branch once they are saved. */
+         * each retry, for ever. Unsaved or leased files keep it where it is,
+         * and local work merges (D87). Ancestry, not the tracking ref before
+         * this fetch: an earlier fetch that moved the tracking ref while the
+         * files were unsaved must not strand the branch once they are saved. */
         const followRemote = async (branch: `refs/heads/${string}`, head: string): Promise<void> => {
           const local = localByName.get(branch);
           if (local === undefined || local === head) {
             return;
           }
           const walk = await port.log({ heads: [revisionId(head), revisionId(local)], limit: divergenceWalkLimit });
-          if (integrationOf(walk, revisionId(local), revisionId(head)) !== 'fastForward') {
+          const relation = integrationOf(walk, revisionId(local), revisionId(head));
+          const name = branch.slice('refs/heads/'.length);
+          if (relation === 'diverged') {
+            await mergeLinked(branch, name);
             return;
           }
-          const name = branch.slice('refs/heads/'.length);
+          if (relation !== 'fastForward') {
+            return;
+          }
           try {
             const moved = await fastForwardBranch({ remote: input.remote, branch: name }, signal);
             /* A held checkout stays where it is: its files are the person's or a run's. */
@@ -4413,7 +4474,15 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
            */
           return relation === 'upToDate' ? 'ahead' : relation;
         })();
-        return { leases, integration, branches, records, ...(advanced.length === 0 ? {} : { advanced }) };
+        return {
+          leases,
+          integration,
+          branches,
+          records,
+          ...(advanced.length === 0 ? {} : { advanced }),
+          ...(merged.length === 0 ? {} : { merged }),
+          ...(conflicts.length === 0 ? {} : { conflicts }),
+        };
       }),
 
       /** A clean checkout takes the remote head; nothing is composed (A2). */
@@ -4441,10 +4510,8 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
         if (outcome.status === 'conflicted') {
           return { status: 'conflicted', branch: outcome.line, into: input.branch, paths: outcome.paths };
         }
-        const treeId = outcome.checkoutId === undefined ? undefined : await treeIdOf(outcome.revisionId);
-        return outcome.checkoutId === undefined || treeId === undefined
-          ? { status: 'merged' }
-          : { status: 'merged', moved: { checkoutId: outcome.checkoutId, revisionId: outcome.revisionId, treeId } };
+        const moved = await movedOf(outcome);
+        return moved === undefined ? { status: 'merged' } : { status: 'merged', moved };
       }),
 
       /* D13: the project's `revision` entries, for the remote the scheduler names. */
