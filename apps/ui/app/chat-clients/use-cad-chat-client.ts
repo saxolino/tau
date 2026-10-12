@@ -180,11 +180,10 @@ export const useCadChatClient = (): CadChatClient => {
     (messageId: string, input: CadChatSubmitInput) => {
       // async-iife: bootstrap — the edit composer closes at once; failures surface on the banner or a toast.
       void withAttachments(input.attachments ?? [], () => {
-        actions.editMessage(
-          messageId,
-          input.text,
-          input.attachments === undefined ? {} : { attachments: input.attachments },
-        );
+        actions.editMessage(messageId, input.text, {
+          ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+          ...(input.references === undefined ? {} : { references: input.references }),
+        });
       });
     },
     [actions, withAttachments],

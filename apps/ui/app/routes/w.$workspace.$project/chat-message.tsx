@@ -951,7 +951,11 @@ export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProp
                 // the wire body's `agent` block is composed from the live
                 // `useCadAgentConfig` snapshot — no model/metadata stamping
                 // on the persisted user row.
-                cadChat.edit(messageId, { text: event.content, attachments: event.attachments });
+                cadChat.edit(messageId, {
+                  text: event.content,
+                  attachments: event.attachments,
+                  ...(event.references === undefined ? {} : { references: event.references }),
+                });
                 exitEditMode();
                 setIsEditing(false);
               }}
