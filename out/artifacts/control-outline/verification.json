@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-12",
+  "pr": "https://github.com/taucad/tau/pull/499",
+  "sourceCommit": "d812187ea9efa7258b887f251c55c8d583cfbb4a",
+  "sourceSha256": {
+    "packages/ui/src/components/checkbox.tsx": "effc44e6a6bf715fadba150dce567b4d4dcf9959ca1205ecbd11a686349023c8",
+    "packages/ui/src/components/switch.tsx": "b2bf5ea68d0eabf35f184dc48e3d41a53cc171da81793fb514663d5106e0c346",
+    "packages/ui/src/components/menu.variants.ts": "1c29695fdfb0a005f187597f7cae21798e2d18400a9ed2156142438477caa41c",
+    "apps/ui/app/components/geometry/parameters/parameters-boolean.tsx": "b016c8e4b89500eafff2883113a6bbdfc2a765385cac3067b2ff3d56516d8af2"
+  },
+  "switchConsumers": [
+    "apps/ui/app/routes/loader/route.tsx",
+    "apps/ui/app/routes/w.$workspace.$project/chat-print-controls.tsx",
+    "apps/ui/app/components/printer/printer-viewer.tsx",
+    "apps/ui/app/components/auth/additional-field.tsx",
+    "apps/ui/app/components/settings/model-settings.tsx",
+    "apps/ui/app/components/settings/experimental-settings.tsx",
+    "apps/ui/app/components/settings/agent-settings.tsx",
+    "apps/ui/app/components/settings/general-settings.tsx",
+    "apps/ui/app/components/geometry/cad/viewer-settings.tsx",
+    "apps/ui/app/components/geometry/cad/grid-control.tsx",
+    "apps/ui/app/components/geometry/cad/kernel-settings.tsx",
+    "apps/ui/app/routes/w.$workspace.$project/chat-print-prepare.tsx",
+    "apps/ui/app/components/geometry/parameters/rjsf-theme.tsx",
+    "apps/ui/app/components/geometry/parameters/parameters-boolean.tsx",
+    "apps/ui/app/components/geometry/parameters/parameters-widget.tsx",
+    "apps/ui/app/routes/w.$workspace.$project/revision-sync-region.tsx",
+    "apps/ui/app/routes/w.$workspace.$project/chat-revisions.tsx",
+    "apps/ui/app/components/chat/chat-agent-sheet.tsx"
+  ],
+  "checkboxSurfaceGroups": 15,
+  "switchSurfaceGroups": 19,
+  "switchFixturesPerTreatment": 41,
+  "states": 14,
+  "style": "1px muted-foreground border at 30% opacity when unchecked; transparent when checked; shadow-xs retained",
+  "fidelity": "Proposed renders actual PR Checkbox/Switch/SwitchRow/ParametersBoolean. Current-main recipes are class overrides. Menu popup uses actual DropdownMenuSwitchItem. Dynamic provider fields use representative local labels. No service or printer actions.",
+  "checks": [
+    "package lint/typecheck/build/pkgcheck",
+    "211 component tests",
+    "ui focused lint and typecheck",
+    "10 viewer settings tests",
+    "canvas typecheck and build",
+    "4 themes / 3 scenarios",
+    "320px contained horizontal table scrolling",
+    "real parameter/menu Space toggles",
+    "menu Escape and trigger focus return",
+    "2px keyboard focus",
+    "checked transparent / invalid feature border / disabled preserved",
+    "Geist Sans loaded"
+  ],
+  "limitations": [
+    "Border contrast below 3:1 on some normal-theme surfaces, matching the requested viewer style.",
+    "Full app routes, Electron, screen reader and 200% zoom/text resizing not rechecked in this successor."
+  ]
+}
