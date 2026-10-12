@@ -79,6 +79,7 @@ export function ThreeCanvasInstance({
   const dpr = Math.min(globalThis.devicePixelRatio, 2);
   const isInspectorEnabled = useViewerFeature('webGpuInspector');
   const { showRenderFps = true } = useViewerEnvironment();
+  const isTauDebugEnabled = useViewerFeature('tauDebug');
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const [isContextLost, setIsContextLost] = useState(false);
   const [rendererError, setRendererError] = useState<Error>();
@@ -241,7 +242,9 @@ export function ThreeCanvasInstance({
           </SceneOverlay>
         </OverlayDepthProvider>
         {isCanvasReady ? <ActorBridge /> : null}
-        {showRenderFps ? <RenderFpsOverlay hasTopRightGizmo={enableGizmo && Boolean(gizmoContainer)} /> : null}
+        {showRenderFps && isTauDebugEnabled ? (
+          <RenderFpsOverlay hasTopRightGizmo={enableGizmo && Boolean(gizmoContainer)} />
+        ) : null}
       </ThreeGraphicsBackendProvider>
     </Canvas>
   );
