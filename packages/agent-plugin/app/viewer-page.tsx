@@ -367,6 +367,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         });
       },
       follows: () => latest.current.view.follows,
+      linked: () => latest.current.view.linked,
       toolCallId: () => latest.current.view.toolCallId,
       show(result) {
         showRef.current?.(result);

@@ -40,6 +40,11 @@ export type HostView = Readonly<{
    * conversation's show never replaces it.
    */
   follows: boolean;
+  /**
+   * Whether the page opened on the model its link names (the loopback page's `?model=`): it follows only the shows
+   * made after it opened, so a show from before never replaces the model the link was for.
+   */
+  linked: boolean;
   /** The id of the `tools/call` whose result opened the page (`toolInfo.id`), when a tool result did. */
   toolCallId: string | undefined;
   colorScheme: 'light' | 'dark';
@@ -195,6 +200,7 @@ const connectMcpApp = async (): Promise<HostBridge> => {
       kind: 'mcp-app',
       composition: context?.displayMode === 'inline' ? 'inline' : 'tab',
       follows: context?.toolInfo === undefined,
+      linked: false,
       toolCallId: toolCallId === undefined ? undefined : String(toolCallId),
       colorScheme: context?.theme === 'dark' ? 'dark' : 'light',
       canRequestFullscreen:
@@ -308,6 +314,7 @@ const connectLoopback = (): HostBridge => {
     kind: 'loopback',
     composition: 'tab',
     follows: true,
+    linked: modelId !== null,
     toolCallId: undefined,
     colorScheme: prefersDark.matches ? 'dark' : 'light',
     canRequestFullscreen: false,
