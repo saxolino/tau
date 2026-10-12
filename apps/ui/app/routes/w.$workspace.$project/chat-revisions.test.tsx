@@ -850,7 +850,14 @@ describe('Revisions pane closeout', () => {
       checkoutId: 'live',
       branches: [
         { name: 'main', head: undefined, checkoutId: 'live', checkoutRoot: '/projects/p', leaseChatIds: [] },
-        { name: 'upstream-only', head: undefined, checkoutId: undefined, checkoutRoot: undefined, leaseChatIds: [] },
+        {
+          name: 'upstream-only',
+          head: undefined,
+          checkoutId: undefined,
+          checkoutRoot: undefined,
+          leaseChatIds: [],
+          onRemote: true,
+        },
       ],
     };
 

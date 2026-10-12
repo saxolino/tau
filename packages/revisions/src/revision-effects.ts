@@ -4367,7 +4367,12 @@ export const createRevisionActors = (options: RevisionActorsOptions): RevisionAc
         }
         const branches = [...reported]
           .filter(([name]) => !isHostLocalRef(name))
-          .map(([name, head]) => ({ name: name.slice('refs/heads/'.length), head }));
+          .map(([name, head]) => ({
+            name: name.slice('refs/heads/'.length),
+            head,
+            /* Every listed branch has a local ref by now; this is what *Remote only* may claim (D93). */
+            onRemote: advertisedBranches.has(name as `refs/heads/${string}`),
+          }));
         const context = await chatContext();
         const recordTasks: Array<Promise<SyncRefOutcome>> = [];
         if (context !== undefined && syncChats) {

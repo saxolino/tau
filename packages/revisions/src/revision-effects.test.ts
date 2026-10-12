@@ -1820,7 +1820,20 @@ for (const actorSet of actorSets) {
       });
       expect(fetched.merged).toEqual(['feature']);
       expect(fetched.conflicts).toBeUndefined();
-      expect(fetched.branches).toContainEqual({ name: 'feature', head });
+      expect(fetched.branches).toContainEqual({ name: 'feature', head, onRemote: true });
+    }, 30_000);
+
+    it('should report a branch only this device has as not on the remote (D93)', async () => {
+      const context = await linkedDivergence({ 'feature.ts': 'mine\n' });
+      await context.port.updateRef({
+        name: 'refs/heads/local-only',
+        expectedHead: undefined,
+        head: revisionId(context.own),
+      });
+
+      const fetched = await fetchMain(context.actors);
+
+      expect(fetched.branches).toContainEqual({ name: 'local-only', head: context.own, onRemote: false });
     }, 30_000);
 
     it('should record an overlapping linked divergence on its conflict line and announce it once (D87)', async () => {

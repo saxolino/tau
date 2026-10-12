@@ -759,8 +759,8 @@ describe.runIf(gitToolchainOnPath).each(legs)('W13 second-device flow over git h
       });
       expect(fetched.branches).toEqual(
         expect.arrayContaining([
-          { name: 'main', head: main },
-          { name: 'feature', head: feature.commitId },
+          { name: 'main', head: main, onRemote: true },
+          { name: 'feature', head: feature.commitId, onRemote: true },
         ]),
       );
       await run(two.actors.branch.applySwitch, {

@@ -2387,15 +2387,21 @@ describe('projectRevisionsMachine', () => {
     harness.promises.settle('readSyncRemote', { output: { remote: 'tau' } });
     await flush();
     harness.promises.settle('syncFetch', {
-      output: { leases: {}, integration: 'diverged', branches: [{ name: 'remote-feature', head: 'rev-remote' }] },
+      output: {
+        leases: {},
+        integration: 'diverged',
+        branches: [{ name: 'remote-feature', head: 'rev-remote', onRemote: true }],
+      },
     });
     await flush();
+    /* The fetch's own word on the remote reaches the row, so *Remote only* is never a guess (D93). */
     expect(selectRevisionStatus(harness.actor.getSnapshot()).branches).toContainEqual({
       name: 'remote-feature',
       head: 'rev-remote',
       checkoutId: undefined,
       checkoutRoot: undefined,
       leaseChatIds: [],
+      onRemote: true,
     });
     harness.promises.settle('syncMerge', {
       output: { status: 'conflicted', branch: conflictLine, into: 'main', paths: ['enclosure.ts'] },

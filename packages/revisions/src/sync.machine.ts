@@ -366,8 +366,11 @@ export type SyncFetchActorOutput = Readonly<{
    * to *Backed up* and push nothing (C15).
    */
   integration: 'upToDate' | 'ahead' | 'fastForward' | 'diverged';
-  /** Local branch refs after remote branch reconciliation, including ref-only branches. */
-  branches?: ReadonlyArray<Readonly<{ name: string; head: string }>>;
+  /**
+   * Local branch refs after remote branch reconciliation, including ref-only branches.
+   * `onRemote` is whether this fetch found the branch on the remote (D93).
+   */
+  branches?: ReadonlyArray<Readonly<{ name: string; head: string; onRemote?: boolean }>>;
   /** Independent record projections attempted after the fetch. */
   records?: readonly SyncRefOutcome[];
   /** Other checkouts this pull moved onto their remote heads (D60), or onto a merge with them (D87). */

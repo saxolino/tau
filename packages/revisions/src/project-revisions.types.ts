@@ -144,6 +144,11 @@ export type RevisionBranchFacet = Readonly<{
   checkoutRoot: string | undefined;
   /** Chats whose turns are placed on this branch (the row's chips). */
   leaseChatIds: readonly string[];
+  /**
+   * Whether the last fetch found this branch on the remote (D93); absent when
+   * no fetch has said. Only a row with no checkout reads it: *Remote only*.
+   */
+  onRemote?: boolean;
 }>;
 
 /** One undecided conflicted revision as the *Needs your decision* card renders it (D14). @public */
