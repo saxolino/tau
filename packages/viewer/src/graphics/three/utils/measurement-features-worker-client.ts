@@ -30,8 +30,12 @@ export type MeasurementGraphMessage =
       values: THREE.Vector3[] | number[] | string[];
     }
   | { type: 'map'; field: 'triangleRegion' | 'triangleBody' | 'triangleFeatureId'; values: number[] | string[] }
+  | { type: 'yield' }
   | { type: 'done' }
   | { type: 'error'; message: string };
+
+/** The page's answer to `yield`: every message before it has been handled, so the worker may post the next window. */
+export type MeasurementGraphAck = { type: 'ack' };
 
 type Task = {
   mesh: THREE.Mesh;
@@ -144,6 +148,11 @@ export function createMeasurementFeatureWorkerClient(
 
   function onMessage(event: MessageEvent<MeasurementGraphMessage>): void {
     const message = event.data;
+    if (message.type === 'yield') {
+      // Answer even when the task is gone, so a stream the page no longer wants still drains.
+      worker?.postMessage({ type: 'ack' } satisfies MeasurementGraphAck);
+      return;
+    }
     if (!active || !graph) {
       return;
     }
