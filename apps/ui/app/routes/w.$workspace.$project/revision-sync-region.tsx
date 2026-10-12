@@ -56,9 +56,11 @@ import { timelineRow } from '#components/revisions/revision-timeline.js';
 import { describeRevisionFailure } from '#lib/revision-failure-copy.js';
 import {
   accessRemovedSentence,
+  asksTauSignIn,
   backupCopy,
   isGithubRemote,
 } from '#routes/w.$workspace.$project/revision-vocabulary.js';
+import type { RevisionWhere } from '#routes/w.$workspace.$project/revision-vocabulary.js';
 import { isSyncReadOnly } from '#hooks/use-cloud-projects.js';
 import type { ProjectAccessRole } from '#hooks/use-cloud-projects.js';
 
@@ -141,6 +143,11 @@ export type RevisionSyncRegionProps = {
    */
   readonly role?: ProjectAccessRole;
   /**
+   * The viewer is signed out of Tau, so this device withholds its GitHub
+   * credential and a refusal asks for *Sign in*, not GitHub (D100).
+   */
+  readonly isSignedOut?: boolean;
+  /**
    * The project id: the owner's collaborator surface needs it, and so does a
    * moved GitHub repository, whose binding it keys (D11).
    */
@@ -186,18 +193,23 @@ const reconnectCopy = (remote: RemoteFacet): string => {
  *
  * @param reason - The failure class the sync machine recorded.
  * @param remote - The connection, so a credential problem names its provider.
- * @param role - The viewer's relationship to the project, which decides whether a plan action is theirs.
+ * @param viewer - The viewer's relationship to the project, which decides whether a plan action is
+ *   theirs, and whether they are signed out of Tau, which makes a GitHub refusal a sign-in (D100).
  * @returns Which action to render, or `undefined` when there is nothing to do.
  */
 const syncFailureAction = (
   { reason, error }: Readonly<{ reason?: SyncFailureReason | undefined; error?: string | undefined }>,
   remote: RemoteFacet,
-  role?: ProjectAccessRole,
+  { role, isSignedOut }: Pick<RevisionWhere, 'role' | 'isSignedOut'> = {},
 ): 'signIn' | 'upgrade' | 'reconnectGithub' | 'moved' | 'syncNow' | 'retry' | undefined => {
   switch (reason) {
     case 'unauthorized': {
-      /* Only Tau Cloud is reached with this device's own session (D18). */
-      return remote.kind === 'tau' ? 'signIn' : isGithubRemote(remote) ? 'reconnectGithub' : 'retry';
+      /* Only Tau Cloud is reached with this device's own session, and GitHub only once signed in (D18, D100). */
+      return asksTauSignIn({ reason }, remote, isSignedOut)
+        ? 'signIn'
+        : isGithubRemote(remote)
+          ? 'reconnectGithub'
+          : 'retry';
     }
     /* D17: a plan is the owner's to change. A collaborator's refusal is the
        owner-directed sentence alone; an owner with no larger plan gets none
@@ -490,6 +502,7 @@ export function RevisionSyncRegion({
   storageLimitBytes,
   signInHref,
   role,
+  isSignedOut,
   projectId,
   isLineKnown = true,
   branch,
@@ -517,8 +530,9 @@ export function RevisionSyncRegion({
   const handleConnectRequest = (): void => {
     setShouldConnect(false);
   };
-  const syncState = backupCopy(sync, role, remote);
-  const failureAction = syncFailureAction(sync, remote, role);
+  const viewer = { role, isSignedOut };
+  const syncState = backupCopy(sync, viewer, remote);
+  const failureAction = syncFailureAction(sync, remote, viewer);
   /* W2a: a damaged cloud copy is terminal; the client has nothing to offer but the truth (I12). */
   const failureSentence =
     sync.reason === 'damaged' ? describeRevisionFailure('backup', 'REMOTE_DAMAGED').description : sync.error;
@@ -1316,7 +1330,7 @@ export function RevisionSyncRegion({
         <div role='alert' aria-label='Backup connection error' className='flex flex-wrap items-center gap-2 text-sm'>
           <CircleAlert aria-hidden className='size-4 shrink-0 text-feature' />
           <span className='min-w-0 flex-1'>{remote.error}</span>
-          {renderFailureAction(syncFailureAction(remote, remote, role) ?? 'retry', () => {
+          {renderFailureAction(syncFailureAction(remote, remote, viewer) ?? 'retry', () => {
             setChangingBackup(true);
           })}
         </div>

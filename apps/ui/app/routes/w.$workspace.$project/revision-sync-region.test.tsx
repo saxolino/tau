@@ -846,6 +846,42 @@ describe('RevisionSyncRegion', () => {
     expect(screen.getByText(copy, { exact: true })).toBeInTheDocument();
   });
 
+  /* D100: signed out, this device withholds its GitHub credential; GitHub refused nothing. */
+  it.each([
+    [0, 'Backed up'],
+    [1, 'Not backed up · 1 revision'],
+  ] as const)('should ask a signed-out viewer to sign in when %i revisions wait, saying “%s”', (pendingCount, copy) => {
+    renderRegion(
+      facet({ kind: 'git', provider: 'github', phase: 'connected', url: 'https://github.com/rifont/example.git' }),
+      syncFacet({
+        state: 'failed',
+        reason: 'unauthorized',
+        pendingCount,
+        error: 'Sign in to Tau to sync with GitHub.',
+      }),
+      { isSignedOut: true },
+    );
+
+    const row = screen.getByRole('status', { name: 'Backup status' });
+    expect(within(row).getByText(copy, { exact: true })).toBeInTheDocument();
+    expect(within(row).getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/auth/sign-in');
+    expect(row).not.toHaveTextContent('refused access');
+    expect(screen.queryByRole('button', { name: 'Reconnect GitHub' })).not.toBeInTheDocument();
+  });
+
+  it('should offer a signed-in viewer Reconnect GitHub for the same refusal (D68)', () => {
+    renderRegion(
+      facet({ kind: 'git', provider: 'github', phase: 'connected', url: 'https://github.com/rifont/example.git' }),
+      syncFacet({ state: 'failed', reason: 'unauthorized', pendingCount: 0, error: 'GitHub refused the credential.' }),
+      { isSignedOut: false },
+    );
+
+    const row = screen.getByRole('status', { name: 'Backup status' });
+    expect(within(row).getByText('Backed up · GitHub refused access', { exact: true })).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: 'Reconnect GitHub' })).toBeInTheDocument();
+    expect(within(row).queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
+  });
+
   it('says nothing about backup when the project has no remote', () => {
     renderRegion(facet());
 
