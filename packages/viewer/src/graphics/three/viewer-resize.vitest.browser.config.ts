@@ -27,7 +27,10 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/graphics/three/viewer-resize-continuation.browser.test.tsx'],
+    include: [
+      'src/graphics/three/post-processing-antialias.browser.test.tsx',
+      'src/graphics/three/viewer-resize-continuation.browser.test.tsx',
+    ],
     testTimeout: 60_000,
     fileParallelism: false,
     browser: {
