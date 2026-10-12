@@ -919,6 +919,70 @@ describe('syncMachine', () => {
     harness.stop();
   });
 
+  it('D98: a revision minted after an access refusal is owed, and a refusal with nothing minted stays backed up (D68)', async () => {
+    const harness = start();
+    await settleWhenRunning(harness.effects, 'fetch', {
+      error: new RevisionPortError('REMOTE_UNAUTHORIZED', 'Write access to repository not granted.'),
+    });
+    await vi.waitFor(() => {
+      expect(harness.actor.getSnapshot().matches('failed')).toBe(true);
+    });
+    expect(selectSyncFacet(harness.actor.getSnapshot())).toMatchObject({
+      state: 'failed',
+      pendingCount: 0,
+      reason: 'unauthorized',
+    });
+
+    harness.actor.send({
+      type: 'revisionMinted',
+      checkoutId: 'live',
+      trigger: 'save',
+      revisionId: 'r25',
+      branch: 'main',
+    });
+    /* Recorded, so a reopen that is refused again still knows Rev 25 never left. */
+    await settleWhenRunning(harness.effects, 'writePending', { output: undefined });
+    await vi.waitFor(() => {
+      expect(harness.actor.getSnapshot().matches('failed')).toBe(true);
+    });
+    expect(harness.effects.inputsFor('writePending').at(-1)).toMatchObject({
+      record: { entries: [{ ref: mainRef, head: 'r25' }] },
+    });
+    expect(selectSyncFacet(harness.actor.getSnapshot())).toMatchObject({
+      state: 'failed',
+      pendingCount: 1,
+      reason: 'unauthorized',
+    });
+    /* Still terminal: the mint never retries a refused project by itself (rule 19). */
+    expect(harness.effects.running('push')).toBe(0);
+
+    harness.stop();
+  });
+
+  it('D98: a revision minted while the open pull runs is owed once that pull is refused', async () => {
+    const harness = start();
+    await vi.waitFor(() => {
+      expect(harness.effects.running('fetch')).toBe(1);
+    });
+    harness.actor.send({
+      type: 'revisionMinted',
+      checkoutId: 'live',
+      trigger: 'save',
+      revisionId: 'r25',
+      branch: 'main',
+    });
+    harness.effects.settle('fetch', {
+      error: new RevisionPortError('REMOTE_FORBIDDEN', 'Write access to repository not granted.'),
+    });
+    await settleWhenRunning(harness.effects, 'writePending', { output: undefined });
+    await vi.waitFor(() => {
+      expect(harness.actor.getSnapshot().matches('failed')).toBe(true);
+    });
+    expect(selectSyncFacet(harness.actor.getSnapshot())).toMatchObject({ pendingCount: 1, reason: 'forbidden' });
+
+    harness.stop();
+  });
+
   it('row 13: a queue that will not write is a failure nothing can retry its way out of', async () => {
     const harness = start();
     await openCleanly(harness);

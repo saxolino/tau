@@ -632,6 +632,31 @@ const owedPushes = (context: SyncMachineContext): readonly SyncQueueEntry[] =>
   );
 
 /**
+ * Whether a revision minted since the last push is missing from what this remote is owed (D98).
+ *
+ * `mintedSincePushAt` is set by a mint alone, never by a record change, and
+ * cleared when a push carries it; a push that then fails records its own entry.
+ *
+ * @param context - Current context.
+ * @returns `true` when this branch's owed entry is absent or names an older head.
+ */
+const owesUnrecordedMint = (context: SyncMachineContext): boolean => {
+  if (context.mintedSincePushAt === undefined) {
+    return false;
+  }
+  const owed = owedPushes(context).find((entry) => entry.ref === historyRefOf(context.branch));
+  return owed === undefined || (context.localHead !== undefined && owed.head !== context.localHead);
+};
+
+/**
+ * A queue write inside `failed` did not land; what is owed stays in context (D98, MC-R8: a named effect).
+ * @param error - Why the write failed.
+ */
+const reportQueueWriteFailure = (error: unknown): void => {
+  console.error('[revisions] sync queue write', error);
+};
+
+/**
  * Whether a ref is in the history set rather than the record set (policy rule 10).
  *
  * @param ref - A fully-qualified ref name.
@@ -1986,6 +2011,52 @@ const syncMachineDefinition = setup({
       on: {
         syncNow: { target: 'opening', context: ({ context, event }) => carry(context, event) },
         remoteConnected: { target: 'opening', context: ({ event }) => ({ remote: event.remote }) },
+      },
+      /* D98: that remembered mint is still owed, so it is recorded as owed — or
+       * the row read *Backed up* over a revision that never left (D68 holds
+       * only with nothing minted since). Recorded inside `failed`, never pushed:
+       * the state stays terminal and *Sync now* still leaves it at once. */
+      initial: 'settled',
+      states: {
+        settled: {
+          always: ({ context }) =>
+            owesUnrecordedMint(context)
+              ? {
+                  target: 'recording',
+                  context: {
+                    pending: nextPending({
+                      pending: context.pending,
+                      outcomes: [
+                        {
+                          name: historyRefOf(context.branch),
+                          status: 'rejected',
+                          head: context.localHead,
+                          ...(context.error === undefined ? {} : { reason: context.error }),
+                        },
+                      ],
+                      leases: context.leases,
+                      remote: context.remote,
+                      now: Date.now(),
+                    }),
+                  },
+                }
+              : undefined,
+        },
+        recording: {
+          invoke: {
+            src: 'writePending',
+            input: ({ context }) => ({
+              projectId: context.projectId,
+              record: { version: 1, entries: context.pending },
+            }),
+            onDone: { target: 'settled' },
+            /* The refusal stays the row's reason; the next settle that records rewrites the queue. */
+            onError: ({ event }, enq) => {
+              enq(reportQueueWriteFailure, event.error);
+              return { target: 'settled' };
+            },
+          },
+        },
       },
     },
   },
