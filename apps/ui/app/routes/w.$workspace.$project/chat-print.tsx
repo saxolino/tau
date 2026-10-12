@@ -282,7 +282,10 @@ function NoMachines(): React.JSX.Element {
   );
 }
 
-/** The observation's age. It ticks every second, so it is no live region: the notice above announces staleness. */
+/**
+ * The observation's age. It ticks every second, so it is no live region: the notice above announces staleness. The
+ * controller's own state word is inspection detail: beside the header's state it read as a contradiction.
+ */
 function PrintFooter({ entry }: { readonly entry: MachineDirectoryEntry | undefined }): React.JSX.Element {
   const now = useNow();
   return (
@@ -291,9 +294,6 @@ function PrintFooter({ entry }: { readonly entry: MachineDirectoryEntry | undefi
       <span className='min-w-0 flex-1 truncate'>
         {entry ? `Observed ${formatAge(entry.snapshot.observedAt, now)}` : 'No machine selected'}
       </span>
-      {entry?.snapshot.state.native === undefined ? null : (
-        <span className='shrink-0 font-mono'>{entry.snapshot.state.native}</span>
-      )}
     </p>
   );
 }

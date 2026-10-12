@@ -747,7 +747,7 @@ export function RunBlock({
             <span key={counter.id} title={`Counted from work ${basisWords[progress.basis]}`}>
               {counter.label} {counter.current.toLocaleString()}
               {counter.total === undefined ? '' : ` of ${counter.total.toLocaleString()}`}
-              <span className='sr-only'> ({basisWords[progress.basis]})</span>
+              <span className='sr-only'>, counted from work {basisWords[progress.basis]}</span>
             </span>
           ))}
           {progress.elapsed === undefined ? null : <span>{minutes(progress.elapsed)} elapsed</span>}
@@ -1125,6 +1125,12 @@ export function InspectStage({
         <dd className='font-mono break-all'>
           {capabilities.revision} · {capabilities.incarnation}
         </dd>
+        {entry.snapshot.state.native === undefined ? null : (
+          <>
+            <dt className='text-muted-foreground'>Controller state</dt>
+            <dd className='font-mono break-all'>{entry.snapshot.state.native}</dd>
+          </>
+        )}
         <dt className='text-muted-foreground'>Observed</dt>
         <dd>
           <time dateTime={entry.snapshot.observedAt}>{new Date(entry.snapshot.observedAt).toLocaleString()}</time> ·{' '}

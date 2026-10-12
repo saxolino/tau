@@ -475,6 +475,17 @@ describe('Print pane orientation', () => {
     expect(prepareActions().getByRole('button', { name: 'Slice and preview' })).toBeEnabled();
     view.unmount();
 
+    view.unmount();
+
+    // The controller's own word is inspection detail, never a second state beside the header's.
+    const cancelled = entry({ snapshot: { ...entry().snapshot, state: { status: 'ready', native: 'FAILED' } } });
+    const inspected = renderPane(createFixture({ entries: [cancelled] }).client);
+    await findMachine('Ready');
+    expect(screen.queryByText('FAILED')).not.toBeInTheDocument();
+    openDisclosure(/^Inspect/u);
+    expect(screen.getByText('Controller state').nextElementSibling).toHaveTextContent('FAILED');
+    inspected.unmount();
+
     renderPane(createFixture({ entries: [entry({ freshness: 'stale' })] }).client);
     await findMachine('Stale observation');
     expect(

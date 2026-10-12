@@ -23,6 +23,7 @@ import { PressureAdvanceStage } from '#routes/w.$workspace.$project/chat-print-m
 import {
   MachineAlerts,
   MonitorStage,
+  RunBlock,
   describeRun,
   isObservationStale,
 } from '#routes/w.$workspace.$project/chat-print-monitor.js';
@@ -103,6 +104,7 @@ const surfaces = (client: MachineClient, machine: MachineDirectoryEntry, attende
         <>
           <MachineAlerts control={control} />
           <Activities control={control} />
+          <RunBlock control={control} jobs={[]} />
           <MonitorStage control={control} />
           <ControlStage client={client} control={control} />
           <PressureAdvanceStage control={control} />
@@ -1350,6 +1352,10 @@ describe("the machine's own actions", () => {
       idleOnly,
     );
     const { fixture } = renderControl(waiting, { attended: true });
+    // A screen reader hears what the counter counts.
+    expect(within(screen.getByRole('region', { name: 'Run' })).getByText(/^Lines 3 of 12/u)).toHaveTextContent(
+      'Lines 3 of 12, counted from work sent to the machine; it runs a few lines behind',
+    );
     const control = openStage('Control');
     // The run owns motion; the simulator's lid stays, as the provider allows it now.
     expect(within(control).queryByRole('group', { name: 'Motion' })).not.toBeInTheDocument();
