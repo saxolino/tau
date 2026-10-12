@@ -36,6 +36,17 @@ export type ViewerEnvironment = {
   /** Developer and experimental switches. */
   readonly features: ViewerFeatures;
   /**
+   * Whether the canvas shows its render-loop FPS readout; on unless an
+   * embedder that prints no status text (an MCP App card) turns it off.
+   */
+  readonly showRenderFps?: boolean | undefined;
+  /**
+   * Whether each WebGL frame stays in the canvas after it is shown, so the
+   * embedder can read the live view (an MCP App's capture for the agent).
+   * Off by default: keeping the buffer costs a copy per frame.
+   */
+  readonly readableCanvas?: boolean | undefined;
+  /**
    * Debug-only component mounted inside the stage while `features.tauDebug` is
    * on; an application test bridge uses it to drive and observe the section view.
    */

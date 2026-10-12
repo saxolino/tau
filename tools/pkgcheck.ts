@@ -513,6 +513,14 @@ const internalImportsExceptions: Readonly<Record<string, Readonly<Record<string,
   '@taucad/viewer': {
     '#*.jsx': '.tsx components and hooks share every directory with .ts modules; the canonical #*.js reaches only .ts',
   },
+  // The viewer page builds from app/ into one HTML file (not the plugin's src/ launcher), and its
+  // basic-host harness sits in e2e/; relative imports are banned workspace-wide.
+  '@taucad/agent-plugin': {
+    '#app/*.jsx': 'viewer page .tsx components outside src/, built into dist-app/app.html',
+    '#app/*.js': 'viewer page .ts modules outside src/, built into dist-app/app.html',
+    '#app/*': 'viewer page stylesheet outside src/, imported by its entry',
+    '#e2e/*.js': 'MCP Apps basic-host harness outside src/; relative imports are banned workspace-wide',
+  },
 };
 
 /** Projects whose sources live under `src/`; `type:app` layouts are deliberately outside the rule. */

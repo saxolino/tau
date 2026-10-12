@@ -25,7 +25,7 @@ import { setRaycasterFromCamera } from '#graphics/three/utils/raycaster-from-cam
 import { WebGpuInspectorOverlay } from '#graphics/three/webgpu-inspector-overlay.jsx';
 import { cn } from '@taucad/ui/utils/cn';
 import { useCameraRig } from '#hooks/use-graphics.jsx';
-import { useViewerFeature } from '#environment/viewer-environment.jsx';
+import { useViewerEnvironment, useViewerFeature } from '#environment/viewer-environment.jsx';
 
 /**
  * Props for {@link ThreeCanvasInstance}: the Three.js context properties plus a retry callback for context loss.
@@ -78,6 +78,7 @@ export function ThreeCanvasInstance({
 }: ThreeCanvasInstanceProps): React.JSX.Element {
   const dpr = Math.min(globalThis.devicePixelRatio, 2);
   const isInspectorEnabled = useViewerFeature('webGpuInspector');
+  const { showRenderFps = true, readableCanvas = false } = useViewerEnvironment();
   const isTauDebugEnabled = useViewerFeature('tauDebug');
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const [isContextLost, setIsContextLost] = useState(false);
@@ -126,12 +127,11 @@ export function ThreeCanvasInstance({
 
   const glProperty = useMemo(
     () =>
-      createTauR3fGlProp(
-        graphicsBackend,
-        [cameraRig.perspectiveCamera, cameraRig.orthographicCamera],
-        setRendererError,
-      ),
-    [cameraRig, graphicsBackend],
+      createTauR3fGlProp(graphicsBackend, [cameraRig.perspectiveCamera, cameraRig.orthographicCamera], {
+        onCreateError: setRendererError,
+        preserveDrawingBuffer: readableCanvas,
+      }),
+    [cameraRig, graphicsBackend, readableCanvas],
   );
 
   const bindCanvas = useCallback<RefCallback<HTMLCanvasElement>>(
@@ -241,7 +241,9 @@ export function ThreeCanvasInstance({
           </SceneOverlay>
         </OverlayDepthProvider>
         {isCanvasReady ? <ActorBridge /> : null}
-        {isTauDebugEnabled ? <RenderFpsOverlay hasTopRightGizmo={enableGizmo && Boolean(gizmoContainer)} /> : null}
+        {showRenderFps && isTauDebugEnabled ? (
+          <RenderFpsOverlay hasTopRightGizmo={enableGizmo && Boolean(gizmoContainer)} />
+        ) : null}
       </ThreeGraphicsBackendProvider>
     </Canvas>
   );
