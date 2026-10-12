@@ -86,6 +86,14 @@ export {
   readProjectId,
 } from '#machine-host.js';
 export type { CreateNodeMachineRuntimeOptions, MachineHostIdentity, MachineSecretStore } from '#machine-host.js';
+export { openLocalMachines, openSharedMachineHost } from '#local-machines.js';
+export type {
+  LocalMachines,
+  LocalMachinesRefusal,
+  OpenLocalMachinesOptions,
+  OpenSharedMachineHostOptions,
+  SharedMachineHost,
+} from '#local-machines.js';
 export { completeMachineBinding } from '#machine-binding-ceremony.js';
 export type { CompleteMachineBindingInput, MachineBindingCeremonyEvent } from '#machine-binding-ceremony.js';
 export {

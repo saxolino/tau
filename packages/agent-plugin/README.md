@@ -83,7 +83,11 @@ The same prompt works in `codex` after the Codex install. The agent writes `main
 | `show_model`                | Shows a model in the Tau viewer; a CAD source or STEP/STL/3MF/OBJ becomes GLB first           | The GLB, under `.tau/artifacts/`             |
 | `view_state`                | Reports what the viewer shows: model, selection, visibility, camera; with `capture`, an image | Nothing                                      |
 
-The tools load with the session in both hosts rather than waiting behind tool search. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
+The tools load with the session in both hosts rather than waiting behind tool search.
+
+### Printing
+
+With `TAU_HOST_MACHINES=true` in the server's environment (the Codex manifest passes it through), `tau mcp` also offers the print tools (`get_print_profiles`, `request_print`, `get_print_request`, `list_print_requests`, `cancel_print`) over the printers you bound in the Tau app. `request_print` slices the model in the folder the agent is working in, which must be a Tau project (it holds `tau.json`), and asks you to approve the print in the agent app's own form; the print starts only if you tick Approve and accept. An agent app that cannot show a form gets the request back waiting, and you approve it in Tau's Print pane. Printers are shared by every Tau app on the computer and only one can use them at a time, so while the Tau desktop app has them the server offers no print tools, and while the server has them the desktop app waits. That is why printing is off unless you turn it on, and why a server whose one folder is not a Tau project (Claude Code's project folder, or `--project`) leaves the printers alone and says so on stderr. Codex names the folder with each call, so its server prints from whichever project the thread works in. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
 
 ## Viewer
 
