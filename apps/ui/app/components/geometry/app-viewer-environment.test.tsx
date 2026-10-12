@@ -16,7 +16,7 @@ vi.mock('#hooks/use-theme.js', () => ({
 }));
 
 vi.mock('#hooks/use-color.js', () => ({
-  useColor: () => ({ serialized: { hex: '#00987c' } }),
+  useColor: () => ({ serialized: { hex: 'accent' } }),
 }));
 
 function BackendProbe(): React.JSX.Element {
