@@ -742,6 +742,33 @@ export function buildUserMessage(input: {
 }
 
 /**
+ * The user message an edit produces: the original's id and metadata around the edited text, attachments and
+ * references. References are re-derived from the edited text, so a token the edit removed drops its reference; the
+ * edit composer's chips, then the original's references, supply the detail for each token that remains.
+ *
+ * @param original - The message being edited.
+ * @param input - The edited text, attachments and the edit composer's structured references.
+ * @returns The edited message under the original's id.
+ */
+export function buildEditedUserMessage(
+  original: MyUIMessage,
+  input: {
+    readonly text: string;
+    readonly attachments?: readonly StoredAttachmentRef[];
+    readonly references?: readonly CadReference[];
+  },
+): MyUIMessage {
+  const { references: previous = [], ...metadata } = original.metadata ?? {};
+  const built = buildUserMessage({
+    text: input.text,
+    ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+    // A later reference wins its token, so the edit composer's chips go last.
+    references: [...previous, ...(input.references ?? [])],
+  });
+  return { ...built, id: original.id, metadata: { ...metadata, ...built.metadata } };
+}
+
+/**
  * The references a message carries (blueprint D6): one per distinct `@cad[...]` token in its text, the composer's
  * structured reference when one matches the token, else what the token itself names. A reference whose token the
  * text no longer holds (the chip was deleted) is dropped.

@@ -7,10 +7,10 @@ The viewer reads nothing from cookies, URLs or application stores. An embedder d
 ## Install
 
 ```sh
-npm install @taucad/viewer @taucad/runtime react react-dom three @react-three/fiber xstate @xstate/react
+npm install @taucad/viewer @taucad/runtime @taucad/ui react react-dom three @react-three/fiber xstate @xstate/react
 ```
 
-`react`, `react-dom`, `three`, `@react-three/fiber`, `xstate`, `@xstate/react` and `@taucad/runtime` are peer dependencies so that one instance of each serves the whole application.
+`react`, `react-dom`, `three`, `@react-three/fiber`, `xstate`, `@xstate/react`, `@taucad/runtime` and `@taucad/ui` are peer dependencies so that one instance of each serves the whole application.
 
 Components use Tailwind utility classes and the `@taucad/ui` design tokens. Import `@taucad/ui/styles/tokens.css` in your stylesheet and add the viewer's `dist` to Tailwind's sources.
 
