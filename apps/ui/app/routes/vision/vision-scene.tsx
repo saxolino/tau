@@ -118,7 +118,7 @@ const Gearbox = ({
 export const VisionScene = memo(function VisionScene(properties: VisionSceneProperties): React.JSX.Element {
   const [error, setError] = useState<Error>();
   const backend = readGraphicsBackendQueryOverride() ?? 'webgl';
-  const renderer = useMemo(() => createTauR3fGlProp(backend, [], setError), [backend]);
+  const renderer = useMemo(() => createTauR3fGlProp(backend, [], { onCreateError: setError }), [backend]);
   const parts = useGearboxParts(properties.onReady, setError);
   if (error) {
     throw error;

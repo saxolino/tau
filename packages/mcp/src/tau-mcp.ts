@@ -81,7 +81,35 @@ export type TauMcpDispatchOptions = {
    * experimental capability), since it advertises no MCP roots.
    */
   meta?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Ask the person to approve one effect, through the client's own form elicitation. Present only on a host tool's
+   * call and only when the client declared form elicitation at `initialize`; absent, no person can answer here and
+   * the host must leave the effect for Tau's own surface (blueprint E9).
+   */
+  confirm?: TauMcpConfirm | undefined;
 };
+
+/**
+ * One approval question asked through the MCP client (blueprint E9, W11).
+ *
+ * The client draws its own form with one checkbox. `approved` needs the person to tick it and accept; leaving it
+ * unticked or declining is `denied`; dismissing the form, or the call being cancelled, is `cancelled`. It rejects
+ * when the client could not ask: it refused or failed the form request, or no answer came within ten minutes. That is
+ * not the person's answer, so the effect is left for them in Tau, as for a client that draws no forms.
+ *
+ * @public
+ */
+export type TauMcpConfirm = (
+  request: Readonly<{
+    /** What would happen, in the person's words. */
+    message: string;
+    /** The checkbox label. */
+    label: string;
+  }>,
+) => Promise<'approved' | 'denied' | 'cancelled'>;
+
+/** How long a person has to answer an approval form before the client counts as unable to ask. */
+const confirmLimit = 10 * 60 * 1000;
 
 /** One validated call into Tau's canonical RPC dispatcher. @public */
 export type TauMcpRpcCall = Readonly<{
@@ -470,6 +498,51 @@ const toSdkHostTools = (tools: readonly TauMcpHostTool[] = []): readonly SdkHost
  * @param hostTools - Host tools with their SDK schemas.
  * @returns Nothing.
  */
+/**
+ * The approval question for one host tool call, when the client can draw a form.
+ *
+ * @param server - The server whose client is asked.
+ * @param extra - The call's request id and cancellation, so the form belongs to that call.
+ * @returns The question, or `undefined` when the client declared no form elicitation. The question rejects when
+ *   the client fails to ask it.
+ */
+const confirmFor = (
+  server: McpServer,
+  extra: Readonly<{ requestId: string | number; signal: AbortSignal }>,
+): TauMcpConfirm | undefined => {
+  const elicitation = server.server.getClientCapabilities()?.elicitation;
+  /* An empty declaration is form-only (the 2025-06-18 shape); a URL-only client cannot draw a checkbox. */
+  if (elicitation === undefined || (elicitation.form === undefined && elicitation.url !== undefined)) {
+    return undefined;
+  }
+  return async ({ message, label }) => {
+    const answer = await server.server
+      .elicitInput(
+        {
+          mode: 'form',
+          message,
+          requestedSchema: {
+            type: 'object',
+            properties: { approve: { type: 'boolean', title: label, default: false } },
+            required: ['approve'],
+          },
+        },
+        { relatedRequestId: extra.requestId, signal: extra.signal, timeout: confirmLimit },
+      )
+      .catch((error: unknown) => {
+        /* A call cancelled while the form is open is cancelled; any other failure is the client's, not the person's. */
+        if (extra.signal.aborted) {
+          return undefined;
+        }
+        throw error;
+      });
+    if (answer?.action === 'accept') {
+      return answer.content?.['approve'] === true ? 'approved' : 'denied';
+    }
+    return answer?.action === 'decline' ? 'denied' : 'cancelled';
+  };
+};
+
 const registerTools = (
   server: McpServer,
   options: Pick<TauMcpServerOptions, 'dispatch' | 'screenshotImages' | 'viewer'>,
@@ -551,7 +624,12 @@ const registerTools = (
         const result = await dispatch(
           /* The SDK validated `args` against the tool's own schema; this only recovers the object type (CL11). */
           { toolName: tool.name, args: hostToolArgumentsSchema.parse(args) },
-          { toolCallId: randomUUID(), signal: extra.signal, meta: extra._meta },
+          {
+            toolCallId: randomUUID(),
+            signal: extra.signal,
+            meta: extra._meta,
+            confirm: confirmFor(server, extra),
+          },
         );
         return result.success === true ? rpcSuccess(withoutSuccess(result)) : rpcFailure(result);
       },

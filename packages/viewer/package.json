@@ -106,6 +106,7 @@
     "./parameters/parameter-edit": "./src/parameters/parameter-edit.ts",
     "./parameters/parameter-group-card": "./src/parameters/parameter-group-card.tsx",
     "./parameters/parameter-select": "./src/parameters/parameter-select.tsx",
+    "./panels/structure-section": "./src/panels/structure-section.tsx",
     "./parameters/parameters": "./src/parameters/parameters.tsx",
     "./parameters/parameters-boolean": "./src/parameters/parameters-boolean.tsx",
     "./parameters/parameters-number": "./src/parameters/parameters-number.tsx",
@@ -476,6 +477,11 @@
         "types": "./dist/parameters/parameter-select.d.mts",
         "import": "./dist/parameters/parameter-select.mjs",
         "default": "./dist/parameters/parameter-select.mjs"
+      },
+      "./panels/structure-section": {
+        "types": "./dist/panels/structure-section.d.mts",
+        "import": "./dist/panels/structure-section.mjs",
+        "default": "./dist/panels/structure-section.mjs"
       },
       "./parameters/parameters": {
         "types": "./dist/parameters/parameters.d.mts",

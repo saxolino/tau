@@ -89,6 +89,35 @@ describe('createLocalMcpViewer', () => {
     expect(shownModel(await viewer.show({}, inline)).model.path).toBe('models/part.glb');
   });
 
+  it('should keep the model shown last and the page read per conversation the host names', async () => {
+    const inThread = (thread: string, toolCallId: string): TauMcpViewerCallOptions => ({
+      toolCallId,
+      presentation: 'inline',
+      meta: { threadId: thread },
+    });
+    const { model } = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, inThread('thread-a', 'call-a')));
+    expect(shownModel(await viewer.show({}, inThread('thread-b', 'call-b'))).model.sourceFile).toBe('src/bracket.ts');
+    expect(shownModel(await viewer.show({}, inThread('thread-a', 'call-a2'))).model.path).toBe('models/part.glb');
+
+    /* A card's app_sync carries no thread; the show call it names does. */
+    const view = {
+      model: { id: model.id, title: model.title, path: model.path },
+      selected: [],
+      hidden: [],
+      isolated: [],
+      sectionActive: false,
+      measurementCount: 0,
+      composition: 'inline',
+      interactedAt: 5,
+    } as const;
+    await viewer.sync(
+      { pageId: 'card-page-a', version: 0, follow: false, wait: false, view, toolCallId: 'call-a' },
+      inline,
+    );
+    expect(await viewer.viewState({}, inThread('thread-b', 'call-b2'))).toMatchObject({ errorCode: 'NO_VIEWER' });
+    expect(await viewer.viewState({}, inThread('thread-a', 'call-a3'))).toEqual({ view });
+  });
+
   it('should refuse a path outside the project and a format the page cannot draw', async () => {
     expect(await viewer.show({ targetFile: '../secret.glb' }, inline)).toMatchObject({
       errorCode: 'PATH_OUTSIDE_PROJECT',
@@ -178,6 +207,25 @@ describe('createLocalMcpViewer', () => {
         totalBytes: glb.length,
         data: glb.subarray(0, 4).toString('base64'),
       });
+    });
+
+    it('should hand the loopback page a shown model, with its selection, through app_sync and refuse malformed input', async () => {
+      const { viewerUrl } = shownModel(await viewer.show({ targetFile: 'models/part.glb' }, text));
+      const { origin, token } = loopbackOf(viewerUrl);
+      const call = async (name: string, args: unknown) =>
+        fetch(`${origin}/api/tools/call`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-tau-viewer-token': token },
+          body: JSON.stringify({ name, arguments: args }),
+        });
+
+      const held = call('app_sync', { pageId: 'loopback-page', version: 1, follow: true, wait: true });
+      const next = shownModel(await viewer.show({ targetFile: 'models/part.glb', select: ['component:arm'] }, text));
+      const synced = await held;
+      expect(synced.status).toBe(200);
+      expect(await synced.json()).toEqual({ version: 2, show: { ...next, select: ['component:arm'] } });
+      const malformed = await call('app_sync', { pageId: 'p' });
+      expect(malformed.status).toBe(400);
     });
 
     it('should answer the model a link names, from the project it was shown in, without rendering again', async () => {

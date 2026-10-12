@@ -18,6 +18,7 @@ import type { McpUiHostCapabilities, McpUiHostContext } from '@modelcontextproto
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { tauViewerToolName } from '@taucad/mcp/viewer-protocol';
 import type { TauViewerShowResult } from '@taucad/mcp/viewer-protocol';
+import type { ChatReference } from '#app/chat-reference.js';
 
 /** Which composition the page draws (blueprint "Composition per presentation"). */
 export type ViewerComposition = 'inline' | 'tab';
@@ -33,6 +34,19 @@ export type ChatRoute = 'context' | 'message' | 'clipboard';
 export type HostView = Readonly<{
   kind: 'mcp-app' | 'loopback';
   composition: ViewerComposition;
+  /**
+   * Whether the page follows `show_model`: one the person opened (a thread tab, the sidebar, the loopback page) does;
+   * a card keeps the model its tool result named in every display mode, fullscreen included, so another
+   * conversation's show never replaces it.
+   */
+  follows: boolean;
+  /**
+   * Whether the page opened on the model its link names (the loopback page's `?model=`): it follows only the shows
+   * made after it opened, so a show from before never replaces the model the link was for.
+   */
+  linked: boolean;
+  /** The id of the `tools/call` whose result opened the page (`toolInfo.id`), when a tool result did. */
+  toolCallId: string | undefined;
   colorScheme: 'light' | 'dark';
   /** Whether the page may offer its own fullscreen action: Claude hosts want one, Codex draws its own (E3). */
   canRequestFullscreen: boolean;
@@ -58,11 +72,12 @@ export type HostBridge = Readonly<{
   callTool(name: string, args: Readonly<Record<string, unknown>>): Promise<unknown>;
   /**
    * Hand the person's reference to the conversation (E8) along the view's
-   * {@link ChatRoute}.
+   * {@link ChatRoute}: as model context, its text with the structured
+   * references as `structuredContent`; as a message or on the clipboard, its text.
    *
    * @returns The route it took.
    */
-  addToChat(text: string): Promise<ChatRoute>;
+  addToChat(reference: ChatReference): Promise<ChatRoute>;
   requestFullscreen(): Promise<void>;
 }>;
 
@@ -180,9 +195,13 @@ const connectMcpApp = async (): Promise<HostBridge> => {
   const viewOf = (context: McpUiHostContext | undefined): HostView => {
     const host = app.getHostVersion()?.name ?? '';
     const isCodex = /codex|openai|chatgpt/iu.test(host);
+    const toolCallId = context?.toolInfo?.id;
     return {
       kind: 'mcp-app',
       composition: context?.displayMode === 'inline' ? 'inline' : 'tab',
+      follows: context?.toolInfo === undefined,
+      linked: false,
+      toolCallId: toolCallId === undefined ? undefined : String(toolCallId),
       colorScheme: context?.theme === 'dark' ? 'dark' : 'light',
       canRequestFullscreen:
         !isCodex && context?.displayMode === 'inline' && (context.availableDisplayModes ?? []).includes('fullscreen'),
@@ -257,10 +276,13 @@ const connectMcpApp = async (): Promise<HostBridge> => {
       return () => listeners.delete(listener);
     },
     callTool,
-    async addToChat(text) {
+    async addToChat({ text, references }) {
       const route = chatRouteOf(app.getHostCapabilities());
       if (route === 'context') {
-        await app.updateModelContext({ content: [{ type: 'text', text }] });
+        await app.updateModelContext({
+          content: [{ type: 'text', text }],
+          ...(references.length === 0 ? {} : { structuredContent: { references } }),
+        });
       } else if (route === 'message') {
         const { isError } = await app.sendMessage({ role: 'user', content: [{ type: 'text', text }] });
         if (isError === true) {
@@ -291,6 +313,9 @@ const connectLoopback = (): HostBridge => {
   const view = (): HostView => ({
     kind: 'loopback',
     composition: 'tab',
+    follows: true,
+    linked: modelId !== null,
+    toolCallId: undefined,
     colorScheme: prefersDark.matches ? 'dark' : 'light',
     canRequestFullscreen: false,
     chatRoute: 'clipboard',
@@ -335,7 +360,7 @@ const connectLoopback = (): HostBridge => {
       return () => listeners.delete(listener);
     },
     callTool,
-    async addToChat(text) {
+    async addToChat({ text }) {
       await navigator.clipboard.writeText(text);
       return 'clipboard';
     },

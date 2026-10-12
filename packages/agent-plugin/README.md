@@ -71,30 +71,41 @@ The same prompt works in `codex` after the Codex install. The agent writes `main
 
 ## Tools
 
-| Tool                | What it does                                                                | Writes                                       |
-| ------------------- | --------------------------------------------------------------------------- | -------------------------------------------- |
-| `evaluate_model`    | Builds one model file; returns its status, kernel issues, views and exports | Nothing                                      |
-| `test_model`        | Runs the project's GeoSpec tests (`*.geospec.ts`), one file or one test     | A report over 128 KiB, in the session folder |
-| `screenshot`        | Renders views of a model and returns the images in the result               | The images, in the session folder            |
-| `export_model`      | Exports STEP, STL, 3MF, glTF or another format the model offers             | `.tau/artifacts/` in the project             |
-| `arrange_workbench` | Opens views and panes for a person who has the project open in the Tau app  | `.tau/workbench/` in the project             |
-| `show_model`        | Shows a model in the Tau viewer; a CAD source is rendered to GLB first      | The GLB, under `.tau/artifacts/`             |
+| Tool                        | What it does                                                                                  | Writes                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `evaluate_model`            | Builds one model file; returns its status, kernel issues, views and exports                   | Nothing                                      |
+| `test_model`                | Runs the project's GeoSpec tests (`*.geospec.ts`), one file or one test                       | A report over 128 KiB, in the session folder |
+| `screenshot`                | Renders views of a model and returns the images in the result                                 | The images, in the session folder            |
+| `export_model`              | Exports STEP, STL, 3MF, glTF or another format the model offers                               | `.tau/artifacts/` in the project             |
+| `arrange_workbench`         | Opens views and panes for a person who has the project open in the Tau app                    | `.tau/workbench/` in the project             |
+| `get_parameters`            | Reads a model's parameters: their schema, defaults and the values in effect                   | Nothing                                      |
+| `apply_parameter_operation` | Edits a model's parameters through a checked write; Tau shows the same values                 | `.tau/parameters/` in the project            |
+| `show_model`                | Shows a model in the Tau viewer; a CAD source or STEP/STL/3MF/OBJ becomes GLB first           | The GLB, under `.tau/artifacts/`             |
+| `view_state`                | Reports what the viewer shows: model, selection, visibility, camera; with `capture`, an image | Nothing                                      |
 
-The tools load with the session in both hosts rather than waiting behind tool search. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
+The tools load with the session in both hosts rather than waiting behind tool search.
+
+### Printing
+
+With `TAU_HOST_MACHINES=true` in the server's environment (the Codex manifest passes it through), `tau mcp` also offers the print tools (`get_print_profiles`, `request_print`, `get_print_request`, `list_print_requests`, `cancel_print`) over the printers you bound in the Tau app. `request_print` slices the model in the folder the agent is working in, which must be a Tau project (it holds `tau.json`), and asks you to approve the print in the agent app's own form; the print starts only if you tick Approve and accept. An agent app that cannot show a form gets the request back waiting, and you approve it in Tau's Print pane. Printers are shared by every Tau app on the computer and only one can use them at a time, so while the Tau desktop app has them the server offers no print tools, and while the server has them the desktop app waits. That is why printing is off unless you turn it on, and why a server whose one folder is not a Tau project (Claude Code's project folder, or `--project`) leaves the printers alone and says so on stderr. Codex names the folder with each call, so its server prints from whichever project the thread works in. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
 
 ## Viewer
 
 `show_model` puts the model in front of you. How depends on what the host declares when it connects:
 
-| Host                   | What you get                                                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Codex desktop          | A Tau tab in the thread, Tau in the sidebar (`browse_models`) and Open with Tau for `.glb` and `.svg` files (`open_model_file`) |
-| Claude Desktop         | An inline card in the conversation, with Add to chat and Open full view                                                         |
-| Claude Code, Codex CLI | A `http://127.0.0.1` link to the same page, served by `tau mcp` for its session; screenshots still come back inline             |
+| Host                   | What you get                                                                                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex desktop          | A Tau tab in the thread, Tau in the sidebar (`browse_models`) and Open with Tau for `.glb`, `.svg`, `.step`, `.stl`, `.3mf` and `.obj` files (`open_model_file`) |
+| Claude Desktop         | An inline card in the conversation, with Add to chat and Open full view                                                                                          |
+| Claude Code, Codex CLI | A `http://127.0.0.1` link to the same page, served by `tau mcp` for its session; screenshots still come back inline                                              |
 
-The card shows the canvas and two actions. The tab, fullscreen and the browser page add the control bar: grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the host as context; a host that takes only messages gets Send to chat, and where a host takes neither (the browser page) it becomes Copy prompt. Colours and font follow the host.
+The card shows the canvas and two actions. The tab, fullscreen and the browser page add the control bar: grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the host as context: the part's name and its `@cad[<file>#<component>]` token as text, and the same structured reference Tau's own chat chip carries as `structuredContent`. A host that takes only messages gets Send to chat, with the text; where a host takes neither (the browser page) it becomes Copy prompt. Colours and font follow the host.
 
-The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The browser link carries a per-session token and answers only on `127.0.0.1`.
+The page stays live with the agent. It long-polls `app_sync`, a tool only the page can call, to report its view and to hear of the next model: a tab, fullscreen or browser page switches to each model `show_model` shows, while an inline card keeps its own. `show_model` with `select` selects components by id once the model is drawn. `view_state` reads the page the person used last; with `capture: true` that page draws its canvas into a PNG of at most 1280 px wide and returns it through `app_capture_reply`. Without a page open, `view_state` answers `NO_VIEWER` and `screenshot` still renders.
+
+The tab and fullscreen page have a side panel (Panels in the bottom bar): the component tree, where a click selects a component and the eye hides or shows it; the model's parameters, where an edit is written to the project and the page shows the model rendered with it; the selected part's properties; and switches for the grid, axes, edges and surfaces. When you move the camera or hide a part, `tau mcp` saves that view in the project's `.tau/workbench` records, so Tau opens the project with the same camera and hidden parts.
+
+The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The server reads only the range asked for, gzips a range that shrinks by a tenth or more, and refuses a range once the file has changed, so the page shows the new file instead of a mix of two. A 50 MB GLB streams in thirteen calls. The browser link carries a per-session token and answers only on `127.0.0.1`.
 
 The launcher hands the page to the CLI in `TAU_VIEWER_PAGE`. To run the viewer from Claude Desktop, add the launcher to `claude_desktop_config.json` (Settings → Developer → Edit config):
 

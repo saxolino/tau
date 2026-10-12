@@ -39,7 +39,8 @@ export type TauHost = {
     /** What the host declares; by default every route the page uses. */
     hostCapabilities?: McpUiHostCapabilities;
     toolArguments: Record<string, unknown>;
-    toolResult: CallToolResult;
+    /** The tool result that opened the view; absent for a view the person opened (a thread tab, the sidebar). */
+    toolResult: CallToolResult | undefined;
     width: number;
     height: number;
   }): Promise<void>;
@@ -102,16 +103,9 @@ globalThis.tauHost = {
     frame.title = 'Tau viewer';
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.style.cssText = `width:${String(width)}px;height:${String(height)}px;border:1px solid #ccc`;
-    frame.srcdoc = html.replace(
-      '<head>',
-      `<head><meta http-equiv="Content-Security-Policy" content="${cspOf(csp).replaceAll('"', '&quot;')}">`,
-    );
     document.body.append(frame);
-    await new Promise<void>((resolve) => {
-      frame.addEventListener('load', () => {
-        resolve();
-      });
-    });
+    /* The window survives the frame's navigation to the page, so the bridge listens before the page's first message:
+     * a page whose script sends `ui/initialize` before the frame's load event is not missed. */
     const view = frame.contentWindow;
     if (view === null) {
       throw new Error('The frame has no window.');
@@ -142,10 +136,22 @@ globalThis.tauHost = {
     };
     bridge.addEventListener('initialized', () => {
       record.initialized = true;
-      void bridge?.sendToolInput({ arguments: toolArguments });
-      void bridge?.sendToolResult(toolResult);
+      if (toolResult !== undefined) {
+        void bridge?.sendToolInput({ arguments: toolArguments });
+        void bridge?.sendToolResult(toolResult);
+      }
     });
     await bridge.connect(new PostMessageTransport(view, view));
+    const loaded = new Promise<void>((resolve) => {
+      frame.addEventListener('load', () => {
+        resolve();
+      });
+    });
+    frame.srcdoc = html.replace(
+      '<head>',
+      `<head><meta http-equiv="Content-Security-Policy" content="${cspOf(csp).replaceAll('"', '&quot;')}">`,
+    );
+    await loaded;
   },
   setHostContext(next) {
     context = { ...context, ...next };

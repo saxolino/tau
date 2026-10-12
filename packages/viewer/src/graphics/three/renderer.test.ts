@@ -125,8 +125,18 @@ describe('createRenderer', () => {
         expect(created?.kind).toBe('webgl');
         expect(created?.setTransparentSort).not.toHaveBeenCalled();
         expect(created?.options).not.toHaveProperty('premultipliedAlpha');
+        expect(created?.options).not.toHaveProperty('preserveDrawingBuffer');
       },
     );
+
+    it('should keep the WebGL drawing buffer for a readable viewport canvas', async () => {
+      const { createRenderer } = await import('#graphics/three/renderer.js');
+
+      const canvas = document.createElement('canvas');
+      await createRenderer('viewport', 'webgl', { canvas, preserveDrawingBuffer: true });
+
+      expect(hoisted.createdRenderers.at(0)?.options).toMatchObject({ canvas, preserveDrawingBuffer: true });
+    });
   });
 });
 
