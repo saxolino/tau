@@ -17,6 +17,11 @@ export type RevisionStatusProjection = Readonly<{
   projectId: string;
   checkoutId: string | undefined;
   /**
+   * The live checkout — the project directory — whichever checkout the
+   * workbench has selected; a branch on any other one is *Linked* (D96).
+   */
+  liveCheckoutId?: string | undefined;
+  /**
    * Where that checkout's files are — the route every consumer re-roots at
    * when *Switch* moves the workbench (S27).
    *

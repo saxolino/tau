@@ -1066,7 +1066,7 @@ export function RevisionsPanelBody(): React.JSX.Element {
             <RevisionBranches
               branches={branches}
               currentBranch={currentBranch}
-              liveCheckoutId={status?.checkoutId}
+              liveCheckoutId={status?.liveCheckoutId}
               chatNames={chatNames}
               chatCheckoutIds={chatCheckoutIds}
               {...(activeChatId === undefined ? {} : { activeChatId })}

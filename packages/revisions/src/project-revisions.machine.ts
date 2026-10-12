@@ -1642,6 +1642,7 @@ export const selectRevisionStatus = (
   return {
     projectId: context.projectId,
     checkoutId: context.selectedCheckoutId,
+    liveCheckoutId: context.liveCheckoutId,
     checkoutRoot: selected?.root,
     line: lineOf(selected?.branch, headRevisionId),
     registrySettled: context.registrySettled,

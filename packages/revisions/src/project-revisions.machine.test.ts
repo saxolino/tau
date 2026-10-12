@@ -702,6 +702,19 @@ describe('projectRevisionsMachine', () => {
     harness.actor.stop();
   });
 
+  it('names the live checkout while a linked one is selected (D96)', () => {
+    const harness = start();
+
+    registerCheckouts(harness);
+    harness.actor.send({ type: 'pinTo', checkoutId: 'checkout-b' });
+    expect(selectRevisionStatus(harness.actor.getSnapshot())).toMatchObject({
+      checkoutId: 'checkout-b',
+      liveCheckoutId: 'checkout-live',
+    });
+
+    harness.actor.stop();
+  });
+
   /* RM-R5: a producer's fact is a hint, so the checkout re-reads and reports its own head. */
   it('re-heads a checkout that a restore moved', async () => {
     const harness = start();
@@ -1008,6 +1021,7 @@ describe('projectRevisionsMachine', () => {
     expect(selectRevisionStatus(harness.actor.getSnapshot())).toEqual({
       projectId: 'project-1',
       checkoutId: 'checkout-b',
+      liveCheckoutId: 'checkout-live',
       checkoutRoot: '/checkouts/checkout-b',
       line: { kind: 'unborn', name: 'agent/b' },
       registrySettled: true,
