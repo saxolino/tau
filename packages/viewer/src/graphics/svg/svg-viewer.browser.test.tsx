@@ -54,7 +54,7 @@ describe('SVG viewer in Chromium', () => {
     expect(Number(/scale\(([^)]+)\)/.exec(transform)?.[1])).toBeGreaterThan(3.5);
     const screenshot = await page.screenshot({
       element: screen.getByTestId('frame'),
-      path: '../../../../../../../out/tscircuit-closeout/svg-copper-zoom.png',
+      path: '../../../../../out/tscircuit-closeout/svg-copper-zoom.png',
     });
     expect(screenshot).toContain('svg-copper-zoom.png');
   });

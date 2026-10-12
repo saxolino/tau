@@ -394,6 +394,7 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
         });
       },
       follows: () => latest.current.view.follows,
+      linked: () => latest.current.view.linked,
       toolCallId: () => latest.current.view.toolCallId,
       show(result) {
         showRef.current?.(result);
@@ -411,6 +412,27 @@ export function ViewerPage({ bridge }: Readonly<{ bridge: HostBridge }>): React.
       link.stop();
     };
   }, [bridge, graphicsRef, isDrawn, showRef, shownUnit]);
+
+  /* Report the view once a newly shown model is drawn, so `view_state` finds the page without waiting for its held
+   * sync to come back: a card's first sync left before it had a model. */
+  const shownModelId = shown?.model.id;
+  useEffect(() => {
+    if (shownModelId === undefined) {
+      return;
+    }
+    let cancelled = false;
+    const report = async (): Promise<void> => {
+      if (!(await whenDrawn(isDrawn)) || cancelled) {
+        return;
+      }
+      linkRef.current?.nudge();
+    };
+    // async-iife: bootstrap — the report goes once the model is drawn; a newer model cancels it.
+    void report();
+    return () => {
+      cancelled = true;
+    };
+  }, [isDrawn, shownModelId]);
 
   /* After the person changes the view, report it once they pause. */
   const reportTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
