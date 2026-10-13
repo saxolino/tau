@@ -331,6 +331,7 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
         output.revisions === undefined ? undefined : `${String(output.revisions.length)} revision(s)`,
         output.changes === undefined ? undefined : `${String(output.changes.length)} changed file(s)`,
         output.branches === undefined ? undefined : `${String(output.branches.length)} branch(es)`,
+        output.conflict === undefined ? undefined : `${String(output.conflict.files.length)} conflicted file(s)`,
       ]
         .filter((field) => field !== undefined)
         .join(' · '),
