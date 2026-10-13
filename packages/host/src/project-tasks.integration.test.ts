@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -150,6 +150,151 @@ const cancelRoot = async (harness: ProjectTasksHarness, root: ProjectTask): Prom
 };
 
 describe('project tasks through real host authority, revisions and scripted ACP', () => {
+  it('should refuse a composer start on a delegated chat and preserve its task on message and resume', async () => {
+    const harness = await createProjectTasksHarness({ agents: [fixtureAgent] });
+    harnesses.push(harness);
+    await startRoot({ harness, suffix: 'delegated-start', prompt: 'PROJECT_TASK_FIXTURE:root' });
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await harness.tasks.read();
+          return snapshot.tasks.map((task) => task.attempts.at(-1)?.status);
+        },
+        { timeout: 45_000 },
+      )
+      .toEqual(['completed', 'completed', 'completed']);
+    const before = await harness.tasks.read();
+    const child = before.tasks[1];
+    if (!child) {
+      throw new Error('Delegated child missing.');
+    }
+    const placementBefore = harness.host.revisions.status().branches;
+    const answer = await harness.host.launcher.execute({
+      type: 'start',
+      commandId: 'start-delegated-chat',
+      payload: {
+        chatId: child.chatId,
+        runId: 'new-root-on-child',
+        trigger: 'submit',
+        message: { id: 'follow-up-message', role: 'user', content: 'Work in this child chat' },
+        config: { agent: { kind: 'acp', id: 'codex' }, systemPrompt: '', toolChoice: 'auto' },
+      },
+    });
+    expect(answer).toMatchObject({ status: 'refused', effect: 'not-applied', code: 'TASK_FORBIDDEN' });
+    expect(await harness.tasks.read()).toEqual(before);
+    expect(harness.host.revisions.status().branches).toEqual(placementBefore);
+    expect(JSON.stringify(await harness.readLog(child.chatId))).not.toContain('new-root-on-child');
+    await expect(readFile(join(harness.workspaceRoot, 'child.txt'), 'utf8')).rejects.toThrow('ENOENT');
+
+    const sent = await harness.tasks.send({
+      taskId: child.id,
+      requestId: 'delegated-follow-up',
+      text: 'DELEGATED_FOLLOW_UP_NONCE',
+    });
+    const resumed = await harness.host.projectTasks.request({
+      operation: 'resume',
+      input: { taskId: child.id, requestId: 'resume-delegated-follow-up' },
+    });
+    expect(resumed).toMatchObject({ kind: 'task', task: { id: child.id, chatId: child.chatId } });
+    await waitStatus(harness, child.id, 'completed');
+    const after = await harness.tasks.read();
+    const continued = after.tasks.find((task) => task.id === child.id);
+    expect(continued).toMatchObject({
+      parentTaskId: child.parentTaskId,
+      depth: child.depth,
+      provider: child.provider,
+      chatId: child.chatId,
+    });
+    expect(continued?.attempts).toHaveLength(2);
+    expect(continued?.attempts[1]).toMatchObject({
+      source: child.attempts[0]?.source,
+      toolGrant: child.attempts[0]?.toolGrant,
+    });
+    expect(continued?.attempts[1]?.candidateCheckoutId).not.toBe(child.attempts[0]?.candidateCheckoutId);
+    expect(after.messages).toContainEqual(sent);
+    expect(JSON.stringify(await harness.readLog(child.chatId))).toContain('DELEGATED_FOLLOW_UP_NONCE');
+    await expect(readFile(join(harness.workspaceRoot, 'child.txt'), 'utf8')).rejects.toThrow('ENOENT');
+  }, 90_000);
+
+  it('should isolate nested candidates in an adopted repository without capturing ignored files or touching user worktrees', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tau-adopted-project-tasks-'));
+    ownedDirectories.push(directory);
+    const workspaceRoot = join(directory, 'project');
+    const checkoutsDirectory = join(directory, 'checkouts');
+    const userWorktree = join(directory, 'mine');
+    await mkdir(join(workspaceRoot, '.tau'), { recursive: true });
+    await writeFile(join(workspaceRoot, '.gitignore'), 'dist/\n.env\n');
+    await writeFile(join(workspaceRoot, 'main.scad'), 'cube(10);\n');
+    await writeFile(join(workspaceRoot, '.tau', 'AGENTS.md'), 'Project instruction nonce: INHERITED_CONTEXT_NONCE.\n');
+    const git = (args: readonly string[]): string =>
+      execFileSync('git', ['-C', workspaceRoot, '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...args], {
+        encoding: 'utf8',
+      }).trim();
+    git(['init', '--quiet', '--initial-branch=main']);
+    git(['add', '--all']);
+    git(['commit', '--quiet', '-m', 'Initial']);
+    git(['worktree', 'add', '--quiet', '-b', 'side', userWorktree]);
+    await writeFile(join(userWorktree, 'unrelated.scad'), 'sphere(1);\n');
+    await mkdir(join(workspaceRoot, 'dist'));
+    await writeFile(join(workspaceRoot, 'dist', 'bundle.js'), 'private build\n');
+    await writeFile(join(workspaceRoot, '.env'), 'PRIVATE_NONCE=1\n');
+    await writeFile(join(workspaceRoot, 'main.scad'), 'cube(11);\n');
+    const userWorktreeBefore = git(['-C', userWorktree, 'rev-parse', 'HEAD']);
+    const harness = await createProjectTasksHarness({
+      agents: [fixtureAgent],
+      reopen: { workspaceRoot, checkoutsDirectory },
+    });
+    harnesses.push(harness);
+    await startRoot({ harness, suffix: 'adopted', prompt: 'PROJECT_TASK_FIXTURE:root' });
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await harness.tasks.read();
+          return snapshot.tasks.map((task) => task.attempts.at(-1)?.status);
+        },
+        { timeout: 45_000 },
+      )
+      .toEqual(['completed', 'completed', 'completed']);
+    const snapshot = await harness.tasks.read();
+    const [root, child, grandchild] = snapshot.tasks;
+    if (!root || !child || !grandchild) {
+      throw new Error('Nested adopted task lineage missing.');
+    }
+    expect(child.attempts[0]?.source.revisionId).toBe(root.attempts[0]?.source.revisionId);
+    expect(grandchild.attempts[0]?.source.revisionId).toBe(root.attempts[0]?.source.revisionId);
+    const { branches } = harness.host.revisions.status();
+    const childRoot = branches.find((branch) => branch.name.startsWith(`task-${child.id}-`))?.checkoutRoot;
+    const grandchildRoot = branches.find((branch) => branch.name.startsWith(`task-${grandchild.id}-`))?.checkoutRoot;
+    if (!childRoot || !grandchildRoot) {
+      throw new Error('Adopted candidates missing.');
+    }
+    expect(childRoot).not.toBe(grandchildRoot);
+    for (const candidate of [childRoot, grandchildRoot]) {
+      // oxlint-disable-next-line no-await-in-loop -- each candidate must omit the private files independently.
+      await expect(readFile(join(candidate, '.env'), 'utf8')).rejects.toThrow('ENOENT');
+      // oxlint-disable-next-line no-await-in-loop -- each candidate must omit the ignored build output independently.
+      await expect(readFile(join(candidate, 'dist', 'bundle.js'), 'utf8')).rejects.toThrow('ENOENT');
+      // oxlint-disable-next-line no-await-in-loop -- each candidate must start from the same frozen source.
+      expect(await readFile(join(candidate, 'main.scad'), 'utf8')).toBe('cube(11);\n');
+    }
+    expect(await readFile(join(workspaceRoot, 'main.scad'), 'utf8')).toBe('cube(11);\n');
+    expect(git(['worktree', 'list', '--porcelain'])).toContain('branch refs/heads/side');
+    expect(git(['-C', userWorktree, 'rev-parse', 'HEAD'])).toBe(userWorktreeBefore);
+    expect(git(['show', 'HEAD:main.scad'])).toBe('cube(11);');
+    expect(git(['ls-tree', '-r', '--name-only', 'HEAD'])).not.toMatch(/(?:^|\n)(?:\.env|dist\/|\.tau\/chats\/)/u);
+    expect(git(['status', '--porcelain', '--', '.env', 'dist', 'main.scad'])).toBe('');
+    expect(await readFile(join(userWorktree, 'unrelated.scad'), 'utf8')).toBe('sphere(1);\n');
+    await harness.close({ preserve: true });
+    const reopened = await createProjectTasksHarness({
+      agents: [fixtureAgent],
+      reopen: { workspaceRoot, checkoutsDirectory },
+    });
+    harnesses.push(reopened);
+    expect(await reopened.tasks.read()).toEqual(snapshot);
+    expect(git(['worktree', 'list', '--porcelain'])).toContain('branch refs/heads/side');
+    expect(git(['-C', userWorktree, 'rev-parse', 'HEAD'])).toBe(userWorktreeBefore);
+  }, 90_000);
+
   it('should dispatch parent-child-grandchild tools, isolate files and recover durable mailbox without replaying tools', async () => {
     const harness = await createProjectTasksHarness({ agents: [fixtureAgent] });
     harnesses.push(harness);

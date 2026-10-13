@@ -191,6 +191,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
   const rootDelivery = new Map<string, number>();
   const taskGrants = new Map<string, Pick<AgentChannelAdmissionConfig, 'toolChoice' | 'allowedTools'>>();
   let tasks: Promise<ProjectTaskCoordinator> | undefined;
+  let taskOwner: ProjectTaskCoordinator | undefined;
   const taskCoordinator = async (): Promise<ProjectTaskCoordinator> => {
     if (tasks === undefined) {
       throw Object.assign(new Error('This host has no durable project identity.'), { code: 'TASK_UNAVAILABLE' });
@@ -478,6 +479,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
   if (options.projectId !== undefined) {
     const { projectId } = options;
     const initializeTasks = async (): Promise<ProjectTaskCoordinator> => {
+      await revisions.opened();
       const store = await createNodeProjectTaskStore({ workspaceRoot, projectId });
       const coordinator = await createProjectTaskCoordinator({
         projectId,
@@ -514,6 +516,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
           placement: turnPlacement,
         }),
       });
+      taskOwner = coordinator;
       await coordinator.recover();
       return coordinator;
     };
@@ -544,8 +547,15 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     let retryTaskClose = false;
     if (tasks !== undefined) {
       try {
-        const coordinator = await tasks;
-        await coordinator.close();
+        await tasks;
+      } catch {
+        /* A refused revision open has no task owner. Recovery may reject after
+         * opening one, in which case that owner still needs the close below. */
+      }
+    }
+    if (taskOwner !== undefined) {
+      try {
+        await taskOwner.close();
       } catch {
         retryTaskClose = true;
       }
@@ -554,10 +564,10 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
       await launcher.close();
       ownerClosed.resolve();
     });
-    if (retryTaskClose && tasks !== undefined) {
+    if (retryTaskClose && taskOwner !== undefined) {
+      const owner = taskOwner;
       await settle(async () => {
-        const coordinator = await tasks;
-        await coordinator.close();
+        await owner.close();
       });
     }
     /* After the launcher: its attempts are settled, so the tree records what is on disk and stops. */
@@ -637,6 +647,16 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
             if (command.type === 'start' && options.projectId !== undefined) {
               const coordinator = await taskCoordinator();
               const snapshot = await coordinator.read({ kind: 'host', projectId: options.projectId });
+              if (snapshot.tasks.some((task) => task.chatId === chatId && task.parentTaskId !== undefined)) {
+                return {
+                  commandId: command.commandId,
+                  generation: 0,
+                  status: 'refused',
+                  effect: 'not-applied',
+                  code: 'TASK_FORBIDDEN',
+                  message: 'This chat belongs to a delegated task. Send a task message and use Resume to continue it.',
+                };
+              }
               const rootTask = snapshot.tasks.find((task) => task.chatId === chatId && task.parentTaskId === undefined);
               if (rootTask !== undefined) {
                 const messages = await coordinator.inbox({ taskId: rootTask.id });

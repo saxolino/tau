@@ -645,6 +645,7 @@ describe('createProjectHost', () => {
   /* W6.r2 H5: a second close while the first runs waits for it; the host's resources close once. */
   it('should close once when two closes run together', async () => {
     const { project } = await desktopProjectHost();
+    await project.revisions.opened();
     seams.closes = 0;
     seams.closed = 0;
 

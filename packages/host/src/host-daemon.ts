@@ -979,8 +979,24 @@ export const startHostDaemon = (options: HostDaemonOptions): HostDaemonHandle =>
     try {
       await project.revisions.opened();
     } catch (error) {
-      await project.close().catch(() => undefined);
-      await machines?.host.close();
+      try {
+        await project.close();
+      } catch (cleanupError) {
+        emit({
+          type: 'warning',
+          code: 'REVISION_UNAVAILABLE',
+          message: `Project cleanup after refused open failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        });
+      }
+      try {
+        await machines?.host.close();
+      } catch (cleanupError) {
+        emit({
+          type: 'warning',
+          code: 'MACHINE_HOST',
+          message: `Machine cleanup after refused project open failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        });
+      }
       throw error;
     }
     const server = startAgentServer({
