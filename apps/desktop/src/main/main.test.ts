@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/naming-convention -- mocked Electron exports and environment keys retain production names */
-import { mkdir, mkdtemp, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Worker as NodeWorker } from 'node:worker_threads';
@@ -100,6 +100,11 @@ const app = {
     return true;
   }),
   getPath: vi.fn((name: string) => (name === 'userData' ? state.userData : join(state.userData, name))),
+  setPath: vi.fn((name: string, path: string) => {
+    if (name === 'userData') {
+      state.userData = path;
+    }
+  }),
   getVersion: vi.fn(() => 'test'),
   /* No `package.json` here, so a packaged case boots locked, like a release. */
   getAppPath: vi.fn(() => state.userData),
@@ -1269,4 +1274,32 @@ describe('desktop main machine store', () => {
     },
     bootMilliseconds,
   );
+});
+
+describe('packaged staging profile initialization', () => {
+  it('should select a separate profile before acquiring the single-instance lock', async () => {
+    vi.stubGlobal('tauCloudBuildEnabled', false);
+    const root = await mkdtemp(join(tmpdir(), 'tau-staging-main-'));
+    state.userData = root;
+    app.isPackaged = true;
+    await writeFile(join(root, 'package.json'), JSON.stringify({ tauDesktop: { channel: 'staging' } }));
+    Object.defineProperty(process, 'resourcesPath', { configurable: true, value: root });
+    const staging = join(root, 'appData', 'Tau Staging');
+    app.requestSingleInstanceLock.mockImplementationOnce(() => {
+      expect(state.userData).toBe(staging);
+      expect(app.setPath).toHaveBeenCalledWith('sessionData', staging);
+      return true;
+    });
+    try {
+      await import('#main/main.js');
+      await vi.waitFor(() => {
+        expect(state.ipcListeners.has(servicesPortRelayTag)).toBe(true);
+      });
+      expect(app.requestSingleInstanceLock).toHaveBeenCalledOnce();
+      expect(app.setName).toHaveBeenCalledWith('Tau Staging');
+      expect(app.setName).not.toHaveBeenCalledWith('Tau');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

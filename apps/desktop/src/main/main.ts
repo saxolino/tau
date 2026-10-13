@@ -92,6 +92,7 @@ import { readGeneratedImage } from '#main/generated-image.js';
 import { createBambuStudioService } from '#main/bambu-studio-service.js';
 import { readWindowState, writeWindowState } from '#main/window-state.js';
 import { startDesktopUpdater } from '#main/updater.js';
+import { configureDesktopProfile } from '#main/profile.js';
 import {
   appIconThemeChannel,
   agentHostSessionChannels,
@@ -129,6 +130,7 @@ if (environmentLocked) {
 /* A staging package (`TAU_DESKTOP_CHANNEL=staging` at packaging time) defaults
  * to taucad.dev and never follows the production update feed. */
 const desktopChannel = app.isPackaged ? packagedChannel(app.getAppPath()) : 'production';
+configureDesktopProfile(app, desktopChannel);
 const isDevelopment = process.env.ELECTRON_RENDERER_URL !== undefined;
 const hideTestWindow = process.env['TAU_E2E_HIDE_WINDOW'] === '1';
 /* Packaged executable launches skip Playwright's readiness loader. Hold window
@@ -315,7 +317,6 @@ app.on('second-instance', (_event, argv) => {
   focusMainWindow();
 });
 
-app.setName('Tau');
 process.title = 'Tau';
 /* Unpackaged on Windows and Linux the registration has to name the executable
  * and the script Electron was started with, or the OS records `electron` itself
