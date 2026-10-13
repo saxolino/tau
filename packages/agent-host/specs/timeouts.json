@@ -826,6 +826,88 @@
       "token": "void flush();",
       "class": "Debounce",
       "owner": "agent-plugin-ui-blueprint W10"
+    },
+    {
+      "id": "PT1",
+      "bound": "Not a timer: project task mailbox cursor named after",
+      "site": "packages/agent-host/src/wire/project-tasks.schema.ts",
+      "token": "after: z.number().int().nonnegative().optional()",
+      "class": "None",
+      "owner": "acp-projects W1"
+    },
+    {
+      "id": "PT2",
+      "bound": "Not a timer: validated task wait duration in milliseconds, at most 30 s",
+      "site": "packages/agent-host/src/wire/project-tasks.schema.ts",
+      "token": "timeout: z.number().int().min(0).max(30_000).optional()",
+      "class": "None",
+      "owner": "acp-projects W1"
+    },
+    {
+      "id": "PT3",
+      "bound": "Task cancellation observation, default 10 s through the injected scheduler; expiry answers TASK_BUSY and retains the cancelling attempt and reservation, never declares settlement",
+      "site": "packages/host/src/project-tasks/coordinator.ts",
+      "token": "setTimeout(callback, waitDelay)",
+      "class": "Peer",
+      "owner": "acp-projects W1",
+      "fixedBy": "ACP-P2-OWNER-ANSWERS: task settlement owner answers (host-integration/report.md)"
+    },
+    {
+      "id": "PT4",
+      "bound": "Task change long poll, requested duration at most 30 s; expiry returns the current unchanged snapshot and holds no admission reservation",
+      "site": "packages/host/src/project-tasks/coordinator.ts",
+      "token": "schedule(changed, input.timeout ?? 30_000)",
+      "class": "Liveness",
+      "owner": "acp-projects W1"
+    },
+    {
+      "id": "PT5",
+      "bound": "Not a timer: remove validated timeout from task mailbox read parameters",
+      "site": "packages/host/src/project-tasks/coordinator.ts",
+      "token": "const { timeout: _timeout, ...readInput } = input",
+      "class": "None",
+      "owner": "acp-projects W1"
+    },
+    {
+      "id": "PT6",
+      "bound": "Root task transcript observation backstop, 24 h; stops only the read follower, never cancels model work, declares terminal state or releases an unresolved reservation",
+      "site": "packages/host/src/project-host.ts",
+      "token": "AbortSignal.timeout(24 * 60 * 60_000)",
+      "class": "Liveness",
+      "owner": "acp-projects W2"
+    },
+    {
+      "id": "PT7",
+      "bound": "Canonical project context filesystem reads, 30 s, for native client context and new root admissions",
+      "site": "packages/host/src/project-host.ts",
+      "token": "AbortSignal.timeout(30_000)",
+      "class": "External edge",
+      "owner": "acp-projects W3"
+    },
+    {
+      "id": "PT8",
+      "bound": "Child task transcript observation backstop, 24 h; on observation ending it waits for the canonical owner close and settlement, never invents a terminal result",
+      "site": "packages/host/src/project-task-integration.ts",
+      "token": "AbortSignal.timeout(24 * 60 * 60_000)",
+      "class": "Liveness",
+      "owner": "acp-projects W2"
+    },
+    {
+      "id": "PT9",
+      "bound": "Native task reconciliation transcript observation, 30 s; an unconfirmed settlement refuses TASK_BUSY, retaining the attempt and reservation",
+      "site": "packages/host/src/project-task-integration.ts",
+      "token": "AbortSignal.timeout(30_000)",
+      "class": "Peer",
+      "owner": "acp-projects W2",
+      "fixedBy": "ACP-P2-OWNER-ANSWERS: task settlement owner answers (host-integration/report.md)"
+    },
+    {
+      "id": "PT10",
+      "bound": "Exact existing placement lease acknowledgement retry spacing: answered applied/held queries retried serially every 25 ms for at most 1 s; refusal or still-held lease answers TASK_BUSY and retains uncertainty",
+      "site": "packages/host/src/project-task-integration.ts",
+      "token": "setTimeout(resolve, 25)",
+      "class": "Backoff",
+      "owner": "acp-projects W2"
     }
   ]
 }
