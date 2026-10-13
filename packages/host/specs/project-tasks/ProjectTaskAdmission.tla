@@ -3,7 +3,10 @@ EXTENDS Naturals, FiniteSets, TLC
 \* This source-linked model projects reservations, lineage and resource ownership.
 \* Mailbox delivery remains outside this finite projection: its separate semantic
 \* checks bound actual rendered UTF-8 prompt bytes, not escaped journal JSON bytes.
-CONSTANTS Tasks, Root, Requests, Cap, Depth
+\* ModelResolved includes non-Tau tasks and Tau tasks whose selected catalog row
+\* resolved. Admission may precede this check, but a failed selection cannot
+\* allocate a revision checkout or attach a model to the private candidate.
+CONSTANTS Tasks, Root, Requests, Cap, Depth, ModelResolved
 VARIABLES phase, parent, depth, source, closed, resources, admitted
 vars == <<phase, parent, depth, source, closed, resources, admitted>>
 Active == {t \in Tasks : phase[t] \in {"allocating", "running", "cancelling"}}
@@ -23,7 +26,7 @@ Spawn(p, t, r) == /\ p \in Active /\ p \notin closed
                   /\ source' = [source EXCEPT ![t] = source[p]]
                   /\ admitted' = [admitted EXCEPT ![r] = t]
                   /\ UNCHANGED <<closed, resources>>
-Allocate(t) == /\ phase[t] \in {"allocating", "cancelling"} /\ t \notin resources
+Allocate(t) == /\ phase[t] \in {"allocating", "cancelling"} /\ t \in ModelResolved /\ t \notin resources
                /\ resources' = resources \cup {t}
                /\ UNCHANGED <<phase, parent, depth, source, closed, admitted>>
 Start(t) == /\ phase[t] = "allocating" /\ t \in resources /\ t \notin closed
@@ -44,5 +47,6 @@ Bounded == Cardinality(Active) <= Cap
 Nested == \A t \in Tasks : depth[t] <= Depth
 ImmutableSource == \A t \in Tasks : phase[t] # "absent" => source[t] = "immutable-base"
 NoTerminalResources == resources \subseteq Active
+UnresolvedNoResources == resources \subseteq ModelResolved
 CancelledNeverStarts == \A t \in closed : phase[t] # "running"
 =============================================================================

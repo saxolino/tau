@@ -15,6 +15,10 @@
     "ProjectTaskAdmission.target.cfg": {
       "tier": "pr",
       "expect": "pass"
+    },
+    "ProjectTaskAdmission.model-refusal.cfg": {
+      "tier": "pr",
+      "expect": "pass"
     }
   }
 }
