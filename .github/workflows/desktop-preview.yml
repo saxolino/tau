@@ -72,6 +72,14 @@ jobs:
           ninja --version
           xcrun --find clang++
 
+      # Build the renderer and Electron JavaScript first, so payload ownership
+      # failures stop the preview before the costly native packaging closure.
+      - name: Check desktop renderer payload before native packaging
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm nx run desktop:check-renderer-payload --parallel=1 --outputStyle=stream 2>&1 | tee "$PREVIEW_EVIDENCE_ROOT/payload.log"
+
       - name: Provision pinned Python wrapper tooling
         env:
           GEOSPEC_PYTHON313: ${{ steps.python313.outputs.python-path }}
