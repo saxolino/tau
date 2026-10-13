@@ -132,8 +132,12 @@ function QuestionOptions({
       {question.allowsText ? (
         <li>
           {isWriting || question.options.length === 0 ? (
-            <div className={cn('flex items-start gap-2.5 rounded-md px-2', isFlat ? 'py-1.5' : 'py-2')}>
-              {question.options.length === 0 ? null : <LetterKey letter={otherLetter} />}
+            <div className='flex items-start gap-2 rounded-md px-2 pt-1'>
+              {question.options.length === 0 ? null : (
+                <span className='pt-2'>
+                  <LetterKey letter={otherLetter} />
+                </span>
+              )}
               <QuestionTextAnswer
                 draft={draft}
                 onDraftChange={setDraft}
@@ -235,7 +239,7 @@ function SettledRows({
 }
 
 const cardClassName = (isFlat: boolean): string =>
-  isFlat ? 'px-1 py-2.5' : 'rounded-lg border bg-background px-1 py-3';
+  isFlat ? 'px-1 py-2.5' : 'rounded-lg border bg-background px-2 py-3';
 
 const settledTitle = (kind: AskStatus['kind'], agentName: string | undefined): string => {
   switch (kind) {
@@ -305,7 +309,7 @@ function SettledCard({
       tabIndex={-1}
       className={cn('flex flex-col gap-2 outline-none', cardClassName(isFlat), className)}
     >
-      <div className='flex min-w-0 items-center gap-1.5 px-2 text-xs text-muted-foreground'>
+      <div className='flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-2 text-xs text-muted-foreground'>
         <MessageCircleQuestionMark aria-hidden='true' className='size-3.5 shrink-0' />
         <span id={titleId} className='min-w-0 flex-1 wrap-break-word'>
           {settledTitle(kind, agentName)}
@@ -358,7 +362,7 @@ function QuestionHeader({
   readonly timer: string | undefined;
 }): React.JSX.Element {
   return (
-    <div className='flex min-w-0 items-center gap-1.5 px-2 text-xs text-muted-foreground'>
+    <div className='flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-2 text-xs text-muted-foreground'>
       <MessageCircleQuestionMark aria-hidden='true' className='size-3.5 shrink-0' />
       <span className='min-w-0 truncate'>
         {agentName === undefined ? 'Question' : `${agentName} asks`}

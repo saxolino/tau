@@ -109,7 +109,7 @@ export const DictationRecording = memo(function ({
             : 'flex h-7 min-w-0 flex-1 items-center justify-center text-sm text-muted-foreground'
         }
       >
-        {dictationLabels[phase]}
+        <span className='truncate'>{dictationLabels[phase]}</span>
       </span>
     </>
   );

@@ -235,19 +235,17 @@ describe('question dictation', () => {
     vi.mocked(onHold).mockClear();
     await user.click(screen.getByRole('button', { name: 'Dictate' }));
     expect(onHold).toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Send answer' })).toBeDisabled();
-    // Edits made after recording starts must survive final insertion.
-    await user.type(box, ' With a base.');
-    await user.keyboard('{Enter}');
+    expect(screen.queryByRole('button', { name: 'Send answer' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Your answer' })).not.toBeInTheDocument();
     expect(onAnswer).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Stop dictation' }));
     await waitFor(() => {
-      expect(box).toHaveValue('A seashell. With a base. Use rounded corners.');
+      expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveValue('A seashell. Use rounded corners.');
     });
-    expect(box).toHaveFocus();
+    expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveFocus();
     expect(onAnswer).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Send answer' }));
-    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('form', { text: 'A seashell. With a base. Use rounded corners.' });
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('form', { text: 'A seashell. Use rounded corners.' });
   });
 
   it('should cancel pending speech on Escape while preserving typed text', async () => {
@@ -263,8 +261,8 @@ describe('question dictation', () => {
     await act(async () => {
       response.resolve('Discard this.');
     });
-    expect(box).toHaveValue('Keep this.');
-    expect(box).toHaveFocus();
+    expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveValue('Keep this.');
+    expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveFocus();
     expect(capture.cancel).toHaveBeenCalled();
     expect(onAnswer).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Dictate' })).toBeVisible();
