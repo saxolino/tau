@@ -105,8 +105,8 @@ describe('Tau child model admission', () => {
     const execution = await host.backend.start(host.launch, allocation);
     const command = host.launcher.execute.mock.calls[0]?.[0];
     expect(command?.type).toBe('start');
-    if (command?.type !== 'start') {
-      throw new Error('Expected a child start command.');
+    if (command?.type !== 'start' || command.payload.config === undefined) {
+      throw new Error('Expected a child start command with admission config.');
     }
     expect(command.payload.config.model).toEqual(allocation.model);
     expect(host.resolved).toHaveBeenCalledOnce();
@@ -158,8 +158,8 @@ describe('Tau child model admission', () => {
     const execution = await host.backend.start(host.launch, allocation);
     const command = host.launcher.execute.mock.calls[0]?.[0];
     expect(command?.type).toBe('start');
-    if (command?.type !== 'start') {
-      throw new Error('Expected a child start command.');
+    if (command?.type !== 'start' || command.payload.config === undefined) {
+      throw new Error('Expected a child start command with admission config.');
     }
     expect(command.payload.config.model).toBeUndefined();
     await expect(execution.completion).resolves.toEqual({ status: 'completed' });
