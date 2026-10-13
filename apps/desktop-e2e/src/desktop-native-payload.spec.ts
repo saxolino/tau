@@ -171,6 +171,15 @@ try {
     },
   });
   try {
+    const profile = await application.evaluate(({ app }) => ({
+      userData: app.getPath('userData'),
+      sessionData: app.getPath('sessionData'),
+    }));
+    expect(profile).toEqual({
+      userData: join(runRoot, 'user-data'),
+      sessionData: join(runRoot, 'user-data'),
+    });
+
     const positive = await runUtilityProbe(application, { cwd: runRoot, entry: utilityEntry, esbuildExecutable });
     if (!positive.ok) {
       throw new Error(`Packaged native payload probe failed:\n${positive.error}`);

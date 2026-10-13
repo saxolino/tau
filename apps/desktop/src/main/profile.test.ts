@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { App } from 'electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAuthService } from '#main/auth-service.js';
@@ -14,7 +13,9 @@ afterEach(() => {
   }
 });
 
-const profile = (): { application: Pick<App, 'getPath' | 'setPath' | 'setName'>; paths: Map<string, string> } => {
+const profile = (
+  explicitUserData = '',
+): { application: Parameters<typeof configureDesktopProfile>[0]; paths: Map<string, string> } => {
   const directory = mkdtempSync(join(tmpdir(), 'tau-profile-'));
   directories.push(directory);
   const paths = new Map([
@@ -25,6 +26,7 @@ const profile = (): { application: Pick<App, 'getPath' | 'setPath' | 'setName'>;
   return {
     paths,
     application: {
+      commandLine: { getSwitchValue: vi.fn((name: string) => (name === 'user-data-dir' ? explicitUserData : '')) },
       getPath: (name) => paths.get(name)!,
       setPath: (name, path) => {
         paths.set(name, path);
@@ -55,6 +57,20 @@ describe('desktop channel profile', () => {
     expect(application.setName).toHaveBeenCalledWith('Tau Staging');
     configureDesktopProfile(application, 'staging');
     expect(application.getPath('userData')).toBe(staging);
+  });
+
+  it('should honor an explicit Electron user data directory for staging', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'tau-explicit-profile-'));
+    directories.push(directory);
+    const explicitUserData = join(directory, 'preview');
+    const { application, paths } = profile(explicitUserData);
+    const defaultStaging = join(application.getPath('appData'), 'Tau Staging');
+    configureDesktopProfile(application, 'staging');
+    expect(paths.get('userData')).toBe(explicitUserData);
+    expect(paths.get('sessionData')).toBe(explicitUserData);
+    expect(existsSync(explicitUserData)).toBe(true);
+    expect(existsSync(defaultStaging)).toBe(false);
+    expect(application.setName).toHaveBeenCalledWith('Tau Staging');
   });
 
   it('should retain production credentials when a staging session expires or rotates', async () => {

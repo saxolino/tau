@@ -92,6 +92,7 @@ vi.mock('node:worker_threads', async (importOriginal) => {
 
 const app = {
   isPackaged: false,
+  commandLine: { getSwitchValue: vi.fn(() => '') },
   dock: { setIcon: vi.fn() },
   requestSingleInstanceLock: vi.fn(() => true),
   whenReady: vi.fn(async () => state.ready),
