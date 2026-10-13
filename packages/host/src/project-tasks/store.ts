@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { createActor } from 'xstate';
+import { projectTaskProjectionLogic } from '#project-tasks/projection.js';
 import { projectTaskSchema, projectTaskMessageSchema } from '@taucad/agent-host/wire';
 import type { ProjectTask, ProjectTaskMessage, ProjectTaskRefusalCode } from '@taucad/agent-host/wire';
 
-/** Typed task refusal preserves stable codes across tool/UI boundaries. @public */
+/** Typed task refusal preserves stable codes across tool/UI boundaries. @internal */
 export class ProjectTaskError extends Error {
   public readonly code: ProjectTaskRefusalCode;
 
@@ -36,11 +38,11 @@ export const projectTaskRecordSchema = z.strictObject({
     .optional(),
 });
 
-/** A project ordering authority's append. @public */
+/** A project ordering authority's append. @internal */
 export type ProjectTaskRecord = z.infer<typeof projectTaskRecordSchema>;
-/** A prepared change becomes visible only after append-and-sync acknowledges. @public */
+/** A prepared change becomes visible only after append-and-sync acknowledges. @internal */
 export type ProjectTaskChange = Omit<ProjectTaskRecord, 'version' | 'projectId' | 'sequence'>;
-/** Environment storage with owner-qualified exclusive append-and-sync. @public */
+/** Environment storage with owner-qualified exclusive append-and-sync. @internal */
 export type ProjectTaskStorage = Readonly<{
   read: () => Promise<Uint8Array<ArrayBuffer>>;
   append: (bytes: Uint8Array<ArrayBuffer>) => Promise<void>;
@@ -49,13 +51,13 @@ export type ProjectTaskStorage = Readonly<{
   exclusive: <Result>(section: () => Promise<Result>) => Promise<Result>;
   close: () => Promise<void>;
 }>;
-/** One serialized project writer; transaction callbacks must not acquire resources. @public */
+/** One serialized project writer; transaction callbacks must not acquire resources. @internal */
 export type ProjectTaskStore = Readonly<{
   projectId: string;
   transaction: <Result>(operation: (view: ProjectTaskStoreView) => Promise<Result>) => Promise<Result>;
   close: () => Promise<void>;
 }>;
-/** Current journal projection available inside the project writer's transaction. @public */
+/** Current journal projection available inside the project writer's transaction. @internal */
 export type ProjectTaskStoreView = Readonly<{
   tasks: ReadonlyMap<string, ProjectTask>;
   messages: readonly ProjectTaskMessage[];
@@ -73,17 +75,12 @@ const encoder = new TextEncoder();
  *
  * @param options - Project identity and exclusively owned durable storage.
  * @returns The sole ordering authority for this project.
- * @public
+ * @internal
  */
 const openProjectTaskStore = async (
   options: Readonly<{ projectId: string; storage: ProjectTaskStorage }>,
 ): Promise<ProjectTaskStore> => {
   const { projectId, storage } = options;
-  const tasks = new Map<string, ProjectTask>();
-  const messages: ProjectTaskMessage[] = [];
-  const requests = new Map<string, z.infer<typeof requestSchema>>();
-  const deliveries = new Map<string, number>();
-  const records: ProjectTaskRecord[] = [];
   let bytes = await storage.read();
   const lastNewline = bytes.lastIndexOf(10);
   let byteLength = lastNewline + 1;
@@ -92,29 +89,20 @@ const openProjectTaskStore = async (
   let closed = false;
   let queue = Promise.resolve();
 
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, byteLength));
+  const projection = createActor(projectTaskProjectionLogic);
+  projection.start();
+  const selectProjection = () => projection.getSnapshot().context;
   const apply = (record: ProjectTaskRecord): void => {
-    for (const task of record.tasks) {
-      tasks.set(task.id, task);
-    }
-    if (record.message) {
-      messages.push(record.message);
-    }
-    if (record.request) {
-      requests.set(record.request.key, record.request);
-    }
-    if (record.delivery) {
-      deliveries.set(record.delivery.taskId, record.delivery.through);
-    }
-    records.push(record);
+    projection.send({ type: 'append', record });
   };
 
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, byteLength));
   try {
     for (const line of text.split('\n').filter(Boolean)) {
       const record = projectTaskRecordSchema.parse(JSON.parse(line));
       if (
         record.projectId !== projectId ||
-        record.sequence !== records.length + 1 ||
+        record.sequence !== selectProjection().records.length + 1 ||
         record.tasks.some((task) => task.projectId !== projectId) ||
         (record.message && (record.message.projectId !== projectId || record.message.sequence !== record.sequence))
       ) {
@@ -123,12 +111,18 @@ const openProjectTaskStore = async (
       apply(record);
     }
   } catch (error) {
+    projection.stop();
     throw new ProjectTaskError('TASK_STORAGE_INVALID', `Task records cannot be replayed: ${String(error)}`);
   }
   bytes = bytes.slice(0, byteLength);
 
   const append = async (change: ProjectTaskChange): Promise<ProjectTaskRecord> => {
-    const record = projectTaskRecordSchema.parse({ ...change, version: 1, projectId, sequence: records.length + 1 });
+    const record = projectTaskRecordSchema.parse({
+      ...change,
+      version: 1,
+      projectId,
+      sequence: selectProjection().records.length + 1,
+    });
     if (
       record.tasks.some((task) => task.projectId !== projectId) ||
       (record.message && (record.message.projectId !== projectId || record.message.sequence !== record.sequence))
@@ -182,7 +176,27 @@ const openProjectTaskStore = async (
       if (closed || poisoned) {
         throw new ProjectTaskError(closed ? 'TASK_CLOSED' : 'TASK_STORAGE_POISONED', 'The task store is unavailable.');
       }
-      return await operation({ tasks, messages, requests, deliveries, records, sequence: records.length, append });
+      return await operation({
+        get tasks() {
+          return new Map(Object.entries(selectProjection().tasks));
+        },
+        get messages() {
+          return selectProjection().messages;
+        },
+        get requests() {
+          return new Map(Object.entries(selectProjection().requests));
+        },
+        get deliveries() {
+          return new Map(Object.entries(selectProjection().deliveries));
+        },
+        get records() {
+          return selectProjection().records;
+        },
+        get sequence() {
+          return selectProjection().records.length;
+        },
+        append,
+      });
     } finally {
       next.resolve();
     }
@@ -196,6 +210,7 @@ const openProjectTaskStore = async (
       if (!closed) {
         closed = true;
         await storage.close();
+        projection.stop();
       }
     },
   };
@@ -206,7 +221,7 @@ const openProjectTaskStore = async (
  *
  * @param options - Project identity and exclusively owned append-and-sync storage.
  * @returns The project ordering authority.
- * @public
+ * @internal
  */
 export const createProjectTaskStore = async (
   options: Readonly<{ projectId: string; storage: ProjectTaskStorage }>,

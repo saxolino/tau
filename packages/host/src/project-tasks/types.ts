@@ -7,9 +7,13 @@ import type {
   ProjectTaskSpawn,
   ProjectTaskWait,
 } from '@taucad/agent-host/wire';
-import type { ProjectTaskCaller, ProjectTaskRootAdmission } from '#project-tasks/backend.js';
+import type {
+  ProjectTaskCaller,
+  ProjectTaskContinuationAdmission,
+  ProjectTaskRootAdmission,
+} from '#project-tasks/backend.js';
 
-/** Ordered durable projection returned to UI/tools; cursor covers the whole project journal. @public */
+/** Ordered durable projection returned to UI/tools; cursor covers the whole project journal. @internal */
 export type ProjectTaskSnapshot = Readonly<{
   tasks: readonly ProjectTask[];
   messages: readonly ProjectTaskMessage[];
@@ -18,9 +22,10 @@ export type ProjectTaskSnapshot = Readonly<{
   hasMore: boolean;
 }>;
 
-/** Host-owned task operations; every call receives an authenticated identity separately from model input. @public */
+/** Host-owned task operations; every call receives an authenticated identity separately from model input. @internal */
 export type ProjectTaskCoordinator = Readonly<{
   admitRoot: (input: ProjectTaskRootAdmission) => Promise<ProjectTask>;
+  admitContinuation: (input: ProjectTaskContinuationAdmission) => Promise<ProjectTask>;
   finishRoot: (
     input: Readonly<{
       taskId: string;

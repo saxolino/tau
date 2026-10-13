@@ -8,6 +8,21 @@ const identifier = z
   .regex(/^[\w.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');
 
+/** Bounded model-delivery mailbox batches; full UI reads remain cursor-paginated. @public */
+export const projectTaskMailboxLimits: Readonly<{ maxMessages: number; maxBytes: number; maxTextBytes: number }> = {
+  maxMessages: 16,
+  maxBytes: 32_768,
+  maxTextBytes: 16_384,
+};
+const mailboxText = z
+  .string()
+  .min(1)
+  .max(projectTaskMailboxLimits.maxTextBytes)
+  .refine(
+    (value) => new TextEncoder().encode(value).byteLength <= projectTaskMailboxLimits.maxTextBytes,
+    'Task message exceeds its UTF-8 byte budget.',
+  );
+
 /** Provider selection is transport neutral; Tau children use the Tau ACP adapter. @public */
 export const projectTaskProviderSchema = z.strictObject({
   id: identifier,
@@ -46,6 +61,7 @@ export const projectTaskAttemptSchema = z.strictObject({
   toolGrant: projectTaskToolGrantSchema,
   createdAt: z.number().int().nonnegative(),
   placementId: identifier.optional(),
+  candidateCheckoutId: identifier.optional(),
   runId: identifier.optional(),
   endedAt: z.number().int().nonnegative().optional(),
   detail: z.string().max(4096).optional(),
@@ -74,7 +90,7 @@ export const projectTaskMessageSchema = z.strictObject({
   senderTaskId: identifier.optional(),
   recipientTaskId: identifier,
   requestId: identifier,
-  text: z.string().min(1).max(32_768),
+  text: mailboxText,
   createdAt: z.number().int().nonnegative(),
 });
 
@@ -90,7 +106,7 @@ export const projectTaskSpawnSchema = z.strictObject({
 export const projectTaskSendSchema = z.strictObject({
   requestId: identifier,
   taskId: identifier,
-  text: z.string().min(1).max(32_768),
+  text: mailboxText,
 });
 
 /** Bounded mailbox read over project-wide ordered cursors. @public */

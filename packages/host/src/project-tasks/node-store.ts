@@ -8,7 +8,7 @@ import type { ProjectTaskStore } from '#project-tasks/store.js';
  *
  * @param options - Host-owned project root and identity, never model-supplied paths.
  * @returns An exclusively locked durable task ordering authority.
- * @public
+ * @internal
  */
 export const createNodeProjectTaskStore = async (
   options: Readonly<{ workspaceRoot: string; projectId: string }>,

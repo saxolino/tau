@@ -7,12 +7,12 @@ import type {
   ProjectTaskToolGrant,
 } from '@taucad/agent-host/wire';
 
-/** Host-authenticated caller. Tool arguments cannot construct this identity. @public */
+/** Host-authenticated caller. Tool arguments cannot construct this identity. @internal */
 export type ProjectTaskCaller =
   | Readonly<{ kind: 'host'; projectId: string }>
   | Readonly<{ kind: 'task'; projectId: string; taskId: string; attemptId: string }>;
 
-/** One already-admitted task execution and its immutable source. @public */
+/** One already-admitted task execution and its immutable source. @internal */
 export type ProjectTaskLaunch = Readonly<{
   task: ProjectTask;
   attempt: ProjectTaskAttempt;
@@ -20,17 +20,17 @@ export type ProjectTaskLaunch = Readonly<{
   messages: readonly ProjectTaskMessage[];
 }>;
 
-/** Private candidate allocated through the existing revision owner. @public */
+/** Private candidate allocated through the existing revision owner. @internal */
 export type ProjectTaskAllocation = Readonly<{ placementId: string; checkoutId: string }>;
 
-/** Backend's sole existing launcher turn; completion follows settlement and release. @public */
+/** Backend's sole existing launcher turn; completion follows settlement and release. @internal */
 export type ProjectTaskExecution = Readonly<{
   runId: string;
   completion: Promise<Readonly<{ status: 'completed' | 'failed' | 'cancelled'; detail?: string }>>;
   cancel: () => Promise<void>;
 }>;
 
-/** Host composition port. No model loop or session pool belongs to the task coordinator. @public */
+/** Host composition port. No model loop or session pool belongs to the task coordinator. @internal */
 export type ProjectTaskBackend = Readonly<{
   /** Validate provider/capabilities without allocating resources. */
   validate: (provider: ProjectTaskProvider) => Promise<void>;
@@ -42,11 +42,13 @@ export type ProjectTaskBackend = Readonly<{
   release: (
     input: Readonly<{ task: ProjectTask; attempt: ProjectTaskAttempt; allocation: ProjectTaskAllocation }>,
   ) => Promise<void>;
-  /** Reconcile existing launcher leadership and placement leases before interrupted recovery. */
-  reconcile: (input: Readonly<{ task: ProjectTask; attempt: ProjectTaskAttempt }>) => Promise<void>;
+  /** Reconcile launcher/leases; return any allocation that still needs release, including crash-before-record allocation. */
+  reconcile: (
+    input: Readonly<{ task: ProjectTask; attempt: ProjectTaskAttempt }>,
+  ) => Promise<ProjectTaskAllocation | undefined>;
 }>;
 
-/** Root turns count against the same budget but execute through their existing host owner. @public */
+/** Root turns count against the same budget but execute through their existing host owner. @internal */
 export type ProjectTaskRootAdmission = Readonly<{
   requestId: string;
   chatId: string;
@@ -57,3 +59,6 @@ export type ProjectTaskRootAdmission = Readonly<{
   source: ProjectTaskSource;
   toolGrant: ProjectTaskToolGrant;
 }>;
+
+/** Rebind a native continuation to its durable task without a second backend admission. @internal */
+export type ProjectTaskContinuationAdmission = Readonly<{ requestId: string; chatId: string; runId: string }>;

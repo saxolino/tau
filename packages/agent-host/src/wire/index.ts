@@ -73,6 +73,7 @@ export { turnPlacementSchema, turnSettlementSchema } from '#wire/settlement.sche
 export type { TurnPlacementRecord, TurnSettlementBody } from '#wire/settlement.schema.js';
 export type { RefusalCode, RefusalEntry, RefusalOwner, RetryClass } from '#wire/refusals.js';
 export {
+  projectTaskMailboxLimits,
   projectTaskProviderSchema,
   projectTaskSourceSchema,
   projectTaskToolGrantSchema,
