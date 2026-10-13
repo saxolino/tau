@@ -908,6 +908,14 @@
       "token": "setTimeout(resolve, 25)",
       "class": "Backoff",
       "owner": "acp-projects W2"
+    },
+    {
+      "id": "PT11",
+      "bound": "Desktop signed-in Tau catalog fetch for an explicit child model, 10 s; expiry fails the task attempt before candidate creation",
+      "site": "apps/desktop/src/tau/project-model-resolver.ts",
+      "token": "AbortSignal.timeout(10_000)",
+      "class": "External edge",
+      "owner": "acp-projects model admission"
     }
   ]
 }
