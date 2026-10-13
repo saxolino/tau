@@ -146,6 +146,12 @@ export const tauToolNames = [
   'get_print_profiles',
   'list_print_requests',
   'cancel_print',
+  'task_spawn',
+  'task_read',
+  'task_send',
+  'task_wait',
+  'task_cancel',
+  'task_resume',
 ] as const;
 
 /**
