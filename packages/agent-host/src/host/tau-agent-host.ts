@@ -26,6 +26,7 @@ import type { ChatRunKind, ChatRunOutcomeEvent, ChatRunRow } from '#host/chat-ru
 import { createChatRunRegistry } from '#host/chat-run-registry.js';
 import type { ExternalAgentPort, ExternalRunKind, TauAgentAdmissionConfig } from '#host/external-agent.js';
 import { startExternalTurn } from '#host/external-turn.driver.js';
+import type { TauTurnProjection, TauTurnTransport } from '#host/tau-turn-transport.js';
 import {
   externalMarker,
   externalSessionOf,
@@ -145,6 +146,8 @@ export type CreateTauAgentHostOptions = {
    * refused at admission, never silently downgraded to a Tau turn.
    */
   readonly externalRunners?: Readonly<Record<string, ExternalAgentPort>> | undefined;
+  /** Protocol projection around already-admitted Tau turns; does not replace their model loop. */
+  readonly tauTurnTransport?: TauTurnTransport | undefined;
   /**
    * W8's placement port: every attempt is placed, settled and acknowledged (RA-R12). A host without one only reads: it
    * refuses every `start` and `resume` `REVISIONS_UNAVAILABLE` before any row, so no run edits unplaced (D13).
@@ -845,6 +848,7 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
   const approvalFor = (
     key: TurnAttemptKey,
     invocation: Readonly<{ toolCallId: string; toolName: string; signal: AbortSignal }>,
+    project?: TauTurnProjection['needsInput'],
   ): Readonly<{ approve: HostToolApproval; spent: () => string | undefined }> => {
     let spent: string | undefined;
     const recall = async (approvalKey: string): Promise<HostToolApprovalRecord | undefined> => {
@@ -859,6 +863,7 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
           return prior.resolution;
         }
       }
+      await project?.({ toolCallId: invocation.toolCallId, toolName: invocation.toolName, prompt: request.prompt });
       const { signal } = invocation;
       const aborted = Promise.withResolvers<never>();
       const onAbort = (): void => {
@@ -908,10 +913,14 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
   };
 
   /** A Tau attempt's tools, each call carrying its approval and marking the recalled one it used (D5). */
-  const approvingTools = (key: TurnAttemptKey, tools: ToolRegistry): ToolRegistry => ({
+  const approvingTools = (
+    key: TurnAttemptKey,
+    tools: ToolRegistry,
+    project?: TauTurnProjection['needsInput'],
+  ): ToolRegistry => ({
     list: () => tools.list(),
     invoke: async (invocation) => {
-      const { approve, spent } = approvalFor(key, invocation);
+      const { approve, spent } = approvalFor(key, invocation, project);
       let result: Awaited<ReturnType<ToolRegistry['invoke']>>;
       try {
         result = await tools.invoke({ ...invocation, approve });
@@ -1530,6 +1539,9 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
           }
           const clientContext =
             typeof options.clientContext === 'function' ? await options.clientContext() : options.clientContext;
+          let projection: TauTurnProjection | undefined;
+          const transportAbort = new AbortController();
+          let transportedExecution: Promise<AgentRunOutcome> | undefined;
           const build = async (first: boolean): Promise<AgentSession> =>
             createAgentSession({
               chatId,
@@ -1540,10 +1552,15 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
               model,
               modelTransport: options.modelTransport,
               /* The attempt's tools, as W8 granted them over its checkout (RA-R12); the host's without placement. */
-              toolRegistry: approvingTools(key, grant?.tools ?? options.toolRegistry),
+              toolRegistry: approvingTools(key, grant?.tools ?? options.toolRegistry, async (request) =>
+                projection?.needsInput?.(request),
+              ),
               eventLog: log,
               /* I2: the session's rows go through the chat's one chain, gated by its attempt (RA-R6). */
-              appendEvent: async (event) => append([event as LogRowBody]),
+              appendEvent: async (event) => {
+                await append([event as LogRowBody]);
+                await projection?.durable(event as LogRowBody);
+              },
               ...(first && mode === 'start' && admission?.context !== undefined ? { context: admission.context } : {}),
               ...(selection === undefined ? {} : { selection }),
               clientContext,
@@ -1557,7 +1574,10 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
               createId,
               now,
               onCompaction: options.onCompaction,
-              onLiveEvent: publishLive,
+              onLiveEvent: async (event) => {
+                await publishLive(event);
+                await projection?.live(event);
+              },
               clock: options.clock,
               streamStall: options.delays?.streamStall,
             });
@@ -1605,7 +1625,28 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
           const reportEnding = async (): Promise<void> => {
             let ended: AgentRunOutcome;
             try {
-              ended = await drive();
+              ended =
+                options.tauTurnTransport === undefined
+                  ? await drive()
+                  : await options.tauTurnTransport.run({
+                      chatId,
+                      runId,
+                      attempt: key.attempt,
+                      root: grant?.root,
+                      message: admission?.message,
+                      signal: transportAbort.signal,
+                      execute: async (observer) => {
+                        if (transportedExecution !== undefined) {
+                          throw new Error('A Tau transport cannot execute its admitted attempt twice.');
+                        }
+                        projection = observer;
+                        transportedExecution = drive();
+                        return transportedExecution;
+                      },
+                      abort: () => {
+                        session.abort();
+                      },
+                    });
             } catch (error) {
               report({
                 type: 'agentEnded',
@@ -1627,6 +1668,7 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
             },
             abort: () => {
               stopped = true;
+              transportAbort.abort();
               session.abort();
             },
             decide: () => undefined,
