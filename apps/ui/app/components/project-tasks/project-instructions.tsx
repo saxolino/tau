@@ -12,9 +12,11 @@ import {
 } from '@taucad/ui/components/sheet';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
+import { readCanonicalProjectInstructions, projectInstructionsMaxBytes } from '#hooks/use-context-payload.js';
 import { PaneButton } from '#components/ui/pane-button.js';
 
 const instructionsPath = '.tau/AGENTS.md';
+type LoadedInstructions = Readonly<{ bytes?: Uint8Array<ArrayBuffer> }>;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
@@ -42,48 +44,33 @@ export function ProjectInstructions(): React.JSX.Element {
 
 /** Editing remains local until the filesystem acknowledges Save instructions. */
 export function ProjectInstructionsEditor(): React.JSX.Element {
-  const { whenServicesReady, writeFile, createDirectory } = useFileManager();
+  const { projectId } = useProject();
+  return <InstructionsEditor key={projectId} projectId={projectId} />;
+}
+
+function InstructionsEditor({ projectId }: { readonly projectId: string }): React.JSX.Element {
+  const { recordFiles, parameterFiles, workbenchFiles } = useFileManager();
+  const canonicalPath = `/projects/${projectId}/${instructionsPath}`;
   const [text, setText] = useState('');
-  const [savedText, setSavedText] = useState<string>();
+  const [saved, setSaved] = useState<LoadedInstructions>();
+  const savedText = saved === undefined ? undefined : decoder.decode(saved.bytes);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
 
-  const read = useCallback(async (): Promise<string> => {
-    const { contentService } = await whenServicesReady();
-    const result = await contentService.resolve(instructionsPath);
-    switch (result.kind) {
-      case 'text': {
-        return decoder.decode(result.content);
-      }
-      case 'orphaned': {
-        return '';
-      }
-      case 'too-large': {
-        throw new Error('Project instructions are too large to edit here. Open .tau/AGENTS.md in Files.');
-      }
-      case 'binary': {
-        throw new Error(
-          'Project instructions contain binary data. Open .tau/AGENTS.md in Files to replace them with text.',
-        );
-      }
-      case 'error': {
-        throw result.cause;
-      }
-      case 'loading': {
-        throw new Error('Project instructions are still loading. Try loading them again.');
-      }
-    }
-  }, [whenServicesReady]);
+  const read = useCallback(
+    async (): Promise<LoadedInstructions> => readCanonicalProjectInstructions(projectId, recordFiles),
+    [projectId, recordFiles],
+  );
 
   const load = useCallback(async (): Promise<void> => {
     setIsLoading(true);
     setError(undefined);
     try {
       const value = await read();
-      setText(value);
-      setSavedText(value);
+      setText(decoder.decode(value.bytes));
+      setSaved(value);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Could not read project instructions. Try loading them again.');
     } finally {
@@ -97,8 +84,8 @@ export function ProjectInstructionsEditor(): React.JSX.Element {
       try {
         const value = await read();
         if (!isCancelled) {
-          setText(value);
-          setSavedText(value);
+          setText(decoder.decode(value.bytes));
+          setSaved(value);
         }
       } catch (error) {
         if (!isCancelled) {
@@ -124,19 +111,30 @@ export function ProjectInstructionsEditor(): React.JSX.Element {
     setError(undefined);
     setNotice(undefined);
     try {
-      if ((await read()) !== savedText) {
+      const bytes = encoder.encode(text);
+      if (bytes.byteLength > projectInstructionsMaxBytes) {
+        throw new Error(
+          'Project instructions are too large to save here. Shorten them or edit .tau/AGENTS.md in Files.',
+        );
+      }
+      await parameterFiles.mkdir(`/projects/${projectId}/.tau`, { recursive: true });
+      const result = await workbenchFiles.writeFileChecked({
+        path: canonicalPath,
+        data: bytes,
+        // oxlint-disable-next-line typescript/no-restricted-types -- The checked filesystem write uses null for expected absence.
+        preconditions: [{ path: canonicalPath, expected: saved?.bytes ?? null }],
+      });
+      if (result.status === 'conflict') {
         throw new Error('Project instructions changed elsewhere. Load instructions again before saving.');
       }
-      await createDirectory('.tau', { recursive: true });
-      await writeFile(instructionsPath, encoder.encode(text), { source: 'user' });
-      setSavedText(text);
+      setSaved({ bytes });
       setNotice('Instructions saved. The next turn uses the updated instructions.');
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Could not save project instructions. Try saving again.');
     } finally {
       setIsSaving(false);
     }
-  }, [createDirectory, read, savedText, text, writeFile]);
+  }, [canonicalPath, parameterFiles, projectId, saved, text, workbenchFiles]);
 
   return (
     <div className='flex min-w-0 flex-col gap-3 p-4'>

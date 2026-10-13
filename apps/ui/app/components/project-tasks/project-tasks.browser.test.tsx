@@ -12,14 +12,21 @@ const instructionFiles = vi.hoisted(() => ({ text: '' }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project' }) }));
 vi.mock('#hooks/use-file-manager.js', () => {
   const manager = {
-    whenServicesReady: async () => ({
-      contentService: {
-        resolve: async () => ({ kind: 'text', content: new TextEncoder().encode(instructionFiles.text) }),
+    recordFiles: {
+      exists: async () => true,
+      stat: async () => ({
+        type: 'file',
+        contentKind: 'text',
+        size: new TextEncoder().encode(instructionFiles.text).byteLength,
+      }),
+      readFile: async () => new TextEncoder().encode(instructionFiles.text),
+    },
+    parameterFiles: { mkdir: async () => undefined },
+    workbenchFiles: {
+      writeFileChecked: async (input: { data: Uint8Array<ArrayBuffer> }) => {
+        instructionFiles.text = new TextDecoder().decode(input.data);
+        return { status: 'applied', content: input.data };
       },
-    }),
-    createDirectory: async () => undefined,
-    writeFile: async (_path: string, bytes: Uint8Array<ArrayBuffer>) => {
-      instructionFiles.text = new TextDecoder().decode(bytes);
     },
   };
   return { useFileManager: () => manager };

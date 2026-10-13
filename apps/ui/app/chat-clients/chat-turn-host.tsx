@@ -2,6 +2,10 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { isResumableRun } from '@taucad/agent-host';
+import { useProject } from '#hooks/use-project.js';
+import { useFileManager } from '#hooks/use-file-manager.js';
+import { readCanonicalProjectMemory } from '#hooks/use-context-payload.js';
+import { daemonPlacementOf } from '#lib/agent-host-placement.js';
 import { useCadAgentConfig } from '#hooks/use-cad-agent-config.js';
 import { useActiveChatInstance } from '#chat-clients/_internal/use-active-chat-instance.js';
 import { useActiveChatSession, useChatComposer } from '#hooks/active-chat-provider.js';
@@ -24,6 +28,8 @@ import { isGlobalPrivacyControlEnabled } from '#lib/global-privacy-control.lib.j
 /** The route publishes command composition; project-scoped host observation lives in ProjectSessionBinding. */
 export function ChatTurnHost(): ReactNode {
   const agent = useCadAgentConfig();
+  const { projectId } = useProject();
+  const { recordFiles } = useFileManager();
   const { activeChatId } = useActiveChatSession();
   const chat = useActiveChatInstance();
   const store = useChatSessionStore();
@@ -131,8 +137,23 @@ export function ChatTurnHost(): ReactNode {
                   ];
                 })()
               : messages;
+        let admittedAgent = turnAgent;
+        if (daemonPlacementOf(execution) === undefined) {
+          // A watch can lag the save acknowledgement. New logical browser turns read current canonical bytes here.
+          const memory = { ...turnAgent.contextPayload?.memory };
+          delete memory['.tau/AGENTS.md'];
+          Object.assign(memory, await readCanonicalProjectMemory(projectId, recordFiles));
+          const hasMemory = Object.keys(memory).length > 0;
+          admittedAgent = {
+            ...turnAgent,
+            contextPayload:
+              turnAgent.contextPayload !== undefined || hasMemory
+                ? { ...turnAgent.contextPayload, memory: hasMemory ? memory : undefined }
+                : undefined,
+          };
+        }
         const browserHost = hostAdmission({
-          agent: turnAgent,
+          agent: admittedAgent,
           chatId: activeChatId,
           resolveModel: resolveModelRef.current,
           trigger: turnTriggerOf(intent),
@@ -175,7 +196,7 @@ export function ChatTurnHost(): ReactNode {
         throw error;
       }
     },
-    [activeChatId, admitExecution, chat, store, surfaceDispatchFailure, telemetry],
+    [activeChatId, admitExecution, chat, projectId, recordFiles, store, surfaceDispatchFailure, telemetry],
   );
 
   /* The admitted turn retains its callback; future seeds need a live focused publisher. */
