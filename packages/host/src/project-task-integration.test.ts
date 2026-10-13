@@ -1,13 +1,61 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import type { ToolRegistry, TauAgentHost, TurnPlacementPort } from '@taucad/agent-host';
-import { parseLogEvent } from '@taucad/agent-host';
+import { parseLogEvent, emptyChatLedger } from '@taucad/agent-host';
 import type { AgentLauncher } from '@taucad/agent-host/launcher';
+import type { ProjectTask, ProjectTaskAttempt } from '@taucad/agent-host/wire';
 import { toolName } from '@taucad/chat/constants';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
-import { withProjectTaskTools, readRecordedToolGrant, waitForTaskLeaseRetirement } from '#project-task-integration.js';
+import {
+  withProjectTaskTools,
+  readRecordedToolGrant,
+  waitForTaskLeaseRetirement,
+  createProjectTaskBackend,
+} from '#project-task-integration.js';
 
 describe('task placement retirement proof', () => {
+  it('retains a known root cancellation when finalization exists but its lease acknowledgement does not', async () => {
+    vi.useFakeTimers();
+    try {
+      const placement = mock<TurnPlacementPort>();
+      placement.reconcile.mockResolvedValue({
+        requestId: 'task-release-run',
+        status: 'applied',
+        held: [{ key: { chatId: 'chat', runId: 'run', turnId: 'turn', attempt: 1 }, checkoutId: 'live' }],
+      });
+      const host = mock<TauAgentHost>();
+      host.ledger.mockResolvedValue({
+        ...emptyChatLedger,
+        runs: {
+          run: {
+            kind: 'tau',
+            attempt: 1,
+            lifecycle: 'cancelled',
+            appendState: 'settled',
+            committed: true,
+            settlements: [],
+            pendingInterrupts: {},
+            opaque: false,
+          },
+        },
+      });
+      const launcher = mock<AgentLauncher>({ host });
+      const backend = createProjectTaskBackend(
+        mock<Parameters<typeof createProjectTaskBackend>[0]>({ launcher: () => launcher, placement }),
+      );
+      const waiting = expect(
+        backend.reconcile({
+          task: mock<ProjectTask>({ id: 'root', chatId: 'chat' }),
+          attempt: mock<ProjectTaskAttempt>({ id: 'attempt', runId: 'run' }),
+        }),
+      ).rejects.toMatchObject({ code: 'TASK_BUSY' });
+      await vi.advanceTimersByTimeAsync(1000);
+      await waiting;
+      expect(launcher.execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'cancel' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('waits for acknowledgement after a finalized row before releasing the task reservation', async () => {
     const placement = mock<TurnPlacementPort>();
     placement.reconcile.mockResolvedValueOnce({

@@ -372,6 +372,7 @@ export const createProjectTaskBackend = (
         );
       };
       if (ended(await options.launcher().host.ledger(task.chatId))) {
+        await waitForTaskLeaseRetirement(options.placement, task.chatId, runId);
         return undefined;
       }
       for await (const { ledger } of followChat(options.launcher().read, task.chatId, {
@@ -379,6 +380,7 @@ export const createProjectTaskBackend = (
         until: ended,
       })) {
         if (ended(ledger)) {
+          await waitForTaskLeaseRetirement(options.placement, task.chatId, runId);
           return undefined;
         }
       }
