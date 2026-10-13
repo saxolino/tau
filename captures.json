@@ -1,0 +1,13 @@
+{
+  "sourceHead": "078daad93f36497728c1f5201b304a28a45b1e9c",
+  "profile": "software",
+  "backend": "native WebGPUBackend",
+  "adapter": "SwiftShader",
+  "capture": "real final-output target readback",
+  "sceneSamples": 4,
+  "threeRevision": "184",
+  "images": [
+    "viewer-light.png",
+    "viewer-dark.png"
+  ]
+}
