@@ -132,10 +132,10 @@
     "steer"
   ],
   "sources": {
-    "src/host/chat-run.machine.ts": "9a0fd7ef1aa40460272ed846e4009727a09ac6ce8187c2453c7bb1f2069e4ed1"
+    "src/host/chat-run.machine.ts": "6a3567f6750cba8b0976466325009eceab01624f58bacc32c66a715ac3f83dae"
   },
   "specs": {
-    "ChatRunSlot.tla": "8bc5cc72552d73374d4fba20b111e50a8d756e809fedfb8d0b68f438f3d9ba9a",
+    "ChatRunSlot.tla": "2723d7d7baf9e2a32dd5732fd5f2e294ec182478d5fa2c2b019d93125268eadc",
     "ChatRunSlotGraph.tla": "8e0ead5432b435e03bfec31863999214835040bccdc52f96928aba79f5d84a81"
   },
   "tables": {},

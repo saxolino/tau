@@ -203,7 +203,7 @@ jobs:
                 echo "[Download unverified archive for diagnosis]($ARCHIVE_URL). SHA256SUMS and provenance.json accompany the ZIP."
               fi
               echo "Package verification: $VERIFY_STATUS. Packaged Electron launch and native payload probe: $LAUNCH_STATUS."
-              echo 'The launch probe exercises Electron main and native utility payloads; it does not qualify the renderer UI or a live account sign-in.'
+              echo 'The launch probe exercises Electron main, the loaded desktop home renderer and native utility payloads; it does not qualify broader renderer workflows or a live account sign-in.'
               echo 'This preview is ad-hoc signed, not Developer ID signed or notarized. macOS may require explicit approval to open it.'
               echo 'It uses staging services and does not check for automatic updates.'
             else

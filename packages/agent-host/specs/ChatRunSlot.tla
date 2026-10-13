@@ -365,6 +365,8 @@ placed(k) ==   \* W8's admit answered (trivially without "placement"); the drive
                    completes, acked, lockFree, gw, call, callState, closeVars>>
 
 placementRefused(k) ==   \* no lease remains: [failed{executed: false}, turn.failed], no complete
+    \* Refusal code/message/details are durable diagnostic data, abstracted by H("failed").
+    \* Preserving upstream placement failure details changes no control state, lease or answer action.
     /\ Has("placement") /\ alive /\ CanAppend
     /\ \/ k = T /\ pc[T] = "placing"
        \/ k = Resume /\ pc[Resume] = "bind"
