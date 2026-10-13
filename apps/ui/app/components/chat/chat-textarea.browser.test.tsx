@@ -6,17 +6,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { Button } from '@taucad/ui/components/button';
+import type { Ask } from '@taucad/chat';
 import { kernelConfigurations } from '@taucad/types/constants';
 import { storedRef } from '#utils/attachment.test-utils.js';
 
 let dictationAvailable = false;
 let transcription: ReturnType<typeof Promise.withResolvers<string>> | undefined;
 let recordLevel: ((level: number) => void) | undefined;
-vi.doMock('#components/chat/dictation-client.js', () => ({
+vi.doMock('#components/dictation/dictation-client.js', () => ({
   fetchDictationStatus: async () => ({ available: dictationAvailable }),
   transcribeDictation: async () => transcription?.promise ?? 'Make the corners round.',
 }));
-vi.doMock('#components/chat/dictation-capture.js', () => ({
+vi.doMock('#components/dictation/dictation-capture.js', () => ({
   captureDictation: async ({ onLevel }: { onLevel: (level: number) => void }) => {
     recordLevel = onLevel;
     return { finish: async () => new Blob([], { type: 'audio/wav' }), cancel: () => undefined };
@@ -69,6 +70,7 @@ vi.doMock('#components/files/file-link.js', () => ({
 }));
 
 const { ChatTextareaDesktop } = await import('#components/chat/chat-textarea-desktop.js');
+const { QuestionCard } = await import('#components/chat/question-card.js');
 const { ChatTextareaSkeleton } = await import('#components/chat/chat-textarea-skeleton.js');
 type ComposerProps = ComponentProps<typeof ChatTextareaDesktop>;
 const noop = (): void => undefined;
@@ -391,4 +393,87 @@ describe('dictation recording and transcription', () => {
       }
     },
   );
+});
+
+describe('question dictation', () => {
+  it.each([
+    { width: 800, theme: 'light' },
+    { width: 800, theme: 'dark' },
+    { width: 320, theme: 'light' },
+    { width: 320, theme: 'dark' },
+  ])('should review and send a dictated answer at $width in $theme mode', async ({ width, theme }) => {
+    await page.viewport(width, 600);
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    dictationAvailable = true;
+    transcription = Promise.withResolvers<string>();
+    const onAnswer = vi.fn();
+    const onHold = vi.fn();
+    const ask: Ask = {
+      id: 'ask_material',
+      callId: 'call_material',
+      source: 'tau',
+      askedAt: '2026-10-13T20:00:00.000Z',
+      deadline: null,
+      questions: [
+        { id: 'material', question: 'What material and finish should the bracket use?', allowsText: true, options: [] },
+      ],
+    };
+    render(
+      <TooltipProvider>
+        <section aria-label='Question reply' className='p-4'>
+          <QuestionCard
+            ask={ask}
+            answers={undefined}
+            now={Date.parse(ask.askedAt)}
+            onAnswer={onAnswer}
+            onHold={onHold}
+            onDecline={noop}
+          />
+        </section>
+      </TooltipProvider>,
+    );
+    const box = page.getByRole('textbox', { name: 'Your answer' });
+    const region = screen.getByRole('region', { name: 'Question reply' });
+    await expect.element(page.getByRole('button', { name: 'Dictate', exact: true })).toBeVisible();
+    await box.fill('Aluminium.');
+    await page.screenshot({
+      element: region,
+      path: `../../../../../out/test-results/composer/question-idle-${width}-${theme}.png`,
+    });
+    await page.getByRole('button', { name: 'Dictate', exact: true }).click();
+    expect(onHold).toHaveBeenCalled();
+    await expect.element(page.getByRole('button', { name: 'Stop dictation' })).toBeVisible();
+    act(() => {
+      for (let index = 0; index < 100; index++) {
+        recordLevel?.(Math.max(0, Math.sin(index * 0.31)) * 0.12);
+      }
+    });
+    await expect.element(page.getByRole('button', { name: 'Send answer' })).toBeDisabled();
+    await box.click();
+    await page.screenshot({
+      element: region,
+      path: `../../../../../out/test-results/composer/question-recording-${width}-${theme}.png`,
+    });
+    await page.getByRole('button', { name: 'Stop dictation' }).click();
+    await expect.element(page.getByRole('status', { name: 'Transcribing', exact: true })).toBeVisible();
+    await box.click();
+    await page.screenshot({
+      element: region,
+      path: `../../../../../out/test-results/composer/question-transcribing-${width}-${theme}.png`,
+    });
+    expect(region.scrollWidth).toBe(region.clientWidth);
+    const input = screen.getByRole('textbox', { name: 'Your answer' });
+    const microphone = screen.getByRole('button', { name: 'Transcribing', exact: true });
+    expect(input.getBoundingClientRect().right).toBeLessThanOrEqual(microphone.getBoundingClientRect().left);
+    await act(async () => {
+      transcription?.resolve('Use a brushed finish.');
+    });
+    await expect.element(box).toHaveValue('Aluminium. Use a brushed finish.');
+    expect(onAnswer).not.toHaveBeenCalled();
+    await box.fill('Aluminium. Use a brushed finish on both sides.');
+    await page.getByRole('button', { name: 'Send answer' }).click();
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('material', {
+      text: 'Aluminium. Use a brushed finish on both sides.',
+    });
+  });
 });

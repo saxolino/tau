@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ArrowUp, CircleCheck, CircleSlash, Clock, MessageCircleQuestionMark, Undo2 } from 'lucide-react';
+import { CircleCheck, CircleSlash, Clock, MessageCircleQuestionMark, Undo2 } from 'lucide-react';
 import { askStatus, resolveAnswers } from '@taucad/chat';
 import type { Ask, AskAnswers, AskedQuestion, AskStatus } from '@taucad/chat';
 import { Badge } from '@taucad/ui/components/badge';
 import { Button } from '@taucad/ui/components/button';
-import { Textarea } from '@taucad/ui/components/textarea';
 import { cn } from '@taucad/ui/utils/cn';
+import { QuestionTextAnswer } from '#components/chat/question-text-answer.js';
 
 /** What the person gives one question. @public */
 export type QuestionReply = { readonly choice: string } | { readonly text: string };
@@ -89,23 +89,7 @@ function QuestionOptions({
   }, [shouldTakeFocus, onFocusTaken]);
   const [isWriting, setIsWriting] = useState(false);
   const [draft, setDraft] = useState('');
-  const textId = useId();
-  const textRef = useRef<HTMLTextAreaElement>(null);
-  /* Choosing "Something else" moves focus into the box it opens. */
-  useEffect(() => {
-    if (isWriting) {
-      textRef.current?.focus();
-    }
-  }, [isWriting]);
   const otherLetter = letters[question.options.length] ?? '…';
-  const send = (): void => {
-    const text = draft.trim();
-    if (text !== '') {
-      onAnswer({ text });
-      setDraft('');
-      setIsWriting(false);
-    }
-  };
 
   return (
     <ul ref={listRef} className='flex flex-col gap-1'>
@@ -150,44 +134,24 @@ function QuestionOptions({
           {isWriting || question.options.length === 0 ? (
             <div className={cn('flex items-start gap-2.5 rounded-md px-2', isFlat ? 'py-1.5' : 'py-2')}>
               {question.options.length === 0 ? null : <LetterKey letter={otherLetter} />}
-              <div className='flex min-w-0 flex-1 items-end gap-1.5'>
-                <label htmlFor={textId} className='sr-only'>
-                  Your answer
-                </label>
-                <Textarea
-                  ref={textRef}
-                  id={textId}
-                  rows={1}
-                  value={draft}
-                  disabled={!isOpen}
-                  placeholder={question.options.length === 0 ? 'Type your answer' : 'Type your own answer'}
-                  className='min-h-8 resize-none py-1.5'
-                  onFocus={onHold}
-                  onChange={(event) => {
-                    setDraft(event.target.value);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      send();
-                    } else if (event.key === 'Escape' && question.options.length > 0) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setIsWriting(false);
-                    }
-                  }}
-                />
-                <Button
-                  type='button'
-                  size='icon-sm'
-                  variant='outline'
-                  aria-label='Send answer'
-                  disabled={!isOpen || draft.trim() === ''}
-                  onClick={send}
-                >
-                  <ArrowUp aria-hidden='true' />
-                </Button>
-              </div>
+              <QuestionTextAnswer
+                draft={draft}
+                onDraftChange={setDraft}
+                isOpen={isOpen}
+                shouldTakeFocus={isWriting || shouldTakeFocus}
+                placeholder={question.options.length === 0 ? 'Type your answer' : 'Type your own answer'}
+                onHold={onHold}
+                onAnswer={(text) => {
+                  onAnswer({ text });
+                  setDraft('');
+                  setIsWriting(false);
+                }}
+                onDismiss={() => {
+                  if (question.options.length > 0) {
+                    setIsWriting(false);
+                  }
+                }}
+              />
             </div>
           ) : (
             <button
@@ -541,7 +505,7 @@ export function QuestionCard({
             <p className='px-2 text-xs wrap-break-word text-muted-foreground'>{ask.message}</p>
           ) : null}
           <QuestionOptions
-            key={current.id}
+            key={`${ask.id}:${current.id}`}
             question={current}
             isOpen={isOpen}
             isFlat={isFlat}
