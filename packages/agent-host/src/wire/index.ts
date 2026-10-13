@@ -72,3 +72,44 @@ export { isResumable, refusalOf, refusals } from '#wire/refusals.js';
 export { turnPlacementSchema, turnSettlementSchema } from '#wire/settlement.schema.js';
 export type { TurnPlacementRecord, TurnSettlementBody } from '#wire/settlement.schema.js';
 export type { RefusalCode, RefusalEntry, RefusalOwner, RetryClass } from '#wire/refusals.js';
+export {
+  projectTaskProviderSchema,
+  projectTaskSourceSchema,
+  projectTaskToolGrantSchema,
+  projectTaskStatusSchema,
+  projectTaskAttemptSchema,
+  projectTaskSchema,
+  projectTaskMessageSchema,
+  projectTaskSpawnSchema,
+  projectTaskSendSchema,
+  projectTaskReadSchema,
+  projectTaskWaitSchema,
+  projectTaskActionSchema,
+  projectTaskRefusalCodes,
+} from '#wire/project-tasks.schema.js';
+export type {
+  ProjectTaskProvider,
+  ProjectTaskSource,
+  ProjectTaskToolGrant,
+  ProjectTaskStatus,
+  ProjectTaskAttempt,
+  ProjectTask,
+  ProjectTaskMessage,
+  ProjectTaskSpawn,
+  ProjectTaskSend,
+  ProjectTaskRead,
+  ProjectTaskWait,
+  ProjectTaskAction,
+  ProjectTaskRefusalCode,
+} from '#wire/project-tasks.schema.js';
+export {
+  projectTaskChannelRequestSchema,
+  projectTaskChannelAnswerSchema,
+  projectTaskSnapshotSchema,
+} from '#wire/project-task-channel.schema.js';
+export type {
+  ProjectTaskChannelRequest,
+  ProjectTaskChannelAnswer,
+  ProjectTaskChannelPort,
+  ProjectTaskSnapshot,
+} from '#wire/project-task-channel.schema.js';

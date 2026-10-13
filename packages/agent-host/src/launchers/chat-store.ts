@@ -130,7 +130,14 @@ export const chatStoreBinding = (store: ChatStore): ChatStoreBinding => {
 
 /** One storage path segment, never a path: a chat id is a directory name under `.tau/chats`. @internal */
 export const requireChatPathSegment = (value: string, label = 'chatId'): string => {
-  if (!value || value === '.' || value === '..' || value.includes('/') || value.includes('\\')) {
+  if (
+    !value ||
+    value.toLowerCase() === '.project-tasks' ||
+    value === '.' ||
+    value === '..' ||
+    value.includes('/') ||
+    value.includes('\\')
+  ) {
     throw Object.assign(new Error(`${label} must be one storage path segment.`), { code: 'STORAGE_PATH_INVALID' });
   }
   return value;
