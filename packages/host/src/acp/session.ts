@@ -73,6 +73,17 @@ import type {
 
 import type { ExternalAgentTurn } from '@taucad/agent-host/launcher';
 import type { ExternalAgentLogin, ExternalAgentStop } from '@taucad/agent-host/wire';
+import {
+  projectTaskActionSchema,
+  projectTaskMessageSchema,
+  projectTaskReadSchema,
+  projectTaskSchema,
+  projectTaskSendSchema,
+  projectTaskSnapshotSchema,
+  projectTaskSpawnSchema,
+  projectTaskWaitSchema,
+  projectTaskRefusalCodes,
+} from '@taucad/agent-host/wire';
 import type {
   ExternalAgentLogEvent,
   JsonObject,
@@ -583,10 +594,17 @@ const tauMcpSchemas = {
   [toolName.exportModel]: { input: exportModelInputSchema, output: exportModelOutputSchema },
   /* The endpoint supplies the chat, so an external call carries none. */
   [toolName.askQuestions]: { input: askQuestionsInputSchema.omit({ chatId: true }), output: askQuestionsOutputSchema },
+  [toolName.taskSpawn]: { input: projectTaskSpawnSchema, output: projectTaskSchema },
+  [toolName.taskRead]: { input: projectTaskReadSchema, output: projectTaskSnapshotSchema },
+  [toolName.taskSend]: { input: projectTaskSendSchema, output: projectTaskMessageSchema },
+  [toolName.taskWait]: { input: projectTaskWaitSchema, output: projectTaskSnapshotSchema },
+  [toolName.taskCancel]: { input: projectTaskActionSchema, output: projectTaskSchema },
+  [toolName.taskResume]: { input: projectTaskActionSchema, output: projectTaskSchema },
 } as const;
 
 /** Tau MCP errors emitted outside the shared business RPC schema. */
 const tauMcpHostErrorCodes = new Set([
+  ...projectTaskRefusalCodes,
   'AGENT_HOST_ERROR',
   'MACHINE_TOOL_ERROR',
   'MCP_RUN_INACTIVE',

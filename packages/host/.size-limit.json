@@ -1,7 +1,7 @@
 [
   {
-    "name": "total (ESM JS) — measured 178.93 kB brotli on 2026-10-13 (durable project tasks, scoped agent tools and the Tau ACP adapter)",
+    "name": "total (ESM JS) — measured 179.08 kB brotli on 2026-10-13 (durable project tasks, scoped agent tools and the Tau ACP adapter)",
     "path": "dist/**/*.mjs",
-    "limit": "179 kB"
+    "limit": "179.1 kB"
   }
 ]

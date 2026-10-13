@@ -66,6 +66,12 @@ export const tauToolKinds = new Map<string, string>([
   ['get_print_profiles', 'read'],
   ['list_print_requests', 'read'],
   ['cancel_print', 'other'],
+  ['task_spawn', 'execute'],
+  ['task_read', 'read'],
+  ['task_send', 'edit'],
+  ['task_wait', 'read'],
+  ['task_cancel', 'other'],
+  ['task_resume', 'execute'],
 ]);
 
 const normalizeBracketArrays = (input: Record<string, unknown>): Record<string, unknown> => {

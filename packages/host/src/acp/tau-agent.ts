@@ -3,7 +3,7 @@ import type { AnyMessage, SessionUpdate, Stream } from '@agentclientprotocol/sdk
 import type { AgentRunOutcome, TauTurnTransport, TauTurnTransportInput } from '@taucad/agent-host';
 import type { AcpWireFrame } from '#acp/spawn.js';
 
-/** Observable protocol projections; the adapter never writes them back into the chat log. */
+/** Observable protocol projections; the adapter never writes them back into the chat log. @public */
 export type TauAgentAcpOptions = Readonly<{
   onFrame?: ((frame: AcpWireFrame) => void) | undefined;
   onUpdate?: ((update: SessionUpdate) => void | Promise<void>) | undefined;

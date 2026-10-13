@@ -3037,6 +3037,9 @@ importers:
 
   libs/chat:
     dependencies:
+      '@taucad/agent-host':
+        specifier: workspace:*
+        version: link:../../packages/agent-host
       '@taucad/types':
         specifier: workspace:*
         version: link:../types

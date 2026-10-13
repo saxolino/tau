@@ -1,4 +1,9 @@
 import {
+  ChatMessageToolProjectTask,
+  renderProjectTaskDynamic,
+  isProjectTaskToolName,
+} from '#routes/w.$workspace.$project/chat-message-tool-project-task.js';
+import {
   BookOpen,
   Box,
   Camera,
@@ -11,7 +16,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { memo, useMemo, useState } from 'react';
+import { Fragment, memo, useMemo, useState } from 'react';
 import { messageRole, toolName } from '@taucad/chat/constants';
 import type { MyMessagePart, ToolInvocation, UsageData } from '@taucad/chat';
 import type { DynamicToolUIPart } from 'ai';
@@ -323,6 +328,10 @@ function renderAssistantPart(
       }
       const tau = isRecord(part.toolMetadata?.['tau']) ? part.toolMetadata['tau'] : undefined;
       const nativeName = typeof tau?.['nativeName'] === 'string' ? tau['nativeName'] : undefined;
+      const taskCard = renderProjectTaskDynamic({ part });
+      if (taskCard !== undefined) {
+        return <Fragment key={part.toolCallId}>{taskCard}</Fragment>;
+      }
       if (tau?.['presentation'] === 'tau-mcp') {
         const state = Reflect.get(part, 'preliminary') === true ? 'input-available' : part.state;
         switch (nativeName) {
@@ -435,6 +444,19 @@ function renderAssistantPart(
           <span className='truncate'>{part.filename ?? part.mediaType}</span>
         </div>
       );
+    }
+
+    case 'tool-task_spawn':
+    case 'tool-task_read':
+    case 'tool-task_send':
+    case 'tool-task_wait':
+    case 'tool-task_cancel':
+    case 'tool-task_resume': {
+      const name = part.type.slice('tool-'.length);
+      if (isProjectTaskToolName(name)) {
+        return <ChatMessageToolProjectTask key={part.toolCallId} name={name} part={part} />;
+      }
+      return undefined;
     }
 
     case 'tool-web_search': {
