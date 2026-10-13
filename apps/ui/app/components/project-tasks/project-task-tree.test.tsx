@@ -170,4 +170,20 @@ describe('Project task tree', () => {
     await screen.findByRole('status');
     expect(commands.resume).toHaveBeenCalledWith('child');
   });
+
+  it('offers resume for a completed child through its original task identity', async () => {
+    const child = task('child', 'root');
+    child.attempts[0] = { ...child.attempts[0]!, status: 'completed' };
+    const commands = actions();
+    render(
+      <MemoryRouter>
+        <ProjectTaskTree tasks={[task('root'), child]} messages={[]} agents={[]} actions={commands} />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Task details for child' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Resume task' }));
+    await screen.findByRole('status');
+    expect(commands.resume).toHaveBeenCalledWith('child');
+    expect(screen.queryByRole('button', { name: 'Retry task' })).toBeNull();
+  });
 });

@@ -3,6 +3,7 @@ import { StrictMode, useImperativeHandle } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import type { MyUIMessage } from '@taucad/chat';
+import type { ProjectTask, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
 import { chatTurnRequestSchema } from '@taucad/chat/schemas';
 import type {
   ChatTextareaHandle,
@@ -112,6 +113,7 @@ vi.mock('#chat-clients/use-cad-chat-client.js', () => ({
 const capturedTextarea: {
   onSubmit?: ChatTextareaProperties['onSubmit'];
   className?: string;
+  isSubmitDisabled?: boolean;
   focus: ReturnType<typeof vi.fn<() => void>>;
 } = {
   focus: vi.fn<() => void>(),
@@ -121,9 +123,11 @@ vi.mock('#components/chat/chat-textarea.js', () => ({
     readonly ref?: React.Ref<ChatTextareaHandle>;
     readonly onSubmit?: ChatTextareaProperties['onSubmit'];
     readonly className?: string;
+    readonly isSubmitDisabled?: boolean;
   }): React.JSX.Element => {
     capturedTextarea.onSubmit = properties.onSubmit;
     capturedTextarea.className = properties.className;
+    capturedTextarea.isSubmitDisabled = properties.isSubmitDisabled;
     useImperativeHandle(properties.ref, () => ({ focus: capturedTextarea.focus }), []);
     return <div data-testid='chat-textarea' />;
   },
@@ -216,6 +220,15 @@ vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({ projectId: 'project_test' }),
 }));
 
+let taskSnapshot: ProjectTaskSnapshot | undefined;
+const openPanel = vi.fn();
+vi.mock('#hooks/use-project-tasks.js', () => ({
+  useProjectTasks: () => ({ snapshot: taskSnapshot }),
+}));
+vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', () => ({
+  useProjectWorkspace: () => ({ openPanel }),
+}));
+
 const skillsCatalogReads = vi.hoisted(() => vi.fn(() => []));
 vi.mock('#hooks/use-skills-catalog.js', () => ({ useSkillsCatalog: skillsCatalogReads }));
 
@@ -271,6 +284,7 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
     capturedTextarea.className = undefined;
     setMockMessages([]);
     archiveOpen = false;
+    taskSnapshot = undefined;
   });
 
   it('replaces the transcript and composer with the archive without reading transcript projections', () => {
@@ -322,6 +336,40 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
     expect(screen.getByRole('button', { name: 'Scroll to bottom' }).parentElement).toBe(
       screen.getByTestId('chat-textarea').parentElement,
     );
+  });
+
+  it('routes a completed child chat to its task mailbox and disables generic submission', async () => {
+    const child: ProjectTask = {
+      id: 'child',
+      projectId: 'project_test',
+      chatId: 'chat_test',
+      parentTaskId: 'parent',
+      depth: 1,
+      title: 'Bracket child',
+      prompt: 'Build a bracket',
+      provider: { id: 'codex' },
+      createdAt: 1,
+      closed: false,
+      attempts: [
+        {
+          id: 'attempt-child',
+          number: 1,
+          status: 'completed',
+          toolGrant: { toolChoice: 'auto' },
+          source: { revisionId: 'base', checkoutId: 'candidate' },
+          createdAt: 1,
+        },
+      ],
+    };
+    taskSnapshot = { tasks: [child], messages: [], cursor: 1, nextCursor: 1, hasMore: false };
+    render(<ChatHistory />);
+
+    expect(capturedTextarea.isSubmitDisabled).toBe(true);
+    expect(screen.getByRole('status').textContent).toContain('Send a message and resume the task from Agents');
+    await submitDraft('Follow up on the bracket');
+    expect(submitMock).not.toHaveBeenCalled();
+    screen.getByRole('button', { name: 'Open Agents' }).click();
+    expect(openPanel).toHaveBeenCalledWith('agents');
   });
 
   it('calls cadChat.submit with the text and attachment references from the textarea', async () => {

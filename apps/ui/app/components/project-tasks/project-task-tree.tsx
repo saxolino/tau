@@ -196,7 +196,11 @@ const TaskDetails = memo(function TaskDetails({
   const attempt = task.attempts.at(-1);
   const status = attempt?.status;
   const canCancel = status === 'allocating' || status === 'running';
-  const canResume = status === 'failed' || status === 'cancelled' || status === 'interrupted';
+  const canResume =
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'interrupted' ||
+    (status === 'completed' && task.parentTaskId !== undefined);
   const mailbox = useMemo(
     () => messages.filter((message) => message.recipientTaskId === task.id || message.senderTaskId === task.id),
     [messages, task.id],
@@ -328,7 +332,7 @@ const TaskDetails = memo(function TaskDetails({
                 void resume();
               }}
             >
-              Retry task
+              {status === 'completed' ? 'Resume task' : 'Retry task'}
             </Button>
           ) : null}
         </div>

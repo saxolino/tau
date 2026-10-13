@@ -38,6 +38,9 @@ import { useSearchParameter } from '#hooks/use-search-parameter.js';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { flagParameter } from '#utils/search-parameter.codecs.js';
 import { ArchivedChats } from '#routes/w.$workspace.$project/archived-chats.js';
+import { useProjectTasks } from '#hooks/use-project-tasks.js';
+import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { Button } from '@taucad/ui/components/button';
 
 // Component-local CSS variable. Declared here (rather than in global.css)
 // to keep the chat-history pinning system self-contained — the only
@@ -179,6 +182,14 @@ const ExpandedChatHistory = memo(function ({
   const { projectId } = useProject();
   const { chats } = useChatRecords(projectId);
   const { activeChatId, persistenceActorRef } = useChatContext();
+  const projectTasks = useProjectTasks(projectId);
+  const delegatedTask = projectTasks.snapshot?.tasks.find(
+    (task) => task.chatId === activeChatId && task.parentTaskId !== undefined,
+  );
+  const workspace = useProjectWorkspace({ enableNoContext: true });
+  const openAgents = useCallback(() => {
+    workspace?.openPanel('agents');
+  }, [workspace]);
   const skillsCatalog = useSkillsCatalog();
   const agentInvocations = useChatSelector((state) => state.agentInvocations);
   const skillInvocations = skillsCatalog.map((skill) => `/${skill.name}`).join('\n');
@@ -234,10 +245,13 @@ const ExpandedChatHistory = memo(function ({
   const submitChat = cadChat.submit;
   const onSubmit: ChatTextareaProperties['onSubmit'] = useCallback(
     async ({ content, attachments, references }) => {
+      if (delegatedTask !== undefined) {
+        return;
+      }
       // Pending until the message lands, so the composer stays busy through admission (R8).
       await submitChat({ text: content, attachments, ...(references === undefined ? {} : { references }) });
     },
-    [submitChat],
+    [delegatedTask, submitChat],
   );
 
   const groups = useChatSelector((state) => state.turnGroups);
@@ -376,7 +390,27 @@ const ExpandedChatHistory = memo(function ({
                 <ChatTodoList key={activeChatId} />
                 <ChatQuestionQueue key={`${activeChatId}:questions`} onDismissFocus={focusComposer} />
               </div>
-              <ChatTextarea ref={chatTextareaRef} mode='main' enableAutoFocus={false} onSubmit={onSubmit} />
+              {delegatedTask ? (
+                <div
+                  role='status'
+                  className='mx-2 flex items-center justify-between gap-2 rounded-lg border bg-muted p-2 text-sm'
+                >
+                  <span>
+                    This chat belongs to {delegatedTask.title}. Send a message and resume the task from Agents to
+                    continue it.
+                  </span>
+                  <Button type='button' size='sm' variant='outline' onClick={openAgents}>
+                    Open Agents
+                  </Button>
+                </div>
+              ) : null}
+              <ChatTextarea
+                ref={chatTextareaRef}
+                mode='main'
+                enableAutoFocus={false}
+                onSubmit={onSubmit}
+                isSubmitDisabled={delegatedTask !== undefined}
+              />
             </div>
           </FloatingPanelContent>
         </FloatingPanel>
