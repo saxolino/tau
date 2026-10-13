@@ -10,7 +10,13 @@
 import { randomBytes } from 'node:crypto';
 
 import { followChat, unsettledAttempts, jsonValueSchema } from '@taucad/agent-host';
-import type { ChatLedger, ToolRegistry, TurnPlacementPort, TauClientContextInput } from '@taucad/agent-host';
+import type {
+  AgentSessionModel,
+  ChatLedger,
+  ToolRegistry,
+  TurnPlacementPort,
+  TauClientContextInput,
+} from '@taucad/agent-host';
 import { createAgentLauncher } from '@taucad/agent-host/launcher';
 import { chatIdSchema, projectTaskRefusalCodes } from '@taucad/agent-host/wire';
 import type {
@@ -94,6 +100,9 @@ export type ProjectFileSystem = Readonly<{
 /** The runtime client a project host's tools and parameter actors run on, for one root. @public */
 export type ProjectHostRuntimeClient = HostRuntimeClient;
 
+/** The selected Tau catalog id and cancellation of one child attempt. @public */
+export type ResolveProjectModelInput = Readonly<{ modelId: string; signal: AbortSignal }>;
+
 /** Options for {@link createProjectHost}. @public */
 export type ProjectHostOptions = Pick<
   ProjectRevisionsOptions,
@@ -109,6 +118,8 @@ export type ProjectHostOptions = Pick<
     runtimeClient: (root: string) => Promise<ProjectHostRuntimeClient>;
     /** Reporting only: observe the actual Tau agent-side ACP boundary. */
     tauAcp?: TauAgentAcpOptions | undefined;
+    /** Resolve an explicit Tau child model to the portable admission row. Called once per new attempt. */
+    resolveModel?: ((input: ResolveProjectModelInput) => Promise<AgentSessionModel | undefined>) | undefined;
     /** The adapters this machine discovered; the host builds the ACP port over its own checkouts. */
     externalAgents?: Readonly<{ agents: readonly AcpAdapter[]; mcpUrl: () => string }> | undefined;
     /** Each revision fact; reporting only, never fatal. */
@@ -489,7 +500,8 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
           launcher: () => launcher,
           agents: externalAgents?.agents.map((agent) => agent.id) ?? [],
           systemPrompt: options.systemPrompt,
-          tauModel: options.model?.id,
+          tauModel: options.model,
+          resolveModel: options.resolveModel,
           bind: (runId, chatId) => {
             taskChats.set(runId, chatId);
           },

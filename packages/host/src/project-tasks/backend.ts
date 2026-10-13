@@ -6,6 +6,7 @@ import type {
   ProjectTaskSource,
   ProjectTaskToolGrant,
 } from '@taucad/agent-host/wire';
+import type { AgentSessionModel } from '@taucad/agent-host';
 
 /** Host-authenticated caller. Tool arguments cannot construct this identity. @internal */
 export type ProjectTaskCaller =
@@ -21,7 +22,11 @@ export type ProjectTaskLaunch = Readonly<{
 }>;
 
 /** Private candidate allocated through the existing revision owner. @internal */
-export type ProjectTaskAllocation = Readonly<{ placementId: string; checkoutId: string }>;
+export type ProjectTaskAllocation = Readonly<{
+  placementId: string;
+  checkoutId: string;
+  model?: AgentSessionModel;
+}>;
 
 /** Backend's sole existing launcher turn; completion follows settlement and release. @internal */
 export type ProjectTaskExecution = Readonly<{

@@ -72,6 +72,7 @@ export type {
   ProjectHostCommand,
   ProjectHostOptions,
   ProjectHostRuntimeClient,
+  ResolveProjectModelInput,
 } from '#project-host.js';
 export { keyedResource } from '#keyed-resource.js';
 export { openLocalParameterActors } from '#local-parameters.js';

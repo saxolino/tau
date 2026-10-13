@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { followChat, unsettledAttempts, jsonValueSchema } from '@taucad/agent-host';
-import type { HostToolDefinition, ToolRegistry, ChatLedger, TurnPlacementPort } from '@taucad/agent-host';
+import type {
+  AgentSessionModel,
+  HostToolDefinition,
+  ToolRegistry,
+  ChatLedger,
+  TurnPlacementPort,
+} from '@taucad/agent-host';
 import type { AgentLauncher } from '@taucad/agent-host/launcher';
 import {
   projectTaskActionSchema,
@@ -9,6 +15,7 @@ import {
   projectTaskSpawnSchema,
   projectTaskWaitSchema,
   projectTaskToolGrantSchema,
+  agentChannelModelSchema,
 } from '@taucad/agent-host/wire';
 import type { AgentChannelAdmissionConfig, ProjectTaskToolGrant } from '@taucad/agent-host/wire';
 import { toolName } from '@taucad/chat/constants';
@@ -195,7 +202,10 @@ export const createProjectTaskBackend = (
     launcher: () => AgentLauncher;
     agents: readonly string[];
     systemPrompt: string;
-    tauModel: string | undefined;
+    tauModel: AgentSessionModel | undefined;
+    resolveModel?:
+      | ((input: Readonly<{ modelId: string; signal: AbortSignal }>) => Promise<AgentSessionModel | undefined>)
+      | undefined;
     bind: (runId: string, chatId: string) => void;
     allocated: (checkoutId: string, root: string) => void;
     context: (
@@ -209,7 +219,12 @@ export const createProjectTaskBackend = (
   }>,
 ): ProjectTaskBackend => ({
   validate: async (provider) => {
-    if (provider.id === 'tau' && provider.model !== undefined && provider.model !== options.tauModel) {
+    if (
+      provider.id === 'tau' &&
+      provider.model !== undefined &&
+      provider.model !== options.tauModel?.id &&
+      options.resolveModel === undefined
+    ) {
       throw Object.assign(
         new Error(
           'This Tau host cannot select the requested model. Use its configured model or configure that model on the host.',
@@ -222,6 +237,41 @@ export const createProjectTaskBackend = (
     }
   },
   allocate: async ({ task, attempt, signal }) => {
+    signal.throwIfAborted();
+    let model: AgentSessionModel | undefined;
+    if (task.provider.id === 'tau') {
+      const modelId = task.provider.model;
+      if (modelId === undefined) {
+        if (options.tauModel === undefined) {
+          throw Object.assign(new Error('Choose a Tau model in provider.model; this host has no default model.'), {
+            code: 'TASK_UNAVAILABLE',
+          });
+        }
+        model = options.tauModel;
+      } else if (modelId === options.tauModel?.id) {
+        model = options.tauModel;
+      } else {
+        const resolved = await options.resolveModel?.({ modelId, signal });
+        if (resolved === undefined || resolved.id !== modelId) {
+          throw Object.assign(new Error('The requested Tau model is unavailable on this host.'), {
+            code: 'TASK_UNAVAILABLE',
+          });
+        }
+        model = resolved;
+      }
+      const parsed = agentChannelModelSchema.safeParse(model);
+      if (!parsed.success && model !== options.tauModel) {
+        throw Object.assign(new Error('The selected Tau model has invalid admission metadata.'), {
+          code: 'TASK_UNAVAILABLE',
+        });
+      }
+      const selected = parsed.success ? parsed.data : model;
+      model = Object.freeze({
+        ...selected,
+        ...(selected.cost === undefined ? {} : { cost: Object.freeze({ ...selected.cost }) }),
+        ...(selected.reasoning === undefined ? {} : { reasoning: Object.freeze({ ...selected.reasoning }) }),
+      });
+    }
     signal.throwIfAborted();
     const answer = await options.revisions.channel.request({
       command: 'createBranch',
@@ -237,7 +287,7 @@ export const createProjectTaskBackend = (
     }
     const result = parsed.data;
     options.allocated(result.checkoutId, result.checkoutRoot);
-    return { placementId: attempt.id, checkoutId: result.checkoutId };
+    return { placementId: attempt.id, checkoutId: result.checkoutId, ...(model === undefined ? {} : { model }) };
   },
   start: async (launch, allocation) => {
     const { task, attempt, signal } = launch;
@@ -247,6 +297,8 @@ export const createProjectTaskBackend = (
     const contextPayload = await options.context(allocation.checkoutId, signal);
     const grant = attempt.toolGrant;
     options.rememberGrant(runId, grant);
+    const admissionModel =
+      allocation.model === undefined ? undefined : agentChannelModelSchema.safeParse(allocation.model);
     const answer = await options.launcher().execute({
       type: 'start',
       commandId: `task-start-${attempt.id}`,
@@ -260,6 +312,7 @@ export const createProjectTaskBackend = (
           systemPrompt: options.systemPrompt,
           ...grant,
           contextPayload,
+          ...(task.provider.id === 'tau' && admissionModel?.success ? { model: admissionModel.data } : {}),
           ...(task.provider.id === 'tau'
             ? {}
             : {
