@@ -1573,18 +1573,24 @@ describe('startHostDaemon', () => {
       });
 
       const daemon = await startPairedAgentDaemon(temporaryDirectory, relay, []);
-      await daemon.ready;
-      await project!.channel.request({ command: 'connectRemote', kind: 'tau' });
+      try {
+        await daemon.ready;
+        await project!.channel.request({ command: 'connectRemote', kind: 'tau' });
 
-      /* Git's own remotes list is the record (D29), so that is what is read —
-       * and it is written before the registration this fixture's API never
-       * answers, which is why nothing here waits for a `connected` phase. */
-      const workspaceRoot = join(temporaryDirectory, 'workspace');
-      await expect
-        .poll(async () => readFile(join(workspaceRoot, '.git', 'config'), 'utf8').catch(() => ''), { timeout: 10_000 })
-        .toContain(tauRemoteUrl(relay.url.origin, 'workspace'));
-
-      await daemon.close();
+        /* The relay answers the Git advertisement with 404. Seeing that
+         * request proves the served project's Tau API origin reached the
+         * remote; the failed connection then rolls its temporary config back. */
+        await expect
+          .poll(() => relay.requests.find((request) => request.line.includes('/info/refs')), { timeout: 10_000 })
+          .toMatchObject({ line: 'GET /v1/git/workspace.git/info/refs?service=git-upload-pack' });
+        await expect.poll(() => project!.status().remote.phase, { timeout: 10_000 }).toBe('failed');
+        const workspaceRoot = join(temporaryDirectory, 'workspace');
+        expect(await readFile(join(workspaceRoot, '.git', 'config'), 'utf8')).not.toContain(
+          tauRemoteUrl(relay.url.origin, 'workspace'),
+        );
+      } finally {
+        await daemon.close();
+      }
     },
     30_000,
   );
