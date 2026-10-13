@@ -1,5 +1,8 @@
 ------------------------- MODULE ProjectTaskAdmission -------------------------
 EXTENDS Naturals, FiniteSets, TLC
+\* This source-linked model projects reservations, lineage and resource ownership.
+\* Mailbox delivery remains outside this finite projection: its separate semantic
+\* checks bound actual rendered UTF-8 prompt bytes, not escaped journal JSON bytes.
 CONSTANTS Tasks, Root, Requests, Cap, Depth
 VARIABLES phase, parent, depth, source, closed, resources, admitted
 vars == <<phase, parent, depth, source, closed, resources, admitted>>

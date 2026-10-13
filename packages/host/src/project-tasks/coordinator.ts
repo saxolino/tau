@@ -23,6 +23,7 @@ import type {
   ProjectTaskExecution,
   ProjectTaskRootAdmission,
 } from '#project-tasks/backend.js';
+import { formatProjectTaskMailboxMessage } from '#project-tasks/mailbox.js';
 import { ProjectTaskError } from '#project-tasks/store.js';
 import { createProjectTaskDispatch } from '#project-tasks/dispatch.js';
 import type { ProjectTaskDispatchActor } from '#project-tasks/dispatch.js';
@@ -760,7 +761,8 @@ export const createProjectTaskCoordinator = async (
           projectTaskMailboxLimits.maxMessages,
         );
         for (const message of pending) {
-          const nextLength = new TextEncoder().encode(JSON.stringify(message)).byteLength + 128;
+          // Root and child prompts use this exact formatter. Two bytes cover per-entry joining/leading newlines.
+          const nextLength = new TextEncoder().encode(formatProjectTaskMailboxMessage(message)).byteLength + 2;
           if (batch.length >= count || byteLength + nextLength > projectTaskMailboxLimits.maxBytes) {
             break;
           }

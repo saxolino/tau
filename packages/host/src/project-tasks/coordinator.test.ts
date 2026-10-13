@@ -6,6 +6,8 @@ import type { ProjectTask, ProjectTaskMessage } from '@taucad/agent-host/wire';
 import { createProjectTaskCoordinator } from '#project-tasks/coordinator.js';
 import { createNodeProjectTaskStore } from '#project-tasks/node-store.js';
 import type { ProjectTaskBackend, ProjectTaskCaller, ProjectTaskLaunch } from '#project-tasks/backend.js';
+import { formatProjectTaskMailboxMessage } from '#project-tasks/mailbox.js';
+import { projectTaskMessageSchema, projectTaskMailboxLimits } from '@taucad/agent-host/wire';
 import { StepClock } from '@taucad/xstate-testing/clock';
 import type { ProjectTaskCoordinatorOptions } from '#project-tasks/coordinator.js';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
@@ -351,11 +353,11 @@ describe('durable project task authority', () => {
     );
     const first = await coordinator.inbox({ taskId: parent.id });
     expect(first).toHaveLength(2);
-    const serializedBytes = first.reduce(
-      (total, message) => total + new TextEncoder().encode(JSON.stringify(message)).byteLength + 128,
+    const renderedBytes = first.reduce(
+      (total, message) => total + new TextEncoder().encode(formatProjectTaskMailboxMessage(message)).byteLength + 2,
       0,
     );
-    expect(serializedBytes).toBeLessThanOrEqual(32_768);
+    expect(renderedBytes).toBeLessThanOrEqual(32_768);
     await coordinator.acknowledgeDelivery({
       taskId: parent.id,
       attemptId: attemptId(parent),
@@ -430,10 +432,12 @@ describe('durable project task authority', () => {
   });
   it('keeps a failed release reserved until actual release recovery succeeds, including duplicate cancellation', async () => {
     let releaseFails = true;
+    let resourceOwned = true;
     const release = vi.fn(async () => {
       if (releaseFails) {
         throw new Error('Injected release failure');
       }
+      resourceOwned = false;
     });
     const { coordinator, caller, backend, outcomes } = await fixture({ maxActive: 2, release });
     const child = await coordinator.spawn(caller, spawnInput('release-child'));
@@ -441,6 +445,13 @@ describe('durable project task authority', () => {
     outcomes.get(attemptId(child))?.resolve({ status: 'completed' });
     await settle(coordinator, child.id, 'cancelling');
     await expect(coordinator.spawn(caller, spawnInput('still-full'))).rejects.toMatchObject({ code: 'TASK_CAPACITY' });
+    // Failed dispatch does not imply durable reservation release; this is the model's Failed projection.
+    const failed = await coordinator.read(host, { taskId: child.id });
+    expect({
+      resource: resourceOwned,
+      reservation: failed.tasks[0]?.attempts.at(-1)?.status === 'cancelling',
+      settled: !resourceOwned,
+    }).toEqual({ resource: true, reservation: true, settled: false });
     await expect(coordinator.recover()).rejects.toThrow('Injected release failure');
     await settle(coordinator, child.id, 'cancelling');
     await expect(coordinator.cancel(host, { taskId: child.id, requestId: 'release-cancel' })).rejects.toThrow(
@@ -450,6 +461,7 @@ describe('durable project task authority', () => {
     await coordinator.cancel(host, { taskId: child.id, requestId: 'release-cancel' });
     await settle(coordinator, child.id, 'cancelled');
     expect(backend.release).toHaveBeenCalledTimes(4);
+    expect(resourceOwned).toBe(false);
   });
 
   it.each(['allocation', 'completion'])(
@@ -524,5 +536,44 @@ describe('durable project task authority', () => {
     await expect(
       continued.admitContinuation({ chatId: parent.chatId, runId: 'root-run', requestId: 'closed-task-resume' }),
     ).rejects.toMatchObject({ code: 'TASK_CLOSED' });
+  });
+  it('delivers valid escaped-control heads and the following nonce under actual rendered prompt bounds', async () => {
+    const { coordinator, caller, parent } = await fixture();
+    const escaped = await coordinator.send(caller, {
+      taskId: parent.id,
+      requestId: 'escaped-head',
+      text: '\u0000'.repeat(6000),
+    });
+    const nonce = await coordinator.send(caller, {
+      taskId: parent.id,
+      requestId: 'following-nonce',
+      text: 'later-nonce',
+    });
+    expect(new TextEncoder().encode(JSON.stringify(escaped)).byteLength).toBeGreaterThan(
+      projectTaskMailboxLimits.maxBytes,
+    );
+    const batch = await coordinator.inbox({ taskId: parent.id });
+    expect(batch.map((message) => message.id)).toEqual([escaped.id, nonce.id]);
+    expect(
+      batch.reduce(
+        (total, message) => total + new TextEncoder().encode(formatProjectTaskMailboxMessage(message)).byteLength + 2,
+        0,
+      ),
+    ).toBeLessThanOrEqual(projectTaskMailboxLimits.maxBytes);
+    await coordinator.acknowledgeDelivery({ taskId: parent.id, attemptId: attemptId(parent), through: nonce.sequence });
+    expect(await coordinator.inbox({ taskId: parent.id })).toEqual([]);
+    const longestAccepted = projectTaskMessageSchema.parse({
+      id: 'i'.repeat(128),
+      projectId: 'p'.repeat(128),
+      senderTaskId: 's'.repeat(128),
+      recipientTaskId: 't'.repeat(128),
+      requestId: 'r'.repeat(128),
+      sequence: Number.MAX_SAFE_INTEGER,
+      createdAt: 0,
+      text: '\n'.repeat(projectTaskMailboxLimits.maxTextBytes),
+    });
+    expect(new TextEncoder().encode(formatProjectTaskMailboxMessage(longestAccepted)).byteLength + 2).toBeLessThan(
+      projectTaskMailboxLimits.maxBytes,
+    );
   });
 });
