@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { availableParallelism, loadavg, tmpdir } from 'node:os';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -48,6 +49,12 @@ export const resolve = async (specifier, context, next) => {
 };
 `;
 
+/** What the noisy model prints from its kernel's thread; never JSON-RPC. */
+const noiseMarker = 'tau-mcp-model-console-noise';
+
+/** What the loud model prints after more output than a pipe holds. */
+const loudTailMarker = 'tau-mcp-model-console-tail';
+
 const files = {
   block: {
     'main.ts': `import { drawRectangle } from 'replicad';
@@ -65,6 +72,21 @@ describe('20 x 10 x 4 mm block', () => {
     expectGeo(model).toHaveBoundingBox({ size: { x: 20, y: 10, z: 4 }, tolerance: 0.001 });
   });
 });
+`,
+    'noisy.ts': `import { drawRectangle } from 'replicad';
+
+export default function main() {
+  console.log('${noiseMarker}');
+  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);
+}
+`,
+    'loud.ts': `import { drawRectangle } from 'replicad';
+
+export default function main() {
+  console.log('x'.repeat(1024 * 1024));
+  console.log('${loudTailMarker}');
+  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);
+}
 `,
     'broken.ts': `import { drawRectangle } from 'replicad';
 
@@ -176,10 +198,15 @@ let launches = 0;
  *
  * @param projectDirectory - The `CLAUDE_PROJECT_DIR` Claude Code would set; none, as Codex sets none.
  * @param viewerPage - The viewer page `launch.ts` hands over (`TAU_VIEWER_PAGE`), if any.
- * @param extra - Further environment, such as the printer store a test isolates.
+ * @param extra - Further environment (`env`), such as the printer store a test isolates, and `tau mcp` options
+ *   after the command (`args`).
  * @returns The child, a transport the SDK client connects over, and its output.
  */
-const launch = (projectDirectory?: string, viewerPage?: string, extra: Record<string, string> = {}): Served => {
+const launch = (
+  projectDirectory?: string,
+  viewerPage?: string,
+  extra: { readonly env?: Record<string, string>; readonly args?: readonly string[] } = {},
+): Served => {
   launches += 1;
   const resolveLog = join(scratch, `resolved-${String(launches)}.log`);
   /* Built by assignment so no environment key is a source literal. */
@@ -194,10 +221,18 @@ const launch = (projectDirectory?: string, viewerPage?: string, extra: Record<st
   if (viewerPage !== undefined) {
     env['TAU_VIEWER_PAGE'] = viewerPage;
   }
-  Object.assign(env, extra);
+  Object.assign(env, extra.env);
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', '--import', pathToFileURL(join(scratch, 'register.mjs')).href, binPath, 'mcp'],
+    [
+      '--import',
+      'tsx',
+      '--import',
+      pathToFileURL(join(scratch, 'register.mjs')).href,
+      binPath,
+      'mcp',
+      ...(extra.args ?? []),
+    ],
     { cwd: repoRoot, env, stdio: ['pipe', 'pipe', 'pipe'] },
   );
   let stdout = '';
@@ -403,17 +438,26 @@ describe('tau mcp over stdio', () => {
     kernelCallLimit,
   );
 
-  /* Before the second project below loads its kernels: every replicad kernel
-   * instance sets replicad's process-global OpenCascade, so a later instance in
-   * this process breaks this project's STEP route (KERNEL_BINDING_FAILED). */
   it(
-    'should run GeoSpec on the native engine',
-    async ({ skip }) => {
-      skip(nativeEngineUnavailable !== undefined, nativeEngineUnavailable);
-      const result = await call({ name: 'test_model', arguments: {} });
+    "should keep stdout to the protocol when a model logs from its kernel's realm",
+    async () => {
+      const result = await call({ name: 'evaluate_model', arguments: { targetFile: 'noisy.ts' } });
 
-      expect(result.isError ?? false, textOf(result)).toBe(false);
-      expect(result.structuredContent).toMatchObject({ passed: 1, total: 1 });
+      expect(result.structuredContent).toMatchObject({ status: 'ready' });
+      /* Asserted on exit below, once every forwarded write has landed. */
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    "should forward a model's output past a full pipe to stderr",
+    async () => {
+      const result = await call({ name: 'evaluate_model', arguments: { targetFile: 'loud.ts' } });
+
+      expect(result.structuredContent).toMatchObject({ status: 'ready' });
+      /* A megabyte overfills stderr's pipe; what follows reaches stderr only if the forwarding resumes once the
+       * pipe drains. (Once esbuild has started, this process's stderr blocks instead, so this passes without it.) */
+      await expect.poll(() => served.stderr().includes(loudTailMarker), { timeout: 10_000 }).toBe(true);
     },
     kernelCallLimit,
   );
@@ -475,6 +519,37 @@ describe('tau mcp over stdio', () => {
     kernelCallLimit,
   );
 
+  it(
+    'should export the first project as STEP after the second project rendered',
+    async () => {
+      const result = await call({ name: 'export_model', arguments: { targetFile: 'main.ts', to: 'step' } });
+
+      expect(result.isError ?? false, textOf(result)).toBe(false);
+      const artifactPath = (result.structuredContent as { files?: Array<{ artifactPath: string }> } | undefined)
+        ?.files?.[0]?.artifactPath;
+      expect(artifactPath).toBeDefined();
+      const step = await readFile(join(scratch, 'block', artifactPath ?? ''), 'utf8');
+      expect(step.startsWith('ISO-10303-21;')).toBe(true);
+      /* Re-imported: the STEP kernel opens and renders what was exported. */
+      await writeFile(join(scratch, 'block', 'exported.step'), step);
+      const reopened = await call({ name: 'evaluate_model', arguments: { targetFile: 'exported.step' } });
+      expect(reopened.structuredContent, textOf(reopened)).toMatchObject({ status: 'ready' });
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should run GeoSpec on the native engine after the second project rendered',
+    async ({ skip }) => {
+      skip(nativeEngineUnavailable !== undefined, nativeEngineUnavailable);
+      const result = await call({ name: 'test_model', arguments: {} });
+
+      expect(result.isError ?? false, textOf(result)).toBe(false);
+      expect(result.structuredContent).toMatchObject({ passed: 1, total: 1 });
+    },
+    kernelCallLimit,
+  );
+
   it('should exit within five seconds of the client closing, removing its screenshots', async ({ annotate }) => {
     await client.close();
     const { code, elapsed } = await exitWithin(served, 5000);
@@ -493,6 +568,8 @@ describe('tau mcp over stdio', () => {
     for (const line of lines) {
       expect(JSONRPCMessageSchema.safeParse(JSON.parse(line)).success, line.slice(0, 200)).toBe(true);
     }
+    expect(served.stdout()).not.toContain(noiseMarker);
+    expect(served.stderr()).toContain(noiseMarker);
   }, 30_000);
 });
 
@@ -688,7 +765,7 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
     async () => {
       const { environment } = await isolatedStore('config-held');
       const project = await printProject('printing');
-      const first = launch(project, undefined, environment);
+      const first = launch(project, undefined, { env: environment });
       disposers.push(stopIfRunning(first));
       const holder = new Client({ name: 'tau-mcp-printers', version: '1' });
       await connect(holder, first);
@@ -696,7 +773,7 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
       const listed = CallToolResultSchema.parse(await holder.callTool({ name: 'list_print_requests', arguments: {} }));
       expect(listed.isError ?? false, textOf(listed)).toBe(false);
 
-      const second = launch(project, undefined, environment);
+      const second = launch(project, undefined, { env: environment });
       disposers.push(stopIfRunning(second));
       const other = new Client({ name: 'tau-mcp-printers-2', version: '1' });
       await connect(other, second);
@@ -715,7 +792,7 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
     async () => {
       const { environment } = await isolatedStore('config-unnamed');
       await mkdir(join(scratch, 'not-a-project'), { recursive: true });
-      const unnamed = launch(join(scratch, 'not-a-project'), undefined, environment);
+      const unnamed = launch(join(scratch, 'not-a-project'), undefined, { env: environment });
       disposers.push(stopIfRunning(unnamed));
       const client = new Client({ name: 'tau-mcp-unnamed', version: '1' });
       await connect(client, unnamed);
@@ -725,7 +802,7 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
       });
 
       /* It holds no lock, so a server in a project prints while it runs. */
-      const named = launch(await printProject('printing-beside'), undefined, environment);
+      const named = launch(await printProject('printing-beside'), undefined, { env: environment });
       disposers.push(stopIfRunning(named));
       const other = new Client({ name: 'tau-mcp-named', version: '1' });
       await connect(other, named);
@@ -796,7 +873,7 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
       const project = await printProject('codex-project');
       await mkdir(join(scratch, 'codex-unnamed'), { recursive: true });
       /* As Codex starts it: in the plugin's folder (here the repository, which holds no tau.json), naming no project. */
-      const server = launch(undefined, undefined, environment);
+      const server = launch(undefined, undefined, { env: environment });
       disposers.push(stopIfRunning(server));
       const asked: string[] = [];
       let approve = false;
@@ -850,6 +927,292 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
       });
       await expect(access(join(project, approvedAnswer.request?.artifact.path ?? 'missing'))).resolves.toBeUndefined();
       await client.close();
+    },
+    kernelCallLimit,
+  );
+});
+
+/**
+ * A model that runs for `milliseconds` of busy CPU and records when, so two
+ * projects' runs show whether they overlapped.
+ *
+ * @param timeline - Absolute file each run appends `{ project, started, ended }` to.
+ * @param project - The project name recorded.
+ * @param milliseconds - How long the model computes.
+ * @returns The model source.
+ */
+const timedModel = (
+  timeline: string,
+  project: string,
+  milliseconds: number,
+): string => `import { drawRectangle } from 'replicad';
+
+export default function main() {
+  const started = Date.now();
+  while (Date.now() - started < ${String(milliseconds)}) {
+    /* Busy: a synchronous model holds its thread, as OpenCASCADE does. */
+  }
+  globalThis.process.getBuiltinModule('node:fs').appendFileSync(
+    ${JSON.stringify(timeline)},
+    JSON.stringify({ project: ${JSON.stringify(project)}, started, ended: Date.now() }) + '\\n',
+  );
+  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);
+}
+`;
+
+/**
+ * A model that never returns, after writing `marker` so a test knows it runs.
+ *
+ * @param marker - Absolute file written once the model starts.
+ * @returns The model source.
+ */
+const loopingModel = (marker: string): string => `import { drawRectangle } from 'replicad';
+
+export default function main() {
+  drawRectangle(20, 10);
+  globalThis.process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(marker)}, 'running');
+  for (;;) {
+    /* Never returns. */
+  }
+}
+`;
+
+const boxModel = files.block['main.ts'];
+
+/** Seconds `tau mcp` gives one operation in the thread-per-project server below. */
+const operationTimeoutSeconds = 30;
+
+/** Milliseconds a call to an already-loaded project may take on a loaded machine. */
+const warmCallLimit = 120_000;
+
+/**
+ * Resolve once `path` exists.
+ *
+ * @param path - The file to wait for.
+ * @param limit - Milliseconds to wait before rejecting.
+ */
+const fileAppears = async (path: string, limit: number): Promise<void> => {
+  const deadline = performance.now() + limit;
+  for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- polling a file another process writes.
+    if (await exists(path)) {
+      return;
+    }
+    if (performance.now() > deadline) {
+      throw new Error(`${path} did not appear within ${String(limit)} ms`);
+    }
+    // oxlint-disable-next-line no-await-in-loop -- ditto.
+    await sleep(100);
+  }
+};
+
+describe('tau mcp with one thread per project', () => {
+  let served: Served;
+  let client: Client;
+  let alpha = '';
+  let beta = '';
+  let timeline = '';
+  const betaMeta = () => ({ 'codex/sandbox-state-meta': { sandboxCwd: pathToFileURL(beta).href } });
+
+  const call = async (params: CallToolRequest['params'], timeout = kernelCallLimit): Promise<CallToolResult> =>
+    CallToolResultSchema.parse(await client.callTool(params, undefined, { timeout }));
+
+  beforeAll(async () => {
+    alpha = join(scratch, 'alpha');
+    beta = join(scratch, 'beta');
+    timeline = join(scratch, 'timeline.jsonl');
+    await mkdir(alpha);
+    await mkdir(beta);
+    await writeFile(join(alpha, 'main.ts'), boxModel);
+    await writeFile(join(beta, 'main.ts'), boxModel);
+    served = launch(alpha, undefined, { args: ['--operation-timeout', String(operationTimeoutSeconds)] });
+    disposers.push(stopIfRunning(served));
+    client = new Client({ name: 'tau-mcp-integration-threads', version: '1' });
+    await connect(client, served);
+    /* Both projects loaded, so the cases below time models, not kernel boots. */
+    const [first, second] = await Promise.all([
+      call({ name: 'evaluate_model', arguments: { targetFile: 'main.ts' } }),
+      call({ name: 'evaluate_model', arguments: { targetFile: 'main.ts' }, _meta: betaMeta() }),
+    ]);
+    expect(first.structuredContent).toMatchObject({ status: 'ready' });
+    expect(second.structuredContent).toMatchObject({ status: 'ready' });
+  }, kernelCallLimit);
+
+  it(
+    "should run two projects' models at the same time",
+    async () => {
+      await writeFile(join(alpha, 'slow.ts'), timedModel(timeline, 'alpha', 3000));
+      await writeFile(join(beta, 'slow.ts'), timedModel(timeline, 'beta', 3000));
+
+      const results = await Promise.all([
+        call({ name: 'evaluate_model', arguments: { targetFile: 'slow.ts' } }, warmCallLimit),
+        call({ name: 'evaluate_model', arguments: { targetFile: 'slow.ts' }, _meta: betaMeta() }, warmCallLimit),
+      ]);
+
+      for (const result of results) {
+        expect(result.structuredContent, textOf(result)).toMatchObject({ status: 'ready' });
+      }
+      const recorded = await readFile(timeline, 'utf8');
+      const runs = recorded
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => JSON.parse(line) as { project: string; started: number; ended: number });
+      const overlapping = runs.some(
+        (a) =>
+          a.project === 'alpha' && runs.some((b) => b.project === 'beta' && a.started < b.ended && b.started < a.ended),
+      );
+      expect(overlapping, JSON.stringify(runs)).toBe(true);
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should time out a looping model in its own thread while another project keeps working, then recover',
+    async () => {
+      const marker = join(scratch, 'alpha-looping');
+      await writeFile(join(alpha, 'loop.ts'), loopingModel(marker));
+      const started = performance.now();
+      const looping = call({ name: 'evaluate_model', arguments: { targetFile: 'loop.ts' } }, warmCallLimit);
+      await fileAppears(marker, warmCallLimit);
+
+      const other = await call(
+        { name: 'evaluate_model', arguments: { targetFile: 'main.ts' }, _meta: betaMeta() },
+        warmCallLimit,
+      );
+      expect(other.structuredContent, textOf(other)).toMatchObject({ status: 'ready' });
+
+      const timedOut = await looping;
+      const elapsed = performance.now() - started;
+      expect(
+        timedOut.isError === true ||
+          (timedOut.structuredContent as { status?: string } | undefined)?.status === 'error',
+      ).toBe(true);
+      expect(JSON.stringify(timedOut.content) + JSON.stringify(timedOut.structuredContent ?? {})).toMatch(
+        /timed out/iu,
+      );
+      /* The deadline, the termination grace, and the call's own overhead. */
+      expect(elapsed).toBeLessThan((operationTimeoutSeconds + 15) * 1000);
+
+      /* The edited model runs in a fresh thread at once: the timed-out thread, which the
+       * runtime would terminate only a second later, never takes another call. */
+      await writeFile(join(alpha, 'loop.ts'), boxModel);
+      const recovered = await call({ name: 'evaluate_model', arguments: { targetFile: 'loop.ts' } });
+      expect(recovered.structuredContent, textOf(recovered)).toMatchObject({ status: 'ready' });
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    "should replace a project's thread after its model ends the thread",
+    async () => {
+      await writeFile(
+        join(alpha, 'exit.ts'),
+        `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  drawRectangle(1, 1);\n  globalThis.process.exit(3);\n}\n`,
+      );
+      const ended = await call({ name: 'evaluate_model', arguments: { targetFile: 'exit.ts' } }, warmCallLimit);
+      expect(
+        ended.isError === true || (ended.structuredContent as { status?: string } | undefined)?.status === 'error',
+      ).toBe(true);
+
+      const replaced = await call({ name: 'evaluate_model', arguments: { targetFile: 'main.ts' } });
+      expect(replaced.structuredContent, textOf(replaced)).toMatchObject({ status: 'ready' });
+      const other = await call(
+        { name: 'evaluate_model', arguments: { targetFile: 'main.ts' }, _meta: betaMeta() },
+        warmCallLimit,
+      );
+      expect(other.structuredContent, textOf(other)).toMatchObject({ status: 'ready' });
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should stop every thread within the shutdown grace, even one running a model that never returns',
+    async () => {
+      const marker = join(scratch, 'beta-looping');
+      await writeFile(join(beta, 'loop.ts'), loopingModel(marker));
+      /* The call never answers: the server stops under it. */
+      const looping = Promise.allSettled([
+        client.callTool(
+          { name: 'evaluate_model', arguments: { targetFile: 'loop.ts' }, _meta: betaMeta() },
+          undefined,
+          {
+            timeout: kernelCallLimit,
+          },
+        ),
+      ]);
+      await fileAppears(marker, warmCallLimit);
+
+      await client.close();
+      /* Inside the five-second grace: a thread that ignored termination would hold the exit to the grace. */
+      const { code } = await exitWithin(served, 4000);
+      expect(code).toBe(0);
+      await looping;
+    },
+    kernelCallLimit,
+  );
+});
+
+describe('tau mcp idle release', () => {
+  it(
+    'should keep a thread whose call outlasts the idle release',
+    async () => {
+      const project = join(scratch, 'idle-busy');
+      await mkdir(project);
+      await writeFile(join(project, 'main.ts'), boxModel);
+      await writeFile(join(project, 'slow.ts'), timedModel(join(scratch, 'idle-busy.jsonl'), 'idle-busy', 5000));
+      const served = launch(project, undefined, { args: ['--idle-release', '2'] });
+      disposers.push(stopIfRunning(served));
+      const client = new Client({ name: 'tau-mcp-integration-idle-busy', version: '1' });
+      await connect(client, served);
+      const evaluate = async (targetFile: string): Promise<CallToolResult> =>
+        CallToolResultSchema.parse(
+          await client.callTool({ name: 'evaluate_model', arguments: { targetFile } }, undefined, {
+            timeout: kernelCallLimit,
+          }),
+        );
+
+      const warm = await evaluate('main.ts');
+      expect(warm.structuredContent, textOf(warm)).toMatchObject({ status: 'ready' });
+      /* Five seconds of computing against a two-second idle release. */
+      const slow = await evaluate('slow.ts');
+      expect(slow.structuredContent, textOf(slow)).toMatchObject({ status: 'ready' });
+      await client.close();
+      const { code } = await exitWithin(served, 10_000);
+      expect(code).toBe(0);
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    "should release an idle project's thread and load a fresh one on its next call",
+    async () => {
+      const project = join(scratch, 'idle');
+      await mkdir(project);
+      await writeFile(join(project, 'main.ts'), boxModel);
+      const served = launch(project, undefined, { args: ['--idle-release', '2'] });
+      disposers.push(stopIfRunning(served));
+      const client = new Client({ name: 'tau-mcp-integration-idle', version: '1' });
+      await connect(client, served);
+      const evaluate = async (): Promise<unknown> => {
+        const result = CallToolResultSchema.parse(
+          await client.callTool({ name: 'evaluate_model', arguments: { targetFile: 'main.ts' } }, undefined, {
+            timeout: kernelCallLimit,
+          }),
+        );
+        return result.structuredContent;
+      };
+
+      expect(await evaluate()).toMatchObject({ status: 'ready' });
+      const loaded = await served.kernelModules();
+      await sleep(5000);
+      expect(await evaluate()).toMatchObject({ status: 'ready' });
+
+      /* A fresh thread resolves its kernels again; the released one is gone. */
+      const reloaded = await served.kernelModules();
+      expect(reloaded.length).toBeGreaterThan(loaded.length);
+      await client.close();
+      const { code } = await exitWithin(served, 10_000);
+      expect(code).toBe(0);
     },
     kernelCallLimit,
   );

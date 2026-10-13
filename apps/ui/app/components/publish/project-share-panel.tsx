@@ -615,9 +615,6 @@ function PortableShareBody({
           </div>
         )}
       </div>
-      {isDirect ? (
-        <p className='text-sm text-feature dark:text-feature/70'>Sign in to persist a Tau-hosted share.</p>
-      ) : null}
       {/* `returned` is the wait for the status check, so it goes once that answers:
        * connected needs no words, and anything else has its own line below. */}
       {!isDirect &&

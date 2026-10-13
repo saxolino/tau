@@ -170,6 +170,7 @@ Actions:
 - describe: which branch the project is on, its current revision number, and every branch it holds
 - log: that branch's revisions, newest first ({ action: 'log', limit: 10 })
 - diff: the files that changed between two revisions ({ action: 'diff', from, to })
+- conflict: both sides of a conflict waiting for a decision ({ action: 'conflict', revision }); your files hold only "ours"
 
 Use this to find out what changed and when — before rewriting a file someone
 else just changed, when a user refers to "the last version", or to check whether

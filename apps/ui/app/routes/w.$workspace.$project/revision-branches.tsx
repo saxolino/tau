@@ -659,9 +659,12 @@ export function RevisionBranches({
               {counts.length === 0 ? null : <span className='tabular-nums'>{counts.join(', ')}</span>}
               {/* Checkout identity, not a path prefix (I2, C40). */}
               {branch.checkoutId === undefined ? (
-                <Badge variant='outline' className='font-normal'>
-                  Remote only
-                </Badge>
+                /* A branch only this device has, with no checkout, is not *Remote only* (D93). */
+                branch.onRemote === true ? (
+                  <Badge variant='outline' className='font-normal'>
+                    Remote only
+                  </Badge>
+                ) : null
               ) : branch.checkoutId === liveCheckoutId ? null : (
                 <Badge variant='outline' className='font-normal'>
                   Linked

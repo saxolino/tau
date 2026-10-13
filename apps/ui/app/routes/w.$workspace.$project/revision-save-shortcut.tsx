@@ -2,7 +2,8 @@
  * `Mod+S` anywhere in the workbench: record what is on disk (S30, AC12).
  *
  * Buffers first, then the ask: `editorRef.flushNow`, `projectRef.flushNow`, wait
- * for both stores to become idle, then cut the tree. The wait is bounded so a
+ * for both stores to become idle and for the editor's file writes to land
+ * (D80), then cut the tree. The wait is bounded so a
  * stuck producer cannot disable the explicit save gesture forever.
  */
 
@@ -10,6 +11,7 @@ import { useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { waitFor } from 'xstate';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { useOptionalFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
 import { useRevisionCommands } from '#hooks/use-revision-status.js';
 import type { KeyCombination } from '@taucad/ui/utils/keys';
@@ -30,6 +32,8 @@ const saveFlushTimeoutMilliseconds = 10_000;
  */
 export function useSaveRevisionRequest(): () => Promise<void> {
   const { projectRef, editorRef } = useProject();
+  /* No file manager means no editor writes to wait for. */
+  const fileManagerRef = useOptionalFileManager()?.fileManagerRef;
   const { saveRevision } = useRevisionCommands();
   return useCallback(async () => {
     editorRef.send({ type: 'flushNow' });
@@ -42,6 +46,14 @@ export function useSaveRevisionRequest(): () => Promise<void> {
         waitFor(projectRef, (state) => state.matches({ ready: { storing: 'idle' } }), {
           timeout: saveFlushTimeoutMilliseconds,
         }),
+        Promise.race([
+          fileManagerRef?.getSnapshot().context.contentService?.settleEditorSaves(),
+          new Promise((_resolve, reject) => {
+            setTimeout(() => {
+              reject(new Error('The editor files did not finish saving.'));
+            }, saveFlushTimeoutMilliseconds);
+          }),
+        ]),
       ]);
       /* Not awaited: the gesture is finished once the cut is asked for, and the
        * correlated answer exists for the unload registrant, not for a person
@@ -54,7 +66,7 @@ export function useSaveRevisionRequest(): () => Promise<void> {
       console.error('[revisions]', 'save', error);
       toast.error('Revision not saved', { description: 'The editor could not finish saving its files.' });
     }
-  }, [editorRef, projectRef, saveRevision]);
+  }, [editorRef, projectRef, fileManagerRef, saveRevision]);
 }
 
 /**
