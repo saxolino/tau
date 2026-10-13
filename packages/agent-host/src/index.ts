@@ -173,7 +173,13 @@ export type {
   ExternalTurnOutcome,
   TauAgentAdmissionConfig,
 } from '#host/external-agent.js';
-export type { CommandKey, CreateTauAgentHostOptions, TauAgentHost, TauAgentTurnRequest } from '#host/tau-agent-host.js';
+export type {
+  CommandKey,
+  CreateTauAgentHostOptions,
+  TauAgentHost,
+  TauAgentTurnRequest,
+  TauClientContextInput,
+} from '#host/tau-agent-host.js';
 export type {
   CachedSystemPromptOptions,
   GatewayModelErrorCode,

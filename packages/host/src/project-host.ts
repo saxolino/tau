@@ -9,10 +9,17 @@
 
 import { randomBytes } from 'node:crypto';
 
-import { followChat, unsettledAttempts } from '@taucad/agent-host';
-import type { ChatLedger, ToolRegistry, TurnPlacementPort } from '@taucad/agent-host';
+import { followChat, unsettledAttempts, jsonValueSchema } from '@taucad/agent-host';
+import type { ChatLedger, ToolRegistry, TurnPlacementPort, TauClientContextInput } from '@taucad/agent-host';
 import { createAgentLauncher } from '@taucad/agent-host/launcher';
-import { chatIdSchema } from '@taucad/agent-host/wire';
+import { chatIdSchema, projectTaskRefusalCodes } from '@taucad/agent-host/wire';
+import type {
+  ProjectTaskChannelPort,
+  AgentChannelAdmissionConfig,
+  HostCommand,
+  ProjectTask,
+  CommandAnswer,
+} from '@taucad/agent-host/wire';
 import type { AgentLauncher, AgentLauncherOptions } from '@taucad/agent-host/launcher';
 import { createNodeChatStore } from '@taucad/agent-host/node';
 import type { NodeFsProviderClient } from '@taucad/filesystem/backend';
@@ -32,6 +39,13 @@ import type { HostMcpEndpoint } from '#mcp-server.js';
 import { hostRevisionActor } from '#revision-actor.js';
 import { createProjectRevisions } from '#revisions.js';
 import type { HostRevisionEvent, ProjectRevisions, ProjectRevisionsOptions, TurnCheckout } from '#revisions.js';
+import { createProjectTaskCoordinator } from '#project-tasks/coordinator.js';
+import { createNodeProjectTaskStore } from '#project-tasks/node-store.js';
+import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
+import { createProjectTaskBackend, withProjectTaskTools, readRecordedToolGrant } from '#project-task-integration.js';
+import { readProjectTaskContext } from '#project-task-context.js';
+import { createTauAgentAcpTransport } from '#acp/tau-agent.js';
+import type { TauAgentAcpOptions } from '#acp/tau-agent.js';
 
 /**
  * Admit a checkout's filesystem as the host tools' filesystem. Revision hosts type checkout filesystems loosely, so the
@@ -87,6 +101,8 @@ export type ProjectHostOptions = Pick<
     fileSystem: ProjectFileSystem;
     /** The runtime client for the root the calling turn works in, which the caller memoizes. */
     runtimeClient: (root: string) => Promise<ProjectHostRuntimeClient>;
+    /** Reporting only: observe the actual Tau agent-side ACP boundary. */
+    tauAcp?: TauAgentAcpOptions | undefined;
     /** The adapters this machine discovered; the host builds the ACP port over its own checkouts. */
     externalAgents?: Readonly<{ agents: readonly AcpAdapter[]; mcpUrl: () => string }> | undefined;
     /** Each revision fact; reporting only, never fatal. */
@@ -112,6 +128,8 @@ export type ProjectHostOptions = Pick<
 export type ProjectHost = Readonly<{
   launcher: AgentLauncher;
   revisions: ProjectRevisions;
+  /** Project-bound controls for the existing agent channel. */
+  projectTasks: ProjectTaskChannelPort;
   /** Present when external agents were given; the caller mounts it on its loopback server. */
   mcp: HostMcpEndpoint | undefined;
   /**
@@ -161,6 +179,59 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
   /* The runs a client sent while this host served, by chat: counted before anything is awaited, so a drain that begins
    * while one is still being placed follows it, and the launcher admits it though it arrives during the drain (T3). */
   const entered = new Map<string, Set<string>>();
+  const taskChats = new Map<string, string>();
+  const taskRoots = new Map<string, string>();
+  const rootCommands = new Map<string, Extract<HostCommand, { type: 'start' }>>();
+  const rootDelivery = new Map<string, number>();
+  const taskGrants = new Map<string, Pick<AgentChannelAdmissionConfig, 'toolChoice' | 'allowedTools'>>();
+  let tasks: Promise<ProjectTaskCoordinator> | undefined;
+  const taskCoordinator = async (): Promise<ProjectTaskCoordinator> => {
+    if (tasks === undefined) {
+      throw Object.assign(new Error('This host has no durable project identity.'), { code: 'TASK_UNAVAILABLE' });
+    }
+    return tasks;
+  };
+  const taskFollowers = new Map<string, Promise<void>>();
+  const trackTask = (coordinator: ProjectTaskCoordinator, task: ProjectTask, runId: string): void => {
+    const attemptId = task.attempts.at(-1)!.id;
+    if (taskFollowers.has(attemptId)) {
+      return;
+    }
+    const follow = async (): Promise<void> => {
+      try {
+        const rootSettled = (ledger: ChatLedger): boolean => {
+          const run = ledger.runs[runId];
+          return (
+            run !== undefined &&
+            ['completed', 'failed', 'cancelled'].includes(run.lifecycle ?? '') &&
+            settled(new Set([runId]))(ledger)
+          );
+        };
+        for await (const { ledger } of followChat(launcher.read, task.chatId, {
+          signal: AbortSignal.timeout(24 * 60 * 60_000),
+          until: rootSettled,
+        })) {
+          const run = ledger.runs[runId];
+          if (run !== undefined && rootSettled(ledger)) {
+            await coordinator.finishRoot({
+              taskId: task.id,
+              attemptId,
+              status:
+                run.lifecycle === 'completed' ? 'completed' : run.lifecycle === 'cancelled' ? 'cancelled' : 'failed',
+            });
+            break;
+          }
+        }
+      } catch (error) {
+        console.error('[project tasks] root settlement tracking failed', error);
+      } finally {
+        taskFollowers.delete(attemptId);
+        taskChats.delete(runId);
+        taskGrants.delete(runId);
+      }
+    };
+    taskFollowers.set(attemptId, follow());
+  };
   /* The counted starts and resumes not yet answered: a drain waits for them, so it never follows a run it is still
    * unknown whether the launcher admitted (W6.r1 round 5). */
   const answering = new Set<Promise<unknown>>();
@@ -254,21 +325,96 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     ...(options.machines === undefined ? {} : { machines: options.machines }),
     ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
   };
-  const toolRegistry = createHostToolRegistry({ ...registryOptions, workspaceRoot, checkouts });
+  const decorateTools = (registry: ToolRegistry): ToolRegistry => {
+    if (options.projectId === undefined) {
+      return registry;
+    }
+    const tools = withProjectTaskTools(registry, taskCoordinator, (runId) => taskChats.get(runId));
+    return {
+      ...tools,
+      invoke: async (invocation) => {
+        const grant = invocation.runId === undefined ? undefined : taskGrants.get(invocation.runId);
+        const explicitChoice = Array.isArray(grant?.toolChoice) ? grant.toolChoice : undefined;
+        if (
+          (invocation.runId !== undefined && grant === undefined) ||
+          grant?.toolChoice === 'none' ||
+          (grant?.allowedTools !== undefined && !grant.allowedTools.includes(invocation.toolName)) ||
+          (explicitChoice !== undefined && !explicitChoice.includes(invocation.toolName))
+        ) {
+          return {
+            isError: true,
+            content: { errorCode: 'TOOL_NOT_ALLOWED', message: 'This tool is outside the admitted parent grant.' },
+          };
+        }
+        return tools.invoke(invocation);
+      },
+    };
+  };
+  const toolRegistry = decorateTools(createHostToolRegistry({ ...registryOptions, workspaceRoot, checkouts }));
   const toolRegistryFor = (root: string, filesystem?: HostToolFileSystem): ToolRegistry =>
-    createHostToolRegistry({
-      ...registryOptions,
-      workspaceRoot: root,
-      ...(filesystem === undefined ? {} : { filesystem: () => filesystem }),
-    });
+    decorateTools(
+      createHostToolRegistry({
+        ...registryOptions,
+        workspaceRoot: root,
+        ...(filesystem === undefined ? {} : { filesystem: () => filesystem }),
+      }),
+    );
   /* The host process is the placement session (TS-R6 holds trivially); no Node host runs an attempt unplaced (D13). */
-  const turnPlacement = (
+  const placement = (
     options.turnPlacement ??
     ((input) =>
       input.revisions.placement(({ root, filesystem }) =>
         input.toolRegistryFor(root, asHostToolFileSystem(filesystem)),
       ))
   )({ revisions, toolRegistryFor });
+  const turnPlacement: TurnPlacementPort = {
+    ...placement,
+    admit: async (input) => {
+      const answer = await placement.admit(input);
+      const command = rootCommands.get(input.key.runId);
+      if (answer.status !== 'refused' && command !== undefined && options.projectId !== undefined) {
+        try {
+          const source = answer.placement;
+          if (source.baseRevisionId === undefined) {
+            throw Object.assign(new Error('The admitted checkout has no immutable source revision.'), {
+              code: 'TASK_SOURCE_UNAVAILABLE',
+            });
+          }
+          const coordinator = await taskCoordinator();
+          const text =
+            typeof command.payload.message.content === 'string'
+              ? command.payload.message.content
+              : 'Project agent turn';
+          const task = await coordinator.admitRoot({
+            requestId: command.commandId,
+            chatId: input.key.chatId,
+            runId: input.key.runId,
+            title: text.slice(0, 256) || 'Project agent turn',
+            prompt: text || 'Project agent turn',
+            provider: {
+              id: command.payload.config?.agent?.id ?? 'tau',
+              ...(command.payload.config?.agent?.model === undefined
+                ? {}
+                : { model: command.payload.config.agent.model }),
+            },
+            source: { revisionId: source.baseRevisionId, checkoutId: source.checkoutId },
+            toolGrant: taskGrants.get(input.key.runId) ?? { toolChoice: 'none' },
+          });
+          const through = rootDelivery.get(input.key.runId);
+          if (through !== undefined) {
+            await coordinator.acknowledgeDelivery({ taskId: task.id, attemptId: task.attempts.at(-1)!.id, through });
+          }
+          taskChats.set(input.key.runId, input.key.chatId);
+          rootCommands.delete(input.key.runId);
+          trackTask(coordinator, task, input.key.runId);
+        } catch (error) {
+          await placement.abandon({ requestId: `${input.requestId}-task-refusal`, key: input.key });
+          throw error;
+        }
+      }
+      return answer;
+    },
+  };
 
   const externalAgents =
     options.externalAgents !== undefined && options.externalAgents.agents.length > 0
@@ -285,6 +431,13 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     modelTransport: options.modelTransport,
     credential: options.credential,
     systemPrompt: options.systemPrompt,
+    ...(options.projectId === undefined
+      ? {}
+      : {
+          clientContext: async (_input: TauClientContextInput) =>
+            readProjectTaskContext(asHostToolFileSystem(fileSystem.open(workspaceRoot)), AbortSignal.timeout(30_000)),
+        }),
+    ...(options.projectId === undefined ? {} : { tauTurnTransport: createTauAgentAcpTransport(options.tauAcp) }),
     ...(options.model === undefined ? {} : { model: options.model }),
     toolRegistry,
     turnPlacement,
@@ -310,6 +463,57 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
           }),
         }),
   });
+  if (options.projectId !== undefined) {
+    const { projectId } = options;
+    const initializeTasks = async (): Promise<ProjectTaskCoordinator> => {
+      const store = await createNodeProjectTaskStore({ workspaceRoot, projectId });
+      const coordinator = await createProjectTaskCoordinator({
+        projectId,
+        store,
+        backend: createProjectTaskBackend({
+          revisions,
+          launcher: () => launcher,
+          agents: externalAgents?.agents.map((agent) => agent.id) ?? [],
+          systemPrompt: options.systemPrompt,
+          tauModel: options.model?.id,
+          bind: (runId, chatId) => {
+            taskChats.set(runId, chatId);
+          },
+          allocated: (checkoutId, root) => {
+            taskRoots.set(checkoutId, root);
+          },
+          context: async (checkoutId, signal) => {
+            if (!taskRoots.has(checkoutId)) {
+              throw Object.assign(new Error('The task candidate root is unavailable.'), {
+                code: 'TASK_SOURCE_UNAVAILABLE',
+              });
+            }
+            return readProjectTaskContext(asHostToolFileSystem(fileSystem.open(workspaceRoot)), signal);
+          },
+          rememberGrant: (runId, grant) => {
+            taskGrants.set(runId, grant);
+          },
+          released: (runId, checkoutId) => {
+            taskChats.delete(runId);
+            taskGrants.delete(runId);
+            taskRoots.delete(checkoutId);
+          },
+        }),
+      });
+      await coordinator.recover();
+      return coordinator;
+    };
+    tasks = initializeTasks();
+    const ready = tasks;
+    // async-iife: bootstrap -- initialization failure is reported while calls retain the same rejected authority.
+    void (async () => {
+      try {
+        await ready;
+      } catch (error) {
+        console.error('[project tasks] project task authority unavailable', error);
+      }
+    })();
+  }
 
   let mcpClosed = false;
   /* A second close waits for the first; one after a close that failed tries again. */
@@ -323,7 +527,22 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         failures.push(error);
       }
     };
+    let retryTaskClose = false;
+    if (tasks !== undefined) {
+      try {
+        const coordinator = await tasks;
+        await coordinator.close();
+      } catch {
+        retryTaskClose = true;
+      }
+    }
     await settle(async () => launcher.close());
+    if (retryTaskClose && tasks !== undefined) {
+      await settle(async () => {
+        const coordinator = await tasks;
+        await coordinator.close();
+      });
+    }
     /* After the launcher: its attempts are settled, so the tree records what is on disk and stops. */
     await settle(async () => revisions.release());
     await settle(async () => parameters.closeAll());
@@ -366,14 +585,120 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         const counted = !runs.has(runId);
         entered.set(chatId, runs.add(runId));
         /* A run that was refused, or whose placement threw, is no run to drain. */
-        const answered = (async () => {
+        const answered = (async (): Promise<CommandAnswer> => {
           let admitted = false;
+          let continuation:
+            | Readonly<{ coordinator: ProjectTaskCoordinator; task: ProjectTask; newlyReserved: boolean }>
+            | undefined;
           try {
+            if (command.type === 'resume' && options.projectId !== undefined) {
+              const coordinator = await taskCoordinator();
+              try {
+                const before = await coordinator.read({ kind: 'host', projectId: options.projectId });
+                const previous = before.tasks.find((task) => task.chatId === chatId)?.attempts.at(-1)?.id;
+                const task = await coordinator.admitContinuation({ requestId: command.commandId, chatId, runId });
+                const attempt = task.attempts.at(-1)!;
+                taskChats.set(runId, chatId);
+                taskGrants.set(runId, attempt.toolGrant);
+                continuation = { coordinator, task, newlyReserved: attempt.id !== previous };
+              } catch (error) {
+                if (error instanceof Error && 'code' in error && error.code === 'TASK_NOT_FOUND') {
+                  const grant = await readRecordedToolGrant(launcher, chatId, runId);
+                  taskGrants.set(runId, grant ?? { toolChoice: 'none' });
+                } else {
+                  return {
+                    commandId: command.commandId,
+                    generation: 0,
+                    status: 'refused',
+                    effect: 'not-applied',
+                    code: error instanceof Error && 'code' in error ? String(error.code) : 'TASK_UNAVAILABLE',
+                    message: error instanceof Error ? error.message : String(error),
+                  };
+                }
+              }
+            }
+            if (command.type === 'start' && options.projectId !== undefined) {
+              const coordinator = await taskCoordinator();
+              const snapshot = await coordinator.read({ kind: 'host', projectId: options.projectId });
+              const rootTask = snapshot.tasks.find((task) => task.chatId === chatId && task.parentTaskId === undefined);
+              if (rootTask !== undefined) {
+                const messages = await coordinator.inbox({ taskId: rootTask.id });
+                if (messages.length > 0) {
+                  const mailbox = messages
+                    .map(
+                      (message) =>
+                        `<task-message sequence="${message.sequence}" sender="${message.senderTaskId ?? 'host'}">\n${message.text}\n</task-message>`,
+                    )
+                    .join('\n');
+                  const original = command.payload.message.content;
+                  command = {
+                    ...command,
+                    payload: {
+                      ...command.payload,
+                      message: {
+                        ...command.payload.message,
+                        content:
+                          typeof original === 'string'
+                            ? `${original}\n${mailbox}`
+                            : [
+                                ...(Array.isArray(original) ? jsonValueSchema.array().parse(original) : [original]),
+                                { type: 'text', text: mailbox },
+                              ],
+                      },
+                    },
+                  };
+                  rootDelivery.set(runId, messages.at(-1)!.sequence);
+                }
+              }
+              const contextPayload = await readProjectTaskContext(
+                asHostToolFileSystem(fileSystem.open(workspaceRoot)),
+                AbortSignal.timeout(30_000),
+              );
+              command = {
+                ...command,
+                payload: {
+                  ...command.payload,
+                  config: {
+                    systemPrompt: options.systemPrompt,
+                    toolChoice: 'auto',
+                    ...command.payload.config,
+                    contextPayload: {
+                      ...command.payload.config?.contextPayload,
+                      ...contextPayload,
+                      memory: contextPayload.memory ?? {},
+                    },
+                  },
+                },
+              };
+              rootCommands.set(runId, command);
+              taskGrants.set(runId, {
+                toolChoice: command.payload.config?.toolChoice ?? 'auto',
+                ...(command.payload.config?.allowedTools === undefined
+                  ? {}
+                  : { allowedTools: command.payload.config.allowedTools }),
+              });
+            }
             const answer = await launcher.execute(command);
+            if (continuation !== undefined) {
+              if (answer.status === 'refused' && continuation.newlyReserved) {
+                await continuation.coordinator.finishRoot({
+                  taskId: continuation.task.id,
+                  attemptId: continuation.task.attempts.at(-1)!.id,
+                  status: 'failed',
+                  detail: answer.message,
+                });
+              } else if (answer.status !== 'refused') {
+                trackTask(continuation.coordinator, continuation.task, runId);
+              }
+            }
             admitted = answer.status !== 'refused';
             return answer;
           } finally {
             if (counted && !admitted) {
+              rootCommands.delete(runId);
+              rootDelivery.delete(runId);
+              taskGrants.delete(runId);
+              taskChats.delete(runId);
               runs.delete(runId);
               if (runs.size === 0 && entered.get(chatId) === runs) {
                 entered.delete(chatId);
@@ -390,6 +715,38 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
       },
     },
     revisions,
+    projectTasks: {
+      request: async (request, signal) => {
+        try {
+          const coordinator = await taskCoordinator();
+          const caller = { kind: 'host', projectId: options.projectId! } as const;
+          switch (request.operation) {
+            case 'read': {
+              return { kind: 'snapshot', snapshot: await coordinator.read(caller, request.input) };
+            }
+            case 'wait': {
+              return { kind: 'snapshot', snapshot: await coordinator.wait(caller, request.input, signal) };
+            }
+            case 'send': {
+              return { kind: 'message', message: await coordinator.send(caller, request.input) };
+            }
+            case 'cancel': {
+              return { kind: 'task', task: await coordinator.cancel(caller, request.input) };
+            }
+            case 'resume': {
+              return { kind: 'task', task: await coordinator.resume(caller, request.input) };
+            }
+          }
+        } catch (error) {
+          const code = error instanceof Error && 'code' in error ? String(error.code) : 'TASK_UNAVAILABLE';
+          return {
+            kind: 'refused',
+            code: projectTaskRefusalCodes.find((value) => value === code) ?? 'TASK_UNAVAILABLE',
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      },
+    },
     mcp,
     close: async () => {
       closing ??= closeHost();

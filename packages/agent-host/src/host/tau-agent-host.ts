@@ -106,6 +106,9 @@ export type TauAgentTurnRequest = TauAgentTurnRequestBase &
       }
   );
 
+/** Context refresh location; an admitted root is present during execution and resume. @public */
+export type TauClientContextInput = Readonly<{ chatId: string; runId: string; root?: string }>;
+
 /** Dependencies shared by every run created by one portable host. @public */
 export type CreateTauAgentHostOptions = {
   readonly systemPrompt: string;
@@ -126,7 +129,7 @@ export type CreateTauAgentHostOptions = {
   readonly now?: (() => Date) | undefined;
   readonly clientContext?:
     | CreateAgentSessionOptions['clientContext']
-    | (() => Promise<ClientContext | undefined> | ClientContext | undefined);
+    | ((input: TauClientContextInput) => Promise<ClientContext | undefined> | ClientContext | undefined);
   readonly recentSkills?: CreateAgentSessionOptions['recentSkills'];
   readonly substituteToolResult?: CreateAgentSessionOptions['substituteToolResult'];
   readonly summarize?: CreateAgentSessionOptions['summarize'];
@@ -1315,7 +1318,9 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
       }
       const clientContext =
         config.clientContext ??
-        (typeof options.clientContext === 'function' ? await options.clientContext() : options.clientContext);
+        (typeof options.clientContext === 'function'
+          ? await options.clientContext({ chatId, runId: start.runId })
+          : options.clientContext);
       /* Journaled (RA-R3): a restart before the turn commits replays exactly this admission. */
       const context = await createTurnContextSnapshot({
         chatId,
@@ -1538,7 +1543,9 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
             throw coded('HOST_MODEL_UNAVAILABLE', 'This Tau host configures no model; the admission must name one.');
           }
           const clientContext =
-            typeof options.clientContext === 'function' ? await options.clientContext() : options.clientContext;
+            typeof options.clientContext === 'function'
+              ? await options.clientContext({ chatId, runId, ...(grant === undefined ? {} : { root: grant.root }) })
+              : options.clientContext;
           let projection: TauTurnProjection | undefined;
           const transportAbort = new AbortController();
           let transportedExecution: Promise<AgentRunOutcome> | undefined;

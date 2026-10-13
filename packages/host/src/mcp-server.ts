@@ -107,6 +107,12 @@ export const hostMcpAllowedTools = [
   toolName.listPrintRequests,
   toolName.cancelPrint,
   toolName.askQuestions,
+  toolName.taskSpawn,
+  toolName.taskRead,
+  toolName.taskSend,
+  toolName.taskWait,
+  toolName.taskCancel,
+  toolName.taskResume,
 ] as const;
 
 /** One name from {@link hostMcpAllowedTools}. @public */
@@ -119,6 +125,12 @@ export type HostMcpAllowedTool = (typeof hostMcpAllowedTools)[number];
  * calls and this endpoint answers from the registry's own content.
  */
 const hostMcpRegistryTools: ReadonlySet<HostMcpAllowedTool> = new Set<HostMcpAllowedTool>([
+  toolName.taskSpawn,
+  toolName.taskRead,
+  toolName.taskSend,
+  toolName.taskWait,
+  toolName.taskCancel,
+  toolName.taskResume,
   toolName.arrangeWorkbench,
   toolName.getParameters,
   toolName.applyParameterOperation,
@@ -132,6 +144,8 @@ const hostMcpRegistryTools: ReadonlySet<HostMcpAllowedTool> = new Set<HostMcpAll
 
 /** The registry tools that change nothing, here or on a machine. */
 const readOnlyRegistryTools: ReadonlySet<string> = new Set<string>([
+  toolName.taskRead,
+  toolName.taskWait,
   toolName.getParameters,
   toolName.getPrintProfiles,
   toolName.getPrintRequest,

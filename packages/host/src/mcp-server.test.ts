@@ -258,6 +258,12 @@ describe('createHostMcpEndpoint capability', () => {
       'list_print_requests',
       'cancel_print',
       'ask_questions',
+      'task_spawn',
+      'task_read',
+      'task_send',
+      'task_wait',
+      'task_cancel',
+      'task_resume',
     ]);
     expect(claims.allowedTools).not.toContain('start_machine_print');
 

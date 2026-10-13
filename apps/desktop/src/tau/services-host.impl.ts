@@ -947,6 +947,7 @@ export const createServicesHost = (options: ServicesHostOptions = {}): ServicesH
           build: packageVersion,
           sessionKey: agentSessionKey,
           revisions: host.revisions.channel,
+          projectTasks: host.projectTasks,
         });
         log('agent-host-served', { workspaceRoot, reused: servedHost === host });
         servedHost = host;

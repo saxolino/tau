@@ -974,6 +974,7 @@ export const startHostDaemon = (options: HostDaemonOptions): HostDaemonHandle =>
     const server = startAgentServer({
       launcher,
       revisions: project.revisions.channel,
+      projectTasks: project.projectTasks,
       token: agent.token,
       workspaceRoot: agent.workspaceRoot,
       ...(machines ? { machines } : {}),

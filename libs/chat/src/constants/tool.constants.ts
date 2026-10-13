@@ -26,6 +26,12 @@ export const toolName = {
   getPrintRequest: 'get_print_request',
   listPrintRequests: 'list_print_requests',
   cancelPrint: 'cancel_print',
+  taskSpawn: 'task_spawn',
+  taskRead: 'task_read',
+  taskSend: 'task_send',
+  taskWait: 'task_wait',
+  taskCancel: 'task_cancel',
+  taskResume: 'task_resume',
 } as const satisfies Record<string, string>;
 
 /** @public */

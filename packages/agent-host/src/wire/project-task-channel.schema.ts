@@ -6,6 +6,7 @@ import {
   projectTaskSchema,
   projectTaskSendSchema,
   projectTaskWaitSchema,
+  projectTaskRefusalCodes,
 } from '#wire/project-tasks.schema.js';
 
 /** Project-scoped control operations, separate from per-chat run commands. @public */
@@ -29,7 +30,7 @@ export const projectTaskChannelAnswerSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('snapshot'), snapshot: projectTaskSnapshotSchema }),
   z.strictObject({ kind: z.literal('task'), task: projectTaskSchema }),
   z.strictObject({ kind: z.literal('message'), message: projectTaskMessageSchema }),
-  z.strictObject({ kind: z.literal('refused'), code: z.string(), message: z.string() }),
+  z.strictObject({ kind: z.literal('refused'), code: z.enum(projectTaskRefusalCodes), message: z.string() }),
 ]);
 /** One project control request. @public */
 export type ProjectTaskChannelRequest = z.infer<typeof projectTaskChannelRequestSchema>;
