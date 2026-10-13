@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from 'react';
+import { useCallback, useEffect, useMemo, useReducer } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { Bot, Circle, CircleAlert, Clock3, FolderGit2, GitBranch, Radio, ShieldAlert, XIcon } from 'lucide-react';
@@ -9,6 +9,9 @@ import { formatRelativeTime } from '#utils/date.utils.js';
 import { useProject } from '#hooks/use-project.js';
 import { useProjectSlugs } from '#hooks/use-project-slug-route.js';
 import { useAgentProjections } from '#hooks/use-agent-projections.js';
+import { useProjectTasks } from '#hooks/use-project-tasks.js';
+import { ProjectTaskTree } from '#components/project-tasks/project-task-tree.js';
+import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import {
   formatReceiptTotal,
   sumReceiptCredits,
@@ -119,11 +122,45 @@ export const AgentsPanelBody = ({
     metadataByChatId,
     enabled: enableHistory,
   });
+  const tasks = useProjectTasks(projectId, enableHistory);
+  const workspace = useProjectWorkspace({ enableNoContext: true });
+  const reviewChanges = useCallback(() => {
+    workspace?.openPanel('revisions');
+  }, [workspace]);
+  const taskChatIds = useMemo(() => new Set(tasks.snapshot?.tasks.map((task) => task.chatId)), [tasks.snapshot?.tasks]);
+  const standaloneAgents = useMemo(
+    () => agents.filter((agent) => !taskChatIds.has(agent.chatId)),
+    [agents, taskChatIds],
+  );
 
   return (
     <div data-slot='agents-panel-body' className='flex size-full min-h-0 flex-col overflow-hidden bg-sidebar'>
       <AgentsOverview agents={agents} />
       <div className='min-h-0 flex-1 scroll-shadows-y overflow-y-auto p-2 [--scroll-fade-end:transparent] [--scroll-fade-size:28px]'>
+        {tasks.unavailable ? <p className='px-2 py-2 text-xs text-muted-foreground'>{tasks.unavailable}</p> : null}
+        {tasks.isLoading ? (
+          <p role='status' aria-busy className='px-2 py-2 text-xs'>
+            Loading project tasks…
+          </p>
+        ) : null}
+        {tasks.error ? (
+          <div role='alert' className='flex flex-col gap-2 px-2 py-2 text-xs'>
+            <p>{tasks.error}</p>
+            <Button size='sm' variant='outline' onClick={tasks.retry}>
+              Reconnect tasks
+            </Button>
+          </div>
+        ) : null}
+        {tasks.snapshot && tasks.snapshot.tasks.length > 0 ? (
+          <ProjectTaskTree
+            tasks={tasks.snapshot.tasks}
+            messages={tasks.snapshot.messages}
+            agents={agents}
+            projectSlugs={projectSlugs}
+            actions={tasks.actions}
+            onReviewChanges={workspace ? reviewChanges : undefined}
+          />
+        ) : null}
         {isLoading && agents.length === 0 ? <AgentsLoading /> : null}
         {error && agents.length === 0 ? (
           <PanelEmptyState
@@ -147,7 +184,12 @@ export const AgentsPanelBody = ({
             </Button>
           </PanelEmptyState>
         ) : null}
-        {!isLoading && !error && agents.length === 0 ? (
+        {!isLoading &&
+        !error &&
+        !tasks.isLoading &&
+        !tasks.error &&
+        agents.length === 0 &&
+        (tasks.snapshot?.tasks.length ?? 0) === 0 ? (
           <PanelEmptyState
             icon={Bot}
             title='No agents yet'
@@ -155,7 +197,7 @@ export const AgentsPanelBody = ({
             className='m-0 min-h-full rounded-xl border bg-card'
           />
         ) : null}
-        {agents.length > 0 ? <AgentList agents={agents} projectSlugs={projectSlugs} /> : null}
+        {standaloneAgents.length > 0 ? <AgentList agents={standaloneAgents} projectSlugs={projectSlugs} /> : null}
       </div>
     </div>
   );

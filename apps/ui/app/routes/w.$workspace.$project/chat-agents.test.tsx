@@ -14,6 +14,14 @@ vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'proje
 vi.mock('#hooks/use-project-slug-route.js', () => ({
   useProjectSlugs: () => ({ status: 'resolved', value: { workspaceSlug: 'tau', projectSlug: 'engine' } }),
 }));
+vi.mock('#hooks/use-project-tasks.js', () => ({
+  useProjectTasks: () => ({
+    isLoading: false,
+    unavailable: 'Child tasks require the desktop project host.',
+    retry: vi.fn(),
+    actions: { send: vi.fn(), cancel: vi.fn(), resume: vi.fn() },
+  }),
+}));
 vi.mock('#hooks/use-agent-projections.js', async (importOriginal) => {
   const original = await importOriginal<typeof AgentProjectionsModule>();
   return { ...original, useAgentProjections: vi.fn() };

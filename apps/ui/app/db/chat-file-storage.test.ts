@@ -935,6 +935,36 @@ describe('chat file store — log ownership boundary', () => {
     2,
   )}\n`;
 
+  it('excludes the reserved task sidecar while retaining valid record and log-only chats', async () => {
+    const { store, write, reads } = createStoreWithFiles();
+    await write(`/projects/${projectId}/.tau/chats/${chatId}/chat.json`, record);
+    await write(`/projects/${projectId}/.tau/chats/chat_log_only/events.jsonl`, 'host log');
+    await write(`/projects/${projectId}/.tau/chats/.project-tasks/events.jsonl`, 'task journal');
+    await write(
+      `/projects/${projectId}/.tau/chats/.PROJECT-TASKS/chat.json`,
+      JSON.stringify({ id: '.PROJECT-TASKS', resourceId: projectId, name: 'Reserved', createdAt: 1, updatedAt: 1 }),
+    );
+    const chats = await store.getChatsForResource(projectId);
+    const records = await store.getChatRecordsForResource(projectId);
+    expect(chats.map((chat) => chat.id).sort()).toEqual([chatId, 'chat_log_only'].sort());
+    expect(records.map((chat) => chat.id).sort()).toEqual([chatId, 'chat_log_only'].sort());
+    expect(reads.some((path) => /\/\.project-tasks\//iu.test(path))).toBe(false);
+  });
+
+  it('refuses addressing, creating or tombstoning the reserved task sidecar through the chat API', async () => {
+    const { store, write, read, exists } = createStoreWithFiles();
+    const journalPath = `/projects/${projectId}/.tau/chats/.project-tasks/events.jsonl`;
+    await write(journalPath, 'preserved task journal');
+    await expect(store.getChat('.project-tasks')).rejects.toThrow();
+    await expect(
+      store.createChat(projectId, { id: '.project-tasks', name: 'Forbidden', messages: [] }),
+    ).rejects.toThrow();
+    await expect(store.deleteChat('.project-tasks')).rejects.toThrow();
+    await expect(store.purgeChat('.project-tasks')).rejects.toThrow();
+    expect(await read(journalPath)).toBe('preserved task journal');
+    expect(await exists(`/projects/${projectId}/.tau/chats/.project-tasks/chat.json`)).toBe(false);
+  });
+
   it('reads metadata only for a chat whose log contains turns', async () => {
     const { store, write, reads } = createStoreWithFiles();
     await write(`/projects/${projectId}/.tau/chats/${chatId}/${'chat.json'}`, record);

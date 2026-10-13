@@ -30,6 +30,11 @@ const fakeChannel = (answer?: (command: HostCommand) => CommandAnswer | undefine
     yield* [];
   };
   return {
+    projectTasks: async () => ({
+      kind: 'refused',
+      code: 'TASK_UNAVAILABLE',
+      message: 'This chat-only test host does not provide tasks.',
+    }),
     commands,
     reads,
     append: (row) => {

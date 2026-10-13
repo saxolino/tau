@@ -5,6 +5,7 @@ import type { Chat } from '@taucad/chat';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import { parseChatRecord, serializeChatRecord } from '@taucad/chat/schemas';
 import { chatLogFileName, chatRecordFileName, chatRecordsPath } from '@taucad/revisions';
+import { chatIdSchema } from '@taucad/agent-host/wire';
 import { errorCategory, idPrefix } from '@taucad/types/constants';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { isRecord } from '@taucad/utils/schema';
@@ -58,7 +59,7 @@ const invalidStartupError: NonNullable<Chat['error']> = {
 };
 
 const chatDirectory = (projectId: string, chatId: string): string =>
-  `/projects/${projectId}/${chatRecordsPath(chatId)}`;
+  `/projects/${projectId}/${chatRecordsPath(chatIdSchema.parse(chatId))}`;
 
 const recordPath = (projectId: string, chatId: string): string =>
   `${chatDirectory(projectId, chatId)}/${chatRecordFileName}`;
@@ -169,7 +170,7 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
   const readRecord = async (projectId: string, chatId: string): Promise<ChatRecord | undefined> => {
     const text = await readText(recordPath(projectId, chatId));
     const record = text === undefined ? undefined : parseChatRecord(text);
-    if (record === undefined) {
+    if (record === undefined || record.id !== chatId || !chatIdSchema.safeParse(record.id).success) {
       return undefined;
     }
     located.set(record.id, projectId);
@@ -232,7 +233,11 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
     } catch {
       return [];
     }
-    const chats = await Promise.all(ids.map(async (chatId) => readChatDirectory(projectId, chatId)));
+    const chats = await Promise.all(
+      ids
+        .filter((chatId) => chatIdSchema.safeParse(chatId).success)
+        .map(async (chatId) => readChatDirectory(projectId, chatId)),
+    );
     return chats.filter((chat): chat is Chat => chat !== undefined && chat.purgedAt === undefined);
   };
 
@@ -243,7 +248,11 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
     } catch {
       return [];
     }
-    const records = await Promise.all(ids.map(async (chatId) => readChatRecord(projectId, chatId)));
+    const records = await Promise.all(
+      ids
+        .filter((chatId) => chatIdSchema.safeParse(chatId).success)
+        .map(async (chatId) => readChatRecord(projectId, chatId)),
+    );
     return records.filter((record): record is ChatRecord => record !== undefined && record.purgedAt === undefined);
   };
 
@@ -254,6 +263,7 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
    * price of the chat table being gone and is paid once per chat per session.
    */
   const locate = async (chatId: string): Promise<string | undefined> => {
+    chatIdSchema.parse(chatId);
     const known = located.get(chatId);
     if (known !== undefined) {
       return known;
@@ -313,7 +323,7 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
       id?: string;
     },
   ): Promise<Chat> => {
-    const id = chat.id ?? generatePrefixedId(idPrefix.chat);
+    const id = chatIdSchema.parse(chat.id ?? generatePrefixedId(idPrefix.chat));
     const timestamp = Date.now();
     const created: Chat = {
       ...chat,
