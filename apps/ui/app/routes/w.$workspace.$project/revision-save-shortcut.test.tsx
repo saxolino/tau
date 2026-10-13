@@ -19,6 +19,9 @@ const saveRevision = vi.fn<(trigger?: 'save' | 'hidden' | 'close') => void>(() =
   sent.push('saveRevision');
 });
 const waitForStore = vi.fn(async () => undefined);
+const settleEditorSaves = vi.fn(async () => {
+  sent.push('files:settled');
+});
 const toastError = vi.hoisted(() => vi.fn());
 
 vi.mock('xstate', () => ({ waitFor: waitForStore }));
@@ -44,6 +47,11 @@ vi.mock('#hooks/use-project.js', () => ({
     };
   },
 }));
+vi.mock('#hooks/use-file-manager.js', () => ({
+  useOptionalFileManager: () => ({
+    fileManagerRef: { getSnapshot: () => ({ context: { contentService: { settleEditorSaves } } }) },
+  }),
+}));
 vi.mock('#hooks/use-revision-status.js', () => ({
   useRevisionCommands: () => ({ saveRevision }),
 }));
@@ -62,6 +70,7 @@ beforeEach(() => {
   waitForStore.mockReset();
   waitForStore.mockResolvedValue(undefined);
   toastError.mockReset();
+  settleEditorSaves.mockClear();
 });
 
 describe('the workbench save shortcut', () => {
@@ -74,8 +83,27 @@ describe('the workbench save shortcut', () => {
 
     await userEvent.keyboard('{Control>}s{/Control}');
 
-    expect(sent).toStrictEqual(['editor:flushNow', 'project:1:flushNow', 'saveRevision']);
+    expect(sent).toStrictEqual(['editor:flushNow', 'project:1:flushNow', 'files:settled', 'saveRevision']);
     expect(saveRevision).toHaveBeenCalledWith('save');
+  });
+
+  /* D80: ⌘S right after typing recorded only the first keystroke of the edit. */
+  it('waits for the editor’s queued file writes before it asks for the cut', async () => {
+    const written = Promise.withResolvers<void>();
+    settleEditorSaves.mockImplementationOnce(async () => written.promise);
+    render(
+      <KeyboardProvider>
+        <RevisionSaveShortcut />
+      </KeyboardProvider>,
+    );
+
+    await userEvent.keyboard('{Control>}s{/Control}');
+    expect(saveRevision).not.toHaveBeenCalled();
+    written.resolve();
+
+    await waitFor(() => {
+      expect(saveRevision).toHaveBeenCalledWith('save');
+    });
   });
 
   it('lets only the focused project answer while other live projects stay mounted (P73)', async () => {
@@ -88,7 +116,7 @@ describe('the workbench save shortcut', () => {
 
     await userEvent.keyboard('{Control>}s{/Control}');
 
-    expect(sent).toStrictEqual(['editor:flushNow', 'project:2:flushNow', 'saveRevision']);
+    expect(sent).toStrictEqual(['editor:flushNow', 'project:2:flushNow', 'files:settled', 'saveRevision']);
     expect(saveRevision).toHaveBeenCalledTimes(1);
   });
 

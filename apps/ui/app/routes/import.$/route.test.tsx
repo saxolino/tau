@@ -10,6 +10,8 @@ import type { ImportWorkerRequest, ImportWorkerResponse } from '#workers/import.
 import ImportRoute from '#routes/import.$/route.js';
 import type * as ReactRouterModule from 'react-router';
 
+type GitHubApiClient = ReturnType<typeof getGitHubClient>;
+
 const existingProjectId = 'proj_existing0000000000000';
 const picker = vi.hoisted(() => ({ available: true as boolean | undefined }));
 const slugs = vi.hoisted(() => ({
@@ -18,14 +20,14 @@ const slugs = vi.hoisted(() => ({
 const linkedImport = vi.hoisted(() => ({ prepare: vi.fn() }));
 type RepositoryMetadata = Awaited<ReturnType<ReturnType<typeof getGitHubClient>['getRepository']>>;
 const getRepository = vi.hoisted(() =>
-  vi.fn(async (): Promise<RepositoryMetadata> => {
+  vi.fn<GitHubApiClient['getRepository']>(async () => {
     throw Object.assign(new Error('Not Found - https://docs.github.com/rest/repos/repos'), { status: 404 });
   }),
 );
 const listFiles = vi.hoisted(() => vi.fn(async (): Promise<Array<{ path: string; size: number }>> => []));
 const workerRequests = vi.hoisted((): ImportWorkerRequest[] => []);
 const listBranches = vi.hoisted(() =>
-  vi.fn(async () => ({ branches: [] as Array<{ name: string; sha: string; updatedAt: number }>, hasMore: false })),
+  vi.fn<GitHubApiClient['listBranches']>(async () => ({ branches: [], hasMore: false, endCursor: undefined })),
 );
 const repositoryMetadata: RepositoryMetadata = {
   avatarUrl: undefined,
@@ -89,12 +91,12 @@ class RecordingWorker {
 /* The route's `clientLoader`, evaluated against the router's own location so navigation re-derives it. */
 vi.mock('react-router', async (importOriginal) => {
   const router = await importOriginal<typeof ReactRouterModule>();
-  const { resolveGitHubImportTarget } = await import('#routes/import.$/import.utils.js');
+  const { resolveImportRoute } = await import('#routes/import.$/import.utils.js');
   return {
     ...router,
     useLoaderData: () => {
       const location = router.useLocation();
-      return resolveGitHubImportTarget(location.pathname.replace(/^\/import\/?/u, ''), location.search);
+      return resolveImportRoute(location.pathname.replace(/^\/import\/?/u, ''), location.search);
     },
   };
 });
@@ -249,6 +251,28 @@ describe('ImportRoute GitHub card', () => {
     expect(screen.queryByText('Desktop handoff offer')).not.toBeInTheDocument();
   });
 
+  it('should name the default branch the import falls back to when the public branch list fails', async () => {
+    getRepository.mockResolvedValueOnce({
+      avatarUrl: undefined,
+      description: undefined,
+      stars: 0,
+      forks: 0,
+      watchers: 0,
+      license: undefined,
+      defaultBranch: 'trunk',
+      isPrivate: false,
+      lastUpdated: '2026-10-01T00:00:00Z',
+    });
+    listBranches.mockRejectedValueOnce(new Error('GitHub answered 502'));
+
+    await renderImport('/import/github.com/octo/part');
+
+    expect(
+      await screen.findByText(/^Could not fetch branches\. Import will use the/u, {}, { timeout: 3000 }),
+    ).toHaveTextContent('Could not fetch branches. Import will use the trunk branch.');
+    expect(listBranches).toHaveBeenCalledWith(expect.objectContaining({ owner: 'octo', repo: 'part' }));
+  });
+
   it('should not offer the account picker for a missing repository when the deployment has no GitHub App', async () => {
     picker.available = false;
     await renderImport('/import/github.com/octo/missing');
@@ -349,6 +373,19 @@ describe('ImportRoute GitHub card', () => {
     });
   });
 
+  /* A link the route cannot import lands on the form holding it, never on the crash page (E11, E13). */
+  it('should hold an address it cannot import in the URL field and say why it cannot be reviewed', async () => {
+    await renderImport('/import/https://gitlab.com/gitlab-org/gitlab');
+
+    const url = screen.getByRole('textbox', { name: 'Public repository URL' });
+    expect(url).toHaveValue('https://gitlab.com/gitlab-org/gitlab');
+    expect(url).toHaveAttribute('aria-invalid', 'true');
+    expect(
+      screen.getByText('Enter a github.com repository address, like https://github.com/owner/repo.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review repository' })).toBeDisabled();
+  });
+
   it('should review a URL only on submission and restore its draft and focus after cancellation', async () => {
     const user = userEvent.setup();
     await renderImport();
@@ -439,5 +476,18 @@ describe('ImportRoute GitHub card', () => {
     await user.click(screen.getByText('Details'));
     expect(screen.getByText('Git fetch failed: connection reset')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Import and link' })).toBeEnabled();
+  });
+
+  it('should drop a refusal of the old branch name once the name is edited', async () => {
+    const user = userEvent.setup();
+    linkedImport.prepare.mockRejectedValueOnce(new Error('Remote branch main already names another revision.'));
+    await renderImport();
+    await user.click(screen.getByRole('button', { name: 'Pick linked repository' }));
+    await user.click(screen.getByRole('button', { name: 'Import and link' }));
+    expect(await screen.findByRole('alert', { name: 'Import interrupted' })).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Local and sync branch' }), '-tau');
+
+    expect(screen.queryByRole('alert', { name: 'Import interrupted' })).not.toBeInTheDocument();
   });
 });
