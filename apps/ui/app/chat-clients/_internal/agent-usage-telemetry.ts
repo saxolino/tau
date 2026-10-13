@@ -129,9 +129,10 @@ const apiMisusePatterns = [
 /** Source extensions of the kernels' model files. */
 const modelFileExtensions = ['.ts', '.js', '.py', '.kcl', '.scad', '.cs'] as const;
 const knownTauTools: ReadonlySet<string> = new Set(tauToolNames);
-/* The deployed ingest v1 accepts these operations by kind, but its optional name enum predates project tasks.
+/* The deployed ingest v1 accepts these operations by kind, but its optional name enum predates these tools.
  * Keep their quantities and outcomes while omitting only the newer labels; no execution data is affected. */
-const unnamedTaskTools: ReadonlySet<string> = new Set([
+const unnamedNewTools: ReadonlySet<string> = new Set([
+  toolName.installPackages,
   toolName.taskSpawn,
   toolName.taskRead,
   toolName.taskSend,
@@ -507,7 +508,7 @@ const foldChunk = (facts: TurnFacts, chunk: Readonly<Record<string, unknown>>): 
 const toolCallsOf = (facts: TurnFacts, named: boolean): Pick<AgentTurnDetail, 'toolCalls'> => {
   const counts = new Map<string, NonNullable<AgentTurnDetail['toolCalls']>[number]>();
   for (const { kind, tool, status } of facts.toolResults.values()) {
-    const name = named && (tool === undefined || !unnamedTaskTools.has(tool)) ? tool : undefined;
+    const name = named && (tool === undefined || !unnamedNewTools.has(tool)) ? tool : undefined;
     const key = `${kind}:${name ?? ''}:${status}`;
     const entry = counts.get(key) ?? { kind, ...(name === undefined ? {} : { tool: name }), status, count: 0 };
     entry.count += 1;

@@ -31,6 +31,10 @@ import { revisionsInputSchema, revisionsOutputSchema } from '#schemas/tools/revi
 import { updateTodosInputSchema, updateTodosOutputSchema } from '#schemas/tools/update-todos.tool.schema.js';
 import { askQuestionsInputSchema, askQuestionsOutputSchema } from '#schemas/tools/ask-questions.tool.schema.js';
 import {
+  installPackagesInputSchema,
+  installPackagesOutputSchema,
+} from '#schemas/tools/install-packages.tool.schema.js';
+import {
   cancelPrintInputSchema,
   cancelPrintOutputSchema,
   getMachineInputSchema,
@@ -157,6 +161,10 @@ export const uiMessageTools = {
   [toolName.askQuestions]: {
     inputSchema: askQuestionsInputSchema,
     outputSchema: askQuestionsOutputSchema,
+  },
+  [toolName.installPackages]: {
+    inputSchema: installPackagesInputSchema,
+    outputSchema: installPackagesOutputSchema,
   },
   [toolName.getMachine]: {
     inputSchema: getMachineInputSchema,

@@ -201,7 +201,8 @@ const deployedToolCalls = z
     }),
   )
   .max(72);
-const taskKinds = [
+const newToolKinds = [
+  ['install_packages', 'edit'],
   ['task_spawn', 'execute'],
   ['task_read', 'read'],
   ['task_send', 'edit'],
@@ -211,7 +212,7 @@ const taskKinds = [
 ] as const;
 
 describe('trackAgentTurn', () => {
-  it.each(taskKinds)(
+  it.each(newToolKinds)(
     'reports %s compatibly with deployed ingest while keeping old consented tool names',
     (tool, kind) => {
       const runId = `compatible-${tool}`;
@@ -249,13 +250,13 @@ describe('trackAgentTurn', () => {
     },
   );
 
-  it('keeps the old maximum row cardinality and every quantity when task calls join all named and generic statuses', () => {
+  it('keeps the old maximum row cardinality and every quantity when new calls join all named and generic statuses', () => {
     const runId = 'compatible-cardinality';
     const { publish, report } = harness(runId, {
       identity: { agentId: 'tau', placement: 'desktop' },
       usageMetrics: { kernelId: 'replicad' },
     });
-    const ownRows = [...deployedToolNames, ...taskKinds.map(([name]) => name)].flatMap((name) =>
+    const ownRows = [...deployedToolNames, ...newToolKinds.map(([name]) => name)].flatMap((name) =>
       [false, true].flatMap((isError) =>
         tauToolRows(`${name}-${String(isError)}`, name, { input: {}, output: {}, isError }),
       ),
@@ -278,7 +279,7 @@ describe('trackAgentTurn', () => {
       throw new Error('Expected a settled agent turn.');
     }
     expect(entry.detail.toolCalls).toHaveLength(72);
-    expect(entry.detail.toolCalls?.reduce((count, call) => count + call.count, 0)).toBe(84);
+    expect(entry.detail.toolCalls?.reduce((count, call) => count + call.count, 0)).toBe(86);
     expect(entry.detail.toolCalls?.filter((call) => call.tool !== undefined)).toHaveLength(52);
     expect(deployedToolCalls.parse(entry.detail.toolCalls)).toEqual(entry.detail.toolCalls);
   });
