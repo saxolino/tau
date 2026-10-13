@@ -1,6 +1,6 @@
 [
   {
-    "name": "total (ESM JS) — measured 181.06 kB brotli on 2026-10-13 (project tasks, Tau ACP and install_packages; @taucad/bundler-core stays external)",
+    "name": "total (ESM JS) — project tasks, Tau ACP and adopted-repository open checks; @taucad/bundler-core stays external",
     "path": "dist/**/*.mjs",
     "limit": "182 kB"
   }
