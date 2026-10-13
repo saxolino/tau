@@ -105,6 +105,47 @@ const runtimeNetworkArguments = (modulePath: string): string[] =>
     ? ['--allow-net']
     : [];
 
+/**
+ * The S35 spike's second child profile: a native-only runtime child.
+ *
+ * Charter D37 asks whether a child under `--permission` can launch the sandboxed native
+ * workers (build123d, PicoGK) when it holds exactly `--allow-child-process` and read grants
+ * on the payload store and the workspace. The child's own code and private temp directory
+ * are granted as the standard child's are; nothing else is readable and only the private
+ * temp directory is writable. The worker itself is contained by the native sandbox
+ * (`sandbox-exec` / bubblewrap), which this grant never replaces (I7).
+ *
+ * @param options - The child module, its code roots, store and workspace roots, and temp directory.
+ * @returns The native-only child's permission flags.
+ * @internal
+ */
+export const nativePermissionArguments = (options: {
+  readonly modulePath: string;
+  readonly codeRoots: readonly string[];
+  readonly storeRoots: readonly string[];
+  readonly workspaceRoot: string;
+  readonly temporaryDirectory: string;
+}): string[] => [
+  '--permission',
+  '--allow-child-process',
+  ...[dirname(options.modulePath), ...options.codeRoots].map((root) => `--allow-fs-read=${root}`),
+  ...options.storeRoots.map((root) => `--allow-fs-read=${root}`),
+  `--allow-fs-read=${options.workspaceRoot}`,
+  `--allow-fs-read=${options.temporaryDirectory}`,
+  `--allow-fs-write=${options.temporaryDirectory}`,
+];
+
+/** The S35 native-only child profile; absent means the standard permissioned child. @internal */
+export type NativeRuntimeChildProfile = {
+  readonly kind: 'native';
+  /** Directories the child's own code (and its dependencies) load from. */
+  readonly codeRoots: readonly string[];
+  /** The sealed payload store roots the kernels launch from. */
+  readonly storeRoots: readonly string[];
+  /** The project directory; also the child's working directory. */
+  readonly workspaceRoot: string;
+};
+
 const killChild = async (child: ChildProcess): Promise<void> => {
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
@@ -140,13 +181,18 @@ const killChild = async (child: ChildProcess): Promise<void> => {
 export const startRuntimeChild = async (options: {
   readonly modulePath: string;
   readonly args?: readonly string[];
+  /** S35 spike: the native-only child profile. */
+  readonly profile?: NativeRuntimeChildProfile;
+  /** S35 spike: frames the child sends before `ready` other than `ready` and `error`. */
+  readonly onFrame?: (frame: unknown) => void;
 }): Promise<RuntimeChildHandle> => {
   const authorizationToken = randomBytes(32).toString('base64url');
   /* The real path: importing a module resolves symlinks component by component (macOS's `/var` is a link to
    * `/private/var`), and the grants cover only this directory, not its symlinked ancestors. */
   const temporaryDirectory = await realpath(await mkdtemp(join(tmpdir(), 'tau-runtime-child-')));
+  const { profile } = options;
   const child = fork(options.modulePath, [...(options.args ?? [])], {
-    cwd: process.cwd(),
+    cwd: profile ? profile.workspaceRoot : process.cwd(),
     env: {
       ...minimalEnvironment(),
       // `os.tmpdir()` reads TMPDIR on POSIX and TEMP or TMP on Windows.
@@ -158,7 +204,9 @@ export const startRuntimeChild = async (options: {
     },
     execArgv: [
       ...developmentLoaderArguments(options.modulePath),
-      ...permissionArguments(options.modulePath, temporaryDirectory),
+      ...(profile
+        ? nativePermissionArguments({ ...profile, modulePath: options.modulePath, temporaryDirectory })
+        : permissionArguments(options.modulePath, temporaryDirectory)),
       ...runtimeNetworkArguments(options.modulePath),
     ],
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -197,7 +245,9 @@ export const startRuntimeChild = async (options: {
     const childError = errorMessageSchema.safeParse(message);
     if (childError.success) {
       ready.reject(new Error(`Tau Host runtime child failed: ${childError.data.message}`));
+      return;
     }
+    options.onFrame?.(message);
   };
   child.on('message', onMessage);
   child.once('error', (error) => {
