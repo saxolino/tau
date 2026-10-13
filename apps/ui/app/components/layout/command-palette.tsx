@@ -9,6 +9,7 @@ import { CommandDialog, CommandInput, CommandList, CommandEmpty, CommandItem } f
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import type { KeyCombination } from '@taucad/ui/utils/keys';
+import { ariaKeyShortcuts } from '@taucad/ui/utils/keys';
 import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { menuGroupHeadingClass, menuItemLayoutClass } from '@taucad/ui/components/menu.variants';
@@ -268,9 +269,10 @@ const commandKeyCombination = {
 
 type CommandPaletteTriggerProperties = {
   readonly items: CommandPaletteItem[];
+  readonly variant: CommandsVariant;
 };
 
-function CommandPaletteTrigger({ items }: CommandPaletteTriggerProperties): React.JSX.Element {
+function CommandPaletteTrigger({ items, variant }: CommandPaletteTriggerProperties): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
   const { formattedKeyCombination } = useKeybinding(commandKeyCombination, () => {
@@ -280,18 +282,44 @@ function CommandPaletteTrigger({ items }: CommandPaletteTriggerProperties): Reac
   return (
     <>
       {open ? <ProjectNavigationCommandItems /> : null}
-      <SidebarMenuButton
-        variant='outline'
-        aria-label='Search'
-        className='text-muted-foreground max-md:hidden'
-        onClick={() => {
-          setOpen(true);
-        }}
-      >
-        <Search aria-hidden className='size-4 shrink-0' />
-        <span className='flex-1 whitespace-nowrap'>Search</span>
-        <KeyShortcut className='ml-2 shrink-0'>{formattedKeyCombination}</KeyShortcut>
-      </SidebarMenuButton>
+      {variant === 'icon' ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon-sm'
+              aria-label='Search'
+              aria-keyshortcuts={ariaKeyShortcuts(commandKeyCombination)}
+              className='shrink-0 rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground max-md:hidden'
+              onClick={() => {
+                setOpen(true);
+              }}
+            >
+              <Search aria-hidden className='size-4' />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Search{' '}
+            <KeyShortcut className='ml-1' variant='tooltip'>
+              {formattedKeyCombination}
+            </KeyShortcut>
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        <SidebarMenuButton
+          variant='outline'
+          aria-label='Search'
+          className='text-muted-foreground max-md:hidden'
+          onClick={() => {
+            setOpen(true);
+          }}
+        >
+          <Search aria-hidden className='size-4 shrink-0' />
+          <span className='flex-1 whitespace-nowrap'>Search</span>
+          <KeyShortcut className='ml-2 shrink-0'>{formattedKeyCombination}</KeyShortcut>
+        </SidebarMenuButton>
+      )}
       <CommandPalette isOpen={open} items={items} onOpenChange={setOpen} />
     </>
   );
@@ -443,16 +471,20 @@ export function RouteCommandPaletteItems(): React.JSX.Element {
   );
 }
 
+/** How the search trigger presents: a full-width `bar`, or a compact `icon` button for a header row. */
+type CommandsVariant = 'bar' | 'icon';
+
 /**
  * Sidebar search entry point: the palette trigger over every registered item.
+ * @param properties - The trigger's presentation.
  * @returns The palette trigger and its mobile equivalent.
  */
-export function Commands(): React.JSX.Element {
+export function Commands({ variant = 'bar' }: { readonly variant?: CommandsVariant }): React.JSX.Element {
   const allItems = useContext(CommandPaletteItemsContext);
 
   return (
     <div className='flex items-center gap-2'>
-      <CommandPaletteTrigger items={allItems} />
+      <CommandPaletteTrigger items={allItems} variant={variant} />
       <CommandPaletteMobile items={allItems} />
     </div>
   );

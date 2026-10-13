@@ -30,7 +30,11 @@ vi.mock('#components/nav/project-navigation.js', () => ({
 }));
 
 vi.mock('#components/layout/command-palette.js', () => ({
-  Commands: () => <button type='button'>Search projects and chats</button>,
+  Commands: ({ variant = 'bar' }: { readonly variant?: 'bar' | 'icon' }) => (
+    <button type='button' data-variant={variant}>
+      Search projects and chats
+    </button>
+  ),
 }));
 
 vi.mock('#components/nav/project-navigation-command-items.js', () => ({
@@ -117,6 +121,17 @@ describe('AppSidebar', () => {
     expect(container.querySelector('[data-slot=sidebar-header]')).toHaveClass('h-9');
     expect(container.querySelector('[data-slot=sidebar-header] [data-slot=sidebar-trigger]')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Home' })).not.toBeInTheDocument();
+  });
+
+  it('places the browser search trigger as an icon at the end of the header row', () => {
+    const { container } = renderSidebar();
+    const header = container.querySelector<HTMLElement>('[data-slot=sidebar-header]');
+    const searchButtons = screen.getAllByRole('button', { name: 'Search projects and chats' });
+
+    expect(searchButtons).toHaveLength(1);
+    expect(header).toContainElement(searchButtons[0]!);
+    expect(searchButtons[0]).toHaveAttribute('data-variant', 'icon');
+    expect(header).toHaveClass('justify-end');
   });
 
   it('keeps desktop identity beneath the native titlebar without duplicating its toggle', () => {

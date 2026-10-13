@@ -36,10 +36,10 @@ const wordmarkAspectRatio = 2321.24 / 710;
 
 /* The width each control row fills, including a trailing 4 px: the chat header's own first
  * control then lands one row-gap after the last of these, so the two read as one row. The web
- * row is the `pl-2` inset, the wordmark link (`h-5` wordmark plus `px-1` either side), the
- * sidebar trigger (`size-7`) and the `pr-1` gap: every control sits 4 px from the next. */
+ * row is the `pl-2` inset, the sidebar trigger (`size-7`), the wordmark link (`h-5` wordmark plus
+ * `px-1` either side) and the `pr-1` gap: every control sits 4 px from the next. */
 const desktopTitlebarControlsWidth = 'calc(var(--spacing) * 44)';
-const webTitlebarControlsWidth = `calc(var(--spacing) * ${2 + 1 + 5 * wordmarkAspectRatio + 1 + 7 + 1})`;
+const webTitlebarControlsWidth = `calc(var(--spacing) * ${2 + 7 + 1 + 5 * wordmarkAspectRatio + 1 + 1})`;
 
 const sidebarMinimumWidth = 192;
 const sidebarMaximumWidth = 480;
@@ -146,6 +146,7 @@ const WebTitlebarControls = ({
     data-slot='web-titlebar-controls'
     className='fixed top-0 left-0 z-50 hidden h-9 w-(--titlebar-controls-width) items-center bg-transparent pr-1 pl-2 md:flex'
   >
+    <SidebarTrigger aria-label='Toggle Sidebar' onSidebarResize={onSidebarResize} />
     <Link
       to='/'
       aria-label='Home'
@@ -153,7 +154,6 @@ const WebTitlebarControls = ({
     >
       <TauWordmark aria-hidden className='h-5 w-auto text-primary' />
     </Link>
-    <SidebarTrigger aria-label='Toggle Sidebar' onSidebarResize={onSidebarResize} />
   </div>
 );
 

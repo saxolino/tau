@@ -244,16 +244,16 @@ describe('Page application shell', () => {
     expect(screen.getByText('Page content')).toBeInTheDocument();
   });
 
-  it('keeps the browser wordmark and sidebar control adjacent', () => {
+  it('leads the browser titlebar with the sidebar control before the wordmark', () => {
     const { container } = render(<Page />);
     const controls = container.querySelector<HTMLElement>('[data-slot=web-titlebar-controls]');
     expect(controls).not.toBeNull();
     const controlRegion = controls!;
 
-    expect(controlRegion.children[0]).toBe(within(controlRegion).getByRole('link', { name: 'Home' }));
-    expect(controlRegion.children[1]).toBe(within(controlRegion).getByRole('button', { name: 'Toggle Sidebar' }));
+    expect(controlRegion.children[0]).toBe(within(controlRegion).getByRole('button', { name: 'Toggle Sidebar' }));
+    expect(controlRegion.children[1]).toBe(within(controlRegion).getByRole('link', { name: 'Home' }));
     expect(controlRegion.children).toHaveLength(2);
-    // The wordmark link's own `px-1` is the 4 px gap to the trigger, matching the gap between
+    // The wordmark link's own `px-1` is the 4 px gap from the trigger, matching the gap between
     // every later control; a row gap on top would double it.
     expect(controlRegion).toHaveClass('pl-2', 'pr-1');
     expect(controlRegion).not.toHaveClass('gap-1', 'gap-2', 'px-2');

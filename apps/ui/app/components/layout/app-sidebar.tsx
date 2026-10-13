@@ -26,6 +26,8 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
   const flags = useFeatureFlags();
   const desktopTarget = isDesktopTarget();
   const isNonMobileCollapsed = !isMobile && state === 'collapsed';
+  // The web header row shares its line with the fixed titlebar's trigger and wordmark, so search sits at its end.
+  const isWebHeaderSearch = !isMobile && !desktopTarget;
   const navMainItems = React.useMemo(
     () =>
       [...navRoutes.navMain, ...billingNavRoutes].filter(
@@ -50,7 +52,7 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
         className={cn(
           'flex flex-row items-center gap-1',
           isMobile && 'p-1',
-          !isMobile && !desktopTarget && 'h-9 p-0',
+          isWebHeaderSearch && 'h-9 justify-end py-0 pr-2 pl-0',
           !isMobile && desktopTarget && 'p-1 pt-9',
           isMobile && desktopTarget && 'h-9 pl-(--desktop-titlebar-inset) [&_:is(a,button)]:[app-region:no-drag]',
         )}
@@ -68,11 +70,12 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
           </SidebarMenuButton>
         ) : null}
         {isMobile ? <SidebarTrigger /> : null}
+        {isWebHeaderSearch ? <Commands variant='icon' /> : null}
       </SidebarHeader>
       <SidebarContent className='gap-0'>
         <div className='sticky top-0 z-10 space-y-1 bg-sidebar px-2 pb-1'>
           {/* Global search entries register when search opens. */}
-          <Commands />
+          {isWebHeaderSearch ? null : <Commands />}
           <NavChat />
         </div>
         <div className='flex-1 overflow-y-auto'>
