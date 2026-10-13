@@ -140,6 +140,7 @@ jobs:
 
       # Retain the archive even when the verifier fails; the run result remains authoritative.
       - name: Upload preview archive and provenance
+        id: archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-preview-darwin-arm64-${{ github.event.pull_request.head.sha }}
@@ -153,12 +154,14 @@ jobs:
           compression-level: 0
 
       - name: Verify packaged runtime and macOS integration
+        id: verify
         shell: bash
         run: |
           set -o pipefail
           pnpm nx run desktop:verify-macos-package 2>&1 | tee "$PREVIEW_EVIDENCE_ROOT/verify.log"
 
       - name: Upload build and verification diagnostics
+        id: diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -171,10 +174,25 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
+          ARCHIVE_STATUS: ${{ steps.archive.outcome }}
+          ARCHIVE_URL: ${{ steps.archive.outputs.artifact-url }}
+          VERIFY_STATUS: ${{ steps.verify.outcome }}
+          DIAGNOSTICS_STATUS: ${{ steps.diagnostics.outcome }}
+          DIAGNOSTICS_URL: ${{ steps.diagnostics.outputs.artifact-url }}
         run: |
           {
             echo "Apple Silicon preview from commit $SOURCE_SHA. Build/verification status: $JOB_STATUS."
-            echo 'Download the desktop-preview-darwin-arm64 artifact from this run; SHA256SUMS and provenance.json accompany the ZIP.'
-            echo 'This preview is ad-hoc signed, not Developer ID signed or notarized. macOS may require explicit approval to open it.'
-            echo 'It uses staging services and does not check for automatic updates. A failed verification means the archive is retained for diagnosis.'
+            if [ "$ARCHIVE_STATUS" = success ] && [ -n "$ARCHIVE_URL" ]; then
+              echo "[Download preview archive]($ARCHIVE_URL); SHA256SUMS and provenance.json accompany the ZIP."
+              echo "Package verification: $VERIFY_STATUS. If verification did not succeed, this archive is retained for diagnosis and is not a verified delivery."
+              echo 'This preview is ad-hoc signed, not Developer ID signed or notarized. macOS may require explicit approval to open it.'
+              echo 'It uses staging services and does not check for automatic updates.'
+            else
+              echo "No package archive is available from this run. Archive upload: $ARCHIVE_STATUS."
+            fi
+            if [ "$DIAGNOSTICS_STATUS" = success ] && [ -n "$DIAGNOSTICS_URL" ]; then
+              echo "[Download build and verification diagnostics]($DIAGNOSTICS_URL)."
+            else
+              echo "No diagnostics artifact is available. Diagnostics upload: $DIAGNOSTICS_STATUS."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
