@@ -1,9 +1,32 @@
 import { describe, expect, it } from 'vitest';
+import { jscadKernel } from '@taucad/jscad';
+import { manifoldKernel } from '@taucad/manifold';
+import { picovoxelKernel } from '@taucad/picovoxel';
+import { tscircuitKernel } from '@taucad/tscircuit';
 import { replicadKernel } from '@taucad/replicad';
 import { kernelLibraries } from '#utils/kernel-libraries.js';
 import { getKernelDependencies, kernelsWithLibraries } from '#utils/kernel.utils.js';
 
 describe('getKernelDependencies', () => {
+  it.each([
+    ['replicad', replicadKernel],
+    ['jscad', jscadKernel],
+    ['manifold', manifoldKernel],
+    ['picovoxel', picovoxelKernel],
+    ['tscircuit', tscircuitKernel],
+  ] as const)(
+    'should keep the dependency-only %s projection equal to the real kernel metadata',
+    async (kernelId, factory) => {
+      expect(await getKernelDependencies(kernelId)).toEqual(factory().builtinDependencies);
+    },
+  );
+
+  it('should return independent dependency records without mutating the checked projection', async () => {
+    const first = await getKernelDependencies('replicad');
+    first['replicad'] = 'caller-edited';
+    expect(await getKernelDependencies('replicad')).toEqual(replicadKernel().builtinDependencies);
+  });
+
   it('should declare the package the replicad plugin runs, under its import name', async () => {
     const dependencies = await getKernelDependencies('replicad');
 
