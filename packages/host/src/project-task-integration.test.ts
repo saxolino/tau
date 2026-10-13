@@ -1,11 +1,44 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import type { ToolRegistry, TauAgentHost } from '@taucad/agent-host';
+import type { ToolRegistry, TauAgentHost, TurnPlacementPort } from '@taucad/agent-host';
 import { parseLogEvent } from '@taucad/agent-host';
 import type { AgentLauncher } from '@taucad/agent-host/launcher';
 import { toolName } from '@taucad/chat/constants';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
-import { withProjectTaskTools, readRecordedToolGrant } from '#project-task-integration.js';
+import { withProjectTaskTools, readRecordedToolGrant, waitForTaskLeaseRetirement } from '#project-task-integration.js';
+
+describe('task placement retirement proof', () => {
+  it('waits for acknowledgement after a finalized row before releasing the task reservation', async () => {
+    const placement = mock<TurnPlacementPort>();
+    placement.reconcile.mockResolvedValueOnce({
+      requestId: 'task-release-run',
+      status: 'applied',
+      held: [{ key: { chatId: 'chat', runId: 'run', turnId: 'turn', attempt: 1 }, checkoutId: 'candidate' }],
+    });
+    placement.reconcile.mockResolvedValue({ requestId: 'task-release-run', status: 'applied', held: [] });
+    await waitForTaskLeaseRetirement(placement, 'chat', 'run');
+    expect(placement.reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses bounded retirement when the existing owner still holds the lease', async () => {
+    vi.useFakeTimers();
+    try {
+      const placement = mock<TurnPlacementPort>();
+      placement.reconcile.mockResolvedValue({
+        requestId: 'task-release-run',
+        status: 'applied',
+        held: [{ key: { chatId: 'chat', runId: 'run', turnId: 'turn', attempt: 1 }, checkoutId: 'candidate' }],
+      });
+      const waiting = expect(waitForTaskLeaseRetirement(placement, 'chat', 'run')).rejects.toMatchObject({
+        code: 'TASK_BUSY',
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      await waiting;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('authenticated project task tool binding', () => {
   it('recovers the recorded legacy grant across bounded pages without inventing task authority', async () => {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { followChat, unsettledAttempts, jsonValueSchema } from '@taucad/agent-host';
-import type { HostToolDefinition, ToolRegistry, ChatLedger } from '@taucad/agent-host';
+import type { HostToolDefinition, ToolRegistry, ChatLedger, TurnPlacementPort } from '@taucad/agent-host';
 import type { AgentLauncher } from '@taucad/agent-host/launcher';
 import {
   projectTaskActionSchema,
@@ -14,6 +14,7 @@ import type { AgentChannelAdmissionConfig, ProjectTaskToolGrant } from '@taucad/
 import { toolName } from '@taucad/chat/constants';
 import type { ProjectTaskBackend, ProjectTaskLaunch } from '#project-tasks/backend.js';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
+import { formatProjectTaskMailboxMessage } from '#project-tasks/mailbox.js';
 import type { ProjectRevisions } from '#revisions.js';
 
 /** Canonical task tools shared by the internal registry and session-bound MCP. @internal */
@@ -203,6 +204,8 @@ export const createProjectTaskBackend = (
     ) => Promise<NonNullable<AgentChannelAdmissionConfig['contextPayload']>>;
     rememberGrant: (runId: string, grant: Pick<AgentChannelAdmissionConfig, 'toolChoice' | 'allowedTools'>) => void;
     released: (runId: string, checkoutId: string) => void;
+    waitForOwnerClose: () => Promise<void>;
+    placement: TurnPlacementPort;
   }>,
 ): ProjectTaskBackend => ({
   validate: async (provider) => {
@@ -301,14 +304,52 @@ export const createProjectTaskBackend = (
           };
         }
       }
-      return { status: 'failed', detail: 'The task transcript owner stopped before settlement.' };
+      /* The launcher's public reads stop as close begins. Its canonical host still owns the terminal write and
+       * placement acknowledgement; only that owner's completed close makes the retained final ledger authoritative. */
+      await options.waitForOwnerClose();
+      const ledger = await options.launcher().host.ledger(task.chatId);
+      const run = ledger.runs[runId];
+      if (
+        run === undefined ||
+        unsettledAttempts(ledger).some((entry) => entry.runId === runId) ||
+        !['completed', 'failed', 'cancelled'].includes(run.lifecycle ?? '')
+      ) {
+        throw Object.assign(new Error('The task owner closed without a durable placement settlement.'), {
+          code: 'TASK_BUSY',
+        });
+      }
+      return {
+        status: run.lifecycle === 'completed' ? 'completed' : run.lifecycle === 'cancelled' ? 'cancelled' : 'failed',
+      };
     })();
     if (signal.aborted) {
       await cancel();
     }
     return { runId, completion, cancel };
   },
-  release: async ({ attempt, allocation }) => {
+  release: async ({ task, attempt, allocation }) => {
+    let ledger: ChatLedger;
+    try {
+      ledger = await options.launcher().host.ledger(task.chatId);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'HOST_CLOSED')) {
+        throw error;
+      }
+      await options.waitForOwnerClose();
+      ledger = await options.launcher().host.ledger(task.chatId);
+    }
+    const runId = attempt.runId ?? attempt.id;
+    const run = ledger.runs[runId];
+    if (
+      run !== undefined &&
+      (!['completed', 'failed', 'cancelled'].includes(run.lifecycle ?? '') ||
+        unsettledAttempts(ledger).some((entry) => entry.runId === runId))
+    ) {
+      throw Object.assign(new Error('The task placement is not durably settled; its reservation remains held.'), {
+        code: 'TASK_BUSY',
+      });
+    }
+    await waitForTaskLeaseRetirement(options.placement, task.chatId, runId);
     options.released(attempt.runId ?? attempt.id, allocation.checkoutId);
   },
   reconcile: async ({ task, attempt }) => {
@@ -348,6 +389,41 @@ export const createProjectTaskBackend = (
 });
 
 /**
+ * Observe retirement through the existing placement owner: the settlement row precedes its acknowledgement.
+ * @param placement - The same port that admitted and settles the run.
+ * @param chatId - The authenticated task chat.
+ * @param runId - The admitted run whose reservation is retained until acknowledgement.
+ * @returns Once the existing owner confirms that it holds no lease for the run.
+ * @internal
+ */
+export const waitForTaskLeaseRetirement = async (
+  placement: TurnPlacementPort,
+  chatId: string,
+  runId: string,
+): Promise<void> => {
+  const deadline = Date.now() + 1000;
+  for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- each owner observation must follow the prior acknowledgement opportunity.
+    const answer = await placement.reconcile({ requestId: `task-release-${runId}`, chatId });
+    if (answer.status === 'applied' && !answer.held.some((entry) => entry.key.runId === runId)) {
+      return;
+    }
+    if (answer.status !== 'applied' || Date.now() >= deadline) {
+      throw Object.assign(
+        new Error('The task placement has not acknowledged retirement; its reservation remains held.'),
+        {
+          code: 'TASK_BUSY',
+        },
+      );
+    }
+    // oxlint-disable-next-line no-await-in-loop -- bounded spacing prevents concurrent queries against the same owner.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 25);
+    });
+  }
+};
+
+/**
  * Keep mailbox content distinguishable from the task's instruction.
  * @param launch - The admitted task and bounded mailbox batch.
  * @returns The task instruction followed by durable message envelopes.
@@ -355,11 +431,5 @@ export const createProjectTaskBackend = (
  */
 const taskPrompt = (launch: ProjectTaskLaunch): string => {
   const { task, messages } = launch;
-  return [
-    task.prompt,
-    ...messages.map(
-      (message) =>
-        `\n<task-message sequence="${message.sequence}" sender="${message.senderTaskId ?? 'host'}">\n${message.text}\n</task-message>`,
-    ),
-  ].join('\n');
+  return [task.prompt, ...messages.map((message) => `\n${formatProjectTaskMailboxMessage(message)}`)].join('\n');
 };

@@ -477,6 +477,33 @@ describe('chatRun placement paths (W7.r1)', () => {
     expect(next.value).toBe('closing');
   });
 
+  it('should retain an uncertain settlement on a failed shutdown cut instead of retrying close forever', () => {
+    const finishing = at((snapshot) => snapshot.matches({ settling: 'finishing' }));
+    const refused = {
+      type: 'completeAnswered',
+      key: contextOf(finishing).settle!.key,
+      status: 'refused',
+      code: 'CUT_FAILED',
+    };
+    const [ordinary] = step(finishing, refused);
+    expect(ordinary.matches({ settling: 'backingOff' })).toBe(true);
+
+    const [closing] = step(finishing, { type: 'close' });
+    const [faulted, effects] = step(closing, refused);
+    expect(faulted.value).toBe('closing');
+    expect(faulted.context.cause).toBe('fault');
+    expect(effects.map(({ type }) => type)).not.toContain('acknowledgePlacement');
+    expect(effects.map(({ type }) => type)).not.toContain('appendRows');
+  });
+
+  it('should relinquish an unsettled attempt without issuing a settlement write', () => {
+    const finishing = at((snapshot) => snapshot.matches({ settling: 'finishing' }));
+    const [next, effects] = step(finishing, { type: 'relinquish' });
+    expect(next.value).toBe('closing');
+    expect(effects.map(({ type }) => type)).not.toContain('appendRows');
+    expect(effects.map(({ type }) => type)).not.toContain('acknowledgePlacement');
+  });
+
   it('should abandon the placement when a fence ends a running attempt', () => {
     const running = at((snapshot) => snapshot.matches('running') && contextOf(snapshot).pending !== undefined);
     const [next, effects] = step(running, {

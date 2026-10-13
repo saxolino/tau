@@ -42,9 +42,15 @@ import type { HostRevisionEvent, ProjectRevisions, ProjectRevisionsOptions, Turn
 import { createProjectTaskCoordinator } from '#project-tasks/coordinator.js';
 import { createNodeProjectTaskStore } from '#project-tasks/node-store.js';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
-import { createProjectTaskBackend, withProjectTaskTools, readRecordedToolGrant } from '#project-task-integration.js';
+import {
+  createProjectTaskBackend,
+  withProjectTaskTools,
+  readRecordedToolGrant,
+  waitForTaskLeaseRetirement,
+} from '#project-task-integration.js';
 import { readProjectTaskContext } from '#project-task-context.js';
 import { createTauAgentAcpTransport } from '#acp/tau-agent.js';
+import { formatProjectTaskMailboxMessage } from '#project-tasks/mailbox.js';
 import type { TauAgentAcpOptions } from '#acp/tau-agent.js';
 
 /**
@@ -192,6 +198,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     return tasks;
   };
   const taskFollowers = new Map<string, Promise<void>>();
+  const ownerClosed = Promise.withResolvers<void>();
   const trackTask = (coordinator: ProjectTaskCoordinator, task: ProjectTask, runId: string): void => {
     const attemptId = task.attempts.at(-1)!.id;
     if (taskFollowers.has(attemptId)) {
@@ -213,6 +220,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         })) {
           const run = ledger.runs[runId];
           if (run !== undefined && rootSettled(ledger)) {
+            await waitForTaskLeaseRetirement(turnPlacement, task.chatId, runId);
             await coordinator.finishRoot({
               taskId: task.id,
               attemptId,
@@ -223,7 +231,11 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
           }
         }
       } catch (error) {
-        console.error('[project tasks] root settlement tracking failed', error);
+        /* Shutdown has already settled the coordinator before closing its journal; a delayed follower cannot
+         * finish that same record again. Other settlement failures, including a held lease, remain visible. */
+        if (!(closing !== undefined && error instanceof Error && 'code' in error && error.code === 'TASK_CLOSED')) {
+          console.error('[project tasks] root settlement tracking failed', error);
+        }
       } finally {
         taskFollowers.delete(attemptId);
         taskChats.delete(runId);
@@ -498,6 +510,8 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
             taskGrants.delete(runId);
             taskRoots.delete(checkoutId);
           },
+          waitForOwnerClose: async () => ownerClosed.promise,
+          placement: turnPlacement,
         }),
       });
       await coordinator.recover();
@@ -536,7 +550,10 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         retryTaskClose = true;
       }
     }
-    await settle(async () => launcher.close());
+    await settle(async () => {
+      await launcher.close();
+      ownerClosed.resolve();
+    });
     if (retryTaskClose && tasks !== undefined) {
       await settle(async () => {
         const coordinator = await tasks;
@@ -624,12 +641,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
               if (rootTask !== undefined) {
                 const messages = await coordinator.inbox({ taskId: rootTask.id });
                 if (messages.length > 0) {
-                  const mailbox = messages
-                    .map(
-                      (message) =>
-                        `<task-message sequence="${message.sequence}" sender="${message.senderTaskId ?? 'host'}">\n${message.text}\n</task-message>`,
-                    )
-                    .join('\n');
+                  const mailbox = messages.map((message) => formatProjectTaskMailboxMessage(message)).join('\n');
                   const original = command.payload.message.content;
                   command = {
                     ...command,

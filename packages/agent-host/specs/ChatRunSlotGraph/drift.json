@@ -131,8 +131,11 @@
     "start",
     "steer"
   ],
+  "sources": {
+    "src/host/chat-run.machine.ts": "9a0fd7ef1aa40460272ed846e4009727a09ac6ce8187c2453c7bb1f2069e4ed1"
+  },
   "specs": {
-    "ChatRunSlot.tla": "212f7671a6b6334621e60592b7f80150ccecc9671f7c2fae528181b7a03f3992",
+    "ChatRunSlot.tla": "8bc5cc72552d73374d4fba20b111e50a8d756e809fedfb8d0b68f438f3d9ba9a",
     "ChatRunSlotGraph.tla": "8e0ead5432b435e03bfec31863999214835040bccdc52f96928aba79f5d84a81"
   },
   "tables": {},

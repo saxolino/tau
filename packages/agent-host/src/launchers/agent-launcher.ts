@@ -1309,8 +1309,10 @@ export const createAgentLauncher = (options: AgentLauncherOptions): AgentLaunche
         replay.clear();
         writerGenerations.clear();
         placing.abort();
-        await port.close();
         await host.close();
+        /* Graceful close settles the actor while this process still holds leadership. Closing the port first
+         * relinquishes/fences it instead, preserving an orphan lease without its terminal settlement row. */
+        await port.close();
         const unclaimed = [...views.values()];
         views.clear();
         await Promise.allSettled(
