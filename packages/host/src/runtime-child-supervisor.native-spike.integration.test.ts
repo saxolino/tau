@@ -178,9 +178,38 @@ describe('S35 in-child sandbox wrapper grants', () => {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
-    const last = steps.at(-1) as { ok?: boolean } | undefined;
+    const last = steps.at(-1) as { ok?: boolean; argv?: string[] } | undefined;
     discoveredReadRoots = last?.ok ? grants : [];
-    record('wrap-grant-discovery', { ok: last?.ok === true, grants, steps });
+    /* The same wrap without --permission: a wrapper that silently skipped a path it could not read would emit a
+     * different sandbox profile under the grants. */
+    const unrestrictedTemporary = realpathSync(await mkdtemp(join(tmpdir(), 's35w-')));
+    let unrestricted: { ok: boolean; argv?: string[] } | undefined;
+    try {
+      const result = spawnSync(process.execPath, [wrapModule, storeRoot, workspaceRoot], {
+        cwd: workspaceRoot,
+        env: { PATH: process.env['PATH'], TMPDIR: unrestrictedTemporary },
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      const line = result.stdout.split('\n').find((candidate) => candidate.startsWith('{'));
+      unrestricted = line ? (JSON.parse(line) as { ok: boolean; argv?: string[] }) : undefined;
+    } finally {
+      await rm(unrestrictedTemporary, { recursive: true, force: true });
+    }
+    const normalize = (argv: readonly string[] | undefined, temporaryPath: string): string | undefined =>
+      argv?.join('\u0000').replaceAll(temporaryPath, '<TMP>').replaceAll(/[0-9a-f]{8,}/gu, '<HEX>')
+        /* The proxy ports are chosen per process. */
+        .replaceAll(/\b\d{4,5}\b/gu, '<PORT>');
+    const restrictedProfile = normalize(last?.argv, temporary);
+    const unrestrictedProfile = normalize(unrestricted?.argv, unrestrictedTemporary);
+    record('wrap-grant-discovery', {
+      ok: last?.ok === true,
+      grants,
+      profileIdenticalToUnrestricted: restrictedProfile === unrestrictedProfile,
+      restrictedArgv: last?.argv,
+      unrestrictedArgv: unrestricted?.argv,
+      steps: steps.map((step) => ({ ...(step as object), argv: undefined })),
+    });
     /* Records the finding; the strict child below is the S35 pass/fail line. */
     expect(last?.ok, JSON.stringify(steps.at(-1))).toBe(true);
   });

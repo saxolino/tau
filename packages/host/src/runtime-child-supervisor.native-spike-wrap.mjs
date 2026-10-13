@@ -15,7 +15,7 @@ try {
     workingDirectory,
     commandId: 's35-wrap',
   });
-  console.log(JSON.stringify({ ok: true, argvLength: argv.length }));
+  console.log(JSON.stringify({ ok: true, argv }));
 } catch (error) {
   const cause = error?.cause ?? error;
   console.log(
