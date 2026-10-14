@@ -1,7 +1,7 @@
 [
   {
-    "name": "total (ESM JS) — project tasks, Tau ACP, Codex reasoning summaries and adopted-repository open checks; @taucad/bundler-core stays external",
+    "name": "total (ESM JS) — project tasks, Tau ACP, Codex reasoning summaries, Grok interoperability and adopted-repository open checks; @taucad/bundler-core stays external",
     "path": "dist/**/*.mjs",
-    "limit": "182.1 kB"
+    "limit": "183.8 kB"
   }
 ]
