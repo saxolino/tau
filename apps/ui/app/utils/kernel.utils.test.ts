@@ -27,6 +27,16 @@ describe('getKernelDependencies', () => {
     expect(await getKernelDependencies('replicad')).toEqual(replicadKernel().builtinDependencies);
   });
 
+  it('should match every kernel without loading executable plugins into the renderer', () => {
+    expect(kernelLibraries).toEqual({
+      replicad: replicadKernel().builtinDependencies,
+      jscad: jscadKernel().builtinDependencies,
+      manifold: manifoldKernel().builtinDependencies,
+      picovoxel: picovoxelKernel().builtinDependencies,
+      tscircuit: tscircuitKernel().builtinDependencies,
+    });
+  });
+
   it('should declare the package the replicad plugin runs, under its import name', async () => {
     const dependencies = await getKernelDependencies('replicad');
 

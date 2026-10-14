@@ -1127,6 +1127,8 @@ export const createTurnProjection = (options: {
     readonly sourceId: string;
     readonly kind: 'text' | 'thinking';
     phase?: string;
+    reasoningSummary?: string;
+    summaryIndex?: number;
     readonly durableId: string;
     readonly startedAtMs: number;
     text: string;
@@ -1223,6 +1225,7 @@ export const createTurnProjection = (options: {
     const { usage, model, cost, context } = reported;
     return {
       ...(block?.phase === undefined ? {} : { phase: block.phase }),
+      ...(block?.reasoningSummary === undefined ? {} : { reasoningSummary: block.reasoningSummary }),
       /* `model` *and* `responseModel`: the first is what ran, the second is what
        * every existing usage reader already looks for, and for an external turn
        * they are the same fact — Tau never substitutes a model here. */
@@ -1268,6 +1271,7 @@ export const createTurnProjection = (options: {
         content: block.text,
         ...(block.kind === 'thinking' ? { timestamp: block.endedAt } : {}),
         ...(block.phase === undefined ? {} : { phase: block.phase }),
+        ...(block.reasoningSummary === undefined ? {} : { reasoningSummary: block.reasoningSummary }),
       });
     }
     const message: ProviderMessage = {
@@ -1556,6 +1560,24 @@ export const createTurnProjection = (options: {
         if (typeof phase === 'string') {
           block.phase = phase;
         }
+        const summary =
+          options.agentId === 'codex' && kind === 'thinking'
+            ? asRecord(asRecord(asRecord(update._meta)?.['codex'])?.['reasoningSummary'])
+            : undefined;
+        const summaryIndex = summary?.['index'];
+        const summaryText = summary?.['text'];
+        if (
+          typeof summaryIndex === 'number' &&
+          Number.isSafeInteger(summaryIndex) &&
+          summaryIndex >= 0 &&
+          typeof summaryText === 'string' &&
+          summaryText !== '' &&
+          summaryIndex >= (block.summaryIndex ?? 0)
+        ) {
+          block.reasoningSummary =
+            summaryIndex === block.summaryIndex ? (block.reasoningSummary ?? '') + summaryText : summaryText;
+          block.summaryIndex = summaryIndex;
+        }
         if (update.messageId !== undefined) {
           assistantBlocks.set(key, block);
         }
@@ -1568,6 +1590,7 @@ export const createTurnProjection = (options: {
             contentIndex: 0,
             ...(kind === 'thinking' ? { timestamp: block.startedAtMs } : {}),
             ...(block.phase === undefined ? {} : { phase: block.phase }),
+            ...(block.reasoningSummary === undefined ? {} : { reasoningSummary: block.reasoningSummary }),
           });
         }
         block.text += delta;
@@ -1580,6 +1603,7 @@ export const createTurnProjection = (options: {
           delta,
           offset: block.text.length - delta.length,
           ...(block.phase === undefined ? {} : { phase: block.phase }),
+          ...(block.reasoningSummary === undefined ? {} : { reasoningSummary: block.reasoningSummary }),
         });
         if (idleFlush) {
           clearTimeout(idleFlush);

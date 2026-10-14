@@ -16,6 +16,7 @@ const panelView = vi.hoisted(() => ({
   agents: [] as AgentProjection[],
 }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project' }) }));
+vi.mock('#hooks/use-project-availability.js', () => ({ useProjectAvailability: () => 'ready' }));
 vi.mock('#hooks/use-project-slug-route.js', () => ({
   useProjectSlugs: () => ({ status: 'resolved', value: { workspaceSlug: 'home', projectSlug: 'bracket' } }),
 }));
