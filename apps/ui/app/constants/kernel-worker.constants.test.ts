@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createDefaultKernelOptions, createDebugKernelOptions } from '#constants/kernel-worker.constants.js';
-import { runtime, uiRuntimeConfigSchema } from '#runtime/ui-runtime.definition.js';
+import { runtime } from '#runtime/ui-runtime.definition.js';
+import { uiRuntimeConfigSchema } from '#runtime/ui-runtime.schema.js';
 import { fromMemoryFs } from '@taucad/runtime/filesystem';
 import { resolveRuntimeDefinition } from '@taucad/runtime/worker';
 
@@ -42,30 +43,36 @@ describe('kernel-worker constants', () => {
       'openrscad',
       'jscad',
       'manifold',
+      'picovoxel',
       'gltf',
       'brep',
       'rhino',
       'assimp',
       'replicad',
       'zoo',
+      'tscircuit',
     ]);
     for (const kernel of resolvedRuntime.kernels) {
       expect(typeof kernel.id).toBe('string');
       expect(Array.isArray(kernel.extensions)).toBe(true);
     }
+    // PicoVoxel keeps its default wasm 'auto' (resolved per worker from the isolation snapshot).
+    expect(resolvedRuntime.kernels.find((kernel) => kernel.id === 'picovoxel')).not.toHaveProperty('options.wasm');
     expect(resolvedRuntime.middleware.map((middleware) => middleware.id)).toEqual([
       'observability',
       'parameterFileResolver',
-      'parameterCache',
+      'parameterUnits',
       'geometryCache',
-      'gltfCoordinateTransform',
       'gltfEdgeDetection',
     ]);
   });
 
   it('createDefaultKernelOptions builds client options with boot config and a wired TransportPlugin', () => {
     const fileSystem = fromMemoryFs();
-    const options = createDefaultKernelOptions({ fileSystem, runtimeConfig: expectedConfig });
+    const options = createDefaultKernelOptions({
+      fileSystem,
+      runtimeConfig: expectedConfig,
+    });
 
     expect(options.config).toEqual(expectedConfig);
     expect(options.transport).toBeDefined();
@@ -83,7 +90,10 @@ describe('kernel-worker constants', () => {
 
   it('createDebugKernelOptions inherits transport composition from default', () => {
     const fileSystem = fromMemoryFs();
-    const debugOptions = createDebugKernelOptions({ fileSystem, runtimeConfig: expectedConfig });
+    const debugOptions = createDebugKernelOptions({
+      fileSystem,
+      runtimeConfig: expectedConfig,
+    });
 
     expect(debugOptions.transport).toBeDefined();
     expect(debugOptions.config).toEqual(expectedConfig);

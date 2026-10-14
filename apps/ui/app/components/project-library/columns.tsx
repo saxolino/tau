@@ -2,28 +2,37 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { ArrowRight } from 'lucide-react';
 import { NavLink } from 'react-router';
 import type { ReactNode } from 'react';
-import type { ProjectListItem } from '#types/project.types.js';
+import type { ProjectListItem } from '#types/project-library.types.js';
 import { DataTableColumnHeader } from '#components/ui/data-table.js';
-import { Button } from '#components/ui/button.js';
-import { Checkbox } from '#components/ui/checkbox.js';
+import { Button } from '@taucad/ui/components/button';
+import { Checkbox } from '@taucad/ui/components/checkbox';
 import { formatRelativeTime } from '#utils/date.utils.js';
 import type { ProjectActions } from '#components/project-library/project-library.js';
 import { ProjectActionDropdown } from '#components/project-library/project-action-dropdown.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { InlineTextEditor } from '#components/inline-text-editor.js';
 import { useProjectThumbnail } from '#hooks/use-project-thumbnail.js';
 
 import { projectSlugOf, projectUrlOr } from '#utils/project-url.utils.js';
+import type { CloudProject } from '#hooks/use-cloud-projects.js';
+import {
+  CloudProjectNameCell,
+  OnTauCloudMark,
+  OpenCloudProjectButton,
+  isCloudOnly,
+} from '#routes/projects_/cloud-projects.js';
+import type { LibraryRow } from '#routes/projects_/cloud-projects.js';
 
 // Rename component for table cells
 function ProjectNameCell({
   project,
   actions,
 }: {
-  readonly project: ProjectListItem;
+  readonly project: ProjectListItem & { readonly onCloud?: boolean };
   readonly actions: ProjectActions;
 }) {
-  const thumbnailSource = useProjectThumbnail(project.id);
+  const thumbnail = useProjectThumbnail(project.id);
+  const thumbnailSource = thumbnail.url;
   return (
     <div className='flex w-full items-center justify-between gap-3 pr-2'>
       <div className='flex items-center gap-3'>
@@ -40,6 +49,19 @@ function ProjectNameCell({
           )}
         </div>
         <div className='min-w-0'>
+          {thumbnail.status === 'error' || thumbnail.status === 'closed' ? (
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              title={thumbnail.error}
+              onClick={() => {
+                thumbnail.refresh();
+              }}
+            >
+              Retry thumbnail
+            </Button>
+          ) : null}
           <InlineTextEditor
             value={project.name}
             className='h-7 [&_[data-slot=button]]:font-medium'
@@ -47,7 +69,10 @@ function ProjectNameCell({
           />
           {/* Two projects may share a display name; the directory slug is what
               tells them apart on disk and in the URL (blueprint F5). */}
-          <div className='truncate pl-2 font-mono text-xs text-muted-foreground'>{projectSlugOf(project.locator)}</div>
+          <div className='flex min-w-0 items-center gap-1.5 pl-2 text-xs text-muted-foreground'>
+            <span className='truncate font-mono'>{projectSlugOf(project.locator)}</span>
+            {project.onCloud === true ? <OnTauCloudMark /> : undefined}
+          </div>
         </div>
       </div>
     </div>
@@ -74,7 +99,10 @@ function ProjectOpenButton({ project }: { readonly project: ProjectListItem }): 
 }
 
 // Create a factory function for columns that accepts actions
-export const createColumns = (actions: ProjectActions): Array<ColumnDef<ProjectListItem>> => [
+export const createColumns = (
+  actions: ProjectActions,
+  onOpenCloudProject: (entry: CloudProject) => Promise<void>,
+): Array<ColumnDef<LibraryRow>> => [
   {
     id: 'select',
     header: ({ table }) => (
@@ -88,24 +116,30 @@ export const createColumns = (actions: ProjectActions): Array<ColumnDef<ProjectL
         />
       </div>
     ),
-    cell: ({ row }) => (
-      <div className='pl-2'>
-        <Checkbox
-          checked={row.getIsSelected()}
-          aria-label='Select row'
-          onCheckedChange={(value) => {
-            row.toggleSelected(Boolean(value));
-          }}
-        />
-      </div>
-    ),
+    cell: ({ row }) =>
+      row.getCanSelect() ? (
+        <div className='pl-2'>
+          <Checkbox
+            checked={row.getIsSelected()}
+            aria-label='Select row'
+            onCheckedChange={(value) => {
+              row.toggleSelected(Boolean(value));
+            }}
+          />
+        </div>
+      ) : undefined,
     enableSorting: false,
   },
   {
     accessorKey: 'name',
     header: ({ column }) => <DataTableColumnHeader column={column} title='Name' />,
     cell({ row }): ReactNode {
-      return <ProjectNameCell project={row.original} actions={actions} />;
+      const { original } = row;
+      return isCloudOnly(original) ? (
+        <CloudProjectNameCell entry={original} />
+      ) : (
+        <ProjectNameCell project={original} actions={actions} />
+      );
     },
     enableSorting: true,
     enableHiding: false,
@@ -122,7 +156,10 @@ export const createColumns = (actions: ProjectActions): Array<ColumnDef<ProjectL
     id: 'entryPath',
     header: ({ column }) => <DataTableColumnHeader column={column} title='Entry File' />,
     cell({ row }): ReactNode {
-      return <div className='font-mono text-xs'>{row.original.assets.main.entryPath}</div>;
+      const { original } = row;
+      return isCloudOnly(original) ? undefined : (
+        <div className='font-mono text-xs'>{original.assets.main.entryPath}</div>
+      );
     },
     enableSorting: false,
     enableHiding: true,
@@ -140,6 +177,13 @@ export const createColumns = (actions: ProjectActions): Array<ColumnDef<ProjectL
     id: 'actions',
     cell({ row }): ReactNode {
       const project = row.original;
+      if (isCloudOnly(project)) {
+        return (
+          <div className='flex items-center justify-end gap-2'>
+            <OpenCloudProjectButton entry={project} onOpen={onOpenCloudProject} className='ml-auto' />
+          </div>
+        );
+      }
       const isDeleted = Boolean(project.deletedAt);
 
       return (

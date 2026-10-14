@@ -1,0 +1,368 @@
+import { asBuffer, createKernelError, createKernelSuccess, defineKernel } from '@taucad/runtime/kernel';
+import type { ComputeAnnouncement, KernelIssue, KernelServices } from '@taucad/runtime/kernel';
+import { createExportFile } from '@taucad/runtime/types';
+import { actionDigest, canonicalizeComputeAction, contentDigest } from '@taucad/cache-core';
+import type { ActionDigest, ComputeAction } from '@taucad/cache-core';
+import { sha256StringSync } from '@taucad/utils/hash';
+
+import {
+  build123dAnalysisSchema,
+  build123dArtifactSchema,
+  build123dBuildSchema,
+  build123dComputeDescriptorLimit,
+} from '#build123d.protocol.js';
+import type { Build123dAnalysis } from '#build123d.protocol.js';
+import { build123dExportSchemas, build123dOptionsSchema, build123dRenderSchema } from '#build123d.schemas.js';
+import { Build123dWorkerError, PythonSession } from '#python-session.js';
+import { createWorkspaceMirror } from '#build123d-workspace-mirror.js';
+
+const computeNamespace = 'build123d.operation.v1';
+const computeProducerVersion = 'build123d@0.11.1|python@3.13|ocp@7.9.3.1.1|occt@7.9.3|worker-protocol@1|adapter@1';
+const computeEnvironment = {
+  platform: process.platform,
+  architecture: process.arch,
+  lengthUnit: 'millimeter',
+} as const;
+
+/** EQ27: retain an operation whose own kernel call took at least this many milliseconds. */
+const computeAdmissionFloor = 5;
+
+/**
+ * Recompute the worker's action identity before it can name a stored record.
+ *
+ * The worker canonicalizes the same action independently; a disagreement would
+ * key the shared store inconsistently, so it is dropped rather than announced.
+ */
+const verifiedDigest = (action: ComputeAction, claimed: string): ActionDigest | undefined => {
+  const digest = actionDigest({
+    value: `sha256:${sha256StringSync(canonicalizeComputeAction(action))}`,
+  });
+  return digest === claimed ? digest : undefined;
+};
+
+/** Opaque identity for shapes retained in one Python process generation. @public */
+export type Build123dNativeHandle = {
+  readonly sessionGeneration: number;
+  readonly handleId: string;
+};
+
+class Build123dKernelError extends Error {
+  public readonly issues: KernelIssue[];
+
+  public constructor(issues: KernelIssue[]) {
+    super(issues.map(({ message }) => message).join('; '));
+    this.issues = issues;
+    this.name = 'Build123dKernelError';
+  }
+}
+
+const issuesFrom = (error: unknown, fileName?: string): KernelIssue[] => {
+  if (error instanceof Build123dWorkerError) {
+    return error.issues.map(({ code: pythonCode, type: pythonType, ...issue }) => ({
+      ...issue,
+      code: 'RUNTIME',
+      type: pythonType === 'syntax' || pythonType === 'validation' ? 'compilation' : pythonType,
+      details: { pythonCode, pythonType },
+    }));
+  }
+  return [
+    {
+      message: error instanceof Error ? error.message : String(error),
+      code: 'RUNTIME',
+      type: 'runtime',
+      severity: 'error',
+      ...(fileName ? { location: { fileName, startLineNumber: 1, startColumn: 1 } } : {}),
+    },
+  ];
+};
+
+/** The part of the kernel context `analyzeEntry` reads; it adds the memo field. */
+type Build123dContext = {
+  readonly session: PythonSession;
+  observedDependencies: string[];
+  analysis?: { readonly operationId: number; readonly key: string; readonly result: Promise<Build123dAnalysis> };
+};
+
+/**
+ * One analyze request per entry and runtime operation, spanned.
+ *
+ * Dependency and parameter discovery ask the worker the same question with the same arguments
+ * inside one render, so the second asks nothing. D8 wants the wire time in the trace.
+ *
+ * @param entryPath - Model entry the worker analyzes.
+ * @param runtime - Kernel runtime, for its operation, abort signal and tracer.
+ * @param context - Kernel context holding the session and its observed dependencies.
+ * @returns The worker's analysis.
+ */
+const analyzeEntry = async (
+  entryPath: string,
+  runtime: Pick<KernelServices, 'operationId' | 'signal' | 'tracer'>,
+  context: Build123dContext,
+): Promise<Build123dAnalysis> => {
+  const { operationId } = runtime;
+  const { observedDependencies } = context;
+  const key = [entryPath, ...observedDependencies].join('\0');
+  if (operationId !== undefined && context.analysis?.operationId === operationId && context.analysis.key === key) {
+    return context.analysis.result;
+  }
+  const analyze = async (): Promise<Build123dAnalysis> => {
+    const span = runtime.tracer.startSpan('build123d.analyze', { entryPath });
+    try {
+      return await context.session.request({
+        method: 'analyze',
+        params: { entryPath, observedDependencies },
+        schema: build123dAnalysisSchema,
+        signal: runtime.signal,
+      });
+    } finally {
+      span.end();
+    }
+  };
+  const result = analyze();
+  if (operationId !== undefined) {
+    context.analysis = { operationId, key, result };
+  }
+  return result;
+};
+
+/** `build123d` kernel capability. @public */
+export const build123dKernel = defineKernel({
+  id: 'build123d',
+  extensions: ['py'],
+  name: 'Build123dKernel',
+  version: '0.11.1+python3.13.ocp7.9.3.1.1.protocol1.topology1',
+  optionsSchema: build123dOptionsSchema,
+  views: { model: { title: 'Model', mimeType: 'model/gltf-binary', optionsSchema: build123dRenderSchema } },
+  // D2: the Python worker answers `cancelMethod: 'cancel'` itself and keeps its resident prefix.
+  cancellation: 'cooperative',
+  exports: {
+    glb: {
+      title: 'glTF binary',
+      mimeType: 'model/gltf-binary',
+      extension: 'glb',
+      optionsSchema: build123dExportSchemas.glb,
+    },
+    step: {
+      title: 'STEP',
+      mimeType: 'application/step',
+      extension: 'step',
+      optionsSchema: build123dExportSchemas.step,
+    },
+  },
+
+  async initialize(options, runtime) {
+    const mirror = await createWorkspaceMirror();
+    const session = new PythonSession({
+      ...options,
+      ...mirror,
+      logger: runtime.logger,
+    });
+    const observedDependencies: string[] = [];
+    const warmCandidates: ActionDigest[] = [];
+    return {
+      mirror,
+      session,
+      resident: session.createResidentBinding(),
+      observedDependencies,
+      warmCandidates,
+      computeProducer: {
+        id: '@taucad/build123d',
+        version: computeProducerVersion,
+        implementationAssets: [
+          options.pythonSha256,
+          options.workerSha256,
+          ...options.supportFiles.map(({ sha256 }) => sha256),
+        ].map((sha256) => contentDigest({ value: `sha256:${sha256}` })),
+      },
+    };
+  },
+
+  async resolve({ entryPath }, runtime, context) {
+    await context.mirror.sync(runtime.filesystem, runtime.fileContentCache, runtime.operationId);
+    try {
+      const analysis = await analyzeEntry(entryPath, runtime, context);
+      return { resolved: analysis.resolved, unresolved: analysis.unresolved };
+    } catch (error) {
+      throw new Build123dKernelError(issuesFrom(error, entryPath));
+    }
+  },
+
+  async describe({ entryPath }, runtime, context) {
+    await context.mirror.sync(runtime.filesystem, runtime.fileContentCache, runtime.operationId);
+    try {
+      const analysis = await analyzeEntry(entryPath, runtime, context);
+      if (!analysis.declaration) {
+        throw new Error('Build123d analyzer omitted its parameter declaration.');
+      }
+      return createKernelSuccess({ parameters: analysis.declaration });
+    } catch (error) {
+      return createKernelError(issuesFrom(error, entryPath));
+    }
+  },
+
+  async evaluate({ entryPath, parameters }, runtime, context) {
+    await context.mirror.sync(runtime.filesystem, runtime.fileContentCache, runtime.operationId);
+    const build = async (compute: Record<string, unknown> | undefined) => {
+      const span = runtime.tracer.startSpan('build123d.build', { entryPath });
+      try {
+        const result = await context.session.request({
+          method: 'build',
+          params: {
+            entryPath,
+            parameters,
+            ...(compute ? { compute } : {}),
+          },
+          schema: build123dBuildSchema,
+          signal: runtime.signal,
+          // G-F5: an abort stops the worker at its next funnel boundary and keeps the resident prefix.
+          cancelMethod: 'cancel',
+        });
+        context.observedDependencies = result.observedDependencies;
+        return result;
+      } finally {
+        span.end();
+      }
+    };
+
+    try {
+      if (runtime.compute.status !== 'on') {
+        // Off arm: no scope, no announcement, no publication tail, no worker-side patching.
+        const plain = await build(undefined);
+        return {
+          handle: {
+            sessionGeneration: context.session.generation,
+            handleId: plain.handleId,
+          },
+        };
+      }
+      const scope = runtime.compute.openScope({
+        namespace: computeNamespace,
+        producer: context.computeProducer,
+        environment: computeEnvironment,
+        discovery: { entryPath },
+        resident: context.resident,
+        admissionFloor: computeAdmissionFloor,
+      });
+      let outcome: 'delivered' | 'failed' = 'failed';
+      try {
+        // Warm discovery runs before every build, so a worker that outlives another
+        // producer's publication still picks it up (D16 refresh clause).
+        await scope.warm({
+          digests: context.warmCandidates,
+          maxEntries: build123dComputeDescriptorLimit,
+        });
+        runtime.signal.throwIfAborted();
+        const result = await build({
+          namespace: computeNamespace,
+          producer: context.computeProducer,
+          environment: computeEnvironment,
+        });
+        if (result.compute) {
+          const announcements: ComputeAnnouncement[] = [];
+          const admitted: ActionDigest[] = [];
+          for (const entry of result.compute.announcements) {
+            const action: ComputeAction = entry.action;
+            const digest = verifiedDigest(action, entry.actionDigest);
+            if (!digest) {
+              continue;
+            }
+            admitted.push(digest);
+            announcements.push({
+              kind: 'action',
+              action,
+              digest,
+              computeDuration: entry.computeDuration,
+              estimatedBytes: entry.estimatedBytes,
+            });
+          }
+          context.resident.track(admitted);
+          context.session.observeResidentBytes(result.compute.stats.logicalBytes);
+          scope.announce({ entries: announcements });
+          context.warmCandidates = [...new Set([...context.warmCandidates, ...admitted])].slice(
+            -build123dComputeDescriptorLimit,
+          );
+        }
+        outcome = 'delivered';
+        return {
+          handle: {
+            sessionGeneration: context.session.generation,
+            handleId: result.handleId,
+          },
+        };
+      } finally {
+        // Seals metadata only; the runtime permits the export tail after real delivery.
+        scope.close({
+          outcome: runtime.signal.aborted ? 'cancelled' : outcome,
+        });
+      }
+    } catch (error) {
+      throw new Build123dKernelError(issuesFrom(error, entryPath));
+    }
+  },
+
+  async render({ handle, options }, runtime, context) {
+    if (!context.session.isHandleGenerationValid(handle.sessionGeneration)) {
+      throw new Build123dKernelError(issuesFrom(new Error('Build123d native handle is stale.')));
+    }
+    try {
+      const artifact = await context.session.request({
+        method: 'mesh',
+        params: {
+          handleId: handle.handleId,
+          linearTolerance: options.tessellation.linearTolerance,
+          angularTolerance: options.tessellation.angularTolerance,
+        },
+        schema: build123dArtifactSchema,
+        signal: runtime.signal,
+      });
+      return { content: await context.session.readArtifact(artifact) };
+    } catch (error) {
+      throw new Build123dKernelError(issuesFrom(error));
+    }
+  },
+
+  async export(input, runtime, context) {
+    if (!context.session.isHandleGenerationValid(input.handle.sessionGeneration)) {
+      throw new Build123dKernelError(issuesFrom(new Error('Build123d native handle is stale.')));
+    }
+    try {
+      const artifact = await context.session.request({
+        method: input.exportId === 'glb' ? 'mesh' : 'export',
+        params:
+          input.exportId === 'glb'
+            ? {
+                handleId: input.handle.handleId,
+                linearTolerance: input.options.tessellation.linearTolerance,
+                angularTolerance: input.options.tessellation.angularTolerance,
+              }
+            : { handleId: input.handle.handleId, format: 'step' },
+        schema: build123dArtifactSchema,
+        signal: runtime.signal,
+      });
+      const bytes = await context.session.readArtifact(artifact);
+      return {
+        files: [
+          createExportFile(input.exportId, input.exportId === 'glb' ? 'model.glb' : 'assembly.step', asBuffer(bytes)),
+        ],
+      };
+    } catch (error) {
+      throw new Build123dKernelError(issuesFrom(error));
+    }
+  },
+
+  isHandleValid({ handle }, _runtime, context) {
+    return context.session.isHandleGenerationValid(handle.sessionGeneration);
+  },
+
+  releaseHandle({ handle }, _runtime, context) {
+    context.session.release(handle.handleId, handle.sessionGeneration);
+  },
+
+  async onDispose(context) {
+    try {
+      await context.session.cleanup();
+    } finally {
+      await context.mirror.cleanup();
+    }
+  },
+});

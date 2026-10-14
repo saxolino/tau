@@ -1,8 +1,9 @@
-import type { Chat } from '@taucad/chat';
+import type { ChatRecord } from '@taucad/chat/schemas';
+import { compareChatsByRecency } from '#utils/chat-recency.utils.js';
 
 /** Deterministic focus repair after a chat is deleted. */
 export function pickNextFocusedChatId(
-  chats: readonly Chat[],
+  chats: readonly ChatRecord[],
   deletedChatId: string,
   focusedChatId: string | undefined,
 ): string | undefined {
@@ -18,7 +19,7 @@ export function pickNextFocusedChatId(
   let mostRecent = remaining[0]!;
   for (let index = 1; index < remaining.length; index++) {
     const candidate = remaining[index]!;
-    if (candidate.updatedAt > mostRecent.updatedAt) {
+    if (compareChatsByRecency(candidate, mostRecent) < 0) {
       mostRecent = candidate;
     }
   }

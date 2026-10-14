@@ -9,11 +9,12 @@
 
 import { describe, expectTypeOf, it } from 'vitest';
 import type { JSONSchema7 } from '@taucad/json-schema';
-import type { ExportFidelity, FileExtension } from '@taucad/types';
+import type { ExportFidelity } from '@taucad/types';
 import type * as RuntimeTypes from '#types/runtime.types.js';
 import type { CapabilitiesManifest, ExportRoute, GetParametersResult, RenderCapability } from '#types/runtime.types.js';
 import type { KernelPlugin, MiddlewarePlugin, TranscoderPlugin } from '#plugins/plugin-types.js';
 import type { RuntimeContentInput } from '#types/runtime-content.types.js';
+import type { JsonStructureSchema } from '@taucad/parameters';
 
 // =============================================================================
 // Wide-default (on-wire) shape — preserved for the worker-emitted manifest
@@ -24,9 +25,9 @@ describe('ExportRoute target shape (wide default)', () => {
     expectTypeOf<ExportRoute['exportOptions']['schema']>().toEqualTypeOf<JSONSchema7>();
   });
 
-  it('should expose targetFormat and sourceFormat as FileExtension', () => {
-    expectTypeOf<ExportRoute['targetFormat']>().toEqualTypeOf<FileExtension>();
-    expectTypeOf<ExportRoute['sourceFormat']>().toEqualTypeOf<FileExtension>();
+  it('should expose open targetFormat and sourceFormat strings', () => {
+    expectTypeOf<ExportRoute['targetFormat']>().toEqualTypeOf<string>();
+    expectTypeOf<ExportRoute['sourceFormat']>().toEqualTypeOf<string>();
   });
 
   it('should expose fidelity as ExportFidelity', () => {
@@ -75,10 +76,11 @@ describe('RenderCapability shape (wide default)', () => {
 });
 
 describe('GetParametersResult target shape', () => {
-  it('should expose jsonSchema as JSONSchema7 on success', () => {
+  it('should expose the native JSON Structure schema and effective bindings on success', () => {
     type Success = Extract<GetParametersResult, { success: true }>;
 
-    expectTypeOf<Success['data']['jsonSchema']>().toEqualTypeOf<JSONSchema7>();
+    expectTypeOf<Success['data']['schema']>().toEqualTypeOf<JsonStructureSchema>();
+    expectTypeOf<Success['data']['profile']>().toEqualTypeOf<'tau-json-structure-units-03-v1'>();
   });
 });
 

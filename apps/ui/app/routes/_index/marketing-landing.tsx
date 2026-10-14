@@ -1,5 +1,5 @@
 import { Link } from 'react-router';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import { CommunityProjectGrid } from '#components/project-grid.js';
 import { galleryProjects } from '#constants/project-examples.js';
 import { LazySection } from '#components/ui/lazy-section.js';
@@ -35,7 +35,7 @@ export function MarketingLanding(): React.JSX.Element {
         {/* Live, in-browser demo (R6): JSCAD gear + live geometry checks, with a
             lazy OpenSCAD QR tab. Viewport-gated so the runtime never loads until
             the section scrolls into view. */}
-        <section className='border-b'>
+        <section aria-label='Live CAD demo' className='border-b'>
           <div className='container mx-auto px-4 py-20'>
             <LazySection minHeight='560px' fallback={<HeroViewerSkeleton />}>
               <LazyLiveDemo />

@@ -1,11 +1,14 @@
-import type { ComponentProps, FunctionComponent } from 'react';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import type { ComponentProps, FunctionComponent, MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { DockviewApi, DockviewReadyEvent, DockviewTheme, IDockviewHeaderActionsProps } from 'dockview-react';
 import { DockviewReact } from 'dockview-react';
 import { DockviewTabOverflowPicker } from '#components/panes/dockview-tab-overflow-picker.js';
 import type { DockviewTabIconRenderer, DockviewTabProps } from '#components/panes/dockview-tab.js';
 import { OmniScroller } from '#components/ui/omni-scroller.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { isDesktopTarget } from '#lib/build-target.js';
+import { useResizeHandles } from '#components/panes/use-resize-handles.js';
+import { dockviewResizeHandle } from '#components/panes/resize-handle.js';
 
 /**
  * Custom Dockview theme. The `dockview-theme-tau` class is applied to the root
@@ -50,11 +53,10 @@ export const dockviewStyleOverrides = cn(
   // ── Drag & drop ──
   '[--dv-drag-over-background-color:color-mix(in_oklch,var(--primary),transparent_80%)]',
   '[--dv-drag-over-border-color:var(--primary)]',
+  '[&_.dv-drop-target-selection]:[border-radius:var(--dv-tab-border-radius)]',
   // ── Sash (resize handles) ──
   '[--dv-sash-color:transparent]',
-  '[--dv-active-sash-color:var(--primary)]',
-  '[--dv-active-sash-transition-duration:0.1s]',
-  '[--dv-active-sash-transition-delay:0.5s]',
+  '[--dv-active-sash-color:transparent]',
   // ── Sash cursor: col-resize / row-resize (adds the bar between arrows) ──
   '[&_.dv-split-view-container.dv-horizontal_>_.dv-sash-container_>_.dv-sash.dv-enabled]:!cursor-col-resize',
   '[&_.dv-split-view-container.dv-horizontal_>_.dv-sash-container_>_.dv-sash.dv-maximum]:!cursor-col-resize',
@@ -65,6 +67,7 @@ export const dockviewStyleOverrides = cn(
   // ── Scrollbar ──
   '[--dv-tabs-container-scrollbar-color:var(--border)]',
   '[--dv-scrollbar-background-color:var(--border)]',
+  '[&_.dv-scrollbar-horizontal]:!h-[calc(var(--scrollbar-thickness)/2)]',
   // ── Tab scroll shadows: horizontal fade preserving top/bottom borders ──
   // Two mask layers composited with `add` (union):
   //   Layer 1 – border strips: 1px top + 1px bottom always fully opaque
@@ -161,21 +164,20 @@ export const dockviewStyleOverrides = cn(
   // masks the title beneath the close action without showing a separate pill.
   '[&_.dv-tab:hover_.dv-default-tab_.dv-default-tab-action:not(:hover)]:!bg-accent',
   '[&_.dv-tab.dv-active-tab_.dv-default-tab_.dv-default-tab-action:not(:hover)]:!bg-accent',
-  '[&_.dv-tab.dv-active-tab_.dockview-tab-title]:[--scroll-fade-size:42px]',
+  '[&_.dv-tab.dv-active-tab_.dockview-tab-title]:[--fade-label-size:var(--fade-label-size-actions)]',
   '[&_.dv-tab_.dv-default-tab_.dv-default-tab-action:hover]:text-foreground',
-  '[&_.dv-tab_.dv-default-tab_.dv-default-tab-action:hover]:!bg-input',
+  '[&_.dv-tab_.dv-default-tab_.dv-default-tab-action:hover]:!bg-nested-action-hover',
 
   // ═══════════════════════════════════════════════════════════════════════════
   // TAB STATES
   // ═══════════════════════════════════════════════════════════════════════════
 
   '[&_.dv-tab]:rounded-sm',
-  '[&_.dv-tab]:transition-colors',
+  // Hover is instant: the close action and its opaque scrim appear in one frame, so a
+  // fading tab background would show them as a grey patch over a half-lit tab.
   '[&_.dv-tab:not(.dv-active-tab):hover]:!bg-accent',
   '[&_.dv-tab:not(.dv-active-tab):hover]:!text-muted-foreground',
-  '[&_.dv-tab:focus-visible]:outline-none',
-  '[&_.dv-tab:focus-visible]:ring-2',
-  '[&_.dv-tab:focus-visible]:ring-ring',
+  '[&_.dv-tab:focus-visible]:focus-outline',
   '[&_.dv-tab.dv-active-tab_.dv-default-tab-action]:opacity-100',
   '[&_.dv-tab:focus-within_.dv-default-tab-action]:visible',
   '[&_.dv-tab:focus-within_.dv-default-tab-action]:opacity-100',
@@ -213,7 +215,7 @@ export const dockviewStyleOverrides = cn(
   '[&_.dv-right-actions-container_button:has(>svg:only-child)]:!w-7',
   '[&_.dv-pre-actions-container_button:has(>svg:only-child)]:!w-7',
   '[&_:is(.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)_button]:!bg-transparent',
-  '[&_:is(.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)_button:hover]:!bg-muted-foreground/15',
+  '[&_:is(.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)_button:hover]:!bg-accent',
 
   // ── Group-hover action button visibility ──
   // Hidden by default, shown on group hover to reduce visual noise.
@@ -259,48 +261,84 @@ export const dockviewStyleOverrides = cn(
   '[&_.dv-split-view-container.dv-animation_.dv-view]:[backface-visibility:visible]',
 );
 
+const desktopDockviewStyleOverrides = isDesktopTarget()
+  ? cn(
+      '[&_.dv-tabs-and-actions-container]:[app-region:no-drag]',
+      '[&_:is(.dv-tabs-container,.dv-void-container)]:[app-region:drag]',
+      '[&_:is(.dv-tab,.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)]:[app-region:no-drag]',
+    )
+  : undefined;
+
 /**
- * Scroll the active tab fully into view within its group's tab bar.
- *
- * Dockview's built-in scroll fires synchronously before the browser
- * reflows newly added tabs, so their widths can be zero. This helper
- * runs after layout to correct the scroll position.
+ * Scroll one tab strip so its active tab sits fully beyond the edge fades,
+ * then notify Dockview's custom scrollbar so its cached offset follows.
  */
+function revealActiveTab(tabsContainer: HTMLElement): void {
+  const activeTab = tabsContainer.querySelector<HTMLElement>('.dv-tab.dv-active-tab');
+  if (!activeTab) {
+    return;
+  }
+
+  const tabLeft = activeTab.offsetLeft;
+  const tabRight = tabLeft + activeTab.offsetWidth;
+  const { scrollLeft } = tabsContainer;
+  const fadeSize = Number.parseFloat(getComputedStyle(tabsContainer).getPropertyValue('--scroll-fade-size')) || 0;
+  const visibleLeft = scrollLeft + fadeSize;
+  const visibleRight = scrollLeft + tabsContainer.clientWidth - fadeSize;
+
+  if (tabLeft < visibleLeft) {
+    tabsContainer.scrollLeft = Math.max(0, tabLeft - fadeSize);
+    tabsContainer.dispatchEvent(new Event('scroll'));
+  } else if (tabRight > visibleRight) {
+    tabsContainer.scrollLeft = Math.max(
+      0,
+      Math.min(tabLeft - fadeSize, tabRight - tabsContainer.clientWidth + fadeSize),
+    );
+    tabsContainer.dispatchEvent(new Event('scroll'));
+  }
+}
+
+/** Reveal the active group's tab after its DOM mutation has completed. */
 export function scrollActiveTabIntoView(api: DockviewApi): void {
-  requestAnimationFrame(() => {
-    const group = api.activeGroup;
-    if (!group) {
+  const tabs = api.activeGroup?.element.querySelector<HTMLElement>('.dv-tabs-container');
+  if (tabs) {
+    revealActiveTab(tabs);
+  }
+}
+
+/** One prepaint owner for each strip, including inactive groups during resize. */
+function useRevealActiveTab(group: IDockviewHeaderActionsProps['group']): void {
+  useLayoutEffect(() => {
+    const tabs = group.element.querySelector<HTMLElement>('.dv-tabs-container');
+    if (!tabs) {
       return;
     }
 
-    const tabsContainer = group.element.querySelector<HTMLElement>('.dv-tabs-container');
-    const activeTab = tabsContainer?.querySelector<HTMLElement>('.dv-tab.dv-active-tab');
-    if (!tabsContainer || !activeTab) {
-      return;
-    }
+    const reveal = (): void => {
+      revealActiveTab(tabs);
+    };
+    const sizeObserver = new ResizeObserver(reveal);
+    sizeObserver.observe(tabs);
+    // Dockview activates and inserts tabs imperatively. A mutation delivery
+    // sees the completed operation without postponing scroll until another paint.
+    const tabsObserver = new MutationObserver(reveal);
+    tabsObserver.observe(tabs, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    reveal();
 
-    const tabLeft = activeTab.offsetLeft;
-    const tabRight = tabLeft + activeTab.offsetWidth;
-    const { scrollLeft } = tabsContainer;
-    const visibleRight = scrollLeft + tabsContainer.clientWidth;
-
-    if (tabLeft < scrollLeft) {
-      tabsContainer.scrollLeft = tabLeft;
-    } else if (tabRight > visibleRight) {
-      tabsContainer.scrollLeft = Math.min(tabLeft, tabRight - tabsContainer.clientWidth);
-    }
-  });
+    return () => {
+      sizeObserver.disconnect();
+      tabsObserver.disconnect();
+    };
+  }, [group]);
 }
 
 /**
  * Themed Dockview wrapper.
  *
  * Renders `DockviewReact` with the `tauDockviewTheme` applied automatically.
- * All theme styling -- CSS variable declarations, tab states, action button
- * visibility, shell overlays, containment overrides
- * -- is expressed as Tailwind className selectors in `dockviewStyleOverrides`
- * above, keeping everything co-located with the component and in sync with the
- * Tailwind theme.
+ * CSS variables, tab states, actions, shell overlays and containment overrides
+ * live in `dockviewStyleOverrides`. Native resize feedback is shared with the
+ * other pane engines in `pane-resize.css`.
  *
  * Dockview v4.13+ defaults to `'onlyWhenVisible'` rendering, which appends
  * panel content directly into `.dv-content-container` (a child of
@@ -308,9 +346,8 @@ export function scrollActiveTabIntoView(api: DockviewApi): void {
  * allowing plain CSS `.dv-groupview:hover` to fire for both the tab bar and
  * the content area of every split pane.
  *
- * Also wires a post-layout scroll correction so that the active tab is always
- * fully visible after panel activation — working around Dockview's synchronous
- * scroll that fires before the browser reflows newly-added tab elements.
+ * Keeps sizing and active-tab reveal in the same prepaint delivery as the
+ * parent resize or tab mutation, without a chain of later-frame corrections.
  */
 export function Dockview({
   className,
@@ -320,44 +357,89 @@ export function Dockview({
   tabLeadingIcon,
   ...properties
 }: DockviewProperties): React.JSX.Element {
-  const disposableRef = useRef<{ dispose(): void } | undefined>(undefined);
+  const resizeRootRef = useRef<HTMLDivElement>(null);
+  const apiRef = useRef<DockviewApi | undefined>(undefined);
+  useResizeHandles(resizeRootRef, (sash) => dockviewResizeHandle(apiRef.current, sash));
   const RightHeaderActions = useMemo<FunctionComponent<IDockviewHeaderActionsProps>>(() => {
     const CallerActions = rightHeaderActionsComponent;
-    const ComposedRightHeaderActions = (actionProperties: IDockviewHeaderActionsProps): React.JSX.Element => (
-      <div className='flex h-full items-center gap-1'>
-        <DockviewTabOverflowPicker {...actionProperties} getIcon={getTabIcon} leadingIcon={tabLeadingIcon} />
-        {CallerActions ? <CallerActions {...actionProperties} /> : null}
-      </div>
-    );
-    ComposedRightHeaderActions.displayName = 'DockviewRightHeaderActions';
+    const ComposedRightHeaderActions = function DockviewRightHeaderActions(
+      actionProperties: IDockviewHeaderActionsProps,
+    ): React.JSX.Element {
+      useRevealActiveTab(actionProperties.group);
+      return (
+        <div className='flex h-full items-center gap-1'>
+          <DockviewTabOverflowPicker {...actionProperties} getIcon={getTabIcon} leadingIcon={tabLeadingIcon} />
+          {CallerActions ? <CallerActions {...actionProperties} /> : null}
+        </div>
+      );
+    };
     return ComposedRightHeaderActions;
   }, [getTabIcon, rightHeaderActionsComponent, tabLeadingIcon]);
 
   const handleReady = useCallback(
     (event: DockviewReadyEvent) => {
-      disposableRef.current?.dispose();
-      disposableRef.current = event.api.onDidActivePanelChange(() => {
-        scrollActiveTabIntoView(event.api);
-      });
+      apiRef.current = event.api;
       onReady(event);
     },
     [onReady],
   );
 
-  useEffect(() => {
+  const handleTabClick = useCallback((event: ReactMouseEvent<HTMLDivElement>): void => {
+    const api = apiRef.current;
+    if (!api || !(event.target instanceof Element)) {
+      return;
+    }
+    if (event.target.closest('.dv-tab')) {
+      // Native tab handlers have completed by the bubble phase. Re-clicking
+      // the active tab may scroll it without changing its active class.
+      scrollActiveTabIntoView(api);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const root = resizeRootRef.current;
+    if (!root) {
+      return;
+    }
+    const layout = (): void => {
+      const api = apiRef.current;
+      if (!api || !root.isConnected || !root.offsetParent) {
+        return;
+      }
+      const width = root.clientWidth;
+      const height = root.clientHeight;
+      if (width > 0 && height > 0 && (api.width !== width || api.height !== height)) {
+        api.layout(width, height);
+      }
+    };
+    // Observe the externally sized shell, not a child whose layout we change.
+    // Dockview's automatic observer delays through RAF, exposing stale group
+    // widths for a paint whenever an outer pane opens or its sash moves.
+    const observer = new ResizeObserver(layout);
+    observer.observe(root);
+    layout();
     return () => {
-      disposableRef.current?.dispose();
+      observer.disconnect();
+      apiRef.current = undefined;
     };
   }, []);
 
   return (
-    <OmniScroller className={cn('size-full', dockviewStyleOverrides)} viewportSelector='.dv-tabs-container'>
+    <OmniScroller
+      ref={resizeRootRef}
+      data-resize-owner
+      className={cn('pane-resize size-full', dockviewStyleOverrides, desktopDockviewStyleOverrides)}
+      viewportSelector='.dv-tabs-container'
+      onClick={handleTabClick}
+    >
       <DockviewReact
         {...properties}
         className={className}
+        disableFloatingGroups
+        disableAutoResizing
         disableTabsOverflowList
         rightHeaderActionsComponent={RightHeaderActions}
-        scrollbars='native'
+        scrollbars='custom'
         theme={tauDockviewTheme}
         onReady={handleReady}
       />

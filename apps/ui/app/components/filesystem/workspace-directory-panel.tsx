@@ -16,9 +16,9 @@
  * the persistence target varies by surface.
  */
 
-import { FolderOpen, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
-import { Button } from '#components/ui/button.js';
-import { cn } from '#utils/ui.utils.js';
+import { FolderOpen, AlertTriangle, RefreshCw, Unplug } from 'lucide-react';
+import { Button } from '@taucad/ui/components/button';
+import { cn } from '@taucad/ui/utils/cn';
 import { workspaceDirectoryActions, workspaceDirectoryCopy } from '#constants/workspace-directory-copy.constants.js';
 import type { WorkspaceDirectoryStatus } from '#constants/workspace-directory-copy.constants.js';
 
@@ -42,8 +42,8 @@ export type WorkspaceDirectoryPanelProps = {
   readonly onConnect?: () => void | Promise<void>;
   /** Re-grant read/write permission on the current handle. */
   readonly onGrantAccess?: () => void | Promise<void>;
-  /** Forget the workspace + every project bound to it (irreversible). */
-  readonly onForget?: () => void | Promise<void>;
+  /** Remove Tau's retained directory handle while preserving workspace identity. */
+  readonly onDisconnect?: () => void | Promise<void>;
   /**
    * Optional right-aligned metadata node rendered in the `row` variant
    * between the description block and the action group. Lets callers
@@ -60,7 +60,7 @@ export function WorkspaceDirectoryPanel({
   isBusy = false,
   onConnect,
   onGrantAccess,
-  onForget,
+  onDisconnect,
   meta,
 }: WorkspaceDirectoryPanelProps): React.JSX.Element {
   const copy = workspaceDirectoryCopy[status];
@@ -68,7 +68,13 @@ export function WorkspaceDirectoryPanel({
     (status === 'missing' || status === 'disconnected' || status === 'connected' || status === 'permission') &&
     onConnect;
   const showGrantAccess = status === 'permission' && onGrantAccess;
-  const showForget = status !== 'unsupported' && variant === 'row' && onForget;
+  const showDisconnect = (status === 'connected' || status === 'permission') && variant === 'row' && onDisconnect;
+  const connectLabel =
+    status === 'missing'
+      ? workspaceDirectoryActions.connect
+      : status === 'disconnected'
+        ? workspaceDirectoryActions.reconnect
+        : workspaceDirectoryActions.change;
 
   const indicator =
     status === 'connected' ? (
@@ -76,7 +82,7 @@ export function WorkspaceDirectoryPanel({
     ) : status === 'unsupported' ? (
       <AlertTriangle className='size-4 shrink-0 text-muted-foreground' />
     ) : (
-      <AlertTriangle className='text-amber-500 size-4 shrink-0' />
+      <AlertTriangle className='size-4 shrink-0 text-warning' />
     );
 
   if (variant === 'banner') {
@@ -86,7 +92,7 @@ export function WorkspaceDirectoryPanel({
         className={cn(
           'flex items-center justify-between gap-4 rounded-md border px-3 py-2 text-sm',
           status === 'permission' || status === 'disconnected' || status === 'missing'
-            ? 'border-amber-500/40 bg-amber-500/10'
+            ? 'border-warning/40 bg-warning/10'
             : 'border-border bg-muted/40',
         )}
       >
@@ -101,12 +107,12 @@ export function WorkspaceDirectoryPanel({
           {showGrantAccess ? (
             <Button size='sm' variant='outline' disabled={isBusy} onClick={onGrantAccess}>
               <RefreshCw className='mr-1 size-3.5' />
-              {workspaceDirectoryActions.reconnect}
+              {workspaceDirectoryActions.grantAccess}
             </Button>
           ) : undefined}
           {showConnect ? (
             <Button size='sm' variant='outline' disabled={isBusy} onClick={onConnect}>
-              {status === 'missing' ? workspaceDirectoryActions.connect : workspaceDirectoryActions.change}
+              {connectLabel}
             </Button>
           ) : undefined}
         </div>
@@ -130,12 +136,23 @@ export function WorkspaceDirectoryPanel({
           {meta}
           {showGrantAccess ? (
             <Button size='sm' variant='outline' disabled={isBusy} onClick={onGrantAccess}>
-              {workspaceDirectoryActions.reconnect}
+              {workspaceDirectoryActions.grantAccess}
             </Button>
           ) : undefined}
-          {showForget ? (
-            <Button size='sm' variant='ghost' disabled={isBusy} onClick={onForget} aria-label='Forget workspace'>
-              <Trash2 className='size-4' />
+          {showConnect ? (
+            <Button size='sm' variant='outline' disabled={isBusy} onClick={onConnect}>
+              {connectLabel}
+            </Button>
+          ) : undefined}
+          {showDisconnect ? (
+            <Button
+              size='sm'
+              variant='ghost'
+              disabled={isBusy}
+              onClick={onDisconnect}
+              aria-label={workspaceDirectoryActions.disconnect}
+            >
+              <Unplug className='size-4' aria-hidden />
             </Button>
           ) : undefined}
         </div>
@@ -158,13 +175,13 @@ export function WorkspaceDirectoryPanel({
           {showGrantAccess ? (
             <Button size='sm' disabled={isBusy} onClick={onGrantAccess}>
               <RefreshCw className='mr-1 size-3.5' />
-              {workspaceDirectoryActions.reconnect}
+              {workspaceDirectoryActions.grantAccess}
             </Button>
           ) : undefined}
           {showConnect ? (
             <Button size='sm' variant={showGrantAccess ? 'outline' : 'default'} disabled={isBusy} onClick={onConnect}>
               <FolderOpen className='mr-1 size-3.5' />
-              {status === 'missing' ? workspaceDirectoryActions.connect : workspaceDirectoryActions.change}
+              {connectLabel}
             </Button>
           ) : undefined}
         </div>

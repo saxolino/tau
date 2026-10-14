@@ -12,6 +12,7 @@ import { ChatToolDescription } from '#components/chat/chat-tool-text.js';
 import { ChatToolLabel } from '#components/chat/chat-tool-label.js';
 import { ChatToolError } from '#components/chat/chat-tool-error.js';
 import { ViewerLink } from '#components/files/viewer-link.js';
+import { ChatMessageMedia } from '#routes/w.$workspace.$project/chat-message-media.js';
 
 function FilenameLink({ targetFile }: { readonly targetFile: string }): React.JSX.Element {
   return <ViewerLink path={targetFile}>{targetFile}</ViewerLink>;
@@ -31,7 +32,7 @@ export function ChatMessageToolScreenshot({
       const subjectNoun = mode === 'multi_angle' ? 'orthographic views' : 'screenshot';
 
       return (
-        <ChatToolCard variant='minimal' status='loading' isDefaultOpen={false}>
+        <ChatToolCard variant='minimal' status='loading' isCollapsible={false}>
           <ChatToolCardHeader>
             <ChatToolCardIcon icon={Camera} />
             <ChatToolCardTitle>
@@ -56,12 +57,20 @@ export function ChatMessageToolScreenshot({
     case 'output-available': {
       const { output } = part;
       const allImages = output.images;
-      const renderableImages = allImages.filter((img) => img.dataUrl.startsWith('data:'));
+      const renderableImages = allImages.filter((image) =>
+        'dataUrl' in image ? image.dataUrl.startsWith('data:') : image.path.startsWith('attachments/'),
+      );
       const count = allImages.length;
       const noun = count === 1 ? 'screenshot' : 'screenshots';
 
       return (
-        <ChatToolCard className='@container' variant='minimal' status='ready' isDefaultOpen={false}>
+        <ChatToolCard
+          className='@container'
+          variant='minimal'
+          status='ready'
+          isDefaultOpen={false}
+          isCollapsible={renderableImages.length > 0}
+        >
           <ChatToolCardHeader>
             <ChatToolCardIcon icon={Camera} />
             <ChatToolCardTitle>
@@ -84,13 +93,19 @@ export function ChatMessageToolScreenshot({
                 className={`grid gap-2 ${renderableImages.length === 1 ? 'grid-cols-1' : 'grid-cols-2 @md:grid-cols-3'}`}
               >
                 {renderableImages.map((image) => (
-                  <div key={image.view} className='flex flex-col items-center gap-1'>
-                    <img
-                      src={image.dataUrl}
-                      alt={`${image.view} view`}
-                      className='rounded-sm border bg-background object-contain'
+                  <div
+                    key={JSON.stringify([image.view, image.instance, image.angle])}
+                    className='flex flex-col items-center gap-1'
+                  >
+                    <ChatMessageMedia
+                      media={
+                        'dataUrl' in image
+                          ? { url: image.dataUrl, mediaType: image.dataUrl.slice(5, image.dataUrl.indexOf(';')) }
+                          : { url: image.path, mediaType: image.mimeType }
+                      }
+                      alt={`${image.angle ?? image.view} view`}
                     />
-                    <span className='text-xs text-muted-foreground'>{image.view}</span>
+                    <span className='text-xs text-muted-foreground'>{image.angle ?? image.view}</span>
                   </div>
                 ))}
               </div>

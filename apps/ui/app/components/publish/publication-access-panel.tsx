@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Loader2, Trash2 } from 'lucide-react';
-import { Button } from '#components/ui/button.js';
-import { CopyButton } from '#components/copy-button.js';
+import { Button } from '@taucad/ui/components/button';
+import { CopyButton } from '@taucad/ui/components/copy-button';
 import { toast } from '#components/ui/sonner.js';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '#components/ui/select.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@taucad/ui/components/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { PublicationEmailTagsField, getPublicationEmailTagsError } from '#components/publish/publication-email-tags.js';
 
 export type PublicationAccessGrant = {
@@ -148,7 +148,15 @@ export function PublicationAccessPanel({
             placeholder='teammate@example.com'
             onEmailsChange={setPendingEmails}
           />
-          <Button type='button' size='sm' className='self-end' disabled={!canAdd} onClick={() => void handleAdd()}>
+          <Button
+            type='button'
+            size='sm'
+            className='self-end'
+            disabled={!canAdd}
+            onClick={() => {
+              void handleAdd();
+            }}
+          >
             {mutating ? <Loader2 className='size-4 animate-spin' aria-hidden /> : null}
             <span>Add access</span>
           </Button>

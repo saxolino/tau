@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react';
-import type { Model } from '@taucad/chat';
-import { Button } from '#components/ui/button.js';
-import { Input } from '#components/ui/input.js';
-import { Switch } from '#components/ui/switch.js';
+import { Bot, SearchX } from 'lucide-react';
+import type { Model } from '#hooks/use-models.js';
+import { Button } from '@taucad/ui/components/button';
+import { SwitchRow } from '@taucad/ui/components/switch';
 import { SvgIcon } from '#components/icons/svg-icon.js';
 import { useModels } from '#hooks/use-models.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
+import { Loader } from '@taucad/ui/components/loader';
 
 export function ModelSettings(): React.JSX.Element {
-  const { data = [], recommendedModels, isAvailable, setAvailable } = useModels();
+  const { data = [], isLoading, recommendedModels, isAvailable, setAvailable } = useModels();
   const [search, setSearch] = useState('');
   const [showAll, setShowAll] = useState(false);
 
@@ -25,61 +28,122 @@ export function ModelSettings(): React.JSX.Element {
 
   return (
     <div className='flex flex-col gap-4 pb-6'>
-      <Input
+      <SearchInput
+        aria-label='Search models'
         value={search}
+        variant='transparent'
+        onClear={() => {
+          setSearch('');
+        }}
         onChange={(event) => {
           setSearch(event.target.value);
         }}
-        placeholder='Search models...'
+        placeholder='Search models…'
       />
 
-      <p className='text-sm text-muted-foreground'>
-        Choose which models appear in the chat model picker. Disabled models stay configured and can be re-enabled
-        anytime.
-      </p>
-
-      <div className='flex flex-col gap-0.5 rounded-md border p-1'>
-        {visibleModels.map((model) => {
-          const checked = isAvailable(model);
-          return (
-            <button
-              key={model.id}
-              type='button'
-              onClick={() => {
-                setAvailable(model, !checked);
-              }}
-              className='flex w-full items-center justify-between gap-3 rounded-sm px-2.5 py-2 text-left transition-colors hover:bg-menu-highlight focus-visible:bg-menu-highlight focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none'
-            >
-              <div className='flex min-w-0 items-center gap-2.5'>
-                <SvgIcon id={model.details.family} className='size-4 shrink-0' />
-                <div className='flex min-w-0 flex-col'>
-                  <span className='truncate text-sm'>{model.name}</span>
-                  {model.description ? (
-                    <span className='text-xs leading-snug font-medium text-muted-foreground/80'>
-                      {model.description}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <Switch className='pointer-events-none shrink-0' tabIndex={-1} checked={checked} />
-            </button>
-          );
-        })}
+      <div className='flex flex-col gap-2'>
+        <h2>Available models</h2>
+        {visibleModels.length === 0 ? (
+          <ModelsEmptyState
+            search={search.trim()}
+            isLoading={isLoading}
+            hasHiddenModels={!showAll && data.length > 0}
+            onClearSearch={() => {
+              setSearch('');
+            }}
+            onShowAll={() => {
+              setShowAll(true);
+            }}
+          />
+        ) : (
+          <div className='flex flex-col gap-0.5 rounded-xl border p-1'>
+            {visibleModels.map((model) => (
+              <SwitchRow
+                key={model.id}
+                icon={<SvgIcon id={model.details.family} className='size-4' />}
+                description={model.description}
+                isChecked={isAvailable(model)}
+                onIsCheckedChange={(isChecked) => {
+                  setAvailable(model, isChecked);
+                }}
+              >
+                <span className='truncate'>{model.name}</span>
+              </SwitchRow>
+            ))}
+          </div>
+        )}
       </div>
 
-      {visibleModels.length === 0 ? (
-        <p className='text-sm text-muted-foreground'>No models match your search.</p>
+      {visibleModels.length > 0 ? (
+        <Button
+          variant='link'
+          className='self-start px-0'
+          onClick={() => {
+            setShowAll((previous) => !previous);
+          }}
+        >
+          {showAll ? 'Show recommended only' : 'View All Models'}
+        </Button>
       ) : null}
-
-      <Button
-        variant='link'
-        className='self-start px-0'
-        onClick={() => {
-          setShowAll((previous) => !previous);
-        }}
-      >
-        {showAll ? 'Show recommended only' : 'View All Models'}
-      </Button>
     </div>
+  );
+}
+
+function ModelsEmptyState({
+  search,
+  isLoading,
+  hasHiddenModels,
+  onClearSearch,
+  onShowAll,
+}: {
+  readonly search: string;
+  readonly isLoading: boolean;
+  readonly hasHiddenModels: boolean;
+  readonly onClearSearch: () => void;
+  readonly onShowAll: () => void;
+}): React.JSX.Element {
+  const className = 'h-64 rounded-xl border bg-card';
+
+  if (isLoading) {
+    return <PanelEmptyState icon={Loader} title='Loading models' aria-busy className={className} />;
+  }
+
+  if (search) {
+    return (
+      <PanelEmptyState
+        icon={SearchX}
+        title={`No models match “${search}”`}
+        description='Try another model or provider name.'
+        className={className}
+      >
+        <Button variant='outline' size='sm' onClick={onClearSearch}>
+          Clear search
+        </Button>
+      </PanelEmptyState>
+    );
+  }
+
+  if (hasHiddenModels) {
+    return (
+      <PanelEmptyState
+        icon={Bot}
+        title='No recommended models'
+        description='Browse the full catalog to choose the models you want available.'
+        className={className}
+      >
+        <Button variant='outline' size='sm' onClick={onShowAll}>
+          View all models
+        </Button>
+      </PanelEmptyState>
+    );
+  }
+
+  return (
+    <PanelEmptyState
+      icon={Bot}
+      title='No models available'
+      description='The model catalog is empty or could not be reached.'
+      className={className}
+    />
   );
 }

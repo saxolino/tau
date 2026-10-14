@@ -12,32 +12,45 @@
  * @public
  */
 
-export { defineKernel } from '#types/runtime-kernel.types.js';
+export { defineKernelV2 as defineKernel, nonemptyExportFiles } from '#types/runtime-kernel-v2.types.js';
 export type {
-  AnyKernelDefinition,
-  CreateGeometryInput,
-  CreateGeometryOutput,
-  ExportGeometryInput,
-  GetDependenciesInput,
-  GetParametersInput,
-  InitializeInput,
-  KernelDefinition,
+  Artifact,
+  DescribeInput,
+  DescribeResult,
+  EvaluateInput,
+  EvaluateOutput,
+  EvaluateResult,
+  ExportDeclaration,
+  KernelDefinitionV2 as KernelDefinition,
+  KernelFactoryV2 as KernelPluginFactory,
+  KernelServices,
+  RenderInput,
+  RenderOutput,
+  RenderResult,
+  ResolveInput,
+  ResolveOutput,
+  ViewDeclaration,
+  ViewInstance,
+  ExportInput,
+  ExportOutput,
+  KernelExportResult,
+} from '#types/runtime-kernel-v2.types.js';
+export type {
   KernelFileSystem,
-  KernelPluginFactory,
-  KernelRuntime,
+  RealmGroup,
+  RealmHold,
+  RealmHoldInput,
+  RealmResources,
   RuntimeFileSystemBase,
   RuntimeLogger,
   RuntimeLogOptions,
   RuntimeWatchEvent,
   RuntimeWatchRequest,
 } from '#types/runtime-kernel.types.js';
-export type { GetDependenciesResult } from '#types/runtime-dependency.types.js';
+export type { ParameterDeclaration } from '@taucad/parameters';
 
 export type {
-  CreateGeometryResult,
   ErrorLocation,
-  ExportGeometryResult,
-  GetParametersResult,
   KernelErrorResult,
   KernelIssue,
   KernelIssueType,
@@ -46,28 +59,21 @@ export type {
 } from '#types/runtime.types.js';
 
 export type { KernelPlugin } from '#plugins/plugin-types.js';
-export {
-  finalizeMeshOutput,
-  finalizeRenderOutput,
-  RenderArtifactFinalizationError,
-} from '#framework/render-artifact-finalizer.js';
-export type { MeshArtifactFinalizerInput, RenderArtifactFinalizerInput } from '#framework/render-artifact-finalizer.js';
 export { createKernelError, createKernelSuccess } from '#kernels/kernel-helpers.js';
 export {
   convertRawIssuesToKernelIssues,
-  createKernelModuleRegistryExpression,
+  createKernelParameterDeclaration,
   createKernelModuleShim,
   enrichIssueLocation,
   extractDefaultParameters,
-  getModuleRegistry,
   isRecordObject,
-  KERNEL_MODULES_KEY,
   loadBinaryFile,
   registerKernelModule,
   toVmEntryPath,
 } from '#kernels/kernel-module-helpers.js';
 export type { RuntimeModuleExports } from '#kernels/kernel-module-helpers.js';
 export { checkAbort } from '#framework/cooperative-abort.js';
+export { createRealmGroup } from '#framework/realm-resources.js';
 export { named } from '#framework/named.js';
 export { getWebAssemblyExceptionConstructor, isWebAssemblyException } from '#framework/wasm-exception.js';
 export type { WebAssemblyException } from '#framework/wasm-exception.js';
@@ -92,9 +98,45 @@ export { isNotFoundError } from '#filesystem/filesystem-errors.js';
 export { asBuffer } from '@taucad/utils/file';
 export { hashString, sha256Bytes, sha256String } from '@taucad/utils/hash';
 export { resolveImportPath } from '@taucad/utils/import';
-export { joinPath, resolveVirtualPath } from '@taucad/utils/path';
+export { assertRootedPath, joinRelativePath, resolveRootedPath } from '@taucad/utils/path';
 export { jsonSchemaFromJson } from '@taucad/utils/schema';
 export { Topic } from '@taucad/events';
 export type { TopicOptions, TopicSubscribeOptions, TopicSubscription } from '@taucad/events';
-export { coordinateSystemSchema, unitSchema } from '#types/export-option-schemas.js';
+export { coordinateSystemSchema, gltfExportConventionSchema, unitSchema } from '#types/export-option-schemas.js';
 export type { CoordinateSystemOptions, UnitOptions } from '#types/export-option-schemas.js';
+export { quantity } from '#configuration/zod.js';
+export { quantityKinds } from '@taucad/units/quantity';
+export type { QuantitySchemaOptions } from '#configuration/zod.js';
+
+export type {
+  BuildReuse,
+  ComputeAnnouncement,
+  ComputeAnnounceResult,
+  ComputeBinding,
+  ComputeGeneration,
+  ComputeGetInput,
+  ComputeGetResult,
+  ComputePinInput,
+  ComputePinResult,
+  ComputePutInput,
+  ComputePutResult,
+  ComputeReleaseInput,
+  ComputeRetention,
+  ComputeReuseScope,
+  ComputeScopeReceipt,
+  ComputeScopeSettlement,
+  ComputeStore,
+  ComputeStoreControl,
+  ComputeStoreEngine,
+  ComputeStoreEntry,
+  ComputeStoreReport,
+  ComputeStoreSession,
+  ComputeWarmInput,
+  ComputeWarmResult,
+  CloseComputeScopeInput,
+  KernelComputeCapability,
+  OpenComputeScopeInput,
+  ResidentCacheBinding,
+  ResidentCacheStats,
+  ResidentExportEntry,
+} from '#types/runtime-compute.types.js';

@@ -1,7 +1,7 @@
 import { Topic } from '@taucad/events';
+import type { WatchRequest, WatchEvent } from '@taucad/filesystem';
+import type { ObservationWatch } from '#observation-service.js';
 import type { ChangeEvent, FileSystemBackend } from '@taucad/types';
-import { normalizePath } from '@taucad/utils/path';
-import type { WorkspacePathResolver } from '#workspace-path-resolver.js';
 
 /**
  * Transport surface required to wire worker push events (typically
@@ -11,6 +11,12 @@ import type { WorkspacePathResolver } from '#workspace-path-resolver.js';
  */
 export type WorkerChangeChannelTransport = {
   listen: (event: string, handler: (data: unknown) => void) => () => void;
+  /** Actual authority registration; omitted only by local synchronous sources. */
+  watchReady?: (
+    request: WatchRequest,
+    handler: (event: WatchEvent) => void,
+  ) => { ready: Promise<void>; closed: Promise<void>; unsubscribe(): void };
+  closed?: Promise<void>;
 };
 
 /**
@@ -27,8 +33,11 @@ export type WorkerChangeSubscription<T> = {
 };
 
 /**
- * Rename notification with workspace-relative paths (`undefined` when that
- * side of the rename is outside the project root).
+ * Rename notification with workspace-relative paths.
+ *
+ * Both edges arrive on a rooted transport — the bridge degrades a rename with
+ * one end outside the root to an arrival or a disappearance — so an absent edge
+ * is what a consumer must still tolerate, not what it will be handed.
  *
  * @public
  */
@@ -127,15 +136,19 @@ function isChangeEvent(value: unknown): value is ChangeEvent {
  * events to facades. Does not suppress self-writes — the runtime bridge already
  * skips the originator.
  *
+ * The transport is the project's own rooted connection (charter D12), so events
+ * arrive in the workspace-relative namespace the facades speak and this channel
+ * translates nothing: `scopeEventToRoot` in the bridge has already re-spelled
+ * every path and withheld everything outside the root. Re-applying a resolver
+ * here would drop the very events it was meant to deliver.
+ *
  * @public
  * @example <caption>Subscribe to file writes with a path filter</caption>
  * ```typescript
  * import { WorkerChangeChannel } from '@taucad/fs-client/worker-change-channel';
- * import { WorkspacePathResolver } from '@taucad/fs-client/workspace-path-resolver';
  * import type { WorkerChangeChannelTransport } from '@taucad/fs-client/worker-change-channel';
  * export function exampleWorkerChannel(listen: WorkerChangeChannelTransport['listen']): WorkerChangeChannel {
- *   const paths = new WorkspacePathResolver('/project');
- *   const channel = new WorkerChangeChannel({ transport: { listen }, paths });
+ *   const channel = new WorkerChangeChannel({ transport: { listen } });
  *   const openPaths = new Set<string>(['a.ts']);
  *   channel.onFileWritten({
  *     interestedIn: (relativePath: string) => openPaths.has(relativePath),
@@ -146,8 +159,9 @@ function isChangeEvent(value: unknown): value is ChangeEvent {
  * ```
  */
 export class WorkerChangeChannel {
-  private readonly paths: WorkspacePathResolver;
   private readonly unlisten: () => void;
+  private readonly transport: WorkerChangeChannelTransport;
+  private readonly closedSignal = Promise.withResolvers<void>();
   readonly #fileWritten = new Topic<{ type: 'fileWritten'; path: string; backend: FileSystemBackend }>({
     name: 'WorkerChangeChannel.fileWritten',
   });
@@ -175,8 +189,16 @@ export class WorkerChangeChannel {
     name: 'WorkerChangeChannel.backendChanged',
   });
 
-  public constructor(deps: { transport: WorkerChangeChannelTransport; paths: WorkspacePathResolver }) {
-    this.paths = deps.paths;
+  /** Whether exact authority watches own observation invalidation. @returns True for a real watch transport. */
+  public get hasAuthorityWatch(): boolean {
+    return this.transport.watchReady !== undefined;
+  }
+
+  public constructor(deps: { transport: WorkerChangeChannelTransport }) {
+    this.transport = deps.transport;
+    if (deps.transport.closed) {
+      void this.forwardClosure(deps.transport.closed);
+    }
     this.unlisten = deps.transport.listen('fileChanged', (data: unknown) => {
       this.#dispatch(data);
     });
@@ -365,7 +387,13 @@ export class WorkerChangeChannel {
   /**
    * Detach the underlying `fileChanged` listener and drop subscriber lists.
    */
+  /** Captured observation source lifetime. */
+  public get closed(): Promise<void> {
+    return this.closedSignal.promise;
+  }
+
   public dispose(): void {
+    this.closedSignal.resolve();
     this.unlisten();
     this.#fileWritten.dispose();
     this.#fileDeleted.dispose();
@@ -379,87 +407,154 @@ export class WorkerChangeChannel {
     this.#backendChanged.dispose();
   }
 
+  /**
+   * Register a captured resource watch before its authoritative read.
+   * @param request - Root-relative paths and matching scope.
+   * @param handler - Exact changes, both rename edges, or explicit reset.
+   * @returns Actual registration acknowledgement and closure.
+   */
+  public watchReady(request: WatchRequest, handler: (event: WatchEvent) => void): ObservationWatch {
+    if (this.transport.watchReady) {
+      const watch = this.transport.watchReady(request, handler);
+      return { ready: watch.ready, closed: watch.closed, dispose: watch.unsubscribe };
+    }
+    /* Local Topic sources are registered synchronously; this fallback is not
+     * used to acknowledge a remote watch registration. */
+    const matches = (path: string): boolean =>
+      request.paths.some(
+        (root) =>
+          path === '' ||
+          path === root ||
+          root.startsWith(`${path}/`) ||
+          (request.recursive !== true && (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '') === root) ||
+          (request.recursive === true && (root === '' || path.startsWith(`${root}/`))),
+      );
+    const unsubscriptions = [
+      this.onFileWritten({
+        interestedIn: matches,
+        handler: ({ path }) => {
+          handler({ type: 'change', path });
+        },
+      }),
+      this.onFileDeleted({
+        interestedIn: matches,
+        handler: ({ path }) => {
+          handler({ type: 'delete', path });
+        },
+      }),
+      this.onFileCopied({
+        handler: ({ targetPath }) => {
+          if (matches(targetPath)) {
+            handler({ type: 'change', path: targetPath });
+          }
+        },
+      }),
+      this.onFileRenamed({
+        interestedIn: matches,
+        handler: ({ oldPath, newPath }) => {
+          if (oldPath !== undefined && newPath !== undefined) {
+            handler({ type: 'rename', oldPath, newPath });
+          } else if (oldPath !== undefined) {
+            handler({ type: 'delete', path: oldPath });
+          } else if (newPath !== undefined) {
+            handler({ type: 'change', path: newPath });
+          }
+        },
+      }),
+      this.onDirectoryCreated({
+        interestedIn: matches,
+        handler: ({ path }) => {
+          handler({ type: 'change', path });
+        },
+      }),
+      this.onDirectoryDeleted({
+        interestedIn: matches,
+        handler: ({ path }) => {
+          handler({ type: 'delete', path });
+        },
+      }),
+      this.onDirectoryChanged({
+        interestedIn: matches,
+        handler: ({ path }) => {
+          handler({ type: 'change', path });
+        },
+      }),
+      this.onDirectoryCopied({
+        handler: ({ targetPath }) => {
+          if (matches(targetPath)) {
+            handler({ type: 'change', path: targetPath });
+          }
+        },
+      }),
+      this.onDirectoryRenamed({
+        interestedIn: matches,
+        handler: () => {
+          handler({ type: 'reset' });
+        },
+      }),
+      this.onBackendChanged(() => {
+        handler({ type: 'reset' });
+      }),
+    ];
+    return {
+      ready: Promise.resolve(),
+      closed: this.closed,
+      dispose: () => {
+        for (const unsubscribe of unsubscriptions) {
+          unsubscribe();
+        }
+      },
+    };
+  }
+
+  private async forwardClosure(closed: Promise<void>): Promise<void> {
+    try {
+      await closed;
+    } catch {
+      /* A failed transport also closes this captured source. */
+    }
+    this.closedSignal.resolve();
+  }
+
   #dispatch(data: unknown): void {
     if (!isChangeEvent(data)) {
       return;
     }
     switch (data.type) {
       case 'fileWritten': {
-        const path = this.paths.toRelativePath(data.path);
-        if (path !== undefined) {
-          this.#fileWritten.emit({ type: 'fileWritten', path, backend: data.backend });
-        }
+        this.#fileWritten.emit(data);
         return;
       }
       case 'fileDeleted': {
-        const path = this.paths.toRelativePath(data.path);
-        if (path !== undefined) {
-          this.#fileDeleted.emit({ type: 'fileDeleted', path, backend: data.backend });
-        }
+        this.#fileDeleted.emit(data);
         return;
       }
       case 'fileRenamed': {
-        const oldPath = this.paths.toRelativePath(data.oldPath);
-        const newPath = this.paths.toRelativePath(data.newPath);
-        if (oldPath === undefined && newPath === undefined) {
-          return;
-        }
-        this.#fileRenamed.emit({ type: 'fileRenamed', oldPath, newPath, backend: data.backend });
+        this.#fileRenamed.emit(data);
         return;
       }
       case 'fileCopied': {
-        const sourcePath = this.paths.toRelativePath(data.sourcePath);
-        const targetPath = this.paths.toRelativePath(data.targetPath);
-        if (targetPath === undefined) {
-          return;
-        }
-        this.#fileCopied.emit({ type: 'fileCopied', sourcePath, targetPath, backend: data.backend });
+        this.#fileCopied.emit(data);
         return;
       }
       case 'directoryCreated': {
-        const path = this.paths.toRelativePath(data.path);
-        if (path !== undefined) {
-          this.#directoryCreated.emit({ type: 'directoryCreated', path, backend: data.backend });
-        }
+        this.#directoryCreated.emit(data);
         return;
       }
       case 'directoryDeleted': {
-        const path = this.paths.toRelativePath(data.path);
-        if (path !== undefined) {
-          this.#directoryDeleted.emit({ type: 'directoryDeleted', path, backend: data.backend });
-        }
+        this.#directoryDeleted.emit(data);
         return;
       }
       case 'directoryRenamed': {
-        const oldPath = this.paths.toRelativePath(data.oldPath);
-        const newPath = this.paths.toRelativePath(data.newPath);
-        if (oldPath === undefined && newPath === undefined) {
-          return;
-        }
-        this.#directoryRenamed.emit({ type: 'directoryRenamed', oldPath, newPath, backend: data.backend });
+        this.#directoryRenamed.emit(data);
         return;
       }
       case 'directoryCopied': {
-        const sourcePath = this.paths.toRelativePath(data.sourcePath);
-        const targetPath = this.paths.toRelativePath(data.targetPath);
-        if (targetPath === undefined) {
-          return;
-        }
-        this.#directoryCopied.emit({ type: 'directoryCopied', sourcePath, targetPath, backend: data.backend });
+        this.#directoryCopied.emit(data);
         return;
       }
       case 'directoryChanged': {
-        const directoryAbsolute = data.path;
-        const rootNorm = normalizePath(this.paths.root);
-        const directoryNorm = normalizePath(directoryAbsolute);
-        const relativeDirectory = directoryNorm === rootNorm ? '' : this.paths.toRelativePath(directoryAbsolute);
-        if (relativeDirectory !== undefined) {
-          this.#directoryChanged.emit({
-            type: 'directoryChanged',
-            path: relativeDirectory,
-            backend: data.backend,
-          });
-        }
+        this.#directoryChanged.emit(data);
         return;
       }
       case 'backendChanged': {

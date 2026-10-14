@@ -1,9 +1,6 @@
 /**
- * ChatErrorServiceUnavailable uses Try again copy with continuation behavior.
- *
- * `continueChat()` resumes the stream without touching `chat.messages`.
- * A destructive `regenerate()` here would erase partial assistant content
- * the user already saw before the network or service interruption.
+ * ChatErrorServiceUnavailable resumes only a run the host can continue.
+ * Try again explicitly replays an unrecoverable turn.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -20,8 +17,10 @@ const regenerate = vi.fn();
 
 vi.mock('#hooks/use-chat.js', () => ({
   useChatActions: () => ({ continueChat, regenerate }),
-  useChatRetrySnapshot: () => ({ retryAttempt: 0, retryMaxAttempts: 5 }),
   useChatSelector: vi.fn(),
+}));
+vi.mock('#routes/w.$workspace.$project/use-open-new-chat.js', () => ({
+  useOpenNewChat: () => ({ openNewChat: vi.fn(), isReady: true }),
 }));
 
 describe('ChatErrorServiceUnavailable', () => {
@@ -42,16 +41,33 @@ describe('ChatErrorServiceUnavailable', () => {
     expect(screen.getByText('Unable to reach Tau')).toBeInTheDocument();
   });
 
-  it('should call continueChat when Try again is clicked', async () => {
+  it('should resume the paused turn and say that it is saved', async () => {
     const user = userEvent.setup();
-    render(<ChatErrorServiceUnavailable />);
+    render(<ChatErrorServiceUnavailable resumable />);
 
-    const tryAgain = screen.getByRole('button', { name: /try again/i });
-    expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Unable to reach Tau')).toBeInTheDocument();
+    expect(screen.getByText('Everything up to here is saved.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
 
-    await user.click(tryAgain);
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
 
     expect(continueChat).toHaveBeenCalledTimes(1);
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  /* F5: this card is category-routed, so it also serves 503 codes the host
+     rules unrecoverable (`BILLING_RECOVERY_UNAVAILABLE`). */
+  it('should promise nothing and keep Try again for an outage the host will not resume', async () => {
+    const user = userEvent.setup();
+    render(<ChatErrorServiceUnavailable resumable={false} />);
+
+    expect(screen.getByText('Unable to reach Tau')).toBeInTheDocument();
+    expect(screen.queryByText('Everything up to here is saved.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /resume/iu })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    expect(continueChat).not.toHaveBeenCalled();
   });
 });

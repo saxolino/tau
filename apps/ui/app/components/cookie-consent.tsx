@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { CookieIcon } from 'lucide-react';
 import { Link } from 'react-router';
-import { useAnalytics, useCookieConsent } from '#hooks/use-analytics.js';
-import { Button } from '#components/ui/button.js';
-import { Checkbox } from '#components/ui/checkbox.js';
-import { Label } from '#components/ui/label.js';
-import { Separator } from '#components/ui/separator.js';
+import { useCookieConsent } from '#hooks/use-cookie-consent.js';
+import { isGlobalPrivacyControlEnabled } from '#lib/global-privacy-control.lib.js';
+import { Button } from '@taucad/ui/components/button';
+import { Checkbox } from '@taucad/ui/components/checkbox';
+import { Label } from '@taucad/ui/components/label';
+import { Separator } from '@taucad/ui/components/separator';
 import {
   Dialog,
   DialogContent,
@@ -13,26 +14,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '#components/ui/dialog.js';
+} from '@taucad/ui/components/dialog';
 
-/**
- * Detects if Global Privacy Control (GPC) is enabled in the browser.
- * GPC is a browser signal that indicates the user's preference to opt out of tracking.
- * @see https://globalprivacycontrol.org
- */
-function isGlobalPrivacyControlEnabled(): boolean {
-  if (typeof navigator === 'undefined') {
-    return false;
-  }
-
-  // Navigator.globalPrivacyControl is the standard GPC signal
-  return (navigator as Navigator & { globalPrivacyControl?: boolean }).globalPrivacyControl === true;
-}
-
-/**
- * Cookie preferences dialog component.
- * Can be used standalone to allow users to manage their cookie preferences.
- */
 export function CookiePreferencesDialog({
   isOpen,
   onOpenChange,
@@ -40,190 +23,172 @@ export function CookiePreferencesDialog({
   readonly isOpen: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }): React.JSX.Element {
-  const analytics = useAnalytics();
-  const [, setConsentStatus] = useCookieConsent();
-  // Default to false for GDPR compliance - optional cookies must not be pre-selected
-  const [analyticsEnabled, setAnalyticsEnabled] = useState(analytics.get_explicit_consent_status() === 'granted');
-
-  // Reset local state to match actual consent status when dialog opens
-  // Uses PostHog's get_explicit_consent_status() as the source of truth
-  // This ensures Cancel truly discards changes by syncing on each open
-  useEffect(() => {
-    if (isOpen) {
-      setAnalyticsEnabled(analytics.get_explicit_consent_status() === 'granted');
-    }
-  }, [isOpen, analytics]);
-
-  const handleSaveSettings = (): void => {
-    if (analyticsEnabled) {
-      analytics.opt_in_capturing();
-      setConsentStatus('granted');
-    } else {
-      analytics.opt_out_capturing();
-      setConsentStatus('denied');
-    }
-
-    onOpenChange(false);
-  };
-
-  const handleCancel = (): void => {
-    onOpenChange(false);
-  };
-
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Cookie preferences</DialogTitle>
-          <DialogDescription>
-            We use cookies to analyze site usage and improve your experience.{' '}
-            <Link to='/legal/privacy' className='underline hover:text-foreground'>
-              Learn more
-            </Link>
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className='flex flex-col gap-4'>
-          {/* Essential cookies - always enabled */}
-          <div className='flex items-start gap-3'>
-            <Checkbox checked disabled id='essential' className='mt-0.5' />
-            <div className='flex flex-col gap-1'>
-              <Label htmlFor='essential' className='font-medium'>
-                Essential Cookies
-              </Label>
-              <p className='text-sm text-muted-foreground'>
-                Enable basic functions like page navigation and access to secure areas of the website. Without these
-                cookies, the website cannot function properly.
-              </p>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Product analytics - toggleable */}
-          <div className='flex items-start gap-3'>
-            <Checkbox
-              checked={analyticsEnabled}
-              id='analytics'
-              className='mt-0.5'
-              onCheckedChange={(checked) => {
-                setAnalyticsEnabled(checked === true);
-              }}
-            />
-            <div className='flex flex-col gap-1'>
-              <Label htmlFor='analytics' className='font-medium'>
-                Analytics
-              </Label>
-              <p className='text-sm text-muted-foreground'>
-                Cookies used to collect information about how you use the website. This data helps us improve the site
-                and your experience.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant='outline' onClick={handleCancel}>
-            Cancel
-          </Button>
-          <Button onClick={handleSaveSettings}>Save settings</Button>
-        </DialogFooter>
-      </DialogContent>
+      {isOpen ? <CookiePreferencesContent onOpenChange={onOpenChange} /> : null}
     </Dialog>
   );
 }
 
+const CookiePreferencesContent = ({
+  onOpenChange,
+}: {
+  readonly onOpenChange: (open: boolean) => void;
+}): React.JSX.Element => {
+  const [consentStatus, setConsentStatus] = useCookieConsent();
+  const globalPrivacyControl = isGlobalPrivacyControlEnabled();
+  const [analyticsEnabled, setAnalyticsEnabled] = useState(consentStatus === 'accepted');
+
+  const handleSaveSettings = (): void => {
+    setConsentStatus(analyticsEnabled && !globalPrivacyControl ? 'accepted' : 'declined');
+    onOpenChange(false);
+  };
+
+  return (
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Cookie preferences</DialogTitle>
+        <DialogDescription>
+          Tau uses optional analytics only after you allow it.{' '}
+          <Link to='/legal/privacy' className='underline hover:text-foreground'>
+            Learn more
+          </Link>
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className='flex flex-col gap-4'>
+        <div className='flex items-start gap-3'>
+          <Checkbox checked disabled id='essential' className='mt-0.5' />
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='essential' className='font-medium'>
+              Essential storage
+            </Label>
+            <p className='text-sm text-muted-foreground'>Keeps the website secure and remembers your consent.</p>
+          </div>
+        </div>
+
+        <Separator />
+
+        <div className='flex items-start gap-3'>
+          <Checkbox
+            checked={analyticsEnabled && !globalPrivacyControl}
+            disabled={globalPrivacyControl}
+            id='analytics'
+            className='mt-0.5'
+            onCheckedChange={(checked) => {
+              setAnalyticsEnabled(checked === true);
+            }}
+          />
+          <div className='flex flex-col gap-1'>
+            <Label htmlFor='analytics' className='font-medium'>
+              Product analytics
+            </Label>
+            <p className='text-sm text-muted-foreground'>
+              Helps Tau understand website usage through PostHog. This may use cookies and session recording.
+            </p>
+            {globalPrivacyControl ? (
+              <p className='text-sm text-muted-foreground'>
+                Your browser’s Global Privacy Control signal disables analytics.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <DialogFooter>
+        <Button
+          variant='outline'
+          onClick={() => {
+            onOpenChange(false);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button variant='outline' onClick={handleSaveSettings}>
+          Save settings
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+};
+
 /**
- * Cookie consent banner component.
- *
- * Displays a floating banner in the bottom-right corner when consent
- * has not been given, with options to accept, decline, or manage preferences.
+ * While the banner is mounted, a focused control scrolls clear of it (WCAG 2.4.11). Scroll margin on the focused
+ * element works in whichever container scrolls, and the rem-based spacing grows with text zoom as the banner does.
+ * `<body>` carries no React-owned class, so toggling it here cannot race the root's theme classes.
  */
+// ponytail: a control at the very end of its scroller can still sit under the banner; reserve scroller space if that bites.
+const bannerFocusClearanceClass = '[&_:focus]:scroll-mb-48';
+
 export function CookieConsent(): React.JSX.Element | undefined {
-  const analytics = useAnalytics();
   const [consentStatus, setConsentStatus] = useCookieConsent();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [isVisible, setIsVisible] = useState(false);
+  const isBannerShown = consentStatus === 'unknown';
 
-  // Honor Global Privacy Control (GPC) signal
-  // If GPC is enabled and consent is pending, automatically opt out of analytics
   useEffect(() => {
-    if (consentStatus === 'pending' && isGlobalPrivacyControlEnabled()) {
-      analytics.opt_out_capturing();
-      setConsentStatus('denied');
-    }
-  }, [analytics, consentStatus, setConsentStatus]);
-
-  // Delay showing the banner by 2 seconds
-  useEffect(() => {
-    if (consentStatus !== 'pending') {
-      return;
+    if (!isBannerShown) {
+      return undefined;
     }
 
-    const timer = setTimeout(() => {
-      setIsVisible(true);
-    }, 2000);
-
+    document.body.classList.add(bannerFocusClearanceClass);
     return () => {
-      clearTimeout(timer);
+      document.body.classList.remove(bannerFocusClearanceClass);
     };
-  }, [consentStatus]);
+  }, [isBannerShown]);
 
-  // Sync PostHog consent state with our cookie on mount and when consent changes
-  useEffect(() => {
-    if (consentStatus === 'granted') {
-      analytics.opt_in_capturing();
-    } else if (consentStatus === 'denied') {
-      analytics.opt_out_capturing();
-    }
-  }, [analytics, consentStatus]);
-
-  const handleAccept = (): void => {
-    setConsentStatus('granted');
-  };
-
-  const handleDecline = (): void => {
-    setConsentStatus('denied');
-  };
-
-  const handleManage = (): void => {
-    setIsDialogOpen(true);
-  };
-
-  // Don't render banner if consent has already been given or not yet visible
-  if (consentStatus !== 'pending' || !isVisible) {
+  if (!isBannerShown) {
     return undefined;
   }
 
   return (
     <>
-      {/* Cookie consent banner */}
-      <div className='fixed right-2 bottom-2 z-50 max-w-sm animate-in duration-300 fade-in slide-in-from-bottom-4 max-sm:left-2'>
+      <div
+        role='region'
+        aria-label='Cookie preferences'
+        className='fixed right-2 bottom-2 z-50 max-w-sm duration-300 fade-in slide-in-from-bottom-4 motion-safe:animate-in max-sm:left-2'
+      >
         <div className='flex flex-col gap-2 rounded-lg border bg-card p-4 shadow-md'>
           <div className='flex items-start justify-between'>
             <h3 className='font-semibold'>Cookies</h3>
             <CookieIcon className='size-4 shrink-0 text-muted-foreground' />
           </div>
           <p className='text-sm text-muted-foreground'>
-            We use cookies to analyze site usage and improve your experience.
+            Allow optional PostHog analytics, including session recording, to help improve Tau?
           </p>
           <div className='flex items-center justify-between'>
-            <Button variant='link' size='sm' className='-mb-2 -ml-3' onClick={handleManage}>
+            <Button
+              variant='link'
+              size='sm'
+              className='-mb-2 -ml-3'
+              onClick={() => {
+                setIsDialogOpen(true);
+              }}
+            >
               Manage
             </Button>
             <div className='flex items-center gap-2'>
-              <Button variant='outline' size='sm' onClick={handleDecline}>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  setConsentStatus('declined');
+                }}
+              >
                 Decline
               </Button>
-              <Button size='sm' onClick={handleAccept}>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  setConsentStatus('accepted');
+                }}
+              >
                 Accept
               </Button>
             </div>
           </div>
         </div>
       </div>
-
-      {/* Preferences dialog */}
       <CookiePreferencesDialog isOpen={isDialogOpen} onOpenChange={setIsDialogOpen} />
     </>
   );

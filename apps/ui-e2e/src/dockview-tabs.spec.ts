@@ -2,13 +2,10 @@ import { expect, test } from 'vitest';
 import { page as selectors } from 'vitest/browser';
 import type { Locator } from 'vitest/browser';
 import * as target from '#support/external-target.js';
+import { expandPath, treeItem } from '#support/file-tree.js';
 
 const seedRoute = '/__e2e/project-file-tree';
 const seedProjectName = 'sgenoud/models file-tree e2e';
-
-const filesPane = (): Locator => selectors.getByRole('region', { name: /^Files for /u }).first();
-const treeItem = (path: string): Locator =>
-  filesPane().getByCss(`[data-testid="file-tree-item"][data-file-tree-path="${path}"]`);
 
 const editorTab = (path: string): Locator => selectors.getByCss(`.dv-tab[aria-label="${path}"]`);
 const tabTooltipTrigger = (path: string): Locator =>
@@ -24,24 +21,6 @@ const openViewerFile = async (name: RegExp, path: string): Promise<void> => {
   await target.expectVisible(fileDrawer);
   await target.click(fileDrawer.getByRole('option', { name }));
   await target.expectVisible(editorTab(path), 15_000);
-};
-
-const expandPath = async (path: string): Promise<void> => {
-  const segments = path.split('/');
-  let current = '';
-  for (const segment of segments) {
-    current = current ? `${current}/${segment}` : segment;
-    const item = treeItem(current);
-    // oxlint-disable-next-line no-await-in-loop -- Each child exists only after its parent expands.
-    await target.expectVisible(item, 15_000);
-    // oxlint-disable-next-line no-await-in-loop -- Folder expansion is intentionally sequential.
-    if ((await target.getAttribute(item, 'aria-expanded')) !== 'true') {
-      // oxlint-disable-next-line no-await-in-loop -- Folder expansion is intentionally sequential.
-      await target.click(item, { position: { x: 8, y: 14 } });
-    }
-    // oxlint-disable-next-line no-await-in-loop -- Folder expansion is intentionally sequential.
-    await target.expectAttribute(item, 'aria-expanded', 'true', 15_000);
-  }
 };
 
 const openSeededProject = async (): Promise<void> => {
@@ -63,7 +42,7 @@ const openSeededProject = async (): Promise<void> => {
   const searchButton = selectors.getByRole('button', { name: 'Search', exact: true });
   await target.expectVisible(searchButton);
   await target.click(searchButton);
-  const commandSearch = selectors.getByPlaceholder('Search projects, chats, and actions...');
+  const commandSearch = selectors.getByPlaceholder('Search projects, chats, and actions…');
   await target.expectVisible(commandSearch);
   await target.fill(commandSearch, 'Open files');
   const openFilesCommand = selectors.getByText('Open files', { exact: true });
@@ -77,6 +56,9 @@ const openSeededProject = async (): Promise<void> => {
 type TabVisualState = {
   readonly backgroundColor: string;
   readonly borderRadius: number;
+  readonly closeFade: string;
+  readonly closeFadeBackground: string;
+  readonly closeBackgroundColor: string;
   readonly closePosition: string;
   readonly closeLayer: string;
   readonly color: string;
@@ -97,6 +79,9 @@ const readTabVisualState = async (tab: Locator): Promise<TabVisualState> =>
     return {
       backgroundColor: style.backgroundColor,
       borderRadius: Number.parseFloat(style.borderRadius),
+      closeFade: getComputedStyle(close, '::before').content,
+      closeFadeBackground: getComputedStyle(close, '::before').backgroundImage,
+      closeBackgroundColor: closeStyle.backgroundColor,
       closePosition: closeStyle.position,
       closeLayer: closeStyle.zIndex,
       color: style.color,
@@ -143,7 +128,11 @@ test('keeps fixed fading tabs usable across visual and interaction states', asyn
   expect(activeLight.width).toBeGreaterThanOrEqual(112);
   expect(activeLight.width).toBeLessThanOrEqual(160);
   expect(activeLight.borderRadius).toBeGreaterThan(0);
-  expect(activeLight.maskImage).toContain('linear-gradient');
+  expect(activeLight.maskImage).toContain('linear-gradient(to right');
+  expect(activeLight.maskImage).toContain('42px');
+  expect(activeLight.closeFade).not.toBe('none');
+  expect(activeLight.closeFadeBackground).toContain('linear-gradient(to right');
+  expect(activeLight.closeBackgroundColor).toBe(activeLight.backgroundColor);
   expect(activeLight.closePosition).toBe('absolute');
   expect(Number(activeLight.closeLayer)).toBeGreaterThan(0);
   expect(activeLight.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
@@ -171,7 +160,7 @@ test('keeps fixed fading tabs usable across visual and interaction states', asyn
   await target.click(overflowPicker('package.json'));
   await target.expectAttribute(overflowPicker('package.json'), 'aria-expanded', 'true');
   const overflowPopover = selectors.getByCss('[data-slot="popover-content"]');
-  const overflowSearch = overflowPopover.getByPlaceholder('Search open tabs...');
+  const overflowSearch = overflowPopover.getByPlaceholder('Search open tabs…');
   await target.expectVisible(overflowSearch);
   await target.fill(overflowSearch, 'package.json');
   const packageOption = overflowPopover.getByRole('option', { name: /package\.json/u });
@@ -214,6 +203,8 @@ test('keeps fixed fading tabs usable across visual and interaction states', asyn
     if (!(strip instanceof HTMLElement)) {
       throw new Error('Dockview tab strip was missing.');
     }
+    const scrollable = element.closest<HTMLElement>('.dv-scrollable');
+    const overlayScrollbar = scrollable?.querySelector<HTMLElement>('.dv-scrollbar-horizontal');
 
     strip.scrollLeft = 0;
     const forward = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 80 });
@@ -227,20 +218,27 @@ test('keeps fixed fading tabs usable across visual and interaction states', asyn
       afterReverse: strip.scrollLeft,
       forwardDispatch,
       forwardPrevented: forward.defaultPrevented,
-      hasLegacyWrapper: element.closest('.dv-scrollable') !== null,
+      hasOverlayScrollbar: Boolean(overlayScrollbar),
+      overlayScrollbarHeight: overlayScrollbar ? getComputedStyle(overlayScrollbar).height : undefined,
+      overlayScrollbarPosition: overlayScrollbar ? getComputedStyle(overlayScrollbar).position : undefined,
       reverseDispatch,
       reversePrevented: reverse.defaultPrevented,
+      scrollableHeight: scrollable?.getBoundingClientRect().height,
+      stripHeight: strip.getBoundingClientRect().height,
     };
   });
-  expect(wheelState).toEqual({
+  expect(wheelState).toMatchObject({
     afterForward: 80,
     afterReverse: 40,
     forwardDispatch: false,
     forwardPrevented: true,
-    hasLegacyWrapper: false,
+    hasOverlayScrollbar: true,
+    overlayScrollbarHeight: '4.5px',
+    overlayScrollbarPosition: 'absolute',
     reverseDispatch: false,
     reversePrevented: true,
   });
+  expect(wheelState.stripHeight).toBe(wheelState.scrollableHeight);
 
   const longTooltipTrigger = tabTooltipTrigger('public/models/nested/strainer.js');
   // Radix intentionally suppresses a tooltip on pointer-down until the
@@ -313,7 +311,7 @@ test('keeps fixed fading tabs usable across visual and interaction states', asyn
   await target.expectVisible(splitPopover.getByRole('option', { name: /box-corner\.js/u }));
   await target.expectVisible(splitPopover.getByRole('option', { name: /readme\.md/u }));
   await target.expectCount(splitPopover.getByRole('option', { name: /package\.json/u }), 0);
-  await target.press(splitPopover.getByPlaceholder('Search open tabs...'), 'Escape');
+  await target.press(splitPopover.getByPlaceholder('Search open tabs…'), 'Escape');
 
   const splitWheelState = await target.evaluateLocator(secondStrip, (strip) => {
     const firstStrip = strip.closest('[data-slot="omni-scroller"]')?.querySelector<HTMLElement>('.dv-tabs-container');
@@ -357,7 +355,7 @@ test('keeps fixed fading tabs usable across visual and interaction states', asyn
   const overflowDrawer = selectors.getByRole('dialog', { name: 'Open tabs' });
   await target.expectVisible(overflowDrawer);
   await target.expectCount(selectors.getByCss('[data-slot="popover-content"]'), 0);
-  const viewerSearch = overflowDrawer.getByPlaceholder('Search open tabs...');
+  const viewerSearch = overflowDrawer.getByPlaceholder('Search open tabs…');
   await target.fill(viewerSearch, 'public/models/nested/strainer.js');
   await target.click(overflowDrawer.getByRole('option', { name: /strainer\.js/u }));
   await target.expectAttribute(editorTab('public/models/nested/strainer.js'), 'aria-selected', 'true');

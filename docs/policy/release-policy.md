@@ -3,7 +3,7 @@ title: 'Release Policy'
 description: 'Versioning, building, and publishing strategy for @taucad/* npm packages: Nx Release, version plans, tsdown, OIDC.'
 status: active
 created: '2026-02-27'
-updated: '2026-08-24'
+updated: '2026-10-12'
 related:
   - docs/policy/version-policy.md
   - docs/policy/public-surface-policy.md
@@ -20,21 +20,24 @@ Nx Release with version plans provides native monorepo integration and decouples
 
 ## Packages in Scope
 
-| Package                   | Description                                             |
-| ------------------------- | ------------------------------------------------------- |
-| `@taucad/runtime`         | Multi-kernel CAD runtime for browser and Node.js        |
-| `@taucad/runtime-testing` | Runtime harnesses, mocks, and geometry assertions       |
-| `@taucad/cli`             | Headless CAD export CLI                                 |
-| `@taucad/react`           | React bindings for the runtime                          |
-| `geospec`                 | GeoSpec authoring contract and CLI-facing specification |
-| `@taucad/geospec-engine`  | Fair-source GeoSpec execution/proof engine and CLI      |
-| `@taucad/openrscad`       | OpenRSCAD runtime plugin                                |
-| `packages/plugins/*`      | Publishable runtime capability toolkits                 |
-| `packages/core/*`         | Publishable shared implementation packages              |
+| Package                   | Description                                               |
+| ------------------------- | --------------------------------------------------------- |
+| `@taucad/runtime`         | Multi-kernel CAD runtime for browser and Node.js          |
+| `@taucad/runtime-testing` | Runtime harnesses, mocks, and geometry assertions         |
+| `@taucad/filesystem`      | Portable filesystem abstraction and backends              |
+| `@taucad/rpc`             | Typed RPC channel primitives                              |
+| `@taucad/units`           | Portable unit parsing, conversion, and quantity semantics |
+| `@taucad/cli`             | Headless CAD export CLI                                   |
+| `@taucad/react`           | React bindings for the runtime                            |
+| `geospec`                 | GeoSpec authoring contract and CLI-facing specification   |
+| `@taucad/geospec-engine`  | GeoSpec CLI and Node worker-pool host                     |
+| `@taucad/openrscad`       | OpenRSCAD runtime plugin                                  |
+| `packages/plugins/*`      | Publishable runtime capability toolkits                   |
+| `packages/core/*`         | Publishable shared implementation packages                |
 
-The following internal libraries remain in the fixed Nx version group but are not published independently: `@taucad/events`, `@taucad/filesystem`, `@taucad/fs-bridge`, `@taucad/json-schema`, `@taucad/memory`, `@taucad/rpc`, `@taucad/types`, `@taucad/units`, and `@taucad/utils`. Runtime bundles all nine. The former `@taucad/vm` library is no longer one of them: its sources live inside `@taucad/esbuild`, which owns and publishes them directly. Public plugin and core packages remain external dependencies and publish in the same fixed train.
+The following private libraries are outside the fixed Nx release group: `@taucad/events`, `@taucad/fs-bridge`, `@taucad/json-schema`, `@taucad/memory`, `@taucad/types`, and `@taucad/utils`. All six are runtime bundle candidates. `@taucad/filesystem` and `@taucad/rpc` publish separately and remain external runtime dependencies; RPC is also an `@taucad/agent-host` dependency (host-agnostic R3, W4 SC-S4). The former `@taucad/vm` library is no longer one of them: its sources live inside `@taucad/esbuild`, which owns and publishes them directly. Public `@taucad/units`, plugin, and core packages remain external dependencies and publish in the same fixed train.
 
-`@taucad/runtime/types` is the public owner for runtime contract types. JSON Schema inference and units remain implementation libraries with no public runtime veneer or subpath.
+`@taucad/runtime/types` is the public owner for runtime contract types. JSON Schema inference remains an implementation library with no public runtime veneer or subpath. `@taucad/units` owns the portable public units API.
 
 `@taucad/fs-client` and `@taucad/telemetry` are private and outside the release group. Telemetry is Tau application infrastructure; its contracts live in `libs/telemetry`, its observability middleware lives in the UI, and it is neither bundled into runtime nor published.
 
@@ -42,9 +45,9 @@ The following internal libraries remain in the fixed Nx version group but are no
 
 ### Fixed Versioning
 
-All packages in the release group share a single version number. When any member changes, Nx aligns the group to the same version. This includes the versioned-but-not-published bundled libraries so their changes cannot ship without a corresponding runtime version.
+The fixed release group selects `tag:type:package` projects in `nx.json`; its packages share one version number. Private `type:lib` bundle candidates are outside that selector. When a private-library change affects a published package, include the affected package in the release plan; Nx does not version the private library as a release-group member.
 
-**Rationale**: The packages are tightly coupled, and `@taucad/runtime` bundles nine private implementation libraries. Independent versioning would create a combinatorial compatibility matrix that is difficult to test and communicate.
+**Rationale**: The packages are tightly coupled, and `@taucad/runtime` may bundle six private implementation libraries. Independent versioning would create a combinatorial compatibility matrix that is difficult to test and communicate.
 
 ### Semantic Versioning
 
@@ -113,7 +116,7 @@ The `pkgcheck` Nx plugin validates package.json structure before publish:
 - Identical development and publish export key sets
 - Every `files` entry exists in the staged package
 - ESM-only entry points resolve correctly
-- Bundled workspace modules have exactly one published owner
+- Each package's bundled workspace modules are permitted by its own manifest and tags; private libraries may have multiple published bundle owners
 - Published declarations contain no non-JSDoc specifier for a bundled workspace package
 - A strict consumer (`skipLibCheck: false`) resolves the runtime under both `bundler` and `nodenext`
 - publint, Are the Types Wrong, circular-dependency, and size-limit gates pass
@@ -172,7 +175,8 @@ Developer                          CI (GitHub Actions)
    ├─ Generate changelogs
    ├─ Commit + tag (v{version})
    └─ Push tag
-                                   5. Tag triggers publish workflow
+                                   5. Operator dispatches the publish
+                                      workflow on the tag
                                       ├─ nx run scripts:release-gate (validators,
                                       │  release checks, pkgcheck/test/typecheck/
                                       │  lint by tag, surface audit, quick start)
@@ -201,8 +205,8 @@ This section specifies the operator-owned release procedure. It does not authori
 
 The closeout Decision Register has settled the former C1/C5/C6 and OQ2/OQ4/OQ7 branches:
 
-1. Runtime bundles exactly nine private implementation libraries: events, filesystem, fs-bridge, JSON Schema, memory, RPC, types, units, and utils. None publishes independently.
-2. `@taucad/runtime/types` is the public runtime-contract type surface. JSON Schema inference and units have no public veneer or runtime subpath.
+1. Runtime may bundle six private implementation libraries: events, fs-bridge, JSON Schema, memory, types, and utils. `@taucad/filesystem`, `@taucad/rpc`, and `@taucad/units` publish separately and remain external.
+2. `@taucad/runtime/types` is the public runtime-contract type surface. JSON Schema inference has no public veneer or runtime subpath; `@taucad/units` owns portable unit parsing, conversion, and quantity semantics.
 3. Concrete backend dependencies are owned by their plugin packages; runtime does not depend on them.
 4. `@taucad/geospec-engine` publishes after runtime and `geospec`.
 5. `nanoraster@0.2.0` and its three platform packages replace the deleted `@taucad/render` package.
@@ -225,7 +229,7 @@ pnpm nx release --skip-publish --first-release
 git push origin main --follow-tags
 ```
 
-The pushed release tag triggers `.github/workflows/publish.yml`; CI runs the release gate, dry-runs, then publishes the fixed group in one `nx release publish`. After verifying the train, the operator may promote each approved package:
+The operator then dispatches `.github/workflows/publish.yml` on the release tag (`gh workflow run publish.yml --ref v<version>`); a pushed tag alone publishes nothing. The run executes the release gate, dry-runs, then publishes the fixed group in one `nx release publish`. After verifying the train, the operator may promote each approved package:
 
 ```bash
 npm dist-tag add '<package>@<released-version>' latest
@@ -240,18 +244,27 @@ Only after the replacement train is installed and verified, deprecate the exact 
 ```bash
 npm deprecate '@taucad/converter@0.1.0-beta.0' 'Use @taucad/assimp, @taucad/brep, @taucad/gltf, or @taucad/rhino.'
 npm deprecate '@taucad/events@0.1.0-beta.0' 'Bundled into @taucad/runtime.'
-npm deprecate '@taucad/filesystem@0.1.0-beta.0' 'Use @taucad/runtime/filesystem.'
 npm deprecate '@taucad/memory@0.1.0-beta.0' 'Bundled into @taucad/runtime.'
-npm deprecate '@taucad/rpc@0.1.0-beta.0' 'Bundled into @taucad/runtime.'
 npm deprecate '@taucad/types@0.1.0-beta.0' 'Use @taucad/runtime/types.'
 npm deprecate '@taucad/json-schema@0.1.0-beta.0' 'Bundled into @taucad/runtime.'
-npm deprecate '@taucad/units@0.1.0-beta.0' 'Bundled into @taucad/runtime.'
 npm deprecate '@taucad/utils@0.1.0-beta.0' 'Bundled into @taucad/runtime.'
 npm deprecate '@taucad/fs-client@0.1.0-beta.0' 'Use @taucad/runtime/filesystem.'
 npm deprecate '@taucad/telemetry@0.1.0-beta.0' 'Internal Tau application package; no public replacement.'
 ```
 
 The retired `@taucad/testing` package has no one-to-one replacement: its chat schema and prompt/harness concerns moved to their owners before the narrower `@taucad/runtime-testing` package was created. Do not deprecate it with a misleading replacement pointer.
+
+## Application Releases
+
+The deployable applications (projects tagged `release:app`: `ui`, `api` and `desktop`) are versioned separately from the npm train and are never published to npm.
+
+- **Version source**: `scripts/src/release-apps.ts` bumps each application from the conventional commits that touched its workspace dependency closure since its last `<project>@<version>` tag (feature: minor; breaking: major, or minor below 1.0.0; anything else: patch). Tests and Markdown do not count. An application without a tag starts at `0.1.0`.
+- **Release PRs**: `.github/workflows/release.yml` keeps one bot-owned pull request per application on `release/<project>`, whose commit only changes that application's `package.json` version and `CHANGELOG.md`. Squash-merging one is the release act for that application; its push creates the application's tag and GitHub Release with the release GitHub App. Applications release independently.
+- **Release CI**: a published GitHub Release starts `.github/workflows/release-build.yml`, which lints, typechecks, tests and builds the application at its tag, then ships it in the same run. A desktop release also packages macOS (Developer ID signed and notarized), Linux and Windows (unsigned) archives, attaches them with `SHA256SUMS.txt` and the per-platform update feeds, becomes the repository's latest release, and then writes its feeds to the fixed `desktop-feed` prerelease, which installed apps read. The "Latest" badge is therefore not a production control.
+- **Staging desktop**: dispatching `.github/workflows/release-desktop-staging.yml` from `main` creates a `desktop-staging@<version>-staging.<n>` prerelease with the release GitHub App. `release-build.yml` builds it exactly like a desktop release, packaged for the staging channel (taucad.dev endpoints, no update checks) and signed from the `desktop-staging` environment; it attaches the archives without update feeds and never marks the prerelease latest.
+- **Production**: merging a UI or API release pull request is the release, with no further approval. Its `release-build.yml` run verifies the application at its tag and then deploys only that application (the API to Fly; the UI and docs to Netlify); the other application stays where it is. The desktop keeps its `desktop` approval, because a shipped desktop build updates installed apps and can only be replaced, not rolled back. Rollbacks and redeploys dispatch `.github/workflows/deploy-production.yml` from `main` with one `ui@` or `api@` tag: it requires the release build to have verified that tag and dispatches the same deploys. Deploying an older version than the application's last production deploy requires `rollback: true`.
+- **Who releases**: merging a `release/*` pull request ships production, so it is the operator's act. An agent merges one only on the operator's explicit instruction for that release.
+- **Schema migrations**: the API's Fly release command migrates the database before new machines boot, and every API build becomes ready only on exactly the schema it was generated for (`assertSchemaCompatibility`). Staging runs each migration first on every push to `main`. A rollback never undoes a migration, so an API release whose diff adds a migration under `apps/api/app/database/migrations` cannot be rolled back by redeploying an older image: it is fixed forward. Check that diff before merging an API release pull request.
 
 ## Security Considerations
 
@@ -272,6 +285,13 @@ The retired `@taucad/testing` package has no one-to-one replacement: its chat sc
 | 2026-02 | tsdown for package builds                               | Already in use; Rolldown-based, fast ESM output with tree-shaking                                                                                         |
 | 2026-02 | CI-only publishing                                      | Prevents accidental or unauthorized publishes from dev machines                                                                                           |
 | 2026-08 | Include `@taucad/geospec-engine` in the train           | The settled package split keeps authoring in `geospec` and publishes execution/proof plus the CLI from the fair-source engine package                     |
-| 2026-08 | Close C1/C5/C6 and OQ2/OQ4/OQ7                          | Bundle RPC/converter, use scoped Replicad aliases, publish GeoSpec engine, replace render with nanoraster, and internalize telemetry                      |
+| 2026-08 | Close C1/C5/C6 and OQ2/OQ4/OQ7                          | Originally selected bundled RPC/converter, scoped Replicad aliases, GeoSpec engine, nanoraster, and private telemetry; RPC bundling was later superseded  |
 | 2026-08 | Batch fixed-group publication through generated targets | Nx rejects project-filtered publication within a fixed group; explicit generated-target batches preserve fixed versioning and registry-dependent ordering |
 | 2026-08 | Supersede the batches with one `nx release publish`     | `nx-release-publish` already depends on `^nx-release-publish` (+ `pkgcheck` via `targetDefaults`), so Nx orders and fail-stops the fixed group natively   |
+| 2026-09 | Publish filesystem and RPC separately                   | Runtime and agent-host consume public dependency layers; six private libraries remain runtime bundle candidates                                           |
+| 2026-10 | Release applications from GitHub Releases               | One bot-owned release PR versions the UI, API and desktop from commits; a GitHub Release triggers the full build and production is an explicit dispatch   |
+| 2026-10 | Staging desktop prereleases                             | A signed staging build reaches taucad.dev testers without touching the production release, its update feed or its approval gate                           |
+| 2026-10 | One release PR and one production promotion per app     | The UI, API and desktop ship on their own cadence; a red desktop build no longer holds a web release (research: monorepo-app-release-practice)            |
+| 2026-10 | Desktop update feed on a fixed `desktop-feed` release   | GitHub has one "Latest" per repository; installed apps no longer depend on which application released last                                                |
+| 2026-10 | One-tap release: the release run deploys production     | Merging a release PR is the release; one approval in its run takes it to production, and the Command Center follows that run by its merge commit          |
+| 2026-10 | Drop the production approval for the UI and API         | The approval came hours after the merge and added no information; staging rehearsal, rollback and fix-forward for migrations are the controls instead     |

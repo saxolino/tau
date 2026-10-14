@@ -13,9 +13,9 @@ const fixture = (name: 'birdhouse' | 'bundler-feature-matrix', mainFile: string)
   const files = Object.fromEntries(
     Object.entries(fixtureModules)
       .filter(([path]) => path.includes(marker))
-      .map(([path, source]) => [`/${path.slice(path.indexOf(marker) + marker.length)}`, source]),
+      .map(([path, source]) => [path.slice(path.indexOf(marker) + marker.length), source]),
   );
-  return { files, mainFile: `/${mainFile}` };
+  return { files, mainFile };
 };
 
 const hash = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> =>
@@ -38,20 +38,26 @@ const exportFixture = async (
           type: 'module',
         });
   const client = createRuntimeClient(
-    createWebWorkerClientOptions({ createWorker, files: input.files, renderTimeout: 300_000 }),
+    createWebWorkerClientOptions({ createWorker, files: input.files, operationTimeout: 300_000 }),
   );
   try {
-    const result = await client.export('glb', { source: { path: input.mainFile } });
+    const document = client.open({ source: { path: input.mainFile }, watch: false });
+    let result;
+    try {
+      result = await document.export('glb');
+    } finally {
+      document.close();
+    }
     if (!result.success) {
       throw new Error(result.issues.map(({ message }) => message).join('; '));
     }
-    const output = result.data.find(({ name }) => name.endsWith('.glb'))?.bytes;
+    const output = result.files.find(({ name }) => name.endsWith('.glb'))?.bytes;
     if (output === undefined) {
       throw new Error('Runtime returned no GLB output.');
     }
     return { bytes: output.byteLength, sha256: await hash(output) };
   } finally {
-    client.terminate();
+    await client.shutdown();
   }
 };
 

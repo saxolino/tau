@@ -1,9 +1,9 @@
+import type { GeoSpecAssertionClientOptions, GeoSpecCanonicalClaimReport } from '#assertion-client/index.js';
 import type { BuiltinModule, BundleResult, VmFileSystem, VmIssue } from '@taucad/esbuild/vm';
 import type { GeometryDiagnostic, Vec3 } from '#mesh/types.js';
 import type { GeometrySelector } from '#selector/types.js';
-import type { GeoSpecModelLoader } from '#model/index.js';
-import type { GeoSpecRunProfile } from '#runner/profile.js';
-import type { GeoSpecStepLoader } from '#step/index.js';
+import type { GeoSpecNativeModelLoader, GeoSpecModelLoadEvidence } from '#model/native-model-loader.js';
+import type { GeoSpecNativeSubject } from '#engine/client.js';
 
 /**
  * Axis-keyed numeric expectation used by high-level geometry matchers.
@@ -22,10 +22,10 @@ export type GeoSpecAxisExpectation = {
  * @public
  */
 export type GeoSpecBoundingBoxExpectation = {
-  min?: Vec3 | GeoSpecAxisExpectation;
-  max?: Vec3 | GeoSpecAxisExpectation;
-  size?: GeoSpecAxisExpectation;
-  center?: GeoSpecAxisExpectation;
+  min?: Vec3 | Partial<Record<keyof GeoSpecAxisExpectation, GeoSpecNumericExpectation>>;
+  max?: Vec3 | Partial<Record<keyof GeoSpecAxisExpectation, GeoSpecNumericExpectation>>;
+  size?: Vec3 | Partial<Record<keyof GeoSpecAxisExpectation, GeoSpecNumericExpectation>>;
+  center?: Vec3 | Partial<Record<keyof GeoSpecAxisExpectation, GeoSpecNumericExpectation>>;
   tolerance?: number;
 };
 
@@ -66,7 +66,7 @@ export type GeoSpecComponentInterferencePairExpectation = {
  * @public
  */
 export type GeoSpecComponentInterferenceAllowance = {
-  kind: 'intentionalInterference';
+  kind?: 'intentionalInterference';
   left: GeoSpecComponentSelector;
   right: GeoSpecComponentSelector;
   maxVolume?: number;
@@ -189,7 +189,7 @@ export type GeoSpecCircularHoleExpectation = {
   diameter: number;
   through?: boolean;
   axis?: 'x' | 'y' | 'z';
-  center?: GeoSpecAxisExpectation;
+  center?: GeoSpecPointExpectation;
   tolerance?: number;
 };
 
@@ -303,7 +303,7 @@ export type GeoSpecCircularHolePatternExpectation = {
   holeDiameter: number;
   boltCircleDiameter?: number;
   axis?: 'x' | 'y' | 'z';
-  center?: GeoSpecAxisExpectation;
+  center?: GeoSpecPointExpectation;
   tolerance?: number;
 };
 
@@ -350,7 +350,7 @@ export type GeoSpecGeometrySelector =
     }
   /**
    * SB3 V1 selector catalog kinds (body/face/datum/interface/group plus the
-   * string shorthand), resolved by the `geospec/selector` engine. SB4 routes
+   * string shorthand), resolved by the native engine. SB4 routes
    * relationship endpoints through that engine: the legacy explicit
    * axis/plane members above resolve as `stability: 'explicit'` fixtures
    * (rejected by the production evidence policy), while named legacy forms
@@ -456,6 +456,18 @@ export type GeoSpecMeshIntegrityExpectation = {
 };
 
 /**
+ * Diagnostic severities rejected by
+ * `expectGeo(...).toHaveNoDiagnostics(...)`.
+ *
+ * Defaults to `error` and `warning` when omitted.
+ *
+ * @public
+ */
+export type GeoSpecNoDiagnosticsExpectation = {
+  severities?: Array<GeometryDiagnostic['severity']>;
+};
+
+/**
  * Exact BRep validity expectation accepted by `expectGeo(...).toBeValidBrep(...)`.
  *
  * @public
@@ -475,6 +487,12 @@ export type GeoSpecValidBrepExpectation = {
  * @public
  */
 export type GeoSpecMatcher = {
+  /** Core-owned negation; missing or refused evidence still fails. */
+  readonly not: Omit<GeoSpecMatcher, 'not'>;
+  /** Assert the fixed rational plate contract. */
+  toSatisfyRationalPlate(): GeoSpecAssertion;
+  /** Assert the fixed parallel-plane distance contract. */
+  toSatisfyParallelPlaneDistance(): GeoSpecAssertion;
   /**
    * Assert axis-aligned bounds, size, or center for a loaded geometry subject.
    */
@@ -484,7 +502,8 @@ export type GeoSpecMatcher = {
    */
   toHaveConnectedComponents(expected: GeoSpecConnectedComponentsExpectation): GeoSpecAssertion;
   /**
-   * Assert that each mesh surface is closed and manifold-like.
+   * Assert closed mesh edge incidence; this does not prove vertex-manifold
+   * validity, embeddedness, a Boolean fuse, or material connectivity.
    */
   toBeWatertight(): GeoSpecAssertion;
   /**
@@ -503,6 +522,10 @@ export type GeoSpecMatcher = {
    * Assert rendered mesh evidence is internally trustworthy for downstream checks.
    */
   toHaveMeshIntegrity(expected: GeoSpecMeshIntegrityExpectation): GeoSpecAssertion;
+  /**
+   * Assert that the subject carries no diagnostics at the rejected severities.
+   */
+  toHaveNoDiagnostics(expected?: GeoSpecNoDiagnosticsExpectation): GeoSpecAssertion;
   /**
    * Assert total surface area, preferring exact BRep mass properties when available.
    */
@@ -585,6 +608,7 @@ export type GeoSpecAssertion = {
     | 'assemblyOccurrences'
     | 'spatialRelationships'
     | 'meshIntegrity'
+    | 'noDiagnostics'
     | 'surfaceArea'
     | 'volume'
     | 'mass'
@@ -600,7 +624,9 @@ export type GeoSpecAssertion = {
     | 'chamferFeature'
     | 'filletFeature'
     | 'minimumWallThickness'
-    | 'voidContinuity';
+    | 'voidContinuity'
+    | 'toSatisfyRationalPlate'
+    | 'toSatisfyParallelPlaneDistance';
   /** User-authored value passed to expectGeo(). */
   subject: unknown;
   /** Expected geometry condition. */
@@ -609,6 +635,10 @@ export type GeoSpecAssertion = {
   passed?: boolean;
   /** Structured diagnostics from matcher evaluation. */
   diagnostics?: GeometryDiagnostic[];
+  /** Exact compiled assertion report, including core-owned bytes and polarity. */
+  report?: GeoSpecCanonicalClaimReport;
+  /** The host load which admitted this assertion's subject; independent of equal geometry hashes. */
+  loadId?: string;
   /** Wall-clock cost of matcher evaluation in milliseconds (R1: budgeted matchers only). */
   durationMs?: number;
 };
@@ -618,14 +648,47 @@ export type GeoSpecAssertion = {
  *
  * @public
  */
-export type GeoSpecTestStatus = 'passed' | 'failed' | 'skipped';
+export type GeoSpecTestStatus = 'passed' | 'failed' | 'unsupported' | 'inconclusive' | 'not-run' | 'skipped';
+
+/** Test accounting for the actual module collection and execution. @public */
+export type GeoSpecTestAccounting = {
+  discovered: number;
+  selected: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  unsupported: number;
+  inconclusive: number;
+  skipped: number;
+  notRun: number;
+};
+
+/** Consumed source and artifact identities retained without replacing earlier loads. @public */
+export type GeoSpecRunLineage = {
+  status: 'complete' | 'unavailable' | 'mixed';
+  modules: ReadonlyArray<{
+    entryPath: string;
+    bundleSha256: string;
+    files: Readonly<Record<string, string>>;
+    consistent: boolean;
+  }>;
+  loads: ReadonlyArray<{
+    loadId: string;
+    status: 'complete' | 'unavailable' | 'failed';
+    subject?: GeoSpecNativeSubject;
+    evidence?: GeoSpecModelLoadEvidence;
+    error?: string;
+    diagnostics?: readonly GeometryDiagnostic[];
+  }>;
+};
 
 /**
  * Worker-local cache for successful GeoSpec bundles.
  *
- * The cache is internal runner infrastructure and must only be shared by
- * serial executions. Each invocation still creates a fresh collector and
- * host binding.
+ * The cache is internal runner infrastructure. Each invocation still creates a
+ * fresh collector, run token and host binding, so runs that reuse one entry
+ * stay isolated. An entry is reused only while every read its bundle was built
+ * from still returns the answer the bundler got.
  *
  * @public
  */
@@ -633,9 +696,19 @@ export type GeoSpecModuleBundleCache = Map<
   string,
   {
     builtinIdentity: string;
+    /** The run token embedded in `bundle.code`; a reuse executes a copy under its own run's token. */
     runToken: string;
     bundle: BundleResult;
-    dependencyContents: ReadonlyMap<string, Uint8Array<ArrayBuffer>>;
+    /**
+     * Each filesystem read the bundler made while building `bundle`, with the
+     * answer it got. Existence probes are reads too: they decide which file an
+     * import resolves to.
+     */
+    bundlerReads: ReadonlyArray<{
+      question: 'exists' | 'utf8' | 'bytes';
+      path: string;
+      answer: boolean | string | Uint8Array<ArrayBuffer>;
+    }>;
   }
 >;
 
@@ -645,6 +718,8 @@ export type GeoSpecModuleBundleCache = Map<
  * @public
  */
 export type GeoSpecTestCase = {
+  /** Registration ordinal before filtering, scoped to the source module's collection. */
+  ordinal?: number;
   /** Hierarchical suite path. */
   suite: string[];
   /** Test case name. */
@@ -667,7 +742,7 @@ export type GeoSpecTestCase = {
 export type RunGeoSpecModuleOptions = {
   /** Filesystem containing the test module and its project imports. */
   filesystem: VmFileSystem;
-  /** Absolute ESM test entry path. */
+  /** Filesystem-root-relative ESM test entry path. */
   entryPath: string;
   /** JavaScript regular expression matched against full `suite > test` names. */
   testNamePattern?: string | RegExp;
@@ -677,14 +752,18 @@ export type RunGeoSpecModuleOptions = {
   matcherWallBackstop?: number;
   /** Emit structured forensic events for this run. */
   forensic?: boolean;
-  /** Model loader exposed to VM tests through `geospec/model`. */
-  modelLoader?: GeoSpecModelLoader;
-  /** STEP loader exposed to VM tests through `geospec/step`. */
-  stepLoader?: GeoSpecStepLoader;
+  /**
+   * Host-provided protocol-3 compiled assertion client. The host owns engine and
+   * admitted subject lifetimes and supplies bindings through builtinModules;
+   * authored tests use the canonical GeoSpec API, not a separate native dialect.
+   */
+  nativeAssertions: GeoSpecAssertionClientOptions;
+  /** Host-composed identity loader; authored tests use the canonical `geospec/model` API. */
+  nativeModelLoader?: (
+    options: Parameters<GeoSpecNativeModelLoader>[0],
+  ) => Promise<GeoSpecNativeSubject & { readonly load?: GeoSpecModelLoadEvidence }>;
   /** Additional in-memory modules made available to the VM. */
   builtinModules?: Record<string, BuiltinModule>;
-  /** Internal profile counters used by opt-in benchmark tooling. */
-  internalProfile?: GeoSpecRunProfile;
   /** Successful bundle cache owned by a serial runner worker. @internal */
   bundleCache?: GeoSpecModuleBundleCache;
   /**
@@ -703,10 +782,12 @@ export type RunGeoSpecModuleOptions = {
  */
 export type GeoSpecRunSuccess = {
   success: true;
-  /** True when every collected test passed or was skipped. */
+  /** True only when selected tests completed successfully with coherent available lineage. */
   passed: boolean;
   tests: GeoSpecTestCase[];
   bundle: BundleResult;
+  accounting?: GeoSpecTestAccounting;
+  lineage?: GeoSpecRunLineage;
 };
 
 /**
@@ -718,6 +799,10 @@ export type GeoSpecRunFailure = {
   success: false;
   issues: VmIssue[];
   bundle?: BundleResult;
+  accounting?: GeoSpecTestAccounting;
+  lineage?: GeoSpecRunLineage;
+  /** Tests registered before a module execution failure, including their retained assertions. */
+  tests?: GeoSpecTestCase[];
 };
 
 /**

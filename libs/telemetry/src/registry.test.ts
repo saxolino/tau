@@ -6,7 +6,128 @@ describe('TauMetrics', () => {
   const metrics = Object.values(TauMetrics);
 
   it('should define all canonical metrics', () => {
-    expect(metrics).toHaveLength(43);
+    expect(metrics).toHaveLength(75);
+  });
+
+  it('should bound funded-operation telemetry to content-free dimensions', () => {
+    expect(
+      TauMetrics.billingFundedOperationRecoveries.attributes.safeParse({
+        'deployment.environment': 'preview-123',
+        'tau.billing.capacity_pool': 'primary',
+        'tau.billing.recovery.outcome': 'resolved',
+      }).success,
+    ).toBe(false);
+    expect(
+      TauMetrics.billingFundedOperationDenials.attributes.safeParse({
+        'deployment.environment': 'prod-us',
+        'tau.billing.capacity_pool': 'helper',
+        'tau.billing.denial.reason': 'operator_route_paused',
+      }).success,
+    ).toBe(true);
+    expect(
+      TauMetrics.billingFundedOperationDenials.attributes.safeParse({
+        'deployment.environment': 'prod-us',
+        'tau.billing.capacity_pool': 'helper',
+        'tau.billing.denial.reason': 'supplier_route_paused',
+      }).success,
+    ).toBe(false);
+    expect(
+      TauMetrics.billingFundedOperationTerminals.attributes.safeParse({
+        'deployment.environment': 'development',
+        'tau.billing.capacity_pool': 'primary',
+        'tau.billing.terminal.kind': 'final_usage',
+        'tau.billing.terminal.incomplete_reason': 'max_output_tokens',
+      }).success,
+    ).toBe(true);
+    expect(
+      TauMetrics.billingFundedOperationTerminals.attributes.safeParse({
+        'deployment.environment': 'development',
+        'tau.billing.capacity_pool': 'primary',
+        'tau.billing.terminal.kind': 'final_usage',
+        'tau.billing.terminal.incomplete_reason': 'provider supplied text',
+      }).success,
+    ).toBe(false);
+    expect(
+      TauMetrics.billingFundedOperationCurrent.attributes.safeParse({
+        'deployment.environment': 'prod-us',
+        'tau.billing.capacity_pool': 'primary',
+        'tau.billing.pending.state': 'due',
+      }).success,
+    ).toBe(true);
+    expect(
+      TauMetrics.billingFundedOperationRecoveryBatchDuration.attributes.safeParse({
+        'deployment.environment': 'prod-us',
+        'tau.billing.capacity_pool': 'primary',
+        'tau.billing.recovery.batch.outcome': 'provider supplied text',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('should meter supplier cost per call with the same model and provider labels as the customer charge', () => {
+    expect(TauMetrics.billingSupplierCostPicoUsd).toMatchObject({
+      name: 'tau.billing.supplier_cost_picousd',
+      unit: '{picousd}',
+      type: 'counter',
+    });
+    expect(Object.keys(TauMetrics.billingSupplierCostPicoUsd.attributes.shape).sort()).toEqual([
+      'deployment.environment',
+      'gen_ai.provider.name',
+      'gen_ai.request.model',
+    ]);
+    const chargeLabels = Object.keys(TauMetrics.genAiCost.attributes.shape);
+    expect(chargeLabels).toEqual(expect.arrayContaining(['gen_ai.request.model', 'gen_ai.provider.name']));
+    expect(
+      TauMetrics.billingSupplierCostPicoUsd.attributes.safeParse({
+        'gen_ai.request.model': 'model-a',
+        'gen_ai.provider.name': 'provider-a',
+        'deployment.environment': 'preview-123',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('should count unpriced operations by environment, provider, sku and a bounded reason', () => {
+    expect(TauMetrics.billingSupplierUnpricedOperations).toMatchObject({
+      name: 'tau.billing.supplier_unpriced_operations',
+      unit: '{operation}',
+      type: 'gauge',
+    });
+    expect(Object.keys(TauMetrics.billingSupplierUnpricedOperations.attributes.shape).sort()).toEqual([
+      'deployment.environment',
+      'gen_ai.provider.name',
+      'tau.billing.sku',
+      'tau.billing.unpriced.reason',
+    ]);
+    for (const reason of ['missing_rate', 'dimension_mismatch', 'absorbed']) {
+      expect(
+        TauMetrics.billingSupplierUnpricedOperations.attributes.safeParse({
+          'deployment.environment': 'staging',
+          'gen_ai.provider.name': 'provider-a',
+          'tau.billing.sku': 'model:route-a',
+          'tau.billing.unpriced.reason': reason,
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      TauMetrics.billingSupplierUnpricedOperations.attributes.safeParse({
+        'deployment.environment': 'staging',
+        'gen_ai.provider.name': 'provider-a',
+        'tau.billing.sku': 'model:route-a',
+        'tau.billing.unpriced.reason': 'provider supplied text',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('should expose the WebSocket upgrade-rejection counter with a bounded label set', () => {
+    expect(TauMetrics.wsUpgradeRejections.name).toBe('ws.upgrade.rejections');
+    expect(TauMetrics.wsUpgradeRejections.type).toBe('counter');
+    expect(TauMetrics.wsUpgradeRejections.unit).toBe('{connection}');
+    expect(
+      TauMetrics.wsUpgradeRejections.attributes.safeParse({ 'ws.gateway': 'hosts', reason: 'user-123' }).success,
+    ).toBe(false);
+    expect(
+      TauMetrics.wsDisconnections.attributes.safeParse({ 'ws.gateway': 'hosts', 'ws.close.reason': 'transport close' })
+        .success,
+    ).toBe(false);
   });
 
   it('should expose the tool-result offload counter with the canonical OTEL name', () => {
@@ -62,6 +183,33 @@ describe('TauMetrics', () => {
     expect(TauMetrics.genAiContextCompactionDecisions.type).toBe('counter');
   });
 
+  it('should bound agent context labels to the ingest vocabularies', () => {
+    expect(
+      TauMetrics.agentEvaluations.attributes.safeParse({
+        'agent.id': 'tau',
+        'kernel.id': 'replicad',
+        'evaluation.class': 'api_misuse',
+      }).success,
+    ).toBe(true);
+    expect(
+      TauMetrics.agentReferenceLookups.attributes.safeParse({
+        'agent.id': 'codex',
+        'kernel.id': 'my-kernel',
+        'lookup.outcome': 'ok',
+      }).success,
+    ).toBe(false);
+    expect(
+      TauMetrics.agentToolCalls.attributes.safeParse({
+        'agent.id': 'codex',
+        'tool.kind': 'execute',
+        'tool.name': 'Bash',
+        status: 'completed',
+      }).success,
+    ).toBe(false);
+    expect(TauMetrics.agentTurns.attributes.shape).toHaveProperty(['kernel.id']);
+    expect(TauMetrics.agentErrors.attributes.shape).not.toHaveProperty(['kernel.id']);
+  });
+
   it('should use lowercase dot-delimited names for all metrics', () => {
     for (const metric of metrics) {
       expect(metric.name).toMatch(/^[a-z][\d._a-z]*$/);
@@ -83,7 +231,7 @@ describe('TauMetrics', () => {
 
   it('should use pluralized names or mass nouns for counters', () => {
     const counters = metrics.filter((m) => m.type === 'counter');
-    const validSuffixes = /s$|cost$|microusd$|flagged$/;
+    const validSuffixes = /s$|cost$|microusd$|picousd$|flagged$/;
     for (const counter of counters) {
       const lastSegment = counter.name.split('.').at(-1) ?? '';
       expect(lastSegment).toMatch(validSuffixes);

@@ -1,9 +1,9 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#components/ui/card.js';
-import { Switch } from '#components/ui/switch.js';
-import { Slider } from '#components/ui/slider.js';
+import { SettingsItem, SettingsSectionCard } from '#components/settings/settings-item.js';
+import { CardContent, CardHeader, CardTitle } from '@taucad/ui/components/card';
+import { Switch } from '@taucad/ui/components/switch';
 import { useCookie } from '#hooks/use-cookie.js';
-import { useImageQuality } from '#hooks/use-image-quality.js';
 import { cookieName } from '#constants/cookie.constants.js';
+import { tauCloudEnabled } from '#cloud/cloud-enabled.js';
 
 function SettingRow({
   label,
@@ -26,94 +26,67 @@ function SettingRow({
 }
 
 export function AgentSettings(): React.JSX.Element {
-  const [showModelCost, setShowModelCost] = useCookie(cookieName.chatModelCost, true);
+  const [showCredits, setShowCredits] = useCookie(cookieName.chatModelCost, true);
   const [includeFileSystem, setIncludeFileSystem] = useCookie(cookieName.chatCtxFs, true);
   const [includeActiveFile, setIncludeActiveFile] = useCookie(cookieName.chatCtxActive, true);
   const [includeOpenFiles, setIncludeOpenFiles] = useCookie(cookieName.chatCtxOpen, true);
-  const [showCodePreview, setShowCodePreview] = useCookie(cookieName.chatToolCodePreview, true);
-  const [showAnalysisImages, setShowAnalysisImages] = useCookie(cookieName.chatToolAnalysisImages, true);
   const [testingEnabled, setTestingEnabled] = useCookie(cookieName.chatTestingEnabled, true);
-  const { quality: screenshotQuality, setQuality: setScreenshotQuality } = useImageQuality();
 
   return (
     <div className='flex flex-col gap-6 pb-6'>
-      <Card>
-        <CardHeader>
-          <CardTitle>Metadata Display</CardTitle>
-          <CardDescription>Control what metadata is shown alongside chat messages.</CardDescription>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-4'>
-          <SettingRow label='Show Model Cost' description='Display token cost per message in the chat history'>
-            <Switch checked={showModelCost} onCheckedChange={setShowModelCost} />
-          </SettingRow>
-        </CardContent>
-      </Card>
+      {tauCloudEnabled ? (
+        <SettingsSectionCard>
+          <CardHeader>
+            <CardTitle>Metadata Display</CardTitle>
+          </CardHeader>
+          <CardContent className='flex flex-col gap-4'>
+            <SettingsItem settingId='show-credits'>
+              <SettingRow
+                label='Show Credits'
+                description='Display the Tau credits charged for each message in the chat history'
+              >
+                <Switch aria-label='Show Credits' checked={showCredits} onCheckedChange={setShowCredits} />
+              </SettingRow>
+            </SettingsItem>
+          </CardContent>
+        </SettingsSectionCard>
+      ) : null}
 
-      <Card>
+      <SettingsSectionCard>
         <CardHeader>
           <CardTitle>Editor Context</CardTitle>
-          <CardDescription>Choose which editor context is automatically included with each message.</CardDescription>
         </CardHeader>
         <CardContent className='flex flex-col gap-4'>
-          <SettingRow label='Filesystem' description='Include a snapshot of the project file tree'>
-            <Switch checked={includeFileSystem} onCheckedChange={setIncludeFileSystem} />
-          </SettingRow>
-          <SettingRow label='Active File' description='Include the currently focused file'>
-            <Switch checked={includeActiveFile} onCheckedChange={setIncludeActiveFile} />
-          </SettingRow>
-          <SettingRow label='Open Tabs' description='Include all open editor tabs'>
-            <Switch checked={includeOpenFiles} onCheckedChange={setIncludeOpenFiles} />
-          </SettingRow>
+          <SettingsItem settingId='filesystem-context'>
+            <SettingRow label='Filesystem' description='Include a snapshot of the project file tree'>
+              <Switch aria-label='Filesystem' checked={includeFileSystem} onCheckedChange={setIncludeFileSystem} />
+            </SettingRow>
+          </SettingsItem>
+          <SettingsItem settingId='active-file'>
+            <SettingRow label='Active File' description='Include the currently focused file'>
+              <Switch aria-label='Active File' checked={includeActiveFile} onCheckedChange={setIncludeActiveFile} />
+            </SettingRow>
+          </SettingsItem>
+          <SettingsItem settingId='open-tabs'>
+            <SettingRow label='Open Tabs' description='Include all open editor tabs'>
+              <Switch aria-label='Open Tabs' checked={includeOpenFiles} onCheckedChange={setIncludeOpenFiles} />
+            </SettingRow>
+          </SettingsItem>
         </CardContent>
-      </Card>
+      </SettingsSectionCard>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Tool Display</CardTitle>
-          <CardDescription>Configure how tool results are displayed in the chat.</CardDescription>
-        </CardHeader>
-        <CardContent className='flex flex-col gap-4'>
-          <SettingRow label='Code Preview' description='Show inline code previews for file operations'>
-            <Switch checked={showCodePreview} onCheckedChange={setShowCodePreview} />
-          </SettingRow>
-          <SettingRow label='Analysis Images' description='Show image previews for visual analysis results'>
-            <Switch checked={showAnalysisImages} onCheckedChange={setShowAnalysisImages} />
-          </SettingRow>
-          <SettingRow
-            label='Screenshot Quality'
-            description='Higher quality is more precise but increases upload time and LLM cost'
-          >
-            <div className='flex w-32 items-center gap-2'>
-              <Slider
-                min={0.1}
-                max={1}
-                step={0.1}
-                value={[screenshotQuality]}
-                onValueChange={([value]) => {
-                  if (value !== undefined) {
-                    setScreenshotQuality(value);
-                  }
-                }}
-              />
-              <span className='w-10 text-right text-xs text-muted-foreground'>
-                {Math.round(screenshotQuality * 100)}%
-              </span>
-            </div>
-          </SettingRow>
-        </CardContent>
-      </Card>
-
-      <Card>
+      <SettingsSectionCard>
         <CardHeader>
           <CardTitle>Testing</CardTitle>
-          <CardDescription>Control the availability of testing tools in agent conversations.</CardDescription>
         </CardHeader>
         <CardContent className='flex flex-col gap-4'>
-          <SettingRow label='Enable Testing Tools' description='Allow the agent to run and edit tests'>
-            <Switch checked={testingEnabled} onCheckedChange={setTestingEnabled} />
-          </SettingRow>
+          <SettingsItem settingId='testing-tools'>
+            <SettingRow label='Enable Testing Tools' description='Allow the agent to run and edit tests'>
+              <Switch aria-label='Enable Testing Tools' checked={testingEnabled} onCheckedChange={setTestingEnabled} />
+            </SettingRow>
+          </SettingsItem>
         </CardContent>
-      </Card>
+      </SettingsSectionCard>
     </div>
   );
 }

@@ -1,10 +1,9 @@
 import { defineConfig } from 'vitest/config';
-import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 
 export default defineConfig({
-  plugins: [nxViteTsPaths()],
   test: {
     environment: 'node',
+    pool: 'threads',
     typecheck: {
       enabled: true,
       include: ['**/*.test-d.ts'],

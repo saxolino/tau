@@ -3,7 +3,7 @@ title: 'Color Policy'
 description: 'OKLCH color system rules: hue architecture, lightness levels, chroma ranges, semantic tokens, contrast requirements, colorblind safety, dark mode, and anti-patterns for all Tau UI surfaces.'
 status: active
 created: '2026-03-14'
-updated: '2026-08-24'
+updated: '2026-10-04'
 related:
   - docs/policy/ui-policy.md
   - docs/policy/diagram-policy.md
@@ -20,7 +20,7 @@ OKLCH provides perceptual uniformity — equal numeric changes in lightness prod
 
 ## 1. OKLCH Is the Canonical Color Space
 
-All design tokens are defined as `oklch(L C H)` in `global.css`. No hex, HSL, or RGB in token definitions. Components consume semantic tokens via Tailwind utilities, never raw oklch values.
+Color tokens are defined as `oklch(L C H)`. Shared tokens live in `packages/ui/src/styles/tokens.css`, exported as `@taucad/ui/styles/tokens.css`. The app imports that stylesheet in `apps/ui/app/styles/global.css` and extends it with app-specific diagram and scrollbar tokens. No hex, HSL, or RGB in color token definitions. Components consume semantic tokens via Tailwind utilities, never raw oklch values.
 
 **Why**: OKLCH is perceptually uniform (unlike HSL where blue at L=0.5 appears much darker than yellow at L=0.5), supports P3 gamut natively, and makes palette generation trivial by adjusting L independently of H and C.
 
@@ -29,7 +29,7 @@ All design tokens are defined as `oklch(L C H)` in `global.css`. No hex, HSL, or
 CORRECT:
 
 ```css
-/* In global.css */
+/* In packages/ui/src/styles/tokens.css */
 --primary: oklch(var(--l-primary) var(--c-primary) var(--hue-primary));
 ```
 
@@ -54,11 +54,11 @@ Treat `--hue-primary` as the user-customizable accent hue, not as a generator fo
 | ------------------- | ---------------------------------- | ------------- | ---------------------------- |
 | `--hue-primary`     | Base                               | 180deg (teal) | Brand accent and focus       |
 | `--hue-secondary`   | `calc(var(--hue-primary) - 10deg)` | 170deg        | Explicitly chromatic accents |
-| `--hue-destructive` | Fixed                              | 15deg         | Error, delete, danger        |
+| `--hue-destructive` | Fixed                              | 15deg         | Delete, data loss            |
 | `--hue-success`     | Fixed                              | 150deg        | Success, complete            |
 | `--hue-warning`     | Fixed                              | 70deg         | Warning, caution             |
 | `--hue-information` | Fixed                              | 250deg        | Informational                |
-| `--hue-feature`     | Fixed                              | 280deg        | Feature highlights           |
+| `--hue-feature`     | Fixed                              | 280deg        | Errors, alerts, highlights   |
 | `--hue-highlighted` | Fixed                              | 330deg        | Highlighted/flagged          |
 
 Do not define a neutral hue. Achromatic colors have no meaningful hue, and every structural neutral uses chroma `0`. Status hues remain fixed so their meaning does not change with the user's accent choice.
@@ -119,7 +119,7 @@ Chroma peaks at mid-lightness and drops at extremes. Very light and very dark co
 
 ## 5. Semantic Token Usage
 
-Components always use semantic Tailwind classes. The mapping from CSS variable to utility class happens in `@theme inline` in `global.css`.
+Components always use semantic Tailwind classes. Shared CSS-variable mappings live in `@theme inline` in `packages/ui/src/styles/tokens.css`; app-specific mappings extend them in `apps/ui/app/styles/global.css`.
 
 | Need                 | Token                | Tailwind Class                        |
 | -------------------- | -------------------- | ------------------------------------- |
@@ -131,8 +131,9 @@ Components always use semantic Tailwind classes. The mapping from CSS variable t
 | Structural selection | `--accent`           | `bg-accent`, `text-accent-foreground` |
 | Border               | `--border`           | `border-border`                       |
 | Input field          | `--input`            | `border-input`                        |
-| Focus ring           | `--ring`             | `ring-ring`                           |
-| Error state          | `--destructive`      | `bg-destructive`, `text-destructive`  |
+| Focus outline        | `--ring`             | `focus-visible:focus-outline`         |
+| Error or alert state | `--feature`          | `bg-feature`, `text-feature`          |
+| Data-losing action   | `--destructive`      | `variant='destructive'`               |
 | Success state        | `--success`          | `bg-success`, `text-success`          |
 
 ### Opacity Modifiers
@@ -242,7 +243,7 @@ CORRECT:
 
 ### Inline OKLCH in Components
 
-Only `global.css` should contain raw `oklch()`. Components that need dynamic colors (e.g., Monaco editor peek highlights) should reference CSS variables within the `oklch()` call: `oklch(0.75 0.15 var(--hue-primary) / 0.3)`.
+Define raw `oklch()` color tokens in the owning shared or app-specific stylesheet described in Section 1. Components that need dynamic colors (e.g., Monaco editor peek highlights) should reference CSS variables within the `oklch()` call: `oklch(0.75 0.15 var(--hue-primary) / 0.3)`.
 
 ### Separate Dark Mode Authoring
 
@@ -250,13 +251,17 @@ Never create standalone dark-mode colors. The lightness inversion system ensures
 
 **Exception**: Component-scoped tokens like `--diagram-*` may define explicit dark-mode values when the inversion formula produces suboptimal results. These must be documented in the relevant component policy.
 
+Recorded component-scoped exceptions without a component policy of their own:
+
+- `--viewer-tool-active` (`apps/ui/app/styles/global.css`), the running viewer tool's glyph (Section, Measure). It is set by hand for light, dark and high contrast, and for light and dark under `prefers-contrast: more` (black takes dark's value), because it must stay at 3:1 on both `--accent` and `--sidebar-background` at every `--hue-primary`, and one lightness and chroma through the inversion scale cannot hold that on both surfaces. The `running viewer tool glyph token` test in `apps/ui/app/styles/global.test.ts` sweeps all seven themes at every 5° of hue.
+
 ### Brand-Derived Structural Neutrals
 
 Never derive structural surface, foreground, input, border, card, popover, or sidebar tokens from `--hue-primary` or `--hue-secondary`, even at low chroma. Use chroma `0` and express hierarchy through lightness.
 
 ## Summary Checklist
 
-- [ ] All new tokens use `oklch(L C H)` format in `global.css`
+- [ ] All new color tokens use `oklch(L C H)` in their owning shared or app-specific stylesheet (Section 1)
 - [ ] Chroma value falls within the range for the token's purpose (see Section 4)
 - [ ] Every structural neutral has chroma exactly `0` and is independent of `--hue-primary`
 - [ ] Both light and dark mode values defined (or derived via `--l-*` inversion)

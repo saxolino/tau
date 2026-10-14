@@ -1,6 +1,23 @@
 // oxlint-disable typescript/no-extraneous-class -- Monaco's factory export uses a PascalCase property name
 // oxlint-disable max-params -- Monaco's factory export uses a PascalCase property name
 declare const tauBuildFrontendUrl: string;
+declare const tauBuildId: number;
+declare const tauCloudBuildEnabled: boolean;
+
+/*
+ * Declaration merging into `vite/client`'s own `ImportMetaEnv` only works with
+ * `interface`. As a `type` alias this collapsed the whole shape to `any`, so
+ * every `import.meta.env.PROD` / `.DEV` read leaked `any` into its expression.
+ */
+// oxlint-disable-next-line typescript/consistent-type-definitions -- merging into vite/client's `ImportMetaEnv` requires `interface`.
+interface ImportMetaEnv {
+  /**
+   * Compile-time host seam (charter D2). Substituted by `define` in
+   * `vite.config.ts` (`'web'`) and `desktop/vite.config.ts` (`'desktop'`);
+   * left undefined under `mode === 'test'` so unit tests can stub it.
+   */
+  readonly TAU_TARGET?: 'web' | 'desktop';
+}
 
 declare module '*?base64' {
   const value: string;

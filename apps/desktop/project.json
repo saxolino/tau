@@ -1,0 +1,297 @@
+{
+  "name": "desktop",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/desktop/src",
+  "projectType": "application",
+  "tags": ["scope:ui", "type:app", "release:app"],
+  "implicitDependencies": ["desktop-quick-look"],
+  "targets": {
+    "prepare-build123d-python": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/python"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-build123d-python.mts"
+      }
+    },
+    "prepare-build123d-python-macos": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/python/darwin-arm64"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-build123d-python.mts --target darwin-arm64"
+      }
+    },
+    "prepare-build123d-python-linux": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/python/linux-x64"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-build123d-python.mts --target linux-x64"
+      }
+    },
+    "prepare-build123d-python-windows": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/python/win32-x64"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-build123d-python.mts --target win32-x64"
+      }
+    },
+    "prepare-picogk-dotnet": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/picogk"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-picogk-dotnet.mts"
+      }
+    },
+    "prepare-picogk-dotnet-macos": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/picogk/darwin-arm64"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-picogk-dotnet.mts --target darwin-arm64"
+      }
+    },
+    "build": {
+      "cache": true,
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/dist"],
+      "inputs": [
+        "production",
+        "^production",
+        {
+          "env": "TAU_CLOUD_ENABLED"
+        }
+      ],
+      "dependsOn": [
+        "typecheck",
+        {
+          "projects": ["ui"],
+          "target": "build:desktop"
+        }
+      ],
+      "options": {
+        "cwd": "{projectRoot}",
+        "command": "electron-vite build"
+      }
+    },
+    "dev": {
+      "executor": "nx:run-commands",
+      "continuous": true,
+      "dependsOn": [
+        "prepare-build123d-python",
+        "prepare-picogk-dotnet",
+        {
+          "projects": ["scripts"],
+          "target": "populate-ui-env"
+        },
+        {
+          "projects": ["ui"],
+          "target": "dev:desktop"
+        }
+      ],
+      "options": {
+        "cwd": "{projectRoot}",
+        "command": "node --import @oxc-node/core/register ../../scripts/src/wait-for-url.ts http://localhost:3001 && node --env-file=../ui/.env scripts/run-electron-vite.mts dev",
+        "env": {
+          "ELECTRON_RENDERER_URL": "http://localhost:3001"
+        }
+      }
+    },
+    "serve": {
+      "executor": "nx:run-commands",
+      "continuous": true,
+      "dependsOn": [
+        "build",
+        "prepare-build123d-python",
+        "prepare-picogk-dotnet",
+        {
+          "projects": ["scripts"],
+          "target": "populate-ui-env"
+        }
+      ],
+      "options": {
+        "cwd": "{projectRoot}",
+        "command": "node --env-file=../ui/.env scripts/run-electron-vite.mts preview --skipBuild",
+        "env": {
+          "NODE_ENV": "production"
+        }
+      }
+    },
+    "prepare-git": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/git"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-git.mts"
+      }
+    },
+    "prepare-git-macos": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/git/darwin-arm64", "{projectRoot}/resources/git/SOURCES"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-git.mts --target darwin-arm64"
+      }
+    },
+    "prepare-git-linux": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/resources/git/linux-x64", "{projectRoot}/resources/git/SOURCES"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/prepare-git.mts --target linux-x64"
+      }
+    },
+    "test-git-payload": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/git-payload.test.mts"
+      }
+    },
+    "package-macos": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "build",
+        "check-renderer-payload",
+        {
+          "projects": ["geospec-engine-native"],
+          "target": "prepare-geospec-ci-artifacts"
+        },
+        {
+          "projects": ["desktop-quick-look"],
+          "target": "build-extensions"
+        },
+        "prepare-build123d-python-macos",
+        "prepare-picogk-dotnet-macos",
+        "prepare-git-macos"
+      ],
+      "outputs": ["{projectRoot}/package-out"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-macos.mts"
+      }
+    },
+    "package-macos-release": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "build",
+        "check-renderer-payload",
+        {
+          "projects": ["geospec-engine-native"],
+          "target": "prepare-geospec-ci-artifacts"
+        },
+        {
+          "projects": ["desktop-quick-look"],
+          "target": "build-extensions"
+        },
+        "prepare-build123d-python-macos",
+        "prepare-picogk-dotnet-macos",
+        "prepare-git-macos"
+      ],
+      "outputs": ["{projectRoot}/package-out"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-macos.mts --release"
+      }
+    },
+    "package-macos-unsigned": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "build",
+        "check-renderer-payload",
+        {
+          "projects": ["geospec-engine-native"],
+          "target": "prepare-geospec-ci-artifacts"
+        },
+        {
+          "projects": ["desktop-quick-look"],
+          "target": "build-extensions"
+        },
+        "prepare-build123d-python-macos",
+        "prepare-picogk-dotnet-macos",
+        "prepare-git-macos"
+      ],
+      "outputs": ["{projectRoot}/package-out"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-macos.mts --unsigned"
+      }
+    },
+    "package-linux": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build", "check-renderer-payload", "prepare-build123d-python-linux", "prepare-git-linux"],
+      "outputs": ["{projectRoot}/package-out"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-desktop.mts --platform linux-x64 --archive"
+      }
+    },
+    "package-windows": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build", "check-renderer-payload", "prepare-build123d-python-windows"],
+      "outputs": ["{projectRoot}/package-out"],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-desktop.mts --platform win32-x64 --archive"
+      }
+    },
+    "test-macos-package-mode": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/macos-package-mode.test.mts"
+      }
+    },
+    "test-desktop-package": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-package.test.mts"
+      }
+    },
+    "verify-macos-package": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/verify-macos-package.mts"
+      }
+    },
+    "verify-macos-release": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/verify-macos-package.mts --release"
+      }
+    },
+    "verify-macos-unsigned": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/verify-macos-package.mts --unsigned"
+      }
+    },
+    "check-renderer-payload": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "metadata": {
+        "description": "Renderer ownership gate: fails when the renderer bundle carries kernel, converter or host payloads (only KCL and Clipper WASM are allowed). Every package target depends on it. Cached on the bytes it checks, the renderer build and the main and preload bundles; `dist/dev-electron`, the branded Electron that `dev` and `serve` create, is left out of the key."
+      },
+      "dependsOn": ["build"],
+      "inputs": [
+        "{projectRoot}/scripts/check-renderer-payload.mts",
+        {
+          "dependentTasksOutputFiles": "{apps/ui/desktop/build,apps/desktop/dist/main,apps/desktop/dist/preload}/**",
+          "transitive": true
+        }
+      ],
+      "outputs": [],
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/check-renderer-payload.mts"
+      }
+    }
+  }
+}

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/naming-convention -- Transport descriptors intentionally use protocol-shaped keys. */
 /**
  * Conformance test C2 — bundled transports satisfy the canonical
  * fat {@link RuntimeTransportClient} / {@link RuntimeTransportHost}
@@ -14,17 +13,23 @@
  * `encodeGeometry(g)`, `close()`, `closed` Promise.
  */
 
+import { EventEmitter } from 'node:events';
+
 import { afterEach, describe, it, expect, vi } from 'vitest';
 
 import { createChannelServer, wrapMessagePort, wrapWebSocket } from '@taucad/rpc';
-import type { Channel, ChannelServerHandle, Port, WebSocketLike } from '@taucad/rpc';
+import type { ChannelServerHandle, MessagePortMainLike, Port, WebSocketLike } from '@taucad/rpc';
 import { msgpackCodec } from '@taucad/rpc/codec/msgpack';
+import { createFileSystemBridgePort, fileSystemBridgeProtocolVersion } from '@taucad/fs-bridge';
+import { contentDigest, digestAction } from '@taucad/cache-core';
+import type { ActionDigest, ComputeAction } from '@taucad/cache-core';
 import type { Geometry } from '@taucad/types';
+import { z } from 'zod';
 
-import { fromFileSystemBridge, fromMemoryFs } from '#filesystem/runtime-filesystem.js';
+import { fromFileSystemBridge, fromFsLike, fromMemoryFs } from '#filesystem/runtime-filesystem.js';
 import { fromNodeFs } from '#filesystem/from-node-fs.js';
-import type { RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
-import { createRuntimeClient } from '#client/runtime-client-core.js';
+import type { FsLike, RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
+import { createRuntimeClient } from '#client/runtime-document-client-core.js';
 import type { KernelWorker } from '#framework/kernel-worker.js';
 import { inProcessTransport } from '#transport/in-process-transport.js';
 import { nodeWorkerHost } from '#transport/node-worker-host.js';
@@ -33,15 +38,21 @@ import { webWorkerHost } from '#transport/web-worker-host.js';
 import { webSocketClient } from '#transport/web-socket-client.js';
 import { webSocketTransport } from '#transport/web-socket-transport.js';
 import { webSocketClientOptionsSchema } from '#transport/web-socket-transport.schemas.js';
-import { triggerRenderTimeout } from '#transport/_internal/abort-channel.js';
-import { createWorkerDispatcher, runtimeChannelSessionKey } from '#transport/_internal/runtime-worker-dispatcher.js';
+import { extractInlineFileSystem } from '#transport/_internal/runtime-filesystem-handle.js';
+import { runtimeChannelSessionKey } from '#transport/_internal/runtime-channel-bindings.js';
+import { createDocumentWorkerDispatcher } from '#transport/_internal/runtime-document-dispatcher.js';
 import type { RuntimeTransportClient } from '#transport/runtime-transport.types.js';
-import type { RuntimeProtocol } from '#types/runtime-protocol.types.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
+import { defineKernelV2 as defineKernel } from '#types/runtime-kernel-v2.types.js';
 import { defineRuntime } from '#worker/runtime-definition.js';
+import { createMemoryComputeEngine } from '#cache/memory-compute-engine.js';
+import { _registerComputeStore } from '#cache/kernel-compute-runtime.js';
+import type { ComputeStore, ResidentExportEntry } from '#types/runtime-compute.types.js';
+// oxlint-disable-next-line no-restricted-imports -- Runtime-private fixture stays outside the package build graph.
+import { createParameterDeclaration } from '../../test/support/kernel-worker.fixture.js';
 
 const testGeometry = { format: 'gltf', content: new Uint8Array([1]), hash: 'mock' } satisfies Geometry;
-const unsupportedSameIsolateTimeoutMessage =
-  'renderTimeout must be 0 because this transport cannot enforce a wall-clock render deadline. Use a worker-backed transport with terminable timeout recovery.';
+const unsupportedSameIsolateTimeoutMessage = 'This transport cannot enforce a wall-clock operation deadline.';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -51,28 +62,27 @@ afterEach(() => {
 const makeStubKernelWorker = (): KernelWorker => {
   const base = {
     initialize: vi.fn().mockResolvedValue(undefined),
-    render: vi.fn().mockResolvedValue({ success: true, data: testGeometry, issues: [] }),
-    exportGeometry: vi.fn().mockResolvedValue({
-      success: true,
-      data: [
-        { name: 'model.gltf', mimeType: 'model/gltf+json', bytes: new Uint8Array([1]) },
-        { name: 'model.bin', mimeType: 'application/octet-stream', bytes: new Uint8Array([2]) },
-      ],
-      issues: [],
-    }),
+    describe: vi.fn().mockResolvedValue({ success: true, data: { parameters: {} }, issues: [] }),
+    exportDocument: vi.fn().mockResolvedValue({ success: true, data: [], issues: [] }),
+    snapshotSource: vi.fn().mockResolvedValue({ success: true, data: { files: [] }, issues: [] }),
+    transcode: vi.fn().mockResolvedValue({ success: true, data: [], issues: [] }),
     cleanup: vi.fn().mockResolvedValue(undefined),
     notifyFileChanged: vi.fn().mockResolvedValue(undefined),
-    handleOpenFile: vi.fn(),
-    handleStageAndOpenFile: vi.fn().mockResolvedValue(undefined),
-    handleUpdateParameters: vi.fn(),
-    handleSetOptions: vi.fn(),
+    handleOpenDocument: vi.fn(),
+    handleUpdateDocument: vi.fn(),
+    handleCloseDocument: vi.fn(),
+    handleOpenView: vi.fn(),
+    handleUpdateView: vi.fn(),
+    handleCloseView: vi.fn(),
+    handleOperationAbort: vi.fn(),
     ensureLoadedBundler: vi.fn().mockResolvedValue(undefined),
     setTelemetrySend: vi.fn(),
     setDevtoolsTelemetryEnabled: vi.fn(),
     setCompiledWasmModules: vi.fn(),
     flushTelemetry: vi.fn(),
     setSignalBuffer: vi.fn(),
-    handleWireAbort: vi.fn(),
+    setComputeBinding: vi.fn(),
+    permitComputePublication: vi.fn(),
     capabilitiesManifest: { routes: [], renderCapabilities: {} },
   };
   return base as unknown as KernelWorker;
@@ -93,8 +103,8 @@ describe('transport conformance — in-process (C2)', () => {
     expect(typeof plugin.materialize).toBe('function');
   });
 
-  it('materialise() returns the v6 fat client handle surface', () => {
-    const mainEntry = '/main.ts';
+  it('materialise() returns the document transport handle surface', () => {
+    const mainEntry = 'main.ts';
     const plugin = inProcessTransport({
       runtime,
       fileSystem: fromMemoryFs({ [mainEntry]: 'export default () => true;' }),
@@ -104,9 +114,8 @@ describe('transport conformance — in-process (C2)', () => {
     expect(typeof client.describe).toBe('function');
     expect(typeof client.open).toBe('function');
     expect(typeof client.initialize).toBe('function');
-    expect(typeof client.reservePreview).toBe('function');
-    expect(client.renderTimeoutRecovery.kind).toBe('unsupported');
-    expect(typeof client.resolveGeometry).toBe('function');
+    expect(client.operationTimeoutRecovery.kind).toBe('unsupported');
+    expect(typeof client.resolveBinary).toBe('function');
     expect(typeof client.close).toBe('function');
     expect(client.closed).toBeInstanceOf(Promise);
     void plugin;
@@ -131,10 +140,227 @@ describe('transport conformance — in-process (C2)', () => {
     expect(typeof ready.channel.notify).toBe('function');
     expect(ready.channel.hello.payload).toMatchObject({
       server: 'kernel-runtime-worker',
-      protocolVersion: 1,
+      protocolVersion: 4,
     });
     await client.close();
     await client.closed;
+  });
+
+  it('evaluates and exports request-owned sources without replacing the settled preview', async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const kernel = defineKernel({
+      id: 'in-process-request-scope',
+      name: 'In-process request-scope fixture',
+      version: '1.0.0',
+      extensions: ['scope'],
+      views: { model: { title: 'Model', mimeType: 'model/gltf-binary' } },
+      exports: { glb: { title: 'GLB', mimeType: 'model/gltf-binary', extension: 'glb', optionsSchema: z.object({}) } },
+      async initialize() {
+        return {};
+      },
+      async resolve(input) {
+        return { resolved: [input.entryPath], unresolved: [] };
+      },
+      async describe() {
+        const declaration = createParameterDeclaration();
+        if (!declaration.success) {
+          return declaration;
+        }
+        return { success: true, data: { parameters: declaration.data }, issues: declaration.issues };
+      },
+      async evaluate(input, runtime) {
+        const label = await runtime.filesystem.readFile(input.entryPath, 'utf8');
+        return { handle: { label }, views: ['model'] as const, exports: ['glb'] as const };
+      },
+      async render({ handle }) {
+        return { content: encoder.encode(`mesh:${handle.label}`) };
+      },
+      async export({ handle }) {
+        return {
+          files: [
+            { name: 'model.glb', bytes: encoder.encode(`export:${handle.label}`), mimeType: 'model/gltf-binary' },
+          ],
+        };
+      },
+    })();
+    const requestRuntime = defineRuntime({ kernels: [kernel] });
+    const client = createRuntimeClient({
+      transport: inProcessTransport({ runtime: requestRuntime, fileSystem: fromMemoryFs() }),
+    });
+
+    try {
+      const preview = client.open({ source: { files: { 'preview.scope': 'preview-c' } } });
+      const previewEvaluation = await preview.evaluation();
+      expect(previewEvaluation.superseded).toBe(false);
+
+      const evaluationDocument = client.open({ source: { files: { 'evaluation.scope': 'source-a' } } });
+      const selectedEvaluation = await evaluationDocument.evaluation();
+      expect(selectedEvaluation.superseded).toBe(false);
+      const evaluation = await evaluationDocument.view('model').rendering();
+      expect(evaluation.superseded).toBe(false);
+      if (evaluation.superseded || !evaluation.rendering.success) {
+        throw new Error('Expected request-scoped GLB rendering.');
+      }
+      expect(decoder.decode(evaluation.rendering.artifact.content as Uint8Array<ArrayBuffer>)).toBe('mesh:source-a');
+
+      const exportDocument = client.open({ source: { files: { 'export.scope': 'source-b' } } });
+      const exportEvaluation = await exportDocument.evaluation();
+      expect(exportEvaluation.superseded).toBe(false);
+      const requestExport = await exportDocument.export('glb');
+      expect(requestExport.success).toBe(true);
+      if (!requestExport.success) {
+        throw new Error('Expected request-scoped export.');
+      }
+      expect(decoder.decode(requestExport.files[0].bytes)).toBe('export:source-b');
+
+      const previewExport = await preview.export('glb');
+      expect(previewExport.success).toBe(true);
+      if (!previewExport.success) {
+        throw new Error('Expected settled-preview export.');
+      }
+      expect(decoder.decode(previewExport.files[0].bytes)).toBe('export:preview-c');
+      preview.close();
+      evaluationDocument.close();
+      exportDocument.close();
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it('publishes and reuses durable compute through the public in-process factory', async () => {
+    const action: ComputeAction = {
+      schemaVersion: 1,
+      namespace: 'transport.lifecycle',
+      producer: {
+        id: 'in-process-compute',
+        version: '1',
+        implementationAssets: [contentDigest({ value: `sha256:${'1'.repeat(64)}` })],
+      },
+      operation: 'solve',
+      inputs: [],
+      arguments: {},
+      environment: {},
+      codec: { id: 'test.bytes', version: '1' },
+    };
+    const digest = await digestAction({ action });
+    let solves = 0;
+    let createCalls = 0;
+    let imports = 0;
+    let settlement: Promise<unknown> | undefined;
+    const kernel = defineKernel({
+      id: 'in-process-compute',
+      name: 'In-process compute fixture',
+      version: '1.0.0',
+      extensions: ['compute'],
+      views: { model: { title: 'Model', mimeType: 'model/gltf-binary' } },
+      exports: {},
+      async initialize() {
+        return {};
+      },
+      async resolve(input) {
+        return { resolved: [input.entryPath], unresolved: [] };
+      },
+      async describe() {
+        const declaration = createParameterDeclaration();
+        if (!declaration.success) {
+          return declaration;
+        }
+        return { success: true, data: { parameters: declaration.data }, issues: declaration.issues };
+      },
+      async evaluate(_input, runtime) {
+        createCalls += 1;
+        if (runtime.compute.status !== 'on') {
+          throw new Error('compute capability was off');
+        }
+        const native = new Map<ActionDigest, Uint8Array<ArrayBuffer>>();
+        const scope = runtime.compute.openScope({
+          namespace: action.namespace,
+          producer: action.producer,
+          environment: action.environment,
+          resident: {
+            contains: ({ digest: candidate }) => native.has(candidate),
+            importEntries: async ({ entries }) => {
+              for (const entry of entries) {
+                native.set(entry.actionDigest, new Uint8Array(entry.bytes));
+              }
+              imports += entries.length;
+              return { imported: entries.map((entry) => entry.actionDigest), omitted: [] };
+            },
+            exportEntries: async ({ digests }) => ({
+              entries: digests.flatMap((candidate): ResidentExportEntry[] => {
+                const bytes = native.get(candidate);
+                return bytes
+                  ? [{ action, bytes, mediaType: 'application/octet-stream', determinism: 'byte-exact' }]
+                  : [];
+              }),
+              omitted: digests.filter((candidate) => !native.has(candidate)),
+            }),
+            stats: () => ({
+              entries: native.size,
+              logicalBytes: 0,
+              encodedBytes: { status: 'unsupported' },
+              evictions: 0,
+              omissions: 0,
+            }),
+            clear: () => {
+              native.clear();
+            },
+          },
+        });
+        const warm = await scope.warm({ digests: [digest] });
+        if (warm.status !== 'imported' || !warm.imported.includes(digest)) {
+          solves += 1;
+          native.set(digest, new TextEncoder().encode('shape'));
+          scope.announce({ entries: [{ kind: 'action', action, digest, computeDuration: 2, estimatedBytes: 5 }] });
+        }
+        settlement = scope.close({ outcome: 'delivered' }).settled;
+        return { handle: {}, views: ['model'] as const, exports: [] as const };
+      },
+      async render() {
+        return { content: testGeometry.content };
+      },
+    })();
+    const authority = createMemoryComputeEngine();
+    const store = _registerComputeStore({
+      spec: Object.freeze({}) as ComputeStore,
+      engine: authority.engine,
+      workspace: 'trusted',
+      control: authority.control({ workspace: 'trusted' }),
+    });
+    const createClient = () =>
+      createRuntimeClient({
+        transport: inProcessTransport({
+          runtime: defineRuntime({ kernels: [kernel] }),
+          fileSystem: fromMemoryFs(),
+          compute: { mode: 'durable', store },
+        }),
+      });
+    const producer = createClient();
+    const producerDocument = producer.open({ source: { files: { 'main.compute': 'producer' } } });
+    const produced = await producerDocument.evaluation();
+    expect(produced.superseded).toBe(false);
+    if (!produced.superseded) {
+      expect(produced.evaluation.success, JSON.stringify(produced.evaluation.issues)).toBe(true);
+    }
+    const producerView = producerDocument.view('model');
+    await expect(producerView.rendering()).resolves.toMatchObject({ superseded: false, rendering: { success: true } });
+    producerView.close();
+    await expect(settlement).resolves.toMatchObject({ status: 'published' });
+    await producer.shutdown();
+
+    const consumer = createClient();
+    try {
+      const consumerDocument = consumer.open({ source: { files: { 'main.compute': 'consumer' } } });
+      const consumerEvaluation = await consumerDocument.evaluation();
+      expect(consumerEvaluation.superseded).toBe(false);
+      consumerDocument.close();
+      expect(createCalls).toBe(2);
+      expect(imports).toBe(1);
+      expect(solves).toBe(1);
+    } finally {
+      await consumer.shutdown();
+    }
   });
 
   it('client.open() is idempotent (second call resolves the same channel)', async () => {
@@ -172,14 +398,14 @@ describe('transport conformance — in-process (C2)', () => {
       expect(() =>
         createRuntimeClient({
           transport: makeTransport(),
-          renderTimeout: 1,
+          operationTimeout: 1,
         }),
       ).toThrow(new TypeError(unsupportedSameIsolateTimeoutMessage));
 
       const client = createRuntimeClient({ transport: makeTransport() });
       await client.connect();
       expect(() => {
-        client.setRenderTimeout(1);
+        client.setOperationTimeout(1);
       }).toThrow(new TypeError(unsupportedSameIsolateTimeoutMessage));
       client.terminate();
     },
@@ -189,7 +415,7 @@ describe('transport conformance — in-process (C2)', () => {
    * on the consumer callable — same-isolate authors use {@link inProcessClient}
    * only; standalone host transports are sibling modules for worker kernels. */
 
-  /* S9: bundled transports wire `runtimeProtocolSchemas` by default at
+  /* S9: bundled transports wire `runtimeDocumentProtocolSchemas` by default at
    * both wire boundaries (client and dispatcher server), so a malformed
    * call frame is rejected at the channel layer with a typed
    * `WireValidationError` rather than reaching the kernel impl. */
@@ -198,11 +424,10 @@ describe('transport conformance — in-process (C2)', () => {
     try {
       const ready = await client.open();
       await ready.channel.ready;
-      /* `export` requires `format: FileExtension` (strict object); an
-       * empty payload triggers server-side validation before the impl
-       * runs. */
+      /* `export` requires document, operation, and target identities; an
+       * empty payload triggers server-side validation before the impl runs. */
       await expect(
-        // Validation test intentionally passes an invalid payload (missing `format`)
+        // Validation test intentionally passes an invalid payload (missing identities).
         ready.channel.call(
           'export',
           // oxlint-disable-next-line ban-ts-comment -- invalid payload exercises wire-validation path before impl runs
@@ -256,11 +481,11 @@ describe('transport conformance — web-worker (C2)', () => {
       const options = createWebWorkerClientOptions({
         url: 'about:blank',
         workerCtor,
-        files: { '/main.ts': 'export default () => true;' },
-        renderTimeout: 4567,
+        files: { 'main.ts': 'export default () => true;' },
+        operationTimeout: 4567,
       });
 
-      expect(options.renderTimeout).toBe(4567);
+      expect(options.operationTimeout).toBe(4567);
       expect(options.transport.id).toBe('web-worker');
       const description = options.transport.describe();
       expect(description.fileSystem).toBe('inline');
@@ -280,7 +505,7 @@ describe('transport conformance — web-worker (C2)', () => {
     expect(() =>
       createWebWorkerClientOptions({
         createWorker,
-        files: { '/main.ts': 'export default () => true;' },
+        files: { 'main.ts': 'export default () => true;' },
         fileSystem: fromMemoryFs(),
       }),
     ).toThrow(/either `files` or `fileSystem`/);
@@ -295,9 +520,8 @@ describe('transport conformance — web-worker (C2)', () => {
       expect(typeof client.describe).toBe('function');
       expect(typeof client.open).toBe('function');
       expect(typeof client.initialize).toBe('function');
-      expect(typeof client.reservePreview).toBe('function');
-      expect(client.renderTimeoutRecovery.kind).toBe('terminable');
-      expect(typeof client.resolveGeometry).toBe('function');
+      expect(client.operationTimeoutRecovery.kind).toBe('terminable');
+      expect(typeof client.resolveBinary).toBe('function');
       expect(typeof client.close).toBe('function');
       expect(client.closed).toBeInstanceOf(Promise);
     } finally {
@@ -357,18 +581,18 @@ describe('transport conformance — web-worker (C2)', () => {
     }
   });
 
-  it('throws on a forged RuntimeFileSystem (must come from a fromX factory)', async () => {
+  it('rejects a forged RuntimeFileSystem at transport factory invocation', async () => {
     const { webWorkerTransport } = await import('#transport/web-worker-transport.js');
     const { workerCtor, dispose } = makeFakeWorkerCtor();
     try {
-      expect(() =>
+      expect(() => {
         webWorkerTransport({
           url: 'about:blank',
           workerCtor,
           // @ts-expect-error Intentionally malformed `fileSystem` (must come from a `fromX` factory).
           fileSystem: { kind: 'inline' },
-        }).materialize(),
-      ).toThrow(/fromX. factory/);
+        });
+      }).toThrow(/Invalid input/);
     } finally {
       dispose();
     }
@@ -384,10 +608,8 @@ describe('transport conformance — web-worker (C2)', () => {
     const fake = makeFakeWorkerCtor();
     try {
       const options = { workerCtor: fake.workerCtor } as unknown as WebWorkerTransportOptions;
-      const client = webWorkerTransport(options).materialize();
-      await expect(client.open()).rejects.toThrow(/createWorker.*worker `url`/);
+      expect(() => webWorkerTransport(options)).toThrow(/createWorker.*worker `url`/);
       expect(fake.urls).toEqual([]);
-      await client.close();
     } finally {
       fake.dispose();
     }
@@ -442,7 +664,7 @@ describe('transport conformance — web-worker (C2)', () => {
       try {
         const client = webWorkerTransport({ url: 'about:blank', workerCtor: fake.workerCtor }).materialize();
         await client.open();
-        const recovery = client.renderTimeoutRecovery;
+        const recovery = client.operationTimeoutRecovery;
         expect(recovery.kind).toBe('terminable');
         if (recovery.kind !== 'terminable') {
           throw new TypeError('Expected terminable Web Worker recovery');
@@ -451,7 +673,7 @@ describe('transport conformance — web-worker (C2)', () => {
         await recovery.terminate();
         await client.close();
 
-        await expect(client.closed).resolves.toEqual({ cause: 'render-timeout' });
+        await expect(client.closed).resolves.toEqual({ cause: 'operation-timeout' });
         expect(fake.terminateCalls()).toBe(1);
       } finally {
         fake.dispose();
@@ -481,7 +703,6 @@ describe('transport conformance — web-worker (C2)', () => {
     expect(host.id).toBe('web-worker');
     expect(typeof host.open).toBe('function');
     expect(typeof host.adoptInitialize).toBe('function');
-    expect(typeof host.encodeGeometry).toBe('function');
     expect(host.closed).toBeInstanceOf(Promise);
   });
 });
@@ -519,9 +740,8 @@ describe('transport conformance — node-worker (C2)', () => {
       expect(typeof client.describe).toBe('function');
       expect(typeof client.open).toBe('function');
       expect(typeof client.initialize).toBe('function');
-      expect(typeof client.reservePreview).toBe('function');
-      expect(client.renderTimeoutRecovery.kind).toBe('terminable');
-      expect(typeof client.resolveGeometry).toBe('function');
+      expect(client.operationTimeoutRecovery.kind).toBe('terminable');
+      expect(typeof client.resolveBinary).toBe('function');
       expect(typeof client.close).toBe('function');
       expect(client.closed).toBeInstanceOf(Promise);
     } finally {
@@ -567,18 +787,18 @@ describe('transport conformance — node-worker (C2)', () => {
     }
   });
 
-  it('throws on a forged RuntimeFileSystem (must come from a fromX factory)', async () => {
+  it('rejects a forged RuntimeFileSystem at transport factory invocation', async () => {
     const { nodeWorkerTransport } = await import('#transport/node-worker-transport.js');
     const fake = makeFakeNodeWorkerCtor();
     try {
-      expect(() =>
+      expect(() => {
         nodeWorkerTransport({
           url: new URL('about:blank'),
           workerCtor: fake.workerCtor,
           // @ts-expect-error Intentionally malformed `fileSystem` (must come from a `fromX` factory).
           fileSystem: { kind: 'inline' },
-        }).materialize(),
-      ).toThrow(/fromX. factory/);
+        });
+      }).toThrow(/Invalid input/);
     } finally {
       fake.dispose();
     }
@@ -615,7 +835,7 @@ describe('transport conformance — node-worker (C2)', () => {
           workerCtor: fake.workerCtor,
         }).materialize();
         await client.open();
-        const recovery = client.renderTimeoutRecovery;
+        const recovery = client.operationTimeoutRecovery;
         expect(recovery.kind).toBe('terminable');
         if (recovery.kind !== 'terminable') {
           throw new TypeError('Expected terminable Node Worker recovery');
@@ -624,7 +844,7 @@ describe('transport conformance — node-worker (C2)', () => {
         await recovery.terminate();
         await client.close();
 
-        await expect(client.closed).resolves.toEqual({ cause: 'render-timeout' });
+        await expect(client.closed).resolves.toEqual({ cause: 'operation-timeout' });
         expect(fake.terminateCalls()).toBe(1);
       } finally {
         fake.dispose();
@@ -644,7 +864,7 @@ describe('transport conformance — node-worker (C2)', () => {
 
       fake.emit('exit', 17);
 
-      await expect(client.closed).resolves.toEqual({ cause: 'host-exit', exitCode: 17 });
+      await expect(client.closed).resolves.toEqual({ cause: 'host-exit', exitCode: 17, phase: 'boot' });
       expect(fake.terminateCalls()).toBe(1);
     } finally {
       fake.dispose();
@@ -656,7 +876,6 @@ describe('transport conformance — node-worker (C2)', () => {
     expect(host.id).toBe('node-worker');
     expect(typeof host.open).toBe('function');
     expect(typeof host.adoptInitialize).toBe('function');
-    expect(typeof host.encodeGeometry).toBe('function');
     expect(host.closed).toBeInstanceOf(Promise);
   });
 });
@@ -690,9 +909,8 @@ describe('transport conformance — web-socket (C2)', () => {
     expect(typeof client.describe).toBe('function');
     expect(typeof client.open).toBe('function');
     expect(typeof client.initialize).toBe('function');
-    expect(typeof client.reservePreview).toBe('function');
-    expect(client.renderTimeoutRecovery.kind).toBe('terminable');
-    expect(typeof client.resolveGeometry).toBe('function');
+    expect(client.operationTimeoutRecovery.kind).toBe('terminable');
+    expect(typeof client.resolveBinary).toBe('function');
     expect(typeof client.close).toBe('function');
     expect(client.closed).toBeInstanceOf(Promise);
   });
@@ -718,7 +936,7 @@ describe('transport conformance — web-socket (C2)', () => {
       await ready.channel.ready;
       expect(ready.channel.hello.payload).toMatchObject({
         server: 'kernel-runtime-worker',
-        protocolVersion: 1,
+        protocolVersion: 4,
       });
       expect(bed.dialled.map((entry) => new URL(entry.url).pathname)).toEqual(['/runtime']);
       expect(new URL(bed.dialled[0]!.url).searchParams.get('session')).toEqual(expect.any(String));
@@ -754,9 +972,9 @@ describe('transport conformance — web-socket (C2)', () => {
         await client.open();
         bed.dialled[0]!.host.close(code, 'host stopping');
 
-        await expect(client.closed).resolves.toEqual({ cause: 'host-exit' });
+        await expect(client.closed).resolves.toEqual({ cause: 'host-exit', phase: 'session' });
         await client.close();
-        await expect(client.closed).resolves.toEqual({ cause: 'host-exit' });
+        await expect(client.closed).resolves.toEqual({ cause: 'host-exit', phase: 'session' });
       } finally {
         bed.dispose();
       }
@@ -796,9 +1014,16 @@ describe('transport conformance — web-socket (C2)', () => {
   });
 
   it.each([
-    ['without watch', fromMemoryFs(), false],
+    /* `fsLike` has no watch channel of its own; the memory store does (D15). */
+    ['inline without watch', fromFsLike({ promises: {} } as unknown as FsLike), false],
+    [
+      'channel over a watching store',
+      fromFileSystemBridge(() => createFileSystemBridgePort(extractInlineFileSystem(fromMemoryFs())!)),
+      true,
+    ],
     /* Never read — only `typeof fs.watch === 'function'` is under test. */
-    ['with watch', fromNodeFs(import.meta.dirname), true],
+    ['inline with watch', fromNodeFs(import.meta.dirname), true],
+    ['inline memory with watch', fromMemoryFs(), true],
   ] as const)(
     'serves the consumer filesystem over a second socket %s',
     async (_label, fileSystem: RuntimeFileSystem, watchable: boolean) => {
@@ -812,14 +1037,14 @@ describe('transport conformance — web-socket (C2)', () => {
         const sessions = bed.dialled.map((entry) => new URL(entry.url).searchParams.get('session'));
         expect(sessions[0]).toBe(sessions[1]);
 
-        /* The bridge server posts its hello during construction, so the far
-         * end of the `/fs` socket already holds it. */
+        await bed.firstFileSystemFrame;
         expect(bed.fileSystemFrames).toHaveLength(1);
         expect(bed.fileSystemFrames[0]).toMatchObject({
           v: 1,
           k: 'lh',
           o: 1,
-          d: { v: 1, state: 'ready', watchable },
+          /* The inner hello is the filesystem bridge's, not the RPC frame's. */
+          d: { v: fileSystemBridgeProtocolVersion, state: 'ready', watchable },
         });
       } finally {
         await client.close();
@@ -896,13 +1121,12 @@ describe('transport conformance — web-socket (C2)', () => {
     }
   });
 
-  it('rejects a bridged filesystem handle in the option schema', () => {
+  it('accepts a bridged filesystem handle in the option schema without opening it', () => {
     const bridged = fromFileSystemBridge(() => {
       throw new Error('never connected in conformance');
     });
     const parsed = webSocketClientOptionsSchema.safeParse({ url, fileSystem: bridged });
-    expect(parsed.success).toBe(false);
-    expect(JSON.stringify(parsed.error?.issues)).toContain('fromFileSystemBridge');
+    expect(parsed.success).toBe(true);
   });
 });
 
@@ -911,15 +1135,6 @@ describe('transport conformance — web-socket (C2)', () => {
  * ============================================================ */
 
 describe('transport conformance — shared transport internals (T37)', () => {
-  const renderId = '550e8400-e29b-41d4-a716-446655440000';
-
-  /** The abort frame the shared helper would emit for `target` — the byte-for-byte reference. */
-  const sharedAbortFrame = (target: { renderId: string; abortGeneration?: number }): [string, unknown] => {
-    const notify = vi.fn();
-    triggerRenderTimeout({ notify } as unknown as Channel<RuntimeProtocol>, undefined, target);
-    return notify.mock.calls[0] as [string, unknown];
-  };
-
   /**
    * Far end of a real `MessageChannel` running an rpc server, so the client
    * completes its handshake and actually flushes queued notify frames.
@@ -927,21 +1142,19 @@ describe('transport conformance — shared transport internals (T37)', () => {
   const wireBackedPeer = (): {
     port: MessagePort;
     peerPort: MessagePort;
-    firstNotify: Promise<[string, unknown]>;
     dispose: () => void;
   } => {
     const pair = new MessageChannel();
-    const received = Promise.withResolvers<[string, unknown]>();
-    const server = createChannelServer<RuntimeProtocol>({
+    const server = createChannelServer<RuntimeDocumentProtocol>({
       port: wrapMessagePort<unknown>(pair.port2, { label: 't37:peer' }),
       sessionKey: runtimeChannelSessionKey,
-      hello: { server: 'kernel-runtime-worker', runtimeVersion: 'test', protocolVersion: 1 },
+      hello: { server: 'kernel-runtime-worker', runtimeVersion: 'test', protocolVersion: 4 },
       impl: {
         async call() {
           throw new Error('T37 conformance issues no calls');
         },
-        notify(_context, name, args) {
-          received.resolve([name, args]);
+        notify() {
+          /* The conformance peer sends no notifications. */
         },
         listen: () => {
           throw new Error('T37 conformance subscribes to nothing');
@@ -951,7 +1164,6 @@ describe('transport conformance — shared transport internals (T37)', () => {
     return {
       port: pair.port1,
       peerPort: pair.port2,
-      firstNotify: received.promise,
       dispose: () => {
         server.dispose();
         pair.port1.close();
@@ -999,27 +1211,25 @@ describe('transport conformance — shared transport internals (T37)', () => {
       async (port: MessagePort): Promise<RuntimeTransportClient> => {
         const { nodeWorkerTransport } = await import('#transport/node-worker-transport.js');
         const wrapped = portBacked(port);
-        const worker = {
-          postMessage: (data: unknown, transfer?: readonly Transferable[]) => {
+        // oxlint-disable-next-line unicorn/prefer-event-target -- node:worker_threads.Worker is an EventEmitter; this fake must match it.
+        class PortBackedNodeWorker extends EventEmitter {
+          public constructor() {
+            super();
+            wrapped.onMessage((data) => this.emit('message', data));
+          }
+
+          public postMessage(data: unknown, transfer?: readonly Transferable[]): void {
             wrapped.postMessage(data, transfer);
-          },
-          on(event: string, listener: (data: unknown) => void) {
-            if (event === 'message') {
-              wrapped.onMessage(listener);
-            }
-            return worker;
-          },
-          off: () => worker,
-          terminate: async () => {
+          }
+
+          public async terminate(): Promise<number> {
             wrapped.close();
             return 0;
-          },
-        };
+          }
+        }
         return nodeWorkerTransport({
           url: new URL('about:blank'),
-          workerCtor: function fakeNodeWorker() {
-            return worker;
-          } as unknown as WorkerConstructorLike,
+          workerCtor: PortBackedNodeWorker,
         }).materialize() as unknown as RuntimeTransportClient;
       },
     ],
@@ -1028,6 +1238,13 @@ describe('transport conformance — shared transport internals (T37)', () => {
       async (port: MessagePort): Promise<RuntimeTransportClient> => {
         const { electronUtilityClient } = await import('#electron/electron-utility-client.js');
         return electronUtilityClient({ port }) as unknown as RuntimeTransportClient;
+      },
+    ],
+    [
+      'electron-utility-main',
+      async (port: MessagePort): Promise<RuntimeTransportClient> => {
+        const { electronUtilityMainClient } = await import('#electron/electron-utility-client.js');
+        return electronUtilityMainClient({ port: port as unknown as MessagePortMainLike });
       },
     ],
     [
@@ -1043,30 +1260,6 @@ describe('transport conformance — shared transport internals (T37)', () => {
     ],
   ] as const;
 
-  it.each(terminableTransports)(
-    '%s builds its abort frame with the shared helper',
-    async (_transportId, materialize) => {
-      const peer = wireBackedPeer();
-      const client = await materialize(peer.port);
-      try {
-        const ready = await client.open();
-        await ready.channel.ready;
-
-        const recovery = client.renderTimeoutRecovery;
-        if (recovery.kind !== 'terminable') {
-          throw new TypeError(`Expected terminable ${_transportId} recovery`);
-        }
-        const target = { renderId, ...client.reservePreview() };
-        recovery.abortRender(target);
-
-        await expect(peer.firstNotify).resolves.toEqual(sharedAbortFrame(target));
-      } finally {
-        await client.close();
-        peer.dispose();
-      }
-    },
-  );
-
   it('electron-utility settles closed as host-exit when the utility end of the port closes', async () => {
     const materializeElectronUtility = terminableTransports.find(([id]) => id === 'electron-utility')![1];
     const peer = wireBackedPeer();
@@ -1077,19 +1270,36 @@ describe('transport conformance — shared transport internals (T37)', () => {
 
       peer.peerPort.close();
 
-      await expect(client.closed).resolves.toEqual({ cause: 'host-exit' });
+      /* No exit relay is registered for this port, so the close settles only
+       * after the relay window elapses — with `exitCode` absent as a fact. */
+      await expect(client.closed).resolves.toEqual({ cause: 'host-exit', phase: 'session' });
       await client.close();
-      await expect(client.closed).resolves.toEqual({ cause: 'host-exit' });
+      await expect(client.closed).resolves.toEqual({ cause: 'host-exit', phase: 'session' });
     } finally {
       peer.dispose();
     }
+  });
+
+  it('electron-utility-main releases its exact main-owned lease on close', async () => {
+    const { port1, port2 } = new MessageChannel();
+    const release = vi.fn();
+    const { electronUtilityMainClient } = await import('#electron/electron-utility-client.js');
+    const client = electronUtilityMainClient({
+      port: port1 as unknown as MessagePortMainLike,
+      release,
+    });
+
+    await client.close();
+
+    expect(release).toHaveBeenCalledExactlyOnceWith('requested');
+    port2.close();
   });
 
   it('electron-utility settles closed with the exit code main relayed for the dead utility', async () => {
     const { registerElectronRuntimeHostExit } = await import('#electron/_internal/runtime-host-lease.js');
     const materializeElectronUtility = terminableTransports.find(([id]) => id === 'electron-utility')![1];
     const peer = wireBackedPeer();
-    let notifyHostExit: ((exitCode?: number) => void) | undefined;
+    let notifyHostExit: ((detail: { exitCode: number; released: boolean }) => void) | undefined;
     registerElectronRuntimeHostExit(peer.port, (notify) => {
       notifyHostExit = notify;
     });
@@ -1098,12 +1308,13 @@ describe('transport conformance — shared transport internals (T37)', () => {
       const ready = await client.open();
       await ready.channel.ready;
 
-      notifyHostExit?.(7);
+      notifyHostExit?.({ exitCode: 7, released: false });
 
-      await expect(client.closed).resolves.toEqual({ cause: 'host-exit', exitCode: 7 });
+      const relayed = { cause: 'host-exit', exitCode: 7, phase: 'session', released: false };
+      await expect(client.closed).resolves.toEqual(relayed);
       /* Both liveness signals exist; `finish` is idempotent and the first cause wins. */
       peer.peerPort.close();
-      await expect(client.closed).resolves.toEqual({ cause: 'host-exit', exitCode: 7 });
+      await expect(client.closed).resolves.toEqual(relayed);
     } finally {
       peer.dispose();
     }
@@ -1191,11 +1402,13 @@ function createWebSocketTestBed(): {
   createSocket: (url: string) => WebSocketLike;
   dialled: readonly DialledSocket[];
   fileSystemFrames: readonly unknown[];
+  firstFileSystemFrame: Promise<void>;
   dispose: () => void;
 } {
   const dialled: DialledSocket[] = [];
-  const dispatchers: Array<ChannelServerHandle<RuntimeProtocol>> = [];
+  const dispatchers: Array<ChannelServerHandle<RuntimeDocumentProtocol>> = [];
   const fileSystemFrames: unknown[] = [];
+  const firstFileSystemFrame = Promise.withResolvers<void>();
 
   return {
     createSocket(url: string): WebSocketLike {
@@ -1208,16 +1421,20 @@ function createWebSocketTestBed(): {
       if (new URL(url).pathname.endsWith('/runtime')) {
         /* Wired here, not after `open()` resolves: the dispatcher posts its
          * hello during construction and a later listener never sees it. */
-        dispatchers.push(createWorkerDispatcher(makeStubKernelWorker(), wrapWebSocket<unknown>(host, msgpackCodec)));
+        dispatchers.push(
+          createDocumentWorkerDispatcher(makeStubKernelWorker(), wrapWebSocket<unknown>(host, msgpackCodec)),
+        );
       } else {
         host.addEventListener('message', (event) => {
           fileSystemFrames.push(msgpackCodec.decode((event as { data: Uint8Array<ArrayBuffer> }).data));
+          firstFileSystemFrame.resolve();
         });
       }
       return client;
     },
     dialled,
     fileSystemFrames,
+    firstFileSystemFrame: firstFileSystemFrame.promise,
     dispose() {
       for (const dispatcher of dispatchers) {
         dispatcher.dispose('conformance teardown');
@@ -1258,8 +1475,6 @@ function messagePortAsWebSocket(port: MessagePort): WebSocketLike {
     },
   };
 }
-
-type WorkerConstructorLike = new (url: string | URL) => unknown;
 
 type FakeWorker = {
   postMessage: (data: unknown, transfer?: readonly Transferable[]) => void;
@@ -1322,15 +1537,29 @@ function makeFakeWorkerCtor(): {
   };
 }
 
-type FakeNodeWorker = {
-  postMessage: (data: unknown, transferList?: unknown) => void;
-  on: (event: 'message', listener: (data: unknown) => void) => FakeNodeWorker;
-  off: (event: 'message', listener: (data: unknown) => void) => FakeNodeWorker;
-  terminate: () => Promise<number>;
-};
+/** A Node worker double: an `EventEmitter`, as `node:worker_threads.Worker` is, so it accepts every event `NodeWorkerLike` declares. */
+// oxlint-disable-next-line unicorn/prefer-event-target -- node:worker_threads.Worker is an EventEmitter; this fake must match it.
+class FakeNodeWorker extends EventEmitter {
+  private readonly onTerminate: () => void;
+
+  public constructor(onTerminate: () => void) {
+    super();
+    this.onTerminate = onTerminate;
+  }
+
+  public postMessage(): void {
+    /* No-op */
+  }
+
+  public async terminate(): Promise<number> {
+    this.onTerminate();
+    this.removeAllListeners();
+    return 0;
+  }
+}
 
 function makeFakeNodeWorkerCtor(): {
-  workerCtor: unknown;
+  workerCtor: new (url: string | URL) => FakeNodeWorker;
   created: FakeNodeWorker[];
   urls: Array<string | URL>;
   terminateCalls: () => number;
@@ -1340,43 +1569,22 @@ function makeFakeNodeWorkerCtor(): {
   const created: FakeNodeWorker[] = [];
   const urls: Array<string | URL> = [];
   let terminationCount = 0;
-  let latestListeners: Map<string, Set<(data: unknown) => void>> | undefined;
-  const ctor = function fakeNodeWorkerImpl(this: FakeNodeWorker, url: string | URL): FakeNodeWorker {
-    urls.push(url);
-    const listeners = new Map<string, Set<(data: unknown) => void>>();
-    latestListeners = listeners;
-    const fake: FakeNodeWorker = {
-      postMessage() {
-        /* No-op */
-      },
-      on(event, listener) {
-        const eventListeners = listeners.get(event) ?? new Set<(data: unknown) => void>();
-        eventListeners.add(listener);
-        listeners.set(event, eventListeners);
-        return fake;
-      },
-      off(event, listener) {
-        listeners.get(event)?.delete(listener);
-        return fake;
-      },
-      async terminate() {
+  class RecordedNodeWorker extends FakeNodeWorker {
+    public constructor(url: string | URL) {
+      super(() => {
         terminationCount++;
-        listeners.clear();
-        return 0;
-      },
-    };
-    created.push(fake);
-    return fake;
-  } as unknown as new (url: string | URL) => FakeNodeWorker;
+      });
+      urls.push(url);
+      created.push(this);
+    }
+  }
   return {
-    workerCtor: ctor,
+    workerCtor: RecordedNodeWorker,
     created,
     urls,
     terminateCalls: () => terminationCount,
     emit(type, payload) {
-      for (const listener of latestListeners?.get(type) ?? []) {
-        listener(payload);
-      }
+      created.at(-1)?.emit(type, payload);
     },
     dispose() {
       for (const w of created) {

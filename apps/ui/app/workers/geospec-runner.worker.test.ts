@@ -2,6 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { GeoSpecRunnerResult } from 'geospec/runner/worker';
 import type {
   GeoSpecRunnerWorkerRequest,
@@ -23,8 +24,12 @@ const workerMocks = vi.hoisted(() => {
     exists: vi.fn(),
     dispose: vi.fn(),
   };
+  const document = {
+    export: vi.fn<(format: string, input: { options: Record<string, unknown> }) => Promise<{ success: boolean }>>(),
+    close: vi.fn(),
+  };
   const runtimeClient = {
-    export: vi.fn(),
+    open: vi.fn<(input: { source: { path: string }; parameters?: Record<string, unknown> }) => typeof document>(),
     terminate: vi.fn(),
   };
   const runner = {
@@ -46,6 +51,7 @@ const workerMocks = vi.hoisted(() => {
   return {
     fsProxy,
     runtimeClient,
+    document,
     runner,
     geoSpecModelLoadErrorClass: MockGeoSpecModelLoadError,
     createGeoSpecModelLoadError: (diagnostics: ReadonlyArray<{ code: string; message: string }>) =>
@@ -54,13 +60,12 @@ const workerMocks = vi.hoisted(() => {
     createRuntimeClient: vi.fn(),
     createFileSystemBridgeProxy: vi.fn(),
     fromFsLike: vi.fn(),
-    createGeoSpecWebRunner: vi.fn(),
     loadModel: vi.fn(),
     createDefaultKernelOptions: vi.fn(),
   };
 });
 
-vi.mock('@taucad/runtime', () => ({
+vi.mock('@taucad/runtime/client', () => ({
   createRuntimeClient: workerMocks.createRuntimeClient,
 }));
 
@@ -70,10 +75,6 @@ vi.mock('@taucad/fs-bridge', () => ({
 
 vi.mock('@taucad/runtime/filesystem', () => ({
   fromFsLike: workerMocks.fromFsLike,
-}));
-
-vi.mock('geospec/runner/web', () => ({
-  createGeoSpecWebRunner: workerMocks.createGeoSpecWebRunner,
 }));
 
 vi.mock('geospec/model', () => {
@@ -88,8 +89,30 @@ vi.mock('#constants/kernel-worker.constants.js', () => ({
   createDefaultKernelOptions: workerMocks.createDefaultKernelOptions,
 }));
 
-vi.mock('#runtime/ui-runtime.definition.js', () => ({
+vi.mock('#runtime/ui-runtime.schema.js', () => ({
   uiRuntimeConfigSchema: workerMocks.uiRuntimeConfigSchema,
+}));
+
+const nativeMocks = vi.hoisted(() => {
+  const close = vi.fn();
+  return {
+    close,
+    initialize: vi.fn(),
+    engine: vi.fn(function () {
+      return { close };
+    }),
+    createNativeGeoSpecRunner: vi.fn(),
+  };
+});
+
+vi.mock('@taucad/geospec-engine-native', () => ({
+  initialize: nativeMocks.initialize,
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- Match the public module's constructor export.
+  Engine: nativeMocks.engine,
+}));
+
+vi.mock('geospec/runner/native', () => ({
+  createNativeGeoSpecRunner: nativeMocks.createNativeGeoSpecRunner,
 }));
 
 const successfulRunnerResult = (): GeoSpecRunnerResult => ({
@@ -132,7 +155,7 @@ const mockProjectTree = (localRootPath: string, files: readonly string[]): void 
     const parts = file.split('/').filter(Boolean);
     let currentDirectory = localRootPath;
     for (const directory of parts.slice(0, -1)) {
-      const nextDirectory = currentDirectory === '/' ? `/${directory}` : `${currentDirectory}/${directory}`;
+      const nextDirectory = currentDirectory === '' ? directory : `${currentDirectory}/${directory}`;
       directories.get(currentDirectory)?.add(directory);
       if (!directories.has(nextDirectory)) {
         directories.set(nextDirectory, new Set());
@@ -144,7 +167,7 @@ const mockProjectTree = (localRootPath: string, files: readonly string[]): void 
       continue;
     }
     directories.get(currentDirectory)?.add(fileName);
-    filePaths.add(currentDirectory === '/' ? `/${fileName}` : `${currentDirectory}/${fileName}`);
+    filePaths.add(currentDirectory === '' ? fileName : `${currentDirectory}/${fileName}`);
   }
 
   workerMocks.fsProxy.readdir.mockImplementation(async (path: string) => {
@@ -191,13 +214,16 @@ const initializeWorkerSession = async (options: {
     },
   } as MessageEvent<GeoSpecRunnerWorkerRequest>);
 
-  await vi.waitFor(() => {
-    expect(options.postMessage).toHaveBeenCalledWith({
-      type: 'initialized',
-      requestId,
-      sessionId,
-    } satisfies GeoSpecRunnerWorkerResponse);
-  });
+  await vi.waitFor(
+    () => {
+      expect(options.postMessage).toHaveBeenCalledWith({
+        type: 'initialized',
+        requestId,
+        sessionId,
+      } satisfies GeoSpecRunnerWorkerResponse);
+    },
+    { timeout: 5000 },
+  );
   options.postMessage.mockClear();
   return sessionId;
 };
@@ -232,14 +258,19 @@ describe('geospec-runner.worker', () => {
     workerMocks.fsProxy.rename.mockReset();
     workerMocks.fsProxy.exists.mockReset();
     workerMocks.fsProxy.dispose.mockReset();
-    workerMocks.runtimeClient.export.mockReset();
+    workerMocks.runtimeClient.open.mockReset().mockReturnValue(workerMocks.document);
+    workerMocks.document.export.mockReset();
+    workerMocks.document.close.mockReset();
     workerMocks.runtimeClient.terminate.mockReset();
     workerMocks.runner.run.mockReset();
     workerMocks.runner.close.mockReset();
     workerMocks.createRuntimeClient.mockReset();
     workerMocks.createFileSystemBridgeProxy.mockReset();
     workerMocks.fromFsLike.mockReset();
-    workerMocks.createGeoSpecWebRunner.mockReset();
+    nativeMocks.initialize.mockReset().mockResolvedValue(undefined);
+    nativeMocks.engine.mockClear();
+    nativeMocks.close.mockReset();
+    nativeMocks.createNativeGeoSpecRunner.mockReset().mockReturnValue(workerMocks.runner);
     workerMocks.loadModel.mockReset();
     workerMocks.createDefaultKernelOptions.mockReset();
     workerMocks.uiRuntimeConfigSchema.safeParse.mockReset();
@@ -273,17 +304,20 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue(runtimeFileSystem);
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['main.geospec.ts']);
-    workerMocks.loadModel.mockResolvedValue({ provenance: { source: { kind: 'runtime' } } });
+    mockProjectTree('', ['main.geospec.ts']);
+    workerMocks.document.export.mockResolvedValue({ success: true });
     workerMocks.runner.run.mockImplementation(async () => {
-      const runnerOptions = workerMocks.createGeoSpecWebRunner.mock.calls[0]?.[0] as {
-        modelLoader: (input: { file: string; parameters: Record<string, unknown> }) => Promise<unknown>;
+      const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
+        model: { runtime: typeof workerMocks.runtimeClient };
       };
-      await runnerOptions.modelLoader({ file: 'main.ts', parameters: { height: 42 } });
+      expect(runnerOptions.model.runtime).toBe(workerMocks.runtimeClient);
+      const document = runnerOptions.model.runtime.open({ source: { path: 'main.ts' }, parameters: { height: 42 } });
+      await document.export('glb', { options: {} });
+      document.close();
       return successfulRunnerResult();
     });
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
     expect(messageListener).toBeDefined();
@@ -303,6 +337,7 @@ describe('geospec-runner.worker', () => {
       expect(postMessage).toHaveBeenCalledWith({
         type: 'result',
         requestId: 'request-1',
+        candidates: [],
         result: {
           success: true,
           failures: [],
@@ -315,6 +350,16 @@ describe('geospec-runner.worker', () => {
           ],
           passed: 1,
           total: 1,
+          runStatus: 'inconclusive',
+          lineageStatus: 'unavailable',
+          tests: [
+            {
+              id: 'main.geospec.ts:geometry > should use the requested model',
+              requirement: 'geometry > should use the requested model',
+              targetFile: 'main.geospec.ts',
+              status: 'passed',
+            },
+          ],
         },
       } satisfies GeoSpecRunnerWorkerResponse);
     });
@@ -332,12 +377,12 @@ describe('geospec-runner.worker', () => {
       testNamePattern: undefined,
       testTimeout: undefined,
     });
-    expect(workerMocks.loadModel).toHaveBeenCalledWith({
-      file: '/main.ts',
+    expect(workerMocks.runtimeClient.open).toHaveBeenCalledWith({
+      source: { path: 'main.ts' },
       parameters: { height: 42 },
-      projectPath: '/',
-      runtime: workerMocks.runtimeClient,
     });
+    expect(workerMocks.document.export).toHaveBeenCalledWith('glb', { options: {} });
+    expect(workerMocks.document.close).toHaveBeenCalledOnce();
     expect(workerMocks.runtimeClient.terminate).not.toHaveBeenCalled();
     expect(workerMocks.fsProxy.dispose).not.toHaveBeenCalled();
   }, 15_000);
@@ -362,25 +407,26 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue(runtimeFileSystem);
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['vase.geospec.ts']);
-    workerMocks.loadModel.mockResolvedValue({ provenance: { source: { kind: 'runtime' } } });
+    mockProjectTree('', ['vase.geospec.ts']);
+    workerMocks.fsProxy.readFile.mockResolvedValue(Uint8Array.of(42));
     workerMocks.runner.run.mockImplementation(async () => {
-      const runnerOptions = workerMocks.createGeoSpecWebRunner.mock.calls[0]?.[0] as {
-        modelLoader: (input: { file: string; parameters?: Record<string, unknown> }) => Promise<unknown>;
+      const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
+        model: { readSource: (source: string) => Promise<Uint8Array<ArrayBuffer>> };
       };
-      await runnerOptions.modelLoader({ file: 'main.scad' });
+      await expect(runnerOptions.model.readSource('main.scad')).resolves.toEqual(Uint8Array.of(42));
+      await expect(runnerOptions.model.readSource('../foreign.scad')).rejects.toThrow();
       return {
         ...successfulRunnerResult(),
         files: [
           {
             ...successfulRunnerResult().files[0]!,
-            file: '/vase.geospec.ts',
+            file: 'vase.geospec.ts',
           },
         ],
       };
     });
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
 
@@ -403,25 +449,21 @@ describe('geospec-runner.worker', () => {
         }),
       );
     });
-    expect(workerMocks.fsProxy.readdir).toHaveBeenCalledWith('/');
-    expect(workerMocks.fsProxy.stat).toHaveBeenCalledWith('/vase.geospec.ts');
-    const runnerOptions = workerMocks.createGeoSpecWebRunner.mock.calls[0]?.[0] as {
+    expect(workerMocks.fsProxy.readdir).toHaveBeenCalledWith('');
+    expect(workerMocks.fsProxy.stat).toHaveBeenCalledWith('vase.geospec.ts');
+    const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
       filesystem: { readFile: unknown; writeFile: unknown };
-      modelLoader: unknown;
+      model: { readSource: unknown };
     };
     expect(typeof runnerOptions.filesystem.readFile).toBe('function');
     expect(typeof runnerOptions.filesystem.writeFile).toBe('function');
-    expect(typeof runnerOptions.modelLoader).toBe('function');
+    expect(typeof runnerOptions.model.readSource).toBe('function');
     expect(workerMocks.runner.run).toHaveBeenCalledWith({
       files: ['vase.geospec.ts'],
       testNamePattern: undefined,
       testTimeout: undefined,
     });
-    expect(workerMocks.loadModel).toHaveBeenCalledWith({
-      file: '/main.scad',
-      projectPath: '/',
-      runtime: workerMocks.runtimeClient,
-    });
+    expect(workerMocks.fsProxy.readFile).toHaveBeenCalledExactlyOnceWith('main.scad');
   });
 
   it('should discover root and nested GeoSpec files recursively in the worker', async () => {
@@ -442,7 +484,7 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['vase.geospec.ts', 'main.scad', 'lib/vase_variant.geospec.ts', 'lib/vase_variant.scad']);
+    mockProjectTree('', ['vase.geospec.ts', 'main.scad', 'lib/vase_variant.geospec.ts', 'lib/vase_variant.scad']);
     workerMocks.runner.run.mockResolvedValue({
       success: true,
       passed: 2,
@@ -486,7 +528,7 @@ describe('geospec-runner.worker', () => {
       ],
     });
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
 
@@ -556,10 +598,10 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['vase.geospec.ts', 'lib/vase_variant.geospec.ts']);
+    mockProjectTree('', ['vase.geospec.ts', 'lib/vase_variant.geospec.ts']);
     workerMocks.runner.run.mockResolvedValue(successfulRunnerResult());
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
 
@@ -602,10 +644,10 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['root.geospec.ts', 'lib/vase_variant.geospec.ts', 'lib/vase_variant.slow.geospec.ts']);
+    mockProjectTree('', ['root.geospec.ts', 'lib/vase_variant.geospec.ts', 'lib/vase_variant.slow.geospec.ts']);
     workerMocks.runner.run.mockResolvedValue(successfulRunnerResult());
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
 
@@ -653,10 +695,10 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue(runtimeFileSystem);
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['main.geospec.ts']);
+    mockProjectTree('', ['main.geospec.ts']);
     workerMocks.runner.run.mockResolvedValue(successfulRunnerResult());
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
 
@@ -687,7 +729,7 @@ describe('geospec-runner.worker', () => {
     expect(fsLike.promises['writeFile']).toBeTypeOf('function');
     expect(fsLike.promises['readdir']).toBeTypeOf('function');
     expect(workerMocks.createFileSystemBridgeProxy).toHaveBeenCalledTimes(1);
-    expect(workerMocks.fsProxy.readdir).toHaveBeenCalledWith('/');
+    expect(workerMocks.fsProxy.readdir).toHaveBeenCalledWith('');
     const runtimeClientOptions = workerMocks.createRuntimeClient.mock.calls[0]?.[0] as {
       options: { fileSystem: unknown };
     };
@@ -709,12 +751,10 @@ describe('geospec-runner.worker', () => {
     vi.stubGlobal('close', vi.fn());
     workerMocks.uiRuntimeConfigSchema.safeParse.mockReturnValueOnce({
       success: false,
-      error: {
-        issues: [
-          { path: ['tauApiUrl'], message: 'expected string' },
-          { path: ['tauWebSocketUrl'], message: 'expected string' },
-        ],
-      },
+      error: new z.ZodError([
+        { code: 'custom', path: ['tauApiUrl'], message: 'expected string' },
+        { code: 'custom', path: ['tauWebSocketUrl'], message: 'expected string' },
+      ]),
     });
 
     await import('#workers/geospec-runner.worker.js');
@@ -736,17 +776,18 @@ describe('geospec-runner.worker', () => {
       expect(postMessage).toHaveBeenCalledWith({
         type: 'error',
         requestId: 'request-invalid-config',
-        message: 'RUNTIME_CONFIG_INVALID: tauApiUrl: expected string; tauWebSocketUrl: expected string',
+        message:
+          'RUNTIME_CONFIG_INVALID: ✖ expected string\n  → at tauApiUrl\n✖ expected string\n  → at tauWebSocketUrl',
       } satisfies GeoSpecRunnerWorkerResponse);
     });
     expect(workerMocks.createFileSystemBridgeProxy).not.toHaveBeenCalled();
     expect(workerMocks.fromFsLike).not.toHaveBeenCalled();
     expect(workerMocks.createRuntimeClient).not.toHaveBeenCalled();
-    expect(workerMocks.createGeoSpecWebRunner).not.toHaveBeenCalled();
+    expect(nativeMocks.createNativeGeoSpecRunner).not.toHaveBeenCalled();
     expect(postMessage.mock.calls[0]?.[0].message).not.toContain(['Port at index 0', ' is already neutered'].join(''));
   });
 
-  it('should memoize fatal runtime boot failures during one GeoSpec run', async () => {
+  it('should preserve each runtime failure without memoizing authored source loads', async () => {
     let messageListener: ((event: MessageEvent<GeoSpecRunnerWorkerRequest>) => void) | undefined;
     vi.stubGlobal(
       'addEventListener',
@@ -764,21 +805,25 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['main.geospec.ts']);
+    mockProjectTree('', ['main.geospec.ts']);
     const fatalError = workerMocks.createGeoSpecModelLoadError([
       { code: 'RUNTIME_UNAVAILABLE', message: 'runtime boot failed' },
     ]);
-    workerMocks.loadModel.mockRejectedValueOnce(fatalError);
+    workerMocks.document.export.mockRejectedValue(fatalError);
     workerMocks.runner.run.mockImplementation(async () => {
-      const runnerOptions = workerMocks.createGeoSpecWebRunner.mock.calls[0]?.[0] as {
-        modelLoader: (input: { file: string }) => Promise<unknown>;
+      const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
+        model: { runtime: typeof workerMocks.runtimeClient };
       };
-      await expect(runnerOptions.modelLoader({ file: 'main.scad' })).rejects.toBe(fatalError);
-      await expect(runnerOptions.modelLoader({ file: 'main.scad' })).rejects.toBe(fatalError);
+      await expect(
+        runnerOptions.model.runtime.open({ source: { path: 'main.scad' } }).export('glb', { options: {} }),
+      ).rejects.toBe(fatalError);
+      await expect(
+        runnerOptions.model.runtime.open({ source: { path: 'main.scad' } }).export('glb', { options: {} }),
+      ).rejects.toBe(fatalError);
       return successfulRunnerResult();
     });
     workerMocks.runner.close.mockResolvedValue(undefined);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
 
@@ -796,7 +841,7 @@ describe('geospec-runner.worker', () => {
     await vi.waitFor(() => {
       expect(workerMocks.runner.run).toHaveBeenCalledTimes(1);
     });
-    expect(workerMocks.loadModel).toHaveBeenCalledTimes(1);
+    expect(workerMocks.document.export).toHaveBeenCalledTimes(2);
   });
 
   it('should reject run requests before initialization with a structured diagnostic', async () => {
@@ -830,7 +875,7 @@ describe('geospec-runner.worker', () => {
       } satisfies GeoSpecRunnerWorkerResponse);
     });
     expect(workerMocks.createRuntimeClient).not.toHaveBeenCalled();
-    expect(workerMocks.createGeoSpecWebRunner).not.toHaveBeenCalled();
+    expect(nativeMocks.createNativeGeoSpecRunner).not.toHaveBeenCalled();
   });
 
   it('should reuse session runtime state while running discovery fresh for each invocation', async () => {
@@ -852,8 +897,8 @@ describe('geospec-runner.worker', () => {
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
     workerMocks.runner.run.mockResolvedValue(successfulRunnerResult());
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
-    mockProjectTree('/', ['main.geospec.ts']);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
+    mockProjectTree('', ['main.geospec.ts']);
 
     await import('#workers/geospec-runner.worker.js');
     const sessionId = await initializeWorkerSession({
@@ -876,7 +921,7 @@ describe('geospec-runner.worker', () => {
       testTimeout: undefined,
     });
 
-    mockProjectTree('/', ['main.geospec.ts', 'lib/variant.geospec.ts']);
+    mockProjectTree('', ['main.geospec.ts', 'lib/variant.geospec.ts']);
     sendRunRequest({
       messageListener,
       requestId: 'request-second-fresh',
@@ -895,7 +940,7 @@ describe('geospec-runner.worker', () => {
     expect(workerMocks.createFileSystemBridgeProxy).toHaveBeenCalledTimes(1);
     expect(workerMocks.fromFsLike).toHaveBeenCalledTimes(1);
     expect(workerMocks.createRuntimeClient).toHaveBeenCalledTimes(1);
-    expect(workerMocks.createGeoSpecWebRunner).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.createNativeGeoSpecRunner).toHaveBeenCalledTimes(1);
     expect(workerMocks.runtimeClient.terminate).not.toHaveBeenCalled();
   });
 
@@ -917,7 +962,7 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['first.geospec.ts', 'second.geospec.ts']);
+    mockProjectTree('', ['first.geospec.ts', 'second.geospec.ts']);
     const resolvers: Array<(result: GeoSpecRunnerResult) => void> = [];
     workerMocks.runner.run.mockImplementation(async () => {
       const result = await new Promise<GeoSpecRunnerResult>((resolve) => {
@@ -925,7 +970,7 @@ describe('geospec-runner.worker', () => {
       });
       return result;
     });
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
     const sessionId = await initializeWorkerSession({
@@ -970,7 +1015,7 @@ describe('geospec-runner.worker', () => {
     expect(resultRequestIds).toEqual(['request-first-queue', 'request-second-queue']);
   });
 
-  it('should reset fatal model load memoization between runs', async () => {
+  it('should recover runtime exports between runs without retaining the earlier failure', async () => {
     let messageListener: WorkerMessageListener | undefined;
     vi.stubGlobal(
       'addEventListener',
@@ -988,30 +1033,33 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    mockProjectTree('/', ['main.geospec.ts']);
+    mockProjectTree('', ['main.geospec.ts']);
     const fatalError = workerMocks.createGeoSpecModelLoadError([
       { code: 'RUNTIME_UNAVAILABLE', message: 'runtime boot failed' },
     ]);
-    workerMocks.loadModel.mockRejectedValueOnce(fatalError).mockResolvedValueOnce({ provenance: { source: {} } });
+    workerMocks.document.export.mockRejectedValueOnce(fatalError).mockResolvedValueOnce({ success: true });
     workerMocks.runner.run
       .mockImplementationOnce(async () => {
-        const runnerOptions = workerMocks.createGeoSpecWebRunner.mock.calls[0]?.[0] as {
-          modelLoader: (input: { file: string }) => Promise<unknown>;
+        const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
+          model: { runtime: typeof workerMocks.runtimeClient };
         };
-        await expect(runnerOptions.modelLoader({ file: 'main.scad' })).rejects.toBe(fatalError);
-        await expect(runnerOptions.modelLoader({ file: 'main.scad' })).rejects.toBe(fatalError);
+        await expect(
+          runnerOptions.model.runtime.open({ source: { path: 'main.scad' } }).export('glb', { options: {} }),
+        ).rejects.toBe(fatalError);
         return successfulRunnerResult();
       })
       .mockImplementationOnce(async () => {
-        const runnerOptions = workerMocks.createGeoSpecWebRunner.mock.calls[0]?.[0] as {
-          modelLoader: (input: { file: string }) => Promise<unknown>;
+        const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
+          model: { runtime: typeof workerMocks.runtimeClient };
         };
-        await expect(runnerOptions.modelLoader({ file: 'main.scad' })).resolves.toEqual({
-          provenance: { source: {} },
+        await expect(
+          runnerOptions.model.runtime.open({ source: { path: 'main.scad' } }).export('glb', { options: {} }),
+        ).resolves.toEqual({
+          success: true,
         });
         return successfulRunnerResult();
       });
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
     const sessionId = await initializeWorkerSession({
@@ -1037,7 +1085,64 @@ describe('geospec-runner.worker', () => {
     await vi.waitFor(() => {
       expect(workerMocks.runner.run).toHaveBeenCalledTimes(2);
     });
-    expect(workerMocks.loadModel).toHaveBeenCalledTimes(2);
+    expect(workerMocks.document.export).toHaveBeenCalledTimes(2);
+  });
+
+  it('should select compiled WASM with bounded evidence without an engine choice', async () => {
+    let messageListener: WorkerMessageListener | undefined;
+    vi.stubGlobal(
+      'addEventListener',
+      vi.fn((type: string, listener: WorkerMessageListener) => {
+        if (type === 'message') {
+          messageListener = listener;
+        }
+      }),
+    );
+    const postMessage = vi.fn<(message: GeoSpecRunnerWorkerResponse) => void>();
+    vi.stubGlobal('postMessage', postMessage);
+    vi.stubGlobal('close', vi.fn());
+
+    workerMocks.createFileSystemBridgeProxy.mockReturnValue(workerMocks.fsProxy);
+    workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
+    workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
+    workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
+    nativeMocks.initialize.mockResolvedValue(undefined);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
+
+    await import('#workers/geospec-runner.worker.js');
+    messageListener?.({
+      data: {
+        type: 'initialize',
+        requestId: 'native-initialize',
+        sessionId: 'native-session',
+        runtimeConfig: defaultRuntimeConfig,
+        fileSystemPort: new MessageChannel().port1,
+      },
+    } as MessageEvent<GeoSpecRunnerWorkerRequest>);
+
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'initialized',
+        requestId: 'native-initialize',
+        sessionId: 'native-session',
+      } satisfies GeoSpecRunnerWorkerResponse);
+    });
+    expect(nativeMocks.initialize).toHaveBeenCalledOnce();
+    expect(nativeMocks.engine).toHaveBeenCalledOnce();
+    expect(nativeMocks.createNativeGeoSpecRunner).toHaveBeenCalledOnce();
+    // The product reads verdicts and localized failures, not complete success witnesses.
+    const runnerOptions = nativeMocks.createNativeGeoSpecRunner.mock.calls[0]?.[0] as {
+      readonly nativeAssertions: {
+        readonly engine: Readonly<Record<string, unknown>>;
+        readonly evidenceProfile: string;
+      };
+    };
+    expect(runnerOptions.nativeAssertions.evidenceProfile).toBe('bounded');
+    for (const method of ['ingestSubject', 'subjectHandle', 'releaseSubject', 'processRequest', 'evaluateClaim']) {
+      expect(typeof runnerOptions.nativeAssertions.engine[method]).toBe('function');
+    }
+    expect(runnerOptions.nativeAssertions.engine).not.toHaveProperty('close');
+    expect(nativeMocks.close).not.toHaveBeenCalled();
   });
 
   it('should dispose runner runtime and filesystem state on close', async () => {
@@ -1059,7 +1164,7 @@ describe('geospec-runner.worker', () => {
     workerMocks.fromFsLike.mockReturnValue({ kind: 'runtime-fs' });
     workerMocks.createDefaultKernelOptions.mockImplementation((options: unknown) => ({ options }));
     workerMocks.createRuntimeClient.mockReturnValue(workerMocks.runtimeClient);
-    workerMocks.createGeoSpecWebRunner.mockReturnValue(workerMocks.runner);
+    nativeMocks.createNativeGeoSpecRunner.mockReturnValue(workerMocks.runner);
 
     await import('#workers/geospec-runner.worker.js');
     const sessionId = await initializeWorkerSession({
@@ -1085,6 +1190,7 @@ describe('geospec-runner.worker', () => {
     expect(workerMocks.runner.close).toHaveBeenCalledTimes(1);
     expect(workerMocks.runtimeClient.terminate).toHaveBeenCalledTimes(1);
     expect(workerMocks.fsProxy.dispose).toHaveBeenCalledTimes(1);
+    expect(nativeMocks.close).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
   });
 

@@ -9,11 +9,18 @@ import { Placeholder } from '@tiptap/extension-placeholder';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { Slice } from '@tiptap/pm/model';
 import type { EditorView } from '@tiptap/pm/view';
-import type { Chat } from '@taucad/chat';
+import type { ChatRecord } from '@taucad/chat/schemas';
+import {
+  cadReferenceFromGeometryComponent,
+  cadReferenceToken,
+  geometryComponentReferenceSchema,
+  maxCadReferences,
+} from '@taucad/chat/references';
+import type { CadReference } from '@taucad/chat/references';
 import type { FileEntry } from '@taucad/types';
 import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
 import type { ChipType } from '#components/chat/context-chip.js';
-import { buildPastedContent, slashCommandRegex } from '#utils/at-reference.utils.js';
+import { buildPastedContent, invocationTokenRegex } from '#utils/at-reference.utils.js';
 import type { PastedContentSegment } from '#utils/at-reference.utils.js';
 import { ContextChipNode } from '#components/chat/tiptap/context-chip-node.js';
 import { SubmitOnEnter } from '#components/chat/tiptap/submit-on-enter.js';
@@ -52,14 +59,10 @@ export type ChatInputContent = {
  * Rehydrates chip segments as `contextChip` nodes and handles
  * newline boundaries by creating separate paragraphs.
  *
- * Returns `undefined` when no chips are present (caller should use plain text).
+ * Always returns a JSON document so literal HTML-like text is never handed to
+ * Tiptap's string parser as markup.
  */
-export function buildEditorContentJson(segments: PastedContentSegment[]): JSONContent | undefined {
-  const hasChips = segments.some((s) => s.type === 'chip');
-  if (!hasChips) {
-    return undefined;
-  }
-
+export function buildEditorContentJson(segments: PastedContentSegment[]): JSONContent {
   const paragraphs: JSONContent[] = [];
   let currentContent: JSONContent[] = [];
 
@@ -112,6 +115,32 @@ function walkChildren(node: JSONContent, visitor: (child: JSONContent) => void):
   }
 }
 
+/**
+ * The structured references the composer's geometry chips hold (blueprint D6), in document order, without duplicates.
+ * A chip whose stored reference does not parse contributes nothing; its token still names it in the text.
+ */
+export function cadReferencesOfChips(chips: readonly ContextChip[]): CadReference[] {
+  const references = new Map<string, CadReference>();
+  for (const chip of chips) {
+    if (chip.geometryReference === undefined || references.size >= maxCadReferences) {
+      continue;
+    }
+    let stored: unknown;
+    try {
+      stored = JSON.parse(chip.geometryReference);
+    } catch {
+      continue;
+    }
+    const parsed = geometryComponentReferenceSchema.safeParse(stored);
+    if (!parsed.success) {
+      continue;
+    }
+    const reference = cadReferenceFromGeometryComponent(parsed.data);
+    references.set(cadReferenceToken(reference), reference);
+  }
+  return [...references.values()];
+}
+
 export function extractContent(editor: Editor): ChatInputContent {
   const editorDocument = editor.getJSON();
   const contextChips: ContextChip[] = [];
@@ -153,7 +182,7 @@ export function extractContent(editor: Editor): ChatInputContent {
 
   walk(editorDocument);
 
-  return { text: textParts.join('').trim(), contextChips };
+  return { text: textParts.join(''), contextChips };
 }
 
 export type UseChatEditorOptions = {
@@ -162,7 +191,7 @@ export type UseChatEditorOptions = {
   onUpdate?: (content: ChatInputContent) => void;
   handleImagePaste?: (event: ClipboardPasteEvent) => boolean;
   treeService: FileTreeService | undefined;
-  chats: Chat[];
+  chats: ChatRecord[];
   actionItems?: ContextSuggestionItem[];
   slashCommandItems?: SlashCommandItem[];
   onSlashCommand?: (item: SlashCommandItem) => void;
@@ -182,6 +211,7 @@ export type UseChatEditorReturn = {
   clearEditor: () => void;
 };
 
+/* oxlint-disable react/refs -- The `use no memo` boundary preserves Tiptap's long-lived editor callbacks while refs expose the latest React inputs. */
 export function useChatEditor({
   onSubmit,
   onEscape,
@@ -195,6 +225,8 @@ export function useChatEditor({
   onContextAction,
   placeholder = 'Ask Tau to build anything...',
 }: UseChatEditorOptions): UseChatEditorReturn {
+  'use no memo';
+
   const [contextSuggestionState, setContextSuggestionState] = useState<
     SuggestionPopupState<ContextSuggestionItem> | undefined
   >(undefined);
@@ -212,6 +244,18 @@ export function useChatEditor({
   actionItemsRef.current = actionItems;
   const slashCommandItemsRef = useRef(slashCommandItems);
   slashCommandItemsRef.current = slashCommandItems;
+  const knownItemsCacheRef = useRef<{ items?: SlashCommandItem[]; byToken: ReadonlyMap<string, SlashCommandItem> }>({
+    byToken: new Map(),
+  });
+  /** Enabled agent items keyed by their exact invocation token (`/brep-design`, `$imagegen`). */
+  const getKnownItems = useCallback((): ReadonlyMap<string, SlashCommandItem> => {
+    const cache = knownItemsCacheRef.current;
+    if (cache.items !== slashCommandItemsRef.current) {
+      cache.items = slashCommandItemsRef.current;
+      cache.byToken = new Map(getEnabledSlashCommandItems(cache.items ?? []).map((item) => [item.label, item]));
+    }
+    return cache.byToken;
+  }, []);
   const onContextActionRef = useRef(onContextAction);
   onContextActionRef.current = onContextAction;
   const onSlashCommandRef = useRef(onSlashCommand);
@@ -301,6 +345,7 @@ export function useChatEditor({
       }),
       SlashCommand.configure({
         getItems: getSlashCommandItems,
+        getKnownItems,
         renderCallbacks: slashRenderCallbacks,
         onCommand: handleSlashCommand,
       }),
@@ -308,6 +353,9 @@ export function useChatEditor({
     editorProps: {
       attributes: {
         class: 'outline-none',
+        // An editable div only takes a name through a role; Shift+Enter adds lines.
+        role: 'textbox',
+        'aria-multiline': 'true',
         'aria-label': placeholder,
       },
       handlePaste: (_view: EditorView, event: ClipboardEvent) => {
@@ -327,26 +375,19 @@ export function useChatEditor({
         }
 
         const hasAtRef = text.includes('@');
-        const slashTest = new RegExp(slashCommandRegex.source, slashCommandRegex.flags);
-        const hasSlashCmd = slashTest.test(text);
-        if (!hasAtRef && !hasSlashCmd) {
+        const hasInvocation = new RegExp(invocationTokenRegex.source).test(text);
+        if (!hasAtRef && !hasInvocation) {
           return false;
         }
 
         const lazyTree: Map<string, FileEntry> =
           treeServiceRef.current?.getTreeSnapshot() ?? new Map<string, FileEntry>();
-        const knownSkillIds = new Set(
-          getEnabledSlashCommandItems(slashCommandItemsRef.current ?? []).map((item) => item.id),
-        );
         const segments = buildPastedContent(text, {
           fileTree: lazyTree,
           chats: chatsRef.current,
-          knownSkills: knownSkillIds,
+          knownTokens: new Set(getKnownItems().keys()),
         });
         const json = buildEditorContentJson(segments);
-        if (!json) {
-          return false;
-        }
 
         const { schema } = _view.state;
         if (!schema.nodes['contextChip']) {
@@ -378,12 +419,25 @@ export function useChatEditor({
     editor.commands.clearContent();
   }, [editor]);
 
+  // Catalog settlement is external to Tiptap transactions; derive the open menu without mirroring it in state.
+  const popupItems = slashCommandState === undefined ? [] : getSlashCommandItems(slashCommandState.query);
+  const triggerPosition = editor.state.selection.from - (slashCommandState?.query.length ?? 0) - 1;
+  const trigger = triggerPosition < 0 ? '' : editor.state.doc.textBetween(triggerPosition, triggerPosition + 1);
+  const currentSlashCommandState =
+    slashCommandState === undefined
+      ? undefined
+      : {
+          ...slashCommandState,
+          items: trigger === '$' ? popupItems.filter((item) => item.label.startsWith('$')) : popupItems,
+        };
+
   return {
     editor,
     contextSuggestionState,
-    slashCommandState,
+    slashCommandState: currentSlashCommandState,
     contextKeydownRef,
     slashKeydownRef,
     clearEditor,
   };
 }
+/* oxlint-enable react/refs */

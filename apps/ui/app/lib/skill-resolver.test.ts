@@ -55,7 +55,22 @@ function createMemoryResolver(files: MemoryTree) {
 }
 
 describe('createSkillResolver', () => {
-  it('should expose the built-in create-skill as a virtual system resource', async () => {
+  it('resolves the shipped workbench body through the browser system catalog', async () => {
+    const resolver = createMemoryResolver({});
+    expect(await resolver.listSkills()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'workbench', source: 'system' })]),
+    );
+    const resolved = await resolver.resolveSkill('workbench');
+    expect(resolved.success).toBe(true);
+    if (resolved.success) {
+      expect(resolved.content).toContain(
+        '`arrange_workbench({ open?, close?, views?, entries?, viewer?, workbench?, lanes?, basedOn? })`',
+      );
+      expect(resolved.content).toContain('Read before you rearrange');
+    }
+  });
+
+  it('should expose the system create-skill as a virtual system resource', async () => {
     const resolver = createMemoryResolver({});
 
     const listing = await resolver.listSkills();
@@ -76,39 +91,73 @@ describe('createSkillResolver', () => {
         skillName: 'create-skill',
         source: 'system',
         resourceUri: 'system:skills/create-skill/SKILL.md',
-        content: expect.stringContaining('# Create Skill'),
         supportingFiles: [],
       }),
     );
+    expect(resolved.success).toBe(true);
+    if (resolved.success) {
+      expect(resolved.content).toContain('# Create Skill');
+    }
   });
 
-  it('should prefer user skills over system and legacy sources and preserve shadow metadata', async () => {
+  it('should let a user skill fully replace a same-slug system bundle', async () => {
     const resolver = createMemoryResolver({
       '.agents/skills/create-skill/SKILL.md': skillMarkdown({
         name: 'create-skill',
         description: 'Workspace override',
         source: 'user',
-      }),
-      '.tau/skills/create-skill/SKILL.md': skillMarkdown({
-        name: 'create-skill',
-        description: 'Legacy override',
+        body: '# Workspace replacement',
       }),
     });
 
     const listing = await resolver.listSkills();
     const createSkill = listing.find((skill) => skill.name === 'create-skill');
 
+    expect(listing.filter((skill) => skill.name === 'create-skill')).toHaveLength(1);
     expect(createSkill).toEqual(
       expect.objectContaining({
         description: 'Workspace override',
         source: 'user',
+        resourceUri: 'file:.agents/skills/create-skill/SKILL.md',
         skillPath: '.agents/skills/create-skill/SKILL.md',
-        shadowedSources: expect.arrayContaining([
-          expect.objectContaining({ source: 'system', resourceUri: 'system:skills/create-skill/SKILL.md' }),
-          expect.objectContaining({ source: 'legacy', skillPath: '.tau/skills/create-skill/SKILL.md' }),
-        ]),
       }),
     );
+    // The replaced bundle is recorded as shadowed; none of its content or metadata leaks through.
+    expect(createSkill?.shadowedSources).toEqual([
+      expect.objectContaining({ source: 'system', resourceUri: 'system:skills/create-skill/SKILL.md' }),
+    ]);
+    expect(createSkill).toHaveProperty('version', undefined);
+    expect(createSkill).toHaveProperty('whenToUse', undefined);
+
+    const resolved = await resolver.resolveSkill('create-skill');
+    expect(resolved).toEqual(
+      expect.objectContaining({
+        success: true,
+        source: 'user',
+        resourceUri: 'file:.agents/skills/create-skill/SKILL.md',
+      }),
+    );
+    expect(resolved.success).toBe(true);
+    if (resolved.success) {
+      expect(resolved.content).toContain('# Workspace replacement');
+    }
+    expect(resolved).toHaveProperty('shadowedSources', createSkill?.shadowedSources);
+    expect(resolved).not.toHaveProperty('version');
+    expect(resolved).not.toHaveProperty('whenToUse');
+  });
+
+  // `.agents/skills` is the only filesystem root the resolver reads (L7).
+  it('never reads the legacy .tau/skills directory', async () => {
+    const resolver = createMemoryResolver({
+      '.tau/skills/legacy-only/SKILL.md': skillMarkdown({
+        name: 'legacy-only',
+        description: 'Legacy override',
+      }),
+    });
+
+    const listing = await resolver.listSkills();
+
+    expect(listing.find((skill) => skill.name === 'legacy-only')).toBeUndefined();
   });
 
   it('should reflect edited content on the next prompt listing (no per-chat freeze)', async () => {
@@ -142,9 +191,12 @@ describe('createSkillResolver', () => {
       expect.objectContaining({
         success: true,
         skillName: 'mine',
-        content: expect.stringContaining('# Edited Mine'),
       }),
     );
+    expect(resolved.success).toBe(true);
+    if (resolved.success) {
+      expect(resolved.content).toContain('# Edited Mine');
+    }
   });
 
   it('should return SKILL_NOT_FOUND for unknown skills', async () => {

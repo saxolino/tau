@@ -7,23 +7,39 @@ const projects = [
   {
     id: 'project-one',
     name: 'Bracket Assembly',
+    description: '  Wall bracket with gussets ',
     lastActivityAt: 2,
     slugs: { workspaceSlug: 'home', projectSlug: 'Bracket Assembly' },
   },
-  { id: 'project-unresolved', name: 'Unresolved', lastActivityAt: 3 },
+  { id: 'project-unresolved', name: 'Unresolved', description: '', lastActivityAt: 3 },
 ];
 const chats = [
   {
     id: 'chat/one',
     resourceId: 'project-one',
     name: 'Refine gusset',
+    messages: [],
     createdAt: 1,
-    updatedAt: 4,
+    updatedAt: 999,
+    recencyAt: 4,
+  },
+  {
+    id: 'chat/two',
+    resourceId: 'project-one',
+    name: 'Latest activity',
+    messages: [],
+    createdAt: 2,
+    updatedAt: 2,
+    recencyAt: 5,
   },
 ];
 let registered: CommandPaletteItem[] = [];
 
 vi.mock('#hooks/use-projects.js', () => ({ useProjects: () => ({ projects }) }));
+vi.mock('#hooks/use-project-thumbnail.js', () => ({
+  useProjectThumbnail: () => ({ url: undefined, status: 'ready', error: undefined, refresh: vi.fn() }),
+}));
+vi.mock('#utils/date.utils.js', () => ({ formatRelativeTime: () => 'just now' }));
 vi.mock('#hooks/use-all-chats.js', () => ({ useAllChats: () => ({ chats }) }));
 vi.mock('#components/layout/command-palette.js', () => ({
   useCommandPaletteItems: (_id: string, factory: () => CommandPaletteItem[]) => {
@@ -38,13 +54,15 @@ describe('ProjectNavigationCommandItems', () => {
     registered = [];
     render(<ProjectNavigationCommandItems />);
 
-    expect(registered).toHaveLength(2);
+    expect(registered).toHaveLength(3);
     expect(registered[0]).toMatchObject({
       id: 'project-project-one',
-      searchValue: 'Bracket Assembly',
+      searchValue: 'Bracket Assembly   Wall bracket with gussets ',
+      detail: 'home/Bracket Assembly · just now',
       link: '/w/home/Bracket%20Assembly',
     });
-    expect(registered[1]).toMatchObject({
+    expect(registered[1]).toMatchObject({ id: 'chat-chat/two' });
+    expect(registered[2]).toMatchObject({
       id: 'chat-chat/one',
       searchValue: 'Refine gusset Bracket Assembly',
       link: '/w/home/Bracket%20Assembly?chat=chat%2Fone',

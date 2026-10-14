@@ -3,7 +3,7 @@ title: 'npm Publishing Policy'
 description: 'Per-package rules for preparing @taucad/* libraries for npm publication: tsdown shape, dependency hygiene, exports map discipline, validation gates, README requirements.'
 status: active
 created: '2026-05-22'
-updated: '2026-08-25'
+updated: '2026-10-01'
 related:
   - docs/policy/compatibility-policy.md
   - docs/policy/release-policy.md
@@ -43,7 +43,7 @@ Most of these properties are configuration, not code. This policy codifies the c
 
 Applies to every package under `packages/*`, `packages/plugins/*`, and `packages/core/*` whose `package.json` declares `"private": false`.
 
-Internal workspace libraries under `libs/*` and `apps/libs/*` are `"private": true` and exempt from publish-specific rules; Rule 1's internal-library dependency shape still applies. They must either remain internal or be bundled into a publishable package via `deps.alwaysBundle` (see Rule 4). Runtime bundles only engine-owned private helpers. Concrete kernels, middleware, bundlers, transcoders, and backend helper logic belong to published plugin or core packages. Telemetry remains private application infrastructure and is not bundled or published.
+Internal workspace libraries under `libs/*` and `apps/libs/*` are `"private": true` and exempt from publish-specific rules; Rule 1's internal-library dependency shape still applies. They must either remain internal or be bundled into a publishable package via `deps.alwaysBundle` (see Rule 4). Runtime bundles only generic substrate-owned private helpers, including those used by its jobs/configuration modules. Concrete kernels, middleware, bundlers, transcoders, solver/device/slicer implementations, and backend helper logic belong to published plugin or core packages. Telemetry remains private application infrastructure and is not bundled or published.
 
 ## Rules
 
@@ -51,13 +51,20 @@ Internal workspace libraries under `libs/*` and `apps/libs/*` are `"private": tr
 
 Every dependency declared in a publishable package must be classified into exactly one of these buckets. Bucket selection is non-negotiable.
 
-| Bucket                      | Field                                                             | Treatment                                                    |
-| --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------ |
-| A. Bundled-in workspace dep | `devDependencies`                                                 | Bundle into `dist/` via `tsdown.config.ts#deps.alwaysBundle` |
-| B. External runtime dep     | `dependencies`                                                    | Installed alongside the package; never bundled               |
-| C. Optional runtime dep     | `optionalDependencies`                                            | Best-effort install (e.g., platform-specific natives)        |
-| D. Optional peer dep        | `peerDependencies` + `peerDependenciesMeta.<name>.optional: true` | Build-time integration (e.g., `vite`, `rolldown`)            |
-| E. Dev-only                 | `devDependencies`                                                 | Test/build tooling — never present at consumer install time  |
+Use pnpm to change workspace dependencies. Add a general root dependency with `pnpm add -w <dependency>` and root development tooling with `pnpm add -Dw <dependency>`. A package-owned production dependency belongs in that package's manifest: use `pnpm --filter <package-name> add <dependency>` and apply the classification below. Do not rely on a root installation to hide an undeclared consumer runtime requirement.
+
+Serialize dependency changes and the resulting install before parallel verification. The pinned pnpm 11 defaults to installing when a command detects stale dependencies; use per-call `pnpm_config_verify_deps_before_run=error` for concurrent checks so drift fails instead of starting competing installs.
+
+| Bucket                         | Field                                                             | Treatment                                                                                                                                                                   |
+| ------------------------------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A. Bundled-in workspace dep    | `devDependencies`                                                 | Bundle into `dist/` via `tsdown.config.ts#deps.alwaysBundle`                                                                                                                |
+| B. External runtime dep        | `dependencies`                                                    | Installed alongside the package; never bundled                                                                                                                              |
+| C. Optional runtime dep        | `optionalDependencies`                                            | Best-effort install (e.g., platform-specific natives)                                                                                                                       |
+| D. Optional peer dep           | `peerDependencies` + `peerDependenciesMeta.<name>.optional: true` | Build-time integration (e.g., `vite`, `rolldown`)                                                                                                                           |
+| E. Dev-only                    | `devDependencies`                                                 | Test/build tooling — never present at consumer install time                                                                                                                 |
+| F. Vendored third-party engine | `devDependencies`                                                 | Bundle a reviewed upstream graph into a separate `dist/engine/` build; record included packages and actual LICENSE text, and block publication for held or pending entries. |
+
+The sole optional runtime-peer exception to bucket D's build-time treatment is `@parcel/watcher` for native observation selected through `@taucad/filesystem/backend/node` and `@taucad/runtime/filesystem/node`. Each owning publishable package declares it in `peerDependencies` with `peerDependenciesMeta['@parcel/watcher'].optional: true` and in `devDependencies` for its own build/tests. It is not an `optionalDependencies` auto-install in those browser-safe packages. No other runtime integration inherits this exception. Its absence must leave importing the package, constructing its Node filesystem, and non-watch read/write operations usable; selecting watch requires a separately installed peer and a clear install error, without an unready fallback.
 
 **Why**: Mis-classification causes either bloat (bundling a real dep), install failures (bundling a private workspace dep is fine but leaving it in `dependencies` 404s the install), or hidden requirements (forgetting an optional peer in `peerDependenciesMeta`).
 
@@ -101,6 +108,8 @@ INCORRECT:
 
 Plugin and core packages have additional dependency rules:
 
+**Schema-only exception:** `@taucad/project-core` owns the portable Tau project-manifest schema and parser consumed by Runtime and GeoSpec. It must not import or declare `@taucad/runtime` in any dependency field; Runtime declares the public project-core dependency. The Runtime-peer rule below does not apply to this package. Its emitted Zod API still requires the literal Zod peer and catalog development dependency. This exception prevents the Runtime → private types → project-core → Runtime cycle; it grants no exception to plugin packages or other core packages.
+
 | Package class                                | Required dependency shape                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@taucad/runtime`                            | Must not depend on concrete plugin packages, concrete backend packages, native/Python runners, or toolchain-specific `@taucad/*-core` packages.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -113,6 +122,8 @@ Plugin and core packages have additional dependency rules:
 | Internal `type:lib` / `type:app-lib` project | Never declares an identity-singleton dependency named by the workspace peer-rule registry (today `zod`) in `dependencies` or `optionalDependencies`; the published bundle owner or leaf application satisfies that peer. A buildable internal library explicitly externalises that singleton in its build config so its private `dist` cannot vendor a second copy. Ordinary third-party runtime dependencies remain declared because they record what the bundle owner must externalise.                                                                                                                                       |
 
 **Why**: Tree shaking removes code from bundles; it does not remove packages from `node_modules`. Payload isolation must be represented in the package graph.
+
+A publishable package must not depend on a workspace `patchedDependencies` entry for its behavior. A pnpm patch changes only this workspace's install and never reaches a consumer. Extend the dependency on its own public seams instead. `@taucad/agent-host` extends `@earendil-works/pi-ai` through the `fetch` and `onPayload` options it passes to every adapter, and carries no pi-ai patch. The Vertex AI Gemini thought and thought-signature mapping lives in `packages/agent-host/src/transport/vertex-completions-shim.ts`, and PDF document blocks are produced in `packages/agent-host/src/transport/document-payload.ts`. Before any new patch is considered, record a need that neither seam can express in the owning research document ([project chat draft persistence blueprint](../research/project-chat-draft-persistence-blueprint.md) D22). Prefer an upstream fix through the `repos` and `submit-pr` skills.
 
 ### 2. No `file:` or Tarball Dependencies in Publishable Packages
 
@@ -174,6 +185,9 @@ export default defineConfig(packageConfig);
 Required fields:
 
 - `unbundle: true` — emit source files mirroring `src/` structure. Required for any package whose consumers use `new URL(literal, import.meta.url)` for asset/plugin discovery (see `docs/research/runtime-zero-config-bundling.md`). Default-on workspace-wide for consistency.
+
+For bucket F, keep Tau's own `tsdown.config.ts` at `unbundle: true` and use a second config with `unbundle: false` for the vendored engine alone. `@taucad/tscircuit` owns this exception under D14. Remove the second build when the upstream graph installs cleanly without Tau's Zod or native-module workarounds. An inventory row hidden from a package roster is not evidence that held code is absent from a distributable; inspect the actual package, app, and desktop outputs before release (EQ5).
+
 - `dts: true` — emit `.d.mts` declarations beside ESM JavaScript.
 - `minify: true` — non-negotiable for published artefacts.
 - `tsconfig: 'tsconfig.build.json'` — separate from `tsconfig.json` (dev) and `tsconfig.spec.json` (tests).
@@ -192,12 +206,12 @@ When a publishable package depends on a private workspace library (anything unde
 
 Published first-party packages are different. `@taucad/*` plugin and core packages that have their own public package identity must stay external when they provide independent versioning, optional host payloads, or payload isolation. For example, `@taucad/cli` may depend on `@taucad/image`, but `@taucad/runtime` must not bundle or depend on it.
 
-Use a single regex per package that names every private workspace dep explicitly. Do not use a catch-all `/^@taucad\//` — externally-published packages (for example, plugin packages, `@taucad/kcl-wasm-lib`, or `libcascade`) must stay external.
+Use `bundlePattern(await workspace(), projectName)` to derive a subpath-aware regex from that package's eligible private workspace devDependencies. Do not use a catch-all `/^@taucad\//` — externally-published packages (for example, plugin packages, `@taucad/kcl-wasm-lib`, or `libcascade`) must stay external.
 
 CORRECT:
 
 ```typescript
-const TAU_WORKSPACE_BUNDLE = /^@taucad\/(events|filesystem|fs-bridge|json-schema|memory|rpc|types|units|utils)(\/|$)/;
+const TAU_WORKSPACE_BUNDLE = /^@taucad\/(events|filesystem|fs-bridge|json-schema|memory|types|utils)(\/|$)/;
 
 export default defineConfig({
   // ...
@@ -207,9 +221,11 @@ export default defineConfig({
 });
 ```
 
-The runtime bundle list is exactly events, filesystem, fs-bridge, JSON Schema, memory, RPC, types, units, and utils. Concrete plugin and public core packages stay external.
+The runtime's current private bundle candidates are events, fs-bridge, JSON Schema, memory, RPC, types, and utils. Published `@taucad/filesystem`, `@taucad/units`, concrete plugin, and public core packages stay external.
 
-Every bundled private workspace library has exactly one published owner at any time — the pkgcheck bundle-ownership gate enforces this. When a private helper serves multiple published packages after the plugin split, either its shared logic becomes a published core package the plugins consume, or the private library is dissolved into its consumers. Never bundle the same private library into two published owners. `@taucad/converter` takes the dissolution path: it is removed entirely (per-backend import kernels in plugin packages, shared glTF machinery in `@taucad/geometry-core`), so no package bundles it — see `docs/research/runtime-converter-dissolution-blueprint.md`.
+Generic jobs and configuration are internal runtime modules with focused public runtime subpaths, not separate jobs/configuration packages. Their private filesystem/path dependencies are bundled into runtime and units are consumed through public `@taucad/units`; do not introduce a dependency back-edge or another foundation package merely to preserve the superseded separate-package layout. Base configuration imports remain independent of the explicit Zod authoring entry. Check packed JavaScript and declarations from both entries; source aliases are not publication proof. Independently published consumers outside this consolidation still require their own valid dependency disposition.
+
+Each published package may independently bundle a private workspace library it is permitted to use. The pkgcheck mirror witness verifies permission for each package; its artifact and strict-consumer checks reject leaked private imports and unresolved declarations. A shared private helper does not need a public package identity merely because multiple public packages embed it. Identity-sensitive dependencies remain external according to their peer rules. `@taucad/converter` was removed entirely (per-backend import kernels in plugin packages, shared glTF machinery in `@taucad/geometry-core`), so no package bundles it — see `docs/research/runtime-converter-dissolution-blueprint.md`.
 
 INCORRECT:
 
@@ -221,7 +237,7 @@ deps: {
 
 The `(\/|$)` suffix is required so subpath imports (`@taucad/utils/id`, `@taucad/types/constants`) match — without it, the regex bundles only bare-specifier imports and leaves subpaths external (the failure mode in [rolldown/tsdown#544](https://github.com/rolldown/tsdown/issues/544)).
 
-**Why**: Bundling workspace deps gives consumers a single-install experience. Subpath-aware regexes prevent silent partial-bundling regressions. Keeping the explicit list (rather than `/^@taucad\//`) prevents accidentally bundling externally-published `@taucad/*` packages, which would duplicate WASM bindings and break consumer dedup.
+**Why**: Bundling workspace deps gives consumers a single-install experience. Subpath-aware regexes prevent silent partial-bundling regressions. Deriving each package's pattern from its private-library manifest dependencies (rather than `/^@taucad\//`) prevents accidentally bundling externally-published `@taucad/*` packages, which would duplicate WASM bindings and break consumer dedup.
 
 ### 5. `exports` and `publishConfig.exports` Must Stay in Lockstep
 
@@ -284,28 +300,28 @@ export { default } from './plugin';
 
 Every publishable package must declare these fields. Missing fields fail `publint`.
 
-| Field                   | Required value                                                                                                    |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `name`                  | `@taucad/<pkg>`                                                                                                   |
-| `version`               | SemVer per `docs/policy/version-policy.md` (managed by Nx Release)                                                |
-| `description`           | One-line, ≤120 chars, shown on npmjs.com search                                                                   |
-| `keywords`              | At least 3 relevant terms                                                                                         |
-| `license`               | Per the license partition in Rule 12 — `Apache-2.0` for every package in this scope except the fair-source engine |
-| `author`                | Same canonical author across all packages                                                                         |
-| `repository`            | `{ "type": "git", "url": "git+https://github.com/taucad/tau.git", "directory": "<package directory>" }`           |
-| `homepage`              | `https://tau.new/docs/<pkg>` (or repo URL until docs land)                                                        |
-| `bugs`                  | `{ "url": "https://github.com/taucad/tau/issues" }`                                                               |
-| `type`                  | `"module"`                                                                                                        |
-| `engines`               | `{ "node": ">=24.0.0" }` (matches the workspace's minimum supported Node release)                                 |
-| `sideEffects`           | `false` unless the package has top-level side effects (rare)                                                      |
-| `files`                 | `["dist", "README.md", "CHANGELOG.md"]` — never include source, tests, or configs                                 |
-| `main`                  | `./dist/index.mjs` for packages with a root runtime export                                                        |
-| `types`                 | `./dist/index.d.mts` for packages with a root export                                                              |
-| `exports`               | Map every public subpath to its source `.ts` (workspace dev)                                                      |
-| `publishConfig.exports` | Map every public subpath to its ESM output (publish-time override)                                                |
-| `publishConfig.access`  | `"public"` for scoped packages                                                                                    |
+| Field                   | Required value                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `name`                  | `@taucad/<pkg>`                                                                                         |
+| `version`               | SemVer per `docs/policy/version-policy.md` (managed by Nx Release)                                      |
+| `description`           | One-line, ≤120 chars, shown on npmjs.com search                                                         |
+| `keywords`              | At least 3 relevant terms                                                                               |
+| `license`               | `Apache-2.0` per the repository-wide rule in Rule 12                                                    |
+| `author`                | Same canonical author across all packages                                                               |
+| `repository`            | `{ "type": "git", "url": "git+https://github.com/taucad/tau.git", "directory": "<package directory>" }` |
+| `homepage`              | `https://tau.new/docs/<pkg>` (or repo URL until docs land)                                              |
+| `bugs`                  | `{ "url": "https://github.com/taucad/tau/issues" }`                                                     |
+| `type`                  | `"module"`                                                                                              |
+| `engines`               | `{ "node": ">=24.0.0" }` (matches the workspace's minimum supported Node release)                       |
+| `sideEffects`           | `false` unless the package has top-level side effects (rare)                                            |
+| `files`                 | `["dist", "README.md", "CHANGELOG.md"]` — never include source, tests, or configs                       |
+| `main`                  | `./dist/index.mjs` for packages with a root runtime export                                              |
+| `types`                 | `./dist/index.d.mts` for packages with a root export                                                    |
+| `exports`               | Map every public subpath to its source `.ts` (workspace dev)                                            |
+| `publishConfig.exports` | Map every public subpath to its ESM output (publish-time override)                                      |
+| `publishConfig.access`  | `"public"` for scoped packages                                                                          |
 
-No `prepublishOnly` hook: `nx.json` `targetDefaults["nx-release-publish"].dependsOn` includes `pkgcheck`, so the gate runs as a native dependency of publish for every package. Do not add the hook back.
+No `prepublishOnly` hook by default: `nx.json` `targetDefaults["nx-release-publish"].dependsOn` includes `pkgcheck`, so the gate runs as a native dependency of publish for every package. Bucket F's `@taucad/tscircuit` is a narrow exception while its vendored-code licence inventory contains held or unreviewed entries. Its source-package `prepublishOnly` runs the same licence checker as its required `nx-release-publish` dependency, guarding direct source publish as well as the workspace release path. The Nx dependency remains authoritative because package managers may strip lifecycle scripts from packed manifests. Remove the source hook with the held-code distribution gate when every inventory entry is cleared and EQ5 output-level exclusion is proved; do not treat this hook as distribution approval.
 
 INCORRECT (missing `engines`, `sideEffects`, `bugs`, `homepage`):
 
@@ -321,16 +337,16 @@ INCORRECT (missing `engines`, `sideEffects`, `bugs`, `homepage`):
 
 Every package must pass `tools/pkgcheck.ts` before publish. The orchestrator runs these sub-checks in order; any single failure blocks the publish.
 
-| Check                            | Tool                                                         | Purpose                                                                    | Severity |
-| -------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------- | -------- |
-| 1. Tau metadata                  | `tools/pkgcheck.ts`                                          | Tau-specific ESM-only metadata and publish-map checks                      | error    |
-| 2. Bundle ownership              | `tools/pkgcheck.ts`                                          | One published owner per bundled workspace package                          | error    |
-| 3. Bundled declaration specifier | `tools/pkgcheck.ts`                                          | No bundled workspace specifier remains in runtime declarations             | error    |
-| 4. Strict consumer types         | `tsc`                                                        | Runtime declarations pass with `skipLibCheck: false` under both resolvers  | error    |
-| 5. `publint`                     | [publint](https://publint.dev)                               | `package.json` field validity (`exports`, `main`, `types` vs actual files) | error    |
-| 6. `attw`                        | [@arethetypeswrong/core](https://arethetypeswrong.github.io) | TypeScript type resolution for ESM-only packages (`profile: 'esm-only'`)   | error    |
-| 7. `madge`                       | [madge](https://github.com/pahen/madge)                      | Circular dependency detection inside `src/`                                | error    |
-| 8. `size-limit`                  | [size-limit](https://github.com/ai/size-limit)               | Per-entry bundle size budgets (defined in `.size-limit.json`)              | error    |
+| Check                            | Tool                                                         | Purpose                                                                     | Severity |
+| -------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------- | -------- |
+| 1. Tau metadata                  | `tools/pkgcheck.ts`                                          | Tau-specific ESM-only metadata and publish-map checks                       | error    |
+| 2. Bundle ownership              | `tools/pkgcheck.ts`                                          | Each emitted workspace mirror is permitted by its package manifest and tags | error    |
+| 3. Bundled declaration specifier | `tools/pkgcheck.ts`                                          | No bundled workspace specifier remains in runtime declarations              | error    |
+| 4. Strict consumer types         | `tsc`                                                        | Runtime declarations pass with `skipLibCheck: false` under both resolvers   | error    |
+| 5. `publint`                     | [publint](https://publint.dev)                               | `package.json` field validity (`exports`, `main`, `types` vs actual files)  | error    |
+| 6. `attw`                        | [@arethetypeswrong/core](https://arethetypeswrong.github.io) | TypeScript type resolution for ESM-only packages (`profile: 'esm-only'`)    | error    |
+| 7. `madge`                       | [madge](https://github.com/pahen/madge)                      | Circular dependency detection inside `src/`                                 | error    |
+| 8. `size-limit`                  | [size-limit](https://github.com/ai/size-limit)               | Per-entry bundle size budgets (defined in `.size-limit.json`)               | error    |
 
 Run locally:
 
@@ -439,38 +455,33 @@ Publishable packages must declare `"private": false` (or omit the field entirely
 
 `libs/*` packages (internal-only) **must** declare `"private": true` and are never published.
 
-### 12. Apache-2.0 by Default, FSL Only for the GeoSpec Engine
+### 12. Use Apache-2.0 for Every Workspace Package
 
-Every workspace package — published _and_ private — declares a `license` field. Use Apache-2.0 everywhere except the
-explicit GeoSpec engine exception.
+Every workspace package — published _and_ private — declares `"license": "Apache-2.0"`.
 
-| Bucket           | Projects                                                 | `license` field      | `LICENSE` file                            |
-| ---------------- | -------------------------------------------------------- | -------------------- | ----------------------------------------- |
-| Apache default   | Every workspace package except `packages/geospec-engine` | `Apache-2.0`         | Required — canonical Apache-2.0 text      |
-| Engine exception | `packages/geospec-engine`                                | `FSL-1.1-Apache-2.0` | Required — FSL 1.1 Apache-2.0-future text |
+| Projects                | `license` field | `LICENSE` file                       |
+| ----------------------- | --------------- | ------------------------------------ |
+| Every workspace package | `Apache-2.0`    | Required — canonical Apache-2.0 text |
 
 Rules that follow from the table:
 
 - Published package license files are named exactly `LICENSE` — npm includes them in the tarball regardless of the
   `files` array. The private repository root retains its historical lowercase [`license`](../../license) filename.
   Verify published artifacts with `npm pack --dry-run | grep LICENSE`.
-- License texts are **verbatim**. Do not add a preamble, summary, or extra restriction to either text.
+- License texts are **verbatim**. Do not add a preamble, summary, or extra restriction.
 - **Every** workspace package carries a same-directory license file, private ones included. Apache packages use bytes
   identical to the canonical root text. `scripts/src/validate-license-partitions.ts` proves the SPDX field, file
   presence, and byte identity across the workspace.
-- Describe the engine as **fair source** or **source-available**, never as open source. Describe the rest of Tau's
-  first-party code as Apache-2.0 open source.
 - The workspace generator always emits Apache-2.0. Architectural placement still derives tags, privacy, and build
-  defaults, but never legal terms. Create the singular FSL engine exception deliberately rather than as a generator
-  option.
-- Moving code between the editor, API, `apps/libs`, `libs`, and ordinary `packages` keeps Apache-2.0 unchanged. Review
-  any extraction from `packages/geospec-engine` and all third-party code separately.
+  defaults, but never legal terms.
+- Moving Tau-authored code between the editor, API, `apps/libs`, `libs`, ordinary packages, the GeoSpec substrate, and
+  the GeoSpec engine keeps Apache-2.0 unchanged. Review third-party code separately.
 
 Routing prose for consumers lives in `LICENSING.md` at the repository root. The current decision record is
 `docs/research/apache-default-relicensing-blueprint.md`; older licensing comparisons remain historical evidence.
 
-**Why**: the tarball is the unit of distribution, so the SPDX field and the license text must travel with each package
-independently. The single exception remains unambiguous without coupling ordinary package placement to licensing.
+**Why**: the tarball is the unit of distribution, so the SPDX field and licence text must travel with each package
+independently. One repository-wide licence avoids coupling package placement to legal terms.
 
 ## Decision Tables
 
@@ -510,12 +521,12 @@ Before merging a PR that touches a publishable package's `package.json` or `tsdo
 - [ ] Workspace deps bundled via `deps.alwaysBundle` with subpath-aware regex (Rule 4)
 - [ ] `exports` and `publishConfig.exports` list identical keys (Rule 5)
 - [ ] Plugin packages export named `plugin` and no default plugin; core packages export no `plugin`
-- [ ] All required `package.json` fields present (Rule 6): `engines`, `sideEffects`, `bugs`, `homepage`; no `prepublishOnly` hook
+- [ ] All required `package.json` fields present (Rule 6): `engines`, `sideEffects`, `bugs`, `homepage`; no `prepublishOnly` hook except the bucket F held-licence gate described above
 - [ ] `pnpm nx run <pkg>:pkgcheck` passes (Rule 7)
 - [ ] README covers every required section (Rule 8)
 - [ ] Build-time integrations declared as optional peers (Rule 10)
 - [ ] `"private": false` (or omitted) on publishable packages (Rule 11)
-- [ ] `license` field matches the partition bucket and a verbatim `LICENSE` file is present where required (Rule 12)
+- [ ] `license` is `Apache-2.0` and a verbatim canonical `LICENSE` file is present (Rule 12)
 
 ## Known Limitations
 

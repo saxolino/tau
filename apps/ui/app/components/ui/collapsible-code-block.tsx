@@ -8,9 +8,9 @@ import {
   CodeBlockContent,
   Pre,
 } from '#components/code/code-block.js';
-import { CopyButton } from '#components/copy-button.js';
-import { Button } from '#components/ui/button.js';
-import { cn } from '#utils/ui.utils.js';
+import { CopyButton } from '@taucad/ui/components/copy-button';
+import { Button } from '@taucad/ui/components/button';
+import { cn } from '@taucad/ui/utils/cn';
 
 type CollapsibleContainerProps = {
   readonly children: React.ReactNode;
@@ -59,10 +59,11 @@ export function CollapsibleContainer({
       {/* Toggle button - always in normal flow so it has its own space */}
       {shouldShowToggle ? (
         <Button
+          variant='ghost'
           size='xs'
           aria-label={isExpanded ? 'Collapse code block' : 'Expand code block'}
           aria-expanded={isExpanded}
-          className='h-4 w-full shrink-0 rounded-none bg-transparent text-center text-foreground/50 hover:bg-neutral/10'
+          className='h-4 w-full shrink-0 rounded-none bg-transparent text-center text-foreground/50 hover:bg-neutral/10 hover:text-foreground/50 dark:hover:bg-neutral/10'
           onClick={() => {
             setIsExpanded((previous) => !previous);
           }}

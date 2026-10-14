@@ -8,26 +8,28 @@
  * under this graph would only ever surface as the client's init timeout. Behind
  * a dynamic import the same failure is a rejected promise the entry can report.
  *
+ * What remains here is only the browser half: the engine's browser
+ * registration, the bridge-backed filesystems, the kernel worker, and the
+ * request queue. Discovery, model loading and result projection are
+ * `@taucad/agent-tools/geospec`, which the daemon runs too.
+ *
  * @module
  */
 
-import '@taucad/geospec-engine/register';
+import { runGeoSpecTests } from '@taucad/agent-tools/geospec';
 import { createRuntimeClient } from '@taucad/runtime/client';
+import type { AnyRuntimeDefinition } from '@taucad/runtime/worker';
 import { fromFsLike } from '@taucad/runtime/filesystem';
 import type { FsLike } from '@taucad/runtime/filesystem';
 import type { FileStat } from '@taucad/types';
 import type { FileSystemBridgeProxy } from '@taucad/fs-bridge';
-import { resolveVirtualPath } from '@taucad/utils/path';
-import { discoverGeoSpecFiles } from 'geospec/runner';
+import { assertRootedPath } from '@taucad/utils/path';
 import type { GeoSpecDiscoveryFileSystem } from 'geospec/runner';
-import { createGeoSpecWebRunner } from 'geospec/runner/web';
-import type { GeoSpecWebRunnerOptions } from 'geospec/runner/web';
-import type { GeoSpecRunnerResult } from 'geospec/runner/worker';
-import { GeoSpecModelLoadError, loadModel } from 'geospec/model';
-import type { GeoSpecModelLoader } from 'geospec/model';
+import type { GeoSpecRunner, GeoSpecRunnerOptions } from 'geospec/runner/worker';
+import { z } from 'zod';
 import { createDefaultKernelOptions } from '#constants/kernel-worker.constants.js';
-import { runnerResultToTestModelOutput } from '#lib/geospec-rpc-result.js';
-import { uiRuntimeConfigSchema } from '#runtime/ui-runtime.definition.js';
+import { uiRuntimeConfigSchema } from '#runtime/ui-runtime.schema.js';
+import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
 import type {
   GeoSpecRunnerWorkerInitializeRequest,
   GeoSpecRunnerWorkerRequest,
@@ -55,17 +57,187 @@ type ProjectFileSystemBridge = Pick<
   | 'dispose'
 >;
 
-type GeoSpecVmFileSystem = GeoSpecWebRunnerOptions['filesystem'];
+type GeoSpecVmFileSystem = GeoSpecRunnerOptions['filesystem'];
 
 const workerScope = globalThis as unknown as WorkerScope;
+const candidateEncoder = new TextEncoder();
+const candidateDecoder = new TextDecoder('utf-8', { fatal: true });
+let foreignCandidates: ReadonlyArray<Uint8Array<ArrayBuffer>> = [];
+let locallyEstablishedCandidates: Array<Uint8Array<ArrayBuffer>> = [];
+let candidateSharingEnabled = false;
 
-const toLocalAbsolutePath = (path: string): string => resolveVirtualPath(path.startsWith('/') ? path : `/${path}`);
+type ExactClusterSelector = Readonly<{ subjectHash: string; toleranceMm: number }>;
+
+/** The one native fact family this browser candidate route can represent. */
+export const exactClusterSelector = (request: Uint8Array<ArrayBuffer>): ExactClusterSelector | undefined => {
+  try {
+    const input: unknown = JSON.parse(candidateDecoder.decode(request));
+    if (
+      typeof input !== 'object' ||
+      input === null ||
+      !('method' in input) ||
+      input.method !== 'submitClaims' ||
+      !('plan' in input)
+    ) {
+      return undefined;
+    }
+    const { plan } = input;
+    if (
+      typeof plan !== 'object' ||
+      plan === null ||
+      !('subjects' in plan) ||
+      !('claims' in plan) ||
+      !Array.isArray(plan.subjects) ||
+      !Array.isArray(plan.claims)
+    ) {
+      return undefined;
+    }
+    const claim = plan.claims[0] as unknown;
+    if (
+      typeof claim !== 'object' ||
+      claim === null ||
+      !('capability' in claim) ||
+      claim.capability !== 'toHaveConnectedComponents' ||
+      !('payload' in claim)
+    ) {
+      return undefined;
+    }
+    const { payload } = claim;
+    if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      !('kind' in payload) ||
+      payload.kind !== 'connectedComponents'
+    ) {
+      return undefined;
+    }
+    const expected: unknown =
+      'arguments' in payload && Array.isArray(payload.arguments) ? payload.arguments[0] : undefined;
+    if (
+      typeof expected !== 'object' ||
+      expected === null ||
+      !('toleranceMm' in expected) ||
+      typeof expected.toleranceMm !== 'number' ||
+      !Number.isFinite(expected.toleranceMm) ||
+      expected.toleranceMm < 0
+    ) {
+      return undefined;
+    }
+    if (!('subjectSlots' in claim) || !Array.isArray(claim.subjectSlots) || claim.subjectSlots.length !== 1) {
+      return undefined;
+    }
+    const slot: unknown = claim.subjectSlots[0];
+    const subject: unknown = plan.subjects.find(
+      (row: unknown) => typeof row === 'object' && row !== null && 'slot' in row && row.slot === slot,
+    );
+    if (typeof subject !== 'object' || subject === null) {
+      return undefined;
+    }
+    const hash = 'subjectHash' in subject ? subject.subjectHash : undefined;
+    if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/u.test(hash)) {
+      return undefined;
+    }
+    return { subjectHash: hash, toleranceMm: expected.toleranceMm };
+  } catch {
+    return undefined;
+  }
+};
+
+const candidateControl = (
+  input: Readonly<{
+    engine: { processRequest(request: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> };
+    canonicalize: (request: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer>;
+    selector: ExactClusterSelector;
+    operation: 'export' | 'compare';
+    candidate?: unknown;
+  }>,
+): Record<string, unknown> => {
+  const { engine, canonicalize, selector, operation, candidate } = input;
+  const control =
+    candidate === undefined
+      ? { operation, subjectHash: selector.subjectHash, toleranceMm: selector.toleranceMm }
+      : { candidate, operation, subjectHash: selector.subjectHash, toleranceMm: selector.toleranceMm };
+  const bytes = canonicalize(candidateEncoder.encode(JSON.stringify({ _tauNativeExactClusterCandidateV1: control })));
+  const result: unknown = JSON.parse(candidateDecoder.decode(engine.processRequest(bytes)));
+  return typeof result === 'object' && result !== null ? (result as Record<string, unknown>) : {};
+};
+
+/** Local assertion first; private work is conditional and never changes its result. */
+export const withCandidate = <T>(
+  input: Readonly<{
+    request: Uint8Array<ArrayBuffer>;
+    evaluate: () => T;
+    engine: { processRequest(request: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> };
+    canonicalize: (request: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer>;
+    enabled: boolean;
+  }>,
+): T => {
+  const result = input.evaluate();
+  if (!input.enabled || locallyEstablishedCandidates.length > 0) {
+    return result;
+  }
+  const selector = exactClusterSelector(input.request);
+  if (selector === undefined) {
+    return result;
+  }
+  try {
+    const { candidate } = candidateControl({
+      engine: input.engine,
+      canonicalize: input.canonicalize,
+      selector,
+      operation: 'export',
+    });
+    if (
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      'address' in candidate &&
+      typeof candidate.address === 'object' &&
+      candidate.address !== null &&
+      'actionSha256' in candidate.address &&
+      typeof candidate.address.actionSha256 === 'string'
+    ) {
+      const { actionSha256 } = candidate.address;
+      if (locallyEstablishedCandidates.length === 0) {
+        locallyEstablishedCandidates.push(candidateEncoder.encode(JSON.stringify(candidate)));
+      }
+      const matching = foreignCandidates.find((bytes) => {
+        try {
+          const foreign: unknown = JSON.parse(candidateDecoder.decode(bytes));
+          return (
+            typeof foreign === 'object' &&
+            foreign !== null &&
+            'address' in foreign &&
+            typeof foreign.address === 'object' &&
+            foreign.address !== null &&
+            'actionSha256' in foreign.address &&
+            foreign.address.actionSha256 === actionSha256
+          );
+        } catch {
+          return false;
+        }
+      });
+      if (matching !== undefined) {
+        const foreign: unknown = JSON.parse(candidateDecoder.decode(matching));
+        candidateControl({
+          engine: input.engine,
+          canonicalize: input.canonicalize,
+          selector,
+          operation: 'compare',
+          candidate: foreign,
+        });
+      }
+    }
+  } catch {
+    // Optional candidate work cannot change a completed local assertion.
+  }
+  return result;
+};
 
 function createBridgeVmFileSystem(proxy: ProjectFileSystemBridge): GeoSpecVmFileSystem {
   async function readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   async function readFile(path: string, encoding: 'utf8'): Promise<string>;
   async function readFile(path: string, encoding?: 'utf8'): Promise<string | Uint8Array<ArrayBuffer>> {
-    const bridgePath = toLocalAbsolutePath(path);
+    const bridgePath = assertRootedPath(path);
     if (encoding === 'utf8') {
       return proxy.readFile(bridgePath, 'utf8');
     }
@@ -77,14 +249,14 @@ function createBridgeVmFileSystem(proxy: ProjectFileSystemBridge): GeoSpecVmFile
 
   return {
     async exists(path: string): Promise<boolean> {
-      return proxy.exists(toLocalAbsolutePath(path));
+      return proxy.exists(assertRootedPath(path));
     },
     readFile,
     async writeFile(path: string, content: string): Promise<void> {
-      await proxy.writeFile(toLocalAbsolutePath(path), content);
+      await proxy.writeFile(assertRootedPath(path), content);
     },
     async ensureDir(path: string): Promise<void> {
-      await proxy.mkdir(toLocalAbsolutePath(path), { recursive: true });
+      await proxy.mkdir(assertRootedPath(path), { recursive: true });
     },
   };
 }
@@ -92,22 +264,14 @@ function createBridgeVmFileSystem(proxy: ProjectFileSystemBridge): GeoSpecVmFile
 function createDiscoveryFileSystem(proxy: ProjectFileSystemBridge): GeoSpecDiscoveryFileSystem {
   return {
     async readdir(path: string): Promise<readonly string[]> {
-      return proxy.readdir(toLocalAbsolutePath(path));
+      return proxy.readdir(assertRootedPath(path));
     },
     async stat(path: string) {
-      const stat = await proxy.stat(toLocalAbsolutePath(path));
+      const stat = await proxy.stat(assertRootedPath(path));
       return { kind: stat.type === 'dir' ? 'directory' : 'file' };
     },
   };
 }
-
-const hasGeoSpecSelectionFilters = (args: GeoSpecRunnerWorkerRunRequest['args']): boolean =>
-  Boolean(
-    (args.files !== undefined && args.files.length > 0) ||
-    (args.include !== undefined && args.include.length > 0) ||
-    (args.exclude !== undefined && args.exclude.length > 0) ||
-    (args.testNamePattern ?? '') !== '',
-  );
 
 const createProjectFileSystemProxy = async (port: MessagePort): Promise<ProjectFileSystemBridge> => {
   const { createTransferredFileSystemBridgeProxy } = await import('@taucad/fs-bridge');
@@ -141,39 +305,18 @@ const createRuntimeFsLike = (proxy: ProjectFileSystemBridge): FsLike => {
 };
 
 const formatRuntimeConfigError = (error: unknown): string => {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'issues' in error &&
-    Array.isArray((error as { issues: unknown[] }).issues)
-  ) {
-    return (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues
-      .map((issue) => {
-        const path = issue.path?.join('.') ?? 'runtimeConfig';
-        return `${path}: ${issue.message ?? 'invalid value'}`;
-      })
-      .join('; ');
+  if (error instanceof z.ZodError) {
+    return z.prettifyError(error);
   }
   return error instanceof Error ? error.message : String(error);
-};
-
-const isFatalRuntimeBootError = (error: unknown): boolean => {
-  if (error instanceof GeoSpecModelLoadError) {
-    return error.diagnostics.some((diagnostic) => diagnostic.code === 'RUNTIME_UNAVAILABLE');
-  }
-  return false;
-};
-
-type WorkerModelState = {
-  fatalModelLoadError?: Error;
 };
 
 type WorkerSession = {
   sessionId: string;
   fileSystem: ProjectFileSystemBridge;
-  runtimeClient: ReturnType<typeof createRuntimeClient>;
-  runner: ReturnType<typeof createGeoSpecWebRunner>;
-  modelState: WorkerModelState;
+  runtimeClient: AppRuntimeClient;
+  runner: GeoSpecRunner;
+  closeEngine?: (() => void) | undefined;
 };
 
 type QueuedRun = {
@@ -207,7 +350,11 @@ const disposeSession = async (): Promise<void> => {
     try {
       activeSession.runtimeClient.terminate();
     } finally {
-      activeSession.fileSystem.dispose();
+      try {
+        activeSession.closeEngine?.();
+      } finally {
+        activeSession.fileSystem.dispose();
+      }
     }
   }
 };
@@ -222,8 +369,9 @@ const initializeGeoSpecWorker = async (request: GeoSpecRunnerWorkerInitializeReq
   }
 
   let fileSystem: ProjectFileSystemBridge | undefined;
-  let runtimeClient: ReturnType<typeof createRuntimeClient> | undefined;
-  let runner: ReturnType<typeof createGeoSpecWebRunner> | undefined;
+  let runtimeClient: AppRuntimeClient | undefined;
+  let runner: GeoSpecRunner | undefined;
+  let closeEngine: (() => void) | undefined;
   try {
     const runtimeConfigResult = uiRuntimeConfigSchema.safeParse(request.runtimeConfig);
     if (!runtimeConfigResult.success) {
@@ -232,64 +380,66 @@ const initializeGeoSpecWorker = async (request: GeoSpecRunnerWorkerInitializeReq
 
     fileSystem = await createProjectFileSystemProxy(request.fileSystemPort);
     const runtimeFileSystem = fromFsLike(createRuntimeFsLike(fileSystem));
-    runtimeClient = createRuntimeClient(
+    runtimeClient = createRuntimeClient<AnyRuntimeDefinition>(
       createDefaultKernelOptions({
         fileSystem: runtimeFileSystem,
         runtimeConfig: runtimeConfigResult.data,
       }),
     );
-    const modelState: WorkerModelState = {};
-    const modelLoader: GeoSpecModelLoader = async (input) => {
-      if (modelState.fatalModelLoadError) {
-        throw modelState.fatalModelLoadError;
-      }
-      const load = async () => {
-        if ('source' in input) {
-          return loadModel(input);
-        }
-        if ('code' in input) {
-          const code = Object.fromEntries(
-            Object.entries(input.code).map(([file, content]) => [toLocalAbsolutePath(file), content]),
-          );
-          return loadModel({
-            ...input,
-            code,
-            file: toLocalAbsolutePath(input.file),
-            projectPath: '/',
-            runtime: runtimeClient,
-          });
-        }
-        const file = toLocalAbsolutePath(input.file);
-        return loadModel({
-          ...input,
-          file,
-          projectPath: '/',
-          runtime: runtimeClient,
-        });
+    {
+      const [native, { createNativeGeoSpecRunner }] = await Promise.all([
+        import('@taucad/geospec-engine-native'),
+        import('geospec/runner/native'),
+      ]);
+      await native.initialize();
+      const engine = new native.Engine();
+      closeEngine = () => {
+        engine.close();
       };
+      const candidateEngine = {
+        ingestSubject: (...args: Parameters<typeof engine.ingestSubject>) => engine.ingestSubject(...args),
+        subjectHandle: (requestBytes: Uint8Array<ArrayBuffer>) => engine.subjectHandle(requestBytes),
+        releaseSubject: (requestBytes: Uint8Array<ArrayBuffer>) => engine.releaseSubject(requestBytes),
+        processRequest: (requestBytes: Uint8Array<ArrayBuffer>) =>
+          withCandidate({
+            request: requestBytes,
+            evaluate: () => engine.processRequest(requestBytes),
+            engine,
+            canonicalize: native.canonicalize,
+            enabled: candidateSharingEnabled,
+          }),
+        evaluateClaim: (requestBytes: Uint8Array<ArrayBuffer>) =>
+          withCandidate({
+            request: requestBytes,
+            evaluate: () => engine.evaluateClaim(requestBytes),
+            engine,
+            canonicalize: native.canonicalize,
+            enabled: candidateSharingEnabled,
+          }),
+      };
+      const projectFiles = fileSystem;
 
-      if ('source' in input) {
-        return load();
-      }
-      try {
-        return await load();
-      } catch (error) {
-        if (isFatalRuntimeBootError(error)) {
-          modelState.fatalModelLoadError = error instanceof Error ? error : new Error(String(error));
-        }
-        throw error;
-      }
-    };
-    runner = createGeoSpecWebRunner({
-      filesystem: createBridgeVmFileSystem(fileSystem),
-      modelLoader,
-    });
+      runner = createNativeGeoSpecRunner({
+        filesystem: createBridgeVmFileSystem(fileSystem),
+        // PERF-OUTPUT-01: the product selects the bounded success evidence (ruling 13).
+        nativeAssertions: { engine: candidateEngine, evidenceProfile: 'bounded' },
+        model: {
+          runtime: runtimeClient,
+          readSource: async (source) => {
+            if (typeof source !== 'string') {
+              throw new TypeError('Project GeoSpec sources must be rooted filesystem paths or in-memory bytes.');
+            }
+            return projectFiles.readFile(assertRootedPath(source));
+          },
+        },
+      });
+    }
     const activeSession = {
       sessionId: request.sessionId,
       fileSystem,
       runtimeClient,
       runner,
-      modelState,
+      closeEngine,
     };
     session = activeSession;
     workerScope.postMessage({ type: 'initialized', requestId: request.requestId, sessionId: request.sessionId });
@@ -300,7 +450,11 @@ const initializeGeoSpecWorker = async (request: GeoSpecRunnerWorkerInitializeReq
       try {
         runtimeClient?.terminate();
       } finally {
-        fileSystem?.dispose();
+        try {
+          closeEngine?.();
+        } finally {
+          fileSystem?.dispose();
+        }
       }
     }
     postError(request.requestId, error instanceof Error ? error.message : 'GeoSpec worker failed to initialize.');
@@ -314,35 +468,27 @@ const runGeoSpecInWorker = async (request: GeoSpecRunnerWorkerRunRequest): Promi
     return;
   }
 
-  delete activeSession.modelState.fatalModelLoadError;
+  foreignCandidates = request.candidates ?? [];
+  candidateSharingEnabled = request.candidateSharingEnabled === true;
+  locallyEstablishedCandidates = [];
 
   try {
-    const discovery = await discoverGeoSpecFiles({
-      filesystem: createDiscoveryFileSystem(activeSession.fileSystem),
-      projectPath: '/',
-      files: request.args.files,
-      include: request.args.include,
-      exclude: request.args.exclude,
-    });
-    const entryPaths = discovery.files;
-    const runResult: GeoSpecRunnerResult =
-      entryPaths.length === 0
-        ? { success: false, passed: 0, failed: 1, selectedTests: 0, files: [] }
-        : await activeSession.runner.run({
-            files: entryPaths,
-            testNamePattern: request.args.testNamePattern,
-            testTimeout: request.args.testTimeout,
-          });
-    const output = runnerResultToTestModelOutput(runResult, entryPaths, {
-      filtersApplied: hasGeoSpecSelectionFilters(request.args),
+    const output = await runGeoSpecTests({
+      discovery: createDiscoveryFileSystem(activeSession.fileSystem),
+      runner: activeSession.runner,
+      args: request.args,
     });
     workerScope.postMessage({
       type: 'result',
       requestId: request.requestId,
       result: { success: true, ...output },
+      candidates: locallyEstablishedCandidates,
     });
   } catch (error) {
     postError(request.requestId, error instanceof Error ? error.message : 'GeoSpec worker failed to run tests.');
+  } finally {
+    foreignCandidates = [];
+    locallyEstablishedCandidates = [];
   }
 };
 

@@ -1,8 +1,13 @@
-import { NodeIO } from '@gltf-transform/core';
+import { WebIO } from '@gltf-transform/core';
 import type { Document, JSONDocument, Mesh as GltfTransformMesh } from '@gltf-transform/core';
 
 import { embedGltfResources, registerTauGltfExtensions, TauCadTopology } from '@taucad/geometry-core';
-import type { KittyCadBrepNode, KittyCadBrepRoot } from '@taucad/geometry-core';
+import type {
+  KittyCadBrepNode,
+  KittyCadBrepRoot,
+  TauCadTopologyComponent,
+  TauCadTopologyExport,
+} from '@taucad/geometry-core';
 import { kittyCadBoundaryRepresentationExtension, tauCadTopologyExtension } from '@taucad/runtime/types';
 import type { JSONObject } from '@taucad/runtime/types';
 
@@ -46,23 +51,12 @@ type KittyCadBrepPayload = {
   curves3D?: unknown[];
 };
 
-type PrimitiveRef = {
-  nodeIndex: number;
-  meshIndex: number;
-  primitiveIndex: number;
-};
-
-type TauTopologyComponent = {
-  id: string;
-  name: string;
+type TauTopologyComponent = TauCadTopologyComponent & {
   kind: 'body' | 'face';
-  selector: string;
-  parentId?: string;
-  childIds?: string[];
   nodeIndex: number;
   meshIndex: number;
   primitiveIndices: number[];
-  primitiveRefs: PrimitiveRef[];
+  primitiveRefs: NonNullable<TauCadTopologyComponent['primitiveRefs']>;
   capabilities: JSONObject;
   sourceRefs: JSONObject;
 };
@@ -73,6 +67,11 @@ type BuildTopologyResult = {
   bodyComponentIdsByNode: Map<number, string>;
 };
 
+const defaultExports: TauCadTopologyExport[] = [
+  { fidelity: 'mesh', formats: ['glb', 'stl'], available: true },
+  { fidelity: 'brep', formats: ['step', 'stp', 'iges', 'igs', 'brep', 'dxf'], available: true },
+];
+
 const defaultCapabilities = {
   canHide: true,
   canIsolate: true,
@@ -80,10 +79,7 @@ const defaultCapabilities = {
   canAdjustOpacity: true,
   hasDrawings: false,
   hasPreciseTopology: true,
-  exports: [
-    { fidelity: 'mesh', formats: ['glb', 'stl'], available: true },
-    { fidelity: 'brep', formats: ['step', 'stp', 'iges', 'igs', 'brep', 'dxf'], available: true },
-  ],
+  exports: defaultExports,
 } satisfies JSONObject;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -415,7 +411,7 @@ export async function enrichZooGltfTopology(
   bytes: Uint8Array<ArrayBuffer>,
   options: EnrichZooGltfTopologyOptions,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const io = registerTauGltfExtensions(new NodeIO());
+  const io = registerTauGltfExtensions(new WebIO());
   const document =
     options.format === 'glb'
       ? await io.readBinary(bytes)

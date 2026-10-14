@@ -1,5 +1,14 @@
-import type { FileStat, FileStatEntry, ProjectManifest } from '@taucad/types';
 import type {
+  CheckedFileWrite,
+  CheckedFileWriteResult,
+  FileWritePrecondition,
+  FileStat,
+  ProjectManifest,
+} from '@taucad/types';
+import type { ContentExportFilter } from '@taucad/filesystem/content-ops';
+import type {
+  FileStatOptions,
+  HeadFileStat,
   FileTreeNode,
   MkdirOptions,
   MountConfig,
@@ -39,6 +48,54 @@ export type BulkMoveResult = Readonly<{
 }>;
 
 /**
+ * The physical-scope reads the `/files` workspace browser makes (charter D5).
+ *
+ * Every path here names a {@link WorkspaceScope} the mount table does not route
+ * — a folder the person granted that no project claims — so no composed view
+ * exists to serve it and the authority reads it through a standalone provider.
+ * `scope` is **required** on all three: a *routed* path is content, and content
+ * is the rooted surface's, never the authority's (D5, D12).
+ *
+ * @public
+ */
+export type ScopedStorageClient = {
+  readShallowDirectory(path: string, options: { readonly scope: WorkspaceScope }): Promise<FileTreeNode[]>;
+  readFile(path: string, options: { readonly encoding: 'utf8'; readonly scope: WorkspaceScope }): Promise<string>;
+  readFile(path: string, options: { readonly scope: WorkspaceScope }): Promise<Uint8Array<ArrayBuffer>>;
+  getZippedDirectory(path: string, options: { readonly scope: WorkspaceScope }): Promise<Blob>;
+};
+
+/**
+ * Everything an **unrooted** bridge connection answers (charter D5, W11).
+ *
+ * Topology, the change stream and the `/files` browser's three scoped reads,
+ * spelled as the wire spells them. Charter deviation H3 is closed here on the
+ * client side: no per-path content member exists for a caller to reach, so a
+ * project tree cannot be read or written without naming the root and the
+ * consumer that owns it.
+ *
+ * @public
+ */
+export type WorkspaceAuthorityClient = Pick<
+  FileSystemClient,
+  | 'mount'
+  | 'unmount'
+  | 'configureProjectRoots'
+  | 'listProjectManifests'
+  | 'commitPendingProjectDirectory'
+  | 'adoptProjectDirectory'
+  | 'permanentlyDeleteProjectDirectory'
+  | 'disposeStorageRoot'
+  | 'pollExternalChanges'
+  | 'watch'
+> & {
+  readScopedFile(path: string, options: { readonly encoding: 'utf8'; readonly scope: WorkspaceScope }): Promise<string>;
+  readScopedFile(path: string, options: { readonly scope: WorkspaceScope }): Promise<Uint8Array<ArrayBuffer>>;
+  readScopedShallowDirectory(path: string, options: { readonly scope: WorkspaceScope }): Promise<FileTreeNode[]>;
+  getScopedZippedDirectory(path: string, options: { readonly scope: WorkspaceScope }): Promise<Blob>;
+};
+
+/**
  * Typed filesystem RPC surface consumed by main-thread facades such as
  * `FileContentService` and `FileTreeService`. Matches the worker `FileManager` protocol without
  * transport lifecycle hooks (`listen`, `dispose`).
@@ -58,13 +115,19 @@ export type BulkMoveResult = Readonly<{
  * ```
  */
 export type FileSystemClient = {
-  readFile(filepath: string, options: 'utf8' | { encoding: 'utf8'; scope?: WorkspaceScope }): Promise<string>;
-  readFile(filepath: string, options?: { scope?: WorkspaceScope }): Promise<Uint8Array<ArrayBuffer>>;
+  readFile(filepath: string, options: 'utf8' | { encoding: 'utf8' }): Promise<string>;
+  readFile(filepath: string, options?: { encoding?: undefined }): Promise<Uint8Array<ArrayBuffer>>;
   writeFile(filepath: string, data: Uint8Array<ArrayBuffer> | string): Promise<void>;
+  writeFileChecked(input: Omit<CheckedFileWrite, 'signal'>): Promise<CheckedFileWriteResult>;
+  deleteFileChecked(input: {
+    path: string;
+    preconditions: readonly FileWritePrecondition[];
+  }): Promise<CheckedFileWriteResult>;
   writeFiles(files: Record<string, { content: Uint8Array<ArrayBuffer> }>): Promise<void>;
   mkdir(path: string, options?: MkdirOptions): Promise<void>;
   readdir(path: string): Promise<string[]>;
   stat(path: string): Promise<FileStat>;
+  stat(path: string, options: FileStatOptions): Promise<FileStat | HeadFileStat>;
   lstat(path: string): Promise<FileStat>;
   /**
    * Move a file or directory. Directory-aware: same-mount moves delegate to
@@ -110,16 +173,24 @@ export type FileSystemClient = {
    */
   rmdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   exists(path: string): Promise<boolean>;
-  getDirectoryStat(path: string): Promise<FileStatEntry[]>;
-  getDirectoryContents(path: string): Promise<Record<string, Uint8Array<ArrayBuffer>>>;
-  duplicateFile(sourcePath: string, destinationPath: string): Promise<void>;
-  copyDirectory(sourcePath: string, destinationPath: string): Promise<void>;
-  /**
-   * Package a directory's contents into a ZIP archive. Pass `{ scope }`
-   * to zip from the standalone provider for an explicit workspace scope
-   * instead of the active mount table.
+  /*
+   * `duplicateFile`, `copyDirectory`, `searchFiles` and `getDirectoryStat` are
+   * **not** here (charter D3, D4, W12d). Each walked or indexed the raw provider
+   * unmasked; each is now the rooted surface's — `duplicate`, `copyTree`,
+   * `search`, `statTree` — where the composed view supplies the mask before any
+   * provider I/O. The absolute-path spellings live on {@link ComposedViewClient},
+   * which routes them to the view.
    */
-  getZippedDirectory(path: string, options?: { scope?: WorkspaceScope }): Promise<Blob>;
+  /**
+   * Package a directory's contents into a ZIP archive, minus whatever the path
+   * registry hides.
+   *
+   * Served by `archive` on the rooted surface, where the mask comes with the view
+   * and `{ versionedOnly }` keeps only the bytes the registry counts as the
+   * project. A physical workspace scope the mount table does not route is the
+   * `/files` browser's download and is {@link ScopedStorageClient}'s (charter D5).
+   */
+  getZippedDirectory(path: string, options?: ContentExportFilter): Promise<Blob>;
 
   /**
    * Mount a path prefix on a fresh provider instance. Webaccess mounts
@@ -137,23 +208,19 @@ export type FileSystemClient = {
   commitPendingProjectDirectory(
     input: CommitPendingProjectDirectoryInput,
   ): Promise<CommitPendingProjectDirectoryResult>;
-  /** Mint a fresh identity for an `adoption-required` project directory (R11). */
-  adoptProjectDirectory(locator: ProjectLocator): Promise<ProjectManifest>;
+  /** Give an `adoption-required` project directory an identity: `id` restores its route's previous one (R11). */
+  adoptProjectDirectory(locator: ProjectLocator, options?: { readonly id?: string }): Promise<ProjectManifest>;
   /** Permanently remove one exact physical project after verifying its manifest identity. */
   permanentlyDeleteProjectDirectory(
     input: PermanentDeleteProjectDirectoryInput,
   ): Promise<PermanentDeleteProjectDirectoryResult>;
 
-  /**
-   * Read a single directory level. Pass `{ scope }` to read via the
-   * standalone provider for an explicit workspace scope (used by the
-   * `/files` route to show all backends side-by-side); omit `scope` to
-   * route through the active mount table.
-   *
-   * The standalone provider cache is keyed by `(backend, workspaceId)`
-   * so two workspaces with the same folder name never share a provider.
+  /*
+   * `readShallowDirectory` is **not** here (W11, H3). One directory level of a
+   * routed path is `readDirectory` through the view; one level of a physical
+   * scope the mount table does not route is {@link ScopedStorageClient}'s, and
+   * naming it here again is how a routed read finds the raw provider.
    */
-  readShallowDirectory(path: string, options?: { scope?: WorkspaceScope }): Promise<FileTreeNode[]>;
 
   /**
    * Drop the cached standalone provider for the given backend / scope.
@@ -166,12 +233,6 @@ export type FileSystemClient = {
   disposeStorageRoot(storageRootKey: string): void;
 
   readDirectory(path: string): Promise<FileTreeNode[]>;
-
-  searchFiles(
-    root: string,
-    query: string,
-    options?: { maxResults?: number; includeDirectories?: boolean },
-  ): Promise<FileStatEntry[]>;
 
   /**
    * Reconcile out-of-band changes under one routed root, or every configured webaccess root when omitted.

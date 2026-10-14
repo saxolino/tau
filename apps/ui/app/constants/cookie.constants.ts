@@ -1,4 +1,5 @@
 import type { ConstantRecord } from '@taucad/types';
+import { metaConfig } from '#constants/meta.constants.js';
 
 /**
  * Cookie names.
@@ -15,6 +16,8 @@ export const cookieName = {
   colorHue: 'color-hue',
   // Whether code editors show parameter-name inlay hints.
   codeInlayHints: 'code-inlay-hints',
+  // Whether actions use pointer cursors instead of the platform default.
+  pointerCursors: 'pointer-cursors',
 
   /* Layout */
   // Whether the sidebar is open.
@@ -33,8 +36,12 @@ export const cookieName = {
   /* Chat */
   // Whether to enable web search in the chat.
   chatWebSearch: 'chat-web-search',
-  // The last selected model.
+  // The last execution used — any agent, with its model, level and config — carried onto new chats.
+  chatExecution: 'chat-execution',
+  // The last chosen Tau model.
   chatModel: 'chat-model',
+  // The last chosen Tau reasoning level.
+  chatEffort: 'chat-effort',
   // Per-user model availability overrides (sparse; values differ from model.recommended).
   chatModelOverrides: 'chat-model-overrides',
   // Whether to show the model cost in the chat-history.
@@ -51,23 +58,27 @@ export const cookieName = {
   // oxlint-disable-next-line unicorn-js/prevent-abbreviations -- ctx is conventional for context
   chatCtxOpen: 'chat-ctx-open',
 
-  /* Chat Tool Sections - collapse state (true = open, false = collapsed) */
-  // Whether code preview section is open in file operations.
-  chatToolCodePreview: 'chat-tool-code-preview',
-  // Whether images section in visual analysis is open.
-  chatToolAnalysisImages: 'chat-tool-analysis-images',
-  // The quality of the screenshots in the chat.
-  chatScreenshotQuality: 'chat-screenshot-quality',
+  /* Chat Tools */
   // Whether GeoSpec testing tools are enabled.
   chatTestingEnabled: 'chat-testing-enabled',
+  // Whether the agent sheet's Settings disclosure is open.
+  chatOpAgentSettings: 'chat-op-agent-settings',
 
   /* Projects */
   // The last selected project view mode.
   projectViewMode: 'project-view-mode',
+  // The last selected project list page size.
+  projectPageSize: 'project-page-size',
 
-  /* Graphics */
-  // Whether the section view status is open.
-  viewOpStatus: 'view-op-status',
+  /* Community */
+  // The last selected Community example page size.
+  examplePageSize: 'example-page-size',
+  // The last selected Parts page size.
+  partPageSize: 'part-page-size',
+
+  /* Share */
+  // The last chosen sharing method in the workbench Share panel.
+  shareProvider: 'share-provider',
 
   /* Console */
   // The last selected log level.
@@ -84,11 +95,10 @@ export const cookieName = {
   /* Docs */
   // Whether the docs sidebar is open.
   docsOpSidebar: 'docs-op-sidebar',
-
-  /* Privacy */
-  // The user's cookie consent choice.
-  cookieConsent: 'cookie-consent',
 } as const;
+
+/** Web-only consent cookie, intentionally outside the ordinary preference API. */
+export const consentCookieName = `${metaConfig.cookiePrefix}cookie-consent`;
 
 /**
  * Union of all cookie names.

@@ -3,10 +3,10 @@
   "compilerOptions": {
     "rewriteRelativeImportExtensions": true,
     "outDir": "./out-tsc/spec",
-    "types": ["node", "vitest", "vitest/browser"],
+    "types": ["node", "vitest", "vitest/browser", "@vitest/browser-playwright"],
     "paths": {
       "#*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "global-setup.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.mts", "global-setup.ts", "production-server.ts", "vitest.config.ts"]
 }

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { fromMemoryFs } from '@taucad/runtime/filesystem';
 import type { ThumbnailEvent, ThumbnailInput } from '#machines/thumbnail.machine.js';
 import type { HeadlessImageJob } from '#services/headless-image.service.js';
 
@@ -15,37 +14,71 @@ vi.mock('@xstate/react', () => ({
 }));
 
 const sourceEntryPath = 'src/main.ts';
+const geometryContent = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
+let geometryFormat: 'gltf' | 'svg' = 'gltf';
 let snapshotEntryPath: string | undefined = sourceEntryPath;
 const getSnapshot = vi.fn(() => ({
   context: {
-    kernelClient: {},
     entryPath: snapshotEntryPath,
-    parameters: { size: 10 },
+    openAttempt: 0,
+    rendering: {
+      success: true,
+      requestId: 'request-1',
+      evaluationId: 'evaluation-1',
+      transient: false,
+      view: 'model',
+      artifact:
+        geometryFormat === 'gltf'
+          ? { mimeType: 'model/gltf-binary', content: geometryContent }
+          : { mimeType: 'image/svg+xml', content: '<svg xmlns="http://www.w3.org/2000/svg"/>' },
+      hash: 'geometry-hash',
+      issues: [],
+    },
+    evaluation: undefined,
   },
+  matches: () => false,
 }));
-let geometryListener: ((event: { geometry: { hash: string } }) => void) | undefined;
+type RenderEvent = {
+  rendering: {
+    success: true;
+    transient: false;
+    hash: string;
+    evaluationId: string;
+    artifact: ReturnType<typeof getSnapshot>['context']['rendering']['artifact'];
+  };
+};
+let renderingListener: ((event: RenderEvent) => void) | undefined;
 const unsubscribe = vi.fn();
-const on = vi.fn((_event: string, listener: (event: { geometry: { hash: string } }) => void) => {
-  geometryListener = listener;
+const unsubscribeSnapshots = vi.fn();
+const subscribe = vi.fn(() => ({ unsubscribe: unsubscribeSnapshots }));
+const on = vi.fn((_event: string, listener: (event: RenderEvent) => void) => {
+  renderingListener = listener;
   return { unsubscribe };
 });
 
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({
-    geometryUnits: new Map([['src/main.ts', { getSnapshot, on }]]),
+    geometryUnits: new Map([['src/main.ts', { getSnapshot, on, subscribe }]]),
     mainEntryPath: 'src/main.ts',
     projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
   }),
 }));
 
 const writeFile = vi.fn(async () => undefined);
-const runtimeFileSystem = fromMemoryFs();
+const deleteFile = vi.fn(async () => undefined);
 vi.mock('#hooks/use-file-manager.js', () => ({
-  useFileManager: () => ({ writeFile, runtimeFileSystem }),
+  useFileManager: () => ({ writeFile, deleteFile }),
 }));
 
-const webpFile = (bytes: number[]) => [{ name: 'render.webp', mimeType: 'image/webp', bytes: new Uint8Array(bytes) }];
-const exportImage = vi.fn(async (_job: HeadlessImageJob) => webpFile([1, 2, 3]));
+const webpBytes = (marker = 0): Uint8Array<ArrayBuffer> => {
+  const bytes = new Uint8Array(13);
+  bytes.set(new TextEncoder().encode('RIFF'), 0);
+  bytes.set(new TextEncoder().encode('WEBP'), 8);
+  bytes[12] = marker;
+  return bytes;
+};
+const webpFile = (marker = 0) => [{ name: 'render.webp', mimeType: 'image/webp', bytes: webpBytes(marker) }];
+const exportImage = vi.fn(async (_job: HeadlessImageJob) => webpFile(1));
 vi.mock('#providers/headless-image-provider.js', () => ({
   useHeadlessImageService: () => ({ export: exportImage }),
 }));
@@ -64,52 +97,77 @@ const locator = (providerBasePath: string) =>
     providerBasePath,
   }) as const;
 
+const deferred = <T>() => {
+  let release!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    release = resolve;
+  });
+  return { promise, resolve: release };
+};
+
+const renderArtifact = async () => {
+  const result = await thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal });
+  if ('status' in result) {
+    throw new Error('Expected a rendered thumbnail artifact');
+  }
+  return result;
+};
+
 describe('useThumbnailGenerator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     thumbnailInput = undefined;
-    geometryListener = undefined;
+    renderingListener = undefined;
     snapshotEntryPath = sourceEntryPath;
+    geometryFormat = 'gltf';
     getProjectFileSystemConfig.mockResolvedValue(locator('/projects/one'));
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 1536, height: 1152, close: vi.fn() }));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('should forward the settled nested entry path unchanged and commit bytes', async () => {
     renderHook(() => useThumbnailGenerator());
-    const artifact = await thumbnailInput!.render({ kind: 'manual-thumbnail' });
+    const artifact = await renderArtifact();
 
-    await thumbnailInput!.store(artifact);
+    await expect(thumbnailInput!.store(artifact)).resolves.toEqual({ status: 'stored' });
 
-    expect(writeFile).toHaveBeenCalledWith('thumbnail.webp', new Uint8Array([1, 2, 3]), { source: 'machine' });
+    expect(writeFile).toHaveBeenCalledWith('thumbnail.webp', webpBytes(1), { source: 'machine' });
     expect(exportImage).toHaveBeenCalledWith({
       kind: 'manual-thumbnail',
       identity: 'proj_aaaaaaaaaaaaaaaaaaaaa:unsettled',
       projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
-      sourceFormat: 'gltf',
+      signal: exportImage.mock.calls[0]![0].signal,
+      sourceFormat: 'glb',
+      sourcePath: sourceEntryPath,
+      geometryHash: 'geometry-hash',
+      content: geometryContent,
       format: 'webp',
-      fileSystem: runtimeFileSystem,
-      source: { path: sourceEntryPath },
-      parameters: { size: 10 },
-      includeEdges: true,
       exportOptions: {
         mode: 'single',
-        width: 768,
-        height: 576,
-        margin: 0.1,
-        projection: 'perspective',
-        phi: 60,
-        theta: -45,
-        quality: 0.9,
+        width: 1536,
+        height: 1152,
+        lineWidth: 6,
+        camera: {
+          framing: 'bounds',
+          direction: [0.6123724357, -0.6123724357, 0.5],
+          up: [0, 0, 1],
+          margin: 0.1,
+          projection: { kind: 'perspective', verticalFieldOfView: 45 },
+        },
+        quality: 0.95,
+        ao: {},
       },
     });
     const job = exportImage.mock.calls[0]![0];
-    if (job.sourceFormat !== 'gltf') {
-      throw new Error('Expected a GLTF image job');
+    if (job.sourceFormat !== 'glb' || job.kind === 'capture') {
+      throw new Error('Expected a GLB thumbnail job');
     }
-    expect(job.source.path).toBe(sourceEntryPath);
+    expect(job.sourcePath).toBe(sourceEntryPath);
+    expect(job.content).toBe(geometryContent);
   });
 
   it('should reject a missing settled source without enqueueing an image export', async () => {
@@ -117,11 +175,11 @@ describe('useThumbnailGenerator', () => {
     renderHook(() => useThumbnailGenerator());
 
     try {
-      await thumbnailInput!.render({ kind: 'manual-thumbnail' });
+      await thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal });
       expect.fail('render should reject without a settled entry path');
     } catch (error) {
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe('source-unavailable: settled CAD entry path not ready');
+      expect((error as Error).message).toBe('source-unavailable: committed rendering not ready');
     }
     expect(exportImage).not.toHaveBeenCalled();
   });
@@ -130,29 +188,85 @@ describe('useThumbnailGenerator', () => {
     exportImage.mockResolvedValueOnce([]);
     renderHook(() => useThumbnailGenerator());
 
-    await expect(thumbnailInput!.render({ kind: 'manual-thumbnail' })).rejects.toThrow(
-      'Thumbnail export expected exactly one non-empty image/webp artifact, received 0:',
-    );
+    await expect(
+      thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal }),
+    ).rejects.toThrow('Thumbnail export expected exactly one non-empty image/webp artifact, received 0:');
 
     exportImage.mockResolvedValueOnce([
-      { name: 'render.webp', mimeType: 'image/webp', bytes: new Uint8Array([1]) },
+      { name: 'render.webp', mimeType: 'image/webp', bytes: webpBytes(1) },
       { name: 'render.png', mimeType: 'image/png', bytes: new Uint8Array() },
     ]);
-    await expect(thumbnailInput!.render({ kind: 'manual-thumbnail' })).rejects.toThrow(
-      'Thumbnail export expected exactly one non-empty image/webp artifact, received 2: image/webp 1B, image/png 0B',
+    await expect(
+      thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal }),
+    ).rejects.toThrow(
+      'Thumbnail export expected exactly one non-empty image/webp artifact, received 2: image/webp 13B, image/png 0B',
     );
+    exportImage.mockResolvedValueOnce([
+      { name: 'render.webp', mimeType: 'image/webp', bytes: new Uint8Array([1, 2, 3]) },
+    ]);
+    await expect(
+      thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal }),
+    ).rejects.toThrow('without a WebP signature');
+    vi.mocked(createImageBitmap).mockResolvedValueOnce({
+      width: 640,
+      height: 480,
+      close: vi.fn(),
+    } as unknown as ImageBitmap);
+    exportImage.mockResolvedValueOnce(webpFile(2));
+    await expect(
+      thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal }),
+    ).rejects.toThrow('expected 1536×1152 pixels, received 640×480');
     expect(writeFile).not.toHaveBeenCalled();
   });
 
-  it('should include 4:3 dimensions in the settled thumbnail identity', () => {
+  it('should render automatic and manual SVG thumbnails as canonical WebP artifacts', async () => {
+    geometryFormat = 'svg';
     renderHook(() => useThumbnailGenerator());
 
-    geometryListener?.({ geometry: { hash: 'geometry-hash' } });
+    const automatic = await thumbnailInput!.render({
+      kind: 'automatic-thumbnail',
+      identity: 'svg-identity',
+      signal: new AbortController().signal,
+    });
+    expect(automatic).toMatchObject({ identity: 'svg-identity' });
+    await expect(
+      thumbnailInput!.render({ kind: 'manual-thumbnail', signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      identity: 'proj_aaaaaaaaaaaaaaaaaaaaa:unsettled',
+    });
+    expect(exportImage).toHaveBeenCalledTimes(2);
+    expect(exportImage).toHaveBeenCalledWith({
+      kind: 'automatic-thumbnail',
+      identity: 'svg-identity',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
+      signal: exportImage.mock.calls[0]![0].signal,
+      sourceFormat: 'svg',
+      sourcePath: sourceEntryPath,
+      content: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      format: 'webp',
+      exportOptions: { width: 1536, height: 1152, quality: 0.95 },
+    });
+  });
+
+  it('should include the render recipe in the settled thumbnail identity', () => {
+    renderHook(() => useThumbnailGenerator());
+
+    renderingListener?.({
+      rendering: {
+        success: true,
+        transient: false,
+        hash: 'geometry-hash',
+        evaluationId: 'evaluation-1',
+        artifact: getSnapshot().context.rendering.artifact,
+      },
+    });
 
     const event = send.mock.calls.at(-1)?.[0];
     expect(event?.type).toBe('settled');
     if (event?.type === 'settled') {
-      expect(event.hash).toBe('proj_aaaaaaaaaaaaaaaaaaaaa:src/main.ts:geometry-hash:webp:q0.9:768x576:m0.1:edges');
+      expect(event.hash).toBe(
+        'proj_aaaaaaaaaaaaaaaaaaaaa:src/main.ts:geometry-hash:webp:q0.95:1536x1152:m0.1:lw6:camera-bounds-v1:edges:studio-v5',
+      );
     }
   });
 
@@ -161,9 +275,12 @@ describe('useThumbnailGenerator', () => {
       .mockResolvedValueOnce(locator('/projects/one'))
       .mockResolvedValueOnce(locator('/projects/two'));
     renderHook(() => useThumbnailGenerator());
-    const artifact = await thumbnailInput!.render({ kind: 'manual-thumbnail' });
+    const artifact = await renderArtifact();
 
-    await thumbnailInput!.store(artifact);
+    await expect(thumbnailInput!.store(artifact)).resolves.toEqual({
+      status: 'skipped',
+      reason: 'locator-changed',
+    });
 
     expect(writeFile).not.toHaveBeenCalled();
   });
@@ -173,7 +290,7 @@ describe('useThumbnailGenerator', () => {
     writeFile.mockRejectedValueOnce(failure);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     renderHook(() => useThumbnailGenerator());
-    const artifact = await thumbnailInput!.render({ kind: 'manual-thumbnail' });
+    const artifact = await renderArtifact();
 
     await expect(thumbnailInput!.store(artifact)).rejects.toBe(failure);
     expect(warn).toHaveBeenCalledOnce();
@@ -185,11 +302,59 @@ describe('useThumbnailGenerator', () => {
     });
   });
 
-  it('should unsubscribe from geometry events on unmount', () => {
+  it('should unsubscribe from geometry events and render requests on unmount', () => {
     const { unmount } = renderHook(() => useThumbnailGenerator());
 
     unmount();
 
     expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(unsubscribeSnapshots).toHaveBeenCalledOnce();
+  });
+
+  it('should resolve regenerate with the machine-reported outcome', async () => {
+    const hook = renderHook(() => useThumbnailGenerator());
+    const outcome = hook.result.current.regenerate();
+    expect(send).toHaveBeenLastCalledWith({ type: 'regenerate' });
+
+    thumbnailInput!.onManualResult?.({
+      status: 'stored',
+      kind: 'manual-thumbnail',
+      identity: 'manual-identity',
+    });
+
+    await expect(outcome).resolves.toEqual({
+      status: 'stored',
+      kind: 'manual-thumbnail',
+      identity: 'manual-identity',
+    });
+  });
+
+  it('should settle pending manual regeneration when the hook unmounts', async () => {
+    const hook = renderHook(() => useThumbnailGenerator());
+    const outcome = hook.result.current.regenerate();
+
+    hook.unmount();
+
+    await expect(outcome).resolves.toMatchObject({
+      status: 'failed',
+      kind: 'manual-thumbnail',
+      error: { name: 'AbortError' },
+    });
+  });
+
+  it('should recheck generation after an awaited locator lookup before writing', async () => {
+    const lookup = deferred<ReturnType<typeof locator>>();
+    getProjectFileSystemConfig
+      .mockResolvedValueOnce(locator('/projects/one'))
+      .mockImplementationOnce(async () => lookup.promise);
+    const hook = renderHook(() => useThumbnailGenerator());
+    const artifact = await renderArtifact();
+    const storage = thumbnailInput!.store(artifact);
+
+    hook.unmount();
+    lookup.resolve(locator('/projects/one'));
+
+    await expect(storage).resolves.toEqual({ status: 'skipped', reason: 'superseded' });
+    expect(writeFile).not.toHaveBeenCalled();
   });
 });

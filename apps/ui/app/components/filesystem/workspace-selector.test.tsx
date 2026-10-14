@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { WorkspaceSelector } from '#components/filesystem/workspace-selector.js';
-import { TooltipProvider } from '#components/ui/tooltip.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { ProjectCreationLocationState } from '#hooks/use-project-creation-location.js';
 
 const homeOnly: ProjectCreationLocationState = {
@@ -79,7 +79,7 @@ describe('WorkspaceSelector', () => {
     expect(trigger.querySelector('svg')).toHaveClass('size-3.5');
   });
 
-  it('matches the model selector geometry and explains the storage choice', async () => {
+  it('matches the composer’s ghost pill and explains the storage choice', async () => {
     const user = userEvent.setup();
     renderPicker(readyState());
 
@@ -87,7 +87,9 @@ describe('WorkspaceSelector', () => {
     expect(trigger).toHaveClass('h-7', 'rounded-full');
     expect(trigger).not.toHaveClass('border');
     expect(trigger).not.toHaveClass('bg-background');
-    expect(trigger.querySelector('svg')).toHaveClass('size-3.5');
+    /* Glyph first at the bar's 16 px, its label the first to leave when the bar needs room (D6). */
+    expect(trigger.querySelector('svg')).toHaveClass('size-4');
+    expect(trigger.querySelector('span')).toHaveClass('group-data-[hide-kernel]/bar:hidden');
     expect(trigger).toHaveTextContent('Home');
     expect(trigger).not.toHaveTextContent('in this browser');
     expect(trigger.querySelector('[title]')).toBeNull();
@@ -97,6 +99,22 @@ describe('WorkspaceSelector', () => {
       'Home uses browser storage, which can be cleared. Select to change location.',
     );
     expect(tooltipCopy[0]).toBeVisible();
+  });
+
+  it('explains Home as a folder on your computer in the desktop app', async () => {
+    vi.stubEnv('TAU_TARGET', 'desktop');
+    try {
+      const user = userEvent.setup();
+      renderPicker(readyState());
+      await user.hover(screen.getByRole('button', { name: 'Create in Home' }));
+
+      const tooltipCopy = await screen.findAllByText(
+        'Home keeps projects in a folder on your computer. Select to change location.',
+      );
+      expect(tooltipCopy[0]).toBeVisible();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('explains direct disk storage without repeating the trigger label', async () => {
@@ -137,7 +155,7 @@ describe('WorkspaceSelector', () => {
 
     await user.click(screen.getByRole('button', { name: 'Create in Home' }));
 
-    expect(screen.queryByPlaceholderText('Search locations...')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Search locations…')).not.toBeInTheDocument();
     expect(screen.getByText('Create in')).toBeVisible();
     const options = screen.getAllByRole('option');
     expect(options).toHaveLength(2);
@@ -177,9 +195,9 @@ describe('WorkspaceSelector', () => {
     await user.click(screen.getByRole('button', { name: 'Create in Home' }));
 
     if (enabled) {
-      expect(screen.getByPlaceholderText('Search locations...')).toBeVisible();
+      expect(screen.getByPlaceholderText('Search locations…')).toBeVisible();
     } else {
-      expect(screen.queryByPlaceholderText('Search locations...')).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText('Search locations…')).not.toBeInTheDocument();
     }
   });
 
@@ -272,22 +290,12 @@ describe('WorkspaceSelector', () => {
     expect(onSelectionComplete).toHaveBeenCalledTimes(2);
   });
 
-  it('restores focus after desktop cancellation but not nested cancellation', async () => {
+  it('restores focus after desktop cancellation', async () => {
     const user = userEvent.setup();
     const onRequestFocus = vi.fn();
-    const { unmount } = render(
-      <TooltipProvider>
-        <WorkspaceSelector state={readyState()} variant='toolbar' onRequestFocus={onRequestFocus} />
-      </TooltipProvider>,
-    );
-    await user.click(screen.getByRole('button', { name: 'Create in Home' }));
-    await user.keyboard('{Escape}');
-    expect(onRequestFocus).toHaveBeenCalledOnce();
-    unmount();
-
     render(
       <TooltipProvider>
-        <WorkspaceSelector state={readyState()} variant='toolbar' isNested onRequestFocus={onRequestFocus} />
+        <WorkspaceSelector state={readyState()} variant='toolbar' onRequestFocus={onRequestFocus} />
       </TooltipProvider>,
     );
     await user.click(screen.getByRole('button', { name: 'Create in Home' }));

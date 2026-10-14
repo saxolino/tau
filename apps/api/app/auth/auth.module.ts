@@ -1,6 +1,8 @@
 /* oxlint-disable no-use-extend-native/no-use-extend-native -- Reflect.Metadata is required */
+import { BillingAccountClosureService } from '#api/billing/billing-account-closure.service.js';
+import { BillingPaymentsService } from '#api/billing/billing-payments.service.js';
 import type { DynamicModule, NestModule, OnModuleInit } from '@nestjs/common';
-import { Global, Inject, Logger, Module } from '@nestjs/common';
+import { Global, HttpException, Inject, Logger, Module, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DiscoveryModule, DiscoveryService, HttpAdapterHost, MetadataScanner } from '@nestjs/core';
 import { betterAuth } from 'better-auth';
@@ -15,6 +17,9 @@ import { BetterAuthService } from '#auth/better-auth.service.js';
 import type { Environment } from '#config/environment.config.js';
 import { EmailModule } from '#email/email.module.js';
 import { EmailService } from '#email/email.service.js';
+import { BillingModule } from '#api/billing/billing.module.js';
+import { HostsModule } from '#api/hosts/hosts.module.js';
+import { HostsService } from '#api/hosts/hosts.service.js';
 
 type AuthInstance = ReturnType<typeof betterAuth>;
 
@@ -23,6 +28,7 @@ const hooks = [
   { metadataKey: afterHookKey, hookType: 'after' },
 ] as const;
 
+/** Authentication remains available while first-party payment ownership is qualified. */
 @Global()
 @Module({
   imports: [DiscoveryModule, DatabaseModule],
@@ -30,32 +36,43 @@ const hooks = [
   exports: [AuthService],
 })
 export class AuthModule implements NestModule, OnModuleInit {
-  public static forRootAsync(): DynamicModule {
-    return {
-      global: true,
-      module: AuthModule,
-      imports: [DatabaseModule, EmailModule],
-      providers: [
-        {
+  public static forRootAsync(options: { readonly tauCloudEnabled: boolean }): DynamicModule {
+    const authProvider = options.tauCloudEnabled
+      ? {
           provide: authInstanceKey,
+          // eslint-disable-next-line max-params-no-constructor/max-params-no-constructor -- Nest resolves five distinct auth composition tokens.
           async useFactory(
             databaseService: DatabaseService,
             configService: ConfigService<Environment, true>,
-            authService: AuthService,
             emailService: EmailService,
+            cloudHosts: HostsService,
+            closure: BillingAccountClosureService,
           ): Promise<AuthInstance> {
-            const config = getBetterAuthConfig({
-              databaseService,
-              configService,
-              authService,
-              emailService,
-            });
-            return betterAuth(config);
+            return betterAuth(
+              getBetterAuthConfig({ databaseService, configService, emailService, cloudHosts, closure }),
+            );
           },
-          inject: [DatabaseService, ConfigService, AuthService, EmailService],
-        },
-        BetterAuthService,
-      ],
+          inject: [DatabaseService, ConfigService, EmailService, HostsService, BillingAccountClosureService],
+        }
+      : {
+          provide: authInstanceKey,
+          // eslint-disable-next-line max-params-no-constructor/max-params-no-constructor -- Nest resolves four distinct auth composition tokens.
+          async useFactory(
+            databaseService: DatabaseService,
+            configService: ConfigService<Environment, true>,
+            emailService: EmailService,
+            cloudHosts: HostsService,
+          ): Promise<AuthInstance> {
+            return betterAuth(getBetterAuthConfig({ databaseService, configService, emailService, cloudHosts }));
+          },
+          inject: [DatabaseService, ConfigService, EmailService, HostsService],
+        };
+    return {
+      global: true,
+      module: AuthModule,
+      /* HostsModule for account deletion's cloud-host stop (W10 a4). */
+      imports: [DatabaseModule, EmailModule, HostsModule, ...(options.tauCloudEnabled ? [BillingModule] : [])],
+      providers: [authProvider, BetterAuthService],
       exports: [authInstanceKey, BetterAuthService],
     };
   }
@@ -67,6 +84,8 @@ export class AuthModule implements NestModule, OnModuleInit {
     @Inject(DiscoveryService) private readonly discoveryService: DiscoveryService,
     @Inject(MetadataScanner) private readonly metadataScanner: MetadataScanner,
     @Inject(HttpAdapterHost) private readonly adapter: HttpAdapterHost<FastifyAdapter>,
+    // oxlint-disable-next-line eslint/new-cap -- Nest's Optional decorator is a function by contract.
+    @Optional() @Inject(BillingPaymentsService) private readonly payments?: BillingPaymentsService,
   ) {}
 
   public onModuleInit(): void {
@@ -110,47 +129,81 @@ export class AuthModule implements NestModule, OnModuleInit {
       return;
     }
 
-    // Configure the auth routes
-    instance.all(`${basePath}/*`, async (request: Request, reply: Reply) => {
-      try {
-        const url = new URL(request.url, `${request.protocol}://${request.hostname}`);
-
-        const headers = new Headers();
-        for (const [key, value] of Object.entries(request.headers)) {
-          if (value) {
-            headers.append(key, value.toString());
-          }
-        }
-
-        const request_ = new Request(url.toString(), {
-          method: request.method,
-          headers,
-          body: request.body ? JSON.stringify(request.body) : undefined,
-        });
-
-        const response = await this.auth.handler(request_);
-
-        void reply.status(response.status);
-        // oxlint-disable-next-line unicorn/no-array-for-each -- headers are not iterable
-        response.headers.forEach((value, key) => reply.header(key, value));
-
-        const responseText = response.body ? await response.text() : null;
-        void reply.send(
-          responseText ?? {
-            status: response.status,
-            message: response.statusText,
+    // This scoped parser preserves signed bytes ahead of the authentication wildcard.
+    if (this.payments) {
+      const stripeWebhookPath = `${basePath}/stripe/webhook`;
+      void instance.register(async (scoped) => {
+        scoped.removeContentTypeParser('application/json');
+        scoped.addContentTypeParser(
+          'application/json',
+          { parseAs: 'buffer', bodyLimit: 1024 * 1024 },
+          (_request, body, done) => {
+            done(null, body);
           },
         );
-      } catch (error) {
-        this.logger.fatal(error, 'Better auth error');
-        void reply.status(500).send({
-          error: 'Internal authentication error',
-          code: 'AUTH_FAILURE',
+        scoped.post(stripeWebhookPath, { bodyLimit: 1024 * 1024 }, async (request: Request, reply: Reply) => {
+          if (!Buffer.isBuffer(request.body) || typeof request.headers['stripe-signature'] !== 'string') {
+            await reply.status(400).send({ code: 'invalid_stripe_delivery' });
+            return;
+          }
+          try {
+            await this.payments?.receiveWebhook(new Uint8Array(request.body), request.headers['stripe-signature']);
+            await reply.status(200).send({ received: true });
+          } catch (error) {
+            const status = error instanceof HttpException ? error.getStatus() : 503;
+            await reply
+              .status(status)
+              .send({ code: status >= 500 ? 'stripe_inbox_unavailable' : 'invalid_stripe_delivery' });
+          }
         });
-      }
+      });
+    }
+
+    // Configure the auth routes
+    instance.all(`${basePath}/*`, async (request: Request, reply: Reply) => {
+      await this.forwardToAuth(request, reply, request.body ? JSON.stringify(request.body) : undefined);
     });
 
     this.logger.log(`AuthModule initialized at '${basePath}/*'`);
+  }
+
+  private async forwardToAuth(request: Request, reply: Reply, body: string | undefined): Promise<void> {
+    try {
+      const url = new URL(request.url, `${request.protocol}://${request.hostname}`);
+
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(request.headers)) {
+        if (value) {
+          headers.append(key, value.toString());
+        }
+      }
+
+      const request_ = new Request(url.toString(), {
+        method: request.method,
+        headers,
+        body,
+      });
+
+      const response = await this.auth.handler(request_);
+
+      void reply.status(response.status);
+      // oxlint-disable-next-line unicorn/no-array-for-each -- headers are not iterable
+      response.headers.forEach((value, key) => reply.header(key, value));
+
+      const responseText = response.body ? await response.text() : null;
+      void reply.send(
+        responseText ?? {
+          status: response.status,
+          message: response.statusText,
+        },
+      );
+    } catch (error) {
+      this.logger.fatal(error, 'Better auth error');
+      void reply.status(500).send({
+        error: 'Internal authentication error',
+        code: 'AUTH_FAILURE',
+      });
+    }
   }
 
   private setupHooks(providerMethod: (context: unknown) => Promise<void>): void {

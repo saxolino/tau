@@ -52,10 +52,39 @@ export function mountFileOperationParticipants(init: {
   readonly contentService: FileContentService;
   readonly editorRef: ActorRefFrom<typeof editorMachine>;
   readonly projectRef: ActorRefFrom<typeof projectMachine>;
+  /** The transactional sidecar mover: prepared before the source mutation, committed or rolled back with it. */
+  readonly parameterFiles?: Readonly<{
+    prepareFileOperation: Parameters<FileContentService['addFileOperationParticipant']>[0];
+  }>;
+  /** Current workbench record owners update view and entry paths before layout closure. */
+  readonly onWorkbenchPathChange?: (
+    change: Readonly<{ type: 'rename'; oldPath: string; newPath: string } | { type: 'delete'; path: string }>,
+  ) => Promise<void>;
 }): () => void {
-  const { contentService, editorRef, projectRef } = init;
+  const { contentService, editorRef, projectRef, parameterFiles, onWorkbenchPathChange } = init;
+  let pathChangeTail: Promise<void> = Promise.resolve();
+  const runWorkbenchPathChange = async (
+    change: Parameters<NonNullable<typeof onWorkbenchPathChange>>[0],
+  ): Promise<void> => {
+    await pathChangeTail;
+    try {
+      await onWorkbenchPathChange?.(change);
+    } catch {
+      /* The record owner reports its own write failure. Keep later changes ordered. */
+    }
+  };
+  const changeWorkbenchPaths = (change: Parameters<NonNullable<typeof onWorkbenchPathChange>>[0]): void => {
+    if (!onWorkbenchPathChange) {
+      return;
+    }
+    pathChangeTail = runWorkbenchPathChange(change);
+  };
+  const disposePreparedParticipant =
+    parameterFiles === undefined
+      ? undefined
+      : contentService.addFileOperationParticipant(parameterFiles.prepareFileOperation);
 
-  return contentService.onDidContentChange((event: ContentChangeEvent) => {
+  const disposeContentParticipant = contentService.onDidContentChange((event: ContentChangeEvent) => {
     switch (event.type) {
       case 'written': {
         sendProjectFileActivity(projectRef, 'written', [event.path]);
@@ -82,10 +111,19 @@ export function mountFileOperationParticipants(init: {
         // Editor: re-write path in place on every affected tab. The
         // existing `renameFile` action handles both single-file and
         // prefix (directory) renames in one pass.
-        editorRef.send({ type: 'renameFile', oldPath: event.oldPath, newPath: event.newPath });
+        editorRef.send({
+          type: 'renameFile',
+          oldPath: event.oldPath,
+          newPath: event.newPath,
+        });
         // Project: rewrite path-keyed maps and `mainEntryPath` so
         // open viewers / CAD actors / parameters survive the move.
-        projectRef.send({ type: 'fileMoved', oldPath: event.oldPath, newPath: event.newPath });
+        projectRef.send({
+          type: 'fileMoved',
+          oldPath: event.oldPath,
+          newPath: event.newPath,
+        });
+        changeWorkbenchPaths({ type: 'rename', oldPath: event.oldPath, newPath: event.newPath });
         sendProjectFileActivity(projectRef, event.type, [event.oldPath, event.newPath]);
         return;
       }
@@ -93,8 +131,8 @@ export function mountFileOperationParticipants(init: {
         // Editor: close the matching tab if any. Path is exact, no
         // prefix scan needed for single-file deletes.
         editorRef.send({ type: 'closeFile', path: event.path });
-        editorRef.send({ type: 'pruneComponentDisplayForDeletedPath', path: event.path });
         projectRef.send({ type: 'fileDeleted', path: event.path });
+        changeWorkbenchPaths({ type: 'delete', path: event.path });
         sendProjectFileActivity(projectRef, 'deleted', [event.path]);
         return;
       }
@@ -110,10 +148,10 @@ export function mountFileOperationParticipants(init: {
             editorRef.send({ type: 'closeFile', path: file.path });
           }
         }
-        editorRef.send({ type: 'pruneComponentDisplayForDeletedPath', path: event.path });
         projectRef.send({ type: 'directoryDeleted', path: event.path });
+        changeWorkbenchPaths({ type: 'delete', path: event.path });
         sendProjectFileActivity(projectRef, 'directoryDeleted', [event.path]);
-        return;
+        break;
       }
       // 'read' does not represent a project mutation.
       default: {
@@ -121,4 +159,8 @@ export function mountFileOperationParticipants(init: {
       }
     }
   });
+  return () => {
+    disposeContentParticipant();
+    disposePreparedParticipant?.();
+  };
 }

@@ -1,6 +1,10 @@
 import type { JSONSchema7, JSONSchema7Type } from '@taucad/json-schema';
 import { toJsonSchema } from '@taucad/json-schema';
 
+/** True for non-null objects whose keys are strings, excluding arrays. @public */
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 /**
  * Capitalizes the first letter of a string
  */
@@ -52,6 +56,7 @@ export async function jsonSchemaFromJson(json: Record<string, unknown>): Promise
       if (type === 'string' || type === 'number' || type === 'integer' || type === 'boolean') {
         return {
           ...processedSchema,
+          type: type === 'integer' ? 'number' : type,
           default: value as JSONSchema7Type,
         };
       }
@@ -88,7 +93,7 @@ export async function jsonSchemaFromJson(json: Record<string, unknown>): Promise
 
   // Add $schema field and root title
   return {
-    $schema: 'http://json-schema.org/draft-06/schema#',
+    $schema: 'http://json-schema.org/draft-07/schema#',
     ...schema,
     title: 'Root',
   };

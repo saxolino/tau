@@ -2,30 +2,33 @@
 /* oxlint-disable max-lines -- comprehensive kernel test suite */
 /* oxlint-disable @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matchers return any */
 /* eslint-disable @typescript-eslint/naming-convention -- File names use extensions like 'box.ts' */
+import { readFile } from 'node:fs/promises';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 import { NodeIO } from '@gltf-transform/core';
 import type { Document } from '@gltf-transform/core';
 import { Window } from 'happy-dom';
-import type {
-  FileExtension,
-  GeometryResponse,
-  HashedGeometryResult,
-  JSONSchema7,
-  RuntimeContentInput,
-  TelemetryEntry,
-} from '@taucad/runtime/types';
-import type { ExportResult } from '@taucad/runtime';
+import type { RuntimeContentInput, TelemetryEntry } from '@taucad/runtime/types';
+import type { ParameterManifest } from '@taucad/parameters';
+import type { ExportResult, Rendering } from '@taucad/runtime';
 
-import { replicadKernel } from '#replicad.kernel.js';
+import { registerTauGltfExtensions, readMechanismExport } from '@taucad/geometry-core';
+import type { TauCadTopologyPayload, TauCadTopologyRoot } from '@taucad/geometry-core';
+import { tauCadTopologyExtension } from '@taucad/runtime/types';
+import { decode as msgpackDecode, encode as msgpackEncode } from '@msgpack/msgpack';
+import { evaluatePose, resolveMechanismComponents, sampleAnimation } from '@taucad/kinematics';
+import { offersFor, replicadKernel } from '#replicad.kernel.js';
+import { normalizeRenderShapes } from '#utils/render-output.js';
+import type { NativeHandleEntry } from '#interface-resolution.js';
 import {
-  assertFailure,
-  assertSuccess,
+  assertRenderingSuccess,
+  createMockKernelRuntime,
   createGeometryFile,
   createGeometryTestHelpers,
   createTestGeometry,
   createTestRuntimeClient,
   extractGltfFromResult,
-  getTestParameters,
+  expectKernelProjectionOrder,
   mapZupMillimetersToYupMeters,
   readCoordinateEvidence,
 } from '@taucad/runtime-testing';
@@ -43,32 +46,49 @@ type ReplicadTestOptions = {
   readonly workerOptions?: Parameters<typeof replicadKernel>[0];
 };
 
+// The suite runs every runtime in this one isolate. The multi-threaded build parks
+// an `Atomics.waitAsync` on its pthread mailbox that never settles, so each multi
+// runtime keeps its whole OpenCASCADE heap reachable after shutdown: about 100 MB
+// a test, which took this file past the 16 GB CI runner. Tests take the
+// single-threaded build unless they name a variant.
 const createReplicadRuntime = (options?: ReplicadTestOptions) =>
   defineRuntime({
-    kernels: [replicadKernel(options?.workerOptions)],
+    kernels: [replicadKernel({ wasm: 'single', ...options?.workerOptions })],
     bundlers: [esbuildBundler()],
   });
 
-type TestClient = ReturnType<typeof createTestRuntimeClient>;
+const makeTestClient = (files: Record<string, string>, options?: ReplicadTestOptions) =>
+  createTestRuntimeClient({ runtime: createReplicadRuntime(options), files });
+type TestClient = ReturnType<typeof makeTestClient>;
 type GeometryFile = ReturnType<typeof createGeometryFile>;
 
 const testClients = new Set<TestClient>();
+const activeDocuments = new Map<
+  TestClient,
+  {
+    path: string;
+    parametersKey: string;
+    document: ReturnType<TestClient['open']>;
+  }
+>();
 
 /** Create a production-path in-process client for tests with the provided files. */
 const createClient = (
   files: Record<string, string>,
-  options?: ReplicadTestOptions & { readonly onTelemetry?: (entries: TelemetryEntry[]) => void },
+  options?: ReplicadTestOptions & { readonly onTelemetry?: (entries: readonly TelemetryEntry[]) => void },
 ): TestClient => {
-  const client = createTestRuntimeClient({ runtime: createReplicadRuntime(options), files });
+  const client = makeTestClient(files, options);
   if (options?.onTelemetry) {
-    client.on('telemetry', options.onTelemetry);
+    const { onTelemetry } = options;
+    client.on('telemetry', (batch) => {
+      onTelemetry(batch.entries);
+    });
   }
   testClients.add(client);
   return client;
 };
 
-const sourcePath = (file: GeometryFile): string =>
-  file.path === '/' ? file.filename : `${file.path}/${file.filename}`;
+const sourcePath = (file: GeometryFile): string => (file.path === '' ? file.filename : `${file.path}/${file.filename}`);
 
 const renderGeometry = async (
   client: TestClient,
@@ -83,38 +103,78 @@ const renderGeometry = async (
     content?: RuntimeContentInput;
     options?: Record<string, unknown>;
   },
-): Promise<HashedGeometryResult> => {
-  const outcome = await client.render({
-    source: { path: sourcePath(file) },
-    parameters,
+): Promise<Rendering> => {
+  const path = sourcePath(file);
+  const parametersKey = JSON.stringify(parameters);
+  let active = activeDocuments.get(client);
+  if (active?.path !== path) {
+    active?.document.close();
+    active = { path, parametersKey, document: client.open({ source: { path }, parameters }) };
+    activeDocuments.set(client, active);
+  } else if (active.parametersKey !== parametersKey) {
+    const updated = await active.document.update({ parameters });
+    expect(updated.superseded).toBe(false);
+    if (updated.superseded) {
+      throw new Error('Replicad test update was superseded');
+    }
+    active.parametersKey = parametersKey;
+  }
+  const view = active.document.view('model', {
     ...(content ? { content } : {}),
-    ...(options ? { renderOptions: options } : {}),
+    ...(options ? { options } : {}),
   });
+  const outcome = await view.rendering();
+  view.close();
   expect(outcome.superseded).toBe(false);
   if (outcome.superseded) {
     throw new Error('Replicad test render was superseded');
   }
-  return outcome.geometry;
+  return outcome.rendering;
 };
 
 const exportLastRender = async (
   client: TestClient,
-  format: FileExtension,
+  format: Extract<keyof ReturnType<typeof replicadKernel>['exports'], string>,
   exportOptions?: Record<string, unknown>,
-): Promise<ExportResult> => client.export(format, exportOptions === undefined ? undefined : { exportOptions });
+): Promise<ExportResult> => {
+  const active = activeDocuments.get(client);
+  if (!active) {
+    throw new Error('No document is open for export');
+  }
+  return active.document.export(format, exportOptions === undefined ? undefined : { options: exportOptions });
+};
 
 afterEach(async () => {
+  for (const active of activeDocuments.values()) {
+    active.document.close();
+  }
+  activeDocuments.clear();
   await Promise.all([...testClients].map(async (client) => client.shutdown()));
   testClients.clear();
 });
 
-const expectSvgContent = (geometry: GeometryResponse): string => {
-  expect(geometry.format).toBe('svg');
-  if (geometry.format !== 'svg') {
-    throw new Error(`Expected SVG geometry, received ${geometry.format}`);
+const expectSvgContent = (rendering: Rendering): string => {
+  assertRenderingSuccess(rendering);
+  expect(rendering.artifact.mimeType).toBe('image/svg+xml');
+  if (rendering.artifact.mimeType !== 'image/svg+xml' || typeof rendering.artifact.content !== 'string') {
+    throw new Error(`Expected SVG rendering, received ${rendering.artifact.mimeType}`);
   }
-  return geometry.content;
+  return rendering.artifact.content;
 };
+
+function assertRenderingFailure(rendering: Rendering): asserts rendering is Extract<Rendering, { success: false }> {
+  expect(rendering.success).toBe(false);
+  if (rendering.success) {
+    throw new Error('Expected rendering failure');
+  }
+}
+
+function assertExportSuccess(result: ExportResult): asserts result is Extract<ExportResult, { success: true }> {
+  expect(result.success).toBe(true);
+  if (!result.success) {
+    throw new Error(result.issues.map((issue) => issue.message).join('\n'));
+  }
+}
 
 const expectStandardReplicadSvgPaths = (svg: string, { minPathCount = 1 } = {}): Array<string | undefined> => {
   const window = new Window();
@@ -217,13 +277,18 @@ const mapStlEvidenceToYUp = ({
 };
 
 /** Helper to extract parameters and assert success. */
-const getParameters = async (
-  files: Record<string, string>,
-  mainFile: string,
-): Promise<{
-  jsonSchema: JSONSchema7;
-  defaultParameters: Record<string, unknown>;
-}> => getTestParameters({ runtime: createReplicadRuntime(), files, mainFile });
+async function getParameters(files: Record<string, string>, mainFile: string): Promise<ParameterManifest> {
+  const client = makeTestClient(files);
+  try {
+    const described = await client.describe({ source: { path: mainFile } });
+    if (!described.success) {
+      throw new Error(described.issues.map((issue) => issue.message).join('\n'));
+    }
+    return described.parameters;
+  } finally {
+    await client.shutdown();
+  }
+}
 
 /** Helper to create geometry and return the result. */
 const createGeometry = async ({
@@ -242,9 +307,8 @@ const createGeometry = async ({
   createTestGeometry({
     runtime: createReplicadRuntime(options),
     files,
-    mainFile,
-    parameters,
-    content,
+    open: { source: { path: mainFile }, ...(parameters ? { parameters } : {}) },
+    ...(content ? { view: (document) => document.view('model', { content }) } : {}),
   });
 
 // Create geometry test helpers instance for geometry assertions
@@ -258,6 +322,47 @@ describe('ReplicadWorker', () => {
     replicadDefinition = await resolveReplicadDefinition();
   });
 
+  it('keeps fine and coarse projections and STEP export independent', async () => {
+    const { importSTEP, measureVolume, measureArea, isShape3D } = await import('replicad');
+    const file = createGeometryFile('box.ts');
+    const files = {
+      'box.ts': `import { makeCylinder } from 'replicad'; export default () => makeCylinder(10, 20);`,
+    };
+    const client = createClient(files);
+    const freshClient = createClient(files);
+    const render = async (target: TestClient, tolerance: number) => {
+      const result = await renderGeometry(target, {
+        file,
+        parameters: {},
+        options: {
+          tessellation: { linearTolerance: tolerance, angularTolerance: 10 },
+        },
+      });
+      assertRenderingSuccess(result);
+      return extractGltfFromResult(result)!;
+    };
+    const ordered = await expectKernelProjectionOrder({
+      renderA: async () => render(client, 0.001),
+      renderB: async () => render(client, 1),
+      freshB: async () => render(freshClient, 1),
+      export: async () => {
+        const result = await exportLastRender(client, 'step');
+        assertExportSuccess(result);
+        const { bytes } = result.files[0];
+        const imported = await importSTEP(new Blob([bytes], { type: 'application/step' }));
+        expect(isShape3D(imported)).toBe(true);
+        if (!isShape3D(imported)) {
+          throw new Error('Expected a 3D STEP shape');
+        }
+        const volume = measureVolume(imported);
+        const area = measureArea(imported);
+        expect(volume).toBeGreaterThan(0);
+        return { volume, area, byteLength: bytes.byteLength };
+      },
+    });
+    expect(ordered.first).not.toEqual(ordered.intervening);
+  }, 60_000);
+
   // ===========================================================================
   // Tests: Parameter Extraction
   // ===========================================================================
@@ -265,7 +370,7 @@ describe('ReplicadWorker', () => {
   describe('getParameters', () => {
     describe('ESM style - export syntax', () => {
       it('should extract defaultParams from exported const', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'box.ts': `
               import { drawRoundedRectangle } from 'replicad';
@@ -285,23 +390,23 @@ describe('ReplicadWorker', () => {
           'box.ts',
         );
 
-        expect(defaultParameters).toEqual({
+        expect(defaults).toEqual({
           width: 100,
           height: 50,
           depth: 30,
         });
-        expect(jsonSchema).toMatchObject({
+        expect(schema).toMatchObject({
           type: 'object',
           properties: {
-            width: { type: 'integer', default: 100 },
-            height: { type: 'integer', default: 50 },
-            depth: { type: 'integer', default: 30 },
+            width: { type: 'double', default: 100 },
+            height: { type: 'double', default: 50 },
+            depth: { type: 'double', default: 30 },
           },
         });
       });
 
       it('should extract nested defaultParams', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'box.ts': `
               import { draw } from 'replicad';
@@ -325,25 +430,25 @@ describe('ReplicadWorker', () => {
           'box.ts',
         );
 
-        expect(defaultParameters).toEqual({
+        expect(defaults).toEqual({
           dimensions: { width: 100, height: 50 },
           options: { rounded: true, radius: 5 },
         });
-        expect(jsonSchema).toMatchObject({
+        expect(schema).toMatchObject({
           type: 'object',
           properties: {
             dimensions: {
               type: 'object',
               properties: {
-                width: { type: 'integer', default: 100 },
-                height: { type: 'integer', default: 50 },
+                width: { type: 'double', default: 100 },
+                height: { type: 'double', default: 50 },
               },
             },
             options: {
               type: 'object',
               properties: {
                 rounded: { type: 'boolean', default: true },
-                radius: { type: 'integer', default: 5 },
+                radius: { type: 'double', default: 5 },
               },
             },
           },
@@ -351,7 +456,7 @@ describe('ReplicadWorker', () => {
       });
 
       it('should handle array parameters', async () => {
-        const { defaultParameters } = await getParameters(
+        const { defaults } = await getParameters(
           {
             'box.ts': `
               import { draw } from 'replicad';
@@ -369,7 +474,7 @@ describe('ReplicadWorker', () => {
           'box.ts',
         );
 
-        expect(defaultParameters).toEqual({
+        expect(defaults).toEqual({
           sizes: [10, 20, 30],
           position: [0, 0, 0],
         });
@@ -378,7 +483,7 @@ describe('ReplicadWorker', () => {
 
     describe('CommonJS style - global defaultParams', () => {
       it('should extract defaultParams from global variable', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'box.js': `
               const { draw } = replicad;
@@ -397,12 +502,12 @@ describe('ReplicadWorker', () => {
           'box.js',
         );
 
-        expect(defaultParameters).toEqual({ width: 80, height: 40 });
-        expect(jsonSchema).toMatchObject({
+        expect(defaults).toEqual({ width: 80, height: 40 });
+        expect(schema).toMatchObject({
           type: 'object',
           properties: {
-            width: { type: 'integer', default: 80 },
-            height: { type: 'integer', default: 40 },
+            width: { type: 'double', default: 80 },
+            height: { type: 'double', default: 40 },
           },
         });
       });
@@ -410,7 +515,7 @@ describe('ReplicadWorker', () => {
 
     describe('Edge cases', () => {
       it('should return empty parameters for file without defaultParams', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'box.ts': `
               import { draw } from 'replicad';
@@ -423,14 +528,14 @@ describe('ReplicadWorker', () => {
           'box.ts',
         );
 
-        expect(defaultParameters).toEqual({});
-        expect(jsonSchema).toMatchObject({
+        expect(defaults).toEqual({});
+        expect(schema).toMatchObject({
           type: 'object',
         });
       });
 
       it('should handle boolean parameters', async () => {
-        const { defaultParameters } = await getParameters(
+        const { defaults } = await getParameters(
           {
             'box.ts': `
               import { draw } from 'replicad';
@@ -448,11 +553,11 @@ describe('ReplicadWorker', () => {
           'box.ts',
         );
 
-        expect(defaultParameters).toEqual({ addHoles: true, centered: false });
+        expect(defaults).toEqual({ addHoles: true, centered: false });
       });
 
       it('should handle string parameters', async () => {
-        const { defaultParameters } = await getParameters(
+        const { defaults } = await getParameters(
           {
             'box.ts': `
               import { draw } from 'replicad';
@@ -470,7 +575,7 @@ describe('ReplicadWorker', () => {
           'box.ts',
         );
 
-        expect(defaultParameters).toEqual({ label: 'My Box', material: 'PLA' });
+        expect(defaults).toEqual({ label: 'My Box', material: 'PLA' });
       });
     });
   });
@@ -494,8 +599,8 @@ describe('ReplicadWorker', () => {
         mainFile: 'named.ts',
       });
 
-      assertSuccess(result);
-      expect(result.data.format).toBe('gltf');
+      assertRenderingSuccess(result);
+      expect(result.artifact.mimeType).toBe('model/gltf-binary');
       const glbData = extractGltfFromResult(result);
       expect(glbData).toBeDefined();
       const { nodeNames, meshNames } = await readGltfNodeMeshNames(glbData!);
@@ -516,8 +621,8 @@ describe('ReplicadWorker', () => {
         mainFile: 'unnamed.ts',
       });
 
-      assertSuccess(result);
-      expect(result.data.format).toBe('gltf');
+      assertRenderingSuccess(result);
+      expect(result.artifact.mimeType).toBe('model/gltf-binary');
       const glbData = extractGltfFromResult(result);
       expect(glbData).toBeDefined();
       const { nodeNames, meshNames } = await readGltfNodeMeshNames(glbData!);
@@ -540,7 +645,7 @@ describe('ReplicadWorker', () => {
         mainFile: 'unnamed-multi.ts',
       });
 
-      assertSuccess(result);
+      assertRenderingSuccess(result);
       const glbData = extractGltfFromResult(result);
       expect(glbData).toBeDefined();
       const { nodeNames, meshNames } = await readGltfNodeMeshNames(glbData!);
@@ -573,9 +678,9 @@ describe('ReplicadWorker', () => {
           mainFile: 'box.ts',
         });
 
-        assertSuccess(result);
-        expect(result.data).toBeDefined();
-        expect(result.data.format).toBe('gltf');
+        assertRenderingSuccess(result);
+        expect(result).toBeDefined();
+        expect(result.artifact.mimeType).toBe('model/gltf-binary');
 
         // Geometry quality assertions
         await geometryHelpers.expectValidGltf(result);
@@ -605,7 +710,7 @@ describe('ReplicadWorker', () => {
           parameters: { width: 100, height: 60, depth: 20 },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry should use parameter values (100x60x20)
         await geometryHelpers.expectValidGltf(result);
@@ -633,7 +738,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'profile.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry quality assertions (50x30x10 box)
         await geometryHelpers.expectValidGltf(result);
@@ -657,7 +762,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'multi.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Should produce 2 meshes (box + cylinder)
         await geometryHelpers.expectValidGltf(result);
@@ -686,7 +791,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'box.js',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry quality assertions (50x30x10 box)
         await geometryHelpers.expectValidGltf(result);
@@ -720,7 +825,7 @@ describe('ReplicadWorker', () => {
           parameters: { size: 75 },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry should use parameter value (75x75x75 cube)
         await geometryHelpers.expectValidGltf(result);
@@ -755,7 +860,7 @@ describe('ReplicadWorker', () => {
           parameters: { width: 50, height: 30, depth: 10 },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
@@ -780,7 +885,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'hollow.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Boolean difference produces 1 mesh (hollow cylinder)
         await geometryHelpers.expectValidGltf(result);
@@ -805,7 +910,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'fused.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Boolean union produces 1 mesh (box with cylinder on top)
         await geometryHelpers.expectValidGltf(result);
@@ -832,7 +937,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'transformed.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Transformation produces 1 mesh (rotated and translated box)
         await geometryHelpers.expectValidGltf(result);
@@ -858,7 +963,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'loft.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Loft produces 1 mesh (cone-like shape)
         await geometryHelpers.expectValidGltf(result);
@@ -882,7 +987,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'filleted.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Fillet produces 1 mesh (box with rounded edges)
         await geometryHelpers.expectValidGltf(result);
@@ -906,7 +1011,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'shell.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Shell produces 1 mesh (hollow box)
         await geometryHelpers.expectValidGltf(result);
@@ -1099,7 +1204,7 @@ describe('ReplicadWorker', () => {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         const issue = result.issues[0]!;
         expect(issue).toEqual(
           expect.objectContaining({
@@ -1154,7 +1259,7 @@ describe('ReplicadWorker', () => {
           parameters: {},
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
       });
@@ -1181,7 +1286,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'main.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry: 30x30x30 cube
         await geometryHelpers.expectValidGltf(result);
@@ -1228,7 +1333,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'main.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry: 40x40 base with cylinder on top, total height 50
         await geometryHelpers.expectValidGltf(result);
@@ -1263,7 +1368,7 @@ describe('ReplicadWorker', () => {
           parameters: { size: 100 },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry: 100x100x100 cube (using passed parameter)
         await geometryHelpers.expectValidGltf(result);
@@ -1304,7 +1409,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'main.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry: box + cylinder, 2 meshes
         await geometryHelpers.expectValidGltf(result);
@@ -1313,6 +1418,16 @@ describe('ReplicadWorker', () => {
     });
 
     describe('2D geometry (SVG output)', () => {
+      it('offers a drawing-only model with an authored instance as the default view', async () => {
+        const { draw } = await import('replicad');
+        const drawing = draw().hLine(5).vLine(5).close();
+        const offers = offersFor({ shapes: normalizeRenderShapes({ shape: drawing, name: 'Front' }) });
+        expect(offers.views).toEqual(['drawing']);
+        expect(offers.views[0]).toBe('drawing');
+        expect(offers.exports).toEqual([]);
+        expect(offers.instances?.drawing).toEqual([{ id: 'Front', title: 'Front' }]);
+      });
+
       it('should return SVG for 2D sketch without extrusion', async () => {
         const result = await createGeometry({
           files: {
@@ -1331,8 +1446,8 @@ describe('ReplicadWorker', () => {
           mainFile: 'sketch.ts',
         });
 
-        assertSuccess(result);
-        const svg = expectSvgContent(result.data);
+        assertRenderingSuccess(result);
+        const svg = expectSvgContent(result);
         expect(svg.startsWith('<svg')).toBe(true);
         expect(svg).toContain('</svg>');
         expectStandardReplicadSvgPaths(svg);
@@ -1364,14 +1479,14 @@ describe('ReplicadWorker', () => {
           mainFile: 'projection-drawing.ts',
         });
 
-        assertSuccess(result, 'projection drawing');
-        const svg = expectSvgContent(result.data);
+        assertRenderingSuccess(result, 'projection drawing');
+        const svg = expectSvgContent(result);
         expect(svg.startsWith('<svg')).toBe(true);
         expect(svg).toContain('</svg>');
         expectStandardReplicadSvgPaths(svg);
       });
 
-      it('should reject mixed 3D and projected SVG drawing output without path serialization errors', async () => {
+      it('should render a model while retaining projected drawings as separate view offers', async () => {
         const result = await createGeometry({
           files: {
             'projection-drawings.ts': `
@@ -1415,21 +1530,13 @@ describe('ReplicadWorker', () => {
           mainFile: 'projection-drawings.ts',
         });
 
-        assertFailure(result, 'projection drawings');
-        expect(result.issues).toHaveLength(1);
-        expect(result.issues[0]).toMatchObject({
-          code: 'MIXED_RENDER_OUTPUT_UNSUPPORTED',
-          message: 'Kernel render produced mixed public geometry formats.',
-          severity: 'error',
-          type: 'runtime',
-        });
-        expect(result.issues.map((issue) => issue.message).join('\n')).not.toContain('replaceAll');
+        assertRenderingSuccess(result, 'projection drawings');
+        expect(extractGltfFromResult(result)?.byteLength).toBeGreaterThan(0);
       });
 
-      it('should render multiple colored 2D drawings as one SVG', async () => {
-        const result = await createGeometry({
-          files: {
-            'colored-drawings.ts': `
+      it('should render each colored 2D drawing as an authored SVG instance', async () => {
+        const files = {
+          'colored-drawings.ts': `
               import { draw } from 'replicad';
 
               export default function main() {
@@ -1478,19 +1585,31 @@ describe('ReplicadWorker', () => {
                 ];
               }
             `,
-          },
-          mainFile: 'colored-drawings.ts',
-        });
-
-        assertSuccess(result, 'colored drawings');
-        const svg = expectSvgContent(result.data);
-        expect(svg).toContain('</svg>');
-        const strokes = expectStandardReplicadSvgPaths(svg, { minPathCount: 5 });
-        expect(strokes).toContain('#ff0000');
-        expect(strokes).toContain('#0000ff');
-        expect(strokes).toContain('#008000');
-        expect(strokes).toContain('#000000');
-        expect(strokes).toContain('#800080');
+        };
+        const client = createClient(files);
+        const document = client.open({ source: { path: 'colored-drawings.ts' } });
+        const evaluated = await document.evaluation();
+        expect(evaluated.superseded).toBe(false);
+        if (evaluated.superseded || !evaluated.evaluation.success) {
+          throw new Error('Expected five offered drawing instances');
+        }
+        const instances = evaluated.evaluation.views.find((offer) => offer.id === 'drawing')?.instances;
+        expect(instances).toHaveLength(5);
+        const perInstanceStrokes = await Promise.all(
+          (instances ?? []).map(async (instance) => {
+            const view = document.view('drawing', { instance: instance.id });
+            const settled = await view.rendering();
+            view.close();
+            expect(settled.superseded).toBe(false);
+            if (settled.superseded) {
+              throw new Error('Drawing view was superseded');
+            }
+            const svg = expectSvgContent(settled.rendering);
+            return expectStandardReplicadSvgPaths(svg);
+          }),
+        );
+        const strokes = perInstanceStrokes.flat();
+        expect(strokes).toEqual(expect.arrayContaining(['#ff0000', '#0000ff', '#008000', '#000000', '#800080']));
       });
     });
 
@@ -1513,7 +1632,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'syntax_error.ts',
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues.length).toBeGreaterThan(0);
       });
 
@@ -1531,7 +1650,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'undefined_func.ts',
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues.length).toBeGreaterThan(0);
       });
 
@@ -1550,7 +1669,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'runtime_error.ts',
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues.length).toBeGreaterThan(0);
       });
 
@@ -1570,7 +1689,7 @@ describe('ReplicadWorker', () => {
           mainFile: 'main.ts',
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             message: expect.stringMatching(/bla is not defined/i),
@@ -1615,7 +1734,7 @@ describe('ReplicadWorker', () => {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1641,7 +1760,7 @@ describe('ReplicadWorker', () => {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1671,7 +1790,7 @@ export default function main() {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1707,7 +1826,7 @@ export default function main() {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1751,7 +1870,7 @@ export default function main() {
           },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1792,7 +1911,7 @@ export default function main() {
           },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1889,7 +2008,7 @@ export default function main() {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1922,7 +2041,7 @@ export default function main() {
           },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -1953,7 +2072,7 @@ export default function main() {
           options: { workerOptions: { wasm: 'single' } },
         });
 
-        assertFailure(result);
+        assertRenderingFailure(result);
         expect(result.issues[0]).toEqual(
           expect.objectContaining({
             type: 'kernel',
@@ -2017,7 +2136,7 @@ export default function main() {
           mainFile: 'decorated.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
 
         // Geometry quality assertions (50x30x10 box)
         await geometryHelpers.expectValidGltf(result);
@@ -2048,15 +2167,15 @@ export default function main() {
         file: geometryFile,
         parameters: {},
       });
-      assertSuccess(createResult);
+      assertRenderingSuccess(createResult);
 
       const exportResult = await exportLastRender(client, 'step');
-      assertSuccess(exportResult);
-      expect(exportResult.data.length).toBeGreaterThan(0);
-      expect(exportResult.data[0]?.bytes).toBeInstanceOf(Uint8Array);
-      expect(exportResult.data[0]?.mimeType).toBe('application/step');
+      assertExportSuccess(exportResult);
+      expect(exportResult.files.length).toBeGreaterThan(0);
+      expect(exportResult.files[0].bytes).toBeInstanceOf(Uint8Array);
+      expect(exportResult.files[0].mimeType).toBe('application/step');
 
-      const stepContent = new TextDecoder().decode(exportResult.data[0]!.bytes);
+      const stepContent = new TextDecoder().decode(exportResult.files[0].bytes);
       expect(stepContent).toContain('CLOSED_SHELL');
       expect(stepContent).toContain('ADVANCED_BREP_SHAPE_REPRESENTATION');
     });
@@ -2078,9 +2197,9 @@ export default function main() {
       await renderGeometry(client, { file: geometryFile, parameters: {} });
 
       const exportResult = await exportLastRender(client, 'step');
-      assertSuccess(exportResult);
+      assertExportSuccess(exportResult);
 
-      const stepBytes = exportResult.data[0]!.bytes;
+      const stepBytes = exportResult.files[0].bytes;
       const stepBlob = new Blob([stepBytes], { type: 'application/step' });
       const importedShape = await importSTEP(stepBlob);
 
@@ -2121,11 +2240,11 @@ export default function main() {
       await renderGeometry(client, { file: createGeometryFile('step-coordinate.ts'), parameters: {} });
       const zUp = await exportLastRender(client, 'step', { coordinateSystem: 'z-up' });
       const yUp = await exportLastRender(client, 'step', { coordinateSystem: 'y-up' });
-      assertSuccess(zUp);
-      assertSuccess(yUp);
+      assertExportSuccess(zUp);
+      assertExportSuccess(yUp);
 
-      const zShape = await importSTEP(new Blob([zUp.data[0]!.bytes], { type: 'application/step' }));
-      const yShape = await importSTEP(new Blob([yUp.data[0]!.bytes], { type: 'application/step' }));
+      const zShape = await importSTEP(new Blob([zUp.files[0].bytes], { type: 'application/step' }));
+      const yShape = await importSTEP(new Blob([yUp.files[0].bytes], { type: 'application/step' }));
       try {
         expect(isShape3D(zShape)).toBe(true);
         expect(isShape3D(yShape)).toBe(true);
@@ -2170,9 +2289,9 @@ export default function main() {
       await renderGeometry(client, { file: geometryFile, parameters: {} });
 
       const exportResult = await exportLastRender(client, 'stl');
-      assertSuccess(exportResult);
-      expect(exportResult.data.length).toBeGreaterThan(0);
-      expect(exportResult.data[0]!.name).toBe('Shape 1');
+      assertExportSuccess(exportResult);
+      expect(exportResult.files.length).toBeGreaterThan(0);
+      expect(exportResult.files[0].name).toBe('Shape 1');
     });
 
     it('should export to binary STL format', async () => {
@@ -2190,7 +2309,7 @@ export default function main() {
       await renderGeometry(client, { file: geometryFile, parameters: {} });
 
       const exportResult = await exportLastRender(client, 'stl', { binary: true });
-      assertSuccess(exportResult);
+      assertExportSuccess(exportResult);
     });
 
     it('should rotate asymmetric binary STL vertices and normals to y-up exactly once', async () => {
@@ -2205,11 +2324,11 @@ export default function main() {
       await renderGeometry(client, { file: createGeometryFile('stl-coordinate.ts'), parameters: {} });
       const zUp = await exportLastRender(client, 'stl', { binary: true, coordinateSystem: 'z-up' });
       const yUp = await exportLastRender(client, 'stl', { binary: true, coordinateSystem: 'y-up' });
-      assertSuccess(zUp);
-      assertSuccess(yUp);
+      assertExportSuccess(zUp);
+      assertExportSuccess(yUp);
 
-      expect(readBinaryStlEvidence(yUp.data[0]!.bytes)).toEqual(
-        mapStlEvidenceToYUp(readBinaryStlEvidence(zUp.data[0]!.bytes)),
+      expect(readBinaryStlEvidence(yUp.files[0].bytes)).toEqual(
+        mapStlEvidenceToYUp(readBinaryStlEvidence(zUp.files[0].bytes)),
       );
     });
 
@@ -2228,8 +2347,8 @@ export default function main() {
       await renderGeometry(client, { file: geometryFile, parameters: {} });
 
       const exportResult = await exportLastRender(client, 'gltf');
-      assertSuccess(exportResult);
-      expect(exportResult.data[0]?.name).toContain('gltf');
+      assertExportSuccess(exportResult);
+      expect(exportResult.files[0].name).toContain('gltf');
     });
 
     it('should export to GLB format', async () => {
@@ -2247,8 +2366,8 @@ export default function main() {
       await renderGeometry(client, { file: geometryFile, parameters: {} });
 
       const exportResult = await exportLastRender(client, 'glb');
-      assertSuccess(exportResult);
-      expect(exportResult.data[0]?.name).toContain('glb');
+      assertExportSuccess(exportResult);
+      expect(exportResult.files[0].name).toContain('glb');
     });
 
     it('should export empty GLB and glTF files after an empty render', async () => {
@@ -2264,25 +2383,17 @@ export default function main() {
 
       const geometryFile = createGeometryFile('empty.ts');
       const createResult = await renderGeometry(client, { file: geometryFile, parameters: {} });
-      assertSuccess(createResult);
+      assertRenderingSuccess(createResult);
 
       const glbExportResult = await exportLastRender(client, 'glb');
-      assertSuccess(glbExportResult);
-      const glbFile = glbExportResult.data[0];
-      expect(glbFile).toBeDefined();
-      if (glbFile === undefined) {
-        throw new Error('Expected empty GLB export file.');
-      }
+      assertExportSuccess(glbExportResult);
+      const glbFile = glbExportResult.files[0];
       const document = await new NodeIO().readBinary(glbFile.bytes);
       expect(document.getRoot().listMeshes()).toHaveLength(0);
 
       const gltfExportResult = await exportLastRender(client, 'gltf');
-      assertSuccess(gltfExportResult);
-      const gltfFile = gltfExportResult.data[0];
-      expect(gltfFile).toBeDefined();
-      if (gltfFile === undefined) {
-        throw new Error('Expected empty glTF export file.');
-      }
+      assertExportSuccess(gltfExportResult);
+      const gltfFile = gltfExportResult.files[0];
       const json = JSON.parse(new TextDecoder().decode(gltfFile.bytes)) as { meshes: unknown[] };
       expect(json.meshes).toEqual([]);
     });
@@ -2305,9 +2416,9 @@ export default function main() {
         coordinateSystem: 'z-up',
         unit: { length: 'millimeter' },
       });
-      assertSuccess(exportResult);
+      assertExportSuccess(exportResult);
 
-      const size = await readGltfSize(exportResult.data[0]!.bytes);
+      const size = await readGltfSize(exportResult.files[0].bytes);
       expect(size[0]).toBeCloseTo(50, 4);
       expect(size[1]).toBeCloseTo(30, 4);
       expect(size[2]).toBeCloseTo(10, 4);
@@ -2346,11 +2457,11 @@ export default function main() {
           coordinateSystem: 'y-up',
           unit: { length: 'meter' },
         });
-        assertSuccess(zUp);
-        assertSuccess(yUp);
+        assertExportSuccess(zUp);
+        assertExportSuccess(yUp);
 
-        const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.data[0]!.bytes, format });
-        const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.data[0]!.bytes, format });
+        const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.files[0].bytes, format });
+        const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.files[0].bytes, format });
         expect(yUpEvidence).toEqual(mapZupMillimetersToYupMeters(zUpEvidence));
       },
     );
@@ -2373,24 +2484,29 @@ export default function main() {
       await renderGeometry(client, { file: geometryFile, parameters: {} });
 
       const exportResult = await exportLastRender(client, 'step', {});
-      assertSuccess(exportResult);
+      assertExportSuccess(exportResult);
 
-      const stepContent = new TextDecoder().decode(exportResult.data[0]!.bytes);
+      const stepContent = new TextDecoder().decode(exportResult.files[0].bytes);
       expect(stepContent).toContain('CLOSED_SHELL');
       expect(stepContent).toContain('ADVANCED_BREP_SHAPE_REPRESENTATION');
       expect(stepContent).toContain('base');
       expect(stepContent).toContain('cylinder');
     });
 
-    it('should reject export when no render has settled', async () => {
+    it('should export from a committed evaluation before any view renders', async () => {
       const client = createClient({
-        'empty.ts': `
-          import { draw } from 'replicad';
-          export default function main() { return []; }
+        'box.ts': `
+          import { makeBox } from 'replicad';
+          export default function main() { return makeBox([0, 0, 0], [1, 1, 1]); }
         `,
       });
-
-      await expect(exportLastRender(client, 'step')).rejects.toMatchObject({ code: 'RUNTIME_NO_RENDER_OUTCOME' });
+      const document = client.open({ source: { path: 'box.ts' } });
+      const exported = await document.export('step');
+      assertExportSuccess(exported);
+      const step = new TextDecoder().decode(exported.files[0].bytes);
+      expect(step).toContain('CLOSED_SHELL');
+      expect(step).toContain('ADVANCED_BREP_SHAPE_REPRESENTATION');
+      document.close();
     });
 
     it('should respect mesh configuration for export', async () => {
@@ -2416,7 +2532,7 @@ export default function main() {
         },
       });
 
-      assertSuccess(exportResult);
+      assertExportSuccess(exportResult);
     });
   });
 
@@ -2442,7 +2558,7 @@ export default function main() {
         mainFile: 'named.ts',
       });
 
-      assertSuccess(result);
+      assertRenderingSuccess(result);
     });
 
     it('should handle colored shapes', async () => {
@@ -2462,7 +2578,7 @@ export default function main() {
         mainFile: 'colored.ts',
       });
 
-      assertSuccess(result);
+      assertRenderingSuccess(result);
     });
 
     it('should handle shapes with opacity', async () => {
@@ -2482,7 +2598,7 @@ export default function main() {
         mainFile: 'transparent.ts',
       });
 
-      assertSuccess(result);
+      assertRenderingSuccess(result);
     });
   });
 
@@ -2516,7 +2632,7 @@ export default function main() {
           parameters: { width: 50, height: 30, depth: 10 },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.05, 0.01, 0.03], 0.0005);
@@ -2538,7 +2654,7 @@ export default function main() {
           mainFile: 'assertions.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
       });
@@ -2565,7 +2681,7 @@ export default function main() {
           mainFile: 'const-assertion.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.04, 0.015, 0.02], 0.0005);
@@ -2589,7 +2705,7 @@ export default function main() {
           mainFile: 'type-import.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.05, 0.01, 0.03], 0.0005);
@@ -2615,7 +2731,7 @@ export default function main() {
           mainFile: 'inline-type.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.05, 0.01, 0.03], 0.0005);
@@ -2662,7 +2778,7 @@ export default function main() {
           mainFile: 'interfaces.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 2);
       });
@@ -2699,7 +2815,7 @@ export default function main() {
           mainFile: 'type-aliases.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 2);
       });
@@ -2732,7 +2848,7 @@ export default function main() {
           mainFile: 'generics.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.05, 0.02, 0.03], 0.0005);
@@ -2761,7 +2877,7 @@ export default function main() {
           mainFile: 'enums.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.05, 0.01, 0.03], 0.0005);
@@ -2794,7 +2910,7 @@ export default function main() {
           mainFile: 'modern-ts.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.05, 0.01, 0.02], 0.0005);
@@ -2854,7 +2970,7 @@ export default function main() {
           mainFile: 'main.ts',
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 2);
       });
@@ -2897,7 +3013,7 @@ export default function main() {
           parameters: { width: 60, height: 40, depth: 15 },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.06, 0.015, 0.04], 0.0005);
@@ -2964,7 +3080,7 @@ export default function main() {
           },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
       });
@@ -3034,7 +3150,7 @@ export default function main() {
           },
         });
 
-        assertSuccess(result);
+        assertRenderingSuccess(result);
         await geometryHelpers.expectValidGltf(result);
         await geometryHelpers.expectMeshCount(result, 1);
         await geometryHelpers.expectBoundingBoxSize(result, [0.06, 0.035, 0.04], 0.001);
@@ -3097,10 +3213,10 @@ export default function main() {
         parameters: { base: { width: 50 } },
       });
 
-      assertSuccess(result);
+      assertRenderingSuccess(result);
       // If shallow merge: base = { width: 50 } (missing depth, cornerRadius → runtime error)
       // If deep merge: base = { width: 50, depth: 20, cornerRadius: 5 } → success
-      expect(result.data.format).toBe('gltf');
+      expect(result.artifact.mimeType).toBe('model/gltf-binary');
     });
 
     it('should re-render with different parameters when replicad is imported transitively (production flow)', async () => {
@@ -3129,7 +3245,7 @@ export default function main() {
         file: geometryFile,
         parameters: { size: 30 },
       });
-      assertSuccess(result1);
+      assertRenderingSuccess(result1);
       await geometryHelpers.expectValidGltf(result1);
 
       // Second render with different parameters — kernel selection is cached
@@ -3138,7 +3254,7 @@ export default function main() {
         file: geometryFile,
         parameters: { size: 60 },
       });
-      assertSuccess(result2);
+      assertRenderingSuccess(result2);
       await geometryHelpers.expectValidGltf(result2);
     });
 
@@ -3163,7 +3279,7 @@ export default function main() {
         parameters: {},
       });
 
-      assertSuccess(result);
+      assertRenderingSuccess(result);
       await geometryHelpers.expectValidGltf(result);
     });
 
@@ -3188,7 +3304,7 @@ export default function main() {
         file: geometryFile,
         parameters: {},
       });
-      assertSuccess(result);
+      assertRenderingSuccess(result);
       await geometryHelpers.expectValidGltf(result);
     });
   });
@@ -3241,7 +3357,7 @@ describe('OC API Call Tracing', () => {
   }
 
   it('emits separate Replicad render spans for BRep execution, tessellation, and glTF packing', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3257,7 +3373,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const runMainSpan = expectTelemetrySpan(allEntries, 'replicad.run-main');
@@ -3291,7 +3407,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits a nested Replicad edge tessellation span when BRep edges are enabled', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3307,7 +3423,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const renderOutputSpan = expectTelemetrySpan(allEntries, 'replicad.render-output');
@@ -3326,7 +3442,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('uses prototype tessellation for repeated translated shape instances by default', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'shafts.ts': repeatedCylinderCode },
@@ -3342,7 +3458,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const renderOutputSpan = expectTelemetrySpan(allEntries, 'replicad.render-output');
@@ -3377,7 +3493,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('keeps the legacy per-shape tessellation path when tessellationInstancing is disabled', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'shafts.ts': repeatedCylinderCode },
@@ -3393,7 +3509,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const renderOutputSpan = expectTelemetrySpan(allEntries, 'replicad.render-output');
@@ -3408,7 +3524,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('uses prototype edge tessellation for repeated translated shape instances when BRep edges are enabled', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'shafts.ts': repeatedCylinderCode },
@@ -3425,7 +3541,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const renderOutputSpan = expectTelemetrySpan(allEntries, 'replicad.render-output');
@@ -3455,8 +3571,8 @@ describe('OC API Call Tracing', () => {
       options: { workerOptions: { ocTracing: 'off', tessellationInstancing: false } },
     });
 
-    assertSuccess(instanced);
-    assertSuccess(legacy);
+    assertRenderingSuccess(instanced);
+    assertRenderingSuccess(legacy);
 
     const instancedGltf = extractGltfFromResult(instanced);
     const legacyGltf = extractGltfFromResult(legacy);
@@ -3466,7 +3582,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits Replicad library summary telemetry under run-main when summary tracing is enabled', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       {
@@ -3492,7 +3608,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const runMainSpan = expectTelemetrySpan(allEntries, 'replicad.run-main');
@@ -3511,7 +3627,7 @@ describe('OC API Call Tracing', () => {
   }, 15_000);
 
   it('emits Replicad library per-call telemetry under run-main when per-call tracing is enabled', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       {
@@ -3536,7 +3652,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const runMainSpan = expectTelemetrySpan(allEntries, 'replicad.run-main');
@@ -3568,7 +3684,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits no Replicad library telemetry when library tracing is off', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3584,7 +3700,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const librarySpans = allEntries.filter((entry) => entry.name.startsWith('replicad.library.'));
@@ -3592,7 +3708,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits Replicad library summary telemetry when user code fails after library calls', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       {
@@ -3617,7 +3733,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertFailure(result);
+    assertRenderingFailure(result);
 
     const allEntries = telemetryBatches.flat();
     const runMainSpan = expectTelemetrySpan(allEntries, 'replicad.run-main');
@@ -3632,7 +3748,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits an oc.summary span in summary mode', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3648,7 +3764,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const summarySpan = allEntries.find((entry) => entry.name === 'oc.summary');
@@ -3660,7 +3776,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits individual oc.* spans in per-call mode', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3676,7 +3792,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const ocSpans = allEntries.filter((entry) => entry.name.startsWith('oc.') && entry.name !== 'oc.summary');
@@ -3687,7 +3803,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('emits no oc spans when tracing is off', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3703,7 +3819,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const ocSpans = allEntries.filter((entry) => entry.name.startsWith('oc.'));
@@ -3711,7 +3827,7 @@ describe('OC API Call Tracing', () => {
   });
 
   it('summary span contains per-class statistics', async () => {
-    const telemetryBatches: TelemetryEntry[][] = [];
+    const telemetryBatches: Array<readonly TelemetryEntry[]> = [];
 
     const client = createClient(
       { 'box.ts': boxCode },
@@ -3727,7 +3843,7 @@ describe('OC API Call Tracing', () => {
     });
     await collectTelemetry();
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const allEntries = telemetryBatches.flat();
     const summarySpan = allEntries.find((entry) => entry.name === 'oc.summary');
@@ -3776,11 +3892,10 @@ describe('includeEdges content', () => {
     const result = await createTestGeometry({
       runtime: createReplicadRuntime({ workerOptions: { wasm: 'single' } }),
       files: { 'box.ts': boxCode },
-      mainFile: 'box.ts',
-      parameters: {},
+      open: { source: { path: 'box.ts' } },
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
     const lineCount = await countLinePrimitives(result);
     expect(lineCount).toBe(0);
   });
@@ -3789,12 +3904,11 @@ describe('includeEdges content', () => {
     const result = await createTestGeometry({
       runtime: createReplicadRuntime(),
       files: { 'box.ts': boxCode },
-      mainFile: 'box.ts',
-      parameters: {},
-      content: { includeEdges: true },
+      open: { source: { path: 'box.ts' } },
+      view: (document) => document.view('model', { content: { includeEdges: true } }),
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
     const lineCount = await countLinePrimitives(result);
     expect(lineCount).toBeGreaterThan(0);
   });
@@ -3803,20 +3917,18 @@ describe('includeEdges content', () => {
     const withoutEdges = await createTestGeometry({
       runtime: createReplicadRuntime(),
       files: { 'box.ts': boxCode },
-      mainFile: 'box.ts',
-      parameters: {},
-      content: { includeEdges: false },
+      open: { source: { path: 'box.ts' } },
+      view: (document) => document.view('model', { content: { includeEdges: false } }),
     });
     const withEdges = await createTestGeometry({
       runtime: createReplicadRuntime(),
       files: { 'box.ts': boxCode },
-      mainFile: 'box.ts',
-      parameters: {},
-      content: { includeEdges: true },
+      open: { source: { path: 'box.ts' } },
+      view: (document) => document.view('model', { content: { includeEdges: true } }),
     });
 
-    assertSuccess(withoutEdges);
-    assertSuccess(withEdges);
+    assertRenderingSuccess(withoutEdges);
+    assertRenderingSuccess(withEdges);
 
     const glbWithout = extractGltfFromResult(withoutEdges)!;
     const glbWith = extractGltfFromResult(withEdges)!;
@@ -3849,12 +3961,11 @@ describe('includeEdges content', () => {
     const result = await createTestGeometry({
       runtime: createReplicadRuntime(),
       files: { 'box.ts': boxCode },
-      mainFile: 'box.ts',
-      parameters: {},
-      content: { includeEdges: true },
+      open: { source: { path: 'box.ts' } },
+      view: (document) => document.view('model', { content: { includeEdges: true } }),
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
     const lineCount = await countLinePrimitives(result);
     expect(lineCount).toBeGreaterThan(0);
   });
@@ -3895,14 +4006,14 @@ describe('Angular tolerance', () => {
       parameters: {},
       options: { tessellation: { linearTolerance: 1, angularTolerance: 60 } },
     });
-    assertSuccess(coarseResult);
+    assertRenderingSuccess(coarseResult);
 
     const fineResult = await renderGeometry(client, {
       file: geometryFile,
       parameters: {},
       options: { tessellation: { linearTolerance: 1, angularTolerance: 5 } },
     });
-    assertSuccess(fineResult);
+    assertRenderingSuccess(fineResult);
 
     const coarseVertices = await getVertexCount(extractGltfFromResult(coarseResult)!);
     const fineVertices = await getVertexCount(extractGltfFromResult(fineResult)!);
@@ -4001,11 +4112,10 @@ describe('Normal consistency', () => {
           }
         `,
       },
-      mainFile: 'box.ts',
-      parameters: {},
+      open: { source: { path: 'box.ts' } },
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const glbData = extractGltfFromResult(result)!;
     const document = await new NodeIO().readBinary(glbData);
@@ -4081,11 +4191,10 @@ describe('Normal consistency', () => {
           }
         `,
       },
-      mainFile: 'hollow.ts',
-      parameters: {},
+      open: { source: { path: 'hollow.ts' } },
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const glbData = extractGltfFromResult(result)!;
     const document = await new NodeIO().readBinary(glbData);
@@ -4149,11 +4258,10 @@ describe('Normal consistency', () => {
           }
         `,
       },
-      mainFile: 'fillet.ts',
-      parameters: {},
+      open: { source: { path: 'fillet.ts' } },
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const glbData = extractGltfFromResult(result)!;
     const document = await new NodeIO().readBinary(glbData);
@@ -4185,11 +4293,10 @@ describe('Normal consistency', () => {
           }
         `,
       },
-      mainFile: 'tray.ts',
-      parameters: {},
+      open: { source: { path: 'tray.ts' } },
     });
 
-    assertSuccess(result);
+    assertRenderingSuccess(result);
 
     const glbData = extractGltfFromResult(result)!;
     const document = await new NodeIO().readBinary(glbData);
@@ -4207,6 +4314,295 @@ describe('Normal consistency', () => {
   }, 15_000);
 });
 
+// =============================================================================
+// Mechanism export → TAU_cad_topology
+// =============================================================================
+
+const mechanismModule = (
+  driverComponent: string,
+  declaration = 'function mechanism(params: typeof defaultParams): MechanismSource',
+): string => `
+  import { makeBox } from 'replicad';
+  import type { MechanismSource } from '@taucad/kinematics';
+
+  export const defaultParams = { gap: 20 };
+
+  export default function main(params: typeof defaultParams) {
+    return [
+      { shape: makeBox([0, 0, 0], [100, 50, 10]), name: 'Base' },
+      { shape: makeBox([0, 0, 10], [20, 20, 30]), name: 'Drive Gear' },
+      { shape: makeBox([params.gap + 20, 0, 10], [params.gap + 40, 20, 30]), name: 'Driven Gear' },
+    ];
+  }
+
+  export ${declaration} {
+    return {
+      schemaVersion: 1,
+      units: { length: 'mm', angle: 'deg' },
+      root: 'base',
+      links: {
+        base: { shapes: ['Base'] },
+        drive: { shapes: ['${driverComponent}'] },
+        driven: { shapes: ['Driven Gear'] },
+      },
+      joints: {
+        drive: {
+          type: 'revolute',
+          parent: 'base',
+          child: 'drive',
+          origin: [10, 10, 10],
+          axis: [0, 0, 1],
+          limits: { lower: -180, upper: 180 },
+        },
+        driven: { type: 'revolute', parent: 'base', child: 'driven', origin: [params.gap + 30, 10, 10], axis: [0, 0, 1] },
+      },
+      couplings: [{ driver: 'drive', follower: 'driven', ratio: -0.5 }],
+    };
+  }
+`;
+
+const readTopologyPayload = async (glb: Uint8Array<ArrayBuffer> | undefined): Promise<TauCadTopologyPayload> => {
+  if (!glb) {
+    throw new Error('Expected GLB render output.');
+  }
+  const document = await registerTauGltfExtensions(new NodeIO()).readBinary(glb);
+  const root = document.getRoot().getExtension<TauCadTopologyRoot>(tauCadTopologyExtension);
+  if (!root) {
+    throw new Error('Expected a TAU_cad_topology payload.');
+  }
+  const payload: unknown = root.getPayload();
+  return payload as TauCadTopologyPayload;
+};
+
+/** Round to nanometre precision and fold negative zero so frame conversions compare exactly. */
+const rounded = (vector: readonly number[] | undefined): number[] =>
+  (vector ?? []).map((value) => Math.round(value * 1e9) / 1e9 + 0);
+
+/** `readMechanismExport` formats only a throw from `mechanism()`; these cases never throw. */
+const formatUnreachable = (): never => {
+  throw new Error('Expected mechanism() not to throw.');
+};
+
+describe('mechanism export', () => {
+  it('should render and pose the hinged model documented in the Replicad skill', async () => {
+    const reference = await readFile(new URL('../agent/kinematics-reference.md', import.meta.url), 'utf8');
+    const source = /## Complete hinged model\n\n```typescript\n([\s\S]*?)\n```/u.exec(reference)?.[1];
+    expect(source).toBeDefined();
+    if (source === undefined) {
+      return;
+    }
+
+    const result = await createGeometry({ files: { 'hinge.ts': source }, mainFile: 'hinge.ts' });
+    assertRenderingSuccess(result);
+    expect(result.issues).toEqual([]);
+    const payload = await readTopologyPayload(extractGltfFromResult(result));
+    const { mechanism } = payload;
+    expect(mechanism?.links).toEqual({
+      base: { components: ['component:base'] },
+      lid: { components: ['component:lid'] },
+    });
+    const animation = mechanism?.animations?.[0];
+    expect(animation).toBeDefined();
+    if (mechanism === undefined || animation === undefined) {
+      return;
+    }
+    const coordinates = sampleAnimation({ animation, time: 1 });
+    expect(coordinates).toEqual({ hinge: 55 });
+    const pose = evaluatePose({ mechanism, coordinates });
+    expect(pose.status).toBe('posed');
+    if (pose.status === 'posed') {
+      expect(pose.pose.linkTransforms['lid']).not.toEqual(pose.pose.linkTransforms['base']);
+    }
+  });
+
+  it('should carry a mechanism in GLB space with resolved component ids', async () => {
+    const result = await createGeometry({
+      files: { 'gears.ts': mechanismModule('Drive Gear') },
+      mainFile: 'gears.ts',
+      parameters: { gap: 30 },
+    });
+
+    assertRenderingSuccess(result);
+    const payload = await readTopologyPayload(extractGltfFromResult(result));
+    const { mechanism } = payload;
+    expect(result.issues).toEqual([]);
+    expect(payload.components.map((component) => component.id)).toEqual([
+      'component:base',
+      'component:drive-gear',
+      'component:driven-gear',
+    ]);
+    expect(mechanism?.units).toEqual({ length: 'm', angle: 'deg' });
+    expect(mechanism?.links).toEqual({
+      base: { components: ['component:base'] },
+      drive: { components: ['component:drive-gear'] },
+      driven: { components: ['component:driven-gear'] },
+    });
+    // Z-up millimetres → Y-up metres, the vertex rule: (x, y, z) → (x, z, −y) / 1000.
+    const drive = mechanism?.joints['drive'];
+    const driven = mechanism?.joints['driven'];
+    expect(rounded(drive?.origin)).toEqual([0.01, 0.01, -0.01]);
+    expect(drive?.type === 'revolute' ? rounded(drive.axis) : undefined).toEqual([0, 1, 0]);
+    expect(drive?.type === 'revolute' ? drive.limits : undefined).toEqual({ lower: -180, upper: 180 });
+    // The function received the render's parameters: gap 30 puts the driven axis at x = 60 mm.
+    expect(rounded(driven?.origin)).toEqual([0.06, 0.01, -0.01]);
+    expect(mechanism?.couplings).toEqual([{ driver: 'drive', follower: 'driven', ratio: -0.5 }]);
+  });
+
+  it('should report an unknown component and still render the geometry without a mechanism', async () => {
+    const result = await createGeometry({
+      files: { 'gears.ts': mechanismModule('Missing Gear') },
+      mainFile: 'gears.ts',
+    });
+
+    assertRenderingSuccess(result);
+    const payload = await readTopologyPayload(extractGltfFromResult(result));
+    expect(payload.components).toHaveLength(3);
+    expect(payload.mechanism).toBeUndefined();
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'INVALID_REFERENCE',
+        severity: 'warning',
+        message: expect.stringMatching(/\/links\/drive.*Missing Gear/s),
+        details: expect.objectContaining({
+          mechanism: expect.objectContaining({
+            code: 'UNKNOWN_COMPONENT',
+            path: expect.stringContaining('/links/drive'),
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it('should render without a mechanism and warn, source-mapped, when mechanism() throws', async () => {
+    const result = await createGeometry({
+      files: {
+        'box.ts': `
+          import { makeBox } from 'replicad';
+
+          export const defaultParams = { size: 10 };
+
+          export default function main(params: typeof defaultParams) {
+            return [{ shape: makeBox([0, 0, 0], [params.size, params.size, params.size]), name: 'Base' }];
+          }
+
+          export function mechanism(params: typeof defaultParams) {
+            throw new Error(\`mechanism typo for size \${params.size}\`);
+          }
+        `,
+      },
+      mainFile: 'box.ts',
+    });
+
+    assertRenderingSuccess(result);
+    const payload = await readTopologyPayload(extractGltfFromResult(result));
+    expect(payload.components).toHaveLength(1);
+    expect(payload.mechanism).toBeUndefined();
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        type: 'runtime',
+        message: expect.stringMatching(/^Mechanism: mechanism\(\) threw ".*mechanism typo for size 10"/),
+        stackFrames: expect.arrayContaining([expect.anything()]),
+        details: {
+          producer: { kernelId: 'replicad' },
+          mechanism: {
+            code: 'INVALID_VALUE',
+            path: '',
+            message: expect.stringContaining('mechanism typo for size 10'),
+            recovery: expect.any(String),
+          },
+        },
+      }),
+    ]);
+  });
+
+  it('should resolve an async mechanism() to its value', async () => {
+    const result = await createGeometry({
+      files: {
+        'gears.ts': mechanismModule(
+          'Drive Gear',
+          'async function mechanism(params: typeof defaultParams): Promise<MechanismSource>',
+        ),
+      },
+      mainFile: 'gears.ts',
+    });
+
+    assertRenderingSuccess(result);
+    const payload = await readTopologyPayload(extractGltfFromResult(result));
+    expect(result.issues).toEqual([]);
+    expect(payload.mechanism?.links['drive']).toEqual({ components: ['component:drive-gear'] });
+  });
+
+  it('should normalise the mechanism once so a msgpack build snapshot admits it identically', async () => {
+    const authored = {
+      schemaVersion: 1,
+      units: { length: 'mm', angle: 'deg' },
+      root: 'base',
+      links: { base: { shapes: ['Base'] }, lid: { shapes: ['Lid'] } },
+      joints: {
+        hinge: {
+          type: 'revolute',
+          parent: 'base',
+          child: 'lid',
+          origin: [0, 0, 0],
+          axis: [0, 0, 1],
+          limits: undefined,
+        },
+      },
+      couplings: undefined,
+    };
+    const { mechanism, issues } = await readMechanismExport({
+      module: { mechanism: () => authored },
+      parameters: {},
+      kernelId: 'replicad',
+      formatError: formatUnreachable,
+    });
+    // The build cache stores the handle snapshot with msgpack, which writes `undefined` as nil.
+    const restored = msgpackDecode(msgpackEncode({ shapes: [], mechanism })) as { mechanism: unknown };
+    const componentIds = Object.fromEntries([
+      ['Base', 'component:base'],
+      ['Lid', 'component:lid'],
+    ]);
+
+    expect(issues).toEqual([]);
+    expect(resolveMechanismComponents({ source: mechanism, componentIds }).status).toBe('resolved');
+    expect(resolveMechanismComponents({ source: restored.mechanism, componentIds })).toEqual(
+      resolveMechanismComponents({ source: mechanism, componentIds }),
+    );
+  });
+
+  it('should warn and drop a mechanism that JSON cannot hold', async () => {
+    const cyclic: Record<string, unknown> = { schemaVersion: 1 };
+    cyclic['self'] = cyclic;
+
+    const outcomes = await Promise.all(
+      [{ schemaVersion: 1n }, cyclic].map(async (value) =>
+        readMechanismExport({
+          module: { mechanism: value },
+          parameters: {},
+          kernelId: 'replicad',
+          formatError: formatUnreachable,
+        }),
+      ),
+    );
+
+    for (const { mechanism, issues } of outcomes) {
+      expect(mechanism).toBeUndefined();
+      expect(issues).toEqual([
+        expect.objectContaining({
+          code: 'INVALID_ANNOTATION',
+          severity: 'warning',
+          message: expect.stringMatching(/^Mechanism: The mechanism cannot be written as JSON/),
+          details: {
+            producer: { kernelId: 'replicad' },
+            mechanism: { code: 'INVALID_VALUE', path: '', message: expect.any(String), recovery: expect.any(String) },
+          },
+        }),
+      ]);
+    }
+  });
+});
+
 // Example-model fixture sweep moved to
 // apps/runtime-e2e/src/replicad-fixtures.test.ts (project-cycle break).
 
@@ -4214,66 +4610,75 @@ describe('Normal consistency', () => {
 // serializeNativeHandle / deserializeNativeHandle
 // =============================================================================
 
+// A display render no longer carries the durable snapshot (charter D12/W6b), so these tests call the
+// kernel's serializer the way the framework does: on the native handle `createGeometry` produces.
+type ReplicadKernelContext = Parameters<NonNullable<typeof replicadDefinition.serializeHandle>>[2];
+
+const serializeHandle = (entries: NativeHandleEntry[], mechanism?: unknown) => {
+  if (!replicadDefinition.serializeHandle) {
+    throw new Error('The replicad kernel declares serializeHandle.');
+  }
+  return replicadDefinition.serializeHandle(
+    { handle: { shapes: entries, mechanism } },
+    createMockKernelRuntime(),
+    mock<ReplicadKernelContext>(),
+  );
+};
+
 describe('serializeNativeHandle', () => {
+  // The `replicad` library binds its OpenCASCADE instance process-globally through `setOC`, so one render
+  // installs the kernel's instance and the handles below are built with the very library the kernel used.
+  beforeAll(async () => {
+    replicadDefinition = await resolveReplicadDefinition();
+    assertRenderingSuccess(
+      await createGeometry({
+        files: {
+          'bootstrap.ts': `
+            import { makeBox } from 'replicad';
+            export default function main() {
+              return makeBox([0, 0, 0], [1, 1, 1]);
+            }
+          `,
+        },
+        mainFile: 'bootstrap.ts',
+      }),
+    );
+  }, 60_000);
+
   it('should serialize nativeHandle to BRep strings with metadata', async () => {
-    const result = await createGeometry({
-      files: {
-        'box.ts': `
-          import { drawRoundedRectangle } from 'replicad';
-          export default function main() {
-            return {
-              shape: drawRoundedRectangle(50, 30).sketchOnPlane().extrude(10),
-              name: 'TestBox',
-              color: '#ff0000',
-              metalness: 0.8,
-              roughness: 0.3,
-            };
-          }
-        `,
-      },
-      mainFile: 'box.ts',
-    });
-
-    assertSuccess(result);
-    expect(result.serializedNativeHandle).toBeDefined();
-
-    const serialized = result.serializedNativeHandle as Array<{
-      brep: string;
-      metadata: Record<string, unknown>;
-    }>;
+    const { drawRoundedRectangle } = await import('replicad');
+    const { shapes: serialized } = serializeHandle(
+      normalizeRenderShapes({
+        shape: drawRoundedRectangle(50, 30).sketchOnPlane().extrude(10),
+        name: 'TestBox',
+        color: '#ff0000',
+        metalness: 0.8,
+        roughness: 0.3,
+      }),
+    );
 
     expect(serialized).toHaveLength(1);
     expect(typeof serialized[0]!.brep).toBe('string');
     expect(serialized[0]!.brep.length).toBeGreaterThan(0);
-    expect(serialized[0]!.metadata['name']).toBe('TestBox');
-    expect(serialized[0]!.metadata['color']).toBe('#ff0000');
-    expect(serialized[0]!.metadata['metalness']).toBe(0.8);
-    expect(serialized[0]!.metadata['roughness']).toBe(0.3);
+    expect(serialized[0]!.metadata.name).toBe('TestBox');
+    expect(serialized[0]!.metadata.color).toBe('#ff0000');
+    expect(serialized[0]!.metadata.metalness).toBe(0.8);
+    expect(serialized[0]!.metadata.roughness).toBe(0.3);
   });
 
   it('should round-trip serialize/deserialize preserving shape geometry', async () => {
-    const result = await createGeometry({
-      files: {
-        'box.ts': `
-          import { drawRoundedRectangle, drawCircle } from 'replicad';
-          export default function main() {
-            return [
-              { shape: drawRoundedRectangle(50, 30).sketchOnPlane().extrude(10), name: 'Box', color: '#ff0000' },
-              { shape: drawCircle(10).sketchOnPlane().extrude(20).translate([0, 0, 10]), name: 'Cylinder', color: '#0000ff', opacity: 0.7 },
-            ];
-          }
-        `,
-      },
-      mainFile: 'box.ts',
-    });
-
-    assertSuccess(result);
-    expect(result.serializedNativeHandle).toBeDefined();
-
-    const serialized = result.serializedNativeHandle as Array<{
-      brep: string;
-      metadata: { name: string; color?: string; opacity?: number };
-    }>;
+    const { drawRoundedRectangle, drawCircle } = await import('replicad');
+    const { shapes: serialized } = serializeHandle(
+      normalizeRenderShapes([
+        { shape: drawRoundedRectangle(50, 30).sketchOnPlane().extrude(10), name: 'Box', color: '#ff0000' },
+        {
+          shape: drawCircle(10).sketchOnPlane().extrude(20).translate([0, 0, 10]),
+          name: 'Cylinder',
+          color: '#0000ff',
+          opacity: 0.7,
+        },
+      ]),
+    );
 
     expect(serialized).toHaveLength(2);
     expect(serialized[0]!.metadata.name).toBe('Box');
@@ -4281,9 +4686,28 @@ describe('serializeNativeHandle', () => {
     expect(serialized[1]!.metadata.opacity).toBe(0.7);
   }, 15_000);
 
+  it('should keep the authored mechanism across a native-handle snapshot', async () => {
+    const replicad = await import('replicad');
+    const mechanism = { schemaVersion: 1, root: 'base', links: { base: { shapes: ['Box'] } }, joints: {} };
+    const snapshot = serializeHandle(
+      normalizeRenderShapes({ shape: replicad.makeBox([0, 0, 0], [1, 1, 1]), name: 'Box' }),
+      mechanism,
+    );
+
+    const restored = replicadDefinition.deserializeHandle!(
+      { serialized: structuredClone(snapshot) },
+      createMockKernelRuntime(),
+      mock<ReplicadKernelContext>({ replicadLibrary: { ...replicad } }),
+    );
+
+    expect(snapshot.mechanism).toEqual(mechanism);
+    expect(restored.mechanism).toEqual(mechanism);
+    expect(restored.shapes.map((entry) => entry.name)).toEqual(['Box']);
+  });
+
   it('should have serializeNativeHandle and deserializeNativeHandle defined on the kernel', () => {
-    expect(replicadDefinition.serializeNativeHandle).toBeDefined();
-    expect(replicadDefinition.deserializeNativeHandle).toBeDefined();
+    expect(replicadDefinition.serializeHandle).toBeDefined();
+    expect(replicadDefinition.deserializeHandle).toBeDefined();
   });
 });
 
@@ -4294,7 +4718,7 @@ describe('No kernel matched', () => {
       mainFile: 'empty.ts',
     });
 
-    assertFailure(result);
+    assertRenderingFailure(result);
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'KERNEL_CAPABILITY_MISSING' }));
   });
 });

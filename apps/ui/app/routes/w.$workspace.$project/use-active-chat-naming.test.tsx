@@ -7,6 +7,10 @@ const client = { generate };
 
 vi.mock('#chat-clients/use-project-name-client.js', () => ({ useProjectNameClient: () => client }));
 
+// Naming is project-scoped: the hook reads `projectId` off the project
+// context and forwards it to the name client.
+vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project_test' }) }));
+
 const { useActiveChatNaming } = await import('#routes/w.$workspace.$project/use-active-chat-naming.js');
 
 const makeChat = (overrides: Partial<Chat> = {}): Chat => ({
@@ -37,6 +41,7 @@ describe('useActiveChatNaming', () => {
       ({ activeChat }) =>
         useActiveChatNaming({
           activeChat,
+          firstMessage: activeChat.messages[0],
           isProjectLoading: false,
           isChatsLoading: false,
           applyGeneratedChatName,
@@ -45,7 +50,7 @@ describe('useActiveChatNaming', () => {
     );
 
     await waitFor(() => {
-      expect(generate).toHaveBeenCalledWith({ text: 'design a bracket' });
+      expect(generate).toHaveBeenCalledWith({ projectId: 'project_test', text: 'design a bracket' });
       expect(applyGeneratedChatName).toHaveBeenCalledWith('chat_new', 'Bracket design');
     });
     rerender({ activeChat: makeChat({ updatedAt: 2 }) });
@@ -58,6 +63,7 @@ describe('useActiveChatNaming', () => {
       ({ activeChat }) =>
         useActiveChatNaming({
           activeChat,
+          firstMessage: activeChat.messages[0],
           isProjectLoading: false,
           isChatsLoading: false,
           applyGeneratedChatName,
@@ -77,6 +83,7 @@ describe('useActiveChatNaming', () => {
     renderHook(() =>
       useActiveChatNaming({
         activeChat: makeChat(),
+        firstMessage: makeChat().messages[0],
         isProjectLoading: false,
         isChatsLoading: false,
         applyGeneratedChatName: vi.fn(),

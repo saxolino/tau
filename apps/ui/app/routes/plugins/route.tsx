@@ -1,5 +1,10 @@
-import { Link } from 'react-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { fileContentBytes } from '@taucad/fs-client/file-content-service';
+import { z } from 'zod';
+import { ObservationService } from '@taucad/fs-client/observation-service';
+import { useObservation } from '@taucad/fs-client/react/use-observation';
+import type { MetaFunction } from 'react-router';
+import { PageContent } from '#components/layout/page-content.js';
+import { useCallback, useMemo } from 'react';
 import {
   Blocks,
   Check,
@@ -16,27 +21,23 @@ import {
   Store,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Badge } from '#components/ui/badge.js';
-import { Button } from '#components/ui/button.js';
-import { Input } from '#components/ui/input.js';
-import { Separator } from '#components/ui/separator.js';
+import { Badge } from '@taucad/ui/components/badge';
+import { Button } from '@taucad/ui/components/button';
+import { Input } from '@taucad/ui/components/input';
+import { Separator } from '@taucad/ui/components/separator';
 import type { Handle } from '#types/matches.types.js';
-import { cn } from '#utils/ui.utils.js';
+import { PageHeader } from '#components/layout/page-header.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { useSkillsCatalog } from '#hooks/use-skills-catalog.js';
-import { builtInSystemSkills } from '#lib/system-skills-catalog.js';
+import { useSkillsCatalogState } from '#hooks/use-skills-catalog.js';
+import { systemSkillsCatalog } from '#lib/system-skills-catalog.js';
 import { tauStoreSkills } from '#lib/tau-plugin-store-catalog.js';
-import type { BuiltInSystemSkill } from '#lib/system-skills-catalog.js';
+import type { SystemSkill } from '#lib/system-skills-catalog.js';
 import type { TauStoreSkill } from '#lib/tau-plugin-store-catalog.js';
 
+export const meta: MetaFunction = () => [{ title: 'Plugins · Tau' }];
+
 export const handle: Handle = {
-  breadcrumb() {
-    return (
-      <Button asChild variant='ghost'>
-        <Link to='/plugins'>Plugins</Link>
-      </Button>
-    );
-  },
   enableOverflowY: true,
 };
 
@@ -60,7 +61,7 @@ const featuredPlugins: StoreItem[] = [
     name: 'Chrome',
     description: 'Control Chrome with Tau',
     icon: Globe,
-    accent: 'bg-blue/10 text-blue',
+    accent: 'bg-information/10 text-information',
   },
   {
     name: 'Slack',
@@ -91,9 +92,9 @@ const featuredPlugins: StoreItem[] = [
 
 const skillAccentClasses = [
   'bg-warning/10 text-warning',
-  'bg-yellow/10 text-yellow',
-  'bg-purple/10 text-purple',
-  'bg-blue/10 text-blue',
+  'bg-warning/10 text-warning',
+  'bg-feature/10 text-feature',
+  'bg-information/10 text-information',
 ];
 
 type InstalledPluginManifest = {
@@ -114,12 +115,24 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const manifestPath = '.agents/plugins/installed.json';
 
+const installedPluginManifestSchema = z.object({
+  skills: z
+    .record(
+      z.string(),
+      z.object({
+        status: z.enum(['installed', 'shadowed']),
+        source: z.literal('tau-store'),
+        installedPath: z.string(),
+        shadowPath: z.string().optional(),
+        version: z.string(),
+        updatedAt: z.string(),
+      }),
+    )
+    .optional(),
+});
+
 function parseManifest(bytes: Uint8Array<ArrayBuffer>): InstalledPluginManifest {
-  try {
-    return JSON.parse(textDecoder.decode(bytes)) as InstalledPluginManifest;
-  } catch {
-    return {};
-  }
+  return installedPluginManifestSchema.parse(JSON.parse(textDecoder.decode(bytes)));
 }
 
 function skillToStoreItem(skill: TauStoreSkill, index: number): StoreItem {
@@ -132,7 +145,7 @@ function skillToStoreItem(skill: TauStoreSkill, index: number): StoreItem {
   };
 }
 
-function systemSkillToStoreItem(skill: BuiltInSystemSkill): StoreItem {
+function systemSkillToStoreItem(skill: SystemSkill): StoreItem {
   return {
     slug: skill.slug,
     name: skill.name,
@@ -217,33 +230,27 @@ function StoreSection({
 }
 
 export default function PluginsRoute(): React.JSX.Element {
-  const { readFile, writeFiles, exists } = useFileManager();
-  const skillsCatalog = useSkillsCatalog();
-  const [manifest, setManifest] = useState<InstalledPluginManifest>({});
-
-  const systemSkills = useMemo(() => builtInSystemSkills.map((skill) => systemSkillToStoreItem(skill)), []);
-  const storeSkills = useMemo(() => tauStoreSkills.map((skill, index) => skillToStoreItem(skill, index)), []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadManifest(): Promise<void> {
-      try {
-        const bytes = await readFile(manifestPath);
-        if (!cancelled) {
-          setManifest(parseManifest(bytes));
-        }
-      } catch {
-        if (!cancelled) {
-          setManifest({});
-        }
-      }
+  const { writeFiles, exists, contentService } = useFileManager();
+  const catalog = useSkillsCatalogState();
+  const skillsCatalog = catalog.commands;
+  const manifestService = useMemo(() => {
+    if (!contentService) {
+      return undefined;
     }
+    return new ObservationService<InstalledPluginManifest>({
+      resource: manifestPath,
+      read: async (read) => {
+        const result = await read.observe(contentService.observeContent(manifestPath));
+        return result.kind === 'orphaned' ? {} : parseManifest(fileContentBytes({ path: manifestPath, result }));
+      },
+      equal: (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+    });
+  }, [contentService]);
+  const manifestSnapshot = useObservation(manifestService);
+  const manifest = manifestSnapshot.value ?? {};
 
-    void loadManifest();
-    return () => {
-      cancelled = true;
-    };
-  }, [readFile]);
+  const systemSkills = useMemo(() => systemSkillsCatalog.map((skill) => systemSkillToStoreItem(skill)), []);
+  const storeSkills = useMemo(() => tauStoreSkills.map((skill, index) => skillToStoreItem(skill, index)), []);
 
   const getSkillInstallStatus = useCallback(
     (item: StoreItem): 'available' | 'installed' | 'shadowed' => {
@@ -264,6 +271,12 @@ export default function PluginsRoute(): React.JSX.Element {
 
   const installSkill = useCallback(
     async (slug: string): Promise<void> => {
+      if (catalog.status !== 'ready') {
+        return;
+      }
+      if (manifestSnapshot.status !== 'ready') {
+        return;
+      }
       const skill = tauStoreSkills.find((entry) => entry.slug === slug);
       if (!skill) {
         return;
@@ -292,39 +305,84 @@ export default function PluginsRoute(): React.JSX.Element {
         [targetPath]: { content: textEncoder.encode(skill.skillMarkdown) },
         [manifestPath]: { content: textEncoder.encode(JSON.stringify(nextManifest, null, 2) + '\n') },
       });
-      setManifest(nextManifest);
+      manifestService?.refresh();
     },
-    [exists, manifest, writeFiles],
+    [exists, manifest, manifestService, manifestSnapshot.status, writeFiles, catalog.status],
   );
 
   return (
-    <main className='mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 pt-14 pb-16'>
-      <div className='flex items-center gap-1 self-start'>
-        <Button size='xs' variant='secondary' className='h-7 rounded-md px-2 text-xs'>
-          Plugins
-        </Button>
-        <Button size='xs' variant='ghost' className='h-7 rounded-md px-2 text-xs text-muted-foreground'>
-          Skills
-        </Button>
-      </div>
-
-      <header className='space-y-6 text-center'>
-        <h1 className='text-2xl font-medium tracking-normal'>Make Tau work your way</h1>
-        <div className='flex items-center gap-2'>
-          <div className='relative min-w-0 flex-1'>
-            <Search className='pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground' />
-            <Input className='h-7 rounded-md pl-8 text-xs md:text-xs' placeholder='Search plugins' />
+    <PageContent className='space-y-6'>
+      <PageHeader
+        title='Plugins'
+        action={
+          <div className='ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto'>
+            <div className='flex items-center gap-1'>
+              <Button size='sm' variant='secondary'>
+                Plugins
+              </Button>
+              <Button size='sm' variant='ghost'>
+                Skills
+              </Button>
+            </div>
+            <div className='relative min-w-0 grow sm:w-64'>
+              <Search className='pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground' />
+              <Input aria-label='Search plugins' className='pl-8' placeholder='Search plugins…' />
+            </div>
+            <Button variant='secondary' size='sm'>
+              Built by Tau
+            </Button>
+            <Button variant='secondary' size='sm'>
+              All
+            </Button>
           </div>
-          <Button variant='secondary' size='xs' className='h-7 gap-1.5 rounded-md px-2 text-xs'>
-            Built by Tau
-          </Button>
-          <Button variant='secondary' size='xs' className='h-7 rounded-md px-2 text-xs'>
-            All
+        }
+      />
+
+      {manifestSnapshot.error && (
+        <p role='alert' className='text-sm text-destructive'>
+          {manifestSnapshot.error}
+        </p>
+      )}
+      {manifestService &&
+      (manifestSnapshot.status === 'closed' ||
+        manifestSnapshot.status === 'error' ||
+        (manifestSnapshot.value !== undefined && manifestSnapshot.status !== 'ready')) ? (
+        <div role='status' className='flex items-center justify-between gap-2 text-sm'>
+          <span>
+            {manifestSnapshot.status === 'registering' || manifestSnapshot.status === 'pending'
+              ? 'Plugin updates pending'
+              : 'Plugin updates unavailable'}
+          </span>
+          <Button
+            variant='ghost'
+            size='sm'
+            aria-label='Retry plugin updates'
+            onClick={() => {
+              manifestService.refresh();
+            }}
+          >
+            Retry
           </Button>
         </div>
-      </header>
+      ) : undefined}
+      {catalog.status === 'ready' ? undefined : (
+        <div role='status' className='flex items-center justify-between gap-2 text-sm'>
+          <span>
+            {catalog.status === 'registering' || catalog.status === 'pending'
+              ? 'Skill updates pending'
+              : 'Skill updates unavailable'}
+          </span>
+          <Button variant='ghost' size='sm' aria-label='Retry skill updates' onClick={catalog.retry}>
+            Retry
+          </Button>
+        </div>
+      )}
+      <StoreSection title='Featured' items={featuredPlugins} />
+      <StoreSection title='System' items={systemSkills} />
+      <StoreSection title='Skills' items={storeSkills} getStatus={getSkillInstallStatus} onInstall={installSkill} />
 
-      <section className='flex h-40 items-center justify-center overflow-hidden rounded-md border bg-[linear-gradient(135deg,color-mix(in_oklab,var(--color-blue)_18%,var(--background)),color-mix(in_oklab,var(--color-purple)_14%,var(--background)),color-mix(in_oklab,var(--color-yellow)_12%,var(--background)))]'>
+      {/* Below the collections: the first viewport belongs to the lists (page composition Rule 14). */}
+      <section className='flex h-40 items-center justify-center overflow-hidden rounded-md border bg-[linear-gradient(135deg,color-mix(in_oklab,var(--information)_18%,var(--background)),color-mix(in_oklab,var(--feature)_14%,var(--background)),color-mix(in_oklab,var(--warning)_12%,var(--background)))]'>
         <div className='flex flex-col items-center gap-4'>
           <Badge
             variant='secondary'
@@ -341,10 +399,6 @@ export default function PluginsRoute(): React.JSX.Element {
         </div>
       </section>
 
-      <StoreSection title='Featured' items={featuredPlugins} />
-      <StoreSection title='System' items={systemSkills} />
-      <StoreSection title='Skills' items={storeSkills} getStatus={getSkillInstallStatus} onInstall={installSkill} />
-
       <section className='flex items-center gap-3 rounded-md border border-dashed px-4 py-3'>
         <PackagePlus className='size-4 shrink-0 text-muted-foreground' />
         <div className='min-w-0 flex-1'>
@@ -357,6 +411,6 @@ export default function PluginsRoute(): React.JSX.Element {
           Add
         </Button>
       </section>
-    </main>
+    </PageContent>
   );
 }

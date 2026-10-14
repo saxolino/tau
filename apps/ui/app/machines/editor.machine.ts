@@ -1,33 +1,40 @@
-import { assign, assertEvent, setup, enqueueActions, raise } from 'xstate';
-import type { ActorRefFrom } from 'xstate';
+import { setup, types } from 'xstate';
+import type { ActorRefFrom, EnqueueObject, SystemRegistry } from 'xstate';
 import { idPrefix } from '@taucad/types/constants';
 import { generatePrefixedId } from '@taucad/utils/id';
-import { fromSafeAsync } from '#lib/xstate.lib.js';
+import { assertRootedPath, resolveRootedPath } from '@taucad/utils/path';
+import { eventSchemas, fromSafeAsync } from '#lib/xstate.lib.js';
 import type { PartialDeep } from 'type-fest';
-import type { SerializedDockview } from 'dockview-react';
 import type {
   EditorState,
   EditorStateInput,
   OpenFile,
   FileOpenSource,
   PanelState,
-  ViewState,
+  PreviousWorkbenchLayout,
 } from '#types/editor.types.js';
-import type {
-  GraphicsViewSettings,
-  PersistedModelComponentDisplayState,
-  PersistedModelComponentDisplayUnitState,
-} from '#constants/editor.constants.js';
-import {
-  defaultPanelState,
-  omitEmptyComponentDisplayState,
-  parseGraphicsViewSettings,
-  parseLegacyModelComponentDisplay,
-} from '#constants/editor.constants.js';
-import { createSourceModelInteractionUnitId } from '#machines/model-interaction.machine.js';
+import type { GraphicsBackendPreference } from '@taucad/viewer/graphics/graphics-settings';
+import { defaultPanelState } from '#constants/editor.constants.js';
 import { mergePanelState } from '#utils/panel-state.utils.js';
 
 const maxOpenFiles = 200;
+
+const repairPersistedOpenFiles = (files: readonly OpenFile[], activePaneId: string | undefined): OpenFile[] => {
+  const byPath = new Map<string, OpenFile>();
+  for (const file of files) {
+    try {
+      const candidate = file.path.startsWith('/') && !file.path.startsWith('//') ? file.path.slice(1) : file.path;
+      const repaired = { ...file, path: resolveRootedPath(candidate) };
+      const existing = byPath.get(repaired.path);
+      if (!existing || repaired.paneId === activePaneId) {
+        byPath.set(repaired.path, repaired);
+      }
+    } catch {
+      // Ignore malformed persisted tabs; they cannot identify a project file.
+    }
+  }
+  return [...byPath.values()];
+};
 
 /**
  * Mint a fresh stable editor pane id.
@@ -68,109 +75,13 @@ function rewritePathIfMatched(path: string | undefined, oldPath: string, newPath
   return `${newPath}${path.slice(oldPath.length)}`;
 }
 
-function mergeComponentDisplayUnits(
-  left: PersistedModelComponentDisplayUnitState,
-  right: PersistedModelComponentDisplayUnitState,
-): PersistedModelComponentDisplayUnitState {
-  return {
-    hiddenComponentIds: [...new Set([...(left.hiddenComponentIds ?? []), ...(right.hiddenComponentIds ?? [])])],
-    isolatedComponentIds: [...new Set([...(left.isolatedComponentIds ?? []), ...(right.isolatedComponentIds ?? [])])],
-    opacityByComponentId: {
-      ...left.opacityByComponentId,
-      ...right.opacityByComponentId,
-    },
-  };
-}
-
-function normalizeComponentDisplayUnits(
-  unitsById: Record<string, PersistedModelComponentDisplayUnitState>,
-): PersistedModelComponentDisplayState | undefined {
-  const normalizedEntries = Object.entries(unitsById)
-    .map(([unitId, unit]): [string, PersistedModelComponentDisplayUnitState] | undefined => {
-      const normalizedUnit: PersistedModelComponentDisplayUnitState = {
-        ...((unit.hiddenComponentIds?.length ?? 0) > 0 ? { hiddenComponentIds: unit.hiddenComponentIds } : {}),
-        ...((unit.isolatedComponentIds?.length ?? 0) > 0 ? { isolatedComponentIds: unit.isolatedComponentIds } : {}),
-        ...(Object.keys(unit.opacityByComponentId ?? {}).length > 0
-          ? { opacityByComponentId: unit.opacityByComponentId }
-          : {}),
-      };
-      return Object.keys(normalizedUnit).length > 0 ? [unitId, normalizedUnit] : undefined;
-    })
-    .filter((entry): entry is [string, PersistedModelComponentDisplayUnitState] => entry !== undefined);
-
-  return omitEmptyComponentDisplayState({
-    schemaVersion: 1,
-    unitsById: Object.fromEntries(normalizedEntries),
-  });
-}
-
-function mergeComponentDisplayStates(
-  displays: readonly PersistedModelComponentDisplayState[],
-): PersistedModelComponentDisplayState | undefined {
-  const unitsById: Record<string, PersistedModelComponentDisplayUnitState> = {};
-  for (const display of displays) {
-    for (const [unitId, unit] of Object.entries(display.unitsById)) {
-      unitsById[unitId] = unitsById[unitId] ? mergeComponentDisplayUnits(unitsById[unitId], unit) : unit;
-    }
-  }
-  return normalizeComponentDisplayUnits(unitsById);
-}
-
-function rekeyComponentDisplayForRename(
-  componentDisplay: PersistedModelComponentDisplayState | undefined,
+function rekeyFileSidebarsForRename(
+  widths: Record<string, number>,
   oldPath: string,
   newPath: string,
-): PersistedModelComponentDisplayState | undefined {
-  if (!componentDisplay) {
-    return undefined;
-  }
-
-  const updatedUnits: Record<string, PersistedModelComponentDisplayUnitState> = {};
-  for (const [unitId, unit] of Object.entries(componentDisplay.unitsById)) {
-    const oldUnitPrefix = createSourceModelInteractionUnitId(oldPath);
-    const nextUnitId =
-      unitId === oldUnitPrefix || unitId.startsWith(`${oldUnitPrefix}/`)
-        ? createSourceModelInteractionUnitId(`${newPath}${unitId.slice(oldUnitPrefix.length)}`)
-        : unitId;
-    updatedUnits[nextUnitId] = updatedUnits[nextUnitId]
-      ? mergeComponentDisplayUnits(updatedUnits[nextUnitId], unit)
-      : unit;
-  }
-
-  return normalizeComponentDisplayUnits(updatedUnits);
-}
-
-function pruneComponentDisplayForDeletedPath(
-  componentDisplay: PersistedModelComponentDisplayState | undefined,
-  deletedPath: string,
-): PersistedModelComponentDisplayState | undefined {
-  if (!componentDisplay) {
-    return undefined;
-  }
-
-  const deletedUnitPrefix = createSourceModelInteractionUnitId(deletedPath);
-  return normalizeComponentDisplayUnits(
-    Object.fromEntries(
-      Object.entries(componentDisplay.unitsById).filter(
-        ([unitId]) => unitId !== deletedUnitPrefix && !unitId.startsWith(`${deletedUnitPrefix}/`),
-      ),
-    ),
-  );
-}
-
-function rekeyViewSettingsForRename(
-  viewSettings: Record<string, ViewState>,
-  oldPath: string,
-  newPath: string,
-): Record<string, ViewState> {
+): Record<string, number> {
   return Object.fromEntries(
-    Object.entries(viewSettings).map(([viewId, viewState]) => [
-      viewId,
-      {
-        ...viewState,
-        entryPath: rewritePathIfMatched(viewState.entryPath, oldPath, newPath),
-      },
-    ]),
+    Object.entries(widths).map(([path, width]) => [rewritePathIfMatched(path, oldPath, newPath) ?? path, width]),
   );
 }
 
@@ -192,16 +103,11 @@ export type EditorStateContext = {
   focusedChatId: string | undefined;
   /** Panel layout state (open/close, sizes, mobile tab) */
   panelState: PanelState;
-  /** Serialized mixed file/utility Workbench Dockview layout */
-  workbenchLayout: SerializedDockview | undefined;
-  /** Serialized DockviewReact layout for the geometry viewer area */
-  viewerLayout: SerializedDockview | undefined;
-  /** Per-viewer-panel state, keyed by Dockview panel ID */
-  viewSettings: Record<string, ViewState>;
-  /** Project-scoped model appearance shared by every viewer panel. */
-  modelComponentDisplay: PersistedModelComponentDisplayState | undefined;
-  /** Legacy per-view display data must be rewritten into the canonical top-level field. */
-  needsModelComponentDisplayMigration: boolean;
+  /** Device-local file sidebar pixel widths, keyed by project path. */
+  fileSidebars: Record<string, number>;
+  /** Device rendering API preference. */
+  graphicsBackendPreferences: Record<string, GraphicsBackendPreference>;
+  previousLayout: PreviousWorkbenchLayout | undefined;
   isLoading: boolean;
   error: Error | undefined;
   /** Flag indicating changes occurred during a write operation that need persisting */
@@ -246,22 +152,24 @@ type EditorStateEvent =
   | { type: 'setActiveFile'; path: string }
   | { type: 'revealFileInTree'; path: string; expandTarget?: boolean }
   | { type: 'revealModelComponentInExplorer'; entryPath: string; unitId: string; componentId: string }
+  /** Open the Kinematics pane at the joint that moves a part. */
+  | { type: 'revealModelComponentInKinematics'; entryPath: string; unitId: string; componentId: string }
   | { type: 'renameFile'; oldPath: string; newPath: string }
   | { type: 'closeAll' }
   // Chat operations
   | { type: 'setRequestedChatId'; chatId: string | undefined }
+  /* A chat the caller already knows exists (freshly created, or listed in the
+   * loaded chat list). Focused synchronously — routing it through
+   * `setRequestedChatId` would re-enter `ensuringFocusedChat` and flash the
+   * chat pane's skeleton on every switch. */
+  | { type: 'focusKnownChat'; chatId: string }
   | { type: 'setFocusedChatId'; chatId: string | undefined }
   // Panel operations
   | { type: 'setPanelState'; panelState: PartialDeep<PanelState> }
-  // Dockview layout operations
-  | { type: 'setWorkbenchLayout'; layout: SerializedDockview }
-  | { type: 'setViewerLayout'; layout: SerializedDockview }
-  // View settings operations
-  | { type: 'setViewSettings'; viewId: string; viewState: ViewState }
-  | { type: 'updateViewSettings'; viewId: string; settings: Partial<GraphicsViewSettings> }
-  | { type: 'removeViewSettings'; viewId: string }
-  | { type: 'setModelComponentDisplay'; componentDisplay?: PersistedModelComponentDisplayState }
-  | { type: 'pruneComponentDisplayForDeletedPath'; path: string }
+  // Browser-local presentation only; portable arrangement belongs to workbench records.
+  | { type: 'setPreviousLayout'; layout: PreviousWorkbenchLayout | undefined }
+  | { type: 'setFileSidebarWidth'; path: string; width: number }
+  | { type: 'setGraphicsBackendPreference'; viewId: string; preference: GraphicsBackendPreference }
   // Flush pending state immediately (bypasses debounce, used on tab close)
   | { type: 'flushNow' }
   | { type: 'editorStateRetrieved'; state: EditorState | undefined }
@@ -287,7 +195,8 @@ type EditorStateEmitted =
   | { type: 'fileOpening'; path: string }
   | { type: 'fileOpenFailed'; path: string; error: Error }
   | { type: 'fileRevealRequested'; path: string; expandTarget?: boolean }
-  | { type: 'modelComponentRevealRequested'; entryPath: string; unitId: string; componentId: string };
+  | { type: 'modelComponentRevealRequested'; entryPath: string; unitId: string; componentId: string }
+  | { type: 'kinematicsRevealRequested'; entryPath: string; unitId: string; componentId: string };
 
 // Actors to be provided by the consumer
 const loadEditorStateActor = fromSafeAsync<
@@ -333,6 +242,115 @@ const ensureFocusedChatActor = fromSafeAsync<
   throw new Error('Not implemented. Please supply via provide.');
 });
 
+const editorActors = {
+  loadEditorStateActor,
+  saveEditorStateActor,
+  materialiseOpenFileActor,
+  ensureFocusedChatActor,
+};
+
+type EditorEnqueue = EnqueueObject<EditorStateEvent, EditorStateEmitted, SystemRegistry, typeof editorActors>;
+type EditorPatch = Partial<EditorStateContext>;
+type EditorArgs<EventType extends EditorStateEvent['type']> = Readonly<{
+  context: EditorStateContext;
+  event: Extract<EditorStateEvent, { type: EventType }>;
+}>;
+
+const errorOf = (error: unknown, fallback: string): Error => (error instanceof Error ? error : new Error(fallback));
+
+/** Hydrate context from the persisted editor state, repairing whatever older data left behind. */
+const loadedStatePatch = ({ event }: EditorArgs<'editorStateRetrieved'>, enq: EditorEnqueue): EditorPatch => {
+  const loadedState = event.state;
+
+  // Merge loaded panelState with defaults to handle missing fields from old data
+  const mergedPanelState = loadedState?.panelState
+    ? mergePanelState(defaultPanelState, loadedState.panelState)
+    : defaultPanelState;
+
+  const persistedActivePaneId = loadedState?.activePaneId;
+  const openFiles = repairPersistedOpenFiles(loadedState?.openFiles ?? [], persistedActivePaneId);
+  const knownPaneIds = new Set<string>(openFiles.map((f) => f.paneId));
+  const resolvedActivePaneId =
+    persistedActivePaneId !== undefined && knownPaneIds.has(persistedActivePaneId) ? persistedActivePaneId : undefined;
+
+  const activeMeta = openFiles.find((f) => f.paneId === resolvedActivePaneId);
+  if (activeMeta) {
+    enq.emit({ type: 'fileOpened', path: activeMeta.path, source: 'machine', readOnly: activeMeta.readOnly });
+  }
+
+  return {
+    openFiles,
+    activePaneId: resolvedActivePaneId,
+    // `focusedChatId` is hydrated from `loadedState` here as the
+    // *candidate* — the subsequent `loading.ensuringFocusedChat`
+    // substate validates it against the live chat list and reassigns
+    // (or auto-creates) so the value on entry to `ready` is always
+    // an extant chat id.
+    focusedChatId: loadedState?.focusedChatId,
+    panelState: mergedPanelState,
+    fileSidebars: loadedState?.fileSidebars ?? {},
+    graphicsBackendPreferences: loadedState?.graphicsBackendPreferences ?? {},
+    previousLayout: loadedState?.previousLayout,
+    isLoading: false,
+  };
+};
+
+/** Add a pane for a newly opened file, evicting the least recently used pane past the cap. */
+const withNewPane = (
+  context: EditorStateContext,
+  file: Readonly<{ path: string; readOnly?: boolean | undefined }>,
+): Readonly<{ openFiles: OpenFile[]; paneId: string }> => {
+  const newFile: OpenFile = {
+    paneId: mintPaneId(),
+    path: file.path,
+    name: file.path.split('/').pop() ?? file.path,
+    lastAccessedAt: Date.now(),
+    readOnly: file.readOnly,
+  };
+
+  let openFiles = [...context.openFiles, newFile];
+
+  if (openFiles.length > maxOpenFiles) {
+    const sorted = [...openFiles].sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
+    const victim = sorted.find((f) => f.paneId !== newFile.paneId);
+    if (victim) {
+      openFiles = openFiles.filter((f) => f.paneId !== victim.paneId);
+    }
+  }
+  return { openFiles, paneId: newFile.paneId };
+};
+
+/**
+ * Take the validated/created focused chat id `ensureFocusedChatActor` reports
+ * and re-raise it as `setFocusedChatId`, so the `storing` region picks the
+ * change up through the canonical event channel (single write path,
+ * debounced). An out-of-band save would race it.
+ */
+const focusedChatEnsured =
+  (target: string) =>
+  ({ event }: EditorArgs<'focusedChatEnsured'>, enq: EditorEnqueue) => {
+    enq.raise({ type: 'setFocusedChatId', chatId: event.focusedChatId });
+    return { target, context: { focusedChatId: event.focusedChatId, focusedChatError: undefined } };
+  };
+
+const focusedChatFailed =
+  (target: string) =>
+  ({ event }: Readonly<{ event: Readonly<{ error: unknown }> }>) => ({
+    target,
+    context: { focusedChatError: errorOf(event.error, 'ensureFocusedChatActor failed') },
+  });
+
+/** Candidates for the focused chat: the one asked for, then the one persisted. */
+const ensureFocusedChatInput = ({ context }: Readonly<{ context: EditorStateContext }>) => ({
+  projectId: context.projectId,
+  requestedChatId: context.requestedChatId,
+  persistedChatId: context.focusedChatId,
+});
+
+const debounceWrite = { target: 'pending' } as const;
+const restartDebounce = { target: 'pending', reenter: true } as const;
+const markPendingChanges = { context: { hasPendingChanges: true } } as const;
+
 /**
  * Editor State Machine
  *
@@ -345,613 +363,85 @@ const ensureFocusedChatActor = fromSafeAsync<
  * clean for CLI/multi-frontend reuse.
  */
 export const editorMachine = setup({
-  types: {
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    context: {} as EditorStateContext,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    events: {} as EditorStateEvent,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    emitted: {} as EditorStateEmitted,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    input: {} as EditorStateMachineInput,
+  schemas: {
+    context: types<EditorStateContext>(),
+    events: eventSchemas<EditorStateEvent>(),
+    emitted: eventSchemas<EditorStateEmitted>(),
+    input: types<EditorStateMachineInput>(),
   },
-  actors: {
-    loadEditorStateActor,
-    saveEditorStateActor,
-    materialiseOpenFileActor,
-    ensureFocusedChatActor,
-  },
-  actions: {
-    // ============================================================================
-    // Lifecycle actions
-    // ============================================================================
-    setLoading: assign({ isLoading: true }),
-    clearLoading: assign({ isLoading: false }),
-    setError: assign({
-      error({ event }) {
-        if ('error' in event && event.error instanceof Error) {
-          return event.error;
-        }
-
-        return new Error('Unknown error');
-      },
-      isLoading: false,
-    }),
-    clearError: assign({ error: undefined }),
-
-    setLoadedState: enqueueActions(({ enqueue, event }) => {
-      assertEvent(event, 'editorStateRetrieved');
-      const loadedState = event.state;
-
-      // Merge loaded panelState with defaults to handle missing fields from old data
-      const mergedPanelState = loadedState?.panelState
-        ? mergePanelState(defaultPanelState, loadedState.panelState)
-        : defaultPanelState;
-
-      // Safe loading for Dockview layout fields -- older persisted data may not have these
-      let workbenchLayout: SerializedDockview | undefined;
-      let viewerLayout: SerializedDockview | undefined;
-      let viewSettings: Record<string, ViewState> = {};
-      let modelComponentDisplay = loadedState?.modelComponentDisplay;
-      let needsModelComponentDisplayMigration = false;
-      try {
-        workbenchLayout = loadedState?.workbenchLayout;
-
-        viewerLayout = loadedState?.viewerLayout;
-
-        const persistedViewSettings = loadedState?.viewSettings ?? {};
-        const orderedViewSettings = Object.entries(persistedViewSettings).sort(([left], [right]) =>
-          left.localeCompare(right),
-        );
-        const legacyDisplays = orderedViewSettings
-          .map(([, viewState]) => parseLegacyModelComponentDisplay(viewState.graphicsSettings))
-          .filter((display): display is PersistedModelComponentDisplayState => display !== undefined);
-        needsModelComponentDisplayMigration = orderedViewSettings.some(
-          ([, viewState]) =>
-            (viewState.graphicsSettings as GraphicsViewSettings & { componentDisplay?: unknown }).componentDisplay !==
-            undefined,
-        );
-        modelComponentDisplay ??= mergeComponentDisplayStates(legacyDisplays);
-        viewSettings = Object.fromEntries(
-          orderedViewSettings.map(([viewId, viewState]) => [
-            viewId,
-            { ...viewState, graphicsSettings: parseGraphicsViewSettings(viewState.graphicsSettings) },
-          ]),
-        );
-      } catch {
-        // Corrupt/incompatible persisted data -- silently default
-        workbenchLayout = undefined;
-        viewerLayout = undefined;
-        viewSettings = {};
-        modelComponentDisplay = undefined;
-        needsModelComponentDisplayMigration = false;
-      }
-
-      const openFiles: OpenFile[] = [...(loadedState?.openFiles ?? [])];
-      const knownPaneIds = new Set<string>(openFiles.map((f) => f.paneId));
-      const persistedActivePaneId = loadedState?.activePaneId;
-      const resolvedActivePaneId =
-        persistedActivePaneId !== undefined && knownPaneIds.has(persistedActivePaneId)
-          ? persistedActivePaneId
-          : undefined;
-
-      enqueue.assign({
-        openFiles,
-        activePaneId: resolvedActivePaneId,
-        // `focusedChatId` is hydrated from `loadedState` here as the
-        // *candidate* — the subsequent `loading.ensuringFocusedChat`
-        // substate validates it against the live chat list and reassigns
-        // (or auto-creates) so the value on entry to `ready` is always
-        // an extant chat id.
-        focusedChatId: loadedState?.focusedChatId,
-        panelState: mergedPanelState,
-        workbenchLayout,
-        viewerLayout,
-        viewSettings,
-        modelComponentDisplay: omitEmptyComponentDisplayState(modelComponentDisplay),
-        needsModelComponentDisplayMigration,
-        isLoading: false,
-      });
-
-      const activeMeta = openFiles.find((f) => f.paneId === resolvedActivePaneId);
-      if (activeMeta) {
-        enqueue.emit({
-          type: 'fileOpened',
-          path: activeMeta.path,
-          source: 'machine',
-          readOnly: activeMeta.readOnly,
-        });
-      }
-    }),
-
-    setMaterialiseModel: assign(({ event }) => {
-      assertEvent(event, 'registerMaterialiseModel');
-      return { materialiseModel: event.materialiseModel };
-    }),
-
-    stashPendingOpenAndEmitOpening: enqueueActions(({ enqueue, event }) => {
-      assertEvent(event, 'openFile');
-      enqueue.assign({
-        pendingOpenFile: {
-          path: event.path,
-          source: event.source,
-          lineNumber: event.lineNumber,
-          column: event.column,
-          readOnly: event.readOnly,
-        },
-      });
-      enqueue.emit({ type: 'fileOpening', path: event.path });
-    }),
-
-    finalizeMaterializedOpenSuccess: enqueueActions(({ enqueue, context }) => {
-      const pending = context.pendingOpenFile;
-      if (!pending) {
-        return;
-      }
-
-      const now = Date.now();
-      const newFile: OpenFile = {
-        paneId: mintPaneId(),
-        path: pending.path,
-        name: pending.path.split('/').pop() ?? pending.path,
-        lastAccessedAt: now,
-        readOnly: pending.readOnly,
-      };
-
-      let updatedFiles = [...context.openFiles, newFile];
-
-      if (updatedFiles.length > maxOpenFiles) {
-        const sorted = [...updatedFiles].sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
-        const victim = sorted.find((f) => f.paneId !== newFile.paneId);
-        if (victim) {
-          updatedFiles = updatedFiles.filter((f) => f.paneId !== victim.paneId);
-        }
-      }
-
-      enqueue.assign({
-        openFiles: updatedFiles,
-        activePaneId: newFile.paneId,
-        pendingOpenFile: undefined,
-      });
-
-      enqueue.emit({
-        type: 'fileOpened',
-        path: pending.path,
-        lineNumber: pending.lineNumber,
-        column: pending.column,
-        source: pending.source,
-        readOnly: pending.readOnly,
-      });
-    }),
-
-    finalizeMaterializedOpenFailure: enqueueActions(({ enqueue, event, context }) => {
-      const path = context.pendingOpenFile?.path ?? 'unknown';
-      const error =
-        'error' in event && event.error instanceof Error ? event.error : new Error('Materialise model failed');
-      enqueue.assign({ pendingOpenFile: undefined });
-      enqueue.emit({ type: 'fileOpenFailed', path, error });
-    }),
-
-    // ============================================================================
-    // File operations (consolidated from fileExplorerMachine)
-    // ============================================================================
-    openFile: enqueueActions(({ enqueue, event, context }) => {
-      assertEvent(event, 'openFile');
-
-      const now = Date.now();
-      const existingFile = context.openFiles.find((f) => f.path === event.path);
-      if (existingFile) {
-        enqueue.assign({
-          openFiles: context.openFiles.map((f) =>
-            f.paneId === existingFile.paneId
-              ? { ...f, lastAccessedAt: now, readOnly: event.readOnly ?? f.readOnly }
-              : f,
-          ),
-          activePaneId: existingFile.paneId,
-        });
-        enqueue.emit({
-          type: 'fileOpened',
-          path: event.path,
-          lineNumber: event.lineNumber,
-          column: event.column,
-          source: event.source,
-          readOnly: event.readOnly ?? existingFile.readOnly,
-        });
-        return;
-      }
-
-      const newFile: OpenFile = {
-        paneId: mintPaneId(),
-        path: event.path,
-        name: event.path.split('/').pop() ?? event.path,
-        lastAccessedAt: now,
-        readOnly: event.readOnly,
-      };
-
-      let updatedFiles = [...context.openFiles, newFile];
-
-      if (updatedFiles.length > maxOpenFiles) {
-        const sorted = [...updatedFiles].sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
-        const victim = sorted.find((f) => f.paneId !== newFile.paneId);
-        if (victim) {
-          updatedFiles = updatedFiles.filter((f) => f.paneId !== victim.paneId);
-        }
-      }
-
-      enqueue.assign({
-        openFiles: updatedFiles,
-        activePaneId: newFile.paneId,
-      });
-
-      enqueue.emit({
-        type: 'fileOpened',
-        path: event.path,
-        lineNumber: event.lineNumber,
-        column: event.column,
-        source: event.source,
-        readOnly: event.readOnly,
-      });
-    }),
-
-    closeFile: enqueueActions(({ enqueue, event, context }) => {
-      assertEvent(event, 'closeFile');
-
-      const closing = context.openFiles.find((file) => file.path === event.path);
-      if (!closing) {
-        return;
-      }
-      const updatedOpenFiles = context.openFiles.filter((file) => file.paneId !== closing.paneId);
-      let newActivePaneId = context.activePaneId;
-
-      if (context.activePaneId === closing.paneId) {
-        newActivePaneId = updatedOpenFiles.at(-1)?.paneId;
-        if (newActivePaneId !== undefined) {
-          const newActive = updatedOpenFiles.find((f) => f.paneId === newActivePaneId);
-          if (newActive) {
-            enqueue.emit({
-              type: 'fileOpened',
-              path: newActive.path,
-            });
-          }
-        }
-      }
-
-      enqueue.assign({
-        openFiles: updatedOpenFiles,
-        activePaneId: newActivePaneId,
-      });
-    }),
-
-    setActiveFile: enqueueActions(({ enqueue, event, context }) => {
-      assertEvent(event, 'setActiveFile');
-
-      const target = context.openFiles.find((f) => f.path === event.path);
-      if (!target || context.activePaneId === target.paneId) {
-        return;
-      }
-
-      enqueue.assign({
-        openFiles: context.openFiles.map((f) =>
-          f.paneId === target.paneId ? { ...f, lastAccessedAt: Date.now() } : f,
-        ),
-        activePaneId: target.paneId,
-      });
-
-      enqueue.emit({
-        type: 'fileOpened',
-        path: target.path,
-      });
-    }),
-
-    revealFileInTree: enqueueActions(({ enqueue, event }) => {
-      assertEvent(event, 'revealFileInTree');
-
-      enqueue.emit({
-        type: 'fileRevealRequested',
-        path: event.path,
-        expandTarget: event.expandTarget,
-      });
-    }),
-    revealModelComponentInExplorer: enqueueActions(({ enqueue, event }) => {
-      assertEvent(event, 'revealModelComponentInExplorer');
-
-      enqueue.emit({
-        type: 'modelComponentRevealRequested',
-        entryPath: event.entryPath,
-        unitId: event.unitId,
-        componentId: event.componentId,
-      });
-    }),
-
-    closeAll: enqueueActions(({ enqueue }) => {
-      enqueue.assign({
-        openFiles: [],
-        activePaneId: undefined,
-      });
-    }),
-
-    renameFile: enqueueActions(({ enqueue, event, context }) => {
-      assertEvent(event, 'renameFile');
-
-      const { oldPath, newPath } = event;
-
-      // Rewrite path in place on each affected pane. Pane identity
-      // (paneId) is preserved — only the `path` and `name` properties
-      // mutate. This is the key invariant that lets the editor + viewer
-      // surfaces survive a rename without React unmount.
-      const updatedOpenFiles = context.openFiles.map((file) => {
-        if (file.path === oldPath) {
-          return {
-            ...file,
-            path: newPath,
-            name: newPath.split('/').pop() ?? newPath,
-          };
-        }
-        if (file.path.startsWith(`${oldPath}/`)) {
-          const relativePath = file.path.slice(oldPath.length);
-          const newFilePath = `${newPath}${relativePath}`;
-          return {
-            ...file,
-            path: newFilePath,
-            name: newFilePath.split('/').pop() ?? newFilePath,
-          };
-        }
-        return file;
-      });
-
-      enqueue.assign({
-        openFiles: updatedOpenFiles,
-        viewSettings: rekeyViewSettingsForRename(context.viewSettings, oldPath, newPath),
-        modelComponentDisplay: rekeyComponentDisplayForRename(context.modelComponentDisplay, oldPath, newPath),
-      });
-
-      const activePath = selectActiveFilePath(context.openFiles, context.activePaneId);
-      const activeWasAffected = activePath === oldPath || activePath?.startsWith(`${oldPath}/`);
-      if (activeWasAffected) {
-        const newActivePath = activePath === oldPath ? newPath : `${newPath}${activePath?.slice(oldPath.length) ?? ''}`;
-        enqueue.emit({
-          type: 'fileOpened',
-          path: newActivePath,
-        });
-      }
-    }),
-
-    // ============================================================================
-    // Chat operations
-    // ============================================================================
-    setFocusedChatIdInContext: assign(({ event }) => {
-      assertEvent(event, 'setFocusedChatId');
-      return { focusedChatId: event.chatId };
-    }),
-
-    setRequestedChatIdInContext: assign(({ event }) => {
-      assertEvent(event, 'setRequestedChatId');
-      return { requestedChatId: event.chatId };
-    }),
-
-    /**
-     * Assign the validated/created focused chat id emitted by
-     * `ensureFocusedChatActor` via the `focusedChatEnsured` event to
-     * context and clear any pre-existing `focusedChatError`. Pairs with
-     * `raiseSetFocusedChatId` so the `storing` region picks up the
-     * change through the canonical event channel (single write path,
-     * debounced).
-     */
-    assignEnsuredFocusedChat: assign(({ event }) => {
-      assertEvent(event, 'focusedChatEnsured');
-      return {
-        focusedChatId: event.focusedChatId,
-        focusedChatError: undefined,
-      };
-    }),
-
-    /**
-     * Re-emit the assigned focused chat id as a `setFocusedChatId` event
-     * so the `storing` region's existing handler (line 760+) debounces a
-     * write. Keeping persistence on a single canonical path avoids the
-     * dual-write race that an out-of-band save would introduce.
-     */
-    raiseSetFocusedChatId: raise(({ context }): { type: 'setFocusedChatId'; chatId: string | undefined } => ({
-      type: 'setFocusedChatId',
-      chatId: context.focusedChatId,
-    })),
-
-    assignFocusedChatError: assign(({ event }) => {
-      // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate's done.invoke.* error event has an `error` payload not modelled in the union
-      const { error } = event as unknown as { error: unknown };
-      return {
-        focusedChatError: error instanceof Error ? error : new Error('ensureFocusedChatActor failed'),
-      };
-    }),
-
-    clearFocusedChatError: assign({ focusedChatError: undefined }),
-
-    // ============================================================================
-    // Panel operations
-    // ============================================================================
-    setPanelStateInContext: assign(({ event, context }) => {
-      assertEvent(event, 'setPanelState');
-      return {
-        panelState: mergePanelState(context.panelState, event.panelState),
-      };
-    }),
-
-    // ============================================================================
-    // Dockview layout operations
-    // ============================================================================
-    setWorkbenchLayoutInContext: assign(({ event }) => {
-      assertEvent(event, 'setWorkbenchLayout');
-      return { workbenchLayout: event.layout };
-    }),
-
-    setViewerLayoutInContext: assign(({ event }) => {
-      assertEvent(event, 'setViewerLayout');
-      return { viewerLayout: event.layout };
-    }),
-
-    // ============================================================================
-    // View settings operations
-    // ============================================================================
-    setViewSettingsInContext: assign(({ event, context }) => {
-      assertEvent(event, 'setViewSettings');
-      return {
-        viewSettings: { ...context.viewSettings, [event.viewId]: event.viewState },
-      };
-    }),
-
-    updateViewSettingsInContext: assign(({ event, context }) => {
-      assertEvent(event, 'updateViewSettings');
-      const existing = context.viewSettings[event.viewId];
-      if (!existing) {
-        return {};
-      }
-
-      return {
-        viewSettings: {
-          ...context.viewSettings,
-          [event.viewId]: {
-            ...existing,
-            graphicsSettings: { ...existing.graphicsSettings, ...event.settings },
-          },
-        },
-      };
-    }),
-
-    removeViewSettingsInContext: assign(({ event, context }) => {
-      assertEvent(event, 'removeViewSettings');
-      const { [event.viewId]: _, ...rest } = context.viewSettings;
-      return { viewSettings: rest };
-    }),
-
-    setModelComponentDisplayInContext: assign(({ event }) => {
-      assertEvent(event, 'setModelComponentDisplay');
-      return {
-        modelComponentDisplay: omitEmptyComponentDisplayState(event.componentDisplay),
-        needsModelComponentDisplayMigration: false,
-      };
-    }),
-
-    pruneComponentDisplayForDeletedPathInContext: assign(({ event, context }) => {
-      assertEvent(event, 'pruneComponentDisplayForDeletedPath');
-      return {
-        modelComponentDisplay: pruneComponentDisplayForDeletedPath(context.modelComponentDisplay, event.path),
-      };
-    }),
-
-    // ============================================================================
-    // Persistence tracking
-    // ============================================================================
-    setPendingChanges: assign({ hasPendingChanges: true }),
-    clearPendingChanges: assign({ hasPendingChanges: false }),
-  },
-  guards: {
-    hasPendingChanges({ context }) {
-      return context.hasPendingChanges;
-    },
-    shouldDeferOpenFile({ context, event }) {
-      assertEvent(event, 'openFile');
-      if (context.pendingOpenFile !== undefined) {
-        return false;
-      }
-
-      if (context.materialiseModel === undefined) {
-        return false;
-      }
-
-      return !context.openFiles.some((f) => f.path === event.path);
-    },
-    focusedChatIdIsUndefined({ context }) {
-      return context.focusedChatId === undefined;
-    },
-  },
+  actors: editorActors,
   delays: {
     storeDebounce: 500,
   },
 }).createMachine({
   id: 'editor',
-  context({ input }) {
-    return {
-      projectId: input.projectId,
-      openFiles: [],
-      activePaneId: undefined,
-      requestedChatId: input.requestedChatId,
-      focusedChatId: undefined,
-      panelState: defaultPanelState,
-      workbenchLayout: undefined,
-      viewerLayout: undefined,
-      viewSettings: {},
-      modelComponentDisplay: undefined,
-      needsModelComponentDisplayMigration: false,
-      isLoading: false,
-      error: undefined,
-      hasPendingChanges: false,
-      focusedChatError: undefined,
-      materialiseModel: undefined,
-      pendingOpenFile: undefined,
-    };
-  },
+  context: ({ input }) => ({
+    projectId: input.projectId,
+    openFiles: [],
+    activePaneId: undefined,
+    requestedChatId: input.requestedChatId,
+    focusedChatId: undefined,
+    panelState: defaultPanelState,
+    fileSidebars: {},
+    graphicsBackendPreferences: {},
+    previousLayout: undefined,
+    isLoading: false,
+    error: undefined,
+    hasPendingChanges: false,
+    focusedChatError: undefined,
+    materialiseModel: undefined,
+    pendingOpenFile: undefined,
+  }),
   initial: 'idle',
   on: {
-    setRequestedChatId: {
-      actions: 'setRequestedChatIdInContext',
+    setRequestedChatId: { context: ({ event }) => ({ requestedChatId: event.chatId }) },
+    /* Fallback for the pre-`ready` window: record the request so the cold-start
+     * ensure resolves to it. The `ready.operation` handler overrides this one
+     * and also persists. */
+    focusKnownChat: {
+      context: ({ event }) => ({
+        requestedChatId: event.chatId,
+        focusedChatId: event.chatId,
+        focusedChatError: undefined,
+      }),
     },
   },
   states: {
     idle: {
       on: {
-        load: {
-          target: 'loading',
-          actions: 'setLoading',
-        },
+        load: { target: 'loading', context: { isLoading: true } },
       },
     },
     loading: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined } }),
       initial: 'hydrating',
       states: {
         hydrating: {
           invoke: {
             src: 'loadEditorStateActor',
             input: ({ context }) => ({ projectId: context.projectId }),
-            onDone: {
-              target: 'ensuringFocusedChat',
-            },
-            onError: {
-              // Loading failed; still run the ensure path so the route
-              // gate sees either a healed focusedChatId or a typed error
-              // panel rather than a stuck spinner.
-              target: 'ensuringFocusedChat',
-              actions: 'clearLoading',
-            },
+            onDone: { target: 'ensuringFocusedChat' },
+            // Loading failed; still run the ensure path so the route
+            // gate sees either a healed focusedChatId or a typed error
+            // panel rather than a stuck spinner.
+            onError: { target: 'ensuringFocusedChat', context: { isLoading: false } },
           },
           on: {
-            editorStateRetrieved: {
-              actions: 'setLoadedState',
-            },
+            editorStateRetrieved: (args, enq) => ({ context: loadedStatePatch(args, enq) }),
           },
         },
         ensuringFocusedChat: {
-          entry: 'clearFocusedChatError',
+          entry: () => ({ context: { focusedChatError: undefined } }),
           invoke: {
             src: 'ensureFocusedChatActor',
-            input: ({ context }) => ({
-              projectId: context.projectId,
-              requestedChatId: context.requestedChatId,
-              persistedChatId: context.focusedChatId,
-            }),
-            onError: {
-              // Surface the error to the route gate via `focusedChatError`.
-              // The runtime ensure loop in `ready.operation` lets the user
-              // retry via `<FocusedChatErrorPanel>` without a full reload.
-              target: '#editor.ready',
-              actions: 'assignFocusedChatError',
-            },
+            input: ensureFocusedChatInput,
+            // Surface the error to the route gate via `focusedChatError`.
+            // The runtime ensure loop in `ready.operation` lets the user
+            // retry via `<FocusedChatErrorPanel>` without a full reload.
+            onError: focusedChatFailed('#editor.ready'),
           },
           on: {
-            focusedChatEnsured: {
-              target: '#editor.ready',
-              actions: ['assignEnsuredFocusedChat', 'raiseSetFocusedChatId'],
-            },
+            focusedChatEnsured: focusedChatEnsured('#editor.ready'),
           },
         },
       },
@@ -969,7 +459,8 @@ export const editorMachine = setup({
               // re-enters `ensuringFocusedChat` so the route gate's
               // <ActiveChatProvider chatId> mount-precondition is always
               // restored.
-              always: [{ guard: 'focusedChatIdIsUndefined', target: 'ensuringFocusedChat' }],
+              always: ({ context }) =>
+                context.focusedChatId === undefined ? { target: 'ensuringFocusedChat' } : undefined,
             },
             materializingOpenFile: {
               invoke: {
@@ -978,105 +469,225 @@ export const editorMachine = setup({
                   path: context.pendingOpenFile?.path ?? '',
                   materialise: context.materialiseModel!,
                 }),
-                onDone: {
-                  target: 'idle',
-                  actions: 'finalizeMaterializedOpenSuccess',
+                onDone: ({ context }, enq) => {
+                  const pending = context.pendingOpenFile;
+                  if (!pending) {
+                    return { target: 'idle' };
+                  }
+                  const { openFiles, paneId } = withNewPane(context, pending);
+                  enq.emit({
+                    type: 'fileOpened',
+                    path: pending.path,
+                    lineNumber: pending.lineNumber,
+                    column: pending.column,
+                    source: pending.source,
+                    readOnly: pending.readOnly,
+                  });
+                  return {
+                    target: 'idle',
+                    context: { openFiles, activePaneId: paneId, pendingOpenFile: undefined },
+                  };
                 },
-                onError: {
-                  target: 'idle',
-                  actions: 'finalizeMaterializedOpenFailure',
+                onError: ({ context, event }, enq) => {
+                  enq.emit({
+                    type: 'fileOpenFailed',
+                    path: context.pendingOpenFile?.path ?? 'unknown',
+                    error: errorOf(event.error, 'Materialise model failed'),
+                  });
+                  return { target: 'idle', context: { pendingOpenFile: undefined } };
                 },
               },
             },
             ensuringFocusedChat: {
-              entry: 'clearFocusedChatError',
+              entry: () => ({ context: { focusedChatError: undefined } }),
               invoke: {
                 src: 'ensureFocusedChatActor',
-                input: ({ context }) => ({
-                  projectId: context.projectId,
-                  requestedChatId: context.requestedChatId,
-                  persistedChatId: context.focusedChatId,
-                }),
-                onError: {
-                  target: 'focusedChatUnresolved',
-                  actions: 'assignFocusedChatError',
-                },
+                input: ensureFocusedChatInput,
+                onError: focusedChatFailed('focusedChatUnresolved'),
               },
               on: {
-                focusedChatEnsured: {
-                  target: 'idle',
-                  actions: ['assignEnsuredFocusedChat', 'raiseSetFocusedChatId'],
-                },
+                focusedChatEnsured: focusedChatEnsured('idle'),
               },
             },
             focusedChatUnresolved: {
               on: {
-                retryEnsureFocusedChat: {
-                  target: 'ensuringFocusedChat',
-                },
+                retryEnsureFocusedChat: { target: 'ensuringFocusedChat' },
               },
             },
           },
           on: {
-            setRequestedChatId: {
-              target: '.ensuringFocusedChat',
-              actions: 'setRequestedChatIdInContext',
+            focusKnownChat: ({ event }, enq) => {
+              enq.raise({ type: 'setFocusedChatId', chatId: event.chatId });
+              return {
+                target: '.idle',
+                context: { requestedChatId: event.chatId, focusedChatId: event.chatId, focusedChatError: undefined },
+              };
             },
-            registerMaterialiseModel: {
-              actions: 'setMaterialiseModel',
+            /* A bare project URL (no `searchParameterName.chat`) names no chat, so a chat already focused
+             * still satisfies it — revalidating would enter `ensuringFocusedChat` and
+             * flash the chat pane's skeleton before the route rewrites the URL. */
+            setRequestedChatId: ({ context, event }) =>
+              event.chatId === undefined && context.focusedChatId !== undefined
+                ? { context: { requestedChatId: event.chatId } }
+                : { target: '.ensuringFocusedChat', context: { requestedChatId: event.chatId } },
+            registerMaterialiseModel: { context: ({ event }) => ({ materialiseModel: event.materialiseModel }) },
+            openFile: ({ context, event }, enq) => {
+              assertRootedPath(event.path);
+              const existingFile = context.openFiles.find((f) => f.path === event.path);
+
+              if (context.pendingOpenFile === undefined && context.materialiseModel !== undefined && !existingFile) {
+                enq.emit({ type: 'fileOpening', path: event.path });
+                return {
+                  target: '.materializingOpenFile',
+                  context: {
+                    pendingOpenFile: {
+                      path: event.path,
+                      source: event.source,
+                      lineNumber: event.lineNumber,
+                      column: event.column,
+                      readOnly: event.readOnly,
+                    },
+                  },
+                };
+              }
+
+              if (existingFile) {
+                const now = Date.now();
+                enq.emit({
+                  type: 'fileOpened',
+                  path: event.path,
+                  lineNumber: event.lineNumber,
+                  column: event.column,
+                  source: event.source,
+                  readOnly: event.readOnly ?? existingFile.readOnly,
+                });
+                return {
+                  context: {
+                    openFiles: context.openFiles.map((f) =>
+                      f.paneId === existingFile.paneId
+                        ? { ...f, lastAccessedAt: now, readOnly: event.readOnly ?? f.readOnly }
+                        : f,
+                    ),
+                    activePaneId: existingFile.paneId,
+                  },
+                };
+              }
+
+              const { openFiles, paneId } = withNewPane(context, event);
+              enq.emit({
+                type: 'fileOpened',
+                path: event.path,
+                lineNumber: event.lineNumber,
+                column: event.column,
+                source: event.source,
+                readOnly: event.readOnly,
+              });
+              return { context: { openFiles, activePaneId: paneId } };
             },
-            openFile: [
-              {
-                guard: 'shouldDeferOpenFile',
-                target: '.materializingOpenFile',
-                actions: 'stashPendingOpenAndEmitOpening',
-              },
-              { actions: 'openFile' },
-            ],
-            closeFile: {
-              actions: 'closeFile',
+            closeFile: ({ context, event }, enq) => {
+              const closing = context.openFiles.find((file) => file.path === event.path);
+              if (!closing) {
+                return {};
+              }
+              const openFiles = context.openFiles.filter((file) => file.paneId !== closing.paneId);
+              let { activePaneId } = context;
+
+              if (context.activePaneId === closing.paneId) {
+                activePaneId = openFiles.at(-1)?.paneId;
+                const newActive = openFiles.find((f) => f.paneId === activePaneId);
+                if (activePaneId !== undefined && newActive) {
+                  enq.emit({ type: 'fileOpened', path: newActive.path });
+                }
+              }
+
+              return { context: { openFiles, activePaneId } };
             },
-            setActiveFile: {
-              actions: 'setActiveFile',
+            setActiveFile: ({ context, event }, enq) => {
+              const target = context.openFiles.find((f) => f.path === event.path);
+              if (!target || context.activePaneId === target.paneId) {
+                return {};
+              }
+              enq.emit({ type: 'fileOpened', path: target.path });
+              return {
+                context: {
+                  openFiles: context.openFiles.map((f) =>
+                    f.paneId === target.paneId ? { ...f, lastAccessedAt: Date.now() } : f,
+                  ),
+                  activePaneId: target.paneId,
+                },
+              };
             },
-            revealFileInTree: {
-              actions: 'revealFileInTree',
+            revealFileInTree: ({ event }, enq) => {
+              enq.emit({ type: 'fileRevealRequested', path: event.path, expandTarget: event.expandTarget });
+              return {};
             },
-            revealModelComponentInExplorer: {
-              actions: 'revealModelComponentInExplorer',
+            revealModelComponentInExplorer: ({ event }, enq) => {
+              enq.emit({
+                type: 'modelComponentRevealRequested',
+                entryPath: event.entryPath,
+                unitId: event.unitId,
+                componentId: event.componentId,
+              });
+              return {};
             },
-            renameFile: {
-              actions: 'renameFile',
+            revealModelComponentInKinematics: ({ event }, enq) => {
+              enq.emit({
+                type: 'kinematicsRevealRequested',
+                entryPath: event.entryPath,
+                unitId: event.unitId,
+                componentId: event.componentId,
+              });
+              return {};
             },
-            closeAll: {
-              actions: 'closeAll',
+            renameFile: ({ context, event }, enq) => {
+              const { oldPath, newPath } = event;
+
+              // Rewrite path in place on each affected pane. Pane identity
+              // (paneId) is preserved — only the `path` and `name` properties
+              // mutate. This is the key invariant that lets the editor + viewer
+              // surfaces survive a rename without React unmount.
+              const openFiles = context.openFiles.map((file) => {
+                if (file.path === oldPath) {
+                  return { ...file, path: newPath, name: newPath.split('/').pop() ?? newPath };
+                }
+                if (file.path.startsWith(`${oldPath}/`)) {
+                  const newFilePath = `${newPath}${file.path.slice(oldPath.length)}`;
+                  return { ...file, path: newFilePath, name: newFilePath.split('/').pop() ?? newFilePath };
+                }
+                return file;
+              });
+
+              const activePath = selectActiveFilePath(context.openFiles, context.activePaneId);
+              const activeWasAffected = activePath === oldPath || activePath?.startsWith(`${oldPath}/`);
+              if (activeWasAffected) {
+                enq.emit({
+                  type: 'fileOpened',
+                  path: activePath === oldPath ? newPath : `${newPath}${activePath?.slice(oldPath.length) ?? ''}`,
+                });
+              }
+
+              return {
+                context: {
+                  openFiles,
+                  fileSidebars: rekeyFileSidebarsForRename(context.fileSidebars, oldPath, newPath),
+                },
+              };
             },
-            setFocusedChatId: {
-              actions: 'setFocusedChatIdInContext',
-            },
+            closeAll: { context: { openFiles: [], activePaneId: undefined } },
+            setFocusedChatId: { context: ({ event }) => ({ focusedChatId: event.chatId }) },
             setPanelState: {
-              actions: 'setPanelStateInContext',
+              context: ({ context, event }) => ({ panelState: mergePanelState(context.panelState, event.panelState) }),
             },
-            setWorkbenchLayout: {
-              actions: 'setWorkbenchLayoutInContext',
+            setPreviousLayout: { context: ({ event }) => ({ previousLayout: event.layout }) },
+            setFileSidebarWidth: {
+              context: ({ context, event }) => ({
+                fileSidebars: { ...context.fileSidebars, [event.path]: event.width },
+              }),
             },
-            setViewerLayout: {
-              actions: 'setViewerLayoutInContext',
-            },
-            setViewSettings: {
-              actions: 'setViewSettingsInContext',
-            },
-            updateViewSettings: {
-              actions: 'updateViewSettingsInContext',
-            },
-            removeViewSettings: {
-              actions: 'removeViewSettingsInContext',
-            },
-            setModelComponentDisplay: {
-              actions: 'setModelComponentDisplayInContext',
-            },
-            pruneComponentDisplayForDeletedPath: {
-              actions: 'pruneComponentDisplayForDeletedPathInContext',
+            setGraphicsBackendPreference: {
+              context: ({ context, event }) => ({
+                graphicsBackendPreferences: { ...context.graphicsBackendPreferences, [event.viewId]: event.preference },
+              }),
             },
           },
         },
@@ -1085,43 +696,36 @@ export const editorMachine = setup({
           states: {
             idle: {
               on: {
-                openFile: { target: 'pending' },
-                closeFile: { target: 'pending' },
-                closeAll: { target: 'pending' },
-                setActiveFile: { target: 'pending' },
-                renameFile: { target: 'pending' },
-                setFocusedChatId: { target: 'pending' },
-                setPanelState: { target: 'pending' },
-                setWorkbenchLayout: { target: 'pending' },
-                setViewerLayout: { target: 'pending' },
-                setViewSettings: { target: 'pending' },
-                updateViewSettings: { target: 'pending' },
-                removeViewSettings: { target: 'pending' },
-                setModelComponentDisplay: { target: 'pending' },
-                pruneComponentDisplayForDeletedPath: { target: 'pending' },
-                registerMaterialiseModel: { target: 'pending' },
+                flushNow: ({ context }) => (context.error === undefined ? undefined : { target: 'writing' }),
+                openFile: debounceWrite,
+                closeFile: debounceWrite,
+                closeAll: debounceWrite,
+                setActiveFile: debounceWrite,
+                renameFile: debounceWrite,
+                setFocusedChatId: debounceWrite,
+                setPanelState: debounceWrite,
+                setPreviousLayout: debounceWrite,
+                setFileSidebarWidth: debounceWrite,
+                setGraphicsBackendPreference: debounceWrite,
+                registerMaterialiseModel: debounceWrite,
               },
             },
             pending: {
               after: {
-                storeDebounce: 'writing',
+                storeDebounce: { target: 'writing' },
               },
               on: {
-                openFile: { target: 'pending', reenter: true },
-                closeFile: { target: 'pending', reenter: true },
-                closeAll: { target: 'pending', reenter: true },
-                setActiveFile: { target: 'pending', reenter: true },
-                renameFile: { target: 'pending', reenter: true },
-                setFocusedChatId: { target: 'pending', reenter: true },
-                setPanelState: { target: 'pending', reenter: true },
-                setWorkbenchLayout: { target: 'pending', reenter: true },
-                setViewerLayout: { target: 'pending', reenter: true },
-                setViewSettings: { target: 'pending', reenter: true },
-                updateViewSettings: { target: 'pending', reenter: true },
-                removeViewSettings: { target: 'pending', reenter: true },
-                setModelComponentDisplay: { target: 'pending', reenter: true },
-                pruneComponentDisplayForDeletedPath: { target: 'pending', reenter: true },
-                registerMaterialiseModel: { target: 'pending', reenter: true },
+                openFile: restartDebounce,
+                closeFile: restartDebounce,
+                closeAll: restartDebounce,
+                setActiveFile: restartDebounce,
+                renameFile: restartDebounce,
+                setFocusedChatId: restartDebounce,
+                setPanelState: restartDebounce,
+                setPreviousLayout: restartDebounce,
+                setFileSidebarWidth: restartDebounce,
+                setGraphicsBackendPreference: restartDebounce,
+                registerMaterialiseModel: restartDebounce,
                 // Immediately bypass debounce and write
                 flushNow: { target: 'writing' },
               },
@@ -1129,48 +733,40 @@ export const editorMachine = setup({
             writing: {
               invoke: {
                 src: 'saveEditorStateActor',
-                input({ context }) {
-                  return {
-                    editorState: {
-                      projectId: context.projectId,
-                      openFiles: context.openFiles,
-                      activePaneId: context.activePaneId,
-                      focusedChatId: context.focusedChatId,
-                      panelState: context.panelState,
-                      workbenchLayout: context.workbenchLayout,
-                      viewerLayout: context.viewerLayout,
-                      viewSettings: context.viewSettings,
-                      modelComponentDisplay: context.modelComponentDisplay,
-                    },
-                  };
-                },
-                onDone: [
-                  {
-                    guard: 'hasPendingChanges',
-                    target: 'pending',
-                    actions: 'clearPendingChanges',
+                input: ({ context }) => ({
+                  editorState: {
+                    projectId: context.projectId,
+                    openFiles: context.openFiles,
+                    activePaneId: context.activePaneId,
+                    focusedChatId: context.focusedChatId,
+                    panelState: context.panelState,
+                    fileSidebars: context.fileSidebars,
+                    graphicsBackendPreferences: context.graphicsBackendPreferences,
+                    previousLayout: context.previousLayout,
                   },
-                  { target: 'idle' },
-                ],
-                onError: { target: 'pending', actions: 'clearPendingChanges' },
+                }),
+                onDone: ({ context }) =>
+                  context.hasPendingChanges
+                    ? { target: 'pending', context: { error: undefined, hasPendingChanges: false } }
+                    : { target: 'idle', context: { error: undefined } },
+                onError: ({ event }) => ({
+                  target: 'idle',
+                  context: { error: errorOf(event.error, 'Unknown error'), isLoading: false, hasPendingChanges: false },
+                }),
               },
               on: {
                 // Track mutations during write so we persist again after completion
-                openFile: { actions: 'setPendingChanges' },
-                closeFile: { actions: 'setPendingChanges' },
-                closeAll: { actions: 'setPendingChanges' },
-                setActiveFile: { actions: 'setPendingChanges' },
-                renameFile: { actions: 'setPendingChanges' },
-                setFocusedChatId: { actions: 'setPendingChanges' },
-                setPanelState: { actions: 'setPendingChanges' },
-                setWorkbenchLayout: { actions: 'setPendingChanges' },
-                setViewerLayout: { actions: 'setPendingChanges' },
-                setViewSettings: { actions: 'setPendingChanges' },
-                updateViewSettings: { actions: 'setPendingChanges' },
-                removeViewSettings: { actions: 'setPendingChanges' },
-                setModelComponentDisplay: { actions: 'setPendingChanges' },
-                pruneComponentDisplayForDeletedPath: { actions: 'setPendingChanges' },
-                registerMaterialiseModel: { actions: 'setPendingChanges' },
+                openFile: markPendingChanges,
+                closeFile: markPendingChanges,
+                closeAll: markPendingChanges,
+                setActiveFile: markPendingChanges,
+                renameFile: markPendingChanges,
+                setFocusedChatId: markPendingChanges,
+                setPanelState: markPendingChanges,
+                setPreviousLayout: markPendingChanges,
+                setFileSidebarWidth: markPendingChanges,
+                setGraphicsBackendPreference: markPendingChanges,
+                registerMaterialiseModel: markPendingChanges,
               },
             },
           },

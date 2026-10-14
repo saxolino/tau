@@ -7,22 +7,22 @@ import { useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { toast } from 'sonner';
 import { UserAvatar } from '#components/auth/user/user-avatar.js';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '#components/ui/dropdown-menu.js';
-import { Field } from '#components/ui/field.js';
-import { Label } from '#components/ui/label.js';
+} from '@taucad/ui/components/dropdown-menu';
+import { Field } from '@taucad/ui/components/field';
+import { Label } from '@taucad/ui/components/label';
 import { Spinner } from '#components/ui/spinner.js';
 
 export type ChangeAvatarProps = {
   className?: string;
 };
 
-export function ChangeAvatar({ className }: ChangeAvatarProps) {
+export function ChangeAvatar({ className }: ChangeAvatarProps): React.JSX.Element {
   const { authClient, localization, avatar } = useAuth();
   const { data: session } = useSession(authClient);
 
@@ -34,18 +34,18 @@ export function ChangeAvatar({ className }: ChangeAvatarProps) {
 
   const isPending = updatePending || isUploading || isDeleting;
 
-  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
     if (!file) {
       return;
     }
 
-    e.target.value = '';
+    event.target.value = '';
 
     setIsUploading(true);
 
     try {
-      const resized = (await avatar.resize?.(file, avatar.size, avatar.extension)) || file;
+      const resized = await avatar.resize(file, avatar.size, avatar.extension);
 
       const image = (await avatar.upload?.(resized)) ?? (await fileToBase64(resized));
 

@@ -1,1323 +1,735 @@
 // @vitest-environment node
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import { assign, createActor, setup, waitFor } from 'xstate';
-import type { CapabilitiesManifest, KernelIssue, TelemetryEntry } from '@taucad/runtime';
-import { createMockRuntimeClient } from '@taucad/runtime-testing';
-import type { Geometry } from '@taucad/types';
-import { defaultRenderTimeout } from '#constants/editor.constants.js';
+import { createActor, setup, waitFor } from 'xstate';
+import type { AnyRuntimeDefinition, Evaluation, KernelIssue, Rendering, RuntimeContentInput } from '@taucad/runtime';
+import { createRuntimeClient, defineRuntime } from '@taucad/runtime';
+import { defineKernel, createKernelSuccess } from '@taucad/runtime/kernel';
+import { inProcessTransport } from '@taucad/runtime/transport/in-process';
+import { fromMemoryFs } from '@taucad/runtime/filesystem';
+import { gltfEdgeDetection } from '@taucad/middleware';
+import { writeGlb } from '@taucad/geometry-core';
+import { z } from 'zod';
+import { createMockRuntimeClient, createMockRuntimeDocument } from '@taucad/runtime-testing';
+import { defaultOperationTimeout } from '#constants/editor.constants.js';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
-import { cadMachine } from '#machines/cad.machine.js';
+import { cadMachine, disposeCadRuntime, selectCadFailureIssues } from '#machines/cad.machine.js';
 import type { CadContext } from '#machines/cad.machine.js';
-import { logMachine } from '#machines/logs.machine.js';
-import type { runtime } from '#runtime/ui-runtime.definition.js';
 import type { AppRuntimeClient, KernelOptionsFactory, LazyKernelOptionsFactory } from '#types/runtime-client.alias.js';
 
-const noop = () => {
-  /* No-op */
-};
-
-const createMockAppRuntimeClient = () => createMockRuntimeClient<typeof runtime>();
-
-const createKernelOptionsFactory = (): LazyKernelOptionsFactory => async () => () =>
+const kernelOptionsFactory: LazyKernelOptionsFactory = async () => () =>
   mock<ReturnType<KernelOptionsFactory>>({
-    config: {
-      tauApiUrl: 'https://api.test',
-      tauWebSocketUrl: 'wss://api.test',
-    },
+    config: { tauApiUrl: 'https://api.test', tauWebSocketUrl: 'wss://api.test' },
   });
 
-// ---------------------------------------------------------------------------
-// Factory helpers
-// ---------------------------------------------------------------------------
-
-function createTestActor(options?: {
-  connectResult?: () => Promise<{
+function fixture() {
+  const client = createMockRuntimeClient();
+  const runtime = createMockRuntimeDocument();
+  vi.mocked(client.open).mockReturnValue(runtime.document);
+  const cleanup = vi.fn();
+  const connectWork = async (): Promise<{
     type: 'kernelConnected';
     client: AppRuntimeClient;
     cleanups: Array<() => void>;
-  }>;
-  connectError?: Error;
-  shouldInitializeKernelOnStart?: boolean;
-  parentRef?: CadContext['parentRef'];
-  logRef?: CadContext['logActorRef'];
-}) {
-  const mockClient = createMockAppRuntimeClient();
-  const cleanups: Array<() => void> = [];
-
-  const connectWork =
-    options?.connectResult ??
-    (options?.connectError
-      ? async () => {
-          // oxlint-disable-next-line @typescript-eslint/only-throw-error -- test stub
-          throw options.connectError;
-        }
-      : async () => {
-          await Promise.resolve();
-          return { type: 'kernelConnected', client: mockClient, cleanups };
-        });
-
-  const machine = cadMachine.provide({
-    actors: {
-      connectKernelActor: fromSafeAsync(connectWork),
-    },
-  });
-
-  const kernelOptionsFactory = createKernelOptionsFactory();
-
-  const actor = createActor(machine, {
-    input: {
-      shouldInitializeKernelOnStart: options?.shouldInitializeKernelOnStart ?? false,
-      parentRef: options?.parentRef,
-      logRef: options?.logRef,
-      kernelOptionsFactory,
-      fileSystemRoot: '/projects/test',
-    },
-  });
-
-  return { actor, mockClient, cleanups };
-}
-
-async function startAndConnect(options?: Parameters<typeof createTestActor>[0]) {
-  const result = createTestActor(options);
-  result.actor.start();
-  await waitFor(result.actor, (s) => s.value !== 'connecting');
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Stub data
-// ---------------------------------------------------------------------------
-
-const stubEntryPath = 'main.ts';
-
-const stubGeometry: Geometry = { format: 'gltf', content: new Uint8Array(0), hash: 'stub' };
-
-const stubIssues: KernelIssue[] = [{ message: 'test issue', code: 'RUNTIME', type: 'runtime', severity: 'warning' }];
-const stubFailureIssues: KernelIssue[] = [
-  { message: 'radius must be positive', code: 'RUNTIME', type: 'runtime', severity: 'error' },
-];
-
-type AppRuntimeExportRoute = NonNullable<ReturnType<AppRuntimeClient['bestRouteFor']>>;
-
-const stubExportRoute = {
-  targetFormat: 'glb',
-  kernelId: 'replicad',
-  sourceFormat: 'gltf',
-  fidelity: 'mesh',
-  exportOptions: { schema: {}, defaults: {} },
-} satisfies AppRuntimeExportRoute;
-
-const stubCapabilities: CapabilitiesManifest = {
-  routes: [stubExportRoute],
-  renderCapabilities: {},
-  registrations: [],
-};
-
-type ExportAvailabilityEvent = {
-  type: 'geometryUnit.exportAvailabilityChanged';
-  actorId: string;
-  available: boolean;
-};
-
-function createParentActor() {
-  const parentMachine = setup({
-    types: {
-      // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-      context: {} as { events: ExportAvailabilityEvent[] },
-      // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-      events: {} as ExportAvailabilityEvent,
-    },
-    actions: {
-      recordAvailability: assign({
-        events: ({ context, event }) => [...context.events, event],
-      }),
-    },
-  }).createMachine({
-    context: { events: [] },
-    on: {
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- XState event name
-      'geometryUnit.exportAvailabilityChanged': {
-        actions: 'recordAvailability',
+  }> => ({ type: 'kernelConnected', client, cleanups: [cleanup] });
+  const actor = createActor(
+    cadMachine.provide({
+      actors: {
+        connectKernelActor: fromSafeAsync(connectWork),
       },
-    },
-  });
-
-  return createActor(parentMachine).start();
-}
-
-function createExportableRuntimeClient(): AppRuntimeClient {
-  const client = createMockAppRuntimeClient();
-  Object.defineProperty(client, 'capabilities', {
-    value: stubCapabilities,
-    configurable: true,
-  });
-  vi.mocked(client.bestRouteFor).mockImplementation((format) =>
-    format === stubExportRoute.targetFormat ? stubExportRoute : undefined,
+    }),
+    { input: { shouldInitializeKernelOnStart: false, fileSystemRoot: '/projects/test', kernelOptionsFactory } },
   );
-  return client;
+  actor.start();
+  return { client, runtime, cleanup, actor };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+async function connected(f: ReturnType<typeof fixture>) {
+  await waitFor(f.actor, (snapshot) => snapshot.value === 'idle');
+  return f;
+}
 
-describe('cadMachine', () => {
+async function opened(f: ReturnType<typeof fixture>, entryPath = 'main.ts') {
+  await connected(f);
+  f.actor.send({ type: 'initializeModel', entryPath });
+  await vi.waitFor(() => {
+    expect(f.client.open).toHaveBeenCalledOnce();
+  });
+  await waitFor(f.actor, (snapshot) => snapshot.context.document === f.runtime.document);
+  return f;
+}
+
+const failure: Rendering = {
+  success: false,
+  requestId: 'failed-view',
+  evaluationId: 'eval-2',
+  transient: false,
+  view: 'model',
+  issues: [{ code: 'RUNTIME', type: 'runtime', severity: 'error', message: 'projection failed' }],
+};
+
+const noViews: Evaluation = {
+  success: true,
+  id: 'empty-evaluation',
+  transient: false,
+  views: [],
+  exports: [],
+  issues: [],
+};
+
+describe('cadMachine watched document', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  // =========================================================================
-  // State: connecting
-  // =========================================================================
-  describe('connecting', () => {
-    it('should start in connecting state', () => {
-      const { actor } = createTestActor();
-      actor.start();
-      expect(actor.getSnapshot().value).toBe('connecting');
-      actor.stop();
+  it('opens one watched source and subscribes the default view', async () => {
+    const f = await opened(fixture());
+    expect(f.client.open).toHaveBeenCalledWith({
+      source: { path: 'main.ts' },
+      watch: true,
     });
-
-    it('should transition to idle on successful connection', async () => {
-      const { actor } = await startAndConnect();
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should set kernelClient in context after connection', async () => {
-      const { actor } = await startAndConnect();
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-      actor.stop();
-    });
-
-    it('should transition to error on connection failure', async () => {
-      const { actor } = await startAndConnect({
-        connectError: new Error('Connection refused'),
-      });
-      expect(actor.getSnapshot().value).toBe('error');
-      const issues = actor.getSnapshot().context.kernelIssues;
-      expect(issues.get('__connection__')?.[0]?.message).toBe('Connection refused');
-      actor.stop();
-    });
-
-    it('should buffer initializeModel during connecting and forward on connect', async () => {
-      let resolveConnect!: () => void;
-      const mockClient = createMockAppRuntimeClient();
-
-      const { actor } = createTestActor({
-        connectResult: async () =>
-          new Promise((resolve) => {
-            resolveConnect = () => {
-              resolve({ type: 'kernelConnected', client: mockClient, cleanups: [] as Array<() => void> });
-            };
-          }),
-      });
-      actor.start();
-      expect(actor.getSnapshot().value).toBe('connecting');
-
-      actor.send({
-        type: 'initializeModel',
-        entryPath: stubEntryPath,
-        parameters: { width: 10 },
-      });
-
-      expect(actor.getSnapshot().context.entryPath).toEqual(stubEntryPath);
-      expect(actor.getSnapshot().context.parameters).toEqual({ width: 10 });
-
-      resolveConnect();
-      await waitFor(actor, (s) => s.value === 'idle');
-
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: { width: 10 },
-        content: { includeEdges: true },
-      });
-      actor.stop();
-    });
-
-    it('should buffer setEntryPath during connecting', () => {
-      const { actor } = createTestActor({
-        connectResult: async () => new Promise<never>(noop),
-      });
-      actor.start();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(actor.getSnapshot().context.entryPath).toEqual(stubEntryPath);
-      actor.stop();
-    });
-
-    it('should buffer setParameters during connecting', () => {
-      const { actor } = createTestActor({
-        connectResult: async () => new Promise<never>(noop),
-      });
-      actor.start();
-
-      actor.send({ type: 'setParameters', parameters: { depth: 5 } });
-      expect(actor.getSnapshot().context.parameters).toEqual({ depth: 5 });
-      actor.stop();
-    });
-
-    it('should stay in connecting when actor never settles (simulates abort)', async () => {
-      const { actor } = createTestActor({
-        connectResult: async () =>
-          new Promise<never>(
-            // oxlint-disable-next-line no-empty-function -- mock stub for never-settling promise
-            () => {},
-          ),
-      });
-      actor.start();
-      expect(actor.getSnapshot().value).toBe('connecting');
-
-      await new Promise((resolve) => {
-        setTimeout(resolve, 50);
-      });
-
-      expect(actor.getSnapshot().value).toBe('connecting');
-      expect(actor.getSnapshot().context.kernelIssues.has('__connection__')).toBe(false);
-      actor.stop();
-    });
-
-    it('should transition to error on DOMException AbortError reaching onError', async () => {
-      const { actor } = await startAndConnect({
-        connectError: new DOMException('The operation was aborted', 'AbortError'),
-      });
-      expect(actor.getSnapshot().value).toBe('error');
-      const issues = actor.getSnapshot().context.kernelIssues;
-      expect(issues.get('__connection__')?.[0]?.message).toBe('The operation was aborted');
-      actor.stop();
-    });
-
-    it('should transition to error on non-abort DOMException', async () => {
-      const { actor } = await startAndConnect({
-        connectError: new DOMException('Network error', 'NetworkError'),
-      });
-      expect(actor.getSnapshot().value).toBe('error');
-      const issues = actor.getSnapshot().context.kernelIssues;
-      expect(issues.get('__connection__')?.[0]?.message).toBe('Network error');
-      actor.stop();
-    });
+    expect(f.runtime.viewSpy).toHaveBeenLastCalledWith('model', {});
+    expect(f.actor.getSnapshot().context.defaultView).toBe(f.runtime.view);
+    f.actor.stop();
   });
 
-  // =========================================================================
-  // State: idle
-  // =========================================================================
-  describe('idle', () => {
-    it('should forward setEntryPath to runtime client as render', async () => {
-      const { actor, mockClient } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
-      });
-      expect(actor.getSnapshot().context.entryPath).toEqual(stubEntryPath);
-      actor.stop();
+  it('follows changing default offers and closes an export-only projection', async () => {
+    const f = await opened(fixture());
+    const initialCalls = f.runtime.viewSpy.mock.calls.length;
+    f.runtime.emitEvaluated({
+      ...f.runtime.evaluation,
+      id: 'same-offer-next-evaluation',
     });
-
-    it('should update context on setParameters without forwarding to kernel from cad.machine', async () => {
-      const { actor, mockClient } = await startAndConnect();
-
-      actor.send({ type: 'setParameters', parameters: { height: 20 } });
-      expect(mockClient.updateParameters).not.toHaveBeenCalled();
-      expect(actor.getSnapshot().context.parameters).toEqual({ height: 20 });
-      actor.stop();
+    expect(f.runtime.viewSpy).toHaveBeenCalledTimes(initialCalls);
+    f.runtime.emitEvaluated({
+      ...noViews,
+      views: [{ id: 'drawing', title: 'Drawing', mimeType: 'image/svg+xml' }],
     });
-
-    it('should forward initializeModel as render with parameters', async () => {
-      const { actor, mockClient } = await startAndConnect();
-
-      actor.send({
-        type: 'initializeModel',
-        entryPath: stubEntryPath,
-        parameters: { width: 10 },
-      });
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: { width: 10 },
-        content: { includeEdges: true },
-      });
-      expect(actor.getSnapshot().context.entryPath).toEqual(stubEntryPath);
-      actor.stop();
-    });
-
-    it('should transition to rendering on stateChanged(rendering)', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-      actor.stop();
-    });
-
-    it('should transition to error on stateChanged(error)', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'stateChanged', state: 'error' });
-      expect(actor.getSnapshot().value).toBe('error');
-      actor.stop();
-    });
-
-    it('should stay in idle on stateChanged(idle)', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should update geometry on geometryComputed', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      expect(actor.getSnapshot().context.geometry).toEqual(stubGeometry);
-      expect(actor.getSnapshot().context.latestGeometryOutcome).toBe('success');
-      actor.stop();
-    });
-
-    it('should settle failed geometry while retaining the last viewable artifact', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({ type: 'geometryComputed', geometry: stubGeometry, issues: [] });
-      actor.send({ type: 'setParameters', parameters: { radius: -1 } });
-      const requestedRenderId = actor.getSnapshot().context.lastRequestedRenderId;
-      expect(actor.getSnapshot().context.geometry).toBe(stubGeometry);
-      expect(actor.getSnapshot().context.latestGeometryOutcome).toBeUndefined();
-
-      actor.send({ type: 'geometryFailed', issues: stubFailureIssues });
-
-      const { context } = actor.getSnapshot();
-      expect(context.geometry).toBe(stubGeometry);
-      expect(context.latestGeometryOutcome).toBe('failure');
-      expect(context.kernelIssues.get(stubEntryPath)).toBe(stubFailureIssues);
-      expect(context.lastSettledRenderId).toBe(requestedRenderId);
-      actor.stop();
-    });
-
-    it('should store kernel issues with geometryComputed', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: stubIssues,
-      });
-
-      const issues = actor.getSnapshot().context.kernelIssues;
-      expect(issues.get('main.ts')).toEqual(stubIssues);
-      actor.stop();
-    });
-
-    it('should clear kernel issues on geometryComputed with no issues', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: stubIssues,
-      });
-      expect(actor.getSnapshot().context.kernelIssues.has('main.ts')).toBe(true);
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      expect(actor.getSnapshot().context.kernelIssues.has('main.ts')).toBe(false);
-      actor.stop();
-    });
-
-    it('should set default parameters on parametersParsed', async () => {
-      const { actor } = await startAndConnect();
-      const schema = { type: 'object', properties: { width: { type: 'number' } } } as const;
-
-      actor.send({
-        type: 'parametersParsed',
-        defaultParameters: { width: 42 },
-        jsonSchema: schema,
-      });
-
-      expect(actor.getSnapshot().context.defaultParameters).toEqual({ width: 42 });
-      expect(actor.getSnapshot().context.jsonSchema).toEqual(schema);
-      actor.stop();
-    });
-
-    it('should set code issues on setCodeIssues', async () => {
-      const { actor } = await startAndConnect();
-
-      const codeIssues = mock<CadContext['codeIssues']>([
-        { message: 'syntax error', startLineNumber: 0, endLineNumber: 0, startColumn: 0, endColumn: 0 },
-      ]);
-      actor.send({ type: 'setCodeIssues', errors: codeIssues });
-      expect(actor.getSnapshot().context.codeIssues).toEqual(codeIssues);
-      actor.stop();
-    });
-
-    it('should emit geometryEvaluated on geometryComputed', async () => {
-      const { actor } = await startAndConnect();
-      const emitted: unknown[] = [];
-      actor.on('geometryEvaluated', (event) => emitted.push(event));
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-
-      expect(emitted).toHaveLength(1);
-      expect(emitted[0]).toMatchObject({ type: 'geometryEvaluated', geometry: stubGeometry });
-      actor.stop();
-    });
-
-    it('should keep running availability-affecting transitions without a parentRef', async () => {
-      const mockClient = createExportableRuntimeClient();
-      const { actor } = await startAndConnect({
-        connectResult: async () => ({ type: 'kernelConnected', client: mockClient, cleanups: [] }),
-      });
-
-      actor.send({ type: 'activeKernelChanged', kernelId: 'replicad' });
-      actor.send({ type: 'geometryComputed', geometry: stubGeometry, issues: [] });
-
-      expect(actor.getSnapshot().context.geometry).toBe(stubGeometry);
-      expect(actor.getSnapshot().context.activeKernelId).toBe('replicad');
-      actor.stop();
-    });
-
-    it('should notify the parentRef when export availability becomes true', async () => {
-      const parentRef = createParentActor();
-      const mockClient = createExportableRuntimeClient();
-      const { actor } = await startAndConnect({
-        parentRef,
-        connectResult: async () => ({ type: 'kernelConnected', client: mockClient, cleanups: [] }),
-      });
-
-      actor.send({ type: 'activeKernelChanged', kernelId: 'replicad' });
-      actor.send({ type: 'geometryComputed', geometry: stubGeometry, issues: [] });
-
-      await waitFor(parentRef, (state) => state.context.events.some((event) => event.available));
-      const availableEvent = parentRef.getSnapshot().context.events.find((event) => event.available);
-      expect(availableEvent).toEqual({
-        type: 'geometryUnit.exportAvailabilityChanged',
-        actorId: actor.id,
-        available: true,
-      });
-
-      actor.stop();
-      parentRef.stop();
-    });
-
-    it('should retain viewable geometry but disable export while initializeModel is pending', async () => {
-      const parentRef = createParentActor();
-      const mockClient = createExportableRuntimeClient();
-      const { actor } = await startAndConnect({
-        parentRef,
-        connectResult: async () => ({ type: 'kernelConnected', client: mockClient, cleanups: [] }),
-      });
-
-      actor.send({ type: 'activeKernelChanged', kernelId: 'replicad' });
-      actor.send({ type: 'geometryComputed', geometry: stubGeometry, issues: [] });
-      await waitFor(parentRef, (state) => state.context.events.some((event) => event.available));
-
-      actor.send({ type: 'initializeModel', entryPath: stubEntryPath });
-
-      await waitFor(parentRef, (state) => state.context.events.at(-1)?.available === false);
-      expect(parentRef.getSnapshot().context.events.at(-1)).toEqual({
-        type: 'geometryUnit.exportAvailabilityChanged',
-        actorId: actor.id,
-        available: false,
-      });
-      expect(actor.getSnapshot().context.geometry).toBe(stubGeometry);
-      expect(actor.getSnapshot().context.latestGeometryOutcome).toBeUndefined();
-
-      actor.stop();
-      parentRef.stop();
-    });
-
-    it('should disable export after failure without clearing viewable geometry', async () => {
-      const parentRef = createParentActor();
-      const mockClient = createExportableRuntimeClient();
-      const { actor } = await startAndConnect({
-        parentRef,
-        connectResult: async () => ({ type: 'kernelConnected', client: mockClient, cleanups: [] }),
-      });
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({ type: 'activeKernelChanged', kernelId: 'replicad' });
-      actor.send({ type: 'geometryComputed', geometry: stubGeometry, issues: [] });
-      await waitFor(parentRef, (state) => state.context.events.at(-1)?.available === true);
-
-      actor.send({ type: 'geometryFailed', issues: stubFailureIssues });
-
-      await waitFor(parentRef, (state) => state.context.events.at(-1)?.available === false);
-      expect(actor.getSnapshot().context.geometry).toBe(stubGeometry);
-      expect(parentRef.getSnapshot().context.events.at(-1)?.available).toBe(false);
-      actor.stop();
-      parentRef.stop();
-    });
+    expect(f.runtime.viewSpy).toHaveBeenLastCalledWith('drawing', {});
+    f.runtime.emitEvaluated(noViews);
+    expect(f.actor.getSnapshot().context.defaultView).toBeUndefined();
+    f.runtime.emitEvaluated(f.runtime.evaluation);
+    expect(f.runtime.viewSpy).toHaveBeenLastCalledWith('model', {});
+    expect(f.actor.getSnapshot().context.defaultView).toBe(f.runtime.view);
+    f.actor.stop();
   });
 
-  describe('kernel logs', () => {
-    it.each([undefined, { component: 'Replicad', operation: 'render' }, { component: 'Replicad', file: '/main.ts' }])(
-      'should attribute %j origin to the current compilation unit',
-      async (origin) => {
-        vi.spyOn(console, 'debug').mockImplementation(noop);
-        const logRef = createActor(logMachine).start();
-        const { actor } = await startAndConnect({ logRef });
-        actor.send({ type: 'initializeModel', entryPath: stubEntryPath });
-        await waitFor(actor, (snapshot) => snapshot.matches('idle'));
-
-        actor.send({
-          type: 'kernelLog',
-          level: 'info',
-          message: 'kernel ready',
-          origin,
-          data: { threads: 4 },
-        });
-        await waitFor(logRef, (snapshot) => snapshot.context.logBuffer.size === 1);
-
-        expect(logRef.getSnapshot().context.logBuffer.get(0)).toMatchObject({
-          level: 'info',
-          message: 'kernel ready',
-          origin: {
-            ...origin,
-            file: stubEntryPath,
+  it.each(['native', 'middleware'] as const)(
+    'requests %s GLB edges through the actual CAD subscription',
+    async (provider) => {
+      const kernel = defineKernel({
+        id: 'interactive-edges',
+        name: 'Interactive edges',
+        version: '1.0.0',
+        extensions: ['edges'],
+        views: {
+          model: {
+            title: 'Model',
+            mimeType: 'model/gltf-binary',
+            ...(provider === 'native' ? { content: ['includeEdges'] as const } : {}),
           },
-          data: { threads: 4 },
-        });
-
+        },
+        exports: {},
+        async initialize() {
+          return {};
+        },
+        async resolve({ entryPath }) {
+          return { resolved: [entryPath], unresolved: [] };
+        },
+        async describe() {
+          return createKernelSuccess({
+            parameters: {
+              schema: {
+                $schema: 'https://json-structure.org/meta/extended/v0/#',
+                $id: 'urn:taucad:test:interactive-edges',
+                $uses: ['JSONSchemaUnits'],
+                name: 'InteractiveEdgesParameters',
+                type: 'object',
+              },
+              defaults: {},
+            },
+          });
+        },
+        async evaluate() {
+          return { handle: {}, views: ['model'] };
+        },
+        async render({ content }: { handle: Record<string, unknown>; content?: RuntimeContentInput }) {
+          return {
+            content: writeGlb({
+              nodes: [
+                {
+                  primitives: [
+                    {
+                      mode: 4,
+                      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+                      material: {},
+                    },
+                    ...(content?.includeEdges
+                      ? [
+                          {
+                            mode: 1,
+                            positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+                            material: {},
+                          },
+                        ]
+                      : []),
+                  ],
+                },
+              ],
+            }),
+          };
+        },
+      })();
+      const runtime: AnyRuntimeDefinition = defineRuntime({
+        kernels: [kernel],
+        middleware: provider === 'middleware' ? [gltfEdgeDetection()] : [],
+      });
+      const client = createRuntimeClient({
+        transport: inProcessTransport({
+          runtime,
+          fileSystem: fromMemoryFs({ 'main.edges': '' }),
+        }),
+      });
+      const actor = createActor(
+        cadMachine.provide({
+          actors: {
+            connectKernelActor: fromSafeAsync(
+              async (): Promise<{
+                type: 'kernelConnected';
+                client: AppRuntimeClient;
+                cleanups: Array<() => void>;
+              }> => {
+                await client.connect();
+                return { type: 'kernelConnected', client, cleanups: [] };
+              },
+            ),
+          },
+        }),
+        {
+          input: {
+            shouldInitializeKernelOnStart: false,
+            fileSystemRoot: '',
+            kernelOptionsFactory,
+            operationTimeout: 0,
+          },
+        },
+      );
+      actor.start();
+      try {
+        await waitFor(actor, (snapshot) => snapshot.value === 'idle');
+        actor.send({ type: 'initializeModel', entryPath: 'main.edges' });
+        const snapshot = await waitFor(
+          actor,
+          (state) =>
+            state.context.rendering?.success === true &&
+            state.context.defaultView?.request.content?.includeEdges === true,
+        );
+        const { rendering } = snapshot.context;
+        if (!rendering?.success || rendering.artifact.mimeType !== 'model/gltf-binary') {
+          throw new Error('Expected an edge-enabled GLB rendering');
+        }
+        const bytes = rendering.artifact.content;
+        if (typeof bytes === 'string') {
+          throw new TypeError('Expected binary GLB');
+        }
+        const jsonLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(12, true);
+        const json = z
+          .object({ meshes: z.array(z.object({ primitives: z.array(z.object({ mode: z.number().optional() })) })) })
+          .parse(JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + jsonLength))));
+        expect(json.meshes.some((mesh) => mesh.primitives.some((primitive) => primitive.mode === 1))).toBe(true);
+      } finally {
+        disposeCadRuntime(actor.getSnapshot().context);
         actor.stop();
-        logRef.stop();
+      }
+    },
+  );
+
+  it('commits preview parameters on the existing document', async () => {
+    const f = await opened(fixture());
+    f.actor.send({ type: 'setPreviewParameters', parameters: { width: 42 } });
+    await vi.waitFor(() => {
+      expect(f.runtime.document.update).toHaveBeenCalledWith({
+        parameters: { width: 42 },
+      });
+    });
+    expect(f.client.open).toHaveBeenCalledOnce();
+    f.actor.stop();
+  });
+
+  it('sends drag parameters transiently and keeps staged commit bytes separate', async () => {
+    const f = await opened(fixture());
+    f.actor.send({ type: 'scrubParameters', parameters: { width: 20 } });
+    await vi.waitFor(() => {
+      expect(f.runtime.document.update).toHaveBeenCalledWith({ parameters: { width: 20 }, transient: true });
+    });
+    const stage = { 'main.params.json': new Uint8Array([1]) };
+    f.actor.send({ type: 'commitParameters', stage });
+    await vi.waitFor(() => {
+      expect(f.runtime.document.update).toHaveBeenCalledWith({ stage });
+    });
+    expect(f.client.open).toHaveBeenCalledOnce();
+    f.actor.stop();
+  });
+
+  it('keeps the last successful rendering and its source revision after a failed view', async () => {
+    const f = await opened(fixture());
+    const sourceRevision: NonNullable<Rendering['sourceRevision']> = {
+      entry: 'main.ts',
+      files: { 'main.ts': 'missing' },
+    };
+    const good: Rendering = { ...f.runtime.rendering, sourceRevision };
+    f.runtime.emitRendered(good);
+    expect(f.actor.getSnapshot().context.rendering).toBe(good);
+    f.runtime.emitRendered(failure);
+    expect(f.actor.getSnapshot().context.rendering).toBe(good);
+    expect(selectCadFailureIssues(f.actor.getSnapshot())?.[0]?.message).toBe('projection failed');
+    f.actor.stop();
+  });
+
+  it('clears a retained image only after a successful empty evaluation', async () => {
+    const f = await opened(fixture());
+    f.runtime.emitRendered(f.runtime.rendering);
+    f.runtime.emitEvaluated({ ...noViews, success: false, issues: failure.issues });
+    expect(f.actor.getSnapshot().context.rendering).toBe(f.runtime.rendering);
+    f.runtime.emitEvaluated(noViews);
+    expect(f.actor.getSnapshot().context.rendering).toBeUndefined();
+    expect(f.actor.getSnapshot().context.evaluation).toBe(noViews);
+    f.actor.stop();
+  });
+
+  it('keeps an export-only success after the automatic default reports VIEW_UNAVAILABLE', async () => {
+    const f = await opened(fixture());
+    f.runtime.emitRendered(f.runtime.rendering);
+    f.runtime.emitEvaluated(noViews);
+    f.runtime.emitRendered({
+      ...failure,
+      evaluationId: noViews.id,
+      issues: [{ code: 'VIEW_UNAVAILABLE', type: 'runtime', severity: 'error', message: 'No default view is offered' }],
+    });
+    f.runtime.emitViewStatus('error');
+
+    const snapshot = f.actor.getSnapshot();
+    expect(snapshot.matches('error')).toBe(false);
+    expect(snapshot.context.evaluation).toBe(noViews);
+    expect(snapshot.context.rendering).toBeUndefined();
+    expect(snapshot.context.latestRenderingOutcome).toBe('success');
+    expect(snapshot.context.kernelIssues.get('main.ts')).toBeUndefined();
+    f.actor.stop();
+  });
+
+  it('records evaluated diagnostics with no visible projection', async () => {
+    const f = await opened(fixture());
+    const diagnostic: Evaluation = {
+      ...noViews,
+      issues: [{ code: 'RUNTIME', type: 'runtime', severity: 'warning', message: 'source warning' }],
+    };
+    f.runtime.emitEvaluated(diagnostic);
+    expect(f.actor.getSnapshot().context.evaluation).toBe(diagnostic);
+    expect(f.actor.getSnapshot().context.kernelIssues.get('main.ts')?.[0]?.message).toBe('source warning');
+    f.actor.stop();
+  });
+
+  it('keeps evaluation diagnostics after a successful default rendering', async () => {
+    const f = await opened(fixture());
+    const diagnostic: KernelIssue = {
+      code: 'RUNTIME',
+      type: 'runtime',
+      severity: 'warning',
+      message: 'source warning',
+    };
+    const { evaluation, rendering } = f.runtime;
+    if (!evaluation.success || !rendering.success) {
+      throw new Error('Expected successful runtime fixtures');
+    }
+    f.runtime.emitEvaluated({ ...evaluation, issues: [diagnostic] });
+    f.runtime.emitRendered({ ...rendering, issues: [] });
+
+    expect(f.actor.getSnapshot().context.kernelIssues.get('main.ts')).toEqual([diagnostic]);
+    f.actor.stop();
+  });
+
+  it('replaces source documents and closes the old view', async () => {
+    const f = await opened(fixture());
+    const replacement = createMockRuntimeDocument();
+    vi.mocked(f.client.open).mockReturnValue(replacement.document);
+    f.actor.send({ type: 'setEntryPath', entryPath: 'other.ts' });
+    await vi.waitFor(() => {
+      expect(f.client.open).toHaveBeenCalledTimes(2);
+    });
+    expect(f.runtime.view.close).toHaveBeenCalledOnce();
+    expect(f.runtime.document.close).toHaveBeenCalledOnce();
+    expect(f.client.open).toHaveBeenLastCalledWith({ source: { path: 'other.ts' }, watch: true });
+    f.actor.stop();
+  });
+
+  it('ignores late events from a replaced source', async () => {
+    const f = await opened(fixture());
+    const replacement = createMockRuntimeDocument();
+    vi.mocked(f.client.open).mockReturnValue(replacement.document);
+    f.actor.send({ type: 'setEntryPath', entryPath: 'other.ts' });
+    await waitFor(f.actor, (snapshot) => snapshot.context.document === replacement.document);
+    f.runtime.emitRendered(f.runtime.rendering);
+    f.runtime.emitEvaluated(noViews);
+    expect(f.actor.getSnapshot().context.rendering).toBeUndefined();
+    expect(f.actor.getSnapshot().context.evaluation).toBeUndefined();
+    replacement.emitRendered(replacement.rendering);
+    expect(f.actor.getSnapshot().context.rendering).toBe(replacement.rendering);
+    f.actor.stop();
+  });
+
+  it('releases a document on filesystem binding replacement before reconnecting', async () => {
+    const f = await opened(fixture());
+    f.actor.send({ type: 'filesystemBindingChanged' });
+    await vi.waitFor(() => {
+      expect(f.client.terminate).toHaveBeenCalledOnce();
+    });
+    expect(f.runtime.document.close).toHaveBeenCalledOnce();
+    expect(f.runtime.view.close).toHaveBeenCalledOnce();
+    expect(f.cleanup).toHaveBeenCalledOnce();
+    f.actor.stop();
+  });
+
+  it('parks the watched document and client while retaining the last frame', async () => {
+    const f = await opened(fixture());
+    f.runtime.emitRendered(f.runtime.rendering);
+    await waitFor(f.actor, (snapshot) => snapshot.value === 'idle');
+    f.actor.send({ type: 'parkRuntime' });
+    await waitFor(f.actor, (snapshot) => snapshot.value === 'parked');
+    expect(f.runtime.view.close).toHaveBeenCalledOnce();
+    expect(f.runtime.document.close).toHaveBeenCalledOnce();
+    expect(f.client.terminate).toHaveBeenCalledOnce();
+    expect(f.actor.getSnapshot().context.rendering).toBe(f.runtime.rendering);
+    f.actor.stop();
+  });
+
+  it('reopens a watched document on reveal while keeping the parked frame until replacement', async () => {
+    const f = await opened(fixture());
+    f.runtime.emitRendered(f.runtime.rendering);
+    await waitFor(f.actor, (snapshot) => snapshot.value === 'idle');
+    f.actor.send({ type: 'parkRuntime' });
+    await waitFor(f.actor, (snapshot) => snapshot.value === 'parked');
+    const revealed = createMockRuntimeDocument();
+    vi.mocked(f.client.open).mockReturnValue(revealed.document);
+    f.actor.send({ type: 'resumeRuntime' });
+    await vi.waitFor(() => {
+      expect(f.client.open).toHaveBeenCalledTimes(2);
+    });
+    expect(f.actor.getSnapshot().context.rendering).toBe(f.runtime.rendering);
+    revealed.emitRendered(revealed.rendering);
+    expect(f.actor.getSnapshot().context.rendering).toBe(revealed.rendering);
+    f.actor.stop();
+  });
+
+  it('reports a failed default view without discarding its prior frame', async () => {
+    const f = await opened(fixture());
+    f.runtime.emitRendered(f.runtime.rendering);
+    f.runtime.emitViewStatus('error');
+    expect(f.actor.getSnapshot().value).toBe('error');
+    expect(f.actor.getSnapshot().context.rendering).toBe(f.runtime.rendering);
+    f.runtime.emitRendered(failure);
+    expect(selectCadFailureIssues(f.actor.getSnapshot())?.[0]?.message).toBe('projection failed');
+    f.actor.stop();
+  });
+
+  it('applies operation timeout before opening and updates a live client', async () => {
+    const f = await connected(fixture());
+    expect(f.client.setOperationTimeout).toHaveBeenCalledWith(defaultOperationTimeout);
+    f.actor.send({ type: 'setOperationTimeout', operationTimeout: 12_000 });
+    expect(f.client.setOperationTimeout).toHaveBeenCalledWith(12_000);
+    f.actor.stop();
+  });
+
+  it('uses one shared cleanup for document and client at the React boundary', async () => {
+    const f = await opened(fixture());
+    const context: CadContext = f.actor.getSnapshot().context;
+    disposeCadRuntime(context);
+    expect(f.runtime.view.close).toHaveBeenCalledOnce();
+    expect(f.runtime.document.close).toHaveBeenCalledOnce();
+    expect(f.client.terminate).toHaveBeenCalledOnce();
+    expect(f.cleanup).toHaveBeenCalledOnce();
+    f.actor.stop();
+  });
+  it.each(['first', 'both'] as const)('should retain only refused real view subscriptions: %s', async (mode) => {
+    const f = fixture();
+    const firstError = new Error('rendered subscription refused');
+    const secondError = new Error('status subscription refused');
+    const first = vi.fn<() => void>(() => {
+      throw firstError;
+    });
+    const second = vi.fn<() => void>(() => {
+      if (mode === 'both') {
+        throw secondError;
+      }
+    });
+    vi.mocked(f.runtime.view.on).mockReturnValueOnce(first).mockReturnValueOnce(second);
+    await opened(f);
+    try {
+      f.actor.send({ type: 'closeRuntime' });
+      await waitFor(f.actor, (state) => state.matches('runtimeCloseFailed'));
+      expect(first).toHaveBeenCalledOnce();
+      expect(second).toHaveBeenCalledOnce();
+      expect(f.actor.getSnapshot().matches('runtimeClosed')).toBe(false);
+      const error = f.actor.getSnapshot().context.runtimeCloseError;
+      if (mode === 'both') {
+        expect(error).toBeInstanceOf(AggregateError);
+        if (!(error instanceof AggregateError)) {
+          throw new Error('Expected both subscription failures');
+        }
+        expect(error.errors).toEqual([firstError, secondError]);
+      } else {
+        expect(error).toBe(firstError);
+      }
+      first.mockImplementation(() => undefined);
+      second.mockImplementation(() => undefined);
+      f.actor.send({ type: 'closeRuntime' });
+      await waitFor(f.actor, (state) => state.matches('runtimeClosed'));
+      expect(first).toHaveBeenCalledTimes(2);
+      expect(second).toHaveBeenCalledTimes(mode === 'both' ? 2 : 1);
+      expect(f.client.shutdown).toHaveBeenCalledOnce();
+    } finally {
+      f.actor.stop();
+    }
+  });
+
+  it('should not leave closing on late document, view or worker status', async () => {
+    const f = await opened(fixture());
+    const release = Promise.withResolvers<void>();
+    vi.mocked(f.client.shutdown).mockImplementation(async () => release.promise);
+    try {
+      f.actor.send({ type: 'closeRuntime' });
+      await vi.waitFor(() => {
+        expect(f.client.shutdown).toHaveBeenCalledOnce();
+      });
+      for (const event of [
+        { type: 'documentStatusChanged', status: 'ready' },
+        { type: 'defaultViewStatusChanged', status: 'rendering' },
+        { type: 'stateChanged', state: 'error' },
+      ] as const) {
+        f.actor.send(event);
+        expect(f.actor.getSnapshot().matches('runtimeClosing')).toBe(true);
+      }
+    } finally {
+      release.resolve();
+      f.actor.stop();
+    }
+  });
+
+  it('should attempt document, view and all subscriptions and retry only failed owners', async () => {
+    const f = await opened(fixture());
+    const refusal = new Error('document listener refused');
+    const failed = vi.fn<() => void>(() => {
+      throw refusal;
+    });
+    const successful = vi.fn();
+    f.actor.send({
+      type: 'documentOpened',
+      document: f.runtime.document,
+      defaultView: f.runtime.view,
+      cleanups: [failed, successful],
+      requestId: f.actor.getSnapshot().context.openAttempt,
+    });
+    try {
+      f.actor.send({ type: 'closeRuntime' });
+      await waitFor(f.actor, (state) => state.matches('runtimeCloseFailed'));
+      expect(f.actor.getSnapshot().context.runtimeCloseError).toBe(refusal);
+      expect(f.actor.getSnapshot().context.documentCleanups).toEqual([failed]);
+      expect(successful).toHaveBeenCalledOnce();
+      expect(f.runtime.document.close).toHaveBeenCalledOnce();
+      expect(f.runtime.view.close).toHaveBeenCalledOnce();
+      expect(f.cleanup).toHaveBeenCalledOnce();
+      failed.mockImplementation(() => undefined);
+      f.actor.send({ type: 'closeRuntime' });
+      await waitFor(f.actor, (state) => state.matches('runtimeClosed'));
+      expect(failed).toHaveBeenCalledTimes(2);
+      expect(successful).toHaveBeenCalledOnce();
+      expect(f.client.shutdown).toHaveBeenCalledOnce();
+      expect(f.runtime.document.close).toHaveBeenCalledOnce();
+      expect(f.runtime.view.close).toHaveBeenCalledOnce();
+    } finally {
+      f.actor.stop();
+    }
+  });
+
+  it('should drain late document ownership without replacing the closing document', async () => {
+    const f = await opened(fixture());
+    const release = Promise.withResolvers<void>();
+    vi.mocked(f.client.shutdown).mockImplementation(async () => release.promise);
+    const late = createMockRuntimeDocument();
+    const refusal = new Error('late listener refused');
+    const failed = vi.fn<() => void>(() => {
+      throw refusal;
+    });
+    const successful = vi.fn();
+    try {
+      f.actor.send({ type: 'closeRuntime' });
+      await vi.waitFor(() => {
+        expect(f.client.shutdown).toHaveBeenCalledOnce();
+      });
+      f.actor.send({
+        type: 'documentOpened',
+        document: late.document,
+        defaultView: late.view,
+        cleanups: [failed, successful],
+        requestId: f.actor.getSnapshot().context.openAttempt,
+      });
+      expect(f.actor.getSnapshot().context.document).toBe(f.runtime.document);
+      release.resolve();
+      await waitFor(f.actor, (state) => state.matches('runtimeCloseFailed'));
+      expect(f.actor.getSnapshot().context.runtimeCloseError).toBe(refusal);
+      expect(f.actor.getSnapshot().context.documentCleanups).toEqual([failed]);
+      expect(successful).toHaveBeenCalledOnce();
+      expect(late.view.close).toHaveBeenCalledOnce();
+      expect(late.document.close).toHaveBeenCalledOnce();
+      failed.mockImplementation(() => undefined);
+      f.actor.send({ type: 'closeRuntime' });
+      await waitFor(f.actor, (state) => state.matches('runtimeClosed'));
+      expect(f.client.shutdown).toHaveBeenCalledOnce();
+      expect(failed).toHaveBeenCalledTimes(2);
+      expect(successful).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      f.actor.stop();
+    }
+  });
+
+  it.each(['connected', 'parked', 'refused'] as const)(
+    'should acknowledge repeated close of a %s owner without projection success',
+    async (mode) => {
+      const f =
+        mode === 'refused'
+          ? (() => {
+              const actor = createActor(
+                cadMachine.provide({
+                  actors: {
+                    connectKernelActor: fromSafeAsync(async () => {
+                      throw new Error('initialization refused');
+                    }),
+                  },
+                }),
+                { input: { shouldInitializeKernelOnStart: false, fileSystemRoot: '', kernelOptionsFactory } },
+              ).start();
+              return { actor, client: createMockRuntimeClient() };
+            })()
+          : await connected(fixture());
+      try {
+        if (mode === 'refused') {
+          await waitFor(f.actor, (state) => state.matches('error'));
+        }
+        if (mode === 'parked') {
+          f.actor.send({ type: 'parkRuntime' });
+        }
+        f.actor.send({ type: 'closeRuntime' });
+        await waitFor(f.actor, (state) => state.matches('runtimeClosed'));
+        f.actor.send({ type: 'closeRuntime' });
+        expect(f.actor.getSnapshot().matches('runtimeClosed')).toBe(true);
+        expect(f.client.shutdown).toHaveBeenCalledTimes(mode === 'connected' ? 1 : 0);
+        expect(f.actor.getSnapshot().context.kernelClient).toBeUndefined();
+      } finally {
+        f.actor.stop();
+      }
+    },
+  );
+
+  it('should await the privately connecting client and fence binding and restore intents', async () => {
+    const runtime = await import('@taucad/runtime/client');
+    const client = createMockRuntimeClient();
+    const ready = Promise.withResolvers<void>();
+    const closed = Promise.withResolvers<void>();
+    vi.mocked(client.connect).mockImplementation(async () => ready.promise);
+    vi.mocked(client.shutdown).mockImplementation(async () => closed.promise);
+    vi.spyOn(runtime, 'createRuntimeClient').mockReturnValue(client);
+    const fileManager = createActor(
+      setup({}).createMachine({
+        initial: 'ready',
+        context: {
+          contentService: { id: 'original' },
+          openFileSystemBridge: () => ({ port: new MessageChannel().port1, dispose: () => undefined }),
+        },
+        on: { replace: { context: { contentService: { id: 'replacement' } } } },
+        states: { ready: {} },
+      }),
+    ).start();
+    const actor = createActor(cadMachine, {
+      input: {
+        shouldInitializeKernelOnStart: false,
+        // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- real ready actor supplies the connection owner's read-only filesystem seam
+        fileManagerRef: fileManager as unknown as NonNullable<CadContext['fileManagerRef']>,
+        kernelOptionsFactory,
+        fileSystemRoot: '/projects/test',
       },
-    );
-
-    it('should retain project logs when a compilation unit initializes', async () => {
-      const logRef = createActor(logMachine).start();
-      logRef.send({ type: 'addLog', message: 'existing project log' });
-      const { actor } = await startAndConnect({ logRef });
-
-      actor.send({ type: 'initializeModel', entryPath: stubEntryPath });
-
-      expect(
-        logRef
-          .getSnapshot()
-          .context.logBuffer.toArray()
-          .map(({ message }) => message),
-      ).toEqual(['existing project log']);
-
-      actor.stop();
-      logRef.stop();
-    });
-  });
-
-  // =========================================================================
-  // State: rendering
-  // =========================================================================
-  describe('rendering', () => {
-    async function enterRendering() {
-      const result = await startAndConnect();
-      result.actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(result.actor.getSnapshot().matches('rendering')).toBe(true);
-      return result;
-    }
-
-    it('should stay in rendering on geometryComputed and store geometry', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
+    }).start();
+    try {
+      await vi.waitFor(() => {
+        expect(client.connect).toHaveBeenCalledOnce();
       });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-      expect(actor.getSnapshot().context.geometry).toBe(stubGeometry);
-      actor.stop();
-    });
-
-    it('should transition to idle on stateChanged(idle)', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should stay in rendering on kernelIssue and store issues', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({ type: 'kernelIssue', errors: stubIssues });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-      expect(actor.getSnapshot().context.kernelIssues.get(stubEntryPath)).toBe(stubIssues);
-      actor.stop();
-    });
-
-    it('should transition to error on stateChanged(error)', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({ type: 'stateChanged', state: 'error' });
-      expect(actor.getSnapshot().value).toBe('error');
-      actor.stop();
-    });
-
-    it('should transition to buffering on stateChanged(buffering)', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({ type: 'stateChanged', state: 'buffering' });
-      expect(actor.getSnapshot().value).toBe('buffering');
-      actor.stop();
-    });
-
-    it('should clear renderPhase when exiting rendering state', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({ type: 'kernelProgress', phase: 'Meshing' });
-      expect(actor.getSnapshot().context.renderPhase).toBe('Meshing');
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      expect(actor.getSnapshot().context.renderPhase).toBeUndefined();
-      actor.stop();
-    });
-
-    it('should accept setEntryPath during rendering (forwards to client as render)', async () => {
-      const { actor, mockClient } = await enterRendering();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
-      });
-      actor.stop();
-    });
-
-    it('should update context on setParameters during rendering without forwarding', async () => {
-      const { actor, mockClient } = await enterRendering();
-
-      actor.send({ type: 'setParameters', parameters: { depth: 5 } });
-      expect(mockClient.updateParameters).not.toHaveBeenCalled();
-      expect(actor.getSnapshot().context.parameters).toEqual({ depth: 5 });
-      actor.stop();
-    });
-
-    it('should track progress during rendering', async () => {
-      const { actor } = await enterRendering();
-
-      actor.send({ type: 'kernelProgress', phase: 'bundling' });
-      expect(actor.getSnapshot().context.renderPhase).toBe('bundling');
-      actor.stop();
-    });
-
-    it('should store telemetry during rendering', async () => {
-      const { actor } = await enterRendering();
-
-      const entries = mock<TelemetryEntry[]>([{ name: 'test', startTime: 0, duration: 100, workerTimeOrigin: 0 }]);
-      actor.send({ type: 'kernelTelemetry', entries });
-      expect(actor.getSnapshot().context.telemetryEntries).toHaveLength(1);
-      actor.stop();
-    });
-  });
-
-  // =========================================================================
-  // State: buffering
-  // =========================================================================
-  describe('buffering', () => {
-    async function enterBuffering() {
-      const result = await startAndConnect();
-      result.actor.send({ type: 'stateChanged', state: 'buffering' });
-      expect(result.actor.getSnapshot().value).toBe('buffering');
-      return result;
-    }
-
-    it('should transition to buffering on stateChanged(buffering) from idle', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'stateChanged', state: 'buffering' });
-      expect(actor.getSnapshot().value).toBe('buffering');
-      actor.stop();
-    });
-
-    it('should transition to rendering on stateChanged(rendering) from buffering', async () => {
-      const { actor } = await enterBuffering();
-
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-      actor.stop();
-    });
-
-    it('should transition to idle on stateChanged(idle) from buffering', async () => {
-      const { actor } = await enterBuffering();
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should transition to error on stateChanged(error) from buffering', async () => {
-      const { actor } = await enterBuffering();
-
-      actor.send({ type: 'stateChanged', state: 'error' });
-      expect(actor.getSnapshot().value).toBe('error');
-      actor.stop();
-    });
-
-    it('should accept setEntryPath during buffering and forward to client', async () => {
-      const { actor, mockClient } = await enterBuffering();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
-      });
-      actor.stop();
-    });
-
-    it('should accept setParameters during buffering', async () => {
-      const { actor } = await enterBuffering();
-
-      actor.send({ type: 'setParameters', parameters: { width: 10 } });
-      expect(actor.getSnapshot().context.parameters).toEqual({ width: 10 });
-      actor.stop();
-    });
-
-    it('should accept geometryComputed during buffering and store geometry', async () => {
-      const { actor } = await enterBuffering();
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      expect(actor.getSnapshot().value).toBe('buffering');
-      expect(actor.getSnapshot().context.geometry).toBe(stubGeometry);
-      actor.stop();
-    });
-
-    it('should transition to buffering on stateChanged(buffering) from error', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'stateChanged', state: 'error' });
-      expect(actor.getSnapshot().value).toBe('error');
-
-      actor.send({ type: 'stateChanged', state: 'buffering' });
-      expect(actor.getSnapshot().value).toBe('buffering');
-      actor.stop();
-    });
-  });
-
-  // =========================================================================
-  // State: error
-  // =========================================================================
-  describe('error', () => {
-    async function enterError() {
-      const result = await startAndConnect();
-      result.actor.send({ type: 'stateChanged', state: 'error' });
-      expect(result.actor.getSnapshot().value).toBe('error');
-      return result;
-    }
-
-    it('should reconnect on setEntryPath from error state', async () => {
-      const mockClient = createMockAppRuntimeClient();
-      let connectAttempt = 0;
-
-      const { actor } = createTestActor({
-        connectResult: async () => {
-          connectAttempt++;
-          if (connectAttempt === 1) {
-            throw new Error('Connection refused');
-          }
-          return { type: 'kernelConnected', client: mockClient, cleanups: [] as Array<() => void> };
-        },
-      });
-      actor.start();
-      await waitFor(actor, (s) => s.value === 'error');
       expect(actor.getSnapshot().context.kernelClient).toBeUndefined();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(actor.getSnapshot().value).toBe('connecting');
-
-      await waitFor(actor, (s) => s.value === 'idle');
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
+      actor.send({ type: 'closeRuntime' });
+      await vi.waitFor(() => {
+        expect(client.shutdown).toHaveBeenCalledOnce();
       });
-      actor.stop();
-    });
-
-    it('should reconnect on initializeModel from error state', async () => {
-      const mockClient = createMockAppRuntimeClient();
-      let connectAttempt = 0;
-
-      const { actor } = createTestActor({
-        connectResult: async () => {
-          connectAttempt++;
-          if (connectAttempt === 1) {
-            throw new Error('Connection refused');
-          }
-          return { type: 'kernelConnected', client: mockClient, cleanups: [] as Array<() => void> };
-        },
-      });
-      actor.start();
-      await waitFor(actor, (s) => s.value === 'error');
+      fileManager.send({ type: 'replace' });
+      actor.send({ type: 'restoreParameters' });
+      expect(actor.getSnapshot().matches('runtimeClosed')).toBe(false);
+      expect(client.terminate).not.toHaveBeenCalled();
+      expect(client.open).not.toHaveBeenCalled();
+      closed.resolve();
+      await waitFor(actor, (state) => state.matches('runtimeClosed'));
+      ready.resolve();
+      await Promise.resolve();
       expect(actor.getSnapshot().context.kernelClient).toBeUndefined();
-
-      actor.send({
-        type: 'initializeModel',
-        entryPath: stubEntryPath,
-        parameters: { width: 10 },
-      });
-      expect(actor.getSnapshot().value).toBe('connecting');
-      expect(actor.getSnapshot().context.entryPath).toEqual(stubEntryPath);
-
-      await waitFor(actor, (s) => s.value === 'idle');
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: { width: 10 },
-        content: { includeEdges: true },
-      });
+      actor.send({ type: 'filesystemBindingChanged' });
+      expect(actor.getSnapshot().matches('runtimeClosed')).toBe(true);
+      expect(runtime.createRuntimeClient).toHaveBeenCalledOnce();
+    } finally {
+      closed.resolve();
+      ready.resolve();
       actor.stop();
-    });
+      fileManager.stop();
+    }
+  });
 
-    it('should stay in error on setParameters and only update context', async () => {
-      const mockClient = createMockAppRuntimeClient();
-      let connectAttempt = 0;
-
-      const { actor } = createTestActor({
-        connectResult: async () => {
-          connectAttempt++;
-          if (connectAttempt === 1) {
-            throw new Error('Connection refused');
+  it.each(['client', 'subscription', 'both'] as const)(
+    'should retain exact %s failures and retry only failed cleanup ownership',
+    async (owner) => {
+      const f = await connected(fixture());
+      const clientFailure = new Error('shutdown refused');
+      const callbackFailure = new Error('subscription refused');
+      const failed = vi.fn(() => undefined);
+      const successful = vi.fn();
+      if (owner !== 'subscription') {
+        vi.mocked(f.client.shutdown).mockRejectedValue(clientFailure);
+      }
+      if (owner !== 'client') {
+        failed.mockImplementation(() => {
+          throw callbackFailure;
+        });
+      }
+      f.actor.send({ type: 'kernelAllocated', client: f.client, cleanups: [failed, successful] });
+      try {
+        f.actor.send({ type: 'closeRuntime' });
+        await waitFor(f.actor, (state) => state.matches('runtimeCloseFailed'));
+        const error = f.actor.getSnapshot().context.runtimeCloseError;
+        if (owner === 'both') {
+          expect(error).toBeInstanceOf(AggregateError);
+          if (!(error instanceof AggregateError)) {
+            throw new Error('Expected both failures');
           }
-          return { type: 'kernelConnected', client: mockClient, cleanups: [] as Array<() => void> };
-        },
-      });
-      actor.start();
-      await waitFor(actor, (s) => s.value === 'error');
-
-      actor.send({ type: 'setParameters', parameters: { depth: 5 } });
-      expect(actor.getSnapshot().value).toBe('error');
-      expect(actor.getSnapshot().context.parameters).toEqual({ depth: 5 });
-      actor.stop();
-    });
-
-    it('should reconnect on initializeModel even when kernelClient existed', async () => {
-      const { actor } = await enterError();
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-
-      actor.send({
-        type: 'initializeModel',
-        entryPath: stubEntryPath,
-        parameters: { width: 10 },
-      });
-      expect(actor.getSnapshot().value).toBe('connecting');
-      actor.stop();
-    });
-
-    it('should reconnect on setEntryPath even when kernelClient existed', async () => {
-      const { actor } = await enterError();
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(actor.getSnapshot().value).toBe('connecting');
-      actor.stop();
-    });
-
-    it('should stay in error on setParameters even when kernelClient existed', async () => {
-      const { actor } = await enterError();
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-
-      actor.send({ type: 'setParameters', parameters: { depth: 5 } });
-      expect(actor.getSnapshot().value).toBe('error');
-      expect(actor.getSnapshot().context.parameters).toEqual({ depth: 5 });
-      actor.stop();
-    });
-
-    it('should transition to idle on stateChanged(idle)', async () => {
-      const { actor } = await enterError();
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should transition to rendering on stateChanged(rendering)', async () => {
-      const { actor } = await enterError();
-
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-      actor.stop();
-    });
-
-    it('should store kernel issues in error state on kernelIssue', async () => {
-      const result = await startAndConnect();
-      result.actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      result.actor.send({ type: 'stateChanged', state: 'error' });
-      expect(result.actor.getSnapshot().value).toBe('error');
-
-      result.actor.send({ type: 'kernelIssue', errors: stubIssues });
-      expect(result.actor.getSnapshot().value).toBe('error');
-      expect(result.actor.getSnapshot().context.kernelIssues.get(stubEntryPath)).toBe(stubIssues);
-      result.actor.stop();
-    });
-
-    it('should preserve kernel issues set in rendering after transition to error', async () => {
-      const result = await startAndConnect();
-      result.actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      result.actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(result.actor.getSnapshot().matches('rendering')).toBe(true);
-
-      result.actor.send({ type: 'kernelIssue', errors: stubIssues });
-      expect(result.actor.getSnapshot().context.kernelIssues.get(stubEntryPath)).toBe(stubIssues);
-
-      result.actor.send({ type: 'stateChanged', state: 'error' });
-      expect(result.actor.getSnapshot().value).toBe('error');
-      expect(result.actor.getSnapshot().context.kernelIssues.get(stubEntryPath)).toBe(stubIssues);
-      result.actor.stop();
-    });
-  });
-
-  // =========================================================================
-  // Cleanup (destroyKernel exit action)
-  // =========================================================================
-  describe('cleanup', () => {
-    it('should wire destroyKernel as a root exit action', () => {
-      expect(cadMachine.config.exit).toContainEqual('destroyKernel');
-    });
-
-    it('should store event cleanups from connect result', async () => {
-      const cleanup1 = vi.fn();
-      const cleanup2 = vi.fn();
-      const mockClient = createMockAppRuntimeClient();
-
-      const { actor } = await startAndConnect({
-        connectResult: async () => {
-          return { type: 'kernelConnected', client: mockClient, cleanups: [cleanup1, cleanup2] };
-        },
-      });
-
-      expect(actor.getSnapshot().context.eventCleanups).toHaveLength(2);
-      actor.stop();
-    });
-
-    it('should store runtime client in context after connection', async () => {
-      const { actor } = await startAndConnect();
-
-      expect(actor.getSnapshot().context.kernelClient).toBeDefined();
-      actor.stop();
-    });
-  });
-
-  // =========================================================================
-  // Context initialization
-  // =========================================================================
-  describe('context initialization', () => {
-    it('should initialize with correct defaults', () => {
-      const { actor } = createTestActor();
-      actor.start();
-      const { context } = actor.getSnapshot();
-
-      expect(context.entryPath).toBeUndefined();
-      expect(context.screenshot).toBeUndefined();
-      expect(context.parameters).toEqual({});
-      expect(context.defaultParameters).toEqual({});
-      expect(context.latestGeometryOutcome).toBeUndefined();
-      expect(context.geometry).toBeUndefined();
-      expect(context.kernelIssues.size).toBe(0);
-      expect(context.codeIssues).toEqual([]);
-      expect(context.kernelClient).toBeUndefined();
-      expect(context.eventCleanups).toEqual([]);
-      expect(context.renderPhase).toBeUndefined();
-      expect(context.telemetryEntries).toEqual([]);
-      expect(context.units).toEqual({ length: 'mm' });
-
-      actor.stop();
-    });
-  });
-
-  // =========================================================================
-  // Multi-event flows
-  // =========================================================================
-  describe('multi-event flows', () => {
-    it('should handle full render cycle: idle -> rendering -> geometryComputed + stateChanged -> idle', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-      expect(actor.getSnapshot().context.geometry).toEqual(stubGeometry);
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should handle setEntryPath during rendering (abort + new render)', async () => {
-      const { actor, mockClient } = await startAndConnect();
-
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      const newEntryPath = 'other.ts';
-      actor.send({ type: 'setEntryPath', entryPath: newEntryPath });
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: newEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
-      });
-      expect(actor.getSnapshot().context.entryPath).toEqual(newEntryPath);
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should handle error recovery: error -> setEntryPath -> reconnect -> idle -> rendering -> idle', async () => {
-      const mockClient = createMockAppRuntimeClient();
-
-      const { actor } = createTestActor({
-        connectResult: async () => {
-          return { type: 'kernelConnected', client: mockClient, cleanups: [] as Array<() => void> };
-        },
-      });
-      actor.start();
-      await waitFor(actor, (s) => s.value === 'idle');
-
-      actor.send({ type: 'stateChanged', state: 'error' });
-      expect(actor.getSnapshot().value).toBe('error');
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(actor.getSnapshot().value).toBe('connecting');
-
-      await waitFor(actor, (s) => s.value === 'idle');
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
-      });
-
-      actor.send({ type: 'stateChanged', state: 'rendering' });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      expect(actor.getSnapshot().matches('rendering')).toBe(true);
-
-      actor.send({ type: 'stateChanged', state: 'idle' });
-      expect(actor.getSnapshot().value).toBe('idle');
-      actor.stop();
-    });
-
-    it('should clear file-specific issues on setEntryPath', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: stubIssues,
-      });
-      expect(actor.getSnapshot().context.kernelIssues.has('main.ts')).toBe(true);
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      expect(actor.getSnapshot().context.kernelIssues.has('main.ts')).toBe(false);
-      actor.stop();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Render timeout forwarding
-  // ---------------------------------------------------------------------------
-
-  describe('render timeout', () => {
-    it('should forward setRenderTimeout to kernel client via setOptions', async () => {
-      const { actor, mockClient } = await startAndConnect();
-
-      actor.send({ type: 'setRenderTimeout', renderTimeout: 60_000 });
-
-      expect(actor.getSnapshot().context.renderTimeout).toBe(60_000);
-      expect(mockClient.setOptions).toHaveBeenCalledWith({ renderTimeout: 60_000 });
-      actor.stop();
-    });
-
-    it('should apply stored renderTimeout on kernel connection via setOptions', async () => {
-      const mockClient = createMockRuntimeClient() as AppRuntimeClient;
-      let resolveConnect!: () => void;
-      const connectGate = new Promise<void>((resolve) => {
-        resolveConnect = resolve;
-      });
-
-      const { actor } = createTestActor({
-        connectResult: async () => {
-          await connectGate;
-          return { type: 'kernelConnected', client: mockClient, cleanups: [] };
-        },
-      });
-
-      actor.start();
-
-      actor.send({ type: 'setRenderTimeout', renderTimeout: 120_000 });
-      expect(actor.getSnapshot().context.renderTimeout).toBe(120_000);
-
-      resolveConnect();
-      await waitFor(actor, (s) => s.value !== 'connecting');
-
-      expect(mockClient.setOptions).toHaveBeenCalledWith({ renderTimeout: 120_000 });
-      actor.stop();
-    });
-
-    it('should default renderTimeout to 60_000ms (60 seconds)', async () => {
-      const { actor } = await startAndConnect();
-      expect(actor.getSnapshot().context.renderTimeout).toBe(defaultRenderTimeout);
-      actor.stop();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Render ID tracking
-  // ---------------------------------------------------------------------------
-
-  describe('render ID tracking', () => {
-    it('should initialize lastRequestedRenderId and lastSettledRenderId to 0', () => {
-      const { actor } = createTestActor();
-      actor.start();
-      const { context } = actor.getSnapshot();
-      expect(context.lastRequestedRenderId).toBe(0);
-      expect(context.lastSettledRenderId).toBe(0);
-      actor.stop();
-    });
-
-    it('should bump lastRequestedRenderId on setEntryPath event', async () => {
-      const { actor } = await startAndConnect();
-      const before = actor.getSnapshot().context.lastRequestedRenderId;
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-
-      expect(actor.getSnapshot().context.lastRequestedRenderId).toBe(before + 1);
-      actor.stop();
-    });
-
-    it('should bump lastRequestedRenderId on setParameters event', async () => {
-      const { actor } = await startAndConnect();
-      const before = actor.getSnapshot().context.lastRequestedRenderId;
-
-      actor.send({ type: 'setParameters', parameters: { width: 10 } });
-
-      expect(actor.getSnapshot().context.lastRequestedRenderId).toBe(before + 1);
-      actor.stop();
-    });
-
-    it('should bump lastRequestedRenderId on initializeModel event', async () => {
-      const { actor } = await startAndConnect();
-      const before = actor.getSnapshot().context.lastRequestedRenderId;
-
-      actor.send({ type: 'initializeModel', entryPath: stubEntryPath, parameters: { width: 5 } });
-
-      expect(actor.getSnapshot().context.lastRequestedRenderId).toBe(before + 1);
-      actor.stop();
-    });
-
-    it('should advance lastSettledRenderId to lastRequestedRenderId on geometryComputed', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({ type: 'setParameters', parameters: { width: 7 } });
-      const requestedAfterTwoBumps = actor.getSnapshot().context.lastRequestedRenderId;
-      expect(requestedAfterTwoBumps).toBeGreaterThan(0);
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-
-      expect(actor.getSnapshot().context.lastSettledRenderId).toBe(requestedAfterTwoBumps);
-      actor.stop();
-    });
-
-    it('should not regress lastSettledRenderId when subsequent geometryComputed arrives without new request', async () => {
-      const { actor } = await startAndConnect();
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-      const settledFirst = actor.getSnapshot().context.lastSettledRenderId;
-
-      actor.send({
-        type: 'geometryComputed',
-        geometry: stubGeometry,
-        issues: [],
-      });
-
-      expect(actor.getSnapshot().context.lastSettledRenderId).toBe(settledFirst);
-      actor.stop();
-    });
-
-    it('should buffer setEntryPath during connecting and forward as render on connect', async () => {
-      let resolveConnect!: () => void;
-      const mockClient = createMockAppRuntimeClient();
-
-      const { actor } = createTestActor({
-        connectResult: async () =>
-          new Promise((resolve) => {
-            resolveConnect = () => {
-              resolve({ type: 'kernelConnected', client: mockClient, cleanups: [] as Array<() => void> });
-            };
-          }),
-      });
-      actor.start();
-      expect(actor.getSnapshot().value).toBe('connecting');
-
-      actor.send({ type: 'setEntryPath', entryPath: stubEntryPath });
-      const requestedDuringConnecting = actor.getSnapshot().context.lastRequestedRenderId;
-      expect(requestedDuringConnecting).toBeGreaterThan(0);
-
-      resolveConnect();
-      await waitFor(actor, (s) => s.value === 'idle');
-
-      expect(mockClient.render).toHaveBeenCalledWith({
-        source: { path: stubEntryPath },
-        parameters: {},
-        content: { includeEdges: true },
-      });
-      actor.stop();
-    });
-  });
+          expect(error.errors).toEqual([clientFailure, callbackFailure]);
+        } else {
+          expect(error).toBe(owner === 'client' ? clientFailure : callbackFailure);
+        }
+        expect(successful).toHaveBeenCalledOnce();
+        expect(f.actor.getSnapshot().context.eventCleanups).toEqual(owner === 'client' ? [] : [failed]);
+        vi.mocked(f.client.shutdown).mockResolvedValue(undefined);
+        failed.mockImplementation(() => undefined);
+        f.actor.send({ type: 'closeRuntime' });
+        await waitFor(f.actor, (state) => state.matches('runtimeClosed'));
+        expect(successful).toHaveBeenCalledOnce();
+        expect(f.client.shutdown).toHaveBeenCalledTimes(owner === 'subscription' ? 1 : 2);
+        expect(failed).toHaveBeenCalledTimes(owner === 'client' ? 1 : 2);
+      } finally {
+        f.actor.stop();
+      }
+    },
+  );
 });

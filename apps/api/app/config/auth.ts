@@ -2,9 +2,19 @@ import { betterAuth } from 'better-auth';
 import type { BetterAuthOptions } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { apiKey } from '@better-auth/api-key';
-import { magicLink } from 'better-auth/plugins';
+import { bearer, magicLink, oneTimeToken } from 'better-auth/plugins';
 import postgres from 'postgres';
+import { tokenLifetimeSeconds } from '#email/email-copy.js';
 import { drizzle } from 'drizzle-orm/postgres-js';
+
+const accountOptions: NonNullable<BetterAuthOptions['account']> = {
+  accountLinking: {
+    enabled: true,
+    trustedProviders: ['github', 'google', 'email-password'],
+    allowDifferentEmails: false,
+  },
+};
+accountOptions.encryptOAuthTokens = true;
 
 /**
  * Static Better Auth configuration.
@@ -19,19 +29,29 @@ export const staticAuthConfig = {
   plugins: [
     apiKey(),
     magicLink({
+      expiresIn: tokenLifetimeSeconds.magicLink,
       sendMagicLink() {
         // No-op for mock configuration
       },
     }),
+    // Desktop sign-in handoff (ruling D7): mints a short-lived, single-use token
+    // the Electron main process exchanges for a bearer session over loopback.
+    // Reuses the existing `verification` table — no schema change.
+    oneTimeToken({ storeToken: 'hashed' }),
+    // `bearer()` stays LAST: its after-hook reads the `set-cookie` every earlier
+    // plugin may have written and re-emits it as `set-auth-token`.
+    bearer(),
   ],
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
     requireEmailVerification: true,
-    resetPasswordTokenExpiresIn: 60 * 60, // 1 hour
+    // Shared with the email copy so the sentence and the deadline cannot drift.
+    resetPasswordTokenExpiresIn: tokenLifetimeSeconds.resetPassword,
     revokeSessionsOnPasswordReset: true,
   },
   emailVerification: {
+    expiresIn: tokenLifetimeSeconds.verifyEmail,
     sendOnSignUp: true,
     sendOnSignIn: true,
     autoSignInAfterVerification: true,
@@ -45,18 +65,15 @@ export const staticAuthConfig = {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
     updateAge: 60 * 60 * 24, // 24 hours
   },
-  account: {
-    accountLinking: {
-      enabled: true,
-      trustedProviders: ['github', 'google', 'email-password'],
-      allowDifferentEmails: false,
-    },
-  },
+  account: accountOptions,
   rateLimit: {
     enabled: true,
     window: 10,
     max: 100,
     storage: 'memory',
+    customRules: {
+      '/get-session': { window: 10, max: 20 },
+    },
   },
   advanced: {
     cookiePrefix: 'tau',

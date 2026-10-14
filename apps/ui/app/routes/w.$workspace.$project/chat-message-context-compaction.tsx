@@ -10,12 +10,12 @@ import {
 } from '#components/chat/chat-tool-card.js';
 import { ChatToolDescription } from '#components/chat/chat-tool-text.js';
 import { ChatToolLabel } from '#components/chat/chat-tool-label.js';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '#components/ui/hover-card.js';
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@taucad/ui/components/hover-card';
 import { formatNumberAbbreviation } from '#utils/number.utils.js';
 
 type CompactionView = {
   icon: LucideIcon;
-  tone?: 'success' | 'warning' | 'destructive';
+  tone?: 'success' | 'warning' | 'error';
   cardStatus: 'ready' | 'warning' | 'error';
   verb: string;
   description: string;
@@ -24,16 +24,17 @@ type CompactionView = {
 
 function getCompactionView(data: ContextCompactionData): CompactionView {
   switch (data.status ?? 'compacted') {
-    case 'failed':
+    case 'failed': {
       return {
         icon: AlertTriangle,
-        tone: 'destructive',
+        tone: 'error',
         cardStatus: 'error',
         verb: 'Compaction blocked',
         description: 'provider dispatch',
         title: 'Context compaction blocked',
       };
-    case 'overflow_retry_succeeded':
+    }
+    case 'overflow_retry_succeeded': {
       return {
         icon: RotateCcw,
         tone: 'warning',
@@ -42,7 +43,8 @@ function getCompactionView(data: ContextCompactionData): CompactionView {
         description: 'chat context after overflow',
         title: 'Overflow retry',
       };
-    case 'skipped':
+    }
+    case 'skipped': {
       return {
         icon: Archive,
         cardStatus: 'ready',
@@ -50,8 +52,8 @@ function getCompactionView(data: ContextCompactionData): CompactionView {
         description: 'chat context compaction',
         title: 'Context compaction skipped',
       };
-    case 'compacted':
-    default:
+    }
+    default: {
       return {
         icon: Archive,
         tone: 'success',
@@ -60,54 +62,77 @@ function getCompactionView(data: ContextCompactionData): CompactionView {
         description: 'chat context',
         title: 'Context compaction',
       };
+    }
   }
 }
 
 function formatTriggerReason(reason: ContextCompactionData['triggerReason']): string | undefined {
   switch (reason) {
-    case 'estimate':
+    case 'estimate': {
       return 'Estimated budget';
-    case 'previous_usage':
+    }
+    case 'previous_usage': {
       return 'Previous provider usage';
-    case 'overflow':
+    }
+    case 'overflow': {
       return 'Provider overflow';
+    }
     case 'none':
-    case undefined:
+    case undefined: {
       return undefined;
-    default:
+    }
+    default: {
       return undefined;
+    }
   }
 }
 
 function formatFailureKind(kind: ContextCompactionData['compactionFailureKind']): string | undefined {
   switch (kind) {
-    case 'morph_transport_error':
+    case 'morph_transport_error': {
       return 'Morph transport error';
-    case 'morph_http_error':
+    }
+    case 'morph_http_error': {
       return 'Morph HTTP error';
-    case 'morph_contract_error':
+    }
+    case 'morph_contract_error': {
       return 'Morph response contract error';
-    case 'transcript_commit_failed':
+    }
+    case 'transcript_commit_failed': {
       return 'Transcript commit failed';
-    case 'context_overflow_retry_failed':
+    }
+    case 'context_overflow_retry_failed': {
       return 'Overflow retry failed';
-    case 'unexpected_error':
+    }
+    case 'circuit_breaker_open': {
+      return 'Compaction paused after repeated ineffective passes';
+    }
+    case 'summarization_failed': {
+      return 'History summarization failed';
+    }
+    case 'unexpected_error': {
       return 'Unexpected implementation error';
-    case undefined:
+    }
+    case undefined: {
       return undefined;
-    default:
+    }
+    default: {
       return undefined;
+    }
   }
 }
 
 function formatFailureDisposition(disposition: ContextCompactionData['failureDisposition']): string | undefined {
   switch (disposition) {
-    case 'blocked_before_provider':
+    case 'blocked_before_provider': {
       return 'Blocked before provider dispatch';
-    case undefined:
+    }
+    case undefined: {
       return undefined;
-    default:
+    }
+    default: {
       return undefined;
+    }
   }
 }
 
@@ -174,18 +199,18 @@ export function ChatMessageContextCompaction({ data }: { readonly data: ContextC
                 <span className='font-mono'>{data.debugId}</span>
               </>
             ) : null}
-            {data.providerNativeReplayMetadataPresent !== undefined ? (
+            {data.providerNativeReplayMetadataPresent === undefined ? null : (
               <>
                 <span className='text-muted-foreground'>Replay metadata</span>
                 <span>{data.providerNativeReplayMetadataPresent ? 'Present' : 'Missing'}</span>
               </>
-            ) : null}
-            {data.missingFunctionCallSignatureCount !== undefined ? (
+            )}
+            {data.missingFunctionCallSignatureCount === undefined ? null : (
               <>
                 <span className='text-muted-foreground'>Missing signatures</span>
                 <span className='font-mono'>{data.missingFunctionCallSignatureCount}</span>
               </>
-            ) : null}
+            )}
             <span className='text-muted-foreground'>Before</span>
             <span className='font-mono'>{formatNumberAbbreviation(data.tokensBeforeCompaction)} tokens</span>
             <span className='text-muted-foreground'>After</span>

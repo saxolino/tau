@@ -3,7 +3,7 @@ title: 'Runtime API Policy'
 description: 'Naming and ownership rules for runtime consumer, plugin-author, transport, filesystem, and artifact APIs.'
 status: active
 created: '2026-07-20'
-updated: '2026-08-24'
+updated: '2026-10-13'
 related:
   - docs/policy/library-api-policy.md
   - docs/policy/runtime-architecture-policy.md
@@ -14,6 +14,7 @@ related:
   - docs/research/runtime-source-api-unification-blueprint.md
   - docs/research/nested-geometry-unit-runtime-source-contract-regression.md
   - docs/research/runtime-path-namespace-documentation-contract.md
+  - docs/research/rooted-filesystem-root-relative-path-unification.md
 ---
 
 # Runtime API Policy
@@ -30,22 +31,22 @@ The same model entry passes through several representations: unresolved consumer
 
 Use the following vocabulary for runtime APIs:
 
-| Semantic role                                | Required name                         | Example                                   | Boundary and invariant                                                                |
-| -------------------------------------------- | ------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------- |
-| Unresolved consumer model input              | `source`                              | `{ path: 'lib/cube.scad' }`               | `RuntimeClient`, React hooks, headless services, and CLI adapters                     |
-| Project-relative file that starts evaluation | `entryPath`                           | `lib/cube.scad`                           | Manifests and project state; normalized POSIX path without a leading `/`              |
-| Filesystem-backed consumer input             | `source.path`                         | `lib/cube.scad` or `/lib/cube.scad`       | Path within the runtime filesystem; may be relative before client normalization       |
-| Inline source-map key and selector           | `files` key and `entry`               | `lib/cube.scad`                           | `entry` selects one key from `source.files`; it is not a basename-only filename       |
-| Normalized file that starts evaluation       | `entryPath`                           | `/lib/cube.scad`                          | Kernel, bundler, and middleware authoring; normalized runtime path beginning with `/` |
-| Arbitrary runtime filesystem target          | `path` or qualified `filePath`        | `/.tau/parameters/lib/cube.scad.json`     | Filesystem methods, dependencies, cache, temporary files, and watches                 |
-| Runtime-owned directory-plus-basename value  | structural `file` payload             | `{ path: '/lib', filename: 'cube.scad' }` | Worker and transport protocol internals only                                          |
-| Authority-global routing path                | qualified `path`                      | `/projects/proj_123/lib/cube.scad`        | Trusted host composition; selects a mount before a runtime filesystem is rooted       |
-| Native backing location                      | `basePath`, `hostPath`, or `hostRoot` | `/Users/alice/project`                    | Host adapter boundary only; never exposed to runtime plugins                          |
-| Engine-private location                      | engine-qualified `path`               | `lib/cube.scad` in OpenRSCAD's module map | Kernel implementation only                                                            |
+| Semantic role                                | Required name                         | Example                                   | Boundary and invariant                                                          |
+| -------------------------------------------- | ------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- |
+| Unresolved consumer model input              | `source`                              | `{ path: 'lib/cube.scad' }`               | `RuntimeClient`, React hooks, headless services, and CLI adapters               |
+| Project-relative file that starts evaluation | `entryPath`                           | `lib/cube.scad`                           | Manifests and project state; normalized POSIX path without a leading `/`        |
+| Filesystem-backed consumer input             | `source.path`                         | `lib/cube.scad`                           | Canonical root-relative path within the supplied runtime filesystem             |
+| Inline source-map key and selector           | `files` key and `entry`               | `lib/cube.scad`                           | `entry` selects one key from `source.files`; it is not a basename-only filename |
+| Normalized file that starts evaluation       | `entryPath`                           | `lib/cube.scad`                           | Kernel, bundler, and middleware authoring; canonical root-relative runtime path |
+| Arbitrary runtime filesystem target          | `path` or qualified `filePath`        | `.tau/parameters/lib/cube.scad.json`      | Filesystem methods, dependencies, cache, temporary files, and watches           |
+| Runtime-owned directory-plus-basename value  | structural `file` payload             | `{ path: 'lib', filename: 'cube.scad' }`  | Worker and transport protocol internals only                                    |
+| Authority-global routing path                | qualified `path`                      | `/projects/proj_123/lib/cube.scad`        | Trusted host composition; selects a mount before a runtime filesystem is rooted |
+| Native backing location                      | `basePath`, `hostPath`, or `hostRoot` | `/Users/alice/project`                    | Host adapter boundary only; never exposed to runtime plugins                    |
+| Engine-private location                      | engine-qualified `path`               | `lib/cube.scad` in OpenRSCAD's module map | Kernel implementation only                                                      |
 
 Do not choose a name merely because two values are both strings or both refer to a file. Apply one name consistently wherever the same semantic identity crosses a public or plugin-author boundary. Document whether an `entryPath` is project-relative or a normalized runtime path at the owning type boundary; do not encode that normalization stage by renaming the field.
 
-Use **runtime path** as the public term for a path within the filesystem supplied to the runtime. A leading `/` refers to that filesystem's root, not the host operating system's root. Lexical normalization removes redundant separators and dot segments and rejects root escape and host-only path forms. It preserves exact case and Unicode spelling and does not imply native `realpath`, symlink resolution, case folding, or Unicode normalization.
+Use **runtime path** as the public term for a canonical root-relative path within the filesystem supplied to the runtime. The capability supplies the root, represented by `''`; descendants such as `main.ts` and `lib/cube.scad` never have a leading slash. Runtime boundaries reject noncanonical separators, dot segments, root escape, and host-only path forms. The spelling preserves exact case and Unicode and does not imply native `realpath`, symlink resolution, case folding, or Unicode normalization.
 
 **Why**: Normalization changes an entry path's invariant, not the identity or role that its name communicates.
 
@@ -76,7 +77,9 @@ Name unresolved model input `source` on every high-level operation that may esta
 Only source-bearing operations accept it:
 
 - `RuntimeClient.render({ source })`;
+- request-scoped `RuntimeClient.evaluate({ source })`;
 - request-scoped `RuntimeClient.export(format, { source })`;
+- `RuntimeClient.snapshotSource({ source })`;
 - `useRuntime({ source })`; and
 - wrappers that directly adapt one of those operations.
 
@@ -97,7 +100,7 @@ INCORRECT:
 
 ```typescript
 await client.export('glb', {
-  entryPath: '/lib/cube.scad',
+  entryPath: 'lib/cube.scad',
   parameters,
 });
 ```
@@ -135,29 +138,48 @@ Name the normalized runtime path of the model entry `entryPath` in every kernel,
 
 This applies to:
 
-- `GetParametersInput`;
-- `CreateGeometryInput`;
-- `GetDependenciesInput`;
+- `DescribeInput`;
+- `EvaluateInput`;
+- `ResolveInput`;
 - `BundleInput`;
 - `KernelBundler.bundle(entryPath)`;
 - `KernelBundler.resolveDependencies(entryPath)`; and
 - middleware hooks that receive or wrap those inputs.
 
-The value begins with `/`, is rooted at the supplied runtime filesystem rather than the host OS, and identifies the root evaluation file. Returned dependency paths use the same runtime filesystem namespace but remain ordinary paths because they are not evaluation entries.
+The value is a canonical root-relative path within the supplied runtime filesystem and identifies the root evaluation file. Returned dependency paths use the same runtime filesystem namespace but remain ordinary paths because they are not evaluation entries.
 
 **Why**: Kernel and bundler authors operate on the same resolved root; different names imply a distinction that does not exist.
 
 CORRECT:
 
 ```typescript
-export default defineKernel({
-  async getDependencies({ entryPath }, runtime) {
-    return runtime.bundler.resolveDependencies(entryPath);
-  },
+import { createKernelParameterDeclaration, createKernelSuccess, defineKernel } from '@taucad/runtime/kernel';
 
-  async createGeometry({ entryPath }, runtime) {
-    const source = await runtime.filesystem.readFile(entryPath, 'utf8');
-    return evaluate(source);
+const emptyParameters = createKernelParameterDeclaration(
+  {},
+  { type: 'object', properties: {}, additionalProperties: false },
+  { id: 'urn:taucad:example:parameters', name: 'ExampleParameters' },
+);
+
+const kernel = defineKernel({
+  id: 'example',
+  name: 'Example',
+  version: '1.0.0',
+  extensions: ['example'],
+  views: {},
+  exports: {},
+  async initialize() {
+    return {};
+  },
+  async resolve({ entryPath }, services) {
+    return services.bundler.resolveDependencies(entryPath);
+  },
+  async describe() {
+    return createKernelSuccess({ parameters: emptyParameters });
+  },
+  async evaluate({ entryPath }, services) {
+    const source = await services.filesystem.readFile(entryPath, 'utf8');
+    return { handle: source };
   },
 });
 ```
@@ -236,7 +258,7 @@ await client.render({
 
 Use `files` for the inline path-to-content map and `entry` for the key that selects an entry from that map. Keys may contain directory segments. Do not describe `entry` as a filename or propagate that model-source selector into project, kernel, bundler, or filesystem APIs. Unrelated domain records may use `entry` only when their surrounding type makes a different meaning explicit.
 
-`source.path` remains the filesystem-source discriminant. Do not rename it to `entryPath`: it is unresolved consumer input and may be relative before runtime normalization.
+`source.path` remains the filesystem-source discriminant. Do not rename it to `entryPath`: it belongs to the consumer source union even though its value must already be a canonical root-relative path.
 
 **Why**: `entry` selects a key from an inline `files` map, whereas `entryPath` identifies a filesystem path; these are different data contracts rather than different normalization stages of one field.
 
@@ -262,7 +284,7 @@ await client.render({
     files: {
       'main.ts': mainSource,
     },
-    entryPath: '/main.ts',
+    entryPath: 'main.ts',
   },
 });
 ```
@@ -303,7 +325,7 @@ CORRECT:
 
 ```typescript
 const kernel = defineKernel({
-  async createGeometry({ entryPath }) {
+  async evaluate({ entryPath }) {
     expectTypeOf(entryPath).toEqualTypeOf<string>();
     return createResult();
   },
@@ -375,6 +397,38 @@ export default defineTauPlugin({
   meta: { name: '@taucad/image' },
   contributions: [imageTranscoder],
 });
+```
+
+### 11. Hold Realm-Shared Backends Through `services.realm`
+
+A kernel whose library binds its backend at module scope holds that backend through `services.realm` instead of creating one per `initialize`. Declare the backend once at module scope with `createRealmGroup<Value>(name)`, naming it after the backend (prefix a third-party name with its package name), and pass that token as `group`; the token fixes the held value's type. Name the `key` after the build, keep the hold in the kernel context, and release it in `onDispose`. Keep the token module-local until a second package must hold the same backend. Keep per-client state (tracers, compute-reuse scopes) in a per-kernel wrapper over the shared value.
+
+CORRECT:
+
+```typescript
+const replicadOcct = createRealmGroup<OpenCascadeInstance>('replicad-occt');
+
+async initialize(options, services) {
+  const occt = await services.realm.hold({
+    group: replicadOcct,
+    key: `${variant}:${wasmUrl ?? ''}`,
+    create: async () => initOcct(wasmUrl, bindingsFactory),
+  });
+  return { occt, openCascade: wrapOcForExceptions(occt.value) };
+},
+async onDispose(context) {
+  context.occt.release();
+},
+```
+
+INCORRECT:
+
+```typescript
+async initialize() {
+  const oc = await initOcct(wasmUrl, bindingsFactory);
+  setOC(oc); // rebinds the library for every client in this realm
+  return { oc };
+},
 ```
 
 ## Anti-Patterns

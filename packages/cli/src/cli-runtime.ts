@@ -1,6 +1,8 @@
 import type { PluginFactory, PluginInstance } from '@taucad/runtime/plugin';
 import { defineRuntime } from '@taucad/runtime/worker';
 import type { AnyRuntimeDefinition } from '@taucad/runtime/worker';
+import type { PicogkKernelOptions } from '@taucad/picogk';
+import { cliZooCloseErrors } from '#zoo-proxy.js';
 
 /** A plugin factory whose default invocation is valid for `--plugin`. @public */
 export type DefaultInvocablePluginFactory = {
@@ -12,6 +14,9 @@ export type DefaultInvocablePluginFactory = {
 export type CliRuntimeOptions = {
   readonly explicitFactories?: readonly DefaultInvocablePluginFactory[];
   readonly configuredPlugins?: readonly PluginInstance[];
+  readonly picogk?: PicogkKernelOptions;
+  /** The Zoo proxy the KCL kernel connects to; defaults to Tau Cloud's (see `cliZooProxyUrl`). */
+  readonly zooProxyUrl?: string;
 };
 
 /**
@@ -22,8 +27,7 @@ export type CliRuntimeOptions = {
  */
 export const createCliRuntime = async (options: CliRuntimeOptions = {}): Promise<AnyRuntimeDefinition> => {
   /*
-   * Array order is kernel-selection precedence. Zoo is deliberately absent because it
-   * needs credential configuration. Extensions and routes stay owned by the packages.
+   * Array order is kernel-selection precedence. Extensions and routes stay owned by the packages.
    */
   const modules = await Promise.all([
     import('@taucad/middleware'),
@@ -33,12 +37,34 @@ export const createCliRuntime = async (options: CliRuntimeOptions = {}): Promise
     import('@taucad/openrscad'),
     import('@taucad/jscad'),
     import('@taucad/manifold'),
+    import('@taucad/picovoxel'),
     import('@taucad/gltf'),
     import('@taucad/brep'),
     import('@taucad/rhino'),
+    import('@taucad/slicer'),
+    import('@taucad/tscircuit'),
   ]);
-  const [{ assimp }, { image }] = await Promise.all([import('@taucad/assimp'), import('@taucad/image')]);
-  const builtIns = [...modules.map(({ plugin }) => plugin()), assimp({ preset: 'all' }), image()];
+  const [{ assimp }, { image }, { zoo }, picogkModule] = await Promise.all([
+    import('@taucad/assimp'),
+    import('@taucad/image'),
+    import('@taucad/zoo'),
+    options.picogk ? import('@taucad/picogk') : undefined,
+  ]);
+  const builtIns = [
+    ...modules.map(({ plugin }) => plugin()),
+    /* The credential rides the WebSocket upgrade (`#zoo-proxy.ts`), never these options. */
+    zoo({
+      kernels: {
+        default: {
+          baseUrl: options.zooProxyUrl ?? 'wss://api.tau.new/v1/kernels/zoo',
+          closeErrors: { ...cliZooCloseErrors },
+        },
+      },
+    }),
+    ...(picogkModule && options.picogk ? [picogkModule.picogk({ kernels: { default: options.picogk } })] : []),
+    assimp({ preset: 'all' }),
+    image(),
+  ];
   const builtInNames = new Set(builtIns.map(({ meta }) => meta.name));
   const plugins: PluginInstance[] = [...builtIns];
   const indexByName = new Map(plugins.map(({ meta }, index) => [meta.name, index]));

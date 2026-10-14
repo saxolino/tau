@@ -1,5 +1,5 @@
 import { Link, NavLink } from 'react-router';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import { TauWordmark } from '#components/icons/tau-wordmark.js';
 import { SvgIcon } from '#components/icons/svg-icon.js';
 import { metaConfig } from '#constants/meta.constants.js';
@@ -7,7 +7,7 @@ import { useAuthLinks } from '#hooks/use-auth-links.js';
 import { GithubStarButton } from '#components/marketing/github-star-button.js';
 
 const navLinks = [
-  { label: 'Docs', to: '/docs' },
+  { label: 'Docs', to: 'https://docs.tau.new' },
   { label: 'Community', to: '/community' },
 ];
 
@@ -20,7 +20,7 @@ export function MarketingTopNav(): React.JSX.Element {
   const { signIn } = useAuthLinks();
 
   return (
-    <header className='sticky top-0 z-40 border-b bg-background/80 backdrop-blur-md'>
+    <header className='sticky top-0 z-40 border-b bg-background/80 backdrop-blur-md [app-region:no-drag]'>
       <div className='container mx-auto flex h-14 items-center justify-between gap-4 px-4'>
         <div className='flex items-center gap-6'>
           <Link to='/' className='flex items-center' aria-label='Tau home'>

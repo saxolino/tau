@@ -10,13 +10,12 @@
  */
 
 import { Worker as NodeWorker } from 'node:worker_threads';
-import type { Transferable as NodeTransferable } from 'node:worker_threads';
+import type { Transferable as NodeTransferable, WorkerOptions } from 'node:worker_threads';
 
 import { createChannelClient } from '@taucad/rpc';
 import type { Channel, Port } from '@taucad/rpc';
 import { Topic } from '@taucad/events';
-import { runtimeProtocolSchemas } from '#types/runtime-protocol.schemas.js';
-import type { Geometry } from '@taucad/types';
+import { runtimeDocumentProtocolSchemas } from '#types/runtime-document-protocol.schemas.js';
 import type {
   RuntimeInitializeMemoryHandle,
   RuntimeInitializePayload,
@@ -25,22 +24,19 @@ import type {
   TransportClientReady,
 } from '#transport/runtime-transport.types.js';
 import type { TransportDescriptor } from '#transport/runtime-transport-descriptor.types.js';
-import { runtimeChannelSessionKey } from '#transport/_internal/runtime-worker-dispatcher.js';
+import { runtimeChannelSessionKey } from '#transport/_internal/runtime-channel-bindings.js';
 import { isRuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
 import type { RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
-import { materialiseGeometry } from '#transport/_internal/geometry-materialiser.js';
-import { materialiseExportResult } from '#transport/_internal/export-materialiser.js';
-import type {
-  GeometryTransport,
-  RuntimeExportResultTransport,
-  RuntimeInitializeResult,
-  RuntimeProtocol,
-} from '#types/runtime-protocol.types.js';
+import { materialiseBinaryContent } from '#transport/_internal/export-materialiser.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
+import type { BinaryContentDelivery, RuntimeInitializeResult } from '#types/runtime-wire.types.js';
 import { allocatePools } from '#transport/_internal/sab-pools.js';
-import { reservePreview, triggerRenderTimeout } from '#transport/_internal/abort-channel.js';
+import { signalDocumentAbort } from '#transport/_internal/abort-channel.js';
 import { buildFileSystemBridge } from '#transport/_internal/file-system-bridge.js';
 import { nodeWorkerId } from '#transport/_internal/node-worker-id.js';
 import type { NodeWorkerId } from '#transport/_internal/node-worker-id.js';
+import type { ComputeBinding } from '#types/runtime-compute.types.js';
+import { buildComputeStoreBridge } from '#transport/_internal/compute-store-bridge.js';
 
 /**
  * Subset of `node:worker_threads.Worker` the transport depends on.
@@ -50,9 +46,43 @@ import type { NodeWorkerId } from '#transport/_internal/node-worker-id.js';
 export type NodeWorkerLike = {
   postMessage(value: unknown, transferList?: readonly NodeTransferable[]): void;
   on(event: 'message', listener: (data: unknown) => void): NodeWorkerLike;
+  /** The transport settles the client from `'error'` and `'exit'`; a worker that never emits them hangs until the operation timeout. */
+  on(event: 'error', listener: (error: Error) => void): NodeWorkerLike;
+  on(event: 'exit', listener: (exitCode: number) => void): NodeWorkerLike;
   off(event: 'message', listener: (data: unknown) => void): NodeWorkerLike;
+  off(event: 'error', listener: (error: Error) => void): NodeWorkerLike;
+  off(event: 'exit', listener: (exitCode: number) => void): NodeWorkerLike;
   terminate(): Promise<number>;
 };
+
+/**
+ * A value `node:worker_threads` can structured-clone into a worker's
+ * `workerData`: primitives, dates, regular expressions, binary data, and
+ * arrays, maps, sets and plain objects of these. Functions, class instances
+ * with behaviour and symbols cannot cross the thread boundary.
+ *
+ * Declare an object's shape with `type`, not `interface`: an interface has no
+ * implicit index signature, so it is not assignable here even when every
+ * member is cloneable.
+ *
+ * @public
+ */
+export type NodeWorkerData =
+  // oxlint-disable-next-line typescript/no-restricted-types -- `null` is a value a worker can receive; this type describes data, not an API's absence.
+  | null
+  | undefined
+  | boolean
+  | number
+  | bigint
+  | string
+  | Date
+  | RegExp
+  | ArrayBuffer
+  | ArrayBufferView
+  | readonly NodeWorkerData[]
+  | ReadonlyMap<NodeWorkerData, NodeWorkerData>
+  | ReadonlySet<NodeWorkerData>
+  | { readonly [key: string]: NodeWorkerData };
 
 /**
  * Options accepted by {@link nodeWorkerClient}.
@@ -65,13 +95,26 @@ export type NodeWorkerClientOptions = {
    * configured runtime through `nodeWorkerHost` or an equivalent helper.
    */
   readonly url: string | URL;
-  readonly workerCtor?: unknown;
+  /**
+   * Override for `node:worker_threads.Worker`, called as
+   * `new workerCtor(url, { workerData })` — a tsx-run `.ts` entry, or a fake
+   * worker in a unit test. A custom constructor must forward `options` to
+   * `Worker`, or the entry never receives `workerData`.
+   */
+  readonly workerCtor?: new (url: string | URL, options?: WorkerOptions) => NodeWorkerLike;
+  /**
+   * Structured-cloned into the worker as `workerData` from
+   * `node:worker_threads`, so one application-owned entry can configure the
+   * runtime it hosts (a project root, a plugin list).
+   */
+  readonly workerData?: NodeWorkerData;
   readonly sharedMemory?: { readonly geometry?: { readonly bytes: number } };
   readonly fileSystem?: RuntimeFileSystem;
   /** Mirror runtime spans into the worker Performance Timeline for DevTools. */
   readonly devtoolsTelemetry?: boolean;
   /** Host-compiled WASM modules cloned into the worker during initialization. */
   readonly compiledWasmModules?: RuntimeInitializeMemoryHandle['compiledWasmModules'];
+  readonly compute?: ComputeBinding;
 };
 
 const wrapNodeWorkerAsPort = (worker: NodeWorkerLike): Port<unknown> => {
@@ -149,9 +192,9 @@ export const nodeWorkerClientDescribe = (options: NodeWorkerClientOptions): Tran
  */
 export const nodeWorkerClient = (
   options: NodeWorkerClientOptions,
-): RuntimeTransportClient<RuntimeProtocol, Readonly<Record<never, never>>, NodeWorkerId> => {
-  const ctor = (options.workerCtor ?? NodeWorker) as new (url: string | URL) => NodeWorkerLike;
-  if (typeof ctor !== 'function') {
+): RuntimeTransportClient<RuntimeDocumentProtocol, Readonly<Record<never, never>>, NodeWorkerId> => {
+  const workerCtor = options.workerCtor ?? NodeWorker;
+  if (typeof workerCtor !== 'function') {
     throw new TypeError('nodeWorkerTransport: requires `node:worker_threads.Worker` (or `workerCtor` test seam)');
   }
   if (options.fileSystem !== undefined && !isRuntimeFileSystem(options.fileSystem)) {
@@ -167,12 +210,16 @@ export const nodeWorkerClient = (
   };
 
   let bridge: ReturnType<typeof buildFileSystemBridge>;
+  let computeBridge: ReturnType<typeof buildComputeStoreBridge> | undefined;
   let openPromise: Promise<TransportClientReady> | undefined;
   let worker: NodeWorkerLike | undefined;
   let port: Port<unknown> | undefined;
-  let channel: Channel<RuntimeProtocol> | undefined;
+  let channel: Channel<RuntimeDocumentProtocol> | undefined;
   let removeWorkerFailureListeners: (() => void) | undefined;
   let isClosed = false;
+  /* A worker that dies before its hello failed to start; one that dies after it
+   * died mid-session. Readiness is the only thing that separates them. */
+  let phase: 'boot' | 'session' = 'boot';
 
   let resolveClosed: ((result: RuntimeTransportCloseResult) => void) | undefined;
   const closed = new Promise<RuntimeTransportCloseResult>((resolve) => {
@@ -206,6 +253,11 @@ export const nodeWorkerClient = (
     } catch {
       /* Best-effort */
     }
+    try {
+      computeBridge?.dispose();
+    } catch {
+      /* Best-effort */
+    }
     resolveClosed?.(result);
   };
 
@@ -218,18 +270,17 @@ export const nodeWorkerClient = (
         throw new Error('nodeWorkerTransport: client closed before open()');
       }
       void ensurePools();
-      worker = Reflect.construct(ctor, [options.url]);
-      const eventWorker = worker as NodeWorkerLike & {
-        on(event: 'error', listener: (error: Error) => void): NodeWorkerLike;
-        on(event: 'exit', listener: (exitCode: number) => void): NodeWorkerLike;
-        off(event: 'error', listener: (error: Error) => void): NodeWorkerLike;
-        off(event: 'exit', listener: (exitCode: number) => void): NodeWorkerLike;
-      };
+      // oxlint-disable-next-line new-cap -- the constructor is held in a camel-case variable by naming policy.
+      worker = new workerCtor(
+        options.url,
+        options.workerData === undefined ? undefined : { workerData: options.workerData },
+      );
+      const eventWorker = worker;
       const onWorkerError = (error: Error): void => {
         void finish({ cause: 'wire-failure', error });
       };
       const onWorkerExit = (exitCode: number): void => {
-        void finish({ cause: 'host-exit', exitCode });
+        void finish({ cause: 'host-exit', exitCode, phase });
       };
       eventWorker.on('error', onWorkerError);
       eventWorker.on('exit', onWorkerExit);
@@ -238,11 +289,22 @@ export const nodeWorkerClient = (
         eventWorker.off('exit', onWorkerExit);
       };
       port = wrapNodeWorkerAsPort(worker);
-      channel = createChannelClient<RuntimeProtocol>({
+      channel = createChannelClient<RuntimeDocumentProtocol>({
         port,
         sessionKey: runtimeChannelSessionKey,
-        protocolSchemas: runtimeProtocolSchemas,
+        protocolSchemas: runtimeDocumentProtocolSchemas,
       });
+      /* `open()` hands the channel back before hello lands, so readiness is
+       * observed separately; a host that never became ready died in boot. */
+      const observeReadiness = async (ready: Promise<unknown>): Promise<void> => {
+        try {
+          await ready;
+          phase = 'session';
+        } catch {
+          /* The phase stays `'boot'`. */
+        }
+      };
+      void observeReadiness(channel.ready);
       return { channel };
     })();
     return openPromise;
@@ -250,18 +312,13 @@ export const nodeWorkerClient = (
 
   return {
     id: nodeWorkerId,
-    reservePreview() {
-      return reservePreview(ensurePools().signalBuffer);
+    signalDocumentAbort(evaluationId, generation, reason) {
+      return signalDocumentAbort(ensurePools().signalBuffer, evaluationId, generation, reason);
     },
-    renderTimeoutRecovery: {
+    operationTimeoutRecovery: {
       kind: 'terminable',
-      abortRender(target): void {
-        if (channel) {
-          triggerRenderTimeout(channel, ensurePools().signalBuffer, target);
-        }
-      },
       async terminate(): Promise<void> {
-        await finish({ cause: 'render-timeout' });
+        await finish({ cause: 'operation-timeout' });
       },
     },
     describe(): TransportDescriptor<NodeWorkerId> {
@@ -276,15 +333,17 @@ export const nodeWorkerClient = (
         throw new Error('nodeWorkerTransport: channel unavailable after open()');
       }
       bridge ??= buildFileSystemBridge(options.fileSystem);
+      computeBridge ??= buildComputeStoreBridge(options.compute);
       const pooled = ensurePools();
       const memoryHandle: RuntimeInitializeMemoryHandle = {
         ...(pooled.signalBuffer ? { signalBuffer: pooled.signalBuffer } : {}),
         ...(pooled.geometryPoolBuffer ? { geometryPoolBuffer: pooled.geometryPoolBuffer } : {}),
         ...(bridge ? { fileSystemPort: bridge.port } : {}),
+        ...computeBridge.memoryHandle,
         ...(options.devtoolsTelemetry === true ? { devtoolsTelemetry: true } : {}),
         ...(options.compiledWasmModules ? { compiledWasmModules: options.compiledWasmModules } : {}),
       };
-      const transferables: Transferable[] = bridge ? [bridge.port] : [];
+      const transferables: Transferable[] = [...(bridge ? [bridge.port] : []), ...computeBridge.transfer];
       const args = { ...input, memoryHandle };
       try {
         const result = await channel.call(
@@ -300,16 +359,13 @@ export const nodeWorkerClient = (
             bridge = undefined;
           }
         }
+        computeBridge.dispose();
+        computeBridge = undefined;
         throw error;
       }
     },
-    async resolveGeometry(transport: GeometryTransport): Promise<Geometry> {
-      return materialiseGeometry(transport, ensurePools().geometryPool, (key) => {
-        channel?.notify('binaryMaterialised', { key });
-      });
-    },
-    async resolveExport(transport: RuntimeExportResultTransport) {
-      return materialiseExportResult(transport, ensurePools().geometryPool, (key) => {
+    async resolveBinary(transport: BinaryContentDelivery): Promise<Uint8Array<ArrayBuffer>> {
+      return materialiseBinaryContent(transport, ensurePools().geometryPool, (key) => {
         channel?.notify('binaryMaterialised', { key });
       });
     },

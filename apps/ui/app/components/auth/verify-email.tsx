@@ -3,10 +3,10 @@ import { CheckCircle2, CircleAlert, LogIn } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router';
 
-import { Button } from '#components/ui/button.js';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#components/ui/card.js';
+import { Button } from '@taucad/ui/components/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@taucad/ui/components/card';
 import { Spinner } from '#components/ui/spinner.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 /** Milliseconds. */
 const redirectDelay = 900;
@@ -32,16 +32,14 @@ export const sanitizeVerifyEmailRedirectTo = (value?: string): string => {
 export function VerifyEmail({ className }: VerifyEmailProps): React.JSX.Element {
   const { authClient, basePaths, viewPaths, navigate, Link } = useAuth();
   const location = useLocation();
-  const [status, setStatus] = useState<VerifyEmailStatus>('verifying');
-
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const token = searchParams.get('token');
+  const [status, setStatus] = useState<VerifyEmailStatus>(() => (token ? 'verifying' : 'missing-token'));
   const redirectTo = sanitizeVerifyEmailRedirectTo(searchParams.get('redirectTo') ?? undefined);
   const signInPath = `${basePaths.auth}/${viewPaths.auth.signIn}`;
 
   useEffect(() => {
     if (!token) {
-      setStatus('missing-token');
       return;
     }
 

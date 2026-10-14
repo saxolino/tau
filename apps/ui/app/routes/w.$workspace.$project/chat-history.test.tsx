@@ -4,7 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import type { MyUIMessage } from '@taucad/chat';
 import { chatTurnRequestSchema } from '@taucad/chat/schemas';
-import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
+import type {
+  ChatTextareaHandle,
+  ChatTextareaProperties,
+  ChatTextareaSubmitPayload,
+} from '#components/chat/chat-textarea-types.js';
+import type { CadChatSubmitInput } from '#chat-clients/use-cad-chat-client.js';
+import { storedRef } from '#utils/attachment.test-utils.js';
+import { buildTurnGroups } from '#routes/w.$workspace.$project/chat-turn-groups.js';
 
 // `useKernel` must NOT be called from chat-history anymore — guard with a
 // throwing mock so any regression is caught loudly.
@@ -15,11 +22,18 @@ vi.mock('#hooks/use-kernel.js', () => ({
 }));
 
 // Chat-history only reads `messageOrder` / `messages` selectors from useChat
-// now; sendMessage / retryMessage / etc. flow through useCadChatClient.
+// now; sendMessage / regenerate / etc. flow through useCadChatClient.
 const chatStateRef: { current: { messages: readonly MyUIMessage[] } } = { current: { messages: [] } };
 const setMockMessages = (messages: readonly MyUIMessage[]): void => {
   chatStateRef.current = { messages };
 };
+let locationState: { readonly focusChatComposer?: boolean } | undefined;
+let archiveOpen = false;
+vi.mock('react-router', () => ({ useLocation: () => ({ state: locationState }) }));
+vi.mock('#hooks/use-search-parameter.js', () => ({ useSearchParameter: () => [archiveOpen, vi.fn()] }));
+vi.mock('#routes/w.$workspace.$project/archived-chats.js', () => ({
+  ArchivedChats: () => <section aria-label='Archived chats' />,
+}));
 // Fake persistence actor — `chat-history.tsx` subscribes to
 // `restoreCancelledDraft` emits to refocus the composer after the
 // persistence machine lifts a cancelled user message back into the draft.
@@ -60,9 +74,11 @@ vi.mock('#hooks/use-chat.js', () => ({
     return selector({
       messages,
       messageOrder: messages.map((m) => m.id),
+      turnGroups: buildTurnGroups(messages),
+      agentInvocations: '',
     });
   },
-  useChatContext: () => ({ persistenceActorRef: fakePersistenceActorRef }),
+  useChatContext: () => ({ activeChatId: 'chat_test', persistenceActorRef: fakePersistenceActorRef }),
 }));
 
 // Capture the body the chat client receives on submit so the wire-format
@@ -70,7 +86,7 @@ vi.mock('#hooks/use-chat.js', () => ({
 const submitMock = vi.fn();
 const cadChatRef: {
   current: {
-    submit: (input: { readonly text: string; readonly imageUrls?: readonly string[] }) => void;
+    submit: (input: CadChatSubmitInput) => void;
     agent: unknown;
   };
 } = {
@@ -78,7 +94,7 @@ const cadChatRef: {
     submit: submitMock,
     agent: {
       profile: 'cad',
-      model: 'openai-gpt-5.5',
+      execution: { kind: 'tau', model: 'openai-gpt-5.5' },
       kernel: 'replicad',
       mode: 'agent',
       toolChoice: 'auto',
@@ -94,7 +110,8 @@ vi.mock('#chat-clients/use-cad-chat-client.js', () => ({
 // can both invoke onSubmit directly and assert that empty-cancel
 // recoveries refocus the composer.
 const capturedTextarea: {
-  onSubmit?: (payload: { content: string; imageUrls: string[] }) => Promise<void>;
+  onSubmit?: ChatTextareaProperties['onSubmit'];
+  className?: string;
   focus: ReturnType<typeof vi.fn<() => void>>;
 } = {
   focus: vi.fn<() => void>(),
@@ -102,26 +119,44 @@ const capturedTextarea: {
 vi.mock('#components/chat/chat-textarea.js', () => ({
   ChatTextarea: (properties: {
     readonly ref?: React.Ref<ChatTextareaHandle>;
-    readonly onSubmit?: (payload: { content: string; imageUrls: string[] }) => Promise<void>;
+    readonly onSubmit?: ChatTextareaProperties['onSubmit'];
+    readonly className?: string;
   }): React.JSX.Element => {
     capturedTextarea.onSubmit = properties.onSubmit;
+    capturedTextarea.className = properties.className;
     useImperativeHandle(properties.ref, () => ({ focus: capturedTextarea.focus }), []);
     return <div data-testid='chat-textarea' />;
   },
 }));
 
+vi.mock('#routes/w.$workspace.$project/chat-message-planning.js', () => ({
+  ChatMessagePlanning: () => (
+    <div role='status' aria-label='Current activity'>
+      Reading files
+    </div>
+  ),
+}));
+
 vi.mock('#routes/w.$workspace.$project/chat-message.js', () => ({
-  ChatMessage: ({ messageId }: { readonly messageId: string }) => (
-    <div data-testid='chat-message' data-message-id={messageId} />
+  ChatMessage: ({ messageId, footer }: { readonly messageId: string; readonly footer?: React.ReactNode }) => (
+    <div data-testid='chat-message' data-message-id={messageId}>
+      {footer}
+    </div>
   ),
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-revision-marker.js', () => ({
-  ChatRevisionMarker: () => null,
+  ChatRevisionMarker: ({
+    userMessageId,
+    isLatestTurn,
+  }: {
+    readonly userMessageId: string;
+    readonly isLatestTurn: boolean;
+  }) => <div data-testid='turn-revision' data-user-message-id={userMessageId} data-latest={String(isLatestTurn)} />,
 }));
 
 vi.mock('#routes/w.$workspace.$project/scroll-down-button.js', () => ({
-  ScrollDownButton: () => null,
+  ScrollDownButton: () => <button type='button' aria-label='Scroll to bottom' />,
 }));
 
 vi.mock('#routes/w.$workspace.$project/revision-seams.js', () => ({
@@ -137,11 +172,7 @@ vi.mock('#routes/w.$workspace.$project/chat-error.js', () => ({
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-title-bar.js', () => ({
-  ChatTitleBar: () => null,
-}));
-
-vi.mock('#routes/w.$workspace.$project/chat-history-status.js', () => ({
-  ChatHistoryStatus: () => null,
+  ChatTitleBar: () => <span data-testid='chat-title-bar' />,
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-history-empty.js', () => ({
@@ -152,15 +183,25 @@ vi.mock('#components/ui/floating-panel.js', () => ({
   FloatingPanel: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
   FloatingPanelClose: () => null,
   FloatingPanelContent: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
-  FloatingPanelContentHeader: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
+  FloatingPanelContentHeader: ({
+    children,
+    className,
+  }: {
+    readonly children: React.ReactNode;
+    readonly className?: string;
+  }) => (
+    <div data-slot='floating-panel-content-header' className={className}>
+      {children}
+    </div>
+  ),
   FloatingPanelErrorContent: () => null,
 }));
 
-vi.mock('#components/ui/key-shortcut.js', () => ({
+vi.mock('@taucad/ui/components/key-shortcut', () => ({
   KeyShortcut: ({ children }: { readonly children: React.ReactNode }) => <span>{children}</span>,
 }));
 
-vi.mock('#hooks/use-keyboard.js', () => ({
+vi.mock('@taucad/ui/components/keyboard', () => ({
   useKeybinding: () => ({ formattedKeyCombination: 'Ctrl+C' }),
 }));
 
@@ -175,26 +216,44 @@ vi.mock('#hooks/use-file-manager.js', () => ({
 vi.mock('#hooks/use-chats.js', () => ({
   useChats: () => ({ chats: [] }),
 }));
+vi.mock('#hooks/use-chat-records.js', () => ({
+  useChatRecords: () => ({ chats: [] }),
+}));
 
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({ projectId: 'project_test' }),
 }));
+
+const skillsCatalogReads = vi.hoisted(() => vi.fn(() => []));
+vi.mock('#hooks/use-skills-catalog.js', () => ({ useSkillsCatalog: skillsCatalogReads }));
 
 // Capture the Virtuoso props so tests can both inspect counts and render
 // the produced items by walking `itemContent` over `totalCount`.
 const capturedVirtuoso: {
   totalCount?: number;
   itemContent?: (index: number) => React.ReactNode;
+  followOutput?: (atBottom: boolean) => 'auto' | false;
+  initialTopMostItemIndex?: { index: string; align: string };
 } = {};
+const scrollToIndexMock = vi.fn();
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: (properties: { readonly totalCount: number; readonly itemContent: (index: number) => React.ReactNode }) => {
-    capturedVirtuoso.totalCount = properties.totalCount;
-    capturedVirtuoso.itemContent = properties.itemContent;
+  Virtuoso: (properties: {
+    readonly data: readonly unknown[];
+    readonly initialTopMostItemIndex: { index: string; align: string };
+    readonly itemContent: (index: number, item: unknown) => React.ReactNode;
+    readonly followOutput: (atBottom: boolean) => 'auto' | false;
+    readonly ref?: React.Ref<{ scrollToIndex: typeof scrollToIndexMock }>;
+  }) => {
+    capturedVirtuoso.initialTopMostItemIndex = properties.initialTopMostItemIndex;
+    capturedVirtuoso.totalCount = properties.data.length;
+    capturedVirtuoso.itemContent = async (index) => properties.itemContent(index, properties.data[index]);
+    capturedVirtuoso.followOutput = properties.followOutput;
+    useImperativeHandle(properties.ref, () => ({ scrollToIndex: scrollToIndexMock }), []);
     const items: React.ReactNode[] = [];
-    for (let index = 0; index < properties.totalCount; index++) {
+    for (let index = 0; index < properties.data.length; index++) {
       items.push(
         <div key={index} data-testid='virtuoso-item' data-index={index}>
-          {properties.itemContent(index)}
+          {properties.itemContent(index, properties.data[index])}
         </div>,
       );
     }
@@ -204,11 +263,10 @@ vi.mock('react-virtuoso', () => ({
 
 const { ChatHistory } = await import('#routes/w.$workspace.$project/chat-history.js');
 
-const submitDraft = async (content = 'hello') => {
-  await capturedTextarea.onSubmit?.({
-    content,
-    imageUrls: [],
-  });
+const draftAttachment = storedRef({ hash: 'f'.repeat(64), mediaType: 'application/pdf', filename: 'spec.pdf' });
+
+const submitDraft = async (content = 'hello', attachments: ChatTextareaSubmitPayload['attachments'] = []) => {
+  await capturedTextarea.onSubmit?.({ content, attachments });
 };
 
 const message = (id: string, role: MyUIMessage['role']): MyUIMessage => ({
@@ -221,15 +279,68 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedTextarea.onSubmit = undefined;
+    capturedTextarea.className = undefined;
     setMockMessages([]);
+    archiveOpen = false;
   });
 
-  it('calls cadChat.submit with the text and imageUrls payload from the textarea', async () => {
+  it('replaces the transcript and composer with the archive without reading transcript projections', () => {
+    archiveOpen = true;
+    const view = render(<ChatHistory />);
+    expect(screen.getByRole('region', { name: 'Archived chats' })).toBeInTheDocument();
+    expect(screen.queryByTestId('chat-textarea')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('virtuoso')).not.toBeInTheDocument();
+    expect(skillsCatalogReads).not.toHaveBeenCalled();
+    archiveOpen = false;
+    view.rerender(<ChatHistory className='returned' />);
+    expect(screen.queryByRole('region', { name: 'Archived chats' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-textarea')).toBeInTheDocument();
+  });
+
+  it('skips hidden transcript and skill projections, then reveals current messages', () => {
+    setMockMessages([message('u1', 'user')]);
+    const view = render(<ChatHistory isExpanded={false} setIsExpanded={vi.fn()} />);
+
+    expect(skillsCatalogReads).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('virtuoso')).toBeNull();
+    expect(screen.queryByTestId('chat-textarea')).toBeNull();
+
+    setMockMessages([message('u1', 'user'), message('a1', 'assistant')]);
+    view.rerender(<ChatHistory isExpanded={false} setIsExpanded={vi.fn()} />);
+    expect(skillsCatalogReads).not.toHaveBeenCalled();
+
+    view.rerender(<ChatHistory isExpanded setIsExpanded={vi.fn()} />);
+    expect(skillsCatalogReads).toHaveBeenCalledOnce();
+    expect(screen.getAllByTestId('chat-message')).toHaveLength(2);
+    expect(screen.getByTestId('chat-textarea')).toBeInTheDocument();
+  });
+
+  it('opens with one header row that holds the title bar, and no status row under it', () => {
+    const { container } = render(<ChatHistory />);
+
+    const headers = container.querySelectorAll('[data-slot=floating-panel-content-header]');
+    expect(headers).toHaveLength(1);
+    expect(headers[0]).toHaveClass('gap-1');
+    expect(headers[0]?.querySelector('[data-testid=chat-title-bar]')).not.toBeNull();
+    expect(container.querySelector('.sticky')).toBeNull();
+  });
+
+  it('leaves the surface styling with ChatTextarea and caps the composer width', () => {
     render(<ChatHistory />);
-    await submitDraft('design a desk');
+
+    expect(capturedTextarea.className).toBeUndefined();
+    expect(screen.getByTestId('chat-textarea').parentElement).toHaveClass('max-w-xl');
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' }).parentElement).toBe(
+      screen.getByTestId('chat-textarea').parentElement,
+    );
+  });
+
+  it('calls cadChat.submit with the text and attachment references from the textarea', async () => {
+    render(<ChatHistory />);
+    await submitDraft('design a desk', [draftAttachment]);
 
     expect(submitMock).toHaveBeenCalledTimes(1);
-    expect(submitMock).toHaveBeenCalledWith({ text: 'design a desk', imageUrls: [] });
+    expect(submitMock).toHaveBeenCalledWith({ text: 'design a desk', attachments: [draftAttachment] });
   });
 
   // Wire-format invariant. The chat-client builds the per-request `agent`
@@ -250,8 +361,11 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
     };
     const wireBody = {
       id: 'chat_test',
+      projectId: 'project_test',
       messages: [userMessage],
       agent: cadChatRef.current.agent,
+      admission: { version: 1, idempotencyKey: 'request_0000000001' },
+      execution: { hostId: 'host_test', workspaceId: 'workspace_test', baseRevisionId: 'rev_test' },
     };
 
     expect(() => chatTurnRequestSchema.parse(wireBody)).not.toThrow();
@@ -262,12 +376,15 @@ describe('ChatHistory — turn group rendering', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedTextarea.onSubmit = undefined;
+    capturedVirtuoso.initialTopMostItemIndex = undefined;
     capturedVirtuoso.totalCount = undefined;
     capturedVirtuoso.itemContent = undefined;
+    capturedVirtuoso.followOutput = undefined;
+    scrollToIndexMock.mockClear();
     setMockMessages([]);
   });
 
-  it('should render one TurnGroup per user message and apply min-h only to the last', () => {
+  it('should render natural-height turn groups without a trailing viewport spacer', () => {
     setMockMessages([
       message('u1', 'user'),
       message('a1', 'assistant'),
@@ -289,10 +406,44 @@ describe('ChatHistory — turn group rendering', () => {
     const firstGroupMessages = firstGroup.querySelectorAll<HTMLElement>('[data-testid="chat-message"]');
     expect([...firstGroupMessages].map((node) => node.dataset['messageId'])).toEqual(['u1', 'a1']);
 
-    // Last group bundles u2 + a2 + a3, gets min-h to pin user message at top.
-    expect(lastGroup.className).toContain('min-h-(--chat-live-turn-min-h)');
+    // The last group also takes only its content height.
+    expect(lastGroup.className).not.toContain('min-h-');
     const lastGroupMessages = lastGroup.querySelectorAll<HTMLElement>('[data-testid="chat-message"]');
     expect([...lastGroupMessages].map((node) => node.dataset['messageId'])).toEqual(['u2', 'a2', 'a3']);
+  });
+
+  it('should attach one revision summary to each request, before its replies', () => {
+    setMockMessages([
+      message('u1', 'user'),
+      message('a1', 'assistant'),
+      message('u2', 'user'),
+      message('a2', 'assistant'),
+      message('a3', 'assistant'),
+    ]);
+    render(<ChatHistory />);
+    const [firstGroup, lastGroup] = screen
+      .getAllByTestId('virtuoso-item')
+      .map((item) => item.firstElementChild as HTMLElement);
+    const order = (group: HTMLElement | undefined): string[] =>
+      [...(group?.children ?? [])].map((node) =>
+        node instanceof HTMLElement
+          ? `${node.dataset['testid'] ?? ''}:${node.dataset['messageId'] ?? node.dataset['userMessageId'] ?? ''}`
+          : '',
+      );
+    const summaryOf = (group: HTMLElement | undefined): HTMLElement | undefined =>
+      group?.querySelector<HTMLElement>('[data-testid="turn-revision"]') ?? undefined;
+
+    /* The card is the request's own footer (R11), so replies can never land between them. */
+    const footerOf = (group: HTMLElement | undefined, id: string): string[] =>
+      order(group?.querySelector<HTMLElement>(`[data-message-id="${id}"]`) ?? undefined);
+    expect(order(firstGroup)).toEqual(['chat-message:u1', 'chat-message:a1']);
+    expect(footerOf(firstGroup, 'u1')).toEqual(['turn-revision:u1']);
+    expect(footerOf(firstGroup, 'a1')).toEqual([]);
+    expect(order(lastGroup).slice(0, 3)).toEqual(['chat-message:u2', 'chat-message:a2', 'chat-message:a3']);
+    expect(footerOf(lastGroup, 'u2')).toEqual(['turn-revision:u2']);
+    expect(lastGroup?.querySelectorAll('[data-testid="turn-revision"]')).toHaveLength(1);
+    expect(summaryOf(firstGroup)?.dataset['latest']).toBe('false');
+    expect(summaryOf(lastGroup)?.dataset['latest']).toBe('true');
   });
 
   it('should render a leading assistant message in its own group when no user message precedes it', () => {
@@ -303,10 +454,9 @@ describe('ChatHistory — turn group rendering', () => {
     const items = screen.getAllByTestId('virtuoso-item');
     expect(items).toHaveLength(1);
 
-    // Lone assistant greeting still receives min-h because it is the last
-    // (and only) group — keeps the empty-canvas effect consistent.
+    // A leading assistant greeting also takes only its content height.
     const onlyGroup = items[0]!.firstElementChild as HTMLElement;
-    expect(onlyGroup.className).toContain('min-h-(--chat-live-turn-min-h)');
+    expect(onlyGroup.className).not.toContain('min-h-');
     const messages = onlyGroup.querySelectorAll<HTMLElement>('[data-testid="chat-message"]');
     expect([...messages].map((node) => node.dataset['messageId'])).toEqual(['a0']);
   });
@@ -334,6 +484,18 @@ describe('ChatHistory — turn group rendering', () => {
     expect(screen.getByTestId('virtuoso').querySelectorAll('[data-testid="chat-error-adornment"]')).toHaveLength(1);
   });
 
+  it('keeps the error adornment reachable on a chat with no turns yet (W19-b)', () => {
+    /* The first turn of a fresh project is refused by the durable workspace
+     * before any user message exists, so the banner that rides the last turn
+     * group has no group to ride and the person saw nothing at all (I12). */
+    setMockMessages([]);
+
+    render(<ChatHistory />);
+
+    expect(screen.queryAllByTestId('chat-error-adornment')).toHaveLength(1);
+    expect(screen.getByTestId('virtuoso').querySelectorAll('[data-testid="chat-error-adornment"]')).toHaveLength(0);
+  });
+
   it('should pass the correct totalCount to Virtuoso (one per turn group)', () => {
     setMockMessages([
       message('a0', 'assistant'),
@@ -347,15 +509,42 @@ describe('ChatHistory — turn group rendering', () => {
     expect(capturedVirtuoso.totalCount).toBe(3);
     expect(typeof capturedVirtuoso.itemContent).toBe('function');
   });
+
+  it('opens at the bottom and leaves scroll-away intact when a new turn arrives', () => {
+    setMockMessages([message('u1', 'user'), message('a1', 'assistant')]);
+    const view = render(<ChatHistory />);
+    expect(capturedVirtuoso.initialTopMostItemIndex).toEqual({ index: 'LAST', align: 'end' });
+    expect(capturedVirtuoso.followOutput?.(true)).toBe('auto');
+    expect(capturedVirtuoso.followOutput?.(false)).toBe(false);
+    setMockMessages([message('u1', 'user'), message('a1', 'assistant'), message('u2', 'user')]);
+    view.rerender(<ChatHistory className='updated' />);
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps exactly one activity row in the composer region outside the transcript', () => {
+    setMockMessages([message('u1', 'user'), message('a1', 'assistant')]);
+    render(<ChatHistory />);
+    const activity = screen.getByRole('status', { name: 'Current activity' });
+    expect(screen.getByRole('region', { name: 'Chat composer' })).toContainElement(activity);
+    expect(screen.getByTestId('virtuoso')).not.toContainElement(activity);
+  });
 });
 
-describe('ChatHistory — empty-cancel composer refocus', () => {
+describe('ChatHistory — composer refocus', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedTextarea.onSubmit = undefined;
     capturedTextarea.focus = vi.fn<() => void>();
     persistenceListeners.clear();
+    locationState = undefined;
     setMockMessages([]);
+  });
+
+  it('focuses the composer when a new-chat surface requests it', () => {
+    locationState = { focusChatComposer: true };
+    render(<ChatHistory />);
+
+    expect(capturedTextarea.focus).toHaveBeenCalledTimes(1);
   });
 
   it('refocuses the composer on the next animation frame when persistence emits restoreCancelledDraft', async () => {

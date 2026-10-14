@@ -1,84 +1,89 @@
 import { useMemo } from 'react';
-import { InfoTooltip } from '#components/ui/info-tooltip.js';
-import { TableHeader, TableRow, TableHead, TableBody, TableCell, TableFooter, Table } from '#components/ui/table.js';
-import { formatCurrency } from '#utils/currency.utils.js';
+import { InfoTooltip } from '@taucad/ui/components/info-tooltip';
+import {
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+  TableFooter,
+  Table,
+} from '@taucad/ui/components/table';
+import { formatCredits } from '#utils/credits.utils.js';
 import { formatNumberAbbreviation } from '#utils/number.utils.js';
-import { useChats } from '#hooks/use-chats.js';
+import { useProjectChatUsage } from '#hooks/use-chats.js';
+import { useChatRecords } from '#hooks/use-chat-records.js';
 import { useProject } from '#hooks/use-project.js';
+import { sumReceiptCredits, useReceiptCredits } from '#routes/w.$workspace.$project/chat-message-data-usage.js';
 
-type UsageTotals = {
+type UsageTokens = {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  inputTokensCost: number;
-  outputTokensCost: number;
-  cacheReadTokensCost: number;
-  cacheWriteTokensCost: number;
-  totalCost: number;
+  parts: number;
 };
 
 /**
- * Component for displaying total usage data across all chats in a project.
- * Self-contained component that extracts its own state from the project context.
+ * Project-wide chat usage: provider token counts aggregated locally, and Tau
+ * credits taken from the funded operations' own receipts. No amount here is
+ * derived from a local price (B4 R2/R3).
+ *
+ * @returns The usage panel, or nothing when the project has no recorded usage.
  */
-export function ChatDetailsUsage(): React.JSX.Element | undefined {
+export function ChatDetailsUsage({ enabled = true }: { readonly enabled?: boolean } = {}):
+  | React.JSX.Element
+  | undefined {
   const { projectId } = useProject();
-  const { chats } = useChats(projectId);
+  const { chats } = useChatRecords(projectId, { enabled });
+  const chatIds = useMemo(() => chats.map((chat) => chat.id), [chats]);
+  const history = useProjectChatUsage(projectId, chatIds, enabled);
 
-  // Calculate total usage across all chats in the project
-  const totals = useMemo(() => {
-    const usage: UsageTotals = {
+  const { tokens, operationIds } = useMemo(() => {
+    const usage: UsageTokens = {
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
-      inputTokensCost: 0,
-      outputTokensCost: 0,
-      cacheReadTokensCost: 0,
-      cacheWriteTokensCost: 0,
-      totalCost: 0,
+      parts: 0,
     };
+    const ids = new Set<string>();
 
     for (const chat of chats) {
-      for (const message of chat.messages) {
-        for (const part of message.parts) {
-          if (part.type === 'data-usage') {
-            usage.inputTokens += part.data.inputTokens;
-            usage.outputTokens += part.data.outputTokens;
-            usage.cacheReadTokens += part.data.cacheReadTokens;
-            usage.cacheWriteTokens += part.data.cacheWriteTokens;
-            usage.inputTokensCost += part.data.inputTokensCost;
-            usage.outputTokensCost += part.data.outputTokensCost;
-            usage.cacheReadTokensCost += part.data.cacheReadTokensCost;
-            usage.cacheWriteTokensCost += part.data.cacheWriteTokensCost;
-            usage.totalCost += part.data.totalCost;
-          }
-        }
+      const summary = history.get(chat.id);
+      if (summary === undefined) {
+        continue;
+      }
+      usage.parts += summary.parts;
+      usage.inputTokens += summary.inputTokens;
+      usage.outputTokens += summary.outputTokens;
+      usage.cacheReadTokens += summary.cacheReadTokens;
+      usage.cacheWriteTokens += summary.cacheWriteTokens;
+      for (const id of summary.operationIds) {
+        ids.add(id);
       }
     }
 
-    return usage;
-  }, [chats]);
+    return { tokens: usage, operationIds: [...ids].sort() };
+  }, [chats, history]);
 
-  if (totals.totalCost === 0) {
+  const credits = useReceiptCredits(operationIds);
+  const total = sumReceiptCredits(operationIds, credits);
+
+  if (tokens.parts === 0) {
     return undefined;
   }
 
-  const totalTokens = totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
+  const totalTokens = tokens.inputTokens + tokens.outputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens;
 
   return (
-    <div className='@container border-t pt-3'>
-      <div className='flex items-center gap-1.5 text-sm font-medium text-foreground'>
-        <span>Chat Usage</span>
-      </div>
-
-      <Table className='-mx-2 overflow-clip rounded-md'>
+    <section aria-label='Chat usage' className='@container overflow-hidden rounded-xl border border-border bg-card'>
+      <h2 className='border-b px-3 py-2 text-[13px] font-medium text-foreground'>Chat usage</h2>
+      <Table>
         <TableHeader>
           <TableRow>
             <TableHead className=''>Metric</TableHead>
             <TableHead className='text-right'>Tokens</TableHead>
-            <TableHead className='text-right'>Cost</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -91,10 +96,7 @@ export function ChatDetailsUsage(): React.JSX.Element | undefined {
                 conversation history.
               </InfoTooltip>
             </TableCell>
-            <TableCell className='text-right font-mono'>{formatNumberAbbreviation(totals.inputTokens)}</TableCell>
-            <TableCell className='text-right font-mono'>
-              {formatCurrency(totals.inputTokensCost, { significantFigures: 2 })}
-            </TableCell>
+            <TableCell className='text-right font-mono'>{formatNumberAbbreviation(tokens.inputTokens)}</TableCell>
           </TableRow>
           <TableRow>
             <TableCell className='flex flex-row items-center gap-1'>
@@ -102,12 +104,9 @@ export function ChatDetailsUsage(): React.JSX.Element | undefined {
               <span className='hidden @[16rem]:inline'>Output</span>
               <InfoTooltip>The number of tokens in output responses across all chats.</InfoTooltip>
             </TableCell>
-            <TableCell className='text-right font-mono'>{formatNumberAbbreviation(totals.outputTokens)}</TableCell>
-            <TableCell className='text-right font-mono'>
-              {formatCurrency(totals.outputTokensCost, { significantFigures: 2 })}
-            </TableCell>
+            <TableCell className='text-right font-mono'>{formatNumberAbbreviation(tokens.outputTokens)}</TableCell>
           </TableRow>
-          {totals.cacheReadTokens > 0 && (
+          {tokens.cacheReadTokens > 0 && (
             <TableRow>
               <TableCell className='flex flex-row items-center gap-1'>
                 <span className='@[16rem]:hidden'>CR</span>
@@ -117,13 +116,10 @@ export function ChatDetailsUsage(): React.JSX.Element | undefined {
                   the same prompt.
                 </InfoTooltip>
               </TableCell>
-              <TableCell className='text-right font-mono'>{formatNumberAbbreviation(totals.cacheReadTokens)}</TableCell>
-              <TableCell className='text-right font-mono'>
-                {formatCurrency(totals.cacheReadTokensCost, { significantFigures: 2 })}
-              </TableCell>
+              <TableCell className='text-right font-mono'>{formatNumberAbbreviation(tokens.cacheReadTokens)}</TableCell>
             </TableRow>
           )}
-          {totals.cacheWriteTokens > 0 ? (
+          {tokens.cacheWriteTokens > 0 ? (
             <TableRow>
               <TableCell className='flex flex-row items-center gap-1'>
                 <span className='@[16rem]:hidden'>CW</span>
@@ -134,24 +130,28 @@ export function ChatDetailsUsage(): React.JSX.Element | undefined {
                 </InfoTooltip>
               </TableCell>
               <TableCell className='text-right font-mono'>
-                {formatNumberAbbreviation(totals.cacheWriteTokens)}
-              </TableCell>
-              <TableCell className='text-right font-mono'>
-                {formatCurrency(totals.cacheWriteTokensCost, { significantFigures: 2 })}
+                {formatNumberAbbreviation(tokens.cacheWriteTokens)}
               </TableCell>
             </TableRow>
           ) : undefined}
         </TableBody>
-        <TableFooter className='overflow-clip rounded-b-md'>
+        <TableFooter>
           <TableRow>
             <TableCell>Total</TableCell>
             <TableCell className='text-right font-mono'>{formatNumberAbbreviation(totalTokens)}</TableCell>
-            <TableCell className='text-right font-mono'>
-              {formatCurrency(totals.totalCost, { significantFigures: 2 })}
-            </TableCell>
           </TableRow>
         </TableFooter>
       </Table>
-    </div>
+      <p className='border-t px-3 py-2 text-xs text-muted-foreground'>
+        {operationIds.length === 0 ? (
+          'No Tau-funded turns in this project.'
+        ) : (
+          <>
+            <span className='font-mono text-foreground'>{formatCredits(total.creditAtoms)}</span> charged
+            {total.pending > 0 ? ` · ${String(total.pending)} pending` : ''}
+          </>
+        )}
+      </p>
+    </section>
   );
 }

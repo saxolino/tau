@@ -2,6 +2,7 @@ import { defineTranscoder } from '@taucad/runtime/transcoder';
 import { lookupMimeType } from '@taucad/runtime/types';
 import { conversionEdges, createAssimp } from 'libassimp';
 import type { Assimp, ConversionEdge, ExportFormat, ExportOptionsFor } from 'libassimp';
+import { z } from 'zod';
 import { assimpEdgeSchemas } from '#assimp-export-options.js';
 
 type TauAssimpRoute = Extract<ConversionEdge, { from: 'glb' | 'gltf'; to: Exclude<ExportFormat, 'assjson'> }>;
@@ -38,6 +39,10 @@ const edges: readonly TauAssimpEdge[] = conversionEdges
   .filter((edge) => isTauAssimpRoute(edge))
   .map((edge) => toTauEdge(edge));
 
+const assimpTranscoderOptionsSchema = z
+  .object({ backend: z.enum(['auto', 'native', 'wasm']).default('auto') })
+  .strict();
+
 const outputName = (name: string, format: TauAssimpRoute['to']): string =>
   format === 'step' ? name.replace(/\.stp$/u, '.step') : name;
 
@@ -47,12 +52,20 @@ export const assimpTranscoder = defineTranscoder({
   name: 'AssimpTranscoder',
   version: '0.1.0',
   edges,
+  optionsSchema: assimpTranscoderOptionsSchema,
 
-  async initialize() {
-    return { assimp: await createAssimp() };
+  async initialize({ backend }, services) {
+    const assimp = await createAssimp({
+      backend,
+      onLog: ({ cause, level, message }) => {
+        services.logger.custom(level === 'warning' ? 'warn' : level, message, { data: cause });
+      },
+    });
+    services.logger.log(`libassimp backend=${assimp.backend} addon=${assimp.buildIdentity ?? 'none'}`);
+    return { assimp };
   },
 
-  async transcode(input, runtime, context: AssimpTranscoderContext) {
+  async transcode(input, services, context: AssimpTranscoderContext) {
     if (input.files.length === 0) {
       return {
         success: false,
@@ -63,13 +76,15 @@ export const assimpTranscoder = defineTranscoder({
     }
 
     try {
-      runtime.logger.log(`Transcoding ${input.from} -> ${input.to}`);
+      services.logger.log(`Transcoding ${input.from} -> ${input.to}`);
+      const options = {
+        to: input.to,
+        exportOptions: input.options as ExportOptionsFor<typeof input.to>,
+        signal: services.signal,
+      };
       const { files } = await context.assimp.convert(
         input.files.map(({ name, bytes }) => ({ name, bytes })),
-        {
-          to: input.to,
-          exportOptions: input.options as ExportOptionsFor<typeof input.to>,
-        },
+        options,
       );
       const output = files.map((file) => {
         const name = outputName(file.name, input.to);
@@ -79,7 +94,7 @@ export const assimpTranscoder = defineTranscoder({
           mimeType: lookupMimeType(name.split('.').pop() ?? ''),
         };
       });
-      runtime.logger.log(`Successfully transcoded to ${input.to}`);
+      services.logger.log(`Successfully transcoded to ${input.to}`);
       return { success: true, data: output, issues: [] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Transcoding failed';
@@ -90,7 +105,7 @@ export const assimpTranscoder = defineTranscoder({
     }
   },
 
-  async cleanup(context) {
+  async onDispose(context) {
     context.assimp.dispose();
   },
 });

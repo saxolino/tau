@@ -1,32 +1,160 @@
-import { useMemo } from 'react';
-import { DollarSign } from 'lucide-react';
+import { useQueries } from '@tanstack/react-query';
 import type { UsageData } from '@taucad/chat';
-import { SvgIcon } from '#components/icons/svg-icon.js';
-import { InfoTooltip } from '#components/ui/info-tooltip.js';
-import { Badge } from '#components/ui/badge.js';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '#components/ui/hover-card.js';
-import { TableHeader, TableRow, TableHead, TableBody, TableCell, TableFooter, Table } from '#components/ui/table.js';
+import { formatCreditAtomsDisplay, wireOperationReceiptSchema } from '@taucad/billing';
+import type { WireOperationReceipt } from '@taucad/billing';
+import { useBillingSession } from '@taucad/billing/hooks/billing-session';
 import { useModels } from '#hooks/use-models.js';
-import { formatCurrency } from '#utils/currency.utils.js';
-import { formatNumberAbbreviation } from '#utils/number.utils.js';
+import { externalAgentDisplayName } from '#lib/agent-host-placement.js';
+import { ChatMessageUsage, sumUsageTokens } from '#routes/w.$workspace.$project/chat-message-usage.js';
 import { useCookie } from '#hooks/use-cookie.js';
 import { cookieName } from '#constants/cookie.constants.js';
+import { recordBillingRevisionMinimum } from '#db/billing-snapshot-store.js';
 
-type UsageTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  inputTokensCost: number;
-  outputTokensCost: number;
-  cacheReadTokensCost: number;
-  cacheWriteTokensCost: number;
-  totalCost: number;
+/** What the account's own authority says one funded operation cost. @public */
+export type ReceiptCredit =
+  | { readonly status: 'pending'; readonly authorizedMaxCreditAtoms: bigint }
+  | { readonly status: 'settled'; readonly chargedCreditAtoms: bigint }
+  | { readonly status: 'unavailable' };
+
+const creditOf = (receipt: WireOperationReceipt): ReceiptCredit => {
+  switch (receipt.state) {
+    case 'terminal': {
+      return { status: 'settled', chargedCreditAtoms: BigInt(receipt.receipt.chargedCreditAtoms) };
+    }
+    case 'pending': {
+      return { status: 'pending', authorizedMaxCreditAtoms: BigInt(receipt.authorizedMaxCreditAtoms) };
+    }
+    case 'unavailable': {
+      return { status: 'unavailable' };
+    }
+  }
+};
+
+/** The funded operations one set of usage parts was charged through. @public */
+export const usageOperationIds = (usageParts: readonly UsageData[]): string[] => {
+  const ids = new Set<string>();
+  for (const usage of usageParts) {
+    if (usage.operationId !== undefined) {
+      ids.add(usage.operationId);
+    }
+  }
+  return [...ids].sort();
 };
 
 /**
- * Component for displaying usage data from data parts.
- * Aggregates multiple usage parts across agent turns and displays totals.
+ * Reads the authoritative receipt for every named operation.
+ *
+ * This is the single receipt reader for every chat surface — the per-message
+ * badge, the chat footer, the project total and the agents pane all call it, so
+ * one owner holds the owner/environment check and the immutability rule. A
+ * settled receipt never changes, so it is fetched once and cached; only a
+ * pending operation is polled. A read that fails, or that answers for another
+ * account or environment, yields no entry at all: the caller then shows
+ * "Pending", never a zero and never a locally multiplied figure (B4 R2).
+ *
+ * ponytail: one GET per distinct operation, deduped by React Query. A batch
+ * receipt endpoint is the upgrade path if a project's operation count ever
+ * makes the fan-out visible.
+ *
+ * @param operationIds - Operations to resolve; duplicates are collapsed.
+ * @returns Resolved credits by operation id.
+ * @public
+ */
+export const useReceiptCredits = (operationIds: readonly string[]): ReadonlyMap<string, ReceiptCredit> => {
+  const { apiBaseUrl, userId, environment } = useBillingSession();
+  const ids = [...new Set(operationIds)].sort();
+  const results = useQueries({
+    queries: ids.map((operationId) => ({
+      queryKey: ['billing', 'operation', apiBaseUrl, userId, environment, operationId],
+      enabled: userId !== undefined && apiBaseUrl !== undefined && environment !== undefined,
+      // Terminal receipts are immutable; only an unresolved operation is polled.
+      staleTime: Number.POSITIVE_INFINITY,
+      refetchInterval: ({ state }: { state: { data?: WireOperationReceipt } }) =>
+        state.data === undefined || state.data.state === 'pending' ? 5000 : false,
+      queryFn: async ({ signal }: { signal: AbortSignal }): Promise<WireOperationReceipt> => {
+        const response = await fetch(`${apiBaseUrl}/v1/billing/operations/${encodeURIComponent(operationId)}`, {
+          credentials: 'include',
+          signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Operation receipt request failed with ${response.status}`);
+        }
+        const receipt = wireOperationReceiptSchema.parse(await response.json());
+        if (receipt.ownerId !== userId || receipt.environment !== environment) {
+          throw new Error('Receipt belongs to a different billing session');
+        }
+        if (receipt.operationId !== operationId) {
+          throw new Error('Receipt answers for a different operation');
+        }
+        await recordBillingRevisionMinimum({
+          environment: receipt.environment,
+          ownerId: receipt.ownerId,
+          subjectId: receipt.subjectId,
+          revision: receipt.snapshotRevision,
+        });
+        return receipt;
+      },
+    })),
+  });
+  const credits = new Map<string, ReceiptCredit>();
+  for (const [index, operationId] of ids.entries()) {
+    const receipt = results[index]?.data;
+    if (receipt) {
+      credits.set(operationId, creditOf(receipt));
+    }
+  }
+  return credits;
+};
+
+/** Settled credits plus the operations still without one. @public */
+export type ReceiptTotal = { readonly creditAtoms: bigint; readonly pending: number };
+
+/**
+ * Sums only the receipts that actually resolved.
+ *
+ * ponytail: an `unavailable` receipt counts as pending. Separating the two in
+ * an aggregate label is the upgrade path if authority reads start failing
+ * often; the per-message detail already names the difference.
+ *
+ * @param operationIds - Operations the surface is totalling.
+ * @param credits - Resolved receipts from {@link useReceiptCredits}.
+ * @returns The settled total and the count still unresolved.
+ * @public
+ */
+export const sumReceiptCredits = (
+  operationIds: readonly string[],
+  credits: ReadonlyMap<string, ReceiptCredit>,
+): ReceiptTotal => {
+  let creditAtoms = 0n;
+  let pending = 0;
+  for (const operationId of new Set(operationIds)) {
+    const credit = credits.get(operationId);
+    if (credit?.status === 'settled') {
+      creditAtoms += credit.chargedCreditAtoms;
+      continue;
+    }
+    pending += 1;
+  }
+  return { creditAtoms, pending };
+};
+
+/** Short credit summary used by every chat surface's badge or footer. @public */
+export const formatReceiptTotal = ({ creditAtoms, pending }: ReceiptTotal): string => {
+  if (pending === 0) {
+    return formatCreditAtomsDisplay(creditAtoms);
+  }
+  if (creditAtoms === 0n) {
+    return 'Pending';
+  }
+  return `${formatCreditAtomsDisplay(creditAtoms)} · ${String(pending)} pending`;
+};
+
+/**
+ * Per-turn usage beside a chat message: Tau credits from the operation's own
+ * receipt, with the provider's token counts as the explanation.
+ *
+ * @param props - The turn's usage parts, in order.
+ * @returns The usage button and its hover card, or nothing when there is no usage.
  */
 export function ChatMessageDataUsage({
   usageParts,
@@ -34,195 +162,25 @@ export function ChatMessageDataUsage({
   readonly usageParts: UsageData[];
 }): React.JSX.Element | undefined {
   const { resolveModel } = useModels();
-  const [showModelCost] = useCookie(cookieName.chatModelCost, true);
+  const [showCredits] = useCookie(cookieName.chatModelCost, true);
+  const operationIds = usageOperationIds(usageParts);
+  const credits = useReceiptCredits(operationIds);
 
-  // Calculate totals from usage parts
-  const { totals, hasMultipleTurns, model } = useMemo(() => {
-    if (usageParts.length === 0) {
-      return { totals: undefined, hasMultipleTurns: false, model: undefined };
-    }
-
-    const hasMultiple = usageParts.length > 1;
-
-    // Calculate totals from all usage parts
-    const calculated: UsageTotals = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      inputTokensCost: 0,
-      outputTokensCost: 0,
-      cacheReadTokensCost: 0,
-      cacheWriteTokensCost: 0,
-      totalCost: 0,
-    };
-
-    for (const usage of usageParts) {
-      calculated.inputTokens += usage.inputTokens;
-      calculated.outputTokens += usage.outputTokens;
-      calculated.cacheReadTokens += usage.cacheReadTokens;
-      calculated.cacheWriteTokens += usage.cacheWriteTokens;
-      calculated.inputTokensCost += usage.inputTokensCost;
-      calculated.outputTokensCost += usage.outputTokensCost;
-      calculated.cacheReadTokensCost += usage.cacheReadTokensCost;
-      calculated.cacheWriteTokensCost += usage.cacheWriteTokensCost;
-      calculated.totalCost += usage.totalCost;
-    }
-
-    const lastUsage = usageParts.at(-1);
-    const modelId = lastUsage?.model;
-    const resolvedModel = modelId ? resolveModel(modelId) : undefined;
-
-    return { totals: calculated, hasMultipleTurns: hasMultiple, model: resolvedModel };
-  }, [usageParts, resolveModel]);
-
-  if (!totals) {
+  const lastUsage = usageParts.at(-1);
+  if (lastUsage === undefined) {
     return undefined;
   }
 
-  const totalTokens = totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
-
+  const tauBilled = operationIds.length > 0;
+  const summary = tauBilled ? formatReceiptTotal(sumReceiptCredits(operationIds, credits)) : 'Not billed';
   return (
-    <HoverCard openDelay={100} closeDelay={100}>
-      <HoverCardTrigger asChild className='flex flex-row items-center' tabIndex={0}>
-        <Badge
-          variant='outline'
-          className='h-7 cursor-help gap-0 border-none font-medium text-inherit outline-none hover:bg-neutral/20'
-        >
-          <DollarSign className='size-3.5! stroke-2' />
-          {showModelCost ? <span>{formatCurrency(totals.totalCost, { significantFigures: 2 })}</span> : undefined}
-        </Badge>
-      </HoverCardTrigger>
-      <HoverCardContent className='w-auto overflow-hidden p-2 pt-1'>
-        <div className='flex flex-col space-y-1'>
-          <div className='flex flex-row items-baseline justify-between gap-4 p-2 pb-0'>
-            <h4 className='font-medium'>Usage Details</h4>
-            {model ? (
-              <div className='flex items-baseline gap-2 text-xs'>
-                <SvgIcon id={model.family} className='size-4 translate-y-[0.25em] text-muted-foreground' />
-                <span className='font-mono'>{model.name}</span>
-              </div>
-            ) : undefined}
-          </div>
-          <Table className='h-full overflow-clip rounded-md [&_tbody]:block [&_tbody]:max-h-[300px] [&_tbody]:scroll-shadows-y [&_tfoot]:block [&_thead]:block [&_tr]:grid [&_tr]:grid-cols-[1fr_auto_auto]'>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Metric</TableHead>
-                <TableHead className='text-right'>Tokens</TableHead>
-                <TableHead className='text-right'>Cost</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {hasMultipleTurns ? (
-                // Display per-turn breakdown for multi-turn messages
-                <>
-                  {usageParts.map((usage, index) => {
-                    const turnTokens =
-                      usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
-                    return (
-                      <TableRow key={usage.id}>
-                        <TableCell className='flex flex-row items-center gap-1'>
-                          <span>Turn {index + 1}</span>
-                          <InfoTooltip>
-                            <div className='space-y-1 text-xs'>
-                              <div>Input: {formatNumberAbbreviation(usage.inputTokens)} tokens</div>
-                              <div>Output: {formatNumberAbbreviation(usage.outputTokens)} tokens</div>
-                              {usage.cacheReadTokens > 0 && (
-                                <div>Cache Read: {formatNumberAbbreviation(usage.cacheReadTokens)} tokens</div>
-                              )}
-                              {usage.cacheWriteTokens > 0 && (
-                                <div>Cache Write: {formatNumberAbbreviation(usage.cacheWriteTokens)} tokens</div>
-                              )}
-                            </div>
-                          </InfoTooltip>
-                        </TableCell>
-                        <TableCell className='text-right font-mono'>{formatNumberAbbreviation(turnTokens)}</TableCell>
-                        <TableCell className='text-right font-mono'>
-                          {formatCurrency(usage.totalCost, { significantFigures: 2 })}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </>
-              ) : (
-                // Display detailed breakdown for single-turn messages
-                <>
-                  <TableRow>
-                    <TableCell className='flex flex-row items-center gap-1'>
-                      <span>Input</span>
-                      <InfoTooltip>
-                        The number of tokens in the input prompt. This includes the user prompt, system message, and any
-                        previous messages.
-                      </InfoTooltip>
-                    </TableCell>
-                    <TableCell className='text-right font-mono'>
-                      {formatNumberAbbreviation(totals.inputTokens)}
-                    </TableCell>
-                    <TableCell className='text-right font-mono'>
-                      {formatCurrency(totals.inputTokensCost, { significantFigures: 2 })}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell className='flex flex-row items-center gap-1'>
-                      <span>Output</span>
-                      <InfoTooltip>The number of tokens in the output response.</InfoTooltip>
-                    </TableCell>
-                    <TableCell className='text-right font-mono'>
-                      {formatNumberAbbreviation(totals.outputTokens)}
-                    </TableCell>
-                    <TableCell className='text-right font-mono'>
-                      {formatCurrency(totals.outputTokensCost, { significantFigures: 2 })}
-                    </TableCell>
-                  </TableRow>
-                  {totals.cacheReadTokens > 0 && (
-                    <TableRow>
-                      <TableCell className='flex flex-row items-center gap-1'>
-                        <span>Cache Read</span>
-                        <InfoTooltip>
-                          The number of tokens read from the prompt cache. This improves performance by avoiding
-                          re-processing the same prompt.
-                        </InfoTooltip>
-                      </TableCell>
-                      <TableCell className='text-right font-mono'>
-                        {formatNumberAbbreviation(totals.cacheReadTokens)}
-                      </TableCell>
-                      <TableCell className='text-right font-mono'>
-                        {formatCurrency(totals.cacheReadTokensCost, { significantFigures: 2 })}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {totals.cacheWriteTokens > 0 ? (
-                    <TableRow>
-                      <TableCell className='flex flex-row items-center gap-1'>
-                        <span>Cache Write</span>
-                        <InfoTooltip>
-                          The number of tokens written to the prompt cache. This improves performance by avoiding
-                          re-processing the same prompt.
-                        </InfoTooltip>
-                      </TableCell>
-                      <TableCell className='text-right font-mono'>
-                        {formatNumberAbbreviation(totals.cacheWriteTokens)}
-                      </TableCell>
-                      <TableCell className='text-right font-mono'>
-                        {formatCurrency(totals.cacheWriteTokensCost, { significantFigures: 2 })}
-                      </TableCell>
-                    </TableRow>
-                  ) : undefined}
-                </>
-              )}
-            </TableBody>
-            <TableFooter className='overflow-clip rounded-b-md'>
-              <TableRow>
-                <TableCell>Total</TableCell>
-                <TableCell className='text-right font-mono'>{formatNumberAbbreviation(totalTokens)}</TableCell>
-                <TableCell className='text-right font-mono'>
-                  {formatCurrency(totals.totalCost, { significantFigures: 2 })}
-                </TableCell>
-              </TableRow>
-            </TableFooter>
-          </Table>
-        </div>
-      </HoverCardContent>
-    </HoverCard>
+    <ChatMessageUsage
+      model={resolveModel(lastUsage.model)}
+      agent={lastUsage.agent === undefined ? undefined : externalAgentDisplayName(lastUsage.agent)}
+      totals={sumUsageTokens(usageParts)}
+      turns={usageParts.length}
+      credits={showCredits ? summary : undefined}
+      reference={lastUsage.attemptId}
+    />
   );
 }

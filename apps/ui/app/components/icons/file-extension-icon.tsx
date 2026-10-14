@@ -16,6 +16,9 @@ type IconConfig =
       id: FileExtension;
     };
 
+// Export-only text formats in the extension catalog; they carry no 3D badge.
+const textFormats: ReadonlySet<FileExtension> = new Set<FileExtension>(['csv', 'json', 'txt']);
+
 // Only lib types and renamed format-3d types (where extension doesn't match format name)
 const iconConfigMap: Partial<Record<string, IconConfig>> = {
   // Languages (lib types)
@@ -42,6 +45,18 @@ const iconConfigMap: Partial<Record<string, IconConfig>> = {
   tsx: {
     type: 'lib',
     id: 'react',
+  },
+  py: {
+    type: 'lib',
+    id: 'python',
+  },
+  cs: {
+    type: 'lib',
+    id: 'csharp',
+  },
+  wasm: {
+    type: 'lib',
+    id: 'webassembly',
   },
 
   // Special lib types for 3D formats
@@ -81,6 +96,11 @@ const iconConfigMap: Partial<Record<string, IconConfig>> = {
     type: 'format-3d',
     id: 'step',
   },
+  // A sliced print container is a G-code program first, not a 3MF mesh.
+  'gcode.3mf': {
+    type: 'format-3d',
+    id: 'gcode',
+  },
 
   // Version Control (lib types)
   gitignore: {
@@ -96,6 +116,9 @@ const iconConfigMap: Partial<Record<string, IconConfig>> = {
     id: 'git',
   },
 };
+
+// Configured multi-part extensions such as `gcode.3mf`, which win over their last segment.
+const compoundExtensions = Object.keys(iconConfigMap).filter((extension) => extension.includes('.'));
 
 // Whole-filename matches, checked before the extension table so `tau.json`
 // and `package.json` do not collapse into the generic `.json` icon — the same
@@ -122,19 +145,21 @@ function getBasename(path: string): string {
 
 function getIconConfig(filename: string): IconConfig | undefined {
   // Priority 1: whole-filename match
-  const filenameConfig = iconConfigByFilename[getBasename(filename)];
+  const basename = getBasename(filename);
+  const filenameConfig = iconConfigByFilename[basename];
   if (filenameConfig) {
     return filenameConfig;
   }
 
   // Priority 2: extension match
-  const extension = getFileExtension(filename);
+  const extension =
+    compoundExtensions.find((candidate) => basename.endsWith(`.${candidate}`)) ?? getFileExtension(filename);
   const explicitConfig = iconConfigMap[extension];
   if (explicitConfig) {
     return explicitConfig;
   }
 
-  if (fileExtensionSet.has(extension as FileExtension)) {
+  if (fileExtensionSet.has(extension as FileExtension) && !textFormats.has(extension as FileExtension)) {
     return {
       type: 'format-3d',
       id: extension as FileExtension,

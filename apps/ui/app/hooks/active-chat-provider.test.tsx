@@ -3,10 +3,15 @@
 /* eslint-disable @typescript-eslint/explicit-member-accessibility -- mock class constructor omits the `public` keyword to mirror the AI SDK's published shape. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
+import { StrictMode, useEffect } from 'react';
+import { useSelector } from '@xstate/react';
 import type { ReactNode } from 'react';
+import type * as AiSdk from 'ai';
 import type { Chat, MyUIMessage } from '@taucad/chat';
 import { resolveKernel } from '@taucad/types/constants';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
+import type { DraftAttachmentModel } from '#hooks/draft.machine.js';
+import { lifecycleRow, logRow, publishLogRows, runningRows } from '#machines/chat-projection.fixture.js';
 
 // ---------------------------------------------------------------------------
 // Hoisted harness — mocks the project-manager surface (chat row persistence),
@@ -29,8 +34,7 @@ type FakeChat = {
 const harness = vi.hoisted(() => ({
   created: [] as FakeChat[],
   patchChat: vi.fn(),
-  setMessageEdit: vi.fn(),
-  clearMessageEdit: vi.fn(),
+  touchChatRecency: vi.fn(),
   getChat: vi.fn(),
   consumeChatStartupRequest: vi.fn(),
   commitCancelledDraftRestore: vi.fn(),
@@ -41,6 +45,9 @@ const harness = vi.hoisted(() => ({
   selectedModelName: 'Cookie Model',
   setKernel: vi.fn(),
   cookieKernel: 'openscad' as 'openscad' | 'manifold' | 'replicad',
+  homeFiles: new Map<string, Uint8Array<ArrayBuffer>>(),
+  homeReadFile: vi.fn<(path: string) => Promise<Uint8Array<ArrayBuffer>>>(),
+  homeWriteFile: vi.fn<(path: string, bytes: Uint8Array<ArrayBuffer>) => Promise<void>>(),
 }));
 
 vi.mock('@ai-sdk/react', () => ({
@@ -53,6 +60,8 @@ vi.mock('@ai-sdk/react', () => ({
     public sendMessage = vi.fn().mockResolvedValue(undefined);
     public regenerate = vi.fn().mockResolvedValue(undefined);
     public stop = vi.fn().mockResolvedValue(undefined);
+    public makeRequest = vi.fn().mockResolvedValue(undefined);
+    public resumeStream = vi.fn().mockResolvedValue(undefined);
     readonly #messagesListeners = new Set<() => void>();
     readonly #statusListeners = new Set<() => void>();
     readonly #errorListeners = new Set<() => void>();
@@ -103,9 +112,13 @@ vi.mock('@ai-sdk/react', () => ({
   },
 }));
 
-vi.mock('ai', () => ({
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof AiSdk>()),
   // oxlint-disable-next-line typescript-eslint/no-extraneous-class -- mock requires a `new`able value
   DefaultChatTransport: class {},
+  lastAssistantMessageIsCompleteWithApprovalResponses: vi.fn(),
+  isStaticToolUIPart: () => false,
+  safeValidateUIMessages: async ({ messages }: { messages: MyUIMessage[] }) => ({ success: true, data: messages }),
 }));
 
 vi.mock('#environment.config.js', () => ({
@@ -119,8 +132,7 @@ vi.mock('#machines/inspector.js', () => ({
 vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({
     patchChat: harness.patchChat,
-    setMessageEdit: harness.setMessageEdit,
-    clearMessageEdit: harness.clearMessageEdit,
+    touchChatRecency: harness.touchChatRecency,
     getChat: harness.getChat,
     consumeChatStartupRequest: harness.consumeChatStartupRequest,
     commitCancelledDraftRestore: harness.commitCancelledDraftRestore,
@@ -168,6 +180,12 @@ function stableResolvedModel(id: string, name: string): unknown {
 }
 const stableResolveModel = (id: string): unknown =>
   stableResolvedModel(id, id === harness.selectedModelId ? harness.selectedModelName : id);
+// The real hook's Tau branch, kept so the dual-write assertions stay on the cookie setter.
+const rememberExecution = (execution: { readonly kind: string; readonly model?: string }): void => {
+  if (execution.kind === 'tau') {
+    harness.setSelectedModelId(execution.model);
+  }
+};
 const useModelsReturnCache = new Map<string, unknown>();
 function getStableUseModelsReturn(): unknown {
   const key = `${harness.selectedModelId}|${harness.selectedModelName}`;
@@ -176,6 +194,8 @@ function getStableUseModelsReturn(): unknown {
     cached = {
       selectedModelId: harness.selectedModelId,
       setSelectedModelId: harness.setSelectedModelId,
+      defaultExecution: { kind: 'tau', model: harness.selectedModelId },
+      rememberExecution,
       selectedModel: stableResolvedModel(harness.selectedModelId, harness.selectedModelName),
       resolveModel: stableResolveModel,
       data: [],
@@ -197,13 +217,60 @@ vi.mock('#hooks/use-kernel.js', () => ({
   }),
 }));
 
-const { ActiveChatProvider, ChatComposerProvider, useActiveChatSession, useChatComposer } =
-  await import('#hooks/active-chat-provider.js');
-const { ChatSessionStoreProvider } = await import('#hooks/chat-session-store-provider.js');
+vi.mock('#hooks/use-file-manager.js', () => {
+  /*
+   * An in-memory Home workspace: the composer record and its attachment
+   * directory. `homeReadFile` / `homeWriteFile` wrap it so a row can stall or
+   * fail one call without replacing the store.
+   */
+  const notFound = (path: string): Error => Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+  const client = {
+    readFile: async (path: string, encoding?: 'utf8') => {
+      const bytes = await harness.homeReadFile(path);
+      return encoding === 'utf8' ? new TextDecoder().decode(bytes) : bytes;
+    },
+    writeFile: async (path: string, data: string | Uint8Array<ArrayBuffer>) =>
+      harness.homeWriteFile(path, typeof data === 'string' ? new TextEncoder().encode(data) : data),
+    exists: async (path: string) => harness.homeFiles.has(path),
+    readdir: async (path: string) => {
+      const names = [...harness.homeFiles.keys()]
+        .filter((entry) => entry.startsWith(`${path}/`))
+        .map((entry) => entry.slice(path.length + 1));
+      if (names.length === 0) {
+        throw notFound(path);
+      }
+      return names;
+    },
+    unlink: async (path: string) => {
+      harness.homeFiles.delete(path);
+    },
+    rmdir: async (path: string) => {
+      for (const entry of [...harness.homeFiles.keys()].filter((key) => key.startsWith(`${path}/`))) {
+        harness.homeFiles.delete(entry);
+      }
+    },
+  };
+  return { useFileManager: () => ({ recordFiles: client }) };
+});
+
+const {
+  ActiveChatProvider,
+  ChatComposerProvider,
+  HomeNewProjectComposerProvider,
+  useActiveChatSession,
+  useChatComposer,
+} = await import('#hooks/active-chat-provider.js');
+const { ChatSessionStoreProvider, useChatSessionStore } = await import('#hooks/chat-session-store-provider.js');
+const { UnloadProvider, useFlushOnClose } = await import('#hooks/use-flush-on-close.js');
+
+const testModel: DraftAttachmentModel = {
+  name: 'Test Model',
+  support: { modalities: { input: ['text', 'image', 'pdf'], output: ['text'] } },
+};
 
 function makeChat(overrides: Partial<Chat> = {}): Chat {
   return {
-    id: 'chat_homepage_main',
+    id: 'chat_default',
     resourceId: 'home',
     name: '',
     messages: [],
@@ -213,11 +280,13 @@ function makeChat(overrides: Partial<Chat> = {}): Chat {
   };
 }
 
-function createSessionWrapper(chatId: string) {
+function createSessionWrapper(chatId: string, projectId = 'home') {
   return function Wrapper({ children }: { readonly children: ReactNode }) {
     return (
       <ChatSessionStoreProvider>
-        <ActiveChatProvider chatId={chatId}>{children}</ActiveChatProvider>
+        <ActiveChatProvider chatId={chatId} projectId={projectId}>
+          {children}
+        </ActiveChatProvider>
       </ChatSessionStoreProvider>
     );
   };
@@ -227,8 +296,20 @@ function createComposerWrapper() {
   return function Wrapper({ children }: { readonly children: ReactNode }) {
     return (
       <ChatSessionStoreProvider>
-        <ChatComposerProvider>{children}</ChatComposerProvider>
+        <ChatComposerProvider surface='marketing'>{children}</ChatComposerProvider>
       </ChatSessionStoreProvider>
+    );
+  };
+}
+
+function createHomeWrapper() {
+  return function Wrapper({ children }: { readonly children: ReactNode }) {
+    return (
+      <StrictMode>
+        <UnloadProvider>
+          <HomeNewProjectComposerProvider>{children}</HomeNewProjectComposerProvider>
+        </UnloadProvider>
+      </StrictMode>
     );
   };
 }
@@ -236,8 +317,7 @@ function createComposerWrapper() {
 beforeEach(() => {
   harness.created = [];
   harness.patchChat.mockReset().mockResolvedValue(undefined);
-  harness.setMessageEdit.mockReset().mockResolvedValue(undefined);
-  harness.clearMessageEdit.mockReset().mockResolvedValue(undefined);
+  harness.touchChatRecency.mockReset().mockResolvedValue(undefined);
   harness.getChat.mockReset().mockResolvedValue(undefined);
   harness.consumeChatStartupRequest.mockReset().mockResolvedValue(undefined);
   harness.commitCancelledDraftRestore.mockReset().mockResolvedValue(undefined);
@@ -248,6 +328,17 @@ beforeEach(() => {
   harness.selectedModelName = 'Cookie Model';
   harness.setKernel.mockReset();
   harness.cookieKernel = 'openscad';
+  harness.homeFiles.clear();
+  harness.homeReadFile.mockReset().mockImplementation(async (path: string) => {
+    const bytes = harness.homeFiles.get(path);
+    if (bytes === undefined) {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    }
+    return bytes;
+  });
+  harness.homeWriteFile.mockReset().mockImplementation(async (path: string, bytes: Uint8Array<ArrayBuffer>) => {
+    harness.homeFiles.set(path, bytes);
+  });
   vi.useRealTimers();
 });
 
@@ -283,7 +374,7 @@ describe('ChatComposerProvider', () => {
 
     expect(typeof result.current.stop).toBe('function');
     expect(() => {
-      result.current.stop();
+      result.current.stop('stop-button');
     }).not.toThrow();
   });
 
@@ -320,6 +411,26 @@ describe('ChatComposerProvider', () => {
 
     expect(result.current.model.modelId).toBe('cookie-model');
     expect(result.current.model.model.id).toBe('cookie-model');
+  });
+
+  /*
+   * `<NewProjectChatComposer>` seeds a created chat with this execution
+   * verbatim, so what it tracks is what a project started from the marketing
+   * hero, the final CTA or the empty library runs on. There is no agent chip on
+   * those surfaces (both textareas gate it on `session`), so the browser host at
+   * the cookie model is the whole contract.
+   */
+  it('should expose an execution tracking the cookie model on this browser’s own host', () => {
+    const { result, rerender } = renderHook(() => useChatComposer(), {
+      wrapper: createComposerWrapper(),
+    });
+
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
+
+    harness.selectedModelId = 'new-model';
+    rerender();
+
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'new-model' });
   });
 
   it('should expose the cookie-resolved kernel', () => {
@@ -416,7 +527,11 @@ describe('ChatComposerProvider', () => {
       });
 
       act(() => {
-        result.current.draftActorRef.send({ type: 'addDraftImage', image: 'data:image/png;base64,raw' });
+        result.current.draftActorRef.send({
+          type: 'addDraftAttachment',
+          dataUrl: 'data:image/png;base64,raw',
+          model: testModel,
+        });
       });
 
       await waitFor(() => {
@@ -439,7 +554,11 @@ describe('ChatComposerProvider', () => {
       });
 
       act(() => {
-        result.current.draftActorRef.send({ type: 'addDraftImage', image: 'data:image/png;base64,raw' });
+        result.current.draftActorRef.send({
+          type: 'addDraftAttachment',
+          dataUrl: 'data:image/png;base64,raw',
+          model: testModel,
+        });
       });
 
       unmount();
@@ -452,6 +571,351 @@ describe('ChatComposerProvider', () => {
 
       expect(harness.toastError).not.toHaveBeenCalled();
     });
+  });
+});
+
+const recordPath = '/.tau/composers/new-project.json';
+const homeAttachments = '/.tau/composers/new-project/attachments';
+const pngDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+
+const chatRecordPath = (projectId: string, chatId: string): string =>
+  `/.tau/composers/chats/${projectId}/${chatId}.json`;
+const writeRecord = (record: unknown, path = recordPath): void => {
+  harness.homeFiles.set(path, new TextEncoder().encode(JSON.stringify(record)));
+};
+const readRecord = (path = recordPath): Record<string, unknown> | undefined => {
+  const bytes = harness.homeFiles.get(path);
+  return bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>);
+};
+const textDraft = (text: string): MyUIMessage => ({
+  id: 'draft',
+  role: 'user',
+  metadata: { createdAt: 1, status: 'pending' },
+  parts: [{ type: 'text', text }],
+});
+const homeAttachmentNames = (): string[] =>
+  [...harness.homeFiles.keys()].filter((path) => path.startsWith(`${homeAttachments}/`));
+
+/** A read the row settles by hand, so it can act while the record is still loading. */
+const deferRecordRead = (): (() => void) => {
+  const settled = Promise.withResolvers<void>();
+  const read = harness.homeReadFile.getMockImplementation()!;
+  harness.homeReadFile.mockImplementation(async (path) => {
+    if (path === recordPath) {
+      await settled.promise;
+    }
+    return read(path);
+  });
+  return () => {
+    settled.resolve();
+  };
+};
+
+function HomeProbe({ onRender }: { readonly onRender: (draftText: string) => void }) {
+  const { draftActorRef } = useChatComposer();
+  const draftText = useSelector(draftActorRef, (snapshot) => snapshot.context.draftText);
+  onRender(draftText);
+  return <p data-testid='home-composer'>ready</p>;
+}
+
+describe('HomeNewProjectComposerProvider', () => {
+  it('mounts an empty selectable composer without acquiring a chat when the file is absent', async () => {
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(result.current.canSelectExecution).toBe(true);
+    expect(result.current.session).toBeUndefined();
+    expect(harness.getChat).not.toHaveBeenCalled();
+    expect(harness.homeWriteFile).not.toHaveBeenCalled();
+  });
+
+  // New (W6): the composer is interactive before, during and after the read — there is no loader to render.
+  it('renders the composer on every render of the lifecycle, before the record resolves', async () => {
+    const release = deferRecordRead();
+    writeRecord({ version: 1, draft: textDraft('stored') });
+    const texts: string[] = [];
+    const view = render(
+      <StrictMode>
+        <UnloadProvider>
+          <HomeNewProjectComposerProvider>
+            <HomeProbe onRender={(text) => texts.push(text)} />
+          </HomeNewProjectComposerProvider>
+        </UnloadProvider>
+      </StrictMode>,
+    );
+
+    expect(view.getByTestId('home-composer')).toBeTruthy();
+    expect(view.container.textContent).toBe('ready');
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => {
+      expect(texts.at(-1) ?? '').toBe('stored');
+    });
+    // The first render already held the composer; nothing but it was ever in the tree.
+    expect(texts[0]).toBe('');
+    expect(view.container.textContent).toBe('ready');
+  });
+
+  it('hydrates the draft and ACP execution from the exact Home record', async () => {
+    writeRecord({
+      version: 1,
+      draft: textDraft('restored from Home'),
+      execution: { kind: 'acp', hostId: 'origin', agentId: 'codex' },
+    });
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('restored from Home');
+    });
+    expect(result.current.execution.execution).toEqual({ kind: 'acp', hostId: 'origin', agentId: 'codex' });
+    expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
+  });
+
+  it('should keep a keystroke typed just before the Home composer unmounts (R9)', async () => {
+    const { result, unmount } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
+    });
+
+    act(() => {
+      result.current.draftActorRef.send({ type: 'setDraftText', text: 'typed then navigated' });
+    });
+    unmount();
+
+    await waitFor(() => {
+      expect(readRecord()).toMatchObject({ draft: { parts: [{ type: 'text', text: 'typed then navigated' }] } });
+    });
+  });
+
+  it('should write the Home draft before session close preparation runs (R9)', async () => {
+    const seenBySession: unknown[] = [];
+    const { result } = renderHook(
+      () => {
+        useFlushOnClose(
+          () => {
+            seenBySession.push(readRecord());
+          },
+          { stage: 'session' },
+        );
+        return useChatComposer();
+      },
+      { wrapper: createHomeWrapper() },
+    );
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
+    });
+    act(() => {
+      result.current.draftActorRef.send({ type: 'setDraftText', text: 'typed then hidden' });
+    });
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await waitFor(() => {
+      expect(seenBySession).toHaveLength(1);
+    });
+    expect(seenBySession[0]).toMatchObject({ draft: { parts: [{ type: 'text', text: 'typed then hidden' }] } });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+  });
+
+  it('should hydrate the Home mode and tool choice from its record (R2)', async () => {
+    writeRecord({ version: 1, toolChoice: 'none', mode: 'plan' });
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context).toMatchObject({
+        draftMode: 'plan',
+        draftToolChoice: 'none',
+      });
+    });
+  });
+
+  // New (W6, D7): a late read applies only to what the user has not touched; what was typed reaches the record on its own.
+  it('never overwrites typing or an execution chosen before the record resolves', async () => {
+    const release = deferRecordRead();
+    writeRecord({
+      version: 1,
+      draft: textDraft('stale draft'),
+      execution: { kind: 'acp', hostId: 'origin', agentId: 'codex' },
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+
+    act(() => {
+      result.current.draftActorRef.send({ type: 'setDraftText', text: 'typed first' });
+      result.current.execution.setActiveExecution({ kind: 'tau', model: 'picked-model' });
+    });
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    await waitFor(() => {
+      expect(readRecord()).toMatchObject({
+        draft: { parts: [{ type: 'text', text: 'typed first' }] },
+        execution: { kind: 'tau', model: 'picked-model' },
+      });
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('typed first');
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'picked-model' });
+  });
+
+  // Rewritten (W6): the shared record toast replaces the provider's own console.error + toast; still exactly one.
+  it.each([
+    ['invalid bytes', async () => new TextEncoder().encode('{')],
+    [
+      'read failure',
+      async () => {
+        throw Object.assign(new Error('offline'), { code: 'EIO' });
+      },
+    ],
+  ])('mounts a usable composer and toasts once after %s', async (_name, read) => {
+    harness.homeReadFile.mockImplementation(read);
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(harness.toastError).toHaveBeenCalled();
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(result.current.status).toBe('ready');
+    expect(harness.toastError).toHaveBeenCalledOnce();
+    expect(harness.toastError).toHaveBeenCalledWith('Could not restore your draft', expect.any(Object));
+  });
+
+  it('persists edits and awaits a draft-only clear while retaining execution', async () => {
+    writeRecord({ version: 1, execution: { kind: 'tau', model: 'cookie-model', hostId: 'desktop' } });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(result.current.execution.execution).toMatchObject({ hostId: 'desktop' });
+    });
+    act(() => {
+      result.current.draftActorRef.send({ type: 'setDraftText', text: 'persist me' });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    await waitFor(() => {
+      expect(readRecord()).toMatchObject({ draft: { parts: [{ type: 'text', text: 'persist me' }] } });
+    });
+    await act(async () => result.current.consumeDraft());
+    // Rewritten (W4 semantics): a clear resets tool choice as a touched field, so its default is written too.
+    expect(readRecord()).toEqual({
+      version: 1,
+      toolChoice: 'auto',
+      execution: { kind: 'tau', model: 'cookie-model', hostId: 'desktop' },
+    });
+  });
+
+  // Rewritten (W6): the failure is now reported by the shared record toast, not a provider catch.
+  it('clears local draft state and resolves when the durable clear fails', async () => {
+    writeRecord({ version: 1, draft: textDraft('already created') });
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('already created');
+    });
+    harness.homeWriteFile.mockRejectedValueOnce(new Error('disk full'));
+    await act(async () => result.current.consumeDraft());
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(harness.toastError).toHaveBeenCalledOnce();
+    expect(harness.toastError).toHaveBeenCalledWith('Could not save your draft', expect.any(Object));
+  });
+
+  // New (W6, P27): a pasted image is stored in the record's own directory and survives a remount.
+  it('persists a pasted image across remount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const first = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    act(() => {
+      first.result.current.draftActorRef.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(first.result.current.draftActorRef.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    const [stored] = first.result.current.draftActorRef.getSnapshot().context.draftAttachments;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    await waitFor(() => {
+      expect(readRecord()).toMatchObject({
+        draft: { parts: [{ type: 'file', url: `attachments/${stored!.hash}.png`, mediaType: 'image/png' }] },
+      });
+    });
+    first.unmount();
+
+    const second = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(second.result.current.draftActorRef.getSnapshot().context.draftAttachments).toEqual([
+        expect.objectContaining({ hash: stored!.hash, mediaType: 'image/png' }),
+      ]);
+    });
+    expect(homeAttachmentNames()).toEqual([`${homeAttachments}/${stored!.hash}.png`]);
+  });
+
+  // New (W6, P27 / D14): a legacy `data:` part in the record is converted to a stored attachment on the next write.
+  it('converts a legacy data URL in the record on the next write', async () => {
+    writeRecord({
+      version: 1,
+      draft: { ...textDraft('legacy'), parts: [{ type: 'file', mediaType: 'image/png', url: pngDataUrl }] },
+    });
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    const [stored] = result.current.draftActorRef.getSnapshot().context.draftAttachments;
+    await waitFor(() => {
+      expect(JSON.stringify(readRecord())).toContain(`attachments/${stored!.hash}.png`);
+    });
+    expect(JSON.stringify(readRecord())).not.toContain('data:');
+    expect(homeAttachmentNames()).toEqual([`${homeAttachments}/${stored!.hash}.png`]);
+  });
+
+  // New (W6, P39): each pre-project surface releases only its own directory.
+  it("leaves every other surface's attachment bytes in place when one surface consumes its draft", async () => {
+    const marketing = renderHook(() => useChatComposer(), { wrapper: createComposerWrapper() });
+    const home = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    const libraryBytes = '/.tau/composers/library/attachments/' + 'c'.repeat(64) + '.png';
+    harness.homeFiles.set(libraryBytes, new Uint8Array([1]));
+    act(() => {
+      marketing.result.current.draftActorRef.send({
+        type: 'addDraftAttachment',
+        dataUrl: pngDataUrl,
+        model: testModel,
+      });
+      home.result.current.draftActorRef.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(homeAttachmentNames()).toHaveLength(1);
+      expect(marketing.result.current.draftActorRef.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    const marketingBytes = [...harness.homeFiles.keys()].find((path) =>
+      path.startsWith('/.tau/composers/marketing/attachments/'),
+    );
+    expect(marketing.result.current.attachmentSource).toBe('/.tau/composers/marketing/attachments');
+    expect(home.result.current.attachmentSource).toBeUndefined();
+
+    await act(async () => marketing.result.current.consumeDraft());
+
+    expect(marketingBytes).toBeDefined();
+    expect(harness.homeFiles.has(marketingBytes!)).toBe(false);
+    expect(homeAttachmentNames()).toHaveLength(1);
+    expect(harness.homeFiles.has(libraryBytes)).toBe(true);
+  });
+
+  // New (W6): once a project has been created from the draft, consuming it releases the draft-stage copies.
+  it('releases the draft-stage attachment copies when the draft is consumed', async () => {
+    const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    act(() => {
+      result.current.draftActorRef.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(homeAttachmentNames()).toHaveLength(1);
+    });
+
+    await act(async () => result.current.consumeDraft());
+
+    expect(homeAttachmentNames()).toEqual([]);
+    expect(readRecord()).toEqual({ version: 1, toolChoice: 'auto' });
   });
 });
 
@@ -488,6 +952,7 @@ describe('ActiveChatProvider', () => {
     });
 
     expect(result.current.status).toBe('ready');
+    expect(result.current.agentActivity).toBe('ready');
 
     act(() => {
       const live = harness.created[0]!;
@@ -498,18 +963,59 @@ describe('ActiveChatProvider', () => {
     expect(result.current.status).toBe('streaming');
   });
 
-  it('should dispatch stopRequest on the persistence machine when stop() is called', () => {
-    const { result } = renderHook(() => ({ composer: useChatComposer(), session: useActiveChatSession() }), {
-      wrapper: createSessionWrapper('chat_stop'),
+  it('names the agent working from its log’s run, not the SDK request (PV-S7, D12)', () => {
+    const { result } = renderHook(() => ({ composer: useChatComposer(), store: useChatSessionStore() }), {
+      wrapper: createSessionWrapper('chat_working'),
     });
-
-    const sendSpy = vi.spyOn(result.current.session.persistenceActorRef, 'send');
 
     act(() => {
-      result.current.composer.stop();
+      publishLogRows(result.current.store, 'chat_working', runningRows());
+    });
+    expect(result.current.composer.status).toBe('streaming');
+    expect(result.current.composer.agentActivity).toBe('working');
+
+    act(() => {
+      publishLogRows(result.current.store, 'chat_working', [lifecycleRow(2, 'completed')], 2);
+    });
+    expect(result.current.composer.agentActivity).toBe('ready');
+    expect(result.current.composer.status).toBe('ready');
+  });
+
+  it('should surface approval and cancellation activity independently from the execution provider', () => {
+    const { result } = renderHook(() => ({ composer: useChatComposer(), store: useChatSessionStore() }), {
+      wrapper: createSessionWrapper('chat_activity'),
     });
 
-    expect(sendSpy).toHaveBeenCalledWith({ type: 'stopRequest' });
+    act(() => {
+      publishLogRows(result.current.store, 'chat_activity', [
+        ...runningRows(),
+        logRow(2, { type: 'interrupt.recorded', interruptId: 'i1', phase: 'requested', reason: 'approval' }),
+      ]);
+    });
+    expect(result.current.composer.agentActivity).toBe('approval-required');
+
+    act(() => {
+      publishLogRows(
+        result.current.store,
+        'chat_activity',
+        [logRow(3, { type: 'interrupt.recorded', interruptId: 'i1', phase: 'resolved', reason: 'approval' })],
+        3,
+      );
+      result.current.composer.stop('stop-button');
+    });
+    expect(result.current.composer.agentActivity).toBe('stopping');
+  });
+
+  it('marks a projected run stopping locally when stop() is called', () => {
+    const { result } = renderHook(() => ({ composer: useChatComposer(), store: useChatSessionStore() }), {
+      wrapper: createSessionWrapper('chat_stop'),
+    });
+    act(() => {
+      publishLogRows(result.current.store, 'chat_stop', runningRows());
+      result.current.composer.stop('stop-button');
+    });
+    expect(result.current.store.isStopping('chat_stop')).toBe(true);
+    expect(result.current.composer.agentActivity).toBe('stopping');
   });
 
   it('should scan messages for the latest data-context-usage part', () => {
@@ -554,11 +1060,11 @@ describe('ActiveChatProvider', () => {
   // ── Session-backed model resolver (chat row preferred, cookie fallback,
   // dual-write on set) ──
   describe('model resolver', () => {
-    it('should prefer Chat.activeModel when present', async () => {
+    it('should prefer a Tau Chat.activeExecution when present', async () => {
       harness.getChat.mockResolvedValue(
         makeChat({
           id: 'chat_with_model',
-          activeModel: 'chat-local-model',
+          activeExecution: { kind: 'tau', model: 'chat-local-model' },
         }),
       );
 
@@ -572,7 +1078,7 @@ describe('ActiveChatProvider', () => {
       expect(result.current.model.model.id).toBe('chat-local-model');
     });
 
-    it('should fall back to the cookie when Chat.activeModel is undefined', async () => {
+    it('should fall back to the cookie when Chat.activeExecution is undefined', async () => {
       harness.getChat.mockResolvedValue(makeChat({ id: 'chat_no_model' }));
 
       const { result } = renderHook(() => useChatComposer(), {
@@ -580,7 +1086,7 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(harness.getChat).toHaveBeenCalledWith('chat_no_model');
+        expect(harness.getChat).toHaveBeenCalledWith('chat_no_model', 'home');
       });
       expect(result.current.model.modelId).toBe('cookie-model');
     });
@@ -601,9 +1107,69 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(harness.patchChat).toHaveBeenCalledWith('chat_dual_write', 'activeModel', 'new-model');
+        expect(harness.patchChat).toHaveBeenCalledWith('chat_dual_write', 'activeExecution', {
+          kind: 'tau',
+          model: 'new-model',
+        });
       });
       expect(harness.setSelectedModelId).toHaveBeenCalledWith('new-model');
+    });
+
+    it('should persist the chosen reasoning level on the chat execution, keeping its model', async () => {
+      harness.getChat.mockResolvedValue(
+        makeChat({ id: 'chat_effort', activeExecution: { kind: 'tau', model: 'old-model', hostId: 'origin' } }),
+      );
+
+      const { result } = renderHook(() => useChatComposer(), {
+        wrapper: createSessionWrapper('chat_effort'),
+      });
+
+      await waitFor(() => {
+        expect(result.current.model.modelId).toBe('old-model');
+      });
+
+      act(() => {
+        result.current.model.setActiveEffort('low');
+      });
+
+      await waitFor(() => {
+        expect(harness.patchChat).toHaveBeenCalledWith('chat_effort', 'activeExecution', {
+          kind: 'tau',
+          model: 'old-model',
+          hostId: 'origin',
+          effort: 'low',
+        });
+      });
+    });
+
+    it('drops a persisted browser-host placement when the active model changes', async () => {
+      const legacyExecution = { kind: 'tau', model: 'old-model', placement: 'browser-host' } as const;
+      harness.getChat.mockResolvedValue(
+        makeChat({
+          id: 'chat_browser_model',
+          activeExecution: legacyExecution,
+        }),
+      );
+
+      const { result } = renderHook(() => useChatComposer(), {
+        wrapper: createSessionWrapper('chat_browser_model'),
+      });
+
+      await waitFor(() => {
+        expect(result.current.model.modelId).toBe('old-model');
+      });
+      act(() => {
+        result.current.model.setActiveModel('new-model');
+      });
+
+      await waitFor(() => {
+        // The browser host is the only Tau placement now: the pre-cutover
+        // property still parses, and is dropped rather than propagated.
+        expect(harness.patchChat).toHaveBeenCalledWith('chat_browser_model', 'activeExecution', {
+          kind: 'tau',
+          model: 'new-model',
+        });
+      });
     });
   });
 
@@ -635,13 +1201,13 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(harness.getChat).toHaveBeenCalledWith('chat_no_kernel');
+        expect(harness.getChat).toHaveBeenCalledWith('chat_no_kernel', 'home');
       });
       expect(result.current.kernel.kernelId).toBe('openscad');
     });
 
     it('should heal a retired openscad chat value through the cookie fallback', async () => {
-      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_retired_kernel', activeKernel: 'openscad' as never }));
+      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_retired_kernel', activeKernel: 'openscad' }));
 
       const { result } = renderHook(() => useChatComposer(), {
         wrapper: createSessionWrapper('chat_retired_kernel'),
@@ -684,23 +1250,193 @@ describe('ActiveChatProvider', () => {
     }
   });
 
-  it('should persist draft to IndexedDB when chatId is defined', async () => {
+  // Rewritten (P40): a project chat's draft lives in its composer record, not on the chat row (D2).
+  it('should persist the draft to the chat’s composer record when chatId is defined', async () => {
+    harness.getChat.mockResolvedValue(makeChat({ id: 'chat_persist', resourceId: 'proj_persist' }));
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     const { result } = renderHook(() => useActiveChatSession(), {
-      wrapper: createSessionWrapper('chat_persist'),
+      wrapper: createSessionWrapper('chat_persist', 'proj_persist'),
     });
 
     act(() => {
       result.current.draftActorRef.send({ type: 'setDraftText', text: 'hello world' });
     });
-
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    expect(harness.patchChat).toHaveBeenCalledWith('chat_persist', 'draft', expect.objectContaining({ id: 'draft' }));
+    await waitFor(() => {
+      expect(readRecord(chatRecordPath('proj_persist', 'chat_persist'))).toMatchObject({
+        draft: { parts: [{ type: 'text', text: 'hello world' }] },
+      });
+    });
+    expect(harness.patchChat).not.toHaveBeenCalledWith('chat_persist', 'draft', expect.anything());
   });
+
+  it.each([false, true])(
+    'should preserve the viewer mount when switching to an evicted chat (retained target: %s)',
+    async (isTargetRetained) => {
+      const mounted = vi.fn();
+      const disposed = vi.fn();
+      const identities: string[][] = [];
+      const stores: Array<ReturnType<typeof useChatSessionStore>> = [];
+
+      function RetainedTarget(): ReactNode {
+        const store = useChatSessionStore();
+        stores.push(store);
+        useEffect(() => {
+          if (!isTargetRetained) {
+            return;
+          }
+          store.acquire('chat_new', 'home');
+          return () => {
+            store.release('chat_new');
+          };
+        }, [store]);
+        return null;
+      }
+
+      function Viewer(): ReactNode {
+        const session = useActiveChatSession();
+        identities.push([session.activeChatId, session.chat.id]);
+        useEffect(() => {
+          mounted();
+          return disposed;
+        }, []);
+        return (
+          <div role='img' aria-label='Project viewer'>
+            {session.activeChatId}
+          </div>
+        );
+      }
+
+      function Surface({ chatId }: { readonly chatId: string }): ReactNode {
+        return (
+          <ChatSessionStoreProvider>
+            <RetainedTarget />
+            <ActiveChatProvider chatId={chatId} projectId='home'>
+              <Viewer />
+            </ActiveChatProvider>
+          </ChatSessionStoreProvider>
+        );
+      }
+
+      const { getByRole, rerender, unmount } = render(<Surface chatId='chat_initial' />);
+      const viewer = getByRole('img', { name: 'Project viewer' });
+      rerender(<Surface chatId='chat_new' />);
+      await waitFor(() => {
+        expect(getByRole('img', { name: 'Project viewer' })).toHaveTextContent('chat_new');
+      });
+      expect(getByRole('img', { name: 'Project viewer' })).toBe(viewer);
+      expect(stores[0]?.get('chat_initial')).toBeUndefined();
+      rerender(<Surface chatId='chat_initial' />);
+      await waitFor(() => {
+        expect(getByRole('img', { name: 'Project viewer' })).toHaveTextContent('chat_initial');
+      });
+      expect(getByRole('img', { name: 'Project viewer' })).toBe(viewer);
+      expect(mounted).toHaveBeenCalledOnce();
+      expect(disposed).not.toHaveBeenCalled();
+      expect(identities.every(([activeId, instanceId]) => activeId === instanceId)).toBe(true);
+      unmount();
+      expect(disposed).toHaveBeenCalledOnce();
+      expect(stores[0]?.get('chat_initial')).toBeUndefined();
+      expect(stores[0]?.get('chat_new')).toBeUndefined();
+    },
+  );
+
+  it('should keep the previous presentation until the destination transcript is hydrated', async () => {
+    const metadata = Promise.withResolvers<Chat | undefined>();
+    harness.getChat.mockImplementation(async (id: string) => (id === 'chat_history' ? metadata.promise : undefined));
+    const seen: string[] = [];
+    const stores: Array<ReturnType<typeof useChatSessionStore>> = [];
+    function History(): ReactNode {
+      const store = useChatSessionStore();
+      stores.push(store);
+      const session = useActiveChatSession();
+      const text = `${session.activeChatId}:${session.chat.messages.map((message) => message.id).join(',')}`;
+      seen.push(text);
+      return <button type='button'>{text}</button>;
+    }
+    function Surface({ chatId }: { readonly chatId: string }): ReactNode {
+      return (
+        <ChatSessionStoreProvider>
+          <ActiveChatProvider chatId={chatId} projectId='home'>
+            <History />
+          </ActiveChatProvider>
+        </ChatSessionStoreProvider>
+      );
+    }
+    const view = render(<Surface chatId='chat_current' />);
+    await act(async () => {
+      publishLogRows(stores[0]!, 'chat_history', [
+        lifecycleRow(0, 'admitted'),
+        logRow(1, {
+          type: 'message.appended',
+          message: { id: 'saved-message', role: 'user', content: 'Saved design' },
+        }),
+        lifecycleRow(2, 'completed'),
+      ]);
+    });
+    view.rerender(<Surface chatId='chat_history' />);
+    expect(view.getByRole('button')).toHaveTextContent('chat_current:');
+    expect(view.getByRole('button').closest('[inert]')).not.toBeNull();
+    await act(async () => {
+      metadata.resolve(makeChat({ id: 'chat_history' }));
+    });
+    await waitFor(() => {
+      expect(view.getByRole('button')).toHaveTextContent('chat_history:saved-message');
+    });
+    expect(seen).not.toContain('chat_history:');
+    expect(view.getByRole('button').closest('[inert]')).toBeNull();
+    expect(stores[0]?.get('chat_current')).toBeUndefined();
+    view.unmount();
+    expect(stores[0]?.get('chat_history')).toBeUndefined();
+  });
+
+  it.each(['empty', 'error'] as const)(
+    'should release superseded handoffs and publish a valid %s destination',
+    async (outcome) => {
+      const delayed = Promise.withResolvers<Chat | undefined>();
+      harness.getChat.mockImplementation(async (id: string) => {
+        if (id === 'chat_slow') {
+          return delayed.promise;
+        }
+        if (id === 'chat_final' && outcome === 'error') {
+          throw new Error('Cannot read metadata');
+        }
+        return undefined;
+      });
+      const stores: Array<ReturnType<typeof useChatSessionStore>> = [];
+      function Probe(): ReactNode {
+        stores.push(useChatSessionStore());
+        return <p>{useActiveChatSession().activeChatId}</p>;
+      }
+      function Surface({ chatId }: { readonly chatId: string }): ReactNode {
+        return (
+          <ChatSessionStoreProvider>
+            <ActiveChatProvider chatId={chatId} projectId='home'>
+              <Probe />
+            </ActiveChatProvider>
+          </ChatSessionStoreProvider>
+        );
+      }
+      const view = render(<Surface chatId='chat_current' />);
+      view.rerender(<Surface chatId='chat_slow' />);
+      view.rerender(<Surface chatId='chat_final' />);
+      await waitFor(() => {
+        expect(view.getByText('chat_final')).toBeTruthy();
+      });
+      expect(stores[0]?.get('chat_slow')).toBeUndefined();
+      expect(stores[0]?.get('chat_current')).toBeUndefined();
+      await act(async () => {
+        delayed.resolve(undefined);
+      });
+      expect(view.getByText('chat_final')).toBeTruthy();
+      view.unmount();
+      expect(stores[0]?.get('chat_final')).toBeUndefined();
+    },
+  );
 
   it('should switch draft state cleanly when chatId prop changes', async () => {
     function Probe(): ReactNode {
@@ -709,62 +1445,42 @@ describe('ActiveChatProvider', () => {
 
     const { rerender } = render(
       <ChatSessionStoreProvider>
-        <ActiveChatProvider chatId='chat_first'>
+        <ActiveChatProvider chatId='chat_first' projectId='home'>
           <Probe />
         </ActiveChatProvider>
       </ChatSessionStoreProvider>,
     );
 
-    expect(harness.getChat).toHaveBeenCalledWith('chat_first');
+    expect(harness.getChat).toHaveBeenCalledWith('chat_first', 'home');
 
     rerender(
       <ChatSessionStoreProvider>
-        <ActiveChatProvider chatId='chat_second'>
+        <ActiveChatProvider chatId='chat_second' projectId='home'>
           <Probe />
         </ActiveChatProvider>
       </ChatSessionStoreProvider>,
     );
 
     await waitFor(() => {
-      expect(harness.getChat).toHaveBeenCalledWith('chat_second');
+      expect(harness.getChat).toHaveBeenCalledWith('chat_second', 'home');
     });
   });
 
-  it('should load the existing Chat.draft from IndexedDB when a record exists', async () => {
-    harness.getChat.mockResolvedValue(
-      makeChat({
-        id: 'chat_with_draft',
-        draft: {
-          id: 'draft',
-          role: 'user',
-          metadata: { createdAt: 0, status: 'pending' },
-          parts: [{ type: 'text', text: 'preserved homepage draft' }],
-        },
-      }),
+  // Rewritten (P40): the draft hydrates from the chat's composer record once the chat names its project (D7).
+  it('should hydrate the draft from the chat’s composer record when one exists', async () => {
+    writeRecord(
+      { version: 1, draft: textDraft('preserved homepage draft') },
+      chatRecordPath('proj_load', 'chat_with_draft'),
     );
+    harness.getChat.mockResolvedValue(makeChat({ id: 'chat_with_draft', resourceId: 'proj_load' }));
 
     const { result } = renderHook(() => useActiveChatSession(), {
-      wrapper: createSessionWrapper('chat_with_draft'),
+      wrapper: createSessionWrapper('chat_with_draft', 'proj_load'),
     });
 
     await waitFor(() => {
-      const snapshot = result.current.draftActorRef.getSnapshot();
-      expect(snapshot.context.draftText).toBe('preserved homepage draft');
+      expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('preserved homepage draft');
     });
-  });
-
-  it('should not throw when no Chat row exists for the given chatId (homepage first-visit)', async () => {
-    harness.getChat.mockResolvedValue(undefined);
-
-    const { result } = renderHook(() => useActiveChatSession(), {
-      wrapper: createSessionWrapper('chat_homepage_main'),
-    });
-
-    await waitFor(() => {
-      expect(harness.getChat).toHaveBeenCalledWith('chat_homepage_main');
-    });
-
-    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
   });
 
   describe('imageResizeFailed toast subscriber', () => {
@@ -776,7 +1492,11 @@ describe('ActiveChatProvider', () => {
       });
 
       act(() => {
-        result.current.draftActorRef.send({ type: 'addDraftImage', image: 'data:image/png;base64,raw' });
+        result.current.draftActorRef.send({
+          type: 'addDraftAttachment',
+          dataUrl: 'data:image/png;base64,raw',
+          model: testModel,
+        });
       });
 
       await waitFor(() => {
@@ -785,22 +1505,33 @@ describe('ActiveChatProvider', () => {
       expect(harness.toastError).toHaveBeenCalledWith('Failed to process image', expect.any(Object));
     });
 
+    // Rewritten (P40): the resized image is stored through the session's real store actor, into the chat's record directory.
     it('should not toast on successful resize', async () => {
       harness.resize.mockResolvedValueOnce('data:image/jpeg;base64,resized');
+      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_no_toast', resourceId: 'proj_toast' }));
 
       const { result } = renderHook(() => useActiveChatSession(), {
-        wrapper: createSessionWrapper('chat_no_toast'),
+        wrapper: createSessionWrapper('chat_no_toast', 'proj_toast'),
       });
 
       act(() => {
-        result.current.draftActorRef.send({ type: 'addDraftImage', image: 'data:image/png;base64,raw' });
+        result.current.draftActorRef.send({
+          type: 'addDraftAttachment',
+          dataUrl: 'data:image/png;base64,raw',
+          model: testModel,
+        });
       });
 
+      // Rewritten (W4 rename): a resized image is now stored and referenced, not kept as its data URL.
       await waitFor(() => {
-        expect(result.current.draftActorRef.getSnapshot().context.draftImages).toEqual([
-          'data:image/jpeg;base64,resized',
+        expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toEqual([
+          expect.objectContaining({ mediaType: 'image/jpeg' }),
         ]);
       });
+      const [stored] = result.current.draftActorRef.getSnapshot().context.draftAttachments;
+      expect(
+        harness.homeFiles.has(`/.tau/composers/chats/proj_toast/chat_no_toast/attachments/${stored!.hash}.jpg`),
+      ).toBe(true);
 
       expect(harness.toastError).not.toHaveBeenCalled();
     });

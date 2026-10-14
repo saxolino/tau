@@ -1,41 +1,54 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
-import { ChevronDown, Paperclip, Wrench, AtSign } from 'lucide-react';
-import type { Chat, ToolSelection } from '@taucad/chat';
+import { chatInputPaddingClassName } from '#components/chat/chat-input-styles.js';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
+import type { Editor } from '@tiptap/core';
+import type { AttachmentDirectories } from '#hooks/use-attachment-source.js';
+import { AtSign, Paperclip, Plus } from 'lucide-react';
+import { useDictation } from '#components/dictation/use-dictation.js';
+import { DictationButton, DictationRecording, DictationFeedback } from '#components/dictation/dictation-controls.js';
+import type { AcpSessionData } from '@taucad/chat';
+import type { ChatRecord } from '@taucad/chat/schemas';
 import type { FileEntry } from '@taucad/types';
 import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
-import { ChatModelSelector, openModelSelectorKeyCombination } from '#components/chat/chat-model-selector.js';
+import { ChatAgentSheet, ghostPillClass } from '#components/chat/chat-agent-sheet.js';
+import { ChatAgentModeControl } from '#components/chat/chat-mode-selector.js';
+import { useAgentConfig } from '#components/chat/use-agent-config.js';
 import { ChatKernelSelector } from '#components/chat/chat-kernel-selector.js';
-import { ChatToolSelector } from '#components/chat/chat-tool-selector.js';
-import { ChatAgentSelector, toggleModeKeyCombination } from '#components/chat/chat-mode-selector.js';
-import { Button } from '#components/ui/button.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { Button } from '@taucad/ui/components/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from '@taucad/ui/components/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { formatKeyCombination } from '#utils/keys.utils.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { ChatContextIndicator } from '#components/chat/chat-context-indicator.js';
 import { ChatTextareaBorderBeam } from '#components/chat/chat-textarea-border-beam.js';
-import { ChatTextareaDesktopImages } from '#components/chat/chat-textarea-desktop-images.js';
+import { ChatTextareaAttachmentRail } from '#components/chat/chat-textarea-image-strip.js';
 import { ChatTextareaSubmitButton } from '#components/chat/chat-textarea-submit-button.js';
-import { focusTrapAttribute } from '#components/chat/chat-textarea-types.js';
-import type { ChatTextareaDragKind } from '#components/chat/chat-textarea-types.js';
-import { useSelector } from '@xstate/react';
+import type { ChatAttachmentAddOptions, ChatTextareaDragKind } from '#components/chat/chat-textarea-types.js';
+import type { DraftAttachment } from '#hooks/draft.machine.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { useDraftActions } from '#hooks/use-chat.js';
-import type { DraftImageOptions } from '#hooks/use-chat.js';
-import type { ResolvedModel } from '#hooks/use-models.js';
-import { useFeature } from '#flags/use-feature.js';
+import { useAgentHostPlacements } from '#hooks/use-cad-agent-config.js';
 import { ChatEditor } from '#components/chat/tiptap/chat-editor.js';
-import { useChatEditor, buildEditorContentJson } from '#components/chat/tiptap/use-chat-editor.js';
-import type { ContextSuggestionItem } from '#components/chat/tiptap/suggestion-types.js';
+import type { CadReference } from '@taucad/chat/references';
+import {
+  buildEditorContentJson,
+  cadReferencesOfChips,
+  extractContent,
+  useChatEditor,
+} from '#components/chat/tiptap/use-chat-editor.js';
+import type { ContextSuggestionItem, SlashCommandItem } from '#components/chat/tiptap/suggestion-types.js';
 import type { ClipboardPasteEvent } from '#components/chat/chat-paste-handler.js';
 import { createScreenshotContextHandler } from '#components/chat/screenshot-actions.utils.js';
-import { buildPastedContent } from '#utils/at-reference.utils.js';
-import { skillMetadataToSlashCommand, useSkillsCatalog } from '#hooks/use-skills-catalog.js';
+import { buildPastedContent, commandInvocation } from '#utils/at-reference.utils.js';
+import { skillMetadataToSlashCommand, useSkillsCatalogState } from '#hooks/use-skills-catalog.js';
 import type { ChatContextReference } from '#components/chat/chat-context-insertion.js';
 
 const dragOverlayCopy: Record<ChatTextareaDragKind, string> = {
-  image: 'Add image(s)',
+  image: 'Add files',
   viewer: 'Add screenshot',
   reference: 'Add reference',
 };
@@ -45,23 +58,32 @@ type ChatTextareaDesktopProperties = {
   readonly enableAutoFocus?: boolean;
   readonly enableContextActions?: boolean;
   readonly enableKernelSelector?: boolean;
+  readonly creationLocationControl?: React.ReactNode;
+  readonly isSubmitDisabled?: boolean;
+  /** Which composer this is: the edit box speaks as one and owns shortcuts only while focused (F6, F19). */
+  readonly mode?: 'main' | 'edit';
 
   // State
   readonly dragKind: ChatTextareaDragKind | undefined;
   readonly isSubmitting: boolean;
+  readonly canResume?: boolean;
+  readonly isAttaching: boolean;
   readonly inputText: string;
-  readonly images: string[];
-  readonly selectedToolChoice: ToolSelection;
+  readonly attachments: readonly DraftAttachment[];
+  readonly attachmentDirectory: AttachmentDirectories;
+  readonly sendBlockReason: string | undefined;
+  readonly attachmentAccept: string;
+  readonly attachmentInputSupported: boolean;
   readonly status: string;
-  readonly selectedModel: ResolvedModel;
-  readonly imageInputSupported: boolean;
   readonly formattedCancelKeyCombination: string;
 
   // Context data for Tiptap editor
   readonly treeService: FileTreeService | undefined;
-  readonly chats: Chat[];
+  readonly chats: ChatRecord[];
   readonly actionItems?: ContextSuggestionItem[];
   readonly setDraftText: (text: string) => void;
+  readonly acpAgentId?: string;
+  readonly acpSessionData?: AcpSessionData;
 
   // Refs
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
@@ -75,7 +97,7 @@ type ChatTextareaDesktopProperties = {
   readonly addContextReferencesRef: React.RefObject<((references: ChatContextReference[]) => void) | undefined>;
 
   // Handlers (all must be stable references to prevent tooltip re-render loops)
-  readonly handleSubmit: () => Promise<void>;
+  readonly handleSubmit: (finalizedText?: string, references?: readonly CadReference[]) => Promise<void>;
   readonly handleCancelClick: () => void;
   readonly handleDragOver: (event: React.DragEvent) => void;
   readonly handleDragLeave: () => void;
@@ -83,17 +105,61 @@ type ChatTextareaDesktopProperties = {
   readonly handlePaste: (event: ClipboardPasteEvent) => boolean;
   readonly handleFileSelect: () => void;
   readonly handleFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  readonly handleAddImage: (image: string, options?: DraftImageOptions) => void;
+  readonly handleAddImage: (image: string, options?: ChatAttachmentAddOptions) => void;
   readonly onScreenshotAction: (item: ContextSuggestionItem) => void;
   readonly onEscapePressed?: () => void;
   readonly handleTextareaBlur: () => void;
-  readonly removeImage: (index: number) => void;
-  readonly setDraftToolChoice: (choice: ToolSelection) => void;
+  readonly removeAttachment: (index: number) => void;
+};
+
+/** Map one ACP command to the composer menu; its chip's text is the agent's exact invocation. @public */
+export const acpCommandToSlashCommand = (
+  command: AcpSessionData['commands'][number],
+  agentId: string,
+): SlashCommandItem => {
+  const invocation = commandInvocation(command.name);
+  return {
+    id: invocation,
+    label: invocation,
+    title: command.name,
+    description: command.description,
+    ...(command.input === null || command.input === undefined ? {} : { fullDescription: command.input.hint }),
+    group: 'Commands',
+    source: agentId,
+  };
 };
 
 /**
- * Desktop version of the chat textarea with Tiptap rich text editor.
- * Supports inline context chips via @-mentions, slash commands, and drag-drop from dockview tabs.
+ * Why Send refuses, in the words its tooltip and description use (F14).
+ *
+ * @returns The reason, or `undefined` when Send would send.
+ */
+const sendRefusalOf = (input: {
+  readonly sendBlockReason: string | undefined;
+  readonly isSubmitting: boolean;
+  readonly isAttaching: boolean;
+  readonly isSubmitDisabled: boolean;
+  readonly isEmpty: boolean;
+}): string | undefined => {
+  if (input.sendBlockReason !== undefined) {
+    return input.sendBlockReason;
+  }
+  if (input.isSubmitting) {
+    return 'Sending…';
+  }
+  if (input.isAttaching) {
+    return 'Waiting for the attachment to finish';
+  }
+  if (input.isEmpty) {
+    return 'Write a message first';
+  }
+  return input.isSubmitDisabled ? 'Not ready to send yet' : undefined;
+};
+
+/**
+ * The chat composer, on every device (C11): the Tiptap rich text editor with
+ * inline context chips via @-mentions, slash commands, drag-drop from dockview
+ * tabs, and one bar of controls.
  *
  * Architecture note: all callback props MUST be stable (memoized) references.
  * Radix UI's SlotClone (used by TooltipTrigger asChild) calls composeRefs()
@@ -108,16 +174,22 @@ export const ChatTextareaDesktop = memo(function ({
   enableAutoFocus = true,
   enableContextActions = true,
   enableKernelSelector = true,
+  creationLocationControl,
+  isSubmitDisabled = false,
+  mode = 'main',
 
   // State
   dragKind,
   isSubmitting,
+  canResume = false,
+  isAttaching,
   inputText,
-  images,
-  selectedToolChoice,
+  attachments,
+  attachmentDirectory,
+  sendBlockReason,
+  attachmentAccept,
+  attachmentInputSupported,
   status,
-  selectedModel,
-  imageInputSupported,
   formattedCancelKeyCombination,
 
   // Context data
@@ -125,6 +197,8 @@ export const ChatTextareaDesktop = memo(function ({
   chats,
   actionItems,
   setDraftText,
+  acpAgentId,
+  acpSessionData,
 
   // Refs
   fileInputReference,
@@ -146,15 +220,26 @@ export const ChatTextareaDesktop = memo(function ({
   onScreenshotAction,
   onEscapePressed,
   handleTextareaBlur,
-  removeImage,
-  setDraftToolChoice,
+  removeAttachment,
 }: ChatTextareaDesktopProperties): React.JSX.Element {
-  const skillsCatalog = useSkillsCatalog();
+  const catalog = useSkillsCatalogState();
+  const skillsCatalog = catalog.status === 'closed' || catalog.status === 'error' ? [] : catalog.commands;
+
+  const commands = acpSessionData?.commands;
   const slashCommandItems = useMemo(
-    () => skillsCatalog.map((skillMetadata) => skillMetadataToSlashCommand(skillMetadata)),
-    [skillsCatalog],
+    (): SlashCommandItem[] =>
+      acpAgentId === undefined
+        ? skillsCatalog.map((skillMetadata) => skillMetadataToSlashCommand(skillMetadata))
+        : (commands ?? []).map((command) => acpCommandToSlashCommand(command, acpAgentId)),
+    [acpAgentId, commands, skillsCatalog],
   );
-  const knownSkillIds = useMemo(() => new Set(slashCommandItems.map((s) => s.id)), [slashCommandItems]);
+  /* Keyed by content: the skills catalog re-reads on every tree change, and a new
+   * identity must not re-run rehydration when the offered tokens are the same. */
+  const knownTokensKey = slashCommandItems
+    .filter((item) => item.enabled !== false)
+    .map((item) => item.label)
+    .join('\n');
+  const knownTokens = useMemo(() => new Set(knownTokensKey === '' ? [] : knownTokensKey.split('\n')), [knownTokensKey]);
 
   const handleEditorUpdate = useCallback(
     (content: { text: string }) => {
@@ -163,14 +248,70 @@ export const ChatTextareaDesktop = memo(function ({
     [setDraftText],
   );
 
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- Tiptap initializes after the composer hooks.
+  const editorRef = useRef<Editor | null>(null);
+  const insertTranscript = useCallback((text: string): void => {
+    const currentEditor = editorRef.current;
+    if (!currentEditor || currentEditor.isDestroyed) {
+      return;
+    }
+    const precedingText = extractContent(currentEditor).text;
+    const separator = precedingText === '' || /\s$/u.test(precedingText) ? '' : ' ';
+    currentEditor
+      .chain()
+      .focus('end')
+      .insertContent({ type: 'text', text: separator + text })
+      .run();
+  }, []);
+  const { draftActorRef } = useChatComposer();
+  const latestDraftOwner = useRef(draftActorRef);
+  useLayoutEffect(() => {
+    latestDraftOwner.current = draftActorRef;
+  }, [draftActorRef]);
+  const dictation = useDictation(insertTranscript, draftActorRef);
+  /* The chips' structured references travel beside the text only when the draft has some. */
+  const submitWithReferences = useCallback(
+    async (text: string | undefined, references: readonly CadReference[]): Promise<void> =>
+      references.length === 0 ? handleSubmit(text) : handleSubmit(text, references),
+    [handleSubmit],
+  );
+  const submitWithDictation = useCallback(async (): Promise<void> => {
+    if (dictation.phase !== 'idle') {
+      if (dictation.phase !== 'recording' || !(await dictation.stop())) {
+        return;
+      }
+      const currentEditor = editorRef.current;
+      if (currentEditor && !currentEditor.isDestroyed && latestDraftOwner.current === draftActorRef) {
+        const content = extractContent(currentEditor);
+        await submitWithReferences(content.text, cadReferencesOfChips(content.contextChips));
+      }
+      return;
+    }
+    const currentEditor = editorRef.current;
+    await submitWithReferences(
+      undefined,
+      currentEditor && !currentEditor.isDestroyed
+        ? cadReferencesOfChips(extractContent(currentEditor).contextChips)
+        : [],
+    );
+  }, [dictation.phase, dictation.stop, draftActorRef, submitWithReferences]);
+  const escapeWithDictation = useCallback((): void => {
+    if (dictation.phase === 'idle') {
+      onEscapePressed?.();
+    } else {
+      dictation.cancel();
+    }
+  }, [dictation.cancel, dictation.phase, onEscapePressed]);
+
   const chatEditor = useChatEditor({
-    onSubmit: handleSubmit,
-    onEscape: onEscapePressed,
+    onSubmit: submitWithDictation,
+    onEscape: escapeWithDictation,
     onUpdate: handleEditorUpdate,
     treeService,
     chats,
     actionItems,
     slashCommandItems,
+    placeholder: mode === 'edit' ? 'Edit your message' : undefined,
     handleImagePaste: handlePaste,
     onContextAction: createScreenshotContextHandler({
       handleAddImage,
@@ -183,22 +324,44 @@ export const ChatTextareaDesktop = memo(function ({
   // Store editor in a ref so callbacks below remain stable (empty dep arrays).
   // This breaks the re-render cascade: editor changes (null→Editor) won't
   // recreate focusEditor/handleAtButtonClick, so Tooltip children stay memo'd.
-  const editorRef = useRef(editor);
-  editorRef.current = editor;
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
 
+  const rehydratedTokensRef = useRef(knownTokens);
   useEffect(() => {
     if (!editor) {
-      return;
+      return undefined;
     }
-    if (inputText === '' && !editor.isEmpty) {
-      editor.commands.clearContent(false);
-    } else if (inputText !== '' && editor.isEmpty) {
-      const lazyTree: Map<string, FileEntry> = treeService?.getTreeSnapshot() ?? new Map<string, FileEntry>();
-      const segments = buildPastedContent(inputText, { fileTree: lazyTree, chats, knownSkills: knownSkillIds });
-      const json = buildEditorContentJson(segments);
-      editor.commands.setContent(json ?? inputText, { emitUpdate: false });
+    const tokensChanged = rehydratedTokensRef.current !== knownTokens;
+    rehydratedTokensRef.current = knownTokens;
+    const current = extractContent(editor);
+    if (inputText === '') {
+      if (current.text !== '') {
+        editor.commands.clearContent(false);
+      }
+      return undefined;
     }
-  }, [inputText, editor, treeService, chats, knownSkillIds]);
+    const lazyTree: Map<string, FileEntry> = treeService?.getTreeSnapshot() ?? new Map<string, FileEntry>();
+    const segments = buildPastedContent(inputText, { fileTree: lazyTree, chats, knownTokens });
+    /* Same text is a no-op (typing must not move the caret) unless tokens that arrived
+     * late (catalog, agent commands) now resolve to more chips — a restored draft rehydrates. */
+    const chipCount = segments.filter((segment) => segment.type === 'chip').length;
+    if (inputText === current.text && (!tokensChanged || chipCount <= current.contextChips.length)) {
+      return undefined;
+    }
+    /* F20: each chip's node view calls `flushSync`, which React refuses inside
+     * its own commit, so the content lands in a microtask after it. */
+    let isCurrent = true;
+    queueMicrotask(() => {
+      if (isCurrent && !editor.isDestroyed) {
+        editor.commands.setContent(buildEditorContentJson(segments), { emitUpdate: false });
+      }
+    });
+    return () => {
+      isCurrent = false;
+    };
+  }, [inputText, editor, treeService, chats, knownTokens]);
 
   // Expose focus function to parent via mutable ref
   useEffect(() => {
@@ -253,10 +416,20 @@ export const ChatTextareaDesktop = memo(function ({
   }, [addContextChipsRef, addContextReferencesRef, insertContextReferences]);
 
   useEffect(() => {
-    if (enableAutoFocus && editor) {
-      editor.commands.focus('end');
+    if (!enableAutoFocus || !editor) {
+      return undefined;
     }
-  }, [enableAutoFocus, editor]);
+    // Rehydration installs the draft in a microtask. Focus after it so opening
+    // a history message keeps its first line visible instead of scrolling to the end.
+    const frame = requestAnimationFrame(() => {
+      if (!editor.isDestroyed) {
+        editor.commands.focus(mode === 'edit' ? 'start' : 'end');
+      }
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  }, [enableAutoFocus, editor, mode]);
 
   // Lock Tiptap while `await onSubmit(...)` is in-flight inside the textarea
   // hook (homepage create-project + `await navigate`, vs fire-and-forget
@@ -267,7 +440,10 @@ export const ChatTextareaDesktop = memo(function ({
     if (!editor) {
       return;
     }
-    editor.setEditable(!isSubmitting);
+    /* No update event: editability is not content, and on mount the editor is
+     * still empty until the restored draft lands (F20), so an update here
+     * would persist an empty draft over it. */
+    editor.setEditable(!isSubmitting, false);
   }, [editor, isSubmitting]);
 
   const focusEditor = useCallback(() => {
@@ -288,24 +464,53 @@ export const ChatTextareaDesktop = memo(function ({
     }
   }, []);
 
-  const isDisabled = inputText.trim().length === 0 && images.length === 0;
+  const dictationActive = dictation.phase !== 'idle';
+  const dictationPending = dictationActive && dictation.phase !== 'recording';
+  const sendRefusal = dictationPending
+    ? 'Wait for dictation to finish'
+    : sendRefusalOf({
+        sendBlockReason,
+        isSubmitting,
+        isAttaching,
+        isSubmitDisabled,
+        isEmpty: !dictationActive && !canResume && inputText.trim().length === 0 && attachments.length === 0,
+      });
+  const dictationButton = useMemo(
+    () =>
+      dictation.available === true ? (
+        <DictationButton phase={dictation.phase} onStart={dictation.start} onStop={dictation.stop} />
+      ) : undefined,
+    [dictation.available, dictation.phase, dictation.start, dictation.stop],
+  );
+  const dictationRecording = useMemo(
+    () =>
+      dictationActive ? (
+        <DictationRecording phase={dictation.phase} levels={dictation.levels} onCancel={dictation.cancel} />
+      ) : undefined,
+    [dictation.cancel, dictation.levels, dictation.phase, dictationActive],
+  );
+  const blockReasonId = useId();
+  /* F19: the beam follows the box's corners. */
+  const radius = mode === 'edit' ? 'rounded-lg' : 'rounded-2xl';
 
   return (
     // Outer wrapper is purely a positioning context for the beam overlay
     // and intentionally takes NO `className` passthrough — see
     // ChatTextareaBorderBeam's docs for why. All layout / styling
     // overrides live on the inner border container below.
-    <div className='relative size-full'>
-      <ChatTextareaBorderBeam isActive={isSubmitting} />
+    <div className='relative w-full' data-chat-composer={mode}>
+      <ChatTextareaBorderBeam isActive={isSubmitting} className={radius} />
 
       <div
         ref={containerReference}
         className={cn(
           'group/chat-textarea @container',
-          'relative flex size-full flex-col rounded-2xl border bg-background',
+          'relative flex w-full flex-col border bg-background',
+          chatInputPaddingClassName,
+          radius,
           'cursor-text overflow-hidden',
           'shadow-md',
-          'has-[.tiptap:focus-visible]:ring-2 has-[.tiptap:focus-visible]:ring-ring',
+          'has-[.tiptap:focus-visible]:focus-outline',
           className,
         )}
         onBlur={handleTextareaBlur}
@@ -313,14 +518,34 @@ export const ChatTextareaDesktop = memo(function ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {/* Images */}
-        <ChatTextareaDesktopImages images={images} onRemoveImage={removeImage} />
+        {acpAgentId === undefined && (catalog.status === 'closed' || catalog.status === 'error') ? (
+          <div role='status' className='flex items-center justify-between gap-2 px-3 pb-2 text-xs'>
+            <span>Skill updates unavailable</span>
+            <Button variant='ghost' size='sm' aria-label='Retry skill updates' onClick={catalog.retry}>
+              Retry
+            </Button>
+          </div>
+        ) : undefined}
+        {/* Attachments */}
+        <ChatTextareaAttachmentRail
+          attachments={attachments}
+          directory={attachmentDirectory}
+          blockReason={sendBlockReason}
+          blockReasonId={blockReasonId}
+          size='desktop'
+          onRemove={removeAttachment}
+        />
 
         {/* Editor */}
-        <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col overflow-auto')} onClick={handleEditorAreaClick}>
+        <div
+          className={cn(
+            'max-h-48 min-w-0 overflow-y-auto overscroll-contain',
+            mode === 'main' && 'max-h-[min(12rem,30cqh)]',
+          )}
+          onClick={handleEditorAreaClick}
+        >
           <ChatEditor
             editor={editor}
-            className='pt-2'
             contextSuggestionState={chatEditor.contextSuggestionState}
             slashCommandState={chatEditor.slashCommandState}
             contextKeydownRef={chatEditor.contextKeydownRef}
@@ -338,28 +563,30 @@ export const ChatTextareaDesktop = memo(function ({
           </div>
         ) : null}
 
-        {/* Bottom-left controls — wrapped in memo'd component to isolate Radix tooltip re-renders */}
-        <ChatTextareaLeftControls
-          selectedModel={selectedModel}
-          enableKernelSelector={enableKernelSelector}
-          selectedToolChoice={selectedToolChoice}
-          focusEditor={focusEditor}
-          setDraftToolChoice={setDraftToolChoice}
-          fileInputReference={fileInputReference}
-          handleFileChange={handleFileChange}
-        />
-
-        {/* Bottom-right controls */}
-        <ChatTextareaRightControls
+        <DictationFeedback transcript={dictation.transcript} error={dictation.error} />
+        <ChatTextareaBar
+          dictationButton={dictationButton}
+          dictationRecording={dictationRecording}
+          composerMode={mode}
+          containerReference={containerReference}
           enableContextActions={enableContextActions}
+          enableKernelSelector={enableKernelSelector}
+          creationLocationControl={creationLocationControl}
+          acpSessionData={acpSessionData}
+          status={status}
+          focusEditor={focusEditor}
           handleAtButtonClick={handleAtButtonClick}
           handleFileSelect={handleFileSelect}
-          imageInputSupported={imageInputSupported}
-          status={status}
+          attachmentInputSupported={attachmentInputSupported}
+          fileInputReference={fileInputReference}
+          attachmentAccept={attachmentAccept}
+          handleFileChange={handleFileChange}
           isSubmitting={isSubmitting}
-          isDisabled={isDisabled}
+          canResume={canResume}
+          sendRefusal={sendRefusal}
+          describedBy={sendBlockReason === undefined ? undefined : blockReasonId}
           formattedCancelKeyCombination={formattedCancelKeyCombination}
-          handleSubmit={handleSubmit}
+          handleSubmit={submitWithDictation}
           handleCancelClick={handleCancelClick}
         />
       </div>
@@ -369,294 +596,317 @@ export const ChatTextareaDesktop = memo(function ({
 
 ChatTextareaDesktop.displayName = 'ChatTextareaDesktop';
 
+/** The labels that leave, in order, before the model's name is cut (D6). */
+const collapseSteps = ['data-hide-kernel', 'data-hide-mode', 'data-hide-level'] as const;
+
 /**
- * Memo'd left control bar containing model/kernel/tool selectors.
- * Isolated to prevent Radix TooltipTrigger asChild composeRefs loops.
+ * The measured collapse. Before paint, and on every resize or label change,
+ * labels leave in a fixed order — the kernel's (or the location's), the mode's,
+ * then the level — until the model's name is whole; only then is it cut.
+ */
+// oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
+function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) {
+      return undefined;
+    }
+    let disposed = false;
+    const fit = (): void => {
+      if (disposed) {
+        return;
+      }
+      const name = bar.querySelector<HTMLElement>('[data-slot=trigger-model]');
+      for (let hidden = 0; hidden <= collapseSteps.length; hidden += 1) {
+        for (const [index, flag] of collapseSteps.entries()) {
+          bar.toggleAttribute(flag, index < hidden);
+        }
+        if (!name || name.scrollWidth <= name.clientWidth) {
+          return;
+        }
+      }
+    };
+    fit();
+    const resize = new ResizeObserver(fit);
+    resize.observe(bar);
+    /* Labels change without a resize (another model, a level). Attributes are
+     * not observed, so the flags this sets cannot loop. */
+    const mutation = new MutationObserver(fit);
+    mutation.observe(bar, { childList: true, subtree: true, characterData: true });
+    /* Webfonts change the name's width without a resize. */
+    const refitWhenFontsLoad = async (): Promise<void> => {
+      await document.fonts.ready;
+      fit();
+    };
+    if (document.fonts.status === 'loading') {
+      void refitWhenFontsLoad();
+    }
+    return () => {
+      disposed = true;
+      resize.disconnect();
+      mutation.disconnect();
+    };
+  }, [barRef]);
+}
+
+/**
+ * The composer's one bar (D6): `justify-between`, so the two clusters can
+ * never overlap (F4). Left: +, the external agent's mode, the kernel (the
+ * location on Home). Right: the context meter, the agent-and-model trigger,
+ * Send. Every control is ghost; Send alone keeps its fill.
  *
- * Exported so the chat-scoped kernel label can be tested in isolation.
- * External consumers should keep using {@link ChatTextareaDesktop}.
+ * Memo'd to isolate Radix `TooltipTrigger asChild` composeRefs loops: every
+ * callback prop must be stable.
  *
  * @internal
  */
-export const ChatTextareaLeftControls = memo(function ({
-  selectedModel,
-  enableKernelSelector,
-  selectedToolChoice,
-  focusEditor,
-  setDraftToolChoice,
-  fileInputReference,
-  handleFileChange,
-}: {
-  readonly selectedModel: ResolvedModel;
-  readonly enableKernelSelector: boolean;
-  readonly selectedToolChoice: ToolSelection;
-  readonly focusEditor: () => void;
-  readonly setDraftToolChoice: (choice: ToolSelection) => void;
-  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
-  readonly fileInputReference: React.RefObject<HTMLInputElement | null>;
-  readonly handleFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-}): React.JSX.Element {
-  // Chat-scoped resolver — falls back to cookie kernel when no chat-local
-  // selection exists. Display label follows the chat's active kernel so
-  // cookie changes elsewhere can no longer flip the label mid-conversation.
-  const {
-    kernel: { kernel: selectedKernel },
-  } = useChatComposer();
-
-  return (
-    <div className='absolute bottom-2 left-2 flex flex-row items-center gap-1 text-muted-foreground'>
-      <ChatTextareaModeControl />
-      {/* Model selector */}
-      <Tooltip>
-        <ChatModelSelector
-          data-chat-textarea-focustrap
-          popoverProperties={{ align: 'start' }}
-          onSelect={focusEditor}
-          onClose={focusEditor}
-        >
-          {(_properties) => (
-            <TooltipTrigger asChild>
-              <Button
-                variant='outline'
-                size='sm'
-                className='h-7 cursor-pointer! rounded-full text-muted-foreground hover:text-foreground @max-[22rem]:w-7 @xs:max-w-fit @[22rem]:pr-2'
-              >
-                <span className='hidden truncate text-xs @[22rem]:block'>{selectedModel.name}</span>
-                <span className='relative flex size-4 items-center justify-center'>
-                  <ChevronDown className='absolute scale-0 transition-transform duration-200 ease-in-out group-hover:scale-0 @[22rem]:scale-100' />
-                  <SvgIcon
-                    id={selectedModel.family}
-                    className='absolute scale-100 grayscale transition-transform duration-200 ease-in-out group-hover:scale-100 @[22rem]:scale-0'
-                  />
-                </span>
-              </Button>
-            </TooltipTrigger>
-          )}
-        </ChatModelSelector>
-        <TooltipContent>
-          <span className='flex items-center gap-1.5'>
-            Select model ({selectedModel.name})
-            <KeyShortcut variant='tooltip'>{formatKeyCombination(openModelSelectorKeyCombination)}</KeyShortcut>
-          </span>
-        </TooltipContent>
-      </Tooltip>
-      {/* Kernel selector */}
-      {enableKernelSelector ? (
-        <Tooltip>
-          <ChatKernelSelector
-            data-chat-textarea-focustrap
-            popoverProperties={{ align: 'start', className: 'w-[360px]' }}
-            onSelect={focusEditor}
-            onClose={focusEditor}
-          >
-            {({ selectedKernel }) => (
-              <TooltipTrigger asChild>
-                <Button
-                  variant='outline'
-                  size='sm'
-                  className='h-7 cursor-pointer! rounded-full text-muted-foreground hover:text-foreground @max-[22rem]:w-7 @xs:max-w-fit @[22rem]:pr-2'
-                >
-                  <span className='hidden items-center gap-1.5 truncate text-xs @[22rem]:inline-flex'>
-                    {selectedKernel.name}
-                  </span>
-                  <span className='relative flex size-4 items-center justify-center'>
-                    <ChevronDown className='absolute scale-0 transition-transform duration-200 ease-in-out group-hover:scale-0 @[22rem]:scale-100' />
-                    <SvgIcon
-                      id={selectedKernel.id}
-                      className='absolute scale-100 grayscale transition-transform duration-200 ease-in-out group-hover:scale-100 @[22rem]:scale-0'
-                    />
-                  </span>
-                </Button>
-              </TooltipTrigger>
-            )}
-          </ChatKernelSelector>
-          <TooltipContent>
-            <span>Select kernel{` `}</span>
-            <span>({selectedKernel.name})</span>
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
-      {/* Tool selector */}
-      <Tooltip>
-        <ChatToolSelector value={selectedToolChoice} onValueChange={setDraftToolChoice}>
-          {({ selectedMode, selectedTools, toolMetadata }) => (
-            <TooltipTrigger asChild>
-              <Button
-                data-chat-textarea-focustrap={focusTrapAttribute}
-                variant='outline'
-                size='sm'
-                className={cn(
-                  'h-7 rounded-full pr-2 text-muted-foreground hover:text-foreground @max-[22rem]:w-7',
-                  selectedTools.length > 0 && 'px-2 @max-[22rem]:w-auto',
-                  // oxlint-disable-next-line no-warning-comments -- keeping this file clean.
-                  'hidden', // TODO: add back when MCP is added.
-                )}
-              >
-                <span className='hidden text-xs @[22rem]:block'>
-                  {selectedMode === 'auto' && 'Auto'}
-                  {selectedMode === 'none' && 'No tools'}
-                  {selectedMode === 'any' && 'Any tool'}
-                  {selectedMode === 'custom' && 'Custom'}
-                </span>
-                {selectedMode === 'custom' && selectedTools.length > 0 ? (
-                  <span className='flex items-center gap-1'>
-                    {selectedTools.map((tool) => {
-                      const Icon = toolMetadata[tool]?.icon;
-                      if (!Icon) {
-                        return null;
-                      }
-
-                      return <Icon key={tool} className='size-4' />;
-                    })}
-                  </span>
-                ) : (
-                  <Wrench className='size-4' />
-                )}
-              </Button>
-            </TooltipTrigger>
-          )}
-        </ChatToolSelector>
-        <TooltipContent>
-          <p>Tool selection</p>
-        </TooltipContent>
-      </Tooltip>
-
-      <input
-        ref={fileInputReference}
-        multiple
-        type='file'
-        accept='image/*'
-        className='hidden'
-        onChange={handleFileChange}
-      />
-    </div>
-  );
-});
-
-/**
- * Memo'd right control bar containing @-mention, upload, and submit buttons.
- * Isolated to prevent Radix TooltipTrigger asChild composeRefs loops.
- */
-const ChatTextareaRightControls = memo(function ({
+export const ChatTextareaBar = memo(function ({
+  dictationButton,
+  dictationRecording,
+  composerMode,
+  containerReference,
   enableContextActions,
+  enableKernelSelector,
+  creationLocationControl,
+  acpSessionData,
+  status,
+  focusEditor,
   handleAtButtonClick,
   handleFileSelect,
-  imageInputSupported,
-  status,
+  attachmentInputSupported,
+  fileInputReference,
+  attachmentAccept,
+  handleFileChange,
   isSubmitting,
-  isDisabled,
+  canResume = false,
+  sendRefusal,
+  describedBy,
   formattedCancelKeyCombination,
   handleSubmit,
   handleCancelClick,
 }: {
+  readonly dictationButton?: React.ReactNode;
+  readonly dictationRecording?: React.ReactNode;
+  readonly composerMode: 'main' | 'edit';
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
+  readonly containerReference: React.RefObject<HTMLDivElement | null>;
   readonly enableContextActions: boolean;
+  readonly enableKernelSelector: boolean;
+  readonly creationLocationControl?: React.ReactNode;
+  readonly acpSessionData?: AcpSessionData;
+  readonly status: string;
+  readonly focusEditor: () => void;
   readonly handleAtButtonClick: () => void;
   readonly handleFileSelect: () => void;
-  readonly imageInputSupported: boolean;
-  readonly status: string;
+  readonly attachmentInputSupported: boolean;
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
+  readonly fileInputReference: React.RefObject<HTMLInputElement | null>;
+  readonly attachmentAccept: string;
+  readonly handleFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   readonly isSubmitting: boolean;
-  readonly isDisabled: boolean;
+  readonly canResume?: boolean;
+  readonly sendRefusal: string | undefined;
+  readonly describedBy: string | undefined;
   readonly formattedCancelKeyCombination: string;
   readonly handleSubmit: () => Promise<void>;
   readonly handleCancelClick: () => void;
 }): React.JSX.Element {
+  const barRef = useRef<HTMLDivElement>(null);
+  useBarCollapse(barRef);
+  const { targets: placements } = useAgentHostPlacements();
+  const { execution } = useChatComposer().execution;
+  const discoveredAgent =
+    execution.kind === 'acp'
+      ? placements
+          .find((placement) => placement.hostId === execution.hostId)
+          ?.externalAgents?.find((agent) => agent.id === execution.agentId)
+      : undefined;
+  const selectedModel = execution.kind === 'acp' ? (execution.model ?? discoveredAgent?.defaultModel) : undefined;
+  const discoveredThoughtLevel =
+    selectedModel === undefined
+      ? discoveredAgent?.thoughtLevel
+      : discoveredAgent?.models.find((model) => model.id === selectedModel)?.thoughtLevel;
+  const agentConfig = useAgentConfig(acpSessionData, status, discoveredThoughtLevel);
+  /* F6: only the composer being typed in owns ⌘/ and ⌘. — the edit box while
+   * focus is inside it, the main composer otherwise. */
+  const ownsShortcuts = useCallback(
+    () =>
+      composerMode === 'edit'
+        ? containerReference.current?.contains(document.activeElement) === true
+        : !document.activeElement?.closest('[data-chat-composer=edit]'),
+    [composerMode, containerReference],
+  );
+
   return (
-    <div className='absolute right-2 bottom-2 flex flex-row items-center gap-1'>
-      <ChatContextIndicator />
-
-      {/* @ context button — hidden when no project/context to attach (e.g. homepage) */}
-      {enableContextActions ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              data-chat-textarea-focustrap={focusTrapAttribute}
-              variant='outline'
-              size='icon'
-              className='size-6 rounded-full text-muted-foreground hover:text-foreground'
-              onClick={handleAtButtonClick}
-            >
-              <AtSign className='size-3.5' />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Add context</TooltipContent>
-        </Tooltip>
-      ) : null}
-
-      {/* Upload button */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant='outline'
-            size='icon'
-            aria-disabled={!imageInputSupported}
-            className={cn(
-              'size-6 rounded-full text-muted-foreground hover:text-foreground',
-              !imageInputSupported && 'opacity-50',
-            )}
-            title='Add image'
-            onClick={handleFileSelect}
-          >
-            <Paperclip className='size-3.5' />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          <p>{imageInputSupported ? 'Upload an image' : 'Selected model cannot read images'}</p>
-        </TooltipContent>
-      </Tooltip>
-
-      {/* Submit button */}
-      <ChatTextareaSubmitButton
-        status={status}
-        isSubmitting={isSubmitting}
-        isDisabled={isDisabled}
-        formattedCancelKeyCombination={formattedCancelKeyCombination}
-        onSubmit={handleSubmit}
-        onCancel={handleCancelClick}
-      />
+    <div ref={barRef} data-slot='composer-bar' className='group/bar flex items-center justify-between gap-2 px-2'>
+      {dictationRecording === undefined ? (
+        <div data-slot='composer-left' className='flex shrink-0 flex-row items-center gap-0.5'>
+          <ChatAddMenu
+            enableContextActions={enableContextActions}
+            isAttachmentSupported={attachmentInputSupported}
+            handleAtButtonClick={handleAtButtonClick}
+            handleFileSelect={handleFileSelect}
+            focusEditor={focusEditor}
+          />
+          <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
+          {creationLocationControl}
+          {enableKernelSelector ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
+          <input
+            ref={fileInputReference}
+            multiple
+            type='file'
+            accept={attachmentAccept}
+            className='hidden'
+            onChange={handleFileChange}
+          />
+        </div>
+      ) : (
+        <div data-slot='composer-left' className='flex min-w-0 flex-1 flex-row items-center gap-2'>
+          {dictationRecording}
+        </div>
+      )}
+      <div data-slot='composer-right' className='flex min-w-0 flex-row items-center gap-1'>
+        {dictationRecording === undefined ? (
+          <>
+            <ChatContextIndicator />
+            <ChatAgentSheet
+              agentConfig={agentConfig}
+              placements={placements}
+              focusEditor={focusEditor}
+              enableShortcut={ownsShortcuts}
+            />
+          </>
+        ) : null}
+        {dictationButton}
+        <ChatTextareaSubmitButton
+          status={status}
+          isSubmitting={isSubmitting}
+          canResume={canResume}
+          refusal={sendRefusal}
+          describedBy={describedBy}
+          formattedCancelKeyCombination={formattedCancelKeyCombination}
+          onSubmit={handleSubmit}
+          onCancel={handleCancelClick}
+        />
+      </div>
     </div>
   );
 });
 
-function ChatTextareaModeControl(): React.JSX.Element | undefined {
-  const planModeEnabled = useFeature('planMode');
-  const { draftActorRef } = useChatComposer();
-  const mode = useSelector(draftActorRef, (state) => state.context.draftMode);
-  const { setDraftMode } = useDraftActions();
-
-  if (!planModeEnabled) {
-    return undefined;
-  }
-
+/** The kernel, ghost and glyph first; its label is the first to leave when the bar needs the room. */
+function ChatTextareaKernelControl({ focusEditor }: { readonly focusEditor: () => void }): React.JSX.Element {
+  const {
+    kernel: { kernel: selectedKernel },
+  } = useChatComposer();
   return (
     <Tooltip>
-      <ChatAgentSelector
+      <ChatKernelSelector
         data-chat-textarea-focustrap
-        mode={mode}
-        onModeChange={setDraftMode}
         popoverProperties={{ align: 'start' }}
+        onSelect={focusEditor}
+        onClose={focusEditor}
       >
-        {({ currentConfig }) => (
+        {({ selectedKernel: kernel }) => (
           <TooltipTrigger asChild>
             <Button
-              variant='outline'
+              variant='ghost'
               size='sm'
+              aria-label={`Select kernel (${kernel.name})`}
               className={cn(
-                'h-7 cursor-pointer! rounded-full text-muted-foreground hover:text-foreground @max-[22rem]:w-7 @xs:max-w-fit @[22rem]:pr-2',
-                currentConfig.activeClass,
+                ghostPillClass,
+                'min-w-0 gap-1.5 group-data-[hide-kernel]/bar:w-7 group-data-[hide-kernel]/bar:px-0',
               )}
             >
-              <currentConfig.icon className='size-4' />
-              <span className='hidden text-xs @[22rem]:block'>{currentConfig.label}</span>
+              <SvgIcon id={kernel.id} className='size-4 shrink-0 grayscale' />
+              <span className='truncate text-xs group-data-[hide-kernel]/bar:hidden'>{kernel.name}</span>
             </Button>
           </TooltipTrigger>
         )}
-      </ChatAgentSelector>
-      <TooltipContent>
-        <span className='flex items-center gap-1.5'>
-          Switch agent mode
-          <KeyShortcut variant='tooltip'>{formatKeyCombination(toggleModeKeyCombination)}</KeyShortcut>
-        </span>
-      </TooltipContent>
+      </ChatKernelSelector>
+      <TooltipContent>Select kernel ({selectedKernel.name})</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * One + for everything a turn can carry (F10): attach a file, or — outside
+ * Home — add context, which types @ and opens the shipped menu. A model that
+ * cannot read files keeps the item, disabled, saying why (F14).
+ */
+function ChatAddMenu({
+  enableContextActions,
+  isAttachmentSupported,
+  handleAtButtonClick,
+  handleFileSelect,
+  focusEditor,
+}: {
+  readonly enableContextActions: boolean;
+  readonly isAttachmentSupported: boolean;
+  readonly handleAtButtonClick: () => void;
+  readonly handleFileSelect: () => void;
+  readonly focusEditor: () => void;
+}): React.JSX.Element {
+  const choseItem = useRef(false);
+  return (
+    <DropdownMenu modal={false}>
+      <Tooltip>
+        <DropdownMenuTrigger asChild>
+          <TooltipTrigger asChild>
+            <Button
+              variant='ghost'
+              size='sm'
+              data-chat-textarea-focustrap
+              aria-label='Add'
+              className={cn(ghostPillClass, 'w-7 shrink-0 px-0')}
+            >
+              <Plus className='size-4' aria-hidden='true' />
+            </Button>
+          </TooltipTrigger>
+        </DropdownMenuTrigger>
+        <TooltipContent>{enableContextActions ? 'Attach a file or add context' : 'Attach a file'}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent
+        align='start'
+        data-chat-textarea-focustrap
+        className='w-60'
+        onCloseAutoFocus={(event) => {
+          /* A chosen item moves focus itself: to the file picker, or to the editor at a typed @. */
+          event.preventDefault();
+          if (!choseItem.current) {
+            focusEditor();
+          }
+          choseItem.current = false;
+        }}
+      >
+        <DropdownMenuItem
+          disabled={!isAttachmentSupported}
+          className='h-auto items-start'
+          onSelect={() => {
+            choseItem.current = true;
+            handleFileSelect();
+          }}
+        >
+          <Paperclip aria-hidden='true' className='mt-0.5' />
+          <span className='flex flex-col'>
+            Attach image or PDF
+            {isAttachmentSupported ? null : (
+              <span className='text-xs text-muted-foreground'>This model can&apos;t read images or PDFs</span>
+            )}
+          </span>
+        </DropdownMenuItem>
+        {enableContextActions ? (
+          <DropdownMenuItem
+            onSelect={() => {
+              choseItem.current = true;
+              handleAtButtonClick();
+            }}
+          >
+            <AtSign aria-hidden='true' />
+            Add context
+            <DropdownMenuShortcut>@</DropdownMenuShortcut>
+          </DropdownMenuItem>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

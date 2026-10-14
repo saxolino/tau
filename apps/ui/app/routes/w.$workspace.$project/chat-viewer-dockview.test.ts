@@ -1,10 +1,12 @@
 /* oxlint-disable @typescript-eslint/consistent-type-assertions -- Dockview structural test doubles cover only exercised fields */
+/* oxlint-disable typescript/no-restricted-types -- Checked file absence is null in the filesystem contract. */
 import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { DockviewApi, DockviewDidDropEvent, DockviewGroupPanel } from 'dockview-react';
 import type { CapabilitiesManifest } from '@taucad/runtime';
-import type { FileEntry } from '@taucad/types';
+import type { FileEntry, CheckedFileWriteResult } from '@taucad/types';
+import { workbenchRecords } from '@taucad/workbench';
 import { tauEditorPanelDragMime, tauFileDragMime } from '@taucad/types/constants';
 import {
   createViewerNewTab,
@@ -13,9 +15,67 @@ import {
   listViewerSelectableFiles,
   replaceViewerNewTabWithFile,
   createInheritedGraphicsSettings,
+  adoptViewerRecordNode,
   ViewerEmptyFilePicker,
 } from '#routes/w.$workspace.$project/chat-viewer-dockview.js';
-import { defaultGraphicsSettings } from '#constants/editor.constants.js';
+import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settings';
+import { createWorkbenchViewStore } from '#workbench-records/view-store.js';
+import { deleteViewFile } from '#workbench-records/view-actions.js';
+
+describe('record-driven viewer adoption', () => {
+  it('deletes an interim recreated view after a tool delete followed by layout close', async () => {
+    const viewId = 'v-1234abcd';
+    const record = workbenchRecords.view.schema.parse({ version: 1, entryPath: 'models/other.ts' });
+    let bytes: Uint8Array<ArrayBuffer> | null = new TextEncoder().encode(workbenchRecords.view.serialize(record));
+    const gate = Promise.withResolvers<void>();
+    const files = {
+      exists: async () => bytes !== null,
+      readFile: async () => bytes!,
+      writeFileChecked: vi.fn(async ({ data }: { data: string }): Promise<CheckedFileWriteResult> => {
+        await gate.promise;
+        bytes = new TextEncoder().encode(data);
+        return { status: 'applied', content: bytes };
+      }),
+      deleteFileChecked: vi.fn(async (): Promise<CheckedFileWriteResult> => {
+        bytes = null;
+        return { status: 'applied', content: new Uint8Array() };
+      }),
+    };
+    const owner = createWorkbenchViewStore({
+      root: '/root',
+      viewId,
+      files,
+      onChange: () => undefined,
+      onError: vi.fn(),
+    });
+    await owner.read();
+    bytes = null; // Tool deletes the view file before publishing its layout change.
+    await owner.read();
+    expect(files.writeFileChecked).not.toHaveBeenCalled();
+    // Deletion clears the durable baseline; the person's live view is what an edit writes.
+    expect(owner.snapshot().record).toBeUndefined();
+    const persisting = owner.edit({ ...record, name: 'Interim person edit' });
+    await vi.waitFor(() => {
+      expect(files.writeFileChecked).toHaveBeenCalledOnce();
+    });
+    const api = {
+      panels: [{ id: viewId, params: { viewId, entryPath: 'models/other.ts' } }],
+      width: 800,
+      height: 600,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Dockview defines this method name.
+      fromJSON: vi.fn(),
+    } as unknown as DockviewApi;
+    const removed = adoptViewerRecordNode(api, { kind: 'group', tabs: [] });
+    expect(removed).toEqual([viewId]);
+    expect(api.fromJSON).toHaveBeenCalledWith(expect.any(Object), { reuseExistingPanels: true });
+    const closing = deleteViewFile({ root: '/root', viewId, files, onError: vi.fn() });
+    gate.resolve();
+    expect(await persisting).toBe(true);
+    expect(await closing).toBe(true);
+    expect(bytes).toBeNull();
+    owner.dispose();
+  });
+});
 
 describe('ensureViewerGroup', () => {
   it('keeps one header/action group available after the final viewer closes', () => {
@@ -41,18 +101,24 @@ describe('viewer split launchers', () => {
       ...defaultGraphicsSettings,
       cameraFovAngle: 42,
       cameraView: {
+        frameId: 'tau:root',
         target: [3, 4, 5],
         direction: [1, 0, 0],
         up: [0, 0, 1],
         verticalSpan: 12,
         perspectiveZoom: 1,
       },
-      pinnedMeasurements: [{ id: 'measurement-1', startPoint: [0, 0, 0], endPoint: [1, 0, 0], distance: 1 }],
+      pinnedMeasurements: [
+        { id: 'measurement-1', frameId: 'tau:root', startPoint: [0, 0, 0], endPoint: [1, 0, 0], distance: 1 },
+      ],
+      sectionView: { active: true, cuts: [{ kind: 'plane', plane: 'xz', offset: 2, isFlipped: true }] },
     });
 
     expect(inherited.cameraFovAngle).toBe(42);
     expect(inherited.cameraView).toBeUndefined();
     expect(inherited.pinnedMeasurements).toBeUndefined();
+    // Cuts are made through one file's geometry, so a new pane starts without them.
+    expect(inherited.sectionView).toBeUndefined();
     expect(inherited).not.toHaveProperty('componentDisplay');
   });
 

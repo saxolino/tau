@@ -1,4 +1,4 @@
-import { version } from 'package.json';
+import { version } from '#package.json';
 
 /**
  * Meta config. Contains infrequently changing information about the app.
@@ -39,10 +39,6 @@ export const metaConfig = {
    */
   description:
     'Tau: the AI-native CAD platform. Describe a part, get verified, manufacturable geometry — in your browser.',
-  /**
-   * The directory of the docs relative to the root of the repository.
-   */
-  docsDir: 'apps/ui/content/docs',
   /**
    * The version of the app.
    */

@@ -1,5 +1,6 @@
 import safeRegex from 'safe-regex';
 import { z } from 'zod';
+import { rootedFilePathSchema, rootedPathSchema } from '#schemas/rooted-path.schema.js';
 
 /** @public */
 export const grepInputSchema = z.object({
@@ -10,7 +11,7 @@ export const grepInputSchema = z.object({
         'The regex pattern is potentially unsafe (may cause catastrophic backtracking). Please simplify the pattern by reducing nested quantifiers or alternations.',
     })
     .describe('The regular expression pattern to search for in file contents.'),
-  path: z.string().optional().describe('The file or directory path to search in. Defaults to project root.'),
+  path: rootedPathSchema.optional().describe('The file or directory path to search in. Defaults to project root.'),
   glob: z
     .string()
     .optional()
@@ -29,12 +30,28 @@ export const grepInputSchema = z.object({
     .min(0)
     .optional()
     .describe('Number of leading matches to skip before applying headLimit. Defaults to 0.'),
+  context: z
+    .number()
+    .int()
+    .min(0)
+    .max(20)
+    .optional()
+    .describe('Lines to return before and after each match (0-20, default 0), like ripgrep -C.'),
 });
 
-const grepMatchSchema = z.object({
-  file: z.string().describe('The file path where the match was found.'),
+/** Canonical grep-match schema shared with the RPC transport. @public */
+export const grepMatchSchema = z.object({
+  file: rootedFilePathSchema.describe('The file path where the match was found.'),
   line: z.number().describe('The line number of the match (1-based).'),
   content: z.string().describe('The content of the matching line.'),
+  before: z
+    .array(z.string())
+    .optional()
+    .describe('Up to `context` lines immediately before the match, in file order. Present only when context > 0.'),
+  after: z
+    .array(z.string())
+    .optional()
+    .describe('Up to `context` lines immediately after the match, in file order. Present only when context > 0.'),
 });
 
 /** @public */

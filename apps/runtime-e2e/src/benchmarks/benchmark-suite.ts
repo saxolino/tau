@@ -10,7 +10,7 @@ import { loadFixture } from '@taucad/tau-examples/fixtures';
 
 /** Which kernel a case is written for. Cases are authored in one kernel's
  *  language, so this is part of the case, not a run-time flag. @public */
-export type BenchmarkKernel = 'replicad' | 'openrscad' | 'openrscad-native';
+export type BenchmarkKernel = 'replicad' | 'openrscad';
 
 /** A single benchmark case with its files and metadata. */
 export type BenchmarkCase = {
@@ -26,6 +26,11 @@ export type BenchmarkCase = {
   operation?: 'export' | 'render';
   /** Parameter values cycled across runs for parameter-only rerender cases. */
   parameterSequence?: ReadonlyArray<Record<string, unknown>>;
+  /**
+   * Parameter values cycled across runs as a committed parameter record: the sidecar is staged
+   * with each render and no override is sent, which is how the Parameters pane commits an edit.
+   */
+  stageSequence?: ReadonlyArray<Record<string, unknown>>;
 };
 
 const defaultMainFile = 'main.ts';
@@ -46,6 +51,15 @@ function inlineCase(name: string, category: string, code: string): BenchmarkCase
     mainFile: defaultMainFile,
   };
 }
+
+/** A box whose parameter form has 100 fields, one of which drives the geometry. */
+const hundredFieldBox = `
+  import { makeBaseBox } from 'replicad';
+  export const defaultParams = { width: 50, ${Array.from({ length: 99 }, (_, index) => `field${index}: 1`).join(', ')} };
+  export default function main({ width }) {
+    return makeBaseBox(width, 30, 20);
+  }
+`;
 
 const primitives: BenchmarkCase[] = [
   {
@@ -85,6 +99,17 @@ const primitives: BenchmarkCase[] = [
     ),
     operation: 'render',
     parameterSequence: [{ width: 40 }, { width: 50 }],
+  },
+  {
+    ...inlineCase('box-parameter-override-100', 'parameters', hundredFieldBox),
+    operation: 'render',
+    parameterSequence: [{ width: 40 }, { width: 50 }],
+  },
+  {
+    // Same model and values as the override case; a commit should cost no more than an override.
+    ...inlineCase('box-parameter-commit', 'parameters', hundredFieldBox),
+    operation: 'render',
+    stageSequence: [{ width: 40 }, { width: 50 }],
   },
   inlineCase(
     'cylinder',
@@ -290,15 +315,18 @@ const examples: BenchmarkCase[] = [
 
 /**
  * OpenSCAD-language cases. The fixture directory is `openscad` (the language),
- * not `openrscad` (the engine); `openrscad-native` runs the identical source
- * through the N-API engine, which is what makes the two rows comparable.
+ * not `openrscad` (the engine). One row: there is one OpenRSCAD kernel, and
+ * whether it bound the addon or the WebAssembly build is the engine's own
+ * choice — `native-speedup.bench.test.ts` is where the two are compared.
  */
-const openscad: BenchmarkCase[] = (['openrscad', 'openrscad-native'] as const).map((kernel) => ({
-  name: `kitchen-sink-${kernel}`,
-  category: 'openscad',
-  kernel,
-  ...loadFixture('openscad', 'kitchen-sink'),
-}));
+const openscad: BenchmarkCase[] = [
+  {
+    name: 'kitchen-sink-openrscad',
+    category: 'openscad',
+    kernel: 'openrscad',
+    ...loadFixture('openscad', 'kitchen-sink'),
+  },
+];
 
 const stress: BenchmarkCase[] = [
   inlineCase(

@@ -5,7 +5,7 @@ description: Create or update a headless XState machine in its owning Tau domain
 
 # Create Machine
 
-Create or update one XState v5 machine without grouping unrelated domains by
+Create or update one XState v6 machine without grouping unrelated domains by
 implementation technology.
 
 ## Ownership Decision
@@ -51,13 +51,33 @@ an existing released API requires it.
 
 ## Implement
 
-Follow `docs/policy/xstate-policy.md` and `docs/policy/library-api-policy.md`:
+Follow `docs/policy/xstate-policy.md` (its "Agent substrate contract", MC-R1–MC-R30, binds every
+owner machine) and `docs/policy/library-api-policy.md`:
 
-- use `setup()` with explicit input, context, and event types;
-- model modes as states, keep context serializable and immutable, and use
-  `assign()` for updates;
-- inject external work with named actors and `.provide()`;
-- prefer invoked actors and return deterministic cleanup from `fromCallback`;
+- use `setup({ schemas })` with `types<T>()` for input and context and an event
+  schema map for events;
+- declare a root `onError` that enters a modelled state, and `version: '1'`,
+  bumped when the alphabet or effect order can change (MC-R12, MC-R21);
+- export one `create<Name>Actor` factory beside the machine that forwards
+  `clock`, `inspect` and `onRejectedEvent` and returns the actor unstarted
+  (MC-R4);
+- give every effect a name: `enq(namedFn, …)`, `enq(actions.name, …)` or a named
+  actor whose default refuses with a sentence naming what was not provided
+  (MC-R8); one-shot I/O is `createAsyncLogic`, read in `onDone`, never
+  `fromSafeAsync` (MC-R10);
+- answer every public event in every state, and export the pairs the machine
+  ignores as `<name>IgnoredEvents` (MC-R17);
+- list every `after`, `timeout` or `createAsyncLogic({ timeout })` on an
+  external edge in an exported timeout table; never let a timer stand in for a
+  peer's answer (MC-R16);
+- model modes as states and keep context serializable; transitions return a
+  context patch, and every effect goes through `enq` in a transition function;
+- inject external work with named actors and `.provide()`, typing provided maps
+  with `satisfies Partial<…Actors>` and exporting the actor map for hosts;
+- prefer invoked actors and return deterministic cleanup from
+  `createCallbackLogic`;
+- give a published machine that composes other machines a named exported
+  interface so its declarations build;
 - keep React, renderer, filesystem, routing, and app actor references outside a
   reusable machine;
 - export exactly one machine value from each public machine subpath; supporting
@@ -72,13 +92,21 @@ an intermediate step, not completion.
 
 Tests must cover the behavior requested plus:
 
+- the shared harness on every actor (MC-R23): `guardActors` from
+  `@taucad/xstate-testing/inspect` with the exported ignore list, `StepClock`
+  from `@taucad/xstate-testing/clock` for timers, and the fakes from
+  `@taucad/xstate-testing/fakes` for scripted effects;
+- one enumeration test: `unansweredEvents` and `unreachedStates` from
+  `@taucad/xstate-testing/paths` both return `[]`;
 - headless `createActor()` startup and stop;
 - provided actor substitution and event ordering;
 - invalid input boundaries;
 - serializable snapshots;
 - repeated transitions and cleanup without leaked subscriptions;
 - exactly one exported machine value for a public subpath;
-- public type assertions.
+- public type assertions;
+- for a published package, the `build` target, which emits declarations that
+  `typecheck` does not.
 
 Run and repair every applicable check:
 

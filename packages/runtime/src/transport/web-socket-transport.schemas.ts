@@ -8,22 +8,25 @@ import { z } from 'zod';
 import type { WebSocketLike } from '@taucad/rpc';
 import { isRuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
 import type { RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
-import { resolveRuntimeFileSystem } from '#transport/_internal/runtime-filesystem-handle.js';
+import type { ComputeBinding } from '#types/runtime-compute.types.js';
+import type { PreparedMachineWebSocket } from '#transport/machine-web-socket.js';
 
-/**
- * A `bridged` handle (`fromFileSystemBridge`) would have to be opened on
- * the client side and re-served over the `/fs` socket — a `Port`-to-`Port`
- * relay with no consumer today, so the schema rejects it by name.
- */
-const inlineRuntimeFileSystemSchema = z.custom<RuntimeFileSystem>(
-  (value) => value === undefined || (isRuntimeFileSystem(value) && resolveRuntimeFileSystem(value).kind === 'inline'),
-  {
-    message:
-      'webSocketTransport: `fileSystem` must be an inline handle (`fromNodeFs`, `fromMemoryFs`, `fromFsLike`). Add bridged-handle support when a consumer needs `fromFileSystemBridge` re-served over the `/fs` socket.',
-  },
-);
+const runtimeFileSystemSchema = z.custom<RuntimeFileSystem>(isRuntimeFileSystem, {
+  message: 'webSocketTransport: `fileSystem` must be produced by a `fromX` factory',
+});
 
 const createSocketSchema = z.custom<(url: string) => WebSocketLike>((value) => typeof value === 'function');
+const unavailableMachinesSchema = z.strictObject({
+  available: z.literal(false),
+  reason: z.enum(['unsupported', 'not-granted']),
+});
+const machinesSchema = z.union([
+  z.strictObject({
+    available: z.literal(true),
+    connect: z.custom<PreparedMachineWebSocket['connect']>((value) => typeof value === 'function'),
+  }),
+  unavailableMachinesSchema,
+]);
 
 export const webSocketClientOptionsSchema = z
   .object({
@@ -35,9 +38,12 @@ export const webSocketClientOptionsSchema = z
     url: z.union([z.string(), z.instanceof(URL)]),
     /**
      * Optional consumer-owned filesystem served to the remote kernel over a
-     * second socket. Must be an inline handle produced by a `fromX` factory.
+     * second socket. Accepts every handle produced by a `fromX` factory.
      */
-    fileSystem: inlineRuntimeFileSystemSchema.optional(),
+    fileSystem: runtimeFileSystemSchema.optional(),
+    compute: z.custom<ComputeBinding>().optional(),
+    /** Authenticated machines route prepared by `prepareMachineWebSocket`. */
+    machines: machinesSchema.optional(),
     /**
      * Override for socket construction — primary use is unit-test injection
      * of a fake socket pair. The transport owns socket construction on

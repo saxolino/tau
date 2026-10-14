@@ -2,7 +2,7 @@
  * Monaco Editor Constants
  *
  * Centralized constants for Monaco language IDs, file extensions, and URI prefixes.
- * Follows pattern from @packages/types/src/constants/code.constants.ts
+ * Follows pattern from @libs/types/src/constants/code.constants.ts
  */
 import type { CodeLanguage } from '@taucad/types';
 import { languageFromExtension } from '@taucad/types/constants';
@@ -13,6 +13,8 @@ export const monacoLanguages = {
   javascript: 'javascript',
   javascriptreact: 'javascriptreact',
   bash: 'bash',
+  python: 'python',
+  csharp: 'csharp',
   json: 'json',
   jsonl: 'jsonl',
   jsonc: 'jsonc',
@@ -23,6 +25,7 @@ export const monacoLanguages = {
   stl: 'stl',
   usd: 'usd',
   sysml: 'sysml',
+  yaml: 'yaml',
 } as const;
 
 export type MonacoLanguage = (typeof monacoLanguages)[keyof typeof monacoLanguages];
@@ -37,12 +40,15 @@ export const codeLanguageToMonacoLanguage = {
   kcl: monacoLanguages.kcl,
   markdown: monacoLanguages.markdown,
   openscad: monacoLanguages.openscad,
+  python: monacoLanguages.python,
+  csharp: monacoLanguages.csharp,
   stepfile: monacoLanguages.stepfile,
   stl: monacoLanguages.stl,
   sysml: monacoLanguages.sysml,
   tsx: monacoLanguages.typescriptreact,
   typescript: monacoLanguages.typescript,
   usd: monacoLanguages.usd,
+  yaml: monacoLanguages.yaml,
 } as const satisfies Record<CodeLanguage, MonacoLanguage>;
 
 const uiOnlyExtensionToCodeLanguage = {

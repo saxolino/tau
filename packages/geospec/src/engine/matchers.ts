@@ -5,8 +5,8 @@
  *
  * The registry is **data**: `geoSpecMatcherDescriptors` is a frozen,
  * JSON-serializable table that a non-TypeScript client can emit verbatim. The
- * substrate owns it; an engine supplies the bodies through
- * {@link import('./seam.js').registerGeoSpecEngine}.
+ * substrate owns it; the compiled `@taucad/geospec-engine-native` core
+ * evaluates every claim lowered from it.
  *
  * @module
  */
@@ -18,7 +18,7 @@ import type { GeoSpecAssertion, GeoSpecMatcher } from '#runner/types.js';
  *
  * @public
  */
-export type GeoSpecMatcherName = keyof GeoSpecMatcher;
+export type GeoSpecMatcherName = Exclude<keyof GeoSpecMatcher, 'not'>;
 
 /**
  * How the substrate derives an assertion's recorded `expected` value from the
@@ -57,20 +57,25 @@ export type GeoSpecMatcherDescriptor = {
 };
 
 /**
- * The 23-entry matcher registry. Insertion order is contract: it fixes
+ * The 26-entry matcher registry. Insertion order is contract: it fixes
  * `geoSpecMatcherNames`, which `libs/api-extractor` and the LLM prompt
  * pipeline consume.
  *
  * @public
  */
-export const geoSpecMatcherDescriptors: Readonly<Record<GeoSpecMatcherName, GeoSpecMatcherDescriptor>> = Object.freeze({
+export const geoSpecMatcherDescriptors: Readonly<{
+  [Name in GeoSpecMatcherName]: Name extends GeoSpecFixedMatcherName
+    ? GeoSpecFixedMatcherDescriptor & { readonly kind: Name }
+    : GeoSpecMatcherDescriptor;
+}> = Object.freeze({
   toHaveBoundingBox: { kind: 'boundingBox', expected: 'bounds', mode: 'sync' },
   toHaveConnectedComponents: { kind: 'connectedComponents', expected: 'first', mode: 'sync' },
   toBeWatertight: { kind: 'watertight', expected: 'true', mode: 'sync' },
-  toHaveNoComponentInterference: { kind: 'componentInterference', expected: 'first-or-empty', mode: 'async' },
+  toHaveNoComponentInterference: { kind: 'componentInterference', expected: 'first-or-empty', mode: 'sync' },
   toHaveAssemblyOccurrences: { kind: 'assemblyOccurrences', expected: 'first', mode: 'sync' },
-  toHaveSpatialRelationships: { kind: 'spatialRelationships', expected: 'first', mode: 'async' },
+  toHaveSpatialRelationships: { kind: 'spatialRelationships', expected: 'first', mode: 'sync' },
   toHaveMeshIntegrity: { kind: 'meshIntegrity', expected: 'first', mode: 'sync' },
+  toHaveNoDiagnostics: { kind: 'noDiagnostics', expected: 'first-or-empty', mode: 'sync' },
   toHaveSurfaceArea: { kind: 'surfaceArea', expected: 'first', mode: 'sync' },
   toHaveVolume: { kind: 'volume', expected: 'first', mode: 'sync' },
   toHaveMass: { kind: 'mass', expected: 'first', mode: 'sync' },
@@ -87,7 +92,29 @@ export const geoSpecMatcherDescriptors: Readonly<Record<GeoSpecMatcherName, GeoS
   toHaveFilletFeature: { kind: 'filletFeature', expected: 'first', mode: 'sync' },
   toHaveMinimumWallThickness: { kind: 'minimumWallThickness', expected: 'first', mode: 'sync' },
   toHaveVoidContinuity: { kind: 'voidContinuity', expected: 'first', mode: 'sync' },
+  toSatisfyRationalPlate: {
+    kind: 'toSatisfyRationalPlate',
+    contract: 'geospec.plate-two-windows/v1',
+    expected: 'true',
+    mode: 'sync',
+  },
+  toSatisfyParallelPlaneDistance: {
+    kind: 'toSatisfyParallelPlaneDistance',
+    contract: 'geospec.pmi.parallel-plane-distance/v1',
+    expected: 'true',
+    mode: 'sync',
+  },
 });
+
+/** A canonical fixed-contract matcher. @public */
+export type GeoSpecFixedMatcherDescriptor = {
+  readonly contract: 'geospec.plate-two-windows/v1' | 'geospec.pmi.parallel-plane-distance/v1';
+  readonly expected: 'true';
+  readonly mode: 'sync';
+};
+
+/** Every canonical fixed-contract matcher name. @public */
+export type GeoSpecFixedMatcherName = 'toSatisfyRationalPlate' | 'toSatisfyParallelPlaneDistance';
 
 /**
  * Derive the `expected` value an assertion records from the call arguments.

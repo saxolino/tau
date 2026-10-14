@@ -8,8 +8,12 @@ import { z } from 'zod';
 import { isRuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
 import type { RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
 import { compiledWasmModuleSchema } from '#transport/_internal/compiled-wasm-module.schema.js';
+import type { ComputeBinding } from '#types/runtime-compute.types.js';
+import type { NodeWorkerClientOptions, NodeWorkerData } from '#transport/node-worker-client.js';
 
-const workerCtorSchema = z.custom<unknown>((value) => typeof value === 'function');
+const workerCtorSchema = z.custom<NonNullable<NodeWorkerClientOptions['workerCtor']>>(
+  (value) => typeof value === 'function',
+);
 
 const runtimeFileSystemSchema = z.custom<RuntimeFileSystem>(
   (value) => value === undefined || isRuntimeFileSystem(value),
@@ -26,6 +30,11 @@ export const nodeWorkerClientOptionsSchema = z
      */
     workerCtor: workerCtorSchema.optional(),
     /**
+     * Structured-cloned into the worker as `workerData`. Not validated here:
+     * `new Worker` throws `DataCloneError` on a value it cannot clone.
+     */
+    workerData: z.custom<NodeWorkerData>().optional(),
+    /**
      * Optional shared-memory pool descriptor.
      */
     sharedMemory: z
@@ -41,6 +50,7 @@ export const nodeWorkerClientOptionsSchema = z
      * Optional filesystem handle produced by a `fromX` factory.
      */
     fileSystem: runtimeFileSystemSchema.optional(),
+    compute: z.custom<ComputeBinding>().optional(),
     /** Explicit Chrome DevTools Performance Timeline mirroring. */
     devtoolsTelemetry: z.boolean().optional(),
     compiledWasmModules: z

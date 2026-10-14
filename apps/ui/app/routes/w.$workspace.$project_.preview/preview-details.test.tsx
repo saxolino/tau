@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type { ActorRefFrom } from 'xstate';
 import type { CapabilitiesManifest, ExportRoute } from '@taucad/runtime';
+import type { ExportResult } from '@taucad/runtime/client';
+import { createMockRuntimeDocument } from '@taucad/runtime-testing';
 import type * as FileUtilsModuleType from '@taucad/utils/file';
 import type { FileExtension } from '@taucad/types';
 import type { cadMachine } from '#machines/cad.machine.js';
@@ -40,7 +42,7 @@ vi.mock('#components/ui/sonner.js', () => ({
   },
 }));
 
-vi.mock('#components/ui/tooltip.js', () => ({
+vi.mock('@taucad/ui/components/tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
   TooltipContent: () => null,
   TooltipTrigger: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
@@ -82,11 +84,15 @@ function createCapabilities(): CapabilitiesManifest {
   };
 }
 
-const mockExport = vi.fn().mockResolvedValue({
+/* Exports run on the unit's scoped runtime document, not the kernel client. */
+const { document: mockDocument } = createMockRuntimeDocument();
+const mockExport = vi.mocked(mockDocument.export).mockResolvedValue({
   success: true,
-  data: [{ bytes: new Uint8Array([1, 2, 3]), name: 'model.glb', mimeType: 'model/gltf-binary' }],
+  exportId: 'glb',
+  evaluationId: 'mock-evaluation',
+  files: [{ bytes: new Uint8Array([1, 2, 3]), name: 'model.glb', mimeType: 'model/gltf-binary' }],
   issues: [],
-});
+} satisfies ExportResult);
 
 function createCadActor(capabilities: CapabilitiesManifest): ActorRefFrom<typeof cadMachine> {
   const kernelClient = {
@@ -94,11 +100,10 @@ function createCadActor(capabilities: CapabilitiesManifest): ActorRefFrom<typeof
     bestRouteFor(format: FileExtension): ExportRoute | undefined {
       return capabilities.routes.find((route) => route.targetFormat === format);
     },
-    export: mockExport,
   };
   return {
     getSnapshot: () => ({
-      context: { kernelClient, activeKernelId: 'replicad', capabilities },
+      context: { kernelClient, activeKernelId: 'replicad', capabilities, document: mockDocument },
     }),
   } as unknown as ActorRefFrom<typeof cadMachine>;
 }
@@ -120,7 +125,7 @@ describe('PreviewDetails', () => {
   it('should render the dynamic export grid instead of legacy static download buttons', () => {
     const cadRef = createCadActor(createCapabilities());
     try {
-      render(<PreviewDetails project={baseProject} hasGeometry={true} cadRef={cadRef} />);
+      render(<PreviewDetails project={baseProject} hasGeometry cadRef={cadRef} />);
 
       expect(screen.getByText('Mesh')).toBeInTheDocument();
       expect(screen.getByText('BREP')).toBeInTheDocument();
@@ -138,15 +143,15 @@ describe('PreviewDetails', () => {
   });
 
   // oxlint-disable-next-line no-template-curly-in-string -- documenting the produced filename pattern in a sentence
-  it('should call kernelClient.export and download as project.name.format when a pill is clicked', async () => {
+  it('should export the scoped document and download as project.name.format when a pill is clicked', async () => {
     const cadRef = createCadActor(createCapabilities());
     try {
-      render(<PreviewDetails project={baseProject} hasGeometry={true} cadRef={cadRef} />);
+      render(<PreviewDetails project={baseProject} hasGeometry cadRef={cadRef} />);
 
       fireEvent.click(screen.getByRole('button', { name: /stl/i }));
 
       await vi.waitFor(() => {
-        expect(mockExport).toHaveBeenCalledWith('stl', { exportOptions: { binary: true } });
+        expect(mockExport).toHaveBeenCalledWith('stl', { options: { binary: true } });
       });
       await vi.waitFor(() => {
         expect(mockDownloadBlob).toHaveBeenCalledTimes(1);
@@ -174,7 +179,7 @@ describe('PreviewDetails', () => {
   it('should render the project description when provided', () => {
     const cadRef = createCadActor(createCapabilities());
     try {
-      render(<PreviewDetails project={baseProject} hasGeometry={true} cadRef={cadRef} />);
+      render(<PreviewDetails project={baseProject} hasGeometry cadRef={cadRef} />);
 
       expect(screen.getByText('A pot')).toBeInTheDocument();
     } finally {
@@ -185,9 +190,7 @@ describe('PreviewDetails', () => {
   it('should render the project tags when provided', () => {
     const cadRef = createCadActor(createCapabilities());
     try {
-      render(
-        <PreviewDetails project={{ ...baseProject, tags: ['ceramic', 'mug'] }} hasGeometry={true} cadRef={cadRef} />,
-      );
+      render(<PreviewDetails project={{ ...baseProject, tags: ['ceramic', 'mug'] }} hasGeometry cadRef={cadRef} />);
 
       expect(screen.getByText('ceramic')).toBeInTheDocument();
       expect(screen.getByText('mug')).toBeInTheDocument();

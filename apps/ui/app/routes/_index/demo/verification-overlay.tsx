@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { Check, X, Loader2 } from 'lucide-react';
-import type { Geometry } from '@taucad/types';
-import { cn } from '#utils/ui.utils.js';
+import { asKnownArtifact } from '@taucad/runtime';
+import type { Artifact } from '@taucad/runtime';
+import { cn } from '@taucad/ui/utils/cn';
+import { applyCanonicalGltfWorld } from '@taucad/viewer/graphics/three/gltf-world';
 
 // A common desktop FDM print bed edge, in millimetres. The bounding-box check
 // is real geometry verification, framed for a maker audience.
@@ -18,13 +20,15 @@ type Measured = {
  * Measure the real axis-aligned bounding box of the generated geometry. The
  * runtime emits glTF in metres; we report the largest edge in millimetres.
  */
-async function measureGeometry(geometry: Geometry): Promise<Measured | undefined> {
-  if (geometry.format !== 'gltf') {
+async function measureArtifact(artifact: Artifact): Promise<Measured | undefined> {
+  const known = asKnownArtifact(artifact);
+  if (known?.mimeType !== 'model/gltf-binary') {
     return undefined;
   }
 
   const loader = new GLTFLoader();
-  const gltf = await loader.parseAsync(geometry.content.buffer, '');
+  const gltf = await loader.parseAsync(new Uint8Array(known.content).buffer, '');
+  applyCanonicalGltfWorld(gltf.scene);
   const box = new THREE.Box3().setFromObject(gltf.scene);
   if (box.isEmpty()) {
     return undefined;
@@ -43,7 +47,7 @@ function CheckChip({ state, label }: { readonly state: CheckState; readonly labe
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full border bg-background/80 px-2.5 py-1 text-xs backdrop-blur-sm',
         state === 'pass' && 'border-primary/40 text-foreground',
-        state === 'fail' && 'border-destructive/40 text-destructive',
+        state === 'fail' && 'border-feature/40 text-feature',
         state === 'pending' && 'text-muted-foreground',
       )}
     >
@@ -64,44 +68,43 @@ function CheckChip({ state, label }: { readonly state: CheckState; readonly labe
  * demo signal; richer assertions (volume budget, interference) can later route
  * through the GeoSpec worker (`apps/ui/app/workers/geospec-runner.worker.ts`).
  */
-export function VerificationOverlay({ geometry }: { readonly geometry: Geometry | undefined }): React.JSX.Element {
-  const [measured, setMeasured] = useState<Measured | undefined>();
-  const [measuring, setMeasuring] = useState(false);
+export function VerificationOverlay({ artifact }: { readonly artifact: Artifact | undefined }): React.JSX.Element {
+  const [measurement, setMeasurement] = useState<{
+    readonly artifact: Artifact;
+    readonly measured: Measured | undefined;
+  }>();
 
   useEffect(() => {
-    if (!geometry) {
+    if (!artifact) {
       return;
     }
 
     let cancelled = false;
-    setMeasuring(true);
-
-    async function measure(target: Geometry): Promise<void> {
+    async function measure(target: Artifact): Promise<void> {
       try {
-        const result = await measureGeometry(target);
+        const result = await measureArtifact(target);
         if (!cancelled) {
-          setMeasured(result);
+          setMeasurement({ artifact: target, measured: result });
         }
       } catch (error) {
         console.error('[VerificationOverlay] measure failed:', error);
         if (!cancelled) {
-          setMeasured(undefined);
-        }
-      } finally {
-        if (!cancelled) {
-          setMeasuring(false);
+          setMeasurement({ artifact: target, measured: undefined });
         }
       }
     }
 
-    void measure(geometry);
+    void measure(artifact);
 
     return () => {
       cancelled = true;
     };
-  }, [geometry]);
+  }, [artifact]);
 
-  const validState: CheckState = geometry ? 'pass' : 'pending';
+  const measured = measurement && measurement.artifact === artifact ? measurement.measured : undefined;
+  const measuring = artifact !== undefined && measurement?.artifact !== artifact;
+
+  const validState: CheckState = artifact ? 'pass' : 'pending';
   const fitState: CheckState = measured ? (measured.maxDimensionMm <= printBedMm ? 'pass' : 'fail') : 'pending';
 
   const fitLabel = measured

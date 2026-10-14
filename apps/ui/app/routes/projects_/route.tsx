@@ -3,34 +3,23 @@
  * and host the library one level down under a `library` child; the page grammar
  * collapsed onto this route and `/projects/new` is the only child left.
  */
-import { Link, Outlet, useLocation } from 'react-router';
-import { Button } from '#components/ui/button.js';
+import { Outlet, useLocation } from 'react-router';
+import type { MetaFunction } from 'react-router';
 import { ProjectLibrary } from '#components/project-library/project-library.js';
 import type { Handle } from '#types/matches.types.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
-import { formatKeyCombination } from '#utils/keys.utils.js';
+
+export const meta: MetaFunction = () => [{ title: 'Projects · Tau' }];
 
 export const handle: Handle = {
-  breadcrumb() {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button asChild variant='ghost'>
-            <Link to='/projects'>Projects</Link>
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent className='flex items-center gap-2 align-baseline'>
-          View all projects{` `}
-          <KeyShortcut variant='tooltip'>{formatKeyCombination({ key: 'b', ctrlKey: true })}</KeyShortcut>
-        </TooltipContent>
-      </Tooltip>
-    );
-  },
   enableOverflowY: true,
 };
 
 export default function Projects(): React.JSX.Element {
   const location = useLocation();
-  return location.pathname === '/projects' ? <ProjectLibrary /> : <Outlet />;
+  if (location.pathname !== '/projects') {
+    return <Outlet />;
+  }
+  /* One list (D20): the library lists this account's Tau Cloud projects beside
+     this device's own, so there is no second *From Tau Cloud* section. */
+  return <ProjectLibrary />;
 }

@@ -5,14 +5,18 @@ import { ChatParameters } from '#routes/w.$workspace.$project/chat-parameters.js
 import { ChatEditorLayout } from '#routes/w.$workspace.$project/chat-editor-layout.js';
 import { ChatDetails } from '#routes/w.$workspace.$project/chat-details.js';
 import { ChatConverter } from '#routes/w.$workspace.$project/chat-converter.js';
+import { ProjectShareWorkbenchPanel } from '#routes/w.$workspace.$project/project-share-action.js';
+import { ChatRevisions } from '#routes/w.$workspace.$project/chat-revisions.js';
 import { ProjectUnavailableOverlay } from '#routes/w.$workspace.$project/project-unavailable-overlay.js';
-import { cn } from '#utils/ui.utils.js';
+import { ProjectManifestIssueBanner } from '#routes/w.$workspace.$project/project-manifest-issue-banner.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { ChatInterfaceNav } from '#routes/w.$workspace.$project/chat-interface-nav.js';
-import { Tabs, TabsContent } from '#components/ui/tabs.js';
+import { Tabs, TabsContent } from '@taucad/ui/components/tabs';
 import { useChatInterfaceState } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { ViewerDockview } from '#routes/w.$workspace.$project/chat-viewer-dockview.js';
-import { Drawer, DrawerContent, DrawerTitle, DrawerDescription } from '#components/ui/drawer.js';
+import { Drawer, DrawerContent, DrawerTitle, DrawerDescription } from '@taucad/ui/components/drawer';
 import { ChatInterfaceSessionGate } from '#routes/w.$workspace.$project/focused-chat-gate.js';
+import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
 
 export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
   const { activeTab, handleTabChange, drawerOpen, handleDrawerChange, snapPoints, activeSnapPoint, handleSnapChange } =
@@ -21,13 +25,15 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
   const isViewerTab = activeTab === 'viewer';
 
   return (
-    <ChatInterfaceSessionGate fallback={<div className='absolute inset-0 size-full md:hidden' />}>
+    <ChatInterfaceSessionGate fallback={<WorkspaceSkeleton />}>
       <div
         className={cn(
           // --nav-height is the height of the navigation tabs
           'absolute inset-0 size-full',
           '[--nav-height:calc(var(--spacing)*11)]', // 10 units of spacing
           'md:hidden', // Hidden on desktop
+          // The workspace lands over the skeleton's background rather than snapping in.
+          'animate-in duration-200 fade-in-50 motion-reduce:animate-none',
         )}
       >
         {/* Main viewer - always visible */}
@@ -38,19 +44,20 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
           }}
         >
           <ViewerDockview />
+          <ProjectManifestIssueBanner />
 
-          {/* Renders ProjectLoadError / WorkspaceUnavailableRecovery
+          {/* Renders the shared failure notice or WorkspaceUnavailableRecovery
             depending on which gate has failed. See Audit R8 for rationale. */}
           <ProjectUnavailableOverlay />
         </div>
 
         <Drawer
           handleOnly
+          modal={false}
           open={drawerOpen}
           snapPoints={snapPoints}
           activeSnapPoint={activeSnapPoint}
           setActiveSnapPoint={handleSnapChange}
-          modal={false}
           onOpenChange={handleDrawerChange}
         >
           <DrawerTitle className='sr-only' id='drawer-title'>
@@ -60,52 +67,61 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
             Chat Interface - use navigation tabs to switch between panels
           </DrawerDescription>
 
-          {/* Drawer for content panels */}
-          <DrawerContent
-            aria-labelledby='drawer-title'
-            aria-describedby='drawer-description'
-            className={cn(
-              'flex-1 rounded-t-lg border-t bg-sidebar',
-              'z-40', // Position below the navigation tabs
-              //
-              'data-[vaul-drawer-direction=bottom]:max-h-[100dvh]',
-              'data-[vaul-drawer-direction=bottom]:mt-0',
-              '[&_[data-slot=drawer-handle-indicator]]:bg-sidebar-primary/15',
-            )}
-            style={{
-              height: '100%',
-            }}
-          >
-            {/* Tab contents */}
-            <Tabs
-              value={activeTab}
-              className='flex h-full flex-col p-0'
+          {/* This docked panel shares interaction with the viewer and persistent navigation. */}
+          {drawerOpen ? (
+            <DrawerContent
+              aria-labelledby='drawer-title'
+              aria-describedby='drawer-description'
+              className={cn(
+                'flex-1 rounded-t-lg border-t bg-sidebar',
+                'z-40', // Position below the navigation tabs
+                //
+                'data-[vaul-drawer-direction=bottom]:max-h-[100dvh]',
+                'data-[vaul-drawer-direction=bottom]:mt-0',
+                '[&_[data-slot=drawer-handle-indicator]]:bg-sidebar-primary/15',
+              )}
               style={{
-                height: isViewerTab ? '100dvh' : `calc(${Number(activeSnapPoint)} * 100dvh - var(--spacing)*12)`,
+                height: '100%',
               }}
-              onValueChange={handleTabChange}
             >
-              <TabsContent enableAnimation={false} value='chat' className='flex h-full flex-col'>
-                <ChatHistory />
-              </TabsContent>
-              <TabsContent enableAnimation={false} value='files' className='flex h-full flex-col'>
-                <ChatFileTree />
-              </TabsContent>
-              <TabsContent enableAnimation={false} value='parameters' className='flex h-full flex-col'>
-                <ChatParameters />
-              </TabsContent>
-              <TabsContent enableAnimation={false} value='viewer' className='flex h-full flex-col' />
-              <TabsContent enableAnimation={false} value='editor' className='flex h-full flex-col'>
-                <ChatEditorLayout />
-              </TabsContent>
-              <TabsContent enableAnimation={false} value='details' className='flex h-full flex-col'>
-                <ChatDetails />
-              </TabsContent>
-              <TabsContent enableAnimation={false} value='converter' className='flex h-full flex-col'>
-                <ChatConverter />
-              </TabsContent>
-            </Tabs>
-          </DrawerContent>
+              {/* Tab contents */}
+              <Tabs
+                value={activeTab}
+                className='flex h-full flex-col p-0'
+                style={{
+                  height: isViewerTab ? '100dvh' : `calc(${Number(activeSnapPoint)} * 100dvh - var(--spacing)*12)`,
+                }}
+                onValueChange={handleTabChange}
+              >
+                <TabsContent enableAnimation={false} value='chat' className='flex h-full flex-col'>
+                  <ChatHistory />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='files' className='flex h-full flex-col'>
+                  <ChatFileTree />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='parameters' className='flex h-full flex-col'>
+                  <ChatParameters />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='viewer' className='flex h-full flex-col' />
+                <TabsContent enableAnimation={false} value='editor' className='flex h-full flex-col'>
+                  <ChatEditorLayout />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='details' className='flex h-full flex-col'>
+                  <ChatDetails />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='converter' className='flex h-full flex-col'>
+                  <ChatConverter />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='share' className='flex h-full flex-col'>
+                  <ProjectShareWorkbenchPanel />
+                </TabsContent>
+                <TabsContent enableAnimation={false} value='revisions' className='flex h-full flex-col'>
+                  {/* The pane's own title and Close, as every other panel here (L3-F15). */}
+                  <ChatRevisions />
+                </TabsContent>
+              </Tabs>
+            </DrawerContent>
+          ) : null}
         </Drawer>
 
         {/* Navigation tabs - Always visible and sticky to bottom */}

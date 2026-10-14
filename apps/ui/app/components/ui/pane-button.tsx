@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Slot as SlotPrimitive } from 'radix-ui';
 import { cva } from 'class-variance-authority';
 import type { VariantProps } from 'class-variance-authority';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 
 type TooltipSide = 'left' | 'right' | 'top' | 'bottom';
 
@@ -10,9 +10,9 @@ const paneButtonVariants = cva(
   [
     'flex shrink-0 select-none items-center justify-center rounded-sm',
     'text-muted-foreground transition-colors',
-    'hover:bg-muted-foreground/15 hover:text-foreground',
-    'aria-pressed:bg-muted-foreground/15 aria-pressed:hover:bg-muted-foreground/20',
-    'outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    // Top-level header actions share the tab's resting fill; nested-action-hover is for actions inside a hovered surface.
+    'hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground aria-pressed:bg-accent',
+    'outline-none focus-visible:focus-outline',
     'disabled:pointer-events-none disabled:opacity-50',
     "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   ],
@@ -56,7 +56,12 @@ function PaneButton({
   const Comp = asChild ? SlotPrimitive.Slot : 'button';
 
   const button = (
-    <Comp type={asChild ? undefined : 'button'} className={paneButtonVariants({ size, className })} {...properties} />
+    <Comp
+      data-slot='pane-button'
+      type={asChild ? undefined : 'button'}
+      className={paneButtonVariants({ size, className })}
+      {...properties}
+    />
   );
 
   if (tooltip) {

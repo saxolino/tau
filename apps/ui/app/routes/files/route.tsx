@@ -1,45 +1,47 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Link } from 'react-router';
-import { Download, FolderArchive, FolderOpen, House, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import type { MetaFunction } from 'react-router';
+import { PageContent } from '#components/layout/page-content.js';
+import {
+  CheckCircle2,
+  AlertCircle,
+  Download,
+  FolderArchive,
+  FolderOpen,
+  House,
+  EllipsisVertical,
+  Plus,
+  RefreshCw,
+  Unplug,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FileSystemBackend } from '@taucad/types';
 import { ExternalLink } from '#components/external-link.js';
-import { Button } from '#components/ui/button.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
-import { Loader } from '#components/ui/loader.js';
+import { Button } from '@taucad/ui/components/button';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
+import { Loader } from '@taucad/ui/components/loader';
 import { Tree, Folder, File } from '#components/magicui/file-tree.js';
 import type { TreeViewElement } from '#components/magicui/file-tree.js';
 import { useFileManager, useHomeStorageBackend } from '#hooks/use-file-manager.js';
+import { nodeHomeRoot } from '#filesystem/desktop-bridge.js';
 import { useProjects } from '#hooks/use-projects.js';
 import { isFileSystemAccessSupported } from '#constants/browser.constants.js';
-import type { Handle } from '#types/matches.types.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
-import { cn } from '#utils/ui.utils.js';
-import {
-  checkHandlePermission,
-  createWorkspace,
-  getWorkspace,
-  listProjectsForWorkspace,
-  listWorkspaces,
-} from '#filesystem/handle-store.js';
+import { PageHeader } from '#components/layout/page-header.js';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { cn } from '@taucad/ui/utils/cn';
+import { checkHandlePermission, getWorkspace, listWorkspaces } from '#filesystem/handle-store.js';
 import type { Workspace } from '#filesystem/handle-store.js';
-import type { ProjectListItem } from '#types/project.types.js';
+import type { ProjectListItem } from '#types/project-library.types.js';
 import { useProjectUrl } from '#hooks/use-project-slug-route.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import type { WorkspaceDirectoryStatus } from '#constants/workspace-directory-copy.constants.js';
 import { toast } from '#components/ui/sonner.js';
+import { getFileTreeDownloadErrorMessage } from '#routes/w.$workspace.$project/file-tree-download-policy.js';
 import { useWorkspaceTelemetry } from '#utils/workspace-telemetry.utils.js';
 import type { FileTreeNode, WorkspaceScope } from '@taucad/filesystem';
+import type { WorkspaceConnectionState } from '#hooks/workspace-connection.machine.js';
+import { isDesktopTarget } from '#lib/build-target.js';
 
-export const handle: Handle = {
-  breadcrumb() {
-    return (
-      <Button asChild variant='ghost'>
-        <Link to='/files'>Files</Link>
-      </Button>
-    );
-  },
-};
+export const meta: MetaFunction = () => [{ title: 'Files · Tau' }];
 
 /**
  * One product-level Home column. Its physical engine is resolved per profile.
@@ -53,7 +55,7 @@ type HomeColumnMeta = {
 const homeColumn: HomeColumnMeta = {
   label: 'Home',
   icon: House,
-  description: 'In this browser',
+  description: isDesktopTarget() ? 'On your computer' : 'In this browser',
 };
 
 type ItemAction = {
@@ -65,6 +67,12 @@ type ItemAction = {
 const fileActions: ItemAction[] = [{ value: 'download', label: 'Download', icon: Download }];
 
 const folderActions: ItemAction[] = [{ value: 'download-zip', label: 'Download as ZIP', icon: FolderArchive }];
+
+const pendingTreeActionHandlers: TreeActionHandlers = {
+  projectsByPath: new Map(),
+  onDownloadFile: async () => undefined,
+  onDownloadFolderZip: async () => undefined,
+};
 
 /** Stable cache key for the loaded-directories map. */
 function makeBackendKey(backend: FileSystemBackend, workspaceId?: string): string {
@@ -111,9 +119,11 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 function FileActions({
   path,
+  name,
   onDownload,
 }: {
   readonly path: string;
+  readonly name: string;
   readonly onDownload: (path: string) => Promise<void>;
 }): React.JSX.Element {
   const handleAction = useCallback(
@@ -126,39 +136,47 @@ function FileActions({
   );
 
   return (
-    <ComboBoxResponsive
-      groupedItems={[{ name: 'Actions', items: fileActions }]}
-      getValue={(item) => item.value}
-      renderLabel={(item) => (
-        <div className='flex items-center gap-2'>
-          <item.icon className='size-4' />
-          <span>{item.label}</span>
-        </div>
-      )}
-      title='File Actions'
-      description='Choose an action for this file'
-      isSearchEnabled={false}
-      onSelect={handleAction}
-    >
-      <Button
-        variant='ghost'
-        size='icon'
-        className='size-6 shrink-0'
-        onClick={(event) => {
-          event.stopPropagation();
-        }}
+    <Tooltip>
+      <ComboBoxResponsive
+        groupedItems={[{ name: 'Actions', items: fileActions }]}
+        getValue={(item) => item.value}
+        renderLabel={(item) => (
+          <div className='flex items-center gap-2'>
+            <item.icon className='size-4' />
+            <span>{item.label}</span>
+          </div>
+        )}
+        title='File Actions'
+        description='Choose an action for this file'
+        isSearchEnabled={false}
+        onSelect={handleAction}
       >
-        <MoreHorizontal className='size-4' />
-      </Button>
-    </ComboBoxResponsive>
+        <TooltipTrigger asChild>
+          <Button
+            variant='ghost'
+            size='icon'
+            className='size-6 shrink-0'
+            aria-label={`Actions for ${name}`}
+            onClick={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <EllipsisVertical className='size-4' />
+          </Button>
+        </TooltipTrigger>
+      </ComboBoxResponsive>
+      <TooltipContent>Actions for {name}</TooltipContent>
+    </Tooltip>
   );
 }
 
 function FolderActions({
   path,
+  name,
   onDownloadZip,
 }: {
   readonly path: string;
+  readonly name: string;
   readonly onDownloadZip: (path: string) => Promise<void>;
 }): React.JSX.Element {
   const handleAction = useCallback(
@@ -171,31 +189,37 @@ function FolderActions({
   );
 
   return (
-    <ComboBoxResponsive
-      groupedItems={[{ name: 'Actions', items: folderActions }]}
-      getValue={(item) => item.value}
-      renderLabel={(item) => (
-        <div className='flex items-center gap-2'>
-          <item.icon className='size-4' />
-          <span>{item.label}</span>
-        </div>
-      )}
-      title='Folder Actions'
-      description='Choose an action for this folder'
-      isSearchEnabled={false}
-      onSelect={handleAction}
-    >
-      <Button
-        variant='ghost'
-        size='icon'
-        className='size-6 shrink-0'
-        onClick={(event) => {
-          event.stopPropagation();
-        }}
+    <Tooltip>
+      <ComboBoxResponsive
+        groupedItems={[{ name: 'Actions', items: folderActions }]}
+        getValue={(item) => item.value}
+        renderLabel={(item) => (
+          <div className='flex items-center gap-2'>
+            <item.icon className='size-4' />
+            <span>{item.label}</span>
+          </div>
+        )}
+        title='Folder Actions'
+        description='Choose an action for this folder'
+        isSearchEnabled={false}
+        onSelect={handleAction}
       >
-        <MoreHorizontal className='size-4' />
-      </Button>
-    </ComboBoxResponsive>
+        <TooltipTrigger asChild>
+          <Button
+            variant='ghost'
+            size='icon'
+            className='size-6 shrink-0'
+            aria-label={`Actions for ${name}`}
+            onClick={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <EllipsisVertical className='size-4' />
+          </Button>
+        </TooltipTrigger>
+      </ComboBoxResponsive>
+      <TooltipContent>Actions for {name}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -230,7 +254,7 @@ function renderTree(elements: TreeViewElement[], handlers: TreeActionHandlers): 
           key={element.id}
           element={<FolderLabel name={element.name} project={project} />}
           value={element.id}
-          actions={<FolderActions path={element.id} onDownloadZip={handlers.onDownloadFolderZip} />}
+          actions={<FolderActions path={element.id} name={element.name} onDownloadZip={handlers.onDownloadFolderZip} />}
         >
           {renderTree(element.children, handlers)}
         </Folder>
@@ -241,7 +265,7 @@ function renderTree(elements: TreeViewElement[], handlers: TreeActionHandlers): 
       <File
         key={element.id}
         value={element.id}
-        actions={<FileActions path={element.id} onDownload={handlers.onDownloadFile} />}
+        actions={<FileActions path={element.id} name={element.name} onDownload={handlers.onDownloadFile} />}
       >
         {element.name}
       </File>
@@ -288,6 +312,7 @@ function ColumnShell({
   unsupportedHint,
   treeActionHandlers,
   topRight,
+  status,
   onRefresh,
   onExpand,
 }: {
@@ -301,6 +326,7 @@ function ColumnShell({
   readonly unsupportedHint?: string;
   readonly treeActionHandlers: TreeActionHandlers;
   readonly topRight?: React.ReactNode;
+  readonly status?: React.ReactNode;
   readonly onRefresh?: () => void;
   readonly onExpand?: (id: string) => void;
 }): React.JSX.Element {
@@ -330,6 +356,7 @@ function ColumnShell({
                   variant='ghost'
                   size='icon'
                   className='size-7'
+                  aria-label='Refresh'
                   disabled={isLoading || isDisabled}
                   onClick={onRefresh}
                 >
@@ -342,9 +369,11 @@ function ColumnShell({
         </div>
       </div>
 
+      {status}
+
       {isDisabled ? (
         <div className='flex flex-1 items-center justify-center rounded-md border border-dashed p-6 text-sm text-muted-foreground'>
-          {unsupportedHint ?? 'Not supported in this browser'}
+          {unsupportedHint ?? 'Not supported here'}
         </div>
       ) : (
         <div className='min-h-0 flex-1 overflow-auto rounded-md border'>
@@ -367,11 +396,73 @@ function ColumnShell({
   );
 }
 
+function WorkspaceConnectionStatus({
+  state,
+  onRetry,
+}: {
+  readonly state: Exclude<WorkspaceConnectionState, { phase: 'idle' | 'selecting' | 'registering' }>;
+  readonly onRetry: () => void;
+}): React.JSX.Element {
+  const content =
+    state.phase === 'failed'
+      ? ['Could not finish connecting', state.message]
+      : state.phase === 'mounting'
+        ? ['Preparing workspace…', 'Making local files available to Tau']
+        : state.phase === 'browsing'
+          ? ['Workspace connected', 'Loading folders and projects']
+          : state.phase === 'discovering'
+            ? ['Reading project folders…', 'Checking each folder for tau.json']
+            : state.phase === 'publishing'
+              ? [
+                  'Preparing project links…',
+                  `${state.projectCount} ${state.projectCount === 1 ? 'project' : 'projects'} found`,
+                ]
+              : state.conflictCount > 0
+                ? [
+                    `${state.projectCount} ${state.projectCount === 1 ? 'project' : 'projects'} ready`,
+                    `${state.conflictCount} ${state.conflictCount === 1 ? 'project needs' : 'projects need'} attention`,
+                  ]
+                : [
+                    `${state.projectCount} ${state.projectCount === 1 ? 'project' : 'projects'} ready`,
+                    'Starting local change monitoring',
+                  ];
+  return (
+    <div
+      role='status'
+      aria-live='polite'
+      className={cn(
+        'flex items-center gap-2 rounded-md border bg-muted/35 px-3 py-2',
+        state.phase === 'failed' && 'border-feature/30 bg-feature/5',
+      )}
+    >
+      {state.phase === 'failed' ? (
+        <Button variant='outline' size='sm' className='order-2 ml-auto' onClick={onRetry}>
+          {state.retry === 'pick-again'
+            ? 'Choose folder again'
+            : state.retry === 'grant-access'
+              ? 'Grant access'
+              : 'Try again'}
+        </Button>
+      ) : state.phase === 'ready' && state.conflictCount > 0 ? (
+        <AlertCircle className='size-4 shrink-0 text-warning' />
+      ) : state.phase === 'ready' ? (
+        <CheckCircle2 className='size-4 shrink-0 text-primary' />
+      ) : (
+        <Loader className='size-4 shrink-0' />
+      )}
+      <div className='min-w-0'>
+        <div className='truncate text-xs font-medium'>{content[0]}</div>
+        <div className='truncate text-xs text-muted-foreground'>{content[1]}</div>
+      </div>
+    </div>
+  );
+}
+
 // ============ Main Route Component ============
 
 export default function FilesRoute(): React.JSX.Element {
   const homeBackend = useHomeStorageBackend();
-  const { client, workspace } = useFileManager();
+  const { scopedStorage, workspace } = useFileManager();
   const { projects } = useProjects();
 
   // Per-cache-key (backend | webaccess:<workspaceId>) loaded directories
@@ -391,7 +482,7 @@ export default function FilesRoute(): React.JSX.Element {
       const built = await Promise.all(
         workspaces.map(async (workspace): Promise<WorkspaceColumnState> => {
           const entry = await getWorkspace(workspace.workspaceId);
-          let status: WorkspaceDirectoryStatus = 'missing';
+          let status: WorkspaceDirectoryStatus = 'disconnected';
           if (entry) {
             const permission = await checkHandlePermission(entry.handle);
             status = permission === 'granted' ? 'connected' : 'permission';
@@ -421,7 +512,11 @@ export default function FilesRoute(): React.JSX.Element {
   const resolveScope = useCallback(
     async (backend: FileSystemBackend, workspaceId?: string): Promise<WorkspaceScope | undefined> => {
       if (backend !== 'webaccess') {
-        return backend === 'memory' ? { backend, storageRootKey: 'memory:files' } : { backend };
+        return backend === 'memory'
+          ? { backend, storageRootKey: 'memory:files' }
+          : backend === 'node'
+            ? { backend, path: nodeHomeRoot() }
+            : { backend };
       }
       if (!workspaceId) {
         return undefined;
@@ -450,7 +545,7 @@ export default function FilesRoute(): React.JSX.Element {
 
       try {
         const scope = await resolveScope(backend, workspaceId);
-        const nodes = scope ? await client.readShallowDirectory(directoryPath, { scope }) : [];
+        const nodes = scope ? await scopedStorage.readShallowDirectory(directoryPath, { scope }) : [];
         setLoadedDirectories((previous) => {
           const directories = new Map(previous[cacheKey] ?? []);
           directories.set(directoryPath, nodes);
@@ -466,7 +561,7 @@ export default function FilesRoute(): React.JSX.Element {
         inflightRef.current.delete(inflightKey);
       }
     },
-    [client, resolveScope],
+    [resolveScope, scopedStorage],
   );
 
   const projectTreeForKey = useCallback(
@@ -542,13 +637,21 @@ export default function FilesRoute(): React.JSX.Element {
 
   // Load Home on mount; load each connected disk workspace as it appears.
   useEffect(() => {
-    void loadColumnTree(homeBackend);
+    // async-iife: bootstrap -- an effect cannot await the tree load.
+    void (async () => {
+      await Promise.resolve();
+      await loadColumnTree(homeBackend);
+    })();
   }, [homeBackend, loadColumnTree]);
 
   useEffect(() => {
     for (const column of workspaceColumns) {
       if (column.status === 'connected') {
-        void loadColumnTree('webaccess', column.workspace.workspaceId);
+        // async-iife: bootstrap -- an effect cannot await the tree load.
+        void (async () => {
+          await Promise.resolve();
+          await loadColumnTree('webaccess', column.workspace.workspaceId);
+        })();
       }
     }
   }, [workspaceColumns, loadColumnTree]);
@@ -560,56 +663,98 @@ export default function FilesRoute(): React.JSX.Element {
       return;
     }
     try {
-      const handle = await globalThis.window.showDirectoryPicker({
-        id: 'tau-workspace',
-        mode: 'readwrite',
-      });
-      // The store decides the default from durable rows, and only reports a
-      // creation when it actually minted an identity (DF6 / DF19).
-      const createdWorkspace = await createWorkspace(handle);
-      await workspace.syncProjectRoots();
-      if (createdWorkspace.minted) {
-        telemetry.workspaceCreated({
-          workspaceId: createdWorkspace.workspaceId,
-        });
-      }
-      await reloadWorkspaceColumns();
-      toast.success(`Connected workspace "${handle.name}"`);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
+      const connected = await projectManager.connectWorkspace();
+      if (connected === undefined) {
         telemetry.workspaceOpenFailed({ workspaceId: undefined, reason: 'aborted' });
         return;
       }
+      if (connected.minted) {
+        telemetry.workspaceCreated({
+          workspaceId: connected.workspace.workspaceId,
+        });
+      } else {
+        telemetry.workspaceConnected({ workspaceId: connected.workspace.workspaceId });
+      }
+      await reloadWorkspaceColumns();
+      toast.success(`Connected workspace "${connected.workspace.name}"`);
+    } catch (error) {
       telemetry.workspaceOpenFailed({ workspaceId: undefined, reason: 'unknown' });
       toast.error('Failed to connect workspace.');
       throw error;
     }
-  }, [reloadWorkspaceColumns, telemetry, workspace]);
+  }, [projectManager, reloadWorkspaceColumns, telemetry]);
 
-  const handleForgetWorkspace = useCallback(
-    async (workspaceId: string) => {
-      setBusyWorkspaceId(workspaceId);
+  const handleRetryWorkspace = useCallback(async () => {
+    try {
+      const connected = await projectManager.retryWorkspaceConnection();
+      if (connected) {
+        await reloadWorkspaceColumns();
+        toast.success(`Connected workspace "${connected.workspace.name}"`);
+      }
+    } catch {
+      toast.error('Failed to connect workspace.');
+    }
+  }, [projectManager, reloadWorkspaceColumns]);
+
+  const handleDisconnectWorkspace = useCallback(
+    async (target: Workspace) => {
+      setBusyWorkspaceId(target.workspaceId);
+      let disconnected: Awaited<ReturnType<typeof workspace.disconnectWorkspace>>;
       try {
-        await projectManager.assertWorkspaceMutationAllowed(workspaceId);
-        const bound = await listProjectsForWorkspace(workspaceId);
-        if (bound.length > 0) {
-          toast.error(
-            `Cannot forget — ${bound.length} project${bound.length === 1 ? '' : 's'} still bound to this workspace.`,
-          );
-          return;
-        }
-        await workspace.forgetWorkspace(workspaceId);
-        const invalidatedKey = makeBackendKey('webaccess', workspaceId);
+        disconnected = await workspace.disconnectWorkspace(target.workspaceId);
+      } catch (error) {
+        console.error('Failed to disconnect workspace:', error);
+        toast.error('Failed to disconnect workspace.');
+        return;
+      } finally {
+        setBusyWorkspaceId(undefined);
+      }
+
+      if (disconnected) {
+        const invalidatedKey = makeBackendKey('webaccess', target.workspaceId);
         setLoadedDirectories((previous) => {
           const { [invalidatedKey]: _removed, ...rest } = previous;
           return rest;
         });
-        await reloadWorkspaceColumns();
-      } finally {
-        setBusyWorkspaceId(undefined);
       }
+      try {
+        await reloadWorkspaceColumns();
+      } catch (error) {
+        console.warn('Workspace disconnected but Files refresh failed', error);
+      }
+      if (!disconnected) {
+        return;
+      }
+      toast.success(`Disconnected workspace "${disconnected.workspace.name}"`, {
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            let restored: boolean;
+            try {
+              restored = await workspace.restoreWorkspaceHandle(target.workspaceId, disconnected.handle);
+            } catch (error) {
+              console.error('Failed to undo workspace disconnect:', error);
+              toast.error('Failed to reconnect workspace.');
+              return;
+            }
+            try {
+              await reloadWorkspaceColumns();
+              if (restored) {
+                await projectManager.refreshWorkspaceCatalog();
+              }
+            } catch (error) {
+              console.warn('Workspace restored but Files refresh failed', error);
+            }
+            if (restored) {
+              telemetry.workspaceConnected({ workspaceId: target.workspaceId });
+            } else {
+              toast.info('Workspace connection has already changed.');
+            }
+          },
+        },
+      });
     },
-    [projectManager, reloadWorkspaceColumns, workspace],
+    [projectManager, reloadWorkspaceColumns, telemetry, workspace],
   );
 
   const buildTreeActionHandlers = useCallback(
@@ -630,7 +775,7 @@ export default function FilesRoute(): React.JSX.Element {
           toast.error('Workspace is not connected.');
           return;
         }
-        const content = await client.readFile(path, { scope });
+        const content = await scopedStorage.readFile(path, { scope });
         const filename = path.split('/').pop() ?? 'file';
         downloadBlob(new Blob([content]), filename);
       },
@@ -640,19 +785,61 @@ export default function FilesRoute(): React.JSX.Element {
           toast.error('Workspace is not connected.');
           return;
         }
-        const blob = await client.getZippedDirectory(path, { scope });
         const folderName = path.split('/').pop() ?? 'folder';
-        downloadBlob(blob, `${folderName}.zip`);
+        toast.promise(async () => scopedStorage.getZippedDirectory(path, { scope }), {
+          loading: `Downloading ${folderName}...`,
+          success(blob) {
+            downloadBlob(blob, `${folderName}.zip`);
+            return `Downloaded ${folderName}.zip`;
+          },
+          error: getFileTreeDownloadErrorMessage,
+        });
       },
     }),
-    [projects, resolveScope, client],
+    [projects, resolveScope, scopedStorage],
   );
 
+  const connectionState = projectManager.workspaceConnection;
+  const connectionWorkspace = 'workspace' in connectionState ? connectionState.workspace : undefined;
+  const existingConnectionColumn = connectionWorkspace
+    ? workspaceColumns.some(({ workspace: candidate }) => candidate.workspaceId === connectionWorkspace.workspaceId)
+    : false;
+  const connectionCanBrowse =
+    connectionState.phase === 'browsing' ||
+    connectionState.phase === 'discovering' ||
+    connectionState.phase === 'publishing' ||
+    connectionState.phase === 'ready' ||
+    (connectionState.phase === 'failed' &&
+      (connectionState.failedPhase === 'discovering' || connectionState.failedPhase === 'publishing'));
+  const pendingWorkspaceColumn: WorkspaceColumnState | undefined =
+    connectionWorkspace && connectionCanBrowse && !existingConnectionColumn
+      ? { workspace: connectionWorkspace, status: 'connected' }
+      : undefined;
+  const visibleWorkspaceColumns: WorkspaceColumnState[] = [
+    ...workspaceColumns.filter((column) => column.status === 'connected'),
+    ...(pendingWorkspaceColumn ? [pendingWorkspaceColumn] : []),
+  ];
+  const showPendingColumn =
+    connectionState.phase === 'selecting' ||
+    connectionState.phase === 'registering' ||
+    (connectionState.phase === 'failed' && connectionWorkspace === undefined) ||
+    (connectionWorkspace !== undefined && !connectionCanBrowse && !existingConnectionColumn);
+  const isConnectionActive =
+    connectionState.phase !== 'idle' && connectionState.phase !== 'ready' && connectionState.phase !== 'failed';
+
+  useEffect(() => {
+    if (connectionWorkspace && connectionCanBrowse) {
+      // async-iife: bootstrap -- an effect cannot await the tree load.
+      void (async () => {
+        await Promise.resolve();
+        await loadColumnTree('webaccess', connectionWorkspace.workspaceId);
+      })();
+    }
+  }, [connectionCanBrowse, connectionWorkspace, loadColumnTree]);
+
   return (
-    <div className='flex h-full flex-col gap-4 px-6 py-8'>
-      <div className='flex items-center justify-between gap-4'>
-        <h1 className='shrink-0 text-3xl font-medium tracking-tight'>Files</h1>
-      </div>
+    <PageContent className='flex h-full flex-col gap-4'>
+      <PageHeader title='Files' />
 
       <div className='grid min-h-0 flex-1 auto-rows-fr grid-cols-1 gap-4 overflow-x-auto md:grid-cols-[repeat(auto-fit,minmax(280px,1fr))]'>
         <ColumnShell
@@ -678,60 +865,124 @@ export default function FilesRoute(): React.JSX.Element {
             </div>
           ) : (
             <>
-              {workspaceColumns
-                .filter((column) => column.status === 'connected')
-                .map((column) => {
-                  const cacheKey = makeBackendKey('webaccess', column.workspace.workspaceId);
-                  return (
-                    <ColumnShell
-                      key={column.workspace.workspaceId}
-                      icon={FolderOpen}
-                      title={column.workspace.name}
-                      subtitle='On your disk'
-                      fileTree={projectTreeForKey(cacheKey)}
-                      isLoading={rootLoading[cacheKey] ?? false}
-                      isDisabled={column.status !== 'connected'}
-                      emptyHint='No projects yet'
-                      treeActionHandlers={buildTreeActionHandlers('webaccess', column.workspace.workspaceId)}
-                      topRight={
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant='ghost'
-                              size='icon'
-                              className='size-7'
-                              disabled={busyWorkspaceId === column.workspace.workspaceId}
-                              onClick={() => void handleForgetWorkspace(column.workspace.workspaceId)}
-                            >
-                              <Trash2 className='size-3.5' />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Forget workspace</TooltipContent>
-                        </Tooltip>
-                      }
-                      onRefresh={() => {
-                        handleRefresh('webaccess', column.workspace.workspaceId);
-                      }}
-                      onExpand={(id) => {
-                        handleExpand(id, 'webaccess', column.workspace.workspaceId);
+              {visibleWorkspaceColumns.map((column) => {
+                const cacheKey = makeBackendKey('webaccess', column.workspace.workspaceId);
+                const status =
+                  connectionWorkspace?.workspaceId === column.workspace.workspaceId &&
+                  connectionState.phase !== 'idle' &&
+                  connectionState.phase !== 'selecting' &&
+                  connectionState.phase !== 'registering' ? (
+                    <WorkspaceConnectionStatus
+                      state={connectionState}
+                      onRetry={() => {
+                        void handleRetryWorkspace();
                       }}
                     />
-                  );
-                })}
+                  ) : undefined;
+                return (
+                  <ColumnShell
+                    key={column.workspace.workspaceId}
+                    icon={FolderOpen}
+                    title={column.workspace.name}
+                    subtitle='On your disk'
+                    fileTree={projectTreeForKey(cacheKey)}
+                    isLoading={rootLoading[cacheKey] ?? false}
+                    isDisabled={column.status !== 'connected'}
+                    emptyHint='No projects yet'
+                    treeActionHandlers={buildTreeActionHandlers('webaccess', column.workspace.workspaceId)}
+                    status={status}
+                    topRight={
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant='ghost'
+                            size='icon'
+                            className='size-7'
+                            disabled={busyWorkspaceId === column.workspace.workspaceId}
+                            onClick={() => {
+                              void handleDisconnectWorkspace(column.workspace);
+                            }}
+                            aria-label='Disconnect workspace'
+                          >
+                            <Unplug className='size-3.5' aria-hidden />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Disconnect workspace</TooltipContent>
+                      </Tooltip>
+                    }
+                    onRefresh={() => {
+                      handleRefresh('webaccess', column.workspace.workspaceId);
+                    }}
+                    onExpand={(id) => {
+                      handleExpand(id, 'webaccess', column.workspace.workspaceId);
+                    }}
+                  />
+                );
+              })}
 
-              <button
-                type='button'
-                className='flex min-h-0 flex-col items-center justify-center gap-2 rounded-lg border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground transition-colors hover:bg-muted/50'
-                onClick={handleAddWorkspace}
-              >
-                <Plus className='size-5' />
-                <span className='font-medium'>Add Workspace</span>
-                <span className='text-xs'>Connect another folder on your computer</span>
-              </button>
+              {showPendingColumn ? (
+                <ColumnShell
+                  icon={FolderOpen}
+                  title={
+                    connectionState.phase === 'registering'
+                      ? connectionState.workspaceName
+                      : connectionState.phase === 'failed'
+                        ? (connectionState.workspaceName ?? connectionWorkspace?.name ?? 'Workspace connection failed')
+                        : (connectionWorkspace?.name ?? 'Choose a workspace folder')
+                  }
+                  subtitle='On your disk'
+                  fileTree={[]}
+                  isLoading={connectionState.phase !== 'failed'}
+                  isDisabled={false}
+                  treeActionHandlers={pendingTreeActionHandlers}
+                  status={
+                    connectionState.phase === 'registering' || connectionState.phase === 'selecting' ? (
+                      <div
+                        role='status'
+                        aria-live='polite'
+                        className='flex items-center gap-2 rounded-md border bg-muted/35 px-3 py-2'
+                      >
+                        <Loader className='size-4 shrink-0' />
+                        <div>
+                          <div className='text-xs font-medium'>
+                            {connectionState.phase === 'selecting'
+                              ? 'Choose a workspace folder'
+                              : `Connecting “${connectionState.workspaceName}”…`}
+                          </div>
+                          <div className='text-xs text-muted-foreground'>
+                            {connectionState.phase === 'selecting'
+                              ? 'Browser folder picker is open'
+                              : 'Saving access to this folder'}
+                          </div>
+                        </div>
+                      </div>
+                    ) : connectionState.phase === 'idle' ? undefined : (
+                      <WorkspaceConnectionStatus
+                        state={connectionState}
+                        onRetry={() => {
+                          void handleRetryWorkspace();
+                        }}
+                      />
+                    )
+                  }
+                />
+              ) : undefined}
+
+              {!isConnectionActive && connectionState.phase !== 'failed' ? (
+                <button
+                  type='button'
+                  className='flex min-h-0 flex-col items-center justify-center gap-2 rounded-lg border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground transition-colors hover:bg-muted/50'
+                  onClick={handleAddWorkspace}
+                >
+                  <Plus className='size-5' />
+                  <span className='font-medium'>Add Workspace</span>
+                  <span className='text-xs'>Connect another folder on your computer</span>
+                </button>
+              ) : undefined}
             </>
           )
         ) : undefined}
       </div>
-    </div>
+    </PageContent>
   );
 }

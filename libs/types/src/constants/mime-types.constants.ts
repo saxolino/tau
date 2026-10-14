@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/naming-convention -- file format names don't follow camelCase */
-
 /**
  * Canonical MIME types for 3D file formats.
  * Single source of truth consumed by runtime plugins and apps.
@@ -18,6 +16,11 @@ export const mimeTypes = {
   webp: 'image/webp',
   jpeg: 'image/jpeg',
   jpg: 'image/jpeg',
+  gif: 'image/gif',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  svg: 'image/svg+xml',
 
   // CAD interchange
   step: 'application/step',
@@ -41,6 +44,10 @@ export const mimeTypes = {
   x3d: 'model/x3d+xml',
   x3db: 'model/x3d+fastinfoset',
   x3dv: 'model/x3d-vrml',
+
+  // Manufacturing toolpaths (slicer output; the two-part extension is one Bambu print-ready container)
+  gcode: 'text/x.gcode',
+  'gcode.3mf': 'application/vnd.bambulab.gcode-3mf',
 
   // USD
   usda: 'model/vnd.usda',
@@ -66,6 +73,11 @@ export const mimeTypes = {
   smd: 'application/x-smd',
   wrl: 'model/vrml',
   xgl: 'application/x-xgl',
+
+  // Text / data (EDA kernel exports: bill of materials, readable netlist, circuit JSON)
+  csv: 'text/csv',
+  txt: 'text/plain',
+  json: 'application/json',
 } as const satisfies Record<string, string>;
 
 /**

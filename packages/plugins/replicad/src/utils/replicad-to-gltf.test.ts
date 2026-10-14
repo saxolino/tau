@@ -3,6 +3,7 @@ import { mock } from 'vitest-mock-extended';
 import { NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsUnlit } from '@gltf-transform/extensions';
 import { tauCadTopologyExtension } from '@taucad/runtime/types';
+import type { KernelIssue } from '@taucad/runtime/types';
 import { convertReplicadGeometriesToGltf } from '#utils/replicad-to-gltf.js';
 import type { GeometryReplicad } from '#replicad.types.js';
 import type { RuntimeLogger } from '@taucad/runtime/kernel';
@@ -62,8 +63,14 @@ type TopologyPayload = {
     nodeIndex: number;
     faceGroups?: Array<{ faceId: number }>;
     edgeGroups?: Array<{ edgeId: number }>;
+    sourceRefs?: { kernelId: string; faceGroupUnit: string; edgeGroupUnit: string };
     capabilities?: { hasPreciseTopology: boolean };
   }>;
+  mechanism?: {
+    units: { length: string; angle: string };
+    links: Record<string, { components: string[] }>;
+    joints: Record<string, { origin: number[]; axis?: number[] }>;
+  };
 };
 
 function readTopologyPayload(glb: Uint8Array<ArrayBuffer>) {
@@ -86,6 +93,46 @@ function readTopologyPayload(glb: Uint8Array<ArrayBuffer>) {
 // =============================================================================
 
 describe('convertReplicadGeometriesToGltf', () => {
+  it('should assign stable per-component occurrence topology identifiers', () => {
+    const first = createSimpleGeometry({
+      faces: {
+        triangles: [0, 1, 2, 0, 2, 3],
+        vertices: [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
+        faceGroups: [
+          { start: 0, count: 3, faceId: 123_456 },
+          { start: 3, count: 3, faceId: 654_321 },
+        ],
+      },
+      edges: {
+        lines: [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
+        edgeGroups: [
+          { start: 0, count: 2, edgeId: 111_111 },
+          { start: 2, count: 2, edgeId: 222_222 },
+        ],
+      },
+    });
+    const second = createSimpleGeometry({
+      ...first,
+      faces: {
+        ...first.faces,
+        faceGroups: first.faces.faceGroups.map((group) => ({ ...group, faceId: group.faceId + 7 })),
+      },
+      edges: {
+        ...first.edges,
+        edgeGroups: first.edges.edgeGroups.map((group) => ({ ...group, edgeId: group.edgeId + 9 })),
+      },
+    });
+
+    const firstGlb = convertReplicadGeometriesToGltf({ geometries: [first], includeTauTopology: true });
+    const secondGlb = convertReplicadGeometriesToGltf({ geometries: [second], includeTauTopology: true });
+
+    expect(secondGlb).toEqual(firstGlb);
+    const component = readTopologyPayload(firstGlb).payload.components[0]!;
+    expect(component.faceGroups?.map(({ faceId }) => faceId)).toEqual([0, 1]);
+    expect(component.edgeGroups?.map(({ edgeId }) => edgeId)).toEqual([0, 1]);
+  });
+
   it('should convert empty geometries array to valid GLB', async () => {
     const result = convertReplicadGeometriesToGltf({ geometries: [], format: 'glb' });
 
@@ -111,6 +158,25 @@ describe('convertReplicadGeometriesToGltf', () => {
     expect(primitive.getIndices()!.getCount()).toBe(6);
     expect(primitive.getAttribute('POSITION')!.getCount()).toBe(4);
     expect(primitive.getAttribute('NORMAL')!.getCount()).toBe(4);
+  });
+
+  it('should omit zero-area triangles and preserve the remaining face group', async () => {
+    const geometry = createSimpleGeometry({
+      faces: {
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0, 0],
+        triangles: [0, 1, 3, 0, 1, 2],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
+        faceGroups: [
+          { start: 0, count: 3, faceId: 1 },
+          { start: 3, count: 3, faceId: 2 },
+        ],
+      },
+    });
+
+    const glb = convertReplicadGeometriesToGltf({ geometries: [geometry], format: 'glb' });
+    const document = await new NodeIO().readBinary(glb);
+    expect(document.getRoot().listMeshes()[0]!.listPrimitives()[0]!.getIndices()!.getCount()).toBe(3);
+    expect(readTopologyPayload(glb).payload.components[0]!.faceGroups).toEqual([{ start: 0, count: 3, faceId: 1 }]);
   });
 
   it('should set node name from geometry name', async () => {
@@ -181,9 +247,9 @@ describe('convertReplicadGeometriesToGltf', () => {
     const material = document.getRoot().listMaterials()[0]!;
 
     const color = material.getBaseColorFactor();
-    expect(color[0]).toBeCloseTo(0.215_861, 3);
-    expect(color[1]).toBeCloseTo(0.215_861, 3);
-    expect(color[2]).toBeCloseTo(0.215_861, 3);
+    expect(color[0]).toBeCloseTo(0.215861, 3);
+    expect(color[1]).toBeCloseTo(0.215861, 3);
+    expect(color[2]).toBeCloseTo(0.215861, 3);
     expect(color[3]).toBeCloseTo(1, 2);
     expect(material.getName()).toBe('');
   });
@@ -352,13 +418,15 @@ describe('convertReplicadGeometriesToGltf', () => {
       tauComponentId: 'component:planet-gear',
       tauComponentKind: 'body',
       tauComponentSelector: 'node/0/surface',
-      faceGroups: [{ start: 0, count: 3, faceId: 7 }],
+      faceGroups: [{ start: 0, count: 3, faceId: 0 }],
+      tauFaceGroupUnit: 'indices-v1',
     });
     expect(json.meshes[0]!.primitives[1]!.extras).toMatchObject({
       tauComponentId: 'component:planet-gear',
       tauComponentKind: 'line',
       tauComponentSelector: 'node/0/edges',
-      edgeGroups: [{ start: 0, count: 6, edgeId: 11 }],
+      edgeGroups: [{ start: 0, count: 6, edgeId: 0 }],
+      tauEdgeGroupUnit: 'xyz-scalars-v1',
     });
   });
 
@@ -391,8 +459,9 @@ describe('convertReplicadGeometriesToGltf', () => {
       name: 'Housing',
       selector: 'node/0',
       nodeIndex: 0,
-      faceGroups: [{ faceId: 123 }],
-      edgeGroups: [{ edgeId: 456 }],
+      faceGroups: [{ faceId: 0 }],
+      edgeGroups: [{ edgeId: 0 }],
+      sourceRefs: { kernelId: 'replicad', faceGroupUnit: 'indices-v1', edgeGroupUnit: 'xyz-scalars-v1' },
       capabilities: { hasPreciseTopology: true },
     });
   });
@@ -438,7 +507,7 @@ describe('convertReplicadGeometriesToGltf', () => {
     };
 
     expect(json.asset.version).toBe('2.0');
-    expect(json.asset.generator).toBe('@taucad/geometry-core@0.1.0-beta.0');
+    expect(json.asset.generator).toMatch(/^@taucad\/geometry-core@\d+\.\d+\.\d+/);
     expect(json.meshes).toHaveLength(1);
     expect(json.buffers[0]!.uri).toMatch(/^data:application\/octet-stream;base64,/);
   });
@@ -516,6 +585,115 @@ describe('convertReplicadGeometriesToGltf', () => {
 
     expect(material.getMetallicFactor()).toBeCloseTo(0, 2);
     expect(material.getRoughnessFactor()).toBeCloseTo(0.35, 2);
+  });
+
+  describe('mechanism', () => {
+    const hingedGeometries = [
+      createSimpleGeometry({
+        name: 'Base',
+        faces: {
+          vertices: [12, -34, 56, 0, 0, 0, 12, 0, 0],
+          triangles: [0, 1, 2],
+          normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+          faceGroups: [],
+        },
+      }),
+      createSimpleGeometry({ name: 'Lid' }),
+    ];
+    const hinge = {
+      schemaVersion: 1,
+      units: { length: 'mm', angle: 'deg' },
+      root: 'base',
+      links: { base: { shapes: ['Base'] }, lid: { shapes: ['Lid'] } },
+      joints: { hinge: { type: 'revolute', parent: 'base', child: 'lid', origin: [12, -34, 56], axis: [0, 1, 0] } },
+    };
+
+    it.each([
+      { transform: {}, length: 'm' },
+      { transform: { coordinateSystem: 'z-up', unit: { length: 'millimeter' } }, length: 'mm' },
+    ] as const)(
+      'should place joint origins exactly where the vertices land for $length',
+      async ({ transform, length }) => {
+        const glb = convertReplicadGeometriesToGltf({ geometries: hingedGeometries, mechanism: hinge, ...transform });
+        const document = await new NodeIO().readBinary(glb);
+        const vertex = document
+          .getRoot()
+          .listMeshes()[0]!
+          .listPrimitives()[0]!
+          .getAttribute('POSITION')!
+          .getElement(0, []);
+        const { mechanism } = readTopologyPayload(glb).payload;
+
+        expect(mechanism?.units).toEqual({ length, angle: 'deg' });
+        expect(mechanism?.links).toEqual({
+          base: { components: ['component:base'] },
+          lid: { components: ['component:lid'] },
+        });
+        const origin = mechanism?.joints['hinge']?.origin ?? [];
+        expect(origin).toHaveLength(3);
+        for (const [axis, value] of origin.entries()) {
+          expect(value).toBeCloseTo(vertex[axis]!, 6);
+        }
+      },
+    );
+
+    it('should report omitted units rather than assume millimetres and degrees', () => {
+      const onMechanismIssues = vi.fn<(issues: KernelIssue[]) => void>();
+      const { units: _units, ...unitless } = hinge;
+
+      const glb = convertReplicadGeometriesToGltf({
+        geometries: hingedGeometries,
+        mechanism: unitless,
+        onMechanismIssues,
+      });
+
+      expect(readTopologyPayload(glb).payload.mechanism).toBeUndefined();
+      expect(onMechanismIssues.mock.calls[0]?.[0]).toMatchObject([
+        {
+          code: 'INVALID_ANNOTATION',
+          severity: 'warning',
+          details: { mechanism: { code: 'INVALID_UNIT', path: '/units' } },
+        },
+      ]);
+    });
+
+    it('should give names that slug alike distinct ids and move only the listed shape', () => {
+      const geometries = ['Base', 'Arm', 'Bolt +X', 'Bolt -X'].map((name) => createSimpleGeometry({ name }));
+      const onMechanismIssues = vi.fn<(issues: KernelIssue[]) => void>();
+      const arm = {
+        ...hinge,
+        links: { base: { shapes: ['Base'] }, arm: { shapes: ['Arm', 'Bolt +X'] } },
+        joints: { hinge: { ...hinge.joints.hinge, child: 'arm' } },
+      };
+
+      const glb = convertReplicadGeometriesToGltf({ geometries, mechanism: arm, onMechanismIssues });
+
+      const { json, payload } = readTopologyPayload(glb);
+      const ids = ['component:base', 'component:arm', 'component:bolt-x', 'component:bolt-x-2'];
+      expect(payload.components.map((component) => component.name)).toEqual(['Base', 'Arm', 'Bolt +X', 'Bolt -X']);
+      expect(payload.components.map((component) => component.id)).toEqual(ids);
+      // The viewer poses GLB nodes by this extra, so the static bolt must not share the moving bolt's id.
+      expect(json.nodes.map((node) => node.extras?.['tauComponentId'])).toEqual(ids);
+      expect(payload.mechanism?.links).toEqual({
+        base: { components: ['component:base'] },
+        arm: { components: ['component:arm', 'component:bolt-x'] },
+      });
+      expect(onMechanismIssues).not.toHaveBeenCalled();
+    });
+
+    it('should report a mechanism that is not an object and still write the geometry', () => {
+      const onMechanismIssues = vi.fn<(issues: KernelIssue[]) => void>();
+
+      const glb = convertReplicadGeometriesToGltf({ geometries: hingedGeometries, mechanism: 42, onMechanismIssues });
+
+      const { payload } = readTopologyPayload(glb);
+      expect(payload.components.map((component) => component.id)).toEqual(['component:base', 'component:lid']);
+      expect(payload.mechanism).toBeUndefined();
+      expect(onMechanismIssues).toHaveBeenCalledOnce();
+      expect(onMechanismIssues.mock.calls[0]?.[0]).toMatchObject([
+        { code: 'INVALID_ANNOTATION', severity: 'warning', details: { mechanism: { code: 'INVALID_SHAPE' } } },
+      ]);
+    });
   });
 
   describe('logger instrumentation', () => {

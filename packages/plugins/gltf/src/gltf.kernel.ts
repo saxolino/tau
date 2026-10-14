@@ -1,28 +1,23 @@
-import { NodeIO } from '@gltf-transform/core';
 import { unpartition } from '@gltf-transform/functions';
 import {
   coordinateSystemSchema,
-  createKernelError,
+  createKernelParameterDeclaration,
   createKernelSuccess,
   defineKernel,
-  finalizeRenderOutput,
   unitSchema,
 } from '@taucad/runtime/kernel';
 import { createExportFile } from '@taucad/runtime/types';
-import {
-  allExtensions,
-  createImportFileInventory,
-  normalizeGltfGeometryNames,
-  transformGltfExportBytes,
-} from '@taucad/geometry-core';
+import { createImportFileInventory, normalizeGltfGeometryNames, transformGltfExportBytes } from '@taucad/geometry-core';
 import { createFileResolverIo } from '#file-resolver-io.utils.js';
+import { addFlatNormals } from '#flat-normals.js';
 
-import { dracoDependencies, loadDracoBackend } from '#draco-backend.js';
-import type { DracoBackend } from '#draco-backend.js';
+import { dracoExtensionName, loadDracoDecoder, usesDracoCompression } from '#draco-backend.js';
 
 const glbOptionsSchema = coordinateSystemSchema
   .extend(unitSchema.shape)
-  .extend({ coordinateSystem: coordinateSystemSchema.shape.coordinateSystem.default('y-up') })
+  .extend({
+    coordinateSystem: coordinateSystemSchema.shape.coordinateSystem.default('y-up'),
+  })
   .strict();
 const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 
@@ -32,33 +27,50 @@ export const gltfKernel = defineKernel({
   extensions: ['glb', 'gltf'],
   name: 'GltfKernel',
   version: '0.1.0',
-  exportFormats: { glb: { optionsSchema: glbOptionsSchema } },
+  views: { model: { title: 'Model', mimeType: 'model/gltf-binary' } },
+  exports: {
+    glb: { title: 'glTF binary', mimeType: 'model/gltf-binary', extension: 'glb', optionsSchema: glbOptionsSchema },
+  },
 
   async initialize() {
-    return { draco: await loadDracoBackend() };
+    return {};
   },
 
-  async getDependencies({ entryPath }, { filesystem }) {
+  async resolve({ entryPath }, { filesystem }) {
     const inventory = await createImportFileInventory(filesystem, entryPath);
-    return { resolved: [...inventory.resolved], unresolved: [...inventory.unresolved] };
+    return {
+      resolved: [...inventory.resolved],
+      unresolved: [...inventory.unresolved],
+    };
   },
 
-  async getParameters() {
+  async describe() {
     return createKernelSuccess({
-      defaultParameters: {},
-      jsonSchema: { type: 'object', properties: {}, additionalProperties: false },
+      parameters: createKernelParameterDeclaration(
+        {},
+        { type: 'object', properties: {}, additionalProperties: false },
+        {
+          id: 'urn:taucad:gltf:parameters',
+          name: 'GltfParameters',
+        },
+      ),
     });
   },
 
-  async createGeometry({ entryPath }, { filesystem }, context: { draco: DracoBackend }) {
+  async evaluate({ entryPath }, { filesystem }) {
     const inventory = await createImportFileInventory(filesystem, entryPath);
-    const dependencies = dracoDependencies(context.draco);
     const isJson = entryPath.toLowerCase().endsWith('.gltf');
-    const io = isJson
-      ? createFileResolverIo(inventory.resolver).registerDependencies(dependencies)
-      : new NodeIO().registerExtensions(allExtensions).registerDependencies(dependencies);
-    const document = isJson ? await io.read(basename(entryPath)) : await io.readBinary(inventory.entryBytes);
+    const io = createFileResolverIo(inventory.resolver);
+    const jsonDocument = isJson
+      ? await io.readAsJSON(basename(entryPath))
+      : await io.binaryToJSON(inventory.entryBytes);
+    if (usesDracoCompression(jsonDocument.json)) {
+      io.registerDependencies({ 'draco3d.decoder': await loadDracoDecoder() });
+    }
+    const document = await io.readJSON(jsonDocument);
+    document.disposeExtension(dracoExtensionName);
     await document.transform(unpartition());
+    addFlatNormals(document);
     const glb = await io.writeBinary(document);
     const normalized = await normalizeGltfGeometryNames(glb, {
       format: 'glb',
@@ -69,23 +81,25 @@ export const gltfKernel = defineKernel({
       sceneNamePolicy: 'clear-generated',
       sceneNameSource: 'imported',
     });
-    return finalizeRenderOutput({ artifacts: [{ format: 'gltf', content: normalized }], nativeHandle: normalized });
+    return { handle: normalized };
   },
 
-  async exportGeometry(input) {
-    if (input.nativeHandle.length === 0) {
-      return createKernelError([
-        { message: 'No geometry available for export.', code: 'RUNTIME', type: 'runtime', severity: 'error' },
-      ]);
+  async render({ handle }) {
+    return { content: handle };
+  },
+
+  async export(input) {
+    if (input.handle.length === 0) {
+      throw new Error('No geometry available for export.');
     }
-    const bytes = await transformGltfExportBytes(input.nativeHandle, {
+    const bytes = await transformGltfExportBytes(input.handle, {
       format: 'glb',
       coordinateSystem: input.options.coordinateSystem,
       unit: input.options.unit,
     });
-    return createKernelSuccess([createExportFile('glb', 'model.glb', bytes)]);
+    return { files: [createExportFile('glb', 'model.glb', bytes)] };
   },
 
-  serializeNativeHandle: ({ nativeHandle }) => new Uint8Array(nativeHandle),
-  deserializeNativeHandle: ({ serializedNativeHandle }) => new Uint8Array(serializedNativeHandle),
+  serializeHandle: ({ handle }) => new Uint8Array(handle),
+  deserializeHandle: ({ serialized }) => new Uint8Array(serialized),
 });

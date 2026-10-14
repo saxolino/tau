@@ -10,31 +10,28 @@
  */
 
 import { cadMaterialDefaults, createExportFile } from '@taucad/runtime/types';
-import type { GeometryGltf, KernelIssue } from '@taucad/runtime/types';
-import { createEmptyGlb, createEmptyGltfGeometry, resolveShapeName, uniqueShapeName } from '@taucad/geometry-core';
+import type { KernelIssue } from '@taucad/runtime/types';
+import { createEmptyGlb, resolveShapeName, uniqueShapeName } from '@taucad/geometry-core';
 
 import {
   jsonSchemaFromJson,
   asBuffer,
   defineKernel,
-  KERNEL_MODULES_KEY,
-  getModuleRegistry,
   isRecordObject,
   extractDefaultParameters,
   toVmEntryPath,
   convertRawIssuesToKernelIssues,
   createKernelError,
   createKernelSuccess,
-  RenderArtifactFinalizationError,
-  finalizeRenderOutput,
+  createKernelParameterDeclaration,
+  nonemptyExportFiles,
+  registerKernelModule,
+  createRealmGroup,
 } from '@taucad/runtime/kernel';
-import type { KernelRuntime, RuntimeLogger } from '@taucad/runtime/kernel';
-
-import { opencascadeOptionsSchema, opencascadeRenderSchema, opencascadeExportSchemas } from '#opencascade.schemas.js';
-
+import type { RealmHold, RuntimeLogger } from '@taucad/runtime/kernel';
 import {
-  initOcct,
   detectMultiThreadSupport,
+  initOcct,
   activateOccParallelism,
   formatOcRuntimeError,
   createOcScope,
@@ -43,6 +40,9 @@ import {
   wrapOcForExceptions,
   wrapOcWithTracing,
 } from '@taucad/occt-core';
+
+import { opencascadeOptionsSchema, opencascadeRenderSchema, opencascadeExportSchemas } from '#opencascade.schemas.js';
+
 import type { OcctModuleFactory, OcTracingSummary } from '@taucad/occt-core';
 
 import { createIncrementalMesh, meshShapesToGltf, parseHexColor } from '#opencascade-mesh.js';
@@ -51,6 +51,9 @@ import type { ShapeEntry } from '#opencascade.types.js';
 import { opencascadeDetectPattern } from '#opencascade.constants.js';
 
 import type { OpenCascadeInstance, TopoDS_Shape } from 'libcascade/init';
+
+/** One libcascade instance per realm, shared by every kernel in it (memory parity with replicad, Q6). */
+const libcascadeOcct = createRealmGroup<OpenCascadeInstance>('libcascade-occt');
 
 const fullWasmUrl = new URL(import.meta.resolve('libcascade/wasm')).href;
 const multiWasmUrl = new URL(import.meta.resolve('libcascade/multi/wasm')).href;
@@ -100,6 +103,8 @@ export type OpenCascadeOptions = {
 
 type OpenCascadeContext = {
   oc: OpenCascadeInstance;
+  /** This kernel's share of the realm's one libcascade instance. */
+  occt: RealmHold<OpenCascadeInstance>;
   isParallelMeshing: boolean;
   tracingSummary?: OcTracingSummary;
   /** Unique MEMFS scratch path per snapshot write, owned by this kernel instance. */
@@ -199,17 +204,6 @@ async function resolveWasm(
 // =============================================================================
 // Helpers
 // =============================================================================
-
-function registerOcModule(oc: OpenCascadeInstance, runtime: KernelRuntime): void {
-  const registry = getModuleRegistry();
-  registry.set('libcascade', oc);
-
-  const exportNames = Object.keys(oc).filter((key) => /^[$_a-z][\w$]*$/i.test(key));
-  const namedExports = exportNames.map((key) => `export const ${key} = __mod.${key};`).join('\n');
-  const code = `const __mod = globalThis.${KERNEL_MODULES_KEY}.get('libcascade');\n${namedExports}\nexport default __mod;\n`;
-
-  runtime.bundler.registerModule('libcascade', { code, version: '3.0.0' });
-}
 
 function shapeEntryFromKernelReturnItem(item: unknown): ShapeEntry | undefined {
   if (isOpenCascadeShape(item)) {
@@ -394,14 +388,12 @@ function deserializeShapeEntry(
   }
 }
 
-function assertSerializedNativeHandle(
-  serializedNativeHandle: unknown,
-): asserts serializedNativeHandle is OpenCascadeSerializedNativeHandle {
-  if (!isRecordObject(serializedNativeHandle)) {
+function assertSerializedNativeHandle(serialized: unknown): asserts serialized is OpenCascadeSerializedNativeHandle {
+  if (!isRecordObject(serialized)) {
     throw new Error('Invalid OpenCascade native-handle snapshot: expected an object.');
   }
 
-  const { kind, version, format, occtFormatVersion, entries } = serializedNativeHandle;
+  const { kind, version, format, occtFormatVersion, entries } = serialized;
   if (kind !== 'opencascade-native-handle' || version !== 1) {
     throw new Error(`Unsupported OpenCascade native-handle snapshot schema: ${String(kind)}/${String(version)}`);
   }
@@ -473,12 +465,12 @@ function exportOpencascadeStlEntry(
  * an empty string is a non-null `const char*` and enables multi-file mode with no geometry in the main file).
  *
  * @param oc - WASM OpenCascade instance
- * @param nativeHandle - shapes and metadata from the last `createGeometry`
+ * @param handle - shapes and metadata from the last `createGeometry`
  * @returns STEP file bytes on success, or `{ ok: false }` when `Perform` fails
  */
 function exportOpencascadeStepAssembly(
   oc: OpenCascadeInstance,
-  nativeHandle: ShapeEntry[],
+  handle: ShapeEntry[],
 ): { ok: true; bytes: Uint8Array<ArrayBuffer> } | { ok: false } {
   const scope = createOcScope();
 
@@ -499,7 +491,7 @@ function exportOpencascadeStepAssembly(
     const rootName = scope.track(new oc.TCollection_ExtendedString('assembly', true));
     oc.TDataStd_Name.Set(rootLabel, rootName);
 
-    for (const entry of nativeHandle) {
+    for (const entry of handle) {
       if (entry.shape.IsNull()) {
         continue;
       }
@@ -596,11 +588,21 @@ export const opencascadeKernel = defineKernel({
   name: 'OpenCascadeKernel',
   version: '1.1.0',
   optionsSchema: opencascadeOptionsSchema,
-  render: { optionsSchema: opencascadeRenderSchema },
-  exportFormats: {
-    stl: { optionsSchema: opencascadeExportSchemas.stl },
-    step: { optionsSchema: opencascadeExportSchemas.step },
-    glb: { optionsSchema: opencascadeExportSchemas.glb },
+  views: { model: { title: 'Model', mimeType: 'model/gltf-binary', optionsSchema: opencascadeRenderSchema } },
+  exports: {
+    stl: { title: 'STL', mimeType: 'model/stl', extension: 'stl', optionsSchema: opencascadeExportSchemas.stl },
+    step: {
+      title: 'STEP',
+      mimeType: 'application/step',
+      extension: 'step',
+      optionsSchema: opencascadeExportSchemas.step,
+    },
+    glb: {
+      title: 'glTF binary',
+      mimeType: 'model/gltf-binary',
+      extension: 'glb',
+      optionsSchema: opencascadeExportSchemas.glb,
+    },
   },
 
   async initialize(options, runtime) {
@@ -613,49 +615,64 @@ export const opencascadeKernel = defineKernel({
     const span = tracer.startSpan('opencascade.wasm-init');
     const resolved = await resolveWasm(options.wasm, logger);
     const compiledModule = resolved.wasmUrl ? runtime.getCompiledWasmModule(resolved.wasmUrl) : undefined;
-    let oc = await initOcct<OpenCascadeInstance>(resolved.wasmUrl, resolved.bindingsFactory, {
-      tracer,
-      ...(compiledModule ? { compiledModule } : {}),
-      print: (text) => {
-        logger.trace('OCJS stdout', { data: { text } });
-      },
-      printErr: (text) => {
-        logger.warn('OCJS stderr', { data: { text } });
+    const occt = await runtime.realm.hold({
+      group: libcascadeOcct,
+      key: `${resolved.variant}:${resolved.wasmUrl ?? ''}`,
+      async create() {
+        // ponytail: OCCT print/printErr reach the creating kernel's logger only; exact with one realm per client.
+        const instance = await initOcct<OpenCascadeInstance>(resolved.wasmUrl, resolved.bindingsFactory, {
+          tracer,
+          ...(compiledModule ? { compiledModule } : {}),
+          print: (text) => {
+            logger.trace('OCJS stdout', { data: { text } });
+          },
+          printErr: (text) => {
+            logger.warn('OCJS stderr', { data: { text } });
+          },
+        });
+        if (resolved.variant === 'multi') {
+          activateOccParallelism(instance, logger);
+        } else {
+          logger.log(`OpenCascade OCCT initialised: variant=${resolved.variant} (single-threaded)`);
+        }
+        return instance;
       },
     });
     span.end();
 
-    if (resolved.variant === 'multi') {
-      activateOccParallelism(oc, logger);
-    } else {
-      logger.log(`OpenCascade OCCT initialised: variant=${resolved.variant} (single-threaded)`);
+    // `onDispose` never runs for a kernel whose initialisation failed, so release the hold here (I5).
+    try {
+      let oc: OpenCascadeInstance;
+      let tracingSummary: OcTracingSummary | undefined;
+      if (ocTracing === 'summary' || ocTracing === 'per-call') {
+        const traced = wrapOcWithTracing(occt.value, tracer, { mode: ocTracing });
+        oc = traced.tracedInstance;
+        tracingSummary = traced.summary;
+      } else {
+        oc = wrapOcForExceptions(occt.value);
+      }
+
+      registerKernelModule(runtime, { name: 'libcascade', exports: oc, version: '3.0.0' });
+      logger.debug('OpenCascade kernel initialized');
+
+      return {
+        oc,
+        occt,
+        isParallelMeshing: resolved.variant === 'multi',
+        tracingSummary,
+        nextSnapshotPath: createSnapshotPathAllocator(),
+      } satisfies OpenCascadeContext;
+    } catch (error) {
+      occt.release();
+      throw error;
     }
-
-    let tracingSummary: OcTracingSummary | undefined;
-    if (ocTracing === 'summary' || ocTracing === 'per-call') {
-      const traced = wrapOcWithTracing(oc, tracer, { mode: ocTracing });
-      oc = traced.tracedInstance;
-      tracingSummary = traced.summary;
-    } else {
-      oc = wrapOcForExceptions(oc);
-    }
-
-    registerOcModule(oc, runtime);
-    logger.debug('OpenCascade kernel initialized');
-
-    return {
-      oc,
-      isParallelMeshing: resolved.variant === 'multi',
-      tracingSummary,
-      nextSnapshotPath: createSnapshotPathAllocator(),
-    } satisfies OpenCascadeContext;
   },
 
-  async getDependencies({ entryPath }, runtime) {
+  async resolve({ entryPath }, runtime) {
     return runtime.bundler.resolveDependencies(entryPath);
   },
 
-  async getParameters({ entryPath }, runtime, context) {
+  async describe({ entryPath }, runtime, context) {
     const relativeFilePath = toVmEntryPath(entryPath);
     let bundleSourceMap: string | undefined;
     let entryUrl: string | undefined;
@@ -675,14 +692,22 @@ export const opencascadeKernel = defineKernel({
       const defaultParameters = extractDefaultParameters(executeResult.value);
       const jsonSchema = await jsonSchemaFromJson(defaultParameters);
 
-      return createKernelSuccess({ defaultParameters, jsonSchema });
+      return createKernelSuccess({
+        parameters: createKernelParameterDeclaration(defaultParameters, jsonSchema, {
+          id: 'urn:taucad:opencascade:parameters',
+          name: 'OpenCascadeParameters',
+        }),
+      });
     } catch (error) {
-      const issue = formatOcRuntimeError(error, context.oc, { bundleSourceMap, entryUrl });
+      const issue = formatOcRuntimeError(error, context.oc, {
+        bundleSourceMap,
+        entryUrl,
+      });
       return createKernelError([issue]);
     }
   },
 
-  async createGeometry({ entryPath, parameters }, runtime, context) {
+  async evaluate({ entryPath, parameters }, runtime, context) {
     const { logger, tracer } = runtime;
     const relativeFilePath = toVmEntryPath(entryPath);
     let bundleSourceMap: string | undefined;
@@ -708,10 +733,12 @@ export const opencascadeKernel = defineKernel({
         logger.warn('createGeometry returning empty: main-function-not-found', {
           data: { filePath: relativeFilePath },
         });
-        return finalizeRenderOutput({ artifacts: [createEmptyGltfGeometry()], nativeHandle: [] });
+        return { handle: [] };
       }
 
-      const mainSpan = tracer.startSpan('opencascade.run-main', { phase: 'computingGeometry' });
+      const mainSpan = tracer.startSpan('opencascade.run-main', {
+        phase: 'computingGeometry',
+      });
       const mainResult = await runOcMain({
         module,
         parameters,
@@ -734,30 +761,33 @@ export const opencascadeKernel = defineKernel({
         logger.warn('createGeometry returning empty: main-returned-no-shapes', {
           data: { filePath: relativeFilePath },
         });
-        return finalizeRenderOutput({ artifacts: [createEmptyGltfGeometry()], nativeHandle: [] });
+        return { handle: [] };
       }
 
       // Tessellation is deferred to meshGeometry — the raw TopoDS shapes are the
-      // nativeHandle, and a BRep-only export never pays for a display mesh.
-      return { nativeHandle: retainShapeEntries(shapeEntries) };
+      // handle, and a BRep-only export never pays for a display mesh.
+      return { handle: retainShapeEntries(shapeEntries) };
     } catch (error) {
-      if (error instanceof OcctBuildError || error instanceof RenderArtifactFinalizationError) {
+      if (error instanceof OcctBuildError) {
         throw error;
       }
 
-      const issue = formatOcRuntimeError(error, context.oc, { bundleSourceMap, entryUrl });
+      const issue = formatOcRuntimeError(error, context.oc, {
+        bundleSourceMap,
+        entryUrl,
+      });
       throw new OcctBuildError([issue]);
     }
   },
 
-  async meshGeometry({ nativeHandle, options }, runtime, context) {
-    if (nativeHandle.length === 0) {
-      return { geometry: createEmptyGltfGeometry() };
+  async render({ handle, options }, runtime, context) {
+    if (handle.length === 0) {
+      return { content: asBuffer(createEmptyGlb()) };
     }
 
     try {
       const meshSpan = runtime.tracer.startSpan('opencascade.mesh-to-gltf', {
-        shapeCount: nativeHandle.length,
+        shapeCount: handle.length,
         phase: 'computingGeometry',
       });
 
@@ -765,7 +795,7 @@ export const opencascadeKernel = defineKernel({
       const { linearTolerance, angularTolerance } = tessellation;
       const gltfData = await (async () => {
         try {
-          return await meshShapesToGltf(context.oc, nativeHandle, {
+          return await meshShapesToGltf(context.oc, handle, {
             linearTolerance,
             angularTolerance: angularTolerance * (Math.PI / 180),
             inParallel: context.isParallelMeshing,
@@ -775,33 +805,34 @@ export const opencascadeKernel = defineKernel({
         }
       })();
 
-      const geometry: GeometryGltf = { format: 'gltf', content: gltfData };
-      return { geometry };
+      return { content: gltfData };
     } catch (error) {
       const issue = formatOcRuntimeError(error, context.oc, {});
       throw new OcctBuildError([issue]);
     }
   },
 
-  async exportGeometry(input, _runtime, context) {
-    const { format, nativeHandle, options } = input;
-    const emptyGlbExport = () =>
-      createKernelSuccess([createExportFile(format, 'model.glb', asBuffer(createEmptyGlb()))]);
-    const noGeometryExportError = () =>
-      createKernelError([
+  async export(input, _runtime, context) {
+    const { exportId, handle, options } = input;
+    const emptyGlbExport = () => ({
+      files: [createExportFile('glb', 'model.glb', asBuffer(createEmptyGlb()))] as const,
+    });
+    const noGeometryExportError = (): never => {
+      throw new OcctBuildError([
         { message: 'No geometry available for export', code: 'RUNTIME', type: 'runtime', severity: 'error' },
       ]);
+    };
 
-    switch (format) {
+    switch (exportId) {
       case 'glb': {
-        if (nativeHandle.length === 0) {
+        if (handle.length === 0) {
           return emptyGlbExport();
         }
 
         const { linearTolerance, angularTolerance } = options.tessellation;
         const { coordinateSystem, unit } = options;
 
-        const gltfData = await meshShapesToGltf(context.oc, nativeHandle, {
+        const gltfData = await meshShapesToGltf(context.oc, handle, {
           linearTolerance,
           angularTolerance: angularTolerance * (Math.PI / 180),
           inParallel: context.isParallelMeshing,
@@ -809,26 +840,26 @@ export const opencascadeKernel = defineKernel({
           unit,
         });
 
-        return createKernelSuccess([createExportFile(format, 'model.glb', asBuffer(gltfData))]);
+        return { files: [createExportFile('glb', 'model.glb', asBuffer(gltfData))] };
       }
 
       case 'step': {
-        if (nativeHandle.length === 0) {
+        if (handle.length === 0) {
           return noGeometryExportError();
         }
 
-        const result = exportOpencascadeStepAssembly(context.oc, nativeHandle);
+        const result = exportOpencascadeStepAssembly(context.oc, handle);
         if (!result.ok) {
-          return createKernelError([
+          throw new OcctBuildError([
             { message: 'STEP write failed', code: 'RUNTIME', type: 'runtime', severity: 'error' },
           ]);
         }
 
-        return createKernelSuccess([createExportFile('step', 'assembly', result.bytes)]);
+        return { files: [createExportFile('step', 'assembly', result.bytes)] };
       }
 
       case 'stl': {
-        if (nativeHandle.length === 0) {
+        if (handle.length === 0) {
           return noGeometryExportError();
         }
 
@@ -837,7 +868,7 @@ export const opencascadeKernel = defineKernel({
         const angularToleranceRad = angularTolerance * (Math.PI / 180);
         const { coordinateSystem } = options;
 
-        const results = nativeHandle.map((entry) =>
+        const results = handle.map((entry) =>
           exportOpencascadeStlEntry(oc, entry, {
             linearTolerance,
             angularTolerance: angularToleranceRad,
@@ -846,12 +877,12 @@ export const opencascadeKernel = defineKernel({
           }),
         );
 
-        return createKernelSuccess(results);
+        return { files: nonemptyExportFiles(results) };
       }
 
       default: {
-        const _exhaustive: never = format;
-        return createKernelError([
+        const _exhaustive: never = exportId;
+        throw new OcctBuildError([
           {
             message: `Unsupported export format: ${String(_exhaustive)}`,
             code: 'KERNEL_CAPABILITY_MISSING',
@@ -863,25 +894,27 @@ export const opencascadeKernel = defineKernel({
     }
   },
 
-  disposeNativeHandle({ nativeHandle }) {
-    releaseShapeEntries(nativeHandle);
+  releaseHandle({ handle }) {
+    releaseShapeEntries(handle);
   },
 
-  serializeNativeHandle({ nativeHandle }, _runtime, context): OpenCascadeSerializedNativeHandle {
+  serializeHandle({ handle }, _runtime, context): OpenCascadeSerializedNativeHandle {
     return {
       kind: 'opencascade-native-handle',
       version: 1,
       format: 'brep-ascii',
       occtFormatVersion: 'TopTools_FormatVersion_CURRENT',
-      entries: nativeHandle.map((entry, index) => serializeShapeEntry(context, entry, index)),
+      entries: handle.map((entry, index) => serializeShapeEntry(context, entry, index)),
     };
   },
 
-  deserializeNativeHandle({ serializedNativeHandle }, _runtime, context) {
-    assertSerializedNativeHandle(serializedNativeHandle);
-    return retainShapeEntries(
-      serializedNativeHandle.entries.map((entry, index) => deserializeShapeEntry(context, entry, index)),
-    );
+  deserializeHandle({ serialized }, _runtime, context) {
+    assertSerializedNativeHandle(serialized);
+    return retainShapeEntries(serialized.entries.map((entry, index) => deserializeShapeEntry(context, entry, index)));
+  },
+
+  async onDispose(context) {
+    context.occt.release();
   },
 });
 

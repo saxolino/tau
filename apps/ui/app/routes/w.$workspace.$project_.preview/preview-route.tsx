@@ -1,71 +1,30 @@
 /**
- * Shared internals of every project-preview route. The static (community
- * examples) and dynamic (owned projects) branches share nothing but this file,
- * so blueprint D4 splits them across `/examples/:id` and
- * `/w/{workspace}/{project}/preview`.
+ * Shared internals of the owned-project preview route.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import type { ProjectManifest } from '@taucad/types';
-import { Button } from '#components/ui/button.js';
-import { Loader } from '#components/ui/loader.js';
+import { Button } from '@taucad/ui/components/button';
+import { Loader } from '@taucad/ui/components/loader';
 import { HomeFileManagerProvider, SharedWorkerGate } from '#hooks/use-file-manager.js';
 import { CadPreviewProvider } from '#hooks/use-cad-preview.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
-import type { ProjectsWithFiles } from '#constants/project-examples.js';
-import { sampleProjects } from '#constants/project-examples.js';
-import { useIsMobile } from '#hooks/use-mobile.js';
+import { useProjects } from '#hooks/use-projects.js';
+import { resolveProjectRoute } from '#hooks/use-project-slug-route.js';
+import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import { PreviewDesktop } from '#routes/w.$workspace.$project_.preview/preview-desktop.js';
 import { PreviewMobile } from '#routes/w.$workspace.$project_.preview/preview-mobile.js';
-import {
-  PreviewProjectContext,
-  usePreviewProject,
-} from '#routes/w.$workspace.$project_.preview/preview-project-context.js';
+import { PreviewProjectContext } from '#routes/w.$workspace.$project_.preview/preview-project-context.js';
 import type { PreviewProjectContextValue } from '#routes/w.$workspace.$project_.preview/preview-project-context.js';
+import { toast } from '#components/ui/sonner.js';
 
-export function findStaticProject(projectId: string): ProjectsWithFiles | undefined {
-  return sampleProjects.find((project) => project.id === projectId);
-}
-
-/**
- * Provider for static projects (from sampleProjects). Metadata is available immediately.
- */
-export function StaticPreviewProvider({
-  children,
-  projectId,
-  staticProject,
-}: {
-  readonly children?: React.ReactNode;
-  readonly projectId: string;
-  readonly staticProject: ProjectsWithFiles;
-}): React.JSX.Element {
-  const projectData = staticProject;
-  const mainFile = staticProject.assets.main.entryPath;
-
-  const noopUpdate = useCallback(() => {
-    // Static projects are read-only
-  }, []);
-
-  const metadataValue = useMemo<PreviewProjectContextValue>(
-    () => ({
-      project: projectData,
-      isStaticProject: true,
-      staticProjectFiles: staticProject.files,
-      updateName: noopUpdate,
-      updateDescription: noopUpdate,
-    }),
-    [projectData, staticProject.files, noopUpdate],
-  );
-
-  return (
-    <PreviewProjectContext.Provider value={metadataValue}>
-      <CadPreviewProvider projectId={projectId} mainFile={mainFile} files={staticProject.files}>
-        {children}
-      </CadPreviewProvider>
-    </PreviewProjectContext.Provider>
-  );
-}
+/** Project details live in tau.json, which Tau refuses to write while it needs repair (R4). */
+const reportDetailsError = (error: unknown): void => {
+  toast.error('Could not save project details', {
+    description: error instanceof Error ? error.message : undefined,
+  });
+};
 
 /**
  * Provider for dynamic projects (from storage). Loads project metadata and defers rendering
@@ -79,20 +38,19 @@ export function DynamicPreviewProvider({
   readonly projectId: string;
 }): React.JSX.Element {
   const projectManager = useProjectManager();
-  const [project, setProject] = useState<ProjectManifest | undefined>();
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadedProject, setLoadedProject] = useState<{
+    readonly projectId: string;
+    readonly project: ProjectManifest | undefined;
+  }>();
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoaded(false);
-
     async function loadProjectMetadata(): Promise<void> {
       const loaded = await projectManager.getProject(projectId);
       if (cancelled) {
         return;
       }
-      setProject(loaded);
-      setIsLoaded(true);
+      setLoadedProject({ projectId, project: loaded });
     }
 
     void loadProjectMetadata();
@@ -102,14 +60,22 @@ export function DynamicPreviewProvider({
     };
   }, [projectId, projectManager]);
 
+  const isLoaded = loadedProject?.projectId === projectId;
+  const project = isLoaded ? loadedProject.project : undefined;
+
   const updateName = useCallback(
     (name: string) => {
       if (!project) {
         return;
       }
 
-      setProject((previous) => (previous ? { ...previous, name } : previous));
-      void projectManager.updateProject(project.id, { ...project, name });
+      setLoadedProject((previous) =>
+        previous?.projectId === projectId && previous.project
+          ? { projectId, project: { ...previous.project, name } }
+          : previous,
+      );
+      // oxlint-disable-next-line promise/prefer-await-to-then, tau-lint/no-async-iife -- a refused manifest write is named, not left loose
+      void projectManager.updateProject(project.id, { ...project, name }).catch(reportDetailsError);
     },
     [project, projectManager],
   );
@@ -120,8 +86,13 @@ export function DynamicPreviewProvider({
         return;
       }
 
-      setProject((previous) => (previous ? { ...previous, description } : previous));
-      void projectManager.updateProject(project.id, { ...project, description });
+      setLoadedProject((previous) =>
+        previous?.projectId === projectId && previous.project
+          ? { projectId, project: { ...previous.project, description } }
+          : previous,
+      );
+      // oxlint-disable-next-line promise/prefer-await-to-then, tau-lint/no-async-iife -- a refused manifest write is named, not left loose
+      void projectManager.updateProject(project.id, { ...project, description }).catch(reportDetailsError);
     },
     [project, projectManager],
   );
@@ -129,8 +100,6 @@ export function DynamicPreviewProvider({
   const metadataValue = useMemo<PreviewProjectContextValue>(
     () => ({
       project,
-      isStaticProject: false,
-      staticProjectFiles: undefined,
       updateName,
       updateDescription,
     }),
@@ -143,7 +112,7 @@ export function DynamicPreviewProvider({
     return (
       <PreviewProjectContext.Provider value={metadataValue}>
         <div role='alert' aria-label='Preview error' className='flex h-full items-center justify-center'>
-          <div className='flex flex-col items-center gap-3 text-destructive'>
+          <div className='flex flex-col items-center gap-3 text-feature'>
             <AlertTriangle className='size-10 opacity-60' strokeWidth={1.5} />
             <span className='max-w-sm text-center text-sm'>
               Project <span className='font-mono'>{projectId}</span> was not found.
@@ -175,8 +144,7 @@ export function DynamicPreviewProvider({
 }
 
 /**
- * The preview shell. `projectId` is the identity every preview pane is keyed
- * by: a `proj_` id for owned projects, the sample id for community examples.
+ * The preview shell. `projectId` is the owned-project identity every preview pane is keyed by.
  */
 export function PreviewSession({
   children,
@@ -185,26 +153,31 @@ export function PreviewSession({
   readonly children?: React.ReactNode;
   readonly projectId: string;
 }): React.JSX.Element {
-  const staticProject = findStaticProject(projectId);
-
   return (
     <SharedWorkerGate>
       <HomeFileManagerProvider key={projectId} projectId={projectId} rootDirectory={`/projects/${projectId}`}>
-        {staticProject ? (
-          <StaticPreviewProvider projectId={projectId} staticProject={staticProject}>
-            {children}
-          </StaticPreviewProvider>
-        ) : (
-          <DynamicPreviewProvider projectId={projectId}>{children}</DynamicPreviewProvider>
-        )}
+        <DynamicPreviewProvider projectId={projectId}>{children}</DynamicPreviewProvider>
       </HomeFileManagerProvider>
     </SharedWorkerGate>
   );
 }
 
-function ProjectNameBreadcrumb({ to }: { readonly to: string }): React.JSX.Element {
-  const { project } = usePreviewProject();
-  const name = project?.name ?? 'Project';
+/*
+ * The shell renders breadcrumbs above every route provider, so this one reads the project
+ * listing the root layout already holds instead of the preview's own context.
+ */
+function ProjectNameBreadcrumb({
+  to,
+  workspace,
+  project,
+}: {
+  readonly to: string;
+  readonly workspace: string;
+  readonly project: string;
+}): React.JSX.Element {
+  const { projects } = useProjects({ includeDeleted: true });
+  const projectId = resolveProjectRoute(projects, workspace, project);
+  const name = projects.find((candidate) => candidate.id === projectId)?.name ?? 'Project';
 
   return (
     <Button asChild variant='ghost'>
@@ -214,9 +187,17 @@ function ProjectNameBreadcrumb({ to }: { readonly to: string }): React.JSX.Eleme
 }
 
 /** Breadcrumb trail for a preview route, linking back to its own URL. */
-export const previewBreadcrumb = (key: string, to: string): React.ReactNode[] => [
-  <ProjectNameBreadcrumb key={`${key}-project-name`} to={to} />,
-  <span key={`${key}-preview`} className='flex h-8 items-center px-3 text-sm font-medium'>
+export const previewBreadcrumb = (
+  slugs: { readonly workspace: string; readonly project: string },
+  to: string,
+): React.ReactNode[] => [
+  <ProjectNameBreadcrumb
+    key={`${slugs.project}-project-name`}
+    to={to}
+    workspace={slugs.workspace}
+    project={slugs.project}
+  />,
+  <span key={`${slugs.project}-preview`} className='flex h-8 items-center px-3 text-sm font-medium'>
     Preview
   </span>,
 ];

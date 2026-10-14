@@ -5,10 +5,25 @@
  * @public
  */
 export const AttributeKey = {
+  /* Agent usage (W36-C): each maps to its Prometheus label exactly (`agent.id` → `agent_id`). `outcome` and
+   * `status` are bare by contract — W36's dashboards query those label names. */
+  AGENT_ID: 'agent.id',
+  AGENT_PLACEMENT: 'agent.placement',
+  AGENT_OUTCOME: 'outcome',
+  AGENT_TOOL_KIND: 'tool.kind',
+  AGENT_TOOL_STATUS: 'status',
+  AGENT_TOKEN_TYPE: 'token.type',
+  AGENT_ERROR_CODE: 'error.code',
+  /* Agent context (agent usage telemetry blueprint): bounded vocabularies from `ingest.ts`. */
+  AGENT_TOOL_NAME: 'tool.name',
+  AGENT_SKILL: 'skill',
+  AGENT_EVALUATION_CLASS: 'evaluation.class',
+  AGENT_LOOKUP_OUTCOME: 'lookup.outcome',
+  AGENT_RUN_STATUS: 'run.status',
+  AGENT_ASSERTION_RESULT: 'result',
+  KERNEL_ID: 'kernel.id',
   KERNEL_STATUS: 'kernel.status',
   EXPORT_FORMAT: 'export.format',
-  RPC_METHOD: 'rpc.method',
-  RPC_STATUS: 'rpc.status',
   WS_CLOSE_REASON: 'ws.close.reason',
   GEN_AI_TOOL_NAME: 'gen_ai.tool.name',
   GEN_AI_TOOL_STATUS: 'gen_ai.tool.status',
@@ -16,7 +31,6 @@ export const AttributeKey = {
   GEN_AI_TOKEN_TYPE: 'gen_ai.token.type',
   GEN_AI_REQUEST_MODEL: 'gen_ai.request.model',
   REDIS_ROLE: 'redis.role',
-  SSE_EVENT_TYPE: 'sse.event.type',
   ERROR_TYPE: 'error.type',
   WS_RECONNECTION_ATTEMPT: 'ws.reconnection.attempt',
   EDITOR_KERNEL: 'editor.kernel',
@@ -124,8 +138,8 @@ export const GenAiInterruptRecoveryOutcome = {
 /**
  * Budgeting mode used for context-window decisions.
  *
- * `estimated` is the only active mode today; exact provider-native counting is
- * reserved for a future TokenBudgetService implementation slot.
+ * `estimated` is the only mode implemented: budgets come from a token estimate
+ * rather than a provider-native count.
  * @public
  */
 export const GenAiContextBudgetKind = {

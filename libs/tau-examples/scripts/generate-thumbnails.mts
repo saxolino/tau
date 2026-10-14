@@ -8,18 +8,24 @@
  *   pnpm exec tsx libs/tau-examples/scripts/generate-thumbnails.mts --only=replicad/logo,replicad/tau-wordmark
  */
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNodeClient } from '@taucad/runtime/node';
 import sharp from 'sharp';
-import { exampleKernelIds, exampleRuntime } from '#scripts/runtime.js';
+import { createExampleRuntimeClient, exampleKernelIds } from '#scripts/runtime.js';
+import { renderThumbnails } from '#scripts/render-thumbnail.js';
+
+// Nx sets FORCE_COLOR while some shells set NO_COLOR; runtime workers would
+// otherwise emit the same Node warning once for every plugin and example.
+delete process.env['NO_COLOR'];
 
 type ManifestEntry = {
   readonly kernel: string;
   readonly name: string;
   readonly mainFile?: string;
   readonly files: readonly string[];
+  readonly featured?: true;
 };
 
 type RenderedThumbnail = {
@@ -41,13 +47,17 @@ const only = new Set(
     .split(',')
     .filter(Boolean) ?? [],
 );
-const thumbnailOptions = { width: 768, height: 576, margin: 0.1 } as const;
+// Edge widths are output pixels. A featured card is drawn at twice a card's size, so its
+// thumbnail halves the width to keep the same on-screen line weight.
+const variants = [
+  { file: 'thumbnail.webp', lineWidth: 6 },
+  { file: 'thumbnail-featured.webp', lineWidth: 3 },
+] as const;
 
-const runtime = exampleRuntime;
 const supportedKernels: ReadonlySet<string> = exampleKernelIds;
 const engineIdForFixtureFamily = (kernel: string): string => (kernel === 'openscad' ? 'openrscad' : kernel);
 
-const generateAssetMap = (thumbnails: readonly RenderedThumbnail[]): string => {
+const generateAssetMap = (entries: readonly ManifestEntry[]): string => {
   const lines = [
     '/* oxlint-disable prettier/prettier, eslint/no-restricted-imports -- Auto-generated Vite asset imports. */',
     '/* eslint-disable @typescript-eslint/naming-convention -- Generated keys are fixture paths. */',
@@ -55,8 +65,7 @@ const generateAssetMap = (thumbnails: readonly RenderedThumbnail[]): string => {
     '// Run `pnpm nx generate-thumbnails tau-examples` to regenerate.',
     '',
   ];
-  for (const [index, thumbnail] of thumbnails.entries()) {
-    const { kernel, name } = thumbnail.entry;
+  for (const [index, { kernel, name }] of entries.entries()) {
     lines.push(`import thumbnail${index} from './kernels/${kernel}/${name}/thumbnail.webp?url';`);
   }
   lines.push(
@@ -64,8 +73,8 @@ const generateAssetMap = (thumbnails: readonly RenderedThumbnail[]): string => {
     '/** Static thumbnail URLs keyed by `<kernel>/<example>`. @public */',
     'export const thumbnailAssets = {',
   );
-  for (const [index, thumbnail] of thumbnails.entries()) {
-    lines.push(`  '${thumbnail.entry.kernel}/${thumbnail.entry.name}': thumbnail${index},`);
+  for (const [index, { kernel, name }] of entries.entries()) {
+    lines.push(`  '${kernel}/${name}': thumbnail${index},`);
   }
   lines.push(
     '} as const;',
@@ -84,17 +93,20 @@ const bytesEqual = (left: Uint8Array<ArrayBuffer>, right: Uint8Array<ArrayBuffer
   return left.every((byte, index) => byte === right[index]);
 };
 
-const isWebp = (bytes: Uint8Array<ArrayBuffer>): boolean =>
-  bytes.byteLength >= 12 &&
-  new TextDecoder().decode(bytes.subarray(0, 4)) === 'RIFF' &&
-  new TextDecoder().decode(bytes.subarray(8, 12)) === 'WEBP';
-
 const decodeWebp = async (
   bytes: Uint8Array<ArrayBuffer>,
-): Promise<{ readonly width: number; readonly height: number; readonly pixels: Uint8Array<ArrayBuffer> }> => {
+): Promise<{
+  readonly width: number;
+  readonly height: number;
+  readonly pixels: Uint8Array<ArrayBuffer>;
+}> => {
   const input = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const { data, info } = await sharp(input).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { width: info.width, height: info.height, pixels: new Uint8Array(data) };
+  return {
+    width: info.width,
+    height: info.height,
+    pixels: new Uint8Array(data),
+  };
 };
 
 const imagesEquivalent = async (
@@ -129,25 +141,6 @@ const imagesEquivalent = async (
   return changedPixels <= left.width * left.height * 0.001;
 };
 
-const renderSvgThumbnail = async (svg: string): Promise<Uint8Array<ArrayBuffer>> => {
-  const { width, height, margin } = thumbnailOptions;
-  const foreground = await sharp(Buffer.from(svg))
-    .resize({
-      width: Math.round(width * (1 - 2 * margin)),
-      height: Math.round(height * (1 - 2 * margin)),
-      fit: 'contain',
-    })
-    .png()
-    .toBuffer();
-  const thumbnail = await sharp({
-    create: { width, height, channels: 4, background: '#000' },
-  })
-    .composite([{ input: foreground, gravity: 'center' }])
-    .webp()
-    .toBuffer();
-  return new Uint8Array(thumbnail);
-};
-
 const entries = JSON.parse(readFileSync(manifestPath, 'utf8')) as ManifestEntry[];
 const allRenderable = entries.filter(
   (entry): entry is ManifestEntry & { readonly mainFile: string } =>
@@ -162,94 +155,88 @@ if (missing.length > 0) {
 const skipped = entries.filter(
   (entry) => entry.mainFile === undefined || !supportedKernels.has(engineIdForFixtureFamily(entry.kernel)),
 );
-for (const entry of skipped) {
+const isolated = process.argv.includes('--isolated');
+for (const entry of isolated ? [] : skipped) {
   const reason = entry.mainFile ? `kernel ${entry.kernel} is not composed` : 'no supported main entrypoint';
   console.log(`Skipping ${entry.kernel}/${entry.name}: ${reason}`);
 }
+if (!isolated) {
+  for (const entry of renderable) {
+    // Native kernel allocations can outlive client.terminate(); reclaim them between examples.
+    const key = `${entry.kernel}/${entry.name}`;
+    const child = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', fileURLToPath(import.meta.url), '--isolated', `--only=${key}`, ...(check ? ['--check'] : [])],
+      { cwd: rootDirectory, stdio: 'inherit' },
+    );
+    if (child.error) {
+      throw child.error;
+    }
+    if (child.status !== 0) {
+      throw new Error(`Thumbnail generation failed for ${key}: ${child.signal ?? child.status}`);
+    }
+  }
+}
 
 const thumbnails: RenderedThumbnail[] = [];
-for (const entry of renderable) {
+for (const entry of isolated ? renderable : []) {
   // One fresh client (and kernel WASM instance) per fixture: OCCT's shell/offset
   // results depend on accumulated heap state, so a shared instance makes a
   // fixture's bytes depend on the 47 fixtures rendered before it. A clean
   // instance is bit-reproducible. See
   // docs/research/tau-examples-thumbnail-nondeterminism.md (costs ~1s/fixture).
+  // PicoGK's sandbox mirrors files beside the entry; C# File.ReadAllText uses that root.
+  const picogkRoot = entry.kernel === 'picogk' ? join(kernelsDirectory, entry.kernel, entry.name) : undefined;
   // oxlint-disable-next-line eslint/no-await-in-loop -- Serial by design; see above.
-  const client = await createNodeClient(kernelsDirectory, { runtime });
+  const client = await createExampleRuntimeClient(picogkRoot ?? kernelsDirectory);
   client.on('log', (logEntry) => {
     if (logEntry.level === 'error' || logEntry.level === 'warn') {
       console.warn(`[runtime:${logEntry.level}] ${logEntry.message}`);
     }
   });
   try {
-    const sourcePath = `${entry.kernel}/${entry.name}/${entry.mainFile}`;
-    console.log(`Rendering ${entry.kernel}/${entry.name}`);
+    const key = `${entry.kernel}/${entry.name}`;
+    const selected = entry.featured ? variants : variants.slice(0, 1);
+    console.log(`Rendering ${key}`);
     // oxlint-disable-next-line eslint/no-await-in-loop -- One shared runtime/GPU queue renders fixtures serially.
-    const outcome = await client.render({
-      source: { path: sourcePath },
-      content: { includeEdges: true },
+    const images = await renderThumbnails(client, {
+      label: key,
+      sourcePath: picogkRoot ? entry.mainFile : `${key}/${entry.mainFile}`,
+      lineWidths: selected.map(({ lineWidth }) => lineWidth),
+      isExactLane: entry.kernel === 'picovoxel',
     });
-    if (outcome.superseded) {
-      throw new Error(`Thumbnail render failed for ${entry.kernel}/${entry.name}: render was superseded`);
+    for (const [index, { file }] of selected.entries()) {
+      thumbnails.push({ entry, bytes: images[index]!, path: join(kernelsDirectory, entry.kernel, entry.name, file) });
     }
-    if (outcome.geometry.success && outcome.geometry.data.format === 'svg') {
-      // oxlint-disable-next-line eslint/no-await-in-loop -- Preserve manifest order and the shared render queue.
-      const bytes = await renderSvgThumbnail(outcome.geometry.data.content);
-      thumbnails.push({
-        entry,
-        bytes,
-        path: join(kernelsDirectory, entry.kernel, entry.name, 'thumbnail.webp'),
-      });
-      continue;
-    }
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Re-export the settled 3D render through the image transcoder.
-    const result = await client.export('webp', {
-      ...(!outcome.geometry.success && { source: { path: sourcePath } }),
-      content: { includeEdges: true },
-      exportOptions: {
-        mode: 'single',
-        ...thumbnailOptions,
-        projection: 'perspective',
-        phi: 60,
-        theta: -45,
-        quality: 0.9,
-      },
-    });
-    if (!result.success) {
-      throw new Error(
-        `Thumbnail export failed for ${entry.kernel}/${entry.name}: ${result.issues
-          .map((issue) => issue.message)
-          .join('; ')}`,
-      );
-    }
-    const thumbnail = result.data[0];
-    if (result.data.length !== 1 || thumbnail?.mimeType !== 'image/webp' || !isWebp(thumbnail.bytes)) {
-      throw new Error(
-        `Thumbnail export expected exactly one valid image/webp artifact, received: ${result.data.map((file) => `${file.mimeType} (${file.bytes.length} bytes)`).join(', ')}`,
-      );
-    }
-    thumbnails.push({
-      entry,
-      bytes: thumbnail.bytes,
-      path: join(kernelsDirectory, entry.kernel, entry.name, 'thumbnail.webp'),
-    });
   } finally {
-    client.terminate();
+    // oxlint-disable-next-line no-await-in-loop -- Each fixture owns one fresh kernel instance.
+    await client.shutdown();
   }
 }
 
-const assetMap = only.size === 0 ? generateAssetMap(thumbnails) : undefined;
+// The asset map follows manifest rows with an actual thumbnail, independent of
+// which native runtimes are composed for this invocation. A selected run can
+// therefore add a new fixture without re-rendering unrelated kernels.
+const assetMap = isolated
+  ? undefined
+  : generateAssetMap(
+      entries.filter(
+        (entry) =>
+          entry.mainFile !== undefined &&
+          existsSync(join(kernelsDirectory, entry.kernel, entry.name, 'thumbnail.webp')),
+      ),
+    );
 if (check) {
   const drift: string[] = [];
   for (const thumbnail of thumbnails) {
     if (!existsSync(thumbnail.path)) {
-      drift.push(`${thumbnail.entry.kernel}/${thumbnail.entry.name}: missing thumbnail.webp`);
+      drift.push(`${thumbnail.entry.kernel}/${thumbnail.entry.name}: missing ${basename(thumbnail.path)}`);
       continue;
     }
     const existing = new Uint8Array(readFileSync(thumbnail.path));
     // oxlint-disable-next-line eslint/no-await-in-loop -- Compare serially with the corresponding generated fixture.
     if (!(await imagesEquivalent(existing, thumbnail.bytes))) {
-      drift.push(`${thumbnail.entry.kernel}/${thumbnail.entry.name}: thumbnail pixels differ`);
+      drift.push(`${thumbnail.entry.kernel}/${thumbnail.entry.name}: ${basename(thumbnail.path)} pixels differ`);
     }
   }
   if (assetMap !== undefined && (!existsSync(assetMapPath) || readFileSync(assetMapPath, 'utf8') !== assetMap)) {
@@ -258,7 +245,7 @@ if (check) {
   if (drift.length > 0) {
     throw new Error(`Generated thumbnail drift:\n${drift.map((item) => `- ${item}`).join('\n')}`);
   }
-  console.log(`Verified ${thumbnails.length} thumbnails`);
+  console.log(`Verified ${renderable.length} thumbnails`);
 } else {
   for (const thumbnail of thumbnails) {
     writeFileSync(thumbnail.path, thumbnail.bytes);
@@ -266,5 +253,5 @@ if (check) {
   if (assetMap !== undefined) {
     writeFileSync(assetMapPath, assetMap);
   }
-  console.log(`Generated ${thumbnails.length} thumbnails${assetMap ? ' and thumbnail.assets.ts' : ''}`);
+  console.log(`Generated ${renderable.length} thumbnails${assetMap ? ' and thumbnail.assets.ts' : ''}`);
 }

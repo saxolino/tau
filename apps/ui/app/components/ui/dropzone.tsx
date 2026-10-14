@@ -3,8 +3,8 @@ import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo } from 'react';
 import type { DropEvent, DropzoneOptions, FileRejection } from 'react-dropzone';
 import { useDropzone } from 'react-dropzone';
-import { Button } from '#components/ui/button.js';
-import { cn } from '#utils/ui.utils.js';
+import { Button } from '@taucad/ui/components/button';
+import { cn } from '@taucad/ui/utils/cn';
 
 type DropzoneContextType = {
   src?: File[];
@@ -73,6 +73,7 @@ export function Dropzone({
 
   return (
     <DropzoneContext.Provider key={JSON.stringify(src)} value={value}>
+      <input {...getInputProps()} hidden aria-label='Choose files' disabled={disabled} />
       <Button
         className={cn(
           'relative h-auto w-full flex-col overflow-hidden p-8',
@@ -85,9 +86,8 @@ export function Dropzone({
         disabled={disabled}
         type='button'
         variant='outline'
-        {...getRootProps()}
+        {...getRootProps({ role: 'button' })}
       >
-        <input {...getInputProps()} disabled={disabled} />
         {children}
       </Button>
     </DropzoneContext.Provider>

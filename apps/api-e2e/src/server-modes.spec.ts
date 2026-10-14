@@ -68,6 +68,7 @@ const expectHealthyServer = async (mode: 'development' | 'production', port: num
       AUTH_SECRET: 'smoke-secret',
       AUTH_URL: 'https://api.example.com',
       DATABASE_URL: 'postgresql://dev_user:dev_password@localhost:5432/tau_dev',
+      DATABASE_RUNTIME_ROLE: 'tau_api_runtime',
       GITHUB_CLIENT_ID: 'smoke',
       GITHUB_CLIENT_SECRET: 'smoke',
       GOOGLE_VERTEX_AI_CREDENTIALS: JSON.stringify({
@@ -102,7 +103,6 @@ const expectHealthyServer = async (mode: 'development' | 'production', port: num
       TAU_S3_SECRET_ACCESS_KEY: 'smoke',
       TAU_TEST_MODE: '',
       TAU_VIEW_COOKIE_SECRET: 'smoke-view-cookie-secret-32chars',
-      ZOO_API_KEY: 'smoke',
     });
     /* eslint-enable @typescript-eslint/naming-convention -- restore project naming checks. */
   }
@@ -156,7 +156,7 @@ const expectHealthyServer = async (mode: 'development' | 'production', port: num
   }
 };
 
-describe.sequential('API server modes', () => {
+describe('API server modes', { concurrent: false }, () => {
   it('should serve liveness through the Vite development server', async () => {
     await expectHealthyServer('development', 3210);
   });

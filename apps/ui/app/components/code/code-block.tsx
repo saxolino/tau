@@ -2,7 +2,7 @@ import type { ComponentProps } from 'react';
 import { cva } from 'class-variance-authority';
 import type { VariantProps } from 'class-variance-authority';
 import { CodeViewer } from '#components/code/code-viewer.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 // Root CodeBlock container variants
 const codeBlockVariants = cva(
@@ -155,20 +155,5 @@ export function Pre({ children, language, className, ...rest }: PreProps): React
     <pre {...rest} className={className}>
       {children}
     </pre>
-  );
-}
-
-export function InlineCode({ children, className, ...rest }: ComponentProps<'code'>): React.JSX.Element {
-  return (
-    <code
-      {...rest}
-      data-slot='inline-code'
-      className={cn(
-        className,
-        'rounded-xs border bg-neutral/10 px-1 py-0 font-normal text-foreground/80 before:content-none after:content-none',
-      )}
-    >
-      {children}
-    </code>
   );
 }

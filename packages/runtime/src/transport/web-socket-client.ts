@@ -16,35 +16,27 @@
  * @public
  */
 
-import { createChannelClient, wrapWebSocket } from '@taucad/rpc';
+import { createChannelClient, wrapMessagePort, wrapWebSocket } from '@taucad/rpc';
 import type { Channel, Port, WebSocketLike } from '@taucad/rpc';
-import { createBridgeServer } from '@taucad/rpc/bridge';
-import type { BridgeServerHandle } from '@taucad/rpc/bridge';
 import { msgpackCodec } from '@taucad/rpc/codec/msgpack';
-import { createFileSystemBridgeHello, fileSystemBridgeSchemas } from '@taucad/fs-bridge';
-import type { Geometry } from '@taucad/types';
+import type { MachineChannelClient } from '#machines/machine-channel.js';
+import type { MachineClient } from '#machines/machine-client.js';
 
-import { runtimeProtocolSchemas } from '#types/runtime-protocol.schemas.js';
-import type {
-  GeometryTransport,
-  RuntimeExportResultTransport,
-  RuntimeInitializeResult,
-  RuntimeProtocol,
-} from '#types/runtime-protocol.types.js';
+import { runtimeDocumentProtocolSchemas } from '#types/runtime-document-protocol.schemas.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
+import type { BinaryContentDelivery, RuntimeInitializeResult } from '#types/runtime-wire.types.js';
 import type {
   RuntimeInitializeMemoryHandle,
   RuntimeInitializePayload,
   RuntimeTransportClient,
   RuntimeTransportCloseResult,
+  RuntimeTransportFacet,
   TransportClientReady,
 } from '#transport/runtime-transport.types.js';
 import type { TransportDescriptor } from '#transport/runtime-transport-descriptor.types.js';
-import type { RuntimeFileSystemBase } from '#types/runtime-kernel.types.js';
-import { extractInlineFileSystem } from '#transport/_internal/runtime-filesystem-handle.js';
-import { materialiseGeometry } from '#transport/_internal/geometry-materialiser.js';
-import { materialiseExportResult } from '#transport/_internal/export-materialiser.js';
-import { triggerRenderTimeout } from '#transport/_internal/abort-channel.js';
-import { runtimeChannelSessionKey } from '#transport/_internal/runtime-worker-dispatcher.js';
+import { buildFileSystemBridge } from '#transport/_internal/file-system-bridge.js';
+import { materialiseBinaryContent } from '#transport/_internal/export-materialiser.js';
+import { runtimeChannelSessionKey } from '#transport/_internal/runtime-channel-bindings.js';
 import {
   buildSocketUrl,
   closeCauseFor,
@@ -54,6 +46,7 @@ import {
 } from '#transport/_internal/web-socket-wire.js';
 import type { WebSocketId } from '#transport/_internal/web-socket-wire.js';
 import type { WebSocketTransportOptions } from '#transport/web-socket-transport.schemas.js';
+import { buildComputeStoreBridge } from '#transport/_internal/compute-store-bridge.js';
 
 type WebSocketConstructorLike = new (url: string) => WebSocketLike;
 
@@ -110,17 +103,51 @@ export const webSocketClientDescribe = (options: WebSocketTransportOptions): Tra
  */
 export const webSocketClient = (
   options: WebSocketTransportOptions,
-): RuntimeTransportClient<RuntimeProtocol, Readonly<Record<never, never>>, WebSocketId> => {
-  /* Minted once per materialisation, so every `RuntimeClient` built from the
-   * same plugin owns an isolated filesystem instance. */
-  const inlineFileSystem: RuntimeFileSystemBase | undefined = extractInlineFileSystem(options.fileSystem);
-
+): RuntimeTransportClient<RuntimeDocumentProtocol, Readonly<Record<never, never>>, WebSocketId> => {
   let openPromise: Promise<TransportClientReady> | undefined;
-  let channel: Channel<RuntimeProtocol> | undefined;
+  let channel: Channel<RuntimeDocumentProtocol> | undefined;
   let runtimePort: Port<unknown> | undefined;
   let fileSystemPort: Port<unknown> | undefined;
-  let fileSystemServer: BridgeServerHandle | undefined;
+  let fileSystemBridge: ReturnType<typeof buildFileSystemBridge>;
+  let disposeFileSystemRelay: (() => void) | undefined;
+  let computePort: Port<unknown> | undefined;
+  let computeBridge: ReturnType<typeof buildComputeStoreBridge>;
+  let disposeComputeRelay: (() => void) | undefined;
   let isClosed = false;
+  /* A socket that dies before hello is a host that failed to start; after it,
+   * a mid-session death. Readiness is the only thing that separates them. */
+  let phase: 'boot' | 'session' = 'boot';
+  let machineChannel: MachineChannelClient | undefined;
+  const getMachineChannel = (): MachineChannelClient => {
+    if (!options.machines?.available) {
+      throw new Error('webSocketTransport: machines route is unavailable');
+    }
+    machineChannel ??= options.machines.connect();
+    return machineChannel;
+  };
+  const machines: RuntimeTransportFacet<MachineClient> = options.machines?.available
+    ? {
+        available: true,
+        listProviders: async (input) => getMachineChannel().listProviders(input),
+        discover: (input) => getMachineChannel().discover(input),
+        beginBinding: async (input) => getMachineChannel().beginBinding(input),
+        removeBinding: async (input) => getMachineChannel().removeBinding(input),
+        preparePrint: async (input) => getMachineChannel().preparePrint(input),
+        uploadPrint: async (input) => getMachineChannel().uploadPrint(input),
+        startPrint: async (input) => getMachineChannel().startPrint(input),
+        reconcileOperation: async (input) => getMachineChannel().reconcileOperation(input),
+        controlRun: async (input) => getMachineChannel().controlRun(input),
+        captureStill: async (input) => getMachineChannel().captureStill(input),
+        requestPrint: async (input) => getMachineChannel().requestPrint(input),
+        listPrintRequests: async (input) => getMachineChannel().listPrintRequests(input),
+        watchPrintRequests: (input) => getMachineChannel().watchPrintRequests(input),
+        resolvePrintRequest: async (input) => getMachineChannel().resolvePrintRequest(input),
+        withdrawPrintRequest: async (input) => getMachineChannel().withdrawPrintRequest(input),
+        list: async (input) => getMachineChannel().list(input),
+        get: async (input) => getMachineChannel().get(input),
+        watch: (input) => getMachineChannel().watch(input),
+      }
+    : (options.machines ?? { available: false, reason: 'unsupported' });
 
   let resolveClosed: ((result: RuntimeTransportCloseResult) => void) | undefined;
   const closed = new Promise<RuntimeTransportCloseResult>((resolve) => {
@@ -137,11 +164,11 @@ export const webSocketClient = (
     } catch {
       /* Best-effort */
     }
-    try {
-      fileSystemServer?.dispose();
-    } catch {
-      /* Best-effort */
-    }
+    machineChannel?.close();
+    disposeFileSystemRelay?.();
+    disposeFileSystemRelay = undefined;
+    disposeComputeRelay?.();
+    disposeComputeRelay = undefined;
     /* The `/fs` socket dies with the runtime socket; the reverse is not true
      * — a lone `/fs` failure leaves `closed` unsettled and surfaces as
      * rejected filesystem calls inside the remote kernel. */
@@ -155,13 +182,18 @@ export const webSocketClient = (
     } catch {
       /* Best-effort */
     }
+    try {
+      computePort?.close();
+    } catch {
+      /* Best-effort */
+    }
     resolveClosed?.(result);
   };
 
   /** First cause wins: `finish` is guarded, so a late `close()` cannot overwrite. */
   const watchRuntimeSocket = (socket: WebSocketLike): void => {
     socket.addEventListener('close', (event: { readonly code?: number; readonly reason?: string }) => {
-      void finish(closeCauseFor(event.code, event.reason));
+      void finish(closeCauseFor(event.code, event.reason, phase));
     });
     socket.addEventListener('error', (event: { readonly error?: unknown; readonly message?: string }) => {
       const error =
@@ -182,6 +214,8 @@ export const webSocketClient = (
    */
   const watchFileSystemSocket = (socket: WebSocketLike): void => {
     socket.addEventListener('close', (event: { readonly code?: number; readonly reason?: string }) => {
+      disposeFileSystemRelay?.();
+      disposeFileSystemRelay = undefined;
       if (event.code !== webSocketCloseCode.policyViolation) {
         return;
       }
@@ -193,6 +227,8 @@ export const webSocketClient = (
       });
     });
     socket.addEventListener('error', () => {
+      disposeFileSystemRelay?.();
+      disposeFileSystemRelay = undefined;
       try {
         fileSystemPort?.close();
       } catch {
@@ -218,32 +254,79 @@ export const webSocketClient = (
       /* Both sockets are wrapped the moment they exist and before either
        * channel is constructed: `wrapWebSocket` buffers from wrap time, and
        * a frame that lands before the wrap is lost at the socket level. */
-      const runtimeSocket = createSocket(buildSocketUrl(options.url, 'runtime', session));
+      const runtimeUrl = new URL(buildSocketUrl(options.url, 'runtime', session));
+      runtimeUrl.searchParams.delete('compute');
+      if (options.compute?.mode === 'durable') {
+        runtimeUrl.searchParams.set('compute', 'durable');
+      }
+      const runtimeSocket = createSocket(runtimeUrl.href);
       runtimePort = wrapWebSocket<unknown>(runtimeSocket, msgpackCodec);
       watchRuntimeSocket(runtimeSocket);
 
-      if (inlineFileSystem) {
+      computeBridge = buildComputeStoreBridge(options.compute);
+      if (options.compute?.mode === 'durable') {
+        const computeSocket = createSocket(buildSocketUrl(options.url, 'compute', session));
+        computePort = wrapWebSocket<unknown>(computeSocket, msgpackCodec);
+        const bridgePort = wrapMessagePort<unknown>(computeBridge.memoryHandle.computeStorePort!, {
+          label: 'web-socket:compute',
+        });
+        const stopBridgeToSocket = bridgePort.onMessage((message) => {
+          computePort?.postMessage(message);
+        });
+        const stopSocketToBridge = computePort.onMessage((message) => {
+          bridgePort.postMessage(message);
+        });
+        bridgePort.start?.();
+        disposeComputeRelay = () => {
+          stopBridgeToSocket();
+          stopSocketToBridge();
+          bridgePort.close();
+          computeBridge.dispose();
+        };
+      }
+
+      fileSystemBridge = buildFileSystemBridge(options.fileSystem);
+      if (fileSystemBridge) {
         const fileSystemSocket = createSocket(buildSocketUrl(options.url, 'fs', session));
         fileSystemPort = wrapWebSocket<unknown>(fileSystemSocket, msgpackCodec);
         watchFileSystemSocket(fileSystemSocket);
-        /* Inverted roles: this side dialled, and this side is the bridge
-         * *server* — the remote kernel consumes it with
-         * `createFileSystemBridgeProxy({ port })`. */
-        fileSystemServer = createBridgeServer(inlineFileSystem, fileSystemPort, {
-          hello: createFileSystemBridgeHello({
-            state: 'ready',
-            capabilities: inlineFileSystem.capabilities,
-            watchable: typeof inlineFileSystem.watch === 'function',
-          }),
-          protocolSchemas: fileSystemBridgeSchemas,
+        const bridgePort = wrapMessagePort<unknown>(fileSystemBridge.port, { label: 'web-socket:filesystem' });
+        const stopBridgeToSocket = bridgePort.onMessage((message) => {
+          fileSystemPort?.postMessage(message);
         });
+        const stopSocketToBridge = fileSystemPort.onMessage((message) => {
+          bridgePort.postMessage(message);
+        });
+        bridgePort.start?.();
+        let isRelayDisposed = false;
+        disposeFileSystemRelay = () => {
+          if (isRelayDisposed) {
+            return;
+          }
+          isRelayDisposed = true;
+          stopBridgeToSocket();
+          stopSocketToBridge();
+          fileSystemBridge?.dispose();
+          fileSystemBridge = undefined;
+        };
       }
 
-      channel = createChannelClient<RuntimeProtocol>({
+      channel = createChannelClient<RuntimeDocumentProtocol>({
         port: runtimePort,
         sessionKey: runtimeChannelSessionKey,
-        protocolSchemas: runtimeProtocolSchemas,
+        protocolSchemas: runtimeDocumentProtocolSchemas,
       });
+      /* `open()` hands the channel back before hello lands, so readiness is
+       * observed separately; a host that never became ready died in boot. */
+      const observeReadiness = async (ready: Promise<unknown>): Promise<void> => {
+        try {
+          await ready;
+          phase = 'session';
+        } catch {
+          /* The phase stays `'boot'`. */
+        }
+      };
+      void observeReadiness(channel.ready);
       return { channel };
     })();
     return openPromise;
@@ -251,20 +334,14 @@ export const webSocketClient = (
 
   return {
     id: webSocketId,
-    reservePreview() {
-      return {};
+    machines,
+    signalDocumentAbort() {
+      return false;
     },
-    renderTimeoutRecovery: {
+    operationTimeoutRecovery: {
       kind: 'terminable',
-      abortRender(target): void {
-        if (!channel) {
-          return;
-        }
-        /* No SAB across a socket — wire notify only. */
-        triggerRenderTimeout(channel, undefined, target);
-      },
       async terminate(): Promise<void> {
-        await finish({ cause: 'render-timeout' });
+        await finish({ cause: 'operation-timeout' });
       },
     },
     describe(): TransportDescriptor<WebSocketId> {
@@ -280,14 +357,13 @@ export const webSocketClient = (
       }
       /* `memoryHandle.fileSystemPort` is a transferable wire field and cannot
        * cross a socket; the host binds the filesystem from the `/fs` socket. */
-      const memoryHandle: RuntimeInitializeMemoryHandle = {};
+      const memoryHandle: RuntimeInitializeMemoryHandle = {
+        computeBindingMode: options.compute?.mode ?? 'memory',
+      };
       return channel.call('initialize', { ...input, memoryHandle });
     },
-    async resolveGeometry(transport: GeometryTransport): Promise<Geometry> {
-      return materialiseGeometry(transport, undefined);
-    },
-    async resolveExport(transport: RuntimeExportResultTransport) {
-      return materialiseExportResult(transport, undefined);
+    async resolveBinary(transport: BinaryContentDelivery): Promise<Uint8Array<ArrayBuffer>> {
+      return materialiseBinaryContent(transport, undefined);
     },
     async close(): Promise<void> {
       await finish({ cause: 'requested' });

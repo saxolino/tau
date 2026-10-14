@@ -5,14 +5,14 @@ import { useState } from 'react';
 import type { SyntheticEvent } from 'react';
 import { toast } from 'sonner';
 
-import { Button } from '#components/ui/button.js';
-import { Card, CardContent, CardFooter } from '#components/ui/card.js';
-import { Field, FieldError } from '#components/ui/field.js';
-import { Input } from '#components/ui/input.js';
-import { Label } from '#components/ui/label.js';
-import { Skeleton } from '#components/ui/skeleton.js';
+import { Button } from '@taucad/ui/components/button';
+import { Card, CardContent, CardFooter } from '@taucad/ui/components/card';
+import { Field, FieldError } from '@taucad/ui/components/field';
+import { Input } from '@taucad/ui/components/input';
+import { Label } from '@taucad/ui/components/label';
+import { Skeleton } from '@taucad/ui/components/skeleton';
 import { Spinner } from '#components/ui/spinner.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 export type ChangeEmailProps = {
   className?: string;
@@ -27,7 +27,7 @@ export type ChangeEmailProps = {
  *
  * @returns A JSX element rendering the change-email card and form
  */
-export function ChangeEmail({ className }: ChangeEmailProps) {
+export function ChangeEmail({ className }: ChangeEmailProps): React.JSX.Element {
   const { authClient, baseURL, localization, viewPaths } = useAuth();
   const { data: session } = useSession(authClient);
 
@@ -39,10 +39,10 @@ export function ChangeEmail({ className }: ChangeEmailProps) {
     email?: string;
   }>({});
 
-  function handleSubmit(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault();
+  function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault();
 
-    const formData = new FormData(e.currentTarget);
+    const formData = new FormData(event.currentTarget);
     changeEmail({
       newEmail: formData.get('email') as string,
       callbackURL: `${baseURL}/${viewPaths.settings.account}`,
@@ -61,12 +61,12 @@ export function ChangeEmail({ className }: ChangeEmailProps) {
 
               {session ? (
                 <Input
-                  key={session?.user.email}
+                  key={session.user.email}
                   id='email'
                   name='email'
                   type='email'
                   autoComplete='email'
-                  defaultValue={session?.user.email}
+                  defaultValue={session.user.email}
                   placeholder={localization.auth.emailPlaceholder}
                   disabled={isPending}
                   required
@@ -76,11 +76,11 @@ export function ChangeEmail({ className }: ChangeEmailProps) {
                       email: undefined,
                     }));
                   }}
-                  onInvalid={(e) => {
-                    e.preventDefault();
+                  onInvalid={(event) => {
+                    event.preventDefault();
                     setFieldErrors((previous) => ({
                       ...previous,
-                      email: (e.target as HTMLInputElement).validationMessage,
+                      email: (event.target as HTMLInputElement).validationMessage,
                     }));
                   }}
                   aria-invalid={Boolean(fieldErrors.email)}

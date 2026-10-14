@@ -83,6 +83,39 @@ export function isWorkspaceDirectoryRequiredError(error: unknown): error is Work
   return error instanceof WorkspaceDirectoryRequiredError;
 }
 
+export type WorkspaceIdentityConflictCode =
+  | 'handle-owned-by-another-workspace'
+  | 'marker-owned-by-another-workspace'
+  | 'stale-target';
+
+/** A reconnect selection would merge or overwrite two durable workspace identities. */
+export class WorkspaceIdentityConflictError extends Error {
+  public readonly code: WorkspaceIdentityConflictCode;
+  public readonly workspaceId: string;
+  public readonly conflictingWorkspaceId: string | undefined;
+
+  public constructor(
+    code: WorkspaceIdentityConflictCode,
+    options: { readonly workspaceId: string; readonly conflictingWorkspaceId?: string },
+  ) {
+    super(
+      code === 'stale-target'
+        ? 'This workspace connection changed before the folder was selected.'
+        : 'That folder is already linked to another workspace.',
+    );
+    this.name = 'WorkspaceIdentityConflictError';
+    this.code = code;
+    this.workspaceId = options.workspaceId;
+    this.conflictingWorkspaceId = options.conflictingWorkspaceId;
+  }
+}
+
+export const isWorkspaceIdentityConflictError = (error: unknown): error is WorkspaceIdentityConflictError =>
+  error instanceof WorkspaceIdentityConflictError;
+
+export const workspaceIdentityConflictCopy =
+  'That folder belongs to another workspace. Choose its original folder or disconnect the existing workspace first.';
+
 /**
  * Thrown when a durable write fails because the origin is out of quota.
  * Distinguishes "the browser refused to store this" from generic IndexedDB
@@ -92,7 +125,7 @@ export function isWorkspaceDirectoryRequiredError(error: unknown): error is Work
  */
 export class StorageQuotaExceededError extends Error {
   public constructor(options?: { cause?: unknown }) {
-    super('Browser storage is full. Free up space or remove unused projects to continue.');
+    super("Tau's local storage is full. Free up space or remove unused projects to continue.");
     this.name = 'StorageQuotaExceededError';
     if (options?.cause !== undefined) {
       (this as { cause?: unknown }).cause = options.cause;
@@ -159,7 +192,7 @@ export function isFileManagerNotReadyError(error: unknown): error is FileManager
 
 /**
  * Mirror of the worker-side `WorkspaceMutationErrorCode` discriminated
- * union. Keep in lockstep with `libs/filesystem/src/workspace-errors.ts`.
+ * union. Keep in lockstep with `packages/filesystem/src/workspace-errors.ts`.
  * Surfaced via {@link workspaceMutationErrorCopy} so toast/banner UIs
  * never re-parse `error.message`.
  */

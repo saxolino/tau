@@ -2,10 +2,9 @@
 /// <reference path='./types/occt-import-js.d.ts' />
 import {
   coordinateSystemSchema,
-  createKernelError,
+  createKernelParameterDeclaration,
   createKernelSuccess,
   defineKernel,
-  finalizeRenderOutput,
   unitSchema,
   withoutEmscriptenProcessListeners,
 } from '@taucad/runtime/kernel';
@@ -17,7 +16,9 @@ import type { OcctImportJs } from '#occt-loader.js';
 
 const glbOptionsSchema = coordinateSystemSchema
   .extend(unitSchema.shape)
-  .extend({ coordinateSystem: coordinateSystemSchema.shape.coordinateSystem.default('y-up') })
+  .extend({
+    coordinateSystem: coordinateSystemSchema.shape.coordinateSystem.default('y-up'),
+  })
   .strict();
 const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 const extension = (path: string): string => path.slice(path.lastIndexOf('.') + 1).toLowerCase();
@@ -43,25 +44,37 @@ export const brepKernel = defineKernel({
   extensions: ['step', 'stp', 'iges', 'igs', 'brep'],
   name: 'BrepKernel',
   version: '0.1.0',
-  exportFormats: { glb: { optionsSchema: glbOptionsSchema } },
+  views: { model: { title: 'Model', mimeType: 'model/gltf-binary' } },
+  exports: {
+    glb: { title: 'glTF binary', mimeType: 'model/gltf-binary', extension: 'glb', optionsSchema: glbOptionsSchema },
+  },
 
   async initialize() {
     return { occt: await loadBackend() };
   },
 
-  async getDependencies({ entryPath }, { filesystem }) {
+  async resolve({ entryPath }, { filesystem }) {
     const inventory = await createImportFileInventory(filesystem, entryPath);
-    return { resolved: [...inventory.resolved], unresolved: [...inventory.unresolved] };
+    return {
+      resolved: [...inventory.resolved],
+      unresolved: [...inventory.unresolved],
+    };
   },
 
-  async getParameters() {
+  async describe() {
     return createKernelSuccess({
-      defaultParameters: {},
-      jsonSchema: { type: 'object', properties: {}, additionalProperties: false },
+      parameters: createKernelParameterDeclaration(
+        {},
+        { type: 'object', properties: {}, additionalProperties: false },
+        {
+          id: 'urn:taucad:brep:parameters',
+          name: 'BrepParameters',
+        },
+      ),
     });
   },
 
-  async createGeometry({ entryPath }, { filesystem }, context: { occt: OcctImportJs }) {
+  async evaluate({ entryPath }, { filesystem }, context: { occt: OcctImportJs }) {
     const inventory = await createImportFileInventory(filesystem, entryPath);
     const glb = await new OcctLoader(context.occt)
       .initialize({ format: extension(entryPath) })
@@ -74,23 +87,25 @@ export const brepKernel = defineKernel({
       sceneNamePolicy: 'clear-generated',
       sceneNameSource: 'external-generated',
     });
-    return finalizeRenderOutput({ artifacts: [{ format: 'gltf', content: normalized }], nativeHandle: normalized });
+    return { handle: normalized };
   },
 
-  async exportGeometry(input) {
-    if (input.nativeHandle.length === 0) {
-      return createKernelError([
-        { message: 'No geometry available for export.', code: 'RUNTIME', type: 'runtime', severity: 'error' },
-      ]);
+  async render({ handle }) {
+    return { content: handle };
+  },
+
+  async export(input) {
+    if (input.handle.length === 0) {
+      throw new Error('No geometry available for export.');
     }
-    const bytes = await transformGltfExportBytes(input.nativeHandle, {
+    const bytes = await transformGltfExportBytes(input.handle, {
       format: 'glb',
       coordinateSystem: input.options.coordinateSystem,
       unit: input.options.unit,
     });
-    return createKernelSuccess([createExportFile('glb', 'model.glb', bytes)]);
+    return { files: [createExportFile('glb', 'model.glb', bytes)] };
   },
 
-  serializeNativeHandle: ({ nativeHandle }) => new Uint8Array(nativeHandle),
-  deserializeNativeHandle: ({ serializedNativeHandle }) => new Uint8Array(serializedNativeHandle),
+  serializeHandle: ({ handle }) => new Uint8Array(handle),
+  deserializeHandle: ({ serialized }) => new Uint8Array(serialized),
 });

@@ -1,4 +1,4 @@
-import type { FileContentMetadata } from '@taucad/types';
+import type { FileTreeContentMetadata } from '@taucad/types';
 
 /**
  * Typed directory listing surface for {@link FileTreeService.listDirectory}.
@@ -23,7 +23,7 @@ export type ListedDirectoryEntry =
       size: number;
       /** Last-modified timestamp in milliseconds since the Unix epoch. */
       mtimeMs: number;
-    } & FileContentMetadata);
+    } & FileTreeContentMetadata);
 
 /**
  * Discriminated snapshot for reactive directory listing consumers (see {@link useDirectoryListing}).
@@ -33,7 +33,7 @@ export type ListedDirectoryEntry =
 export type DirectoryListing =
   | { kind: 'unready' }
   | { kind: 'loading'; path: string }
-  | { kind: 'ready'; path: string; entries: readonly ListedDirectoryEntry[] }
+  | { kind: 'ready'; path: string; entries: readonly ListedDirectoryEntry[]; pending?: true }
   | { kind: 'error'; path: string; cause: DirectoryListingError };
 
 /**
@@ -54,6 +54,7 @@ export type DirectoryListingError = {
  *
  * @public
  */
+// oxlint-disable-next-line no-redeclare -- TypeScript intentionally shares the public value and union-type name.
 export const DirectoryListingErrorCode = {
   NotFound: 'NotFound',
   NotADirectory: 'NotADirectory',

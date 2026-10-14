@@ -1,22 +1,23 @@
 import { authMutationKeys } from '@better-auth-ui/core';
 import { useAuth, useFetchOptions, useSendVerificationEmail, useSignInEmail } from '@better-auth-ui/react';
 import { useIsMutating } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { SyntheticEvent } from 'react';
 import { toast } from 'sonner';
 
-import { Button } from '#components/ui/button.js';
-import { Card, CardContent, CardHeader, CardTitle } from '#components/ui/card.js';
-import { Checkbox } from '#components/ui/checkbox.js';
-import { Field, FieldDescription, FieldError, FieldGroup, FieldSeparator } from '#components/ui/field.js';
-import { Input } from '#components/ui/input.js';
-import { Label } from '#components/ui/label.js';
+import { Button } from '@taucad/ui/components/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@taucad/ui/components/card';
+import { Checkbox } from '@taucad/ui/components/checkbox';
+import { Field, FieldDescription, FieldError, FieldGroup, FieldSeparator } from '@taucad/ui/components/field';
+import { Input } from '@taucad/ui/components/input';
+import { Label } from '@taucad/ui/components/label';
 import { Spinner } from '#components/ui/spinner.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { getCaptchaComponentFromPlugins } from '#utils/auth-plugin.js';
 import { ProviderButtons } from '#components/auth/provider-buttons.js';
 import type { SocialLayout } from '#components/auth/provider-buttons.js';
 import { useAuthEmailDraft } from '#components/auth/auth-email-draft.js';
+import { authErrorMessage, betterFetchErrorBodyCode } from '#utils/auth-error.utils.js';
 
 export type SignInProps = {
   className?: string;
@@ -27,12 +28,9 @@ export type SignInProps = {
 /**
  * Render the sign-in form UI with email/password, magic link, and social provider options.
  *
- * @param className - Optional additional container class names
- * @param socialLayout - Layout style for social provider buttons
- * @param socialPosition - Position of social provider buttons; `"top"` or `"bottom"`. Defaults to `"bottom"`.
  * @returns The rendered sign-in UI as a JSX element
  */
-export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: SignInProps) {
+export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: SignInProps): React.JSX.Element {
   const {
     authClient,
     basePaths,
@@ -53,12 +51,6 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
   const [email, setEmail] = useState(emailDraft);
   const [password, setPassword] = useState('');
 
-  useEffect(() => {
-    if (!email && emailDraft) {
-      setEmail(emailDraft);
-    }
-  }, [email, emailDraft]);
-
   const { mutate: sendVerificationEmail } = useSendVerificationEmail(authClient, {
     onSuccess: () => toast.success(localization.auth.verificationEmailSent),
   });
@@ -67,8 +59,8 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
     onError: (error, { email }) => {
       setPassword('');
 
-      if (error.error?.code === 'EMAIL_NOT_VERIFIED') {
-        toast.error(error.error?.message ?? error.message, {
+      if (betterFetchErrorBodyCode(error) === 'EMAIL_NOT_VERIFIED') {
+        toast.error(authErrorMessage(error), {
           action: {
             label: localization.auth.resend,
             onClick: () => {
@@ -80,7 +72,7 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
           },
         });
       } else {
-        toast.error(error.error?.message ?? error.message);
+        toast.error(authErrorMessage(error));
       }
 
       resetFetchOptions();
@@ -105,21 +97,21 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
     password?: string;
   }>({});
 
-  const handleSubmit = (e: SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const handleSubmit = (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
 
-    const formData = new FormData(e.currentTarget);
+    const formData = new FormData(event.currentTarget);
     const rememberMe = formData.get('rememberMe') === 'on';
 
     signInEmail({
       email,
       password,
-      ...(emailAndPassword?.rememberMe ? { rememberMe } : {}),
+      ...(emailAndPassword.rememberMe ? { rememberMe } : {}),
       fetchOptions,
     });
   };
 
-  const showSeparator = emailAndPassword?.enabled && socialProviders && socialProviders.length > 0;
+  const showSeparator = emailAndPassword.enabled && socialProviders && socialProviders.length > 0;
 
   return (
     <Card className={cn('w-full max-w-sm', className)}>
@@ -141,7 +133,7 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
             </>
           )}
 
-          {emailAndPassword?.enabled && (
+          {emailAndPassword.enabled && (
             <form onSubmit={handleSubmit}>
               <FieldGroup>
                 <Field data-invalid={Boolean(fieldErrors.email)}>
@@ -164,12 +156,12 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
                         email: undefined,
                       }));
                     }}
-                    onInvalid={(e) => {
-                      e.preventDefault();
+                    onInvalid={(event) => {
+                      event.preventDefault();
 
                       setFieldErrors((previous) => ({
                         ...previous,
-                        email: (e.target as HTMLInputElement).validationMessage,
+                        email: (event.target as HTMLInputElement).validationMessage,
                       }));
                     }}
                     aria-invalid={Boolean(fieldErrors.email)}
@@ -187,8 +179,8 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
                     type='password'
                     autoComplete='current-password'
                     value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
+                    onChange={(event) => {
+                      setPassword(event.target.value);
 
                       setFieldErrors((previous) => ({
                         ...previous,
@@ -197,15 +189,15 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
                     }}
                     placeholder={localization.auth.passwordPlaceholder}
                     required
-                    minLength={emailAndPassword?.minPasswordLength}
-                    maxLength={emailAndPassword?.maxPasswordLength}
+                    minLength={emailAndPassword.minPasswordLength}
+                    maxLength={emailAndPassword.maxPasswordLength}
                     disabled={isPending}
-                    onInvalid={(e) => {
-                      e.preventDefault();
+                    onInvalid={(event) => {
+                      event.preventDefault();
 
                       setFieldErrors((previous) => ({
                         ...previous,
-                        password: (e.target as HTMLInputElement).validationMessage,
+                        password: (event.target as HTMLInputElement).validationMessage,
                       }));
                     }}
                     aria-invalid={Boolean(fieldErrors.password)}
@@ -219,7 +211,10 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
                     <div className='flex items-center gap-3'>
                       <Checkbox id='rememberMe' name='rememberMe' disabled={isPending} />
 
-                      <Label htmlFor='rememberMe' className='cursor-pointer text-sm font-normal'>
+                      <Label
+                        htmlFor='rememberMe'
+                        className='cursor-action rounded-sm px-1 py-0.5 text-sm font-normal transition-colors hover:bg-accent'
+                      >
                         {localization.auth.rememberMe}
                       </Label>
                     </div>
@@ -259,7 +254,7 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
         </div>
 
         <div className='mt-4 flex w-full flex-col items-center gap-3'>
-          {emailAndPassword?.forgotPassword && (
+          {emailAndPassword.forgotPassword && (
             <Link
               href={`${basePaths.auth}/${viewPaths.auth.forgotPassword}`}
               className='self-center text-sm underline-offset-4 hover:underline'
@@ -268,7 +263,7 @@ export function SignIn({ className, socialLayout, socialPosition = 'bottom' }: S
             </Link>
           )}
 
-          {emailAndPassword?.enabled && (
+          {emailAndPassword.enabled && (
             <FieldDescription className='text-center'>
               {localization.auth.needToCreateAnAccount}{' '}
               <Link href={`${basePaths.auth}/${viewPaths.auth.signUp}`} className='underline underline-offset-4'>

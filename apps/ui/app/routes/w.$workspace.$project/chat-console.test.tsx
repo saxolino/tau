@@ -32,14 +32,15 @@ vi.mock('#components/panes/paneview-header.js', () => ({
     </div>
   ),
   PaneviewHeaderControls: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  paneviewAttachedBodyClassName: 'attached-body',
   paneviewAttachedSurfaceStyleOverrides: 'attached-paneview',
   paneviewHeaderSize: 40,
 }));
 
-vi.mock('#components/ui/tooltip.js', () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }): React.JSX.Element => <>{children}</>,
+vi.mock('@taucad/ui/components/tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
   TooltipContent: () => null,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }): React.JSX.Element => <>{children}</>,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
 }));
 
 vi.mock('#routes/w.$workspace.$project/use-chat-interface-state.js', () => ({
@@ -160,6 +161,7 @@ vi.mock('dockview-react', async () => {
   };
 });
 
+// oxlint-disable-next-line typescript/consistent-type-assertions -- the console never reads this actor; it only forwards the reference.
 const cadRef = {} as ActorRefFrom<typeof cadMachine>;
 
 describe('ChatConsole', () => {
@@ -178,7 +180,7 @@ describe('ChatConsole', () => {
     const { ChatConsole } = await import('./chat-console.js');
     render(<ChatConsole />);
 
-    expect(screen.getByRole('textbox', { name: 'Filter logs' })).toHaveAttribute('placeholder', 'Filter logs...');
+    expect(screen.getByRole('searchbox', { name: 'Filter logs' })).toHaveAttribute('placeholder', 'Filter logs…');
     expect(screen.getByRole('button', { name: 'Filter by log level' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Console settings' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Clear logs' })).toBeDisabled();
@@ -216,7 +218,7 @@ describe('ChatConsole', () => {
     ).toEqual(['main first', 'main second']);
     expect(screen.getByRole('log', { name: 'Console logs for helper.ts' })).toHaveTextContent('helper warning');
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Filter logs' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter logs' }), {
       target: { value: 'helper' },
     });
     expect(screen.getByText('No matching logs.')).toBeInTheDocument();

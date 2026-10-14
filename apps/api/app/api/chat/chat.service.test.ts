@@ -1,486 +1,443 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Test } from '@nestjs/testing';
-import type { TestingModule } from '@nestjs/testing';
-import { createAgent } from 'langchain';
-import type { ToolName } from '@taucad/chat';
-import { toolName } from '@taucad/chat/constants';
+import { describe, expect, it } from 'vitest';
+import { mock } from 'vitest-mock-extended';
+import { HttpStatus } from '@nestjs/common';
+import { convertToModelMessages, DefaultChatTransport, readUIMessageStream } from 'ai';
 import { ChatService } from '#api/chat/chat.service.js';
-import { ModelService } from '#api/models/model.service.js';
-import { ToolService } from '#api/tools/tool.service.js';
-import { CheckpointerService } from '#api/chat/checkpointer.service.js';
-import { StoreService } from '#api/chat/store.service.js';
-import { CompactionService } from '#api/chat/compaction.service.js';
-import { TauRpcBackendFactory } from '#api/chat/tau-rpc-backend.js';
-import { ChatRpcService } from '#api/chat/chat-rpc.service.js';
-import { TokenBudgetService } from '#api/chat/token-budget.service.js';
-import { MetricsService } from '#telemetry/metrics.js';
-import { newlineTrimmerMiddleware } from '#api/chat/middleware/newline-trimmer.middleware.js';
-import { latexDelimiterMiddleware } from '#api/chat/middleware/latex-delimiter.middleware.js';
-import type { EagerToolDispatchHandler } from '#api/chat/eager-dispatch/eager-tool-dispatch.handler.js';
+import { LlmGatewayError } from '#api/llm/llm-gateway.error.js';
+import type { ModelInvocationIntent, ModelInvocationService } from '#api/llm/model-invocation.types.js';
+import { CodeOwnedBillableModelQualificationResolver } from '#api/billing/billable-model-qualification.js';
+import type { BillableModelProviderAdapter } from '#api/billing/billable-model-invocation.types.js';
 
-// Mock other dependencies
-vi.mock('ai', () => ({
-  streamText: vi.fn(),
-}));
-
-vi.mock('@ai-sdk/openai', () => ({
-  openai: vi.fn(() => 'mocked-model'),
-}));
-
-vi.mock('langchain', () => ({
-  createAgent: vi.fn(() => ({})),
-  createMiddleware: vi.fn((config: unknown) => config),
-}));
-
-vi.mock('#api/chat/prompts/cad-agent.prompt.js', () => ({
-  getCadSystemPrompt: vi.fn().mockResolvedValue({ static: 'static prompt', dynamic: 'dynamic prompt' }),
-}));
-
-vi.mock('#api/chat/utils/create-cached-system-message.js', () => ({
-  createCachedSystemMessage: vi.fn((options: unknown) => options),
-}));
-
-describe('ChatService', () => {
-  let service: ChatService;
-  let module: TestingModule;
-
-  const mockCheckpointer = { id: 'mock-checkpointer' };
-
-  const mockCheckpointerService = {
-    getCheckpointer: vi.fn(() => mockCheckpointer),
-  };
-
-  const mockStore = { id: 'mock-store' };
-  const mockReadDedupClearer = { clearChat: vi.fn() };
-  const mockStoreService = {
-    getStore: vi.fn(() => mockStore),
-    getReadDedupClearer: vi.fn(() => mockReadDedupClearer),
-  };
-
-  const mockModelService = {
-    buildModel: vi.fn(() => ({ model: 'mock-model' })),
-    createProviderDiagnosticsContext: vi.fn((options: Record<string, unknown>) => ({
-      ...options,
-      verbose: false,
-      nextProviderAttemptId: vi.fn(() => 1),
-      setLatestModelCallSummary: vi.fn(),
-      getLatestModelCallSummary: vi.fn(),
-    })),
-    getContextWindow: vi.fn(() => 200_000),
-    getProviderId: vi.fn(() => 'openai'),
-    getKnowledgeCutoff: vi.fn(() => '2025-08'),
-    getOtelProviderName: vi.fn(() => 'openai'),
-    filterProviderToolNamesForModel: vi.fn(({ toolNames }: { readonly toolNames: readonly ToolName[] }) => [
-      ...toolNames,
-    ]),
-  };
-
-  const mockToolService = {
-    getTools: vi.fn(() => ({
-      tools: {
-        // eslint-disable-next-line @typescript-eslint/naming-convention -- Tool name uses snake_case
-        test_model: { name: 'test_model' },
+/* eslint-disable @typescript-eslint/naming-convention -- synthetic supplier fixture uses exact Responses fields */
+const nativeStream = (terminal: 'completed' | 'incomplete' = 'completed') =>
+  [
+    { type: 'response.created', response: { id: 'response-fixture', model: 'gpt-5.6-luna', created_at: 1 } },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { type: 'message', id: 'message-fixture', role: 'assistant', content: [], status: 'in_progress' },
+    },
+    {
+      type: 'response.output_text.delta',
+      item_id: 'message-fixture',
+      output_index: 0,
+      content_index: 0,
+      delta: 'Named part',
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        type: 'message',
+        id: 'message-fixture',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Named part', annotations: [] }],
+        status: 'completed',
       },
-    })),
-  };
+    },
+    {
+      type: `response.${terminal}`,
+      response: {
+        id: 'response-fixture',
+        model: 'gpt-5.6-luna',
+        created_at: 1,
+        status: terminal,
+        ...(terminal === 'incomplete' ? { incomplete_details: { reason: 'max_output_tokens' } } : {}),
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    },
+  ]
+    .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join('');
+/* eslint-enable @typescript-eslint/naming-convention -- remaining test values are local contracts */
 
-  beforeEach(async () => {
-    vi.clearAllMocks();
+const validPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
-    const mockChatRpcService = { sendRpcRequest: vi.fn() };
-
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        ChatService,
-        { provide: CheckpointerService, useValue: mockCheckpointerService },
-        { provide: StoreService, useValue: mockStoreService },
-        { provide: ModelService, useValue: mockModelService },
-        { provide: ToolService, useValue: mockToolService },
-        { provide: MetricsService, useValue: new MetricsService() },
-        { provide: CompactionService, useValue: { compact: vi.fn() } },
-        { provide: TokenBudgetService, useValue: new TokenBudgetService() },
-        { provide: TauRpcBackendFactory, useValue: { create: vi.fn() } },
-        { provide: ChatRpcService, useValue: mockChatRpcService },
+it('uses the installed SDK for native text/image input and the actual UI stream consumer', async () => {
+  const owner = mock<ModelInvocationService>();
+  const resolver = new CodeOwnedBillableModelQualificationResolver({
+    adapters: new Map([['openai-gpt-5.6-luna', mock<BillableModelProviderAdapter>()]]),
+    credentialAccounts: new Map([['openai', 'fixture']]),
+    executionTimeout: 1000,
+  });
+  let captured: ModelInvocationIntent | undefined;
+  let admitted = false;
+  owner.invoke.mockImplementation(async (intent) => {
+    captured = intent;
+    resolver.resolve({ ...intent, environment: 'development' });
+    intent.onAdmitted?.('operation-fixture');
+    return {
+      state: 'streaming',
+      operationId: 'operation-fixture',
+      response: new Response(nativeStream(), { headers: { 'content-type': 'text/event-stream' } }),
+      completion: Promise.resolve(),
+    };
+  });
+  const service = new ChatService(owner);
+  const messages = await convertToModelMessages([
+    {
+      role: 'user',
+      parts: [
+        { type: 'text', text: 'Name this part' },
+        { type: 'file', mediaType: 'image/png', url: `data:image/png;base64,${validPng}` },
       ],
-    }).compile();
+    },
+  ]);
+  const result = await service.getBuildNameGenerator(
+    messages,
+    'owner',
+    'attempt',
+    { projectHint: 'project' },
+    new AbortController().signal,
+    () => {
+      admitted = true;
+    },
+  );
+  expect(admitted).toBe(true);
+  expect(owner.invoke).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(captured?.body)).toContain(JSON.stringify({ type: 'input_text', text: 'Name this part' }));
+  expect(JSON.stringify(captured?.body)).toContain(`data:image/png;base64,${validPng}`);
+  expect(captured?.body).toMatchObject({
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- exact native Responses request field
+    max_output_tokens: 64,
+    reasoning: { effort: 'none' },
+    store: false,
+  });
+  if (result.state !== 'streaming') {
+    throw new Error('Expected stream');
+  }
+  const transport = new DefaultChatTransport({
+    api: 'http://fixture.invalid/chat',
+    fetch: async () => result.response,
+  });
+  const stream = await transport.sendMessages({
+    chatId: 'chat',
+    messages: [],
+    trigger: 'submit-message',
+    messageId: undefined,
+    abortSignal: new AbortController().signal,
+  });
+  let text = '';
+  for await (const message of readUIMessageStream({ stream })) {
+    text = message.parts
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+  }
+  expect(text).toBe('Named part');
+  await result.completion;
+});
 
-    service = moduleRef.get<ChatService>(ChatService);
-    module = moduleRef;
+it.each([
+  ['project_name', 'title', 'getBuildNameGenerator'],
+  ['commit_name', 'commit', 'getCommitMessageGenerator'],
+] as const)('carries both hints into the %s intent as activity %s', async (_surface, activity, method) => {
+  // The gateway surface produces these from headers; the API's own helper
+  // surfaces produce them from the turn request, and both file the same receipt.
+  const owner = mock<ModelInvocationService>();
+  let captured: ModelInvocationIntent | undefined;
+  owner.invoke.mockImplementation(async (intent) => {
+    captured = intent;
+    return {
+      state: 'streaming',
+      operationId: 'operation-fixture',
+      response: new Response(nativeStream(), { headers: { 'content-type': 'text/event-stream' } }),
+      completion: Promise.resolve(),
+    };
   });
 
-  afterEach(async () => {
-    await module.close();
+  await new ChatService(owner)[method](
+    [{ role: 'user', content: 'Name this part' }],
+    'owner',
+    'attempt',
+    { projectHint: 'proj_01J8ZK4E', chatHint: 'chat_01J8ZK4F' },
+    new AbortController().signal,
+  );
+
+  expect(captured).toMatchObject({ activity, projectHint: 'proj_01J8ZK4E', chatHint: 'chat_01J8ZK4F' });
+});
+
+it('leaves an absent hint off the intent instead of sending an empty one', async () => {
+  const owner = mock<ModelInvocationService>();
+  let captured: ModelInvocationIntent | undefined;
+  owner.invoke.mockImplementation(async (intent) => {
+    captured = intent;
+    return {
+      state: 'streaming',
+      operationId: 'operation-fixture',
+      response: new Response(nativeStream(), { headers: { 'content-type': 'text/event-stream' } }),
+      completion: Promise.resolve(),
+    };
   });
 
-  describe('createAgent', () => {
-    it('should get checkpointer from CheckpointerService', async () => {
-      // Act
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
+  await new ChatService(owner).getBuildNameGenerator(
+    [{ role: 'user', content: 'Name this part' }],
+    'owner',
+    'attempt',
+    { chatHint: 'chat_01J8ZK4F' },
+    new AbortController().signal,
+  );
 
-      // Assert
-      expect(mockCheckpointerService.getCheckpointer).toHaveBeenCalledTimes(1);
+  expect(captured).not.toHaveProperty('projectHint');
+  expect(captured).toMatchObject({ chatHint: 'chat_01J8ZK4F' });
+});
+
+it('returns bounded commit text from a max-output response without retrying', async () => {
+  const owner = mock<ModelInvocationService>();
+  let captured: ModelInvocationIntent | undefined;
+  owner.invoke.mockImplementation(async (intent) => {
+    captured = intent;
+    return {
+      state: 'streaming',
+      operationId: 'operation-fixture',
+      response: new Response(nativeStream('incomplete'), { headers: { 'content-type': 'text/event-stream' } }),
+      completion: Promise.resolve(),
+    };
+  });
+  const service = new ChatService(owner);
+  const result = await service.getCommitMessageGenerator(
+    [{ role: 'user', content: 'Describe the change' }],
+    'owner',
+    'attempt',
+    { projectHint: 'project' },
+    new AbortController().signal,
+  );
+  if (result.state !== 'streaming') {
+    throw new Error('Expected stream');
+  }
+  const transport = new DefaultChatTransport({
+    api: 'http://fixture.invalid/chat',
+    fetch: async () => result.response,
+  });
+  const stream = await transport.sendMessages({
+    chatId: 'chat',
+    messages: [],
+    trigger: 'submit-message',
+    messageId: undefined,
+    abortSignal: new AbortController().signal,
+  });
+  let text = '';
+  for await (const message of readUIMessageStream({ stream })) {
+    text = message.parts
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+  }
+  expect(text).toBe('Named part');
+  expect(owner.invoke).toHaveBeenCalledTimes(1);
+  expect(captured).toMatchObject({
+    activity: 'commit',
+    body: {
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- exact native Responses request field
+      max_output_tokens: 64,
+      reasoning: { effort: 'none' },
+      store: false,
+    },
+  });
+  await result.completion;
+});
+
+/**
+ * The text a client reads from a helper result, through the same SDK transport the page's name clients use.
+ *
+ * @param response - The helper's response.
+ * @returns The assembled text.
+ */
+const helperText = async (response: Response): Promise<string> => {
+  const transport = new DefaultChatTransport({ api: 'http://fixture.invalid/chat', fetch: async () => response });
+  const stream = await transport.sendMessages({
+    chatId: 'chat',
+    messages: [],
+    trigger: 'submit-message',
+    messageId: undefined,
+    abortSignal: new AbortController().signal,
+  });
+  let text = '';
+  for await (const message of readUIMessageStream({ stream })) {
+    text = message.parts
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+  }
+  return text;
+};
+
+/* T-U5 (W6, W11a): the helpers run on one fixed route, so a paused route or a restricted account refuses every call.
+ * Naming is a courtesy: the helper answers an empty suggestion, which the page turns into its default name
+ * (`use-project-manager.tsx`, `generated.trim() || defaultProjectName`), and no refusal reaches the client. */
+describe('secondary generator route and account refusals', () => {
+  const routePaused = (): LlmGatewayError =>
+    new LlmGatewayError(
+      HttpStatus.SERVICE_UNAVAILABLE,
+      'MODEL_ROUTE_PAUSED',
+      "This model route is paused by Tau's operators.",
+      { routeId: 'fixture-route' },
+    );
+  const accountRestricted = (): LlmGatewayError =>
+    new LlmGatewayError(HttpStatus.FORBIDDEN, 'BILLING_ACCOUNT_RESTRICTED', 'This Tau billing account is restricted.');
+
+  it.each([
+    { method: 'getBuildNameGenerator', code: 'MODEL_ROUTE_PAUSED', refusal: routePaused },
+    { method: 'getCommitMessageGenerator', code: 'MODEL_ROUTE_PAUSED', refusal: routePaused },
+    { method: 'getBuildNameGenerator', code: 'BILLING_ACCOUNT_RESTRICTED', refusal: accountRestricted },
+    { method: 'getCommitMessageGenerator', code: 'BILLING_ACCOUNT_RESTRICTED', refusal: accountRestricted },
+  ] as const)('should answer $method with no text when admission refuses $code', async ({ method, refusal }) => {
+    const owner = mock<ModelInvocationService>();
+    owner.invoke.mockRejectedValue(refusal());
+    let admitted = false;
+
+    const result = await new ChatService(owner)[method](
+      [{ role: 'user', content: 'Name this part' }],
+      'owner',
+      'attempt',
+      { projectHint: 'project' },
+      new AbortController().signal,
+      () => {
+        admitted = true;
+      },
+    );
+
+    if (result.state !== 'streaming') {
+      throw new Error('Expected the unnamed stream');
+    }
+    expect(result.operationId).toBeUndefined();
+    expect(result.response.status).toBe(200);
+    expect(await helperText(result.response)).toBe('');
+    await expect(result.completion).resolves.toBeUndefined();
+    expect(admitted).toBe(false);
+    expect(owner.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('should still surface a refusal the client can act on', async () => {
+    const owner = mock<ModelInvocationService>();
+    owner.invoke.mockRejectedValue(
+      new LlmGatewayError(HttpStatus.SERVICE_UNAVAILABLE, 'PROVIDER_UNAVAILABLE', 'Model admission failed.'),
+    );
+
+    await expect(
+      new ChatService(owner).getBuildNameGenerator(
+        [{ role: 'user', content: 'Name this part' }],
+        'owner',
+        'attempt',
+        { projectHint: 'project' },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ name: 'LlmGatewayError', message: 'Model admission failed.' });
+    expect(owner.invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('secondary generator admission outcomes', () => {
+  it('settles replay and owner failure without hanging or retrying', async () => {
+    const owner = mock<ModelInvocationService>();
+    const service = new ChatService(owner);
+    owner.invoke.mockResolvedValue({ state: 'terminal', operationId: 'old-operation' });
+    await expect(
+      service.getCommitMessageGenerator(
+        [{ role: 'user', content: 'name it' }],
+        'owner',
+        'attempt',
+        { projectHint: 'project' },
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({ state: 'terminal', operationId: 'old-operation' });
+    expect(owner.invoke).toHaveBeenCalledTimes(1);
+    owner.invoke.mockRejectedValue(new Error('Owner denied invocation'));
+    await expect(
+      service.getCommitMessageGenerator(
+        [{ role: 'user', content: 'name it' }],
+        'owner',
+        'other-attempt',
+        { projectHint: 'project' },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('Owner denied invocation');
+    expect(owner.invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains billing completion failures after SDK output completes', async () => {
+    const owner = mock<ModelInvocationService>();
+    const completed = Promise.withResolvers<void>();
+    owner.invoke.mockResolvedValue({
+      state: 'streaming',
+      operationId: 'operation-fixture',
+      response: new Response(nativeStream(), { headers: { 'content-type': 'text/event-stream' } }),
+      completion: completed.promise,
     });
+    const service = new ChatService(owner);
+    const result = await service.getBuildNameGenerator(
+      [{ role: 'user', content: 'name it' }],
+      'owner',
+      'attempt',
+      { projectHint: 'project' },
+      new AbortController().signal,
+    );
+    if (result.state !== 'streaming') {
+      throw new Error('Expected stream');
+    }
+    await result.response.text();
+    const failed = expect(result.completion).rejects.toThrow('Billing completion failed');
+    completed.reject(new Error('Billing completion failed'));
+    await failed;
+  });
 
-    it('should get read-dedup clearer from StoreService', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
+  it('settles SDK validation failure before funded fetch', async () => {
+    const owner = mock<ModelInvocationService>();
+    const service = new ChatService(owner);
+    await expect(
+      service.getBuildNameGenerator([], 'owner', 'attempt', { projectHint: 'project' }, new AbortController().signal),
+    ).rejects.toThrow();
+    expect(owner.invoke).not.toHaveBeenCalled();
+  });
 
-      expect(mockStoreService.getReadDedupClearer).toHaveBeenCalledTimes(1);
-    });
-
-    it('should reuse the same checkpointer across multiple agent creations', async () => {
-      // Act - create multiple agents (simulating multiple chat requests)
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-2',
-        kernel: 'replicad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-3',
-        kernel: 'jscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      // Assert - checkpointer retrieved each time (but same instance from service)
-      expect(mockCheckpointerService.getCheckpointer).toHaveBeenCalledTimes(3);
-    });
-
-    it('should handle concurrent agent creation', async () => {
-      // Act - simulate multiple concurrent chat requests
-      await Promise.all([
-        service.createAgent({
-          chatId: 'test-chat-1',
-          modelId: 'model-1',
-          kernel: 'openscad',
-          mode: 'agent',
-          tools: { choice: 'auto', testingEnabled: true },
-        }),
-        service.createAgent({
-          chatId: 'test-chat-1',
-          modelId: 'model-2',
-          kernel: 'replicad',
-          mode: 'agent',
-          tools: { choice: 'auto', testingEnabled: true },
-        }),
-        service.createAgent({
-          chatId: 'test-chat-1',
-          modelId: 'model-3',
-          kernel: 'jscad',
-          mode: 'agent',
-          tools: { choice: 'auto', testingEnabled: true },
-        }),
-        service.createAgent({
-          chatId: 'test-chat-1',
-          modelId: 'model-4',
-          kernel: 'openscad',
-          mode: 'agent',
-          tools: { choice: 'auto', testingEnabled: true },
-        }),
-        service.createAgent({
-          chatId: 'test-chat-1',
-          modelId: 'model-5',
-          kernel: 'replicad',
-          mode: 'agent',
-          tools: { choice: 'auto', testingEnabled: true },
-        }),
-      ]);
-
-      // Assert
-      expect(mockCheckpointerService.getCheckpointer).toHaveBeenCalledTimes(5);
-    });
-
-    it('should build model with provided modelId', async () => {
-      // Act
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'claude-3-opus',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      // Assert
-      type BuildModelCall = [
-        string,
-        {
-          providerDiagnosticsContext: {
-            chatId: string;
-            modelId: string;
-            providerId: string;
-          };
-        },
-      ];
-      const buildModelCalls = mockModelService.buildModel.mock.calls as unknown as BuildModelCall[];
-      const buildModelCall = buildModelCalls.at(-1);
-
-      expect(buildModelCall?.[0]).toBe('claude-3-opus');
-      expect(buildModelCall?.[1].providerDiagnosticsContext).toMatchObject({
-        chatId: 'test-chat-1',
-        modelId: 'claude-3-opus',
-        providerId: 'openai',
+  it('propagates cancellation while admission is pending', async () => {
+    const owner = mock<ModelInvocationService>();
+    const service = new ChatService(owner);
+    const started = Promise.withResolvers<void>();
+    owner.invoke.mockImplementation(async ({ signal }) => {
+      started.resolve();
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            reject(new Error('Cancelled pending admission'));
+          },
+          { once: true },
+        );
       });
     });
+    const controller = new AbortController();
+    const result = service.getBuildNameGenerator(
+      [{ role: 'user', content: 'name it' }],
+      'owner',
+      'attempt',
+      { projectHint: 'project' },
+      controller.signal,
+    );
+    const rejected = expect(result).rejects.toThrow('Cancelled pending admission');
+    await started.promise;
+    controller.abort(new Error('Cancelled pending admission'));
+    await rejected;
+    expect(owner.invoke).toHaveBeenCalledTimes(1);
+  });
 
-    it('should get tools with provided tool selection', async () => {
-      // Act
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      // Assert
-      expect(mockToolService.getTools).toHaveBeenCalledWith('auto', 'openscad');
-    });
-
-    it('should filter provider tools through ModelService before creating the agent', async () => {
-      const testModelTool = { name: toolName.testModel };
-      const kernelTool = { name: toolName.getKernelResult };
-      const screenshotTool = { name: toolName.screenshot };
-      vi.mocked(mockToolService.getTools).mockReturnValueOnce({
-        tools: {
-          [toolName.testModel]: testModelTool,
-          [toolName.getKernelResult]: kernelTool,
-          [toolName.screenshot]: screenshotTool,
-        },
-      });
-      vi.mocked(mockModelService.filterProviderToolNamesForModel).mockReturnValueOnce([
-        toolName.testModel,
-        toolName.getKernelResult,
-      ]);
-      const eagerDispatchHandler = {
-        entries: new Map(),
-        setWriter: vi.fn(),
-        bindTools: vi.fn(),
-      } as unknown as EagerToolDispatchHandler;
-
-      await service.createAgent({
-        chatId: 'test-chat-filtered-tools',
-        modelId: 'together-glm-5.2',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-        eagerDispatchHandler,
-      });
-
-      expect(mockModelService.filterProviderToolNamesForModel).toHaveBeenCalledWith({
-        modelId: 'together-glm-5.2',
-        toolNames: expect.arrayContaining([toolName.testModel, toolName.getKernelResult, toolName.screenshot]),
-      });
-      const createAgentCall = vi.mocked(createAgent).mock.calls.at(-1)?.[0];
-      expect(createAgentCall?.tools).toEqual([testModelTool, kernelTool]);
-      expect(eagerDispatchHandler.bindTools).toHaveBeenCalledWith([testModelTool, kernelTool]);
-    });
-
-    it('should pass the active kernel through to ToolService.getTools so kernel-aware tool factories receive it', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'replicad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-      expect(mockToolService.getTools).toHaveBeenCalledWith('auto', 'replicad');
-    });
-
-    it('calls ModelService.getProviderId for the requested model', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      expect(mockModelService.getProviderId).toHaveBeenCalledWith('model-1');
-    });
-
-    it('orders provider diagnostics after final payload normalization and before LLM timing', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-order',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      const createAgentMock = vi.mocked(createAgent);
-      const middleware = createAgentMock.mock.calls.at(-1)?.[0]?.middleware ?? [];
-
-      const indexByName = (name: string): number =>
-        middleware.findIndex((m) => (m as { name?: string } | undefined)?.name === name);
-
-      const normalizerIndex = indexByName('CrossProviderContentNormalizer');
-      const compactionIndex = indexByName('Compaction');
-      const providerDiagnosticsIndex = indexByName('ProviderDiagnostics');
-      const llmTimingIndex = indexByName('LlmTiming');
-
-      expect(normalizerIndex).toBeGreaterThanOrEqual(0);
-      expect(compactionIndex).toBeGreaterThanOrEqual(0);
-      expect(providerDiagnosticsIndex).toBeGreaterThanOrEqual(0);
-      expect(llmTimingIndex).toBeGreaterThanOrEqual(0);
-      expect(normalizerIndex).toBeGreaterThan(compactionIndex);
-      expect(providerDiagnosticsIndex).toBeGreaterThan(normalizerIndex);
-      expect(llmTimingIndex).toBeGreaterThan(providerDiagnosticsIndex);
-    });
-
-    it('should run ToolInputCompatibility after ToolErrorHandler and before eager dispatch/offloading', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-tool-compatibility',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-        eagerDispatchHandler: {
-          entries: new Map(),
-          setWriter: vi.fn(),
-          bindTools: vi.fn(),
-        } as unknown as EagerToolDispatchHandler,
-      });
-
-      const createAgentMock = vi.mocked(createAgent);
-      const middleware = createAgentMock.mock.calls.at(-1)?.[0]?.middleware ?? [];
-
-      const indexByName = (name: string): number =>
-        middleware.findIndex((m) => (m as { name?: string } | undefined)?.name === name);
-
-      const toolErrorIndex = indexByName('ToolErrorHandler');
-      const compatibilityIndex = indexByName('ToolInputCompatibility');
-      const eagerWriterIndex = indexByName('EagerWriterCapture');
-      const toolOffloadingIndex = indexByName('ToolOffloading');
-
-      expect(toolErrorIndex).toBeGreaterThanOrEqual(0);
-      expect(compatibilityIndex).toBeGreaterThan(toolErrorIndex);
-      expect(eagerWriterIndex).toBeGreaterThan(compatibilityIndex);
-      expect(toolOffloadingIndex).toBeGreaterThan(compatibilityIndex);
-    });
-
-    it('throws when getProviderId returns undefined', async () => {
-      vi.mocked(mockModelService.getProviderId).mockImplementationOnce(() => undefined);
-
-      await expect(
-        service.createAgent({
-          chatId: 'test-chat-provider',
-          modelId: 'orphan-model',
-          kernel: 'openscad',
-          mode: 'agent',
-          tools: { choice: 'auto', testingEnabled: true },
-        }),
-      ).rejects.toThrow('Could not resolve provider for model orphan-model');
-    });
-
-    it('should include latex delimiter normalization middleware for checkpointed state', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-1',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      const createAgentMock = vi.mocked(createAgent);
-      const firstCall = createAgentMock.mock.calls[0]?.[0];
-      const middleware = firstCall?.middleware;
-
-      expect(middleware).toBeDefined();
-      expect(middleware).toContain(newlineTrimmerMiddleware);
-      expect(middleware).toContain(latexDelimiterMiddleware);
-
-      const newlineMiddlewareIndex = middleware?.indexOf(newlineTrimmerMiddleware) ?? -1;
-      const latexMiddlewareIndex = middleware?.indexOf(latexDelimiterMiddleware) ?? -1;
-      expect(newlineMiddlewareIndex).toBeGreaterThanOrEqual(0);
-      expect(latexMiddlewareIndex).toBeGreaterThan(newlineMiddlewareIndex);
-    });
-
-    // Most provider-visible request mutators run before Compaction so the
-    // budget decision is made against the same effective LangChain ModelRequest
-    // that will be dispatched to the provider. CrossProviderContentNormalizer is
-    // the exception: it runs after Compaction as the final provider payload
-    // sanitizer because compaction may rebuild AIMessages.
-    it('should run effective-payload middleware before Compaction', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-token-usage',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      const createAgentMock = vi.mocked(createAgent);
-      const firstCall = createAgentMock.mock.calls.at(-1)?.[0];
-      const middleware = firstCall?.middleware ?? [];
-
-      const indexByName = (name: string): number =>
-        middleware.findIndex((m) => (m as { name?: string } | undefined)?.name === name);
-
-      const compactionIndex = indexByName('Compaction');
-      const tokenUsageIndex = indexByName('TokenUsageContext');
-      const safeguardsIndex = indexByName('AgentSafeguards');
-      const clientContextIndex = indexByName('ClientContext');
-      const recentSkillsIndex = indexByName('RecentSkills');
-      const promptCachingIndex = indexByName('PromptCaching');
-      const providerDiagnosticsIndex = indexByName('ProviderDiagnostics');
-
-      expect(compactionIndex).toBeGreaterThanOrEqual(0);
-      expect(tokenUsageIndex).toBeLessThan(compactionIndex);
-      expect(safeguardsIndex).toBeGreaterThan(tokenUsageIndex);
-      expect(safeguardsIndex).toBeLessThan(compactionIndex);
-      expect(clientContextIndex).toBeLessThan(compactionIndex);
-      expect(recentSkillsIndex).toBeLessThan(compactionIndex);
-      expect(promptCachingIndex).toBeLessThan(compactionIndex);
-      expect(providerDiagnosticsIndex).toBeGreaterThan(compactionIndex);
-    });
-
-    // T1.10: InterruptRecovery is wired into the canonical pipeline immediately
-    // after AgentSafeguards (so doom-loop detection runs first) and before
-    // the final provider normalization pass (so the injected `<system-reminder>`
-    // HumanMessage joins the cacheable prefix before payload-specific cleanup).
-    it('should run InterruptRecovery after AgentSafeguards and before CrossProviderContentNormalizer', async () => {
-      await service.createAgent({
-        chatId: 'test-chat-interrupt-recovery',
-        modelId: 'model-1',
-        kernel: 'openscad',
-        mode: 'agent',
-        tools: { choice: 'auto', testingEnabled: true },
-      });
-
-      const createAgentMock = vi.mocked(createAgent);
-      const middleware = createAgentMock.mock.calls.at(-1)?.[0]?.middleware ?? [];
-
-      const indexByName = (name: string): number =>
-        middleware.findIndex((m) => (m as { name?: string } | undefined)?.name === name);
-
-      const safeguardsIndex = indexByName('AgentSafeguards');
-      const interruptRecoveryIndex = indexByName('InterruptRecovery');
-      const normalizerIndex = indexByName('CrossProviderContentNormalizer');
-
-      expect(safeguardsIndex).toBeGreaterThanOrEqual(0);
-      expect(interruptRecoveryIndex).toBeGreaterThan(safeguardsIndex);
-      expect(normalizerIndex).toBeGreaterThan(interruptRecoveryIndex);
-    });
+  it('rejects an already aborted request without admission', async () => {
+    const owner = mock<ModelInvocationService>();
+    const service = new ChatService(owner);
+    await expect(
+      service.getBuildNameGenerator(
+        [],
+        'owner',
+        'attempt',
+        { projectHint: 'project' },
+        AbortSignal.abort(new Error('Cancelled')),
+      ),
+    ).rejects.toThrow('Cancelled');
+    expect(owner.invoke).not.toHaveBeenCalled();
   });
 });

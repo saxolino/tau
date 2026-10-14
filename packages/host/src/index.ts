@@ -1,0 +1,160 @@
+export { startHostDaemon } from '#host-daemon.js';
+export type {
+  HostDaemonAgentOptions,
+  HostDaemonCloseResult,
+  HostDaemonEvent,
+  HostDaemonHandle,
+  HostDaemonOptions,
+  HostSessionCloseCode,
+} from '#host-daemon.js';
+export type {
+  HostJobTaskProfile,
+  HostJobWorkerCloseResult,
+  HostJobWorkerFactory,
+  HostJobWorkerHandle,
+  HostJobWorkerStartInput,
+} from '#job-worker.js';
+export { startHostJobAttemptHost } from '#job-attempt-host.js';
+export type {
+  HostJobAttemptHostCloseResult,
+  HostJobAttemptHostEvent,
+  HostJobAttemptHostHandle,
+  HostJobAttemptIdentity,
+  HostJobAttemptLease,
+  HostJobCapabilityValue,
+  HostJobCoordinatorPort,
+  HostJobExecutionOutcome,
+  HostJobExecutor,
+  HostJobFailure,
+  HostJobProgress,
+  HostJobRunnerRegistration,
+} from '#job-attempt-host.js';
+export type { HostCredential } from '#credential-store.js';
+export { defaultConfigDirectory } from '#credential-store.js';
+export { hostDescriptorPath, hostSessionCookieName, startAgentServer } from '#agent-server.js';
+export type { AgentServerHandle, AgentServerOptions } from '#agent-server.js';
+export { startRunReporter } from '#run-reporter.js';
+export type { RunReporter, RunReporterOptions } from '#run-reporter.js';
+export type { HostRunState } from '#host.schemas.js';
+export { hostRevisionActor } from '#revision-actor.js';
+export {
+  createProjectRevisionPort,
+  createProjectRevisions,
+  openProjectRevisions,
+  projectCloseMilliseconds,
+  projectReleaseMilliseconds,
+  requireRevisionToolchain,
+} from '#revisions.js';
+export type {
+  HostRevisionEvent,
+  ProjectRevisionVerbs,
+  ProjectRevisions,
+  ProjectRevisionsOptions,
+  RevisionDiscardOutcome,
+  RevisionOpenOutcome,
+  RevisionPublishOutcome,
+  RevisionSaveOutcome,
+  RevisionSwitchOutcome,
+  TurnCheckout,
+  TurnConflictedEvent,
+  TurnFailedEvent,
+  TurnFinalizedEvent,
+} from '#revisions.js';
+export { isolationHeaders, serveStaticUi } from '#static-ui.js';
+export type { StaticUiHandler, StaticUiOptions } from '#static-ui.js';
+export { createProjectHost, createProjectHostActor } from '#project-host.js';
+export type {
+  ProjectFileSystem,
+  ProjectHost,
+  ProjectHostActor,
+  ProjectHostActorOptions,
+  ProjectHostCommand,
+  ProjectHostOptions,
+  ProjectHostRuntimeClient,
+} from '#project-host.js';
+export { keyedResource } from '#keyed-resource.js';
+export { openLocalParameterActors } from '#local-parameters.js';
+export type { LocalParameterActors } from '#local-parameters.js';
+export type { KeyedIncarnation, KeyedResource } from '#keyed-resource.js';
+export {
+  createMachineSecretStore,
+  createNodeMachineRuntime,
+  localMachineFacet,
+  machineRouteGrants,
+  openMachineHostIdentity,
+  probeCertificateTrust,
+  readProjectId,
+} from '#machine-host.js';
+export type { CreateNodeMachineRuntimeOptions, MachineHostIdentity, MachineSecretStore } from '#machine-host.js';
+export { openLocalMachines, openSharedMachineHost } from '#local-machines.js';
+export type {
+  LocalMachines,
+  LocalMachinesRefusal,
+  OpenLocalMachinesOptions,
+  OpenSharedMachineHostOptions,
+  SharedMachineHost,
+} from '#local-machines.js';
+export { completeMachineBinding } from '#machine-binding-ceremony.js';
+export type { CompleteMachineBindingInput, MachineBindingCeremonyEvent } from '#machine-binding-ceremony.js';
+export {
+  createFileSecretVault,
+  createKeychainSecretVault,
+  createMemorySecretVault,
+  openSecretVault,
+} from '#secret-vault.js';
+export type { SecretVault, SecretVaultFacts, SecretVaultKind, SecretVaultWriteOptions } from '#secret-vault.js';
+export { createHostToolRegistry } from '#agent-tools.js';
+export type { HostToolRegistryOptions } from '#agent-tools.js';
+export {
+  acpAdapterEnvironment,
+  acpAdapterOverrideVariable,
+  acpAgentProfiles,
+  acpCliProbeTimeout,
+  acpEnvironmentAllowlist,
+  acpEnvironmentPrefixAllowlist,
+  acpLiveSessionLimit,
+  acpModelProbeTimeout,
+  acpNativeToolNamePaths,
+  acpSessionIdleTimeout,
+  createAcpExternalAgentPort,
+  discoverAcpAgents,
+  externalAgentDescriptors,
+  modelChoice,
+  openAcpSession,
+  probeAcpAgentModels,
+  probeAcpAgents,
+  resolveAcpAdapters,
+  spawnAcpAdapter,
+  tauMcpServerName,
+} from '#acp/index.js';
+export type {
+  AcpAdapter,
+  AcpAdapterRefusal,
+  AcpAgentDiscovery,
+  AcpAgentProfile,
+  AcpExternalAgentPortOptions,
+  AcpPromptTurn,
+  AcpAgentFacts,
+  AcpLimitReset,
+  AcpSession,
+  AcpTurnOutcome,
+  AcpWireFrame,
+  OpenAcpSessionOptions,
+  SpawnedAcpAdapter,
+} from '#acp/index.js';
+export {
+  createHostMcpEndpoint,
+  hostMcpAllowedTools,
+  hostMcpCapabilityLifetime,
+  hostMcpLeaseCeiling,
+  HostMcpCapabilityError,
+  hostMcpCapabilityPrefix,
+  serveLocalHostMcp,
+} from '#mcp-server.js';
+export type {
+  HostMcpCapabilityClaims,
+  HostMcpEndpoint,
+  HostMcpEndpointOptions,
+  LocalHostMcp,
+  LocalHostMcpOptions,
+} from '#mcp-server.js';

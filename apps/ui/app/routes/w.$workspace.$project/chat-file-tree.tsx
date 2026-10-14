@@ -1,8 +1,8 @@
 import { memo, useCallback } from 'react';
 import { XIcon } from 'lucide-react';
 import { FloatingPanel, FloatingPanelClose } from '#components/ui/floating-panel.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { ChatEditorFileTree } from '#routes/w.$workspace.$project/chat-editor-file-tree.js';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
@@ -19,8 +19,9 @@ export const FileTreePanelBody = memo(function ({
   borderless = false,
   onOpenFile,
   shouldHandleReveal,
+  readOnly = false,
 }: {
-  readonly actionsContainer?: Element | DocumentFragment | null;
+  readonly actionsContainer?: Element | DocumentFragment;
   readonly className?: string;
   readonly isOpen?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
@@ -30,17 +31,19 @@ export const FileTreePanelBody = memo(function ({
   readonly borderless?: boolean;
   readonly onOpenFile?: (path: string, readOnly?: boolean) => void;
   readonly shouldHandleReveal?: () => boolean;
+  readonly readOnly?: boolean;
 }): React.JSX.Element {
   return (
     <FloatingPanel isOpen={isOpen} side='right' className={className} onOpenChange={onOpenChange}>
       <ChatEditorFileTree
-        actionsContainer={actionsContainer}
+        actionsContainer={actionsContainer ?? undefined}
         closeButton={closeButton}
         showTitle={showTitle}
         borderless={borderless}
         onRequestOpen={onRequestOpen}
         onOpenFile={onOpenFile}
         shouldHandleReveal={shouldHandleReveal}
+        readOnly={readOnly}
       />
     </FloatingPanel>
   );

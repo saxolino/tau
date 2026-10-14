@@ -1,15 +1,27 @@
 import { createEsbuildModuleVm } from '@taucad/esbuild/vm';
+import type { VmFileSystem } from '@taucad/esbuild/vm';
+import { sha256Bytes } from '@taucad/runtime/kernel';
 import { createCollector } from '#runner/collector.js';
+import { createGeoSpecAssertionClient } from '#assertion-client/client.js';
 import { compileGeoSpecTestNamePattern, filterGeoSpecTests } from '#runner/filter.js';
-import { getRegisteredGeoSpecHostBinding } from '#engine/registry.js';
-import type { GeoSpecRunResult, GeoSpecTestCase, RunGeoSpecModuleOptions } from '#runner/types.js';
+import { GeoSpecModelLoadError } from '#model/errors.js';
+import { bindGeoSpecSubject, rawSubjectResidency, resolveGeoSpecSubject } from '#model/subject.js';
+import type { CreateModelLoaderOptions, GeoSpecModelLoader, ManagedGeoSpecModelLoader } from '#model/types.js';
+import type {
+  GeoSpecModuleBundleCache,
+  GeoSpecRunResult,
+  GeoSpecTestAccounting,
+  GeoSpecRunLineage,
+  RunGeoSpecModuleOptions,
+} from '#runner/types.js';
 
 const geospecRunBindingsGlobalKey = '__GEOSPEC_RUN_BINDINGS__';
 
 type GeoSpecRunBinding = {
   collector: ReturnType<typeof createCollector>;
-  modelLoader?: RunGeoSpecModuleOptions['modelLoader'];
-  stepLoader?: RunGeoSpecModuleOptions['stepLoader'];
+  geoSpecModelLoadError: typeof GeoSpecModelLoadError;
+  nativeModelLoader?: GeoSpecModelLoader;
+  createModelLoader?: (defaults: Partial<CreateModelLoaderOptions>) => ManagedGeoSpecModelLoader;
 };
 
 const runBindingsGlobal = globalThis as typeof globalThis & {
@@ -25,17 +37,26 @@ const builtinIdentity = (options: RunGeoSpecModuleOptions): string =>
       .map(([name, module_]) => [name, module_.version, module_.globalName, module_.code]),
   );
 
+type BundlerRead = Parameters<GeoSpecModuleBundleCache['set']>[1]['bundlerReads'][number];
+
 const bytesEqual = (left: Uint8Array<ArrayBuffer>, right: Uint8Array<ArrayBuffer>): boolean =>
   left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 
-const cacheEntryIsCurrent = async (
-  filesystem: RunGeoSpecModuleOptions['filesystem'],
-  dependencyContents: ReadonlyMap<string, Uint8Array<ArrayBuffer>>,
-): Promise<boolean> => {
+const sameAnswer = (left: BundlerRead['answer'], right: BundlerRead['answer']): boolean =>
+  left instanceof Uint8Array && right instanceof Uint8Array ? bytesEqual(left, right) : left === right;
+
+const ask = async (filesystem: VmFileSystem, { question, path }: BundlerRead): Promise<BundlerRead['answer']> => {
+  if (question === 'exists') {
+    return filesystem.exists(path);
+  }
+  return question === 'utf8' ? filesystem.readFile(path, 'utf8') : filesystem.readFile(path);
+};
+
+const cacheEntryIsCurrent = async (filesystem: VmFileSystem, reads: readonly BundlerRead[]): Promise<boolean> => {
   const comparisons = await Promise.all(
-    [...dependencyContents].map(async ([path, previous]) => {
+    reads.map(async (read) => {
       try {
-        return bytesEqual(await filesystem.readFile(path), previous);
+        return sameAnswer(await ask(filesystem, read), read.answer);
       } catch {
         return false;
       }
@@ -44,19 +65,58 @@ const cacheEntryIsCurrent = async (
   return comparisons.every(Boolean);
 };
 
-const snapshotDependencies = async (
-  options: RunGeoSpecModuleOptions,
-  dependencies: readonly string[],
-): Promise<ReadonlyMap<string, Uint8Array<ArrayBuffer>>> => {
-  const entries = await Promise.all(
-    [...new Set([options.entryPath, ...dependencies])].map(
-      async (path): Promise<readonly [string, Uint8Array<ArrayBuffer>]> => [
-        path,
-        await options.filesystem.readFile(path),
-      ],
-    ),
-  );
-  return new Map(entries);
+/**
+ * Wrap the VM filesystem so a new bundle is cached with the answers it was
+ * built from, not a later re-read that a mid-bundle save could already have
+ * changed.
+ *
+ * @param filesystem - The run's VM filesystem.
+ * @returns The recording filesystem for the bundler, and its reads: undefined
+ *   when the bundle must not be cached, because a read failed or the same read
+ *   returned two different answers.
+ */
+const recordBundlerReads = (
+  filesystem: VmFileSystem,
+): { filesystem: VmFileSystem; reads: () => BundlerRead[] | undefined; observed: () => BundlerRead[] } => {
+  const reads = new Map<string, BundlerRead>();
+  let consistent = true;
+  const observe = async <Answer extends BundlerRead['answer']>(
+    question: BundlerRead['question'],
+    path: string,
+    pending: Promise<Answer>,
+  ): Promise<Answer> => {
+    try {
+      const answer = await pending;
+      const previous = reads.get(`${question}:${path}`);
+      if (previous === undefined) {
+        reads.set(`${question}:${path}`, {
+          question,
+          path,
+          answer: answer instanceof Uint8Array ? Uint8Array.from(answer) : answer,
+        });
+      } else {
+        consistent &&= sameAnswer(previous.answer, answer);
+      }
+      return answer;
+    } catch (error) {
+      consistent = false;
+      throw error;
+    }
+  };
+  // ponytail: exactly the VmFileSystem contract; record any read method the bundler gains (an optional stat) here too.
+  return {
+    filesystem: {
+      exists: async (path) => observe('exists', path, filesystem.exists(path)),
+      readFile: (async (path: string, encoding?: 'utf8') =>
+        encoding === 'utf8'
+          ? observe('utf8', path, filesystem.readFile(path, 'utf8'))
+          : observe('bytes', path, filesystem.readFile(path))) as VmFileSystem['readFile'],
+      writeFile: async (path, content) => filesystem.writeFile(path, content),
+      ensureDir: async (path) => filesystem.ensureDir(path),
+    },
+    reads: () => (consistent ? [...reads.values()] : undefined),
+    observed: () => [...reads.values()],
+  };
 };
 
 const resolveCachedBundle = async (options: RunGeoSpecModuleOptions) => {
@@ -64,7 +124,7 @@ const resolveCachedBundle = async (options: RunGeoSpecModuleOptions) => {
   if (
     entry === undefined ||
     entry.builtinIdentity !== builtinIdentity(options) ||
-    !(await cacheEntryIsCurrent(options.filesystem, entry.dependencyContents))
+    !(await cacheEntryIsCurrent(options.filesystem, entry.bundlerReads))
   ) {
     return undefined;
   }
@@ -93,46 +153,24 @@ const getRunBinding = () => {
 
 const createGeospecBuiltinCode = (runToken: string): string => `
 ${createBindingAccessorCode(runToken)}
-const getCollector = () => {
-  const collector = getRunBinding().collector;
-  if (!collector) {
-    throw new Error('GeoSpec collector is not active. Run the module through runGeoSpecModule().');
-  }
-  return collector;
-};
 
-export const describe = (name, fn) => getCollector().describe(name, fn);
-describe.skip = (name, fn) => getCollector().describeSkip(name, fn);
+export const describe = (name, fn) => getRunBinding().collector.describe(name, fn);
+describe.skip = (name, fn) => getRunBinding().collector.describeSkip(name, fn);
 
-export const it = (name, fn) => getCollector().it(name, fn);
-it.skip = (name, fn) => getCollector().itSkip(name, fn);
+export const it = (name, fn) => getRunBinding().collector.it(name, fn);
+it.skip = (name, fn) => getRunBinding().collector.itSkip(name, fn);
 
 export const test = it;
-export const expectGeo = (subject) => getCollector().expectGeo(subject);
+export const expectGeo = (subject) => getRunBinding().collector.expectGeo(subject);
 `;
 
 const createGeospecModelBuiltinCode = (runToken: string): string => `
 ${createBindingAccessorCode(runToken)}
-export class GeoSpecModelLoadError extends Error {
-  constructor(diagnostics) {
-    const snapshot = diagnostics.map((diagnostic) => {
-      try {
-        return structuredClone(diagnostic);
-      } catch {
-        return {
-          ...diagnostic,
-          details: diagnostic?.details === undefined ? undefined : String(diagnostic.details),
-        };
-      }
-    });
-    super(snapshot.map((diagnostic) => diagnostic.message).join('\\n') || 'GeoSpec model load failed.');
-    this.name = 'GeoSpecModelLoadError';
-    this.diagnostics = Object.freeze(snapshot);
-  }
-}
+export const GeoSpecModelLoadError = getRunBinding().geoSpecModelLoadError;
 
 export const loadModel = async (options) => {
-  const loader = getRunBinding().modelLoader;
+  const binding = getRunBinding();
+  const loader = binding.nativeModelLoader;
   if (typeof loader !== 'function') {
     throw new GeoSpecModelLoadError([
       {
@@ -146,47 +184,12 @@ export const loadModel = async (options) => {
   return loader(options);
 };
 
-export const createModelLoader = (defaults = {}) => async (options) => loadModel({ ...defaults, ...options });
-`;
-
-const createGeospecStepBuiltinCode = (runToken: string): string => `
-${createBindingAccessorCode(runToken)}
-export const loadStep = async (options) => {
-  const loader = getRunBinding().stepLoader;
-  if (typeof loader !== 'function') {
-    throw new Error('No GeoSpec STEP loader is active for this runner. Run this test through the GeoSpec CLI or pass stepLoader to runGeoSpecModule().');
+export const createModelLoader = (defaults = {}) => {
+  const factory = getRunBinding().createModelLoader;
+  if (typeof factory !== 'function') {
+    throw new GeoSpecModelLoadError([{ code: 'GEOSPEC_MODEL_LOADER_UNAVAILABLE', severity: 'error', message: 'No managed GeoSpec model loader is active for this runner.' }]);
   }
-  return loader(options);
-};
-
-export const createStepLoader = (defaults = {}) => async (options) => loadStep({ ...defaults, ...options });
-`;
-
-const geospecBrepBuiltinCode = `
-export const analyzeBrep = ({ subject }) => {
-  if (!subject || typeof subject !== 'object' || subject.kind !== 'geometry-subject') {
-    return {
-      success: false,
-      diagnostics: [{
-        code: 'UNSUPPORTED_GEOMETRY_SUBJECT',
-        severity: 'error',
-        message: 'analyzeBrep requires a GeoSpec GeometrySubject.',
-        suggestion: 'Load a subject with loadStep(...) or loadModel({ format: "step" }).',
-      }],
-    };
-  }
-  if (!subject.brep) {
-    return {
-      success: false,
-      diagnostics: [{
-        code: 'UNSUPPORTED_GEOMETRY_EVIDENCE',
-        severity: 'error',
-        message: 'Geometry subject does not include BRep evidence.',
-        suggestion: 'Load a STEP/BRep-capable subject with loadStep(...) or loadModel({ format: "step" }).',
-      }],
-    };
-  }
-  return { success: true, brep: subject.brep, diagnostics: subject.diagnostics ?? [] };
+  return factory(defaults);
 };
 `;
 
@@ -204,24 +207,150 @@ export async function runGeoSpecModule(options: RunGeoSpecModuleOptions): Promis
     return { success: false, issues: [compiledTestNamePattern.issue] };
   }
 
+  const recorder = recordBundlerReads(options.filesystem);
   const vm = await createEsbuildModuleVm({
-    filesystem: options.filesystem,
+    filesystem: recorder.filesystem,
   });
   const collector = createCollector({
     ...(options.matcherWallBackstop === undefined ? {} : { matcherWallBackstop: options.matcherWallBackstop }),
     ...(options.forensic === undefined ? {} : { forensic: options.forensic }),
+    nativeAssertions: options.nativeAssertions,
   });
   const cached = await resolveCachedBundle(options);
-  const runToken = cached?.runToken ?? createRunToken();
+  const runToken = createRunToken();
   const bindings = ensureRunBindings();
-  // D-S3: the model loader is INJECTED. The engine's runner hosts own its
-  // construction (caching, affinity, resource-scope tracking); this module
-  // compiles and executes the spec against whatever it is handed.
-  const { modelLoader } = options;
+  // D-S3: the native model loader is INJECTED. The host owns its construction
+  // (runtime, caching, affinity); this module compiles and executes the spec
+  // against whatever it is handed and binds each admitted subject to this run.
+  const nativeAdmissions = new Set<Promise<unknown>>();
+  const loads: Array<GeoSpecRunLineage['loads'][number]> = [];
+  const drainAdmissions = async (): Promise<void> => {
+    do {
+      const batch = [...nativeAdmissions];
+      // oxlint-disable-next-line no-await-in-loop -- Settled load callbacks may register another finite admission.
+      await Promise.allSettled(batch);
+      for (const pending of batch) {
+        nativeAdmissions.delete(pending);
+      }
+    } while (nativeAdmissions.size > 0);
+  };
+  const configuredNativeModelLoader = options.nativeModelLoader;
+  const admissionClient = createGeoSpecAssertionClient(options.nativeAssertions);
+  let nativeScopeLive = true;
+  /* oxlint-disable typescript/promise-function-async -- Return the exact admission promise to the authored module. */
+  const trackedNativeModelLoader: GeoSpecModelLoader | undefined =
+    configuredNativeModelLoader === undefined
+      ? undefined
+      : (loadOptions) => {
+          const index = loads.length;
+          const loadId = `${runToken}:load:${index + 1}`;
+          loads.push({ loadId, status: 'unavailable' });
+          const pending = (async () => {
+            try {
+              const rawSubject = await configuredNativeModelLoader(loadOptions);
+              const { load, ...identity } = rawSubject;
+              const ensureResident = rawSubjectResidency(rawSubject);
+              const evidence = load === undefined ? undefined : { ...structuredClone(load), loadId };
+              loads[index] = {
+                loadId,
+                status: evidence?.status ?? 'unavailable',
+                subject: identity,
+                ...(evidence === undefined ? {} : { evidence }),
+              };
+              return bindGeoSpecSubject({
+                engine: options.nativeAssertions.engine,
+                client: admissionClient,
+                identity,
+                ...(evidence === undefined ? {} : { load: evidence }),
+                isLive: () => nativeScopeLive,
+                ...(ensureResident === undefined ? {} : { ensureResident }),
+              });
+            } catch (error) {
+              loads[index] = {
+                loadId,
+                status: 'failed',
+                error: error instanceof Error ? error.message : String(error),
+                ...(error instanceof GeoSpecModelLoadError ? { diagnostics: error.diagnostics } : {}),
+              };
+              throw error;
+            }
+          })();
+          // oxlint-disable-next-line promise/prefer-await-to-then -- Observe detached failures immediately, preserving the original admission promise for drainage.
+          nativeAdmissions.add(pending.catch(() => undefined));
+          nativeAdmissions.add(pending);
+          return pending;
+        };
+  /* oxlint-enable typescript/promise-function-async */
   bindings.set(runToken, {
     collector,
-    ...(modelLoader ? { modelLoader } : {}),
-    ...(options.stepLoader ? { stepLoader: options.stepLoader } : {}),
+    geoSpecModelLoadError: GeoSpecModelLoadError,
+    ...(trackedNativeModelLoader ? { nativeModelLoader: trackedNativeModelLoader } : {}),
+    ...(trackedNativeModelLoader
+      ? {
+          createModelLoader: (defaults: Partial<CreateModelLoaderOptions>): ManagedGeoSpecModelLoader => {
+            // The raw loader owns the Runtime; a managed child drains its loads,
+            // invalidates its facades and drops only those loads' private leases.
+            if (defaults.engine !== undefined || defaults.readSource !== undefined) {
+              throw new TypeError('Authored VM model defaults cannot replace the admitting host.');
+            }
+            let generation = 0;
+            const loads = new Set<Promise<unknown>>();
+            const leases = new Set<NonNullable<ReturnType<typeof resolveGeoSpecSubject>['lease']>>();
+            let disposing: Promise<void> | undefined;
+            const loader: GeoSpecModelLoader = async (input) => {
+              const current = generation;
+              const subject = await trackedNativeModelLoader({ ...defaults, ...input });
+              const admission = resolveGeoSpecSubject(subject);
+              if (admission.lease !== undefined) {
+                leases.add(admission.lease);
+              }
+              return bindGeoSpecSubject({
+                ...admission,
+                isLive: () => admission.isLive() && generation === current,
+              });
+            };
+            // oxlint-disable-next-line typescript/promise-function-async -- Preserve the exact child admission promise for lifecycle drainage.
+            const tracked: GeoSpecModelLoader = (input) => {
+              const pending = loader(input);
+              loads.add(pending);
+              return pending;
+            };
+            const dispose = async (): Promise<void> => {
+              do {
+                const pending = [...loads];
+                // oxlint-disable-next-line no-await-in-loop -- Child-scope load callbacks may enqueue more admissions while draining.
+                await Promise.allSettled(pending);
+                for (const load of pending) {
+                  loads.delete(load);
+                }
+              } while (loads.size > 0);
+              generation += 1;
+              const errors: unknown[] = [];
+              for (const lease of leases) {
+                try {
+                  lease.dispose();
+                  leases.delete(lease);
+                } catch (error) {
+                  errors.push(error);
+                }
+              }
+              if (errors.length > 0) {
+                throw new AggregateError(errors, 'GeoSpec model scope disposal failed.');
+              }
+            };
+            return Object.assign(tracked, {
+              // oxlint-disable-next-line typescript/promise-function-async -- Concurrent callers share one scope drain and invalidation.
+              dispose() {
+                // oxlint-disable-next-line promise/prefer-await-to-then -- Return one observed drain promise to every concurrent disposer.
+                disposing ??= dispose().finally(() => {
+                  disposing = undefined;
+                });
+                return disposing;
+              },
+            });
+          },
+        }
+      : {}),
   });
 
   vm.registerModule('geospec', {
@@ -232,14 +361,6 @@ export async function runGeoSpecModule(options: RunGeoSpecModuleOptions): Promis
     version: '0.0.0-poc',
     code: createGeospecModelBuiltinCode(runToken),
   });
-  vm.registerModule('geospec/step', {
-    version: '0.0.0-poc',
-    code: createGeospecStepBuiltinCode(runToken),
-  });
-  vm.registerModule('geospec/brep', {
-    version: '0.0.0-poc',
-    code: geospecBrepBuiltinCode,
-  });
   for (const [name, module_] of Object.entries(options.builtinModules ?? {})) {
     vm.registerModule(name, module_);
   }
@@ -249,52 +370,133 @@ export async function runGeoSpecModule(options: RunGeoSpecModuleOptions): Promis
     if (!bundle.success) {
       return { success: false, issues: bundle.issues, bundle };
     }
-    if (options.bundleCache !== undefined && cached === undefined) {
-      try {
-        options.bundleCache.set(options.entryPath, {
-          builtinIdentity: builtinIdentity(options),
-          runToken,
-          bundle,
-          dependencyContents: await snapshotDependencies(options, bundle.dependencies),
-        });
-      } catch {
-        // Cache bookkeeping must never change execution semantics.
-      }
+    const bundlerReads = recorder.reads();
+    if (options.bundleCache !== undefined && cached === undefined && bundlerReads !== undefined) {
+      options.bundleCache.set(options.entryPath, {
+        builtinIdentity: builtinIdentity(options),
+        runToken,
+        bundle,
+        bundlerReads,
+      });
     }
 
-    const executed = await vm.execute(bundle.code);
+    // A cached bundle embeds the token of the run that built it. Executing it under this run's own token
+    // leaves work that outlives an earlier run with no binding, instead of this run's.
+    const executed = await vm.execute(
+      cached === undefined ? bundle.code : bundle.code.replaceAll(cached.runToken, runToken),
+    );
+    const lineage = async (): Promise<GeoSpecRunLineage> => {
+      const files: Record<string, string> = {};
+      let consistent = recorder.reads() !== undefined;
+      for (const read of cached?.bundlerReads ?? recorder.observed()) {
+        if (read.question === 'exists' || typeof read.answer === 'boolean') {
+          continue;
+        }
+        // oxlint-disable-next-line no-await-in-loop -- Digest the exact recorded bundler answers, not mutable filesystem rereads.
+        const digest = await sha256Bytes(
+          typeof read.answer === 'string' ? new TextEncoder().encode(read.answer) : read.answer,
+        );
+        consistent &&= files[read.path] === undefined || files[read.path] === `sha256:${digest}`;
+        files[read.path] = `sha256:${digest}`;
+      }
+      const observed = new Map<string, string>(Object.entries(files));
+      for (const load of loads) {
+        const { evidence } = load;
+        for (const artifact of evidence?.exportOptions === undefined ? (evidence?.artifacts ?? []) : []) {
+          if (artifact.sourcePath !== undefined) {
+            const digest = `sha256:${artifact.sha256}`;
+            consistent &&= !observed.has(artifact.sourcePath) || observed.get(artifact.sourcePath) === digest;
+            observed.set(artifact.sourcePath, digest);
+          }
+        }
+        if (evidence?.sourcePath !== undefined && evidence.exportOptions === undefined) {
+          const primary = evidence.artifacts[0];
+          if (primary !== undefined) {
+            const digest = `sha256:${primary.sha256}`;
+            consistent &&= !observed.has(evidence.sourcePath) || observed.get(evidence.sourcePath) === digest;
+            observed.set(evidence.sourcePath, digest);
+          }
+        }
+        for (const [path, digest] of Object.entries(load.evidence?.sourceRevision?.files ?? {})) {
+          consistent &&= !observed.has(path) || observed.get(path) === digest;
+          observed.set(path, digest);
+        }
+      }
+      return {
+        status: consistent ? (loads.some((load) => load.status !== 'complete') ? 'unavailable' : 'complete') : 'mixed',
+        modules: [
+          {
+            entryPath: options.entryPath,
+            bundleSha256: await sha256Bytes(
+              new TextEncoder().encode(
+                cached === undefined ? bundle.code : bundle.code.replaceAll(cached.runToken, runToken),
+              ),
+            ),
+            files,
+            consistent,
+          },
+        ],
+        loads,
+      };
+    };
+    const accounting = (selected: number): GeoSpecTestAccounting => ({
+      discovered: collector.tests.length,
+      selected,
+      completed: collector.tests.filter((test) => test.status !== 'not-run' && test.status !== 'skipped').length,
+      passed: collector.tests.filter((test) => test.status === 'passed').length,
+      failed: collector.tests.filter((test) => test.status === 'failed').length,
+      unsupported: collector.tests.filter((test) => test.status === 'unsupported').length,
+      inconclusive: collector.tests.filter((test) => test.status === 'inconclusive').length,
+      skipped: collector.tests.filter((test) => test.status === 'skipped').length,
+      notRun: collector.tests.filter((test) => test.status === 'not-run').length,
+    });
     if (!executed.success) {
-      return { success: false, issues: executed.issues, bundle };
+      await drainAdmissions();
+      return {
+        success: false,
+        issues: executed.issues,
+        bundle,
+        tests: collector.tests,
+        accounting: accounting(0),
+        lineage: await lineage(),
+      };
     }
     if (options.collectOnly === true) {
       // R3 shard splitting: register tests (async describes included) without
       // running any body — a never-matching pattern skips every scheduled test.
       await collector.waitForCompletion(options.testTimeout, /(?!)/u);
+      await drainAdmissions();
       return {
         success: true,
-        passed: true,
-        tests: collector.tests.map((test): GeoSpecTestCase => ({ ...test, status: 'skipped' })),
+        passed: false,
+        tests: collector.tests,
         bundle,
+        accounting: accounting(0),
+        lineage: await lineage(),
       };
     }
     await collector.waitForCompletion(options.testTimeout, compiledTestNamePattern.pattern);
+    await drainAdmissions();
     const tests = filterGeoSpecTests(collector.tests, compiledTestNamePattern.pattern);
+    const sourceLineage = await lineage();
 
     return {
       success: true,
-      passed: tests.every((test) => test.status !== 'failed'),
+      passed:
+        sourceLineage.status === 'complete' &&
+        tests.every((test) => test.status === 'passed' || test.status === 'skipped'),
       tests,
       bundle,
+      accounting: accounting(tests.length),
+      lineage: sourceLineage,
     };
   } finally {
+    await drainAdmissions();
+    nativeScopeLive = false;
     bindings.delete(runToken);
     if (bindings.size === 0) {
       Reflect.deleteProperty(runBindingsGlobal, geospecRunBindingsGlobalKey);
     }
     vm.dispose();
-    // R9: land write-behind evidence at every module/shard boundary so
-    // pending entries become durable (and visible to sibling workers) off the
-    // matcher path. No-op when no engine or store is installed.
-    await getRegisteredGeoSpecHostBinding<() => Promise<void>>('flushEvidenceStore')?.();
   }
 }

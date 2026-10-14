@@ -1,16 +1,14 @@
 // oxlint-disable-next-line import/no-unassigned-import -- side-effect import polyfills IndexedDB for tests
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
-import { describe, it, expect, beforeEach } from 'vitest';
-import type { Chat, MyUIMessage } from '@taucad/chat';
-import type { ChatError, ProjectManifest } from '@taucad/types';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { ProjectManifest } from '@taucad/types';
 import { projectToManifest } from '@taucad/types';
-import { errorCategory } from '@taucad/types/constants';
 import { IndexedDbStorageProvider } from '#db/indexeddb-storage.js';
 import { defaultPanelState } from '#constants/editor.constants.js';
 import type { PendingProjectOperation } from '#types/pending-project-operation.types.js';
 import type { EditorState } from '#types/editor.types.js';
-import type { ProjectLibraryState } from '#types/project.types.js';
+import type { ProjectLibraryState } from '#types/project-library.types.js';
 
 const projectOneId = 'proj_one';
 const projectTwoId = 'proj_two';
@@ -18,34 +16,6 @@ const projectTwoId = 'proj_two';
 // ===========================================================================
 // Helpers
 // ===========================================================================
-
-const userMessage = (text: string): MyUIMessage => ({
-  id: `msg_${text}`,
-  role: 'user',
-  metadata: { createdAt: 1, status: 'success' },
-  parts: [{ type: 'text', text }],
-});
-
-const draftMessage = (text: string): MyUIMessage => ({
-  id: 'draft',
-  role: 'user',
-  metadata: { createdAt: 1, status: 'pending' },
-  parts: [{ type: 'text', text }],
-});
-
-const startupRequest = (messageId: string, id = 'req_startup_test'): NonNullable<Chat['startupRequest']> => ({
-  id,
-  kind: 'regenerate-tail',
-  messageId,
-  source: 'homepage-initial-message',
-  createdAt: 1,
-});
-
-const sampleError = (title: string): ChatError => ({
-  category: errorCategory.generic,
-  title,
-  message: title,
-});
 
 let projectSequence = 0;
 
@@ -60,24 +30,9 @@ const sampleManifest = (id = nextProjectId()): ProjectManifest =>
     assets: { main: { entryPath: 'index.ts' } },
   });
 
-async function freshChat(provider: IndexedDbStorageProvider): Promise<Chat> {
-  return provider.createChat('resource_test', {
-    name: 'Test Chat',
-    messages: [],
-  });
-}
-
 async function freshProject(provider: IndexedDbStorageProvider): Promise<ProjectLibraryState> {
   return provider.createProjectLibraryState({ projectId: nextProjectId(), lastActivityAt: 1 });
 }
-
-const sleep = async (ms: number): Promise<void> => {
-  await new Promise<void>((resolve) => {
-    setTimeout(() => {
-      resolve();
-    }, ms);
-  });
-};
 
 type TrackedConnection = { readonly db: IDBDatabase; closeCalls: number };
 
@@ -135,12 +90,11 @@ beforeEach(() => {
 });
 
 describe('IndexedDbStorageProvider', () => {
-  // The v10 cutover preserves durable domain rows, adds browser-local chrome
-  // preferences, and intentionally clears the incompatible editor layout.
-  it('upgrades v9 to v10, preserves domain rows, and clears editor layout rows', async () => {
+  // The v12 cut retains device state while removing the old portable editor fields.
+  it('upgrades v9 to v12, preserves domain and device rows, and drops chats and portable fields', async () => {
     const libraryRow: ProjectLibraryState = { projectId: 'proj_kept0000000000000000', lastActivityAt: 42 };
     const chatRow = { id: 'cht_kept', resourceId: 'proj_kept0000000000000000', name: 'Kept chat', messages: [] };
-    const editorRow: EditorState = {
+    const editorRow = {
       projectId: libraryRow.projectId,
       openFiles: [],
       activePaneId: undefined,
@@ -148,7 +102,7 @@ describe('IndexedDbStorageProvider', () => {
       panelState: defaultPanelState,
       workbenchLayout: undefined,
       viewerLayout: undefined,
-      viewSettings: {},
+      viewSettings: { old: { entryPath: 'index.ts' } },
       updatedAt: 42,
     };
     await new Promise<void>((resolve, reject) => {
@@ -173,8 +127,12 @@ describe('IndexedDbStorageProvider', () => {
 
     const provider = new IndexedDbStorageProvider();
     await expect(provider.getProjectLibraryState(libraryRow.projectId)).resolves.toEqual(libraryRow);
-    await expect(provider.getChat(chatRow.id)).resolves.toMatchObject({ id: chatRow.id, name: chatRow.name });
-    await expect(provider.getEditorState(libraryRow.projectId)).resolves.toBeUndefined();
+    await expect(provider.getEditorState(libraryRow.projectId)).resolves.toMatchObject({
+      focusedChatId: chatRow.id,
+      fileSidebars: {},
+      graphicsBackendPreferences: {},
+    });
+    expect(await provider.getEditorState(libraryRow.projectId)).not.toHaveProperty('viewSettings');
     await expect(provider.getAppUiPreferences()).resolves.toEqual({ id: 'singleton', projectDisclosure: {} });
 
     const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -186,9 +144,73 @@ describe('IndexedDbStorageProvider', () => {
         reject(request.error ?? new Error('Failed to reopen the database'));
       });
     });
-    expect(upgraded.version).toBe(10);
+    expect(upgraded.version).toBe(12);
     expect([...upgraded.objectStoreNames]).toContain('appUiPreferences');
+    /* No migration and no shim (A31/I15): the chat store is gone, and a chat is
+     * `.tau/chats/<id>/chat.json` inside its project. */
+    expect([...upgraded.objectStoreNames]).not.toContain('chats');
     upgraded.close();
+  });
+
+  it('cuts a v11 editor row to device fields while retaining sidebar pixels, backend and Restore seeds', async () => {
+    const previousLayout = {
+      layout: { version: 1, viewer: { kind: 'group', tabs: [{ kind: 'view', view: 'v-prior' }] } },
+      views: { 'v-prior': { version: 1, entryPath: 'models/other.ts' } },
+    };
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('tau-db', 11);
+      request.addEventListener('upgradeneeded', () => {
+        request.result.createObjectStore('editor', { keyPath: 'projectId' }).put({
+          projectId: projectOneId,
+          openFiles: [{ paneId: 'pane-a', path: 'main.ts', name: 'main.ts', lastAccessedAt: 1 }],
+          activePaneId: 'pane-a',
+          focusedChatId: 'chat-a',
+          panelState: defaultPanelState,
+          previousLayout,
+          workbenchLayout: {
+            panels: {
+              'pane-a': { params: { filePath: 'main.ts', filesWidth: 312 } },
+              'pane-b': { params: { filePath: 'parts/other.ts', filesWidth: 240 } },
+            },
+          },
+          viewerLayout: { grid: {} },
+          viewSettings: {
+            'v-one': { entryPath: 'main.ts', graphicsSettings: { graphicsBackend: 'webgpu' } },
+            'v-two': { entryPath: 'parts/other.ts', graphicsSettings: { graphicsBackend: 'webgl' } },
+          },
+          unitSettings: { 'main.ts': { renderTimeout: 30_000 } },
+          modelComponentDisplay: { schemaVersion: 1, unitsById: {} },
+          updatedAt: 42,
+        });
+      });
+      request.addEventListener('success', () => {
+        request.result.close();
+        resolve();
+      });
+      request.addEventListener('error', () => {
+        reject(request.error ?? new Error('Failed to open legacy database'));
+      });
+    });
+    const provider = new IndexedDbStorageProvider();
+    const row = await provider.getEditorState(projectOneId);
+    expect(row).toEqual({
+      projectId: projectOneId,
+      openFiles: [{ paneId: 'pane-a', path: 'main.ts', name: 'main.ts', lastAccessedAt: 1 }],
+      activePaneId: 'pane-a',
+      focusedChatId: 'chat-a',
+      panelState: defaultPanelState,
+      fileSidebars: { 'main.ts': 312, 'parts/other.ts': 240 },
+      graphicsBackendPreferences: { 'v-one': 'webgpu', 'v-two': 'webgl' },
+      previousLayout,
+      updatedAt: 42,
+    });
+    await provider.updateEditorState({ ...row!, focusedChatId: 'chat-b' });
+    expect(await provider.getEditorState(projectOneId)).toEqual({
+      ...row,
+      focusedChatId: 'chat-b',
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- Vitest's asymmetric matcher is intentionally typed any.
+      updatedAt: expect.any(Number),
+    });
   });
 
   // A profile that never had the database gets the same stores from the same
@@ -206,15 +228,13 @@ describe('IndexedDbStorageProvider', () => {
         reject(request.error ?? new Error('Failed to open the database'));
       });
     });
-    expect(db.version).toBe(10);
+    expect(db.version).toBe(12);
     expect([...db.objectStoreNames].sort()).toEqual([
       'appUiPreferences',
-      'chats',
       'editor',
       'pendingProjectOperations',
       'projectLibraryStates',
     ]);
-    expect([...db.transaction('chats').objectStore('chats').indexNames]).toEqual(['resourceId']);
     db.close();
   });
 
@@ -258,16 +278,6 @@ describe('IndexedDbStorageProvider', () => {
     });
   });
 
-  it('reads all non-deleted chats without adding an index', async () => {
-    const provider = new IndexedDbStorageProvider();
-    const first = await provider.createChat('proj_one', { name: 'First', messages: [] });
-    const second = await provider.createChat('proj_two', { name: 'Second', messages: [] });
-    await provider.softDeleteChat(second.id);
-
-    await expect(provider.getAllChats()).resolves.toMatchObject([{ id: first.id }]);
-    await expect(provider.getAllChats({ includeDeleted: true })).resolves.toHaveLength(2);
-  });
-
   // =========================================================================
   // Connection hygiene (DF17): a leaked or upgrade-blocking connection wedges
   // every later schema bump behind a spinner.
@@ -303,7 +313,7 @@ describe('IndexedDbStorageProvider', () => {
           projectId: nextProjectId(),
           lastActivityAt: 1,
           // A function is unclonable, so `add` throws and the transaction aborts.
-          revisionState: (() => undefined) as unknown as ProjectLibraryState['revisionState'],
+          deletedAt: (() => undefined) as unknown as ProjectLibraryState['deletedAt'],
         }),
       ).rejects.toThrow();
 
@@ -321,7 +331,7 @@ describe('IndexedDbStorageProvider', () => {
         operationId: 'req_pending_create',
         kind: 'duplicate',
         backend: 'opfs',
-        providerBasePath: '/test',
+        providerBasePath: 'test',
         sourceProjectId: project.projectId,
         manifest,
         library: { projectId: manifest.id, lastActivityAt: 3 },
@@ -341,35 +351,26 @@ describe('IndexedDbStorageProvider', () => {
       expect(await provider.getPendingProjectOperations()).toEqual([]);
     });
 
-    it('uses idempotent puts for replayed chat and editor records', async () => {
+    /* The chat half of this case moved with the chat: `resumePendingProjectOperationResources`
+     * returns the operation's chats and the caller writes them as files (W17),
+     * which `chat-file-storage.test.ts` covers. */
+    it('uses idempotent puts for replayed editor records', async () => {
       const provider = new IndexedDbStorageProvider();
-      const chat: Chat = {
-        id: 'chat_replay',
-        resourceId: 'proj_replay',
-        name: 'Replay',
-        messages: [],
-        createdAt: 1,
-        updatedAt: 1,
-      };
       const editorState: EditorState = {
-        projectId: chat.resourceId,
+        projectId: 'proj_replay',
         openFiles: [],
         activePaneId: undefined,
-        focusedChatId: chat.id,
+        focusedChatId: 'chat_replay',
         panelState: defaultPanelState,
-        workbenchLayout: undefined,
-        viewerLayout: undefined,
-        viewSettings: {},
+        fileSidebars: {},
+        graphicsBackendPreferences: {},
         updatedAt: 1,
       };
 
-      await provider.putChatRecord(chat);
-      await provider.putChatRecord(chat);
       await provider.putEditorStateRecord(editorState);
       await provider.putEditorStateRecord(editorState);
 
-      expect(await provider.getChatsForResource(chat.resourceId)).toEqual([chat]);
-      expect(await provider.getEditorState(chat.resourceId)).toEqual(editorState);
+      expect(await provider.getEditorState(editorState.projectId)).toEqual(editorState);
     });
 
     it('admits permanent deletion only while the project is atomically trashed', async () => {
@@ -379,7 +380,7 @@ describe('IndexedDbStorageProvider', () => {
         operationId: 'req_permanent_delete',
         kind: 'permanent-delete',
         projectId: project.projectId,
-        storage: { backend: 'indexeddb', providerBasePath: '/delete' },
+        storage: { backend: 'indexeddb', providerBasePath: 'delete' },
       } as const;
 
       await expect(provider.beginPermanentDeleteProject(operation)).rejects.toThrow(
@@ -405,7 +406,7 @@ describe('IndexedDbStorageProvider', () => {
         operationId: 'req_permanent_delete_race',
         kind: 'permanent-delete',
         projectId: project.projectId,
-        storage: { backend: 'opfs', providerBasePath: '/delete' },
+        storage: { backend: 'opfs', providerBasePath: 'delete' },
       } as const;
 
       const [begin, restore] = await Promise.allSettled([
@@ -429,243 +430,32 @@ describe('IndexedDbStorageProvider', () => {
   // =========================================================================
   // Concurrent updateChat preserves disjoint field writes
   // =========================================================================
-  describe('chat draft resurrection — disjoint-field writes preserve every field', () => {
-    // These tests reproduce the original "draft resurrection" race: a sent
-    // draft was reappearing in the input field because two concurrent
-    // updateChat({draft}) and updateChat({messages}) calls performed
-    // get + put across two separate transactions. After atomic updateChat,
-    // per-chatId mutex, and field-scoped patchChat the production
-    // call sites use patchChat and the race is closed at every layer.
-    it('should preserve both draft and messages when patchChat("draft") and patchChat("messages") race repeatedly', async () => {
-      const iterations = 200;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      /* oxlint-disable no-await-in-loop -- race-detection: each iteration must settle before the next */
-      for (let i = 0; i < iterations; i++) {
-        const text = `iter-${i}`;
-        const draft = draftMessage(text);
-        const messages = [userMessage(text)];
-
-        await Promise.all([
-          provider.patchChat(chat.id, 'draft', draft),
-          provider.patchChat(chat.id, 'messages', messages),
-        ]);
-
-        const final = await provider.getChat(chat.id);
-        if (
-          final?.draft?.parts[0]?.type !== 'text' ||
-          final.draft.parts[0].text !== text ||
-          final.messages.length !== 1 ||
-          final.messages[0]?.parts[0]?.type !== 'text' ||
-          final.messages[0].parts[0].text !== text
-        ) {
-          throw new Error(
-            `iteration ${i}: expected draft="${text}" + messages=["${text}"], got draft=${JSON.stringify(
-              final?.draft?.parts,
-            )} messages=${JSON.stringify(final?.messages)}`,
-          );
-        }
-      }
-      /* oxlint-enable no-await-in-loop */
-    });
-
-    it('should preserve both error and messages when patchChat("error") and patchChat("messages") race', async () => {
-      const iterations = 100;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      /* oxlint-disable no-await-in-loop -- race-detection: each iteration must settle before the next */
-      for (let i = 0; i < iterations; i++) {
-        const tag = `err-${i}`;
-        const error = sampleError(tag);
-        const messages = [userMessage(tag)];
-
-        await Promise.all([
-          provider.patchChat(chat.id, 'error', error),
-          provider.patchChat(chat.id, 'messages', messages),
-        ]);
-
-        const final = await provider.getChat(chat.id);
-        expect(final?.error?.title).toBe(tag);
-        expect(final?.messages).toHaveLength(1);
-        expect(final?.messages[0]?.parts[0]).toEqual({ type: 'text', text: tag });
-      }
-      /* oxlint-enable no-await-in-loop */
-    });
-  });
 
   // =========================================================================
   // Atomic single-transaction updateChat / updateProject
   // =========================================================================
-  describe('updateChat atomic single-transaction semantics', () => {
-    it('should return undefined when chat does not exist', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const result = await provider.updateChat('chat_missing', { name: 'never' });
-      expect(result).toBeUndefined();
-    });
-
-    it('should accept a full chat replacement when update.id matches chatId', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-      const replacement: Chat = {
-        ...chat,
-        name: 'Replaced',
-        messages: [userMessage('full')],
-        updatedAt: chat.updatedAt + 1000,
-      };
-
-      const result = await provider.updateChat(chat.id, replacement);
-      const stored = await provider.getChat(chat.id);
-
-      expect(result?.name).toBe('Replaced');
-      expect(stored?.name).toBe('Replaced');
-      expect(stored?.messages).toEqual([userMessage('full')]);
-    });
-
-    it('should bump updatedAt for material changes and return undefined for no-op updates', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      await sleep(2);
-
-      const bumped = await provider.updateChat(chat.id, { name: 'bump' });
-      expect(bumped?.updatedAt).toBeGreaterThan(chat.updatedAt);
-
-      await sleep(2);
-      const noChange = await provider.updateChat(chat.id, { name: 'bump' });
-      const stored = await provider.getChat(chat.id);
-      expect(noChange).toBeUndefined();
-      expect(stored?.updatedAt).toBe(bumped?.updatedAt);
-    });
-  });
-
-  describe('chat startup and cancelled-draft atomic mutations', () => {
-    it('should consume a matching startup request exactly once', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const message = userMessage('initial');
-      const request = startupRequest(message.id);
-      const chat = await provider.createChat('resource_test', {
-        name: 'Startup Chat',
-        messages: [message],
-        startupRequest: request,
-      });
-
-      const consumed = await provider.consumeChatStartupRequest(chat.id, request.id);
-      const storedAfterConsume = await provider.getChat(chat.id);
-      const staleConsume = await provider.consumeChatStartupRequest(chat.id, request.id);
-
-      expect(consumed?.startupRequest).toBeUndefined();
-      expect(storedAfterConsume?.startupRequest).toBeUndefined();
-      expect(staleConsume).toBeUndefined();
-    });
-
-    it('should no-op when the startup request id is stale', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const message = userMessage('initial');
-      const request = startupRequest(message.id);
-      const chat = await provider.createChat('resource_test', {
-        name: 'Startup Chat',
-        messages: [message],
-        startupRequest: request,
-      });
-
-      const result = await provider.consumeChatStartupRequest(chat.id, 'req_stale');
-      const stored = await provider.getChat(chat.id);
-
-      expect(result).toBeUndefined();
-      expect(stored?.startupRequest).toEqual(request);
-      expect(stored?.updatedAt).toBe(chat.updatedAt);
-    });
-
-    it('should commit restored messages, draft, and startup cleanup together', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const message = userMessage('cancelled');
-      const request = startupRequest(message.id);
-      const chat = await provider.createChat('resource_test', {
-        name: 'Cancelled Startup',
-        messages: [message],
-        startupRequest: request,
-      });
-      const draft = draftMessage('cancelled');
-      await sleep(2);
-
-      const restored = await provider.commitCancelledDraftRestore(chat.id, {
-        messages: [],
-        draft,
-        clearStartupRequestId: request.id,
-      });
-      const stored = await provider.getChat(chat.id);
-
-      expect(restored?.messages).toEqual([]);
-      expect(restored?.draft).toEqual(draft);
-      expect(restored?.startupRequest).toBeUndefined();
-      expect(stored?.messages).toEqual([]);
-      expect(stored?.draft).toEqual(draft);
-      expect(stored?.startupRequest).toBeUndefined();
-      expect(restored?.updatedAt).toBeGreaterThan(chat.updatedAt);
-    });
-
-    it('should preserve disjoint writers when cancelled restore races another field', async () => {
-      const iterations = 100;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      /* oxlint-disable no-await-in-loop -- race-detection: each iteration must settle before the next */
-      for (let i = 0; i < iterations; i++) {
-        const text = `cancelled-${i}`;
-        const message = userMessage(text);
-        const request = startupRequest(message.id, `req_restore_${i}`);
-        const draft = draftMessage(text);
-
-        await provider.patchChat(chat.id, 'messages', [message]);
-        await provider.patchChat(chat.id, 'draft', undefined);
-        await provider.patchChat(chat.id, 'startupRequest', request);
-
-        await Promise.all([
-          provider.patchChat(chat.id, 'activeModel', `model-${i}`),
-          provider.commitCancelledDraftRestore(chat.id, {
-            messages: [],
-            draft,
-            clearStartupRequestId: request.id,
-          }),
-        ]);
-
-        const final = await provider.getChat(chat.id);
-        expect(final?.activeModel).toBe(`model-${i}`);
-        expect(final?.messages).toEqual([]);
-        expect(final?.draft).toEqual(draft);
-        expect(final?.startupRequest).toBeUndefined();
-      }
-      /* oxlint-enable no-await-in-loop */
-    });
-  });
 
   // =========================================================================
   // KeyedMutex serialises concurrent mutations per chatId
   // =========================================================================
-  describe('per-chatId mutex serialises submissions', () => {
-    it('should observe submission order on the resolved values when many writers race the same chat', async () => {
-      const writers = 20;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      const results = await Promise.all(
-        Array.from({ length: writers }, async (_, index) => provider.patchChat(chat.id, 'name', `n-${index}`)),
-      );
-
-      // Each result should reflect a strictly increasing updatedAt. Mutex
-      // submissions are FIFO so results[i].name === `n-${i}` and timestamps
-      // are non-decreasing.
-      const names = results.map((r) => r?.name);
-      expect(names).toEqual(Array.from({ length: writers }, (_, index) => `n-${index}`));
-
-      const stored = await provider.getChat(chat.id);
-      expect(stored?.name).toBe(`n-${writers - 1}`);
-    });
-  });
 
   describe('project library state', () => {
+    it('creates missing library rows in one idempotent batch', async () => {
+      const provider = new IndexedDbStorageProvider();
+      await provider.createProjectLibraryState({ projectId: projectOneId, lastActivityAt: 1 });
+
+      const states = await provider.createProjectLibraryStates([
+        { projectId: projectOneId, lastActivityAt: 999 },
+        { projectId: projectTwoId, lastActivityAt: 2 },
+      ]);
+
+      expect(states).toEqual([
+        { projectId: projectOneId, lastActivityAt: 1 },
+        { projectId: projectTwoId, lastActivityAt: 2 },
+      ]);
+      await expect(provider.getProjectLibraryStates([projectOneId, projectTwoId])).resolves.toHaveLength(2);
+    });
+
     it('creates idempotently without overwriting an existing row', async () => {
       const provider = new IndexedDbStorageProvider();
       const state = await freshProject(provider);
@@ -679,11 +469,9 @@ describe('IndexedDbStorageProvider', () => {
       expect(await provider.getProjectLibraryState(state.projectId)).toEqual(state);
     });
 
-    it('keeps activity monotonic and preserves deletion/revision fields', async () => {
+    it('keeps activity monotonic and preserves the deletion field', async () => {
       const provider = new IndexedDbStorageProvider();
       const state = await freshProject(provider);
-      const revisionState = { headTurnId: 'turn_1', supersededTurnIds: ['turn_0'], dirty: true };
-      await provider.setProjectRevisionState(state.projectId, revisionState);
       await provider.trashProject(state.projectId, 50);
 
       await provider.touchProjectActivity(state.projectId, 40);
@@ -691,7 +479,6 @@ describe('IndexedDbStorageProvider', () => {
         projectId: state.projectId,
         lastActivityAt: 40,
         deletedAt: 50,
-        revisionState,
       });
 
       await provider.touchProjectActivity(state.projectId, 30);
@@ -702,15 +489,29 @@ describe('IndexedDbStorageProvider', () => {
     it('trashes and restores by mutating only deletedAt', async () => {
       const provider = new IndexedDbStorageProvider();
       const state = await freshProject(provider);
-      const revisionState = { headTurnId: 'turn_1', supersededTurnIds: [], dirty: false };
-      await provider.setProjectRevisionState(state.projectId, revisionState);
 
-      expect(await provider.trashProject(state.projectId, 10)).toEqual({
-        ...state,
-        deletedAt: 10,
-        revisionState,
+      expect(await provider.trashProject(state.projectId, 10)).toEqual({ ...state, deletedAt: 10 });
+      expect(await provider.restoreProject(state.projectId)).toEqual(state);
+    });
+
+    it('keeps GeoSpec candidate consent device-local and default-off', async () => {
+      vi.stubGlobal('navigator', {
+        ...navigator,
+        locks: { request: async (_name: string, work: () => Promise<unknown>) => work() },
       });
-      expect(await provider.restoreProject(state.projectId)).toEqual({ ...state, revisionState });
+      const first = new IndexedDbStorageProvider();
+      const state = await freshProject(first);
+      const initial = await first.getProjectLibraryState(state.projectId);
+      expect(initial?.syncGeoSpecCandidates).not.toBe(true);
+
+      await first.setGeoSpecCandidateConsent(state.projectId, true);
+      const reopened = new IndexedDbStorageProvider();
+      const optedIn = await reopened.getProjectLibraryState(state.projectId);
+      expect(optedIn?.syncGeoSpecCandidates).toBe(true);
+      await reopened.setGeoSpecCandidateConsent(state.projectId, false);
+      const optedOut = await first.getProjectLibraryState(state.projectId);
+      expect(optedOut?.syncGeoSpecCandidates).toBe(false);
+      expect(await first.setGeoSpecCandidateConsent('proj_missing', true)).toBeUndefined();
     });
 
     it('returns undefined for field mutations on a missing row', async () => {
@@ -719,393 +520,6 @@ describe('IndexedDbStorageProvider', () => {
       await expect(provider.touchProjectActivity('proj_missing', 1)).resolves.toBeUndefined();
       await expect(provider.trashProject('proj_missing', 1)).resolves.toBeUndefined();
       await expect(provider.restoreProject('proj_missing')).resolves.toBeUndefined();
-    });
-
-    it('never changes activity from chat persistence', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const state = await freshProject(provider);
-      const chat = await provider.createChat(state.projectId, { name: 'A', messages: [] });
-      await provider.updateChat(chat.id, { name: 'B' });
-      await provider.patchChat(chat.id, 'messages', [userMessage('hi')]);
-      await provider.softDeleteChat(chat.id);
-
-      expect(await provider.getProjectLibraryState(state.projectId)).toEqual(state);
-    });
-
-    it('preserves activity when applying a generated navigation chat name', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const state = await freshProject(provider);
-      const chat = await provider.createNavigationRepairChat(state.projectId);
-
-      const result = await provider.applyGeneratedChatName(chat.id, 'Generated Bracket');
-
-      expect(result?.name).toBe('Generated Bracket');
-      expect(result?.updatedAt).toBe(chat.updatedAt);
-      expect(await provider.getProjectLibraryState(state.projectId)).toEqual(state);
-    });
-  });
-
-  // =========================================================================
-  // patchChat<K extends keyof Chat>
-  // =========================================================================
-  describe('patchChat field-scoped writer', () => {
-    it('should write only the named field, leaving every other field byte-identical', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const seeded = await provider.createChat('resource_test', {
-        name: 'Original',
-        messages: [userMessage('hello')],
-        draft: draftMessage('seed-draft'),
-        messageEdits: { 'msg-1': draftMessage('seed-edit') },
-      });
-      const before = structuredClone(seeded);
-
-      await provider.patchChat(seeded.id, 'name', 'Renamed');
-
-      const after = await provider.getChat(seeded.id);
-      expect(after?.name).toBe('Renamed');
-      expect(after?.messages).toEqual(before.messages);
-      expect(after?.draft).toEqual(before.draft);
-      expect(after?.messageEdits).toEqual(before.messageEdits);
-      expect(after?.id).toBe(before.id);
-      expect(after?.resourceId).toBe(before.resourceId);
-      expect(after?.createdAt).toBe(before.createdAt);
-    });
-
-    it('should bump updatedAt', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-      await sleep(2);
-
-      const result = await provider.patchChat(chat.id, 'name', 'Bumped');
-      expect(result?.updatedAt).toBeGreaterThan(chat.updatedAt);
-    });
-
-    it('should return undefined and preserve updatedAt when the field value is unchanged', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-      await sleep(2);
-
-      const result = await provider.patchChat(chat.id, 'name', chat.name);
-      const stored = await provider.getChat(chat.id);
-
-      expect(result).toBeUndefined();
-      expect(stored?.updatedAt).toBe(chat.updatedAt);
-    });
-
-    it('should return undefined when chat does not exist', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const result = await provider.patchChat('chat_missing', 'name', 'Whatever');
-      expect(result).toBeUndefined();
-    });
-
-    it('should preserve both writes when patchChat for different keys race', async () => {
-      const iterations = 100;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      /* oxlint-disable no-await-in-loop -- race-detection: each iteration must settle before the next */
-      for (let i = 0; i < iterations; i++) {
-        const draft = draftMessage(`d-${i}`);
-        const messages = [userMessage(`m-${i}`)];
-
-        await Promise.all([
-          provider.patchChat(chat.id, 'draft', draft),
-          provider.patchChat(chat.id, 'messages', messages),
-        ]);
-
-        const final = await provider.getChat(chat.id);
-        expect(final?.draft).toEqual(draft);
-        expect(final?.messages).toEqual(messages);
-      }
-      /* oxlint-enable no-await-in-loop */
-    });
-
-    it('should clear an optional field when value is undefined', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const seeded = await provider.createChat('resource_test', {
-        name: 'WithError',
-        messages: [],
-        error: sampleError('bad'),
-      });
-      expect(seeded.error?.title).toBe('bad');
-
-      await provider.patchChat(seeded.id, 'error', undefined);
-
-      const after = await provider.getChat(seeded.id);
-      expect(after?.error).toBeUndefined();
-    });
-  });
-
-  // =========================================================================
-  // setMessageEdit / clearMessageEdit
-  // =========================================================================
-  describe('setMessageEdit / clearMessageEdit', () => {
-    it('should create the messageEdits map if absent and store the named entry', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-      expect(chat.messageEdits).toBeUndefined();
-
-      const result = await provider.setMessageEdit(chat.id, 'msg-1', draftMessage('edit-1'));
-
-      expect(result?.messageEdits).toBeDefined();
-      expect(result?.messageEdits?.['msg-1']?.parts[0]).toEqual({ type: 'text', text: 'edit-1' });
-    });
-
-    it('should return undefined and preserve updatedAt when setting the same message edit', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-      const draft = draftMessage('edit-1');
-      const first = await provider.setMessageEdit(chat.id, 'msg-1', draft);
-      await sleep(2);
-
-      const result = await provider.setMessageEdit(chat.id, 'msg-1', structuredClone(draft));
-      const stored = await provider.getChat(chat.id);
-
-      expect(result).toBeUndefined();
-      expect(stored?.updatedAt).toBe(first?.updatedAt);
-    });
-
-    it('should replace only the named entry, leaving siblings untouched', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await provider.createChat('resource_test', {
-        name: 'Test',
-        messages: [],
-        messageEdits: {
-          'msg-keep': draftMessage('keep-original'),
-          'msg-replace': draftMessage('replace-original'),
-        },
-      });
-
-      const result = await provider.setMessageEdit(chat.id, 'msg-replace', draftMessage('replaced'));
-
-      expect(result?.messageEdits?.['msg-keep']?.parts[0]).toEqual({
-        type: 'text',
-        text: 'keep-original',
-      });
-      expect(result?.messageEdits?.['msg-replace']?.parts[0]).toEqual({
-        type: 'text',
-        text: 'replaced',
-      });
-    });
-
-    it('should remove only the named entry on clearMessageEdit', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await provider.createChat('resource_test', {
-        name: 'Test',
-        messages: [],
-        messageEdits: {
-          'msg-keep': draftMessage('stay'),
-          'msg-remove': draftMessage('remove-me'),
-        },
-      });
-
-      const result = await provider.clearMessageEdit(chat.id, 'msg-remove');
-
-      expect(result?.messageEdits?.['msg-remove']).toBeUndefined();
-      expect(result?.messageEdits?.['msg-keep']?.parts[0]).toEqual({ type: 'text', text: 'stay' });
-    });
-
-    it('should be a no-op (no updatedAt bump) when clearing a non-existent entry', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      const result = await provider.clearMessageEdit(chat.id, 'msg-never-existed');
-
-      expect(result).toBeUndefined();
-    });
-
-    it('should preserve disjoint message-edit writes when concurrent setMessageEdit calls race', async () => {
-      const iterations = 30;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      /* oxlint-disable no-await-in-loop -- race-detection: each iteration must settle before the next */
-      for (let i = 0; i < iterations; i++) {
-        const a = draftMessage(`a-${i}`);
-        const b = draftMessage(`b-${i}`);
-
-        await Promise.all([provider.setMessageEdit(chat.id, 'msg-a', a), provider.setMessageEdit(chat.id, 'msg-b', b)]);
-
-        const final = await provider.getChat(chat.id);
-        expect(final?.messageEdits?.['msg-a']?.parts[0]).toEqual({ type: 'text', text: `a-${i}` });
-        expect(final?.messageEdits?.['msg-b']?.parts[0]).toEqual({ type: 'text', text: `b-${i}` });
-      }
-      /* oxlint-enable no-await-in-loop */
-    });
-
-    it('should preserve other entries when setMessageEdit and clearMessageEdit race on the same chat', async () => {
-      const iterations = 30;
-      const provider = new IndexedDbStorageProvider();
-      const chat = await provider.createChat('resource_test', {
-        name: 'Test',
-        messages: [],
-        messageEdits: { 'msg-keep': draftMessage('initial-keep') },
-      });
-
-      /* oxlint-disable no-await-in-loop -- race-detection: each iteration must settle before the next */
-      for (let i = 0; i < iterations; i++) {
-        await Promise.all([
-          provider.setMessageEdit(chat.id, 'msg-keep', draftMessage(`keep-${i}`)),
-          provider.clearMessageEdit(chat.id, 'msg-removable'),
-        ]);
-
-        const final = await provider.getChat(chat.id);
-        expect(final?.messageEdits?.['msg-keep']?.parts[0]).toEqual({
-          type: 'text',
-          text: `keep-${i}`,
-        });
-        expect(final?.messageEdits?.['msg-removable']).toBeUndefined();
-      }
-      /* oxlint-enable no-await-in-loop */
-    });
-  });
-
-  // =========================================================================
-  // Chat.activeModel + Chat.activeKernel are first-class fields
-  // and patchChat round-trips them just like every other top-level field.
-  // =========================================================================
-  describe('activeModel + activeKernel are top-level Chat fields', () => {
-    it('should round-trip activeModel through patchChat', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      const result = await provider.patchChat(chat.id, 'activeModel', 'gpt-5.4-medium');
-
-      expect(result?.activeModel).toBe('gpt-5.4-medium');
-      const stored = await provider.getChat(chat.id);
-      expect(stored?.activeModel).toBe('gpt-5.4-medium');
-    });
-
-    it('should round-trip activeKernel through patchChat', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-
-      const result = await provider.patchChat(chat.id, 'activeKernel', 'manifold');
-
-      expect(result?.activeKernel).toBe('manifold');
-      const stored = await provider.getChat(chat.id);
-      expect(stored?.activeKernel).toBe('manifold');
-    });
-
-    it('should clear activeModel when patched with undefined', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await provider.createChat('resource_test', {
-        name: 'WithModel',
-        messages: [],
-        activeModel: 'seed-model',
-      });
-      expect(chat.activeModel).toBe('seed-model');
-
-      await provider.patchChat(chat.id, 'activeModel', undefined);
-
-      const stored = await provider.getChat(chat.id);
-      expect(stored?.activeModel).toBeUndefined();
-    });
-
-    it('should preserve activeModel when patching an unrelated field', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await provider.createChat('resource_test', {
-        name: 'WithModel',
-        messages: [],
-        activeModel: 'gpt-5.4-medium',
-        activeKernel: 'manifold',
-      });
-
-      await provider.patchChat(chat.id, 'name', 'Renamed');
-
-      const stored = await provider.getChat(chat.id);
-      expect(stored?.activeModel).toBe('gpt-5.4-medium');
-      expect(stored?.activeKernel).toBe('manifold');
-    });
-  });
-
-  // =========================================================================
-  // duplicateChat carries activeModel + activeKernel onto the copy.
-  // =========================================================================
-  describe('duplicateChat carries activeModel + activeKernel', () => {
-    it('should copy activeModel and activeKernel into the duplicated chat', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const original = await provider.createChat('resource_test', {
-        name: 'Original',
-        messages: [],
-        activeModel: 'gpt-5.4-medium',
-        activeKernel: 'manifold',
-      });
-
-      const copy = await provider.duplicateChat(original.id);
-
-      expect(copy.id).not.toBe(original.id);
-      expect(copy.activeModel).toBe('gpt-5.4-medium');
-      expect(copy.activeKernel).toBe('manifold');
-    });
-
-    it('should leave duplicate fields undefined when the source chat had none', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const original = await provider.createChat('resource_test', {
-        name: 'Original',
-        messages: [],
-      });
-
-      const copy = await provider.duplicateChat(original.id);
-
-      expect(copy.activeModel).toBeUndefined();
-      expect(copy.activeKernel).toBeUndefined();
-    });
-
-    it('should not copy one-shot startup intent into the duplicated chat', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const message = userMessage('initial');
-      const original = await provider.createChat('resource_test', {
-        name: 'Original',
-        messages: [message],
-        startupRequest: startupRequest(message.id),
-      });
-
-      const copy = await provider.duplicateChat(original.id);
-
-      expect(copy.messages).toEqual(original.messages);
-      expect(copy.startupRequest).toBeUndefined();
-    });
-
-    it('should not copy one-shot startup intent when duplicating all resource chats', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const sourceProject = await freshProject(provider);
-      const targetProject = await freshProject(provider);
-      const message = userMessage('initial');
-      const original = await provider.createChat(sourceProject.projectId, {
-        name: 'Original',
-        messages: [message],
-        startupRequest: startupRequest(message.id),
-      });
-
-      const mapping = await provider.duplicateResourceChats(sourceProject.projectId, targetProject.projectId);
-      const copiedChat = await provider.getChat(mapping[original.id]!);
-
-      expect(copiedChat?.messages).toEqual(original.messages);
-      expect(copiedChat?.startupRequest).toBeUndefined();
-    });
-  });
-
-  // =========================================================================
-  // softDeleteChat
-  // =========================================================================
-  describe('softDeleteChat', () => {
-    it('should set deletedAt and bump updatedAt atomically', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const chat = await freshChat(provider);
-      await sleep(2);
-
-      const result = await provider.softDeleteChat(chat.id);
-
-      expect(result?.deletedAt).toBeDefined();
-      expect(result?.deletedAt).toBeGreaterThanOrEqual(chat.createdAt);
-      expect(result?.updatedAt).toBeGreaterThan(chat.updatedAt);
-    });
-
-    it('should return undefined when chat does not exist', async () => {
-      const provider = new IndexedDbStorageProvider();
-      const result = await provider.softDeleteChat('chat_missing');
-      expect(result).toBeUndefined();
     });
   });
 });

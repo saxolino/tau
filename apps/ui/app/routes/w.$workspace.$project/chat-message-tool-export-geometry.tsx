@@ -2,10 +2,13 @@ import { CheckCircle, ChevronDown, Download, XCircle } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSelector } from '@xstate/react';
+import { waitFor } from 'xstate';
 import { toast } from 'sonner';
 import type { ToolInvocation } from '@taucad/chat';
 import { toolName } from '@taucad/chat/constants';
 import type { FileExtension } from '@taucad/types';
+import { fileExtensions } from '@taucad/types/constants';
+import { randomUuid } from '@taucad/utils/id';
 
 import {
   ChatToolCard,
@@ -20,14 +23,14 @@ import { useExportToDisk } from '#components/files/use-export-to-disk.js';
 import { ViewerLink } from '#components/files/viewer-link.js';
 import { ExportFormatComboboxLabel, getExportFormatValue } from '#components/files/export-selector.js';
 import { groupExportFormatsByFidelity } from '#components/files/export-format-groups.js';
-import { buttonVariants } from '#components/ui/button.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
-import { menuItemVariants } from '#components/ui/menu.variants.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { buttonVariants } from '@taucad/ui/components/button';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
+import { menuItemVariants } from '@taucad/ui/components/menu.variants';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
 import { deriveAvailableFormats } from '#utils/export-formats.utils.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
@@ -54,6 +57,16 @@ function filenameBaseFromTargetFile(targetFile: string): string {
   return basename.slice(0, extensionIndex);
 }
 
+function exportedFormatFor(to: string, primaryName: string | undefined): FileExtension | undefined {
+  const requested = fileExtensions.find((format) => format === to);
+  if (requested !== undefined) {
+    return requested;
+  }
+  return fileExtensions
+    .filter((format) => primaryName?.endsWith(`.${format}`))
+    .sort((first, second) => second.length - first.length)[0];
+}
+
 function ExportTargetLink({ targetFile }: { readonly targetFile: string }): React.JSX.Element {
   const basename = getBasename(targetFile);
 
@@ -76,20 +89,22 @@ function ExportGeometryDownloadSplitButton({
     readonly byteLength: number;
   }>;
   readonly targetFile: string;
-  readonly exportedFormat: FileExtension;
+  readonly exportedFormat: FileExtension | undefined;
 }): React.JSX.Element {
   const fileManager = useFileManager();
-  const { geometryUnits } = useProject();
+  const { geometryUnits, projectRef } = useProject();
   const { openPanel } = useProjectWorkspace();
   const filenameBase = useMemo(() => filenameBaseFromTargetFile(targetFile), [targetFile]);
   const { exportToDisk, isExporting } = useExportToDisk(filenameBase);
   const [isArtifactDownloadBusy, setIsArtifactDownloadBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [selectedFormat, setSelectedFormat] = useState<FileExtension>(exportedFormat);
+  const [selectedFormat, setSelectedFormat] = useState<FileExtension | undefined>(exportedFormat);
   const isDownloadBusy = isArtifactDownloadBusy || isExporting;
 
   useEffect(() => {
-    setSelectedFormat(exportedFormat);
+    queueMicrotask(() => {
+      setSelectedFormat(exportedFormat);
+    });
   }, [exportedFormat]);
 
   const cadActor = geometryUnits.get(targetFile);
@@ -110,13 +125,29 @@ function ExportGeometryDownloadSplitButton({
   }, [openPanel]);
 
   const onDownload = useCallback(async () => {
-    if (selectedFormat !== exportedFormat) {
-      if (!cadActor) {
+    if (selectedFormat !== undefined && selectedFormat !== exportedFormat) {
+      const claimId = randomUuid();
+      projectRef.send({ type: 'claimGeometryUnit', claimId, entryPath: targetFile });
+      try {
+        let claimedActor = projectRef.getSnapshot().context.geometryUnits.get(targetFile);
+        if (!claimedActor) {
+          const projectState = await waitFor(
+            projectRef,
+            (state) => state.context.geometryUnits.has(targetFile) || state.matches('error'),
+          );
+          claimedActor = projectState.context.geometryUnits.get(targetFile);
+        }
+        if (!claimedActor) {
+          toast.error('Export failed');
+          return;
+        }
+        // The document export pins its own evaluation; a view may be absent or fail independently.
+        await exportToDisk(claimedActor, selectedFormat);
+      } catch {
         toast.error('Export failed');
-        return;
+      } finally {
+        projectRef.send({ type: 'releaseGeometryUnit', claimId });
       }
-
-      await exportToDisk(cadActor, selectedFormat);
       return;
     }
 
@@ -128,20 +159,20 @@ function ExportGeometryDownloadSplitButton({
       );
       await downloadExportArtifactSet(artifacts, {
         singleFileName: files[0]!.name,
-        archiveName: `${filenameBase}-${exportedFormat}.zip`,
+        archiveName: `${filenameBase}-${exportedFormat ?? 'export'}.zip`,
       });
     } catch {
       toast.error('Failed to read exported file');
     } finally {
       setIsArtifactDownloadBusy(false);
     }
-  }, [cadActor, exportToDisk, exportedFormat, fileManager, filenameBase, files, selectedFormat]);
+  }, [exportToDisk, exportedFormat, fileManager, filenameBase, files, projectRef, selectedFormat, targetFile]);
 
   const handleFormatSelect = useCallback((formatValue: string) => {
     setSelectedFormat(formatValue as FileExtension);
   }, []);
 
-  const formatLabel = selectedFormat.toUpperCase();
+  const formatLabel = selectedFormat?.toUpperCase() ?? 'files';
 
   const downloadTooltip = useMemo(() => {
     if (selectedFormat === exportedFormat) {
@@ -174,7 +205,7 @@ function ExportGeometryDownloadSplitButton({
           >
             <Download className='size-3.5 shrink-0' />
             <span data-slot='label'>Download </span>
-            <span className='uppercase'>{selectedFormat}</span>
+            <span className='uppercase'>{selectedFormat ?? 'files'}</span>
           </button>
         </TooltipTrigger>
         <TooltipContent side='top'>{downloadTooltip}</TooltipContent>
@@ -182,7 +213,7 @@ function ExportGeometryDownloadSplitButton({
       <div aria-hidden className='w-px self-stretch bg-border' />
       <Tooltip>
         <ComboBoxResponsive
-          className="data-[slot='popover-content']:w-[220px]"
+          className="data-[slot='popover-content']:w-55"
           description='Choose an export format or open the full exporter.'
           emptyListMessage='No export formats available.'
           footer={
@@ -210,7 +241,7 @@ function ExportGeometryDownloadSplitButton({
           onSelect={handleFormatSelect}
           popoverProperties={{ align: 'end' }}
           renderLabel={(item, selectedItem) => <ExportFormatComboboxLabel item={item} selectedItem={selectedItem} />}
-          searchPlaceHolder='Filter formats...'
+          searchPlaceHolder='Filter formats…'
           title='Export formats'
           value={selectedFormatEntry}
         >
@@ -235,7 +266,7 @@ function ExportGeometryDownloadSplitButton({
 export function ChatMessageToolExportGeometry({
   part,
 }: {
-  readonly part: ToolInvocation<typeof toolName.exportGeometry>;
+  readonly part: ToolInvocation<typeof toolName.exportModel>;
 }): React.JSX.Element {
   switch (part.state) {
     case 'input-streaming':
@@ -254,7 +285,7 @@ export function ChatMessageToolExportGeometry({
       }
 
       return (
-        <ChatToolCard variant='minimal' status='loading' isDefaultOpen={false}>
+        <ChatToolCard variant='minimal' status='loading' isCollapsible={false}>
           <ChatToolCardHeader>
             <ChatToolCardIcon icon={CheckCircle} />
             <ChatToolCardTitle>
@@ -280,7 +311,7 @@ export function ChatMessageToolExportGeometry({
               </ChatToolLabel>
             </ChatToolCardTitle>
             <ExportGeometryDownloadSplitButton
-              exportedFormat={output.format}
+              exportedFormat={exportedFormatFor(output.to, output.files[0]?.name)}
               files={output.files}
               targetFile={input.targetFile}
             />
@@ -296,7 +327,7 @@ export function ChatMessageToolExportGeometry({
     case 'approval-requested':
     case 'approval-responded':
     case 'output-denied': {
-      throw new Error(`Unexpected ${toolName.exportGeometry} state: ${part.state}`);
+      throw new Error(`Unexpected ${toolName.exportModel} state: ${part.state}`);
     }
   }
 }

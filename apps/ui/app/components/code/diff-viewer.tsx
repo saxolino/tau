@@ -4,9 +4,9 @@ import type { ShikiTransformer } from 'shiki/types';
 import { addClassToHast } from 'shiki/core';
 import type { HighlighterCore } from 'shiki/core';
 import { getHighlighter } from '#lib/shiki.lib.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { useTheme } from '#hooks/use-theme.js';
-import type { HighlightLanguageInput } from '#lib/code-language-resolution.js';
+import type { ShikiLanguage } from '#lib/code-language-resolution.js';
 import { resolveHighlightLanguage } from '#lib/code-language-resolution.js';
 
 /** Number of context lines to show above and below each change group. */
@@ -201,7 +201,7 @@ type HiddenLinesSeparatorProps = {
 
 function HiddenLinesSeparator({ count }: HiddenLinesSeparatorProps): React.JSX.Element {
   return (
-    <div className='flex h-4 w-full items-center gap-1 bg-muted/10 px-1 text-[11px] text-muted-foreground'>
+    <div className='flex h-4 w-full items-center gap-1 bg-muted/10 px-1 text-xs text-muted-foreground'>
       <span className='w-4 border-t border-muted-foreground/20' />
       <span className='shrink-0 whitespace-nowrap'>
         {count} hidden line{count === 1 ? '' : 's'}
@@ -214,7 +214,8 @@ function HiddenLinesSeparator({ count }: HiddenLinesSeparatorProps): React.JSX.E
 type DiffViewerProps = {
   readonly originalContent: string;
   readonly modifiedContent: string;
-  readonly language?: HighlightLanguageInput;
+  /** Resolve a file path with `resolveHighlightLanguageForPath`; a raw path would highlight as plaintext. */
+  readonly language?: ShikiLanguage;
   readonly className?: string;
 };
 
@@ -230,7 +231,7 @@ export function DiffViewer({
   language,
   className,
 }: DiffViewerProps): React.JSX.Element {
-  const { theme } = useTheme();
+  const { theme, isHighContrast } = useTheme();
   const [highlighter, setHighlighter] = useState<HighlighterCore | undefined>();
 
   useEffect(() => {
@@ -246,11 +247,9 @@ export function DiffViewer({
   );
   const resolvedLanguage = useMemo(() => resolveHighlightLanguage(language), [language]);
 
+  // Until the highlighter loads, lines render as plain text in the same line boxes, so the diff has its full
+  // height on its first frame (a disclosure measures its content as it opens) and highlighting only recolours it.
   const renderedSegments = useMemo(() => {
-    if (!highlighter) {
-      return null;
-    }
-
     return segments.map((segment, segmentIndex) => {
       if (segment.type === 'hidden') {
         // oxlint-disable-next-line react/no-array-index-key -- segments are stable during render
@@ -258,9 +257,9 @@ export function DiffViewer({
       }
 
       const sourceText = segment.lines.map((line) => line.content).join('\n');
-      const html = highlighter.codeToHtml(sourceText, {
+      const html = highlighter?.codeToHtml(sourceText, {
         lang: resolvedLanguage.shikiLanguage,
-        theme: `github-${theme}`,
+        theme: `github-${theme}${isHighContrast ? '-high-contrast' : ''}`,
         transformers: [buildDiffLineTransformer(segment.lines)],
       });
 
@@ -269,7 +268,7 @@ export function DiffViewer({
           // oxlint-disable-next-line react/no-array-index-key -- segments are stable during render
           key={`code-${segmentIndex}`}
           // oxlint-disable-next-line react/no-danger -- Shiki returns trusted HTML
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={html === undefined ? undefined : { __html: html }}
           className={cn(
             // Pre element styles
             '[&_pre]:m-0 [&_pre]:bg-transparent! [&_pre]:p-0 [&_pre]:leading-[1.6]',
@@ -277,6 +276,9 @@ export function DiffViewer({
             '[&_pre_code]:flex [&_pre_code]:flex-col',
             // Line styles - w-full fills the parent container
             '[&_.line]:relative [&_.line]:block [&_.line]:w-full [&_.line]:px-3!',
+            // One line of height when blank: Shiki renders a blank line as an empty `.line`, or in
+            // plaintext as a `.line` holding one empty span, and both are otherwise 0 px tall
+            '[&_.line]:min-h-[1.6em]',
 
             // Diff styles
             '[&_.line]:border-l-2 [&_.line]:border-transparent',
@@ -286,13 +288,35 @@ export function DiffViewer({
             "[&_.diff.add]:before:content-['']!",
             // Diff remove styles
             '[&_.diff.remove]:bg-destructive/20 [&_.diff.remove]:opacity-70',
-            '[&_.diff.remove]:border-l-destructive',
             "[&_.diff.remove]:before:content-['']!",
+            // Override Fumadocs' inset diff-marker position to paint in the reserved border.
+            '[&_.diff.remove]:before:absolute [&_.diff.remove]:before:inset-y-0 [&_.diff.remove]:before:-left-0.5! [&_.diff.remove]:before:w-0.5',
+            '[&_.diff.remove]:before:bg-[repeating-linear-gradient(to_bottom,var(--destructive)_0_1px,transparent_1px_2px)]',
           )}
-        />
+        >
+          {html === undefined ? (
+            <pre>
+              <code>
+                {segment.lines.map((line, lineIndex) => (
+                  <span
+                    // oxlint-disable-next-line react/no-array-index-key -- lines are stable during render
+                    key={lineIndex}
+                    className={cn(
+                      'line',
+                      line.type === 'added' && 'diff add',
+                      line.type === 'removed' && 'diff remove',
+                    )}
+                  >
+                    {line.content}
+                  </span>
+                ))}
+              </code>
+            </pre>
+          ) : null}
+        </div>
       );
     });
-  }, [segments, resolvedLanguage.shikiLanguage, theme, highlighter]);
+  }, [segments, resolvedLanguage.shikiLanguage, theme, isHighContrast, highlighter]);
 
   // Outer container w-max min-w-full ensures all segments extend to longest line across all groups
   return (

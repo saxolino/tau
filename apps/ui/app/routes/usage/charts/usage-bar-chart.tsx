@@ -1,57 +1,47 @@
 import React, { useMemo } from 'react';
 import { Bar, BarChart, XAxis, YAxis } from 'recharts';
-import { ChartContainer, ChartTooltip, ChartTooltipContent } from '#components/ui/chart.js';
-import type { ChartConfig } from '#components/ui/chart.js';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#components/ui/card.js';
-import { formatCurrency } from '#utils/currency.utils.js';
-import type { UsageRecord } from '#hooks/use-all-usage.js';
-import { getModelColor } from '#routes/usage/provider-colors.js';
+import { ChartContainer, ChartTooltip } from '@taucad/ui/components/chart';
+import type { ChartConfig } from '@taucad/ui/components/chart';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@taucad/ui/components/card';
+import type { WireUsageModelPage } from '@taucad/billing';
+import { getUsageColor } from '#routes/usage/provider-colors.js';
+import { CreditUsageTooltip } from '#routes/usage/charts/credit-usage-tooltip.js';
+import { displayCredits, formatChartCredits } from '#routes/usage/credits.js';
 
 type UsageBarChartProps = {
-  readonly records: UsageRecord[];
+  /** Server model groups for the whole range. */
+  readonly models: WireUsageModelPage['items'];
   readonly title?: string;
   readonly description?: string;
   readonly maxBars?: number;
 };
 
-type ModelData = {
-  model: string;
-  cost: number;
-  fill: string;
-};
-
 const chartConfig: ChartConfig = {
-  cost: {
-    label: 'Cost',
+  credits: {
+    label: 'Credits',
     color: 'var(--primary)',
   },
 };
 
-/**
- * Aggregate records by model.
- */
-function aggregateByModel(records: UsageRecord[], maxBars: number): ModelData[] {
-  const modelMap = new Map<string, number>();
-
-  for (const record of records) {
-    const currentCost = modelMap.get(record.modelName) ?? 0;
-    modelMap.set(record.modelName, currentCost + record.totalCost);
-  }
-
-  // Sort by cost descending and limit to maxBars
-  return [...modelMap.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, maxBars)
-    .map(([model, cost]) => ({ model, cost, fill: getModelColor(model) }));
-}
-
 function UsageBarChartComponent({
-  records,
-  title = 'Cost by Model',
+  models,
+  title = 'Credits by model',
   description,
   maxBars = 10,
 }: UsageBarChartProps): React.JSX.Element {
-  const chartData = useMemo(() => aggregateByModel(records, maxBars), [records, maxBars]);
+  const chartData = useMemo(
+    () =>
+      [...models]
+        .map((item) => ({
+          model: item.modelDisplayName ?? item.modelId,
+          credits: displayCredits(item.netUsedCreditAtoms),
+          creditAtoms: item.netUsedCreditAtoms,
+          fill: getUsageColor(item.modelId),
+        }))
+        .sort((a, b) => b.credits - a.credits)
+        .slice(0, maxBars),
+    [models, maxBars],
+  );
 
   if (chartData.length === 0) {
     return (
@@ -60,8 +50,8 @@ function UsageBarChartComponent({
           <CardTitle>{title}</CardTitle>
           {description ? <CardDescription>{description}</CardDescription> : undefined}
         </CardHeader>
-        <CardContent className='flex h-[300px] items-center justify-center'>
-          <p className='text-sm text-muted-foreground'>No data available</p>
+        <CardContent className='flex h-75 items-center justify-center'>
+          <p className='text-sm text-muted-foreground'>No usage in this range</p>
         </CardContent>
       </Card>
     );
@@ -74,11 +64,12 @@ function UsageBarChartComponent({
         {description ? <CardDescription>{description}</CardDescription> : undefined}
       </CardHeader>
       <CardContent className='min-w-0'>
-        <ChartContainer config={chartConfig} className='h-[300px] w-full min-w-0'>
+        <ChartContainer config={chartConfig} className='h-75 w-full min-w-0'>
           <BarChart data={chartData} layout='vertical' margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <XAxis
               type='number'
-              tickFormatter={(value: number) => formatCurrency(value, { significantFigures: 1 })}
+              allowDecimals={false}
+              tickFormatter={(value: number) => `${formatChartCredits(value)} cr`}
               tickLine={false}
               axisLine={false}
             />
@@ -91,18 +82,11 @@ function UsageBarChartComponent({
               tick={{ fontSize: 14 }}
             />
             {/* @ts-expect-error - ChartTooltipContent types don't match Recharts exactly */}
-            <ChartTooltip cursor={false} content={ChartTooltipContent} />
+            <ChartTooltip cursor={false} content={CreditUsageTooltip} />
             <Bar
-              dataKey='cost'
-              // Discard `radius` and `ref` props as they are not used and cause type errors
-              shape={({ radius, ref, ...props }) => (
-                <rect
-                  {...props}
-                  // oxlint-disable-next-line react/prop-types -- Recharts typing limitation
-                  fill={(props.payload as { fill: string } | undefined)?.fill ?? 'var(--primary)'}
-                  rx={8}
-                  ry={8}
-                />
+              dataKey='credits'
+              shape={({ x, y, width, height, fill }) => (
+                <rect x={x} y={y} width={width} height={height} fill={fill} rx={8} ry={8} />
               )}
             />
           </BarChart>

@@ -1,47 +1,32 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Download, Check, ChevronDown, ArrowUpRight } from 'lucide-react';
-import { defineRuntime } from '@taucad/runtime/worker';
-import { inProcessTransport } from '@taucad/runtime/transport/in-process';
-import { fromMemoryFs } from '@taucad/runtime/filesystem';
-import { openrscad } from '@taucad/openrscad';
-import { parameterCache, geometryCache, gltfCoordinateTransform, gltfEdgeDetection } from '@taucad/middleware';
-import { esbuild } from '@taucad/esbuild';
-import { assimp } from '@taucad/assimp';
 import { parameterEntryPath } from '@taucad/types';
 import { deriveExportFormatOptions } from '#routes/_index/hero-viewer.utils.js';
 import type { ExportFormatOption } from '#routes/_index/hero-viewer.utils.js';
-import { Parameters } from '#components/geometry/parameters/parameters.js';
-import { ModelViewer, RuntimeStatusOverlay } from '#components/model-viewer.js';
+import { Parameters } from '@taucad/viewer/parameters/parameters';
+import { ModelViewer, RuntimeStatusOverlay } from '@taucad/viewer/model-viewer';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import { useProjectCreationLocationError } from '#hooks/use-project-creation-location-error.js';
 import { useRuntime } from '@taucad/react';
-import { Button } from '#components/ui/button.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { Button } from '@taucad/ui/components/button';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
 import { toast } from '#components/ui/sonner.js';
 import { encodeTextFile } from '#utils/filesystem.utils.js';
-import { Loader } from '#components/ui/loader.js';
-import type { Units } from '#components/geometry/parameters/rjsf-context.js';
+import { Loader } from '@taucad/ui/components/loader';
+import type { Units } from '@taucad/viewer/parameters/rjsf-context';
 import qrcodeScad from '#routes/_index/qrcode.scad?raw';
 import { downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { createParameterEntry, serializeParameterEntry } from '#utils/parameter-config.utils.js';
 import { projectUrl } from '#utils/project-url.utils.js';
+import { heroClientOptions } from '#runtime/demo-client-options.js';
 
 const heroMainFile = 'main.scad';
 
 const heroCode = { [heroMainFile]: qrcodeScad };
 
-const heroUnits: Units = { length: { symbol: 'mm', factor: 1 } };
-
-const heroRuntime = defineRuntime({
-  plugins: [assimp(), openrscad(), esbuild()],
-  middleware: [parameterCache(), geometryCache(), gltfCoordinateTransform(), gltfEdgeDetection()],
-});
-const heroKernelClientOptions = {
-  runtime: heroRuntime,
-  transport: inProcessTransport({ runtime: heroRuntime, fileSystem: fromMemoryFs() }),
-};
+const heroUnits: Units = { length: { displaySymbol: 'mm' } };
 
 export function HeroViewer(): React.JSX.Element {
   const navigate = useNavigate();
@@ -52,12 +37,19 @@ export function HeroViewer(): React.JSX.Element {
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  const { geometry, status, defaultParameters, jsonSchema, exportGeometry, capabilities, setParameters } = useRuntime({
-    clientOptions: heroKernelClientOptions,
-    source: { files: heroCode },
-  });
+  const {
+    artifact,
+    artifactHash,
+    status,
+    defaultParameters,
+    jsonSchema,
+    parameterManifest,
+    exportModel,
+    capabilities,
+    setParameters,
+  } = useRuntime({ clientOptions: heroClientOptions, source: { files: heroCode } });
 
-  const hasParameters = Boolean(jsonSchema);
+  const hasParameters = Boolean(jsonSchema && parameterManifest);
 
   type HeroExportFormat = NonNullable<typeof capabilities>['routes'][number]['targetFormat'];
   type HeroExportFormatOption = ExportFormatOption<HeroExportFormat>;
@@ -85,10 +77,10 @@ export function HeroViewer(): React.JSX.Element {
     // oxlint-disable-next-line tau-lint/no-async-iife -- export is async.
     void (async () => {
       try {
-        const result = await exportGeometry(activeFormat.format);
+        const result = await exportModel(activeFormat.format);
         if (result.success) {
           const filename = `qrcode.${activeFormat.format}`;
-          await downloadExportArtifactSet(result.data, {
+          await downloadExportArtifactSet(result.files, {
             singleFileName: filename,
             archiveName: `qrcode-${activeFormat.format}.zip`,
           });
@@ -104,7 +96,7 @@ export function HeroViewer(): React.JSX.Element {
         setIsExporting(false);
       }
     })();
-  }, [activeFormat, isExporting, exportGeometry]);
+  }, [activeFormat, isExporting, exportModel]);
 
   const handleFormatSelect = useCallback(
     (value: string) => {
@@ -163,8 +155,8 @@ export function HeroViewer(): React.JSX.Element {
         <p className='mt-1 text-sm text-muted-foreground/70'>Try scanning the QR code with your phone!</p>
       </div>
 
-      <div className='flex flex-col overflow-hidden rounded-xl border bg-sidebar md:h-[700px] md:flex-row'>
-        <div className='relative h-[300px] md:h-full md:flex-1'>
+      <div className='flex flex-col overflow-hidden rounded-xl border bg-sidebar md:h-175 md:flex-row'>
+        <div className='relative h-75 md:h-full md:flex-1'>
           <RuntimeStatusOverlay status={status} className='top-auto right-4 bottom-4' />
 
           <Button
@@ -178,7 +170,12 @@ export function HeroViewer(): React.JSX.Element {
             {isCreatingProject ? <Loader className='size-4' /> : <ArrowUpRight className='size-4' />}
           </Button>
 
-          <ModelViewer geometry={geometry} enablePan graphicsOptions={{ enableGrid: true, enableAxes: true }} />
+          <ModelViewer
+            artifact={artifact}
+            artifactHash={artifactHash}
+            enablePan
+            graphicsOptions={{ enableGrid: true, enableAxes: true }}
+          />
         </div>
 
         {hasParameters ? (
@@ -188,14 +185,16 @@ export function HeroViewer(): React.JSX.Element {
                 <h3 className='text-sm font-semibold'>Parameters</h3>
                 <p className='text-xs text-muted-foreground'>Adjust the QR code settings</p>
               </div>
-              <div className='h-[280px] overflow-hidden md:h-auto md:flex-1'>
+              <div className='h-70 overflow-hidden md:h-auto md:flex-1'>
                 <Parameters
                   isInitialExpanded={false}
                   parameters={currentParams}
                   defaultParameters={defaultParameters}
                   jsonSchema={jsonSchema}
+                  parameterManifest={parameterManifest!}
+                  parameterEdit={{ kind: 'transient' }}
                   units={heroUnits}
-                  emptyDescription='Loading parameters...'
+                  emptyDescription='Loading parameters…'
                   onParametersChange={handleParametersChange}
                 />
               </div>
@@ -204,7 +203,7 @@ export function HeroViewer(): React.JSX.Element {
                   {exportFormatOptions.length > 0 && activeFormat ? (
                     <>
                       <ComboBoxResponsive
-                        searchPlaceHolder='Search formats...'
+                        searchPlaceHolder='Search formats…'
                         title='Export Format'
                         description='Select a format to export the model'
                         groupedItems={[

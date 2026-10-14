@@ -1,40 +1,31 @@
 import type { ToolUIPart } from 'ai';
 import type {
-  MessageRole,
-  MyMetadata,
+  CadAgentExecution,
   MyMessagePart,
   MyUIMessage,
+  ModelSupport,
   ToolInvocation,
   MyTools,
   UsageData,
 } from '@taucad/chat';
-import { getToolPartName, isAnyToolPart, isToolPart } from '@taucad/chat';
+import { getToolPartName, isAnyToolPart, isToolPart, modelSupportsInput } from '@taucad/chat';
 import { toolName } from '@taucad/chat/constants';
+import {
+  cadReferenceFromToken,
+  cadReferenceToken,
+  maxCadReferences,
+  parseCadReferenceTokens,
+} from '@taucad/chat/references';
+import type { CadReference } from '@taucad/chat/references';
 import { idPrefix } from '@taucad/types/constants';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { metaConfig } from '#constants/meta.constants.js';
 import { formatExportDate } from '#utils/date.utils.js';
 import { getRpcOutcome } from '#services/rpc-ledger.js';
+import { attachmentKind, attachmentUrl } from '#utils/attachment.utils.js';
+import type { AttachmentName, StoredAttachmentRef } from '#utils/attachment.utils.js';
 import type { RequestTerminationCause } from '#hooks/chat-persistence.machine.js';
-
-/**
- * Extract the mime type from a data URL
- *
- * @example <caption>Extract the media type from an image data URL.</caption>
- * extractMimeTypeFromDataUrl('data:image/webp;base64,UklGRu6VAQBXR')
- * // -> 'image/webp'
- *
- * @param dataUrl
- * @returns
- */
-export const extractMimeTypeFromDataUrl = (dataUrl: string): string => {
-  const mimeType = dataUrl.split(',')[0]?.split(':')[1]?.split(';')[0];
-  if (!mimeType) {
-    throw new Error('Invalid data URL');
-  }
-
-  return mimeType;
-};
+import type { ResolvedModel } from '#hooks/use-models.js';
 
 /**
  * The maximum number of characters to include in a snippet of web search results.
@@ -102,6 +93,24 @@ type ToolSerializer<T extends keyof MyTools> = {
 type ToolPartFor<Name extends keyof MyTools> = ToolUIPart<Pick<MyTools, Name>>;
 
 const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
+  [toolName.getParameters]: {
+    input: (input) =>
+      joinLines(
+        `targetFile: ${input.targetFile}`,
+        input.resolutionMode === undefined ? undefined : `resolutionMode: ${input.resolutionMode}`,
+      ),
+    output: (output) => JSON.stringify(output, null, 2),
+  },
+  [toolName.applyParameterOperation]: {
+    input: (input) =>
+      joinLines(
+        `targetFile: ${input.targetFile}`,
+        `requestId: ${input.requestId}`,
+        'action' in input && input.action !== undefined ? `action: ${input.action}` : undefined,
+        'operation' in input && input.operation !== undefined ? `operation: ${input.operation.kind}` : undefined,
+      ),
+    output: (output) => JSON.stringify(output, null, 2),
+  },
   [toolName.webSearch]: {
     input: (input) => `query: ${input.query}`,
     output: (output) =>
@@ -118,6 +127,7 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
     output: (output) => output.map((result) => `- [${result.url}]\n  ${result.content.slice(0, 200)}...`).join('\n'),
   },
   [toolName.editFile]: {
+    // oxlint-disable-next-line typescript/no-deprecated -- Historical edit transcripts retain their recorded target path.
     input: (input) => `targetFile: ${input.targetFile}\ncodeEdit: <${input.codeEdit?.length ?? 0} chars>`,
     output(output) {
       const { diffStats } = output;
@@ -150,18 +160,6 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
         `source: ${output.source}`,
         output.fingerprint ? `fingerprint: ${output.fingerprint}` : undefined,
       ),
-  },
-  [toolName.transferToCadExpert]: {
-    input: () => '',
-    output: (output) => output,
-  },
-  [toolName.transferToResearchExpert]: {
-    input: () => '',
-    output: (output) => output,
-  },
-  [toolName.transferBackToSupervisor]: {
-    input: () => '',
-    output: (output) => output,
   },
   [toolName.readFile]: {
     input: (input) =>
@@ -213,11 +211,22 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
         `pattern: ${input.pattern}`,
         input.path ? `path: ${input.path}` : undefined,
         input.caseSensitive ? 'caseSensitive: true' : undefined,
+        input.context ? `context: ${input.context}` : undefined,
       ),
+    // Context lines use ripgrep's `file-line-` separator so they stay distinct from `file:line:` matches.
     output: (output) =>
       joinLines(
         `Total: ${output.totalMatches}`,
-        output.matches.map((match) => `${match.file}:${match.line}: ${match.content}`).join('\n'),
+        output.matches
+          .flatMap((match) => {
+            const firstLine = match.line - (match.before?.length ?? 0);
+            return [
+              ...(match.before ?? []).map((content, index) => `${match.file}-${firstLine + index}- ${content}`),
+              `${match.file}:${match.line}: ${match.content}`,
+              ...(match.after ?? []).map((content, index) => `${match.file}-${match.line + 1 + index}- ${content}`),
+            ];
+          })
+          .join('\n'),
       ),
   },
   [toolName.globSearch]: {
@@ -234,7 +243,7 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
           .join('\n'),
       ),
   },
-  [toolName.getKernelResult]: {
+  [toolName.evaluateModel]: {
     input: (input) => `targetFile: ${input.targetFile}`,
     output(output) {
       const lines = [`Status: ${output.status}`];
@@ -246,11 +255,12 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
       return joinLines(...lines);
     },
   },
-  [toolName.exportGeometry]: {
-    input: (input) => joinLines(`targetFile: ${input.targetFile}`, `format: ${input.format}`),
+  [toolName.exportModel]: {
+    input: (input) => joinLines(`targetFile: ${input.targetFile}`, `to: ${input.to}`),
     output: (output) =>
       joinLines(
-        `format: ${output.format}`,
+        `to: ${output.to}`,
+        `exportId: ${output.exportId}`,
         ...output.files.map(
           (file) => `${file.name}: ${file.artifactPath} (${file.mimeType}, ${file.byteLength} bytes)`,
         ),
@@ -260,10 +270,99 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
     input: (input) => `mode: ${input.mode}`,
     output: (output) => `Captured ${output.images.length} image(s)`,
   },
+  [toolName.updateTodos]: {
+    input: (input) => (input.items ?? []).map((item) => `- [${item?.status ?? '?'}] ${item?.title ?? ''}`).join('\n'),
+    output: (output) =>
+      `${output.path}: ${String(output.counts.done)} done, ${String(output.counts.in_progress)} in progress, ${String(output.counts.pending)} pending`,
+  },
+  [toolName.askQuestions]: {
+    input: (input) =>
+      (input.questions ?? [])
+        .map(
+          (question) =>
+            `${question?.question ?? ''}\n${(question?.options ?? []).map((option, index) => `  ${String.fromCodePoint(65 + index)}. ${option?.label ?? ''}`).join('\n')}`,
+        )
+        .join('\n'),
+    output: (output) =>
+      output.answers
+        .map(
+          (answer) =>
+            `${answer.id}: ${answer.answer}${answer.source === 'recommended' ? ' (recommended, no reply)' : ''}`,
+        )
+        .join('\n'),
+  },
+  [toolName.arrangeWorkbench]: {
+    input: (input) => `arrange_workbench(${Object.keys(input).join(', ')})`,
+    output: (output) => `-> ${output.revisions.map((revision) => revision.path).join(', ')}`,
+  },
+  [toolName.installPackages]: {
+    input: (input) =>
+      joinLines(
+        ...Object.entries(input.add ?? {}).map(([name, range]) => `add: ${name}@${String(range)}`),
+        ...(input.remove ?? []).map((name) => `remove: ${String(name)}`),
+        ...(input.upgrade ?? []).map((name) => `upgrade: ${String(name)}`),
+      ),
+    output: (output) =>
+      joinLines(
+        ...output.packages.map((item) => `${item.name}@${item.version}`),
+        ...output.issues.map((issue) => `${issue.code}: ${issue.message}`),
+      ),
+  },
+  [toolName.getMachine]: {
+    input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
+    output: (output) => JSON.stringify(output, null, 2),
+  },
+  [toolName.getPrintProfiles]: {
+    input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
+    output: (output) => JSON.stringify(output, null, 2),
+  },
+  [toolName.requestPrint]: {
+    input: (input) =>
+      joinLines(
+        `targetFile: ${input.targetFile}`,
+        input.machineId === undefined ? undefined : `machineId: ${input.machineId}`,
+        input.preset === undefined ? undefined : `preset: ${input.preset}`,
+      ),
+    output: (output) =>
+      joinLines(
+        `${output.request.summary.fileName} on ${output.machineName ?? output.request.machineId}: ${output.request.state}`,
+        output.request.failure?.message,
+        output.nextStep,
+      ),
+  },
+  [toolName.getPrintRequest]: {
+    input: (input) => `requestId: ${input.requestId}`,
+    output: (output) => `${output.request.summary.fileName}: ${output.request.state}`,
+  },
+  [toolName.listPrintRequests]: {
+    input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
+    output: (output) => `${String(output.total)} print request(s)`,
+  },
+  [toolName.cancelPrint]: {
+    input: (input) => JSON.stringify(input),
+    output: (output) => JSON.stringify(output, null, 2),
+  },
+  [toolName.revisions]: {
+    input: (input) => `action: ${input.action}`,
+    /* The `where` line first, because it is the answer every action carries. */
+    output: (output) =>
+      [
+        output.where,
+        output.revisions === undefined ? undefined : `${String(output.revisions.length)} revision(s)`,
+        output.changes === undefined ? undefined : `${String(output.changes.length)} changed file(s)`,
+        output.branches === undefined ? undefined : `${String(output.branches.length)} branch(es)`,
+        output.conflict === undefined ? undefined : `${String(output.conflict.files.length)} conflicted file(s)`,
+      ]
+        .filter((field) => field !== undefined)
+        .join(' · '),
+  },
 };
 
 const serializeToolPart = <Name extends keyof MyTools>(part: ToolPartFor<Name>): string => {
   const name = getToolPartName(part);
+  if (!Object.hasOwn(toolSerializers, name)) {
+    return serializeDynamicToolPart({ ...part, type: 'dynamic-tool', toolName: name });
+  }
   const serializer = toolSerializers[name];
   const inputString = part.state !== 'input-streaming' && part.input !== undefined ? serializer.input(part.input) : '';
   const resultString =
@@ -352,6 +451,10 @@ function serializePart(part: MyMessagePart): string {
       return '';
     }
 
+    case 'data-acp-session': {
+      return '';
+    }
+
     case 'dynamic-tool': {
       return serializeDynamicToolPart(part);
     }
@@ -374,17 +477,26 @@ function aggregateUsage(usageParts: UsageData[]): string {
 
   let inputTokens = 0;
   let outputTokens = 0;
-  let totalCost = 0;
+  const operationIds = new Set<string>();
   for (const d of usageParts) {
     inputTokens += d.inputTokens;
     outputTokens += d.outputTokens;
-    totalCost += d.totalCost;
+    if (d.operationId !== undefined) {
+      operationIds.add(d.operationId);
+    }
   }
 
-  const model = usageParts.at(-1)?.model ?? '';
-  const cost = totalCost > 0 ? ` | Cost: $${totalCost.toFixed(4)}` : '';
+  const last = usageParts.at(-1);
+  const model = last?.model ?? '';
+  /* An export is a copy of the transcript, not of the bill: the charge lives on
+   * the account's receipts and is read from them, so the export names the funded
+   * operations instead of quoting a number it would have to invent (B4 R2). No
+   * price for an external turn either — Tau did not sell those tokens and must
+   * not present the vendor's own billing as one (V6). The agent is named. */
+  const operations = operationIds.size === 0 ? '' : ` | Tau operations: ${[...operationIds].sort().join(', ')}`;
+  const agent = last?.agent === undefined ? '' : `Agent: ${last.agent} | `;
 
-  return `Model: ${model} | Tokens: ${inputTokens} in / ${outputTokens} out${cost}`;
+  return `${agent}Model: ${model} | Tokens: ${inputTokens} in / ${outputTokens} out${operations}`;
 }
 
 /**
@@ -429,7 +541,7 @@ export function serializeMessage(message: MyUIMessage): string {
  * @param title - Title for the transcript (e.g. the chat name)
  * @returns Markdown transcript string
  */
-export function serializeTranscript(messages: MyUIMessage[], title: string): string {
+export function serializeTranscript(messages: readonly MyUIMessage[], title: string): string {
   const exportDate = formatExportDate(new Date());
   const header = `# ${title}\n\n_Exported on ${exportDate} from ${metaConfig.userAgent}_`;
 
@@ -600,45 +712,129 @@ export function stampMessageCreatedAt(messages: MyUIMessage[]): MyUIMessage[] {
   );
 }
 
-// Helper function to create a new message
-export function createMessage({
-  id,
-  content,
-  role,
-  metadata,
-  imageUrls = [],
-}: {
-  id?: string;
-  content: string;
-  role: MessageRole;
-  metadata: MyMetadata;
-  imageUrls?: string[];
+/**
+ * The one user-message builder for every chat verb that sends what the person
+ * composed (submit, edit).
+ *
+ * One file part per attachment comes first, referenced by `attachmentUrl`
+ * relative to the chat's own directory (providers read attachments best ahead
+ * of the text about them), then the text, trimmed and omitted when empty. A part carries `providerMetadata.common.byteLength` only when the
+ * reference knows its size (P29); nothing is invented for one that does not.
+ * The metadata carries the message's geometry references when its text holds `@cad[...]` tokens.
+ *
+ * @param input - The composed text, the chat's attachment references and the chips' structured references.
+ * @returns A pending user message with a fresh id.
+ */
+export function buildUserMessage(input: {
+  readonly text: string;
+  readonly attachments?: readonly StoredAttachmentRef[];
+  /** Structured references the composer's chips held; matched to the text's `@cad[...]` tokens. */
+  readonly references?: readonly CadReference[];
 }): MyUIMessage {
-  const trimmedContent = content.trim();
-
+  const text = input.text.trim();
+  const references = messageReferences(text, input.references ?? []);
   return {
-    id: id ?? generatePrefixedId(idPrefix.message),
-    role,
+    id: generatePrefixedId(idPrefix.message),
+    role: 'user',
     parts: [
-      // Always add image parts first so they are rendered first in the UI
-      ...imageUrls.map(
-        (url) =>
+      ...(input.attachments ?? []).map(
+        (attachment) =>
           ({
             type: 'file',
-            url,
-            mediaType: extractMimeTypeFromDataUrl(url),
+            mediaType: attachment.mediaType,
+            ...(attachment.filename === undefined ? {} : { filename: attachment.filename }),
+            url: attachmentUrl(attachment),
+            ...(attachment.byteLength === undefined
+              ? {}
+              : { providerMetadata: { common: { byteLength: attachment.byteLength } } }),
           }) as const,
       ),
-      // Only add text part if there is text content
-      ...(trimmedContent.length > 0
-        ? [
-            {
-              type: 'text',
-              text: trimmedContent,
-            } as const,
-          ]
-        : []),
+      ...(text.length > 0 ? [{ type: 'text', text } as const] : []),
     ],
-    metadata: { ...metadata, createdAt: Date.now() },
+    metadata: { createdAt: Date.now(), status: 'pending', ...(references.length === 0 ? {} : { references }) },
   };
+}
+
+/**
+ * The user message an edit produces: the original's id and metadata around the edited text, attachments and
+ * references. References are re-derived from the edited text, so a token the edit removed drops its reference; the
+ * edit composer's chips, then the original's references, supply the detail for each token that remains.
+ *
+ * @param original - The message being edited.
+ * @param input - The edited text, attachments and the edit composer's structured references.
+ * @returns The edited message under the original's id.
+ */
+export function buildEditedUserMessage(
+  original: MyUIMessage,
+  input: {
+    readonly text: string;
+    readonly attachments?: readonly StoredAttachmentRef[];
+    readonly references?: readonly CadReference[];
+  },
+): MyUIMessage {
+  const { references: previous = [], ...metadata } = original.metadata ?? {};
+  const built = buildUserMessage({
+    text: input.text,
+    ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+    // A later reference wins its token, so the edit composer's chips go last.
+    references: [...previous, ...(input.references ?? [])],
+  });
+  return { ...built, id: original.id, metadata: { ...metadata, ...built.metadata } };
+}
+
+/**
+ * The references a message carries (blueprint D6): one per distinct `@cad[...]` token in its text, the composer's
+ * structured reference when one matches the token, else what the token itself names. A reference whose token the
+ * text no longer holds (the chip was deleted) is dropped.
+ */
+function messageReferences(text: string, supplied: readonly CadReference[]): CadReference[] {
+  const byToken = new Map(supplied.map((reference) => [cadReferenceToken(reference), reference]));
+  const references = new Map<string, CadReference>();
+  for (const segment of parseCadReferenceTokens(text)) {
+    if (segment.type === 'cadReference' && !references.has(segment.token) && references.size < maxCadReferences) {
+      references.set(segment.token, byToken.get(segment.token) ?? cadReferenceFromToken(segment.target));
+    }
+  }
+  return [...references.values()];
+}
+
+// ACP transports both media kinds; the local agent's prompt capabilities decide what it can read.
+const acpAttachmentSupport: ModelSupport = { modalities: { input: ['text', 'image', 'pdf'], output: ['text'] } };
+
+/**
+ * The selected execution's draft attachment admission, independent of the Tau catalog for ACP.
+ *
+ * @param execution - The selected execution.
+ * @param selectedModel - The last selected Tau model.
+ * @returns The name and transport support checked before draft storage.
+ */
+export const attachmentModelForExecution = (
+  execution: CadAgentExecution,
+  selectedModel: ResolvedModel,
+): { readonly name: string; readonly support?: ModelSupport } =>
+  execution.kind === 'acp'
+    ? { name: execution.agentId, support: acpAttachmentSupport }
+    : { name: selectedModel.name, support: selectedModel.model?.support };
+
+/**
+ * Why a message holding these attachments cannot be sent to the selected
+ * model, or `undefined` when it can (D20). The composer disables Send with
+ * this reason; the chat client refuses with it.
+ *
+ * @param attachments - The draft's (or the open edit's) attachments.
+ * @param model - The selected model: its name for the reason, and what it reads.
+ * @returns The reason, naming the model.
+ */
+export function attachmentSendBlockReason(
+  attachments: readonly AttachmentName[],
+  model: { readonly name: string; readonly support?: ModelSupport },
+): string | undefined {
+  const kinds = new Set(attachments.map((attachment) => attachmentKind(attachment.mediaType)));
+  if (kinds.has('document') && !modelSupportsInput(model.support, 'pdf')) {
+    return `${model.name} can't read PDFs. Remove the PDF or pick another model.`;
+  }
+  if (kinds.has('image') && !modelSupportsInput(model.support, 'image')) {
+    return `${model.name} can't read images. Remove the image or pick another model.`;
+  }
+  return undefined;
 }

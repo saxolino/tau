@@ -1,4 +1,4 @@
-import type { FaceFinder, SimplePoint, SingleFace } from 'replicad';
+import type { FaceFinder, SimplePoint } from 'replicad';
 
 /**
  * Named face selector declaration resolved by the Tau Replicad kernel before export.
@@ -7,7 +7,7 @@ import type { FaceFinder, SimplePoint, SingleFace } from 'replicad';
  */
 export type FaceDeclaration = {
   kind: 'face';
-  select: Extract<SingleFace, (f: FaceFinder) => FaceFinder>;
+  select: (finder: FaceFinder) => FaceFinder;
 };
 
 /**
@@ -17,7 +17,7 @@ export type FaceDeclaration = {
  */
 export type AxisDeclaration = {
   kind: 'axis';
-  select: Extract<SingleFace, (f: FaceFinder) => FaceFinder>;
+  select: (finder: FaceFinder) => FaceFinder;
 };
 
 /**
@@ -63,7 +63,7 @@ export type InterfaceDeclarations = Record<string, InterfaceDeclaration>;
  * @returns Face interface declaration.
  * @public
  */
-export const face = (select: Extract<SingleFace, (f: FaceFinder) => FaceFinder>): FaceDeclaration => ({
+export const face = (select: (finder: FaceFinder) => FaceFinder): FaceDeclaration => ({
   kind: 'face',
   select,
 });
@@ -75,7 +75,7 @@ export const face = (select: Extract<SingleFace, (f: FaceFinder) => FaceFinder>)
  * @returns Axis interface declaration.
  * @public
  */
-export const axis = (select: Extract<SingleFace, (f: FaceFinder) => FaceFinder>): AxisDeclaration => ({
+export const axis = (select: (finder: FaceFinder) => FaceFinder): AxisDeclaration => ({
   kind: 'axis',
   select,
 });
@@ -108,7 +108,7 @@ export const frame = ({
  * `DATUM`/`DATUM_FEATURE` family); the old name is a homonym that conflates
  * the two concepts. Behaviour is identical.
  */
-export const datum = frame;
+export const datum: typeof frame = frame;
 
 /**
  * Declare a named group of face and axis annotations.
@@ -128,7 +128,7 @@ export const group = (members: Array<FaceDeclaration | AxisDeclaration>): GroupD
  * @public
  */
 // eslint-disable-next-line @typescript-eslint/naming-convention -- Ported public annotation API uses this constant name.
-export const INTERFACE_NAME_REGEX = /^[A-Za-z][\dA-Za-z]*(\[[1-9]\d*])?(\.[A-Za-z][\dA-Za-z]*(\[[1-9]\d*])?)*$/;
+export const INTERFACE_NAME_REGEX: RegExp = /^[A-Za-z][\dA-Za-z]*(\[[1-9]\d*])?(\.[A-Za-z][\dA-Za-z]*(\[[1-9]\d*])?)*$/; // oxlint-disable-line typescript/no-inferrable-types -- Required by isolated declarations.
 
 /**
  * Return whether a candidate interface path is valid for STEP export.

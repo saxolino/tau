@@ -1,6 +1,6 @@
 import type { ActorRefFrom } from 'xstate';
-import { Badge } from '#components/ui/badge.js';
-import { Separator } from '#components/ui/separator.js';
+import { Badge } from '@taucad/ui/components/badge';
+import { Separator } from '@taucad/ui/components/separator';
 import { ExportSelector } from '#components/files/export-selector.js';
 import { useFeature } from '#flags/use-feature.js';
 import { PreviewDebugPanel } from '#routes/w.$workspace.$project_.preview/preview-debug-panel.js';
@@ -54,10 +54,10 @@ export function PreviewDetails({ project, hasGeometry, cadRef }: PreviewDetailsP
       {/* Downloads */}
       <div>
         <h3 className='mb-3 text-sm font-semibold'>Downloads</h3>
-        {!hasGeometry ? (
-          <p className='text-xs text-muted-foreground'>Render the geometry to enable export.</p>
-        ) : (
+        {hasGeometry ? (
           <ExportSelector cadActor={cadRef} filenameBase={project.name} variant='inline' />
+        ) : (
+          <p className='text-xs text-muted-foreground'>Render the geometry to enable export.</p>
         )}
       </div>
 

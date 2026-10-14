@@ -2,11 +2,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import {
-  ChatPaneSkeleton,
   ChatHistoryGate,
   ChatInterfaceSessionGate,
   FocusedChatErrorPanel,
 } from '#routes/w.$workspace.$project/focused-chat-gate.js';
+import { ChatPaneSkeleton } from '#routes/w.$workspace.$project/chat-pane-skeleton.js';
 
 type StateValue = string | { [key: string]: StateValue };
 
@@ -58,6 +58,13 @@ vi.mock('#hooks/use-project.js', () => ({
 
 vi.mock('@xstate/react', () => ({
   useSelector: (_reference: unknown, selector: (state: unknown) => unknown) => selector(mockState.current),
+}));
+
+/* The chat's turn host owns the agent-host binding and the bodyless body
+ * factory; it reaches the whole project subtree to compose them. This gate's
+ * contract is only that exactly one of them is mounted inside the provider. */
+vi.mock('#chat-clients/chat-turn-host.js', () => ({
+  ChatTurnHost: () => <div data-testid='chat-turn-host' />,
 }));
 
 vi.mock('#hooks/active-chat-provider.js', () => ({
@@ -202,6 +209,10 @@ describe('ChatInterfaceSessionGate', () => {
     expect(provider.dataset['chatId']).toBe('chat-123');
     expect(screen.getByTestId('session-gate-child')).toBeDefined();
     expect(screen.queryByTestId('session-gate-fallback')).toBeNull();
+    /* One turn host per chat, inside the provider: it is what owns the chat's
+     * agent-host binding and its bodyless body factory (C1). */
+    expect(screen.getAllByTestId('chat-turn-host')).toHaveLength(1);
+    expect(provider.contains(screen.getByTestId('chat-turn-host'))).toBe(true);
   });
 
   it('renders the fallback when focusedChatId has never been set', () => {

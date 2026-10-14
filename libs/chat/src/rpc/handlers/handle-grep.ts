@@ -1,9 +1,8 @@
 import type { GrepRpcInput, GrepRpcResult } from '#schemas/rpc.schema.js';
 import type { RpcFileSystem } from '#rpc/rpc-dependencies.js';
 import { toRpcError } from '#rpc/rpc-error.js';
-import { resolveRpcProjectPath } from '#rpc/rpc-project-path.js';
+import { assertRootedPath, joinRelativePath } from '@taucad/utils/path';
 import { rpcClientErrorCode } from '#schemas/rpc.schema.js';
-import { joinRelativePath } from '@taucad/utils/path';
 
 /**
  * Default `headLimit` when the caller omits one. Mirrors claude-code's
@@ -13,13 +12,17 @@ import { joinRelativePath } from '@taucad/utils/path';
 const defaultGrepHeadLimit = 50;
 
 /**
- * Per-match-line character cap. Lines exceeding this are replaced with
- * `[line truncated: N chars]`, preserving `file`/`line` metadata.
+ * Per-match-line character cap. Lines exceeding this retain their first 500
+ * characters, preserving useful match context and `file`/`line` metadata.
  * Equivalent to ripgrep's `--max-columns 500` (claude-code uses the same).
  */
 const maxGrepLineChars = 500;
 
-async function collectFilePaths(fileSystem: RpcFileSystem, basePath: string): Promise<string[]> {
+async function collectFilePaths(
+  fileSystem: RpcFileSystem,
+  basePath: string,
+  includeExplicitOnly: boolean,
+): Promise<string[]> {
   const paths: string[] = [];
   const entries = await fileSystem.readdir(basePath);
 
@@ -27,9 +30,9 @@ async function collectFilePaths(fileSystem: RpcFileSystem, basePath: string): Pr
     const fullPath = joinRelativePath(basePath, entry.name);
     if (entry.type === 'file') {
       paths.push(fullPath);
-    } else {
+    } else if (includeExplicitOnly || entry.traverseOnImplicitSearch !== false) {
       // oxlint-disable-next-line no-await-in-loop -- recursive traversal
-      const subPaths = await collectFilePaths(fileSystem, fullPath);
+      const subPaths = await collectFilePaths(fileSystem, fullPath, includeExplicitOnly);
       paths.push(...subPaths);
     }
   }
@@ -37,10 +40,10 @@ async function collectFilePaths(fileSystem: RpcFileSystem, basePath: string): Pr
   return paths;
 }
 
-type GrepMatch = { file: string; line: number; content: string };
+type GrepMatch = { file: string; line: number; content: string; before?: string[]; after?: string[] };
 
 function truncateMatchLine(line: string): string {
-  return line.length > maxGrepLineChars ? `[line truncated: ${line.length} chars]` : line;
+  return line.slice(0, maxGrepLineChars);
 }
 
 async function resolveSearchPaths(fileSystem: RpcFileSystem, basePath: string): Promise<string[]> {
@@ -48,20 +51,22 @@ async function resolveSearchPaths(fileSystem: RpcFileSystem, basePath: string): 
   // FILE_NOT_FOUND when the caller types a wrong path (no thrown
   // `Grep search failed` exception, mirrors claude-code's GrepTool.validateInput).
   if (basePath === '') {
-    return collectFilePaths(fileSystem, '');
+    return collectFilePaths(fileSystem, '', false);
   }
   const stat = await fileSystem.stat(basePath);
-  return stat.isDirectory ? collectFilePaths(fileSystem, basePath) : [basePath];
+  const explicitlyScopedToSkills = basePath === '.agents/skills' || basePath.startsWith('.agents/skills/');
+  return stat.isDirectory ? collectFilePaths(fileSystem, basePath, explicitlyScopedToSkills) : [basePath];
 }
 
 /** @public */
 export async function handleGrep(input: GrepRpcInput, fileSystem: RpcFileSystem): Promise<GrepRpcResult> {
   const headLimit = input.headLimit ?? defaultGrepHeadLimit;
   const offset = input.offset ?? 0;
+  const context = input.context ?? 0;
 
   try {
     const regex = new RegExp(input.pattern, input.caseSensitive === false ? 'gi' : 'g');
-    const basePath = resolveRpcProjectPath(input.path ?? '');
+    const basePath = assertRootedPath(input.path ?? '');
 
     let filesToSearch: string[];
     try {
@@ -80,13 +85,16 @@ export async function handleGrep(input: GrepRpcInput, fileSystem: RpcFileSystem)
 
     if (input.glob) {
       const { minimatch } = await import('minimatch');
-      filesToSearch = filesToSearch.filter((path) => minimatch(path, input.glob!, { matchBase: true }));
+      filesToSearch = filesToSearch.filter((path) => minimatch(path, input.glob!, { matchBase: true, dot: true }));
     }
 
     const searchPromises = filesToSearch.map(async (filePath) => {
       try {
         const text = await fileSystem.readFile(filePath);
         const lines = text.split('\n');
+        if (lines.at(-1) === '') {
+          lines.pop();
+        }
         const fileMatches: GrepMatch[] = [];
 
         for (const [lineIndex, line] of lines.entries()) {
@@ -95,6 +103,17 @@ export async function handleGrep(input: GrepRpcInput, fileSystem: RpcFileSystem)
               file: filePath,
               line: lineIndex + 1,
               content: truncateMatchLine(line),
+              // ponytail: adjacent matches repeat shared context lines; merge ranges if that output size matters.
+              ...(context > 0
+                ? {
+                    before: lines
+                      .slice(Math.max(0, lineIndex - context), lineIndex)
+                      .map((contextLine) => truncateMatchLine(contextLine)),
+                    after: lines
+                      .slice(lineIndex + 1, lineIndex + 1 + context)
+                      .map((contextLine) => truncateMatchLine(contextLine)),
+                  }
+                : {}),
             });
           }
 

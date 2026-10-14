@@ -1,6 +1,23 @@
 /* eslint-disable @typescript-eslint/naming-convention -- CONSTANT_CASE is expected for environment variables */
+import { readFile } from 'node:fs/promises';
 // oxlint-disable-next-line import-x/no-unassigned-import -- this is a side effect
 import '@testing-library/jest-dom';
+
+// Vite rewrites package-owned WASM/font assets to /@fs/ URLs. Jsdom has no Vite
+// HTTP server, so load those same real bytes directly while preserving normal fetches.
+const networkFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  // `location` is absent in `@vitest-environment node` files (server.test.ts); their URLs are already absolute.
+  // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the DOM lib types `location` as always present.
+  const url = new URL(input instanceof Request ? input.url : input.toString(), globalThis.location?.href);
+  const isLocalAsset = url.pathname.startsWith('/@fs/') && /\.(?:ttf|wasm)$/u.test(url.pathname);
+  if (!isLocalAsset) {
+    return networkFetch(input, init);
+  }
+  const bytes = await readFile(decodeURIComponent(url.pathname.slice('/@fs'.length)));
+  const contentType = url.pathname.endsWith('.wasm') ? 'application/wasm' : 'font/ttf';
+  return new Response(new Uint8Array(bytes), { headers: { 'Content-Type': contentType } });
+};
 
 // Mock window.ENV for testing - required since the app uses window.ENV in browser environments
 const mockEnv = {
@@ -41,6 +58,57 @@ if (typeof document !== 'undefined' && typeof document.queryCommandSupported !==
     configurable: true,
     writable: true,
     value: () => false,
+  });
+}
+
+// Monaco primes and re-measures Geist Mono through `document.fonts` — the
+// `FontFaceSet` jsdom does not implement — so `configureMonaco` threw at collect
+// in every suite that renders an editor (W14). The stub is here rather than a
+// guard in product code (review R13): a missing web-font API is a property of
+// this environment, and the browser path stays unconditional. `load` resolves
+// with no faces, which is the same answer an offline browser gives.
+// oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- DOM types claim `fonts` is always there; jsdom omits it
+if (typeof document !== 'undefined' && (document.fonts as FontFaceSet | undefined) === undefined) {
+  Object.defineProperty(document, 'fonts', {
+    configurable: true,
+    value: {
+      load: async (): Promise<FontFace[]> => [],
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+      dispatchEvent: (): boolean => true,
+      ready: Promise.resolve(),
+      status: 'loaded',
+      check: (): boolean => true,
+    },
+  });
+}
+
+// Monaco's clipboard service answers every `copy` event on the body with
+// `navigator.clipboard.write([new ClipboardItem({'text/plain': deferred})])`.
+// jsdom implements neither name, so a suite that renders an editor collected
+// the call as an unhandled `ReferenceError` (W14 sweep). Each test that asserts
+// on the clipboard still installs its own spy over this, the way they do today.
+// oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/no-extraneous-class -- DOM types claim ClipboardItem is always defined and jsdom omits it; the stub is a constructor-only class because the platform's is
+globalThis.ClipboardItem ??= class ClipboardItem {
+  public constructor(items: Record<string, unknown>) {
+    /* Monaco hands one deferred promise per MIME type and cancels it when the
+     * next write supersedes it. A real clipboard consumes those promises, so
+     * this stub has to as well, or every cancelled write lands as an unhandled
+     * `Canceled` rejection. `allSettled` subscribes and never rejects. */
+    void Promise.allSettled(Object.values(items));
+  }
+} as unknown as typeof ClipboardItem;
+
+// oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- DOM types claim `clipboard` is always there; jsdom omits it
+if (typeof navigator !== 'undefined' && (navigator.clipboard as Clipboard | undefined) === undefined) {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      read: async (): Promise<ClipboardItems> => [],
+      readText: async (): Promise<string> => '',
+      write: async (): Promise<void> => undefined,
+      writeText: async (): Promise<void> => undefined,
+    },
   });
 }
 
@@ -175,7 +243,7 @@ globalThis.performance.measure = (() => stubEntry) as typeof globalThis.performa
 // Jsdom returns null from HTMLCanvasElement.getContext('2d'), which crashes
 // `three/addons` modules that call `ctx.fillStyle = …` at module load time
 // (e.g. `lottie_canvas.module.js`'s ImagePreloader). Stub a minimal 2d context
-// shape so test files importing from `three/addons` don't fail to load.
+// shape so test files importing the `three/addons` barrel don't fail to load.
 // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- jsdom only ships HTMLCanvasElement when canvas package is installed
 if (typeof HTMLCanvasElement !== 'undefined') {
   const originalGetContext = HTMLCanvasElement.prototype.getContext;

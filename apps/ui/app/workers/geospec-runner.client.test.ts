@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { rpcExecutionTimeout } from '@taucad/chat/constants';
+import { createChatToolRegistry } from '@taucad/agent-tools/registry';
+import { mock } from 'vitest-mock-extended';
+import type { RpcFileSystem } from '@taucad/chat/rpc';
 import type { openFileSystemBridge as OpenFileSystemBridgeFunction } from '@taucad/fs-bridge';
 import { createGeoSpecWorkerRpcClient, geoSpecClientWorstCaseTimeout } from '#workers/geospec-runner.client.js';
 import type { GeoSpecRunnerWorkerRequest, GeoSpecRunnerWorkerResponse } from '#workers/geospec-runner.types.js';
@@ -19,7 +22,7 @@ beforeAll(async () => {
   ({ filesystemBridgeConnectMessageType, openFileSystemBridge } = await import('@taucad/fs-bridge'));
 });
 
-const successResult = (requestId: string): GeoSpecRunnerWorkerResponse => ({
+const successResult = (requestId: string): Extract<GeoSpecRunnerWorkerResponse, { type: 'result' }> => ({
   type: 'result',
   requestId,
   result: {
@@ -127,6 +130,90 @@ const geoSpecPostMessageCall = (
   worker.postMessage.mock.calls[index] as unknown as [GeoSpecRunnerWorkerRequest, Transferable[] | undefined];
 
 describe('createGeoSpecWorkerRpcClient', () => {
+  it('should initialize without engine negotiation and use candidate sharing by default', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    const fetch = vi.fn(async (): Promise<ReadonlyArray<Uint8Array<ArrayBuffer>>> => []);
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      createWorker: () => geoSpecWorker as unknown as Worker,
+      candidateSync: { fetch, publish: async () => undefined },
+    });
+    try {
+      await expect(client.runTests({ files: ['main.geospec.ts'] })).resolves.toMatchObject({ success: true });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(geoSpecPostMessageCall(geoSpecWorker, 0)[0]).not.toHaveProperty('geoSpecEngine');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('isolates an optional candidate-fetch failure from a native GeoSpec result', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    const fetch = vi.fn(async (): Promise<ReadonlyArray<Uint8Array<ArrayBuffer>>> => {
+      throw new Error('offline');
+    });
+    const publish = vi.fn(async () => undefined);
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      createWorker: () => geoSpecWorker as unknown as Worker,
+      candidateSync: { fetch, publish },
+    });
+    await expect(client.runTests({ files: ['main.geospec.ts'] })).resolves.toMatchObject({ success: true });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(geoSpecPostMessageCall(geoSpecWorker, 1)[0]).toMatchObject({
+      type: 'run',
+      candidates: [],
+      candidateSharingEnabled: false,
+    });
+    expect(publish).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('publishes candidates only for a live successful run', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    geoSpecWorker.autoResolveRuns = false;
+    const publish = vi.fn(async () => undefined);
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      createWorker: () => geoSpecWorker as unknown as Worker,
+      candidateSync: { fetch: async () => [], publish },
+    });
+    const candidate = new TextEncoder().encode('{}');
+    const controller = new AbortController();
+    const first = client.runTests({ files: ['main.geospec.ts'] }, { signal: controller.signal });
+    await vi.waitFor(() => {
+      expect(geoSpecWorker.postMessage).toHaveBeenCalledTimes(2);
+    });
+    const [firstRequest] = geoSpecPostMessageCall(geoSpecWorker, 1);
+    if (firstRequest.type !== 'run') {
+      throw new Error('Expected run request.');
+    }
+    geoSpecWorker.emitMessage({ ...successResult('unsolicited'), candidates: [candidate] });
+    controller.abort();
+    geoSpecWorker.emitMessage({ ...successResult(firstRequest.requestId), candidates: [candidate] });
+    await expect(first).resolves.toMatchObject({ success: false });
+    expect(publish).not.toHaveBeenCalled();
+
+    const second = client.runTests({ files: ['main.geospec.ts'] });
+    await vi.waitFor(() => {
+      expect(geoSpecWorker.postMessage).toHaveBeenCalledTimes(4);
+    });
+    const [secondRequest] = geoSpecPostMessageCall(geoSpecWorker, 3);
+    if (secondRequest.type !== 'run') {
+      throw new Error('Expected second run request.');
+    }
+    geoSpecWorker.emitMessage({ ...successResult(secondRequest.requestId), candidates: [candidate] });
+    await expect(second).resolves.toMatchObject({ success: true });
+    expect(publish).toHaveBeenCalledOnce();
+    await client.close();
+  });
+
   it('should finish every client-side budget before the API abandons the RPC', () => {
     // The API stops waiting at `rpcExecutionTimeout` and answers with a generic
     // "the client may be disconnected or unresponsive". A client budget that
@@ -136,7 +223,7 @@ describe('createGeoSpecWorkerRpcClient', () => {
     expect(geoSpecClientWorstCaseTimeout).toBeLessThan(rpcExecutionTimeout);
   });
 
-  it('should reuse one worker across repeated successful test runs', async () => {
+  it('should reuse one default compiled worker across repeated successful test runs', async () => {
     const fileManagerWorker = new FakeFileManagerWorker();
     const geoSpecWorker = new FakeGeoSpecWorker();
     const createWorker = vi.fn(() => geoSpecWorker as unknown as Worker);
@@ -145,6 +232,17 @@ describe('createGeoSpecWorkerRpcClient', () => {
       runtimeConfig,
       createWorker,
     });
+
+    const registry = createChatToolRegistry({
+      fileSystemFor: () => mock<RpcFileSystem>(),
+      geospec: client,
+      testingEnabled: true,
+    });
+    const description = registry.list().find((tool) => tool.name === 'test_model')?.description;
+    expect(description).toContain('expectGeo');
+    expect(description).toContain('loadModel');
+    expect(description).not.toContain('expectNativeGeo');
+    expect(createWorker).not.toHaveBeenCalled();
 
     const args = {
       files: ['main.geospec.ts'],
@@ -169,6 +267,7 @@ describe('createGeoSpecWorkerRpcClient', () => {
       throw new Error('Expected initialize message.');
     }
     expect(initializeMessage.runtimeConfig).toEqual(runtimeConfig);
+    expect(initializeMessage).not.toHaveProperty('geoSpecEngine');
     expect(initializeMessage.fileSystemPort).toBeDefined();
     expect(initializeTransferables).toEqual([initializeMessage.fileSystemPort]);
 
@@ -268,9 +367,11 @@ describe('createGeoSpecWorkerRpcClient', () => {
       const fileManagerWorker = new FakeFileManagerWorker();
       const geoSpecWorker = new FakeGeoSpecWorker();
       geoSpecWorker.autoResolveRuns = false;
+      const publish = vi.fn(async () => undefined);
       const client = createGeoSpecWorkerRpcClient({
         openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
         runtimeConfig,
+        candidateSync: { fetch: async () => [], publish },
         createWorker: () => geoSpecWorker as unknown as Worker,
         runnerTimeout: 100,
         abortGrace: 1000,
@@ -291,13 +392,40 @@ describe('createGeoSpecWorkerRpcClient', () => {
       expect(abortMessage.targetRequestId).toBe(runMessage.requestId);
       expect(geoSpecWorker.terminate).not.toHaveBeenCalled();
 
-      geoSpecWorker.emitMessage(successResult(runMessage.requestId));
+      geoSpecWorker.emitMessage({ ...successResult(runMessage.requestId), candidates: [new Uint8Array([1])] });
       await expect(resultPromise).resolves.toEqual(expect.objectContaining({ success: true }));
+      expect(publish).not.toHaveBeenCalled();
       expect(geoSpecWorker.terminate).not.toHaveBeenCalled();
       await client.close();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not publish a late result after closing a pending run', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    geoSpecWorker.autoResolveRuns = false;
+    const publish = vi.fn(async () => undefined);
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      candidateSync: { fetch: async () => [], publish },
+      createWorker: () => geoSpecWorker as unknown as Worker,
+    });
+    const run = client.runTests({ files: ['main.geospec.ts'] });
+    await vi.waitFor(() => {
+      expect(geoSpecWorker.postMessage).toHaveBeenCalledTimes(2);
+    });
+    const [request] = geoSpecPostMessageCall(geoSpecWorker, 1);
+    if (request.type !== 'run') {
+      throw new Error('Expected run request.');
+    }
+    const closing = client.close();
+    geoSpecWorker.emitMessage({ ...successResult(request.requestId), candidates: [new Uint8Array([1])] });
+    await expect(run).resolves.toMatchObject({ success: false });
+    await closing;
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it('should hard terminate when abort grace expires', async () => {
@@ -326,6 +454,90 @@ describe('createGeoSpecWorkerRpcClient', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('should abort the matching worker run when its outer request is cancelled', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    geoSpecWorker.autoResolveRuns = false;
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      createWorker: () => geoSpecWorker as unknown as Worker,
+      abortGrace: 50,
+    });
+    const controller = new AbortController();
+    const resultPromise = client.runTests({ files: ['slow.geospec.ts'] }, { signal: controller.signal });
+    try {
+      await vi.waitFor(() => {
+        expect(geoSpecWorker.postMessage.mock.calls.some((call) => call[0].type === 'run')).toBe(true);
+      });
+      const [runMessage] = geoSpecPostMessageCall(geoSpecWorker, 1);
+      expect(runMessage.type).toBe('run');
+      controller.abort();
+      const [abortMessage] = geoSpecPostMessageCall(geoSpecWorker, 2);
+      expect(abortMessage).toMatchObject({ type: 'abort', targetRequestId: runMessage.requestId });
+      await expect(resultPromise).resolves.toMatchObject({ success: false });
+      expect(geoSpecWorker.terminate).toHaveBeenCalledOnce();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('should return cancellation when the worker finishes after the outer request aborts', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    geoSpecWorker.autoResolveRuns = false;
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      createWorker: () => geoSpecWorker as unknown as Worker,
+      abortGrace: 50,
+    });
+    const controller = new AbortController();
+    const resultPromise = client.runTests({ files: ['slow.geospec.ts'] }, { signal: controller.signal });
+    try {
+      await vi.waitFor(() => {
+        expect(geoSpecWorker.postMessage.mock.calls.some((call) => call[0].type === 'run')).toBe(true);
+      });
+      const [runMessage] = geoSpecPostMessageCall(geoSpecWorker, 1);
+      expect(runMessage.type).toBe('run');
+      controller.abort();
+      geoSpecWorker.emitMessage(successResult(runMessage.requestId));
+      await expect(resultPromise).resolves.toEqual({
+        success: false,
+        errorCode: 'UNKNOWN',
+        message: 'GeoSpec request cancelled.',
+      });
+      expect(geoSpecWorker.terminate).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('should preserve a worker result that settled before the outer request aborts', async () => {
+    const fileManagerWorker = new FakeFileManagerWorker();
+    const geoSpecWorker = new FakeGeoSpecWorker();
+    const client = createGeoSpecWorkerRpcClient({
+      openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+      runtimeConfig,
+      createWorker: () => geoSpecWorker as unknown as Worker,
+    });
+    const controller = new AbortController();
+    try {
+      await expect(
+        client.runTests({ files: ['main.geospec.ts'] }, { signal: controller.signal }),
+      ).resolves.toMatchObject({
+        success: true,
+        passed: 1,
+      });
+      controller.abort();
+      expect(geoSpecWorker.postMessage.mock.calls.some((call) => call[0].type === 'abort')).toBe(false);
+      expect(geoSpecWorker.terminate).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+    }
+    expect(geoSpecPostMessageCall(geoSpecWorker, 2)[0].type).toBe('close');
   });
 
   it('should recreate the worker after a crash', async () => {

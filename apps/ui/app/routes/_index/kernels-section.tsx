@@ -1,8 +1,8 @@
-import { kernelConfigurations } from '@taucad/types/constants';
-import { Badge } from '#components/ui/badge.js';
+import { availableKernelConfigurations } from '#constants/available-kernel-configurations.js';
+import { Badge } from '@taucad/ui/components/badge';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '#components/ui/hover-card.js';
-import { KernelTierBadge } from '#components/tier-badge.js';
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@taucad/ui/components/hover-card';
+import { KernelCommercialBadge } from '#cloud/kernel-commerce.js';
 
 export function KernelsSection(): React.JSX.Element {
   return (
@@ -19,10 +19,10 @@ export function KernelsSection(): React.JSX.Element {
 
           {/* Kernel Cards */}
           <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
-            {kernelConfigurations.map((kernel) => (
+            {availableKernelConfigurations().map((kernel) => (
               <HoverCard key={kernel.id} openDelay={200} closeDelay={100}>
                 <HoverCardTrigger asChild>
-                  <div className='group cursor-pointer rounded-xl border bg-background p-5 transition-all hover:border-primary/50 hover:shadow-md'>
+                  <div className='group rounded-xl border bg-background p-5 transition-all hover:border-primary/50 hover:shadow-md'>
                     <div className='mb-3 flex items-center gap-3'>
                       <div className='flex size-10 items-center justify-center rounded-lg bg-primary/10'>
                         <SvgIcon id={kernel.id} className='size-5' />
@@ -30,7 +30,7 @@ export function KernelsSection(): React.JSX.Element {
                       <div>
                         <h3 className='flex items-center gap-1.5 font-semibold'>
                           {kernel.name}
-                          <KernelTierBadge kernelId={kernel.id} />
+                          <KernelCommercialBadge kernelId={kernel.id} />
                         </h3>
                         <p className='text-xs text-muted-foreground'>{kernel.language}</p>
                       </div>
@@ -45,7 +45,7 @@ export function KernelsSection(): React.JSX.Element {
                       <div>
                         <h4 className='flex items-center gap-1.5 font-semibold'>
                           {kernel.name}
-                          <KernelTierBadge kernelId={kernel.id} />
+                          <KernelCommercialBadge kernelId={kernel.id} />
                         </h4>
                         <p className='text-xs text-muted-foreground'>
                           Backend: {kernel.backendProvider} · {kernel.dimensions.join('D & ')}D

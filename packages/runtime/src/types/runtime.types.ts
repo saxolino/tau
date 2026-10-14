@@ -8,9 +8,11 @@
  * see runtime-kernel.types.ts.
  */
 
+import type { ContentDigest } from '@taucad/cache-core';
 import type { backendProviders, kernelProviders } from '@taucad/types/constants';
-import type { ExportFidelity, ExportFile, Geometry, GeometryResponse } from '@taucad/types';
+import type { ExportFidelity, ExportFile } from '@taucad/types';
 import type { JSONSchema7 } from '@taucad/json-schema';
+import type { ParameterDeclaration, ParameterManifest } from '@taucad/parameters';
 import type {
   CollectFormatMap,
   CollectKernelIds,
@@ -111,6 +113,26 @@ export type KernelIssue = {
 // =============================================================================
 
 /**
+ * The exact source a request-scoped kernel operation read, in the digest vocabulary that
+ * `ParameterManifest.identity.sourceFiles` already uses.
+ *
+ * `files` covers the entry **and** its resolved dependency closure: one entry per project source
+ * file the operation resolved, keyed by rooted path, valued with the SHA-256 digest of the bytes
+ * this operation read, or `'missing'` for an import that resolved to no file. It is the closure the
+ * operation actually hashed, so it excludes `node_modules` and anything the kernel never read.
+ *
+ * Comparing it with the digest a write reported for the same path is what makes a stale answer
+ * self-diagnosing (blueprint R4, invariant I5).
+ * @public
+ */
+export type SourceRevision = Readonly<{
+  /** Rooted path of the entry file the operation evaluated. */
+  entry: string;
+  /** Content digest per rooted source path; `'missing'` where the import resolved to no file. */
+  files: Readonly<Record<string, ContentDigest | 'missing'>>;
+}>;
+
+/**
  * Successful kernel operation outcome. Non-fatal warnings are preserved in `issues` alongside the operation data.
  * @public
  */
@@ -119,6 +141,23 @@ export type KernelSuccessResult<T> = {
   data: T;
   issues: KernelIssue[];
   serializedNativeHandle?: unknown;
+  /**
+   * The source revision this result was computed from.
+   *
+   * Populated by the request-scoped operations (`evaluateModel`, `getParameters`, `exportModel`,
+   * `snapshotSource`); absent on autonomous preview results and on results produced before any
+   * closure was resolved.
+   */
+  sourceRevision?: SourceRevision;
+  /**
+   * Produce the durable native-handle snapshot on demand (D12).
+   *
+   * No display render reads a snapshot, so a kernel that can make one hands over this thunk and
+   * pays for it only where something asks: an export, a reheat, or a cache write. It resolves
+   * `undefined` once the handle it would read has been disposed, and is stripped from every
+   * published result — it is a function, and functions do not cross the wire.
+   */
+  serializeNativeHandleSnapshot?: () => unknown;
 };
 
 /**
@@ -128,6 +167,13 @@ export type KernelSuccessResult<T> = {
 export type KernelErrorResult = {
   success: false;
   issues: KernelIssue[];
+  /**
+   * The source revision the failing operation had already resolved, when it got that far.
+   *
+   * A failure is the case provenance matters most for — "render failed" against bytes the caller
+   * has since replaced reads exactly like a failure against the current ones.
+   */
+  sourceRevision?: SourceRevision;
 };
 
 /**
@@ -257,36 +303,17 @@ export type BundlerRegistrations = BundlerRegistration[];
 // Operation Result Types
 // =============================================================================
 
-/**
- * Result type for createGeometry.
- * Used by kernel workers and middleware - geometry doesn't have hash yet.
- * The hash is added by kernel-worker.ts after the middleware chain.
- *
- * `data` is `undefined` when the kernel deferred its display artifact to the
- * `meshGeometry` phase (BRep kernels) — the orchestrator runs the mesh phase
- * on the display path and never on the export path.
- * @public
- */
-export type CreateGeometryResult = KernelResult<GeometryResponse | undefined>;
-
-/** Result of the display-only mesh phase. Successful results always carry geometry. @public */
-export type MeshGeometryResult = KernelResult<GeometryResponse>;
-
-/**
- * Completed result type for createGeometry.
- * Returned to consumers - geometry has hash for React keys and caching.
- * @public
- */
-export type HashedGeometryResult = KernelResult<Geometry>;
+/** Internal result of replaying evaluation to restore a native handle. @public */
+export type CreateGeometryResult = KernelResult<undefined>;
 
 /**
  * Outcome of extracting customizer parameters from a CAD script, used to render the parameter editor UI.
  * @public
  */
-export type GetParametersResult = KernelResult<{
-  defaultParameters: Record<string, unknown>;
-  jsonSchema: JSONSchema7;
-}>;
+export type GetParameterDeclarationsResult = KernelResult<ParameterDeclaration>;
+
+/** Admitted effective parameter manifest returned after the complete middleware chain. @public */
+export type GetParametersResult = KernelResult<ParameterManifest>;
 
 /**
  * Outcome of inferring a human-readable name from a CAD script, used as the default project title.
@@ -317,6 +344,8 @@ type RuntimeKernelRegistration<Kernel> = Kernel extends {
       readonly kind: 'kernel';
       readonly id: Id;
       readonly extensions: Extensions;
+      /** The kernel's {@link KernelPlugin.builtinDependencies}. */
+      readonly builtinDependencies?: Readonly<Record<string, string>>;
     }
   : never;
 
@@ -407,6 +436,8 @@ export type RenderCapability<
   };
   /** Framework content supported by this kernel's composed render route. */
   content?: ContentCapability<RenderContentFor<Kernels, Middleware, Kernel>>;
+  /** Cooperative cancellation support for in-flight renders. */
+  cancellation?: 'cooperative';
 };
 // oxlint-enable @typescript-eslint/no-explicit-any
 
@@ -448,6 +479,8 @@ export type CapabilitiesManifest<
         defaults: RenderOptionsFor<Kernels, K>;
       };
       content?: ContentCapability<RenderContentFor<Kernels, Middleware, K>>;
+      /** Cooperative cancellation support for in-flight renders. */
+      cancellation?: 'cooperative';
     };
   };
 };
@@ -466,25 +499,9 @@ export type TransportCapabilities = {
 };
 
 /**
- * The single rolled-up capabilities surface exposed at
- * {@link RuntimeClient.capabilities}. Layers kernel-derived information
- * (every field of {@link CapabilitiesManifest}) under the same object as
- * transport-derived information (`autonomousRenderLoop`, `transport.*`)
- * so consumers reach for one property instead of branching between
- * `capabilities` and a separate `transportCapabilities`.
- *
- * - `autonomousRenderLoop` reflects whether the active transport drives
- *   its own render loop. `false` on no-worker hostings (browser main
- *   thread, edge worker) where consumers must call `client.render(...)`
- *   explicitly; `true` for in-process and worker transports. It does not
- *   imply filesystem reactivity — whether an external edit rerenders
- *   depends on the supplied filesystem adapter exposing `watch`.
- * - `transport.descriptor` is diagnostic only — `RuntimeClient` does not
- *   branch on transport identity.
- *
- * Both `Kernels` and `Transcoders` flow through from
- * {@link CapabilitiesManifest} so route narrowing carries over to the
- * rolled-up surface.
+ * Kernel-derived capabilities and diagnostic transport descriptor exposed at
+ * {@link RuntimeClient.capabilities}. Whether external file edits trigger a
+ * document evaluation depends on the filesystem adapter's `watch` support.
  *
  * @template Kernels - Tuple of registered `KernelPlugin`s
  * @template Transcoders - Tuple of registered `TranscoderPlugin`s
@@ -496,7 +513,6 @@ export type RuntimeCapabilities<
   Middleware extends ReadonlyArray<MiddlewarePlugin<any, any, any>> = MiddlewarePlugin[],
   Transcoders extends ReadonlyArray<TranscoderPlugin<any, any, any, any, any>> = TranscoderPlugin[],
 > = CapabilitiesManifest<Kernels, Middleware, Transcoders> & {
-  readonly autonomousRenderLoop: boolean;
   readonly transport: TransportCapabilities;
 };
 // oxlint-enable @typescript-eslint/no-explicit-any

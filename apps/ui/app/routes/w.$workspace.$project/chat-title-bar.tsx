@@ -1,20 +1,24 @@
-import { useCallback, useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router';
+import { SquarePen } from 'lucide-react';
 import { useSelector } from '@xstate/react';
-import { AlertCircle } from 'lucide-react';
+import { cn } from '@taucad/ui/utils/cn';
 import { ChatHistorySettings } from '#routes/w.$workspace.$project/chat-history-settings.js';
 import { useActiveChatNaming } from '#routes/w.$workspace.$project/use-active-chat-naming.js';
-import { useProject } from '#hooks/use-project.js';
+import { useOpenNewChat } from '#routes/w.$workspace.$project/use-open-new-chat.js';
 import { useChats } from '#hooks/use-chats.js';
-import { useChatRpcStatus } from '#hooks/use-chat-rpc-socket.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import { useProjectSlugs } from '#hooks/use-project-slug-route.js';
-import type { KeyCombination } from '#utils/keys.utils.js';
-import { projectChatUrl } from '#utils/project-url.utils.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { useChatRecords } from '#hooks/use-chat-records.js';
+import { useChatSelector } from '#hooks/use-chat.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { useProject } from '#hooks/use-project.js';
+import type { KeyCombination } from '@taucad/ui/utils/keys';
+import { InlineTextEditor } from '#components/inline-text-editor.js';
+import { sidebarRowEditorClass } from '#components/nav/sidebar-row.js';
 import { FloatingPanelButtonGroup, FloatingPanelContentHeaderActions } from '#components/ui/floating-panel.js';
-import { cn } from '#utils/ui.utils.js';
+import { PaneButton } from '#components/ui/pane-button.js';
+import { useSidebar } from '#components/ui/sidebar.js';
+import { ChatLaneToggle } from '#routes/w.$workspace.$project/chat-lane-toggle.js';
+import { useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 const newChatKeyCombination = {
   key: 'c',
@@ -22,71 +26,99 @@ const newChatKeyCombination = {
   shiftKey: true,
 } satisfies KeyCombination;
 
-/** Current-session title and status; chat collection navigation lives in the sidebar. */
-export function ChatTitleBar({
-  closeButton,
-  onNewChat,
-}: {
-  readonly closeButton?: ReactNode;
-  readonly onNewChat?: () => void;
-}): React.JSX.Element {
-  const { projectRef, editorRef, projectId } = useProject();
-  const { chats, createChat, applyGeneratedChatName, isLoading: isChatsLoading } = useChats(projectId);
-  const navigate = useNavigate();
-  const slugs = useProjectSlugs(projectId);
+/**
+ * The chat pane's one header row: the active chat's name, renamed in place the
+ * way a sidebar row is, with the chat menu at the end. On desktop the row opens
+ * with the chat lane toggle, on the pixel it holds in the viewer's tab bar
+ * while the lane is closed, so it replaces a generic close control; mobile has
+ * no lanes and keeps `closeButton`. Chat collection navigation lives in the
+ * sidebar; with the sidebar collapsed "New chat" follows the toggle.
+ */
+export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode }): React.JSX.Element {
+  const { isMobile, open: isSidebarOpen } = useSidebar();
+  // One toggle in the document at a time: the viewer's tab bar holds it while the lane is hidden.
+  const { chat: isChatVisible } = useWorkspaceLanes();
+  const { openNewChat, isReady: canOpenNewChat } = useOpenNewChat();
+  const { editorRef, projectRef, projectId } = useProject();
   const activeChatId = useSelector(editorRef, (state) => state.context.focusedChatId);
   const isProjectLoading = useSelector(projectRef, (state) => state.context.isLoading);
-  const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId), [activeChatId, chats]);
+  const { chats, isLoading: isChatsLoading } = useChatRecords(projectId);
+  const { applyGeneratedChatName, updateChatName } = useChats(projectId, { enabled: false });
+  const firstMessage = useChatSelector((state) => state.messages[0]);
+  const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId), [chats, activeChatId]);
   const isGeneratingName = useActiveChatNaming({
     activeChat,
+    firstMessage,
     isProjectLoading,
     isChatsLoading,
     applyGeneratedChatName,
   });
-  const { status, error } = useChatRpcStatus();
-  const isDisconnected = status === 'disconnected' || status === 'error';
+  const [isRenaming, setIsRenaming] = useState(false);
+  const name = activeChat?.name ?? 'Chat';
 
-  const createAndOpenChat = useCallback(async (): Promise<void> => {
-    if (slugs.status !== 'resolved') {
-      return;
-    }
-    const chat = await createChat({ name: 'New chat', messages: [] });
-    await navigate(projectChatUrl(slugs.value, chat.id));
-    onNewChat?.();
-  }, [createChat, navigate, onNewChat, slugs]);
+  const createAndOpenChat = async (): Promise<void> => openNewChat();
 
   useKeybinding(newChatKeyCombination, createAndOpenChat);
 
+  const startRename = (): void => {
+    if (activeChat) {
+      setIsRenaming(true);
+    }
+  };
+
   return (
     <>
-      <div className={cn('ml-0.5 flex min-w-0 flex-1 items-center gap-2', isGeneratingName && 'animate-pulse')}>
-        <span className='truncate'>{activeChat?.name ?? 'Chat'}</span>
-        {isDisconnected ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type='button'
-                className='grid size-5 shrink-0 place-items-center rounded-sm text-warning focus-visible:ring-2 focus-visible:ring-ring'
-                aria-label={`Chat connection ${status}`}
-              >
-                <AlertCircle aria-hidden className='size-3.5' />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side='bottom'>
-              <div className='text-xs'>
-                <div className='font-medium'>Connection {status}</div>
-                {error ? <div className='text-muted-foreground'>{error}</div> : null}
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
+      {!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null}
+      {!isMobile && !isSidebarOpen ? (
+        <PaneButton aria-label='New chat' disabled={!canOpenNewChat} tooltip='New chat' onClick={createAndOpenChat}>
+          <SquarePen aria-hidden className='size-3.5 translate-y-[0.5px]' />
+        </PaneButton>
+      ) : null}
+      <div
+        className={cn(
+          'relative flex min-w-0 flex-1 items-center self-stretch',
+          // The editor draws no outline of its own (the sidebar's row does the same).
+          isRenaming && 'rounded-sm focus-outline',
+        )}
+      >
+        {isRenaming && activeChat ? (
+          <InlineTextEditor
+            value={activeChat.name}
+            variant='ghost'
+            shouldStartEditing
+            ariaLabel='Chat name'
+            // A field inside the desktop drag region cannot be typed into or selected.
+            className={cn(sidebarRowEditorClass, '[app-region:no-drag]')}
+            onSave={async (next) => {
+              await updateChatName(activeChat.id, next);
+            }}
+            onEditingChange={(isEditing) => {
+              if (!isEditing) {
+                setIsRenaming(false);
+              }
+            }}
+          />
+        ) : (
+          <span className='fade-label flex-1 text-sm font-medium'>
+            {/* The text, not its box, leaves the drag region: a double-click on a macOS drag
+                region zooms the window, and the rest of the row still drags it. */}
+            {/* oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- Rename remains in the keyboard-accessible menu. */}
+            <span
+              className={cn('text-foreground [app-region:no-drag]', isGeneratingName && 'animate-pulse')}
+              aria-busy={isGeneratingName}
+              onDoubleClick={startRename}
+            >
+              {name}
+            </span>
+          </span>
+        )}
+        <FloatingPanelContentHeaderActions className={cn(!isRenaming && 'md:absolute md:inset-y-0 md:right-0')}>
+          <FloatingPanelButtonGroup>
+            <ChatHistorySettings onRename={startRename} />
+          </FloatingPanelButtonGroup>
+          {isMobile ? closeButton : null}
+        </FloatingPanelContentHeaderActions>
       </div>
-      <FloatingPanelContentHeaderActions>
-        <FloatingPanelButtonGroup>
-          <ChatHistorySettings />
-        </FloatingPanelButtonGroup>
-        {closeButton}
-      </FloatingPanelContentHeaderActions>
     </>
   );
 }

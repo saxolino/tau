@@ -1,113 +1,33 @@
 /**
- * Assistant message activity grouping.
+ * Order-preserving assistant activity grouping and semantic tool summaries.
  *
- * Groups consecutive message parts into logical "activity chunks" for the chat UI,
- * enabling Cursor-style two-level folding:
- *
- * - **Outer fold (per-run)**: a contiguous run of `reasoning` singletons +
- *   aggregated `research` groups can collapse into a single `ChatActivitySection`.
- *   Runs are scoped — `write`/`data`/`transfer`/`text` groups break the run and
- *   render at the top level so file diffs and the final answer are never tucked
- *   inside an activity fold.
- * - **Inner fold**: the aggregated `research` group (web + file exploration +
- *   CAD verification) shows a one-line combined summary that expands to the
- *   individual tool rows.
- *
- * Streaming bias: while a message is still in-flight, the trailing run stays
- * expanded so progress is visible. Earlier runs auto-collapse once any downstream
- * activity (more tools, file edits, text) follows them.
- *
- * Parts are never reordered — consecutive runs of aggregatable categories merge,
- * while text or reasoning between tools forces a split. Empty/whitespace text
- * parts and `step-start` are transparent (they neither render nor split).
- *
- * File edits and persisted interchange exports (`export_geometry`) render as
- * `write` singletons so rich cards stay top-level. CAD verification (kernel
- * checks, screenshots, tests) is part of the `research` exploration phase —
- * its tool cards still render their full diagnostics inline when the
- * aggregated group is expanded.
+ * Adjacent reasoning parts form one reasoning disclosure. Adjacent tool parts
+ * form one activity disclosure. Text, data, and exported artifacts remain
+ * standalone chronological barriers.
  */
 
 import type { MyMessagePart } from '@taucad/chat';
-import { fileUnchangedMarker } from '@taucad/chat/constants';
+import { isRecord } from '@taucad/utils/schema';
+import { agentApprovalToolName } from '#services/agent-host-event-projection.js';
+import { summarizeExternalCall } from '#utils/external-call-summary.js';
 
-// ── Categories ───────────────────────────────────────────────────────────────
+export type ActivityCategory = 'text' | 'reasoning' | 'research' | 'write' | 'data' | 'skip';
 
-/**
- * Activity categories for message part classification.
- *
- * - `text` / `reasoning` / `data` / `transfer` → rendered as singletons (no aggregation).
- * - `write` → singleton preserving the rich per-call diff card (includes
- *   `export_geometry` deliverables persisted under `.tau/artifacts`).
- * - `research` → aggregatable (web search + file exploration + CAD verification combined).
- * - `skip` → invisible parts (`step-start`, `data-usage`, `data-context-usage`,
- *   empty/whitespace text).
- */
-export type ActivityCategory = 'text' | 'reasoning' | 'research' | 'write' | 'transfer' | 'data' | 'skip';
+export type ActivityFamily =
+  | 'skill'
+  | 'read'
+  | 'search'
+  | 'web-search'
+  | 'web-read'
+  | 'execute'
+  | 'edit'
+  | 'render'
+  | 'screenshot'
+  | 'test'
+  | 'chat'
+  | 'other';
 
-const aggregatableCategories = new Set<ActivityCategory>(['research']);
-
-/**
- * Bridging predicate: a bridging part is appended to a pending aggregated run
- * optimistically. At flush time, any *trailing* bridging parts are peeled off
- * and re-emitted as singletons, so only parts that end up sandwiched between
- * two same-category research parts get absorbed.
- *
- * Result: leading reasoning stays a singleton (no pending group exists yet),
- * trailing reasoning stays a singleton (peeled off at flush), and reasoning
- * sandwiched between two research parts is absorbed inline.
- */
-const isBridging = (category: ActivityCategory): boolean => category === 'reasoning';
-
-/**
- * Static category map for non-text part types. `text` is handled separately
- * because empty/whitespace strings classify as `skip`, not `text`.
- */
-const partTypeCategoryMap = new Map<string, ActivityCategory>([
-  ['reasoning', 'reasoning'],
-  ['step-start', 'skip'],
-  ['data-usage', 'skip'],
-  ['data-context-usage', 'skip'],
-  ['data-context-compaction', 'data'],
-  ['file', 'text'],
-  ['source-url', 'text'],
-  ['source-document', 'text'],
-
-  // Research: web + file exploration + CAD verification aggregate into one combined group
-  ['tool-web_search', 'research'],
-  ['tool-web_browser', 'research'],
-  ['tool-read_file', 'research'],
-  ['tool-list_directory', 'research'],
-  ['tool-grep', 'research'],
-  ['tool-glob_search', 'research'],
-  ['tool-get_kernel_result', 'research'],
-  ['tool-screenshot', 'research'],
-  ['tool-test_model', 'research'],
-  ['tool-use_skill', 'data'],
-
-  // Write tools: singletons (preserve rich per-call diff cards)
-  ['tool-edit_file', 'write'],
-  ['tool-create_file', 'write'],
-  ['tool-delete_file', 'write'],
-  ['tool-export_geometry', 'write'],
-
-  // Transfer tools
-  ['tool-transfer_to_cad_expert', 'transfer'],
-  ['tool-transfer_to_research_expert', 'transfer'],
-  ['tool-transfer_back_to_supervisor', 'transfer'],
-]);
-
-/**
- * Maps a message part to its activity category.
- */
-export const classifyActivityPart = (part: MyMessagePart): ActivityCategory => {
-  if (part.type === 'text') {
-    return part.text.trim() === '' ? 'skip' : 'text';
-  }
-  return partTypeCategoryMap.get(part.type) ?? 'data';
-};
-
-// ── Group types ──────────────────────────────────────────────────────────────
+type ActivityState = 'active' | 'approval' | 'completed' | 'denied' | 'error';
 
 export type SingletonGroup = {
   readonly kind: 'singleton';
@@ -118,407 +38,430 @@ export type SingletonGroup = {
 
 export type AggregatedGroup = {
   readonly kind: 'aggregated';
-  readonly category: ActivityCategory;
+  readonly category: 'reasoning' | 'research';
   readonly parts: readonly MyMessagePart[];
   readonly partIndices: readonly number[];
-  /**
-   * Combined summary string `${summaryVerbPast} ${summaryDetail}`. Kept for callers
-   * (e.g. `ChatActivitySection` title) that want a single label.
-   */
   readonly summary: string;
-  /** Verb fragment, e.g. `"Explored"`. Rendered with emphasis in the header. */
-  readonly summaryVerbPast: string;
-  /**
-   * Present-participle counterpart of {@link summaryVerbPast}, e.g. `"Exploring"`.
-   * Rendered when the group's header is in the open/expanded state to signal
-   * that the activity is being actively inspected.
-   */
-  readonly summaryVerbActive: string;
-  /** Detail fragment, e.g. `"2 web searches, 1 file"`. Rendered de-emphasized. */
-  readonly summaryDetail: string;
+  readonly families: readonly ActivityFamily[];
 };
 
 export type ActivityGroup = SingletonGroup | AggregatedGroup;
 
-// ── Summary generation ───────────────────────────────────────────────────────
+const staticFamilies = new Map<string, ActivityFamily>([
+  ['tool-use_skill', 'skill'],
+  ['tool-read_file', 'read'],
+  ['tool-list_directory', 'read'],
+  ['tool-get_parameters', 'read'],
+  ['tool-revisions', 'chat'],
+  ['tool-grep', 'search'],
+  ['tool-glob_search', 'search'],
+  ['tool-web_search', 'web-search'],
+  ['tool-web_browser', 'web-read'],
+  ['tool-edit_file', 'edit'],
+  ['tool-create_file', 'edit'],
+  ['tool-delete_file', 'edit'],
+  ['tool-apply_parameter_operation', 'edit'],
+  ['tool-arrange_workbench', 'edit'],
+  ['tool-install_packages', 'edit'],
+  ['tool-evaluate_model', 'render'],
+  // Durable pre-migration turns remain readable; these names are display-only, never tool registrations.
+  ['tool-get_kernel_result', 'render'],
+  ['tool-screenshot', 'screenshot'],
+  ['tool-test_model', 'test'],
+]);
 
-const pluralize = (count: number, singular: string, plural?: string): string =>
-  `${count} ${count === 1 ? singular : (plural ?? `${singular}s`)}`;
+const nativeFamilies = new Map<string, ActivityFamily>([
+  ['arrange_workbench', 'edit'],
+  ['use_skill', 'skill'],
+  ['read_file', 'read'],
+  ['list_directory', 'read'],
+  ['get_parameters', 'read'],
+  ['revisions', 'chat'],
+  ['grep', 'search'],
+  ['glob_search', 'search'],
+  ['web_search', 'web-search'],
+  ['web_browser', 'web-read'],
+  ['edit_file', 'edit'],
+  ['create_file', 'edit'],
+  ['delete_file', 'edit'],
+  ['apply_parameter_operation', 'edit'],
+  ['install_packages', 'edit'],
+  ['evaluate_model', 'render'],
+  ['get_kernel_result', 'render'],
+  ['screenshot', 'screenshot'],
+  ['test_model', 'test'],
+]);
 
-type SummaryParts = { verb: string; verbActive: string; detail: string };
+const externalFamilies = new Map<string, ActivityFamily>([
+  ['read', 'read'],
+  ['search', 'search'],
+  ['fetch', 'web-read'],
+  ['execute', 'execute'],
+  ['edit', 'edit'],
+  ['delete', 'edit'],
+  ['move', 'edit'],
+  ['think', 'other'],
+]);
 
-/**
- * Image count contributed by a single screenshot tool part. While the call is
- * still streaming we contribute `1` as a placeholder so the summary doesn't
- * stale-display "0 screenshots" mid-flight; once the output is available we count
- * the actual screenshot outputs.
- */
-const countScreenshotImages = (part: MyMessagePart): number => {
-  if (part.type !== 'tool-screenshot') {
-    return 0;
-  }
-  if (part.state !== 'output-available') {
-    return 1;
-  }
-  return part.output.images.length;
+const familyLabels: Record<Exclude<ActivityFamily, 'other'>, Record<ActivityState, string>> = {
+  skill: {
+    active: 'Loading tools',
+    approval: 'Tool loading awaiting approval',
+    completed: 'Loaded tools',
+    denied: 'Tool loading denied',
+    error: 'Tool loading failed',
+  },
+  read: {
+    active: 'Reading files',
+    approval: 'File reads awaiting approval',
+    completed: 'Read files',
+    denied: 'File reads denied',
+    error: 'File reads failed',
+  },
+  search: {
+    active: 'Searching files',
+    approval: 'File search awaiting approval',
+    completed: 'Searched files',
+    denied: 'File search denied',
+    error: 'File search failed',
+  },
+  'web-search': {
+    active: 'Searching the web',
+    approval: 'Web search awaiting approval',
+    completed: 'Searched the web',
+    denied: 'Web search denied',
+    error: 'Web search failed',
+  },
+  'web-read': {
+    active: 'Reading web pages',
+    approval: 'Web reads awaiting approval',
+    completed: 'Read web pages',
+    denied: 'Web reads denied',
+    error: 'Web reads failed',
+  },
+  execute: {
+    active: 'Running commands',
+    approval: 'Commands awaiting approval',
+    completed: 'Ran commands',
+    denied: 'Commands denied',
+    error: 'Commands failed',
+  },
+  edit: {
+    active: 'Editing files',
+    approval: 'File edits awaiting approval',
+    completed: 'Edited files',
+    denied: 'File edits denied',
+    error: 'File edits failed',
+  },
+  render: {
+    active: 'Rendering models',
+    approval: 'Model rendering awaiting approval',
+    completed: 'Rendered models',
+    denied: 'Model rendering denied',
+    error: 'Model rendering failed',
+  },
+  screenshot: {
+    active: 'Capturing images',
+    approval: 'Image capture awaiting approval',
+    completed: 'Captured images',
+    denied: 'Image capture denied',
+    error: 'Image capture failed',
+  },
+  test: {
+    active: 'Running tests',
+    approval: 'Tests awaiting approval',
+    completed: 'Ran tests',
+    denied: 'Tests denied',
+    error: 'Tests failed',
+  },
+  chat: {
+    active: 'Reading chat',
+    approval: 'Chat read awaiting approval',
+    completed: 'Read chat',
+    denied: 'Chat read denied',
+    error: 'Chat read failed',
+  },
 };
 
-/**
- * Test case count contributed by a single test_model tool part. Pre-output
- * states contribute `0` (the test count is unknown until the runner finishes,
- * and a "1 test" placeholder would be misleading); the segment is omitted
- * from the summary until the count is known.
- */
-const countTestCases = (part: MyMessagePart): number => {
-  if (part.type !== 'tool-test_model') {
-    return 0;
-  }
-  if (part.state !== 'output-available') {
-    return 0;
-  }
-  return part.output.passes.length + part.output.failures.length;
+/** External agents' own question tools, whose forms Tau presents as question cards. */
+const questionToolNames = new Set(['AskUserQuestion', 'request_user_input']);
+
+const tauFacts = (part: MyMessagePart): Record<string, unknown> | undefined =>
+  part.type === 'dynamic-tool' && isRecord(part.toolMetadata?.['tau']) ? part.toolMetadata['tau'] : undefined;
+
+/** ACP tool kind carried by a dynamic tool part. */
+export const externalToolKind = (part: MyMessagePart): string | undefined => {
+  const kind = tauFacts(part)?.['kind'];
+  return typeof kind === 'string' ? kind : undefined;
 };
 
-/**
- * Combined summary for the unified `research` category.
- *
- * Mirrors Cursor's mixed-group behavior: web search and code search collapse
- * into a single `searches` count (they are conceptually the same operation
- * from the consumer's perspective). Web URL visits become `fetches`. File
- * reads + directory listings become `files`. CAD verification adds
- * `renders` (kernel checks), `screenshots` (viewer captures, with composite multi-angle =
- * 6), and `tests` (passes + failures across test_model calls).
- *
- * Segments are emitted in the stable order
- * `files → searches → fetches → renders → screenshots → tests`.
- */
-const isCachedReadFilePart = (part: MyMessagePart): boolean => {
-  if (part.type !== 'tool-read_file') {
-    return false;
-  }
-  if (part.state !== 'output-available') {
-    return false;
-  }
-  const { content } = part.output;
-  return typeof content === 'string' && fileUnchangedMarker.matches(content);
-};
-
-const generateResearchSummary = (parts: readonly MyMessagePart[]): SummaryParts => {
-  let files = 0;
-  let cachedReads = 0;
-  let searches = 0;
-  let fetches = 0;
-  let renders = 0;
-  let images = 0;
-  let tests = 0;
-
-  for (const part of parts) {
-    switch (part.type) {
-      case 'tool-read_file': {
-        files++;
-        if (isCachedReadFilePart(part)) {
-          cachedReads++;
-        }
-        break;
-      }
-      case 'tool-list_directory': {
-        files++;
-        break;
-      }
-      case 'tool-web_search':
-      case 'tool-grep':
-      case 'tool-glob_search': {
-        searches++;
-        break;
-      }
-      case 'tool-web_browser': {
-        fetches++;
-        break;
-      }
-      case 'tool-get_kernel_result': {
-        renders++;
-        break;
-      }
-      case 'tool-screenshot': {
-        images += countScreenshotImages(part);
-        break;
-      }
-      case 'tool-test_model': {
-        tests += countTestCases(part);
-        break;
-      }
-    }
-  }
-
-  const segments: string[] = [];
-  if (files > 0) {
-    const filesSegment = pluralize(files, 'file');
-    segments.push(cachedReads > 0 ? `${filesSegment} (${cachedReads} cached)` : filesSegment);
-  }
-  if (searches > 0) {
-    segments.push(pluralize(searches, 'search', 'searches'));
-  }
-  if (fetches > 0) {
-    segments.push(pluralize(fetches, 'fetch', 'fetches'));
-  }
-  if (renders > 0) {
-    segments.push(pluralize(renders, 'render'));
-  }
-  if (images > 0) {
-    segments.push(pluralize(images, 'screenshot'));
-  }
-  if (tests > 0) {
-    segments.push(pluralize(tests, 'test'));
-  }
-
-  return { verb: 'Explored', verbActive: 'Exploring', detail: segments.join(', ') };
-};
-
-const generateSummary = (category: ActivityCategory, parts: readonly MyMessagePart[]): SummaryParts => {
-  switch (category) {
-    case 'research': {
-      return generateResearchSummary(parts);
-    }
-    default: {
-      return { verb: '', verbActive: '', detail: `${parts.length} operations` };
-    }
-  }
-};
-
-const composeSummary = ({ verb, detail }: SummaryParts): string => (verb === '' ? detail : `${verb} ${detail}`);
-
-// ── Section partitioning ─────────────────────────────────────────────────────
-
-/**
- * Categories eligible for the outer `ChatActivitySection` fold. These are the
- * "background activity" categories: thinking and exploration. Concrete results
- * (write/cad/data/transfer) and the final answer (text) must always render at
- * the top level, never tucked inside a section.
- */
-const sectionFoldableCategories = new Set<ActivityCategory>(['reasoning', 'research']);
-
-/**
- * Whether `group` is allowed to live inside a `ChatActivitySection`.
- */
-export const isSectionFoldable = (group: ActivityGroup): boolean => sectionFoldableCategories.has(group.category);
-
-/**
- * A contiguous run of section-foldable groups. Carries `startIndex` so callers
- * can recover each inner group's absolute position in the original `groups`
- * array (used for `isLastGroup` semantics in the renderer).
- */
-export type FoldableRun = {
-  readonly kind: 'foldable-run';
-  readonly groups: readonly ActivityGroup[];
-  readonly startIndex: number;
-};
-
-/**
- * A single non-foldable group rendered at the top level. `groupIndex` is its
- * absolute position in the original `groups` array.
- */
-export type StandaloneRun = {
-  readonly kind: 'standalone';
-  readonly group: ActivityGroup;
-  readonly groupIndex: number;
-};
-
-export type ActivityRun = FoldableRun | StandaloneRun;
-
-/**
- * Partitions `groups` into an ordered list of runs. Consecutive section-foldable
- * groups (reasoning singletons + aggregated research) coalesce into one
- * `FoldableRun`; every other group becomes its own `StandaloneRun`.
- *
- * The renderer then wraps foldable runs that contain at least one aggregated
- * research group in `ChatActivitySection`, while standalone runs always render
- * their group as-is. This guarantees file mutations, CAD operations, data,
- * transfers, and text never end up inside the outer fold.
- *
- * Wrap invariant: the renderer wraps any foldable run containing at least one
- * aggregated group in a `ChatActivitySection` (see {@link shouldWrapRun}).
- * Once wrapped, the section persists for the lifetime of the run. Do not gate
- * the wrapper on `groups.length` — group counts oscillate per part because
- * trailing reasoning is peeled at flush time (see {@link groupAssistantParts}),
- * which would cause the section to mount and unmount on every part arrival
- * and reset its open/close state.
- */
-export const partitionActivityRuns = (groups: readonly ActivityGroup[]): ActivityRun[] => {
-  const runs: ActivityRun[] = [];
-  let pending: ActivityGroup[] = [];
-  let pendingStart = 0;
-
-  const flushPending = (): void => {
-    if (pending.length === 0) {
-      return;
-    }
-    runs.push({ kind: 'foldable-run', groups: pending, startIndex: pendingStart });
-    pending = [];
+/** The title and located paths an external call reported. */
+const externalCallFacts = (part: MyMessagePart): { title: string | undefined; locations: string[] } => {
+  const facts = tauFacts(part);
+  const title = facts?.['title'];
+  const locations = Array.isArray(facts?.['locations']) ? facts['locations'] : [];
+  return {
+    title: typeof title === 'string' ? title : undefined,
+    locations: locations.flatMap((location: unknown) =>
+      isRecord(location) && typeof location['path'] === 'string' ? [location['path']] : [],
+    ),
   };
+};
 
-  for (const [i, group] of groups.entries()) {
-    if (isSectionFoldable(group)) {
-      if (pending.length === 0) {
-        pendingStart = i;
-      }
-      pending.push(group);
-      continue;
-    }
+/** The summary an external call renders under, when Tau can name it. */
+const externalSummary = (part: MyMessagePart) =>
+  part.type === 'dynamic-tool'
+    ? summarizeExternalCall({ ...externalCallFacts(part), kind: externalToolKind(part), input: part.input })
+    : undefined;
 
-    flushPending();
-    runs.push({ kind: 'standalone', group, groupIndex: i });
+const tauMcpToolName = (part: MyMessagePart): string | undefined => {
+  const tau = tauFacts(part);
+  const nativeName = tau?.['nativeName'];
+  return tau?.['presentation'] === 'tau-mcp' && typeof nativeName === 'string' ? nativeName : undefined;
+};
+
+/** Map a tool part to the visible semantic family shared by native and ACP agents. */
+export const activityFamily = (part: MyMessagePart): ActivityFamily => {
+  const staticFamily = staticFamilies.get(part.type);
+  if (staticFamily) {
+    return staticFamily;
   }
+  const nativeName = tauMcpToolName(part);
+  if (nativeName) {
+    return nativeFamilies.get(nativeName) ?? 'other';
+  }
+  const kind = externalToolKind(part);
+  return externalSummary(part)?.family ?? externalFamilies.get(kind ?? '') ?? 'other';
+};
 
-  flushPending();
+/** Classify one message part without reordering it. */
+export const classifyActivityPart = (part: MyMessagePart): ActivityCategory => {
+  if (part.type === 'text') {
+    return part.text.trim() === '' ? 'skip' : 'text';
+  }
+  if (part.type === 'reasoning') {
+    return part.text.trim() === '' ? 'skip' : 'reasoning';
+  }
+  if (part.type === 'dynamic-tool') {
+    if (part.toolName === agentApprovalToolName) {
+      return 'skip';
+    }
+    const nativeName = tauMcpToolName(part);
+    /* A question is a decision, never folded into routine activity (agent questions blueprint D7). */
+    if (nativeName === 'ask_questions' || questionToolNames.has(String(tauFacts(part)?.['nativeName']))) {
+      return 'data';
+    }
+    return nativeName === 'export_model' || nativeName === 'export_geometry' || nativeName === 'arrange_workbench'
+      ? 'write'
+      : 'research';
+  }
+  if (part.type === 'tool-export_model' || part.type === 'tool-arrange_workbench') {
+    return 'write';
+  }
+  if (staticFamilies.has(part.type)) {
+    return 'research';
+  }
+  if (['step-start', 'data-usage', 'data-context-usage'].includes(part.type)) {
+    return 'skip';
+  }
+  if (part.type === 'file' || part.type === 'source-url' || part.type === 'source-document') {
+    return 'text';
+  }
+  return 'data';
+};
 
-  return runs;
+const partState = (part: MyMessagePart): ActivityState => {
+  const rawState: unknown = Reflect.get(part, 'state');
+  const state = typeof rawState === 'string' ? rawState : undefined;
+  if (
+    Reflect.get(part, 'preliminary') === true ||
+    state === 'input-streaming' ||
+    state === 'input-available' ||
+    state === 'approval-responded'
+  ) {
+    return 'active';
+  }
+  if (state === 'approval-requested') {
+    return 'approval';
+  }
+  if (state === 'output-error') {
+    return 'error';
+  }
+  if (state === 'output-denied') {
+    return 'denied';
+  }
+  return 'completed';
 };
 
 /**
- * Returns whether a foldable run should render inside an outer
- * `ChatActivitySection` ("Exploring…") wrapper.
- *
- * The decision intentionally depends only on the **presence** of at least one
- * aggregated group — not on the total group count — so the wrapper's
- * visibility is monotonic across streaming part arrivals: once a research
- * aggregate exists in a run, the wrapper is mounted and stays mounted until a
- * non-foldable part (text, write, data, transfer) breaks the run and the
- * partitioner emits a different `FoldableRun`.
- *
- * Reasoning-only runs (no aggregate) intentionally stay un-wrapped so a
- * sequence of consecutive thinking blocks does not gain redundant chrome.
+ * Whether a part is still running: receiving input, executing, reporting
+ * progress, or resuming after an answered approval. The activity summary's verb
+ * and a collapsed group's spinner both read this one test.
  */
-export const shouldWrapRun = (run: FoldableRun): boolean => run.groups.some((group) => group.kind === 'aggregated');
+export const isActivityPartActive = (part: MyMessagePart): boolean => partState(part) === 'active';
 
-/**
- * Returns the index of the last "meaningful" part in `parts` (highest index
- * where `classifyActivityPart` is not `'skip'`). Returns `-1` for empty input
- * or when every part is skipped.
- *
- * Used to drive per-part auto-collapse: a part at index `i` is considered the
- * trailing live part when `i === findLastMeaningfulPartIndex(parts)`. Reasoning
- * uses this so it auto-collapses as soon as any non-skip part follows it
- * (tool call, text, another reasoning, etc.) — not just text.
- */
+const displayTitle = (part: MyMessagePart, isActive: boolean): string => {
+  if (part.type !== 'dynamic-tool') {
+    return 'Tool call';
+  }
+  /* The card's own phrase, so "Interact with subagent x" reads "Messaged subagent x" in both. */
+  const summary = externalSummary(part);
+  if (summary !== undefined) {
+    return `${isActive ? summary.activeVerb : summary.verb} ${isActive ? summary.activeDetail : summary.detail}`.trim();
+  }
+  const title = tauFacts(part)?.['title'];
+  return typeof title === 'string' && title.trim() !== '' ? title.trim() : part.toolName;
+};
+
+const familyState = (parts: readonly MyMessagePart[]): { state: ActivityState; suffix: string } => {
+  const states = new Set(parts.map((part) => partState(part)));
+  if (states.has('approval')) {
+    return { state: 'approval', suffix: '' };
+  }
+  if (states.has('active')) {
+    return {
+      state: 'active',
+      suffix: states.has('error') ? ' (some failed)' : states.has('denied') ? ' (some denied)' : '',
+    };
+  }
+  if (states.has('completed')) {
+    return {
+      state: 'completed',
+      suffix: states.has('error') ? ' (some failed)' : states.has('denied') ? ' (some denied)' : '',
+    };
+  }
+  return states.has('error') ? { state: 'error', suffix: '' } : { state: 'denied', suffix: '' };
+};
+
+const lowerInitial = (value: string): string => `${value.charAt(0).toLowerCase()}${value.slice(1)}`;
+
+/** Describe every live family represented by an adjacent tool group. */
+export const describeActivity = (parts: readonly MyMessagePart[]): string => {
+  const orderedFamilies: ActivityFamily[] = [];
+  const byFamily = new Map<ActivityFamily, MyMessagePart[]>();
+  for (const part of parts) {
+    const family = activityFamily(part);
+    if (!byFamily.has(family)) {
+      orderedFamilies.push(family);
+      byFamily.set(family, []);
+    }
+    byFamily.get(family)!.push(part);
+  }
+
+  return orderedFamilies
+    .map((family, index) => {
+      const familyParts = byFamily.get(family)!;
+      const { state, suffix } = familyState(familyParts);
+      const phrase =
+        family === 'other'
+          ? `${displayTitle(familyParts.at(-1)!, state === 'active')}${
+              state === 'active'
+                ? externalSummary(familyParts.at(-1)!) === undefined
+                  ? ' — running'
+                  : ''
+                : state === 'approval'
+                  ? ' — awaiting approval'
+                  : state === 'error'
+                    ? ' — failed'
+                    : state === 'denied'
+                      ? ' — denied'
+                      : ''
+            }${suffix}`
+          : `${familyLabels[family][state]}${suffix}`;
+      return index === 0 ? phrase : lowerInitial(phrase);
+    })
+    .join(', ');
+};
+
+/** Last message-part index that produces visible assistant history. */
 export const findLastMeaningfulPartIndex = (parts: readonly MyMessagePart[]): number => {
-  for (let i = parts.length - 1; i >= 0; i--) {
-    if (classifyActivityPart(parts[i]!) !== 'skip') {
-      return i;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (classifyActivityPart(parts[index]!) !== 'skip') {
+      return index;
     }
   }
   return -1;
 };
 
-// ── Grouping ─────────────────────────────────────────────────────────────────
-
 /**
- * Groups an assistant message's parts into an ordered list of singletons and
- * aggregated tool groups for two-level folding in the chat UI.
+ * Group adjacent reasoning and tool activity while preserving order.
  *
- * Consecutive parts in the aggregatable `research` category merge into one
- * `AggregatedGroup`. Non-aggregatable parts (text, write, cad, data,
- * transfer) pass through as `SingletonGroup`. Skipped parts (`step-start`,
- * `data-usage`, empty text) are transparent — they don't interrupt adjacent
- * groups and are omitted from output.
- *
- * Bridging: while a research run is pending, reasoning parts are appended to
- * it optimistically (see {@link isBridging}). When the run finalizes, any
- * trailing bridging parts are peeled off and re-emitted as singletons, so
- * only sandwiched reasoning ends up inside an aggregated group; leading and
- * trailing reasoning remain separate singletons.
+ * Reasoning between or beside tool calls belongs to that activity group, so a
+ * thought never splits one semantic summary. A run with no tool call stays a
+ * standalone reasoning group.
  */
 export const groupAssistantParts = (parts: readonly MyMessagePart[]): ActivityGroup[] => {
   const groups: ActivityGroup[] = [];
-
-  let pendingCategory: ActivityCategory | undefined;
   let pendingParts: MyMessagePart[] = [];
   let pendingIndices: number[] = [];
 
-  const flushPending = (): void => {
-    if (pendingCategory === undefined || pendingParts.length === 0) {
-      pendingCategory = undefined;
-      pendingParts = [];
-      pendingIndices = [];
+  const flush = (): void => {
+    if (pendingParts.length === 0) {
       return;
     }
-
-    const tail: Array<{ part: MyMessagePart; index: number }> = [];
-    while (pendingParts.length > 0 && isBridging(classifyActivityPart(pendingParts.at(-1)!))) {
-      const part = pendingParts.pop()!;
-      const index = pendingIndices.pop()!;
-      tail.unshift({ part, index });
-    }
-
-    if (pendingParts.length > 0) {
-      const summaryParts = generateSummary(pendingCategory, pendingParts);
-      groups.push({
-        kind: 'aggregated',
-        category: pendingCategory,
-        parts: pendingParts,
-        partIndices: pendingIndices,
-        summary: composeSummary(summaryParts),
-        summaryVerbPast: summaryParts.verb,
-        summaryVerbActive: summaryParts.verbActive,
-        summaryDetail: summaryParts.detail,
-      });
-    } else {
-      // All pending parts were bridging — re-emit them as singletons in order.
-      // (Cannot happen given current callers, but keeps the helper total.)
-    }
-
-    for (const { part, index } of tail) {
-      groups.push({
-        kind: 'singleton',
-        part,
-        partIndex: index,
-        category: classifyActivityPart(part),
-      });
-    }
-
-    pendingCategory = undefined;
+    const toolParts = pendingParts.filter((part) => cachedCategory(part) === 'research');
+    const isReasoning = toolParts.length === 0;
+    groups.push({
+      kind: 'aggregated',
+      category: isReasoning ? 'reasoning' : 'research',
+      parts: pendingParts,
+      partIndices: pendingIndices,
+      summary: isReasoning ? '' : describeActivity(toolParts),
+      families: [...new Set(toolParts.map((part) => activityFamily(part)))],
+    });
     pendingParts = [];
     pendingIndices = [];
   };
 
-  for (const [i, part] of parts.entries()) {
-    const category = classifyActivityPart(part);
-
+  for (const [partIndex, part] of parts.entries()) {
+    const category = cachedCategory(part);
     if (category === 'skip') {
       continue;
     }
-
-    if (isBridging(category)) {
-      if (pendingCategory === undefined) {
-        groups.push({ kind: 'singleton', part, partIndex: i, category });
-      } else {
-        pendingParts.push(part);
-        pendingIndices.push(i);
-      }
+    if (category === 'reasoning' || category === 'research') {
+      pendingParts.push(part);
+      pendingIndices.push(partIndex);
       continue;
     }
-
-    if (aggregatableCategories.has(category)) {
-      if (pendingCategory === category) {
-        pendingParts.push(part);
-        pendingIndices.push(i);
-      } else {
-        flushPending();
-        pendingCategory = category;
-        pendingParts = [part];
-        pendingIndices = [i];
-      }
-    } else {
-      flushPending();
-      groups.push({
-        kind: 'singleton',
-        part,
-        partIndex: i,
-        category,
-      });
-    }
+    flush();
+    groups.push({ kind: 'singleton', part, partIndex, category });
   }
-
-  flushPending();
-
+  flush();
+  const first = parts[0];
+  if (first !== undefined) {
+    const previous = activityGroups.get(first);
+    for (const [index, group] of groups.entries()) {
+      const old = previous?.[index];
+      if (
+        old?.kind === 'singleton' &&
+        group.kind === 'singleton' &&
+        old.part === group.part &&
+        old.partIndex === group.partIndex
+      ) {
+        groups[index] = old;
+      } else if (
+        old?.kind === 'aggregated' &&
+        group.kind === 'aggregated' &&
+        old.category === group.category &&
+        old.parts.length === group.parts.length &&
+        old.parts.every((part, at) => part === group.parts[at] && old.partIndices[at] === group.partIndices[at])
+      ) {
+        groups[index] = old;
+      }
+    }
+    activityGroups.set(first, groups);
+  }
   return groups;
+};
+
+const partCategories = new WeakMap<MyMessagePart, ActivityCategory>();
+const activityGroups = new WeakMap<MyMessagePart, ActivityGroup[]>();
+const cachedCategory = (part: MyMessagePart): ActivityCategory => {
+  const prior = partCategories.get(part);
+  if (prior !== undefined) {
+    return prior;
+  }
+  const category = classifyActivityPart(part);
+  partCategories.set(part, category);
+  return category;
 };

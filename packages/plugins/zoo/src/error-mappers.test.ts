@@ -78,7 +78,7 @@ describe('convertKclErrorToKernelIssue', () => {
       details: {
         msg: 'error',
         sourceRanges: [[0, 10, 0]],
-        backtrace: [{ sourceRange: [0, 10, 0], fnName: null }],
+        backtrace: [{ sourceRange: [0, 10, 0], fnName: null, kind: 'call' }],
       },
     });
     const kclError = new KclWasmError(wasmError);
@@ -95,7 +95,7 @@ describe('convertKclErrorToKernelIssue', () => {
       details: {
         msg: 'error',
         sourceRanges: [[0, 5, 0]],
-        backtrace: [{ sourceRange: [0, 5, 0], fnName: null }],
+        backtrace: [{ sourceRange: [0, 5, 0], fnName: null, kind: 'call' }],
       },
     });
     const kclError = new KclWasmError(wasmError);
@@ -156,12 +156,14 @@ describe('convertKclErrorToKernelIssue', () => {
     const kclError = KclError.simple({ kind: 'connection', message: 'connection error' });
     const result = convertKclErrorToKernelIssue(kclError);
     expect(result.issues[0]!.type).toBe('connection');
+    expect(result.issues[0]!.code).toBe('RUNTIME');
   });
 
   it('should map auth kind to connection type', () => {
     const kclError = KclError.simple({ kind: 'auth', message: 'auth error' });
     const result = convertKclErrorToKernelIssue(kclError);
     expect(result.issues[0]!.type).toBe('connection');
+    expect(result.issues[0]!.code).toBe('AUTHENTICATION_ERROR');
   });
 
   it('should map interrupted kind to runtime type', () => {

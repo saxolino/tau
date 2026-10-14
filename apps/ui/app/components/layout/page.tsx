@@ -1,8 +1,10 @@
-import { Outlet } from 'react-router';
+import { Link, NavigationType, Outlet, useLocation, useNavigationType } from 'react-router';
 import { Fragment } from 'react/jsx-runtime';
-import { useMemo } from 'react';
-import type { ReactNode } from 'react';
-import { PanelLeftIcon } from 'lucide-react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import type { CSSProperties, ReactNode, UIEvent } from 'react';
+import { LayoutPriority } from 'allotment';
+import { Allotment } from '#components/panes/allotment.js';
+import type { AllotmentHandle } from 'allotment';
 import { AppSidebar } from '#components/layout/app-sidebar.js';
 import {
   Breadcrumb,
@@ -10,36 +12,104 @@ import {
   BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbSeparator,
-} from '#components/ui/breadcrumb.js';
-import { Separator } from '#components/ui/separator.js';
-import { SidebarInset, SidebarProvider, SidebarTrigger } from '#components/ui/sidebar.js';
+} from '@taucad/ui/components/breadcrumb';
+import { Separator } from '@taucad/ui/components/separator';
+import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '#components/ui/sidebar.js';
 import { useTypedMatches } from '#hooks/use-typed-matches.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { Compose } from '#components/ui/utils/compose.js';
-import { PageFooter } from '#components/layout/page-footer.js';
-import { SidebarOffset } from '#components/layout/sidebar-offset.js';
-import { CookieConsent } from '#components/cookie-consent.js';
+import { CommandPaletteProvider, RouteCommandPaletteItems } from '#components/layout/command-palette.js';
+import { RouteFooter } from '#components/layout/route-footer.js';
 import { SettingsDialog } from '#components/settings/settings-dialog.js';
 import { useResolvedAuth } from '#hooks/use-resolved-auth.js';
 import { useFeatureFlags } from '#flags/use-feature.js';
+import { DesktopTitlebarControls } from '#components/layout/desktop-titlebar-controls.js';
+import { isDesktopTarget } from '#lib/build-target.js';
+import { TauWordmark } from '#components/icons/tau-wordmark.js';
+import { sidebarPreferredWidth } from '#constants/sidebar.constants.js';
 
 export const headerHeight = 'calc(var(--spacing) * 12)';
+export const desktopHeaderHeight = 'calc(var(--spacing) * 9)';
+
+/** The `TauWordmark` viewBox's width over its height. */
+const wordmarkAspectRatio = 2321.24 / 710;
+
+/* The width each control row fills, including a trailing 4 px: the chat header's own first
+ * control then lands one row-gap after the last of these, so the two read as one row. The web
+ * row is the `pl-2` inset, the wordmark link (`h-5` wordmark plus `px-1` either side), the
+ * sidebar trigger (`size-7`) and the `pr-1` gap: every control sits 4 px from the next. */
+const desktopTitlebarControlsWidth = 'calc(var(--spacing) * 44)';
+const webTitlebarControlsWidth = `calc(var(--spacing) * ${2 + 1 + 5 * wordmarkAspectRatio + 1 + 7 + 1})`;
+
+const sidebarMinimumWidth = 192;
+const sidebarMaximumWidth = 480;
+const sidebarKeyboardResizeStep = 16;
+
+const headerOffsetClasses = 'mt-(--header-height) h-[calc(100dvh-var(--header-height)-1px)]';
+
+/*
+ * Each history entry keeps its place in the shell's scroller. React Router's
+ * `ScrollRestoration` restores `window`, but `html, body { overflow: hidden }`
+ * (global.css) makes the shell's inner element the one that scrolls, so Back
+ * used to land at the top. `Page` owns it once for every `enableOverflowY` route.
+ */
+const scrollStorageKey = (locationKey: string): string => `tau.page-scroll.${locationKey}`;
+
+const readSavedScroll = (locationKey: string): number => {
+  try {
+    return Number(globalThis.sessionStorage.getItem(scrollStorageKey(locationKey)) ?? 0);
+  } catch {
+    // A blocked store means no saved place, never a broken page.
+    return 0;
+  }
+};
+
+/** Milliseconds a restored offset is held while the page settles, unless the person scrolls first. */
+const restoreHoldDuration = 1000;
+const restoreReleaseEvents = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
 
 /**
- * Positioning classes for content that needs to account for the sidebar.
- * Applied to the section when `enableFloatingSidebar` is false,
- * or to the content wrapper when rendering errors on floating sidebar routes.
+ * Holds `scroller` at `top` while its content settles. The shell remounts on Back
+ * from a wrapper-less route and its sidebar pane sizes itself a frame later, so the
+ * content first lays out at another width and height; the browser's scroll
+ * anchoring then moves the offset. Re-applying on every resize keeps the saved
+ * place; the hold ends on the person's first scroll input or after `restoreHoldDuration`.
  */
-const sidebarPositioningClasses =
-  'transition-[margin] duration-200 ease-linear md:ml-[calc(var(--sidebar-width-current)-var(--spacing)*2)]';
-const headerOffsetClasses = 'mt-(--header-height) h-[calc(100dvh-var(--header-height)-1px)]';
+const holdScrollPosition = (scroller: HTMLElement, top: number, onRelease: () => void): (() => void) => {
+  const observer = new ResizeObserver(() => {
+    scroller.scrollTop = top;
+  });
+  observer.observe(scroller);
+  for (const child of scroller.children) {
+    observer.observe(child);
+  }
+  const release = (): void => {
+    observer.disconnect();
+    clearTimeout(holdTimeout);
+    for (const type of restoreReleaseEvents) {
+      scroller.removeEventListener(type, release);
+    }
+    onRelease();
+  };
+  const holdTimeout = setTimeout(release, restoreHoldDuration);
+  for (const type of restoreReleaseEvents) {
+    scroller.addEventListener(type, release, { passive: true });
+  }
+  return release;
+};
+
+// ponytail: one sessionStorage write per scroll event; batch on `scrollend` if it ever shows in a profile.
+const saveScroll = (locationKey: string, scrollTop: number): void => {
+  try {
+    globalThis.sessionStorage.setItem(scrollStorageKey(locationKey), String(scrollTop));
+  } catch {
+    // Persistence is best-effort.
+  }
+};
 
 type SectionContentProps = {
   readonly error: ReactNode | undefined;
   readonly enablePageFooter: boolean;
-  readonly enableFloatingSidebar: boolean;
-  readonly shouldApplyPositioning: boolean;
-  readonly enablePageHeader: boolean;
 };
 
 /**
@@ -50,42 +120,14 @@ type SectionContentProps = {
  * - With or without page footer
  * - With or without sidebar positioning
  */
-function SectionContent({
-  error,
-  enablePageFooter,
-  enableFloatingSidebar,
-  shouldApplyPositioning,
-  enablePageHeader,
-}: SectionContentProps): React.JSX.Element {
+function SectionContent({ error, enablePageFooter }: SectionContentProps): React.JSX.Element {
   const content = error ?? <Outlet />;
 
-  // With footer: wrap in flex container with optional positioning
   if (enablePageFooter) {
     return (
-      <div
-        className={cn(
-          'flex min-h-full flex-col overflow-clip',
-          shouldApplyPositioning && sidebarPositioningClasses,
-          shouldApplyPositioning && enablePageHeader && headerOffsetClasses,
-        )}
-      >
+      <div className='flex min-h-full flex-col overflow-clip'>
         <div className='flex flex-1 flex-col'>{content}</div>
-        {enableFloatingSidebar ? (
-          <SidebarOffset asChild via='margin'>
-            <PageFooter />
-          </SidebarOffset>
-        ) : (
-          <PageFooter />
-        )}
-      </div>
-    );
-  }
-
-  // Error on floating sidebar route (no footer): wrap with positioning
-  if (shouldApplyPositioning) {
-    return (
-      <div className={cn('flex flex-col', sidebarPositioningClasses, enablePageHeader && headerOffsetClasses)}>
-        {content}
+        <RouteFooter />
       </div>
     );
   }
@@ -95,9 +137,114 @@ function SectionContent({
   return <>{content}</>;
 }
 
+const WebTitlebarControls = ({
+  onSidebarResize,
+}: {
+  readonly onSidebarResize: (direction: 'narrower' | 'wider') => void;
+}): React.JSX.Element => (
+  <div
+    data-slot='web-titlebar-controls'
+    className='fixed top-0 left-0 z-50 hidden h-9 w-(--titlebar-controls-width) items-center bg-transparent pr-1 pl-2 md:flex'
+  >
+    <Link
+      to='/'
+      aria-label='Home'
+      className='flex h-7 items-center rounded-sm px-1 outline-none focus-visible:focus-outline'
+    >
+      <TauWordmark aria-hidden className='h-5 w-auto text-primary' />
+    </Link>
+    <SidebarTrigger aria-label='Toggle Sidebar' onSidebarResize={onSidebarResize} />
+  </div>
+);
+
+const ApplicationShell = ({
+  children,
+  isDesktopTarget,
+}: {
+  readonly children: ReactNode;
+  readonly isDesktopTarget: boolean;
+}): React.JSX.Element => {
+  const { isMobile, open } = useSidebar();
+  const allotmentRef = useRef<AllotmentHandle>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const sidebarWidthRef = useRef(sidebarPreferredWidth);
+
+  const resizeSidebar = useCallback(
+    (direction: 'narrower' | 'wider') => {
+      if (isMobile || !open) {
+        return;
+      }
+
+      const delta = direction === 'narrower' ? -sidebarKeyboardResizeStep : sidebarKeyboardResizeStep;
+      const nextSidebarWidth = Math.min(
+        sidebarMaximumWidth,
+        Math.max(sidebarMinimumWidth, sidebarWidthRef.current + delta),
+      );
+      const shellWidth = shellRef.current?.clientWidth;
+      if (!shellWidth || nextSidebarWidth === sidebarWidthRef.current) {
+        return;
+      }
+
+      allotmentRef.current?.resize([nextSidebarWidth, Math.max(0, shellWidth - nextSidebarWidth)]);
+      sidebarWidthRef.current = nextSidebarWidth;
+    },
+    [isMobile, open],
+  );
+
+  return (
+    <div
+      ref={shellRef}
+      data-slot='application-shell'
+      data-sidebar-open={!isMobile && open}
+      className='group/app-shell relative size-full min-h-0 overflow-hidden'
+      style={
+        {
+          '--titlebar-controls-width': isDesktopTarget ? desktopTitlebarControlsWidth : webTitlebarControlsWidth,
+        } as CSSProperties
+      }
+    >
+      {isDesktopTarget ? (
+        <DesktopTitlebarControls onSidebarResize={resizeSidebar} />
+      ) : (
+        <WebTitlebarControls onSidebarResize={resizeSidebar} />
+      )}
+      <Allotment
+        paneLabels={['Sidebar', 'Content']}
+        id='application-allotment'
+        ref={allotmentRef}
+        proportionalLayout={false}
+        separator={false}
+        snap={false}
+        className='size-full [--separator-border:var(--sidebar-border)]'
+        onChange={(sizes) => {
+          const sidebarWidth = sizes[0];
+          if (sidebarWidth !== undefined && sidebarWidth > 0) {
+            sidebarWidthRef.current = sidebarWidth;
+          }
+        }}
+      >
+        <Allotment.Pane
+          key='app-sidebar'
+          minSize={sidebarMinimumWidth}
+          preferredSize={sidebarPreferredWidth}
+          maxSize={sidebarMaximumWidth}
+          priority={LayoutPriority.Low}
+          visible={!isMobile && open}
+        >
+          <AppSidebar />
+        </Allotment.Pane>
+        <Allotment.Pane key='app-main' priority={LayoutPriority.High}>
+          {children}
+        </Allotment.Pane>
+      </Allotment>
+    </div>
+  );
+};
+
 export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Element {
   const resolvedAuth = useResolvedAuth();
   const flags = useFeatureFlags();
+  const desktopTarget = isDesktopTarget();
 
   const {
     breadcrumbItems,
@@ -105,7 +252,6 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
     actionItems,
     hasActionItems,
     pageWrapperMatches,
-    enableFloatingSidebar,
     enableOverflowY,
     providers,
     enablePageFooter,
@@ -116,18 +262,86 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
     actionItems: handles.actions,
     hasActionItems: handles.actions.length > 0,
     pageWrapperMatches: handles.enablePageWrapper,
-    enableFloatingSidebar: handles.enableFloatingSidebar.some((match) => match.handle.enableFloatingSidebar === true),
     enableOverflowY: handles.enableOverflowY.some((match) => match.handle.enableOverflowY === true),
     providers: handles.providers,
     enablePageFooter: handles.enablePageFooter.some((match) => match.handle.enablePageFooter === true),
     enablePageHeaderMatches: handles.enablePageHeader,
   }));
+  const { key: locationKey, pathname, hash } = useLocation();
+  const navigationType = useNavigationType();
+  const pageScrollRef = useRef<HTMLDivElement>(null);
+  const previousPathnameRef = useRef(pathname);
+  const isRestoringRef = useRef(false);
+  useLayoutEffect(() => {
+    const scroller = pageScrollRef.current;
+    const isSamePage = previousPathnameRef.current === pathname;
+    previousPathnameRef.current = pathname;
+    if (!enableOverflowY || !scroller) {
+      return;
+    }
+    if (navigationType === NavigationType.Replace && isSamePage) {
+      // A filter or dialog written to the URL replaces the entry: stay put and
+      // carry the offset over to the new key.
+      saveScroll(locationKey, scroller.scrollTop);
+      return;
+    }
+    // Back and Forward restore the entry's offset; a new entry starts at the top
+    // (the scroller outlives the navigation).
+    if (navigationType !== NavigationType.Pop) {
+      scroller.scrollTop = 0;
+      return;
+    }
+    const savedTop = readSavedScroll(locationKey);
+    scroller.scrollTop = savedTop;
+    // The top needs no hold, and a fragment names its own place, which the route scrolls to after this.
+    if (savedTop === 0 || hash !== '') {
+      return;
+    }
+    // Scrolls the settling layout causes are not the person's, so they are not saved.
+    isRestoringRef.current = true;
+    return holdScrollPosition(scroller, savedTop, () => {
+      isRestoringRef.current = false;
+    });
+  }, [enableOverflowY, hash, locationKey, navigationType, pathname]);
+  const handlePageScroll = useCallback(
+    (event: UIEvent) => {
+      if (!isRestoringRef.current) {
+        saveScroll(locationKey, event.currentTarget.scrollTop);
+      }
+    },
+    [locationKey],
+  );
   const enablePageHeader = !enablePageHeaderMatches.some((match) => match.handle.enablePageHeader === false);
+  const hasPageHeaderChrome = [hasBreadcrumbItems, hasActionItems].includes(true);
+  const headerHeightClass = enablePageHeader
+    ? cn(
+        desktopTarget && '[--header-height:calc(var(--spacing)*9)]',
+        !desktopTarget && '[--header-height:calc(var(--spacing)*12)] md:[--header-height:calc(var(--spacing)*9)]',
+      )
+    : '[--header-height:0px]';
 
   // Resolve `enablePageWrapper` per match: a match disables the wrapper when its
   // value is `false`, or when its function form returns `false` for the current
   // viewer (see `Handle.enablePageWrapper`). The wrapper stays on unless some
   // match opts out.
+  /*
+   * `titleBarStyle: 'hiddenInset'` gives macOS no implicit drag area, so the
+   * window's grab band has to be declared in CSS. It belongs to the shell, not
+   * to a route: every route renders through `Page`, including the ones that opt
+   * out of the wrapper below (auth, share links), and a per-route handle leaves
+   * each new route to remember one. Chromium unions the `drag` rects and
+   * subtracts the `no-drag` ones, so interactive chrome sitting in the band —
+   * the header children here, the dockview tabs, the titlebar controls — opts
+   * itself back out.
+   */
+  const desktopDragBand = desktopTarget ? (
+    <span
+      aria-hidden
+      data-slot='desktop-drag-band'
+      className='pointer-events-none fixed inset-x-0 top-0 z-0 h-9 [app-region:drag]'
+    />
+  ) : null;
+
   const chromeContext = { authState: resolvedAuth, flags };
   const enablePageWrapper = !pageWrapperMatches.some((match) => {
     const value = match.handle.enablePageWrapper;
@@ -145,13 +359,6 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
     return providerComponents;
   }, [providers]);
 
-  // Compute positioning logic once
-  // Section handles positioning for standard routes (non-floating sidebar)
-  const shouldSectionApplyPositioning = !enableFloatingSidebar;
-  // Content wrapper needs positioning when: floating sidebar route + error
-  // (because error content doesn't handle its own positioning like fumadocs does)
-  const shouldContentApplyPositioning = enableFloatingSidebar && error !== undefined;
-
   if (!enablePageWrapper) {
     // `html, body { overflow: hidden }` (global.css) means the document never
     // scrolls — the app shell's inner `<section>` is normally the scroll
@@ -160,8 +367,9 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
     // and keep the bare outlet.
     return (
       <Compose components={Providers}>
+        {desktopDragBand}
         {enableOverflowY ? (
-          <div className='h-dvh overflow-y-auto'>
+          <div ref={pageScrollRef} className='h-dvh overflow-y-auto' onScroll={handlePageScroll}>
             <Outlet />
           </div>
         ) : (
@@ -171,82 +379,103 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
     );
   }
 
+  /*
+   * W5/Finding 5b: the shell is above the composed route providers, not below
+   * them. A route that contributes a provider changes the length of this list,
+   * and anything nested inside it changes tree depth — which React implements
+   * by unmounting and re-creating the subtree. Only the route's own content
+   * needs those providers, so only the route's own content sits inside them.
+   *
+   * The command palette is the one piece of shell chrome fed by the routes: its
+   * registry therefore sits above both, the sidebar keeps the trigger, and the
+   * routes register from inside their own providers.
+   */
   return (
-    <Compose components={Providers}>
-      <SidebarProvider>
-        <AppSidebar />
-        <SidebarInset style={{ '--header-height': enablePageHeader ? headerHeight : '0px' }}>
-          {enablePageHeader ? (
-            <header className='pointer-events-none absolute top-0 z-20 flex h-(--header-height) w-full shrink-0 items-center justify-between gap-2'>
-              <div className='pointer-events-auto ml-2 flex h-8 items-center gap-0.25 rounded-md border bg-sidebar p-0.25 pl-2.75 transition-[margin] duration-200 ease-linear md:ml-(--sidebar-width-current) md:gap-1'>
-                <SidebarTrigger className='group/sidebar-trigger -ml-2.5 rounded-sm'>
-                  <PanelLeftIcon className='size-4 group-data-[open=true]/sidebar-trigger:block' />
-                </SidebarTrigger>
-                {hasBreadcrumbItems ? (
-                  <span className='h-4'>
-                    <Separator orientation='vertical' />
-                  </span>
-                ) : null}
-                <Breadcrumb className='hidden [&:has(>:not(:empty))]:block'>
-                  <BreadcrumbList
-                    className={cn(
-                      'sm:gap-0',
-                      '[&_[data-slot=button]]:h-7 [&_[data-slot=button]]:rounded-sm [&_[data-slot=button]]:p-2',
-                      "[&_[data-slot='tooltip-trigger']]:h-7 [&_[data-slot='tooltip-trigger']]:rounded-sm [&_[data-slot='tooltip-trigger']]:p-2",
-                      "[&_[data-slot='breadcrumb-link']]:h-7 [&_[data-slot='breadcrumb-link']]:rounded-sm [&_[data-slot='breadcrumb-link']]:p-2",
-                      '[&_[data-slot=input]]:h-7 [&_[data-slot=input]]:rounded-sm',
-                    )}
-                  >
-                    {breadcrumbItems.map((match) => {
-                      const breadcrumb = match.handle.breadcrumb?.(match);
-                      // Normalize to always be an array
-                      const breadcrumbArray = Array.isArray(breadcrumb) ? breadcrumb : [breadcrumb];
+    <CommandPaletteProvider>
+      {desktopDragBand}
+      <SidebarProvider className='h-dvh min-h-0 overflow-hidden'>
+        <ApplicationShell isDesktopTarget={desktopTarget}>
+          <SidebarInset className={cn('size-full min-w-0', headerHeightClass)}>
+            {enablePageHeader ? (
+              <header
+                className={cn(
+                  'pointer-events-none absolute top-0 z-20 flex h-(--header-height) w-full shrink-0 items-center justify-between gap-2',
+                  hasPageHeaderChrome && 'border-b bg-sidebar',
+                )}
+              >
+                <div
+                  className={cn(
+                    'pointer-events-auto ml-2 flex h-full items-center gap-1 md:group-data-[sidebar-open=false]/app-shell:ml-(--titlebar-controls-width)',
+                    !hasBreadcrumbItems && 'md:hidden',
+                    desktopTarget && '[app-region:no-drag]',
+                  )}
+                >
+                  {desktopTarget ? null : <SidebarTrigger className='md:hidden' />}
+                  {hasBreadcrumbItems && !desktopTarget ? (
+                    <span className='h-4 md:hidden'>
+                      <Separator orientation='vertical' />
+                    </span>
+                  ) : null}
+                  <Breadcrumb className='hidden [&:has(>:not(:empty))]:block'>
+                    <BreadcrumbList
+                      className={cn(
+                        'sm:gap-0',
+                        '[&_[data-slot=button]]:h-7 [&_[data-slot=button]]:rounded-sm [&_[data-slot=button]]:p-2',
+                        "[&_[data-slot='tooltip-trigger']]:h-7 [&_[data-slot='tooltip-trigger']]:rounded-sm [&_[data-slot='tooltip-trigger']]:p-2",
+                        "[&_[data-slot='breadcrumb-link']]:h-7 [&_[data-slot='breadcrumb-link']]:rounded-sm [&_[data-slot='breadcrumb-link']]:p-2",
+                        '[&_[data-slot=input]]:h-7 [&_[data-slot=input]]:rounded-sm',
+                      )}
+                    >
+                      {breadcrumbItems.map((match) => {
+                        const breadcrumb = match.handle.breadcrumb?.(match);
+                        const breadcrumbArray = Array.isArray(breadcrumb) ? breadcrumb : [breadcrumb];
 
-                      return (
-                        <Fragment key={match.id}>
-                          {breadcrumbArray.map((item, index) => (
-                            // oxlint-disable-next-line react/no-array-index-key -- these are stable.
-                            <Fragment key={`${match.id}-${index}`}>
-                              <BreadcrumbSeparator className='hidden first:hidden lg:block' />
-                              <BreadcrumbItem className='hidden last:block hover:text-foreground lg:block'>
-                                <BreadcrumbLink asChild>{item}</BreadcrumbLink>
-                              </BreadcrumbItem>
-                            </Fragment>
-                          ))}
-                        </Fragment>
-                      );
-                    })}
-                  </BreadcrumbList>
-                </Breadcrumb>
-              </div>
+                        return (
+                          <Fragment key={match.id}>
+                            {breadcrumbArray.map((item, index) => (
+                              // oxlint-disable-next-line react/no-array-index-key -- these are stable.
+                              <Fragment key={`${match.id}-${index}`}>
+                                <BreadcrumbSeparator className='hidden first:hidden lg:block' />
+                                <BreadcrumbItem className='hidden last:block hover:text-foreground lg:block'>
+                                  <BreadcrumbLink asChild>{item}</BreadcrumbLink>
+                                </BreadcrumbItem>
+                              </Fragment>
+                            ))}
+                          </Fragment>
+                        );
+                      })}
+                    </BreadcrumbList>
+                  </Breadcrumb>
+                </div>
 
-              <div className='pointer-events-auto flex items-center gap-2 px-2'>
-                {hasActionItems
-                  ? actionItems.map((match) => <Fragment key={match.id}>{match.handle.actions?.(match)}</Fragment>)
-                  : null}
-              </div>
-            </header>
-          ) : null}
-          <section
-            className={cn(
-              'h-dvh',
-              enableOverflowY && 'overflow-y-auto',
-              shouldSectionApplyPositioning && sidebarPositioningClasses,
-              shouldSectionApplyPositioning && enablePageHeader && headerOffsetClasses,
-            )}
-          >
-            <SectionContent
-              error={error}
-              enablePageFooter={enablePageFooter}
-              enableFloatingSidebar={enableFloatingSidebar}
-              shouldApplyPositioning={shouldContentApplyPositioning}
-              enablePageHeader={enablePageHeader}
-            />
-          </section>
-        </SidebarInset>
-        <CookieConsent />
-        <SettingsDialog />
+                <div
+                  className={cn(
+                    'pointer-events-auto flex items-center gap-2 px-2',
+                    desktopTarget && '[app-region:no-drag]',
+                  )}
+                >
+                  {hasActionItems
+                    ? actionItems.map((match) => <Fragment key={match.id}>{match.handle.actions?.(match)}</Fragment>)
+                    : null}
+                </div>
+              </header>
+            ) : null}
+            <section
+              ref={pageScrollRef}
+              className={cn('h-dvh', enableOverflowY && 'overflow-y-auto', enablePageHeader && headerOffsetClasses)}
+              onScroll={enableOverflowY ? handlePageScroll : undefined}
+            >
+              <Compose components={Providers}>
+                <RouteCommandPaletteItems />
+                {/* Its compute section reads the active project; the dialog is a
+                    portal, so only its place in the React tree matters. */}
+                <SettingsDialog />
+                <SectionContent error={error} enablePageFooter={enablePageFooter} />
+              </Compose>
+            </section>
+          </SidebarInset>
+        </ApplicationShell>
       </SidebarProvider>
-    </Compose>
+    </CommandPaletteProvider>
   );
 }

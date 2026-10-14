@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { MessagePortLike, Port } from '@taucad/rpc';
-import { createTransferredFileSystemBridgeProxy, exposeFileSystem, openFileSystemBridge } from '@taucad/fs-bridge';
+import {
+  createTransferredFileSystemBridgeProxy,
+  exposeFileSystem,
+  fileSystemBridgeProtocolVersion,
+  openFileSystemBridge,
+} from '@taucad/fs-bridge';
+import { tauPathPolicy } from '@taucad/filesystem/path-registry';
 
 import { _fromMemoryFsHandle as fromMemoryFS } from '#transport/_internal/from-memory-fs-handle.js';
 import type { RuntimeFileSystemBase } from '#types/runtime-kernel.types.js';
@@ -79,7 +85,7 @@ function createLinkedMemoryPorts(): readonly [Port<unknown>, Port<unknown>] {
 describe('bridge Port<T> round-trip', () => {
   it('readFile crosses a custom in-memory Port pair', async () => {
     type ReadService = { readFile(path: string, encoding: 'utf8'): Promise<string> };
-    const helloPath = '/hello.txt';
+    const helloPath = 'hello.txt';
     const fs = makeFs({ [helloPath]: 'from-port-bridge' });
     const [serverPort, clientPort] = createLinkedMemoryPorts();
 
@@ -98,11 +104,11 @@ describe('bridge Port<T> round-trip', () => {
    * (`filesystem-bridge.ts:457`) is deliberately left in place.
    */
   it('drives createTransferredFileSystemBridgeProxy over a structural port', async () => {
-    const helloPath = '/hello.txt';
+    const helloPath = 'hello.txt';
     const fs = makeFs({ [helloPath]: 'from-structural-port' });
     // Node global `MessageChannel`, standing in for the worker boundary.
     const boundary = new MessageChannel();
-    const exposed = exposeFileSystem(fs, { messageSource: boundary.port2 });
+    const exposed = exposeFileSystem(fs, { policy: tauPathPolicy, messageSource: boundary.port2 });
     const connection = openFileSystemBridge(boundary.port1);
 
     // Hide the real port behind an object carrying only the four members
@@ -127,7 +133,7 @@ describe('bridge Port<T> round-trip', () => {
     const proxy = createTransferredFileSystemBridgeProxy(structuralPort);
     try {
       await proxy.ready;
-      expect(proxy.hello.payload).toMatchObject({ v: 1, state: 'ready' });
+      expect(proxy.hello.payload).toMatchObject({ v: fileSystemBridgeProtocolVersion, state: 'ready' });
       await expect(proxy.readFile(helloPath, 'utf8')).resolves.toBe('from-structural-port');
     } finally {
       proxy.dispose();

@@ -1,10 +1,10 @@
-import type { ExportResult, ExportRoute, RuntimeContentInput } from '@taucad/runtime';
+import type { ExportResult, ExportRoute, RuntimeContentInput, RuntimeDocument } from '@taucad/runtime';
 import type { FileExtension } from '@taucad/types';
-import { formatConfigurations } from '@taucad/types/constants';
-import type { AppRuntimeClient, AppRuntimeExportFormat } from '#types/runtime-client.alias.js';
+import { fileExtensions, formatConfigurations } from '@taucad/types/constants';
+import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
 
 export type FormatEntry = {
-  format: AppRuntimeExportFormat;
+  format: FileExtension;
   fidelity: ExportRoute['fidelity'];
   direct: boolean;
 };
@@ -13,7 +13,7 @@ export type AppRuntimeExportRoute = NonNullable<ReturnType<AppRuntimeClient['bes
 
 /**
  * Narrow a dynamic file extension and runtime-reported kernel id through the
- * typed capabilities manifest before calling the strongly typed client API.
+ * capabilities manifest before exporting from its committed document.
  */
 export function bestRouteForActiveKernel(
   client: AppRuntimeClient,
@@ -28,26 +28,24 @@ export function bestRouteForActiveKernel(
 
 /**
  * Export options produced by runtime JSON Schema forms are runtime-validated
- * against the selected route. This is the single app boundary that converts
- * that dynamic record back into the client's statically projected API.
+ * against the selected route by the document. This is the app boundary for
+ * dynamic form values whose schema is discovered at runtime.
  */
 export type RuntimeValidatedExportInput = {
+  readonly signal?: AbortSignal;
   readonly content?: RuntimeContentInput;
-  readonly exportOptions?: Record<string, unknown>;
+  readonly options?: Record<string, unknown>;
 };
 
-export async function exportWithRuntimeValidatedInput(
-  client: AppRuntimeClient,
+export async function exportDocumentWithValidatedInput(
+  document: RuntimeDocument,
   route: AppRuntimeExportRoute,
   input: RuntimeValidatedExportInput = {},
 ): Promise<ExportResult> {
-  const dynamicClient = client as unknown as {
-    export(format: AppRuntimeExportFormat, options?: RuntimeValidatedExportInput): Promise<ExportResult>;
-  };
-  return input.content !== undefined || input.exportOptions !== undefined
-    ? dynamicClient.export(route.targetFormat, input)
-    : dynamicClient.export(route.targetFormat);
+  return document.export(route.targetFormat, input);
 }
+
+const isCatalogFormat = (value: string): value is FileExtension => fileExtensions.some((format) => format === value);
 
 /**
  * Derive the list of available export formats for a given kernel from the
@@ -66,9 +64,11 @@ export function deriveAvailableFormats(
     return [];
   }
 
-  const targetFormats = new Set<AppRuntimeExportFormat>();
+  const targetFormats = new Set<FileExtension>();
   for (const route of manifest.routes) {
-    targetFormats.add(route.targetFormat);
+    if (isCatalogFormat(route.targetFormat)) {
+      targetFormats.add(route.targetFormat);
+    }
   }
 
   const formats: FormatEntry[] = [];
@@ -78,7 +78,7 @@ export function deriveAvailableFormats(
       continue;
     }
     formats.push({
-      format: route.targetFormat,
+      format,
       fidelity: route.fidelity,
       direct: route.transcoderId === undefined,
     });

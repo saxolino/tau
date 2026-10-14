@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router';
 import type { ProjectManifest } from '@taucad/types';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { getEnvironment } from '#environment.config.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import { projectUrl } from '#utils/project-url.utils.js';
@@ -88,8 +88,8 @@ const GeoSpecRunnerDebugRoute = (): React.JSX.Element => {
           files: seedFiles,
           editorState: {
             panelState: {
-              // The GeoSpec worker client is owned by the chat RPC hook, so
-              // the Chat lane must mount for the probe to exist.
+              // The probe globals mount with the focused chat's session gate,
+              // so the Chat lane must be open for them to exist.
               desktopLayout: { chatOpen: true, workbenchOpen: true, workbenchWidth: 460 },
             },
           },

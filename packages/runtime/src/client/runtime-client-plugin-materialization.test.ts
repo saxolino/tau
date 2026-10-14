@@ -11,15 +11,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { createRuntimeClient, RuntimeConnectionError } from '#client/runtime-client.js';
+import { createRuntimeClient } from '#client/runtime-client.js';
 import type { RuntimeClientOptionsWithTransport } from '#client/runtime-client.js';
 import { fromMemoryFs } from '#filesystem/runtime-filesystem.js';
 import { inProcessTransport } from '#transport/in-process-transport.js';
+import type { MachineClient } from '#machines/machine-client.js';
+import type { RuntimeTransportFacet } from '#transport/runtime-transport.types.js';
 import { defineRuntime } from '#worker/runtime-definition.js';
 
 describe('RuntimeClient TransportPlugin materialization', () => {
   it('materializes distinct transport handles across sequential clients that share one plugin reference', async () => {
-    const mainPath = '/main.ts';
+    const mainPath = 'main.ts';
     const fs = fromMemoryFs({ [mainPath]: `export default () => true;\n` });
     const runtime = defineRuntime({});
     const plugin = inProcessTransport({ runtime, fileSystem: fs });
@@ -40,6 +42,85 @@ describe('RuntimeClient TransportPlugin materialization', () => {
 
     await clientSecond.connect();
     clientSecond.terminate();
+  });
+
+  it('projects the optional machines facet without opening the CAD runtime', async () => {
+    const base = inProcessTransport({ runtime: defineRuntime({}), fileSystem: fromMemoryFs() });
+    const listProviders = vi.fn(async () => []);
+    const machines: RuntimeTransportFacet<MachineClient> = {
+      available: true,
+      listProviders,
+      async *discover() {
+        yield* [];
+      },
+      async beginBinding() {
+        return { status: 'operator-action-required', ceremonyId: 'fixture' };
+      },
+      async removeBinding() {
+        throw new Error('Unused fixture operation');
+      },
+      async preparePrint() {
+        throw new Error('Unused fixture operation');
+      },
+      async uploadPrint() {
+        throw new Error('Unused fixture operation');
+      },
+      async requestPrint() {
+        throw new Error('Unused fixture operation');
+      },
+      async listPrintRequests() {
+        throw new Error('Unused fixture operation');
+      },
+      async *watchPrintRequests() {
+        yield* [];
+      },
+      async resolvePrintRequest() {
+        throw new Error('Unused fixture operation');
+      },
+      async withdrawPrintRequest() {
+        throw new Error('Unused fixture operation');
+      },
+      async startPrint() {
+        throw new Error('Unused fixture operation');
+      },
+      async reconcileOperation() {
+        throw new Error('Unused fixture operation');
+      },
+      async controlRun() {
+        throw new Error('Unused fixture operation');
+      },
+      async captureStill() {
+        throw new Error('Unused fixture operation');
+      },
+      async list() {
+        throw new Error('Unused fixture operation');
+      },
+      async get() {
+        throw new Error('Unused fixture operation');
+      },
+      async *watch() {
+        yield* [];
+      },
+    };
+    const client = createRuntimeClient({
+      transport: {
+        ...base,
+        materialize() {
+          return {
+            ...base.materialize(),
+            machines,
+          };
+        },
+      },
+    });
+
+    expect(client.machines.available).toBe(true);
+    if (client.machines.available) {
+      await expect(client.machines.listProviders({})).resolves.toEqual([]);
+    }
+    expect(listProviders).toHaveBeenCalledOnce();
+    expect(client.jobs).toEqual({ available: false, reason: 'unsupported' });
+    client.terminate();
   });
 
   it('requires transport even when a runtime is supplied through an invalid cast', () => {
@@ -84,7 +165,7 @@ describe('RuntimeClient TransportPlugin materialization', () => {
     client.terminate();
   });
 
-  it('rejects invalid runtime config during connect with a runtime-config cause', async () => {
+  it('rejects invalid runtime config during connect with its runtime error code', async () => {
     const createRuntime = vi.fn(() => ({}));
     const runtime = defineRuntime({
       configSchema: z.object({ endpoint: z.url() }),
@@ -96,17 +177,16 @@ describe('RuntimeClient TransportPlugin materialization', () => {
     });
 
     const error = await client.connect().catch((error: unknown) => error);
-    expect(error).toBeInstanceOf(RuntimeConnectionError);
-    if (!(error instanceof RuntimeConnectionError)) {
-      throw new Error('Expected RuntimeConnectionError');
+    expect(error).toMatchObject({ code: 'RUNTIME_CONFIG_INVALID' });
+    if (!(error instanceof Error)) {
+      throw new Error('Expected a runtime configuration error');
     }
-    expect(error.causeKind).toBe('runtime-config');
     expect(error.message).toContain('endpoint');
     expect(createRuntime).not.toHaveBeenCalled();
     client.terminate();
   });
 
-  it('classifies rejected client config providers as runtime-config failures', async () => {
+  it('preserves rejected client config provider errors', async () => {
     const runtime = defineRuntime({
       configSchema: z.object({ endpoint: z.url() }),
       createRuntime: vi.fn(() => ({})),
@@ -119,11 +199,9 @@ describe('RuntimeClient TransportPlugin materialization', () => {
     });
 
     const error = await client.connect().catch((error: unknown) => error);
-    expect(error).toBeInstanceOf(RuntimeConnectionError);
-    if (!(error instanceof RuntimeConnectionError)) {
-      throw new Error('Expected RuntimeConnectionError');
+    if (!(error instanceof Error)) {
+      throw new Error('Expected the config provider rejection');
     }
-    expect(error.causeKind).toBe('runtime-config');
     expect(error.message).toBe('config loader unavailable');
     client.terminate();
   });

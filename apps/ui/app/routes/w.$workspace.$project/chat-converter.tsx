@@ -1,16 +1,23 @@
-import { XIcon, Download, Info, Check, ChevronDown, ChevronRight, Settings2 } from 'lucide-react';
+import { z } from 'zod';
+import { fileExtensions } from '@taucad/types/constants';
+import { runtimeContentSchema } from '@taucad/runtime';
+import { fileContentBytes } from '@taucad/fs-client/file-content-service';
+import { ObservationService } from '@taucad/fs-client/observation-service';
+import { useObservation } from '@taucad/fs-client/react/use-observation';
+import { XIcon, Download, Info, Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { useCallback, memo, useState, useMemo, useEffect, useRef } from 'react';
 import type { ReactElement } from 'react';
 import { useSelector } from '@xstate/react';
-import type { ActorRefFrom } from 'xstate';
 import type { RuntimeContentInput } from '@taucad/runtime';
 import type { JSONSchema7 } from '@taucad/json-schema';
+import { getActiveGroupValues } from '@taucad/types';
 import type { ExportFile, FileExtension } from '@taucad/types';
+import { randomUuid } from '@taucad/utils/id';
+import { compileParameterManifest, projectJsonSchemaToParameterDeclaration } from '@taucad/parameters';
+import type { ParameterManifest } from '@taucad/parameters';
 import Form from '@rjsf/core';
-import validator from '@rjsf/validator-ajv8';
 import type { IChangeEvent } from '@rjsf/core';
-import deepmerge from 'deepmerge';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import {
   FloatingPanel,
   FloatingPanelClose,
@@ -20,37 +27,49 @@ import {
   FloatingPanelContentHeaderActions,
   FloatingPanelContentTitle,
 } from '#components/ui/floating-panel.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import { useProject } from '#hooks/use-project.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { useMainGraphics, useProject } from '#hooks/use-project.js';
+import type { LengthSymbol } from '@taucad/viewer/constants/length-units';
 import { toast } from '#components/ui/sonner.js';
-import { EmptyItems } from '#components/ui/empty-items.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { Button } from '#components/ui/button.js';
-import { Checkbox } from '#components/ui/checkbox.js';
-import { Label } from '#components/ui/label.js';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '#components/ui/collapsible.js';
-import { cn } from '#utils/ui.utils.js';
-import { toTitleCase } from '#utils/string.utils.js';
+import { Button } from '@taucad/ui/components/button';
+import { Checkbox } from '@taucad/ui/components/checkbox';
+import { Label } from '@taucad/ui/components/label';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
+import { cn } from '@taucad/ui/utils/cn';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '#components/ui/tooltip.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
-import { sortGeometryUnitEntries } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
+import { listGeometryEntryPaths } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
+import { awaitFreshRender } from '#machines/await-fresh-render.js';
+import { selectCadFailureIssues } from '#machines/cad.machine.js';
 import type { FormatEntry } from '#utils/export-formats.utils.js';
 import {
   bestRouteForActiveKernel,
   deriveAvailableFormats,
-  exportWithRuntimeValidatedInput,
+  exportDocumentWithValidatedInput,
   getFormatInfo,
 } from '#utils/export-formats.utils.js';
 import { groupExportFormatsByFidelity } from '#components/files/export-format-groups.js';
-import type { cadMachine } from '#machines/cad.machine.js';
-import { widgets, templates as rjsfTemplates } from '#components/geometry/parameters/rjsf-theme.js';
-import { rjsfIdPrefix, rjsfIdSeparator } from '#components/geometry/parameters/rjsf-utils.js';
-import { deleteValueAtPath, extractModifiedProperties } from '#utils/object.utils.js';
+import { widgets, templates as rjsfTemplates } from '@taucad/viewer/parameters/rjsf-theme';
+import type { ParameterCommit, RJSFContext } from '@taucad/viewer/parameters/rjsf-context';
+import { rjsfFields } from '@taucad/viewer/parameters/rjsf-field-path';
+import {
+  getDiscriminatedUnionInfo,
+  mergeFormDefaults,
+  normalizeRjsfFormData,
+  resetRjsfField,
+  rjsfDefaultFormStateBehavior,
+  rjsfIdPrefix,
+  rjsfIdSeparator,
+} from '@taucad/viewer/parameters/rjsf-utils';
 import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
 import { createExportArtifactZip, downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { downloadBlob } from '@taucad/utils/file';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { isJsonSchemaValid, rjsfValidator } from '@taucad/viewer/parameters/rjsf-validator';
+import type { ParameterSetService } from '#services/parameter-set-service.js';
 
 const toggleConverterKeyCombination = projectWorkspaceKeyCombinations.export;
 
@@ -60,7 +79,6 @@ const toggleConverterKeyCombination = projectWorkspaceKeyCombinations.export;
 
 type GeometryUnitEntry = {
   entryPath: string;
-  actor: ActorRefFrom<typeof cadMachine>;
 };
 
 type ExportPreferences = {
@@ -92,7 +110,109 @@ type ResolvedSchema = {
   defaults: Record<string, unknown>;
 };
 
+type ConfigurationParameterSession = Readonly<{
+  entryPath: string;
+  manifest: ParameterManifest;
+  commit: ParameterCommit;
+}>;
+
+type ConfigurationParameterOwner = Readonly<{
+  parameterService: ParameterSetService;
+}>;
+
+const safePathSegment = (value: string): string => value.replaceAll(/[^a-z0-9._-]/giu, '_');
+
+export async function compileExportConfigurationManifest(
+  provider: string,
+  configuration: string,
+  resolved: ResolvedSchema,
+): Promise<Readonly<{ entryPath: string; manifest: ParameterManifest }>> {
+  const bytes = new TextEncoder().encode(JSON.stringify(resolved));
+  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+  const scopeBytes = new TextEncoder().encode(`${provider}\u0000${configuration}`);
+  const scopeHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', scopeBytes))]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+  // SAFETY: Web Crypto produced the 32-byte lowercase SHA-256 payload above.
+  const revision = `sha256:${hash}` as ParameterManifest['identity']['dependency'];
+  const manifest = await compileParameterManifest({
+    declaration: projectJsonSchemaToParameterDeclaration({
+      schema: resolved.schema,
+      defaults: resolved.defaults,
+      schemaId: `urn:taucad:configuration:${encodeURIComponent(provider)}:${encodeURIComponent(configuration)}`,
+      schemaName: 'ProviderConfiguration',
+    }),
+    scope: { kind: 'provider', provider, configuration },
+    source: {
+      id: `${provider}:${configuration}`,
+      version: revision,
+      revision,
+      capability: 'json-structure',
+    },
+    dependency: revision,
+    middleware: revision,
+  });
+  return {
+    entryPath: `provider-configuration/${safePathSegment(provider)}-${scopeHash.slice(0, 8)}/${safePathSegment(configuration)}-${scopeHash.slice(8, 16)}`,
+    manifest,
+  };
+}
+
+async function resolveExportConfigurationValues(
+  input: Readonly<{
+    parameterService: ParameterSetService;
+    provider: string;
+    configuration: string;
+    resolved: ResolvedSchema;
+    legacyValues: Record<string, unknown>;
+    signal?: AbortSignal;
+  }>,
+): Promise<
+  Readonly<{
+    entryPath: string;
+    manifest: ParameterManifest;
+    target: ReturnType<ParameterSetService['target']>;
+    values: Record<string, unknown>;
+  }>
+> {
+  const { parameterService, provider, configuration, resolved, legacyValues, signal } = input;
+  signal?.throwIfAborted();
+  const compiled = await compileExportConfigurationManifest(provider, configuration, resolved);
+  const admittedLegacyValues = sanitizeFormDelta(resolved.schema, legacyValues);
+  signal?.throwIfAborted();
+  const target = parameterService.target(compiled.entryPath, 'provider-configuration');
+  const existing = await parameterService.readSettled(compiled.entryPath);
+  signal?.throwIfAborted();
+  let snapshot = await parameterService.resolveTarget(target, compiled.manifest);
+  signal?.throwIfAborted();
+  if (existing === undefined && Object.keys(admittedLegacyValues).length > 0) {
+    try {
+      await parameterService.replaceTargetValues(target, compiled.manifest, {
+        values: admittedLegacyValues,
+        expected: snapshot.identity,
+      });
+      snapshot =
+        parameterService.snapshot(compiled.entryPath) ??
+        (await parameterService.resolveTarget(target, compiled.manifest));
+    } catch (error) {
+      if (typeof error !== 'object' || error === null || Reflect.get(error, 'code') !== 'STALE_MANIFEST') {
+        throw error;
+      }
+      snapshot = await parameterService.resolveTarget(target, compiled.manifest);
+    }
+  }
+  const entry = parameterService.snapshot(compiled.entryPath)?.entry ?? snapshot.entry;
+  return {
+    ...compiled,
+    target,
+    values: { ...getActiveGroupValues(entry) },
+  };
+}
+
 type ResolvedFormatSettings = {
+  provider: string;
   content?: ResolvedSchema;
   exportOptions?: ResolvedSchema;
 };
@@ -103,24 +223,6 @@ function isRecordObject(value: unknown): value is Record<string, unknown> {
 
 function schemaObject(schema: JSONSchema7 | boolean | undefined): JSONSchema7 | undefined {
   return schema && typeof schema === 'object' ? schema : undefined;
-}
-
-function modeForSchema(schema: JSONSchema7): string | undefined {
-  const mode = schemaObject(schema.properties?.['mode']);
-  if (!mode) {
-    return undefined;
-  }
-  if (typeof mode.const === 'string') {
-    return mode.const;
-  }
-  return mode.enum?.length === 1 && typeof mode.enum[0] === 'string' ? mode.enum[0] : undefined;
-}
-
-function unionBranches(schema: JSONSchema7): JSONSchema7[] {
-  return [...(schema.anyOf ?? schema.oneOf ?? [])].flatMap((branch) => {
-    const object = schemaObject(branch);
-    return object ? [object] : [];
-  });
 }
 
 function schemaDefaults(schema: JSONSchema7): Record<string, unknown> {
@@ -135,39 +237,41 @@ function schemaDefaults(schema: JSONSchema7): Record<string, unknown> {
   );
 }
 
-function resolveActiveSchema(
+export function resolveActiveSchema(
   schema: JSONSchema7,
   input: Record<string, unknown>,
   defaults: Record<string, unknown> = {},
 ): { schema: JSONSchema7; defaults: Record<string, unknown> } {
-  const branches = unionBranches(schema);
-  if (branches.length === 0) {
+  const union = getDiscriminatedUnionInfo(schema);
+  if (!union) {
     return { schema, defaults };
   }
 
-  const modes = branches.map((branch) => modeForSchema(branch)).filter((mode): mode is string => mode !== undefined);
-  const requestedMode =
-    typeof input['mode'] === 'string'
-      ? input['mode']
-      : typeof defaults['mode'] === 'string'
-        ? defaults['mode']
-        : modes[0];
-  const branch = branches.find((candidate) => modeForSchema(candidate) === requestedMode) ?? branches[0]!;
+  const requestedValue = Object.hasOwn(input, union.discriminator)
+    ? input[union.discriminator]
+    : Object.hasOwn(defaults, union.discriminator)
+      ? defaults[union.discriminator]
+      : union.values[0];
+  const branchIndex = union.values.findIndex((value) => Object.is(value, requestedValue));
+  if (branchIndex === -1) {
+    return { schema, defaults };
+  }
+  const selectedValue = union.values[branchIndex]!;
+  const branch = union.branches[branchIndex]!;
   const { anyOf: _anyOf, oneOf: _oneOf, properties: rootProperties, required: rootRequired, ...root } = schema;
-  const modeSchema = schemaObject(branch.properties?.['mode']);
+  const discriminatorSchema = schemaObject(branch.properties?.[union.discriminator]);
   const properties = {
     ...rootProperties,
     ...branch.properties,
-    mode: {
-      ...modeSchema,
-      title: 'Mode',
-      enum: modes,
-      default: requestedMode,
+    [union.discriminator]: {
+      ...discriminatorSchema,
+      enum: [...union.values],
+      default: selectedValue,
     },
   } satisfies JSONSchema7['properties'];
-  const required = [...new Set([...(rootRequired ?? []), ...(branch.required ?? []), 'mode'])];
+  const required = [...new Set([...(rootRequired ?? []), ...(branch.required ?? []), union.discriminator])];
   const activeSchema: JSONSchema7 = { ...root, ...branch, properties, required };
-  const activeDefaults = { ...defaults, ...schemaDefaults(branch), mode: requestedMode };
+  const activeDefaults = { ...defaults, ...schemaDefaults(branch), [union.discriminator]: selectedValue };
   return { schema: activeSchema, defaults: sanitizeFormDelta(activeSchema, activeDefaults) };
 }
 
@@ -199,7 +303,14 @@ function resolveFormatSettings(
   if (!exportOptions && !content) {
     return undefined;
   }
-  return { content, exportOptions };
+  return {
+    provider:
+      route.transcoderId === undefined
+        ? String(route.kernelId)
+        : `${String(route.kernelId)}+${String(route.transcoderId)}`,
+    content,
+    exportOptions,
+  };
 }
 
 function sanitizeFormDelta(schema: JSONSchema7, input: Record<string, unknown>): Record<string, unknown> {
@@ -217,8 +328,17 @@ function sanitizeFormDelta(schema: JSONSchema7, input: Record<string, unknown>):
       if (!propertySchema) {
         return false;
       }
-      return validator.isValid(propertySchema, value, activeSchema);
+      return isJsonSchemaValid(propertySchema, value, activeSchema);
     }),
+  );
+}
+
+function extractModifiedTopLevel(
+  formData: Record<string, unknown>,
+  defaults: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(formData).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(defaults[key])),
   );
 }
 
@@ -226,6 +346,38 @@ function runtimeContentFromRecord(input: Record<string, unknown>): RuntimeConten
   return {
     ...(typeof input['includeEdges'] === 'boolean' ? { includeEdges: input['includeEdges'] } : {}),
     ...(typeof input['includeTopology'] === 'boolean' ? { includeTopology: input['includeTopology'] } : {}),
+  };
+}
+
+function fillMissingBatchViewIds(schema: JSONSchema7, input: Record<string, unknown>): Record<string, unknown> {
+  const viewsSchema = schemaObject(schema.properties?.['views']);
+  const itemsSchema = viewsSchema?.items;
+  const itemSchema = Array.isArray(itemsSchema) ? undefined : schemaObject(itemsSchema);
+  const { mode, views } = input;
+  if (mode !== 'batch' || !itemSchema?.required?.includes('id') || !Array.isArray(views)) {
+    return input;
+  }
+  const batchViews = views as unknown[];
+
+  const usedIds = new Set(
+    batchViews.flatMap((view) =>
+      isRecordObject(view) && typeof view['id'] === 'string' && view['id'] ? [view['id']] : [],
+    ),
+  );
+  let nextId = 1;
+  return {
+    ...input,
+    views: batchViews.map((view) => {
+      if (!isRecordObject(view) || (typeof view['id'] === 'string' && view['id'])) {
+        return view;
+      }
+      while (usedIds.has(`view-${nextId}`)) {
+        nextId++;
+      }
+      const id = `view-${nextId++}`;
+      usedIds.add(id);
+      return { ...view, id };
+    }),
   };
 }
 
@@ -257,9 +409,19 @@ function GeometryUnitSelector({
   readonly mainEntryPath: string;
   readonly onSelect: (entryPath: string) => void;
 }) {
-  // Hidden when a single geometry unit — no need for a selector
   if (entries.length <= 1) {
-    return null;
+    return (
+      <div className='space-y-1.5'>
+        <p className='text-xs font-medium text-muted-foreground'>File to export</p>
+        <div className='flex h-8 min-w-0 items-center gap-1.5 rounded-lg border bg-background px-2 text-sm'>
+          {selectedEntryPath ? <FileExtensionIcon filename={selectedEntryPath} className='size-3.5 shrink-0' /> : null}
+          <span className='truncate'>{selectedEntryPath || 'No source file'}</span>
+          {selectedEntryPath === mainEntryPath && selectedEntryPath ? (
+            <span className='ml-auto shrink-0 text-[10px] text-muted-foreground'>Main</span>
+          ) : null}
+        </div>
+      </div>
+    );
   }
 
   const groupedItems = getCuGroupedItems(entries);
@@ -282,8 +444,8 @@ function GeometryUnitSelector({
   );
 
   return (
-    <div>
-      <p className='mb-1.5 text-sm font-medium text-muted-foreground'>Select file to export</p>
+    <div className='space-y-1.5'>
+      <p className='text-xs font-medium text-muted-foreground'>File to export</p>
       <ComboBoxResponsive<GeometryUnitEntry>
         key={mainEntryPath}
         groupedItems={groupedItems}
@@ -291,7 +453,7 @@ function GeometryUnitSelector({
         getValue={getCuValue}
         value={defaultValue}
         placeholder='Select file'
-        searchPlaceHolder='Filter files...'
+        searchPlaceHolder='Filter files…'
         title='Select geometry unit'
         description='Choose which file to export geometry from.'
         isSearchEnabled={entries.length > 5}
@@ -327,9 +489,10 @@ function FormatButton({
     <Button
       variant='outline'
       size='xs'
+      aria-pressed={isSelected}
       className={cn(
         'justify-start uppercase',
-        isSelected ? 'border-primary bg-primary/10 text-primary hover:bg-primary/15' : 'hover:border-primary/50',
+        isSelected && 'border-border bg-accent text-accent-foreground hover:bg-accent',
       )}
       onClick={() => {
         onToggle(format);
@@ -373,7 +536,6 @@ function FormatGrid({
   return (
     <TooltipProvider>
       <div className='@container flex flex-col gap-3'>
-        <p className='text-sm font-medium text-muted-foreground'>Select format to export</p>
         {groups.map(({ name, items }) => (
           <div key={name}>
             <p className='mb-1.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase'>{name}</p>
@@ -420,90 +582,231 @@ async function downloadExports(
   }
 }
 
-// Shared static fields for export form context (no search, always expanded)
-const exportFormContextBase = {
+// Shared static fields for export form context (no search; nested groups start collapsed)
+const exportFormContextBase: Pick<RJSFContext, 'searchTerm' | 'allExpanded' | 'shouldShowField'> = {
   searchTerm: '',
-  allExpanded: true,
+  allExpanded: false,
   shouldShowField: () => true,
-  units: { length: { symbol: 'mm' satisfies string, factor: 1 } },
-  displayDescriptors: {
-    width: { descriptor: 'count', unit: 'px' },
-    height: { descriptor: 'count', unit: 'px' },
-    phi: { descriptor: 'angle', unit: 'deg' },
-    theta: { descriptor: 'angle', unit: 'deg' },
-    quality: { descriptor: 'count', unit: '' },
-    margin: { descriptor: 'count', unit: '' },
-  } as const,
 };
 
-function ExportSchemaForm({
+export function ExportSchemaForm({
   idPrefix,
+  provider = 'runtime',
+  configuration = idPrefix,
+  parameterOwner,
   label,
+  shouldShowLabel,
+  className,
   resolved,
+  lengthDisplaySymbol = 'mm',
   value,
   onChange,
 }: {
   readonly idPrefix: string;
+  readonly provider?: string;
+  readonly configuration?: string;
+  readonly parameterOwner: ConfigurationParameterOwner;
   readonly label: string;
+  readonly shouldShowLabel: boolean;
+  readonly className?: string;
   readonly resolved: ResolvedSchema;
+  /** The project's length display unit; model-length options convert to it. */
+  readonly lengthDisplaySymbol?: LengthSymbol;
   readonly value: Record<string, unknown>;
   readonly onChange: (value: Record<string, unknown>) => void;
-}) {
+}): ReactElement {
+  'use no memo';
+
+  const { parameterService } = parameterOwner;
+  const legacyValueRef = useRef(value);
+  useEffect(() => {
+    legacyValueRef.current = value;
+  }, [value]);
+  const [parameterSession, setParameterSession] = useState<ConfigurationParameterSession>();
+  const parameterActor = parameterSession ? parameterService.actor(parameterSession.entryPath) : undefined;
+  const parameterEntry = useSelector(parameterActor, (state) => state?.context.current?.entry);
+  const parameterSnapshot = parameterSession ? parameterService.snapshot(parameterSession.entryPath) : undefined;
+  const authoritativeValue = getActiveGroupValues(parameterEntry);
+  const effectiveValue = parameterSession && parameterSnapshot ? authoritativeValue : value;
   const formData = useMemo(
-    () => deepmerge(resolved.defaults, value) as Record<string, unknown>,
-    [resolved.defaults, value],
+    () => mergeFormDefaults(resolved.schema, resolved.defaults, effectiveValue),
+    [effectiveValue, resolved.defaults, resolved.schema],
   );
   const activeResolved = useMemo(
     () => resolveActiveSchema(resolved.schema, formData, resolved.defaults),
     [resolved.defaults, resolved.schema, formData],
   );
   const activeFormData = useMemo(
-    () => sanitizeFormDelta(activeResolved.schema, deepmerge(activeResolved.defaults, value)),
-    [activeResolved, value],
+    () =>
+      sanitizeFormDelta(
+        activeResolved.schema,
+        mergeFormDefaults(activeResolved.schema, activeResolved.defaults, effectiveValue),
+      ),
+    [activeResolved, effectiveValue],
+  );
+  const currentFormDataRef = useRef(activeFormData);
+  useEffect(() => {
+    currentFormDataRef.current = activeFormData;
+  }, [activeFormData]);
+
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- Changing configuration invalidates the prior authority target immediately.
+    setParameterSession(undefined);
+    const controller = new AbortController();
+    const prepare = async (): Promise<void> => {
+      try {
+        const compiled = await resolveExportConfigurationValues({
+          parameterService,
+          provider,
+          configuration,
+          resolved,
+          legacyValues: legacyValueRef.current,
+          signal: controller.signal,
+        });
+        setParameterSession({
+          ...compiled,
+          commit: {
+            target: compiled.target,
+            group: parameterService.snapshot(compiled.entryPath)?.entry.activeGroup ?? 'default',
+            draft: (pointer) =>
+              parameterService.draft({
+                target: compiled.target,
+                group: parameterService.snapshot(compiled.entryPath)?.entry.activeGroup ?? 'default',
+                pointer,
+              }),
+            setDraft: (pointer, draft) => {
+              parameterService.setDraft(
+                {
+                  target: compiled.target,
+                  group: parameterService.snapshot(compiled.entryPath)?.entry.activeGroup ?? 'default',
+                  pointer,
+                },
+                draft,
+              );
+            },
+            subscribeDrafts: parameterService.subscribeDrafts,
+            commit: async (field) =>
+              parameterService.commitValue(compiled.target, compiled.manifest, {
+                group: parameterService.snapshot(compiled.entryPath)?.entry.activeGroup ?? 'default',
+                ...field,
+              }),
+            setValue: async (field) =>
+              parameterService.submitValue(compiled.target, compiled.manifest, {
+                group: parameterService.snapshot(compiled.entryPath)?.entry.activeGroup ?? 'default',
+                ...field,
+              }),
+          },
+        });
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          toast.error(`${label} could not be prepared: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    };
+    // async-iife: bootstrap — the project service owns settlement beyond this form's view lifetime.
+    void prepare();
+    return () => {
+      controller.abort();
+    };
+  }, [configuration, label, parameterService, provider, resolved]);
+
+  useEffect(() => {
+    if (parameterSession && parameterSnapshot && JSON.stringify(authoritativeValue) !== JSON.stringify(value)) {
+      onChange({ ...authoritativeValue });
+    }
+  }, [authoritativeValue, onChange, parameterSession, parameterSnapshot, value]);
+
+  const persistValues = useCallback(
+    (next: Record<string, unknown>) => {
+      if (!parameterSession || !parameterSnapshot) {
+        return;
+      }
+      const persist = async (): Promise<void> => {
+        try {
+          await parameterService.replaceTargetValues(parameterSession.commit.target, parameterSession.manifest, {
+            values: next,
+          });
+          onChange({ ...next });
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : 'Failed to update export settings.');
+        }
+      };
+      // async-iife: bootstrap — the project service retains and drains this accepted operation.
+      void persist();
+    },
+    [onChange, parameterService, parameterSession, parameterSnapshot],
   );
 
   const handleChange = useCallback(
     (event: IChangeEvent<Record<string, unknown>>) => {
-      const newData = event.formData ?? {};
-      const nextResolved = resolveActiveSchema(resolved.schema, newData, resolved.defaults);
+      const normalized = normalizeRjsfFormData(resolved.schema, event.formData ?? {}) as Record<string, unknown>;
+      const nextResolved = resolveActiveSchema(resolved.schema, normalized, resolved.defaults);
+      const complete = mergeFormDefaults(nextResolved.schema, nextResolved.defaults, normalized);
+      const newData = fillMissingBatchViewIds(nextResolved.schema, complete);
       const sanitized = sanitizeFormDelta(nextResolved.schema, newData);
-      const delta = extractModifiedProperties(sanitized, nextResolved.defaults);
+      currentFormDataRef.current = sanitized;
+      const delta = Object.fromEntries(
+        Object.entries(extractModifiedTopLevel(sanitized, nextResolved.defaults)).filter(
+          ([key, entry]) => !Array.isArray(entry) || entry.length > 0 || Object.hasOwn(nextResolved.defaults, key),
+        ),
+      );
       const { mode } = sanitized;
-      onChange(typeof mode === 'string' && mode !== resolved.defaults['mode'] ? { ...delta, mode } : delta);
+      persistValues(typeof mode === 'string' && mode !== resolved.defaults['mode'] ? { ...delta, mode } : delta);
     },
-    [resolved.defaults, resolved.schema, onChange],
+    [persistValues, resolved.defaults, resolved.schema],
   );
 
-  const resetSingleParameter = useCallback(
-    (fieldPath: string[]) => {
-      onChange(deleteValueAtPath(value, fieldPath));
+  const resetSingleParameter = useCallback<RJSFContext['resetSingleParameter']>(
+    (input) => {
+      const reset = resetRjsfField({ ...input, formData: currentFormDataRef.current });
+      if (reset !== undefined) {
+        currentFormDataRef.current = reset;
+        persistValues(extractModifiedTopLevel(reset, activeResolved.defaults));
+      }
     },
-    [value, onChange],
+    [activeResolved.defaults, persistValues],
   );
 
-  const formContext = useMemo(
-    () => ({
-      ...exportFormContextBase,
-      defaultParameters: activeResolved.defaults,
-      resetSingleParameter,
-    }),
-    [activeResolved.defaults, resetSingleParameter],
-  );
+  if (!parameterSession || !parameterSnapshot) {
+    return (
+      <section aria-label={label} className={className}>
+        {shouldShowLabel ? (
+          <h4 className='px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground'>{label}</h4>
+        ) : null}
+        <p className='px-2.5 py-2 text-xs text-muted-foreground'>Loading checked settings…</p>
+      </section>
+    );
+  }
+
+  const formContext: RJSFContext = {
+    ...exportFormContextBase,
+    units: { length: { displaySymbol: lengthDisplaySymbol } },
+    idPrefix,
+    rootPresentation: 'embedded',
+    defaultParameters: activeResolved.defaults,
+    resetSingleParameter,
+    parameterManifest: parameterSession.manifest,
+    parameterGroup: parameterEntry?.groups[parameterEntry.activeGroup],
+    parameterEdit: {
+      kind: 'authoritative',
+      commit: { ...parameterSession.commit, group: parameterSnapshot.entry.activeGroup },
+    },
+  };
 
   return (
-    <section aria-label={label}>
-      <h4 className='px-2.5 pt-2 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase'>{label}</h4>
+    <section aria-label={label} className={className}>
+      {shouldShowLabel ? <h4 className='px-2.5 pt-2 pb-1 text-xs font-medium text-muted-foreground'>{label}</h4> : null}
       <Form
         schema={activeResolved.schema}
         formData={activeFormData}
-        // @ts-expect-error -- RJSF generic type mismatch with strict TypeScript
-        validator={validator}
+        validator={rjsfValidator}
         widgets={widgets}
-        // @ts-expect-error -- RJSF generic type mismatch with strict TypeScript
+        fields={rjsfFields}
         templates={rjsfTemplates}
         idPrefix={idPrefix}
         idSeparator={rjsfIdSeparator}
         formContext={formContext}
+        experimental_defaultFormStateBehavior={rjsfDefaultFormStateBehavior}
         onChange={handleChange}
         liveValidate
         noHtml5Validate
@@ -513,6 +816,7 @@ function ExportSchemaForm({
 }
 
 function ExportFormatSettings({
+  provider,
   format,
   resolved,
   formatContent,
@@ -520,6 +824,7 @@ function ExportFormatSettings({
   onContentChange,
   onOptionsChange,
 }: {
+  readonly provider: string;
   readonly format: FileExtension;
   readonly resolved: ResolvedFormatSettings;
   readonly formatContent: RuntimeContentInput;
@@ -527,19 +832,25 @@ function ExportFormatSettings({
   readonly onContentChange: (format: FileExtension, content: RuntimeContentInput) => void;
   readonly onOptionsChange: (format: FileExtension, options: Record<string, unknown>) => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const { parameterService } = useProject();
+  const parameterOwner = useMemo(() => ({ parameterService }), [parameterService]);
+  const graphicsActor = useMainGraphics();
+  const lengthDisplaySymbol = useSelector(graphicsActor, (state) => state?.context.displayUnits.length.symbol) ?? 'mm';
+  const hasDualSchemas = Boolean(resolved.content && resolved.exportOptions);
+  const isModified = Object.keys(formatContent).length > 0 || Object.keys(formatOptions).length > 0;
 
   return (
-    <Collapsible open={isOpen} className='border-t border-border/40 first:border-t-0' onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className='group/collapsible flex h-7 w-full items-center justify-between px-2 py-1 transition-colors hover:bg-muted/50'>
-        <h3 className='flex min-w-0 flex-1 items-center gap-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase'>
-          <Settings2 className='size-3' />
-          <span className='truncate'>{toTitleCase(format)} Options</span>
+    <Collapsible defaultOpen className='overflow-hidden rounded-lg border border-border bg-background'>
+      <CollapsibleTrigger className='group/collapsible flex h-8 w-full items-center justify-between rounded-lg px-2 text-left transition-colors duration-150 hover:bg-accent data-[state=open]:rounded-b-none data-[state=open]:bg-accent motion-reduce:transition-none'>
+        <h3 className='flex min-w-0 flex-1 items-center gap-1.5 text-[13px] font-medium text-foreground'>
+          <FileExtensionIcon filename={`file.${format}`} className='size-3.5 shrink-0' />
+          <span className='truncate'>{format.toUpperCase()} options</span>
         </h3>
-        <ChevronRight className='size-3 text-muted-foreground transition-transform duration-200 ease-in-out group-data-[state=open]/collapsible:rotate-90' />
+        <span className='mr-2 shrink-0 text-xs text-muted-foreground'>{isModified ? 'Modified' : 'Defaults'}</span>
+        <ChevronRight className='size-3 text-muted-foreground transition-transform duration-150 ease-out group-data-[state=open]/collapsible:rotate-90 motion-reduce:transition-none' />
       </CollapsibleTrigger>
       <CollapsibleContent
-        className='px-0 py-0'
+        className='overflow-hidden border-t border-border px-0 py-0 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down motion-reduce:animate-none'
         style={
           {
             '--param-field-h': '1.5rem',
@@ -552,8 +863,13 @@ function ExportFormatSettings({
         {resolved.content ? (
           <ExportSchemaForm
             idPrefix={`${rjsfIdPrefix}-${format}-content`}
+            provider={provider}
+            configuration={`export/${format}/content`}
+            parameterOwner={parameterOwner}
             label='Content'
+            shouldShowLabel={hasDualSchemas}
             resolved={resolved.content}
+            lengthDisplaySymbol={lengthDisplaySymbol}
             value={{ ...formatContent }}
             onChange={(content) => {
               onContentChange(format, runtimeContentFromRecord(content));
@@ -563,8 +879,14 @@ function ExportFormatSettings({
         {resolved.exportOptions ? (
           <ExportSchemaForm
             idPrefix={`${rjsfIdPrefix}-${format}-options`}
-            label='Format options'
+            provider={provider}
+            configuration={`export/${format}/options`}
+            parameterOwner={parameterOwner}
+            label='Format'
+            shouldShowLabel={hasDualSchemas}
+            className={cn(hasDualSchemas && 'border-t border-border/70')}
             resolved={resolved.exportOptions}
+            lengthDisplaySymbol={lengthDisplaySymbol}
             value={formatOptions}
             onChange={(options) => {
               onOptionsChange(format, options);
@@ -594,11 +916,14 @@ function ExportSettings({
   readonly onOptionsChange: (format: FileExtension, options: Record<string, unknown>) => void;
 }) {
   const formatsWithSchemas = useMemo(() => {
-    const result: Array<{ format: FileExtension; resolved: ResolvedFormatSettings }> = [];
+    const result: Array<{ format: FileExtension; provider: string; resolved: ResolvedFormatSettings }> = [];
+    if (activeKernelId === undefined) {
+      return result;
+    }
     for (const format of selectedFormats) {
       const resolved = resolveFormatSettings(format, client, activeKernelId);
       if (resolved) {
-        result.push({ format, resolved });
+        result.push({ format, provider: resolved.provider, resolved });
       }
     }
     return result;
@@ -609,10 +934,11 @@ function ExportSettings({
   }
 
   return (
-    <div className='rounded-md border border-border/50'>
-      {formatsWithSchemas.map(({ format, resolved }) => (
+    <div className='mt-3 flex flex-col gap-2'>
+      {formatsWithSchemas.map(({ format, provider, resolved }) => (
         <ExportFormatSettings
           key={format}
+          provider={provider}
           format={format}
           resolved={resolved}
           formatContent={formatContent[format] ?? {}}
@@ -627,7 +953,7 @@ function ExportSettings({
 
 function formatButtonLabel(selectedFormats: FileExtension[], isExporting: boolean, hasDestination: boolean): string {
   if (isExporting) {
-    return 'Exporting...';
+    return 'Exporting…';
   }
 
   if (selectedFormats.length === 0) {
@@ -649,110 +975,249 @@ function formatButtonLabel(selectedFormats: FileExtension[], isExporting: boolea
 // Preference persistence
 // =============================================================================
 
-function useExportPreferences(fileManager: ReturnType<typeof useFileManager>) {
-  const [preferences, setPreferences] = useState<ExportPreferences>(defaultPreferences);
-  const loadedRef = useRef(false);
-  const writeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const { contentService } = fileManager;
+const exportPreferencesSchema = z.object({
+  formatContent: z.partialRecord(z.enum(fileExtensions), runtimeContentSchema).optional(),
+  formatOptions: z.partialRecord(z.enum(fileExtensions), z.record(z.string(), z.unknown())).optional(),
+  selectedFormats: z.array(z.enum(fileExtensions)).optional(),
+  shouldDownload: z.boolean().optional(),
+  shouldSaveToProject: z.boolean().optional(),
+  zipMultiple: z.boolean().optional(),
+});
 
+export function useExportPreferences(
+  fileManager: ReturnType<typeof useFileManager>,
+): readonly [ExportPreferences, (next: ExportPreferences) => void, { readonly error?: string; retry(): void }] {
+  const { contentService, writeFiles } = fileManager;
+  const service = useMemo(
+    () =>
+      contentService
+        ? new ObservationService<ExportPreferences>({
+            resource: preferencesPath,
+            read: async (read) => {
+              const result = await read.observe(contentService.observeContent(preferencesPath));
+              return result.kind === 'orphaned'
+                ? defaultPreferences
+                : {
+                    ...defaultPreferences,
+                    ...exportPreferencesSchema.parse(
+                      JSON.parse(new TextDecoder().decode(fileContentBytes({ path: preferencesPath, result }))),
+                    ),
+                  };
+            },
+            equal: (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+          })
+        : undefined,
+    [contentService],
+  );
+  const snapshot = useObservation(service);
+  const activeSource = useRef(service);
   useEffect(() => {
-    if (loadedRef.current || !contentService) {
-      return;
-    }
-    loadedRef.current = true;
-
-    // async-iife: bootstrap — hydrate export preferences from workspace JSON once
-    void (async () => {
-      try {
-        const content = await fileManager.readFile(preferencesPath);
-        if (content.byteLength > 0) {
-          const decoded = new TextDecoder().decode(content);
-          const parsed = JSON.parse(decoded) as Partial<ExportPreferences>;
-          setPreferences((previous) => ({ ...previous, ...parsed }));
-        }
-      } catch {
-        // File doesn't exist yet — use defaults
-      }
-    })();
-  }, [contentService, fileManager]);
-
-  useEffect(() => {
+    activeSource.current = service;
     return () => {
-      if (writeTimerRef.current) {
-        clearTimeout(writeTimerRef.current);
+      if (activeSource.current === service) {
+        activeSource.current = undefined;
       }
     };
-  }, []);
+  }, [service]);
+  const [local, setLocal] = useState<{
+    service: ObservationService<ExportPreferences>;
+    patch: Partial<ExportPreferences>;
+  }>();
+  const patch = local?.service === service ? local?.patch : undefined;
+  const preferences = useMemo(() => ({ ...(snapshot.value ?? defaultPreferences), ...patch }), [snapshot.value, patch]);
+
+  const [write, setWrite] = useState<{
+    local: NonNullable<typeof local>;
+    phase: 'pending' | 'saved' | 'failed';
+    error?: string;
+  }>();
+  const retry = useCallback(() => {
+    if (!service || activeSource.current !== service) {
+      return;
+    }
+    service.refresh();
+    setWrite((current) => (current?.local.service === service && current.phase === 'failed' ? undefined : current));
+  }, [service]);
+  useEffect(() => {
+    if (!service || !local || local.service !== service || snapshot.status !== 'ready') {
+      return undefined;
+    }
+    if (write?.local.service === service) {
+      if (write.phase === 'pending') {
+        return undefined;
+      }
+      if (write.local === local) {
+        if (
+          write.phase === 'saved' &&
+          snapshot.value &&
+          Object.entries(local.patch).every(
+            ([key, value]) =>
+              JSON.stringify(snapshot.value?.[key as keyof ExportPreferences]) === JSON.stringify(value),
+          )
+        ) {
+          queueMicrotask(() => {
+            setLocal((current) => (current === local ? undefined : current));
+          });
+        }
+        return undefined;
+      }
+    }
+    const captured = local;
+    const timer = setTimeout(() => {
+      setWrite({ local: captured, phase: 'pending' });
+      const persist = async (): Promise<void> => {
+        try {
+          await writeFiles({
+            [preferencesPath]: { content: new TextEncoder().encode(JSON.stringify(preferences, null, 2)) },
+          });
+          if (activeSource.current !== service) {
+            return;
+          }
+          setWrite((current) => (current?.local === captured ? { local: captured, phase: 'saved' } : current));
+          service.refresh();
+        } catch (error) {
+          if (activeSource.current !== service) {
+            return;
+          }
+          setWrite((current) =>
+            current?.local === captured
+              ? {
+                  local: captured,
+                  phase: 'failed',
+                  error: error instanceof Error ? error.message : 'Export preferences could not be saved.',
+                }
+              : current,
+          );
+        }
+      };
+      void persist();
+    }, 100);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [local, preferences, service, snapshot.status, snapshot.value, write, writeFiles]);
 
   const persistPreferences = useCallback(
     (next: ExportPreferences) => {
-      setPreferences(next);
-
-      if (writeTimerRef.current) {
-        clearTimeout(writeTimerRef.current);
+      if (!service) {
+        return;
       }
-      writeTimerRef.current = setTimeout(() => {
-        // async-iife: bootstrap — debounced preference persist; timer already tracks lifecycle
-        void (async () => {
-          const content = new TextEncoder().encode(JSON.stringify(next, null, 2));
-          try {
-            await fileManager.writeFiles({ [preferencesPath]: { content } });
-          } catch {
-            // Persisting preferences is best-effort; ignore write failures
-          }
-        })();
-      }, 100);
+      const patch: Partial<ExportPreferences> = {};
+      for (const key of [
+        'formatContent',
+        'formatOptions',
+        'selectedFormats',
+        'shouldDownload',
+        'shouldSaveToProject',
+        'zipMultiple',
+      ] as const) {
+        if (JSON.stringify(next[key]) !== JSON.stringify(preferences[key])) {
+          Object.assign(patch, { [key]: next[key] });
+        }
+      }
+      setLocal((current) => ({ service, patch: { ...(current?.service === service ? current.patch : {}), ...patch } }));
     },
-    [fileManager],
+    [preferences, service],
   );
-
-  return [preferences, persistPreferences] as const;
+  const error =
+    snapshot.error ?? (write?.phase === 'failed' && write.local.service === service ? write.error : undefined);
+  useEffect(() => {
+    if (error) {
+      toast.error(error, {
+        action: {
+          label: 'Retry',
+          onClick: retry,
+        },
+      });
+    }
+  }, [error, retry]);
+  return [
+    preferences,
+    persistPreferences,
+    {
+      error: error
+        ? snapshot.error
+          ? 'Export settings could not be loaded.'
+          : 'Export settings could not be saved.'
+        : undefined,
+      retry,
+    },
+  ] as const;
 }
 
 // =============================================================================
 // Main component
 // =============================================================================
 
-export const ConverterPanelBody = function (): ReactElement {
-  const { geometryUnits, mainEntryPath, projectRef } = useProject();
+export const ConverterPanelBody = function ({
+  downloadOnly = false,
+  isShown = true,
+}: { readonly downloadOnly?: boolean; readonly isShown?: boolean } = {}): ReactElement {
+  const { geometryUnits, mainEntryPath, parameterService, projectRef, viewRecords, entriesRecord } = useProject();
   const fileManager = useFileManager();
   const projectName = useSelector(projectRef, (state) => state.context.project?.name) ?? 'model';
 
   const cuEntries = useMemo<GeometryUnitEntry[]>(() => {
-    const sorted = sortGeometryUnitEntries([...geometryUnits.entries()], mainEntryPath);
-    return sorted.map(([entryPath, actor]) => ({ entryPath, actor }));
-  }, [geometryUnits, mainEntryPath]);
+    return listGeometryEntryPaths(geometryUnits, viewRecords, mainEntryPath).map((entryPath) => ({ entryPath }));
+  }, [geometryUnits, viewRecords, mainEntryPath]);
 
   const [selectedEntryPath, setSelectedEntryPath] = useState(mainEntryPath);
 
   useEffect(() => {
-    setSelectedEntryPath(mainEntryPath);
+    queueMicrotask(() => {
+      setSelectedEntryPath(mainEntryPath);
+    });
   }, [mainEntryPath]);
 
   useEffect(() => {
-    if (!geometryUnits.has(selectedEntryPath)) {
-      setSelectedEntryPath(mainEntryPath);
+    if (!cuEntries.some((entry) => entry.entryPath === selectedEntryPath)) {
+      queueMicrotask(() => {
+        setSelectedEntryPath(mainEntryPath);
+      });
     }
-  }, [geometryUnits, selectedEntryPath, mainEntryPath]);
+  }, [cuEntries, selectedEntryPath, mainEntryPath]);
 
-  const selectedActor = geometryUnits.get(selectedEntryPath) ?? geometryUnits.get(mainEntryPath);
+  const selectedOperationTimeout = entriesRecord?.entries[selectedEntryPath]?.renderTimeout;
+  useEffect(() => {
+    if (!isShown || !selectedEntryPath) {
+      return;
+    }
+    const claimId = randomUuid();
+    projectRef.send({
+      type: 'claimGeometryUnit',
+      claimId,
+      entryPath: selectedEntryPath,
+      operationTimeout: selectedOperationTimeout,
+    });
+    return () => {
+      projectRef.send({ type: 'releaseGeometryUnit', claimId });
+    };
+  }, [isShown, projectRef, selectedEntryPath, selectedOperationTimeout]);
 
-  const geometry = useSelector(selectedActor, (state) => state?.context.geometry);
+  const selectedActor = geometryUnits.get(selectedEntryPath);
+
+  const rendering = useSelector(selectedActor, (state) => state?.context.rendering);
+  const evaluation = useSelector(selectedActor, (state) => state?.context.evaluation);
+  const latestRenderingOutcome = useSelector(selectedActor, (state) => state?.context.latestRenderingOutcome);
+  const hasExportableDocument =
+    rendering?.success === true ||
+    (latestRenderingOutcome === 'success' && evaluation?.success === true && evaluation.views.length === 0);
   const capabilities = useSelector(selectedActor, (state) => state?.context.capabilities);
   const activeKernelId = useSelector(selectedActor, (state) => state?.context.activeKernelId);
   const kernelClient = useSelector(selectedActor, (state) => state?.context.kernelClient);
 
   const availableFormats = useMemo(
-    () => deriveAvailableFormats(kernelClient, activeKernelId),
+    () => (capabilities === undefined ? [] : deriveAvailableFormats(kernelClient, activeKernelId)),
     // Capabilities is included so format list refreshes whenever the manifest mutates
     [kernelClient, activeKernelId, capabilities],
   );
 
-  const [preferences, persistPreferences] = useExportPreferences(fileManager);
+  const [preferences, persistPreferences, preferenceHealth] = useExportPreferences(fileManager);
   const [isExporting, setIsExporting] = useState(false);
 
-  const { selectedFormats, shouldDownload, shouldSaveToProject, zipMultiple, formatContent, formatOptions } =
-    preferences;
+  const { selectedFormats, zipMultiple, formatContent, formatOptions } = preferences;
+  const shouldDownload = downloadOnly || preferences.shouldDownload;
+  const shouldSaveToProject = !downloadOnly && preferences.shouldSaveToProject;
 
   const hasDestination = shouldDownload || shouldSaveToProject;
 
@@ -793,7 +1258,7 @@ export const ConverterPanelBody = function (): ReactElement {
   );
 
   useEffect(() => {
-    if (!kernelClient || !activeKernelId) {
+    if (!kernelClient || !activeKernelId || capabilities === undefined) {
       return;
     }
 
@@ -856,10 +1321,17 @@ export const ConverterPanelBody = function (): ReactElement {
   );
 
   const handleExport = useCallback(async () => {
-    if (!kernelClient || selectedFormats.length === 0 || !hasDestination) {
+    if (!selectedActor || !kernelClient || selectedFormats.length === 0 || !hasDestination) {
       return;
     }
 
+    const claimId = randomUuid();
+    projectRef.send({
+      type: 'claimGeometryUnit',
+      claimId,
+      entryPath: selectedEntryPath,
+      operationTimeout: selectedOperationTimeout,
+    });
     setIsExporting(true);
 
     const succeeded: FileExtension[] = [];
@@ -867,22 +1339,68 @@ export const ConverterPanelBody = function (): ReactElement {
     const downloadQueue: DownloadEntry[] = [];
 
     try {
+      const settled = await awaitFreshRender(selectedActor);
+      const failedIssues = selectCadFailureIssues(settled);
+      if (failedIssues) {
+        throw new Error(failedIssues.map((issue) => issue.message).join('; ') || 'The selected CAD render failed');
+      }
+      if (settled.context.latestRenderingOutcome !== 'success') {
+        throw new Error(`No current successful geometry is available for ${selectedEntryPath}`);
+      }
+      const freshKernelClient = settled.context.kernelClient;
+      const freshDocument = settled.context.document;
+      const freshKernelId = settled.context.activeKernelId;
+      if (!freshKernelClient || !freshDocument) {
+        throw new Error('The selected CAD runtime is unavailable');
+      }
       /* oxlint-disable no-await-in-loop -- Sequential: each export depends on shared kernel state */
       for (const format of selectedFormats) {
         try {
-          const route = bestRouteForActiveKernel(kernelClient, format, activeKernelId);
-          if (!route || route.kernelId !== activeKernelId) {
+          const route = bestRouteForActiveKernel(freshKernelClient, format, freshKernelId);
+          if (!route || route.kernelId !== freshKernelId) {
             failed.push(format);
             continue;
           }
 
-          const options = sanitizeFormDelta(route.exportOptions.schema, formatOptions[format] ?? {});
-          const content = route.content
-            ? runtimeContentFromRecord(sanitizeFormDelta(route.content.schema, { ...formatContent[format] }))
+          const provider =
+            route.transcoderId === undefined
+              ? String(route.kernelId)
+              : `${String(route.kernelId)}+${String(route.transcoderId)}`;
+          const optionsResolved =
+            Object.keys(route.exportOptions.schema).length === 0
+              ? undefined
+              : await resolveExportConfigurationValues({
+                  parameterService,
+                  provider,
+                  configuration: `export/${format}/options`,
+                  resolved: {
+                    schema: route.exportOptions.schema,
+                    defaults: isRecordObject(route.exportOptions.defaults) ? route.exportOptions.defaults : {},
+                  },
+                  legacyValues: sanitizeFormDelta(route.exportOptions.schema, formatOptions[format] ?? {}),
+                });
+          const contentResolved = route.content
+            ? await resolveExportConfigurationValues({
+                parameterService,
+                provider,
+                configuration: `export/${format}/content`,
+                resolved: {
+                  schema: route.content.schema,
+                  defaults: isRecordObject(route.content.defaults) ? route.content.defaults : {},
+                },
+                legacyValues: sanitizeFormDelta(route.content.schema, { ...formatContent[format] }),
+              })
             : undefined;
-          const result = await exportWithRuntimeValidatedInput(kernelClient, route, {
+          const options = sanitizeFormDelta(
+            route.exportOptions.schema,
+            optionsResolved?.values ?? formatOptions[format] ?? {},
+          );
+          const content = contentResolved
+            ? runtimeContentFromRecord(sanitizeFormDelta(route.content!.schema, contentResolved.values))
+            : undefined;
+          const result = await exportDocumentWithValidatedInput(freshDocument, route, {
             ...(content && Object.keys(content).length > 0 ? { content } : {}),
-            exportOptions: options,
+            options,
           });
 
           if (!result.success) {
@@ -890,7 +1408,7 @@ export const ConverterPanelBody = function (): ReactElement {
             continue;
           }
 
-          const files = result.data;
+          const files = [...result.files];
 
           if (shouldDownload) {
             downloadQueue.push({ format, files });
@@ -923,11 +1441,18 @@ export const ConverterPanelBody = function (): ReactElement {
       } else {
         toast.error(`Failed to export ${failed.map((f) => f.toUpperCase()).join(', ')}`);
       }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Export failed');
     } finally {
       setIsExporting(false);
+      projectRef.send({ type: 'releaseGeometryUnit', claimId });
     }
   }, [
     kernelClient,
+    selectedActor,
+    selectedEntryPath,
+    selectedOperationTimeout,
+    projectRef,
     selectedFormats,
     formatOptions,
     formatContent,
@@ -937,95 +1462,149 @@ export const ConverterPanelBody = function (): ReactElement {
     zipMultiple,
     fileManager,
     hasDestination,
+    parameterService,
   ]);
 
   return (
-    <div className='flex flex-col gap-3 p-3'>
-      <GeometryUnitSelector
-        entries={cuEntries}
-        selectedEntryPath={selectedEntryPath}
-        mainEntryPath={mainEntryPath}
-        onSelect={setSelectedEntryPath}
-      />
-
-      {geometry ? (
-        availableFormats.length > 0 ? (
-          <>
-            <FormatGrid formats={availableFormats} selectedFormats={selectedFormats} onToggle={handleFormatToggle} />
-
-            <ExportSettings
-              selectedFormats={selectedFormats}
-              client={kernelClient}
-              activeKernelId={activeKernelId}
-              formatContent={formatContent}
-              formatOptions={formatOptions}
-              onContentChange={handleContentChange}
-              onOptionsChange={handleOptionsChange}
-            />
-
-            <div className='flex flex-col gap-2'>
-              <div className='flex items-center space-x-2'>
-                <Checkbox id='download-to-disk' checked={shouldDownload} onCheckedChange={handleDownloadToggle} />
-                <Label
-                  htmlFor='download-to-disk'
-                  className='cursor-pointer text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
-                >
-                  Download to disk
-                </Label>
-              </div>
-
-              <div className='flex items-center space-x-2'>
-                <Checkbox id='save-to-project' checked={shouldSaveToProject} onCheckedChange={handleSaveToggle} />
-                <Label
-                  htmlFor='save-to-project'
-                  className='cursor-pointer text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
-                >
-                  Save to project
-                </Label>
-              </div>
-
-              {shouldDownload && selectedFormats.length > 1 ? (
-                <div className='flex items-center space-x-2'>
-                  <Checkbox id='zip-multiple' checked={zipMultiple} onCheckedChange={handleZipToggle} />
-                  <Label
-                    htmlFor='zip-multiple'
-                    className='cursor-pointer text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
-                  >
-                    Zip multiple exports
-                  </Label>
-                </div>
-              ) : null}
+    <div data-slot='export-panel-body' className='flex size-full min-h-0 flex-col overflow-hidden bg-sidebar'>
+      {preferenceHealth.error ? (
+        <div
+          role='alert'
+          aria-label='Export settings unavailable'
+          className='flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2 text-xs'
+        >
+          <span>{preferenceHealth.error}</span>
+          <Button variant='ghost' size='sm' aria-label='Retry export settings' onClick={preferenceHealth.retry}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      <div
+        data-slot='export-scroll-body'
+        className='min-h-0 flex-1 scroll-shadows-y overflow-y-auto p-2 [--scroll-fade-end:transparent] [--scroll-fade-size:28px]'
+      >
+        <div className='flex min-h-full flex-col gap-2'>
+          <section aria-label='Source' className='overflow-hidden rounded-xl border border-border bg-card'>
+            <h2 className='border-b px-3 py-2 text-[13px] font-medium text-foreground'>Source</h2>
+            <div className='p-3'>
+              <GeometryUnitSelector
+                entries={cuEntries}
+                selectedEntryPath={selectedEntryPath}
+                mainEntryPath={mainEntryPath}
+                onSelect={setSelectedEntryPath}
+              />
             </div>
+          </section>
 
-            <Button
-              className='w-full whitespace-normal'
-              variant='outline'
-              size='sm'
-              disabled={selectedFormats.length === 0 || isExporting || !hasDestination}
-              onClick={handleExport}
-            >
-              <Download />
-              <span className='min-w-0 wrap-break-word'>
-                {formatButtonLabel(selectedFormats, isExporting, hasDestination)}
-              </span>
-            </Button>
-          </>
-        ) : (
-          <p className='text-sm text-muted-foreground'>
-            No export formats available. The kernel is still initializing.
-          </p>
-        )
-      ) : (
-        <EmptyItems className='m-0'>
-          <div className='mb-3 rounded-full bg-muted/50 p-2'>
-            <Info className='size-6 text-muted-foreground' strokeWidth={1.5} />
-          </div>
-          <h3 className='mb-1 text-base font-medium'>No geometry to export for this file</h3>
-          <p className='wrap-break-word text-muted-foreground'>
-            Generate or compute geometry for {selectedEntryPath} to enable export options
-          </p>
-        </EmptyItems>
-      )}
+          {hasExportableDocument ? (
+            availableFormats.length > 0 ? (
+              <>
+                <section aria-label='Formats' className='overflow-hidden rounded-xl border border-border bg-card'>
+                  <h2 className='border-b px-3 py-2 text-[13px] font-medium text-foreground'>Formats</h2>
+                  <div className='p-3'>
+                    <FormatGrid
+                      formats={availableFormats}
+                      selectedFormats={selectedFormats}
+                      onToggle={handleFormatToggle}
+                    />
+
+                    <ExportSettings
+                      selectedFormats={selectedFormats}
+                      client={kernelClient}
+                      activeKernelId={activeKernelId}
+                      formatContent={formatContent}
+                      formatOptions={formatOptions}
+                      onContentChange={handleContentChange}
+                      onOptionsChange={handleOptionsChange}
+                    />
+                  </div>
+                </section>
+
+                <section aria-label='Destination' className='overflow-hidden rounded-xl border border-border bg-card'>
+                  <h2 className='border-b px-3 py-2 text-[13px] font-medium text-foreground'>Destination</h2>
+                  <div className='divide-y divide-border'>
+                    <div className='flex min-h-9 items-center gap-2 px-3 py-2 transition-colors hover:bg-accent/50'>
+                      <Checkbox
+                        id='download-to-disk'
+                        checked={shouldDownload}
+                        disabled={downloadOnly}
+                        onCheckedChange={handleDownloadToggle}
+                      />
+                      <Label
+                        htmlFor='download-to-disk'
+                        className='flex-1 cursor-action rounded-sm text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
+                      >
+                        Download to disk
+                      </Label>
+                    </div>
+
+                    {downloadOnly ? null : (
+                      <div className='flex min-h-9 items-center gap-2 px-3 py-2 transition-colors hover:bg-accent/50'>
+                        <Checkbox
+                          id='save-to-project'
+                          checked={shouldSaveToProject}
+                          onCheckedChange={handleSaveToggle}
+                        />
+                        <Label
+                          htmlFor='save-to-project'
+                          className='flex-1 cursor-action rounded-sm text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
+                        >
+                          Save to project
+                        </Label>
+                      </div>
+                    )}
+
+                    {shouldDownload && selectedFormats.length > 1 ? (
+                      <div className='flex min-h-9 items-center gap-2 px-3 py-2 transition-colors hover:bg-accent/50'>
+                        <Checkbox id='zip-multiple' checked={zipMultiple} onCheckedChange={handleZipToggle} />
+                        <Label
+                          htmlFor='zip-multiple'
+                          className='flex-1 cursor-action rounded-sm text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
+                        >
+                          Zip multiple exports
+                        </Label>
+                      </div>
+                    ) : null}
+
+                    <div data-slot='export-action-footer' className='p-3'>
+                      <Button
+                        className='w-full whitespace-normal'
+                        size='sm'
+                        disabled={selectedFormats.length === 0 || isExporting || !hasDestination}
+                        onClick={handleExport}
+                      >
+                        <Download />
+                        <span className='min-w-0 wrap-break-word'>
+                          {formatButtonLabel(selectedFormats, isExporting, hasDestination)}
+                        </span>
+                      </Button>
+                    </div>
+                  </div>
+                </section>
+              </>
+            ) : (
+              <PanelEmptyState
+                icon={Info}
+                title='Export formats are still loading'
+                description={<>Formats for {selectedEntryPath || 'this file'} will appear when its kernel is ready.</>}
+                role='status'
+                aria-label='Export formats are still loading'
+                aria-busy='true'
+                className='m-0 h-auto min-h-40 flex-1 rounded-xl border bg-card'
+              />
+            )
+          ) : (
+            <PanelEmptyState
+              icon={Info}
+              title='No geometry to export for this file'
+              description={
+                <>Generate or compute geometry for {selectedEntryPath || 'this file'} to enable export options.</>
+              }
+              className='m-0 h-auto min-h-40 flex-1 rounded-xl border bg-card'
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -1061,7 +1640,7 @@ export const ChatConverter = memo(function (properties: {
           </FloatingPanelContentHeaderActions>
         </FloatingPanelContentHeader>
         <FloatingPanelContentBody className='p-0'>
-          <ConverterPanelBody />
+          <ConverterPanelBody isShown={isExpanded} />
         </FloatingPanelContentBody>
       </FloatingPanelContent>
     </FloatingPanel>

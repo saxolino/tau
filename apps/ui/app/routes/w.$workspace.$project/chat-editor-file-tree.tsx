@@ -1,11 +1,10 @@
 // oxlint-disable max-lines -- TODO: refactor this component to be more manageable
-import { useCallback, useState, useRef, useMemo, useEffect, memo } from 'react';
+import { useCallback, useId, useState, useRef, useMemo, useEffect, memo } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import type { ItemInstance, TreeInstance } from '@headless-tree/core';
 import {
   FilePlus,
   FolderPlus,
-  MoreHorizontal,
   Box,
   Folder,
   FolderOpen,
@@ -15,6 +14,7 @@ import {
   Copy,
   Trash2,
   Download,
+  Eye,
   Code,
   Clipboard,
   Lock,
@@ -33,12 +33,15 @@ import {
   propMemoizationFeature,
 } from '@headless-tree/core';
 import { useTree, AssistiveTreeDescription } from '@headless-tree/react';
-import { kernelConfigurations, tauFileDragMime } from '@taucad/types/constants';
+import { tauFileDragMime } from '@taucad/types/constants';
+import { availableKernelConfigurations } from '#constants/available-kernel-configurations.js';
 import type { KernelConfiguration } from '@taucad/types/constants';
 import type { FileItem } from '#types/editor.types.js';
-import { cn } from '#utils/ui.utils.js';
-import { Button, buttonVariants } from '#components/ui/button.js';
-import { SearchInput } from '#components/search-input.js';
+import type { FileEntry, FileProvenance } from '@taucad/types';
+import { cn } from '@taucad/ui/utils/cn';
+import { buttonVariants } from '@taucad/ui/components/button';
+import { Badge } from '@taucad/ui/components/badge';
+import { SearchInput } from '@taucad/ui/components/search-input';
 import { toast } from '#components/ui/sonner.js';
 import {
   FloatingPanelContent,
@@ -58,7 +61,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '#components/ui/alert-dialog.js';
+} from '@taucad/ui/components/alert-dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -66,26 +69,30 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
   DropdownMenuLabel,
-} from '#components/ui/dropdown-menu.js';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-  ContextMenuSeparator,
-} from '#components/ui/context-menu.js';
+} from '@taucad/ui/components/dropdown-menu';
 import { useProject } from '#hooks/use-project.js';
 import { mountFileOperationParticipants } from '#filesystem/file-operation-participants.js';
-import { EmptyItems } from '#components/ui/empty-items.js';
-import { HighlightText } from '#components/highlight-text.js';
+import { useWorkbenchViewCommands } from '#workbench-records/view-actions.js';
+import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import type { ViewerNode } from '@taucad/workbench';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
+import { HighlightText } from '@taucad/ui/components/highlight-text';
+import {
+  SidebarRowActions,
+  SidebarRowContextMenu,
+  SidebarRowMenuButton,
+  sidebarRowClass,
+} from '#components/nav/sidebar-row.js';
+import type { SidebarRowMenuItems } from '#components/nav/sidebar-row.js';
 import { FileExtensionIcon, getIconIdForFilename } from '#components/icons/file-extension-icon.js';
 import { getFileExtension, encodeTextFile } from '#utils/filesystem.utils.js';
 import { downloadBlob, asBuffer } from '@taucad/utils/file';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { useFileTreeMap } from '#hooks/use-file-tree.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import type { KeyCombination } from '#utils/keys.utils.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { useRevisionStatus } from '#hooks/use-revision-status.js';
+import { useFileTreeSelector } from '#hooks/use-file-tree.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import type { KeyCombination } from '@taucad/ui/utils/keys';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { parentDirectory } from '@taucad/utils/path';
 
 import type { TreeItemData } from '#routes/w.$workspace.$project/chat-editor-file-tree.utils.js';
@@ -94,7 +101,8 @@ import {
   isEditorSystemArtifactPath,
   isPathFolder,
 } from '#routes/w.$workspace.$project/chat-editor-file-tree.utils.js';
-import { isBundledTypesWorkspacePath } from '#lib/bundled-types-tree.constants.js';
+import { fileProvenanceLabel } from '#lib/file-provenance-labels.js';
+import type { FileProvenanceLabel } from '#lib/file-provenance-labels.js';
 import { isWorkspaceMutationErrorLike, workspaceMutationErrorCopy } from '#filesystem/workspace-errors.js';
 import type { WorkspaceMutationErrorLike } from '#filesystem/workspace-errors.js';
 import { OverwriteConfirmDialog } from '#components/filesystem/overwrite-confirm-dialog.js';
@@ -124,6 +132,108 @@ import {
   getFileTreeDownloadErrorMessage,
   getFileTreeDownloadPolicy,
 } from '#routes/w.$workspace.$project/file-tree-download-policy.js';
+import { desktopBridge } from '#filesystem/desktop-bridge.js';
+import { previewProjectFileInQuickLook } from '#filesystem/desktop-quick-look.js';
+
+/**
+ * What one row shows about where its bytes come from.
+ *
+ * `isSubtreeRoot` and `subtreeRootLevel` are derived from the rows themselves —
+ * the shallowest ancestor the view serves from the same non-project source — so
+ * the badge, the lock and the dashed rail land on the mount root and nothing
+ * below it, without any path knowing what a bundle is.
+ */
+type RowPresentation = FileProvenanceLabel & {
+  readonly provenance: FileProvenance | undefined;
+  readonly isSubtreeRoot: boolean;
+  readonly subtreeRootLevel?: number;
+};
+
+/** The shared read-only refusal copy, read once so the call site is not a pseudo-constructor. */
+const readOnlyPathMessage = (path: string): string => {
+  const copy = workspaceMutationErrorCopy.READ_ONLY_MOUNT;
+  return typeof copy === 'function' ? copy({ path }) : copy;
+};
+
+const parentOfTreePath = (path: string): string => {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash);
+};
+
+/** A row nothing stamped and nothing above it owns: the project's own, unremarkable. */
+const plainPresentation: RowPresentation = Object.freeze({
+  ...fileProvenanceLabel(undefined, ''),
+  provenance: undefined,
+  isSubtreeRoot: true,
+});
+
+const selectTree = (tree: Map<string, FileEntry>): Map<string, FileEntry> => tree;
+
+/** Same provenance facts, whether or not the listing minted a new object for them. */
+const sameProvenance = (previous?: FileProvenance, next?: FileProvenance): boolean =>
+  previous === next ||
+  (previous?.source === next?.source &&
+    previous?.versioned === next?.versioned &&
+    previous?.agentAccess === next?.agentAccess &&
+    previous?.identity === next?.identity &&
+    previous?.overrides === next?.overrides);
+
+/**
+ * Whether two tree snapshots draw the same rows.
+ *
+ * A row shows its path, name, kind and provenance, never size or mtime, so a
+ * content write (a parameter commit, an agent edit) leaves the tree as it was.
+ */
+function sameTreeRows(previous: ReadonlyMap<string, FileEntry>, next: ReadonlyMap<string, FileEntry>): boolean {
+  if (previous.size !== next.size) {
+    return false;
+  }
+  for (const [path, entry] of next) {
+    const before = previous.get(path);
+    if (
+      before !== entry &&
+      (before?.name !== entry.name ||
+        before.type !== entry.type ||
+        !sameProvenance(before.provenance, entry.provenance))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** One pass over the tree snapshot: label every row, then find each non-project subtree's root. */
+function buildRowPresentation(fileTreeMap: ReadonlyMap<string, FileEntry>): Map<string, RowPresentation> {
+  const labels = new Map<string, FileProvenanceLabel & { provenance: FileProvenance | undefined }>();
+  for (const [path, entry] of fileTreeMap) {
+    labels.set(path, { ...fileProvenanceLabel(entry.provenance, path), provenance: entry.provenance });
+  }
+
+  const presentation = new Map<string, RowPresentation>();
+  for (const [path, label] of labels) {
+    if (!label.readOnly) {
+      presentation.set(path, { ...label, isSubtreeRoot: true });
+      continue;
+    }
+
+    let subtreeRoot = path;
+    for (
+      let parent = parentOfTreePath(path);
+      parent !== '' && (labels.get(parent)?.readOnly ?? false);
+      parent = parentOfTreePath(parent)
+    ) {
+      subtreeRoot = parent;
+    }
+
+    presentation.set(path, {
+      ...label,
+      isSubtreeRoot: subtreeRoot === path,
+      subtreeRootLevel: subtreeRoot.split('/').length - 1,
+    });
+  }
+
+  return presentation;
+}
 
 const rootId = fileTreeRootId;
 const keyboardDragStartHotkey = 'Control+ShiftLeft+KeyD';
@@ -222,7 +332,7 @@ function surfaceDropIngestionResult(result: Exclude<DropIngestionResult, { type:
     case 'unsupported': {
       toast.error(
         result.reason === 'recursive-folder-drop-unavailable'
-          ? 'This browser cannot read dropped folders here.'
+          ? 'Dropped folders cannot be read here.'
           : 'Dropped items could not be read.',
       );
       return;
@@ -249,7 +359,7 @@ function addDeletedDescendantPaths(options: {
 }
 
 type ChatEditorFileTreeProps = {
-  readonly actionsContainer?: Element | DocumentFragment | null;
+  readonly actionsContainer?: Element | DocumentFragment;
   readonly closeButton?: React.ReactNode;
   readonly showTitle?: boolean;
   readonly borderless?: boolean;
@@ -272,11 +382,76 @@ export const ChatEditorFileTree = memo(function ({
   // It's necessary to opt out of React Compiler auto-memoization for this component due to:
   // https://headless-tree.lukasbach.com/guides/react-compiler/
   'use no memo'; // Opt out of React Compiler memoization
-  const { projectRef, editorRef } = useProject();
+  const { projectRef, editorRef, parameterService, viewRecords, changeEntryPaths } = useProject();
+  const viewCommands = useWorkbenchViewCommands();
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- Shared/read-only trees can render outside a project workspace.
+  const layoutController = useProjectWorkspace({ enableNoContext: true })?.layoutController;
+  const viewRecordsRef = useRef(viewRecords);
+  const observedViewRecordsRef = useRef(viewRecords);
+  if (observedViewRecordsRef.current !== viewRecords) {
+    observedViewRecordsRef.current = viewRecords;
+    viewRecordsRef.current = viewRecords;
+  }
+  const onWorkbenchPathChange = useCallback(
+    async (
+      change: Readonly<{ type: 'rename'; oldPath: string; newPath: string } | { type: 'delete'; path: string }>,
+    ): Promise<void> => {
+      const source = change.type === 'rename' ? change.oldPath : change.path;
+      // oxlint-disable-next-line typescript/no-restricted-types -- The record schema explicitly permits a cleared entry binding.
+      const matches = (path: string | null): boolean =>
+        path !== null && (path === source || path.startsWith(`${source}/`));
+      const affected = [...viewRecordsRef.current].filter(([, record]) => matches(record.entryPath));
+      try {
+        for (const [viewId, record] of affected) {
+          let nextRecord: typeof record | undefined;
+          const saved =
+            change.type === 'rename'
+              ? // oxlint-disable-next-line eslint/no-await-in-loop -- Checked record edits must preserve file-event order.
+                await viewCommands.edit(viewId, (current) => {
+                  const latest = current ?? record;
+                  nextRecord = matches(latest.entryPath)
+                    ? { ...latest, entryPath: `${change.newPath}${latest.entryPath!.slice(source.length)}` }
+                    : latest;
+                  return nextRecord;
+                })
+              : // oxlint-disable-next-line eslint/no-await-in-loop -- Checked record deletes must preserve file-event order.
+                await viewCommands.remove(viewId);
+          if (!saved) {
+            throw new Error(`View ${viewId} could not follow the file change.`);
+          }
+          const nextRecords = new Map(viewRecordsRef.current);
+          if (nextRecord) {
+            nextRecords.set(viewId, nextRecord);
+          } else {
+            nextRecords.delete(viewId);
+          }
+          viewRecordsRef.current = nextRecords;
+        }
+        if (!(await changeEntryPaths(change))) {
+          throw new Error('Entry settings could not follow the file change.');
+        }
+        if (change.type === 'delete' && affected.length > 0) {
+          const current = layoutController?.snapshot()?.layout.viewer;
+          if (current) {
+            const removed = new Set(affected.map(([id]) => id));
+            const omit = (node: ViewerNode): ViewerNode =>
+              node.kind === 'group'
+                ? { ...node, tabs: node.tabs.filter((tab) => !removed.has(tab.view)), active: undefined }
+                : { ...node, children: node.children.map(omit) };
+            layoutController.personViewerChanged(omit(current));
+          }
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Workbench records could not follow the file change.');
+      }
+    },
+    [changeEntryPaths, layoutController, viewCommands],
+  );
   const fileManager = useFileManager();
   const {
+    overrideUnit,
     contentService,
-    readFile,
+    whenServicesReady,
     writeFile,
     renameFile,
     duplicateFile,
@@ -289,7 +464,9 @@ export const ChatEditorFileTree = memo(function ({
     canRename,
     canCreate,
     canDelete,
+    runtimeFileSystem,
   } = fileManager;
+  const projectId = useSelector(projectRef, (state) => state.context.project?.id);
   const openFiles = useSelector(editorRef, (state) => state.context.openFiles);
   const activeFilePath = useSelector(editorRef, (state) => {
     const id = state.context.activePaneId;
@@ -301,8 +478,11 @@ export const ChatEditorFileTree = memo(function ({
     // Note: Editor file navigation no longer drives the viewport.
     // The viewport has its own independent FileSelector (Step 7).
     const fileOpenedSub = editorRef.on('fileOpened', (event) => {
-      // Read file content for the editor display
-      void readFile(event.path);
+      // Warm the editor's typed content outcome. `resolve` publishes a missing,
+      // binary or unreadable file as its outcome instead of rejecting, so a file
+      // opened before it is written (or after it is removed) is not reported as
+      // an unhandled rejection.
+      void contentService?.resolve(event.path);
     });
 
     // Mount file-operation participants. This is the single funnel
@@ -310,30 +490,62 @@ export const ChatEditorFileTree = memo(function ({
     // machine intents. UI components must NOT dispatch
     // renameFile/closeFile in response to filesystem mutations — the
     // participant does it once, centrally.
-    const participantDispose = contentService
-      ? mountFileOperationParticipants({ contentService, editorRef, projectRef })
-      : undefined;
+    const participantDispose =
+      contentService && !readOnly
+        ? mountFileOperationParticipants({
+            contentService,
+            editorRef,
+            projectRef,
+            parameterFiles: parameterService,
+            onWorkbenchPathChange,
+          })
+        : undefined;
 
     return () => {
       fileOpenedSub.unsubscribe();
       participantDispose?.();
     };
-  }, [projectRef, editorRef, contentService, readFile]);
+  }, [projectRef, editorRef, contentService, readOnly, parameterService, onWorkbenchPathChange]);
 
   const requestOpenFile = useCallback(
-    (path: string, readOnly?: boolean) => {
+    (path: string, fileReadOnly?: boolean) => {
+      const shouldReadOnly = readOnly || fileReadOnly;
       if (onOpenFile) {
-        onOpenFile(path, readOnly);
+        onOpenFile(path, shouldReadOnly ? true : undefined);
         return;
       }
-      editorRef.send({ type: 'openFile', path, source: 'user', readOnly });
+      editorRef.send({ type: 'openFile', path, source: 'user', readOnly: shouldReadOnly ? true : undefined });
     },
-    [editorRef, onOpenFile],
+    [editorRef, onOpenFile, readOnly],
   );
 
   const { treeService } = fileManager;
 
-  const fileTreeMap = useFileTreeMap();
+  /* Every row re-renders with this component, so it holds the snapshot it last drew until a row
+   * would change: sizes and mtimes in it may be stale, and nothing below reads them. */
+  const fileTreeMap = useFileTreeSelector(selectTree, sameTreeRows);
+
+  /**
+   * One provenance answer per row, and the only input to every label and every
+   * mutation gate below. A path spelling decides nothing (mount-provenance V2).
+   */
+  const rowPresentation = useMemo(() => buildRowPresentation(fileTreeMap), [fileTreeMap]);
+  /** A path the tree has not listed — a create target, a drop target — is whatever its nearest listed ancestor is. */
+  const presentationFor = useCallback(
+    (path: string): RowPresentation => {
+      for (let candidate = path; candidate !== ''; candidate = parentOfTreePath(candidate)) {
+        const known = rowPresentation.get(candidate);
+        if (known !== undefined) {
+          return known;
+        }
+      }
+      return plainPresentation;
+    },
+    [rowPresentation],
+  );
+  /** The user's access is `source !== 'project'` (ruling P10), never `agentAccess`. */
+  const isReadOnlyPath = useCallback((path: string): boolean => presentationFor(path).readOnly, [presentationFor]);
+
   const fileTree = useMemo((): FileItem[] => {
     if (fileTreeMap.size === 0) {
       return [];
@@ -352,37 +564,41 @@ export const ChatEditorFileTree = memo(function ({
   }, [fileTreeMap]);
 
   // Tree state management
-  const [expandedItems, setExpandedItemsRaw] = useState<string[]>(() => [rootId]);
+  const [expandedItems, setExpandedItems] = useState<string[]>(() => [rootId]);
   const previousExpandedRef = useRef<Set<string>>(new Set([rootId]));
 
-  const setExpandedItems = useCallback(
-    (updater: string[] | ((previous: string[]) => string[])) => {
-      setExpandedItemsRaw((previous) => {
-        const next = typeof updater === 'function' ? updater(previous) : updater;
-        const previousSet = previousExpandedRef.current;
-        const newlyExpanded = next.filter((id) => id !== rootId && !previousSet.has(id));
+  /**
+   * Warm the listing of every newly expanded directory.
+   *
+   * A listing is a side effect, so it runs once the expansion has committed.
+   * Fired from inside the `expandedItems` updater it ran during render instead,
+   * where the listing it publishes re-enters React mid-update and reaches
+   * `setConfig` + `rebuildTree` against a tree state React has not applied yet
+   * (close-out W4). Every expansion source — click, keyboard, reveal, drop —
+   * warms through this one effect.
+   */
+  useEffect(() => {
+    const previousSet = previousExpandedRef.current;
+    previousExpandedRef.current = new Set(expandedItems);
+    if (!treeService) {
+      return;
+    }
 
-        if (treeService && newlyExpanded.length > 0) {
-          for (const path of newlyExpanded) {
-            if (!treeService.hasChildrenLoaded(path)) {
-              // async-iife: bootstrap — warm directory listing from expansion update; failures logged only
-              void (async (): Promise<void> => {
-                try {
-                  await treeService.listDirectory(path);
-                } catch (error) {
-                  console.error('[ChatEditorFileTree] listDirectory failed:', error);
-                }
-              })();
-            }
-          }
+    for (const path of expandedItems) {
+      if (path === rootId || previousSet.has(path) || treeService.hasChildrenLoaded(path)) {
+        continue;
+      }
+
+      // async-iife: bootstrap — warm directory listing for a newly expanded row; failures logged only
+      void (async (): Promise<void> => {
+        try {
+          await treeService.listDirectory(path);
+        } catch (error) {
+          console.error('[ChatEditorFileTree] listDirectory failed:', error);
         }
-
-        previousExpandedRef.current = new Set(next);
-        return next;
-      });
-    },
-    [treeService],
-  );
+      })();
+    }
+  }, [expandedItems, treeService]);
 
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [focusedItem, setFocusedItem] = useState<string | undefined>(undefined);
@@ -647,8 +863,11 @@ export const ChatEditorFileTree = memo(function ({
 
   const handleRename = useCallback(
     async (item: ItemInstance<TreeItemData>, newName: string): Promise<void> => {
+      if (readOnly) {
+        return;
+      }
       const oldPath = item.getId();
-      if (oldPath === rootId || isBundledTypesWorkspacePath(oldPath)) {
+      if (oldPath === rootId || isReadOnlyPath(oldPath)) {
         return;
       }
 
@@ -677,7 +896,7 @@ export const ChatEditorFileTree = memo(function ({
         toast.error(`Rename failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     },
-    [canRename, renameFile, surfacePreflightError],
+    [canRename, isReadOnlyPath, readOnly, renameFile, surfacePreflightError],
   );
 
   // Initialize headless-tree
@@ -699,9 +918,12 @@ export const ChatEditorFileTree = memo(function ({
         setFocusedItem(value ?? undefined);
       }
     },
-    canReorder: true,
+    canReorder: !readOnly,
     indent: 16,
     async onDrop(draggedItems, target) {
+      if (readOnly) {
+        return;
+      }
       // Handle drag-and-drop by moving items into the target folder.
       // Preflight and then execute truthful sequential moves:
       //   1. Compute the (source → target) edit set, skipping bundled-types and no-ops.
@@ -714,14 +936,14 @@ export const ChatEditorFileTree = memo(function ({
         targetPath,
         getTargetData: (path) => (path === targetPath ? { isFolder: target.item.isFolder() } : undefined),
       });
-      if (isBundledTypesWorkspacePath(targetPath) || isBundledTypesWorkspacePath(targetDirectory)) {
+      if (isReadOnlyPath(targetPath) || isReadOnlyPath(targetDirectory)) {
         return;
       }
 
       const edits = createFileTreeMoveEdits({
         sourcePaths: draggedItems.map((item) => item.getId()),
         targetDirectory,
-        isReadOnlyPath: isBundledTypesWorkspacePath,
+        isReadOnlyPath,
       });
 
       if (edits.length === 0) {
@@ -752,25 +974,26 @@ export const ChatEditorFileTree = memo(function ({
       }
     },
     onRename(item, newName) {
-      void handleRename(item, newName);
+      if (!readOnly) {
+        void handleRename(item, newName);
+      }
     },
     onPrimaryAction(item) {
       if (!item.isFolder()) {
         const path = item.getId();
-        const readOnly = isBundledTypesWorkspacePath(path);
-        requestOpenFile(path, readOnly);
+        requestOpenFile(path, readOnly || isReadOnlyPath(path));
       }
     },
     hotkeys: {
       startDrag: {
         hotkey: keyboardDragStartHotkey,
         preventDefault: true,
-        isEnabled: (treeInstance) => !treeInstance.getState().dnd,
+        isEnabled: (treeInstance) => !readOnly && !treeInstance.getState().dnd,
       },
       customStartDragRightShift: {
         hotkey: keyboardDragStartRightShiftHotkey,
         preventDefault: true,
-        isEnabled: (treeInstance) => !treeInstance.getState().dnd,
+        isEnabled: (treeInstance) => !readOnly && !treeInstance.getState().dnd,
         handler(_event, treeInstance) {
           startFileTreeKeyboardDrag(treeInstance);
         },
@@ -778,6 +1001,9 @@ export const ChatEditorFileTree = memo(function ({
       customDelete: {
         hotkey: 'Delete',
         handler(_event, treeInstance) {
+          if (readOnly) {
+            return;
+          }
           const selected = treeInstance.getSelectedItems();
           if (selected.length > 0) {
             handleDelete(selected);
@@ -808,17 +1034,20 @@ export const ChatEditorFileTree = memo(function ({
     // those into zero edits; returning false here lets the tree choose a nearby
     // ancestor target and can accidentally move files out of their folder.
     canDrop(draggedItems, target) {
+      if (readOnly) {
+        return false;
+      }
       const targetPath = target.item.getId();
       const targetDirectory = resolveFileTreeTargetDirectory({
         targetPath,
         getTargetData: (path) => (path === targetPath ? { isFolder: target.item.isFolder() } : undefined),
       });
 
-      if (isBundledTypesWorkspacePath(targetPath) || isBundledTypesWorkspacePath(targetDirectory)) {
+      if (isReadOnlyPath(targetPath) || isReadOnlyPath(targetDirectory)) {
         return false;
       }
 
-      if (draggedItems.some((item) => isBundledTypesWorkspacePath(item.getId()))) {
+      if (draggedItems.some((item) => isReadOnlyPath(item.getId()))) {
         return false;
       }
 
@@ -826,7 +1055,7 @@ export const ChatEditorFileTree = memo(function ({
     },
     // Set custom data on the drag event so Dockview panels can receive file drops
     createForeignDragObject(items) {
-      const paths = items.map((item) => item.getId()).filter((id) => id !== rootId && !isBundledTypesWorkspacePath(id));
+      const paths = items.map((item) => item.getId()).filter((id) => id !== rootId && !isReadOnlyPath(id));
       return {
         format: tauFileDragMime,
         data: JSON.stringify(paths),
@@ -834,16 +1063,15 @@ export const ChatEditorFileTree = memo(function ({
     },
     // Allow file drops from computer on writable folders, root, or file-parent targets.
     canDropForeignDragObject(dataTransfer, target) {
+      if (readOnly) {
+        return false;
+      }
       const targetId = target.item.getId();
       const targetDirectory = resolveFileTreeTargetDirectory({
         targetPath: targetId,
         getTargetData: (path) => (path === targetId ? { isFolder: target.item.isFolder() } : undefined),
       });
-      if (
-        isBundledTypesWorkspacePath(targetId) ||
-        isBundledTypesWorkspacePath(targetDirectory) ||
-        !canReadForeignFileTreeDrop(dataTransfer)
-      ) {
+      if (isReadOnlyPath(targetId) || isReadOnlyPath(targetDirectory) || !canReadForeignFileTreeDrop(dataTransfer)) {
         return false;
       }
 
@@ -851,12 +1079,15 @@ export const ChatEditorFileTree = memo(function ({
     },
     // Handle file drops from computer (supports folders with directory structure)
     async onDropForeignDragObject(dataTransfer, target) {
+      if (readOnly) {
+        return;
+      }
       const targetPath = target.item.getId();
       const targetDirectory = resolveFileTreeTargetDirectory({
         targetPath,
         getTargetData: (path) => (path === targetPath ? { isFolder: target.item.isFolder() } : undefined),
       });
-      if (isBundledTypesWorkspacePath(targetPath) || isBundledTypesWorkspacePath(targetDirectory)) {
+      if (isReadOnlyPath(targetPath) || isReadOnlyPath(targetDirectory)) {
         toast.error('This path is read-only.');
         return;
       }
@@ -893,9 +1124,10 @@ export const ChatEditorFileTree = memo(function ({
 
   // Rebuild tree when file data changes
   useEffect(() => {
+    tree.setConfig((current) => ({ ...current, dataLoader }));
     tree.rebuildTree();
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- tree object is not stable, only rebuild when fileTree changes
-  }, [fileTree]);
+  }, [dataLoader]);
 
   useEffect(() => {
     focusedItemRef.current = focusedItem;
@@ -1044,25 +1276,31 @@ export const ChatEditorFileTree = memo(function ({
     setPendingFolder({ parentPath, error: undefined });
   }, [allPaths, focusedItem, selectedItems, tree]);
 
-  const handleDelete = useCallback((items: Array<ItemInstance<TreeItemData>>) => {
-    const candidatePaths = items.map((item) => item.getId()).filter((path) => path !== rootId);
-    const paths = candidatePaths.filter((path) => !isBundledTypesWorkspacePath(path));
-    if (paths.length === 0) {
-      if (candidatePaths.length > 0) {
-        toast.error('This path is read-only.');
+  const handleDelete = useCallback(
+    (items: Array<ItemInstance<TreeItemData>>) => {
+      if (readOnly) {
+        return;
       }
-      return;
-    }
+      const candidatePaths = items.map((item) => item.getId()).filter((path) => path !== rootId);
+      const paths = candidatePaths.filter((path) => !isReadOnlyPath(path));
+      if (paths.length === 0) {
+        if (candidatePaths.length > 0) {
+          toast.error('This path is read-only.');
+        }
+        return;
+      }
 
-    setItemsToDelete(paths);
-    setDeleteDialogOpen(true);
-  }, []);
+      setItemsToDelete(paths);
+      setDeleteDialogOpen(true);
+    },
+    [isReadOnlyPath, readOnly],
+  );
 
   const runConfirmDelete = useCallback(async (): Promise<void> => {
     const deletedPaths = new Set<string>();
 
     for (const path of itemsToDelete) {
-      if (path === rootId || isBundledTypesWorkspacePath(path)) {
+      if (path === rootId || isReadOnlyPath(path)) {
         continue;
       }
 
@@ -1095,7 +1333,7 @@ export const ChatEditorFileTree = memo(function ({
 
     const firstRemainingItem = tree.getItems().find((i) => i.getId() !== rootId && !deletedPaths.has(i.getId()));
     setFocusedItem(firstRemainingItem?.getId());
-  }, [canDelete, deleteDirectory, deleteFile, fileTreeMap, itemsToDelete, surfacePreflightError, tree]);
+  }, [canDelete, deleteDirectory, deleteFile, fileTreeMap, isReadOnlyPath, itemsToDelete, surfacePreflightError, tree]);
 
   const confirmDelete = useCallback(() => {
     void runConfirmDelete();
@@ -1110,7 +1348,7 @@ export const ChatEditorFileTree = memo(function ({
     (items: Array<ItemInstance<TreeItemData>>) => {
       for (const item of items) {
         const originalPath = item.getId();
-        if (originalPath === rootId || item.isFolder() || isBundledTypesWorkspacePath(originalPath)) {
+        if (originalPath === rootId || item.isFolder() || isReadOnlyPath(originalPath)) {
           continue;
         }
 
@@ -1146,15 +1384,14 @@ export const ChatEditorFileTree = memo(function ({
         );
       }
     },
-    [allPaths, duplicateFile, requestOpenFile],
+    [allPaths, duplicateFile, isReadOnlyPath, requestOpenFile],
   );
 
   const handleOpenInEditor = useCallback(
     (path: string) => {
-      const readOnly = isBundledTypesWorkspacePath(path);
-      requestOpenFile(path, readOnly);
+      requestOpenFile(path, isReadOnlyPath(path));
     },
-    [requestOpenFile],
+    [isReadOnlyPath, requestOpenFile],
   );
 
   const handleOpenInViewer = useCallback(
@@ -1164,9 +1401,24 @@ export const ChatEditorFileTree = memo(function ({
     [projectRef],
   );
 
+  const handleQuickLook = useCallback(
+    (path: string) => {
+      if (!projectId) {
+        return;
+      }
+      const name = path.split('/').pop() ?? path;
+      toast.promise(previewProjectFileInQuickLook({ path, projectId, runtimeFileSystem }), {
+        loading: `Preparing ${name} for Quick Look…`,
+        success: `Opened ${name} in Quick Look`,
+        error: (error: unknown) => (error instanceof Error ? error.message : 'Quick Look failed'),
+      });
+    },
+    [projectId, runtimeFileSystem],
+  );
+
   const handleDownload = useCallback(
     (path: string, isFolder: boolean) => {
-      const policy = getFileTreeDownloadPolicy(path);
+      const policy = getFileTreeDownloadPolicy(presentationFor(path).provenance);
       if (!policy.allowed) {
         toast.error(policy.message);
         return;
@@ -1181,12 +1433,20 @@ export const ChatEditorFileTree = memo(function ({
             try {
               zipBlob = await getZippedDirectory(path);
             } catch (error) {
-              throw createFileTreeDownloadError({ code: 'zip-generation-failed', path, cause: error });
+              throw createFileTreeDownloadError({
+                code: 'zip-generation-failed',
+                path,
+                cause: error,
+              });
             }
             try {
               downloadBlob(zipBlob, `${name}.zip`);
             } catch (error) {
-              throw createFileTreeDownloadError({ code: 'browser-download-failed', path, cause: error });
+              throw createFileTreeDownloadError({
+                code: 'browser-download-failed',
+                path,
+                cause: error,
+              });
             }
           },
           {
@@ -1198,19 +1458,19 @@ export const ChatEditorFileTree = memo(function ({
       } else {
         toast.promise(
           async () => {
-            let content: Awaited<ReturnType<typeof readFile>>;
-            try {
-              content = await readFile(path);
-            } catch (error) {
-              throw createFileTreeDownloadError({ code: 'path-not-found', path, cause: error });
-            }
+            const { contentService } = await whenServicesReady();
+            const content = await contentService.readRawBytes(path, { sizeLimit: Number.MAX_SAFE_INTEGER });
             const blob = new Blob([asBuffer(content.buffer)], {
               type: 'application/octet-stream',
             });
             try {
               downloadBlob(blob, name);
             } catch (error) {
-              throw createFileTreeDownloadError({ code: 'browser-download-failed', path, cause: error });
+              throw createFileTreeDownloadError({
+                code: 'browser-download-failed',
+                path,
+                cause: error,
+              });
             }
           },
           {
@@ -1221,7 +1481,7 @@ export const ChatEditorFileTree = memo(function ({
         );
       }
     },
-    [readFile, getZippedDirectory],
+    [whenServicesReady, getZippedDirectory, presentationFor],
   );
 
   const handleCopyPath = useCallback(async (path: string): Promise<void> => {
@@ -1234,23 +1494,51 @@ export const ChatEditorFileTree = memo(function ({
 
       toast.error(result.message, result.description ? { description: result.description } : undefined);
     } catch (error) {
-      toast.error('Failed to copy path', { description: error instanceof Error ? error.message : String(error) });
+      toast.error('Failed to copy path', {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   }, []);
 
-  const handleUploadClick = useCallback((targetPath: string) => {
-    if (isBundledTypesWorkspacePath(targetPath)) {
-      toast.error('This path is read-only.');
-      return;
-    }
-    setUploadTargetPath(targetPath);
-    fileInputRef.current?.click();
-  }, []);
+  /**
+   * Place a whole system skill bundle into the project so the project owns it
+   * (V8, ruling P11): the one write allowed under a read-only overlay, and the
+   * client — not this menu — keeps it whole.
+   */
+  const handleCopyToProject = useCallback(
+    (path: string) => {
+      const copyToProject = async (): Promise<void> => {
+        await overrideUnit(path);
+        treeService?.scheduleRefresh(path);
+      };
+      toast.promise(copyToProject(), {
+        loading: 'Copying to project…',
+        success: 'Copied to project. Your version replaces the system skill.',
+        error: (error: unknown) => `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    },
+    [overrideUnit, treeService],
+  );
+
+  const handleUploadClick = useCallback(
+    (targetPath: string) => {
+      if (isReadOnlyPath(targetPath)) {
+        toast.error('This path is read-only.');
+        return;
+      }
+      setUploadTargetPath(targetPath);
+      fileInputRef.current?.click();
+    },
+    [isReadOnlyPath],
+  );
 
   // Shared import processing logic for both drag-drop and upload button.
   const processDroppedEntries = useCallback(
     async (
-      entries: { readonly files: readonly DroppedFile[]; readonly directories: readonly DroppedDirectory[] },
+      entries: {
+        readonly files: readonly DroppedFile[];
+        readonly directories: readonly DroppedDirectory[];
+      },
       targetDirectory: string,
     ) => {
       const directoryPaths = collectDropDirectoryPaths({
@@ -1342,7 +1630,9 @@ export const ChatEditorFileTree = memo(function ({
         toast.success(summary.success.message);
       }
       if (summary.failure) {
-        toast.error(summary.failure.message, { description: summary.failure.description });
+        toast.error(summary.failure.message, {
+          description: summary.failure.description,
+        });
       }
     },
     [
@@ -1395,11 +1685,14 @@ export const ChatEditorFileTree = memo(function ({
 
   const handleForeignDrop = useCallback(
     async ({ path, isFolder, dataTransfer }: ForeignDropTarget): Promise<void> => {
+      if (readOnly) {
+        return;
+      }
       const targetDirectory = resolveFileTreeTargetDirectory({
         targetPath: path,
         getTargetData: (targetPath) => (targetPath === path ? { isFolder } : undefined),
       });
-      if (isBundledTypesWorkspacePath(path) || isBundledTypesWorkspacePath(targetDirectory)) {
+      if (isReadOnlyPath(path) || isReadOnlyPath(targetDirectory)) {
         toast.error('This path is read-only.');
         return;
       }
@@ -1421,7 +1714,7 @@ export const ChatEditorFileTree = memo(function ({
 
       await processDroppedEntries(ingestion, targetDirectory);
     },
-    [processDroppedEntries],
+    [isReadOnlyPath, processDroppedEntries, readOnly],
   );
 
   const setTreeContainerElement: React.RefCallback<HTMLDivElement> = useCallback(
@@ -1455,7 +1748,7 @@ export const ChatEditorFileTree = memo(function ({
       event.preventDefault();
       event.stopPropagation();
       dataTransfer.dropEffect =
-        isBundledTypesWorkspacePath(target.path) || isBundledTypesWorkspacePath(targetDirectory) ? 'none' : 'copy';
+        readOnly || isReadOnlyPath(target.path) || isReadOnlyPath(targetDirectory) ? 'none' : 'copy';
     };
 
     const handleDrop = (event: DragEvent): void => {
@@ -1466,7 +1759,12 @@ export const ChatEditorFileTree = memo(function ({
 
       event.preventDefault();
       event.stopPropagation();
-      void handleForeignDrop({ ...getForeignDropTargetFromEvent(event), dataTransfer });
+      if (!readOnly) {
+        void handleForeignDrop({
+          ...getForeignDropTargetFromEvent(event),
+          dataTransfer,
+        });
+      }
     };
 
     container.addEventListener('dragenter', handleDragEnterOrOver, true);
@@ -1477,7 +1775,7 @@ export const ChatEditorFileTree = memo(function ({
       container.removeEventListener('dragover', handleDragEnterOrOver, true);
       container.removeEventListener('drop', handleDrop, true);
     };
-  }, [handleForeignDrop]);
+  }, [handleForeignDrop, isReadOnlyPath, readOnly]);
 
   // Get display name for delete dialog
   const deleteItemName = useMemo(() => {
@@ -1525,7 +1823,7 @@ export const ChatEditorFileTree = memo(function ({
               Blank
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            {kernelConfigurations.map((kernel) => (
+            {availableKernelConfigurations().map((kernel) => (
               <DropdownMenuItem
                 key={kernel.id}
                 onSelect={() => {
@@ -1576,7 +1874,8 @@ export const ChatEditorFileTree = memo(function ({
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent
-          className='sm:max-w-md'
+          // The title names the file; the dialog portals outside the replay-blocked panel.
+          className='ph-no-capture sm:max-w-md'
           onCloseAutoFocus={(event) => {
             // Prevent default focus restoration (trigger element is gone)
             // and manually focus the tree container
@@ -1594,7 +1893,10 @@ export const ChatEditorFileTree = memo(function ({
           <AlertDialogFooter className='gap-2'>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              className={buttonVariants({ variant: 'destructive', className: 'pr-3' })}
+              className={buttonVariants({
+                variant: 'destructive',
+                className: 'pr-3',
+              })}
               onClick={confirmDelete}
             >
               Delete
@@ -1613,7 +1915,8 @@ export const ChatEditorFileTree = memo(function ({
         }}
       />
 
-      <FloatingPanelContent className={cn(borderless && 'bg-background')}>
+      {/* `ph-no-capture`: session replay never records project file names. */}
+      <FloatingPanelContent className={cn('ph-no-capture', borderless && 'bg-background')}>
         {showTitle || closeButton ? (
           <FloatingPanelContentHeader className={cn(borderless && 'border-0 bg-transparent px-2')}>
             {showTitle ? <FloatingPanelContentTitle>Files</FloatingPanelContentTitle> : <span />}
@@ -1632,7 +1935,7 @@ export const ChatEditorFileTree = memo(function ({
           >
             <SearchInput
               {...tree.getSearchInputElementProps()}
-              placeholder='Filter files...'
+              placeholder='Filter files…'
               className='h-7 min-w-0 flex-1 bg-background'
               onBlur={undefined}
               onClear={() => {
@@ -1656,6 +1959,7 @@ export const ChatEditorFileTree = memo(function ({
               {pendingFolder?.parentPath === '' ? (
                 <PendingFolderInput
                   parentPath=''
+                  isReadOnlyPath={isReadOnlyPath}
                   error={pendingFolder.error}
                   allPaths={allPaths}
                   level={0}
@@ -1675,6 +1979,7 @@ export const ChatEditorFileTree = memo(function ({
                 <PendingFileInput
                   inputRef={pendingFileInputRef}
                   parentPath=''
+                  isReadOnlyPath={isReadOnlyPath}
                   extension={pendingFile.extension}
                   defaultName={pendingFile.defaultName}
                   error={pendingFile.error}
@@ -1740,6 +2045,8 @@ export const ChatEditorFileTree = memo(function ({
                           <div key={itemId}>
                             <TreeItem
                               item={item}
+                              presentation={presentationFor(itemId)}
+                              isReadOnly={readOnly}
                               isActive={activeFilePath === itemId}
                               isOpen={openFiles.some((f) => f.path === itemId)}
                               searchQuery={tree.getState().search ?? ''}
@@ -1750,14 +2057,17 @@ export const ChatEditorFileTree = memo(function ({
                               onUpload={handleUploadClick}
                               onOpenInEditor={handleOpenInEditor}
                               onOpenInViewer={handleOpenInViewer}
+                              onQuickLook={desktopBridge()?.quickLook ? handleQuickLook : undefined}
                               onDownload={handleDownload}
                               onCopyPath={handleCopyPath}
+                              onCopyToProject={handleCopyToProject}
                               onForeignDrop={handleForeignDrop}
                             />
                             {/* Pending folder inside this folder */}
                             {pendingFolder?.parentPath === itemId && item.isFolder() ? (
                               <PendingFolderInput
                                 parentPath={pendingFolder.parentPath}
+                                isReadOnlyPath={isReadOnlyPath}
                                 error={pendingFolder.error}
                                 allPaths={allPaths}
                                 level={itemLevel + 1}
@@ -1777,6 +2087,7 @@ export const ChatEditorFileTree = memo(function ({
                               <PendingFileInput
                                 inputRef={pendingFileInputRef}
                                 parentPath={pendingFile.parentPath}
+                                isReadOnlyPath={isReadOnlyPath}
                                 extension={pendingFile.extension}
                                 defaultName={pendingFile.defaultName}
                                 error={pendingFile.error}
@@ -1807,7 +2118,9 @@ export const ChatEditorFileTree = memo(function ({
               })()}
             </div>
           ) : (
-            <EmptyItems className='m-2'>No files available</EmptyItems>
+            <div className='min-h-0 flex-1 p-2'>
+              <FileTreeEmptyState />
+            </div>
           )}
         </FloatingPanelContentBody>
       </FloatingPanelContent>
@@ -1815,8 +2128,32 @@ export const ChatEditorFileTree = memo(function ({
   );
 });
 
+/**
+ * The open pull's first window (D28, S41, W13 P34).
+ *
+ * A second device opens a project whose files are still on the remote, and
+ * "No files available" would be wrong rather than merely early. The
+ * scheduler's facet is the one signal: while it reads `checking` the pull is
+ * inside its 3 s window, and the moment it answers — or that window elapses —
+ * this says what the device actually has. No second copy of the exits lives
+ * here. The revision status is read here rather than by the tree, whose rows
+ * would otherwise all re-render on every revision the project mints.
+ */
+function FileTreeEmptyState(): React.JSX.Element {
+  const checkingRemote = useRevisionStatus()?.sync.state === 'checking';
+  return (
+    <PanelEmptyState
+      icon={FolderOpen}
+      title={checkingRemote ? 'Checking…' : 'No files available'}
+      className='rounded-xl border bg-card'
+    />
+  );
+}
+
 type TreeItemProps = {
   readonly item: ItemInstance<TreeItemData>;
+  readonly presentation: RowPresentation;
+  readonly isReadOnly?: boolean;
   readonly isActive: boolean;
   readonly isOpen: boolean;
   readonly searchQuery: string;
@@ -1827,14 +2164,18 @@ type TreeItemProps = {
   readonly onUpload: (path: string) => void;
   readonly onOpenInEditor: (path: string) => void;
   readonly onOpenInViewer: (path: string) => void;
+  readonly onQuickLook?: (path: string) => void;
   readonly onDownload: (path: string, isFolder: boolean) => void;
   readonly onCopyPath: (path: string) => Promise<void>;
+  readonly onCopyToProject: (path: string) => void;
   readonly onForeignDrop: (target: ForeignDropTarget) => Promise<void>;
 };
 
 // oxlint-disable-next-line complexity -- UI rendering with many conditional states
 function TreeItem({
   item,
+  presentation,
+  isReadOnly: parentReadOnly = false,
   isActive,
   isOpen,
   searchQuery,
@@ -1845,26 +2186,34 @@ function TreeItem({
   onUpload,
   onOpenInEditor,
   onOpenInViewer,
+  onQuickLook,
   onDownload,
   onCopyPath,
+  onCopyToProject,
   onForeignDrop,
 }: TreeItemProps): React.JSX.Element {
+  // `item` is a stable handle onto the tree's mutable state, so memoizing on its identity freezes
+  // `aria-expanded`, selection and the chevron at their first value — in compiled builds only, which
+  // is why no jsdom suite sees it: https://headless-tree.lukasbach.com/guides/react-compiler/
+  'use no memo';
   const itemLevel = item.getItemMeta().level;
   const paddingLeft = itemLevel * 16 + 8;
   const isSelected = item.isSelected();
   const isRenaming = item.isRenaming();
   const isFolder = item.isFolder();
-  const readOnly = isBundledTypesWorkspacePath(item.getId());
-  const downloadPolicy = getFileTreeDownloadPolicy(item.getId());
+  const readOnly = parentReadOnly || presentation.readOnly;
+  /* An overlay unit is what a project entry replaces wholesale (V8), so the
+   * override gesture belongs on its root row and nowhere else. */
+  const overridableUnit = presentation.isSubtreeRoot && presentation.provenance?.source === 'system-skills';
+  const downloadPolicy = getFileTreeDownloadPolicy(presentation.provenance);
+  const descriptionId = useId();
+  const { description } = presentation;
 
   // Rename input - NOT wrapped by ContextMenu to avoid focus interference
   if (isRenaming) {
     const renameInputProps = item.getRenameInputProps() as React.InputHTMLAttributes<HTMLInputElement>;
     return (
-      <div
-        className='relative flex h-7 items-center border border-input py-1 pr-1 pl-2 focus-within:ring-2 focus-within:ring-ring focus-within:ring-inset'
-        style={{ paddingLeft: `${paddingLeft}px` }}
-      >
+      <div className={cn(sidebarRowClass(true), 'py-1 pl-2')} style={{ paddingLeft: `${paddingLeft}px` }}>
         {/* Indent guide lines (VS Code-style) */}
         {Array.from({ length: itemLevel }, (_, index) => {
           const guideDepth = index + 1;
@@ -1892,7 +2241,7 @@ function TreeItem({
             <FileExtensionIcon filename={item.getItemName()} className='size-3.5 shrink-0 text-muted-foreground' />
           )}
           <input
-            className='h-full min-w-0 flex-1 border-none bg-transparent px-0 text-sm shadow-none outline-none focus:border-transparent focus:ring-0 focus:ring-offset-0'
+            className='h-full min-w-0 flex-1 border-0 bg-transparent px-0 text-sm outline-hidden'
             autoCorrect='off'
             {...renameInputProps}
             onFocus={(event) => {
@@ -1919,311 +2268,267 @@ function TreeItem({
   const treeItemProps = item.getProps();
   const treeDragOver = (treeItemProps as { readonly onDragOver?: (event: DragEvent) => void }).onDragOver;
   const treeDrop = (treeItemProps as { readonly onDrop?: (event: DragEvent) => void }).onDrop;
+  /* The library's own row handler: selection, focus, primary action and the
+   * expand/collapse toggle. It reads React's event, never a second dispatch of
+   * the native one, so its propagation controls apply where the click arrived. */
+  const treeClick = (treeItemProps as { readonly onClick?: (event: React.MouseEvent) => void }).onClick;
 
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
-          {...treeItemProps}
-          data-testid='file-tree-item'
-          data-file-tree-path={item.getId()}
-          data-file-tree-kind={isFolder ? 'directory' : 'file'}
-          className={cn(
-            'group/file relative flex h-7 w-full cursor-pointer items-center justify-between rounded-md py-1 pr-1 pl-2 text-sm text-sidebar-foreground transition-colors',
-            !isActive && 'hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
-            isActive && !isSelected && 'bg-sidebar-accent',
-            isSelected && 'bg-sidebar-accent/70 text-sidebar-accent-foreground',
-            item.isMatchingSearch() && 'bg-primary/20',
-            (item.isDragTarget() || isInsideDragTarget) && 'bg-primary/20',
-          )}
-          style={{ paddingLeft: `${paddingLeft}px` }}
-          onClick={(event) => {
-            if (event.shiftKey || event.ctrlKey || event.metaKey) {
-              // Multi-select click: handle selection + focus only, skip primaryAction (file open)
-              if (event.shiftKey) {
-                item.selectUpTo(event.ctrlKey || event.metaKey);
-              } else {
-                item.toggleSelect();
-              }
-
-              item.setFocused();
-              return;
-            }
-
-            // Plain click: delegate to tree's onClick (handles selection, focus, primaryAction, expand/collapse)
-            const { onClick } = treeItemProps as {
-              onClick?: (event: MouseEvent) => void;
-            };
-            onClick?.(event.nativeEvent);
-          }}
-          onDragOver={(event) => {
-            if (canReadForeignFileTreeDrop(event.dataTransfer)) {
-              event.preventDefault();
-              event.stopPropagation();
-              event.dataTransfer.dropEffect = readOnly ? 'none' : 'copy';
-              return;
-            }
-
-            treeDragOver?.(event.nativeEvent);
-          }}
-          onDrop={(event) => {
-            if (canReadForeignFileTreeDrop(event.dataTransfer)) {
-              event.preventDefault();
-              event.stopPropagation();
-              void onForeignDrop({
-                path: item.getId(),
-                isFolder,
-                dataTransfer: event.dataTransfer,
-              });
-              return;
-            }
-
-            treeDrop?.(event.nativeEvent);
-          }}
-        >
-          {/* Indent guide lines (VS Code-style) */}
-          {Array.from({ length: itemLevel }, (_, index) => {
-            const guideDepth = index + 1;
-            const isActiveGuide = activeFileLevel > 0 ? guideDepth === activeFileLevel : guideDepth === itemLevel;
-            return (
-              <span
-                key={guideDepth}
-                aria-hidden
-                className={cn(
-                  'pointer-events-none absolute -top-0.5 -bottom-0.5 w-px',
-                  isActiveGuide
-                    ? 'bg-border'
-                    : 'bg-border opacity-0 transition-opacity group-hover/filetree:opacity-100',
-                )}
-                style={{ left: `${guideDepth * 16}px` }}
-              />
-            );
-          })}
-          <div className='flex min-w-0 flex-1 grow items-center gap-2'>
-            {isFolder ? (
-              item.isExpanded() ? (
-                <FolderOpen className='size-3.5 shrink-0 text-muted-foreground' />
-              ) : (
-                <Folder className='size-3.5 shrink-0 text-muted-foreground' />
-              )
-            ) : (
-              <FileExtensionIcon filename={item.getItemName()} className='size-3.5 shrink-0 text-muted-foreground' />
-            )}
-            <span className={cn('truncate', isOpen && 'font-medium', isActive && 'text-sidebar-accent-foreground')}>
-              <HighlightText text={item.getItemName()} searchTerm={searchQuery} />
-            </span>
-          </div>
-          {isFolder ? null : (
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant='ghost'
-                  size='icon'
-                  aria-label={`Actions for ${item.getItemName()}`}
-                  className='absolute top-1/2 right-1 size-4.5 -translate-y-1/2 rounded-[5px] bg-transparent p-0 text-muted-foreground opacity-0 group-hover/file:opacity-100 hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground data-[state=open]:opacity-100'
-                  onClick={(event) => {
-                    event.stopPropagation();
-                  }}
-                >
-                  <MoreHorizontal className='size-3.5' />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align='start' side='right'>
-                <DropdownMenuItem
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onOpenInEditor(item.getId());
-                  }}
-                >
-                  <Code />
-                  <span>Open in Editor</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onOpenInViewer(item.getId());
-                  }}
-                >
-                  <Box />
-                  <span>Open in Viewer</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {readOnly ? (
-                  <DropdownMenuItem disabled>
-                    <Lock />
-                    <span>Read-only</span>
-                  </DropdownMenuItem>
-                ) : (
-                  <>
-                    <DropdownMenuItem
-                      onSelect={() => {
-                        item.startRenaming();
-                      }}
-                    >
-                      <Edit />
-                      <span>Rename</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onUpload(item.getId());
-                      }}
-                    >
-                      <Upload />
-                      <span>Upload Files</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDuplicate([item]);
-                      }}
-                    >
-                      <Copy />
-                      <span>Duplicate</span>
-                    </DropdownMenuItem>
-                  </>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void onCopyPath(item.getId());
-                  }}
-                >
-                  <Clipboard />
-                  <span>Copy Path</span>
-                </DropdownMenuItem>
-                {downloadPolicy.allowed ? (
-                  <DropdownMenuItem
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onDownload(item.getId(), false);
-                    }}
-                  >
-                    <Download />
-                    <span>Download</span>
-                  </DropdownMenuItem>
-                ) : null}
-                {readOnly ? null : (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant='destructive'
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDelete([item]);
-                      }}
-                    >
-                      <Trash2 />
-                      <span>Delete</span>
-                    </DropdownMenuItem>
-                  </>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        {isFolder ? null : (
-          <>
-            <ContextMenuItem
-              onClick={() => {
-                onOpenInEditor(item.getId());
-              }}
-            >
-              <Code />
-              <span>Open in Editor</span>
-            </ContextMenuItem>
-            <ContextMenuItem
-              onClick={() => {
-                onOpenInViewer(item.getId());
-              }}
-            >
-              <Box />
-              <span>Open in Viewer</span>
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-          </>
-        )}
-        {readOnly ? (
-          <>
-            <ContextMenuItem disabled>
-              <Lock />
-              <span>Read-only</span>
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-          </>
-        ) : (
-          <>
-            <ContextMenuItem
-              onSelect={() => {
-                item.startRenaming();
-              }}
-            >
-              <Edit />
-              <span>Rename</span>
-            </ContextMenuItem>
-            <ContextMenuItem
-              onClick={() => {
-                onUpload(item.getId());
-              }}
-            >
-              <Upload />
-              <span>Upload Files</span>
-            </ContextMenuItem>
-            {isFolder ? null : (
-              <ContextMenuItem
-                onClick={() => {
-                  onDuplicate([item]);
-                }}
-              >
-                <Copy />
-                <span>Duplicate</span>
-              </ContextMenuItem>
-            )}
-            <ContextMenuSeparator />
-          </>
-        )}
-        <ContextMenuItem
-          onClick={() => {
-            void onCopyPath(item.getId());
-          }}
-        >
-          <Clipboard />
-          <span>Copy Path</span>
-        </ContextMenuItem>
-        {downloadPolicy.allowed ? (
-          <ContextMenuItem
-            onClick={() => {
-              onDownload(item.getId(), isFolder);
+  /* One list for the row's context menu and its actions button alike. */
+  const menuItems: SidebarRowMenuItems = ({ Item, Separator }) => (
+    <>
+      {isFolder ? null : (
+        <>
+          <Item
+            onSelect={() => {
+              onOpenInEditor(item.getId());
             }}
           >
-            <Download />
-            <span>{isFolder ? 'Download as ZIP' : 'Download'}</span>
-          </ContextMenuItem>
-        ) : null}
-        {readOnly ? null : (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              variant='destructive'
-              onClick={() => {
-                onDelete([item]);
+            <Code aria-hidden />
+            Open in Editor
+          </Item>
+          <Item
+            onSelect={() => {
+              onOpenInViewer(item.getId());
+            }}
+          >
+            <Box aria-hidden />
+            Open in Viewer
+          </Item>
+          {onQuickLook ? (
+            <Item
+              onSelect={() => {
+                onQuickLook(item.getId());
               }}
             >
-              <Trash2 />
-              <span>Delete</span>
-            </ContextMenuItem>
-          </>
+              <Eye aria-hidden />
+              Quick Look
+            </Item>
+          ) : null}
+          <Separator />
+        </>
+      )}
+      {readOnly ? (
+        <>
+          <Item disabled>
+            <Lock aria-hidden />
+            Read-only
+          </Item>
+          {overridableUnit ? (
+            <Item
+              onSelect={() => {
+                onCopyToProject(item.getId());
+              }}
+            >
+              <Copy aria-hidden />
+              Copy to project
+            </Item>
+          ) : null}
+          <Separator />
+        </>
+      ) : (
+        <>
+          <Item
+            onSelect={() => {
+              item.startRenaming();
+            }}
+          >
+            <Edit aria-hidden />
+            Rename
+          </Item>
+          <Item
+            onSelect={() => {
+              onUpload(item.getId());
+            }}
+          >
+            <Upload aria-hidden />
+            Upload Files
+          </Item>
+          {isFolder ? null : (
+            <Item
+              onSelect={() => {
+                onDuplicate([item]);
+              }}
+            >
+              <Copy aria-hidden />
+              Duplicate
+            </Item>
+          )}
+          <Separator />
+        </>
+      )}
+      <Item
+        onSelect={() => {
+          void onCopyPath(item.getId());
+        }}
+      >
+        <Clipboard aria-hidden />
+        Copy Path
+      </Item>
+      {downloadPolicy.allowed ? (
+        <Item
+          onSelect={() => {
+            onDownload(item.getId(), isFolder);
+          }}
+        >
+          <Download aria-hidden />
+          {isFolder ? 'Download as ZIP' : 'Download'}
+        </Item>
+      ) : null}
+      {readOnly ? null : (
+        <>
+          <Separator />
+          <Item
+            variant='destructive'
+            onSelect={() => {
+              onDelete([item]);
+            }}
+          >
+            <Trash2 aria-hidden />
+            Delete
+          </Item>
+        </>
+      )}
+    </>
+  );
+
+  return (
+    <SidebarRowContextMenu items={menuItems} isDisabled={false} className='w-48'>
+      <div
+        {...treeItemProps}
+        data-testid='file-tree-item'
+        data-file-tree-path={item.getId()}
+        data-file-tree-kind={isFolder ? 'directory' : 'file'}
+        {...(description ? { 'aria-describedby': descriptionId, title: description } : {})}
+        className={cn(
+          // The sidebar's row: dissolving name, actions over its tail, one lit background on hover,
+          // focus and open menus. Own compositing layer so the native drag image keeps transparent
+          // rounded corners.
+          sidebarRowClass(false),
+          'transform-gpu py-1 pl-2 hover:text-sidebar-accent-foreground',
+          isActive && !isSelected && 'bg-sidebar-accent',
+          isSelected && 'bg-sidebar-accent/70 text-sidebar-accent-foreground',
+          item.isMatchingSearch() && 'bg-primary/20',
+          (item.isDragTarget() || isInsideDragTarget) && 'bg-primary/20',
         )}
-      </ContextMenuContent>
-    </ContextMenu>
+        style={{ paddingLeft: `${paddingLeft}px` }}
+        /* Double-clicking the name renames it, as in the sidebar. */
+        onDoubleClick={
+          readOnly
+            ? undefined
+            : () => {
+                item.startRenaming();
+              }
+        }
+        onClick={(event) => {
+          if (event.shiftKey || event.ctrlKey || event.metaKey) {
+            // Multi-select click: handle selection + focus only, skip primaryAction (file open)
+            if (event.shiftKey) {
+              item.selectUpTo(event.ctrlKey || event.metaKey);
+            } else {
+              item.toggleSelect();
+            }
+
+            item.setFocused();
+            return;
+          }
+
+          treeClick?.(event);
+        }}
+        onDragOver={(event) => {
+          if (canReadForeignFileTreeDrop(event.dataTransfer)) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = readOnly ? 'none' : 'copy';
+            return;
+          }
+
+          treeDragOver?.(event.nativeEvent);
+        }}
+        onDrop={(event) => {
+          if (canReadForeignFileTreeDrop(event.dataTransfer)) {
+            event.preventDefault();
+            event.stopPropagation();
+            void onForeignDrop({
+              path: item.getId(),
+              isFolder,
+              dataTransfer: event.dataTransfer,
+            });
+            return;
+          }
+
+          treeDrop?.(event.nativeEvent);
+        }}
+      >
+        {/* Indent guide lines (VS Code-style); the guide at a mounted subtree's own depth is dashed. */}
+        {Array.from({ length: itemLevel }, (_, index) => {
+          const guideDepth = index + 1;
+          const isActiveGuide = activeFileLevel > 0 ? guideDepth === activeFileLevel : guideDepth === itemLevel;
+          const isSubtreeGuide =
+            presentation.subtreeRootLevel !== undefined && guideDepth === presentation.subtreeRootLevel + 1;
+          return (
+            <span
+              key={guideDepth}
+              aria-hidden
+              className={cn(
+                'pointer-events-none absolute -top-0.5 -bottom-0.5',
+                isSubtreeGuide
+                  ? 'w-0 border-l border-dashed border-border'
+                  : cn(
+                      'w-px',
+                      isActiveGuide
+                        ? 'bg-border'
+                        : 'bg-border opacity-0 transition-opacity group-hover/filetree:opacity-100',
+                    ),
+              )}
+              style={{ left: `${guideDepth * 16}px` }}
+            />
+          );
+        })}
+        <div className='flex min-w-0 flex-1 grow items-center gap-2'>
+          {isFolder ? (
+            item.isExpanded() ? (
+              <FolderOpen className='size-3.5 shrink-0 text-muted-foreground' />
+            ) : (
+              <Folder className='size-3.5 shrink-0 text-muted-foreground' />
+            )
+          ) : (
+            <FileExtensionIcon filename={item.getItemName()} className='size-3.5 shrink-0 text-muted-foreground' />
+          )}
+          <span
+            className={cn(
+              'fade-label flex-1',
+              isOpen && 'font-medium',
+              presentation.dimmed && 'text-muted-foreground',
+              isActive && 'text-sidebar-accent-foreground',
+            )}
+          >
+            <HighlightText text={item.getItemName()} searchTerm={searchQuery} />
+          </span>
+          {presentation.isSubtreeRoot && presentation.badge ? (
+            <Badge variant='secondary' className='ml-auto shrink-0 px-1.5 py-0 font-normal'>
+              {presentation.badge}
+            </Badge>
+          ) : null}
+          {presentation.isSubtreeRoot && presentation.glyph === 'lock' ? (
+            <Lock aria-hidden data-provenance-glyph='lock' className='size-3 shrink-0 text-muted-foreground' />
+          ) : null}
+          {description ? (
+            <span id={descriptionId} className='sr-only'>
+              {description}
+            </span>
+          ) : null}
+        </div>
+        <SidebarRowActions>
+          <SidebarRowMenuButton name={item.getItemName()} items={menuItems} className='w-48' />
+        </SidebarRowActions>
+      </div>
+    </SidebarRowContextMenu>
   );
 }
 
 type PendingFolderInputProps = {
   readonly parentPath: string;
+  readonly isReadOnlyPath: (path: string) => boolean;
   readonly error: string | undefined;
   readonly allPaths: Set<string>;
   readonly level: number;
@@ -2234,6 +2539,7 @@ type PendingFolderInputProps = {
 
 function PendingFolderInput({
   parentPath,
+  isReadOnlyPath,
   error,
   allPaths,
   level,
@@ -2257,8 +2563,8 @@ function PendingFolderInput({
       }
 
       const fullPath = parentPath ? `${parentPath}/${trimmedName}` : trimmedName;
-      if (isBundledTypesWorkspacePath(fullPath)) {
-        return `'${fullPath}' is inside the bundled @types workspace, which is read-only.`;
+      if (isReadOnlyPath(fullPath)) {
+        return readOnlyPathMessage(fullPath);
       }
       if (allPaths.has(fullPath)) {
         return `A file or folder ${trimmedName} already exists at this location. Please choose a different name.`;
@@ -2266,7 +2572,7 @@ function PendingFolderInput({
 
       return undefined;
     },
-    [parentPath, allPaths],
+    [parentPath, allPaths, isReadOnlyPath],
   );
 
   const handleKeyDown = useCallback(
@@ -2295,7 +2601,7 @@ function PendingFolderInput({
   return (
     <div className='flex w-full flex-col gap-0.5'>
       <div
-        className='flex h-7 w-full items-center border border-input py-1 pr-1 focus-within:ring-2 focus-within:ring-ring focus-within:ring-inset'
+        className='flex h-7 w-full items-center border border-input py-1 pr-1 focus-within:focus-outline'
         style={{ paddingLeft: `${paddingLeft}px` }}
       >
         <div className='flex min-w-0 flex-1 items-center gap-2'>
@@ -2303,7 +2609,7 @@ function PendingFolderInput({
           <input
             autoFocus
             value={value}
-            className='h-full min-w-0 flex-1 border-none bg-transparent px-0 text-sm shadow-none outline-none focus:border-transparent focus:ring-0 focus:ring-offset-0'
+            className='h-full min-w-0 flex-1 border-none bg-transparent px-0 text-sm shadow-none outline-none focus:border-transparent focus-visible:outline-none'
             placeholder='Folder name'
             onChange={(event) => {
               setValue(event.target.value);
@@ -2319,7 +2625,7 @@ function PendingFolderInput({
       </div>
       {error ? (
         <div
-          className='rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive'
+          className='rounded-md bg-feature/10 px-2 py-1 text-xs text-feature'
           style={{ marginLeft: `${paddingLeft}px` }}
         >
           {error}
@@ -2333,6 +2639,7 @@ type PendingFileInputProps = {
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
   readonly inputRef: React.RefObject<HTMLInputElement | null>;
   readonly parentPath: string;
+  readonly isReadOnlyPath: (path: string) => boolean;
   readonly extension: string;
   readonly defaultName: string;
   readonly error: string | undefined;
@@ -2346,6 +2653,7 @@ type PendingFileInputProps = {
 function PendingFileInput({
   inputRef,
   parentPath,
+  isReadOnlyPath,
   extension,
   defaultName,
   error,
@@ -2381,8 +2689,8 @@ function PendingFileInput({
       }
 
       const fullPath = parentPath ? `${parentPath}/${trimmedName}` : trimmedName;
-      if (isBundledTypesWorkspacePath(fullPath)) {
-        return `'${fullPath}' is inside the bundled @types workspace, which is read-only.`;
+      if (isReadOnlyPath(fullPath)) {
+        return readOnlyPathMessage(fullPath);
       }
       if (allPaths.has(fullPath)) {
         return `A file ${trimmedName} already exists at this location. Please choose a different name.`;
@@ -2390,7 +2698,7 @@ function PendingFileInput({
 
       return undefined;
     },
-    [parentPath, allPaths],
+    [parentPath, allPaths, isReadOnlyPath],
   );
 
   const handleKeyDown = useCallback(
@@ -2421,7 +2729,7 @@ function PendingFileInput({
   return (
     <div className='flex w-full flex-col gap-0.5'>
       <div
-        className='flex h-7 w-full items-center border border-input py-1 pr-1 focus-within:ring-2 focus-within:ring-ring focus-within:ring-inset'
+        className='flex h-7 w-full items-center border border-input py-1 pr-1 focus-within:focus-outline'
         style={{ paddingLeft: `${paddingLeft}px` }}
       >
         <div className='flex min-w-0 flex-1 items-center gap-2'>
@@ -2432,7 +2740,7 @@ function PendingFileInput({
           <input
             ref={inputRef}
             value={value}
-            className='h-full min-w-0 flex-1 border-none bg-transparent px-0 text-sm shadow-none outline-none focus:border-transparent focus:ring-0 focus:ring-offset-0'
+            className='h-full min-w-0 flex-1 border-none bg-transparent px-0 text-sm shadow-none outline-none focus:border-transparent focus-visible:outline-none'
             placeholder='New File'
             onChange={(event) => {
               setValue(event.target.value);
@@ -2449,7 +2757,7 @@ function PendingFileInput({
       </div>
       {error ? (
         <div
-          className='rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive'
+          className='rounded-md bg-feature/10 px-2 py-1 text-xs text-feature'
           style={{ marginLeft: `${paddingLeft}px` }}
         >
           {error}

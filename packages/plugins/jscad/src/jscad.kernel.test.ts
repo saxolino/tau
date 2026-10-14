@@ -2,18 +2,20 @@
 /* oxlint-disable max-lines -- comprehensive kernel test suite */
 /* oxlint-disable @typescript-eslint/no-unsafe-assignment -- Vitest asymmetric matchers are typed as any in structured assertions. */
 
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { encode as msgpackEncode, decode as msgpackDecode } from '@msgpack/msgpack';
 import { NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsUnlit } from '@gltf-transform/extensions';
-import type { JSONSchema7 } from '@taucad/runtime/types';
+import type { ParameterManifest } from '@taucad/parameters';
+import type { ComputeStore } from '@taucad/runtime/types';
 import { afterEach, describe, it, expect, beforeAll } from 'vitest';
 import * as jscadModelingImport from '@jscad/modeling';
 import { jscadKernel } from '#jscad.kernel.js';
 import { resolveJscadModeling } from '#jscad-modeling.js';
 import { jscadToGltf } from '#jscad-to-gltf.js';
+import { normalizeJscadParts } from '#jscad-parts.js';
 import {
   createMockKernelRuntime,
   createGeometryTestHelpers,
@@ -21,7 +23,7 @@ import {
   createTestRuntimeClient,
   extractGltfFromExportResult,
   extractGltfFromResult,
-  getTestParameters,
+  expectKernelProjectionOrder,
   mapZupMillimetersToYupMeters,
   readCoordinateEvidence,
 } from '@taucad/runtime-testing';
@@ -29,18 +31,23 @@ import { resolveRuntimePluginDefinition } from '@taucad/runtime/plugin';
 
 import { middleware } from '@taucad/middleware';
 import { esbuildBundler } from '@taucad/esbuild';
-import { createRuntimeClient, defineRuntime } from '@taucad/runtime';
+import { asKnownArtifact, createRuntimeClient, defineRuntime } from '@taucad/runtime';
 import { fromNodeFs } from '@taucad/runtime/filesystem/node';
+import { createSqliteComputeEngine, fromSqlite } from '@taucad/runtime/node';
 import { inProcessTransport } from '@taucad/runtime/transport/in-process';
 
 // =============================================================================
 // Test Utilities
 // =============================================================================
 
-const testRuntime = defineRuntime({ kernels: [jscadKernel()], bundlers: [esbuildBundler()] });
-const testClients = new Set<ReturnType<typeof createTestRuntimeClient>>();
+const testRuntime = defineRuntime({
+  kernels: [jscadKernel()],
+  bundlers: [esbuildBundler()],
+});
+const makeTestClient = (files: Record<string, string>) => createTestRuntimeClient({ runtime: testRuntime, files });
+const testClients = new Set<ReturnType<typeof makeTestClient>>();
 const createClient = (files: Record<string, string>) => {
-  const client = createTestRuntimeClient({ runtime: testRuntime, files });
+  const client = makeTestClient(files);
   testClients.add(client);
   return client;
 };
@@ -50,23 +57,33 @@ afterEach(async () => {
   testClients.clear();
 });
 
-type JscadSerializedNativeHandleEntry = { type: 'geom2' | 'geom3' | 'path2'; data: Float32Array; name?: string };
+type JscadSerializedNativeHandleEntry = {
+  type: 'geom2' | 'geom3' | 'path2';
+  data: Float32Array;
+  name?: string;
+};
 
 /** Helper to extract parameters and assert success. */
-const getParameters = async (
-  files: Record<string, string>,
-  mainFile: string,
-): Promise<{
-  jsonSchema: JSONSchema7;
-  defaultParameters: Record<string, unknown>;
-}> => getTestParameters({ runtime: testRuntime, files, mainFile });
+const getParameters = async (files: Record<string, string>, mainFile: string): Promise<ParameterManifest> => {
+  const client = createClient(files);
+  const described = await client.describe({ source: { path: mainFile } });
+  if (!described.success) {
+    throw new Error(described.issues.map((issue) => issue.message).join('\n'));
+  }
+  return described.parameters;
+};
 
 /** Helper to create geometry and return the result. */
 const createGeometry = async (
   files: Record<string, string>,
   mainFile: string,
   parameters: Record<string, unknown> = {},
-): ReturnType<typeof createTestGeometry> => createTestGeometry({ runtime: testRuntime, files, mainFile, parameters });
+): ReturnType<typeof createTestGeometry> =>
+  createTestGeometry({
+    runtime: testRuntime,
+    files,
+    open: { source: { path: mainFile }, parameters },
+  });
 
 // Create geometry test helpers instance for geometry assertions
 const geometryHelpers = createGeometryTestHelpers();
@@ -77,7 +94,7 @@ const createNodeIo = (): NodeIO => new NodeIO().registerExtensions([KHRMaterials
 
 // A runtime per client: middleware caches are owned per registration, so a fresh
 // runtime is what gives each client empty L1 caches.
-const createJscadNodeClient = (projectPath: string) =>
+const createJscadNodeClient = (projectPath: string, store: ComputeStore) =>
   createRuntimeClient({
     transport: inProcessTransport({
       runtime: defineRuntime({
@@ -86,6 +103,7 @@ const createJscadNodeClient = (projectPath: string) =>
         bundlers: [esbuildBundler()],
       }),
       fileSystem: fromNodeFs(projectPath),
+      compute: { mode: 'durable', store },
     }),
   });
 
@@ -94,7 +112,10 @@ let jscadDefinition: Awaited<ReturnType<typeof resolveJscadDefinition>>;
 
 const readNodeMeshNames = async (
   glb: Uint8Array<ArrayBuffer>,
-): Promise<{ nodeNames: Array<string | undefined>; meshNames: Array<string | undefined> }> => {
+): Promise<{
+  nodeNames: Array<string | undefined>;
+  meshNames: Array<string | undefined>;
+}> => {
   const document = await createNodeIo().readBinary(glb);
   return {
     nodeNames: document
@@ -118,7 +139,10 @@ const readPrimitiveModes = async (glb: Uint8Array<ArrayBuffer>): Promise<number[
 
 const readNodeMeshNamesFromResult = async (
   result: Awaited<ReturnType<typeof createGeometry>>,
-): Promise<{ nodeNames: Array<string | undefined>; meshNames: Array<string | undefined> }> => {
+): Promise<{
+  nodeNames: Array<string | undefined>;
+  meshNames: Array<string | undefined>;
+}> => {
   const glb = extractGltfFromResult(result);
   expect(glb).toBeDefined();
   return readNodeMeshNames(glb!);
@@ -156,9 +180,68 @@ const jscadGlbExportOptions = {
 
 const testModeling = resolveJscadModeling(jscadModelingImport);
 
+// `JscadModeling` declares only the members the kernel itself needs. The resolved
+// runtime object carries the whole `@jscad/modeling` API, which the serializer unit
+// tests below use to build handles without going through a render.
+const testJscadApi = testModeling as unknown as {
+  primitives: {
+    cuboid: (options: unknown) => Record<string, unknown>;
+    sphere: (options: unknown) => Record<string, unknown>;
+    cylinder: (options: unknown) => Record<string, unknown>;
+  };
+  booleans: { subtract: (subject: unknown, tool: unknown) => Record<string, unknown> };
+  transforms: { translate: (offset: readonly number[], shape: unknown) => Record<string, unknown> };
+};
+
+/** The shape `jscadCubeCutoutSource` returns, built directly. */
+const buildJscadCubeCutout = (): unknown => {
+  const { primitives, booleans } = testJscadApi;
+  const cubeSize = 50;
+  return booleans.subtract(
+    primitives.cuboid({ size: [cubeSize, cubeSize, cubeSize], center: [0, 0, cubeSize / 2] }),
+    primitives.cylinder({ radius: 10, height: 60, center: [0, 0, cubeSize / 2], segments: 64 }),
+  );
+};
+
 describe('JscadWorker', () => {
   beforeAll(async () => {
     jscadDefinition = await resolveJscadDefinition();
+  });
+
+  it('keeps edge projections and exports independent on one evaluated shape', async () => {
+    const runtime = createMockKernelRuntime();
+    const context = { modulesRegistered: true, modeling: testModeling };
+    const handle = normalizeJscadParts(testJscadApi.primitives.cuboid({ size: [10, 10, 10] }), testModeling);
+    const serialized = jscadDefinition.serializeHandle!({ handle }, runtime, context);
+    const fresh = jscadDefinition.deserializeHandle!({ serialized }, runtime, context);
+    const render = async (shape: typeof handle, includeEdges: boolean) => {
+      const projected = await jscadDefinition.render!(
+        { handle: shape, view: 'model', options: {}, content: { includeEdges } },
+        runtime,
+        context,
+      );
+      return projected.content;
+    };
+    const ordered = await expectKernelProjectionOrder({
+      renderA: async () => render(handle, true),
+      renderB: async () => render(handle, false),
+      freshB: async () => render(fresh, false),
+      export: async () => {
+        const projected = await jscadDefinition.export!(
+          { exportId: 'glb', handle, options: jscadGlbExportOptions, content: { includeEdges: true } },
+          runtime,
+          context,
+        );
+        return projected.files[0].bytes;
+      },
+    });
+    expect(ordered.first).not.toEqual(ordered.intervening);
+
+    await expectKernelProjectionOrder({
+      renderA: async () => render([], true),
+      renderB: async () => render([], false),
+      freshB: async () => render([], false),
+    });
   });
 
   describe('modeling import resolution', () => {
@@ -180,7 +263,7 @@ describe('JscadWorker', () => {
   describe('getParameters', () => {
     describe('ESM style - defaultParams export', () => {
       it('should extract defaultParams from exported const', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'cube.ts': `
               import { primitives } from '@jscad/modeling';
@@ -197,17 +280,17 @@ describe('JscadWorker', () => {
           'cube.ts',
         );
 
-        expect(defaultParameters).toEqual({ size: 20 });
-        expect(jsonSchema).toMatchObject({
+        expect(defaults).toEqual({ size: 20 });
+        expect(schema).toMatchObject({
           type: 'object',
           properties: {
-            size: { type: 'integer', default: 20 },
+            size: { type: 'double', default: 20 },
           },
         });
       });
 
       it('should extract multiple parameters', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'cylinder.ts': `
               import { primitives } from '@jscad/modeling';
@@ -226,17 +309,17 @@ describe('JscadWorker', () => {
           'cylinder.ts',
         );
 
-        expect(defaultParameters).toEqual({
+        expect(defaults).toEqual({
           height: 20,
           radius: 8,
           segments: 48,
         });
-        expect(jsonSchema).toMatchObject({
+        expect(schema).toMatchObject({
           type: 'object',
           properties: {
-            height: { type: 'integer', default: 20 },
-            radius: { type: 'integer', default: 8 },
-            segments: { type: 'integer', default: 48 },
+            height: { type: 'double', default: 20 },
+            radius: { type: 'double', default: 8 },
+            segments: { type: 'double', default: 48 },
           },
         });
       });
@@ -244,7 +327,7 @@ describe('JscadWorker', () => {
 
     describe('CommonJS style - getParameterDefinitions', () => {
       it('should extract parameters from getParameterDefinitions function', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'gear.js': `
               const jscad = require('@jscad/modeling');
@@ -265,12 +348,12 @@ describe('JscadWorker', () => {
           'gear.js',
         );
 
-        expect(defaultParameters).toEqual({ numTeeth: 10, thickness: 5 });
-        expect(jsonSchema).toMatchObject({
+        expect(defaults).toEqual({ numTeeth: 10, thickness: 5 });
+        expect(schema).toMatchObject({
           type: 'object',
           properties: {
             numTeeth: { type: 'integer', default: 10, minimum: 5, maximum: 20 },
-            thickness: { type: 'number', default: 5, minimum: 0 },
+            thickness: { type: 'double', default: 5, minimum: 0 },
           },
         });
       });
@@ -278,7 +361,7 @@ describe('JscadWorker', () => {
 
     describe('Edge cases', () => {
       it('should return empty parameters for file without defaultParams', async () => {
-        const { jsonSchema, defaultParameters } = await getParameters(
+        const { schema, defaults } = await getParameters(
           {
             'cube.ts': `
               import { primitives } from '@jscad/modeling';
@@ -291,14 +374,14 @@ describe('JscadWorker', () => {
           'cube.ts',
         );
 
-        expect(defaultParameters).toEqual({});
-        expect(jsonSchema).toMatchObject({
+        expect(defaults).toEqual({});
+        expect(schema).toMatchObject({
           type: 'object',
         });
       });
 
       it('should handle boolean parameters', async () => {
-        const { defaultParameters } = await getParameters(
+        const { defaults } = await getParameters(
           {
             'cube.ts': `
               import { primitives } from '@jscad/modeling';
@@ -315,11 +398,11 @@ describe('JscadWorker', () => {
           'cube.ts',
         );
 
-        expect(defaultParameters).toEqual({ centered: true });
+        expect(defaults).toEqual({ centered: true });
       });
 
       it('should handle string parameters', async () => {
-        const { defaultParameters } = await getParameters(
+        const { defaults } = await getParameters(
           {
             'cube.ts': `
               import { primitives } from '@jscad/modeling';
@@ -336,7 +419,7 @@ describe('JscadWorker', () => {
           'cube.ts',
         );
 
-        expect(defaultParameters).toEqual({ mode: 'normal' });
+        expect(defaults).toEqual({ mode: 'normal' });
       });
     });
   });
@@ -363,8 +446,7 @@ describe('JscadWorker', () => {
 
         expect(result.success).toBe(true);
         if (result.success) {
-          expect(result.data).toBeDefined();
-          expect(result.data.format).toBe('gltf');
+          expect(result.artifact.mimeType).toBe('model/gltf-binary');
         }
 
         // Geometry quality assertions (10x10x10 cube)
@@ -494,13 +576,13 @@ describe('JscadWorker', () => {
               }
             `,
           },
-          mainFile: 'multi.ts',
-          content: { includeEdges: true },
+          open: { source: { path: 'multi.ts' } },
+          view: (document) => document.view('model', { content: { includeEdges: true } }),
         });
 
         expect(result.success).toBe(true);
         if (result.success) {
-          expect(result.data.format).toBe('gltf');
+          expect(result.artifact.mimeType).toBe('model/gltf-binary');
         }
 
         await geometryHelpers.expectValidGltf(result);
@@ -757,7 +839,7 @@ module.exports = { main, getParameterDefinitions }
         if (!result.success) {
           return;
         }
-        expect(result.data.format).toBe('gltf');
+        expect(result.artifact.mimeType).toBe('model/gltf-binary');
         const invalidIssue = result.issues.find((issue) => issue.code === 'GEOMETRY_INVALID');
         expect(invalidIssue).toBeDefined();
         if (!invalidIssue) {
@@ -795,8 +877,81 @@ module.exports = { main, getParameterDefinitions }
             }),
           }),
         );
-        const invalidIssueDetails = invalidIssue.details as { geometry: { topology: { irregularEdges: number } } };
+        const invalidIssueDetails = invalidIssue.details as {
+          geometry: { topology: { irregularEdges: number } };
+        };
         expect(invalidIssueDetails.geometry.topology.irregularEdges).toBeGreaterThan(0);
+      });
+
+      it('should raise the non-manifold warning from the mesh phase, not from createGeometry', async () => {
+        // The non-manifold-section fixture shape: a closed cuboid with its +Z face
+        // removed, leaving four unmatched boundary edges.
+        const openCube = testModeling.geometries.geom3.fromPoints([
+          [
+            [-2, -2, -2],
+            [-2, 2, -2],
+            [2, 2, -2],
+            [2, -2, -2],
+          ],
+          [
+            [2, -2, -2],
+            [2, 2, -2],
+            [2, 2, 2],
+            [2, -2, 2],
+          ],
+          [
+            [-2, -2, -2],
+            [-2, -2, 2],
+            [-2, 2, 2],
+            [-2, 2, -2],
+          ],
+          [
+            [-2, 2, -2],
+            [-2, 2, 2],
+            [2, 2, 2],
+            [2, 2, -2],
+          ],
+          [
+            [-2, -2, -2],
+            [2, -2, -2],
+            [2, -2, 2],
+            [-2, -2, 2],
+          ],
+        ]);
+        const nativeHandle = normalizeJscadParts(openCube, testModeling);
+
+        const { render, export: exportModel } = jscadDefinition;
+        expect(render).toBeDefined();
+        if (!render) {
+          return;
+        }
+
+        const meshed = await render(
+          { view: 'model', handle: nativeHandle, options: {}, content: { includeEdges: true } },
+          createMockKernelRuntime(),
+          { modulesRegistered: true, modeling: testModeling },
+        );
+
+        // Reverting D11 moves this warning back to createGeometry and empties
+        // the mesh phase's issue list.
+        const meshIssue = meshed.issues?.find((issue) => issue.code === 'GEOMETRY_INVALID');
+        expect(meshIssue).toBeDefined();
+        if (!meshIssue) {
+          return;
+        }
+        expect(meshIssue.severity).toBe('warning');
+        expect(meshIssue.message).toContain('is not a closed oriented solid: non-manifold edges 4');
+        const meshTopology = (meshIssue.details as { geometry: { topology: Record<string, number> } }).geometry
+          .topology;
+        expect(meshTopology).toMatchObject({ openBoundaryEdges: 4, irregularEdges: 4, nonManifoldEdges: 0 });
+
+        const exported = await exportModel!(
+          { exportId: 'glb', handle: nativeHandle, options: jscadGlbExportOptions, content: { includeEdges: true } },
+          createMockKernelRuntime(),
+          { modulesRegistered: true, modeling: testModeling },
+        );
+        expect(exported.files).toHaveLength(1);
+        expect(exported.issues?.filter((issue) => issue.code === 'GEOMETRY_INVALID')).toHaveLength(1);
       });
 
       it('should not warn for the equivalent 2D profile composed before one extrusion', async () => {
@@ -1238,7 +1393,7 @@ module.exports = { main, getParameterDefinitions }
   // Tests: Export Geometry
   // ===========================================================================
 
-  describe('exportGeometry', () => {
+  describe('export', () => {
     it('should return error for unsupported gltf format', async () => {
       const client = createClient({
         'cube.ts': `
@@ -1251,7 +1406,7 @@ module.exports = { main, getParameterDefinitions }
       });
 
       // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- deliberately bypasses the typed format union to test wire rejection.
-      const exportResult = await client.export('gltf' as 'glb', { source: { path: 'cube.ts' } });
+      const exportResult = await client.open({ source: { path: 'cube.ts' } }).export('gltf' as 'glb');
       expect(exportResult.success).toBe(false);
       if (!exportResult.success) {
         expect(exportResult.issues[0]?.message).toContain('gltf');
@@ -1274,11 +1429,11 @@ module.exports = { main, getParameterDefinitions }
         `,
       });
 
-      const exportResult = await client.export('glb', { source: { path: 'glb_assembly.ts' } });
+      const exportResult = await client.open({ source: { path: 'glb_assembly.ts' } }).export('glb');
       expect(exportResult.success).toBe(true);
       if (exportResult.success) {
-        expect(exportResult.data).toHaveLength(1);
-        const exportedGlb = exportResult.data[0]!.bytes;
+        expect(exportResult.files).toHaveLength(1);
+        const exportedGlb = exportResult.files[0].bytes;
         const { nodeNames, meshNames } = await readNodeMeshNames(exportedGlb);
         expect(nodeNames).toEqual(['Base', 'Cap']);
         expect(meshNames).toEqual(nodeNames);
@@ -1298,13 +1453,15 @@ module.exports = { main, getParameterDefinitions }
           }
         `,
       });
-      const zUp = await client.export('glb', {
-        source: { path: 'coordinate-evidence.ts' },
-        exportOptions: { coordinateSystem: 'z-up', unit: { length: 'millimeter' } },
+      const document = client.open({ source: { path: 'coordinate-evidence.ts' } });
+      const zUp = await document.export('glb', {
+        options: {
+          coordinateSystem: 'z-up',
+          unit: { length: 'millimeter' },
+        },
       });
-      const yUp = await client.export('glb', {
-        source: { path: 'coordinate-evidence.ts' },
-        exportOptions: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
+      const yUp = await document.export('glb', {
+        options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
       });
       expect(zUp.success).toBe(true);
       expect(yUp.success).toBe(true);
@@ -1312,8 +1469,12 @@ module.exports = { main, getParameterDefinitions }
         return;
       }
 
-      const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.data[0]!.bytes });
-      const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.data[0]!.bytes });
+      const zUpEvidence = await readCoordinateEvidence({
+        bytes: zUp.files[0].bytes,
+      });
+      const yUpEvidence = await readCoordinateEvidence({
+        bytes: yUp.files[0].bytes,
+      });
       expect(yUpEvidence).toEqual(mapZupMillimetersToYupMeters(zUpEvidence));
     });
 
@@ -1333,12 +1494,12 @@ module.exports = { main, getParameterDefinitions }
         `,
       });
 
-      const exportResult = await client.export('glb', { source: { path: 'invalid-export.ts' } });
+      const exportResult = await client.open({ source: { path: 'invalid-export.ts' } }).export('glb');
       expect(exportResult.success).toBe(true);
       if (!exportResult.success) {
         return;
       }
-      expect(exportResult.data[0]?.bytes.byteLength).toBeGreaterThan(0);
+      expect(exportResult.files[0].bytes.byteLength).toBeGreaterThan(0);
       expect(exportResult.issues).toEqual([
         expect.objectContaining({
           code: 'GEOMETRY_INVALID',
@@ -1367,17 +1528,17 @@ module.exports = { main, getParameterDefinitions }
         `,
       });
 
-      const exportResult = await client.export('glb', { source: { path: 'no_return.ts' } });
+      const exportResult = await client.open({ source: { path: 'no_return.ts' } }).export('glb');
       expect(exportResult.success).toBe(true);
       if (!exportResult.success) {
         return;
       }
 
-      const document = await createNodeIo().readBinary(exportResult.data[0]!.bytes);
+      const document = await createNodeIo().readBinary(exportResult.files[0].bytes);
       expect(document.getRoot().listMeshes()).toHaveLength(0);
     });
 
-    it('should return error when no geometry computed', async () => {
+    it('should export without an earlier view render', async () => {
       const client = createClient({
         'empty.ts': `
           import { primitives } from '@jscad/modeling';
@@ -1388,8 +1549,12 @@ module.exports = { main, getParameterDefinitions }
         `,
       });
 
-      // Don't create geometry, just try to export
-      await expect(client.export('glb')).rejects.toThrow();
+      // A document export evaluates its source even without an earlier view render.
+      const result = await client.open({ source: { path: 'empty.ts' } }).export('glb');
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.files[0].bytes.byteLength).toBeGreaterThan(0);
+      }
     });
 
     it('should return error for unsupported export formats', async () => {
@@ -1405,7 +1570,7 @@ module.exports = { main, getParameterDefinitions }
 
       // JSCAD only supports gltf/glb
       // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- deliberately bypasses the typed format union to test wire rejection.
-      const exportResult = await client.export('step' as 'glb', { source: { path: 'cube.ts' } });
+      const exportResult = await client.open({ source: { path: 'cube.ts' } }).export('step' as 'glb');
       expect(exportResult.success).toBe(false);
     });
   });
@@ -2036,28 +2201,29 @@ module.exports = { main, getParameterDefinitions }
 });
 
 // =============================================================================
-// serializeNativeHandle / deserializeNativeHandle
+// serializeHandle / deserializeHandle
 // =============================================================================
 
-describe('serializeNativeHandle', () => {
-  it('should serialize nativeHandle to compact binary arrays', async () => {
-    const result = await createGeometry(
-      {
-        'box.ts': `
-          const { cuboid } = require('@jscad/modeling').primitives;
-          module.exports = { main: () => cuboid({ size: [20, 20, 20] }) };
-        `,
-      },
-      'box.ts',
-    );
-
-    expect(result.success).toBe(true);
-    if (!result.success) {
-      return;
+describe('serializeHandle', () => {
+  // Charter D12 (W6b) takes the durable snapshot off a display render's published
+  // result, so these serializer unit tests take the handle from the kernel
+  // definition instead of from `client.render()`. Every assertion about the
+  // serializer's own behaviour is unchanged; the durable cache round-trip tests
+  // later in this block still exercise the render path.
+  const serializeShape = (shape: unknown): JscadSerializedNativeHandleEntry[] => {
+    const { serializeHandle } = jscadDefinition;
+    if (!serializeHandle) {
+      throw new Error('The JSCAD kernel does not define serializeHandle.');
     }
+    return serializeHandle({ handle: normalizeJscadParts(shape, testModeling) }, createMockKernelRuntime(), {
+      modulesRegistered: true,
+      modeling: testModeling,
+    }) as JscadSerializedNativeHandleEntry[];
+  };
 
-    expect(result.serializedNativeHandle).toBeDefined();
-    const serialized = result.serializedNativeHandle as Array<{ type: string; data: Float32Array; name?: string }>;
+  it('should serialize nativeHandle to compact binary arrays', () => {
+    const serialized = serializeShape(testJscadApi.primitives.cuboid({ size: [20, 20, 20] }));
+
     expect(serialized).toHaveLength(1);
     expect(serialized[0]!.type).toBe('geom3');
     expect(serialized[0]!.name).toBe('Shape 1');
@@ -2066,29 +2232,22 @@ describe('serializeNativeHandle', () => {
   });
 
   it('should deserialize serialized handles using the normalized package import shape', async () => {
-    const result = await createGeometry(
+    const serialized = serializeShape(buildJscadCubeCutout());
+
+    const { deserializeHandle } = jscadDefinition;
+    expect(deserializeHandle).toBeDefined();
+    if (!deserializeHandle) {
+      return;
+    }
+
+    const restored = deserializeHandle(
       {
-        'cutout.ts': jscadCubeCutoutSource,
+        serialized,
       },
-      'cutout.ts',
-    );
-
-    expect(result.success).toBe(true);
-    if (!result.success) {
-      return;
-    }
-    const { deserializeNativeHandle } = jscadDefinition;
-    expect(deserializeNativeHandle).toBeDefined();
-    if (!deserializeNativeHandle) {
-      return;
-    }
-
-    const restored = deserializeNativeHandle(
-      { serializedNativeHandle: result.serializedNativeHandle as JscadSerializedNativeHandleEntry[] },
       createMockKernelRuntime(),
       { modulesRegistered: true, modeling: testModeling },
     );
-    const glb = jscadToGltf(
+    const { content: glb } = jscadToGltf(
       restored,
       {
         coordinateSystem: 'z-up',
@@ -2102,59 +2261,52 @@ describe('serializeNativeHandle', () => {
   });
 
   it('should deserialize MessagePack-decoded compact binary handles and export GLB bytes', async () => {
-    const result = await createGeometry({ 'cutout.ts': jscadCubeCutoutSource }, 'cutout.ts');
+    const serialized = serializeShape(buildJscadCubeCutout());
 
-    expect(result.success).toBe(true);
-    if (!result.success) {
-      return;
-    }
-    const { deserializeNativeHandle, exportGeometry } = jscadDefinition;
-    expect(deserializeNativeHandle).toBeDefined();
-    if (!deserializeNativeHandle) {
+    const { deserializeHandle, export: exportModel } = jscadDefinition;
+    expect(deserializeHandle).toBeDefined();
+    if (!deserializeHandle) {
       return;
     }
 
-    const decodedSerializedNativeHandle = msgpackDecode(msgpackEncode(result.serializedNativeHandle));
+    const decodedSerializedNativeHandle = msgpackDecode(msgpackEncode(serialized));
     const decodedEntry = (decodedSerializedNativeHandle as Array<{ data: unknown }>)[0];
     expect(decodedEntry?.data).not.toBeInstanceOf(Float32Array);
     expect(ArrayBuffer.isView(decodedEntry?.data)).toBe(true);
 
-    const restoredHandle = deserializeNativeHandle(
-      { serializedNativeHandle: decodedSerializedNativeHandle as JscadSerializedNativeHandleEntry[] },
+    const restoredHandle = deserializeHandle(
+      {
+        serialized: decodedSerializedNativeHandle as JscadSerializedNativeHandleEntry[],
+      },
       createMockKernelRuntime(),
       { modulesRegistered: true, modeling: testModeling },
     );
-    const exportResult = await exportGeometry(
+    const exportResult = await exportModel!(
       {
-        format: 'glb',
-        nativeHandle: restoredHandle,
+        exportId: 'glb',
+        handle: restoredHandle,
         options: jscadGlbExportOptions,
       },
       createMockKernelRuntime(),
       { modulesRegistered: true, modeling: testModeling },
     );
 
-    expect(exportResult.success).toBe(true);
-    if (!exportResult.success) {
-      return;
-    }
-    expect(exportResult.data).toHaveLength(1);
-    expect(exportResult.data[0]?.name).toBe('model.glb');
-    expect(exportResult.data[0]?.bytes.byteLength).toBeGreaterThan(0);
+    expect(exportResult.files).toHaveLength(1);
+    expect(exportResult.files[0].name).toBe('model.glb');
+    expect(exportResult.files[0].bytes.byteLength).toBeGreaterThan(0);
   });
 
   it('should reject malformed serialized compact binary with precise errors', () => {
-    const { deserializeNativeHandle } = jscadDefinition;
-    expect(deserializeNativeHandle).toBeDefined();
-    if (!deserializeNativeHandle) {
+    const { deserializeHandle } = jscadDefinition;
+    expect(deserializeHandle).toBeDefined();
+    if (!deserializeHandle) {
       return;
     }
     const deserializeInvalidHandle = (data: unknown): void => {
-      deserializeNativeHandle(
-        { serializedNativeHandle: data as JscadSerializedNativeHandleEntry[] },
-        createMockKernelRuntime(),
-        { modulesRegistered: true, modeling: testModeling },
-      );
+      deserializeHandle({ serialized: data as JscadSerializedNativeHandleEntry[] }, createMockKernelRuntime(), {
+        modulesRegistered: true,
+        modeling: testModeling,
+      });
     };
 
     expect(() => {
@@ -2174,47 +2326,45 @@ describe('serializeNativeHandle', () => {
 
   it('should export from L2 create cache after MessagePack restoration when export cache is absent', async () => {
     const projectPath = await mkdtemp(join(tmpdir(), 'tau-jscad-create-cache-export-'));
-    const cacheDirectory = join(projectPath, '.tau', 'cache', 'geometry');
-    const exportRequest = {
-      source: { path: 'main.ts' },
-      exportOptions: jscadGlbExportOptions,
-    };
-
+    const cachePath = await mkdtemp(join(tmpdir(), 'tau-jscad-compute-'));
+    const compute = createSqliteComputeEngine({ directory: cachePath });
+    const store = fromSqlite({ store: compute, workspace: projectPath });
     try {
       await writeFile(join(projectPath, 'main.ts'), jscadCubeCutoutSource);
       await writeFile(join(projectPath, 'package.json'), '{"type":"module"}\n');
 
-      const coldClient = createJscadNodeClient(projectPath);
-      const coldExport = await coldClient.export('glb', exportRequest);
+      const coldClient = createJscadNodeClient(projectPath, store);
+      const coldRender = await coldClient.open({ source: { path: 'main.ts' } }).evaluation();
       coldClient.terminate();
-      expect(coldExport.success).toBe(true);
-      if (!coldExport.success) {
-        return;
-      }
-      expect(extractGltfFromExportResult(coldExport)?.byteLength).toBeGreaterThan(0);
+      expect(coldRender.superseded).toBe(false);
+      expect(coldRender.superseded ? undefined : coldRender.evaluation.success).toBe(true);
 
-      const cacheEntries = await readdir(cacheDirectory);
-      const exportCacheEntries = cacheEntries.filter((entry) => entry.startsWith('export-'));
-      expect(exportCacheEntries.length).toBeGreaterThan(0);
-      await Promise.all(exportCacheEntries.map(async (entry) => rm(join(cacheDirectory, entry), { force: true })));
-
-      const restoredClient = createJscadNodeClient(projectPath);
-      const restoredExport = await restoredClient.export('glb', exportRequest);
+      const restoredClient = createJscadNodeClient(projectPath, store);
+      const restoredExport = await restoredClient.open({ source: { path: 'main.ts' } }).export('glb', {
+        options: jscadGlbExportOptions,
+      });
       restoredClient.terminate();
 
       expect(restoredExport.success).toBe(true);
       if (!restoredExport.success) {
         return;
       }
-      expect(restoredExport.data.map(({ name }) => name)).toEqual(['model.glb']);
+      expect(restoredExport.files.map(({ name }) => name)).toEqual(['model.glb']);
       expect(extractGltfFromExportResult(restoredExport)?.byteLength).toBeGreaterThan(0);
     } finally {
-      await rm(projectPath, { recursive: true, force: true });
+      await compute.dispose();
+      await Promise.all([
+        rm(projectPath, { recursive: true, force: true }),
+        rm(cachePath, { recursive: true, force: true }),
+      ]);
     }
   });
 
   it('should render a named assembly after a cold export restores the source-scoped L2 create cache', async () => {
     const projectPath = await mkdtemp(join(tmpdir(), 'tau-jscad-export-then-render-'));
+    const cachePath = await mkdtemp(join(tmpdir(), 'tau-jscad-compute-'));
+    const compute = createSqliteComputeEngine({ directory: cachePath });
+    const store = fromSqlite({ store: compute, workspace: projectPath });
     const source = `
       import { primitives, transforms } from '@jscad/modeling';
 
@@ -2234,10 +2384,9 @@ describe('serializeNativeHandle', () => {
       await writeFile(join(projectPath, 'main.ts'), source);
       await writeFile(join(projectPath, 'package.json'), '{"type":"module"}\n');
 
-      coldClient = createJscadNodeClient(projectPath);
-      const coldExport = await coldClient.export('glb', {
-        source: { path: 'main.ts' },
-        exportOptions: jscadGlbExportOptions,
+      coldClient = createJscadNodeClient(projectPath, store);
+      const coldExport = await coldClient.open({ source: { path: 'main.ts' } }).export('glb', {
+        options: jscadGlbExportOptions,
         content: { includeEdges: true },
       });
       expect(coldExport.success).toBe(true);
@@ -2254,62 +2403,51 @@ describe('serializeNativeHandle', () => {
       coldClient.terminate();
       coldClient = undefined;
 
-      restoredClient = createJscadNodeClient(projectPath);
-      const display = await restoredClient.render({
-        source: { path: 'main.ts' },
-        content: { includeEdges: true },
-      });
+      restoredClient = createJscadNodeClient(projectPath, store);
+      const display = await restoredClient
+        .open({ source: { path: 'main.ts' } })
+        .view('model', { content: { includeEdges: true } })
+        .rendering();
       expect(display.superseded).toBe(false);
       if (display.superseded) {
         return;
       }
-      expect(display.geometry.success).toBe(true);
-      if (!display.geometry.success) {
+      expect(display.rendering.success).toBe(true);
+      if (!display.rendering.success) {
         return;
       }
-      expect(display.geometry.data.format).toBe('gltf');
-      if (display.geometry.data.format !== 'gltf') {
+      const artifact = asKnownArtifact(display.rendering.artifact);
+      expect(artifact?.mimeType).toBe('model/gltf-binary');
+      if (artifact?.mimeType !== 'model/gltf-binary') {
         return;
       }
 
-      expect(await readNodeMeshNames(display.geometry.data.content)).toEqual({
+      expect(await readNodeMeshNames(artifact.content)).toEqual({
         nodeNames: ['Housing', 'Carrier'],
         meshNames: ['Housing', 'Carrier'],
       });
-      expect(await readPrimitiveModes(display.geometry.data.content)).toEqual([
+      expect(await readPrimitiveModes(artifact.content)).toEqual([
         [primitiveModeTriangles, primitiveModeLines],
         [primitiveModeTriangles, primitiveModeLines],
       ]);
     } finally {
       coldClient?.terminate();
       restoredClient?.terminate();
-      await rm(projectPath, { recursive: true, force: true });
+      await compute.dispose();
+      await Promise.all([
+        rm(projectPath, { recursive: true, force: true }),
+        rm(cachePath, { recursive: true, force: true }),
+      ]);
     }
   });
 
-  it('should serialize multiple shapes', async () => {
-    const result = await createGeometry(
-      {
-        'shapes.ts': `
-          const { cuboid, sphere } = require('@jscad/modeling').primitives;
-          module.exports = {
-            main: () => [
-              Object.assign(cuboid({ size: [10, 10, 10] }), { name: 'Box' }),
-              Object.assign(sphere({ radius: 5 }), { name: 'Ball' }),
-            ],
-          };
-        `,
-      },
-      'shapes.ts',
-    );
+  it('should serialize multiple shapes', () => {
+    const { primitives } = testJscadApi;
+    const serialized = serializeShape([
+      Object.assign(primitives.cuboid({ size: [10, 10, 10] }), { name: 'Box' }),
+      Object.assign(primitives.sphere({ radius: 5 }), { name: 'Ball' }),
+    ]);
 
-    expect(result.success).toBe(true);
-    if (!result.success) {
-      return;
-    }
-
-    expect(result.serializedNativeHandle).toBeDefined();
-    const serialized = result.serializedNativeHandle as Array<{ type: string; data: Float32Array; name?: string }>;
     expect(serialized).toHaveLength(2);
     expect(serialized[0]!.type).toBe('geom3');
     expect(serialized[0]!.name).toBe('Box');
@@ -2318,41 +2456,29 @@ describe('serializeNativeHandle', () => {
   });
 
   it('should preserve serialized part names after handle deserialization for GLB output', async () => {
-    const result = await createGeometry(
+    const { primitives, transforms } = testJscadApi;
+    const serialized = serializeShape([
+      Object.assign(primitives.cuboid({ size: [10, 10, 10] }), { name: 'Housing' }),
+      Object.assign(transforms.translate([20, 0, 0], primitives.cuboid({ size: [6, 6, 6] })), {
+        name: 'Carrier',
+      }),
+    ]);
+
+    const { deserializeHandle } = jscadDefinition;
+    expect(deserializeHandle).toBeDefined();
+    if (!deserializeHandle) {
+      return;
+    }
+
+    const restoredHandle = deserializeHandle(
       {
-        'assembly.ts': `
-          const { cuboid } = require('@jscad/modeling').primitives;
-          const { translate } = require('@jscad/modeling').transforms;
-          module.exports = {
-            main: () => [
-              Object.assign(cuboid({ size: [10, 10, 10] }), { name: 'Housing' }),
-              Object.assign(translate([20, 0, 0], cuboid({ size: [6, 6, 6] })), { name: 'Carrier' }),
-            ],
-          };
-        `,
+        serialized,
       },
-      'assembly.ts',
-    );
-
-    expect(result.success).toBe(true);
-    if (!result.success) {
-      return;
-    }
-
-    expect(result.serializedNativeHandle).toBeDefined();
-    const { deserializeNativeHandle } = jscadDefinition;
-    expect(deserializeNativeHandle).toBeDefined();
-    if (!deserializeNativeHandle) {
-      return;
-    }
-
-    const restoredHandle = deserializeNativeHandle(
-      { serializedNativeHandle: result.serializedNativeHandle as JscadSerializedNativeHandleEntry[] },
       createMockKernelRuntime(),
       { modulesRegistered: true, modeling: testModeling },
     );
 
-    const glb = jscadToGltf(
+    const { content: glb } = jscadToGltf(
       restoredHandle,
       {
         coordinateSystem: 'z-up',
@@ -2365,8 +2491,8 @@ describe('serializeNativeHandle', () => {
     expect(meshNames).toEqual(nodeNames);
   });
 
-  it('should have serializeNativeHandle and deserializeNativeHandle defined on the kernel', () => {
-    expect(jscadDefinition.serializeNativeHandle).toBeDefined();
-    expect(jscadDefinition.deserializeNativeHandle).toBeDefined();
+  it('should have serializeHandle and deserializeHandle defined on the kernel', () => {
+    expect(jscadDefinition.serializeHandle).toBeDefined();
+    expect(jscadDefinition.deserializeHandle).toBeDefined();
   });
 });

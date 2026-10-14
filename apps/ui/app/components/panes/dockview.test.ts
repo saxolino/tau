@@ -2,37 +2,62 @@ import { render, screen } from '@testing-library/react';
 import type { FunctionComponent } from 'react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DockviewApi, IDockviewHeaderActionsProps } from 'dockview-react';
+import type { DockviewApi, DockviewReadyEvent, IDockviewHeaderActionsProps } from 'dockview-react';
 import { Dockview, dockviewStyleOverrides, scrollActiveTabIntoView } from '#components/panes/dockview.js';
 
 vi.mock('dockview-react', async () => {
-  const { createElement } = await import('react');
+  const { createElement, useState } = await import('react');
   const dockviewReact = ({
     className,
     disableTabsOverflowList,
+    disableFloatingGroups,
+    onReady,
     rightHeaderActionsComponent: RightHeaderActions,
     scrollbars,
   }: {
     className?: string;
     disableTabsOverflowList?: boolean;
+    disableFloatingGroups?: boolean;
+    onReady?: (event: DockviewReadyEvent) => void;
     rightHeaderActionsComponent?: FunctionComponent<IDockviewHeaderActionsProps>;
     scrollbars?: string;
-  }) =>
-    createElement(
+  }) => {
+    // Native Dockview attaches its group before mounting React header portals.
+    const [groupElement, setGroupElement] = useState<HTMLElement>();
+    const group = { element: groupElement };
+    return createElement(
       'div',
       {
         className,
         'data-disable-tabs-overflow-list': String(disableTabsOverflowList),
+        'data-disable-floating-groups': String(disableFloatingGroups),
         'data-scrollbars': scrollbars,
         'data-testid': 'dockview-react',
+        ref: (element) => {
+          if (!element || groupElement === element) {
+            return;
+          }
+
+          setGroupElement(element);
+          onReady?.({
+            api: {
+              activeGroup: { element },
+              element,
+              onDidActivePanelChange: () => ({ dispose: () => undefined }),
+            } as unknown as DockviewApi,
+          } as DockviewReadyEvent);
+        },
       },
       createElement(
         'div',
         { className: 'dv-tabs-container', 'data-testid': 'dockview-tabs' },
-        createElement('button', { type: 'button' }, 'Tab'),
+        createElement('button', { className: 'dv-tab dv-active-tab', type: 'button' }, 'Tab'),
       ),
-      RightHeaderActions ? createElement(RightHeaderActions, {} as IDockviewHeaderActionsProps) : null,
+      RightHeaderActions && groupElement
+        ? createElement(RightHeaderActions, { group } as IDockviewHeaderActionsProps)
+        : null,
     );
+  };
 
   return {
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Mock key mirrors the upstream export.
@@ -300,6 +325,19 @@ describe('scrollActiveTabIntoView', () => {
 
       expect(tabsContainer!.scrollLeft).toBe(100);
     });
+
+    it('should move the active tab beyond the scroll fade', () => {
+      const { api, tabsContainer } = buildApi({
+        tabs: [{ offsetLeft: 2, width: 112, isActive: true }],
+        container: { scrollLeft: 50, clientWidth: 300 },
+      });
+      tabsContainer!.style.setProperty('--scroll-fade-size', '42px');
+
+      scrollActiveTabIntoView(api);
+      flushRaf();
+
+      expect(tabsContainer!.scrollLeft).toBe(0);
+    });
   });
 
   // ── Full-tab visibility ──
@@ -370,8 +408,8 @@ describe('scrollActiveTabIntoView', () => {
 
   // ── requestAnimationFrame deferral ──
 
-  describe('requestAnimationFrame deferral', () => {
-    it('should not execute scroll logic synchronously', () => {
+  describe('prepaint scroll correction', () => {
+    it('should correct scroll without a later animation frame', () => {
       const { api, tabsContainer } = buildApi({
         tabs: [{ offsetLeft: 300, width: 120, isActive: true }],
         container: { scrollLeft: 0, clientWidth: 300 },
@@ -379,13 +417,32 @@ describe('scrollActiveTabIntoView', () => {
 
       scrollActiveTabIntoView(api);
 
-      // Before rAF fires, scrollLeft should be unchanged
-      expect(tabsContainer!.scrollLeft).toBe(0);
+      expect(tabsContainer!.scrollLeft).toBe(120);
+      expect(vi.getTimerCount()).toBe(0);
+    });
 
+    it('should survive a custom-scrollbar update in the same frame', () => {
+      const { api, tabsContainer } = buildApi({
+        tabs: [{ offsetLeft: 2, width: 112, isActive: true }],
+        container: { scrollLeft: 50, clientWidth: 300 },
+      });
+      tabsContainer!.style.setProperty('--scroll-fade-size', '42px');
+      let cachedScrollLeft = 4;
+      tabsContainer!.addEventListener('scroll', () => {
+        cachedScrollLeft = tabsContainer!.scrollLeft;
+      });
+
+      scrollActiveTabIntoView(api);
+      requestAnimationFrame(() => {
+        tabsContainer!.scrollLeft = cachedScrollLeft;
+        requestAnimationFrame(() => {
+          tabsContainer!.scrollLeft = cachedScrollLeft;
+        });
+      });
+      flushRaf();
       flushRaf();
 
-      // After rAF fires, scrollLeft should be corrected
-      expect(tabsContainer!.scrollLeft).toBe(120);
+      expect(tabsContainer!.scrollLeft).toBe(0);
     });
   });
 });
@@ -398,6 +455,10 @@ describe('dockviewStyleOverrides', () => {
   it('fully fades overflowing tabs beneath the header actions', () => {
     expect(dockviewStyleOverrides).toContain('[&_.dv-tabs-container]:[--scroll-fade-size:42px]');
     expect(dockviewStyleOverrides).toContain('[&_.dv-tabs-container]:[--scroll-fade-end:transparent]');
+  });
+
+  it('keeps the overlay scrollbar at half the standard scrollbar thickness', () => {
+    expect(dockviewStyleOverrides).toContain('[&_.dv-scrollbar-horizontal]:!h-[calc(var(--scrollbar-thickness)/2)]');
   });
 
   it('uses the compact 36px tab strip geometry', () => {
@@ -421,7 +482,7 @@ describe('dockviewStyleOverrides', () => {
       '[&_:is(.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)_button]:!bg-transparent',
     );
     expect(dockviewStyleOverrides).toContain(
-      '[&_:is(.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)_button:hover]:!bg-muted-foreground/15',
+      '[&_:is(.dv-left-actions-container,.dv-right-actions-container,.dv-pre-actions-container)_button:hover]:!bg-accent',
     );
   });
 
@@ -445,8 +506,22 @@ describe('dockviewStyleOverrides', () => {
     expect(dockviewStyleOverrides).toContain('[&_.dv-tab]:rounded-sm');
     expect(dockviewStyleOverrides).toContain('[&_.dv-tab:not(.dv-active-tab):hover]:!bg-accent');
     expect(dockviewStyleOverrides).toContain('[&_.dv-tab:not(.dv-active-tab):hover]:!text-muted-foreground');
-    expect(dockviewStyleOverrides).toContain('[&_.dv-tab:focus-visible]:ring-2');
-    expect(dockviewStyleOverrides).toContain('[&_.dv-tab:focus-visible]:ring-ring/50');
+    expect(dockviewStyleOverrides).toContain('[&_.dv-tab:focus-visible]:focus-outline');
+  });
+
+  it('preserves the active title fade and smooth close-action overlay', () => {
+    expect(dockviewStyleOverrides).not.toContain('[&_.dv-tab.dv-active-tab_.dockview-tab-title]:[mask-image:none]');
+    /* The active tab always shows its close action, so it always carries the wide fade. The size
+       comes from the shared `--fade-label-size-actions` token, never a restated pixel value. */
+    expect(dockviewStyleOverrides).toContain(
+      '[&_.dv-tab.dv-active-tab_.dockview-tab-title]:[--fade-label-size:var(--fade-label-size-actions)]',
+    );
+    /* The tabs container keeps its own `--scroll-fade-size` for horizontal scroll; only the title
+       moved onto the shared label token. */
+    expect(dockviewStyleOverrides).not.toContain('.dockview-tab-title]:[--scroll-fade-size');
+    expect(dockviewStyleOverrides).not.toContain(
+      '[&_.dv-tab.dv-active-tab_.dv-default-tab-action::before]:![content:none]',
+    );
   });
 
   it('uses a tab-matching close-action backdrop until the action itself is hovered', () => {
@@ -460,8 +535,9 @@ describe('dockviewStyleOverrides', () => {
     expect(dockviewStyleOverrides).toContain(
       '[&_.dv-tab.dv-active-tab_.dv-default-tab_.dv-default-tab-action:not(:hover)]:!bg-accent',
     );
-    expect(dockviewStyleOverrides).toContain('[&_.dv-tab.dv-active-tab_.dockview-tab-title]:[--scroll-fade-size:42px]');
-    expect(dockviewStyleOverrides).toContain('[&_.dv-tab_.dv-default-tab_.dv-default-tab-action:hover]:!bg-input');
+    expect(dockviewStyleOverrides).toContain(
+      '[&_.dv-tab_.dv-default-tab_.dv-default-tab-action:hover]:!bg-nested-action-hover',
+    );
   });
 
   it('shows short dividers only between adjacent inactive tabs', () => {
@@ -482,10 +558,92 @@ describe('dockviewStyleOverrides', () => {
     expect(dockviewStyleOverrides).toContain(`${dividerSelector}:!bg-border`);
     expect(dockviewStyleOverrides).toContain('[&_.dv-tabs-container]:border-b-border');
   });
+
+  it('uses the native green drop overlay with the standard tab radius', () => {
+    expect(dockviewStyleOverrides).toContain('[--dv-drag-over-border-color:var(--primary)]');
+    expect(dockviewStyleOverrides).toContain(
+      '[--dv-drag-over-background-color:color-mix(in_oklch,var(--primary),transparent_80%)]',
+    );
+    expect(dockviewStyleOverrides).toContain(
+      '[&_.dv-drop-target-selection]:[border-radius:var(--dv-tab-border-radius)]',
+    );
+  });
 });
 
 describe('Dockview', () => {
-  it('should delegate vertical wheel input to native Dockview tab viewports', () => {
+  it('should reveal an already active tab when clicked without a later frame', () => {
+    vi.useFakeTimers();
+    render(createElement(Dockview, { components: {}, onReady: vi.fn() }));
+    const tabs = screen.getByTestId('dockview-tabs');
+    const tab = screen.getByRole('button', { name: 'Tab' });
+    Object.defineProperties(tabs, {
+      clientWidth: { configurable: true, value: 300 },
+      scrollLeft: { configurable: true, value: 50, writable: true },
+    });
+    Object.defineProperties(tab, {
+      offsetLeft: { configurable: true, value: 2 },
+      offsetWidth: { configurable: true, value: 112 },
+    });
+    tabs.style.setProperty('--scroll-fade-size', '42px');
+
+    tab.click();
+
+    expect(tabs.scrollLeft).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("should reveal a pane's active tab when its strip resizes, even outside the active group", () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    const disconnect = vi.fn();
+    const originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      public constructor(callback: ResizeObserverCallback) {
+        resizeCallbacks.push(callback);
+      }
+
+      public observe(): void {
+        // Resizes are triggered by calling the captured callback.
+      }
+
+      public unobserve(): void {
+        // Not used by the production hook.
+      }
+
+      public disconnect(): void {
+        disconnect();
+      }
+    };
+    vi.useFakeTimers();
+    try {
+      const view = render(createElement(Dockview, { components: {}, onReady: vi.fn() }));
+      const tabs = screen.getByTestId('dockview-tabs');
+      const tab = screen.getByRole('button', { name: 'Tab' });
+      // A restored layout leaves Dockview's cached offset clipping the active tab under the right fade.
+      Object.defineProperties(tabs, {
+        clientWidth: { configurable: true, value: 296 },
+        scrollLeft: { configurable: true, value: 28, writable: true },
+      });
+      Object.defineProperties(tab, {
+        offsetLeft: { configurable: true, value: 236 },
+        offsetWidth: { configurable: true, value: 112 },
+      });
+      tabs.style.setProperty('--scroll-fade-size', '42px');
+
+      for (const callback of resizeCallbacks) {
+        callback([], {} as ResizeObserver);
+      }
+      // Tab right edge (236 + 112 = 348) - clientWidth (296) + fade (42) = 94
+      expect(tabs.scrollLeft).toBe(94);
+
+      view.unmount();
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      globalThis.ResizeObserver = originalResizeObserver;
+    }
+  });
+
+  it('should delegate vertical wheel input to custom Dockview tab viewports', () => {
     render(createElement(Dockview, { className: 'caller-class', components: {}, onReady: vi.fn() }));
     const dockview = screen.getByTestId('dockview-react');
     const wrapper = dockview.parentElement;
@@ -502,8 +660,9 @@ describe('Dockview', () => {
     expect(wrapper).toHaveAttribute('data-slot', 'omni-scroller');
     expect(wrapper).toHaveClass('size-full');
     expect(wrapper?.className).toContain('[--dv-tabs-and-actions-container-height:2.25rem]');
-    expect(dockview).toHaveAttribute('data-scrollbars', 'native');
+    expect(dockview).toHaveAttribute('data-scrollbars', 'custom');
     expect(dockview).toHaveAttribute('data-disable-tabs-overflow-list', 'true');
+    expect(dockview).toHaveAttribute('data-disable-floating-groups', 'true');
     expect(dockview).toHaveClass('caller-class');
     expect(dockview.className).not.toContain('[--dv-tabs-and-actions-container-height:2.25rem]');
     expect(tabs.scrollLeft).toBe(60);

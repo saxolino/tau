@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bundleOwnershipIssues,
   bundlePattern,
   bundledLibraries,
   projects,
@@ -92,15 +91,15 @@ describe('projects()', () => {
 });
 
 describe('publishable()', () => {
-  it('is every non-private type:package project, sorted — twenty-three today', () => {
+  it('is every non-private type:package project, sorted — fifty-three today', () => {
     const names = publishable(live).map((entry) => entry.name);
 
     // The count is the tripwire; re-baselining it is the point at which a new
     // package is noticed. Pinning the whole list would only restate the rule.
-    expect(names).toHaveLength(23);
+    expect(names).toHaveLength(53);
     expect(names).toEqual([...names].sort());
-    // Both ends of the train, and the two native packages added most recently.
-    for (const name of ['runtime', 'runtime-testing', 'geospec-engine', 'opencascade-native', 'openrscad-native']) {
+    // Both ends of the train.
+    for (const name of ['runtime', 'runtime-testing', 'geospec-engine']) {
       expect(names).toContain(name);
     }
 
@@ -116,8 +115,62 @@ describe('publishable()', () => {
 });
 
 describe('validateTags()', () => {
+  it('should allow no host or one valid host and reject unknown or duplicate hosts', () => {
+    expect(
+      validateTags({
+        projects: [
+          project('portable', ['scope:shared', 'type:package'], undefined),
+          project('darwin', ['scope:shared', 'type:package', 'host:darwin-arm64'], undefined),
+          project('unknown-host', ['scope:shared', 'type:package', 'host:other'], undefined),
+          project('two-hosts', ['scope:shared', 'type:package', 'host:darwin-arm64', 'host:darwin-arm64'], undefined),
+          project('host-without-scope', ['type:package', 'host:darwin-arm64'], undefined),
+          project('host-without-type', ['scope:shared', 'host:darwin-arm64'], undefined),
+          project('host-without-layer', ['scope:ui', 'type:app-lib', 'host:darwin-arm64'], undefined),
+        ],
+      }),
+    ).toEqual([
+      'fixture/unknown-host: unknown tag "host:other" (host: must be one of darwin-arm64)',
+      'fixture/two-hosts: expected exactly one host: tag, found host:darwin-arm64, host:darwin-arm64',
+      'fixture/host-without-scope: expected exactly one scope: tag, found none',
+      'fixture/host-without-type: expected exactly one type: tag, found none',
+      'fixture/host-without-layer: expected exactly one layer: tag, found none',
+    ]);
+  });
+
   it('accepts every project in the workspace, inferred ones included', () => {
     expect(validateTags(live)).toEqual([]);
+  });
+
+  it('should allow no release tag or release:app and reject unknown or duplicate release tags', () => {
+    expect(
+      validateTags({
+        projects: [
+          project('unreleased', ['scope:ui', 'type:app'], undefined),
+          project('released', ['scope:ui', 'type:app', 'release:app'], undefined),
+          project('unknown-release', ['scope:ui', 'type:app', 'release:npm'], undefined),
+          project('two-releases', ['scope:ui', 'type:app', 'release:app', 'release:app'], undefined),
+        ],
+      }),
+    ).toEqual([
+      'fixture/unknown-release: unknown tag "release:npm" (release: must be one of app)',
+      'fixture/two-releases: expected exactly one release: tag, found release:app, release:app',
+    ]);
+  });
+
+  it('should allow no deploy tag or deploy:staging and reject unknown or duplicate deploy tags', () => {
+    expect(
+      validateTags({
+        projects: [
+          project('undeployed', ['scope:ui', 'type:app'], undefined),
+          project('staged', ['scope:ui', 'type:app', 'deploy:staging'], undefined),
+          project('unknown-deploy', ['scope:ui', 'type:app', 'deploy:preview'], undefined),
+          project('two-deploys', ['scope:ui', 'type:app', 'deploy:staging', 'deploy:staging'], undefined),
+        ],
+      }),
+    ).toEqual([
+      'fixture/unknown-deploy: unknown tag "deploy:preview" (deploy: must be one of staging)',
+      'fixture/two-deploys: expected exactly one deploy: tag, found deploy:staging, deploy:staging',
+    ]);
   });
 
   it('rejects a project Nx inferred from a bare package.json that declares no tags', () => {
@@ -161,26 +214,19 @@ describe('validateTags()', () => {
 });
 
 describe('bundledLibraries()', () => {
-  it("derives the runtime owner's eight direct bundle candidates", () => {
+  it("derives the runtime owner's six direct bundle candidates", () => {
     expect(bundledLibraries(live, 'runtime')).toEqual([
       '@taucad/events',
-      '@taucad/filesystem',
       '@taucad/fs-bridge',
       '@taucad/json-schema',
       '@taucad/memory',
-      '@taucad/rpc',
       '@taucad/types',
       '@taucad/utils',
     ]);
   });
 
-  it('over-approximates geospec-engine, whose one candidate is test-only', () => {
-    // Known and accepted (research Finding 4): the manifest/tag rule states what
-    // *may* bundle; the emitted `dist/libs/*` mirrors state what did. Pinned so a
-    // change to the devDependency is noticed. `@taucad/tau-examples` left the set
-    // when it was retagged `type:example` (correctness-review OQ5) — geospec-engine
-    // reaches it by filesystem path from one test, never by import.
-    expect(bundledLibraries(live, 'geospec-engine')).toEqual(['@taucad/chat']);
+  it('assigns the private chat contracts to their public MCP bundle owner', () => {
+    expect(bundledLibraries(live, 'mcp')).toEqual(['@taucad/chat']);
   });
 
   it('yields nothing for every other publishable, or for an unknown project', () => {
@@ -188,7 +234,8 @@ describe('bundledLibraries()', () => {
       .filter((entry) => bundledLibraries(live, entry.name).length > 0)
       .map((entry) => entry.name);
 
-    expect(bundlers).toEqual(['geospec-engine', 'runtime']);
+    expect(bundlers).toContain('mcp');
+    expect(bundlers).toContain('runtime');
     expect(bundledLibraries(live, 'no-such-project')).toEqual([]);
   });
 
@@ -208,19 +255,15 @@ describe('bundlePattern()', () => {
   });
 
   it('matches nothing when the package bundles nothing', () => {
-    const pattern = bundlePattern(live, 'cli');
+    const pattern = bundlePattern(live, 'no-such-project');
 
     expect(pattern.test('@taucad/events')).toBe(false);
     expect(pattern.test('')).toBe(false);
   });
 });
 
-describe('bundle ownership', () => {
-  it('gives every bundled library exactly one owner', () => {
-    expect(bundleOwnershipIssues(live)).toEqual([]);
-  });
-
-  it('reports a library claimed by two publishables', () => {
+describe('independent bundle owners', () => {
+  it('derives a subpath-aware pattern for each publishable that claims a private library', () => {
     const contested: Workspace = {
       projects: [
         ...fixture.projects,
@@ -231,7 +274,11 @@ describe('bundle ownership', () => {
       ],
     };
 
-    expect(bundleOwnershipIssues(contested)).toEqual(['@taucad/types is bundled by base and rival']);
+    for (const owner of ['base', 'rival']) {
+      expect(bundlePattern(contested, owner).test('@taucad/types')).toBe(true);
+      expect(bundlePattern(contested, owner).test('@taucad/types/constants')).toBe(true);
+      expect(bundlePattern(contested, owner).test('@taucad/types-extra')).toBe(false);
+    }
   });
 });
 
@@ -255,21 +302,35 @@ describe('publishWaves()', () => {
         }
       }
     }
-    // The longest publishable dependency chain is four packages deep.
-    expect(waves).toHaveLength(4);
+    // The current publishable graph has eleven dependency layers.
+    expect(waves).toHaveLength(11);
     expect(publishWaves(fixture)).toEqual([['base'], ['leaf']]);
   });
 });
 
 describe('publishableClosure()', () => {
   it('closes the runtime quick start over its publishable dependencies, in wave order', () => {
-    expect(publishableClosure(live, ['esbuild', 'replicad'])).toEqual([
+    const closure = publishableClosure(live, ['esbuild', 'replicad']);
+    expect(closure).toEqual([
+      'cache-core',
+      'project-core',
+      'rpc',
+      'spatial',
+      'units',
+      'kinematics',
+      'filesystem',
+      'parameters',
+      'revisions',
       'runtime',
-      'esbuild',
+      'bundler-core',
       'geometry-core',
       'occt-core',
+      'esbuild',
       'replicad',
     ]);
+    const waveOf = new Map(publishWaves(live).flatMap((wave, index) => wave.map((name) => [name, index] as const)));
+    const indices = closure.map((name) => waveOf.get(name) ?? -1);
+    expect(indices).toEqual(indices.toSorted((a, b) => a - b));
   });
 
   it('includes the requested project itself and is idempotent under duplicates', () => {

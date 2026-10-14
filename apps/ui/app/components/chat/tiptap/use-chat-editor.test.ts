@@ -1,6 +1,11 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { useChatEditor, extractContent, buildEditorContentJson } from '#components/chat/tiptap/use-chat-editor.js';
+import {
+  useChatEditor,
+  extractContent,
+  buildEditorContentJson,
+  cadReferencesOfChips,
+} from '#components/chat/tiptap/use-chat-editor.js';
 import type { UseChatEditorOptions } from '#components/chat/tiptap/use-chat-editor.js';
 import { defaultCommands } from '#components/chat/tiptap/slash-command-suggestion.js';
 import type { PastedContentSegment } from '#utils/at-reference.utils.js';
@@ -32,6 +37,75 @@ function createDefaultOptions(overrides?: Partial<UseChatEditorOptions>): UseCha
 }
 
 describe('useChatEditor', () => {
+  it('should refresh an open slash query when catalog commands arrive without another keystroke', async () => {
+    const command = {
+      id: 'gateway-observation',
+      label: '/gateway-observation',
+      description: 'Settled gateway skill',
+      group: 'Skills',
+    };
+    const { result, rerender } = renderHook(
+      ({ items }) => useChatEditor(createDefaultOptions({ slashCommandItems: items })),
+      {
+        initialProps: { items: [] as NonNullable<UseChatEditorOptions['slashCommandItems']> },
+      },
+    );
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    act(() => {
+      result.current.editor!.commands.focus();
+      result.current.editor!.commands.insertContent('/gateway-');
+    });
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.query).toBe('gateway-');
+    });
+    expect(result.current.slashCommandState?.items).toEqual([]);
+    const { editor } = result.current;
+    rerender({ items: [command] });
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.items).toEqual([command]);
+    });
+    expect(result.current.editor).toBe(editor);
+    expect(extractContent(editor!).text).toBe('/gateway-');
+  });
+
+  it('should withdraw an open slash command and refuse a previously captured selection after catalog removal', async () => {
+    const command = {
+      id: 'gateway-observation',
+      label: '/gateway-observation',
+      description: 'Settled gateway skill',
+      group: 'Skills',
+    };
+    const onSlashCommand = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ items }) => useChatEditor(createDefaultOptions({ slashCommandItems: items, onSlashCommand })),
+      {
+        initialProps: { items: [command] as NonNullable<UseChatEditorOptions['slashCommandItems']> },
+      },
+    );
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    act(() => {
+      result.current.editor!.commands.focus();
+      result.current.editor!.commands.insertContent('/gateway-');
+    });
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.items).toEqual([command]);
+    });
+    const selectRetired = result.current.slashCommandState!.command;
+    rerender({ items: [] });
+    act(() => {
+      selectRetired(command);
+    });
+    expect(onSlashCommand).not.toHaveBeenCalled();
+    expect(extractContent(result.current.editor!).text).toBe('/gateway-');
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.items ?? []).toEqual([]);
+    });
+  });
+
   it('should register /compress as a disabled default slash command', () => {
     expect(defaultCommands).toEqual([
       expect.objectContaining({
@@ -40,6 +114,19 @@ describe('useChatEditor', () => {
         enabled: false,
       }),
     ]);
+  });
+
+  it('should expose the editable area as a named multi-line textbox', async () => {
+    const { result } = renderHook(() => useChatEditor(createDefaultOptions({ placeholder: 'Ask Tau' })));
+
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+
+    const editable = result.current.editor!.view.dom;
+    expect(editable).toHaveAttribute('role', 'textbox');
+    expect(editable).toHaveAttribute('aria-multiline', 'true');
+    expect(editable).toHaveAccessibleName('Ask Tau');
   });
 
   it('should hide disabled slash commands while showing enabled skill suggestions', async () => {
@@ -80,6 +167,138 @@ describe('useChatEditor', () => {
 
     await waitFor(() => {
       expect(result.current.slashCommandState?.items.map((item) => item.id)).toEqual(['create-skill']);
+    });
+  });
+
+  it('should insert an ACP $skill as a chip whose text is its exact invocation', async () => {
+    const onSlashCommand = vi.fn();
+    const command = {
+      id: '$brep-design',
+      label: '$brep-design',
+      description: 'Design native BRep geometry',
+      group: 'Commands',
+      source: 'codex',
+    } as const;
+    const { result } = renderHook(() =>
+      useChatEditor(createDefaultOptions({ slashCommandItems: [command], onSlashCommand })),
+    );
+
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    act(() => {
+      result.current.editor!.commands.focus();
+      result.current.editor!.commands.insertContent('/');
+    });
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.items).toContainEqual(command);
+    });
+    act(() => {
+      result.current.slashCommandState!.command(command);
+    });
+
+    expect(extractContent(result.current.editor!)).toEqual({
+      text: '$brep-design ',
+      contextChips: [expect.objectContaining({ id: '$brep-design', label: '$brep-design', chipType: 'skill' })],
+    });
+    expect(onSlashCommand).toHaveBeenCalledWith(command);
+  });
+
+  it('should open a $ menu listing only the agent $ skills', async () => {
+    const dollarSkill = { id: '$imagegen', label: '$imagegen', description: 'Images', group: 'Commands' } as const;
+    const slashCommand = { id: '/compact', label: '/compact', description: 'Compact', group: 'Commands' } as const;
+    const { result } = renderHook(() =>
+      useChatEditor(createDefaultOptions({ slashCommandItems: [dollarSkill, slashCommand] })),
+    );
+
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    act(() => {
+      result.current.editor!.commands.focus();
+      result.current.editor!.commands.insertContent('$');
+    });
+
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.items).toEqual([dollarSkill]);
+    });
+  });
+
+  it('should refresh an unchanged dollar query from an inline mixed catalog without replacing the editor or selection', async () => {
+    const dollar = { id: 'dollar', label: '$gateway-skill', description: 'Initial', group: 'Skills' };
+    const slash = { id: 'slash', label: '/gateway-command', description: 'Slash', group: 'Commands' };
+    const { result, rerender } = renderHook(
+      ({ items }: { items: NonNullable<UseChatEditorOptions['slashCommandItems']> }) =>
+        useChatEditor(createDefaultOptions({ slashCommandItems: [...items] })),
+      { initialProps: { items: [dollar, slash] } },
+    );
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    act(() => {
+      result.current.editor!.commands.focus();
+      result.current.editor!.commands.insertContent('$gateway-');
+    });
+    await waitFor(() => {
+      expect(result.current.slashCommandState?.items).toEqual([dollar]);
+    });
+    const editor = result.current.editor!;
+    const { selection } = editor.state;
+    const updated = { ...dollar, description: 'Updated' };
+    const added = { id: 'added', label: '$gateway-added', description: 'Added', group: 'Skills' };
+    rerender({ items: [updated, slash, added] });
+    expect(result.current.slashCommandState?.items).toEqual([updated, added]);
+    rerender({ items: [updated, slash, added] });
+    expect(result.current.slashCommandState?.items).toEqual([updated, added]);
+    expect(result.current.editor).toBe(editor);
+    expect(editor.state.selection).toBe(selection);
+    expect(extractContent(editor).text).toBe('$gateway-');
+  });
+
+  it('should not open a $ menu when the agent offers no $ skills', async () => {
+    const skill = { id: 'repos', label: '/repos', description: 'Repos', group: 'Skills' } as const;
+    const { result } = renderHook(() => useChatEditor(createDefaultOptions({ slashCommandItems: [skill] })));
+
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    act(() => {
+      result.current.editor!.commands.focus();
+      result.current.editor!.commands.insertContent('costs $');
+    });
+
+    expect(result.current.slashCommandState).toBeUndefined();
+  });
+
+  it('should turn a typed known token into its chip when followed by a space', async () => {
+    const skill = { id: '$imagegen', label: '$imagegen', description: 'Images', group: 'Commands' } as const;
+    const { result } = renderHook(() => useChatEditor(createDefaultOptions({ slashCommandItems: [skill] })));
+
+    await waitFor(() => {
+      expect(result.current.editor).not.toBeNull();
+    });
+    const editor = result.current.editor!;
+    const typeText = (text: string): void => {
+      const { from, to } = editor.state.selection;
+      const handled = editor.view.someProp('handleTextInput', (handler) =>
+        handler(editor.view, from, to, text, () => editor.state.tr.insertText(text, from, to)),
+      );
+      if (!handled) {
+        editor.view.dispatch(editor.state.tr.insertText(text, from, to));
+      }
+    };
+
+    act(() => {
+      editor.commands.focus();
+      typeText('Render with $imagegen');
+      typeText(' ');
+      typeText('now and $5');
+      typeText(' ');
+    });
+
+    expect(extractContent(editor)).toEqual({
+      text: 'Render with $imagegen now and $5 ',
+      contextChips: [expect.objectContaining({ label: '$imagegen', chipType: 'skill' })],
     });
   });
 
@@ -433,9 +652,15 @@ describe('useChatEditor — image paste delegation', () => {
 });
 
 describe('buildEditorContentJson', () => {
-  it('should return undefined when segments contain no chips', () => {
-    const segments: PastedContentSegment[] = [{ type: 'text', value: 'Hello world' }];
-    expect(buildEditorContentJson(segments)).toBeUndefined();
+  it('should preserve literal markup, entities, whitespace, and newlines as text nodes', () => {
+    const segments: PastedContentSegment[] = [{ type: 'text', value: '  Keep <b>literal</b> &amp; text\nnext  ' }];
+    expect(buildEditorContentJson(segments)).toEqual({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: '  Keep <b>literal</b> &amp; text' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'next  ' }] },
+      ],
+    });
   });
 
   it('should produce a doc with contextChip nodes for chip segments', () => {
@@ -444,7 +669,6 @@ describe('buildEditorContentJson', () => {
       { type: 'chip', id: 'main.ts', label: 'main.ts', chipType: 'file', path: 'main.ts' },
     ];
     const result = buildEditorContentJson(segments);
-    expect(result).toBeDefined();
     expect(result).toEqual({
       type: 'doc',
       content: [
@@ -513,7 +737,7 @@ describe('buildEditorContentJson', () => {
     });
 
     act(() => {
-      hookResult.current.editor!.commands.setContent(result!);
+      hookResult.current.editor!.commands.setContent(result);
     });
 
     const content = extractContent(hookResult.current.editor!);
@@ -526,6 +750,24 @@ describe('buildEditorContentJson', () => {
       referenceToken: '@cad[main.ts#component:sun_gear]',
       geometryReference,
     });
+    expect(cadReferencesOfChips([...content.contextChips, ...content.contextChips])).toEqual([
+      {
+        resource: { kind: 'workspace-file', path: 'main.ts' },
+        target: {
+          kind: 'component',
+          componentId: 'component:sun_gear',
+          selector: '/nodes/0',
+          label: 'Sun Gear',
+          componentKind: 'part',
+        },
+      },
+    ]);
+    expect(
+      cadReferencesOfChips([
+        { id: 'a', label: 'a', chipType: 'geometry', geometryReference: '{not json' },
+        { id: 'b', label: 'b', chipType: 'geometry', geometryReference: '{"scheme":"other"}' },
+      ]),
+    ).toEqual([]);
   });
 
   it('should handle multiple adjacent chips', () => {
@@ -535,9 +777,7 @@ describe('buildEditorContentJson', () => {
       { type: 'chip', id: 'main.scad', label: 'main.scad', chipType: 'file', path: 'main.scad' },
     ];
     const result = buildEditorContentJson(segments);
-    expect(result).toBeDefined();
-
-    const paragraph = result!.content?.[0];
+    const paragraph = result.content?.[0];
     expect(paragraph?.content).toHaveLength(3);
 
     const first = paragraph?.content?.[0];
@@ -552,7 +792,10 @@ describe('buildEditorContentJson', () => {
   it('should split text at newlines into separate paragraphs', () => {
     const segments: PastedContentSegment[] = [{ type: 'text', value: 'Line one\nLine two' }];
     const result = buildEditorContentJson(segments);
-    expect(result).toBeUndefined();
+    expect(result.content).toEqual([
+      { type: 'paragraph', content: [{ type: 'text', text: 'Line one' }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Line two' }] },
+    ]);
   });
 
   it('should split text and chips across newline boundaries into paragraphs', () => {
@@ -562,10 +805,9 @@ describe('buildEditorContentJson', () => {
       { type: 'chip', id: 'b.ts', label: 'b.ts', chipType: 'file', path: 'b.ts' },
     ];
     const result = buildEditorContentJson(segments);
-    expect(result).toBeDefined();
-    expect(result!.content).toHaveLength(2);
-    expect(result!.content?.[0]?.content?.[0]?.type).toBe('contextChip');
-    expect(result!.content?.[1]?.content?.[0]?.type).toBe('contextChip');
+    expect(result.content).toHaveLength(2);
+    expect(result.content?.[0]?.content?.[0]?.type).toBe('contextChip');
+    expect(result.content?.[1]?.content?.[0]?.type).toBe('contextChip');
   });
 });
 
@@ -589,10 +831,8 @@ describe('draft content restoration with chip rehydration', () => {
     const segments = buildPastedContent(draftText, { fileTree, chats: [] });
     const json = buildEditorContentJson(segments);
 
-    expect(json).toBeDefined();
-
     act(() => {
-      editor.commands.setContent(json!);
+      editor.commands.setContent(json);
     });
 
     const content = extractContent(editor);
@@ -618,10 +858,8 @@ describe('draft content restoration with chip rehydration', () => {
     const segments = buildPastedContent(draftText, { fileTree, chats: [] });
     const json = buildEditorContentJson(segments);
 
-    expect(json).toBeDefined();
-
     act(() => {
-      editor.commands.setContent(json!);
+      editor.commands.setContent(json);
     });
 
     const content = extractContent(editor);
@@ -646,10 +884,14 @@ describe('draft content restoration with chip rehydration', () => {
     const segments = buildPastedContent(draftText, { fileTree, chats: [] });
     const json = buildEditorContentJson(segments);
 
-    expect(json).toBeUndefined();
+    expect(json.content?.[0]?.content).toEqual([
+      { type: 'text', text: 'Check ' },
+      { type: 'text', text: '@nonexistent.ts' },
+      { type: 'text', text: ' for details' },
+    ]);
 
     act(() => {
-      editor.commands.setContent(draftText);
+      editor.commands.setContent(json);
     });
 
     const content = extractContent(editor);
@@ -658,12 +900,10 @@ describe('draft content restoration with chip rehydration', () => {
   });
 
   it('should rehydrate /command as skill contextChip nodes', async () => {
-    const knownSkills = new Set(['create-policy']);
+    const knownTokens = new Set(['/create-policy']);
     const draftText = '/create-policy';
-    const segments = buildPastedContent(draftText, { fileTree: new Map(), chats: [], knownSkills });
+    const segments = buildPastedContent(draftText, { fileTree: new Map(), chats: [], knownTokens });
     const json = buildEditorContentJson(segments);
-
-    expect(json).toBeDefined();
 
     const { result } = renderHook(() => useChatEditor(createDefaultOptions()));
 
@@ -674,7 +914,7 @@ describe('draft content restoration with chip rehydration', () => {
     const editor = result.current.editor!;
 
     act(() => {
-      editor.commands.setContent(json!);
+      editor.commands.setContent(json);
     });
 
     const content = extractContent(editor);
@@ -686,12 +926,10 @@ describe('draft content restoration with chip rehydration', () => {
   });
 
   it('should rehydrate catalog-backed slash skills without relying on static defaults', async () => {
-    const knownSkills = new Set(['woodworking']);
+    const knownTokens = new Set(['/woodworking']);
     const draftText = '/woodworking make this joinery manufacturable';
-    const segments = buildPastedContent(draftText, { fileTree: new Map(), chats: [], knownSkills });
+    const segments = buildPastedContent(draftText, { fileTree: new Map(), chats: [], knownTokens });
     const json = buildEditorContentJson(segments);
-
-    expect(json).toBeDefined();
 
     const { result } = renderHook(() =>
       useChatEditor(
@@ -717,14 +955,14 @@ describe('draft content restoration with chip rehydration', () => {
     const editor = result.current.editor!;
 
     act(() => {
-      editor.commands.setContent(json!);
+      editor.commands.setContent(json);
     });
 
     const content = extractContent(editor);
     expect(content.contextChips).toHaveLength(1);
     expect(content.contextChips[0]).toEqual(
       expect.objectContaining({
-        id: 'woodworking',
+        id: '/woodworking',
         label: '/woodworking',
         chipType: 'skill',
       }),
@@ -772,7 +1010,7 @@ describe('draft content restoration with chip rehydration', () => {
     expect(content.contextChips).toHaveLength(1);
     expect(content.contextChips[0]).toEqual(
       expect.objectContaining({
-        id: 'visible-skill',
+        id: '/visible-skill',
         label: '/visible-skill',
         chipType: 'skill',
       }),
@@ -784,7 +1022,6 @@ describe('draft content restoration with chip rehydration', () => {
     const segments: PastedContentSegment[] = [{ type: 'chip', id: 'repos', label: '/repos', chipType: 'skill' }];
     const result = buildEditorContentJson(segments);
 
-    expect(result).toBeDefined();
     expect(result).toEqual({
       type: 'doc',
       content: [
@@ -802,13 +1039,11 @@ describe('draft content restoration with chip rehydration', () => {
   });
 
   it('should handle mixed @file and /command rehydration', async () => {
-    const knownSkills = new Set(['repos']);
+    const knownTokens = new Set(['/repos']);
     const fileTree = createFileTree([['main.ts', { name: 'main.ts' }]]);
     const draftText = '/repos check @main.ts';
-    const segments = buildPastedContent(draftText, { fileTree, chats: [], knownSkills });
+    const segments = buildPastedContent(draftText, { fileTree, chats: [], knownTokens });
     const json = buildEditorContentJson(segments);
-
-    expect(json).toBeDefined();
 
     const { result } = renderHook(() =>
       useChatEditor(createDefaultOptions({ treeService: createMockTreeService(fileTree) })),
@@ -821,7 +1056,7 @@ describe('draft content restoration with chip rehydration', () => {
     const editor = result.current.editor!;
 
     act(() => {
-      editor.commands.setContent(json!);
+      editor.commands.setContent(json);
     });
 
     const content = extractContent(editor);

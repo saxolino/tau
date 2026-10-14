@@ -2,9 +2,18 @@
 import process from 'node:process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ENV, getClientEnvironment, getEnvironment, resolveFrontendUrl } from '#environment.config.js';
+import {
+  ENV,
+  getClientEnvironment,
+  getEnvironment,
+  requireClientEnvironment,
+  resolveFrontendUrl,
+} from '#environment.config.js';
+import type { ClientEnvironment } from '#environment.config.js';
 
 const originalEnvironment = { ...process.env };
+const originalProcessEnvironmentDescriptor = Object.getOwnPropertyDescriptor(process, 'env');
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
 
 type EnvironmentEntries = ReadonlyArray<readonly [string, string | undefined]>;
 
@@ -58,6 +67,14 @@ describe('resolveFrontendUrl', () => {
         ]),
       ),
     ).toBe('https://taucad.dev');
+  });
+
+  it('should use the Portless worktree URL outside Netlify', () => {
+    expect(
+      resolveFrontendUrl(
+        environmentFrom([['PORTLESS_URL', 'https://units-runtime-implementation.tau-ui.localhost:1355']]),
+      ),
+    ).toBe('https://units-runtime-implementation.tau-ui.localhost:1355');
   });
 
   it('should derive deploy-preview frontend origin from DEPLOY_PRIME_URL first', () => {
@@ -195,13 +212,16 @@ describe('getEnvironment', () => {
 });
 
 describe('getClientEnvironment', () => {
-  const secretToken = 'ghp_pretend_this_is_a_real_token_00000';
+  const secretToken = 'pretend-this-is-a-real-server-only-secret';
 
+  // `AUTH_SECRET` is the API service's, not the UI's — it is absent from
+  // `environmentSchema` on purpose. Deployments that share one env file across
+  // both services still leak it into this process, so assert it is dropped.
   const setEnvironmentWithSecret = (): void => {
     setProcessEnvironment(
       withBaseEnvironment([
         ['TAU_FRONTEND_URL', 'https://taucad.dev'],
-        ['GITHUB_API_TOKEN', secretToken],
+        ['AUTH_SECRET', secretToken],
       ]),
     );
   };
@@ -212,21 +232,22 @@ describe('getClientEnvironment', () => {
 
   // This payload is serialised into page source for every visitor, so a
   // server-only key reaching it is a leak.
-  it('should omit GITHUB_API_TOKEN from the client payload', async () => {
+  it('should omit server-only secrets from the client payload', async () => {
     setEnvironmentWithSecret();
 
     const clientEnvironment = await getClientEnvironment();
 
-    expect(clientEnvironment).not.toHaveProperty('GITHUB_API_TOKEN');
+    expect(clientEnvironment).not.toHaveProperty('AUTH_SECRET');
     expect(JSON.stringify(clientEnvironment)).not.toContain(secretToken);
   });
 
-  it('should still expose GITHUB_API_TOKEN to server-side callers', async () => {
+  it('should omit server-only secrets from server-side UI environment parsing', async () => {
     setEnvironmentWithSecret();
 
     const environment = await getEnvironment();
 
-    expect(environment.GITHUB_API_TOKEN).toBe(secretToken);
+    expect(environment).not.toHaveProperty('AUTH_SECRET');
+    expect(JSON.stringify(environment)).not.toContain(secretToken);
   });
 
   it('should carry the client-safe keys through to the browser', async () => {
@@ -269,10 +290,137 @@ describe('getClientEnvironment', () => {
       'POSTHOG_ASSET_HOST',
       'POSTHOG_CLIENT_KEY',
       'POSTHOG_UI_HOST',
+      'SENTRY_DSN',
+      'SENTRY_ENVIRONMENT',
       'TAU_API_URL',
+      'TAU_BILLING_ENVIRONMENT',
       'TAU_DEBUG',
       'TAU_FRONTEND_URL',
+      'TAU_GIT_REMOTE_ALLOW_PRIVATE',
       'TAU_WEBSOCKET_URL',
     ]);
+  });
+});
+
+describe('window.ENV host contract', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (originalProcessEnvironmentDescriptor) {
+      Object.defineProperty(process, 'env', originalProcessEnvironmentDescriptor);
+    }
+    if (originalWindowDescriptor) {
+      Object.defineProperty(globalThis, 'window', originalWindowDescriptor);
+    } else {
+      // oxlint-disable-next-line @typescript-eslint/no-dynamic-delete -- restoring the Node test global.
+      delete (globalThis as { window?: Window }).window;
+    }
+    vi.resetModules();
+  });
+
+  it('uses the full pre-import injection without reading process.env', async () => {
+    vi.stubEnv('TAU_TARGET', 'desktop');
+    const injectedEnvironment = {
+      /* eslint-disable @typescript-eslint/naming-convention -- environment variable keys are uppercase by contract. */
+      TAU_API_URL: 'https://api.host.test',
+      TAU_WEBSOCKET_URL: 'wss://socket.host.test',
+      TAU_FRONTEND_URL: 'https://host.test',
+      TAU_DEBUG: true,
+      TAU_GIT_REMOTE_ALLOW_PRIVATE: false,
+      TAU_BILLING_ENVIRONMENT: 'staging',
+      NODE_ENV: 'production',
+      POSTHOG_API_HOST: 'https://events.host.test',
+      POSTHOG_UI_HOST: 'https://analytics.host.test',
+      POSTHOG_ASSET_HOST: 'assets.host.test',
+      POSTHOG_CLIENT_KEY: 'phc_host',
+      SENTRY_DSN: 'https://public@sentry.host.test/1',
+      SENTRY_ENVIRONMENT: 'staging',
+      /* eslint-enable @typescript-eslint/naming-convention -- environment variable keys are uppercase by contract. */
+    } as const satisfies ClientEnvironment;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- browser injection contract is named window.ENV.
+      value: { ENV: injectedEnvironment },
+    });
+    const processEnvironmentRead = vi.fn();
+    Object.defineProperty(process, 'env', {
+      configurable: true,
+      get: () => {
+        // Node 26's ESM loader reads process.env twice while resolving a dynamic import.
+        if (!new Error('trace process.env access').stack?.includes('node:internal/modules/esm/loader')) {
+          processEnvironmentRead();
+        }
+        return originalEnvironment;
+      },
+    });
+    vi.resetModules();
+
+    const { ENV: freshEnvironment } = await import('#environment.config.js');
+    const resolvedEnvironment = { ...freshEnvironment };
+    if (originalProcessEnvironmentDescriptor) {
+      Object.defineProperty(process, 'env', originalProcessEnvironmentDescriptor);
+    }
+
+    expect(resolvedEnvironment).toStrictEqual(injectedEnvironment);
+    expect(processEnvironmentRead).not.toHaveBeenCalled();
+  });
+
+  it('should leave a desktop SPA unbootstrapped without reading server environment', () => {
+    vi.stubEnv('TAU_TARGET', 'desktop');
+    const processEnvironmentRead = vi.fn();
+    Object.defineProperty(process, 'env', {
+      configurable: true,
+      get: () => {
+        // Vitest resolves import.meta.env through process.env; the production
+        // build replaces the existing target helper with the build define.
+        if (!new Error('trace process.env access').stack?.includes('app/lib/build-target.ts')) {
+          processEnvironmentRead();
+        }
+        return originalEnvironment;
+      },
+    });
+
+    expect(ENV.TAU_DEBUG).toBeUndefined();
+    expect(() => ENV.TAU_API_URL).toThrow(/Missing TAU_API_URL/u);
+    expect(() => ENV.TAU_WEBSOCKET_URL).toThrow(/Missing TAU_WEBSOCKET_URL/u);
+    expect(() => requireClientEnvironment('TAU_FRONTEND_URL')).toThrow(/Missing TAU_FRONTEND_URL/u);
+    expect(processEnvironmentRead).not.toHaveBeenCalled();
+  });
+
+  it('should preserve strict web Node validation without an injected client environment', () => {
+    vi.stubEnv('TAU_TARGET', 'web');
+    process.env = {};
+
+    expect(() => ENV.TAU_DEBUG).toThrow('Invalid environment configuration');
+  });
+
+  it('should preserve strict explicit server parsing for the desktop target', async () => {
+    vi.stubEnv('TAU_TARGET', 'desktop');
+    process.env = {};
+
+    await expect(getEnvironment()).rejects.toThrow('Invalid environment configuration');
+    await expect(getClientEnvironment()).rejects.toThrow('Invalid environment configuration');
+  });
+
+  it('reads nothing in a worker, which has neither window nor process', async () => {
+    // oxlint-disable-next-line @typescript-eslint/no-dynamic-delete -- a worker global has no window.
+    delete (globalThis as { window?: Window }).window;
+    vi.resetModules();
+    /* Imported while Node still has its own globals — a worker bundle is
+     * loaded by a runtime that never had `process`, which this environment
+     * cannot reproduce without breaking the module loader. The facade resolves
+     * lazily, so the globals only have to be gone at read time. */
+    const { ENV: workerEnvironment } = await import('#environment.config.js');
+    const originalProcess = globalThis.process;
+    // oxlint-disable-next-line @typescript-eslint/no-dynamic-delete -- a worker global has no process either.
+    delete (globalThis as { process?: NodeJS.Process }).process;
+
+    try {
+      // The read that used to throw and abandon the job that made it.
+      expect(workerEnvironment.TAU_DEBUG).toBeUndefined();
+      // A required value still fails by name rather than by TypeError.
+      expect(() => workerEnvironment.TAU_API_URL).toThrow(/Missing TAU_API_URL/u);
+    } finally {
+      Object.defineProperty(globalThis, 'process', { configurable: true, writable: true, value: originalProcess });
+    }
   });
 });

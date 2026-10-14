@@ -26,6 +26,26 @@ export type PhysicalProjectEvidence = {
   readonly sourceText: string;
 };
 
+/** Read a fixture's durable workspace marker. */
+export const readOpfsWorkspaceMarker = async (
+  fixture: string,
+): Promise<Readonly<Record<string, unknown>> | undefined> =>
+  target.evaluate(async (fixtureName) => {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const fixtureRoot = await root.getDirectoryHandle(fixtureName);
+      const tau = await fixtureRoot.getDirectoryHandle('.tau');
+      const marker = await tau.getFileHandle('workspace.json');
+      const file = await marker.getFile();
+      return JSON.parse(await file.text()) as Readonly<Record<string, unknown>>;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') {
+        return undefined;
+      }
+      throw error;
+    }
+  }, fixture);
+
 /** Read the shared project-routing metadata without importing application modules into the browser runner. */
 export const readProjectStorageState = async (): Promise<ProjectStorageState> =>
   target.evaluate(async () => {
@@ -81,7 +101,11 @@ export const readProjectStorageState = async (): Promise<ProjectStorageState> =>
         pin: (pin as { backend?: string } | undefined)?.backend,
         preference: (preference as { location?: ProjectStorageState['preference'] } | undefined)?.location,
         configs: configs as ProjectStorageState['configs'],
-        workspaces: workspaces as ProjectStorageState['workspaces'],
+        workspaces: (workspaces as ProjectStorageState['workspaces']).map(({ workspaceId, name, slug }) => ({
+          workspaceId,
+          name,
+          slug,
+        })),
         handleWorkspaceIds: handleWorkspaceIds.map(String),
       };
     } finally {
@@ -137,6 +161,91 @@ export const deleteWorkspaceHandle = async (workspaceId: string): Promise<void> 
       db.close();
     }
   }, workspaceId);
+
+/** Seed the historical duplicate-row incident while retaining one connected canonical workspace. */
+export const seedDisconnectedWorkspaceAliases = async (options: {
+  readonly canonicalWorkspaceId: string;
+  readonly aliasWorkspaceIds: readonly string[];
+  readonly retainedConfig?: StoredProjectConfig;
+}): Promise<void> =>
+  target.evaluate(async ({ canonicalWorkspaceId, aliasWorkspaceIds, retainedConfig }) => {
+    const databases = await indexedDB.databases();
+    const database = databases.find(({ name }) => name?.endsWith('fs-handles'));
+    if (!database?.name) {
+      throw new Error('Project storage metadata database is missing');
+    }
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(database.name!);
+      request.addEventListener(
+        'success',
+        () => {
+          resolve(request.result);
+        },
+        { once: true },
+      );
+      request.addEventListener(
+        'error',
+        () => {
+          reject(request.error ?? new Error('Failed to open project storage metadata'));
+        },
+        { once: true },
+      );
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(['configs', 'workspaces', 'handles', 'meta'], 'readwrite');
+        const configs = tx.objectStore('configs');
+        const read = configs.getAll();
+        read.addEventListener('success', () => {
+          const rows = read.result as StoredProjectConfig[];
+          for (const [index, config] of rows.entries()) {
+            if (config.backend === 'webaccess' && config.workspaceId === canonicalWorkspaceId) {
+              configs.put({ ...config, workspaceId: aliasWorkspaceIds[index % aliasWorkspaceIds.length] });
+            }
+          }
+          if (retainedConfig) {
+            configs.put(retainedConfig);
+          }
+          for (const [index, workspaceId] of aliasWorkspaceIds.entries()) {
+            tx.objectStore('workspaces').put({
+              workspaceId,
+              name: 'Previous workspace',
+              slug: `previous-workspace-${index + 1}`,
+              lastConnectedAt: index + 1,
+            });
+            tx.objectStore('handles').delete(workspaceId);
+          }
+          tx.objectStore('meta').put({
+            key: 'project-creation-location',
+            location: { kind: 'workspace', workspaceId: aliasWorkspaceIds[0] },
+          });
+        });
+        tx.addEventListener(
+          'complete',
+          () => {
+            resolve();
+          },
+          { once: true },
+        );
+        tx.addEventListener(
+          'error',
+          () => {
+            reject(tx.error ?? new Error('Failed to seed workspace aliases'));
+          },
+          { once: true },
+        );
+        tx.addEventListener(
+          'abort',
+          () => {
+            reject(tx.error ?? new Error('Workspace alias seed was aborted'));
+          },
+          { once: true },
+        );
+      });
+    } finally {
+      db.close();
+    }
+  }, options);
 
 /** Read manifest and authored source from an OPFS directory (Home or a seeded disk fixture). */
 export const readOpfsProjectEvidence = async (options: {
@@ -235,11 +344,93 @@ export const readIndexedDbProjectEvidence = async (
     }
   }, providerBasePath);
 
-/** Snapshot names and file text below an OPFS fixture for no-write assertions. */
+/** Snapshot file text below one direct IndexedDB project root. */
+export const readIndexedDbTree = async (providerBasePath: string): Promise<Readonly<Record<string, string>>> =>
+  target.evaluate(async (basePath) => {
+    const databases = await indexedDB.databases();
+    const database = databases.find(({ name }) => name?.endsWith('-fs-direct'));
+    if (!database?.name) {
+      return {};
+    }
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(database.name!);
+      request.addEventListener(
+        'success',
+        () => {
+          resolve(request.result);
+        },
+        { once: true },
+      );
+      request.addEventListener(
+        'error',
+        () => {
+          reject(request.error ?? new Error('Failed to open IndexedDB Home'));
+        },
+        { once: true },
+      );
+    });
+    const result = async <T>(request: IDBRequest<T>): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        request.addEventListener(
+          'success',
+          () => {
+            resolve(request.result);
+          },
+          { once: true },
+        );
+        request.addEventListener(
+          'error',
+          () => {
+            reject(request.error ?? new Error('Failed to read IndexedDB tree'));
+          },
+          { once: true },
+        );
+      });
+    try {
+      const store = db.transaction('files').objectStore('files');
+      const allKeys = await result(store.getAllKeys());
+      const keys = allKeys.map(String);
+      const root = basePath.replaceAll(/^\/+|\/$/gu, '');
+      const prefixes = [`/${root}/`, `${root}/`];
+      const entries: Array<readonly [string, string]> = [];
+      for (const key of keys.sort()) {
+        const prefix = prefixes.find((candidate) => key.startsWith(candidate));
+        if (!prefix) {
+          continue;
+        }
+        const value = await result(store.get(key) as IDBRequest<Uint8Array<ArrayBuffer> | ArrayBuffer | undefined>);
+        if (value) {
+          const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+          entries.push([`/${key.slice(prefix.length)}`, new TextDecoder().decode(bytes)]);
+        }
+      }
+      return Object.fromEntries(entries);
+    } finally {
+      db.close();
+    }
+  }, providerBasePath);
+
+/**
+ * Snapshot names and file text below an OPFS directory path for no-write assertions.
+ *
+ * An absent directory answers `{}` rather than throwing: a tree that has not
+ * been materialized yet is a legitimate reading, and every caller's assertion is
+ * over the returned map either way.
+ */
 export const readOpfsTree = async (fixture: string): Promise<Readonly<Record<string, string>>> =>
   target.evaluate(async (fixtureName) => {
     const root = await navigator.storage.getDirectory();
-    const fixtureRoot = await root.getDirectoryHandle(fixtureName);
+    let fixtureRoot = root;
+    try {
+      for (const segment of fixtureName.split('/').filter(Boolean)) {
+        fixtureRoot = await fixtureRoot.getDirectoryHandle(segment);
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') {
+        return {};
+      }
+      throw error;
+    }
     const entries: Array<readonly [string, string]> = [];
     const visit = async (directory: FileSystemDirectoryHandle, prefix: string): Promise<void> => {
       for await (const [name, handle] of directory.entries()) {
@@ -255,3 +446,73 @@ export const readOpfsTree = async (fixture: string): Promise<Readonly<Record<str
     await visit(fixtureRoot, '');
     return Object.fromEntries(entries.sort(([left], [right]) => left.localeCompare(right)));
   }, fixture);
+
+/** Read a project's physical tree through the backend selected by its durable config. */
+export const readProjectTree = async (config: StoredProjectConfig): Promise<Readonly<Record<string, string>>> => {
+  if (config.backend === 'opfs') {
+    return readOpfsTree(config.providerBasePath);
+  }
+  if (config.backend === 'indexeddb') {
+    return readIndexedDbTree(config.providerBasePath);
+  }
+  throw new Error('Webaccess tree evidence requires the directory-picker fixture handle.');
+};
+
+/**
+ * Where one project's linked checkouts live.
+ *
+ * Beside the project on its *own* storage root, never inside its tree: a
+ * physical project directory is a single flat, non-dot-prefixed segment of that
+ * root (`handle-store.ts` `isFlatProjectBasePath`, mirroring
+ * `WorkspaceFileService._configureProjectRoots`), and the revision worker mounts
+ * each checkout at `.tau/checkouts/<projectId>/<checkoutId>` on the project's
+ * provider (`apps/ui/app/machines/file-manager.worker.revisions.ts` `createCheckoutRoutes`,
+ * `packages/filesystem/src/mount-table.ts` `CheckoutRootConfig`, and the
+ * `.tau/checkouts/` guard in `workspace-file-service.ts`). There is no `tree/`
+ * segment — that spelling was the daemon's and is written by nothing.
+ *
+ * So a checkout can never appear in `readProjectTree`, whose prefix filter is
+ * the project's own base path. A reader that looked for one there was
+ * unsatisfiable by construction (T1 row 12).
+ *
+ * @param config - The project's durable config.
+ * @param storageRoot - Path of the storage root itself, for a fixture-rooted backend.
+ * @returns The path holding every checkout of that project.
+ */
+export const checkoutTreeBasePath = (config: StoredProjectConfig, storageRoot = ''): string => {
+  const prefix = storageRoot.replace(/\/+$/u, '');
+  return `${prefix === '' ? '' : `${prefix}/`}.tau/checkouts/${config.projectId}`;
+};
+
+/**
+ * Read one project's linked-checkout trees through the backend its config names.
+ *
+ * @param config - The project's durable config.
+ * @param storageRoot - Path of the storage root itself, for a fixture-rooted backend.
+ * @returns Paths `/<checkoutId>/…`, empty when nothing has been materialized.
+ */
+export const readProjectCheckoutTree = async (
+  config: StoredProjectConfig,
+  storageRoot = '',
+): Promise<Readonly<Record<string, string>>> => {
+  const base = checkoutTreeBasePath(config, storageRoot);
+  if (config.backend === 'opfs') {
+    return readOpfsTree(base);
+  }
+  if (config.backend === 'indexeddb') {
+    return readIndexedDbTree(base);
+  }
+  throw new Error('Webaccess checkout evidence requires the directory-picker fixture handle.');
+};
+
+/** Inspect the existing physical provider namespace without creating another authority. */
+export const readPhysicalDatabasePrefix = async (required: boolean): Promise<string> =>
+  target.evaluate(async (required) => {
+    const databases = await indexedDB.databases();
+    const suffix = '-fs-direct';
+    const name = databases.find((database) => database.name?.endsWith(suffix))?.name;
+    if (required && name === undefined) {
+      throw new Error('The selected IndexedDB physical authority is absent.');
+    }
+    return name?.slice(0, -suffix.length) ?? 'tau-';
+  }, required);

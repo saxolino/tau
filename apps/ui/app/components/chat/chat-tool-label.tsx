@@ -1,4 +1,4 @@
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 type ChatToolLabelProps = {
   /**
@@ -6,7 +6,7 @@ type ChatToolLabelProps = {
    * `"Explored"`, `"Searching"`. Accepts a `ReactNode` so callers can layer
    * additional inline styling (e.g. a mono span for a regex pattern); the
    * outer typography wrapper still applies the canonical `font-medium
-   * text-foreground/60` treatment so colours stay in sync across the chat.
+   * text-muted-foreground` treatment so colours stay in sync across the chat.
    * Always rendered.
    */
   readonly verb: React.ReactNode;
@@ -23,7 +23,7 @@ type ChatToolLabelProps = {
 
 /**
  * Shared verb + detail label for every chat-tool header row (tool cards,
- * activity summaries, the reasoning Brain button).
+ * activity summaries, and the reasoning thought trigger).
  *
  * Lays out the verb and detail as inline text separated by a literal space —
  * **not** a CSS `gap` — so the pair reads as one natural phrase that matches
@@ -41,9 +41,9 @@ type ChatToolLabelProps = {
  *
  * **Hover affordance:** when the label lives inside a parent that declares the
  * `group/chat-tool-trigger` Tailwind named group (every clickable chat-tool
- * header — activity section/group, tool-card header, reasoning Brain button),
- * the verb lifts from `text-foreground/60` to `text-foreground` and the
- * accompanying `ChatToolDescription` lifts from `text-foreground/50` to
+ * header — activity section/group, tool-card header, reasoning thought trigger),
+ * the verb lifts from `text-muted-foreground` to `text-foreground` and the
+ * accompanying `ChatToolDescription` lifts from `text-muted-foreground` to
  * `text-foreground/80`, giving a single consistent "this is clickable" cue
  * everywhere without touching the parent's own colour rules.
  *
@@ -71,7 +71,7 @@ export function ChatToolLabel({ verb, children, className }: ChatToolLabelProps)
 
   return (
     <span className={cn(className)}>
-      <span className='font-medium text-foreground/60 transition-colors group-hover/chat-tool-trigger:text-foreground'>
+      <span className='font-medium text-muted-foreground transition-colors group-hover/chat-tool-trigger:text-foreground group-focus-visible/chat-tool-trigger:text-foreground'>
         {verb}
       </span>
       {hasDetail ? <> {children}</> : undefined}

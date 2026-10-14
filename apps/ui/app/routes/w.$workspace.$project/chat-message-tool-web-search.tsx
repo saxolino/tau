@@ -11,10 +11,10 @@ import {
 } from '#components/chat/chat-tool-card.js';
 import { ChatToolDescription } from '#components/chat/chat-tool-text.js';
 import { ChatToolLabel } from '#components/chat/chat-tool-label.js';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '#components/ui/collapsible.js';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import { WebFavicon } from '#routes/w.$workspace.$project/web-favicon.js';
 import { WebSourceLink } from '#routes/w.$workspace.$project/web-source-link.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { ChatToolError } from '#components/chat/chat-tool-error.js';
 
 const maxVisibleSources = 5;
@@ -80,7 +80,7 @@ export function ChatMessageToolWebSearch({
       const query = part.input?.query ?? '';
 
       return (
-        <ChatToolCard variant='minimal' status='loading' isDefaultOpen={false}>
+        <ChatToolCard variant='minimal' status='loading' isCollapsible={false}>
           <ChatToolCardHeader>
             <ChatToolCardIcon icon={Globe} />
             <ChatToolCardTitle>

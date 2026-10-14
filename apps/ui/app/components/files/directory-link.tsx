@@ -1,8 +1,8 @@
 import { useCallback } from 'react';
 import { Slot as SlotPrimitive } from 'radix-ui';
 import { useProject } from '#hooks/use-project.js';
-import { useIsMobile } from '#hooks/use-mobile.js';
-import { cn } from '#utils/ui.utils.js';
+import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
+import { cn } from '@taucad/ui/utils/cn';
 import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 type DirectoryLinkProps = {
@@ -118,7 +118,7 @@ export function DirectoryLink({ path, className, children, asChild = false }: Di
         // `inline-flex`/`flex` and make layout dependent on Tailwind's CSS
         // source order. See {@link FileLink} for the full rationale.
         !asChild && 'inline',
-        'cursor-pointer decoration-current underline-offset-2 hover:text-foreground hover:underline',
+        'cursor-action decoration-current underline-offset-2 hover:text-foreground hover:underline',
         className,
       )}
       onClick={handleClick}

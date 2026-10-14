@@ -9,11 +9,14 @@
  *
  * Services are initialized when Monaco becomes available and disposed on unmount.
  * Project session changes are forwarded to all services for clean state transitions.
+ *
+ * The provider never withholds its children: the workspace (chat, viewer,
+ * revision UI) renders at once, and consumers read `undefined` services until
+ * Monaco is configured. Code panes own their own placeholder.
  */
 
 import type { ReactNode } from 'react';
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { useMonaco } from '@monaco-editor/react';
 import { toast } from 'sonner';
 import { MonacoMarkerService } from '#lib/monaco-marker-service.js';
 import { createWorkspaceContentBinding, MonacoModelService } from '#lib/monaco-model-service.js';
@@ -36,6 +39,8 @@ import type { cadMachine } from '#machines/cad.machine.js';
 import { useProject } from '#hooks/use-project.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { getMonacoLanguageIdsForKernel } from '#lib/kernel-monaco-language.utils.js';
+import { useConfiguredMonaco } from '#hooks/use-monaco-configuration.js';
+import { getRevisionClient } from '#hooks/use-revision-status.js';
 
 type MonacoServicesContextType = {
   modelService: MonacoModelService | undefined;
@@ -47,7 +52,9 @@ const defaultContextValue: MonacoServicesContextType = { modelService: undefined
 const MonacoServicesContext = createContext<MonacoServicesContextType>(defaultContextValue);
 
 export function MonacoModelServiceProvider({ children }: { readonly children: ReactNode }): React.JSX.Element {
-  const monaco = useMonaco();
+  'use no memo';
+
+  const monaco = useConfiguredMonaco();
   const { projectId, editorRef, geometryUnits } = useProject();
   const { fileManagerRef, contentService, treeService, readFile, exists, readdir, getDirectoryStat } = useFileManager();
 
@@ -84,6 +91,15 @@ export function MonacoModelServiceProvider({ children }: { readonly children: Re
       workspaceFs,
       contentService,
       markerService,
+      projectId,
+      /* D14: an unmergeable edit is recorded through the project's revision client, read when it is needed. */
+      recordEditorConflict: async (input) => {
+        const { worker } = fileManagerRef.getSnapshot().context;
+        if (worker === undefined) {
+          throw new Error('Revisions are still starting. Your edit is kept; type again to save it.');
+        }
+        return getRevisionClient({ projectId, worker }).recordEditorConflict(input);
+      },
     });
     const workspaceContentBinding = createWorkspaceContentBinding(modelService);
     workspaceFs.bindModelService(workspaceContentBinding);
@@ -135,6 +151,7 @@ export function MonacoModelServiceProvider({ children }: { readonly children: Re
       workspaceFs,
     });
 
+    // oxlint-disable-next-line react/set-state-in-effect -- The imperative Monaco service lifecycle can only publish after Monaco and filesystem services initialize.
     setServices({ modelService, markerService });
 
     return () => {
@@ -152,7 +169,7 @@ export function MonacoModelServiceProvider({ children }: { readonly children: Re
 
       setServices(defaultContextValue);
     };
-  }, [monaco, contentService, treeService, fileManagerApi, fileManagerRef, editorRef]);
+  }, [monaco, contentService, treeService, fileManagerApi, fileManagerRef, editorRef, projectId]);
 
   useEffect(() => {
     const ms = services.modelService;

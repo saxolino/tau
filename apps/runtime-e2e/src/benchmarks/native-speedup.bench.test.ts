@@ -1,7 +1,15 @@
 // @vitest-environment node
 /**
- * The repo's first gated timing benchmark: the native OpenRSCAD engine against
- * the WebAssembly one, through the runtime client, on the same source.
+ * The repo's first gated timing benchmark: the OpenRSCAD engine's N-API addon
+ * against its WebAssembly build, through the runtime client, on the same source.
+ *
+ * Both payloads ship in one package (`@taulabs/openrscad-engine`) and one Tau
+ * kernel binds whichever the export map picks, so the two rows are built here
+ * rather than imported: `native` is the kernel's default (the bare import,
+ * which the `node` condition resolves to the addon) and `wasm` is the same
+ * kernel over a facade rebuilt from the engine's own `./core` + `./node`. The
+ * fingerprint gate below would pass vacuously if the addon were missing, so the
+ * suite asserts the default really bound `native` first.
  *
  * Shape copied from `repos/nanoraster/bench/gated.mjs` and
  * `repos/nanoraster/scripts/compare-benchmark.mjs`:
@@ -35,9 +43,23 @@ import { createRuntimeClient } from '@taucad/runtime/client';
 import { inProcessTransport } from '@taucad/runtime/transport/in-process';
 import { fromMemoryFs } from '@taucad/runtime/filesystem';
 import { defineRuntime } from '@taucad/runtime/worker';
-import { openrscadKernel } from '@taucad/openrscad';
-import { openrscadNativeKernel } from '@taucad/openrscad-native';
+import type * as OpenRscadModule from '@taulabs/openrscad-engine';
+import type { RawEngine } from '@taulabs/openrscad-engine/core';
+import { makeApi } from '@taulabs/openrscad-engine/core';
+import * as wasmGlue from '@taulabs/openrscad-engine/node';
+import { createOpenrscadKernel, openrscadKernel } from '@taucad/openrscad';
 import { loadFixture } from '@taucad/tau-examples/fixtures';
+
+/** The WebAssembly backend, assembled from the engine's own facade and glue. */
+const openrscadWasmKernel = createOpenrscadKernel({
+  loadBackend: async () =>
+    ({
+      ...makeApi(wasmGlue as unknown as RawEngine, async () => undefined),
+      ensureReady: async () => undefined,
+      backend: 'wasm',
+      backendCause: undefined,
+    }) as unknown as typeof OpenRscadModule,
+});
 
 /**
  * Gated cases. Only models whose measured run-to-run spread is small enough for
@@ -80,7 +102,6 @@ const baseline: Record<string, { wasm: number; native: number }> = {
 
 const iterations = 15;
 const warmups = 8;
-const projectRoot = '/project/';
 const gateAbsolute = process.env['TAU_BENCHMARK_GATE'] === '1' || process.env['TAU_BENCH_GATE'] === '1';
 
 const median = (values: readonly number[]) => {
@@ -89,43 +110,43 @@ const median = (values: readonly number[]) => {
 };
 
 const createClient = (kernel: typeof openrscadKernel, files: Record<string, string>) => {
-  const absolute: Record<string, string> = {};
-  for (const [name, content] of Object.entries(files)) {
-    absolute[`${projectRoot}${name}`] = content;
-  }
   const runtime = defineRuntime({ kernels: [kernel()] });
-  return createRuntimeClient({ transport: inProcessTransport({ runtime, fileSystem: fromMemoryFs(absolute) }) });
+  return createRuntimeClient({ transport: inProcessTransport({ runtime, fileSystem: fromMemoryFs(files) }) });
 };
 
 const exportGlb = async (client: ReturnType<typeof createClient>, mainFile: string) => {
-  const result = await client.export('glb', {
-    source: { path: `${projectRoot}${mainFile}` },
-    parameters: {},
-  });
-  if (!result.success) {
-    throw new Error(result.issues.map((issue) => issue.message).join('; '));
+  const document = client.open({ source: { path: mainFile }, parameters: {} });
+  try {
+    const result = await document.export('glb');
+    if (!result.success) {
+      throw new Error(result.issues.map((issue) => issue.message).join('; '));
+    }
+    return Buffer.from(result.files[0].bytes);
+  } finally {
+    document.close();
   }
-  const file = result.data[0];
-  if (!file) {
-    throw new Error('export produced no file');
-  }
-  return Buffer.from(file.bytes);
 };
 
 describe('native OpenRSCAD speedup (gated)', () => {
+  it('binds the addon for the default kernel, so the comparison is not wasm against itself', async () => {
+    const engine = await import('@taulabs/openrscad-engine');
+    expect(engine.backend).toBe('native');
+  });
+
   for (const { name, fixture, cold } of cases) {
     it(
       name,
       async () => {
         // Fingerprints first, each from a fresh client's first call.
-        const engines = { wasm: openrscadKernel, native: openrscadNativeKernel };
+        const engines = { wasm: openrscadWasmKernel, native: openrscadKernel };
         const fingerprints: Record<string, { bytes: number; sha256: string }> = {};
         for (const [engine, kernel] of Object.entries(engines)) {
           const client = createClient(kernel, fixture.files);
-          // eslint-disable-next-line no-await-in-loop -- one cold client per engine, sequentially
+          // oxlint-disable-next-line no-await-in-loop -- one cold client per engine, sequentially
           const glb = await exportGlb(client, fixture.mainFile);
           fingerprints[engine] = { bytes: glb.byteLength, sha256: createHash('sha256').update(glb).digest('hex') };
-          client.terminate();
+          // oxlint-disable-next-line no-await-in-loop -- one cold client per engine, sequentially
+          await client.shutdown();
         }
 
         // Then timings, interleaved sample by sample. Warm cases reuse one
@@ -133,8 +154,8 @@ describe('native OpenRSCAD speedup (gated)', () => {
         const shared = cold
           ? undefined
           : {
-              wasm: createClient(openrscadKernel, fixture.files),
-              native: createClient(openrscadNativeKernel, fixture.files),
+              wasm: createClient(openrscadWasmKernel, fixture.files),
+              native: createClient(openrscadKernel, fixture.files),
             };
         const timings: Record<string, number[]> = { wasm: [], native: [] };
         try {
@@ -142,11 +163,12 @@ describe('native OpenRSCAD speedup (gated)', () => {
             for (const engine of ['wasm', 'native'] as const) {
               const client = shared?.[engine] ?? createClient(engines[engine], fixture.files);
               const started = performance.now();
-              // eslint-disable-next-line no-await-in-loop -- interleaved sampling is the point
+              // oxlint-disable-next-line no-await-in-loop -- interleaved sampling is the point
               await exportGlb(client, fixture.mainFile);
               const elapsed = performance.now() - started;
               if (shared === undefined) {
-                client.terminate();
+                // oxlint-disable-next-line no-await-in-loop -- cold clients are disposed between samples
+                await client.shutdown();
               }
               if (sample >= (cold ? 1 : warmups)) {
                 timings[engine]!.push(elapsed);
@@ -154,8 +176,7 @@ describe('native OpenRSCAD speedup (gated)', () => {
             }
           }
         } finally {
-          shared?.wasm.terminate();
-          shared?.native.terminate();
+          await Promise.all([shared?.wasm.shutdown(), shared?.native.shutdown()]);
         }
 
         const report = {

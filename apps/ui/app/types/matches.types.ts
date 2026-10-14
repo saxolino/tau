@@ -33,9 +33,8 @@ export type Handle = {
    */
   commandPalette?: (match: UIMatch) => ReactNode;
   /**
-   * Use this when you need to provide for the entire page,
-   * such as providing for both the page content and breadcrumb items.
-   * This ensures only a single provider is rendered per page.
+   * Providers composed around the route's own content only. The shell renders breadcrumbs,
+   * actions and the command palette above them, so those nodes cannot read a route provider.
    */
   providers?: (match: UIMatch) => React.JSXElementConstructor<React.PropsWithChildren>;
   /**
@@ -51,22 +50,6 @@ export type Handle = {
   enablePageWrapper?: boolean | ((context: PageChromeContext) => boolean);
   /** Render the generic page header. Defaults to true. */
   enablePageHeader?: boolean;
-  /**
-   * Enable floating sidebar mode where the sidebar overlays content.
-   *
-   * Use this for routes with full-screen viewers (CAD, canvas) that should
-   * extend edge-to-edge under the sidebar.
-   *
-   * For elements that should respect the sidebar, use utilities from
-   * `#components/layout/sidebar-offset.js`:
-   *
-   * **Component:**
-   * - `<SidebarOffset via="padding">` - padding offset
-   * - `<SidebarOffset via="margin">` - margin offset
-   * - `<SidebarOffset via="left">` - left positioning for fixed/absolute
-   * - Add `asChild` prop to avoid extra DOM nodes
-   */
-  enableFloatingSidebar?: boolean;
   /**
    * Enable overflow-y on the page. Use this when you have scrollable content in the page.
    */

@@ -1,5 +1,5 @@
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
 
 import { load as yamlLoad } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
@@ -31,6 +31,15 @@ type SkillMetadata = {
 
 const skillPath = (skill: string): string => resolve(skillsRoot, skill, 'SKILL.md');
 
+// Tracked symlinks into the optional Tau Brain checkout; links into them are checked only when it is present.
+const optionalBrainDocuments = ['docs/handbooks', 'docs/incidents', 'docs/reference', 'docs/research'];
+const inAbsentBrain = (target: string): boolean => {
+  const local = relative(repoRoot, target);
+  return optionalBrainDocuments.some(
+    (prefix) => local.startsWith(`${prefix}/`) && !existsSync(resolve(repoRoot, prefix)),
+  );
+};
+
 const metadata = (text: string): SkillMetadata => {
   const match = /^---\n(?<frontmatter>[\s\S]*?)\n---\n/u.exec(text);
   if (!match?.groups?.['frontmatter']) {
@@ -52,14 +61,14 @@ const filesBelow = (path: string): string[] => {
 };
 
 describe('clean-room research skills', () => {
-  it('should remain explicit, bounded, directly linked, and non-executable', () => {
+  it('should allow relevant composition while remaining bounded, linked, and non-executable', () => {
     for (const skill of cleanRoomSkills) {
       const path = skillPath(skill);
       const text = readFileSync(path, 'utf8');
       const frontmatter = metadata(text);
       expect(frontmatter.name).toBe(skill);
-      expect(frontmatter.description).toMatch(/Use only when/u);
-      expect(frontmatter['disable-model-invocation']).toBe(true);
+      expect(frontmatter.description).toContain('Use when');
+      expect(frontmatter['disable-model-invocation']).toBeUndefined();
       expect(text.split('\n').length).toBeLessThan(500);
 
       for (const file of filesBelow(dirname(path))) {
@@ -74,8 +83,9 @@ describe('clean-room research skills', () => {
       for (const match of text.matchAll(/\[[^\]]+\]\((?<target>[^)]+\.md)\)/gu)) {
         const target = match.groups?.['target'];
         expect(target).toBeDefined();
-        if (target) {
-          expect(lstatSync(resolve(dirname(path), target)).isFile()).toBe(true);
+        const resolved = resolve(dirname(path), target ?? '');
+        if (target && !inAbsentBrain(resolved)) {
+          expect(lstatSync(resolved).isFile(), target).toBe(true);
         }
       }
     }
@@ -145,14 +155,11 @@ describe('clean-room WebGPU optimization skill', () => {
     expect(text).toContain('It has no runtime dependency on that repository.');
   });
 
-  it('should remain explicit, concise, locally grounded, and registered', () => {
+  it('should remain discoverable, concise and locally grounded', () => {
     const text = skillText();
-    expect(metadata(text)).toEqual({
-      name: 'optimize-for-gpu',
-      description:
-        'Designs and verifies WebGPU/WGSL compute acceleration for profiled Tau CAD, simulation, and analysis workloads. Use only when explicitly invoked for non-rendering GPU compute.',
-      'disable-model-invocation': true,
-    });
+    expect(metadata(text).name).toBe('optimize-for-gpu');
+    expect(metadata(text).description).toContain('non-rendering GPU compute');
+    expect(metadata(text)['disable-model-invocation']).toBeUndefined();
     expect(text.split('\n').length).toBeLessThan(250);
     for (const link of [
       '../../../docs/policy/vision-policy.md',
@@ -164,7 +171,8 @@ describe('clean-room WebGPU optimization skill', () => {
     ]) {
       expect(text).toContain(`](${link})`);
     }
-    expect(readFileSync(resolve(repoRoot, 'AGENTS.md'), 'utf8')).toContain('| `optimize-for-gpu`');
+    expect(readFileSync(resolve(repoRoot, 'AGENTS.md'), 'utf8')).toContain('.agents/skills/');
+    expect(readdirSync(skillsRoot)).toContain('optimize-for-gpu');
   });
 
   it('should require profiling before GPU work', () => {

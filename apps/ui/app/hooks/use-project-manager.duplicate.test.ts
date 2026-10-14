@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { createElement } from 'react';
+import { consumableBytes } from '@taucad/fs-bridge';
 import { projectToManifest, serializeProjectManifest } from '@taucad/types';
 import type { ProjectManifest } from '@taucad/types';
 import type { PendingProjectOperation, PendingProjectStorage } from '#types/pending-project-operation.types.js';
@@ -24,10 +25,16 @@ const operationId = 'req_bbbbbbbbbbbbbbbbbbbbb';
 let lastManifest = serializeProjectManifest(projectToManifest(sourceProject));
 const phases: string[] = [];
 
-const mockGetDirectoryContents = vi.fn(async () => ({
-  'main.ts': new Uint8Array([1]),
-  'tau.json': serializeProjectManifest(projectToManifest(sourceProject)),
-}));
+/**
+ * The source project's composed read returns authored files and selected
+ * writable records, with control plane, chats and cache omitted.
+ */
+const mockReadDuplicateProjectFiles = vi.fn(
+  async (): Promise<Record<string, Uint8Array<ArrayBuffer>>> => ({
+    'main.ts': new Uint8Array([1]),
+    'tau.json': serializeProjectManifest(projectToManifest(sourceProject)),
+  }),
+);
 const mockSyncProjectRoots = vi.fn(async () => {
   phases.push('roots');
 });
@@ -38,7 +45,7 @@ const mockCommitPendingProjectDirectory = vi.fn(async () => {
 
 vi.mock('#hooks/use-file-manager.js', () => ({
   useFileManager: () => ({
-    client: {
+    recordFiles: {
       readFile: vi.fn(async () => lastManifest),
       writeFiles: vi.fn(async () => {
         phases.push('files');
@@ -47,13 +54,15 @@ vi.mock('#hooks/use-file-manager.js', () => ({
         phases.push('manifest');
         lastManifest = bytes;
       }),
-      getDirectoryContents: mockGetDirectoryContents,
       exists: vi.fn(async () => false),
       rmdir: vi.fn(async () => undefined),
+    },
+    client: {
       listProjectManifests: vi.fn(async () => ({ roots: [], entries: [] })),
       commitPendingProjectDirectory: mockCommitPendingProjectDirectory,
     },
     workspace: { syncProjectRoots: mockSyncProjectRoots },
+    readDuplicateProjectFiles: mockReadDuplicateProjectFiles,
   }),
 }));
 
@@ -67,7 +76,9 @@ const mockSetProjectFileSystemConfig = vi.fn(async () => {
 const mockPinHomeStorageBackend = vi.fn(async (backend: 'indexeddb' | 'opfs') => backend);
 const mockGetProjectCreationLocation = vi.fn();
 const mockSetProjectCreationLocation = vi.fn();
+const mockRequestHomeStoragePersistence = vi.fn(async () => undefined);
 vi.mock('#filesystem/handle-store.js', () => ({
+  requestHomeStoragePersistence: mockRequestHomeStoragePersistence,
   pinHomeStorageBackend: mockPinHomeStorageBackend,
   getHomeStorageBackend: vi.fn(async () => 'opfs'),
   getProjectCreationLocation: mockGetProjectCreationLocation,
@@ -82,12 +93,26 @@ vi.mock('#filesystem/handle-store.js', () => ({
   subscribeProjectRootConfigurationChanges: vi.fn(() => vi.fn()),
 }));
 
-vi.mock('#constants/browser.constants.js', () => ({ isFileSystemAccessSupported: true }));
+vi.mock('#constants/browser.constants.js', () => ({
+  isFileSystemAccessSupported: true,
+  directoryPicker: () => ({
+    available: true,
+    backend: 'webaccess',
+    pick: async (options?: { id?: string; mode?: 'read' | 'readwrite' }) => {
+      const handle = await globalThis.window.showDirectoryPicker({
+        id: options?.id,
+        mode: options?.mode ?? 'readwrite',
+      });
+      return { backend: 'webaccess', handle };
+    },
+  }),
+  webAccessDirectoryPicker: () => ({
+    pick: async (options?: { id?: string; mode?: 'read' | 'readwrite' }) =>
+      globalThis.window.showDirectoryPicker({ id: options?.id, mode: options?.mode ?? 'readwrite' }),
+  }),
+}));
 vi.mock('#hooks/use-cookie.js', () => ({
   useCookie: (_name: string, defaultValue: string) => [defaultValue, vi.fn()],
-}));
-vi.mock('#utils/chat.utils.js', () => ({
-  createMessage: (options: Record<string, unknown>) => ({ id: 'msg-1', ...options }),
 }));
 
 const pendingDuplicate: Extract<PendingProjectOperation, { kind: 'duplicate' }> = {
@@ -137,6 +162,7 @@ vi.mock('xstate', async (importOriginal) => {
           prepareProjectDuplicate: mockDuplicate,
           resumePendingProjectOperationResources: vi.fn(async () => {
             phases.push('resources');
+            return [];
           }),
           completePendingProjectOperation: vi.fn(async () => {
             phases.push('complete');
@@ -148,6 +174,7 @@ vi.mock('xstate', async (importOriginal) => {
 });
 
 const { ProjectManagerProvider, useProjectManager } = await import('#hooks/use-project-manager.js');
+const { tauCloudIntent } = await import('#hooks/use-cloud-projects.js');
 
 const createWrapper = () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -163,6 +190,19 @@ const createWrapper = () => {
 describe('useProjectManager.duplicateProject', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+      clear: () => {
+        storage.clear();
+      },
+    });
     phases.length = 0;
     lastManifest = serializeProjectManifest(projectToManifest(sourceProject));
     mockGetProjectFileSystemConfig.mockResolvedValue({
@@ -188,9 +228,65 @@ describe('useProjectManager.duplicateProject', () => {
       scope: { backend: 'indexeddb' },
       files: pendingDuplicate.files,
       manifest: serializeProjectManifest(duplicateProject),
+      /* The attempt hands its bytes over: the bridge transfers them instead of copying the import. */
+      [consumableBytes]: true,
     });
     expect(phases).toEqual(['pending', 'commit', 'locator', 'roots', 'resources', 'complete']);
-    expect(mockGetDirectoryContents).toHaveBeenCalledWith(`/projects/${sourceProject.id}`);
+    expect(mockReadDuplicateProjectFiles).toHaveBeenCalledWith(`/projects/${sourceProject.id}`);
+  });
+
+  /* D19 (W11 a2): a copy has no remote of its own, so it backs up by default. */
+  it('should mark the duplicate for backup by default', async () => {
+    globalThis.localStorage.clear();
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+    await act(async () => result.current.duplicateProject(sourceProject.id));
+
+    const targetId = mockDuplicate.mock.calls[0]?.[0].targetManifest.id ?? '';
+    expect(tauCloudIntent.get(targetId)).toBe('default');
+    expect(tauCloudIntent.get(sourceProject.id)).toBeUndefined();
+  });
+
+  it('journals workbench layout, views and entries beside authored files, with a fresh manifest', async () => {
+    const layout = new Uint8Array([2]);
+    const view = new Uint8Array([3]);
+    const entries = new Uint8Array([4]);
+    mockReadDuplicateProjectFiles.mockResolvedValueOnce({
+      'main.ts': new Uint8Array([1]),
+      'tau.json': serializeProjectManifest(projectToManifest(sourceProject)),
+      '.tau/workbench/layout.json': layout,
+      '.tau/workbench/views/v-abc12345.json': view,
+      '.tau/workbench/entries.json': entries,
+    });
+
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+    await act(async () => result.current.duplicateProject(sourceProject.id));
+
+    expect(mockDuplicate.mock.calls[0]?.[0].files).toEqual({
+      'main.ts': { content: new Uint8Array([1]) },
+      '.tau/workbench/layout.json': { content: layout },
+      '.tau/workbench/views/v-abc12345.json': { content: view },
+      '.tau/workbench/entries.json': { content: entries },
+    });
+    expect(mockCommitPendingProjectDirectory).toHaveBeenCalledWith(
+      expect.objectContaining({ manifest: serializeProjectManifest(duplicateProject) }),
+    );
+  });
+
+  it('journals only selected project bytes, never the control plane, chats or cache', async () => {
+    /* The raw directory read this replaced handed the journal every byte in the
+     * project directory: the duplicate then carried the source's `.git`, its
+     * chats under a foreign resource id, and its thumbnail (ZIP follow-up F-2). */
+    mockReadDuplicateProjectFiles.mockResolvedValueOnce({
+      'main.ts': new Uint8Array([1]),
+      'tau.json': serializeProjectManifest(projectToManifest(sourceProject)),
+    });
+
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+    await act(async () => result.current.duplicateProject(sourceProject.id));
+
+    const journalled = Object.keys(mockDuplicate.mock.calls[0]?.[0].files ?? {});
+    expect(journalled).toEqual(['main.ts']);
+    expect(mockReadDuplicateProjectFiles).toHaveBeenCalledWith(`/projects/${sourceProject.id}`);
   });
 
   it('records the same webaccess workspace on the duplicate', async () => {
@@ -220,12 +316,13 @@ describe('useProjectManager.duplicateProject', () => {
       workspaceId: 'wsp_alpha',
     });
     expect(mockPinHomeStorageBackend).not.toHaveBeenCalled();
+    expect(mockRequestHomeStoragePersistence).not.toHaveBeenCalled();
     expect(mockGetProjectCreationLocation).not.toHaveBeenCalled();
     expect(mockSetProjectCreationLocation).not.toHaveBeenCalled();
   });
 
   it('leaves the duplicate pending when source-file copying fails', async () => {
-    mockGetDirectoryContents.mockRejectedValueOnce(new Error('copy failed'));
+    mockReadDuplicateProjectFiles.mockRejectedValueOnce(new Error('copy failed'));
     const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
 
     await expect(act(async () => result.current.duplicateProject(sourceProject.id))).rejects.toThrow('copy failed');

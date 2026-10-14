@@ -1,21 +1,11 @@
-/**
- * R2: ChatMessagePlanning renders 'Reconnecting... N/M' while the
- * persistence machine is in `requestLifecycle.retrying`.
- *
- * Verifies:
- *   - retryAttempt > 0 swaps copy from "Planning next moves..." to
- *     "Reconnecting... N/M" and switches the icon.
- *   - The render gate is relaxed so the indicator stays visible during
- *     `chat.status === 'error'` (otherwise we'd flash to nothing between
- *     the failure and the next retry).
- *   - Default retryAttempt of 0 keeps the original "Planning" copy.
- */
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen } from '@testing-library/react';
 import { messageRole } from '@taucad/chat/constants';
 import type { MyUIMessage } from '@taucad/chat';
 import { ChatMessagePlanning } from '#routes/w.$workspace.$project/chat-message-planning.js';
-import type { ChatRetrySnapshot } from '#hooks/use-chat.js';
+import { useChatSidebarStatus } from '#hooks/use-sidebar-status.js';
+import type { ChatSidebarStatus } from '#hooks/use-sidebar-status.js';
+import type { ChatSidebarState } from '#types/chat-sidebar.types.js';
 
 type SelectorState = {
   status: 'submitted' | 'streaming' | 'ready' | 'error';
@@ -23,187 +13,130 @@ type SelectorState = {
   messagesById: Map<string, MyUIMessage>;
 };
 
-let mockSelectorState: SelectorState = {
-  status: 'streaming',
-  messages: [],
-  messagesById: new Map(),
-};
-
-let mockRetrySnapshot: ChatRetrySnapshot = { retryAttempt: 0, retryMaxAttempts: 5 };
+let mockSelectorState: SelectorState = { status: 'streaming', messages: [], messagesById: new Map() };
 
 vi.mock('#hooks/use-chat.js', () => ({
+  useChatContext: () => ({ activeChatId: 'chat-1' }),
   useChatSelector<T>(selector: (state: SelectorState) => T): T {
     return selector(mockSelectorState);
   },
-  useChatRetrySnapshot(): ChatRetrySnapshot {
-    return mockRetrySnapshot;
-  },
+}));
+vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project-1' }) }));
+vi.mock('#hooks/use-sidebar-status.js', () => ({ useChatSidebarStatus: vi.fn() }));
+/* The row warms and lazily loads the liquid-metal spinner, whose renderer imports the graphics backend. Left
+ * real, that dynamic import can still be resolving when the environment tears down; this suite pins whether
+ * the indicator shows, not how the spinner paints, so the row's spinner is replaced before any lazy boundary. */
+vi.mock('#components/chat/chat-activity-spinner.js', () => ({
+  ChatActivitySpinner: () => null,
+  warmChatActivitySpinner: async () => undefined,
 }));
 
-// `ChatToolCard` transitively reads route loader data via useCookie which
-// requires a router context. Mocking the card avoids the router stub
-// entirely -- mirrors `chat-message-reasoning.test.tsx`.
-vi.mock('#components/chat/chat-tool-card.js', () => ({
-  ChatToolCard({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
-    return <div data-testid='chat-tool-card'>{children}</div>;
-  },
-  ChatToolCardHeader({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
-    return <div>{children}</div>;
-  },
-  ChatToolCardIcon(): React.JSX.Element {
-    return <span data-testid='chat-tool-card-icon' />;
-  },
-  ChatToolCardTitle({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
-    return <div>{children}</div>;
-  },
-}));
+const setRun = (state: ChatSidebarState | undefined): void => {
+  vi.mocked(useChatSidebarStatus).mockReturnValue(
+    state === undefined
+      ? undefined
+      : ({
+          state,
+          unread: false,
+          toolName: undefined,
+          pendingApprovalCount: 0,
+          failureReason: undefined,
+          branch: undefined,
+          dirty: false,
+        } satisfies ChatSidebarStatus),
+  );
+};
 
-function setMockState(partial: Partial<SelectorState>): void {
-  const next = { ...mockSelectorState, ...partial };
-  next.messagesById = new Map(next.messages.map((m) => [m.id, m]));
-  mockSelectorState = next;
-}
+const setChat = (status: SelectorState['status'], messages: MyUIMessage[]): void => {
+  mockSelectorState = { status, messages, messagesById: new Map(messages.map((m) => [m.id, m])) };
+};
 
-function makeUserMessage(id: string): MyUIMessage {
+const user = (id: string): MyUIMessage =>
   // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- minimal MyUIMessage shape for test
-  return {
-    id,
-    role: messageRole.user,
-    parts: [{ type: 'text', text: 'hi' }],
-    metadata: { createdAt: 0 },
-  } as MyUIMessage;
-}
+  ({ id, role: messageRole.user, parts: [{ type: 'text', text: 'hi' }], metadata: { createdAt: 0 } }) as MyUIMessage;
 
-function makeAssistantMessage(id: string): MyUIMessage {
-  // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- minimal MyUIMessage shape for test
-  return {
-    id,
-    role: messageRole.assistant,
-    parts: [{ type: 'text', text: 'done', state: 'done' }],
-    metadata: { createdAt: 0 },
-  } as MyUIMessage;
-}
+const assistant = (id: string, parts: Array<Record<string, unknown>>): MyUIMessage =>
+  // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- reducer-shaped parts for test
+  ({ id, role: messageRole.assistant, parts, metadata: { createdAt: 0 } }) as unknown as MyUIMessage;
 
-function makeAssistantWithTextStreaming(id: string): MyUIMessage {
-  // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- minimal assistant tail mid-stream
-  return {
-    id,
-    role: messageRole.assistant,
-    parts: [{ type: 'text', text: 'partial', state: 'streaming' }],
-    metadata: { createdAt: 0 },
-  } as MyUIMessage;
-}
+const tool = (state: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  type: 'dynamic-tool',
+  toolName: 'read_file',
+  toolCallId: 'call-1',
+  state,
+  input: {},
+  ...extra,
+});
 
-function makeAssistantWithToolState(id: string, toolState: 'input-streaming' | 'input-available'): MyUIMessage {
-  // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- minimal tool part shape
-  return {
-    id,
-    role: messageRole.assistant,
-    parts: [
-      {
-        type: 'dynamic-tool',
-        toolName: 'test_tool',
-        toolCallId: 'call_1',
-        state: toolState,
-        input: {},
-      },
-    ],
-    metadata: { createdAt: 0 },
-  } as MyUIMessage;
-}
+const indicator = () => screen.queryByRole('status');
 
-describe('ChatMessagePlanning (reconnect-aware)', () => {
-  it('T25: shows Reconnecting for unconcluded text tail when retryAttempt > 0', () => {
-    const message = makeAssistantWithTextStreaming('msg_tail');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 2, retryMaxAttempts: 5 };
+beforeEach(() => {
+  setRun('working');
+});
 
-    render(<ChatMessagePlanning messageId='msg_tail' />);
-
-    expect(screen.getByText(/Reconnecting/)).toBeInTheDocument();
+describe('ChatMessagePlanning', () => {
+  it('should stay visible while response text streams', () => {
+    setChat('streaming', [user('u1'), assistant('a1', [{ type: 'text', text: 'Drafting', state: 'streaming' }])]);
+    render(<ChatMessagePlanning />);
+    expect(indicator()).toHaveTextContent('Writing response…');
   });
 
-  it('T25: shows Reconnecting for input-streaming tool when retryAttempt > 0', () => {
-    const message = makeAssistantWithToolState('msg_tool', 'input-streaming');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 1, retryMaxAttempts: 5 };
-
-    render(<ChatMessagePlanning messageId='msg_tool' />);
-
-    expect(screen.getByText(/Reconnecting/)).toBeInTheDocument();
+  it('should keep elapsed time across activity changes and remounts, then clean up on completion', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(50_000);
+      setChat('submitted', [user('u1')]);
+      const view = render(<ChatMessagePlanning />);
+      expect(screen.getByRole('timer')).toHaveTextContent('50s');
+      act(() => {
+        vi.advanceTimersByTime(11_000);
+      });
+      setChat('streaming', [user('u1'), assistant('a1', [{ type: 'text', text: 'Draft', state: 'streaming' }])]);
+      view.rerender(<ChatMessagePlanning />);
+      expect(screen.getByRole('timer')).toHaveTextContent('1m 1s');
+      expect(indicator()).not.toContainElement(screen.getByRole('timer'));
+      view.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+      const restored = render(<ChatMessagePlanning />);
+      expect(screen.getByRole('timer')).toHaveTextContent('1m 1s');
+      setRun('done');
+      restored.rerender(<ChatMessagePlanning />);
+      expect(indicator()).toBeNull();
+      expect(screen.queryByRole('timer')).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('T25: shows Reconnecting for input-available tool when retryAttempt > 0', () => {
-    const message = makeAssistantWithToolState('msg_tool2', 'input-available');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 3, retryMaxAttempts: 5 };
-
-    render(<ChatMessagePlanning messageId='msg_tool2' />);
-
-    expect(screen.getByText(/Reconnecting/)).toBeInTheDocument();
+  it('should reset for a new request and omit unknown timestamps', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(3_661_000);
+      setChat('streaming', [user('u1')]);
+      const view = render(<ChatMessagePlanning />);
+      expect(screen.getByRole('timer')).toHaveTextContent('1h 1m 1s');
+      setChat('submitted', [{ ...user('u2'), metadata: { createdAt: Date.now() } }]);
+      view.rerender(<ChatMessagePlanning />);
+      expect(screen.getByRole('timer')).toHaveTextContent('0s');
+      setChat('streaming', [{ id: 'legacy', role: messageRole.user, parts: [] }]);
+      view.rerender(<ChatMessagePlanning />);
+      expect(screen.queryByRole('timer')).toBeNull();
+      expect(indicator()).toBeVisible();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('T25: with retryAttempt 0, unconcluded parts do not show Planning under error status', () => {
-    const message = makeAssistantWithTextStreaming('msg_tail');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 0, retryMaxAttempts: 5 };
-
-    const { container } = render(<ChatMessagePlanning messageId='msg_tail' />);
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('renders "Planning" when retryAttempt is 0 and the chat is streaming', () => {
-    const message = makeUserMessage('msg_1');
-    setMockState({ status: 'streaming', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 0, retryMaxAttempts: 5 };
-
-    render(<ChatMessagePlanning messageId='msg_1' />);
-
-    expect(screen.getByText(/Planning/)).toBeInTheDocument();
-    expect(screen.getByText(/next moves\.{3}/)).toBeInTheDocument();
-    expect(screen.queryByText(/Reconnecting/)).not.toBeInTheDocument();
-  });
-
-  it('renders "Reconnecting... N/M" when retryAttempt > 0', () => {
-    const message = makeUserMessage('msg_1');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 2, retryMaxAttempts: 5 };
-
-    render(<ChatMessagePlanning messageId='msg_1' />);
-
-    expect(screen.getByText(/Reconnecting/)).toBeInTheDocument();
-    expect(screen.getByText(/2\/5\.{3}/)).toBeInTheDocument();
-    expect(screen.queryByText(/Planning/)).not.toBeInTheDocument();
-  });
-
-  it('relaxes the render gate to allow showing the indicator during chat.status === "error"', () => {
-    const message = makeAssistantMessage('msg_assistant');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 1, retryMaxAttempts: 5 };
-
-    const { container } = render(<ChatMessagePlanning messageId='msg_assistant' />);
-
-    expect(container.firstChild).not.toBeNull();
-    expect(screen.getByText(/Reconnecting/)).toBeInTheDocument();
-  });
-
-  it('does NOT render when retryAttempt is 0 AND status is not streaming/submitted', () => {
-    const message = makeAssistantMessage('msg_assistant');
-    setMockState({ status: 'error', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 0, retryMaxAttempts: 5 };
-
-    const { container } = render(<ChatMessagePlanning messageId='msg_assistant' />);
-
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('renders for the trailing user message when streaming', () => {
-    const message = makeUserMessage('msg_1');
-    setMockState({ status: 'submitted', messages: [message] });
-    mockRetrySnapshot = { retryAttempt: 0, retryMaxAttempts: 5 };
-
-    render(<ChatMessagePlanning messageId='msg_1' />);
-
-    expect(screen.getByText(/Planning/)).toBeInTheDocument();
+  it('should keep the timer visible during approval and reconnect waits', () => {
+    setChat('streaming', [user('u1'), assistant('a1', [tool('approval-requested')])]);
+    setRun('approval');
+    const view = render(<ChatMessagePlanning />);
+    expect(indicator()).toHaveTextContent('Waiting for approval');
+    expect(screen.getByRole('timer')).toBeVisible();
+    setRun('reconnecting');
+    view.rerender(<ChatMessagePlanning />);
+    expect(indicator()).toHaveTextContent('Reconnecting…');
   });
 });

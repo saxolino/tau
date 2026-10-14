@@ -1,6 +1,16 @@
 name: 'Setup Nx Environment'
 description: 'Sets up Node.js, pnpm, dependencies, and Nx SHAs for CI workflows'
 
+inputs:
+  node-version:
+    description: 'Node.js version used by this job. 24.21 segfaults Nx as it exits, so the default stays on 24.20.0.'
+    required: false
+    default: '24.20.0'
+  save-pnpm-store:
+    description: "'false' restores the pnpm store without saving it after the job, for jobs whose end gates a workflow"
+    required: false
+    default: 'true'
+
 runs:
   using: 'composite'
   steps:
@@ -13,11 +23,26 @@ runs:
     - name: Setup Node.js
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
-        node-version: '24'
+        node-version: ${{ inputs.node-version }}
         registry-url: 'https://registry.npmjs.org'
 
     - name: Enable corepack
       run: corepack enable
+      shell: bash
+
+    # Nx's native PTY command runner intermittently segfaults a few seconds into
+    # `nx run-many`, before any task output (SIGSEGV, seen on Node 24.10 and
+    # 24.20). Child-process execution keeps Nx caching and orchestration.
+    - name: Run Nx tasks without the native PTY runner
+      run: echo 'NX_NATIVE_COMMAND_RUNNER=false' >> "$GITHUB_ENV"
+      shell: bash
+
+    # Native revision suites, the CLI and every disk host record with `git` and
+    # `git lfs` (`resolveGitToolchain`). The GitHub-hosted images ship git-lfs;
+    # this states that dependency and fails here, by name, on an image without it,
+    # rather than as product-shaped test failures later.
+    - name: Require git-lfs
+      run: git lfs version
       shell: bash
 
     - name: Get pnpm store directory
@@ -26,16 +51,54 @@ runs:
         echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
 
     - name: Setup pnpm cache
+      if: inputs.save-pnpm-store == 'true'
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ${{ env.STORE_PATH }}
-        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
         restore-keys: |
-          ${{ runner.os }}-pnpm-store-
+          ${{ runner.os }}-${{ runner.arch }}-pnpm-store-
+
+    # Saving a missed store is a post step of about 2.5 minutes on macOS (1.1 GB), which
+    # holds back every job that needs this one.
+    - name: Restore pnpm cache
+      if: inputs.save-pnpm-store != 'true'
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-pnpm-store-
 
     - name: Install dependencies
       run: pnpm install --frozen-lockfile
       shell: bash
+
+    # Nx 22.7.1 still segfaults now and then about two seconds into a command,
+    # before it prints or runs anything (SIGSEGV with and without the PTY
+    # runner, Node 24.10 and 24.20; no local repro). Every `pnpm nx` call goes
+    # through this bin, so it reruns a command once when Nx dies from SIGSEGV
+    # (exit 139) and passes every other exit status through unchanged.
+    - name: Rerun Nx once after a segfault
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        bin=node_modules/.bin
+        if [ -e "$bin/nx-segv-guarded" ]; then exit 0; fi
+        mv "$bin/nx" "$bin/nx-segv-guarded"
+        cat > "$bin/nx" <<'SH'
+        #!/bin/sh
+        real="$(dirname "$0")/nx-segv-guarded"
+        "$real" "$@"
+        status=$?
+        if [ "$status" -eq 139 ]; then
+          echo "::warning title=Nx segfault::Nx was killed by SIGSEGV; rerunning: nx $*" >&2
+          "$real" "$@"
+          status=$?
+        fi
+        exit "$status"
+        SH
+        chmod +x "$bin/nx"
 
     - name: Set NX SHAs
       uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1

@@ -9,17 +9,22 @@ on:
     branches-ignore:
       - production
 env:
+  pnpm_config_verify_deps_before_run: warn
   NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
   TAU_API_URL: http://localhost:4000
   TAU_WEBSOCKET_URL: ws://localhost:4001
   TAU_FRONTEND_URL: http://localhost:3000
 
-# Cancel in-progress runs when a new workflow with the same group name is triggered
-# This can save 10-50% on CI compute costs.
-# For pull requests, include the head ref to allow different PRs to run concurrently
-# while still canceling outdated runs on the same PR
+# A newer push to a pull request cancels its outdated run; different PRs run side by
+# side. Each push to `main` gets a group of its own, so it neither waits for nor
+# cancels another: in one shared group a run held the group until its last job ended,
+# including a Darwin job waiting hours for a macOS runner, and each newer push was
+# cancelled while pending, staging deploy and release commit included (2026-10-11,
+# runs 38179340616 and 38183401821). The staging deploys keep their own queues
+# (`deploy-api-staging`, `deploy-ui-staging`) and skip a commit that a newer deploy
+# has already superseded.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
 
 jobs:
@@ -34,9 +39,15 @@ jobs:
       pull-requests: 'read'
     outputs:
       apps: ${{ steps.plan.outputs.apps }}
+      deploy-apps: ${{ steps.plan.outputs.deploy-apps }}
       api: ${{ steps.plan.outputs.api }}
-      e2e: ${{ steps.plan.outputs.e2e }}
       size: ${{ steps.plan.outputs.size }}
+      formal: ${{ steps.plan.outputs.formal }}
+      geospec-required: ${{ steps.geospec.outputs.geospec-required }}
+      geospec-darwin-tests: ${{ steps.geospec.outputs.geospec-darwin-tests }}
+      geospec-darwin-projects: ${{ steps.geospec.outputs.geospec-darwin-projects }}
+      geospec-key: ${{ steps.geospec-key.outputs.key }}
+      geospec-cached: ${{ steps.geospec-cache.outputs.cache-hit == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -46,30 +57,119 @@ jobs:
       - name: Setup Nx Environment
         uses: ./.github/actions/setup-nx
 
+      - name: Select the apps with a staging deploy
+        id: deployables
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          set -o pipefail
+          echo "apps=$(pnpm nx show projects --projects tag:deploy:staging --json | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Find each app's last staging deploy
+        id: deployed
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: ./.github/actions/staging-deploy-history
+        with:
+          mode: base
+          apps: ${{ steps.deployables.outputs.apps }}
+          github-token: ${{ github.token }}
+
       - name: Compute affected lanes
         id: plan
+        env:
+          DEPLOYABLES: ${{ steps.deployables.outputs.apps || '[]' }}
+          DEPLOYED: ${{ steps.deployed.outputs.bases || '{}' }}
         run: |
-          # `tail -1` keeps the JSON array and drops Nx's log lines.
+          # `pipefail` so a failing `nx show projects` fails the step instead of
+          # leaving an empty output behind `tail`. `tail -1` keeps the JSON array
+          # and drops Nx's log lines.
+          set -o pipefail
           apps=$(pnpm nx show projects --affected --type=app --json | tail -1)
           api=$(pnpm nx show projects --affected --projects tag:scope:api --json | tail -1)
-          e2e=$(pnpm nx show projects --affected --projects tag:type:e2e --json | tail -1)
           size=$(pnpm nx show projects --affected --with-target size --json | tail -1)
+          formal=$(pnpm nx show projects --affected --with-target formal --json | tail -1)
           echo "Affected apps: $apps"
           echo "Affected tag:scope:api: $api"
-          echo "Affected tag:type:e2e: $e2e"
           echo "Affected with a size target: $size"
+          echo "Affected with a formal target: $formal"
+          # Each staging app is diffed against the commit staging serves, not against
+          # the last green run that NX_BASE names: while `main` is red that base stays
+          # put and every push would redeploy everything changed since. An app with no
+          # usable record deploys. Only pushes to `main` select any.
+          deploy_apps='[]'
+          for app in $(jq -r '.[]' <<< "$DEPLOYABLES"); do
+            base=$(jq -r --arg app "$app" '.[$app] // empty' <<< "$DEPLOYED")
+            if [ -n "$base" ]; then
+              affected=$(pnpm nx show projects --affected --base="$base" --head=HEAD --projects "$app" --json | tail -1)
+              [ "$affected" != '[]' ] || continue
+            fi
+            deploy_apps=$(jq -c --arg app "$app" '. + [$app]' <<< "$deploy_apps")
+          done
+          echo "Staging deploys: $deploy_apps"
           {
             echo "apps<<EOF"
             echo "$apps"
             echo "EOF"
+            echo "deploy-apps<<EOF"
+            echo "$deploy_apps"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
-          for lane in "api=$api" "e2e=$e2e" "size=$size"; do
+          for lane in "api=$api" "size=$size" "formal=$formal"; do
             if [ "${lane#*=}" = '[]' ]; then
               echo "${lane%%=*}=false" >> "$GITHUB_OUTPUT"
             else
               echo "${lane%%=*}=true" >> "$GITHUB_OUTPUT"
             fi
           done
+
+      # --graph expands dependencies without executing any selected task. In
+      # particular, an affected consumer can reach an unaffected native build.
+      - name: Plan artifact prerequisites from expanded tasks
+        id: geospec
+        env:
+          # Planning only expands the graph, so it needs neither Nx Cloud nor the task
+          # database.
+          NX_NO_CLOUD: 'true'
+          NX_DISABLE_DB: 'true'
+          PLAN_API: ${{ steps.plan.outputs.api == 'true' || (github.ref == 'refs/heads/main' && github.event_name == 'push') }}
+          PLAN_SIZE: ${{ github.event_name == 'pull_request' && steps.plan.outputs.size == 'true' }}
+          PLAN_PERFORMANCE: ${{ github.event_name == 'pull_request' && vars.TAU_BENCHMARK_RUNNER_ENABLED == 'true' }}
+          PLAN_BILLING: ${{ github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && steps.plan.outputs.api == 'true') }}
+        run: |
+          mkdir -p out/artifacts/geospec-native-engine/plan
+          pnpm nx affected -t lint build typecheck size pkgcheck audit-public-surface readme-quickstart lint-benchmark-entry typecheck-benchmark-entry test-benchmark-entry test-benchmark-statistics check-ci-artifacts check-delivery-environment check-conformance-profile check-geospec-test-consumer test-m3-verdicts check-coverage-gate prepare-legacy-reference typecheck-legacy-reference --graph=out/artifacts/geospec-native-engine/plan/affected.json
+          pnpm nx affected -t test --exclude tag:scope:api --graph=out/artifacts/geospec-native-engine/plan/tests.json
+          if [ "$PLAN_API" = true ]; then
+            pnpm nx run-many -t test --projects tag:scope:api --graph=out/artifacts/geospec-native-engine/plan/api-tests.json
+            pnpm nx run-many -t test:server-modes test:models test:git test:billing-foundation --graph=out/artifacts/geospec-native-engine/plan/api.json
+          fi
+          if [ "$PLAN_SIZE" = true ]; then
+            # size:build builds every project with a size configuration.
+            pnpm nx run-many -t size --graph=out/artifacts/geospec-native-engine/plan/size-report.json
+          fi
+          if [ "$PLAN_PERFORMANCE" = true ]; then
+            pnpm nx run-many -t performance-gate benchmark compare-benchmarks --graph=out/artifacts/geospec-native-engine/plan/performance.json
+          fi
+          if [ "$PLAN_BILLING" = true ]; then
+            pnpm nx run-many -t test:billing-stripe --graph=out/artifacts/geospec-native-engine/plan/billing.json
+          fi
+          pnpm nx run scripts:plan-geospec-ci -- out/artifacts/geospec-native-engine/plan/*.json
+
+      # The engine products depend only on the native source closure, which `product-key`
+      # digests without building. When an earlier run on this ref, this pull request's base
+      # branch or `main` already produced that closure, every lane restores its products
+      # and the Mac producer is skipped: no runner queue and no OCCT build.
+      - name: Identify the GeoSpec engine product closure
+        id: geospec-key
+        if: steps.geospec.outputs.geospec-required == 'true'
+        run: echo "key=geospec-transport-v1-$(node packages/geospec-engine-native/scripts/ci-artifacts.mjs product-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Look for GeoSpec engine products from an earlier run
+        id: geospec-cache
+        if: steps.geospec.outputs.geospec-required == 'true'
+        uses: ./.github/actions/geospec-transport
+        with:
+          key: ${{ steps.geospec-key.outputs.key }}
+          mode: lookup
 
   # Every workspace invariant is a `scripts:validate-*` target; `scripts:validate`
   # is the wildcard umbrella over all of them (frontmatter, workspace root,
@@ -89,10 +189,384 @@ jobs:
       - name: Run workspace validators
         run: pnpm nx run scripts:validate
 
-  affected:
-    name: Run affected tasks
+  # Builds the products only when no earlier run produced this closure. It ends once
+  # they are saved: the Darwin host suites run in `geospec-darwin`, so the Linux lanes
+  # start as soon as the products exist instead of waiting for the suites (about an
+  # hour on a full graph, run 37246560360).
+  geospec-producer:
+    name: Produce current GeoSpec artifacts
+    needs: [plan]
+    if: needs.plan.outputs.geospec-required == 'true' && needs.plan.outputs.geospec-cached != 'true'
+    runs-on: macos-15
+    steps:
+      - &checkout-darwin
+        name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Restore-only: a lockfile change would otherwise save the 1.1 GB macOS store after
+      # the job (148-155 s on runs 37869646536 and 37878016418), delaying the jobs that wait
+      # on this one. `pnpm-store-darwin` saves it from `main` once they are done.
+      - &setup-nx-darwin
+        name: Setup Nx Environment
+        uses: ./.github/actions/setup-nx
+        with:
+          node-version: '24.10.0'
+          save-pnpm-store: 'false'
+
+      - &prepare-geospec
+        name: Prepare GeoSpec engine products
+        id: prepare
+        uses: ./.github/actions/geospec-producer
+
+      # Named per run, not per attempt: "Re-run failed jobs" keeps this job's attempt-1 result
+      # and the rerun lanes download it, while `overwrite` lets a full rerun replace it.
+      - name: Upload complete current-source transport
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: geospec-ci-${{ github.sha }}
+          path: |
+            packages/geospec-engine-native/bindings/node/generated/index.d.ts
+            packages/geospec-engine-native/bindings/node/generated/index.js
+            packages/geospec-engine-native/bindings/node/generated/geospec-engine-native.darwin-arm64.node
+            packages/geospec-engine-native/bindings/emscripten/generated/geospec_engine_native.mjs
+            packages/geospec-engine-native/bindings/emscripten/generated/geospec_engine_native.wasm
+            out/artifacts/geospec-native-engine/ci
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+      - name: Keep the products for later runs of this closure
+        uses: ./.github/actions/geospec-transport
+        with:
+          key: ${{ needs.plan.outputs.geospec-key }}
+          mode: save
+
+      - &retain-geospec-preparation
+        name: Retain the OCCT and toolchain preparation
+        if: always() && steps.prepare.outcome == 'success' && github.event_name != 'pull_request'
+        uses: ./.github/actions/geospec-preparation-save
+        with:
+          generation: ${{ steps.prepare.outputs.generation }}
+          preparation-hit: ${{ steps.prepare.outputs.preparation-hit }}
+          cargo-hit: ${{ steps.prepare.outputs.cargo-hit }}
+
+  # Restores the products an earlier run saved. The Darwin host suites still need a
+  # delivery assembled from this checkout's source kit, which `prepare-geospec-ci-artifacts`
+  # reassembles around them. Without saved products it prepares them itself (an Nx Cloud
+  # hit, or a build on the retained OCCT preparation) instead of waiting for
+  # `geospec-producer`, so it starts beside the producer rather than after it: about
+  # 9 minutes off the critical path of a run that changes the native source closure
+  # (run 37437873976). The producer still serves the Linux lanes, which consume its
+  # transport.
+  geospec-darwin:
+    name: Run GeoSpec Darwin host suites
+    needs: [plan]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      needs.plan.outputs.geospec-required == 'true' &&
+      needs.plan.outputs.geospec-darwin-tests == 'true'
+    runs-on: macos-15
+    steps:
+      - *checkout-darwin
+      - *setup-nx-darwin
+
+      - name: Restore GeoSpec engine products from an earlier run
+        if: needs.plan.outputs.geospec-cached == 'true'
+        uses: ./.github/actions/geospec-transport
+        with:
+          key: ${{ needs.plan.outputs.geospec-key }}
+          mode: restore
+
+      - *prepare-geospec
+      - name: Prepare current installed GeoSpec consumer
+        if: needs.plan.outputs.geospec-darwin-tests == 'true'
+        env:
+          GEOSPEC_NATIVE_ASSEMBLY_ROOT: ${{ github.workspace }}/out/artifacts/geospec-native-engine/ci/assembly
+        # Products restored from an earlier run carry the bindings but not the native
+        # package's tsdown output, and `ensure-delivery` only verifies them, so build the
+        # Darwin-hosted packages here (the native `build` is uncached because tsdown copies
+        # those bindings into dist). The consumer target itself never builds the native
+        # package: its .check.ts keeps native production separately assembled.
+        run: |
+          pnpm nx run-many -t require-geospec-delivery --parallel=1
+          pnpm nx run-many -t build --projects tag:host:darwin-arm64 --parallel=1
+          pnpm nx run scripts:prepare-geospec-test-consumer
+          node --input-type=module -e 'import {readFileSync,appendFileSync} from "node:fs"; const {consumerRoot}=JSON.parse(readFileSync("out/artifacts/geospec-test-consumer/receipt.json", "utf8")); appendFileSync(process.env.GITHUB_ENV, `GEOSPEC_INSTALLED_CONSUMER_ROOT=${consumerRoot}\n`);'
+
+      # Runs the affected Darwin host suites the plan job selected from its own affected
+      # base and head, so this job needs no history. The planner leaves out projects
+      # tagged `ci:quarantined` (runtime-e2e), which run in the nightly Darwin job in
+      # e2e-nightly.yml instead, until their failing tests pass there:
+      # https://github.com/taucad/tau/issues/342
+      # The cache bypass stays, narrowed to that selection: a `test` hash covers the
+      # source but neither the gitignored engine products nor the host toolchain that
+      # `ci-artifacts.mjs cache-key` digests, so a cached pass could stand for products
+      # this run did not test.
+      - name: Run affected Darwin host suites
+        if: needs.plan.outputs.geospec-darwin-tests == 'true'
+        env:
+          DARWIN_PROJECTS: ${{ needs.plan.outputs.geospec-darwin-projects }}
+        run: pnpm nx run-many -t test --projects "$DARWIN_PROJECTS" --exclude tag:scope:api,tag:ci:quarantined --skip-nx-cache
+
+      - *retain-geospec-preparation
+
+  # Saves the macOS pnpm store that the Darwin jobs above only restore, after them so
+  # the save delays nothing. actions/cache saves only from a successful job, and nothing
+  # needs this one. On a cache hit, the save is skipped.
+  pnpm-store-darwin:
+    name: Save the macOS pnpm store
+    needs: [geospec-producer, geospec-darwin]
+    if: ${{ !cancelled() && github.event_name == 'push' }}
+    runs-on: macos-15
+    steps:
+      - *checkout-darwin
+      - name: Setup Nx Environment
+        uses: ./.github/actions/setup-nx
+        with:
+          node-version: '24.10.0'
+
+  # The affected tasks run as parallel lanes on separate standard runners: lint,
+  # typecheck, build and its checks, and three test shards. One runner running every
+  # task in turn took 1 h 40 min on a full graph (run 37221169741, 2026-10-04); the
+  # lanes bring that down to the longest lane. Each lane keeps `--parallel=1`, which
+  # its own 16 GB runner still needs (see `Run the lane's tasks`).
+  affected-lane:
+    name: Affected (${{ matrix.lane }})
+    needs: [plan, geospec-producer]
+    # Not `always()`: that also ignores a cancel, so a superseded run kept this job
+    # going for its full length and held the next run in the concurrency queue.
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.geospec-required != 'true' || needs.plan.outputs.geospec-cached == 'true' || needs.geospec-producer.result == 'success')
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'nx-cloud-write' || null }}
+    permissions: # Required for nrwl/nx-set-shas to read workflow runs
+      contents: 'read'
+      actions: 'read'
+      pull-requests: 'read'
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lint, typecheck, build, pkgcheck, test-1, test-2, test-3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Nx Environment
+        uses: ./.github/actions/setup-nx
+        with:
+          node-version: ${{ needs.plan.outputs.geospec-required == 'true' && '24.10.0' || '24.20.0' }}
+
+      - &download-geospec
+        name: Download same-run GeoSpec transport
+        if: needs.plan.outputs.geospec-required == 'true' && needs.plan.outputs.geospec-cached != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: geospec-ci-${{ github.sha }}
+          path: .
+
+      - &restore-geospec
+        name: Restore GeoSpec engine products from an earlier run
+        if: needs.plan.outputs.geospec-required == 'true' && needs.plan.outputs.geospec-cached == 'true'
+        uses: ./.github/actions/geospec-transport
+        with:
+          key: ${{ needs.plan.outputs.geospec-key }}
+          mode: restore
+
+      # Linux lanes consume the products, never the Darwin delivery archives, so they
+      # verify the products against this checkout's native source closure.
+      - &verify-geospec
+        name: Verify GeoSpec products against this checkout
+        if: needs.plan.outputs.geospec-required == 'true'
+        run: pnpm nx run-many -t require-geospec-artifacts --parallel=1
+
+      - name: Setup Linux sandbox prerequisites
+        if: startsWith(matrix.lane, 'test-')
+        uses: ./.github/actions/setup-linux-sandbox
+
+      # The PR gate documented in docs/policy/release-policy.md: under version plans,
+      # a touched release project with no plan is an unreleased change. Base and head
+      # come from NX_BASE/NX_HEAD, which `nrwl/nx-set-shas` exported above. Not run on
+      # `push`, where the release commit itself touches every manifest after consuming
+      # the plans.
+      - name: Check version plans
+        if: matrix.lane == 'build' && github.event_name == 'pull_request'
+        run: pnpm nx release plan:check
+
+      # Nx Affected runs only tasks affected by the changes in this PR/commit.
+      # Browser-backed targets are not in this list — they run nightly in
+      # e2e-nightly.yml, the only workflow that installs Chromium.
+      # Learn more: https://nx.dev/ci/features/affected
+      #
+      # `test` excludes `tag:scope:api`, because these lanes have no services. The API's
+      # default suite carries the repository store, the git transport and the lifecycle
+      # jobs (charter W1, W2, W4, W6), which drive real PostgreSQL and real MinIO and
+      # refuse rather than skip when they are absent. The whole of `test` for that tag
+      # runs in the `api` lane below, which has both; these lanes stay hermetic.
+      #
+      # The three test shards split the affected projects with a `test` target by
+      # their test-file counts. The project list comes from the graph at run time,
+      # never from this file.
+      #
+      # `--parallel=1`: ui:lint and ui:typecheck each peak near 9.5 GB, so any two of
+      # them (or ui:build) together exhaust the 16 GB hosted runner, which then loses
+      # its VM ("The runner has received a shutdown signal"). At Nx's default of three
+      # this happened a few minutes in; at two it still happened once both overlapped.
+      # `test` needs the same cap: overlapping WASM suites lost the VM the same way
+      # a few minutes into `test` (tau#306 and tau#299, 2026-10-04).
+      - name: Run the lane's tasks
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -o pipefail
+          case "$LANE" in
+            lint) pnpm nx affected -t lint --parallel=1 ;;
+            typecheck) pnpm nx affected -t typecheck --parallel=1 ;;
+            build) pnpm nx affected -t build size --parallel=1 ;;
+            pkgcheck)
+              # publint, attw, madge and the surface checks are light, so they run three at
+              # a time once their builds exist. The builds stay serial and land in the local
+              # cache, so the checks reuse them.
+              projects=$(pnpm nx show projects --affected --with-target pkgcheck --json | tail -1 | jq -r 'join(",")')
+              if [ -n "$projects" ]; then
+                pnpm nx run-many -t build --projects "$projects" --parallel=1
+              fi
+              pnpm nx affected -t pkgcheck audit-public-surface readme-quickstart --parallel=3
+              ;;
+            test-*)
+              projects=$(pnpm nx show projects --affected --with-target test --exclude tag:scope:api,tag:host:darwin-arm64 --json | tail -1)
+              pnpm nx graph --file="$RUNNER_TEMP/graph.json" > /dev/null
+              # Weigh each project by its test files, then deal the heaviest first to the
+              # lightest shard, so the slowest suites land in different shards.
+              shard=$(echo "$projects" | jq -r '.[]' | while read -r project; do
+                root=$(jq -r --arg project "$project" '.graph.nodes[$project].data.root' "$RUNNER_TEMP/graph.json")
+                weight=1
+                if [ "$root" != . ]; then
+                  weight=$(( $(git ls-files -- "$root" | grep -cE '(\.(test|spec)\.[cm]?[jt]sx?|Tests?\.cs)$') + 1 ))
+                fi
+                echo "$weight $project"
+              done | sort -k1,1nr -k2,2 | awk -v shard="$(( ${LANE#test-} - 1 ))" '
+                { best = 0; for (s = 1; s < 3; s++) if (load[s] < load[best]) best = s
+                  load[best] += $1
+                  if (best == shard) { printf "%s%s", sep, $2; sep = "," } }')
+              if [ -z "$shard" ]; then
+                echo "No affected test projects in this shard."
+                exit 0
+              fi
+              echo "Shard projects: $shard"
+              pnpm nx run-many -t test --projects "$shard" --parallel=1 --outputStyle=static 2>&1 | tee "$RUNNER_TEMP/affected-test.log"
+              ;;
+            *) echo "Unknown lane $LANE" >&2; exit 1 ;;
+          esac
+
+      # The full log of a full-graph run is far longer than the API's log tail, so a failed
+      # test phase repeats each failing suite's report (and the sandbox host facts the native
+      # suites depend on) as the job's last output.
+      - name: Summarize failed affected tests
+        if: failure() && startsWith(matrix.lane, 'test-')
+        run: |
+          echo '::group::Sandbox host'
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone user.max_user_namespaces 2>&1 || true
+          bwrap --unshare-user --cap-drop ALL --ro-bind / / --dev /dev --unshare-pid --proc /proc -- \
+            unshare --user --map-root-user --pid --fork --mount-proc true \
+            && echo 'nested user namespace: ok' || echo 'nested user namespace: blocked'
+          echo '::endgroup::'
+          if [ -f "$RUNNER_TEMP/affected-test.log" ]; then
+            awk '/Failed Tests [0-9]+|Failed Suites [0-9]+/ { keep = 1; n = 0 }
+                 keep && n < 300 { print; n++ }
+                 /Test Files / { keep = 0 }' "$RUNNER_TEMP/affected-test.log"
+            grep -nE 'exited \([0-9]+\)|apply-seccomp|bwrap:|uid_map|ERR_|Unhandled|out of memory|Test timed out' \
+              "$RUNNER_TEMP/affected-test.log" | head -100
+          fi
+
+      - name: Select affected Python checks
+        id: benchmark-statistics
+        if: matrix.lane == 'build'
+        run: |
+          projects=$(pnpm nx show projects --affected --with-target test-benchmark-statistics --json | tail -1)
+          delivery_projects=$(pnpm nx show projects --affected --with-target check-delivery-environment --json | tail -1)
+          verdict_projects=$(pnpm nx show projects --affected --with-target test-m3-verdicts --json | tail -1)
+          if [ "$projects" = '[]' ]; then
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$projects" != '[]' ] || [ "$delivery_projects" != '[]' ] || [ "$verdict_projects" != '[]' ]; then
+            echo "python-required=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup affected checks Python
+        if: matrix.lane == 'build' && steps.benchmark-statistics.outputs.python-required == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.14'
+
+      - name: Check affected pure artifact and delivery helpers
+        if: matrix.lane == 'build'
+        run: pnpm nx affected -t check-ci-artifacts check-delivery-environment check-conformance-profile check-geospec-test-consumer test-m3-verdicts
+
+      - name: Prepare benchmark statistics dependencies
+        if: matrix.lane == 'build' && steps.benchmark-statistics.outputs.required == 'true'
+        run: |
+          python -m venv "$RUNNER_TEMP/geospec-benchmark-analysis"
+          "$RUNNER_TEMP/geospec-benchmark-analysis/bin/python" -m pip install --disable-pip-version-check numpy==2.3.5
+
+      - name: Check affected benchmark harnesses
+        if: matrix.lane == 'build'
+        env:
+          GEOSPEC_BENCH_ANALYSIS_PYTHON: ${{ runner.temp }}/geospec-benchmark-analysis/bin/python
+        run: pnpm nx affected -t lint-benchmark-entry typecheck-benchmark-entry test-benchmark-entry test-benchmark-statistics
+
+      - name: Check affected critical coverage gates
+        if: matrix.lane == 'build'
+        run: pnpm nx affected -t check-coverage-gate
+
+      - name: Check affected legacy reference fixtures
+        if: matrix.lane == 'build'
+        run: pnpm nx affected -t prepare-legacy-reference typecheck-legacy-reference
+
+      - name: Check workspace root hygiene
+        if: always()
+        run: pnpm nx run scripts:validate-workspace-root
+
+  # The required check. It passes only when every affected lane passed, when this run
+  # needed the GeoSpec producer the producer did too, and when it needed the Darwin host
+  # suites they passed. An unneeded producer may be skipped, and so may one whose
+  # products an earlier run already made (see `plan`).
+  affected:
+    name: Run affected tasks
+    needs: [plan, geospec-producer, geospec-darwin, affected-lane]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every affected lane, the artifact producer and the Darwin suites
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PRODUCER_RESULT: ${{ needs.geospec-producer.result }}
+          PRODUCER_REQUIRED: ${{ needs.plan.outputs.geospec-required }}
+          PRODUCTS_CACHED: ${{ needs.plan.outputs.geospec-cached }}
+          DARWIN_REQUIRED: ${{ needs.plan.outputs.geospec-darwin-tests }}
+          DARWIN_RESULT: ${{ needs.geospec-darwin.result }}
+          LANES_RESULT: ${{ needs.affected-lane.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$PRODUCER_REQUIRED" = true ] && [ "$PRODUCTS_CACHED" != true ]; then test "$PRODUCER_RESULT" = success; fi
+          if [ "$PRODUCER_REQUIRED" = true ] && [ "$DARWIN_REQUIRED" = true ]; then test "$DARWIN_RESULT" = success; fi
+          test "$LANES_RESULT" = success
+
+  # Formal lane (docs/policy/formal-verification-policy.md): the Java and Lean tiers
+  # of every affected project with a `formal` target. A known counterexample is an
+  # expected verdict and never turns this red; a changed verdict, a stale generated
+  # file, a missing tool or a watchdog does. Toolchains come from setup-formal,
+  # pinned by sha256 in tools/formal/toolchain.lock, never from `pnpm install`.
+  formal:
+    name: Formal models
+    runs-on: ubuntu-latest
+    needs: [plan]
+    if: needs.plan.outputs.formal == 'true'
+    timeout-minutes: 15
     permissions: # Required for nrwl/nx-set-shas to read workflow runs
       contents: 'read'
       actions: 'read'
@@ -106,72 +580,36 @@ jobs:
       - name: Setup Nx Environment
         uses: ./.github/actions/setup-nx
 
-      # The PR gate documented in docs/policy/release-policy.md: under version plans,
-      # a touched release project with no plan is an unreleased change. Base and head
-      # come from NX_BASE/NX_HEAD, which `nrwl/nx-set-shas` exported above. Not run on
-      # `push`, where the release commit itself touches every manifest after consuming
-      # the plans.
-      - name: Check version plans
-        if: github.event_name == 'pull_request'
-        run: pnpm nx release plan:check
+      - name: Setup formal toolchains
+        uses: ./.github/actions/setup-formal
+        with:
+          tools: tlc,lean
 
-      # This enables task distribution via Nx Cloud
-      # Run this command as early as possible, before dependencies are installed
-      # Learn more at https://nx.dev/ci/reference/nx-cloud-cli#npx-nxcloud-startcirun
-      # Connect your workspace by running "nx connect" and uncomment this
-      # - run: npx nx-cloud start-ci-run --distribute-on="3 linux-medium-js" --stop-agents-after="build"
-
-      # Nx Affected runs only tasks affected by the changes in this PR/commit.
-      # Browser-backed targets are not in this list — they run in the `e2e` lane,
-      # which is the only job that installs Chromium.
-      # Learn more: https://nx.dev/ci/features/affected
-      - name: Run affected tasks
-        run: pnpm nx affected -t lint test build typecheck size pkgcheck audit-public-surface readme-quickstart
+      - name: Run affected formal tiers
+        # FM-R15: at most two JVMs at once. The runner caps them per process, so one project at a time.
+        run: pnpm nx affected -t formal formal:lean --parallel=1
 
       - name: Check workspace root hygiene
         if: always()
         run: pnpm nx run scripts:validate-workspace-root
 
-  # Browser lane: every `type:e2e` project's Vitest Browser matrices and
-  # development-server qualifications. `nx affected` picks the projects — their
-  # `implicitDependencies` make the selection correct — and target existence
-  # picks the suites, so a new e2e project joins by declaring the targets.
-  e2e:
-    name: Browser end-to-end
-    runs-on: ubuntu-latest
-    needs: [plan]
-    if: needs.plan.outputs.e2e == 'true'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Nx Environment
-        uses: ./.github/actions/setup-nx
-
-      - name: Install Chromium for Vitest Browser
-        run: pnpm exec playwright install --with-deps chromium
-
-      - name: Run affected end-to-end suites
-        run: xvfb-run --auto-servernum pnpm nx affected -t test:e2e test:e2e:development
-
-      - name: Check workspace root hygiene
-        if: always()
-        run: pnpm nx run scripts:validate-workspace-root
-
-      - name: Upload Vitest Browser diagnostics
+      - name: Upload formal reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: vitest-browser-diagnostics
-          path: out/test-results/vitest-browser
+          name: formal-reports
+          path: out/reports/formal
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
 
   size-report:
     name: Bundle size report
     runs-on: ubuntu-latest
-    needs: [plan]
-    if: github.event_name == 'pull_request' && needs.plan.outputs.size == 'true'
+    needs: [plan, geospec-producer]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.geospec-required != 'true' || needs.plan.outputs.geospec-cached == 'true' || needs.geospec-producer.result == 'success') &&
+      (github.event_name == 'pull_request' && needs.plan.outputs.size == 'true')
     permissions:
       pull-requests: write
     steps:
@@ -181,21 +619,82 @@ jobs:
       - name: Setup Nx Environment
         uses: ./.github/actions/setup-nx
 
-      - name: Check bundle sizes
-        uses: andresz1/size-limit-action@94bc357df29c36c8f8d50ea497c3e225c3c95d1d # v1.8.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          build_script: 'size:build'
-          script: cd node_modules/.cache/size-limit && ../../.bin/size-limit --json
-          package_manager: pnpm
+      - *download-geospec
+      - *restore-geospec
+      - *verify-geospec
 
+      # The budgets gate on this checkout alone. The action below also rebuilds the base branch
+      # for its comparison comment, and that build fails whenever the restored GeoSpec products
+      # belong to this head rather than the base, so the comparison only reports.
+      - name: Enforce bundle size budgets
+        run: pnpm size:build && pnpm size:check
+
+      # Before the comparison: the action below leaves the checkout on the base branch.
       - name: Check workspace root hygiene
         if: always()
         run: pnpm nx run scripts:validate-workspace-root
 
+      # The comparison rebuilds the base branch, which took 24 min on a full graph (run
+      # 37221169741, 2026-10-04), so it runs only on PRs labelled `size-compare`. A label
+      # alone does not start a run: push after adding it.
+      # Keep the formatter outside the checkout: the comparison switches to the base branch.
+      - name: Prepare compact size report
+        id: size-report-format
+        if: contains(github.event.pull_request.labels.*.name, 'size-compare')
+        run: |
+          cp scripts/src/compact-size-report.ts "$RUNNER_TEMP/compact-size-report.ts"
+          echo "started-at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Compare bundle sizes with the base branch
+        id: size-comparison
+        if: contains(github.event.pull_request.labels.*.name, 'size-compare')
+        continue-on-error: true
+        uses: andresz1/size-limit-action@94bc357df29c36c8f8d50ea497c3e225c3c95d1d # v1.8.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          build_script: 'size:build'
+          # The action runs `script` without a shell, so the `cd` lives in the package script.
+          # `--silent` keeps pnpm's banner out of the JSON the action parses.
+          script: pnpm --silent size:check --json
+          package_manager: pnpm
+
+      - name: Highlight bundle size increases
+        if: steps.size-comparison.outcome == 'success'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          SIZE_COMPARISON_STARTED_AT: ${{ steps.size-report-format.outputs.started-at }}
+        with:
+          script: |
+            const { join } = require('node:path');
+            const { pathToFileURL } = require('node:url');
+            const { compactSizeReport } = await import(pathToFileURL(join(process.env.RUNNER_TEMP, 'compact-size-report.ts')).href);
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+            const report = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.startsWith('## size-limit report 📦 ') &&
+              Date.parse(comment.updated_at) >= Number(process.env.SIZE_COMPARISON_STARTED_AT) * 1000
+            );
+            if (!report) {
+              core.warning('No fresh size comparison comment found; leaving previous reports unchanged.');
+              return;
+            }
+            await github.rest.issues.updateComment({
+              ...context.repo,
+              comment_id: report.id,
+              body: compactSizeReport(report.body),
+            });
+
   performance:
+    needs: [plan, geospec-producer]
     name: Runtime performance gates
-    if: github.event_name == 'pull_request' && vars.TAU_BENCHMARK_RUNNER_ENABLED == 'true'
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.geospec-required != 'true' || needs.plan.outputs.geospec-cached == 'true' || needs.geospec-producer.result == 'success') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name == 'pull_request' && vars.TAU_BENCHMARK_RUNNER_ENABLED == 'true')
     runs-on: [self-hosted, tau-benchmark]
     steps:
       - name: Checkout
@@ -205,6 +704,10 @@ jobs:
 
       - name: Setup Nx Environment
         uses: ./.github/actions/setup-nx
+
+      - *download-geospec
+      - *restore-geospec
+      - *verify-geospec
 
       - name: Run invariant and microbenchmark gates
         env:
@@ -241,6 +744,23 @@ jobs:
     runs-on: ubuntu-latest
     needs: [plan]
     if: github.event_name == 'pull_request' && needs.plan.outputs.api == 'true'
+    # A production API refuses to boot without Redis, a reachable database and a schema at
+    # this build's migration head, so the smoke test brings both up and runs the image's
+    # own release command before starting it.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: smoke
+          POSTGRES_DB: tau_smoke
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -268,13 +788,22 @@ jobs:
           secrets: |
             nx_cloud_token=${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
 
+      - name: Migrate the smoke database
+        run: |
+          docker run --rm --network host \
+            -e BILLING_DATABASE_URL=postgres://postgres:smoke@localhost:5432/tau_smoke \
+            -e BILLING_ENVIRONMENT=smoke \
+            tau-api:smoke node /app/dist/billing-command.js migrate --environment smoke
+
       - name: Start container
         run: |
-          docker run -d --name tau-api-smoke -p 3000:3000 \
+          docker run -d --name tau-api-smoke --network host \
             -e NODE_ENV=production \
             -e PORT=3000 \
-            -e DATABASE_URL=postgres://user:pass@localhost:5432/none \
+            -e DATABASE_URL=postgres://postgres:smoke@localhost:5432/tau_smoke \
+            -e DATABASE_RUNTIME_ROLE=tau_api_runtime \
             -e TAU_FRONTEND_URL=http://localhost \
+            -e TAU_API_URL=https://api.smoke.example \
             -e LOG_LEVEL=info \
             -e OPENAI_API_KEY=sk-smoke \
             -e ANTHROPIC_API_KEY=sk-ant-smoke \
@@ -284,7 +813,6 @@ jobs:
             -e AUTH_URL=http://localhost \
             -e GITHUB_CLIENT_ID=smoke \
             -e GITHUB_CLIENT_SECRET=smoke \
-            -e ZOO_API_KEY=smoke \
             -e REDIS_URL=redis://localhost:6379 \
             -e TAU_S3_ENDPOINT=https://000000000000000000000000.r2.cloudflarestorage.com \
             -e TAU_S3_PUBLIC_BASE_URL=https://cdn.tau.new \
@@ -317,15 +845,20 @@ jobs:
         if: always()
         run: docker rm -f tau-api-smoke || true
 
-  # Service lane: the suites that need Postgres + Redis + MinIO. Unit tests for
-  # the same projects already ran in `affected`; only the service-backed targets
-  # (`test:models`, `test:server-modes`) run here. Always runs on `main` pushes
-  # so the deploy gate is never green off a stale service check.
+  # Service lane: the suites that need Postgres + Redis + MinIO. Since the git
+  # storage substrate landed, that is the whole of `test` for `tag:scope:api` —
+  # the `affected` lane above excludes the tag rather than trying to guess which
+  # files reach a service — plus the service-backed targets (`test:models`,
+  # `test:server-modes`, `test:git`, the billing foundation). Always runs on `main`
+  # pushes so the deploy gate is never green off a stale service check.
   api:
     name: API tests (Postgres + MinIO)
     runs-on: ubuntu-latest
-    needs: [plan]
-    if: needs.plan.outputs.api == 'true' || (github.ref == 'refs/heads/main' && github.event_name == 'push')
+    needs: [plan, geospec-producer]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.geospec-required != 'true' || needs.plan.outputs.geospec-cached == 'true' || needs.geospec-producer.result == 'success') &&
+      (needs.plan.outputs.api == 'true' || (github.ref == 'refs/heads/main' && github.event_name == 'push'))
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -333,35 +866,279 @@ jobs:
       - name: Setup Nx Environment
         uses: ./.github/actions/setup-nx
 
+      - *download-geospec
+      - *restore-geospec
+      - *verify-geospec
+
       - name: Prepare API env file
         run: cp apps/api/.env.example apps/api/.env
 
       - name: Start Postgres + Redis + MinIO
-        run: docker-compose -f infra/docker-compose.yml up -d postgres redis minio minio-bootstrap
+        run: docker compose -f infra/docker-compose.yml up -d postgres redis minio minio-bootstrap
 
       - name: MinIO smoke (seed + RW)
         run: bash infra/docker-compose.test.sh
 
-      - name: Apply Drizzle migrations
-        run: cd apps/api && DATABASE_URL=postgresql://dev_user:dev_password@localhost:5432/tau_dev pnpm exec drizzle-kit migrate
+      # `api:db-migrate` is the release migration job: DDL, the billing protections and
+      # the runtime role, plus the tariff sync when TAU_CLOUD_ENABLED=true (it is false in
+      # `.env.example`, so these lanes get schema and protections only, as Fly does).
+      - name: Apply the protected migration job
+        run: BILLING_DATABASE_URL=postgresql://dev_user:dev_password@localhost:5432/tau_dev pnpm nx run-many -t db-migrate --projects tag:scope:api
+
+      # The default suite, moved here whole from the `affected` lane. `DATABASE_URL`
+      # is named here rather than left to `apps/api/.env` — which the step above
+      # copies from `.env.example` and which carries the same URL — so the database
+      # these suites talk to is stated at the place they run, not inherited from a
+      # file three steps away. An inherited value wins over anything a Vitest config
+      # loads, which is what makes naming it work at all.
+      #
+      # The `TAU_S3_CONFORMANCE_*` family is the env gate on the R2 half of the
+      # repository-store conformance suite (charter D32). These secrets deliberately
+      # do not exist in this repository: the scratch-bucket credentials are read from
+      # Terraform outputs at run time and are never placed in CI. Absent, they expand
+      # to empty strings, `conformanceAccountFromEnvironment` answers `undefined` and
+      # that half skips; the MinIO half above it still runs on every push. The suite
+      # itself refuses any bucket outside the scratch allowlist before a credential is
+      # used, so this can never be pointed at a staging content bucket.
+      - name: Run API suites (real PostgreSQL + MinIO)
+        env:
+          DATABASE_URL: postgresql://dev_user:dev_password@localhost:5432/tau_dev
+          TAU_S3_CONFORMANCE_ENDPOINT: ${{ secrets.TAU_S3_CONFORMANCE_ENDPOINT }}
+          TAU_S3_CONFORMANCE_BUCKET: ${{ secrets.TAU_S3_CONFORMANCE_BUCKET }}
+          TAU_S3_CONFORMANCE_ACCESS_KEY_ID: ${{ secrets.TAU_S3_CONFORMANCE_ACCESS_KEY_ID }}
+          TAU_S3_CONFORMANCE_SECRET_ACCESS_KEY: ${{ secrets.TAU_S3_CONFORMANCE_SECRET_ACCESS_KEY }}
+        run: pnpm nx run-many -t test --projects tag:scope:api
 
       - name: Qualify API development and production servers
         run: pnpm nx run-many -t test:server-modes
 
-      - name: Run deterministic file-edit profile qualification
-        run: pnpm nx run-many -t test:models -- app/testing/tau-replay.integration.test.ts app/testing/file-edit-profile-live-filesystem.integration.test.ts
+      # The Tau agent plane left the API at W3-CUT-2 (2026-09-02); the surviving
+      # deterministic edit qualification is the Tier-D edit bench.
+      - name: Run deterministic file-edit qualification (edit bench)
+        run: pnpm nx run-many -t test:models -- app/testing/edit-bench/edit-bench.test.ts
+
+      # Hermetic guards on the live provider harness, which the credentialed live
+      # suites cannot run here: a failing live row names the model's own answer,
+      # and a prompt a model refuses as a jailbreak never reaches a provider
+      # (docs/research/grok-4-7-live-suite-refusal-blueprint.md).
+      - name: Run the live-harness guards
+        run: pnpm nx run-many -t test:models -- app/testing/live/live-assertions.test.ts app/testing/live/live-gateway.harness.test.ts
+
+      # Testing policy §13 for the durable migration the release command applies:
+      # interrupted part-way it leaves the schema where it was, and a re-run is a
+      # no-op. Lives under `app/testing/**`, so it runs through the same target as
+      # the edit bench and needs the PostgreSQL this lane starts.
+      - name: Run the durable-migration failure injection
+        run: pnpm nx run-many -t test:models -- app/testing/git-storage-migration.integration.test.ts
+
+      # Charter S2, end to end: two real API processes over one MinIO and one
+      # PostgreSQL, driven by stock `git` and `git-lfs`. The target brings up its own
+      # compose services (idempotent against the ones above) and migrates before it
+      # boots either process.
+      - name: Run the git end-to-end tier (two API processes, one object store)
+        run: pnpm nx run-many -t test:git
+
+      # The L2 fixture starts its own PostgreSQL with pull_policy "never", so
+      # the image must already be on the runner.
+      - name: Pull the billing foundation PostgreSQL image
+        run: docker pull postgres:17-alpine
+
+      # L2 billing lane (every PR, zero Stripe credentials): the complete local
+      # PostgreSQL/Redis foundation, including signed webhook settlement.
+      - name: Run billing foundation (L2)
+        run: pnpm nx run-many -t test:billing-foundation
+
+  # L3 billing e2e: real Stripe test-mode objects + `stripe listen` forwarding
+  # the live event stream into the app under test. External forks do not run
+  # this job. Until the payments work adds the isolated restricted credentials,
+  # the lane skips with a notice when none is set (operator ruling, 2026-10-02);
+  # a partial set still fails, because that is a misconfiguration.
+  billing-e2e:
+    name: Billing e2e (Stripe test mode)
+    runs-on: ubuntu-latest
+    needs: [plan, geospec-producer]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.geospec-required != 'true' || needs.plan.outputs.geospec-cached == 'true' || needs.geospec-producer.result == 'success') &&
+      ((github.event_name == 'push') || (github.event.pull_request.head.repo.full_name == github.repository && needs.plan.outputs.api == 'true'))
+    concurrency:
+      group: stripe-test-account
+      cancel-in-progress: false
+    env:
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_CREATE_RESTRICTED_KEY }}
+      STRIPE_READ_SECRET_KEY: ${{ secrets.STRIPE_TEST_READ_RESTRICTED_KEY }}
+      STRIPE_REFUND_SECRET_KEY: ${{ secrets.STRIPE_TEST_REFUND_RESTRICTED_KEY }}
+      STRIPE_ACCOUNT_ID: ${{ secrets.STRIPE_TEST_ACCOUNT_ID }}
+      # The test account's own catalog. The lane copies `.env.example` into `.env`, whose placeholders
+      # name no real Stripe object; exported values win over `.env` for Nx and for dotenv in vitest.
+      STRIPE_PRICE_ID_PRO_MONTHLY: ${{ secrets.STRIPE_TEST_PRICE_ID_PRO_MONTHLY }}
+      STRIPE_PRODUCT_ID_CREDIT_PACK: ${{ secrets.STRIPE_TEST_PRODUCT_ID_CREDIT_PACK }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Skip without isolated Stripe acceptance credentials
+        id: gate
+        run: |
+          set=0
+          for value in "$STRIPE_SECRET_KEY" "$STRIPE_READ_SECRET_KEY" "$STRIPE_REFUND_SECRET_KEY" "$STRIPE_ACCOUNT_ID" \
+            "$STRIPE_PRICE_ID_PRO_MONTHLY" "$STRIPE_PRODUCT_ID_CREDIT_PACK"; do
+            if [ -n "$value" ]; then set=$((set + 1)); fi
+          done
+          if [ "$set" -eq 0 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Billing e2e skipped::No STRIPE_TEST_* secret is configured; the real Stripe lane runs once the payments work adds them."
+          elif [ "$set" -eq 6 ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Only $set of the six STRIPE_TEST_* secrets are set; set all six or none."
+            exit 1
+          fi
+
+      - name: Setup Nx Environment
+        if: steps.gate.outputs.enabled == 'true'
+        uses: ./.github/actions/setup-nx
+
+      - name: Download same-run GeoSpec transport
+        if: steps.gate.outputs.enabled == 'true' && needs.plan.outputs.geospec-required == 'true' && needs.plan.outputs.geospec-cached != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: geospec-ci-${{ github.sha }}
+          path: .
+
+      - name: Restore GeoSpec engine products from an earlier run
+        if: steps.gate.outputs.enabled == 'true' && needs.plan.outputs.geospec-required == 'true' && needs.plan.outputs.geospec-cached == 'true'
+        uses: ./.github/actions/geospec-transport
+        with:
+          key: ${{ needs.plan.outputs.geospec-key }}
+          mode: restore
+
+      - name: Verify GeoSpec products against this checkout
+        if: steps.gate.outputs.enabled == 'true' && needs.plan.outputs.geospec-required == 'true'
+        run: pnpm nx run-many -t require-geospec-artifacts --parallel=1
+
+      - name: Install Stripe CLI
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" | sudo tee -a /etc/apt/sources.list.d/stripe.list
+          sudo apt-get update -qq && sudo apt-get install -y stripe
+
+      - name: Prepare API env file
+        if: steps.gate.outputs.enabled == 'true'
+        run: cp apps/api/.env.example apps/api/.env
+
+      - name: Start Postgres + Redis + MinIO
+        if: steps.gate.outputs.enabled == 'true'
+        run: docker compose -f infra/docker-compose.yml up -d postgres redis minio minio-bootstrap
+
+      # `api:db-migrate` is the release migration job: DDL, the billing protections and
+      # the runtime role, plus the tariff sync when TAU_CLOUD_ENABLED=true (it is false in
+      # `.env.example`, so these lanes get schema and protections only, as Fly does).
+      - name: Apply the protected migration job
+        if: steps.gate.outputs.enabled == 'true'
+        run: BILLING_DATABASE_URL=postgresql://dev_user:dev_password@localhost:5432/tau_dev pnpm nx run-many -t db-migrate --projects tag:scope:api
+
+      - name: Run real Stripe billing acceptance (L3)
+        if: steps.gate.outputs.enabled == 'true'
+        run: pnpm nx run-many -t test:billing-stripe
 
   # Staging deployments — deploy after builds pass so the Nx Cloud cache is populated.
-  # The staging UI is hosted on Netlify (`taucad` site, custom domain `taucad.dev`)
-  # and rebuilt automatically by the Netlify GitHub integration on every push to
-  # `main` (production context) and on every PR (deploy-preview context); only
-  # the API ships to Fly here (`tau-api-staging`).
+  # The API ships to Fly here (`tau-api-staging`); the UI is built here and published
+  # to Netlify (`taucad` site, `taucad.dev`) by `deploy-ui-staging` below, and docs
+  # and the marketing review site by `deploy-docs-staging` and `deploy-www-staging`.
+  # Netlify no longer builds from Git and there are no PR deploy previews. Each
+  # Netlify production deploy spends credits from a monthly plan (the 2026-10-11
+  # outage paused every deploy), so each job runs only when `plan` lists its app:
+  # affected since the commit staging last recorded for it. Every deploy job skips a
+  # commit a newer run has deployed or is about to (`staging-deploy-superseded`).
+  # `api` is in `needs` because the API's own suites left the `affected` lane: since
+  # the git storage substrate landed, `test` for `tag:scope:api` — the repository
+  # store, the commit protocol, the git transport, the lifecycle jobs and the git
+  # e2e tier — runs only in the `api` job, and a deploy gated on `affected` alone
+  # would ship with all of them red. The `if` needs `!cancelled()` and explicit
+  # results, like `deploy-ui-staging`: without a status function GitHub applies an
+  # implicit `success()`, which is false when any job up the `needs` chain was
+  # skipped — and `geospec-producer` (behind `api` and `affected`) skips whenever
+  # the GeoSpec products are cached, which silently skipped this deploy on most
+  # pushes to `main`. A docs-only push still skips on `contains(…, 'api')`.
+  # Keep `needs.plan.result` before `fromJSON` here and in `deploy-ui-staging`:
+  # with no implicit `success()`, a `plan` that failed before its output step
+  # leaves `deploy-apps` empty and `fromJSON('')` errors.
+  # Both staging deploys wait for `affected-lane`, not the `affected` gate, because
+  # that gate also waits for the Darwin host suites, which the pull request already
+  # passed before merging and which wait hours for a macOS runner when the pool is
+  # busy (run 38193503592 held #486 off staging that way). The suites still turn
+  # this run red and still gate releases (`geospec-artifact-from-main`).
   deploy-api-staging:
     name: Deploy API (Staging)
-    needs: [workspace, affected, plan]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && contains(fromJSON(needs.plan.outputs.apps), 'api')
+    needs: [workspace, affected-lane, plan, api]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.plan.result == 'success' && contains(fromJSON(needs.plan.outputs.deploy-apps), 'api') &&
+      needs.workspace.result == 'success' && needs.affected-lane.result == 'success' &&
+      needs.api.result == 'success'
+    # `actions: read` lets the deploy see whether a newer run already deployed.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/deploy.yml
     with:
       environment: staging
       app: api
+    secrets: inherit
+
+  # The staging UI: built in Actions with this run's GeoSpec products (Netlify
+  # cannot produce them), from the producer's artifact or, when the native source
+  # matched an earlier build, from the products cache, and published by the Netlify CLI. It waits for the
+  # Linux lanes and the producer, not the Darwin suites; see `deploy-api-staging`.
+  # `needs.plan.result` stays before `fromJSON`; see `deploy-api-staging`.
+  deploy-ui-staging:
+    name: Deploy UI (Staging)
+    needs: [workspace, affected-lane, plan, geospec-producer]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.plan.result == 'success' && contains(fromJSON(needs.plan.outputs.deploy-apps), 'ui') &&
+      needs.workspace.result == 'success' && needs.affected-lane.result == 'success' &&
+      (needs.geospec-producer.result == 'success' || needs.plan.outputs.geospec-cached == 'true')
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/deploy-ui.yml
+    with:
+      environment: staging
+      transport: ${{ needs.plan.outputs.geospec-cached == 'true' && 'cache' || 'this-run' }}
+      geospec-key: ${{ needs.plan.outputs.geospec-key }}
+    secrets: inherit
+
+  # Docs (`docs.taucad.dev`) and the marketing review site wait for the same checks
+  # as the staging UI rather than the whole run, which a red Darwin suite or an
+  # unrelated deploy would otherwise hold back.
+  # `needs.plan.result` stays before `fromJSON`; see `deploy-api-staging`.
+  deploy-docs-staging:
+    name: Deploy docs (Staging)
+    needs: [workspace, affected-lane, plan]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.plan.result == 'success' && contains(fromJSON(needs.plan.outputs.deploy-apps), 'docs') &&
+      needs.workspace.result == 'success' && needs.affected-lane.result == 'success'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/deploy-docs.yml
+    with:
+      environment: staging
+    secrets: inherit
+
+  deploy-www-staging:
+    name: Deploy www (Staging)
+    needs: [workspace, affected-lane, plan]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.plan.result == 'success' && contains(fromJSON(needs.plan.outputs.deploy-apps), 'www') &&
+      needs.workspace.result == 'success' && needs.affected-lane.result == 'success'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/deploy-www-review.yml
     secrets: inherit

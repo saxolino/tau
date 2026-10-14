@@ -1,20 +1,62 @@
-export type BuiltInSystemSkill = {
+/**
+ * This app's system-skill layer: every package-owned bundle, loaded the one way
+ * that works in both a browser and Node.
+ *
+ * Package skills come from `@taucad/skills/resources`, the same generated
+ * registry used by native desktop. App-only skills remain inline below.
+ *
+ * Only the T1 bodies come inline. `api-index.md` and the API shards stay files
+ * inside each package, fetched when something greps them — the point of the
+ * tiering is that the whole corpus is *reachable*, not that it is resident.
+ *
+ * The rows are no longer duplicated here either: name, description, version and
+ * when-to-use are read off each manifest, so a package that re-renders its
+ * bundle cannot disagree with the catalogue advertising it.
+ *
+ * @module
+ */
+
+import { systemSkillBundles } from '@taucad/skills/resources';
+
+import { createModelSkillMarkdown } from '#lib/create-model-skill.js';
+
+export type SystemSkill = {
   readonly slug: string;
   readonly name: string;
   readonly description: string;
   readonly version: string;
   readonly source: 'system';
+  readonly priority: 60;
   readonly whenToUse: string;
   readonly skillMarkdown: string;
+  readonly fingerprint?: string;
+  readonly files?: ReadonlyArray<{ readonly path: string }>;
 };
 
-export const builtInSystemSkills: readonly BuiltInSystemSkill[] = [
+/** Every package-owned bundle, flattened: one package may ship more than one. */
+const packageSkills: readonly SystemSkill[] = systemSkillBundles.map(
+  (bundle): SystemSkill => ({
+    slug: bundle.slug,
+    name: bundle.name,
+    description: bundle.description,
+    version: bundle.version,
+    source: 'system',
+    priority: 60,
+    whenToUse: bundle.whenToUse,
+    skillMarkdown: bundle.body,
+    fingerprint: bundle.fingerprint,
+    files: bundle.files,
+  }),
+);
+
+export const systemSkillsCatalog: readonly SystemSkill[] = [
   {
     slug: 'create-skill',
     name: 'Create Skill',
     description: 'Create or update Tau agent skills',
     version: '1.0.0',
     source: 'system',
+    priority: 60,
     whenToUse: 'Use when creating, updating, reviewing, or explaining Tau agent skills or SKILL.md structure.',
     skillMarkdown: `---
 name: create-skill
@@ -32,7 +74,7 @@ Use this skill to create or update Tau agent skills that teach the agent a speci
 ## Tau storage model
 
 - Canonical workspace skills live at \`.agents/skills/<skill-name>/SKILL.md\`.
-- Installed and built-in skills can be shadowed by a user-authored skill with the same name in \`.agents/skills\`.
+- Installed and system skills can be shadowed by a user-authored skill with the same name in \`.agents/skills\`.
 - Before applying an existing skill, the agent should call \`use_skill({ skillName: "<name>" })\` so skill usage is visible.
 
 ## Discovery
@@ -148,4 +190,16 @@ If updating an existing artifact, inspect the current file first and preserve us
 - The skill is discoverable through Tau's skill catalog and can be activated with \`use_skill\`.
 `,
   },
+  {
+    slug: 'create-model',
+    name: 'Create Model',
+    description:
+      'Selects a Tau CAD kernel and activates its authoring skill. Use when creating a model without a pinned kernel.',
+    version: '1.0.0',
+    source: 'system',
+    priority: 60,
+    whenToUse: 'Use when creating a CAD model without a pinned kernel or when kernel choice is ambiguous.',
+    skillMarkdown: createModelSkillMarkdown,
+  },
+  ...packageSkills,
 ];

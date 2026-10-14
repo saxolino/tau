@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { AdditiveBlending } from 'three';
+import { AdditiveBlending, NormalBlending } from 'three';
 import { PointsNodeMaterial } from 'three/webgpu';
+import type { Node } from 'three/webgpu';
 import {
   abs,
   add,
@@ -14,10 +15,12 @@ import {
   mix,
   mul,
   normalize,
-  positionLocal,
   sin,
+  smoothstep,
   sub,
   uniform,
+  uv,
+  vec2,
   vec3,
 } from 'three/tsl';
 
@@ -28,6 +31,7 @@ const defaultMorphOptions: Required<Omit<MorphingPointsMaterialOptions, 'targetC
   pointSize: 2,
   explosionStrength: 2,
   opacity: 1,
+  additive: false,
 };
 
 export type MorphingPointsNodeUniformHandles = {
@@ -52,7 +56,7 @@ export function createMorphingPointsNodeMaterial(options?: MorphingPointsMateria
   readonly material: PointsNodeMaterial;
   readonly handles: MorphingPointsNodeUniformHandles;
 } {
-  const { color, pointSize, explosionStrength, opacity } = { ...defaultMorphOptions, ...options };
+  const { color, pointSize, explosionStrength, opacity, additive } = { ...defaultMorphOptions, ...options };
   const targetColorInput = options?.targetColor ?? color;
 
   const uProgress = uniform(0, 'float');
@@ -76,21 +80,29 @@ export function createMorphingPointsNodeMaterial(options?: MorphingPointsMateria
   // Second argument must stay a literal `'vec3' | 'float'` for TSL generics; grouping under one `as const`
   // object satisfies `tau-lint(no-literal-const-assertion)` while preserving tsgo narrowing (bare `'vec3'`
   // widens when passed through overloads).
-  const morphingPointShaderAttributeTypes = { targetPosition: 'vec3', randomOffset: 'float' } as const;
+  const morphingPointShaderAttributeTypes = {
+    sourcePosition: 'vec3',
+    targetPosition: 'vec3',
+    randomOffset: 'float',
+  } as const;
+  const aSourcePosition = attribute('aSourcePosition', morphingPointShaderAttributeTypes.sourcePosition);
   const aTargetPosition = attribute('aTargetPosition', morphingPointShaderAttributeTypes.targetPosition);
   const aRandomOffset = attribute('aRandomOffset', morphingPointShaderAttributeTypes.randomOffset);
 
   const material = new PointsNodeMaterial({
     transparent: true,
     depthWrite: false,
+    depthTest: false,
     sizeAttenuation: true,
   });
 
-  material.blending = AdditiveBlending;
+  material.blending = additive ? AdditiveBlending : NormalBlending;
 
   material.positionNode = (() => {
-    const midpoint = mix(vec3(positionLocal), vec3(aTargetPosition), float(0.5));
-    const explosionDirection = normalize(vec3(positionLocal));
+    const sourcePosition = vec3(aSourcePosition);
+    const targetPosition = vec3(aTargetPosition);
+    const midpoint = mix(sourcePosition, targetPosition, float(0.5));
+    const explosionDirection = normalize(sourcePosition);
     const explosionAmount = mul(sin(mul(uProgress, float(Math.PI))), uExplosionStrength);
     const midExploded = add(midpoint, mul(explosionDirection, explosionAmount));
 
@@ -99,13 +111,25 @@ export function createMorphingPointsNodeMaterial(options?: MorphingPointsMateria
       float(0),
       float(1),
     );
+    const compositeNoise = (input: Node<'float'>) =>
+      add(
+        mul(sin(input), float(0.5)),
+        mul(sin(mul(input, float(2.3))), float(0.3)),
+        mul(sin(mul(input, float(5.7))), float(0.2)),
+      );
     const noiseVec = vec3(
-      sin(add(mul(aRandomOffset, float(10)), mul(uTime, float(0.5)))),
-      sin(add(mul(aRandomOffset, float(15)), mul(uTime, float(0.7)), float(1))),
-      sin(add(mul(aRandomOffset, float(20)), mul(uTime, float(0.6)), float(2))),
+      compositeNoise(add(mul(aRandomOffset, float(10)), mul(uTime, float(0.5)))),
+      compositeNoise(add(mul(aRandomOffset, float(15)), mul(uTime, float(0.7)), float(1))),
+      compositeNoise(add(mul(aRandomOffset, float(20)), mul(uTime, float(0.6)), float(2))),
     );
-    const noiseTerm = mul(mul(noiseVec, transitionIntensity), float(0.15));
-    const morphed = add(mix(midExploded, vec3(aTargetPosition), uProgress), noiseTerm);
+    const noiseTerm = mul(mul(noiseVec, transitionIntensity), float(0.5));
+    // Progress arrives already eased (morph-animation.ts); linear halves keep velocity continuous.
+    const firstHalfT = clamp(mul(uProgress, float(2)), float(0), float(1));
+    const secondHalfT = clamp(mul(sub(uProgress, float(0.5)), float(2)), float(0), float(1));
+    const trajectory = uProgress
+      .lessThan(float(0.5))
+      .select(mix(sourcePosition, midExploded, firstHalfT), mix(midExploded, targetPosition, secondHalfT));
+    const morphed = add(trajectory, noiseTerm);
 
     // Pointer interaction applied after the morph so points rest on the
     // verified surface and only stir under the cursor. Gaussian falloff (no
@@ -120,7 +144,7 @@ export function createMorphingPointsNodeMaterial(options?: MorphingPointsMateria
     const pointerFalloff = exp(mul(float(-3), mul(pointerNorm, pointerNorm)));
     const pointerWobble = add(
       float(0.75),
-      mul(sin(add(mul(aRandomOffset, float(40)), mul(uTime, float(3)))), float(0.25)),
+      mul(compositeNoise(add(mul(aRandomOffset, float(40)), mul(uTime, float(3)))), float(0.25)),
     );
     const pointerCurl = cross(pointerDirection, vec3(0, 0, 1));
     const pointerOffset = mul(
@@ -136,8 +160,11 @@ export function createMorphingPointsNodeMaterial(options?: MorphingPointsMateria
   const sizeFactorRand = add(float(0.9), mul(aRandomOffset, float(0.2)));
   material.sizeNode = mul(mul(uPointSize, sizeFactorPulse), sizeFactorRand);
 
-  material.colorNode = mix(uSourceRgb, uTargetRgb, mul(uProgress, uHasTargetColor));
-  material.opacityNode = uOpacity;
+  const brightness = add(float(0.9), mul(aRandomOffset, float(0.2)));
+  material.colorNode = mul(mix(uSourceRgb, uTargetRgb, mul(uProgress, uHasTargetColor)), brightness);
+  const pointDistance = length(sub(uv(), vec2(0.5, 0.5)));
+  material.opacityNode = mul(sub(float(1), smoothstep(float(0.42), float(0.5), pointDistance)), uOpacity);
+  material.alphaTest = 0.001;
 
   return {
     material,

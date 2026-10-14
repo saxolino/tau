@@ -11,14 +11,14 @@ import * as mdxParser from '@taucad/oxlint/mdx-parser';
 const unlayeredTargetTypes = ['type:lib', 'type:package', 'type:tool', 'type:example'];
 
 /**
- * Workspace root plus every workspace member directory that has a `package.json`
- * (`packages/*`, nested package groups, `libs/*`, `apps/*`, `apps/libs/*`, `examples/*`,
- * `scripts`), so
- * `import-x/no-extraneous-dependencies` resolves deps from the owning manifest.
+ * Every workspace member directory that has a `package.json` (`packages/*`, nested
+ * package groups, `libs/*`, `apps/*`, `apps/libs/*`, `examples/*`, `tools/*`, `scripts`),
+ * shallowest first so a nested member's config block overrides its parent's.
  */
 const workspacePackageDirectories = () => {
   const root = import.meta.dirname;
-  const directories = new Set([root]);
+  /** @type {Set<string>} */
+  const directories = new Set();
 
   const absorbChildren = (base) => {
     try {
@@ -46,19 +46,61 @@ const workspacePackageDirectories = () => {
   absorbChildren(path.join(root, 'libs'));
   absorbChildren(path.join(root, 'apps'));
   absorbChildren(path.join(root, 'apps/libs'));
+  for (const app of fs.readdirSync(path.join(root, 'apps'))) {
+    absorbChildren(path.join(root, 'apps', app, 'apps'));
+  }
   absorbChildren(path.join(root, 'examples'));
+  absorbChildren(path.join(root, 'tools'));
   if (fs.existsSync(path.join(root, 'scripts/package.json'))) {
     directories.add(path.join(root, 'scripts'));
   }
 
-  return [...directories];
+  return [...directories].sort((a, b) => a.split(path.sep).length - b.split(path.sep).length);
 };
+
+const noExtraneousDependenciesOptions = {
+  devDependencies: true,
+  optionalDependencies: false,
+  peerDependencies: false,
+  includeTypes: true,
+};
+
+/*
+ * `import-x/no-extraneous-dependencies` merges every manifest in an array
+ * `packageDir`, so each member gets its own block: its manifest plus the root,
+ * which holds the apps' dependencies and the shared dev tooling (npm policy §1).
+ * Published and bundled source is narrowed to its own manifest further down.
+ */
+const noExtraneousDependenciesByProject = workspacePackageDirectories().map((directory) => ({
+  files: [`${path.relative(import.meta.dirname, directory)}/**/*.{ts,tsx,mts,cts}`],
+  rules: {
+    'import-x/no-extraneous-dependencies': [
+      'error',
+      { ...noExtraneousDependenciesOptions, packageDir: [directory, import.meta.dirname] },
+    ],
+  },
+}));
 
 const dreiDeepJsImportRestriction = {
   group: ['@react-three/drei/*/*.js'],
   allowTypeImports: true,
   message:
     'Do not value-import Drei deep .js modules from app code. Netlify SSR can classify typeless Drei .js files as CommonJS; import from the Drei barrel or a direct dependency instead. See docs/research/netlify-drei-camera-controls-ssr-crash.md.',
+};
+
+/*
+ * `useMonaco`, `Editor` and `DiffEditor` call `loader.init()` on mount, and a
+ * first `init()` before `configureMonaco` has run `loader.config` binds the page
+ * to the loader's CDN Monaco for good. Only the two owners may touch them:
+ * `lib/monaco.lib.client.ts` (configures the loader) and
+ * `components/code/code-editor.client.tsx` (mounts `Editor` once configured).
+ */
+const monacoLoaderImportRestriction = {
+  name: '@monaco-editor/react',
+  importNames: ['default', 'DiffEditor', 'Editor', 'loader', 'useMonaco'],
+  allowTypeImports: true,
+  message:
+    'Read Monaco with `useConfiguredMonaco` (#hooks/use-monaco-configuration) and render editors with `CodeEditor`; these exports run `loader.init()`, which fetches Monaco from a CDN if it runs before `configureMonaco`. See docs/research/editor-loading-splash-removal-blueprint.md.',
 };
 
 /**
@@ -136,11 +178,12 @@ const namingConventionBase = [
      * filter above one carrying only modifiers, so without it the quoted-name
      * exemption loses to the `strictCamelCase` entry above for any quoted key
      * that happens to contain neither a hyphen nor a space (`'files[0]'`).
+     * `'^'` rather than `'.'` so the empty key `{ '': … }` matches too.
      */
     selector: ['classProperty', 'objectLiteralProperty'],
     format: null,
     modifiers: ['requiresQuotes'],
-    filter: { regex: '.', match: true },
+    filter: { regex: '^', match: true },
   },
 ];
 
@@ -209,6 +252,119 @@ const memberOrdering = [
   },
 ];
 
+/**
+ * Nx module boundaries. The options are shared so the runtime-e2e override can add its
+ * own dynamic-dependency exceptions without restating the tag constraints.
+ */
+const moduleBoundaryOptions = {
+  // Bambu's unpublished hardware qualifier uses host camera capture; its shipped
+  // plugin and browser-safe settings subpath do not import the host.
+  // ponytail: exclude this development-only edge; split the qualifier project if it gains runtime consumers.
+  ignoredCircularDependencies: [['bambu', 'host']],
+  allowCircularSelfDependency: true,
+  /*
+   * The Quick Look extensions are a nested app project (`desktop-quick-look`,
+   * `apps/desktop/macos`) that owns its format manifest. The desktop shell reads
+   * that one JSON contract; nothing else crosses the app-to-app boundary.
+   */
+  allow: ['#macos/quick-look-formats.json'],
+  /*
+   * Libraries that are deliberately lazy-loaded in one consumer and
+   * statically imported in another: the UI keeps the runtime and the
+   * filesystem bridge out of its initial bundle, and the CLI client
+   * loads the agent host on demand, while the Node daemon, its render
+   * probe and the integration tests import the same packages directly.
+   * PicoGK package verification also loads lazily after CLI parsing, while
+   * desktop runtime composition imports its kernel and asset schema directly.
+   * Entries are matched as regular expressions against the import
+   * specifier, so `(/|$)` keeps `@taucad/runtime` from also exempting
+   * `@taucad/runtime-testing`.
+   */
+  checkDynamicDependenciesExceptions: [
+    '@taucad/runtime(/|$)',
+    '@taucad/agent-host(/|$)',
+    '@taucad/fs-bridge(/|$)',
+    '@taucad/picogk(/|$)',
+  ],
+  depConstraints: [
+    {
+      sourceTag: 'scope:api',
+      onlyDependOnLibsWithTags: ['scope:shared', 'scope:api'],
+    },
+    {
+      sourceTag: 'scope:ui',
+      onlyDependOnLibsWithTags: ['scope:shared', 'scope:ui'],
+    },
+    {
+      sourceTag: 'type:app',
+      onlyDependOnLibsWithTags: ['type:lib', 'type:app-lib', 'type:example', 'type:package', 'type:tool'],
+    },
+    {
+      /*
+       * Shared libraries may consume published packages. `tau-examples`
+       * and `chat` both do: a tool contract that describes kernel
+       * results necessarily speaks the runtime's issue vocabulary.
+       * `type:app-lib` is deliberately absent here and from every other
+       * allowlist except `type:app` and `type:e2e` — that omission is
+       * what stops a published package or shared library from consuming
+       * private application code.
+       */
+      sourceTag: 'type:lib',
+      onlyDependOnLibsWithTags: ['type:lib', 'type:package', 'type:tool'],
+    },
+    {
+      // Private application capabilities under `apps/libs/*`.
+      sourceTag: 'type:app-lib',
+      onlyDependOnLibsWithTags: ['type:app-lib', 'type:lib', 'type:package', 'type:tool'],
+    },
+    {
+      // Published packages build on other published packages, shared
+      // libraries, and dev-time tooling — never on application code.
+      sourceTag: 'type:package',
+      onlyDependOnLibsWithTags: ['type:package', 'type:lib', 'type:tool'],
+    },
+    {
+      // Dev-time-only projects: build configs, generators, gates.
+      sourceTag: 'type:tool',
+      onlyDependOnLibsWithTags: ['type:tool', 'type:lib', 'type:package', 'type:example'],
+    },
+    {
+      // Example apps depend on what they demonstrate — geospec for
+      // `.geospec.ts` suites, runtime for export scripts.
+      sourceTag: 'type:example',
+      onlyDependOnLibsWithTags: ['type:lib', 'type:example', 'type:package'],
+    },
+    {
+      // E2e/regression packages sit at the top of the graph and may
+      // consume anything they exercise: apps, libs, and examples.
+      sourceTag: 'type:e2e',
+      onlyDependOnLibsWithTags: ['type:app', 'type:lib', 'type:app-lib', 'type:example', 'type:package', 'type:tool'],
+    },
+    {
+      sourceTag: 'layer:feature',
+      onlyDependOnLibsWithTags: [
+        'layer:feature',
+        'layer:ui',
+        'layer:data-access',
+        'layer:util',
+        ...unlayeredTargetTypes,
+      ],
+    },
+    {
+      sourceTag: 'layer:ui',
+      onlyDependOnLibsWithTags: ['layer:ui', 'layer:util', ...unlayeredTargetTypes],
+    },
+    {
+      sourceTag: 'layer:data-access',
+      onlyDependOnLibsWithTags: ['layer:data-access', 'layer:util', ...unlayeredTargetTypes],
+    },
+    {
+      sourceTag: 'layer:util',
+      onlyDependOnLibsWithTags: ['layer:util', ...unlayeredTargetTypes],
+    },
+  ],
+};
+
 /** @type {import('eslint').Linter.Config[]} */
 const config = [
   {
@@ -231,12 +387,21 @@ const config = [
       '**/stats.html',
       '**/out-tsc',
       '**/generated',
+      // `@taucad/api-extractor` output, one per kernel package.
+      '**/agent/resources.js',
+      '**/agent/resources.d.ts',
+      '**/agent/skills.d.cts',
       '**/assets',
       '**/.netlify',
       '**/*.prompt.example.*',
       '**/*.prompt.example-multifile/**',
       '**/*.cjs',
       '**/*.jscad.js',
+      // Same class: byte-pinned PicoVoxel upstream ports (`provenance.json` hashes); only Tau's
+      // `main.ts` adapters and GeoSpec suites are linted.
+      'libs/tau-examples/src/kernels/picovoxel/*/*.ts',
+      '!libs/tau-examples/src/kernels/picovoxel/*/main.ts',
+      '!libs/tau-examples/src/kernels/picovoxel/*/*.geospec.ts',
       '**/content/docs/**/props/**',
       '**/vitest.integration.config.ts',
       'experiments/**',
@@ -249,18 +414,30 @@ const config = [
       // oxlint/eslint disable banner and lives in no tsconfig project.
       '**/.agents/skills/*/references/*.d.ts',
       '**/reports/**',
+      '**/package-out*/**',
+      'package-out*/**',
+      'apps/desktop/package-out*/**',
+      'apps/desktop/resources/python/**',
       // GeoSpec fixture generation scripts are verbatim-normative model-code
       // inputs run through the runtime VM (see fixtures/README.md), not
       // library sources — same class as prompt examples and experiments.
       'packages/geospec-engine/fixtures/scripts/**',
+      // Pinned external CAD model sources are fixture bytes, not GeoSpec library code.
+      'packages/geospec-engine-native/bench/fixtures/performance-lab/workspace/**',
+      // Registry-gate fixtures are inert artifact inputs the gate parses as
+      // text: their imports deliberately name packages that do not resolve,
+      // and they live in no tsconfig project.
+      'scripts/src/fixtures/**',
+      // Same class: a bundler fixture whose asset queries, JSX and untyped modules
+      // the bundler suites check; it is outside the tau-examples tsconfig.
+      'libs/tau-examples/src/kernels/replicad/bundler-feature-matrix/**',
       // Opt-in benchmark experiments: engine-internal, unpublished, and outside
       // the package tsconfig until PE2 rebuilds what they measure.
       'packages/geospec-engine/experiments/**',
-      // Same class: the native OpenCascade benchmark/parity harnesses are
-      // opt-in CLIs run by hand against a locally built addon and the OCCT
-      // wasm bindings. They are unpublished (`files` excludes `bench/`) and
-      // outside the package tsconfig.
-      'packages/plugins/opencascade-native/bench/**',
+      // Same class: the compute-reuse baseline harness (charter W0) is an
+      // opt-in benchmark reaching runtime-internal seams through a loader
+      // hook; `.mts` files outside the project tsconfig.
+      'apps/runtime-e2e/src/compute-baseline/harness/**',
     ],
   },
 
@@ -288,93 +465,45 @@ const config = [
   {
     plugins: { '@nx': nxEslintPlugin },
     rules: {
+      '@nx/enforce-module-boundaries': ['error', moduleBoundaryOptions],
+    },
+  },
+
+  {
+    /* The unpublished X1C qualifier imports the host for hardware-only capture. Nx checks the closing
+     * path (host → agent-tools → bambu), not that import edge, so scope the documented exception here. */
+    files: ['packages/plugins/bambu/scripts/qualify-x1c.mts'],
+    rules: {
       '@nx/enforce-module-boundaries': [
         'error',
         {
-          allowCircularSelfDependency: true,
-          depConstraints: [
-            {
-              sourceTag: 'scope:api',
-              onlyDependOnLibsWithTags: ['scope:shared', 'scope:api'],
-            },
-            {
-              sourceTag: 'scope:ui',
-              onlyDependOnLibsWithTags: ['scope:shared', 'scope:ui'],
-            },
-            {
-              sourceTag: 'type:app',
-              onlyDependOnLibsWithTags: ['type:lib', 'type:app-lib', 'type:example', 'type:package', 'type:tool'],
-            },
-            {
-              /*
-               * Shared libraries may consume published packages. `tau-examples`
-               * and `chat` both do: a tool contract that describes kernel
-               * results necessarily speaks the runtime's issue vocabulary.
-               * `type:app-lib` is deliberately absent here and from every other
-               * allowlist except `type:app` and `type:e2e` — that omission is
-               * what stops a published package or shared library from consuming
-               * private application code.
-               */
-              sourceTag: 'type:lib',
-              onlyDependOnLibsWithTags: ['type:lib', 'type:package', 'type:tool'],
-            },
-            {
-              // Private application capabilities under `apps/libs/*`.
-              sourceTag: 'type:app-lib',
-              onlyDependOnLibsWithTags: ['type:app-lib', 'type:lib', 'type:package', 'type:tool'],
-            },
-            {
-              // Published packages build on other published packages, shared
-              // libraries, and dev-time tooling — never on application code.
-              sourceTag: 'type:package',
-              onlyDependOnLibsWithTags: ['type:package', 'type:lib', 'type:tool'],
-            },
-            {
-              // Dev-time-only projects: build configs, generators, gates.
-              sourceTag: 'type:tool',
-              onlyDependOnLibsWithTags: ['type:tool', 'type:lib', 'type:package', 'type:example'],
-            },
-            {
-              // Example apps depend on what they demonstrate — geospec for
-              // `.geospec.ts` suites, runtime for export scripts.
-              sourceTag: 'type:example',
-              onlyDependOnLibsWithTags: ['type:lib', 'type:example', 'type:package'],
-            },
-            {
-              // E2e/regression packages sit at the top of the graph and may
-              // consume anything they exercise: apps, libs, and examples.
-              sourceTag: 'type:e2e',
-              onlyDependOnLibsWithTags: [
-                'type:app',
-                'type:lib',
-                'type:app-lib',
-                'type:example',
-                'type:package',
-                'type:tool',
-              ],
-            },
-            {
-              sourceTag: 'layer:feature',
-              onlyDependOnLibsWithTags: [
-                'layer:feature',
-                'layer:ui',
-                'layer:data-access',
-                'layer:util',
-                ...unlayeredTargetTypes,
-              ],
-            },
-            {
-              sourceTag: 'layer:ui',
-              onlyDependOnLibsWithTags: ['layer:ui', 'layer:util', ...unlayeredTargetTypes],
-            },
-            {
-              sourceTag: 'layer:data-access',
-              onlyDependOnLibsWithTags: ['layer:data-access', 'layer:util', ...unlayeredTargetTypes],
-            },
-            {
-              sourceTag: 'layer:util',
-              onlyDependOnLibsWithTags: ['layer:util', ...unlayeredTargetTypes],
-            },
+          ...moduleBoundaryOptions,
+          ignoredCircularDependencies: [...moduleBoundaryOptions.ignoredCircularDependencies, ['host', 'agent-tools']],
+        },
+      ],
+    },
+  },
+
+  {
+    /*
+     * The compute-reuse baseline harness and the bundler benchmarks `await import()` the
+     * replicad, esbuild and openrscad sources by relative path — measuring that dynamic
+     * import IS the benchmark — so Nx records a lazy edge to each. Without this, every
+     * ordinary static import of those packages elsewhere in the suite is rejected. Scoped
+     * to this project so the lazy-load guarantee still holds for the applications.
+     */
+    files: ['apps/runtime-e2e/**/*.{ts,tsx,mts,cts}'],
+    plugins: { '@nx': nxEslintPlugin },
+    rules: {
+      '@nx/enforce-module-boundaries': [
+        'error',
+        {
+          ...moduleBoundaryOptions,
+          checkDynamicDependenciesExceptions: [
+            ...moduleBoundaryOptions.checkDynamicDependenciesExceptions,
+            '@taucad/replicad(/|$)',
+            '@taucad/esbuild(/|$)',
+            '@taucad/openrscad(/|$)',
           ],
         },
       ],
@@ -395,25 +524,165 @@ const config = [
       'no-restricted-syntax': [
         'error',
         {
+          // The materialized-workspace directory the north star deleted (W3d).
+          // A residual one is inert — `reservedTauPathClassification` keeps any
+          // unlisted `.tau` member out of revisions and out of the agent's
+          // hands (P13) — but nothing in the product may name it again.
+          // Both halves: a plain string and a template literal's text, which is
+          // how the e2e specs spell it.
+          selector: 'Literal[value=/\\.tau\\/workspaces/], TemplateElement[value.raw=/\\.tau\\/workspaces/]',
+          message:
+            "`.tau/workspaces` is retired. A turn is placed on its chat's checkout; leases live " +
+            'at `.tau/runs/<runId>.json` and the store at `.git`. ' +
+            'See docs/architecture/workspace-filesystem-and-revisions.md (A38).',
+        },
+        {
+          // The browser's second name for the repository, retired by D29: one
+          // `.git` on every host, in the project's own filesystem. A residual
+          // directory is inert — it falls to `reservedTauPathClassification`
+          // like any unlisted `.tau` member (P13) — but nothing may name it
+          // again. Three halves: a plain string, a template literal's text, and
+          // the path-segment array the desktop e2e specs build, which is the
+          // spelling that survived the first sweep of this rename.
+          // (Comments are not AST nodes, so the two prose mentions that explain
+          // the history are untouched, and so is this rule's own source: this
+          // config is `.mjs` and the block only lints `.ts`/`.tsx`.)
+          selector:
+            'Literal[value=/\\.tau\\/revisions/], TemplateElement[value.raw=/\\.tau\\/revisions/], ArrayExpression > Literal[value=".tau"] + Literal[value="revisions"]',
+          message:
+            '`.tau/revisions` is retired. The repository is `.git` in the project root on every ' +
+            'host, browser included, and the durable sync queue is `.git/sync-pending`. ' +
+            'See docs/policy/revisions-policy.md and the charter (D29, ND23).',
+        },
+        {
+          // The three modules S43 deleted, by name: the Jujutsu adapter, the
+          // wasm revision algebra and the multipart publication upload. A
+          // module path is a string, so this is the string half of the pin
+          // below — an import, a dynamic import, a mock path or a test fixture
+          // that names one of them fails here. (Comments are not AST nodes, so
+          // the two prose mentions of the algebra spike in `object-hash.ts` and
+          // `git-objects.ts` are untouched, and so is this rule's own source:
+          // this config is `.mjs` and the block only lints `.ts`/`.tsx`.)
+          selector:
+            'Literal[value=/(jj-adapter|revision-algebra|publish-multipart)/], TemplateElement[value.raw=/(jj-adapter|revision-algebra|publish-multipart)/]',
+          message:
+            'That module is retired. The disk host is `createNativeGitRevisionPort`, the browser ' +
+            'store is `createIsomorphicGitRevisionPort`, and a publication is a named version of ' +
+            'the synced graph — there is no jj adapter, no wasm algebra and no multipart upload. ' +
+            'See docs/research/workspace-filesystem-revisions-charter.md (D11, D30, EQ14).',
+        },
+        {
           selector: 'TSAsExpression > TSNeverKeyword',
           message:
             '`as never` erases all type information and masks underlying type errors. ' +
             'Fix the root cause: use proper typing, type narrowing, or `as unknown as Type`. ' +
             'See docs/policy/typescript-policy.md.',
         },
-      ],
-      'import-x/no-extraneous-dependencies': [
-        'error',
         {
-          packageDir: workspacePackageDirectories(),
-          devDependencies: true,
-          optionalDependencies: false,
-          peerDependencies: false,
-          includeTypes: true,
+          // Retired by the workspace-filesystem north star (D2, D3, D30, A31).
+          // Path classification is one registry, and the unreachable git code
+          // is gone; no shim, alias or re-export brings either name back.
+          selector: `Identifier[name=/^(${[
+            // Six private path classifiers, replaced by @taucad/filesystem/path-registry.
+            'isDesignPath',
+            'revisionPathPolicy',
+            'excludedRevisionPaths',
+            'maskedDirectories',
+            'isMaskedPath',
+            'maskWorkspaceWrites',
+            // The Jujutsu adapter and its generated per-project configuration.
+            'generatedJjConfigContent',
+            'generatedJjConfigPath',
+            'pinnedJjRelease',
+            'resolveJjExecutable',
+            'createJjRevisionPort',
+            // The dead native-git persistence wrapper.
+            'createNativeGitRevisionPersistence',
+            // Bundles as a wire; git smart HTTP is the only transport. The
+            // selector is anchored, so `createBundler`/`createBundlerSourceHost`
+            // in the bundler toolkits are untouched (review R3).
+            'importBundle',
+            'createBundle',
+            'fetchBundle',
+            'RevisionBundleInput',
+            'ImportRevisionBundleInput',
+            'CreateNativeGitBundleInput',
+            'FetchNativeGitBundleInput',
+            // The hand-rolled browser store, superseded by `isomorphic-git` (EQ12, W3).
+            'createBrowserRevisionPort',
+            'BrowserRevisionPortOptions',
+            // The blob, tree and pack codec `isomorphic-git` and `git` now own.
+            'encodeTreeGraph',
+            'encodeTree',
+            'encodeBlob',
+            'decodeTree',
+            'EncodedTreeGraph',
+            'FlatTreeEntry',
+            'GitMode',
+            // Publications are named versions of the synced graph (D11): no blob
+            // store of uploaded files stands beside it.
+            'BlobStore',
+            // The compiled wasm revision algebra and its out-of-tree artifact.
+            'loadRevisionAlgebra',
+            'RevisionAlgebra',
+            'algebraContract',
+            'algebraSourceRevision',
+            'algebraProvenanceDigest',
+            'algebraRawWasmSha256',
+            'algebraNativeDarwinArm64Sha256',
+            'resolveAlgebraArtifact',
+            'algebraArtifactEnvironmentVariable',
+            // The turn recorder and its branch-per-chat placement (D7, I18, W3c):
+            // a turn attaches to a checkout through `turn.machine` and never
+            // creates one, and the effects behind it are `createRevisionActors`.
+            'TurnRevisionRecorder',
+            'TurnRevisionMode',
+            'turnRevisionBranch',
+            'defaultTurnCaptureExclusions',
+            'withTurnRevisions',
+            'sweepTurnWorkspaces',
+            'hostRevisionModes',
+            'hostTurnCaptureExclusions',
+            // The materialized workspace and its claim file (D7, A38, W3d): a
+            // turn is placed on a checkout the revision root already holds,
+            // there is no second copy of the tree and no claim beside it.
+            'MaterializedWorkspace',
+            'MaterializedWorkspaceAuthority',
+            'MaterializedWorkspaceError',
+            'MaterializedWorkspaceId',
+            'MaterializedWorkspaceIdentity',
+            'MaterializedWorkspaceMetrics',
+            'MaterializedWorkspaceMode',
+            'materializedWorkspaceId',
+            'WorkspaceClaim',
+            'PersistedChatWorkspaceClaim',
+            // Revision *mode* as a wire word (D7, I18, P12): placement is
+            // non-branching by default, so nothing picks one.
+            'ChatRevisionMode',
+            'chatRevisionModeSchema',
+            'useChatRevisionMode',
+            'revisionMode',
+            'placementRevisionModes',
+          ].join('|')})$/]`,
+          message:
+            'This identifier is retired. Path classification is `classify` from ' +
+            '`@taucad/filesystem/path-registry`; the jj adapter, the dead native-git persistence ' +
+            'wrapper, the bundle transport, the hand-rolled browser codec and the wasm revision ' +
+            'algebra are deleted — the browser store is `createIsomorphicGitRevisionPort` and the ' +
+            'disk host is `createNativeGitRevisionPort`. Do not reintroduce a shim or alias. ' +
+            'The turn recorder, its `agent/<chat>` branches and the Node revision modes are ' +
+            'replaced by `projectRevisionsMachine` over `createRevisionActors`. ' +
+            'The materialized workspace, its `.tau/workspaces` claim file and the revision-mode ' +
+            "wire word are gone with it: a turn is placed on its chat's checkout and the host " +
+            'records the revision. ' +
+            'See docs/research/workspace-filesystem-revisions-charter.md (D2, D3, D7, D30, EQ12, EQ14).',
         },
       ],
+      'import-x/no-extraneous-dependencies': ['error', noExtraneousDependenciesOptions],
     },
   },
+
+  ...noExtraneousDependenciesByProject,
 
   {
     files: ['**/*.tsx'],
@@ -443,20 +712,16 @@ const config = [
   },
 
   {
-    files: ['packages/**/*.{ts,tsx}'],
-    ignores: ['packages/**/*.{spec,test,config,setup}.{ts,tsx}'],
+    /*
+     * Published packages, the private libraries bundled into them or into an app,
+     * and the standalone examples answer to their own manifest alone: a root
+     * install must not hide a consumer runtime requirement (npm policy §1).
+     * Omitting `packageDir` reads the nearest `package.json`.
+     */
+    files: ['{packages,libs,apps/libs,examples}/**/*.{ts,tsx,mts,cts}'],
+    ignores: ['**/*.{spec,test,test-d,config,setup}.{ts,tsx,mts,cts}', '**/e2e/**', '**/scripts/**'],
     rules: {
-      'import-x/no-extraneous-dependencies': [
-        'error',
-        {
-          packageDir: workspacePackageDirectories(),
-          devDependencies: true,
-          optionalDependencies: false,
-          peerDependencies: true,
-          includeTypes: true,
-          includeInternal: true,
-        },
-      ],
+      'import-x/no-extraneous-dependencies': ['error', { ...noExtraneousDependenciesOptions, peerDependencies: true }],
     },
   },
 
@@ -557,7 +822,7 @@ const config = [
   },
 
   {
-    files: ['apps/ui/content/docs/**/*.mdx'],
+    files: ['apps/docs/content/docs/**/*.mdx'],
     languageOptions: { parser: mdxParser },
     plugins: { 'tau-lint': tauLintPlugin },
     rules: {
@@ -570,7 +835,7 @@ const config = [
 
   {
     // Compile-only documentation fixtures intentionally model consumer imports outside the Nx graph.
-    files: ['apps/ui/content/docs/**/*.ts'],
+    files: ['apps/docs/content/docs/**/*.ts'],
     rules: {
       '@nx/enforce-module-boundaries': 'off',
     },
@@ -586,7 +851,7 @@ const config = [
      * TypeScript block owns the core rule's options, and these fixtures also
      * re-export types, which the base rule reports identically.
      */
-    files: ['apps/ui/content/docs/runtime/**/*.ts'],
+    files: ['apps/docs/content/docs/runtime/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -734,6 +999,7 @@ const config = [
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: [monacoLoaderImportRestriction],
           patterns: [
             {
               group: ['monaco-editor', 'monaco-editor/*'],
@@ -770,6 +1036,42 @@ const config = [
     },
   },
   {
+    /* Client and worker modules may value-import `monaco-editor`, but not the
+     * loader-bound React exports — except their two owners. */
+    files: [
+      'apps/ui/app/**/*.client.ts',
+      'apps/ui/app/**/*.client.tsx',
+      'apps/ui/app/**/*.worker.ts',
+      'apps/ui/app/**/*.worker.tsx',
+    ],
+    ignores: ['apps/ui/app/components/code/code-editor.client.tsx', 'apps/ui/app/lib/monaco.lib.client.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: [monacoLoaderImportRestriction],
+          patterns: [dreiDeepJsImportRestriction],
+        },
+      ],
+    },
+  },
+  {
+    files: ['apps/api/**/*.{ts,tsx,mts,cts}'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@taucad/billing/hooks/*'],
+              message: 'API code must not import the React-only @taucad/billing hooks surface.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: [
       'apps/ui/app/machines/cad.machine.ts',
       'apps/ui/app/workers/geospec-runner.impl.ts',
@@ -789,6 +1091,58 @@ const config = [
                 'Latency-sensitive runtime consumers must use the narrowest existing @taucad/runtime subpath; root value imports add the full barrel to cold start.',
             },
           ],
+        },
+      ],
+    },
+  },
+  {
+    /*
+     * I12: reserved engineering vocabulary may not reach operator-facing copy.
+     *
+     * Policy rule 1 gives each term one meaning and keeps the engineering ones
+     * out of product text — a person sees Revision, Branch, Current, Restore,
+     * Sync, never checkout, lease, ref, HEAD, worktree or backend. Two refusal
+     * sentences in this program shipped naming a *checkout* and a *lease*, and
+     * the manual "terminology scan" that was supposed to catch them is what
+     * this rule replaces.
+     *
+     * Scoped to rendered text only: JSXText, and the handful of attributes that
+     * are read aloud or shown. A prop *value* is not copy — `compareAgainst=
+     * 'checkout'` and `checkoutId` are the vocabulary of the code, and flagging
+     * them would make the rule noise that gets disabled. `repository` and
+     * `commit` are deliberately absent: neither is reserved, and both are what
+     * a person actually picks and reads on GitHub.
+     */
+    files: ['apps/ui/app/routes/w.$workspace.$project/**/*.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'JSXText[value=/\\b(checkouts?|leases?|worktrees?|backends?|refs?)\\b/i]',
+          message:
+            'Reserved engineering vocabulary in rendered copy (policy rule 1). Say it in product ' +
+            'words: a Revision, a Branch, Current, Restore, Switch, Merge, Discard, Work in, Sync. ' +
+            'See docs/policy/revisions-policy.md (rule 1) and DESIGN.md.',
+        },
+        {
+          selector: 'JSXText[value=/\\bHEAD\\b/]',
+          message:
+            'HEAD is not product vocabulary (policy rule 1). Name what the person sees — the ' +
+            'Current revision, or the branch it is on. See docs/policy/revisions-policy.md.',
+        },
+        {
+          selector:
+            'JSXAttribute[name.name=/^(aria-label|aria-description|title|placeholder|alt|label)$/] > Literal[value=/\\b(checkouts?|leases?|worktrees?|backends?|refs?)\\b/i]',
+          message:
+            'Reserved engineering vocabulary in an accessible name (policy rule 1) — a screen ' +
+            'reader reads this aloud, so it is copy. See docs/policy/revisions-policy.md.',
+        },
+        {
+          selector:
+            'JSXAttribute[name.name=/^(aria-label|aria-description|title|placeholder|alt|label)$/] > Literal[value=/\\bHEAD\\b/]',
+          message:
+            'HEAD is not product vocabulary (policy rule 1), and an accessible name is read ' +
+            'aloud. See docs/policy/revisions-policy.md.',
         },
       ],
     },

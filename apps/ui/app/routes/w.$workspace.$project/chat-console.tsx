@@ -1,13 +1,13 @@
-import { ChevronsDown, Filter, Settings, Trash } from 'lucide-react';
+import { ChevronsDown, Filter, Settings, Terminal, Trash } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import type { PaneviewApi, PaneviewPanelApi } from 'dockview-react';
-import { PaneviewReact } from 'dockview-react';
+import { Paneview } from '#components/panes/paneview.js';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import { Virtuoso } from 'react-virtuoso';
 import type { LogEntry, LogLevel, LogOrigin } from '@taucad/types';
 import { logLevels } from '@taucad/types/constants';
-import { Badge } from '#components/ui/badge.js';
+import { Badge } from '@taucad/ui/components/badge';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -15,15 +15,16 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '#components/ui/dropdown-menu.js';
-import { EmptyItems } from '#components/ui/empty-items.js';
+} from '@taucad/ui/components/dropdown-menu';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { PaneButton } from '#components/ui/pane-button.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
-import { SearchInput } from '#components/search-input.js';
-import { HighlightText } from '#components/highlight-text.js';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { SearchInput } from '@taucad/ui/components/search-input';
+import { HighlightText } from '@taucad/ui/components/highlight-text';
 import {
   PaneviewHeader,
   PaneviewHeaderControls,
+  paneviewAttachedBodyClassName,
   paneviewAttachedSurfaceStyleOverrides,
   paneviewHeaderSize,
 } from '#components/panes/paneview-header.js';
@@ -36,7 +37,7 @@ import {
   usePaneviewPersistence,
 } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { stringToColor } from '#utils/color.utils.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 const defaultLogLevels: Record<LogLevel, boolean> = {
   error: true,
@@ -87,7 +88,7 @@ const ComponentBadge = ({ origin, searchTerm }: { readonly origin?: LogOrigin; r
 const getBadgeColor = (level: LogLevel): string => {
   switch (level) {
     case logLevels.error: {
-      return 'bg-destructive';
+      return 'bg-feature';
     }
     case logLevels.warn: {
       return 'bg-warning';
@@ -99,7 +100,7 @@ const getBadgeColor = (level: LogLevel): string => {
       return 'bg-stable';
     }
     case logLevels.trace: {
-      return 'bg-feature';
+      return 'bg-muted-foreground';
     }
   }
 };
@@ -135,12 +136,12 @@ const ConsoleLogRow = ({
   <pre
     data-console-log-row
     className={cn('group/log mx-2 rounded p-1 font-mono text-xs text-wrap', {
-      'bg-destructive/10 text-destructive hover:bg-destructive/20': log.level === logLevels.error,
+      'bg-feature/10 text-feature hover:bg-feature/20': log.level === logLevels.error,
       'bg-warning/10 text-warning hover:bg-warning/20': log.level === logLevels.warn,
       'hover:bg-neutral/20': log.level === logLevels.info,
       'bg-neutral/10': log.level === logLevels.info && log.infoIndex % 2 !== 0,
       'bg-stable/10 text-stable hover:bg-stable/20': log.level === logLevels.debug,
-      'bg-feature/10 text-feature hover:bg-feature/20': log.level === logLevels.trace,
+      'text-muted-foreground hover:bg-neutral/20': log.level === logLevels.trace,
     })}
   >
     <span className='sr-only'>{log.level} log: </span>
@@ -196,7 +197,7 @@ const ConsolePanelBody = ({ params }: { readonly params: ConsolePanelParams }): 
           atBottomStateChange={setAtBottom}
           itemContent={renderLog}
         />
-        {!atBottom ? (
+        {atBottom ? null : (
           <PaneButton
             className='absolute right-4 bottom-4 z-10 size-7 border border-border bg-card shadow-sm'
             tooltip='Scroll to latest logs'
@@ -207,22 +208,17 @@ const ConsolePanelBody = ({ params }: { readonly params: ConsolePanelParams }): 
           >
             <ChevronsDown />
           </PaneButton>
-        ) : null}
+        )}
       </>
     );
   } else {
     content = (
-      <EmptyItems className='m-2 h-[calc(100%-1rem)]'>
-        {params.totalCount === 0 ? 'No logs yet.' : 'No matching logs.'}
-      </EmptyItems>
+      <PanelEmptyState icon={Terminal} title={params.totalCount === 0 ? 'No logs yet.' : 'No matching logs.'} />
     );
   }
 
   return (
-    <div
-      data-slot='console-unit-surface'
-      className='relative h-full overflow-hidden rounded-b-xl border border-border bg-card'
-    >
+    <div data-slot='console-unit-surface' className={cn('relative h-full', paneviewAttachedBodyClassName)}>
       {content}
     </div>
   );
@@ -314,7 +310,7 @@ const ConsolePaneview = ({
   }, [entryPaths, getPanelParams]);
 
   return (
-    <PaneviewReact
+    <Paneview
       key={paneviewKey}
       className={paneviewAttachedSurfaceStyleOverrides}
       components={paneviewComponents}
@@ -329,11 +325,10 @@ export const ChatConsole = memo(function ChatConsole(): React.JSX.Element {
   const [query, setQuery] = useState('');
   const [enabledLevels, setEnabledLevels] = useCookie(cookieName.consoleLogLevel, defaultLogLevels);
   const [displayConfig, setDisplayConfig] = useCookie(cookieName.consoleDisplayConfig, defaultDisplayConfig);
-  const logVersion = useSelector(logRef, (state) => state.context.logVersion);
-  const allLogs = useMemo(
-    () => logRef.getSnapshot().context.logBuffer.toArray(),
-    // oxlint-disable-next-line react-hooks/exhaustive-deps -- logVersion is the mutable buffer's reactive version
-    [logRef, logVersion],
+  const [, allLogs] = useSelector(
+    logRef,
+    (state) => [state.context.logVersion, state.context.logBuffer.toArray()] as const,
+    (previous, next) => previous[0] === next[0],
   );
   const entries = useMemo(() => [...geometryUnits.entries()], [geometryUnits]);
   const entryPaths = useMemo(
@@ -363,9 +358,9 @@ export const ChatConsole = memo(function ChatConsole(): React.JSX.Element {
 
     for (const projection of result.values()) {
       projection.logs.reverse();
-      projection.logs.forEach((log, index) => {
+      for (const [index, log] of projection.logs.entries()) {
         log.infoIndex = index;
-      });
+      }
     }
     return result;
   }, [allLogs, enabledLevels, entryPaths, query]);
@@ -380,7 +375,7 @@ export const ChatConsole = memo(function ChatConsole(): React.JSX.Element {
           aria-label='Filter logs'
           autoComplete='off'
           className='h-7 min-w-0 flex-1 bg-background'
-          placeholder='Filter logs...'
+          placeholder='Filter logs…'
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -473,7 +468,9 @@ export const ChatConsole = memo(function ChatConsole(): React.JSX.Element {
 
       <div className='min-h-0 flex-1 overflow-hidden'>
         {entryPaths.length === 0 ? (
-          <EmptyItems className='bg-card'>No geometry units.</EmptyItems>
+          <div className='size-full p-2'>
+            <PanelEmptyState icon={Terminal} title='No geometry units.' className='rounded-xl border bg-card' />
+          </div>
         ) : (
           <ConsolePaneview
             entryPaths={entryPaths}

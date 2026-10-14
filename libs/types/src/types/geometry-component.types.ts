@@ -1,3 +1,4 @@
+import type { Mechanism } from '@taucad/kinematics';
 import type { ExportFidelity } from '#types/cad.types.js';
 import type { JSONObject } from '#types/json-value.types.js';
 
@@ -46,6 +47,36 @@ export type GeometryComponentAppearance = {
    * Source material names when present in the geometry payload.
    */
   materialNames?: string[];
+  /**
+   * Source surface-material factors, including descendant surfaces. Line and
+   * point materials are excluded. Omitted factors use glTF defaults; 'unavailable'
+   * denotes an invalid or unavailable explicit value. Explicit factors do not
+   * establish whether the author or an exporter supplied the value.
+   */
+  materials?: Array<{
+    /** Index in the source glTF materials array; omitted for the default material. */
+    materialIndex?: number;
+    /** Optional name on this exact source material, independent of other materials with the same name. */
+    name?: string;
+    /** Source glTF texture-info objects, whose indices address the source asset's textures array. */
+    textures?: {
+      baseColor?: JSONObject;
+      metallicRoughness?: JSONObject;
+      normal?: JSONObject;
+      occlusion?: JSONObject;
+      emissive?: JSONObject;
+    };
+    /** Source glTF material extension descriptors, keyed by extension name. */
+    extensions?: JSONObject;
+    /** Explicit base-color factor converted to CSS for display. The glTF default is white. */
+    color?: string;
+    /** Explicit metallic factor, in [0, 1]. The glTF default is 1. */
+    metalness?: number | 'unavailable';
+    /** Explicit roughness factor, in [0, 1]. The glTF default is 1. */
+    roughness?: number | 'unavailable';
+    /** Whether the source material uses KHR_materials_unlit. */
+    isUnlit?: boolean;
+  }>;
 };
 
 /**
@@ -147,4 +178,6 @@ export type GeometryComponentManifest = {
   nodesById: Record<string, GeometryComponentNode>;
   capabilities: GeometryComponentCapabilities;
   extensionUsed?: string;
+  /** Admitted mechanism from the `TAU_cad_topology` payload, in glTF space with component ids as link members. */
+  mechanism?: Mechanism;
 };

@@ -1,17 +1,15 @@
 import { memo, useCallback, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Box, FileCode, SlidersHorizontal } from 'lucide-react';
-import { Button } from '#components/ui/button.js';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '#components/ui/tabs.js';
-import { Avatar, AvatarImage, AvatarFallback } from '#components/ui/avatar.js';
-import { Separator } from '#components/ui/separator.js';
+import { Button } from '@taucad/ui/components/button';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@taucad/ui/components/tabs';
+import { Avatar, AvatarImage, AvatarFallback } from '@taucad/ui/components/avatar';
+import { Separator } from '@taucad/ui/components/separator';
 import { ProjectSettingsDialog } from '#routes/w.$workspace.$project_.preview/project-settings-dialog.js';
 import { downloadBlob } from '@taucad/utils/file';
 import { toast } from '#components/ui/sonner.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { useProjectManager } from '#hooks/use-project-manager.js';
-import { useProjectCreationLocationError } from '#hooks/use-project-creation-location-error.js';
 import { useCadPreview } from '#hooks/use-cad-preview.js';
 import { CadPreviewViewer, CadPreviewStatus } from '#components/cad-preview.js';
 import { usePreviewProject } from '#routes/w.$workspace.$project_.preview/preview-project-context.js';
@@ -20,23 +18,20 @@ import { PreviewCodeActions } from '#routes/w.$workspace.$project_.preview/previ
 import { PreviewFiles } from '#routes/w.$workspace.$project_.preview/preview-files.js';
 import { PreviewParameters } from '#routes/w.$workspace.$project_.preview/preview-parameters.js';
 import { usePreviewFileList } from '#routes/w.$workspace.$project_.preview/use-preview-file-list.js';
-import { projectUrl } from '#utils/project-url.utils.js';
 import { useProjectUrl } from '#hooks/use-project-slug-route.js';
+import { getFileTreeDownloadErrorMessage } from '#routes/w.$workspace.$project/file-tree-download-policy.js';
 
 export const PreviewDesktop = memo(function (): React.JSX.Element {
   const navigate = useNavigate();
-  const { project, isStaticProject, staticProjectFiles } = usePreviewProject();
-  const { geometry, jsonSchema, cadRef } = useCadPreview();
+  const { project } = usePreviewProject();
+  const { artifact, jsonSchema, cadRef } = useCadPreview();
   const fileManager = useFileManager();
-  const projectManager = useProjectManager();
-  const presentLocationError = useProjectCreationLocationError();
   const files = usePreviewFileList();
 
   const hasParameters = Boolean(jsonSchema);
   // "Edit online" on an owned project's preview goes to its canonical editor URL.
   const editorUrl = useProjectUrl(project?.id);
 
-  const [isCloning, setIsCloning] = useState(false);
   const [activeTab, setActiveTab] = useState('3d');
   const [showParameters, setShowParameters] = useState(true);
 
@@ -46,62 +41,24 @@ export const PreviewDesktop = memo(function (): React.JSX.Element {
     }
 
     toast.promise(
-      async () => {
-        const zipBlob = await fileManager.getZippedDirectory(`/projects/${project.id}`);
-        return zipBlob;
-      },
+      // The preview's file manager is rooted at this project; `''` is that root.
+      async () => fileManager.getZippedDirectory('', { versionedOnly: true }),
       {
-        loading: 'Creating ZIP archive...',
+        loading: 'Creating ZIP archive…',
         success(blob) {
           downloadBlob(blob, `${project.name}.zip`);
           return 'ZIP downloaded successfully';
         },
-        error: 'Failed to create ZIP archive',
+        error(error: unknown) {
+          return `Failed to create ZIP archive: ${getFileTreeDownloadErrorMessage(error)}`;
+        },
       },
     );
   }, [project, fileManager]);
 
-  const handleEditOnline = useCallback(async () => {
-    if (!isStaticProject || !staticProjectFiles || !project) {
-      void navigate(editorUrl);
-      return;
-    }
-
-    if (isCloning) {
-      return;
-    }
-
-    setIsCloning(true);
-
-    try {
-      const createProject = await projectManager.createProject({
-        project: {
-          name: `${project.name} (Remixed)`,
-          description: project.description,
-          tags: [...project.tags],
-          assets: project.assets,
-        },
-        files: staticProjectFiles,
-      });
-
-      await navigate(projectUrl(createProject.slugs));
-    } catch (error) {
-      console.error('Failed to remix project:', error);
-      if (!presentLocationError(error)) {
-        toast.error('Failed to remix project');
-      }
-      setIsCloning(false);
-    }
-  }, [
-    isStaticProject,
-    staticProjectFiles,
-    project,
-    isCloning,
-    editorUrl,
-    projectManager,
-    navigate,
-    presentLocationError,
-  ]);
+  const handleEditOnline = useCallback(() => {
+    void navigate(editorUrl);
+  }, [editorUrl, navigate]);
 
   const toggleParameters = useCallback(() => {
     setShowParameters((previous) => !previous);
@@ -110,7 +67,7 @@ export const PreviewDesktop = memo(function (): React.JSX.Element {
   if (!project) {
     return (
       <div className='flex h-full items-center justify-center'>
-        <p className='text-muted-foreground'>Loading project...</p>
+        <p className='text-muted-foreground'>Loading project…</p>
       </div>
     );
   }
@@ -133,13 +90,8 @@ export const PreviewDesktop = memo(function (): React.JSX.Element {
           </div>
         </div>
         <div className='flex items-center gap-2'>
-          <PreviewCodeActions
-            isStaticProject={isStaticProject}
-            isCloning={isCloning}
-            onRemix={handleEditOnline}
-            onDownloadZip={handleDownloadZip}
-          />
-          {isStaticProject ? null : <ProjectSettingsDialog />}
+          <PreviewCodeActions onEdit={handleEditOnline} onDownloadZip={handleDownloadZip} />
+          <ProjectSettingsDialog />
         </div>
       </div>
 
@@ -203,7 +155,7 @@ export const PreviewDesktop = memo(function (): React.JSX.Element {
 
             {/* Sidebar - About Section */}
             <div className='w-80 border-l bg-sidebar'>
-              <PreviewDetails project={project} hasGeometry={Boolean(geometry)} cadRef={cadRef} />
+              <PreviewDetails project={project} hasGeometry={Boolean(artifact)} cadRef={cadRef} />
               <Separator />
               <div className='hidden p-6'>
                 <h3 className='mb-3 text-sm font-semibold'>Version Control</h3>

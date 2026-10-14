@@ -14,12 +14,10 @@ const createTrianglePrimitive = (materialName?: string): GlbPrimitive => ({
   normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
   indices: new Uint32Array([0, 1, 2]),
   material: {
-    baseColorFactor: [1, 1, 1, 1],
-    metallicFactor: 0,
-    roughnessFactor: 1,
     doubleSided: true,
     alphaMode: 'OPAQUE',
     ...(materialName ? { name: materialName } : {}),
+    pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 1 },
   },
 });
 
@@ -73,7 +71,19 @@ const createManifoldGlb = async (): Promise<Uint8Array<ArrayBuffer>> => {
         .setType(Accessor.Type['SCALAR']!)
         .setArray(new Uint32Array([0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3])),
     );
-  const mesh = document.createMesh('Tetrahedron').addPrimitive(primitive);
+  const secondPrimitive = document
+    .createPrimitive()
+    .setMode(Primitive.Mode['TRIANGLES']!)
+    .setAttribute('POSITION', positions)
+    .setIndices(
+      document
+        .createAccessor('second render indices')
+        .setBuffer(buffer)
+        .setType(Accessor.Type['SCALAR']!)
+        .setArray(new Uint32Array([1, 2, 3, 2, 0, 3])),
+    );
+  primitive.getIndices()!.setArray(new Uint32Array([0, 2, 1, 0, 1, 3]));
+  const mesh = document.createMesh('Tetrahedron').addPrimitive(primitive).addPrimitive(secondPrimitive);
   const manifold = document.createExtension(EXTManifold).createManifoldPrimitive();
   manifold
     .setIndices(
@@ -83,7 +93,7 @@ const createManifoldGlb = async (): Promise<Uint8Array<ArrayBuffer>> => {
         .setType(Accessor.Type['SCALAR']!)
         .setArray(new Uint32Array([0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3])),
     )
-    .setRunIndex([0, 12]);
+    .setRunIndex([0, 6, 12]);
   mesh.setExtension(EXTManifold.EXTENSION_NAME, manifold);
   document.createScene().addChild(document.createNode('Tetrahedron').setMesh(mesh));
   return new NodeIO().registerExtensions([EXTManifold]).writeBinary(document);
@@ -93,6 +103,28 @@ const readGlbJson = (bytes: Uint8Array<ArrayBuffer>): JSONDocument['json'] => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const length = view.getUint32(12, true);
   return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + length))) as JSONDocument['json'];
+};
+
+const withExternalImage = (bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> => {
+  const inputView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const inputJsonLength = inputView.getUint32(12, true);
+  const json = readGlbJson(bytes);
+  json.images = [{ uri: 'missing-texture.png' }];
+  json.textures = [{ source: 0 }];
+  json.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0 };
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+  const paddedJsonLength = Math.ceil(jsonBytes.byteLength / 4) * 4;
+  const remainder = bytes.subarray(20 + inputJsonLength);
+  const output = new Uint8Array(20 + paddedJsonLength + remainder.byteLength);
+  output.fill(0x20, 20, 20 + paddedJsonLength);
+  output.set(bytes.subarray(0, 12));
+  const outputView = new DataView(output.buffer);
+  outputView.setUint32(8, output.byteLength, true);
+  outputView.setUint32(12, paddedJsonLength, true);
+  outputView.setUint32(16, 0x4e_4f_53_4a, true);
+  output.set(jsonBytes, 20);
+  output.set(remainder, 20 + paddedJsonLength);
+  return output;
 };
 
 describe('normalizeGltfGeometryNames', () => {
@@ -153,6 +185,19 @@ describe('normalizeGltfGeometryNames', () => {
     expect(names.sceneNames).toEqual(['Exploded View']);
   });
 
+  it('should normalize names without resolving external GLB images', async () => {
+    const normalized = await normalizeGltfGeometryNames(
+      withExternalImage(writeGlb({ nodes: [{ primitives: [createTrianglePrimitive('Material')] }] })),
+      { format: 'glb', rewriteLegacyGeneratedShapeNames: true },
+    );
+    const json = readGlbJson(normalized);
+
+    expect(json.nodes?.[0]?.name).toBe('Shape 1');
+    expect(json.meshes?.[0]?.name).toBe('Shape 1');
+    expect(json.images?.[0]?.uri).toBe('missing-texture.png');
+    expect(json.materials?.[0]?.pbrMetallicRoughness?.baseColorTexture?.index).toBe(0);
+  });
+
   it('should clear all material names when the caller knows they are generated', async () => {
     const input: GlbInput = {
       nodes: [{ name: 'Bracket', primitives: [createTrianglePrimitive('Bracket')] }],
@@ -208,5 +253,10 @@ describe('normalizeGltfGeometryNames', () => {
     expect(json.meshes?.[0]?.extensions?.['EXT_mesh_manifold']).toMatchObject({
       manifoldPrimitive: { mode: Primitive.Mode['TRIANGLES'] },
     });
+    const document = await new NodeIO().registerExtensions([EXTManifold]).readBinary(transformed);
+    for (const primitive of document.getRoot().listMeshes()[0]!.listPrimitives()) {
+      const vertexCount = primitive.getAttribute('POSITION')!.getCount();
+      expect([...(primitive.getIndices()!.getArray() ?? [])].every((index) => index < vertexCount)).toBe(true);
+    }
   });
 });

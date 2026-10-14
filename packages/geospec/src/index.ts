@@ -4,8 +4,8 @@
  * @module
  */
 
-export { createGeoSpec, describe, expectGeo, geoSpecMatcherNames, it, test } from '#create-geospec.js';
-export type { GeoSpec } from '#create-geospec.js';
+export { describe, expectGeo, geoSpecMatcherNames, it, test } from '#create-geospec.js';
+export type { GeoSpecSubject } from '#model/subject.js';
 export type { GeoSpecUnit } from '#geometry-unit.js';
 
 export type {
@@ -26,6 +26,7 @@ export type {
   GeoSpecMatcher,
   GeoSpecMassExpectation,
   GeoSpecMeshIntegrityExpectation,
+  GeoSpecNoDiagnosticsExpectation,
   GeoSpecMinimumWallThicknessExpectation,
   GeoSpecCircularHolePatternExpectation,
   GeoSpecFilletFeatureExpectation,
@@ -51,6 +52,7 @@ export type {
   GeometryProvenance,
   GeometrySource,
   GeometrySubject,
+  GeometrySubjectMeshEvidence,
   MeshEvidence,
   MeshFileFormat,
   MeshQualityStats,
@@ -59,5 +61,4 @@ export type {
   Vec3,
 } from '#mesh/types.js';
 
-export type { AnalyzeMeshResult, LoadMeshOptions, LoadMeshResult } from '#mesh/load-mesh.js';
 export type { Vec3 as GeoSpecVec3 } from '#mesh/types.js';

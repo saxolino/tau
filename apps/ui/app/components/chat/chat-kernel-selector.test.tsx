@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import type { KernelConfiguration, KernelId } from '@taucad/types/constants';
 import { kernelConfigurations } from '@taucad/types/constants';
+import { entitlementsFromTier } from '@taucad/billing';
 import type { ChatComposerContextValue } from '#hooks/active-chat-provider.js';
 
 // The chat kernel selector reads AND writes through the unified composer
@@ -46,12 +47,22 @@ vi.mock('#hooks/use-kernel.js', () => ({
   },
 }));
 
+const useEntitlementsMock = vi.hoisted(() => vi.fn());
+vi.mock('@taucad/billing/hooks/use-entitlements', () => ({
+  useEntitlements: useEntitlementsMock,
+}));
+
+const openSettingsDialogMock = vi.hoisted(() => vi.fn());
+vi.mock('#hooks/use-settings-dialog.js', () => ({
+  useSettingsDialog: () => ({ isOpen: false, section: 'general', open: openSettingsDialogMock, close: vi.fn() }),
+}));
+
 const capturedComboBox: {
   onSelect?: (id: string) => void;
   value?: unknown;
   renderLabel?: (item: KernelConfiguration, selected?: KernelConfiguration) => React.ReactNode;
 } = {};
-vi.mock('#components/ui/combobox-responsive.js', () => ({
+vi.mock('@taucad/ui/components/combobox-responsive', () => ({
   ComboBoxResponsive: (properties: {
     readonly onSelect?: (id: string) => void;
     readonly value?: unknown;
@@ -82,6 +93,7 @@ function renderSelector(onSelect?: (id: KernelId) => void) {
 describe('ChatKernelSelector — chat-scoped read + dual-write', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useEntitlementsMock.mockReturnValue(entitlementsFromTier('pro'));
     chatKernelState.current = stubKernel;
     capturedComboBox.onSelect = undefined;
     capturedComboBox.value = undefined;
@@ -114,6 +126,47 @@ describe('ChatKernelSelector — chat-scoped read + dual-write', () => {
     renderSelector();
     capturedComboBox.onSelect?.('does-not-exist');
     expect(setActiveKernel).not.toHaveBeenCalled();
+  });
+});
+
+// Project selection remains available on Free; the execution boundary owns
+// entitlement denial so the source and project context stay intact.
+describe('ChatKernelSelector — project access', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useEntitlementsMock.mockReturnValue(entitlementsFromTier('pro'));
+    chatKernelState.current = stubKernel;
+  });
+
+  it('should let Free users select Zoo without opening billing settings', () => {
+    useEntitlementsMock.mockReturnValue(entitlementsFromTier('free'));
+    const onSelect = vi.fn();
+    renderSelector(onSelect);
+
+    capturedComboBox.onSelect?.('zoo');
+
+    expect(setActiveKernel).toHaveBeenCalledWith('zoo');
+    expect(onSelect).toHaveBeenCalledWith('zoo');
+    expect(openSettingsDialogMock).not.toHaveBeenCalled();
+  });
+
+  it('lets free users pick free kernels without any billing detour', () => {
+    useEntitlementsMock.mockReturnValue(entitlementsFromTier('free'));
+    renderSelector();
+
+    capturedComboBox.onSelect?.('replicad');
+
+    expect(setActiveKernel).toHaveBeenCalledWith('replicad');
+    expect(openSettingsDialogMock).not.toHaveBeenCalled();
+  });
+
+  it('activates Zoo normally for entitled users', () => {
+    renderSelector();
+
+    capturedComboBox.onSelect?.('zoo');
+
+    expect(setActiveKernel).toHaveBeenCalledWith('zoo');
+    expect(openSettingsDialogMock).not.toHaveBeenCalled();
   });
 });
 

@@ -2,15 +2,15 @@ import { expect, test } from 'vitest';
 import { page as selectors } from 'vitest/browser';
 import * as target from '#support/external-target.js';
 
+type SectionCut =
+  | Readonly<{ kind: 'plane'; plane: 'xy' | 'xz' | 'yz'; offset: number; isFlipped: boolean }>
+  | Readonly<{ kind: 'revolution'; axis: 'x' | 'y' | 'z'; start: number; sweep: number }>;
+
 type SectionViewBridgeWindow = Window & {
   __TAU_SECTION_VIEW_TEST__?: {
-    setSectionView(state: {
-      plane: 'xy' | 'xz' | 'yz';
-      direction?: 1 | -1;
-      rotationRadians?: readonly [number, number, number];
-      pivot?: readonly [number, number, number];
-      translation?: number;
-    }): void;
+    setSectionCuts(cuts: readonly SectionCut[]): string[];
+    selectSectionCut(id: string | undefined): void;
+    getSectionState(): { isCommitted: boolean };
     setCamera(camera: {
       position: readonly [number, number, number];
       target?: readonly [number, number, number];
@@ -42,8 +42,26 @@ type SectionViewBridgeWindow = Window & {
           };
         }
       | undefined;
+    getSectionCapCompleteness(): SectionCapCompleteness | undefined;
+    getRenderFrame(): { metersPerRenderUnit: number };
   };
 };
+
+type SectionCapCompleteness =
+  | Readonly<{
+      status: 'complete';
+      admittedSourceCount: number;
+      extensionSourceCount: number;
+      fallbackSourceCount: number;
+      trueCutComponentCount: number;
+      cappedTrueCutComponentCount: number;
+      unresolvedTrueCutEdgeCount: number;
+      unsupportedSourceCount: number;
+    }>
+  | Readonly<{
+      status: 'unsupported' | 'failed';
+      failure: Readonly<{ sourceKey: string; code: string; message: string }>;
+    }>;
 
 const webgpuValidationPatterns: readonly RegExp[] = [
   /Vertex buffer slot \d+ required/,
@@ -68,26 +86,46 @@ const expectNoWebGpuValidationFailures = async (from?: number): Promise<void> =>
   expect(failures, `WebGPU validation errors leaked to the console:\n${failures.join('\n')}`).toEqual([]);
 };
 
-async function driveSectionView(rotationY: number): Promise<void> {
-  await target.evaluate((nextRotationY) => {
+/**
+ * Waits until the caps have drawn the latest cuts from at least one model. While a model's section analysis is
+ * pending the caps certify the cuts without it, so being committed alone can mean nothing was capped yet.
+ */
+async function waitForCommittedSection(): Promise<void> {
+  await target.waitFor(
+    () => {
+      const bridge = (globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__;
+      const completeness = bridge?.getSectionCapCompleteness();
+      return (
+        bridge?.getSectionState().isCommitted === true &&
+        completeness?.status === 'complete' &&
+        completeness.admittedSourceCount > 0
+      );
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
+}
+
+/**
+ * A half-turn cutaway about Y through the bounds centre (the fixture's origin): an oblique plane through the axis,
+ * removing the half that starts `start` degrees from +Z.
+ */
+async function driveSectionView(start: number): Promise<void> {
+  await target.evaluate((nextStart) => {
     const bridge = (globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__;
     if (!bridge) {
       throw new Error('Section view e2e bridge is not installed.');
     }
 
     bridge.setCamera({
-      position: [72, -88, 58],
+      position: [0.072, -0.088, 0.058],
       target: [0, 0, 0],
       fov: 42,
       zoom: 1,
     });
-    bridge.setSectionView({
-      plane: 'yz',
-      direction: 1,
-      rotationRadians: [0, nextRotationY, 0],
-      pivot: [0, 0, 0],
-    });
-  }, rotationY);
+    bridge.setSectionCuts([{ kind: 'revolution', axis: 'y', start: nextStart, sweep: 180 }]);
+  }, start);
+  await waitForCommittedSection();
 }
 
 async function sampleSectionCanvas(): Promise<{
@@ -124,7 +162,7 @@ async function sampleSectionCanvasRegion(region: CanvasSampleRegion): Promise<{
   gridLineish: number;
   edgeLineish: number;
 }> {
-  const canvas = selectors.getByCss('[role="img"][aria-label*="3D model preview" i] canvas');
+  const canvas = selectors.getByCss('canvas[data-engine]');
   await target.expectVisible(canvas, 60_000);
   const screenshot = await target.screenshot(canvas);
 
@@ -211,7 +249,7 @@ async function sampleSectionCanvasRegion(region: CanvasSampleRegion): Promise<{
           gridLineish++;
         }
 
-        if (channelMax - channelMin < 24 && channelMax <= 150) {
+        if (channelMax <= 150) {
           edgeLineish++;
         }
       }
@@ -284,23 +322,50 @@ async function getSectionCapPerformanceDiagnostics(): Promise<
   });
 }
 
-async function expectClosedSectionCapIntegrity(backend: 'webgl' | 'webgpu', rotationY: number): Promise<void> {
-  await driveSectionView(rotationY);
-  await target.delay(750);
+async function getSectionCapCompleteness(): Promise<SectionCapCompleteness | undefined> {
+  return target.evaluate(() => {
+    const bridge = (globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__;
+    if (!bridge) {
+      throw new Error('Section view e2e bridge is not installed.');
+    }
+    return bridge.getSectionCapCompleteness();
+  });
+}
+
+async function expectCompleteSectionCaps(context: string): Promise<void> {
+  const completeness = await getSectionCapCompleteness();
+  expect(completeness, `${context}: section-cap completeness diagnostics should be published`).toBeDefined();
+  expect(
+    completeness?.status,
+    `${context}: every admitted source should produce a safe section snapshot\n${JSON.stringify(completeness)}`,
+  ).toBe('complete');
+  if (completeness?.status !== 'complete') {
+    return;
+  }
+  expect(
+    completeness.admittedSourceCount,
+    `${context}: at least one logical source should be admitted`,
+  ).toBeGreaterThan(0);
+  expect(completeness.cappedTrueCutComponentCount, `${context}: every true-cut component should be capped`).toBe(
+    completeness.trueCutComponentCount,
+  );
+  expect(completeness.unresolvedTrueCutEdgeCount, `${context}: no true-cut edge may remain unresolved`).toBe(0);
+  expect(completeness.unsupportedSourceCount, `${context}: no admitted source may be unsupported`).toBe(0);
+}
+
+async function expectClosedSectionCapIntegrity(backend: 'webgl' | 'webgpu', start: number): Promise<void> {
+  await driveSectionView(start);
+  await expectCompleteSectionCaps(`${backend} start=${start}°`);
   const stats = await sampleSectionCanvas();
   const helperSummary = await getSectionHelperSummary();
 
-  expect(
-    stats.distinctBuckets,
-    `rotationY=${rotationY}: section view should render varied pixels`,
-  ).toBeGreaterThanOrEqual(12);
-  expect(
-    stats.dominantRatio,
-    `rotationY=${rotationY}: frame should not collapse to one cap/background color`,
-  ).toBeLessThan(0.96);
-  expect(stats.yellowish, `rotationY=${rotationY}: yellow internal part should remain visible`).toBeGreaterThan(6);
-  expect(stats.blueish, `rotationY=${rotationY}: blue holed housing cap should remain visible`).toBeGreaterThan(6);
-  expect(stats.reddish, `rotationY=${rotationY}: red internal posts should remain visible`).toBeGreaterThan(2);
+  expect(stats.distinctBuckets, `start=${start}°: section view should render varied pixels`).toBeGreaterThanOrEqual(12);
+  expect(stats.dominantRatio, `start=${start}°: frame should not collapse to one cap/background color`).toBeLessThan(
+    0.96,
+  );
+  expect(stats.yellowish, `start=${start}°: yellow internal part should remain visible`).toBeGreaterThan(6);
+  expect(stats.blueish, `start=${start}°: blue holed housing cap should remain visible`).toBeGreaterThan(6);
+  expect(stats.reddish, `start=${start}°: red internal posts should remain visible`).toBeGreaterThan(2);
   expect(
     helperSummary.sectionHelperLineSegments2Count,
     `${backend}: section contour fills should render fat-line clipped-cap borders`,
@@ -317,7 +382,7 @@ async function expectClosedSectionCapIntegrity(backend: 'webgl' | 'webgpu', rota
   ).toBe(true);
   expect(
     stats.edgeLineish,
-    `rotationY=${rotationY}: generated cap outlines should remain visibly near-black in the composed frame`,
+    `start=${start}°: generated cap outlines should remain visibly near-black in the composed frame`,
   ).toBeGreaterThan(20);
 }
 
@@ -329,18 +394,12 @@ async function driveNonManifoldSectionView(): Promise<void> {
     }
 
     bridge.setCamera({
-      position: [5, -7, 5],
+      position: [0.005, -0.007, 0.005],
       target: [0, 0, 0],
       fov: 38,
       zoom: 1.2,
     });
-    bridge.setSectionView({
-      plane: 'xy',
-      direction: 1,
-      rotationRadians: [0, 0, 0],
-      pivot: [0, 0, 0],
-      translation: 0,
-    });
+    bridge.setSectionCuts([{ kind: 'plane', plane: 'xy', offset: 0, isFlipped: false }]);
   });
 }
 
@@ -352,42 +411,34 @@ async function driveCubeCylinderOverlayDepthSectionView(): Promise<void> {
     }
 
     bridge.setCamera({
-      position: [88, -104, 44],
-      target: [0, 0, 14],
+      position: [0.088, -0.104, 0.044],
+      target: [0, 0, 0.014],
       fov: 42,
       zoom: 1,
     });
-    bridge.setSectionView({
-      plane: 'yz',
-      direction: 1,
-      rotationRadians: [0, 0, 0],
-      pivot: [0, 0, 25],
-      translation: 0,
-    });
+    // Selected, so its handle draws over the clipped-away half, as the single section plane's always did.
+    const [id] = bridge.setSectionCuts([{ kind: 'plane', plane: 'yz', offset: 0, isFlipped: false }]);
+    bridge.selectSectionCut(id);
   });
+  await waitForCommittedSection();
 }
 
-async function driveFlowerAttachmentSectionView(translation = 0): Promise<void> {
-  await target.evaluate((nextTranslation) => {
+async function driveFlowerAttachmentSectionView(offsetMillimetres = 0): Promise<void> {
+  await target.evaluate((nextOffset) => {
     const bridge = (globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__;
     if (!bridge) {
       throw new Error('Section view e2e bridge is not installed.');
     }
 
     bridge.setCamera({
-      position: [54, -64, 28],
-      target: [0, 0, 4],
+      position: [0.054, -0.064, 0.028],
+      target: [0, 0, 0.004],
       fov: 38,
       zoom: 1.18,
     });
-    bridge.setSectionView({
-      plane: 'yz',
-      direction: 1,
-      rotationRadians: [0, 0, 0],
-      pivot: [0, 0, 3],
-      translation: nextTranslation,
-    });
-  }, translation);
+    bridge.setSectionCuts([{ kind: 'plane', plane: 'yz', offset: nextOffset / 1000, isFlipped: false }]);
+  }, offsetMillimetres);
+  await waitForCommittedSection();
 }
 
 async function expectFlowerAttachmentContoursVisible(backend: 'webgl' | 'webgpu'): Promise<void> {
@@ -421,17 +472,14 @@ async function expectOverlayAxesVisibleThroughClippedAwayRegion(backend: 'webgl'
     stats.distinctBuckets,
     `${backend}: clipped-away region should retain visible overlay variation`,
   ).toBeGreaterThanOrEqual(4);
+  // A plane cut's only handle is its red offset arrow; the green and blue rotation handles this region once held are gone.
   expect(
     stats.reddish,
-    `${backend}: red scene-axis pixels should remain visible in the clipped-away half`,
+    `${backend}: the red offset handle should remain visible in the clipped-away half`,
   ).toBeGreaterThan(3);
   expect(
     stats.blueish,
     `${backend}: blue scene-axis pixels should remain visible in the clipped-away half`,
-  ).toBeGreaterThan(3);
-  expect(
-    stats.greenish,
-    `${backend}: green scene-axis pixels should remain visible in the clipped-away half`,
   ).toBeGreaterThan(3);
   expect(
     stats.whiteish / sampledPixels,
@@ -440,48 +488,40 @@ async function expectOverlayAxesVisibleThroughClippedAwayRegion(backend: 'webgl'
 }
 
 async function captureSectionCanvas(fileName: string): Promise<void> {
-  const canvas = selectors.getByCss('[role="img"][aria-label*="3D model preview" i] canvas');
+  const canvas = selectors.getByCss('canvas[data-engine]');
   await target.expectVisible(canvas, 60_000);
   await target.screenshot(canvas, fileName);
 }
 
 test.describe('Section view contour fill regression', () => {
   for (const backend of ['webgl', 'webgpu'] as const) {
-    test(`keeps closed caps from bleeding over colored internals in ${backend}`, async ({ skip }) => {
-      if (backend === 'webgpu') {
-        const hasWebGpu = await target.evaluate(() => 'gpu' in navigator);
-        skip(!hasWebGpu, 'WebGPU is not available in this browser runtime.');
-      }
-
+    test(`keeps closed caps from bleeding over colored internals in ${backend}`, async () => {
       const messageStart = backend === 'webgpu' ? await consoleMessageCount() : undefined;
-      await target.navigate(`/examples/jscad_section_cap_fixture?graphicsBackend=${backend}`);
-      await target.expectVisible(selectors.getByRole('img', { name: /3d model preview/i }), 60_000);
-      await target.expectVisible(selectors.getByTestId('bbox-viewer'), 60_000);
-      await target.waitFor(() => Boolean((globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__));
+      await target.navigate(`/__e2e/example-fixture?locator=jscad.section-cap-fixture&graphicsBackend=${backend}`);
+      await target.expectVisible(selectors.getByCss('canvas[data-engine]'), 60_000);
+      await target.expectGraphicsBackend(backend);
+      await target.expectGeometryFramed();
 
-      await expectClosedSectionCapIntegrity(backend, -1.47);
-      await expectClosedSectionCapIntegrity(backend, -0.84);
-      await expectClosedSectionCapIntegrity(backend, 0.42);
+      await expectClosedSectionCapIntegrity(backend, -84);
+      await expectClosedSectionCapIntegrity(backend, -48);
+      await expectClosedSectionCapIntegrity(backend, 24);
       await expectNoWebGpuValidationFailures(messageStart);
     });
   }
 
   for (const backend of ['webgl', 'webgpu'] as const) {
-    test(`keeps clipped-away cube-cylinder region transparent to overlay axes in ${backend}`, async ({ skip }) => {
-      if (backend === 'webgpu') {
-        const hasWebGpu = await target.evaluate(() => 'gpu' in navigator);
-        skip(!hasWebGpu, 'WebGPU is not available in this browser runtime.');
-      }
-
+    test(`keeps clipped-away cube-cylinder region transparent to overlay axes in ${backend}`, async () => {
       const messageStart = backend === 'webgpu' ? await consoleMessageCount() : undefined;
-      await target.navigate(`/examples/jscad_cube_cylinder_section_fixture?graphicsBackend=${backend}`);
-      await target.expectVisible(selectors.getByRole('img', { name: /3d model preview/i }), 60_000);
-      await target.expectVisible(selectors.getByTestId('bbox-viewer'), 60_000);
-      await target.waitFor(() => Boolean((globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__));
+      await target.navigate(
+        `/__e2e/example-fixture?locator=jscad.cube-cylinder-section-fixture&graphicsBackend=${backend}`,
+      );
+      await target.expectVisible(selectors.getByCss('canvas[data-engine]'), 60_000);
+      await target.expectGraphicsBackend(backend);
+      await target.expectGeometryFramed();
 
       await target.delay(500);
       await driveCubeCylinderOverlayDepthSectionView();
-      await target.delay(750);
+      await expectCompleteSectionCaps(`${backend} cube-cylinder`);
       await captureSectionCanvas(`cube-cylinder-overlay-depth-${backend}.png`);
       await expectOverlayAxesVisibleThroughClippedAwayRegion(backend);
       await expectNoWebGpuValidationFailures(messageStart);
@@ -489,20 +529,17 @@ test.describe('Section view contour fill regression', () => {
   }
 
   for (const backend of ['webgl', 'webgpu'] as const) {
-    test(`keeps Flower Attachment generated contour outlines visible in ${backend}`, async ({ skip }) => {
-      if (backend === 'webgpu') {
-        const hasWebGpu = await target.evaluate(() => 'gpu' in navigator);
-        skip(!hasWebGpu, 'WebGPU is not available in this browser runtime.');
-      }
-
+    test(`keeps Flower Attachment generated contour outlines visible in ${backend}`, async () => {
       const messageStart = backend === 'webgpu' ? await consoleMessageCount() : undefined;
-      await target.navigate(`/examples/proj_flower_attachment_section_outline_fixture?graphicsBackend=${backend}`);
-      await target.expectVisible(selectors.getByRole('img', { name: /3d model preview/i }), 60_000);
-      await target.expectVisible(selectors.getByTestId('bbox-viewer'), 60_000);
-      await target.waitFor(() => Boolean((globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__));
+      await target.navigate(
+        `/__e2e/example-fixture?locator=replicad.flower-attachment-section-outline-fixture&graphicsBackend=${backend}`,
+      );
+      await target.expectVisible(selectors.getByCss('canvas[data-engine]'), 60_000);
+      await target.expectGraphicsBackend(backend);
+      await target.expectGeometryFramed();
 
       await driveFlowerAttachmentSectionView();
-      await target.delay(1000);
+      await expectCompleteSectionCaps(`${backend} Flower Attachment`);
       await captureSectionCanvas(`flower-attachment-section-outline-${backend}.png`);
       await expectFlowerAttachmentContoursVisible(backend);
       const firstDiagnostics = await getSectionCapPerformanceDiagnostics();
@@ -519,7 +556,7 @@ test.describe('Section view contour fill regression', () => {
       ).toBeGreaterThan(0);
 
       await driveFlowerAttachmentSectionView(5);
-      await target.delay(250);
+      await expectCompleteSectionCaps(`${backend} dragged Flower Attachment`);
       await captureSectionCanvas(`flower-attachment-section-outline-drag-${backend}.png`);
       await expectFlowerAttachmentContoursVisible(backend);
       const draggedDiagnostics = await getSectionCapPerformanceDiagnostics();
@@ -535,26 +572,38 @@ test.describe('Section view contour fill regression', () => {
   }
 
   for (const backend of ['webgl', 'webgpu'] as const) {
-    test(`fills branched non-manifold section caps in ${backend}`, async ({ skip }) => {
-      if (backend === 'webgpu') {
-        const hasWebGpu = await target.evaluate(() => 'gpu' in navigator);
-        skip(!hasWebGpu, 'WebGPU is not available in this browser runtime.');
-      }
-
+    test(`keeps branched non-manifold sections in the ordinary safe view in ${backend}`, async () => {
       const messageStart = backend === 'webgpu' ? await consoleMessageCount() : undefined;
-      await target.navigate(`/examples/jscad_non_manifold_section_fixture?graphicsBackend=${backend}`);
-      await target.expectVisible(selectors.getByRole('img', { name: /3d model preview/i }), 60_000);
-      await target.expectVisible(selectors.getByTestId('bbox-viewer'), 60_000);
-      await target.waitFor(() => Boolean((globalThis as unknown as SectionViewBridgeWindow).__TAU_SECTION_VIEW_TEST__));
+      await target.navigate(
+        `/__e2e/example-fixture?locator=jscad.non-manifold-section-fixture&graphicsBackend=${backend}`,
+      );
+      await target.expectVisible(selectors.getByCss('canvas[data-engine]'), 60_000);
+      await target.expectGraphicsBackend(backend);
+      await target.expectGeometryFramed();
 
       await driveNonManifoldSectionView();
-      await target.delay(750);
+      await expect
+        .poll(
+          async () => {
+            const completeness = await getSectionCapCompleteness();
+            return completeness?.status;
+          },
+          { timeout: 30_000 },
+        )
+        .toBe('unsupported');
       await captureSectionCanvas(`non-manifold-section-${backend}.png`);
 
-      const stats = await sampleSectionCanvasRegion({ x: 0.35, y: 0.28, width: 0.3, height: 0.36 });
-      expect(stats.distinctBuckets, 'non-manifold cap should render shaded/striped pixels').toBeGreaterThanOrEqual(8);
-      expect(stats.dominantRatio, 'non-manifold cap should not be transparent background').toBeLessThan(0.92);
-      expect(stats.beigeish, 'non-manifold cap should recover beige source-material fill').toBeGreaterThan(80);
+      const completeness = await getSectionCapCompleteness();
+      expect(completeness?.status, JSON.stringify(completeness)).toBe('unsupported');
+      expect(
+        ['open-surface', 'inconsistent-orientation', 'ambiguous-seam', 'non-manifold-vertex'].includes(
+          completeness?.status === 'unsupported' ? completeness.failure.code : '',
+        ),
+      ).toBe(true);
+      const diagnostics = await getSectionCapPerformanceDiagnostics();
+      expect(diagnostics?.latestFrame.counters['safeSnapshotCurrentCount']).toBe(0);
+      const helperSummary = await getSectionHelperSummary();
+      expect(helperSummary.sectionHelperContourSegmentCount).toBe(0);
       await expectNoWebGpuValidationFailures(messageStart);
     });
   }

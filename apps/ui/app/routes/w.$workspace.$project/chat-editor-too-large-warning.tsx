@@ -1,5 +1,5 @@
 import { TriangleAlert } from 'lucide-react';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 
 type ChatEditorTooLargeWarningProps = {
   readonly size: number;
@@ -30,7 +30,7 @@ export function ChatEditorTooLargeWarning({
         <div className='flex flex-col items-center gap-4'>
           <p className='text-sm'>
             The file is {formatBytes(size)} which exceeds the {formatBytes(limit)} editor limit. Opening very large
-            files in the editor can cause your browser tab to become unresponsive.
+            files in the editor can make Tau unresponsive.
           </p>
           <Button variant='outline' onClick={onOpenAnyway}>
             Open Anyway

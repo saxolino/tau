@@ -97,7 +97,12 @@ const [markerDirectory, markerFile] = workspaceMarkerPath.split('/') as [string,
 
 const makeHandle = (
   name: string,
-  options: { marker?: string; readOnly?: boolean; permission?: PermissionState } = {},
+  options: {
+    marker?: string;
+    readOnly?: boolean;
+    permission?: PermissionState;
+    queryPermission?: () => Promise<PermissionState>;
+  } = {},
 ): MemoryDirectoryHandle & FileSystemDirectoryHandle => {
   const handle = new MemoryDirectoryHandle(
     name,
@@ -115,7 +120,9 @@ const makeHandle = (
     handle.directories.set(markerDirectory, tau);
   }
   const permission = options.permission ?? 'granted';
-  Object.defineProperty(handle, 'queryPermission', { value: async () => permission });
+  Object.defineProperty(handle, 'queryPermission', {
+    value: options.queryPermission ?? (async () => permission),
+  });
   return handle as unknown as MemoryDirectoryHandle & FileSystemDirectoryHandle;
 };
 
@@ -138,9 +145,42 @@ const markerJson = (workspaceId: string, slug = 'tau-workspace'): string =>
 
 const evictedWorkspaceId = 'wsp_NMN8Aisp3U9ajVqBkqMrP';
 
-/** Fresh IndexedDB + fresh module graph, mirroring a cold browser start. */
-const loadStore = async (): Promise<typeof HandleStore> => {
+type LegacyProjectConfig = {
+  readonly projectId: string;
+  readonly backend: 'indexeddb';
+  readonly providerBasePath: string;
+};
+
+/** Fresh IndexedDB + fresh module graph, optionally seeded as the prior v3 schema. */
+const loadStore = async (legacyConfigs: readonly LegacyProjectConfig[] = []): Promise<typeof HandleStore> => {
   globalThis.indexedDB = new IDBFactory();
+  if (legacyConfigs.length > 0) {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(`${metaConfig.databasePrefix}fs-handles`, 3);
+      request.addEventListener('upgradeneeded', () => {
+        request.result.createObjectStore('configs', { keyPath: 'projectId' });
+      });
+      request.addEventListener('success', () => {
+        resolve(request.result);
+      });
+      request.addEventListener('error', () => {
+        reject(request.error ?? new Error('legacy open failed'));
+      });
+    });
+    const transaction = db.transaction('configs', 'readwrite');
+    for (const config of legacyConfigs) {
+      transaction.objectStore('configs').put(config);
+    }
+    await new Promise<void>((resolve, reject) => {
+      transaction.addEventListener('complete', () => {
+        resolve();
+      });
+      transaction.addEventListener('error', () => {
+        reject(transaction.error ?? new Error('legacy write failed'));
+      });
+    });
+    db.close();
+  }
   vi.resetModules();
   return import('#filesystem/handle-store.js');
 };
@@ -200,7 +240,7 @@ const stubLocks = (): void => {
 /** Direct database access, standing in for rows written by another tab or an older build. */
 const withRawDb = async <T>(operation: (db: IDBDatabase) => Promise<T>): Promise<T> => {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(`${metaConfig.databasePrefix}fs-handles`, 3);
+    const request = indexedDB.open(`${metaConfig.databasePrefix}fs-handles`, 4);
     request.addEventListener('success', () => {
       resolve(request.result);
     });
@@ -353,6 +393,58 @@ describe('createWorkspace marker identity', () => {
     expect(readMarker(original)?.['workspaceId']).toBe(adopted.workspaceId);
   });
 
+  it('reconnects a marked workspace whose durable row exists without a handle', async () => {
+    const { createWorkspace, disconnectWorkspace, listWorkspaces } = await loadStore();
+    const handle = makeHandle('tau-workspace');
+    const connected = await createWorkspace(handle);
+    const markerBefore = readMarker(handle);
+    await disconnectWorkspace(connected.workspaceId);
+
+    const reconnected = await createWorkspace(handle);
+
+    expect(reconnected).toMatchObject({ workspaceId: connected.workspaceId, minted: false });
+    expect(await rawReadHandle(connected.workspaceId)).toBe(handle);
+    expect(await listWorkspaces()).toHaveLength(1);
+    expect(readMarker(handle)).toEqual(markerBefore);
+  });
+
+  it('normalizes a conflicting marker when the live handle proves the workspace identity', async () => {
+    const { createWorkspace } = await loadStore();
+    const handle = makeHandle('tau-workspace');
+    const connected = await createWorkspace(handle);
+    const conflictingId = 'wsp_bbbbbbbbbbbbbbbbbbbbb';
+    handle.directories.get(markerDirectory)?.files.set(markerFile, { content: markerJson(conflictingId) });
+
+    const refreshed = await createWorkspace(handle);
+
+    expect(refreshed.workspaceId).toBe(connected.workspaceId);
+    expect(readMarker(handle)?.['workspaceId']).toBe(connected.workspaceId);
+  });
+
+  it('leaves the disconnected row unchanged when the reconnect transaction aborts', async () => {
+    const { createWorkspace, disconnectWorkspace } = await loadStore();
+    const handle = makeHandle('tau-workspace');
+    const connected = await createWorkspace(handle);
+    await disconnectWorkspace(connected.workspaceId);
+    const before = await rawReadWorkspace(connected.workspaceId);
+    const { put } = IDBObjectStore.prototype;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ) {
+      if (this.name === 'handles') {
+        this.transaction.abort();
+      }
+      return put.call(this, value, key);
+    });
+
+    await expect(createWorkspace(handle)).rejects.toThrow();
+
+    expect(await rawReadWorkspace(connected.workspaceId)).toEqual(before);
+    expect(await rawReadHandle(connected.workspaceId)).toBeUndefined();
+  });
+
   it('writes the marker for a folder that has none', async () => {
     const { createWorkspace } = await loadStore();
     const handle = makeHandle('My Designs');
@@ -401,38 +493,125 @@ describe('createWorkspace marker identity', () => {
 // R1 — persistent storage
 // ===========================================================================
 
-describe('createWorkspace persistent storage', () => {
-  it('requests persistence once per connect and records the outcome', async () => {
-    const persist = vi.fn(async () => true);
-    const persisted = vi.fn(async () => false);
-    stubStorage({ persist, persisted });
-    const { createWorkspace } = await loadStore();
-
-    const workspace = await createWorkspace(makeHandle('tau-workspace'));
-
-    expect(persisted).toHaveBeenCalledTimes(1);
-    expect(persist).toHaveBeenCalledTimes(1);
-    expect(workspace.storagePersisted).toBe(true);
+describe('Home storage persistence', () => {
+  it('should never request on startup or when connecting a disk workspace', async () => {
+    const persist = vi.fn(async () => false);
+    stubStorage({ persist, persisted: async () => false });
+    const store = await loadStore();
+    await store.getProjectRootConfigs();
+    await store.createWorkspace(makeHandle('tau-workspace'));
+    expect(persist).not.toHaveBeenCalled();
   });
 
-  it('does not re-request persistence when it is already granted', async () => {
+  it('should request once across simultaneous saves and a fresh module sharing the same database', async () => {
+    const persist = vi.fn(async () => false);
+    stubStorage({ persist, persisted: async () => false });
+    const firstTab = await loadStore();
+    vi.resetModules();
+    const secondTab = await import('#filesystem/handle-store.js');
+    await Promise.all([
+      firstTab.requestHomeStoragePersistence(),
+      firstTab.requestHomeStoragePersistence(),
+      secondTab.requestHomeStoragePersistence(),
+    ]);
+    expect(persist).toHaveBeenCalledOnce();
+    vi.resetModules();
+    const reloaded = await import('#filesystem/handle-store.js');
+    await reloaded.requestHomeStoragePersistence();
+    expect(persist).toHaveBeenCalledOnce();
+    expect(reloaded.getPersistentStorageStatus()).toBe('best-effort');
+  });
+
+  it('should skip requesting when already protected', async () => {
     const persist = vi.fn(async () => true);
     stubStorage({ persist, persisted: async () => true });
-    const { createWorkspace } = await loadStore();
-
-    const workspace = await createWorkspace(makeHandle('tau-workspace'));
-
+    const store = await loadStore();
+    await store.requestHomeStoragePersistence();
     expect(persist).not.toHaveBeenCalled();
-    expect(workspace.storagePersisted).toBe(true);
+    expect(store.getPersistentStorageStatus()).toBe('persistent');
   });
 
-  it('tolerates a browser without the Storage Manager API', async () => {
+  it('should refresh both grants and revocations without requesting', async () => {
+    const persisted = vi.fn(async () => false);
+    const persist = vi.fn(async () => false);
+    stubStorage({ persist, persisted });
+    const store = await loadStore();
+    const listener = vi.fn();
+    const unsubscribe = store.subscribePersistentStorageStatus(listener);
+    await store.refreshPersistentStorageStatus();
+    expect(store.getPersistentStorageStatus()).toBe('best-effort');
+    persisted.mockResolvedValue(true);
+    await store.refreshPersistentStorageStatus();
+    expect(store.getPersistentStorageStatus()).toBe('persistent');
+    persisted.mockResolvedValue(false);
+    await store.refreshPersistentStorageStatus();
+    expect(store.getPersistentStorageStatus()).toBe('best-effort');
+    expect(persist).not.toHaveBeenCalled();
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
+  });
+
+  it('should serialize a status refresh behind an in-flight grant', async () => {
+    const grant = Promise.withResolvers<boolean>();
+    const persisted = vi.fn(async () => false);
+    const persist = vi.fn(async () => grant.promise);
+    stubStorage({ persist, persisted });
+    const store = await loadStore();
+    const request = store.requestHomeStoragePersistence();
+    await vi.waitFor(() => {
+      expect(persist).toHaveBeenCalledOnce();
+    });
+    const refresh = store.refreshPersistentStorageStatus();
+    persisted.mockResolvedValue(true);
+    grant.resolve(true);
+    await Promise.all([request, refresh]);
+    expect(store.getPersistentStorageStatus()).toBe('persistent');
+  });
+
+  it('should treat missing APIs and failed checks as unknown protection rather than refused saves', async () => {
     stubStorage(undefined);
-    const { createWorkspace } = await loadStore();
+    const store = await loadStore();
+    await store.refreshPersistentStorageStatus();
+    expect(store.getPersistentStorageStatus()).toBe('unavailable');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    stubStorage({
+      persisted: async () => {
+        throw new Error('unavailable');
+      },
+    });
+    await store.refreshPersistentStorageStatus();
+    expect(store.getPersistentStorageStatus()).toBe('unknown');
+  });
 
-    const workspace = await createWorkspace(makeHandle('tau-workspace'));
+  it('should retain the claim even if the browser request throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const persist = vi.fn(async () => {
+      throw new Error('refused API');
+    });
+    stubStorage({ persist, persisted: async () => false });
+    const store = await loadStore();
+    await expect(store.requestHomeStoragePersistence()).resolves.toBeUndefined();
+    expect(store.getPersistentStorageStatus()).toBe('unknown');
+    vi.resetModules();
+    const reloaded = await import('#filesystem/handle-store.js');
+    await reloaded.requestHomeStoragePersistence();
+    expect(persist).toHaveBeenCalledOnce();
+  });
 
-    expect(workspace.storagePersisted).toBeUndefined();
+  it('should not prompt when the durable claim fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const persist = vi.fn(async () => true);
+    stubStorage({ persist, persisted: async () => false });
+    const store = await loadStore();
+    const { put } = IDBObjectStore.prototype;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown) {
+      const request = put.call(this, value);
+      this.transaction.abort();
+      return request;
+    });
+    await expect(store.requestHomeStoragePersistence()).resolves.toBeUndefined();
+    expect(persist).not.toHaveBeenCalled();
+    expect(store.getPersistentStorageStatus()).toBe('unknown');
   });
 });
 
@@ -453,7 +632,7 @@ describe('storage quota errors', () => {
       setProjectFileSystemConfig({
         projectId: 'proj_000000000000000000001',
         backend: 'indexeddb',
-        providerBasePath: '/demo',
+        providerBasePath: 'demo',
       }),
     ).rejects.toBeInstanceOf(storageQuotaExceededErrorClass);
   });
@@ -539,6 +718,53 @@ describe('Home storage backend', () => {
     await expect(pinHomeStorageBackend('opfs')).rejects.toThrow('Home is pinned to indexeddb');
   });
 
+  it('fails the open rather than hanging when another tab blocks the upgrade', async () => {
+    globalThis.indexedDB = new IDBFactory();
+    // Another tab holding an older version open never yields, so the upgrade stays blocked. The open must
+    // settle: an unsettled promise leaves the app on the "Opening Home" shell for as long as that tab lives.
+    const older = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(`${metaConfig.databasePrefix}fs-handles`, 3);
+      request.addEventListener('upgradeneeded', () => {
+        request.result.createObjectStore('meta', { keyPath: 'key' });
+      });
+      request.addEventListener('success', () => {
+        resolve(request.result);
+      });
+      request.addEventListener('error', () => {
+        reject(request.error ?? new Error('older open failed'));
+      });
+    });
+    stubHomeProbe(false);
+    vi.resetModules();
+    const { getHomeStorageBackend } = await import('#filesystem/handle-store.js');
+
+    await expect(getHomeStorageBackend()).rejects.toThrow('blocked by another Tau tab');
+    older.close();
+  });
+
+  it('closes its connection so a newer version in another tab can upgrade', async () => {
+    stubHomeProbe(false);
+    const { getHomeStorageBackend } = await loadStore();
+    await expect(getHomeStorageBackend()).resolves.toBe('indexeddb');
+
+    // The store now holds the database open. A newer build in another tab must still be able to upgrade.
+    const upgraded = await new Promise<IDBDatabase | 'blocked'>((resolve, reject) => {
+      const request = indexedDB.open(`${metaConfig.databasePrefix}fs-handles`, 5);
+      request.addEventListener('blocked', () => {
+        resolve('blocked');
+      });
+      request.addEventListener('success', () => {
+        resolve(request.result);
+      });
+      request.addEventListener('error', () => {
+        reject(request.error ?? new Error('upgrade failed'));
+      });
+    });
+
+    expect(upgraded).not.toBe('blocked');
+    (upgraded as IDBDatabase).close();
+  });
+
   it('mounts only the selected Home engine', async () => {
     stubHomeProbe(true);
     const { getProjectRootConfigs } = await loadStore();
@@ -559,43 +785,158 @@ describe('getProjectRootConfigs', () => {
   });
 
   it('skips a pre-cutover config instead of poisoning the whole route topology', async () => {
-    const { getProjectRootConfigs, setProjectFileSystemConfig } = await loadStore();
-    await setProjectFileSystemConfig({
-      projectId: 'proj_000000000000000000001',
-      backend: 'indexeddb',
-      providerBasePath: '/projects/legacy--proj_000000000000000000001',
-    });
-    await setProjectFileSystemConfig({
-      projectId: 'proj_000000000000000000002',
-      backend: 'indexeddb',
-      providerBasePath: '/.tau',
-    });
-    await setProjectFileSystemConfig({
-      projectId: 'proj_000000000000000000003',
-      backend: 'indexeddb',
-      providerBasePath: '/flat-project',
+    const { getProjectRootConfigs } = await loadStore([
+      {
+        projectId: 'proj_000000000000000000001',
+        backend: 'indexeddb',
+        providerBasePath: '/projects/legacy--proj_000000000000000000001',
+      },
+      {
+        projectId: 'proj_000000000000000000002',
+        backend: 'indexeddb',
+        providerBasePath: '/.tau',
+      },
+      {
+        projectId: 'proj_000000000000000000003',
+        backend: 'indexeddb',
+        providerBasePath: '/flat-project',
+      },
+    ]);
+
+    const configuration = await getProjectRootConfigs();
+
+    expect(configuration.projects.map((config) => config.providerBasePath)).toEqual(['flat-project']);
+  });
+
+  it('re-admits the config once discovery re-points it at the flat directory', async () => {
+    const projectId = 'proj_000000000000000000001';
+    const { getProjectRootConfigs, setProjectFileSystemConfig } = await loadStore([
+      { projectId, backend: 'indexeddb', providerBasePath: '/projects/legacy' },
+    ]);
+    const beforeRepoint = await getProjectRootConfigs();
+    expect(beforeRepoint.projects).toEqual([]);
+
+    await setProjectFileSystemConfig({ projectId, backend: 'indexeddb', providerBasePath: 'legacy' });
+
+    const afterRepoint = await getProjectRootConfigs();
+    expect(afterRepoint.projects).toEqual([{ projectId, backend: 'indexeddb', providerBasePath: 'legacy' }]);
+  });
+
+  it('keeps one canonical handle on the workspace root instead of cloning it into every project route', async () => {
+    const { applyProjectFileSystemConfigChanges, createWorkspace, getProjectRootConfigs } = await loadStore();
+    const workspace = await createWorkspace(makeHandle('Workshop'));
+    await applyProjectFileSystemConfigChanges({
+      upserts: [
+        {
+          projectId: 'proj_000000000000000000001',
+          backend: 'webaccess',
+          workspaceId: workspace.workspaceId,
+          providerBasePath: 'first',
+        },
+        {
+          projectId: 'proj_000000000000000000002',
+          backend: 'webaccess',
+          workspaceId: workspace.workspaceId,
+          providerBasePath: 'second',
+        },
+      ],
+      deletes: [],
     });
 
     const configuration = await getProjectRootConfigs();
 
-    expect(configuration.projects.map((config) => config.providerBasePath)).toEqual(['/flat-project']);
+    expect(configuration.roots).toHaveLength(2);
+    expect(configuration.projects.filter(({ backend }) => backend === 'webaccess')).toEqual([
+      {
+        projectId: 'proj_000000000000000000001',
+        backend: 'webaccess',
+        workspaceId: workspace.workspaceId,
+        providerBasePath: 'first',
+      },
+      {
+        projectId: 'proj_000000000000000000002',
+        backend: 'webaccess',
+        workspaceId: workspace.workspaceId,
+        providerBasePath: 'second',
+      },
+    ]);
+    expect(configuration.projects.every((config) => !('directoryHandle' in config))).toBe(true);
   });
 
-  it('re-admits the config once discovery re-points it at the flat directory', async () => {
-    const { getProjectRootConfigs, setProjectFileSystemConfig } = await loadStore();
-    const projectId = 'proj_000000000000000000001';
-    await setProjectFileSystemConfig({ projectId, backend: 'indexeddb', providerBasePath: '/projects/legacy' });
-    const beforeRepoint = await getProjectRootConfigs();
-    expect(beforeRepoint.projects).toEqual([]);
+  it('builds a 500-project topology with one permission probe for its workspace', async () => {
+    const queryPermission = vi.fn(async (): Promise<PermissionState> => 'granted');
+    const { applyProjectFileSystemConfigChanges, createWorkspace, getProjectRootConfigs } = await loadStore();
+    const workspace = await createWorkspace(makeHandle('Workshop', { queryPermission }));
+    queryPermission.mockClear();
+    await applyProjectFileSystemConfigChanges({
+      upserts: Array.from({ length: 500 }, (_, index) => ({
+        projectId: `proj_${String(index).padStart(21, '0')}`,
+        backend: 'webaccess',
+        workspaceId: workspace.workspaceId,
+        providerBasePath: `project-${index}`,
+      })),
+      deletes: [],
+    });
 
-    await setProjectFileSystemConfig({ projectId, backend: 'indexeddb', providerBasePath: '/legacy' });
+    const configuration = await getProjectRootConfigs();
 
-    const afterRepoint = await getProjectRootConfigs();
-    expect(afterRepoint.projects).toEqual([{ projectId, backend: 'indexeddb', providerBasePath: '/legacy' }]);
+    expect(configuration.projects.filter(({ backend }) => backend === 'webaccess')).toHaveLength(500);
+    expect(queryPermission).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks permission without a durable config mutation on the next root snapshot', async () => {
+    let permission: PermissionState = 'granted';
+    const queryPermission = vi.fn(async (): Promise<PermissionState> => permission);
+    const { createWorkspace, getProjectRootConfigs, setProjectFileSystemConfig } = await loadStore();
+    const workspace = await createWorkspace(makeHandle('Permission changes', { queryPermission }));
+    const projectId = 'proj_000000000000000000010';
+    await setProjectFileSystemConfig({
+      projectId,
+      backend: 'webaccess',
+      workspaceId: workspace.workspaceId,
+      providerBasePath: 'project',
+    });
+    const granted = await getProjectRootConfigs();
+    expect(granted.projects.some((project) => project.projectId === projectId)).toBe(true);
+    queryPermission.mockClear();
+    permission = 'denied';
+    const denied = await getProjectRootConfigs();
+    expect(denied.projects.some((project) => project.projectId === projectId)).toBe(false);
+    expect(queryPermission).toHaveBeenCalledOnce();
+    permission = 'granted';
+    const regranted = await getProjectRootConfigs();
+    expect(regranted.projects.some((project) => project.projectId === projectId)).toBe(true);
+  });
+
+  it('reads the newly committed replacement handle in the next root snapshot', async () => {
+    const {
+      createWorkspace,
+      getProjectRootConfigs,
+      disconnectWorkspace,
+      updateWorkspaceHandle,
+      setProjectFileSystemConfig,
+    } = await loadStore();
+    const original = makeHandle('Original snapshot');
+    const replacement = makeHandle('Replacement snapshot');
+    const workspace = await createWorkspace(original);
+    await setProjectFileSystemConfig({
+      projectId: 'proj_000000000000000000011',
+      backend: 'webaccess',
+      workspaceId: workspace.workspaceId,
+      providerBasePath: 'project',
+    });
+    const before = await getProjectRootConfigs();
+    await disconnectWorkspace(workspace.workspaceId);
+    await updateWorkspaceHandle(workspace.workspaceId, replacement);
+    const after = await getProjectRootConfigs();
+    const beforeRoot = before.roots.find((root) => root.backend === 'webaccess');
+    const afterRoot = after.roots.find((root) => root.backend === 'webaccess');
+    expect(beforeRoot).toMatchObject({ workspaceId: workspace.workspaceId, directoryHandle: original });
+    expect(afterRoot).toMatchObject({ workspaceId: workspace.workspaceId, directoryHandle: replacement });
   });
 
   // R13 — a workspace dropped from the topology used to vanish in silence.
-  it('reports each skipped workspace exactly once per session', async () => {
+  it('classifies disconnected roots without an alarming console warning', async () => {
     stubLocks();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const onRootSkipped = vi.fn<(skip: HandleStore.WorkspaceRootSkip) => void>();
@@ -607,13 +948,12 @@ describe('getProjectRootConfigs', () => {
     await getProjectRootConfigs(onRootSkipped);
     await getProjectRootConfigs(onRootSkipped);
 
-    expect(warn.mock.calls.filter((call) => String(call[0]).includes(evicted.workspaceId))).toHaveLength(1);
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes(evicted.workspaceId))).toHaveLength(0);
     expect(warn.mock.calls.filter((call) => String(call[0]).includes(revoked.workspaceId))).toHaveLength(1);
-    expect(warn.mock.calls.some((call) => String(call[0]).includes('Evicted'))).toBe(true);
     expect(onRootSkipped).toHaveBeenCalledTimes(2);
     expect(onRootSkipped.mock.calls.map(([skip]) => skip)).toEqual(
       expect.arrayContaining([
-        { workspaceId: evicted.workspaceId, reason: 'missing' },
+        { workspaceId: evicted.workspaceId, reason: 'disconnected' },
         { workspaceId: revoked.workspaceId, reason: 'permission' },
       ]),
     );
@@ -713,6 +1053,304 @@ describe('createWorkspace mint reporting', () => {
   });
 });
 
+describe('workspace disconnect and undo', () => {
+  const preferenceKey = 'project-creation-location';
+
+  it('should remove only the handle when 500 projects remain bound', async () => {
+    const {
+      applyProjectFileSystemConfigChanges,
+      createWorkspace,
+      disconnectWorkspace,
+      getProjectCreationLocation,
+      listProjectsForWorkspace,
+      setProjectCreationLocation,
+    } = await loadStore();
+    const handle = makeHandle('Workshop');
+    const workspace = await createWorkspace(handle);
+    const workspaceBefore = await rawReadWorkspace(workspace.workspaceId);
+    const markerBefore = readMarker(handle);
+    await applyProjectFileSystemConfigChanges({
+      upserts: Array.from({ length: 500 }, (_, index) => ({
+        projectId: `proj_${String(index).padStart(21, '0')}`,
+        backend: 'webaccess',
+        workspaceId: workspace.workspaceId,
+        providerBasePath: `bound-project-${index}`,
+      })),
+      deletes: [],
+    });
+    await setProjectCreationLocation({ kind: 'workspace', workspaceId: workspace.workspaceId });
+    const projectsBefore = await listProjectsForWorkspace(workspace.workspaceId);
+
+    const disconnected = await disconnectWorkspace(workspace.workspaceId);
+
+    expect(disconnected).toEqual({ workspace: workspaceBefore, handle });
+    expect(await rawReadHandle(workspace.workspaceId)).toBeUndefined();
+    expect(await rawReadWorkspace(workspace.workspaceId)).toEqual(workspaceBefore);
+    expect(await listProjectsForWorkspace(workspace.workspaceId)).toEqual(projectsBefore);
+    expect(await getProjectCreationLocation({ webAccessSupported: true })).toEqual({
+      location: { kind: 'workspace', workspaceId: workspace.workspaceId },
+      repaired: undefined,
+    });
+    expect(await rawReadMeta(preferenceKey)).toEqual({
+      key: preferenceKey,
+      location: { kind: 'workspace', workspaceId: workspace.workspaceId },
+    });
+    expect(readMarker(handle)).toEqual(markerBefore);
+  });
+
+  it('should restore the captured handle without changing workspace identity', async () => {
+    const { createWorkspace, disconnectWorkspace, getWorkspace, restoreWorkspaceHandle } = await loadStore();
+    const handle = makeHandle('Workshop');
+    const workspace = await createWorkspace(handle);
+    const disconnected = await disconnectWorkspace(workspace.workspaceId);
+    if (!disconnected) {
+      throw new Error('Expected workspace to disconnect');
+    }
+
+    await expect(restoreWorkspaceHandle(workspace.workspaceId, disconnected.handle)).resolves.toBe(true);
+
+    const restored = await getWorkspace(workspace.workspaceId);
+    expect(restored?.workspace.workspaceId).toBe(workspace.workspaceId);
+    expect(restored?.handle).toBe(handle);
+  });
+
+  it('should preserve 500 bindings through generic reconnect after disconnect', async () => {
+    stubStorage({});
+    const {
+      applyProjectFileSystemConfigChanges,
+      createWorkspace,
+      disconnectWorkspace,
+      getProjectRootConfigs,
+      listProjectsForWorkspace,
+      listWorkspaces,
+    } = await loadStore();
+    const handle = makeHandle('Workshop');
+    const connected = await createWorkspace(handle);
+    const configs = Array.from(
+      { length: 500 },
+      (_, index) =>
+        ({
+          projectId: `proj_${String(index).padStart(21, '0')}`,
+          backend: 'webaccess',
+          workspaceId: connected.workspaceId,
+          providerBasePath: `bound-project-${index}`,
+        }) satisfies HandleStore.ProjectFileSystemConfig,
+    );
+    await applyProjectFileSystemConfigChanges({ upserts: configs, deletes: [] });
+    await disconnectWorkspace(connected.workspaceId);
+
+    const reconnected = await createWorkspace(handle);
+    const topology = await getProjectRootConfigs();
+
+    expect(reconnected).toMatchObject({ workspaceId: connected.workspaceId, minted: false });
+    expect(await listWorkspaces()).toHaveLength(1);
+    expect(await listProjectsForWorkspace(connected.workspaceId)).toEqual(configs);
+    expect(topology.projects.filter(({ backend }) => backend === 'webaccess')).toEqual(configs);
+  });
+
+  it('should refuse stale undo after another handle is connected', async () => {
+    const { createWorkspace, disconnectWorkspace, getWorkspace, restoreWorkspaceHandle, updateWorkspaceHandle } =
+      await loadStore();
+    const originalHandle = makeHandle('Original');
+    const replacementHandle = makeHandle('Replacement');
+    const workspace = await createWorkspace(originalHandle);
+    const disconnected = await disconnectWorkspace(workspace.workspaceId);
+    if (!disconnected) {
+      throw new Error('Expected workspace to disconnect');
+    }
+    await updateWorkspaceHandle(workspace.workspaceId, replacementHandle);
+
+    await expect(restoreWorkspaceHandle(workspace.workspaceId, disconnected.handle)).resolves.toBe(false);
+
+    const current = await getWorkspace(workspace.workspaceId);
+    expect(current?.handle).toBe(replacementHandle);
+  });
+
+  it('should refuse stale undo after a durable generic reconnect', async () => {
+    const { createWorkspace, disconnectWorkspace, getWorkspace, restoreWorkspaceHandle } = await loadStore();
+    const handle = makeHandle('Workshop');
+    const workspace = await createWorkspace(handle);
+    const disconnected = await disconnectWorkspace(workspace.workspaceId);
+    if (!disconnected) {
+      throw new Error('Expected workspace to disconnect');
+    }
+    const reconnected = await createWorkspace(handle);
+
+    await expect(restoreWorkspaceHandle(workspace.workspaceId, disconnected.handle)).resolves.toBe(false);
+    expect(reconnected.workspaceId).toBe(workspace.workspaceId);
+    const restored = await getWorkspace(workspace.workspaceId);
+    expect(restored?.handle).toBe(handle);
+  });
+
+  it('should no-op when the workspace is already disconnected or unknown', async () => {
+    const { createWorkspace, disconnectWorkspace } = await loadStore();
+    const workspace = await createWorkspace(makeHandle('Workshop'));
+    await disconnectWorkspace(workspace.workspaceId);
+
+    await expect(disconnectWorkspace(workspace.workspaceId)).resolves.toBeUndefined();
+    await expect(disconnectWorkspace('wsp_unknown')).resolves.toBeUndefined();
+  });
+});
+
+describe('exact workspace reconnect identity', () => {
+  it('rejects a handle already owned by another workspace without changing either workspace', async () => {
+    const { createWorkspace, disconnectWorkspace, getWorkspace, updateWorkspaceHandle } = await loadStore();
+    const ownerHandle = makeHandle('Owner');
+    const owner = await createWorkspace(ownerHandle);
+    const targetHandle = makeHandle('Target');
+    const target = await createWorkspace(targetHandle);
+    await disconnectWorkspace(target.workspaceId);
+
+    await expect(updateWorkspaceHandle(target.workspaceId, ownerHandle)).rejects.toMatchObject({
+      name: 'WorkspaceIdentityConflictError',
+      code: 'handle-owned-by-another-workspace',
+      conflictingWorkspaceId: owner.workspaceId,
+    });
+    const unchangedOwner = await getWorkspace(owner.workspaceId);
+    expect(unchangedOwner?.handle).toBe(ownerHandle);
+    expect(await getWorkspace(target.workspaceId)).toBeUndefined();
+    expect(readMarker(ownerHandle)?.['workspaceId']).toBe(owner.workspaceId);
+  });
+
+  it('rejects a folder marked for another workspace without durable writes', async () => {
+    const { createWorkspace, disconnectWorkspace, getWorkspace, updateWorkspaceHandle } = await loadStore();
+    const owner = await createWorkspace(makeHandle('Owner'));
+    const targetHandle = makeHandle('Target');
+    const target = await createWorkspace(targetHandle);
+    await disconnectWorkspace(target.workspaceId);
+    const selected = makeHandle('Selected', { marker: markerJson(owner.workspaceId) });
+
+    await expect(updateWorkspaceHandle(target.workspaceId, selected)).rejects.toMatchObject({
+      name: 'WorkspaceIdentityConflictError',
+      code: 'marker-owned-by-another-workspace',
+      conflictingWorkspaceId: owner.workspaceId,
+    });
+    expect(await getWorkspace(target.workspaceId)).toBeUndefined();
+    expect(readMarker(selected)?.['workspaceId']).toBe(owner.workspaceId);
+  });
+
+  it('writes the target marker when exact reconnect selects an unmarked folder', async () => {
+    const { createWorkspace, disconnectWorkspace, getWorkspace, updateWorkspaceHandle } = await loadStore();
+    const target = await createWorkspace(makeHandle('Target'));
+    await disconnectWorkspace(target.workspaceId);
+    const replacement = makeHandle('Replacement');
+
+    await updateWorkspaceHandle(target.workspaceId, replacement);
+
+    const reconnected = await getWorkspace(target.workspaceId);
+    expect(reconnected?.handle).toBe(replacement);
+    expect(readMarker(replacement)).toMatchObject({ workspaceId: target.workspaceId, slug: target.slug });
+  });
+});
+
+describe('workspace binding repair', () => {
+  it('atomically moves verified bindings and preference to the connected canonical workspace', async () => {
+    const {
+      applyProjectFileSystemConfigChanges,
+      createWorkspace,
+      disconnectWorkspace,
+      getProjectCreationLocation,
+      listProjectsForWorkspace,
+      listWorkspaces,
+      repairWorkspaceBindings,
+      setProjectCreationLocation,
+    } = await loadStore();
+    const canonicalHandle = makeHandle('Canonical');
+    const canonical = await createWorkspace(canonicalHandle);
+    const sourceHandle = makeHandle('Previous');
+    const source = await createWorkspace(sourceHandle);
+    await disconnectWorkspace(source.workspaceId);
+    const configs = [
+      {
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
+        backend: 'webaccess',
+        workspaceId: source.workspaceId,
+        providerBasePath: 'alpha',
+      },
+      {
+        projectId: 'proj_bbbbbbbbbbbbbbbbbbbbb',
+        backend: 'webaccess',
+        workspaceId: source.workspaceId,
+        providerBasePath: 'beta',
+      },
+    ] as const satisfies readonly HandleStore.ProjectFileSystemConfig[];
+    await applyProjectFileSystemConfigChanges({ upserts: configs, deletes: [] });
+    await setProjectCreationLocation({ kind: 'workspace', workspaceId: source.workspaceId });
+    const canonicalMarker = readMarker(canonicalHandle);
+    const sourceMarker = readMarker(sourceHandle);
+
+    const result = await repairWorkspaceBindings({
+      canonicalWorkspaceId: canonical.workspaceId,
+      repairs: configs.map(({ projectId, workspaceId: sourceWorkspaceId, providerBasePath }) => ({
+        projectId,
+        sourceWorkspaceId,
+        providerBasePath,
+      })),
+    });
+
+    expect(result).toEqual({
+      repairedProjectCount: 2,
+      removedWorkspaceIds: [source.workspaceId],
+      skipped: [],
+    });
+    expect(await listProjectsForWorkspace(canonical.workspaceId)).toEqual(
+      configs.map((config) => ({ ...config, workspaceId: canonical.workspaceId })),
+    );
+    expect(await listWorkspaces()).toEqual([expect.objectContaining({ workspaceId: canonical.workspaceId })]);
+    expect(await getProjectCreationLocation({ webAccessSupported: true })).toEqual({
+      location: { kind: 'workspace', workspaceId: canonical.workspaceId },
+      repaired: undefined,
+    });
+    expect(readMarker(canonicalHandle)).toEqual(canonicalMarker);
+    expect(readMarker(sourceHandle)).toEqual(sourceMarker);
+  });
+
+  it('leaves every store unchanged when any candidate changed before commit', async () => {
+    const {
+      applyProjectFileSystemConfigChanges,
+      createWorkspace,
+      disconnectWorkspace,
+      getAllProjectFileSystemConfigs,
+      listWorkspaces,
+      repairWorkspaceBindings,
+    } = await loadStore();
+    const canonical = await createWorkspace(makeHandle('Canonical'));
+    const source = await createWorkspace(makeHandle('Previous'));
+    await disconnectWorkspace(source.workspaceId);
+    const configs = [
+      {
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
+        backend: 'webaccess',
+        workspaceId: source.workspaceId,
+        providerBasePath: 'alpha',
+      },
+      {
+        projectId: 'proj_bbbbbbbbbbbbbbbbbbbbb',
+        backend: 'webaccess',
+        workspaceId: source.workspaceId,
+        providerBasePath: 'beta',
+      },
+    ] as const satisfies readonly HandleStore.ProjectFileSystemConfig[];
+    await applyProjectFileSystemConfigChanges({ upserts: configs, deletes: [] });
+
+    const result = await repairWorkspaceBindings({
+      canonicalWorkspaceId: canonical.workspaceId,
+      repairs: [
+        { projectId: configs[0].projectId, sourceWorkspaceId: source.workspaceId, providerBasePath: 'alpha' },
+        { projectId: configs[1].projectId, sourceWorkspaceId: source.workspaceId, providerBasePath: 'changed' },
+      ],
+    });
+
+    expect(result.repairedProjectCount).toBe(0);
+    expect(result.skipped).toEqual([{ projectId: configs[1].projectId, reason: 'config-changed' }]);
+    expect(await getAllProjectFileSystemConfigs()).toEqual(configs);
+    const workspaces = await listWorkspaces();
+    expect(workspaces.map(({ workspaceId }) => workspaceId)).toEqual(
+      expect.arrayContaining([canonical.workspaceId, source.workspaceId]),
+    );
+  });
+});
+
 describe('project creation location preference', () => {
   const preferenceKey = 'project-creation-location';
 
@@ -781,32 +1419,6 @@ describe('project creation location preference', () => {
     });
   });
 
-  it('atomically resets a forgotten preferred workspace to Home', async () => {
-    const { createWorkspace, forgetWorkspace, setProjectCreationLocation } = await loadStore();
-    const workspace = await createWorkspace(makeHandle('Workshop'));
-    await setProjectCreationLocation({ kind: 'workspace', workspaceId: workspace.workspaceId });
-
-    await forgetWorkspace(workspace.workspaceId);
-
-    expect(await rawReadWorkspace(workspace.workspaceId)).toBeUndefined();
-    expect(await rawReadHandle(workspace.workspaceId)).toBeUndefined();
-    expect(await rawReadMeta(preferenceKey)).toEqual({ key: preferenceKey, location: { kind: 'home' } });
-  });
-
-  it('leaves the preference unchanged when another workspace is forgotten', async () => {
-    const { createWorkspace, forgetWorkspace, setProjectCreationLocation } = await loadStore();
-    const preferred = await createWorkspace(makeHandle('Preferred'));
-    const forgotten = await createWorkspace(makeHandle('Forgotten'));
-    await setProjectCreationLocation({ kind: 'workspace', workspaceId: preferred.workspaceId });
-
-    await forgetWorkspace(forgotten.workspaceId);
-
-    expect(await rawReadMeta(preferenceKey)).toEqual({
-      key: preferenceKey,
-      location: { kind: 'workspace', workspaceId: preferred.workspaceId },
-    });
-  });
-
   it('serializes concurrent preference writes in transaction creation order', async () => {
     const { createWorkspace, getProjectCreationLocation, setProjectCreationLocation } = await loadStore();
     const workspace = await createWorkspace(makeHandle('Workshop'));
@@ -859,7 +1471,7 @@ describe('project-root configuration broadcasts', () => {
       await setProjectFileSystemConfig({
         projectId: `proj_00000000000000000000${index}`,
         backend: 'indexeddb',
-        providerBasePath: `/project-${index}`,
+        providerBasePath: `project-${index}`,
       });
     }
     /* oxlint-enable no-await-in-loop */
@@ -871,6 +1483,44 @@ describe('project-root configuration broadcasts', () => {
     });
 
     expect(messages).toBe(1);
+    channel.close();
+  });
+
+  it('broadcasts successful disconnects and restores but not no-ops', async () => {
+    const { createWorkspace, disconnectWorkspace, restoreWorkspaceHandle } = await loadStore();
+    const workspace = await createWorkspace(makeHandle('Workshop'));
+    const channel = new BroadcastChannel(`${metaConfig.databasePrefix}project-root-configuration`);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    const listener = vi.fn();
+    channel.addEventListener('message', listener);
+
+    const disconnected = await disconnectWorkspace(workspace.workspaceId);
+    if (!disconnected) {
+      throw new Error('Expected workspace to disconnect');
+    }
+    await vi.waitFor(() => {
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    await restoreWorkspaceHandle(workspace.workspaceId, disconnected.handle);
+    await vi.waitFor(() => {
+      expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    await disconnectWorkspace(workspace.workspaceId);
+    await vi.waitFor(() => {
+      expect(listener).toHaveBeenCalledTimes(3);
+    });
+    await disconnectWorkspace(workspace.workspaceId);
+    await disconnectWorkspace('wsp_unknown');
+    await restoreWorkspaceHandle('wsp_unknown', disconnected.handle);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+
+    expect(listener).toHaveBeenCalledTimes(3);
     channel.close();
   });
 });

@@ -1,8 +1,10 @@
-import { assign, assertEvent, setup, enqueueActions, fromCallback } from 'xstate';
-import type { AnyActorRef } from 'xstate';
-import { fromSafeAsync } from '#lib/xstate.lib.js';
+import { createCallbackLogic, setup, types } from 'xstate';
+import type { AnyActorRef, EnqueueObject, SystemRegistry } from 'xstate';
+import { eventSchemas, fromSafeAsync } from '#lib/xstate.lib.js';
+import { isReservedBranchName } from '@taucad/revisions';
 import { getGitHubClient } from '#lib/github-api.js';
 import type { ImportWorkerRequest, ImportWorkerResponse } from '#workers/import.worker.js';
+import { normalizeRepositoryFolder, parseGitHubUrl } from '#routes/import.$/import.utils.js';
 
 /**
  * Import GitHub Machine Context
@@ -13,6 +15,8 @@ export type ImportGitHubContext = {
   owner: string;
   repo: string;
   ref: string;
+  /** Repository folder to import, relative to the repository root; empty imports the whole repository. */
+  path: string;
   requestedMainFile: string;
   selectedMainFile: string | undefined;
   repoMetadata:
@@ -53,27 +57,79 @@ export type ImportGitHubContext = {
   urlFromNavigation: boolean;
 };
 
-function toMetadataFetchError(error: unknown): Error {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+/**
+ * What the person importing can do about a failed step; the page words its advice from this.
+ * - `notFound`: the address names no public repository.
+ * - `rateLimited`: GitHub refused unauthenticated reads for now.
+ * - `serverNotConfigured`: this Tau server lacks the GitHub token the step needs.
+ * - `tooLarge`: the repository exceeds an import limit.
+ * - `failed`: anything else; trying again may help.
+ */
+export type ImportGitHubFailure = 'notFound' | 'rateLimited' | 'serverNotConfigured' | 'tooLarge' | 'failed';
 
-  if (errorMessage.includes('404')) {
-    return new Error('Repository not found. Please check the URL and try again.');
+/** A failed import step, classified so the page can give advice that fits the cause. */
+export class ImportGitHubError extends Error {
+  public readonly failure: ImportGitHubFailure;
+
+  public constructor(failure: ImportGitHubFailure, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ImportGitHubError';
+    this.failure = failure;
   }
+}
 
-  if (errorMessage.includes('401') || errorMessage.toLowerCase().includes('unauthorized')) {
-    return new Error(
-      'GitHub API authentication failed. Your access token may be invalid or expired. ' +
-        'Public repository information could not be fetched.',
+const statusOf = (error: unknown): number | undefined =>
+  typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number'
+    ? error.status
+    : undefined;
+
+const codeOf = (error: unknown): string | undefined =>
+  typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
+
+/**
+ * One sentence for a failed public metadata read. Octokit reports the HTTP
+ * status on `status`; its message ("Not Found - https://docs…") is not for users.
+ *
+ * @param error - What the unauthenticated GitHub read threw.
+ * @returns An error whose message is written for the person importing.
+ */
+function toMetadataFetchError(error: unknown): ImportGitHubError {
+  const status = statusOf(error);
+  if (status === 404) {
+    return new ImportGitHubError('notFound', "Tau couldn't find a public repository at this address.", {
+      cause: error,
+    });
+  }
+  if (status === 403 || status === 429) {
+    return new ImportGitHubError(
+      'rateLimited',
+      "GitHub's rate limit for public reads was reached. Try again in a few minutes.",
+      { cause: error },
     );
   }
+  return new ImportGitHubError('failed', "Tau couldn't read this repository from GitHub. Try again shortly.", {
+    cause: error,
+  });
+}
 
-  if (errorMessage.includes('403') || errorMessage.includes('rate limit')) {
-    return new Error(
-      'GitHub API rate limit exceeded. Please add a GITHUB_API_TOKEN to your environment or wait before trying again.',
+/**
+ * Classify a failed branch listing. The Tau route answers `GITHUB_API_TOKEN_UNAVAILABLE`
+ * when its server has no GitHub token; the import can still proceed on the default branch.
+ *
+ * @param error - What the branch route call threw.
+ * @returns The error to keep under `fetchErrors.branches`.
+ */
+function toBranchesFetchError(error: unknown): Error {
+  if (codeOf(error) === 'GITHUB_API_TOKEN_UNAVAILABLE') {
+    return new ImportGitHubError(
+      'serverNotConfigured',
+      error instanceof Error ? error.message : 'GitHub branch listing is not configured on this server.',
+      { cause: error },
     );
   }
-
-  return new Error(`Failed to fetch repository metadata: ${errorMessage}`);
+  return error instanceof Error ? error : new Error('Failed to fetch branches');
 }
 
 /**
@@ -84,6 +140,7 @@ type ImportGitHubInput = {
   owner?: string;
   repo?: string;
   ref?: string;
+  path?: string;
   mainFile?: string;
 };
 
@@ -96,11 +153,13 @@ type ImportGitHubEventInternal =
   | { type: 'updateRepoUrl'; url: string }
   | { type: 'selectBranch'; branch: string }
   | { type: 'selectMainFile'; file: string }
+  | { type: 'selectFolder'; path: string }
   | {
       type: 'syncLocation';
       owner: string;
       repo: string;
       ref: string;
+      path: string;
       mainFile: string;
     }
   | { type: 'startImport' }
@@ -126,6 +185,7 @@ type ImportGitHubEventInternal =
       type: 'workerError';
       message: string;
       phase: 'download' | 'extract' | 'write';
+      reason?: 'tooLarge';
     };
 
 /**
@@ -178,11 +238,13 @@ function buildImportUrl({
   owner,
   repo,
   selectedBranch,
+  path,
   selectedMainFile,
 }: {
   owner: string;
   repo: string;
   selectedBranch: string;
+  path: string;
   selectedMainFile: string | undefined;
 }): string {
   if (!owner || !repo) {
@@ -192,12 +254,16 @@ function buildImportUrl({
   // Use github.com/owner/repo without protocol to avoid browser normalizing // to /
   // The full https:// is implied and added when parsing
   const repoUrl = `github.com/${owner}/${repo}`;
-  const path = `/import/${repoUrl}`;
+  const importPath = `/import/${repoUrl}`;
 
   const parameters = new URLSearchParams();
 
   if (selectedBranch && selectedBranch !== 'main') {
     parameters.set('ref', selectedBranch);
+  }
+
+  if (path) {
+    parameters.set('path', path);
   }
 
   if (selectedMainFile) {
@@ -206,7 +272,7 @@ function buildImportUrl({
 
   const queryString = parameters.size > 0 ? `?${parameters.toString()}` : '';
 
-  return `${path}${queryString}`;
+  return `${importPath}${queryString}`;
 }
 
 const getRepoMetadataActor = fromSafeAsync<RepoMetadataResult, { owner: string; repo: string }>(async ({ input }) => {
@@ -231,7 +297,8 @@ const getBranchesActor = fromSafeAsync<BranchesResult, { owner: string; repo: st
 
     return {
       type: 'branchesRetrieved',
-      branches: result.branches,
+      /* A conflict line is a decision, not a branch to copy (D14). */
+      branches: result.branches.filter(({ name }) => !isReservedBranchName(name)),
       hasMore: result.hasMore,
       endCursor: result.endCursor,
     };
@@ -262,6 +329,7 @@ const createProjectActor = fromSafeAsync<
     owner: string;
     repo: string;
     ref: string;
+    path: string;
     mainFile: string;
     files: Map<string, { filename: string; content: Uint8Array<ArrayBuffer> }>;
   }
@@ -272,6 +340,7 @@ const createProjectActor = fromSafeAsync<
 type ImportWorkerCallbackInput = {
   downloadUrl: string;
   headers?: Record<string, string>;
+  root: string;
 };
 
 type ImportWorkerCallbackEvents =
@@ -282,56 +351,64 @@ type ImportWorkerCallbackEvents =
       filePaths: string[];
       files: Array<{ path: string; content: Uint8Array<ArrayBuffer> }>;
     }
-  | { type: 'workerError'; message: string; phase: 'download' | 'extract' | 'write' };
+  | { type: 'workerError'; message: string; phase: 'download' | 'extract' | 'write'; reason?: 'tooLarge' };
 
-const importWorkerActor = fromCallback<ImportWorkerCallbackEvents, ImportWorkerCallbackInput>(({ sendBack, input }) => {
-  const worker = new Worker(new URL('#workers/import.worker.js', import.meta.url), {
-    type: 'module',
-  });
+const importWorkerActor = createCallbackLogic<ImportWorkerCallbackEvents, ImportWorkerCallbackInput>(
+  ({ sendBack, input }) => {
+    const worker = new Worker(new URL('../workers/import.worker.ts', import.meta.url), {
+      type: 'module',
+    });
 
-  worker.addEventListener('message', (event: MessageEvent<ImportWorkerResponse>) => {
-    const message = event.data;
-    switch (message.type) {
-      case 'downloadProgress': {
-        sendBack({ type: 'updateDownloadProgress', loaded: message.loaded, total: message.total });
-        break;
+    worker.addEventListener('message', (event: MessageEvent<ImportWorkerResponse>) => {
+      const message = event.data;
+      switch (message.type) {
+        case 'downloadProgress': {
+          sendBack({ type: 'updateDownloadProgress', loaded: message.loaded, total: message.total });
+          break;
+        }
+        case 'extractProgress': {
+          sendBack({ type: 'updateExtractProgress', processed: message.processed, total: message.total });
+          break;
+        }
+        case 'extractComplete': {
+          sendBack({
+            type: 'workerExtractComplete',
+            filePaths: message.filePaths,
+            files: message.files,
+          });
+          break;
+        }
+        case 'error': {
+          sendBack({
+            type: 'workerError',
+            message: message.message,
+            phase: message.phase,
+            ...(message.reason === undefined ? {} : { reason: message.reason }),
+          });
+          break;
+        }
       }
-      case 'extractProgress': {
-        sendBack({ type: 'updateExtractProgress', processed: message.processed, total: message.total });
-        break;
-      }
-      case 'extractComplete': {
-        sendBack({
-          type: 'workerExtractComplete',
-          filePaths: message.filePaths,
-          files: message.files,
-        });
-        break;
-      }
-      case 'error': {
-        sendBack({ type: 'workerError', message: message.message, phase: message.phase });
-        break;
-      }
-    }
-  });
+    });
 
-  worker.addEventListener('error', (event) => {
-    sendBack({ type: 'workerError', message: event.message, phase: 'download' });
-  });
+    worker.addEventListener('error', (event) => {
+      sendBack({ type: 'workerError', message: event.message, phase: 'download' });
+    });
 
-  const startMessage: ImportWorkerRequest = {
-    type: 'startDownload',
-    url: input.downloadUrl,
-    headers: input.headers,
-  };
-  worker.postMessage(startMessage);
+    const startMessage: ImportWorkerRequest = {
+      type: 'startDownload',
+      url: input.downloadUrl,
+      headers: input.headers,
+      root: input.root,
+    };
+    worker.postMessage(startMessage);
 
-  return () => {
-    const cancelMessage: ImportWorkerRequest = { type: 'cancel' };
-    worker.postMessage(cancelMessage);
-    worker.terminate();
-  };
-});
+    return () => {
+      const cancelMessage: ImportWorkerRequest = { type: 'cancel' };
+      worker.postMessage(cancelMessage);
+      worker.terminate();
+    };
+  },
+);
 
 const importGitHubActors = {
   getRepoMetadataActor,
@@ -340,6 +417,203 @@ const importGitHubActors = {
   createProjectActor,
   importWorkerActor,
 } as const;
+
+type ImportGitHubEnqueue = EnqueueObject<
+  ImportGitHubEvent,
+  ImportGitHubEmitted,
+  SystemRegistry,
+  typeof importGitHubActors
+>;
+type ImportGitHubPatch = Partial<ImportGitHubContext>;
+type ImportGitHubArgs<EventType extends ImportGitHubEvent['type']> = Readonly<{
+  context: ImportGitHubContext;
+  event: Extract<ImportGitHubEvent, { type: EventType }>;
+}>;
+
+const noFetchErrors = { metadata: undefined, branches: undefined, files: undefined } as const;
+
+const errorOr = (error: unknown, fallback: string): Error => (error instanceof Error ? error : new Error(fallback));
+
+/** Parse the typed GitHub URL into owner/repo/ref, clearing whatever the old repo left. */
+const parseRepoUrl = (context: ImportGitHubContext): ImportGitHubPatch => {
+  // If URL is empty, reset all repo-related state
+  if (!context.repoUrl) {
+    return {
+      owner: '',
+      repo: '',
+      ref: 'main',
+      path: '',
+      repoMetadata: undefined,
+      branches: [],
+      selectedBranch: 'main',
+      branchesCursor: undefined,
+      hasMoreBranches: false,
+      repoFiles: [],
+      selectedMainFile: undefined,
+    };
+  }
+
+  // Parse GitHub URL and extract owner/repo, plus the ref and folder of a `tree/<ref>/<folder>` URL
+  const parsed = parseGitHubUrl(context.repoUrl);
+  if (parsed === undefined) {
+    return { owner: '', repo: '', path: '', repoMetadata: undefined, branches: [], repoFiles: [] };
+  }
+
+  const { owner, repo } = parsed;
+  const ref = parsed.ref ?? 'main';
+
+  // If the repo changed, clear metadata and branches
+  if (owner !== context.owner || repo !== context.repo) {
+    return {
+      owner,
+      repo,
+      ref,
+      path: parsed.path,
+      repoMetadata: undefined,
+      branches: [],
+      selectedBranch: ref,
+      branchesCursor: undefined,
+      hasMoreBranches: false,
+    };
+  }
+
+  return parsed.ref === undefined
+    ? { owner, repo, ref, path: parsed.path }
+    : { owner, repo, ref, selectedBranch: ref, path: parsed.path };
+};
+
+const importUrlOf = (context: ImportGitHubContext): string =>
+  buildImportUrl({
+    owner: context.owner,
+    repo: context.repo,
+    selectedBranch: context.selectedBranch,
+    path: context.path,
+    selectedMainFile: context.selectedMainFile,
+  });
+
+/**
+ * A typed URL: take it, parse it, and tell the route. Clearing (empty URL)
+ * pushes to history; a partial or valid repo replaces during typing, and the
+ * debounce completing is what pushes (for back button support).
+ */
+const updateRepoUrl =
+  (options: Readonly<{ clearError: boolean }>) =>
+  ({ context, event }: ImportGitHubArgs<'updateRepoUrl'>, enq: ImportGitHubEnqueue) => {
+    const typed: ImportGitHubPatch = {
+      ...(options.clearError ? { error: undefined, fetchErrors: noFetchErrors } : {}),
+      repoUrl: event.url,
+      // Clear navigation flag - this is a user-driven change
+      urlFromNavigation: false,
+    };
+    const patch = { ...typed, ...parseRepoUrl({ ...context, ...typed }) };
+    const parsed = { ...context, ...patch };
+    const url = importUrlOf(parsed);
+    enq.emit(!parsed.owner || !parsed.repo ? { type: 'urlPushed', url } : { type: 'urlReplaced', url });
+    return { target: 'checkingRepo', reenter: true, context: patch };
+  };
+
+const selectBranch =
+  (options: Readonly<{ reenter: boolean }>) =>
+  ({ context, event }: ImportGitHubArgs<'selectBranch'>, enq: ImportGitHubEnqueue) => {
+    // When branch changes, re-fetch files for the new branch
+    const patch = { selectedBranch: event.branch, ref: event.branch };
+    enq.emit({ type: 'urlReplaced', url: importUrlOf({ ...context, ...patch }) });
+    return { target: 'fetchingFiles', ...(options.reenter ? { reenter: true } : {}), context: patch };
+  };
+
+const selectMainFileAndReplaceUrl = (
+  { context, event }: ImportGitHubArgs<'selectMainFile'>,
+  enq: ImportGitHubEnqueue,
+) => {
+  const patch = { selectedMainFile: event.file };
+  enq.emit({ type: 'urlReplaced', url: importUrlOf({ ...context, ...patch }) });
+  return { context: patch };
+};
+
+/** A new folder changes what every file path is relative to, so the main-file choice starts over. */
+const selectFolder = ({ context, event }: ImportGitHubArgs<'selectFolder'>, enq: ImportGitHubEnqueue) => {
+  const path = normalizeRepositoryFolder(event.path);
+  if (path === context.path) {
+    return undefined;
+  }
+  const patch = { path, selectedMainFile: undefined, requestedMainFile: '' };
+  enq.emit({ type: 'urlReplaced', url: importUrlOf({ ...context, ...patch }) });
+  return { context: patch };
+};
+
+// Sync location from React Router (for back/forward navigation)
+const syncLocationPatch = (event: Extract<ImportGitHubEvent, { type: 'syncLocation' }>): ImportGitHubPatch => {
+  // If no owner/repo from location, reset to empty state
+  if (!event.owner || !event.repo) {
+    return {
+      repoUrl: '',
+      owner: '',
+      repo: '',
+      ref: 'main',
+      path: '',
+      selectedBranch: 'main',
+      repoMetadata: undefined,
+      branches: [],
+      branchesCursor: undefined,
+      hasMoreBranches: false,
+      repoFiles: [],
+      selectedMainFile: undefined,
+      urlFromNavigation: true, // Mark as navigation-driven
+    };
+  }
+
+  return {
+    repoUrl: `https://github.com/${event.owner}/${event.repo}`,
+    owner: event.owner,
+    repo: event.repo,
+    ref: event.ref || 'main',
+    selectedBranch: event.ref || 'main',
+    path: normalizeRepositoryFolder(event.path),
+    requestedMainFile: event.mainFile || '',
+    selectedMainFile: event.mainFile || undefined,
+    urlFromNavigation: true, // Mark as navigation-driven
+  };
+};
+
+/* Only a location that would change the current state re-enters the check. */
+const syncLocation = ({ context, event }: ImportGitHubArgs<'syncLocation'>) => {
+  const currentRepoUrl = context.owner && context.repo ? `https://github.com/${context.owner}/${context.repo}` : '';
+  const newRepoUrl = event.owner && event.repo ? `https://github.com/${event.owner}/${event.repo}` : '';
+  if (
+    currentRepoUrl === newRepoUrl &&
+    context.selectedBranch === (event.ref || 'main') &&
+    context.path === normalizeRepositoryFolder(event.path)
+  ) {
+    return undefined;
+  }
+  return { target: 'checkingRepo', reenter: true, context: syncLocationPatch(event) };
+};
+
+const hasValidRepo = (context: ImportGitHubContext): boolean =>
+  context.owner.length > 0 && context.repo.length > 0 && context.ref.length > 0;
+
+const startImport = ({ context }: Readonly<{ context: ImportGitHubContext }>) =>
+  hasValidRepo(context) ? { target: 'downloading' } : undefined;
+
+const fetchErrorPatch = (
+  context: ImportGitHubContext,
+  failure: Readonly<{ key: keyof ImportGitHubContext['fetchErrors']; error: unknown; fallback: string }>,
+): ImportGitHubPatch => ({
+  fetchErrors: { ...context.fetchErrors, [failure.key]: errorOr(failure.error, failure.fallback) },
+});
+
+/** Prefer the file the URL asked for, else the first file with a CAD extension. */
+const initialMainFile = (context: ImportGitHubContext): string | undefined => {
+  const fileNames = context.importedFilePaths.length > 0 ? context.importedFilePaths : [...context.files.keys()];
+
+  if (context.requestedMainFile.length > 0 && fileNames.includes(context.requestedMainFile)) {
+    return context.requestedMainFile;
+  }
+
+  const cadExtensions = ['.scad', '.jscad', '.ts', '.js', '.kcl'];
+  // oxlint-disable-next-line unicorn-js/prevent-abbreviations -- ext is conventional abbreviation for extension
+  return fileNames.find((filename) => cadExtensions.some((ext) => filename.endsWith(ext)));
+};
 
 /**
  * Import GitHub Machine
@@ -359,419 +633,15 @@ const importGitHubActors = {
  * - Progress updates are applied immediately for responsive UI feedback
  */
 export const importGitHubMachine = setup({
-  types: {
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    context: {} as ImportGitHubContext,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    events: {} as ImportGitHubEvent,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    input: {} as ImportGitHubInput,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    emitted: {} as ImportGitHubEmitted,
+  schemas: {
+    context: types<ImportGitHubContext>(),
+    events: eventSchemas<ImportGitHubEvent>(),
+    input: types<ImportGitHubInput>(),
+    emitted: eventSchemas<ImportGitHubEmitted>(),
   },
-  actors: {
-    ...importGitHubActors,
-  },
+  actors: importGitHubActors,
   delays: {
     debounceDelay: 500,
-  },
-  actions: {
-    setError: assign({
-      error({ event }) {
-        if ('error' in event && event.error instanceof Error) {
-          return event.error;
-        }
-
-        return new Error('Unknown error');
-      },
-    }),
-    clearError: assign({
-      error: undefined,
-      fetchErrors: {
-        metadata: undefined,
-        branches: undefined,
-        files: undefined,
-      },
-    }),
-    /** Clear repo selection and extracted files; return to empty entry-details (`/import`). */
-    resetReview: assign(({ context }) => ({
-      parentRef: context.parentRef,
-      repoUrl: '',
-      owner: '',
-      repo: '',
-      ref: 'main',
-      requestedMainFile: '',
-      selectedMainFile: undefined,
-      repoMetadata: undefined,
-      branches: [],
-      selectedBranch: 'main',
-      branchesCursor: undefined,
-      hasMoreBranches: false,
-      isLoadingMoreBranches: false,
-      repoFiles: [],
-      isLoadingFiles: false,
-      downloadProgress: { loaded: 0, total: 0 },
-      extractProgress: { processed: 0, total: 0 },
-      files: new Map(),
-      importedFilePaths: [],
-      importWorker: undefined,
-      projectId: undefined,
-      error: undefined,
-      fetchErrors: {
-        metadata: undefined,
-        branches: undefined,
-        files: undefined,
-      },
-      urlFromNavigation: false,
-    })),
-    updateRepoUrl: assign({
-      repoUrl({ event }) {
-        assertEvent(event, 'updateRepoUrl');
-        return event.url;
-      },
-      // Clear navigation flag - this is a user-driven change
-      urlFromNavigation: false,
-    }),
-    parseRepoUrl: assign(({ context }) => {
-      // If URL is empty, reset all repo-related state
-      if (!context.repoUrl) {
-        return {
-          owner: '',
-          repo: '',
-          ref: 'main',
-          repoMetadata: undefined,
-          branches: [],
-          selectedBranch: 'main',
-          branchesCursor: undefined,
-          hasMoreBranches: false,
-          repoFiles: [],
-          selectedMainFile: undefined,
-        };
-      }
-
-      // Parse GitHub URL and extract owner/repo/ref
-      try {
-        const url = new URL(context.repoUrl);
-        if (url.hostname !== 'github.com') {
-          return {
-            owner: '',
-            repo: '',
-            repoMetadata: undefined,
-            branches: [],
-            repoFiles: [],
-          };
-        }
-
-        const pathParts = url.pathname.split('/').filter(Boolean);
-        if (pathParts.length < 2) {
-          return {
-            owner: '',
-            repo: '',
-            repoMetadata: undefined,
-            branches: [],
-            repoFiles: [],
-          };
-        }
-
-        const [owner, repoRaw] = pathParts;
-        if (!owner || !repoRaw) {
-          return {
-            owner: '',
-            repo: '',
-            repoMetadata: undefined,
-            branches: [],
-          };
-        }
-
-        const repo = repoRaw.replace(/\.git$/, '');
-        const ref = 'main'; // Default to main, could be extended later
-
-        // If the repo changed, clear metadata and branches
-        if (owner !== context.owner || repo !== context.repo) {
-          return {
-            owner,
-            repo,
-            ref,
-            repoMetadata: undefined,
-            branches: [],
-            selectedBranch: 'main',
-            branchesCursor: undefined,
-            hasMoreBranches: false,
-          };
-        }
-
-        return { owner, repo, ref };
-      } catch {
-        return {
-          owner: '',
-          repo: '',
-          repoMetadata: undefined,
-          branches: [],
-        };
-      }
-    }),
-    setRepoMetadata: assign({
-      repoMetadata({ event }) {
-        assertEvent(event, 'metadataRetrieved');
-        return event.metadata;
-      },
-      selectedBranch({ event }) {
-        assertEvent(event, 'metadataRetrieved');
-        return event.metadata.defaultBranch;
-      },
-      ref({ event, context }) {
-        assertEvent(event, 'metadataRetrieved');
-        return context.ref === 'main' && event.metadata.defaultBranch ? event.metadata.defaultBranch : context.ref;
-      },
-      fetchErrors({ context }) {
-        return {
-          ...context.fetchErrors,
-          metadata: undefined,
-        };
-      },
-      error: undefined,
-    }),
-    setBranches: assign({
-      branches({ event }) {
-        assertEvent(event, 'branchesRetrieved');
-        return event.branches;
-      },
-      hasMoreBranches({ event }) {
-        assertEvent(event, 'branchesRetrieved');
-        return event.hasMore;
-      },
-      branchesCursor({ event }) {
-        assertEvent(event, 'branchesRetrieved');
-        return event.endCursor;
-      },
-    }),
-    appendBranches: assign({
-      branches({ event, context }) {
-        assertEvent(event, 'branchesRetrieved');
-        const existingNames = new Set(context.branches.map((b) => b.name));
-        const newBranches = event.branches.filter((b) => !existingNames.has(b.name));
-        return [...context.branches, ...newBranches];
-      },
-      hasMoreBranches({ event }) {
-        assertEvent(event, 'branchesRetrieved');
-        return event.hasMore;
-      },
-      branchesCursor({ event }) {
-        assertEvent(event, 'branchesRetrieved');
-        return event.endCursor;
-      },
-      isLoadingMoreBranches: false,
-    }),
-    setLoadingMoreBranches: assign({
-      isLoadingMoreBranches: true,
-    }),
-    setSelectedBranch: assign({
-      selectedBranch({ event }) {
-        assertEvent(event, 'selectBranch');
-        return event.branch;
-      },
-      ref({ event }) {
-        assertEvent(event, 'selectBranch');
-        return event.branch;
-      },
-    }),
-    applyDownloadProgressImmediately: assign({
-      downloadProgress({ event }) {
-        assertEvent(event, 'updateDownloadProgress');
-        return { loaded: event.loaded, total: event.total };
-      },
-    }),
-    applyExtractProgressImmediately: assign({
-      extractProgress({ event }) {
-        assertEvent(event, 'updateExtractProgress');
-        return { processed: event.processed, total: event.total };
-      },
-    }),
-    setProjectId: assign({
-      projectId({ event }) {
-        assertEvent(event, 'projectCreated');
-        return event.projectId;
-      },
-    }),
-    initializeSelectedMainFile: assign({
-      selectedMainFile({ context }) {
-        const fileNames = context.importedFilePaths.length > 0 ? context.importedFilePaths : [...context.files.keys()];
-
-        if (context.requestedMainFile.length > 0 && fileNames.includes(context.requestedMainFile)) {
-          return context.requestedMainFile;
-        }
-
-        const cadExtensions = ['.scad', '.jscad', '.ts', '.js', '.kcl'];
-        // oxlint-disable-next-line unicorn-js/prevent-abbreviations -- ext is conventional abbreviation for extension
-        const foundFile = fileNames.find((filename) => cadExtensions.some((ext) => filename.endsWith(ext)));
-
-        return foundFile;
-      },
-    }),
-    setMetadataError: assign({
-      fetchErrors: ({ context, event }) => ({
-        ...context.fetchErrors,
-        metadata:
-          'error' in event && event.error instanceof Error
-            ? event.error
-            : new Error('Failed to fetch repository metadata'),
-      }),
-    }),
-    setBranchesError: assign({
-      fetchErrors: ({ context, event }) => ({
-        ...context.fetchErrors,
-        branches:
-          'error' in event && event.error instanceof Error ? event.error : new Error('Failed to fetch branches'),
-      }),
-    }),
-    setRepoFiles: assign({
-      repoFiles({ event }) {
-        assertEvent(event, 'filesRetrieved');
-        return event.files;
-      },
-      isLoadingFiles: false,
-    }),
-    setRepoFilesError: assign({
-      fetchErrors: ({ context, event }) => ({
-        ...context.fetchErrors,
-        files: 'error' in event && event.error instanceof Error ? event.error : new Error('Failed to fetch files'),
-      }),
-      isLoadingFiles: false,
-    }),
-    setLoadingRepoFiles: assign({
-      isLoadingFiles: true,
-    }),
-    setSelectedMainFile: assign({
-      selectedMainFile({ event }) {
-        assertEvent(event, 'selectMainFile');
-        return event.file;
-      },
-    }),
-    // Sync location from React Router (for back/forward navigation)
-    syncLocation: assign(({ event }) => {
-      assertEvent(event, 'syncLocation');
-
-      // If no owner/repo from location, reset to empty state
-      if (!event.owner || !event.repo) {
-        return {
-          repoUrl: '',
-          owner: '',
-          repo: '',
-          ref: 'main',
-          selectedBranch: 'main',
-          repoMetadata: undefined,
-          branches: [],
-          branchesCursor: undefined,
-          hasMoreBranches: false,
-          repoFiles: [],
-          selectedMainFile: undefined,
-          urlFromNavigation: true, // Mark as navigation-driven
-        };
-      }
-
-      return {
-        repoUrl: `https://github.com/${event.owner}/${event.repo}`,
-        owner: event.owner,
-        repo: event.repo,
-        ref: event.ref || 'main',
-        selectedBranch: event.ref || 'main',
-        requestedMainFile: event.mainFile || '',
-        selectedMainFile: event.mainFile || undefined,
-        urlFromNavigation: true, // Mark as navigation-driven
-      };
-    }),
-    // Emit URL replacement for real-time typing updates (no history change)
-    emitUrlReplaced: enqueueActions(({ enqueue, context }) => {
-      const url = buildImportUrl({
-        owner: context.owner,
-        repo: context.repo,
-        selectedBranch: context.selectedBranch,
-        selectedMainFile: context.selectedMainFile,
-      });
-      enqueue.emit({ type: 'urlReplaced', url });
-    }),
-    // Emit URL push for meaningful navigation points (adds to history)
-    emitUrlPushed: enqueueActions(({ enqueue, context }) => {
-      const url = buildImportUrl({
-        owner: context.owner,
-        repo: context.repo,
-        selectedBranch: context.selectedBranch,
-        selectedMainFile: context.selectedMainFile,
-      });
-      enqueue.emit({ type: 'urlPushed', url });
-    }),
-    // Emit URL based on whether we're clearing or setting a full repo URL
-    // Clearing (empty URL) → push to history
-    // Valid repo detected → push to history (for back button support)
-    // Partial/incomplete URL → replace (for real-time typing feedback)
-    emitUrlChange: enqueueActions(({ enqueue, context }) => {
-      const url = buildImportUrl({
-        owner: context.owner,
-        repo: context.repo,
-        selectedBranch: context.selectedBranch,
-        selectedMainFile: context.selectedMainFile,
-      });
-      // If owner/repo are empty, this is a clear action - push to history
-      if (!context.owner || !context.repo) {
-        enqueue.emit({ type: 'urlPushed', url });
-      } else {
-        // Valid repo - always replace during typing; we'll push on debounce completion
-        enqueue.emit({ type: 'urlReplaced', url });
-      }
-    }),
-  },
-  guards: {
-    hasValidRepo({ context }) {
-      return context.owner.length > 0 && context.repo.length > 0 && context.ref.length > 0;
-    },
-    hasValidRepoWithoutError({ context }) {
-      return (
-        context.owner.length > 0 && context.repo.length > 0 && context.ref.length > 0 && context.error === undefined
-      );
-    },
-    shouldFetchRepoInfo({ context }) {
-      // Only fetch if we have a valid repo AND we haven't fetched metadata yet (or encountered a blocking error)
-      return (
-        context.owner.length > 0 &&
-        context.repo.length > 0 &&
-        context.ref.length > 0 &&
-        context.repoMetadata === undefined &&
-        context.fetchErrors.metadata === undefined
-      );
-    },
-    hasSelectedMainFile({ context }) {
-      return context.selectedMainFile !== undefined && context.selectedMainFile.length > 0;
-    },
-    hasCriticalFetchError({ context }) {
-      // Critical errors are 404 or rate limit on metadata (means repo doesn't exist or is inaccessible)
-      const metadataError = context.fetchErrors.metadata;
-      if (!metadataError) {
-        return false;
-      }
-
-      const errorMessage = metadataError.message;
-      return errorMessage.includes('404') || errorMessage.includes('403') || errorMessage.includes('rate limit');
-    },
-    canLoadMoreBranches({ context }) {
-      return context.hasMoreBranches && !context.isLoadingMoreBranches;
-    },
-    // Check if location sync would change the current state
-    locationDiffersFromState({ context, event }) {
-      assertEvent(event, 'syncLocation');
-      const currentRepoUrl = context.owner && context.repo ? `https://github.com/${context.owner}/${context.repo}` : '';
-      const newRepoUrl = event.owner && event.repo ? `https://github.com/${event.owner}/${event.repo}` : '';
-      return currentRepoUrl !== newRepoUrl || context.selectedBranch !== (event.ref || 'main');
-    },
-    // Only push URL to history if not from navigation (avoids double-push)
-    shouldPushUrl({ context }) {
-      return !context.urlFromNavigation;
-    },
-    // Combined guard: valid repo AND should push URL
-    hasValidRepoAndShouldPush({ context }) {
-      return (
-        context.owner.length > 0 && context.repo.length > 0 && context.ref.length > 0 && !context.urlFromNavigation
-      );
-    },
   },
 }).createMachine({
   id: 'importGitHub',
@@ -781,6 +651,7 @@ export const importGitHubMachine = setup({
     owner: input.owner ?? '',
     repo: input.repo ?? '',
     ref: input.ref ?? 'main',
+    path: normalizeRepositoryFolder(input.path ?? ''),
     requestedMainFile: input.mainFile ?? '',
     // Initialize selectedMainFile from input if provided (for URL loading with ?main=)
     // Empty string means no file selected, so treat as undefined
@@ -801,55 +672,31 @@ export const importGitHubMachine = setup({
     importWorker: undefined,
     projectId: undefined,
     error: undefined,
-    fetchErrors: {
-      metadata: undefined,
-      branches: undefined,
-      files: undefined,
-    },
+    fetchErrors: noFetchErrors,
     // If we have owner and repo from input, this is from URL navigation
     urlFromNavigation: Boolean(input.owner && input.repo),
   }),
   initial: 'enteringDetails',
   states: {
     enteringDetails: {
-      always: [
-        {
-          target: 'checkingRepo',
-          guard: 'shouldFetchRepoInfo',
-        },
-      ],
+      // Only fetch if we have a valid repo AND we haven't fetched metadata yet (or encountered a blocking error)
+      always: ({ context }) =>
+        hasValidRepo(context) && context.repoMetadata === undefined && context.fetchErrors.metadata === undefined
+          ? { target: 'checkingRepo' }
+          : undefined,
       on: {
-        updateRepoUrl: {
-          actions: ['clearError', 'updateRepoUrl', 'parseRepoUrl', 'emitUrlChange'],
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        selectBranch: {
-          // When branch changes, re-fetch files for the new branch
-          actions: ['setSelectedBranch', 'emitUrlReplaced'],
-          target: 'fetchingFiles',
-        },
-        selectMainFile: {
-          actions: ['setSelectedMainFile', 'emitUrlReplaced'],
-        },
-        syncLocation: {
-          actions: 'syncLocation',
-          guard: 'locationDiffersFromState',
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        startImport: {
-          target: 'downloading',
-          guard: 'hasValidRepo',
-        },
-        loadMoreBranches: {
-          target: 'loadingMoreBranches',
-          guard: 'canLoadMoreBranches',
-        },
+        updateRepoUrl: updateRepoUrl({ clearError: true }),
+        selectBranch: selectBranch({ reenter: false }),
+        selectMainFile: selectMainFileAndReplaceUrl,
+        selectFolder,
+        syncLocation,
+        startImport,
+        loadMoreBranches: ({ context }) =>
+          context.hasMoreBranches && !context.isLoadingMoreBranches ? { target: 'loadingMoreBranches' } : undefined,
       },
     },
     loadingMoreBranches: {
-      entry: 'setLoadingMoreBranches',
+      entry: () => ({ context: { isLoadingMoreBranches: true } }),
       invoke: {
         id: 'loadMoreBranches',
         src: 'getBranchesActor',
@@ -858,73 +705,46 @@ export const importGitHubMachine = setup({
           repo: context.repo,
           cursor: context.branchesCursor,
         }),
-        onDone: {
-          target: 'enteringDetails',
-        },
-        onError: {
-          target: 'enteringDetails',
-          actions: assign({
-            isLoadingMoreBranches: false,
-          }),
-        },
+        onDone: { target: 'enteringDetails' },
+        onError: { target: 'enteringDetails', context: { isLoadingMoreBranches: false } },
       },
       on: {
         branchesRetrieved: {
-          actions: 'appendBranches',
+          context: ({ context, event }) => {
+            const existingNames = new Set(context.branches.map((b) => b.name));
+            return {
+              branches: [...context.branches, ...event.branches.filter((b) => !existingNames.has(b.name))],
+              hasMoreBranches: event.hasMore,
+              branchesCursor: event.endCursor,
+              isLoadingMoreBranches: false,
+            };
+          },
         },
-        updateRepoUrl: {
-          actions: ['clearError', 'updateRepoUrl', 'parseRepoUrl', 'emitUrlChange'],
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        selectBranch: {
-          actions: ['setSelectedBranch', 'emitUrlReplaced'],
-          target: 'fetchingFiles',
-        },
-        selectMainFile: {
-          actions: ['setSelectedMainFile', 'emitUrlReplaced'],
-        },
-        syncLocation: {
-          actions: 'syncLocation',
-          guard: 'locationDiffersFromState',
-          target: 'checkingRepo',
-          reenter: true,
-        },
+        updateRepoUrl: updateRepoUrl({ clearError: true }),
+        selectBranch: selectBranch({ reenter: false }),
+        selectMainFile: selectMainFileAndReplaceUrl,
+        selectFolder,
+        syncLocation,
       },
     },
     checkingRepo: {
       after: {
-        debounceDelay: [
-          {
-            target: 'fetchingRepoInfo',
-            guard: 'hasValidRepoAndShouldPush',
-            // Push URL when valid repo is detected via typing (debounce completed)
-            // Only push if NOT from navigation (avoids double-push)
-            actions: 'emitUrlPushed',
-          },
-          {
-            target: 'fetchingRepoInfo',
-            guard: 'hasValidRepo',
-            // From navigation - don't push URL (already pushed by React Router)
-          },
-        ],
+        debounceDelay: ({ context }, enq) => {
+          if (!hasValidRepo(context)) {
+            return undefined;
+          }
+          // Push URL when valid repo is detected via typing (debounce completed).
+          // From navigation - don't push URL (already pushed by React Router).
+          if (!context.urlFromNavigation) {
+            enq.emit({ type: 'urlPushed', url: importUrlOf(context) });
+          }
+          return { target: 'fetchingRepoInfo' };
+        },
       },
       on: {
-        updateRepoUrl: {
-          actions: ['updateRepoUrl', 'parseRepoUrl', 'emitUrlChange'],
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        syncLocation: {
-          actions: 'syncLocation',
-          guard: 'locationDiffersFromState',
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        startImport: {
-          target: 'downloading',
-          guard: 'hasValidRepo',
-        },
+        updateRepoUrl: updateRepoUrl({ clearError: false }),
+        syncLocation,
+        startImport,
       },
     },
     fetchingRepoInfo: {
@@ -941,32 +761,41 @@ export const importGitHubMachine = setup({
                   owner: context.owner,
                   repo: context.repo,
                 }),
-                onDone: {
-                  target: 'success',
-                },
-                onError: {
+                onDone: { target: 'success' },
+                onError: ({ context, event }) => ({
                   target: 'error',
-                  actions: [
-                    'setMetadataError',
-                    assign({
-                      repoMetadata: undefined,
-                      error: ({ event }) => toMetadataFetchError(event.error),
+                  context: {
+                    ...fetchErrorPatch(context, {
+                      key: 'metadata',
+                      error: event.error,
+                      fallback: 'Failed to fetch repository metadata',
                     }),
-                  ],
-                },
+                    repoMetadata: undefined,
+                    error: toMetadataFetchError(event.error),
+                  },
+                }),
               },
               on: {
                 metadataRetrieved: {
-                  actions: 'setRepoMetadata',
+                  context: ({ context, event }) => {
+                    /* A requested ref (`?ref=` or a folder URL) wins; only the `main` default follows the repository. */
+                    const ref =
+                      context.ref === 'main' && event.metadata.defaultBranch
+                        ? event.metadata.defaultBranch
+                        : context.ref;
+                    return {
+                      repoMetadata: event.metadata,
+                      selectedBranch: ref,
+                      ref,
+                      fetchErrors: { ...context.fetchErrors, metadata: undefined },
+                      error: undefined,
+                    };
+                  },
                 },
               },
             },
-            success: {
-              type: 'final',
-            },
-            error: {
-              type: 'final',
-            },
+            success: { type: 'final' },
+            error: { type: 'final' },
           },
         },
         branches: {
@@ -981,39 +810,35 @@ export const importGitHubMachine = setup({
                   repo: context.repo,
                   cursor: undefined,
                 }),
-                onDone: {
-                  target: 'success',
-                },
-                onError: {
+                onDone: { target: 'success' },
+                onError: ({ context, event }) => ({
                   target: 'error',
-                  actions: [
-                    'setBranchesError',
-                    assign({
-                      branches: [],
-                      hasMoreBranches: false,
-                    }),
-                  ],
-                },
+                  context: {
+                    fetchErrors: { ...context.fetchErrors, branches: toBranchesFetchError(event.error) },
+                    branches: [],
+                    hasMoreBranches: false,
+                  },
+                }),
               },
               on: {
                 branchesRetrieved: {
-                  actions: 'setBranches',
+                  context: ({ event }) => ({
+                    branches: event.branches,
+                    hasMoreBranches: event.hasMore,
+                    branchesCursor: event.endCursor,
+                  }),
                 },
               },
             },
-            success: {
-              type: 'final',
-            },
-            error: {
-              type: 'final',
-            },
+            success: { type: 'final' },
+            error: { type: 'final' },
           },
         },
         files: {
           initial: 'fetching',
           states: {
             fetching: {
-              entry: 'setLoadingRepoFiles',
+              entry: () => ({ context: { isLoadingFiles: true } }),
               invoke: {
                 id: 'fetchFiles',
                 src: 'getFilesActor',
@@ -1022,54 +847,38 @@ export const importGitHubMachine = setup({
                   repo: context.repo,
                   ref: context.selectedBranch,
                 }),
-                onDone: {
-                  target: 'success',
-                },
-                onError: {
+                onDone: { target: 'success' },
+                onError: ({ context, event }) => ({
                   target: 'error',
-                  actions: [
-                    'setRepoFilesError',
-                    assign({
-                      repoFiles: [],
+                  context: {
+                    ...fetchErrorPatch(context, {
+                      key: 'files',
+                      error: event.error,
+                      fallback: 'Failed to fetch files',
                     }),
-                  ],
-                },
+                    isLoadingFiles: false,
+                    repoFiles: [],
+                  },
+                }),
               },
               on: {
-                filesRetrieved: {
-                  actions: 'setRepoFiles',
-                },
+                filesRetrieved: { context: ({ event }) => ({ repoFiles: event.files, isLoadingFiles: false }) },
               },
             },
-            success: {
-              type: 'final',
-            },
-            error: {
-              type: 'final',
-            },
+            success: { type: 'final' },
+            error: { type: 'final' },
           },
         },
       },
-      onDone: {
-        target: 'enteringDetails',
-      },
+      onDone: { target: 'enteringDetails' },
       on: {
-        updateRepoUrl: {
-          actions: ['updateRepoUrl', 'parseRepoUrl', 'emitUrlChange'],
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        syncLocation: {
-          actions: 'syncLocation',
-          guard: 'locationDiffersFromState',
-          target: 'checkingRepo',
-          reenter: true,
-        },
+        updateRepoUrl: updateRepoUrl({ clearError: false }),
+        syncLocation,
       },
     },
     // Fetch files only (when branch changes)
     fetchingFiles: {
-      entry: 'setLoadingRepoFiles',
+      entry: () => ({ context: { isLoadingFiles: true } }),
       invoke: {
         id: 'fetchFilesOnBranchChange',
         src: 'getFilesActor',
@@ -1078,43 +887,26 @@ export const importGitHubMachine = setup({
           repo: context.repo,
           ref: context.selectedBranch,
         }),
-        onDone: {
+        onDone: { target: 'enteringDetails' },
+        onError: ({ context, event }) => ({
           target: 'enteringDetails',
-        },
-        onError: {
-          target: 'enteringDetails',
-          actions: [
-            'setRepoFilesError',
-            assign({
-              repoFiles: [],
-            }),
-          ],
-        },
+          context: {
+            ...fetchErrorPatch(context, { key: 'files', error: event.error, fallback: 'Failed to fetch files' }),
+            isLoadingFiles: false,
+            repoFiles: [],
+          },
+        }),
       },
       on: {
-        filesRetrieved: {
-          actions: 'setRepoFiles',
-        },
-        updateRepoUrl: {
-          actions: ['updateRepoUrl', 'parseRepoUrl', 'emitUrlChange'],
-          target: 'checkingRepo',
-          reenter: true,
-        },
-        selectBranch: {
-          actions: ['setSelectedBranch', 'emitUrlReplaced'],
-          target: 'fetchingFiles',
-          reenter: true,
-        },
-        syncLocation: {
-          actions: 'syncLocation',
-          guard: 'locationDiffersFromState',
-          target: 'checkingRepo',
-          reenter: true,
-        },
+        filesRetrieved: { context: ({ event }) => ({ repoFiles: event.files, isLoadingFiles: false }) },
+        updateRepoUrl: updateRepoUrl({ clearError: false }),
+        selectBranch: selectBranch({ reenter: true }),
+        selectFolder,
+        syncLocation,
       },
     },
     downloading: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined, fetchErrors: noFetchErrors } }),
       invoke: {
         src: 'importWorkerActor',
         input: ({ context }) => {
@@ -1126,65 +918,77 @@ export const importGitHubMachine = setup({
               ref: context.ref,
             }),
             headers: client.getAuthHeaders(),
+            root: context.path,
           };
         },
       },
       on: {
         updateDownloadProgress: {
-          actions: 'applyDownloadProgressImmediately',
+          context: ({ event }) => ({ downloadProgress: { loaded: event.loaded, total: event.total } }),
         },
         updateExtractProgress: {
-          actions: 'applyExtractProgressImmediately',
+          context: ({ event }) => ({ extractProgress: { processed: event.processed, total: event.total } }),
         },
-        workerExtractComplete: {
-          target: 'selectingMainFile',
-          actions: [
-            assign({
-              importedFilePaths({ event }) {
-                assertEvent(event, 'workerExtractComplete');
-                return event.filePaths;
-              },
-              files({ event }) {
-                assertEvent(event, 'workerExtractComplete');
-                const map = new Map<string, { filename: string; content: Uint8Array<ArrayBuffer> }>();
-                for (const entry of event.files) {
-                  const filename = entry.path.split('/').pop() ?? entry.path;
-                  map.set(entry.path, { filename, content: entry.content });
-                }
-
-                return map;
-              },
-            }),
-            'initializeSelectedMainFile',
-          ],
+        workerExtractComplete: ({ context, event }) => {
+          const files = new Map<string, { filename: string; content: Uint8Array<ArrayBuffer> }>();
+          for (const entry of event.files) {
+            const filename = entry.path.split('/').pop() ?? entry.path;
+            files.set(entry.path, { filename, content: entry.content });
+          }
+          const extracted = { importedFilePaths: event.filePaths, files };
+          return {
+            target: 'selectingMainFile',
+            context: { ...extracted, selectedMainFile: initialMainFile({ ...context, ...extracted }) },
+          };
         },
         workerError: {
           target: 'error',
-          actions: assign({
-            error({ event }) {
-              assertEvent(event, 'workerError');
-              return new Error(`Import failed (${event.phase}): ${event.message}`);
-            },
-          }),
+          context: ({ event }) => {
+            const message = `Import failed (${event.phase}): ${event.message}`;
+            return {
+              error: event.reason === 'tooLarge' ? new ImportGitHubError('tooLarge', message) : new Error(message),
+            };
+          },
         },
-        cancelDownload: {
-          target: 'enteringDetails',
-          actions: 'clearError',
-        },
+        cancelDownload: { target: 'enteringDetails', context: { error: undefined, fetchErrors: noFetchErrors } },
       },
     },
     selectingMainFile: {
       on: {
-        selectMainFile: {
-          actions: 'setSelectedMainFile',
-        },
-        confirmImport: {
-          target: 'creating',
-          guard: 'hasSelectedMainFile',
-        },
+        selectMainFile: { context: ({ event }) => ({ selectedMainFile: event.file }) },
+        confirmImport: ({ context }) =>
+          context.selectedMainFile !== undefined && context.selectedMainFile.length > 0
+            ? { target: 'creating' }
+            : undefined,
+        /** Clear repo selection and extracted files; return to empty entry-details (`/import`). */
         cancelReview: {
           target: 'enteringDetails',
-          actions: 'resetReview',
+          context: {
+            repoUrl: '',
+            owner: '',
+            repo: '',
+            ref: 'main',
+            path: '',
+            requestedMainFile: '',
+            selectedMainFile: undefined,
+            repoMetadata: undefined,
+            branches: [],
+            selectedBranch: 'main',
+            branchesCursor: undefined,
+            hasMoreBranches: false,
+            isLoadingMoreBranches: false,
+            repoFiles: [],
+            isLoadingFiles: false,
+            downloadProgress: { loaded: 0, total: 0 },
+            extractProgress: { processed: 0, total: 0 },
+            files: new Map(),
+            importedFilePaths: [],
+            importWorker: undefined,
+            projectId: undefined,
+            error: undefined,
+            fetchErrors: noFetchErrors,
+            urlFromNavigation: false,
+          },
         },
       },
     },
@@ -1195,21 +999,15 @@ export const importGitHubMachine = setup({
           owner: context.owner,
           repo: context.repo,
           ref: context.ref,
+          path: context.path,
           mainFile: context.selectedMainFile!,
           files: context.files,
         }),
-        onDone: {
-          target: 'success',
-        },
-        onError: {
-          target: 'error',
-          actions: 'setError',
-        },
+        onDone: { target: 'success' },
+        onError: ({ event }) => ({ target: 'error', context: { error: errorOr(event.error, 'Unknown error') } }),
       },
       on: {
-        projectCreated: {
-          actions: 'setProjectId',
-        },
+        projectCreated: { context: ({ event }) => ({ projectId: event.projectId }) },
       },
     },
     success: {
@@ -1217,7 +1015,7 @@ export const importGitHubMachine = setup({
     },
     error: {
       on: {
-        retry: 'enteringDetails',
+        retry: { target: 'enteringDetails' },
       },
     },
   },

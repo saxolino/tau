@@ -1,6 +1,6 @@
 import { Suspense, lazy, useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '#components/ui/tabs.js';
-import { Loader } from '#components/ui/loader.js';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@taucad/ui/components/tabs';
+import { Loader } from '@taucad/ui/components/loader';
 import { GearDemo } from '#routes/_index/demo/gear-demo.js';
 
 // OpenRSCAD (WASM) is confined to this lazily-imported module, so selecting the
@@ -48,7 +48,7 @@ export function LiveDemoSection(): React.JSX.Element {
           {tab === 'qr' ? (
             <Suspense
               fallback={
-                <div className='flex h-[560px] items-center justify-center rounded-xl border bg-sidebar'>
+                <div className='flex h-140 items-center justify-center rounded-xl border bg-sidebar'>
                   <Loader />
                 </div>
               }

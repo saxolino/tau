@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { binaryFileContentMetadataSchema, textFileContentMetadataSchema } from '#schemas/file-metadata.schema.js';
+import { rootedPathSchema } from '#schemas/rooted-path.schema.js';
 
 /** @public */
 export const listDirectoryInputSchema = z.object({
-  path: z.string().optional().describe('The directory to list. Defaults to the project root.'),
+  path: rootedPathSchema.optional().describe('The directory to list. Defaults to the project root.'),
 });
 
 const baseDirectoryEntrySchema = z.object({
@@ -11,7 +12,8 @@ const baseDirectoryEntrySchema = z.object({
   size: z.number().int().nonnegative().describe('Byte size when available; directories may report 0 when unknown.'),
 });
 
-const directoryEntrySchema = z.union([
+/** Canonical directory-entry schema shared with the RPC transport. @public */
+export const directoryEntrySchema = z.union([
   baseDirectoryEntrySchema.extend({
     type: z.literal('dir').describe('This entry is a directory.'),
   }),
@@ -28,7 +30,7 @@ const directoryEntrySchema = z.union([
 /** @public */
 export const listDirectoryOutputSchema = z.object({
   entries: z.array(directoryEntrySchema).describe('The list of files and directories in the specified path.'),
-  path: z.string().describe('The resolved path that was listed.'),
+  path: rootedPathSchema.describe('The resolved path that was listed.'),
 });
 
 /** @public */

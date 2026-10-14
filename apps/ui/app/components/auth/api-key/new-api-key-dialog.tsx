@@ -12,19 +12,20 @@ import {
   AlertDialogHeader,
   AlertDialogMedia,
   AlertDialogTitle,
-} from '#components/ui/alert-dialog.js';
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '#components/ui/input-group.js';
-import { Label } from '#components/ui/label.js';
+} from '@taucad/ui/components/alert-dialog';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@taucad/ui/components/input-group';
+import { Label } from '@taucad/ui/components/label';
 import { apiKeyPlugin } from '#utils/api-key-plugin.js';
 
 export type NewApiKeyDialogProps = {
+  // oxlint-disable-next-line react-js/boolean-prop-naming -- mirrors Radix Dialog's controlled `open` prop API.
   open: boolean;
   onOpenChange: (open: boolean) => void;
   name: string | undefined;
   secretKey: string | undefined;
 };
 
-export function NewApiKeyDialog({ open, onOpenChange, name, secretKey }: NewApiKeyDialogProps) {
+export function NewApiKeyDialog({ open, onOpenChange, name, secretKey }: NewApiKeyDialogProps): React.JSX.Element {
   const { localization } = useAuth();
   const { localization: apiKeyLocalization } = useAuthPlugin(apiKeyPlugin);
 

@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createActor, waitFor } from 'xstate';
 import type { EditorState } from '#types/editor.types.js';
-import { defaultGraphicsSettings, defaultPanelState } from '#constants/editor.constants.js';
+import { defaultPanelState } from '#constants/editor.constants.js';
 import { editorMachine } from '#machines/editor.machine.js';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
+import type { MachineActors } from '#lib/xstate.lib.js';
 
 // ---------------------------------------------------------------------------
 // Stubs
@@ -21,9 +22,8 @@ const stubEditorState: EditorState = {
   activePaneId: stubPaneIdMain,
   focusedChatId: 'chat-1',
   panelState: defaultPanelState,
-  workbenchLayout: undefined,
-  viewerLayout: undefined,
-  viewSettings: {},
+  fileSidebars: {},
+  graphicsBackendPreferences: {},
   updatedAt: Date.now(),
 };
 
@@ -70,22 +70,21 @@ function createTestActor(options?: {
   const loadFunction = typeof loadResult === 'function' ? loadResult : async () => loadResult;
   const ensureFunction = options?.ensureResult ?? defaultEnsureFocusedChat;
 
-  const machine = editorMachine.provide({
-    actors: {
-      loadEditorStateActor: fromSafeAsync(async () => {
-        const state = await loadFunction();
-        return { type: 'editorStateRetrieved', state };
-      }),
-      ensureFocusedChatActor: fromSafeAsync(async ({ input }) => ensureFunction(input)),
-      ...(options?.saveResult
-        ? {
-            saveEditorStateActor: fromSafeAsync(async () => {
-              await options.saveResult!();
-            }),
-          }
-        : {}),
-    },
-  });
+  const baseActors = {
+    loadEditorStateActor: fromSafeAsync(async () => {
+      const state = await loadFunction();
+      return { type: 'editorStateRetrieved', state };
+    }),
+    ensureFocusedChatActor: fromSafeAsync(async ({ input }) => ensureFunction(input)),
+  } satisfies Partial<MachineActors<typeof editorMachine>>;
+  const { saveResult } = options ?? {};
+  const savingActors = {
+    ...baseActors,
+    saveEditorStateActor: fromSafeAsync(async () => {
+      await saveResult?.();
+    }),
+  } satisfies Partial<MachineActors<typeof editorMachine>>;
+  const machine = editorMachine.provide({ actors: saveResult === undefined ? baseActors : savingActors });
 
   return createActor(machine, {
     input: { projectId: options?.projectId ?? 'test-build', requestedChatId: options?.requestedChatId },
@@ -107,6 +106,36 @@ async function startAndLoad(options?: Parameters<typeof createTestActor>[0]) {
 describe('editorMachine', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('hydrates and edits device widths, backend preferences, and exact Restore payload without portable state', async () => {
+    const previousLayout: EditorState['previousLayout'] = {
+      layout: {
+        version: 1,
+        lanes: { chat: true, workbench: true },
+        viewer: { kind: 'group', tabs: [] },
+        workbench: { kind: 'group', tabs: [] },
+      },
+      views: {},
+    };
+    const actor = await startAndLoad({
+      loadResult: {
+        ...stubEditorState,
+        fileSidebars: { 'src/main.ts': 280 },
+        graphicsBackendPreferences: { 'v-main': 'webgpu' },
+        previousLayout,
+      },
+    });
+    expect(actor.getSnapshot().context.fileSidebars['src/main.ts']).toBe(280);
+    expect(actor.getSnapshot().context.graphicsBackendPreferences['v-main']).toBe('webgpu');
+    expect(actor.getSnapshot().context.previousLayout).toEqual(previousLayout);
+    actor.send({ type: 'setFileSidebarWidth', path: 'src/main.ts', width: 320 });
+    actor.send({ type: 'setGraphicsBackendPreference', viewId: 'v-main', preference: 'webgl' });
+    actor.send({ type: 'renameFile', oldPath: 'src/main.ts', newPath: 'src/renamed.ts' });
+    expect(actor.getSnapshot().context.fileSidebars).toEqual({ 'src/renamed.ts': 320 });
+    expect(actor.getSnapshot().context.graphicsBackendPreferences).toEqual({ 'v-main': 'webgl' });
+    expect(actor.getSnapshot().context.previousLayout).toEqual(previousLayout);
+    actor.stop();
   });
 
   // =========================================================================
@@ -149,6 +178,25 @@ describe('editorMachine', () => {
       expect(selectActivePath(context)).toBe('src/main.ts');
       expect(context.activePaneId).toBe(stubPaneIdMain);
       expect(context.panelState).toEqual(defaultPanelState);
+      actor.stop();
+    });
+
+    it('should repair and deduplicate legacy slash-prefixed persisted tabs', async () => {
+      const actor = await startAndLoad({
+        loadResult: {
+          ...stubEditorState,
+          openFiles: [
+            { paneId: 'pane-relative', path: 'main.ts', name: 'main.ts', lastAccessedAt: 1000 },
+            { paneId: 'pane-legacy', path: '/main.ts', name: 'main.ts', lastAccessedAt: 2000 },
+          ],
+          activePaneId: 'pane-legacy',
+        },
+      });
+
+      expect(actor.getSnapshot().context.openFiles).toEqual([
+        expect.objectContaining({ paneId: 'pane-legacy', path: 'main.ts' }),
+      ]);
+      expect(actor.getSnapshot().context.activePaneId).toBe('pane-legacy');
       actor.stop();
     });
 
@@ -231,112 +279,6 @@ describe('editorMachine', () => {
       actor.stop();
     });
 
-    it('should rekey viewer entry paths and component display units on rename', async () => {
-      const oldMainUnitId = 'file:src/main.ts';
-      const newMainUnitId = 'file:src/index.ts';
-      const otherUnitId = 'file:src/other.ts';
-      const cameraView = {
-        target: [3, 4, 5],
-        direction: [1, 0, 0],
-        up: [0, 0, 1],
-        verticalSpan: 12,
-        perspectiveZoom: 1.25,
-      } as const;
-      const actor = await startAndLoad({
-        loadResult: {
-          ...stubEditorState,
-          modelComponentDisplay: {
-            schemaVersion: 1,
-            unitsById: {
-              [oldMainUnitId]: { hiddenComponentIds: ['component:Housing'] },
-              [otherUnitId]: { hiddenComponentIds: ['component:Other'] },
-            },
-          },
-          viewSettings: {
-            view1: {
-              entryPath: 'src/main.ts',
-              graphicsSettings: {
-                ...defaultGraphicsSettings,
-                cameraView,
-              },
-            },
-          },
-        },
-      });
-
-      actor.send({ type: 'renameFile', oldPath: 'src/main.ts', newPath: 'src/index.ts' });
-
-      const settings = actor.getSnapshot().context.viewSettings['view1'];
-      expect(settings?.entryPath).toBe('src/index.ts');
-      expect(settings?.graphicsSettings.cameraView).toEqual(cameraView);
-      expect(actor.getSnapshot().context.modelComponentDisplay).toEqual({
-        schemaVersion: 1,
-        unitsById: {
-          [newMainUnitId]: { hiddenComponentIds: ['component:Housing'] },
-          [otherUnitId]: { hiddenComponentIds: ['component:Other'] },
-        },
-      });
-      actor.stop();
-    });
-
-    it('should merge legacy per-view display state into the project field in stable view order', async () => {
-      const legacyState = {
-        ...stubEditorState,
-        viewSettings: {
-          'view-b': {
-            entryPath: 'src/main.ts',
-            graphicsSettings: {
-              ...defaultGraphicsSettings,
-              schemaVersion: 6,
-              componentDisplay: {
-                schemaVersion: 1,
-                unitsById: {
-                  'file:src/main.ts': {
-                    isolatedComponentIds: ['component:Gear'],
-                    opacityByComponentId: { 'component:Housing': 0.7 },
-                  },
-                },
-              },
-            },
-          },
-          'view-a': {
-            entryPath: 'src/main.ts',
-            graphicsSettings: {
-              ...defaultGraphicsSettings,
-              schemaVersion: 6,
-              componentDisplay: {
-                schemaVersion: 1,
-                unitsById: {
-                  'file:src/main.ts': {
-                    hiddenComponentIds: ['component:Cover'],
-                    opacityByComponentId: { 'component:Housing': 0.3 },
-                  },
-                },
-              },
-            },
-          },
-        },
-      } as unknown as EditorState;
-      const actor = await startAndLoad({ loadResult: legacyState });
-
-      expect(actor.getSnapshot().context.modelComponentDisplay).toEqual({
-        schemaVersion: 1,
-        unitsById: {
-          'file:src/main.ts': {
-            hiddenComponentIds: ['component:Cover'],
-            isolatedComponentIds: ['component:Gear'],
-            opacityByComponentId: { 'component:Housing': 0.7 },
-          },
-        },
-      });
-      expect(actor.getSnapshot().context.needsModelComponentDisplayMigration).toBe(true);
-      expect(actor.getSnapshot().context.viewSettings['view-a']?.graphicsSettings).not.toHaveProperty(
-        'componentDisplay',
-      );
-      expect(actor.getSnapshot().context.viewSettings['view-a']?.graphicsSettings.schemaVersion).toBe(9);
-      actor.stop();
-    });
-
     it('should emit fileOpened event', async () => {
       const actor = await startAndLoad({ loadResult: undefined });
       const emitted: unknown[] = [];
@@ -370,80 +312,25 @@ describe('editorMachine', () => {
       actor.stop();
     });
 
-    it('should rekey nested component display units on directory rename', async () => {
-      const oldMainUnitId = 'file:src/foo/main.ts';
-      const oldNestedUnitId = 'file:src/foo/nested/part.ts';
-      const newMainUnitId = 'file:src/bar/main.ts';
-      const newNestedUnitId = 'file:src/bar/nested/part.ts';
-      const actor = await startAndLoad({
-        loadResult: {
-          ...stubEditorState,
-          modelComponentDisplay: {
-            schemaVersion: 1,
-            unitsById: {
-              [oldMainUnitId]: { hiddenComponentIds: ['component:Housing'] },
-              [oldNestedUnitId]: { isolatedComponentIds: ['component:Gear'] },
-            },
-          },
-          viewSettings: {
-            view1: {
-              entryPath: 'src/foo/main.ts',
-              graphicsSettings: {
-                ...defaultGraphicsSettings,
-              },
-            },
-          },
-        },
+    it('should emit Kinematics reveal requests', async () => {
+      const actor = await startAndLoad({ loadResult: undefined });
+      const emitted: unknown[] = [];
+      actor.on('kinematicsRevealRequested', (event) => emitted.push(event));
+
+      actor.send({
+        type: 'revealModelComponentInKinematics',
+        entryPath: 'src/main.ts',
+        unitId: 'file:src/main.ts',
+        componentId: 'component:blocker-door-3',
       });
-
-      actor.send({ type: 'renameFile', oldPath: 'src/foo', newPath: 'src/bar' });
-
-      const settings = actor.getSnapshot().context.viewSettings['view1'];
-      expect(settings?.entryPath).toBe('src/bar/main.ts');
-      expect(actor.getSnapshot().context.modelComponentDisplay).toEqual({
-        schemaVersion: 1,
-        unitsById: {
-          [newMainUnitId]: { hiddenComponentIds: ['component:Housing'] },
-          [newNestedUnitId]: { isolatedComponentIds: ['component:Gear'] },
+      expect(emitted).toEqual([
+        {
+          type: 'kinematicsRevealRequested',
+          entryPath: 'src/main.ts',
+          unitId: 'file:src/main.ts',
+          componentId: 'component:blocker-door-3',
         },
-      });
-      actor.stop();
-    });
-
-    it('should prune component display units for deleted files and directories', async () => {
-      const mainUnitId = 'file:src/foo/main.ts';
-      const nestedUnitId = 'file:src/foo/nested/part.ts';
-      const keepUnitId = 'file:src/keep.ts';
-      const actor = await startAndLoad({
-        loadResult: {
-          ...stubEditorState,
-          modelComponentDisplay: {
-            schemaVersion: 1,
-            unitsById: {
-              [mainUnitId]: { hiddenComponentIds: ['component:Housing'] },
-              [nestedUnitId]: { isolatedComponentIds: ['component:Gear'] },
-              [keepUnitId]: { hiddenComponentIds: ['component:Keep'] },
-            },
-          },
-          viewSettings: {
-            view1: {
-              entryPath: 'src/foo/main.ts',
-              graphicsSettings: {
-                ...defaultGraphicsSettings,
-              },
-            },
-          },
-        },
-      });
-
-      actor.send({ type: 'pruneComponentDisplayForDeletedPath', path: 'src/foo' });
-
-      expect(actor.getSnapshot().context.modelComponentDisplay).toEqual({
-        schemaVersion: 1,
-        unitsById: {
-          [keepUnitId]: { hiddenComponentIds: ['component:Keep'] },
-        },
-      });
+      ]);
       actor.stop();
     });
 
@@ -714,6 +601,36 @@ describe('editorMachine', () => {
         vi.useRealTimers();
       }
     });
+
+    it('should acknowledge a failed save and retry it on flushNow', async () => {
+      vi.useFakeTimers();
+      try {
+        let writeCallCount = 0;
+        const actor = await startAndLoad({
+          loadResult: undefined,
+          saveResult: async () => {
+            writeCallCount += 1;
+            if (writeCallCount === 1) {
+              throw new Error('editor save failed');
+            }
+          },
+        });
+
+        actor.send({ type: 'openFile', path: 'src/a.ts', source: 'user' });
+        await vi.advanceTimersByTimeAsync(500);
+        await waitFor(actor, (state) => state.matches({ ready: { storing: 'idle' } }));
+        expect(actor.getSnapshot().context.error?.message).toBe('editor save failed');
+
+        actor.send({ type: 'flushNow' });
+        await vi.advanceTimersByTimeAsync(0);
+        await waitFor(actor, (state) => state.matches({ ready: { storing: 'idle' } }));
+        expect(writeCallCount).toBe(2);
+        expect(actor.getSnapshot().context.error).toBeUndefined();
+        actor.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // =========================================================================
@@ -775,32 +692,6 @@ describe('editorMachine', () => {
         await waitFor(actor, (s) => s.matches({ ready: { storing: 'idle' } }));
 
         expect(savedFocusedChatId).toBe('chat-42');
-        actor.stop();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it('should persist project-scoped model component display through the storing region', async () => {
-      vi.useFakeTimers();
-      try {
-        let savedDisplay: EditorState['modelComponentDisplay'];
-        const actor = await startAndLoad({
-          loadResult: undefined,
-          saveResult: async () => {
-            savedDisplay = actor.getSnapshot().context.modelComponentDisplay;
-          },
-        });
-        const modelComponentDisplay: NonNullable<EditorState['modelComponentDisplay']> = {
-          schemaVersion: 1,
-          unitsById: { 'file:src/main.ts': { hiddenComponentIds: ['component:Housing'] } },
-        };
-
-        actor.send({ type: 'setModelComponentDisplay', componentDisplay: modelComponentDisplay });
-        await vi.advanceTimersByTimeAsync(500);
-        await waitFor(actor, (state) => state.matches({ ready: { storing: 'idle' } }));
-
-        expect(savedDisplay).toEqual(modelComponentDisplay);
         actor.stop();
       } finally {
         vi.useRealTimers();
@@ -1064,6 +955,54 @@ describe('loading.ensuringFocusedChat', () => {
 // State: ready.operation.ensuringFocusedChat (runtime invariant)
 // ===========================================================================
 describe('ready.operation.ensuringFocusedChat', () => {
+  it('focuses a newly created chat without revalidating the chat list', async () => {
+    let ensureInvocationCount = 0;
+    const actor = await startAndLoad({
+      loadResult: stubEditorState,
+      ensureResult: async (input) => {
+        ensureInvocationCount += 1;
+        return {
+          type: 'focusedChatEnsured',
+          focusedChatId: input.requestedChatId ?? input.persistedChatId ?? 'chat-recovered',
+        };
+      },
+    });
+    expect(ensureInvocationCount).toBe(1);
+
+    actor.send({ type: 'focusKnownChat', chatId: 'chat-created' });
+
+    expect(actor.getSnapshot().context.requestedChatId).toBe('chat-created');
+    expect(actor.getSnapshot().context.focusedChatId).toBe('chat-created');
+    expect(actor.getSnapshot().matches({ ready: { operation: 'idle' } })).toBe(true);
+    expect(ensureInvocationCount).toBe(1);
+    actor.stop();
+  });
+
+  it('keeps the focused chat for a bare project URL instead of revalidating it', async () => {
+    let ensureInvocationCount = 0;
+    const actor = await startAndLoad({
+      loadResult: stubEditorState,
+      ensureResult: async (input) => {
+        ensureInvocationCount += 1;
+        return {
+          type: 'focusedChatEnsured',
+          focusedChatId: input.requestedChatId ?? input.persistedChatId ?? 'chat-recovered',
+        };
+      },
+    });
+    expect(ensureInvocationCount).toBe(1);
+    const { focusedChatId } = actor.getSnapshot().context;
+
+    actor.send({ type: 'setRequestedChatId', chatId: undefined });
+
+    // The route reads `requestedChatId` back to know the bare URL was consumed.
+    expect(actor.getSnapshot().context.requestedChatId).toBeUndefined();
+    expect(actor.getSnapshot().context.focusedChatId).toBe(focusedChatId);
+    expect(actor.getSnapshot().matches({ ready: { operation: 'idle' } })).toBe(true);
+    expect(ensureInvocationCount).toBe(1);
+    actor.stop();
+  });
+
   it('re-enters ensuringFocusedChat from idle when focusedChatId becomes undefined', async () => {
     let ensureInvocationCount = 0;
     const actor = await startAndLoad({

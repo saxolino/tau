@@ -11,7 +11,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { replicadKernel } from '#replicad.kernel.js';
 import { esbuildBundler } from '@taucad/esbuild';
-import { assertSuccess, createTestRuntimeClient } from '@taucad/runtime-testing';
+import { createTestRuntimeClient } from '@taucad/runtime-testing';
 import { defineRuntime } from '@taucad/runtime/worker';
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -113,10 +113,7 @@ const runtime = defineRuntime({ kernels: [replicadKernel()], bundlers: [esbuildB
 const exportStep = async (source: string, options?: { coordinateSystem: 'y-up' | 'z-up' }) => {
   const client = createTestRuntimeClient({ runtime, files: { 'main.ts': source } });
   try {
-    return await client.export('step', {
-      source: { path: 'main.ts' },
-      ...(options ? { exportOptions: options } : {}),
-    });
+    return await client.open({ source: { path: 'main.ts' } }).export('step', options ? { options } : undefined);
   } finally {
     await client.shutdown();
   }
@@ -124,8 +121,11 @@ const exportStep = async (source: string, options?: { coordinateSystem: 'y-up' |
 
 const exportStepText = async (source: string, options?: { coordinateSystem: 'y-up' | 'z-up' }): Promise<string> => {
   const exportResult = await exportStep(source, options);
-  assertSuccess(exportResult, 'GeoSpec STEP export');
-  return new TextDecoder().decode(exportResult.data[0]!.bytes);
+  expect(exportResult.success, 'GeoSpec STEP export').toBe(true);
+  if (!exportResult.success) {
+    throw new Error(exportResult.issues.map((issue) => issue.message).join('\n'));
+  }
+  return new TextDecoder().decode(exportResult.files[0].bytes);
 };
 
 const expectResolvedInterfaceStep = (stepText: string): void => {
@@ -158,10 +158,13 @@ describe('Replicad — GeoSpec STEP export', () => {
   it('should trace the complete model-to-STEP phase set', async () => {
     const client = createTestRuntimeClient({ runtime, files: { 'main.ts': datumModelSource } });
     const labels: string[] = [];
-    const unsubscribe = client.on('telemetry', (entries) => labels.push(...entries.map(({ name }) => name)));
+    const unsubscribe = client.on('telemetry', ({ entries }) => labels.push(...entries.map(({ name }) => name)));
     try {
-      const result = await client.export('step', { source: { path: 'main.ts' } });
-      assertSuccess(result, 'GeoSpec STEP export');
+      const result = await client.open({ source: { path: 'main.ts' } }).export('step');
+      expect(result.success, 'GeoSpec STEP export').toBe(true);
+      if (!result.success) {
+        throw new Error(result.issues.map((issue) => issue.message).join('\n'));
+      }
     } finally {
       unsubscribe();
       await client.shutdown();
@@ -171,7 +174,6 @@ describe('Replicad — GeoSpec STEP export', () => {
       expect.arrayContaining([
         'create.runOcMain',
         'create.resolveInterfaces',
-        'create.serializeNativeHandle',
         'export.exportSTEP',
         'step.product.prepare',
         'step.document.build',
@@ -180,6 +182,9 @@ describe('Replicad — GeoSpec STEP export', () => {
         'step.file.transfer',
       ]),
     );
+    /* D12: the export ran off the live handle, so no snapshot was ever needed. Serialising one here
+     * was pure cost — a BREP write of the whole model — and it is gone with the deferral. */
+    expect(labels).not.toContain('create.serializeNativeHandle');
   });
 
   it('should preserve resolved interfaces across independent public-client renders', async () => {

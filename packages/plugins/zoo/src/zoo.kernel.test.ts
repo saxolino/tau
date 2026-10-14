@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { NodeIO } from '@gltf-transform/core';
 import type { JSONDocument } from '@gltf-transform/core';
 
-import type { JSONSchema7 } from '@taucad/runtime/types';
+import type { JsonStructureSchema } from '@taucad/parameters';
 import { zooKernel } from '#zoo.kernel.js';
 import { zooOptionsSchema } from '#zoo.schemas.js';
 import { KclUtilities } from '#kcl-utils.js';
@@ -19,9 +19,7 @@ import type { GlbPrimitive } from '@taucad/geometry-core';
 
 const getParameterResult = async (files: Record<string, string>, mainFile: string) => {
   const definition = await resolveRuntimePluginDefinition('kernel', zooKernel());
-  const normalizedFiles = Object.fromEntries(
-    Object.entries(files).map(([path, content]) => [path.startsWith('/') ? path : `/${path}`, content]),
-  );
+  const normalizedFiles = { ...files };
   const runtime = createMockKernelRuntime({
     filesystemOverrides: {
       existsResult: (path) => normalizedFiles[path] !== undefined,
@@ -33,7 +31,7 @@ const getParameterResult = async (files: Record<string, string>, mainFile: strin
         return content;
       },
       readdirResult: (directory) => {
-        const prefix = directory === '/' ? '/' : `${directory}/`;
+        const prefix = directory === '' ? '' : `${directory}/`;
         return Object.keys(normalizedFiles)
           .filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes('/'))
           .map((path) => path.slice(prefix.length));
@@ -41,11 +39,7 @@ const getParameterResult = async (files: Record<string, string>, mainFile: strin
     },
   });
   const context = await definition.initialize({ baseUrl: 'https://api.zoo.dev' }, runtime);
-  return definition.getParameters(
-    { entryPath: mainFile.startsWith('/') ? mainFile : `/${mainFile}` },
-    runtime,
-    context,
-  );
+  return definition.describe({ entryPath: mainFile }, runtime, context);
 };
 
 const createTrianglePrimitive = (materialName?: string): GlbPrimitive => ({
@@ -54,12 +48,14 @@ const createTrianglePrimitive = (materialName?: string): GlbPrimitive => ({
   normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
   indices: new Uint32Array([0, 1, 2]),
   material: {
-    baseColorFactor: [1, 1, 1, 1],
-    metallicFactor: 0,
-    roughnessFactor: 1,
     doubleSided: true,
     alphaMode: 'OPAQUE',
     ...(materialName ? { name: materialName } : {}),
+    pbrMetallicRoughness: {
+      baseColorFactor: [1, 1, 1, 1],
+      metallicFactor: 0,
+      roughnessFactor: 1,
+    },
   },
 });
 
@@ -179,7 +175,7 @@ async function getParameters(
   files: Record<string, string>,
   mainFile: string,
 ): Promise<{
-  jsonSchema: JSONSchema7;
+  jsonSchema: JsonStructureSchema;
   defaultParameters: Record<string, unknown>;
 }> {
   const result = await getParameterResult(files, mainFile);
@@ -194,7 +190,7 @@ async function getParameters(
     throw new Error('Extraction failed');
   }
 
-  return result.data;
+  return { jsonSchema: result.data.parameters.schema, defaultParameters: { ...result.data.parameters.defaults } };
 }
 
 /**
@@ -263,9 +259,9 @@ describe('ZooWorker', () => {
         expect(jsonSchema).toMatchObject({
           type: 'object',
           properties: {
-            width: { type: 'number', default: 10 },
-            height: { type: 'number', default: 20 },
-            depth: { type: 'number', default: 5 },
+            width: { type: 'double', default: 10 },
+            height: { type: 'double', default: 20 },
+            depth: { type: 'double', default: 5 },
           },
         });
       });
@@ -710,10 +706,10 @@ export cube = garbage`,
         expect(result.success).toBe(false);
         expect(result.issues).toEqual([
           {
-            code: 'RUNTIME',
+            code: 'BUNDLER_FAILED',
             message: '`garbage` is not defined',
             severity: 'error',
-            type: 'unknown',
+            type: 'compilation',
             stack: '    at <anonymous> (main.kcl:3:14)',
             location: {
               fileName: 'main.kcl',
@@ -734,9 +730,7 @@ export cube = garbage`,
       });
 
       it('should return error with imported file name in message for multi-file project', async () => {
-        // NOTE: The KCL WASM only provides sourceRanges/backtrace for the import
-        // site in main.kcl (moduleId 0), not for the actual error in bad.kcl.
-        // The imported filename and sub-error are embedded in the message string.
+        // KCL 0.1.184 provides the cross-file source and import frame.
         const result = await getParametersWithError(
           {
             'main.kcl': `@settings(defaultLengthUnit = mm, kclVersion = 1.0)
@@ -753,17 +747,23 @@ export cube = garbage`,
         expect(result.issues).toEqual([
           {
             code: 'BUNDLER_FAILED',
-            message: 'Error loading imported file (bad.kcl). Open it to view more details.\n  `garbage` is not defined',
+            message: '`garbage` is not defined',
             severity: 'error',
             type: 'compilation',
-            stack: '    at <anonymous> (main.kcl:3:0)',
-            // Location points to the import site in main.kcl (WASM limitation)
+            stack: '    at import bad.kcl (bad.kcl:3:14)\n    at <anonymous> (main.kcl:3:0)',
             location: {
-              fileName: 'main.kcl',
+              fileName: 'bad.kcl',
               startLineNumber: 3,
-              startColumn: 0,
+              startColumn: 14,
             },
             stackFrames: [
+              {
+                fileName: 'bad.kcl',
+                lineNumber: 3,
+                columnNumber: 14,
+                context: 'user',
+                functionName: 'import bad.kcl',
+              },
               {
                 fileName: 'main.kcl',
                 lineNumber: 3,
@@ -795,10 +795,10 @@ result = makeBadShape()`,
         expect(result.success).toBe(false);
         expect(result.issues).toEqual([
           {
-            code: 'RUNTIME',
+            code: 'BUNDLER_FAILED',
             message: '`garbage` is not defined',
             severity: 'error',
-            type: 'unknown',
+            type: 'compilation',
             stack: '    at makeBadShape (main.kcl:4:9)\n    at <anonymous> (main.kcl:7:9)',
             location: {
               fileName: 'main.kcl',
@@ -831,10 +831,6 @@ result = makeBadShape()`,
       it('should return error with nested import chain in message for 3-file project', async () => {
         // 3-file chain: main.kcl -> middle.kcl -> bad.kcl
         // Error is in bad.kcl, imported transitively through middle.kcl.
-        //
-        // NOTE: Same WASM limitation as 2-file imports -- the backtrace only
-        // contains a single frame at the import site in main.kcl. The import
-        // chain is encoded in the nested error message instead.
         const result = await getParametersWithError(
           {
             'main.kcl': `@settings(defaultLengthUnit = mm, kclVersion = 1.0)
@@ -856,19 +852,31 @@ export badThing = garbage`,
         expect(result.issues).toEqual([
           {
             code: 'BUNDLER_FAILED',
-            message:
-              'Error loading imported file (middle.kcl). Open it to view more details.\n  Error loading imported file (bad.kcl). Open it to view more details.\n  `garbage` is not defined',
+            message: '`garbage` is not defined',
             severity: 'error',
             type: 'compilation',
-            stack: '    at <anonymous> (main.kcl:3:0)',
-            // Location points to the import site in main.kcl (WASM limitation)
+            stack:
+              '    at import bad.kcl (bad.kcl:3:18)\n    at import middle.kcl (middle.kcl:3:0)\n    at <anonymous> (main.kcl:3:0)',
             location: {
-              fileName: 'main.kcl',
+              fileName: 'bad.kcl',
               startLineNumber: 3,
-              startColumn: 0,
+              startColumn: 18,
             },
-            // Only one stack frame at the import site (no cross-file frames)
             stackFrames: [
+              {
+                fileName: 'bad.kcl',
+                lineNumber: 3,
+                columnNumber: 18,
+                context: 'user',
+                functionName: 'import bad.kcl',
+              },
+              {
+                fileName: 'middle.kcl',
+                lineNumber: 3,
+                columnNumber: 0,
+                context: 'user',
+                functionName: 'import middle.kcl',
+              },
               {
                 fileName: 'main.kcl',
                 lineNumber: 3,
@@ -940,11 +948,17 @@ cone = startSketchOn(XZ)
         async (_program, _path, options: { signal: AbortSignal }) =>
           new Promise<never>((_resolve, reject) => {
             rejectCommand = reject;
-            options.signal.addEventListener('abort', () => void cancel(), { once: true });
+            options.signal.addEventListener(
+              'abort',
+              () => {
+                void cancel();
+              },
+              { once: true },
+            );
             markCommandPending();
           }),
       );
-      const context: Parameters<typeof zooDefinition.createGeometry>[2] = {
+      const context: Parameters<typeof zooDefinition.evaluate>[2] = {
         baseUrl: 'ws://fake.example/modeling-commands',
         closeErrors: undefined,
         token: undefined,
@@ -961,8 +975,8 @@ cone = startSketchOn(XZ)
         .spyOn(KclUtilities, 'injectParametersIntoProgram')
         .mockImplementation((program) => program);
       try {
-        const operation = zooDefinition.createGeometry(
-          { entryPath: '/main.kcl', parameters: {} },
+        const operation = zooDefinition.evaluate(
+          { entryPath: 'main.kcl', parameters: {}, options: {} },
           createMockKernelRuntime({
             signal: controller.signal,
             filesystemOverrides: { readFileResult: 'cube = startSketchOn(XY)' },
@@ -987,49 +1001,55 @@ cone = startSketchOn(XZ)
 
   describe('exportGeometry', () => {
     it('should use live engine-session native handles instead of durable snapshots', async () => {
-      expect(zooDefinition.serializeNativeHandle).toBeUndefined();
-      expect(zooDefinition.deserializeNativeHandle).toBeUndefined();
-      expect(zooDefinition.isNativeHandleValid).toBeDefined();
+      expect(zooDefinition.serializeHandle).toBeUndefined();
+      expect(zooDefinition.deserializeHandle).toBeUndefined();
+      expect(zooDefinition.isHandleValid).toBeDefined();
 
-      const context: Parameters<typeof zooDefinition.createGeometry>[2] = {
+      const context: Parameters<typeof zooDefinition.evaluate>[2] = {
         baseUrl: 'ws://fake.example/modeling-commands',
         closeErrors: undefined,
         token: undefined,
         fileSystemManager: undefined,
         kclUtils: undefined,
       };
-      const result = await zooDefinition.createGeometry(
+      const result = await zooDefinition.evaluate(
         {
-          entryPath: '/main.kcl',
+          entryPath: 'main.kcl',
           parameters: {},
+          options: {},
         },
         createMockKernelRuntime({ filesystemOverrides: { readFileResult: '' } }),
         context,
       );
 
-      expect(result.nativeHandle).toEqual({ kind: 'zoo-live-engine-session', hasGeometry: false });
-      expect(result.geometry?.format).toBe('gltf');
-      if (result.geometry?.format === 'gltf') {
-        const document = await new NodeIO().readBinary(result.geometry.content);
-        expect(document.getRoot().listMeshes()).toHaveLength(0);
+      expect(result.handle).toEqual({ kind: 'zoo-live-engine-session', hasGeometry: false, generation: 1 });
+      const rendered = await zooDefinition.render!(
+        { view: 'model', handle: result.handle, options: {} },
+        createMockKernelRuntime(),
+        context,
+      );
+      if (typeof rendered.content === 'string') {
+        throw new TypeError('Zoo model view returned text instead of GLB bytes.');
       }
+      const document = await new NodeIO().readBinary(rendered.content);
+      expect(document.getRoot().listMeshes()).toHaveLength(0);
     });
 
     it('should invalidate geometry handles when the KCL engine no longer has an executed program', async () => {
-      const { isNativeHandleValid } = zooDefinition;
-      expect(isNativeHandleValid).toBeDefined();
-      if (!isNativeHandleValid) {
+      const { isHandleValid } = zooDefinition;
+      expect(isHandleValid).toBeDefined();
+      if (!isHandleValid) {
         throw new Error('Zoo kernel must declare live-handle validity');
       }
 
-      type ZooValidityContext = Parameters<typeof isNativeHandleValid>[2];
+      type ZooValidityContext = Parameters<typeof isHandleValid>[2];
       const runtime = createMockKernelRuntime();
-      const liveHandle = { kind: 'zoo-live-engine-session', hasGeometry: true } as const;
-      const emptyHandle = { kind: 'zoo-live-engine-session', hasGeometry: false } as const;
+      const liveHandle = { kind: 'zoo-live-engine-session', hasGeometry: true, generation: 0 } as const;
+      const emptyHandle = { kind: 'zoo-live-engine-session', hasGeometry: false, generation: 0 } as const;
 
       await expect(
         Promise.resolve(
-          isNativeHandleValid({ nativeHandle: liveHandle }, runtime, {
+          isHandleValid({ handle: liveHandle }, runtime, {
             baseUrl: 'ws://fake.example/modeling-commands',
             fileSystemManager: undefined,
             kclUtils: { canExportFromMemory: false },
@@ -1039,7 +1059,7 @@ cone = startSketchOn(XZ)
 
       await expect(
         Promise.resolve(
-          isNativeHandleValid({ nativeHandle: liveHandle }, runtime, {
+          isHandleValid({ handle: liveHandle }, runtime, {
             baseUrl: 'ws://fake.example/modeling-commands',
             fileSystemManager: undefined,
             kclUtils: { canExportFromMemory: true },
@@ -1047,9 +1067,21 @@ cone = startSketchOn(XZ)
         ),
       ).resolves.toBe(true);
 
+      // A later evaluation may leave the engine exportable while replacing its program.
       await expect(
         Promise.resolve(
-          isNativeHandleValid({ nativeHandle: emptyHandle }, runtime, {
+          isHandleValid({ handle: liveHandle }, runtime, {
+            baseUrl: 'ws://fake.example/modeling-commands',
+            fileSystemManager: undefined,
+            generation: 1,
+            kclUtils: { canExportFromMemory: true },
+          } as ZooValidityContext),
+        ),
+      ).resolves.toBe(false);
+
+      await expect(
+        Promise.resolve(
+          isHandleValid({ handle: emptyHandle }, runtime, {
             baseUrl: 'ws://fake.example/modeling-commands',
             fileSystemManager: undefined,
             kclUtils: undefined,
@@ -1058,8 +1090,43 @@ cone = startSketchOn(XZ)
       ).resolves.toBe(true);
     });
 
+    it('fails stale render and export after a later engine generation, including empty output', async () => {
+      const context: Parameters<typeof zooDefinition.evaluate>[2] = {
+        baseUrl: 'ws://fake.example/modeling-commands',
+        closeErrors: undefined,
+        token: undefined,
+        fileSystemManager: undefined,
+        kclUtils: undefined,
+      };
+      const runtime = createMockKernelRuntime({ filesystemOverrides: { readFileResult: '' } });
+      const input = { entryPath: 'main.kcl', parameters: {}, options: {} };
+      const first = await zooDefinition.evaluate(input, runtime, context);
+      const firstRender = await zooDefinition.render!(
+        { view: 'model', handle: first.handle, options: {} },
+        runtime,
+        context,
+      );
+      const next = await zooDefinition.evaluate(input, runtime, context);
+      const nextRender = await zooDefinition.render!(
+        { view: 'model', handle: next.handle, options: {} },
+        runtime,
+        context,
+      );
+      expect(nextRender.content).toEqual(firstRender.content);
+      await expect(
+        zooDefinition.render!({ view: 'model', handle: first.handle, options: {} }, runtime, context),
+      ).rejects.toThrow(/no longer the current engine program/);
+      await expect(
+        zooDefinition.export!(
+          { exportId: 'glb', handle: first.handle, options: { coordinateSystem: 'y-up', unit: { length: 'meter' } } },
+          runtime,
+          context,
+        ),
+      ).rejects.toThrow(/no longer the current engine program/);
+    });
+
     it('should export empty GLB and glTF files for empty handles but reject STEP and STL', async () => {
-      const context: Parameters<typeof zooDefinition.exportGeometry>[2] = {
+      const context: Parameters<NonNullable<typeof zooDefinition.export>>[2] = {
         baseUrl: 'ws://fake.example/modeling-commands',
         closeErrors: undefined,
         token: undefined,
@@ -1067,55 +1134,51 @@ cone = startSketchOn(XZ)
         kclUtils: undefined,
       };
       const runtime = createMockKernelRuntime();
-      const nativeHandle = { kind: 'zoo-live-engine-session', hasGeometry: false } as const;
+      const nativeHandle = { kind: 'zoo-live-engine-session', hasGeometry: false, generation: 0 } as const;
 
-      const glbResult = await zooDefinition.exportGeometry(
+      const glbResult = await zooDefinition.export!(
         {
-          format: 'glb',
-          nativeHandle,
+          exportId: 'glb',
+          handle: nativeHandle,
           options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
         },
         runtime,
         context,
       );
-      expect(glbResult.success).toBe(true);
-      if (glbResult.success) {
-        const document = await new NodeIO().readBinary(glbResult.data[0]!.bytes);
-        expect(document.getRoot().listMeshes()).toHaveLength(0);
-      }
+      const glbDocument = await new NodeIO().readBinary(glbResult.files[0].bytes);
+      expect(glbDocument.getRoot().listMeshes()).toHaveLength(0);
 
-      const gltfResult = await zooDefinition.exportGeometry(
+      const gltfResult = await zooDefinition.export!(
         {
-          format: 'gltf',
-          nativeHandle,
+          exportId: 'gltf',
+          handle: nativeHandle,
           options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
         },
         runtime,
         context,
       );
-      expect(gltfResult.success).toBe(true);
-      if (gltfResult.success) {
-        const json = JSON.parse(new TextDecoder().decode(gltfResult.data[0]!.bytes)) as { meshes: unknown[] };
-        expect(json.meshes).toEqual([]);
-      }
+      const json = JSON.parse(new TextDecoder().decode(gltfResult.files[0].bytes)) as { meshes: unknown[] };
+      expect(json.meshes).toEqual([]);
 
-      const stepResult = await zooDefinition.exportGeometry(
-        { format: 'step', nativeHandle, options: { coordinateSystem: 'y-up' } },
-        runtime,
-        context,
-      );
-      expect(stepResult.success).toBe(false);
+      await expect(
+        zooDefinition.export!(
+          { exportId: 'step', handle: nativeHandle, options: { coordinateSystem: 'y-up' } },
+          runtime,
+          context,
+        ),
+      ).rejects.toThrow('No geometry available for export.');
 
-      const stlResult = await zooDefinition.exportGeometry(
-        {
-          format: 'stl',
-          nativeHandle,
-          options: { binary: true, coordinateSystem: 'y-up', unit: { length: 'meter' } },
-        },
-        runtime,
-        context,
-      );
-      expect(stlResult.success).toBe(false);
+      await expect(
+        zooDefinition.export!(
+          {
+            exportId: 'stl',
+            handle: nativeHandle,
+            options: { binary: true, coordinateSystem: 'y-up', unit: { length: 'meter' } },
+          },
+          runtime,
+          context,
+        ),
+      ).rejects.toThrow('No geometry available for export.');
     });
 
     it('should normalize generated GLB names from the KCL engine', async () => {
@@ -1125,7 +1188,7 @@ cone = startSketchOn(XZ)
         .mockResolvedValue([
           { contents: await createNamedGlb('Mesh', { materialName: engineMaterialName, sceneName: 'Scene' }) },
         ]);
-      const context: Parameters<typeof zooDefinition.exportGeometry>[2] = {
+      const context: Parameters<NonNullable<typeof zooDefinition.export>>[2] = {
         baseUrl: 'ws://fake.example/modeling-commands',
         closeErrors: undefined,
         token: undefined,
@@ -1137,31 +1200,28 @@ cone = startSketchOn(XZ)
       };
 
       const runtime = createMockKernelRuntime();
-      const result = await zooDefinition.exportGeometry(
+      const result = await zooDefinition.export!(
         {
-          format: 'glb',
-          nativeHandle: { kind: 'zoo-live-engine-session', hasGeometry: true },
+          exportId: 'glb',
+          handle: { kind: 'zoo-live-engine-session', hasGeometry: true, generation: 0 },
           options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
         },
         runtime,
         context,
       );
 
-      expect(result.success).toBe(true);
       expect(exportFromMemory).toHaveBeenCalledWith(expect.anything(), { signal: runtime.signal });
-      if (result.success) {
-        expect(await readGlbNodeNames(result.data[0]!.bytes)).toEqual(['Shape 1']);
-        expect(await readGlbMaterialAndSceneNames(result.data[0]!.bytes)).toEqual({
-          materialNames: [''],
-          sceneNames: [''],
-        });
-      }
+      expect(await readGlbNodeNames(result.files[0].bytes)).toEqual(['Shape 1']);
+      expect(await readGlbMaterialAndSceneNames(result.files[0].bytes)).toEqual({
+        materialNames: [''],
+        sceneNames: [''],
+      });
     });
 
     it('should convert canonical y-up meter GLB evidence to z-up millimeters exactly once', async () => {
       const sourceGlb = await createCoordinateGlb();
       const exportFromMemory = vi.fn().mockResolvedValue([{ contents: sourceGlb }]);
-      const context: Parameters<typeof zooDefinition.exportGeometry>[2] = {
+      const context: Parameters<NonNullable<typeof zooDefinition.export>>[2] = {
         baseUrl: 'ws://fake.example/modeling-commands',
         closeErrors: undefined,
         token: undefined,
@@ -1171,33 +1231,27 @@ cone = startSketchOn(XZ)
           exportFromMemory,
         } as unknown as KclUtilities,
       };
-      const nativeHandle = { kind: 'zoo-live-engine-session', hasGeometry: true } as const;
-      const yUp = await zooDefinition.exportGeometry(
+      const nativeHandle = { kind: 'zoo-live-engine-session', hasGeometry: true, generation: 0 } as const;
+      const yUp = await zooDefinition.export!(
         {
-          format: 'glb',
-          nativeHandle,
+          exportId: 'glb',
+          handle: nativeHandle,
           options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
         },
         createMockKernelRuntime(),
         context,
       );
-      const zUp = await zooDefinition.exportGeometry(
+      const zUp = await zooDefinition.export!(
         {
-          format: 'glb',
-          nativeHandle,
+          exportId: 'glb',
+          handle: nativeHandle,
           options: { coordinateSystem: 'z-up', unit: { length: 'millimeter' } },
         },
         createMockKernelRuntime(),
         context,
       );
-      expect(yUp.success).toBe(true);
-      expect(zUp.success).toBe(true);
-      if (!yUp.success || !zUp.success) {
-        return;
-      }
-
-      const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.data[0]!.bytes });
-      const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.data[0]!.bytes });
+      const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.files[0].bytes });
+      const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.files[0].bytes });
       expect(yUpEvidence).toEqual(mapZupMillimetersToYupMeters(zUpEvidence));
     });
 
@@ -1208,7 +1262,7 @@ cone = startSketchOn(XZ)
         .mockResolvedValue([
           { contents: createNamedGltf('Geometry', { materialName: engineMaterialName, sceneName: 'Scene' }) },
         ]);
-      const context: Parameters<typeof zooDefinition.exportGeometry>[2] = {
+      const context: Parameters<NonNullable<typeof zooDefinition.export>>[2] = {
         baseUrl: 'ws://fake.example/modeling-commands',
         closeErrors: undefined,
         token: undefined,
@@ -1219,24 +1273,21 @@ cone = startSketchOn(XZ)
         } as unknown as KclUtilities,
       };
 
-      const result = await zooDefinition.exportGeometry(
+      const result = await zooDefinition.export!(
         {
-          format: 'gltf',
-          nativeHandle: { kind: 'zoo-live-engine-session', hasGeometry: true },
+          exportId: 'gltf',
+          handle: { kind: 'zoo-live-engine-session', hasGeometry: true, generation: 0 },
           options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
         },
         createMockKernelRuntime(),
         context,
       );
 
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(await readGltfNodeNames(result.data[0]!.bytes)).toEqual(['Shape 1']);
-        expect(await readGltfMaterialAndSceneNames(result.data[0]!.bytes)).toEqual({
-          materialNames: [''],
-          sceneNames: [''],
-        });
-      }
+      expect(await readGltfNodeNames(result.files[0].bytes)).toEqual(['Shape 1']);
+      expect(await readGltfMaterialAndSceneNames(result.files[0].bytes)).toEqual({
+        materialNames: [''],
+        sceneNames: [''],
+      });
     });
   });
 });

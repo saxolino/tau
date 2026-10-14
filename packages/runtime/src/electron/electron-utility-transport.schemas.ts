@@ -9,7 +9,18 @@
 
 import type { RuntimeFileSystem } from '#filesystem/index.js';
 import type { KernelRuntimeWorker } from '#framework/kernel-runtime-worker.js';
+import type { MachineChannelClient } from '#machines/machine-channel.js';
+import type { MessagePortMainLike } from '@taucad/rpc';
 import { z } from 'zod';
+
+/** Same shape as the WebSocket transport's `machines` option: one lazy channel factory, or a truthful refusal. */
+const machinesSchema = z.union([
+  z.strictObject({
+    available: z.literal(true),
+    connect: z.custom<() => MachineChannelClient>((value) => typeof value === 'function'),
+  }),
+  z.strictObject({ available: z.literal(false), reason: z.enum(['unsupported', 'not-granted']) }),
+]);
 
 /**
  * Renderer-side options. The `port` is the WHATWG `MessagePort` the
@@ -28,13 +39,33 @@ export const electronUtilityClientOptionsSchema = z.object({
       typeof (value as { postMessage?: unknown }).postMessage === 'function',
     { message: 'port must be a MessagePort' },
   ),
+  /** Authenticated machines service the shell brokered beside the runtime port. */
+  machines: machinesSchema.optional(),
 });
 
 /** Renderer-side validated options inferred from schema. @public */
 export type ElectronUtilityTransportOptions = z.input<typeof electronUtilityClientOptionsSchema>;
 
+/** Emitter-shaped port options for a main-brokered utility-to-utility client. @public */
+export const electronUtilityMainClientOptionsSchema = z.object({
+  port: z.custom<MessagePortMainLike>(
+    (value) =>
+      value !== null &&
+      typeof value === 'object' &&
+      typeof (value as { postMessage?: unknown }).postMessage === 'function' &&
+      typeof (value as { on?: unknown }).on === 'function',
+    { message: 'port must be an emitter-shaped MessagePortMain' },
+  ),
+  release: z
+    .custom<(reason: 'requested' | 'operation-timeout') => void>((value) => typeof value === 'function', {
+      message: 'release must be a function',
+    })
+    .optional(),
+});
+
 /** Utility-process options owned by the standalone host factory. @public */
 export type ElectronUtilityHostOptions = {
-  readonly fileSystem: RuntimeFileSystem;
+  /** Static filesystem for callers that do not transfer one in the boot frame. */
+  readonly fileSystem?: RuntimeFileSystem;
   readonly worker: KernelRuntimeWorker;
 };

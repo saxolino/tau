@@ -29,7 +29,7 @@ describe('runnerResultToTestModelOutput', () => {
         targetFile: '*.geospec.ts',
       }),
     ]);
-    expect(output.total).toBe(1);
+    expect(output.total).toBe(0);
   });
 
   it('should report no matching tests when file or directory filters select nothing', () => {
@@ -44,7 +44,7 @@ describe('runnerResultToTestModelOutput', () => {
         targetFile: '*.geospec.ts',
       }),
     ]);
-    expect(output.total).toBe(1);
+    expect(output.total).toBe(0);
   });
 
   it('should preserve runtime export diagnostics in compact failures', () => {
@@ -114,5 +114,40 @@ describe('runnerResultToTestModelOutput', () => {
         ],
       }),
     ]);
+  });
+
+  it('should not treat arrays with record-like properties as diagnostic detail records', () => {
+    const details = Object.assign([], {
+      issues: [{ code: 'SHOULD_NOT_SURFACE', message: 'array property' }],
+    });
+    const result: GeoSpecRunnerResult = {
+      success: false,
+      passed: 0,
+      failed: 1,
+      selectedTests: 1,
+      files: [
+        {
+          file: 'main.geospec.ts',
+          result: {
+            success: true,
+            passed: false,
+            bundle: emptyBundle(),
+            tests: [
+              {
+                suite: [],
+                name: 'array details',
+                status: 'failed',
+                assertions: [],
+                diagnostics: [{ code: 'TEST', severity: 'error', message: 'Top-level issue', details }],
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const output = runnerResultToTestModelOutput(result, ['main.geospec.ts']);
+
+    expect(output.failures[0]?.reason).toBe('Top-level issue');
   });
 });

@@ -4,7 +4,7 @@
   "description": "Monaco LSP bindings and language filesystem bridge for the web editor",
   "type": "module",
   "private": true,
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "exports": {
     "./in-process-jsonrpc": {
       "types": "./src/in-process-jsonrpc.ts",
@@ -51,7 +51,9 @@
     "json-rpc-2.0": "^1.7.1",
     "monaco-editor": "^0.55.1",
     "vscode-languageserver-protocol": "^3.18.0",
-    "vscode-uri": "catalog:",
+    "vscode-uri": "catalog:"
+  },
+  "devDependencies": {
     "zod": "catalog:"
   },
   "imports": {

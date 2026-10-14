@@ -1,0 +1,38 @@
+{
+  "name": "host",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/host",
+  "projectType": "library",
+  "tags": ["scope:shared", "type:package"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
+      "options": {
+        "command": "tsdown",
+        "cwd": "{projectRoot}"
+      }
+    },
+    "formal": {},
+    "formal:nightly": {
+      "options": {
+        "command": "vitest run --root packages/host src/acp/run.integration.test.ts src/acp/run.interrupts.integration.test.ts && node tools/formal/src/cli.ts logs host && node tools/formal/src/cli.ts nightly packages/host && vitest run --root packages/host src/acp/acp-sessions.machine.conformance.test.ts",
+        "env": { "FORMAL_SIMULATED": "out/test-results/formal/packages/host/simulated" }
+      }
+    },
+    "test:acp-live": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "metadata": {
+        "description": "One real tool turn through each selected pinned ACP adapter, against the operator's own Codex and Claude logins. Kept off the default test target because it spends their quota; a selected unavailable adapter fails explicitly."
+      },
+      "options": {
+        "cwd": "{workspaceRoot}/packages/host",
+        "command": "../../node_modules/.bin/vitest run --config vitest.config.ts src/acp/acp-live.integration.test.ts",
+        "env": {
+          "TAU_ACP_LIVE": "1"
+        }
+      }
+    }
+  }
+}

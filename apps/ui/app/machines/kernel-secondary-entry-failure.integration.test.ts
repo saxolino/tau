@@ -1,8 +1,10 @@
 // @vitest-environment node
-import { createActor, setup, waitFor } from 'xstate';
+import { createActor, setup, types, waitFor } from 'xstate';
 import { describe, expect, it, vi } from 'vitest';
 import { ChangeEventBus, MountTable, ProviderRegistry, ResourceQueue, WorkspaceFileService } from '@taucad/filesystem';
-import type { FileSystemBridgeConnection } from '@taucad/fs-bridge';
+import { composeView } from '@taucad/filesystem/composed-view';
+import { tauPathPolicy } from '@taucad/filesystem/path-registry';
+import type { FileSystemBridgeConnection, RootedBridgeConsumer } from '@taucad/fs-bridge';
 import { jscad } from '@taucad/jscad';
 import { esbuild } from '@taucad/esbuild';
 import { inProcessTransport } from '@taucad/runtime/transport/in-process';
@@ -11,7 +13,7 @@ import { defineRuntime } from '@taucad/runtime/worker';
 import { awaitFreshRender } from '#machines/await-fresh-render.js';
 import { cadMachine } from '#machines/cad.machine.js';
 import type { CadContext } from '#machines/cad.machine.js';
-import { uiRuntimeConfigSchema } from '#runtime/ui-runtime.definition.js';
+import { uiRuntimeConfigSchema } from '#runtime/ui-runtime.schema.js';
 import type { LazyKernelOptionsFactory } from '#types/runtime-client.alias.js';
 
 const validMain = [
@@ -40,15 +42,13 @@ const fixtureRuntime = defineRuntime({
 
 type FileManagerProbeContext = {
   contentService: Record<string, unknown>;
-  openFileSystemBridge: (root: string) => FileSystemBridgeConnection;
+  openFileSystemBridge: (root: string, consumer: RootedBridgeConsumer) => FileSystemBridgeConnection;
 };
 
 const fileManagerProbe = setup({
-  types: {
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- XState setup requires type witnesses.
-    context: {} as FileManagerProbeContext,
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- XState setup requires type witnesses.
-    input: {} as FileManagerProbeContext,
+  schemas: {
+    context: types<FileManagerProbeContext>(),
+    input: types<FileManagerProbeContext>(),
   },
 }).createMachine({
   initial: 'ready',
@@ -70,7 +70,11 @@ const createFixture = async (partSource: string) => {
     storageRootKey: 'memory:kernel-entry-failure',
   });
   const mountTable = new MountTable();
-  mountTable.mount('/', provider, { backend: 'memory', storageRootKey: 'memory:kernel-entry-failure' });
+  mountTable.mount('/', provider, {
+    class: 'authored',
+    backend: 'memory',
+    storageRootKey: 'memory:kernel-entry-failure',
+  });
   const eventBus = new ChangeEventBus();
   const fileService = new WorkspaceFileService({
     providerRegistry,
@@ -81,13 +85,21 @@ const createFixture = async (partSource: string) => {
   await fileService.writeFile('/main.ts', validMain);
   await fileService.writeFile('/lib/part.ts', partSource);
 
-  const { exposeFileSystem, filesystemBridgeConnectMessageType, openFileSystemBridge } =
+  const { exposeFileSystem, filesystemBridgeConnectMessageType, openFileSystemBridge, workspaceBridgeService } =
     await import('@taucad/fs-bridge');
   const workerScope = new EventTarget();
   vi.stubGlobal('self', workerScope);
-  const exposedFileSystem = exposeFileSystem(fileService, {
+  const exposedFileSystem = exposeFileSystem(workspaceBridgeService(fileService), {
+    policy: tauPathPolicy,
     changeEventBus: eventBus,
-    handlerForRoot: (root, context) => fileService.createRootedFileSystem(root, context),
+    /* The worker's own switch (W2): the kernel names `'agent'`, so this fixture
+     * renders through the masked view it really reads, not the checkout. */
+    handlerForRoot: (root, context, consumer) => {
+      const filesystem = fileService.createRootedFileSystem(root, context);
+      return consumer === 'working-copy'
+        ? filesystem
+        : composeView({ filesystem }, { consumer, policy: tauPathPolicy });
+    },
   });
   const bridgeWorker = {
     postMessage(message: unknown): void {
@@ -97,8 +109,12 @@ const createFixture = async (partSource: string) => {
   const fileManagerRef = createActor(fileManagerProbe, {
     input: {
       contentService: fileService as unknown as Record<string, unknown>,
-      openFileSystemBridge: (root) =>
-        openFileSystemBridge(bridgeWorker as Worker, { messageType: filesystemBridgeConnectMessageType, root }),
+      openFileSystemBridge: (root, consumer) =>
+        openFileSystemBridge(bridgeWorker as Worker, {
+          messageType: filesystemBridgeConnectMessageType,
+          root,
+          consumer,
+        }),
     },
   }).start();
 
@@ -113,7 +129,7 @@ const createFixture = async (partSource: string) => {
           fileSystemRoot: '/',
         },
       }).start();
-      actor.send({ type: 'setRenderTimeout', renderTimeout: 0 });
+      actor.send({ type: 'setOperationTimeout', operationTimeout: 0 });
       return actor;
     },
     dispose() {
@@ -136,35 +152,28 @@ describe('kernel entry failure settlement', { timeout: 30_000 }, () => {
       });
       expect(connectedMain.value, JSON.stringify([...connectedMain.context.kernelIssues])).toBe('idle');
       main.send({ type: 'initializeModel', entryPath: 'main.ts' });
-      await waitFor(
-        main,
-        (snapshot) =>
-          snapshot.value === 'idle' &&
-          snapshot.context.geometry !== undefined &&
-          snapshot.context.lastRequestedRenderId === 1 &&
-          snapshot.context.lastSettledRenderId === 1,
-        { timeout: 5000 },
-      );
-      const lastViewableMainGeometry = main.getSnapshot().context.geometry;
-      expect(lastViewableMainGeometry).toBeDefined();
+      await waitFor(main, (snapshot) => snapshot.value === 'idle' && snapshot.context.rendering?.success === true, {
+        timeout: 5000,
+      });
+      const lastViewableMainRendering = main.getSnapshot().context.rendering;
+      expect(lastViewableMainRendering?.success).toBe(true);
 
       await fixture.fileService.writeFile('/lib/part.ts', brokenPart);
       const failedMain = await waitFor(
         main,
         (snapshot) =>
-          snapshot.value === 'idle' &&
+          snapshot.value === 'error' &&
           (snapshot.context.kernelIssues
             .get('main.ts')
             ?.some((issue) => issue.message.includes('radius must be positive')) ??
             false),
         { timeout: 5000 },
       );
-      expect(failedMain.context.geometry).toBe(lastViewableMainGeometry);
-      expect(failedMain.context.latestGeometryOutcome).toBe('failure');
+      expect(failedMain.context.rendering).toBe(lastViewableMainRendering);
+      expect(failedMain.context.latestRenderingOutcome).toBe('failure');
       const returnedMain = await awaitFreshRender(main, { awaitTimeout: 5000 });
-      expect(returnedMain).toBe(failedMain);
-      expect(returnedMain.context.lastRequestedRenderId).toBe(1);
-      expect(returnedMain.context.lastSettledRenderId).toBe(1);
+      expect(returnedMain.context.rendering).toBe(lastViewableMainRendering);
+      expect(returnedMain.context.latestRenderingOutcome).toBe('failure');
 
       secondary = fixture.createCadActor();
       const connectedSecondary = await waitFor(
@@ -178,7 +187,7 @@ describe('kernel entry failure settlement', { timeout: 30_000 }, () => {
       const failedSecondary = await waitFor(
         secondary,
         (snapshot) =>
-          snapshot.value === 'idle' &&
+          snapshot.value === 'error' &&
           (snapshot.context.kernelIssues
             .get('lib/part.ts')
             ?.some((issue) => issue.message.includes('radius must be positive')) ??
@@ -186,10 +195,9 @@ describe('kernel entry failure settlement', { timeout: 30_000 }, () => {
         { timeout: 5000 },
       );
 
-      expect(failedSecondary.context.lastRequestedRenderId).toBe(1);
-      expect(failedSecondary.context.lastSettledRenderId).toBe(1);
-      expect(failedSecondary.context.latestGeometryOutcome).toBe('failure');
-      await expect(secondarySettlement).resolves.toBe(failedSecondary);
+      expect(failedSecondary.context.rendering).toBeUndefined();
+      expect(failedSecondary.context.latestRenderingOutcome).toBe('failure');
+      await expect(secondarySettlement).resolves.toMatchObject({ context: { latestRenderingOutcome: 'failure' } });
     } finally {
       main.stop();
       secondary?.stop();
@@ -213,7 +221,7 @@ describe('kernel entry failure settlement', { timeout: 30_000 }, () => {
       const failedPrimary = await waitFor(
         primary,
         (snapshot) =>
-          snapshot.value === 'idle' &&
+          snapshot.value === 'error' &&
           (snapshot.context.kernelIssues
             .get('main.ts')
             ?.some((issue) => issue.message.includes('radius must be positive')) ??
@@ -221,10 +229,9 @@ describe('kernel entry failure settlement', { timeout: 30_000 }, () => {
         { timeout: 5000 },
       );
 
-      expect(failedPrimary.context.lastRequestedRenderId).toBe(1);
-      expect(failedPrimary.context.lastSettledRenderId).toBe(1);
-      expect(failedPrimary.context.latestGeometryOutcome).toBe('failure');
-      await expect(primarySettlement).resolves.toBe(failedPrimary);
+      expect(failedPrimary.context.rendering).toBeUndefined();
+      expect(failedPrimary.context.latestRenderingOutcome).toBe('failure');
+      await expect(primarySettlement).resolves.toMatchObject({ context: { latestRenderingOutcome: 'failure' } });
     } finally {
       primary.stop();
       fixture.dispose();

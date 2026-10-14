@@ -2,17 +2,88 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { FileTreeService } from '#file-tree-service.js';
 import type { ExternalPollTelemetry } from '#file-tree-service.js';
-import type { FileSystemClient } from '#file-system-client.js';
-import type { FileTreeNode } from '@taucad/filesystem';
-import type { ChangeEvent, FileEntry, FileStat } from '@taucad/types';
+import type { FileTreeNode, HeadFileStat, WatchEvent } from '@taucad/filesystem';
+import type { ChangeEvent, FileEntry, FileProvenance, FileStat } from '@taucad/types';
 import { WorkerChangeChannel } from '#worker-change-channel.js';
+import type { WorkerChangeChannelTransport } from '#worker-change-channel.js';
 import { DirectoryListingErrorCode, DirectoryListingFailedError } from '#directory-listing.js';
 import { WorkspacePathResolver } from '#workspace-path-resolver.js';
+import { createComposedViewClient } from '#composed-view-client.js';
+import type { ComposedViewClient, ComposedViewProxy } from '#composed-view-client.js';
+import type { WorkspaceAuthorityClient } from '#file-system-client.js';
+import { composeView } from '@taucad/filesystem/composed-view';
+import { tauPathPolicy } from '@taucad/filesystem/path-registry';
+import type { ComposedViewOverlay } from '@taucad/filesystem/composed-view';
+import { MemoryProvider } from '@taucad/filesystem/backend';
 import { headlessVisibilityProvider } from '#visibility-provider.js';
 import type { VisibilityProvider } from '#visibility-provider.js';
 import type { FileContentService, ContentChangeEvent } from '#file-content-service.js';
 
 const workspaceRoot = '/projects/abc';
+
+const skillContents = '---\nname: cad-replicad\n---\n';
+const skillBytes = new TextEncoder().encode(skillContents);
+const skillsRoot = '.agents/skills';
+const skillIdentity = 'skill:cad-replicad@1.0.0#fingerprint';
+
+/** The system skill bundle overlay, shaped as `libs/agent-tools` produces it. */
+const skillOverlay = (): ComposedViewOverlay => {
+  const nodes = new Map<string, { type: 'dir'; children: readonly string[] } | { type: 'file' }>([
+    ['', { type: 'dir', children: ['.agents'] }],
+    ['.agents', { type: 'dir', children: ['skills'] }],
+    [skillsRoot, { type: 'dir', children: ['cad-replicad'] }],
+    [`${skillsRoot}/cad-replicad`, { type: 'dir', children: ['SKILL.md'] }],
+    [`${skillsRoot}/cad-replicad/SKILL.md`, { type: 'file' }],
+  ]);
+  return {
+    root: skillsRoot,
+    source: 'system-skills',
+    unit: (path) =>
+      path.startsWith(`${skillsRoot}/`) && path.slice(skillsRoot.length + 1).split('/')[0] === 'cad-replicad'
+        ? { root: `${skillsRoot}/cad-replicad`, identity: skillIdentity }
+        : undefined,
+    node: (path) => {
+      const node = nodes.get(path);
+      if (node === undefined) {
+        return undefined;
+      }
+      return node.type === 'dir'
+        ? { type: 'dir', children: node.children }
+        : { type: 'file', size: skillBytes.byteLength, contentKind: 'text', lineCount: 3 };
+    },
+    read: async () => skillBytes,
+  };
+};
+
+/**
+ * The production client: in-root reads through one composed view, the
+ * dependency mount through its own (W11), and topology on the authority.
+ */
+const createComposedProxy = async (dependencies?: ComposedViewProxy): Promise<ComposedViewClient> => {
+  const provider = new MemoryProvider();
+  await provider.writeFile('main.ts', 'export {};\n');
+  return createComposedViewClient({
+    workspace: mock<WorkspaceAuthorityClient>(),
+    dependencies:
+      dependencies ??
+      mock<ComposedViewProxy>({
+        readdirWithStats: vi.fn().mockResolvedValue([]),
+        readdir: vi.fn().mockResolvedValue([]),
+        stat: vi.fn().mockResolvedValue(textStat()),
+      }),
+    /* The rooted connection also archives a subtree (charter D2) and serves the
+     * mutation pipeline's porcelain (D4); this harness reads rows. */
+    view: Object.assign(
+      composeView({ filesystem: provider }, { consumer: 'user', overlays: [skillOverlay()], policy: tauPathPolicy }),
+      {
+        archive: vi.fn<ComposedViewProxy['archive']>(),
+        search: vi.fn<ComposedViewProxy['search']>().mockResolvedValue([]),
+        statTree: vi.fn<ComposedViewProxy['statTree']>().mockResolvedValue([]),
+      },
+    ) as unknown as ComposedViewProxy,
+    paths: new WorkspacePathResolver(workspaceRoot),
+  });
+};
 
 const textStat = (size = 0, mtimeMs = 0, lineCount = 1): FileStat => ({
   type: 'file',
@@ -53,6 +124,13 @@ const directoryNode = (name: string): FileTreeNode => ({
   children: [],
 });
 
+/** A project row's provenance, with only `versioned` moving. */
+const provenanceOf = (versioned: boolean): FileProvenance => ({
+  source: 'project',
+  versioned,
+  agentAccess: 'read-write',
+});
+
 const directoryEntry = (path: string): FileEntry => ({
   path,
   name: path.split('/').pop() ?? path,
@@ -76,14 +154,15 @@ function connectContentService(tree: FileTreeService): (event: ContentChangeEven
 }
 
 function createTreeHarness(overrides?: {
-  proxy?: FileSystemClient;
+  proxy?: ComposedViewClient;
   workspaceRoot?: string;
   initialEntries?: FileEntry[];
   visibility?: VisibilityProvider;
+  watchReady?: WorkerChangeChannelTransport['watchReady'];
   onExternalPollTelemetry?: ConstructorParameters<typeof FileTreeService>[0]['onExternalPollTelemetry'];
 }): {
   tree: FileTreeService;
-  proxy: FileSystemClient;
+  proxy: ComposedViewClient;
   emitFileChanged: (event: ChangeEvent) => void;
   disposeChannel: () => void;
 } {
@@ -94,10 +173,10 @@ function createTreeHarness(overrides?: {
   });
   const root = overrides?.workspaceRoot ?? workspaceRoot;
   const paths = new WorkspacePathResolver(root);
-  const channel = new WorkerChangeChannel({ transport: { listen }, paths });
+  const channel = new WorkerChangeChannel({ transport: { listen, watchReady: overrides?.watchReady } });
   const proxy =
     overrides?.proxy ??
-    mock<FileSystemClient>({
+    mock<ComposedViewClient>({
       readDirectory: vi.fn().mockResolvedValue([]),
       readdir: vi.fn().mockResolvedValue([]),
       stat: vi.fn().mockResolvedValue(textStat()),
@@ -123,6 +202,192 @@ function createTreeHarness(overrides?: {
   };
 }
 
+describe('terminal selected observation ownership', () => {
+  it.each(['reset', 'dispose'] as const)('keeps a preselected tree shell inert after domain %s', async (operation) => {
+    const watchReady = vi.fn<NonNullable<WorkerChangeChannelTransport['watchReady']>>().mockImplementation(() => ({
+      ready: Promise.resolve(),
+      closed: Promise.withResolvers<void>().promise,
+      unsubscribe: vi.fn(),
+    }));
+    const owned = createTreeHarness({ watchReady });
+    vi.mocked(owned.proxy.readDirectory).mockResolvedValue([textNode('replacement.ts')]);
+    const selected = owned.tree.observeDirectory('');
+    if (operation === 'reset') {
+      owned.tree.reset('/projects/replacement');
+    } else {
+      owned.tree.dispose();
+    }
+    const late = selected.acquire();
+    try {
+      expect.soft(watchReady).not.toHaveBeenCalled();
+      expect.soft(late.getSnapshot()).toEqual({ status: 'closed' });
+      expect.soft(selected.activeLeaseCount).toBe(0);
+      if (operation === 'reset') {
+        const current = owned.tree.observeDirectory('');
+        const lease = current.acquire();
+        try {
+          await vi.waitFor(() => {
+            expect(current.getSnapshot().status).toBe('ready');
+          });
+          expect.soft(current).not.toBe(selected);
+          expect.soft(watchReady).toHaveBeenCalledOnce();
+          expect.soft(owned.proxy.readDirectory).toHaveBeenCalledWith('/projects/replacement');
+          expect
+            .soft(current.getSnapshot())
+            .toMatchObject({ status: 'ready', value: { kind: 'ready', entries: [{ name: 'replacement.ts' }] } });
+          const readsBeforeStaleCallbacks = vi.mocked(owned.proxy.readDirectory).mock.calls.length;
+          const currentBeforeStaleCallbacks = current.getSnapshot();
+          const invalidationsBeforeStaleCallbacks = current.diagnostics.invalidations;
+          late.refresh();
+          late.release();
+          late.release();
+          await Promise.resolve();
+          expect.soft(owned.proxy.readDirectory).toHaveBeenCalledTimes(readsBeforeStaleCallbacks);
+          expect.soft(current.getSnapshot()).toBe(currentBeforeStaleCallbacks);
+          expect.soft(current.diagnostics.invalidations).toBe(invalidationsBeforeStaleCallbacks);
+          expect.soft(current.activeLeaseCount).toBe(1);
+          expect.soft(current.getSnapshot().status).toBe('ready');
+          expect.soft(selected.getSnapshot()).toEqual({ status: 'closed' });
+        } finally {
+          lease.release();
+        }
+      }
+    } finally {
+      late.release();
+      owned.tree.dispose();
+      owned.disposeChannel();
+    }
+  });
+});
+
+describe('FileTreeService composed-view provenance (north star W2)', () => {
+  /*
+   * North-star W2 pin (execution-queue ruling P2). The Files pane and the
+   * agent's tools read one composed view (charter D1, architecture L4), so a
+   * system skill bundle is a row in the tree with `source: 'system-skills'`
+   * and read-only access — data, never a label on the wire (blueprint S14).
+   */
+  it('should stamp a system skill entry with system-skills provenance', async () => {
+    const harness = createTreeHarness({ proxy: await createComposedProxy() });
+    try {
+      const entries = await harness.tree.listDirectory('.agents/skills/cad-replicad');
+
+      expect(entries.map(({ name }) => name)).toStrictEqual(['SKILL.md']);
+      expect(harness.tree.getTreeSnapshot().get('.agents/skills/cad-replicad/SKILL.md')?.provenance).toMatchObject({
+        source: 'system-skills',
+        agentAccess: 'read-only',
+        versioned: false,
+      });
+    } finally {
+      harness.disposeChannel();
+    }
+  });
+
+  it('should stamp the project rows of the same listing as project entries', async () => {
+    const harness = createTreeHarness({ proxy: await createComposedProxy() });
+    try {
+      await harness.tree.listDirectory('');
+
+      expect(harness.tree.getTreeSnapshot().get('main.ts')?.provenance).toMatchObject({
+        source: 'project',
+        agentAccess: 'read-write',
+        versioned: true,
+      });
+    } finally {
+      harness.disposeChannel();
+    }
+  });
+});
+
+/**
+ * The dependency mount's own rooted view: it lives outside every checkout, so
+ * the checkout's view has never heard of it, and since W11 it is its own root
+ * rather than an authority-global read. Its paths are mount-relative.
+ */
+const dependencyMountView = (): ComposedViewProxy => {
+  const rows = new Map<string, Array<{ name: string } & FileStat>>([
+    ['', [{ name: 'three', type: 'dir', size: 0, mtimeMs: 0 }]],
+    ['three', [{ name: 'index.d.ts', ...textStat() }]],
+  ]);
+  function readdirWithStats(path: string): Promise<Array<{ name: string } & FileStat>>;
+  function readdirWithStats(
+    path: string,
+    options: { readonly content: 'head' },
+  ): Promise<Array<{ name: string } & HeadFileStat>>;
+  async function readdirWithStats(path: string, options?: { readonly content: 'head' }) {
+    const entries = rows.get(path) ?? [];
+    return options === undefined
+      ? entries
+      : entries.map((row) =>
+          row.type === 'file' && row.contentKind === 'text'
+            ? { name: row.name, type: row.type, size: row.size, mtimeMs: row.mtimeMs, contentKind: row.contentKind }
+            : row,
+        );
+  }
+  const view = mock<ComposedViewProxy>({
+    readdirWithStats,
+    readdir: vi.fn().mockResolvedValue([]),
+    stat: vi.fn().mockResolvedValue({ type: 'dir', size: 0, mtimeMs: 0 }),
+  });
+  vi.spyOn(view, 'readdirWithStats');
+  return view;
+};
+
+/*
+ * Finding 4: a root listing is authoritative over the root's children, so the
+ * dependency mount has to be in it or every re-list deletes the row — and with
+ * the row goes the subtree the eager listing loaded.
+ */
+describe('FileTreeService dependency mount row (close-out W3)', () => {
+  it('should keep the dependency mount and its loaded children across a root refresh', async () => {
+    vi.useFakeTimers();
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: await createComposedProxy(dependencyMountView()),
+    });
+    try {
+      const root = await tree.listDirectory('');
+      expect(root.map(({ name }) => name)).toContain('node_modules');
+      await tree.listDirectory('node_modules');
+      expect(tree.getTreeSnapshot().get('node_modules')?.provenance).toMatchObject({ source: 'dependencies' });
+
+      emitFileChanged({ type: 'fileWritten', path: 'added.ts', backend: 'indexeddb' });
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(tree.getTreeSnapshot().has('node_modules')).toBe(true);
+      expect(tree.getTreeSnapshot().has('node_modules/three')).toBe(true);
+    } finally {
+      tree.dispose();
+      disposeChannel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('should keep the dependency mount and its loaded children across a backend resync', async () => {
+    const dependencies = dependencyMountView();
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: await createComposedProxy(dependencies),
+    });
+    try {
+      await tree.listDirectory('');
+      await tree.listDirectory('node_modules');
+      vi.mocked(dependencies.readdirWithStats).mockClear();
+
+      emitFileChanged({ type: 'backendChanged', backend: 'indexeddb' });
+      /* The resync walks resolved directories root-first, so the mount's own arm
+       * runs only while the row survived the root's merge. */
+      await vi.waitFor(() => {
+        expect(dependencies.readdirWithStats).toHaveBeenCalledWith('', { content: 'head' });
+      });
+
+      expect(tree.getTreeSnapshot().has('node_modules')).toBe(true);
+      expect(tree.getTreeSnapshot().has('node_modules/three')).toBe(true);
+    } finally {
+      tree.dispose();
+      disposeChannel();
+    }
+  });
+});
+
 describe('FileTreeService workspace path canonicalization', () => {
   let harness: ReturnType<typeof createTreeHarness>;
 
@@ -135,27 +400,25 @@ describe('FileTreeService workspace path canonicalization', () => {
   });
 
   describe('listDirectory path canonicalization', () => {
-    it('should call readDirectory with the workspace root for every root alias', async () => {
-      const aliases = ['', '.', '/', './', '/projects/abc', '/projects/abc/'];
+    it('should call readDirectory with the workspace root for the canonical root', async () => {
       vi.mocked(harness.proxy.readDirectory).mockResolvedValue([]);
-      for (const alias of aliases) {
-        vi.mocked(harness.proxy.readDirectory).mockClear();
-        harness.tree.reset(workspaceRoot);
-        vi.mocked(harness.proxy.readDirectory).mockResolvedValue([]);
-        // oxlint-disable-next-line no-await-in-loop -- sequential listDirectory avoids race on shared workspace root
-        await harness.tree.listDirectory(alias);
-        expect(harness.proxy.readDirectory).toHaveBeenCalledWith('/projects/abc');
-      }
+      await harness.tree.listDirectory('');
+      expect(harness.proxy.readDirectory).toHaveBeenCalledWith('/projects/abc');
     });
 
-    it('should resolve ./src and /src to the same absolute path under root', async () => {
+    it('should resolve canonical nested paths under the root', async () => {
       vi.mocked(harness.proxy.readDirectory).mockResolvedValue([]);
-      await harness.tree.listDirectory('./src');
+      await harness.tree.listDirectory('src');
       expect(harness.proxy.readDirectory).toHaveBeenLastCalledWith('/projects/abc/src');
-      harness.tree.reset(workspaceRoot);
-      vi.mocked(harness.proxy.readDirectory).mockResolvedValue([]);
-      await harness.tree.listDirectory('/src');
-      expect(harness.proxy.readDirectory).toHaveBeenLastCalledWith('/projects/abc/src');
+    });
+
+    it('should reject non-canonical aliases before calling the proxy', async () => {
+      for (const alias of ['.', '/', './', '/src', '/projects/abc']) {
+        vi.mocked(harness.proxy.readDirectory).mockClear();
+        // oxlint-disable-next-line no-await-in-loop -- each invalid boundary value is verified independently
+        await expect(harness.tree.listDirectory(alias)).rejects.toBeInstanceOf(DirectoryListingFailedError);
+        expect(harness.proxy.readDirectory).not.toHaveBeenCalled();
+      }
     });
 
     it('should reject before calling the proxy when the path escapes the workspace', async () => {
@@ -167,37 +430,37 @@ describe('FileTreeService workspace path canonicalization', () => {
     });
   });
 
-  describe('listDirectory (root aliases vs nested)', () => {
-    it('should call readDirectory with the workspace root for root alias path', async () => {
+  describe('listDirectory (root vs nested)', () => {
+    it('should call readDirectory with the workspace root for the empty root path', async () => {
       vi.mocked(harness.proxy.readDirectory).mockResolvedValue([]);
-      await harness.tree.listDirectory('.');
+      await harness.tree.listDirectory('');
       expect(harness.proxy.readDirectory).toHaveBeenCalledWith('/projects/abc');
     });
 
-    it('should resolve /src under the workspace root', async () => {
+    it('should resolve src under the workspace root', async () => {
       vi.mocked(harness.proxy.readDirectory).mockResolvedValue([]);
-      await harness.tree.listDirectory('/src');
+      await harness.tree.listDirectory('src');
       expect(harness.proxy.readDirectory).toHaveBeenCalledWith('/projects/abc/src');
     });
   });
 
   describe('stat', () => {
-    it('should call stat with the resolved absolute path for /src', async () => {
-      await harness.tree.stat('/src');
+    it('should call stat with the resolved authority path for src', async () => {
+      await harness.tree.stat('src');
       expect(harness.proxy.stat).toHaveBeenCalledWith('/projects/abc/src');
     });
   });
 
   describe('getDirectoryStat', () => {
-    it('should call getDirectoryStat with the workspace root for "."', async () => {
-      await harness.tree.getDirectoryStat('.');
+    it('should call getDirectoryStat with the workspace root for the empty root path', async () => {
+      await harness.tree.getDirectoryStat('');
       expect(harness.proxy.getDirectoryStat).toHaveBeenCalledWith('/projects/abc');
     });
   });
 
   describe('exists', () => {
-    it('should stat the workspace root when checking "."', async () => {
-      await harness.tree.exists('.');
+    it('should stat the workspace root when checking the empty root path', async () => {
+      await harness.tree.exists('');
       expect(harness.proxy.stat).toHaveBeenCalledWith('/projects/abc');
     });
   });
@@ -224,7 +487,7 @@ describe('FileTreeService rooted search and external polling', () => {
     const unsubscribe = vi.fn();
     const firstPoll = Promise.withResolvers<void>();
     const report = vi.fn<(aggregate: ExternalPollTelemetry) => void>();
-    const proxy = mock<FileSystemClient>({
+    const proxy = mock<ComposedViewClient>({
       pollExternalChanges: vi.fn().mockReturnValueOnce(firstPoll.promise).mockResolvedValue(undefined),
     });
     const { tree, disposeChannel } = createTreeHarness({
@@ -240,6 +503,8 @@ describe('FileTreeService rooted search and external polling', () => {
     });
 
     tree.startPolling();
+    tree.startPolling();
+    expect(unsubscribe).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(2000);
     expect(proxy.pollExternalChanges).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -285,7 +550,7 @@ describe('FileTreeService rooted search and external polling', () => {
     const report = vi.fn<(aggregate: ExternalPollTelemetry) => void>();
     const poll = vi.fn().mockRejectedValueOnce(new Error('first poll failed')).mockResolvedValue(undefined);
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const proxy = mock<FileSystemClient>({ pollExternalChanges: poll });
+    const proxy = mock<ComposedViewClient>({ pollExternalChanges: poll });
     const { tree, disposeChannel } = createTreeHarness({ proxy, onExternalPollTelemetry: report });
 
     tree.startPolling();
@@ -334,7 +599,7 @@ describe('FileTreeService rooted search and external polling', () => {
     vi.useFakeTimers();
     const pollExternalChanges = vi.fn().mockResolvedValue(true);
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({ pollExternalChanges }),
+      proxy: mock<ComposedViewClient>({ pollExternalChanges }),
     });
 
     tree.startPolling();
@@ -357,7 +622,7 @@ describe('FileTreeService rooted search and external polling', () => {
     vi.useFakeTimers();
     const pollExternalChanges = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({ pollExternalChanges }),
+      proxy: mock<ComposedViewClient>({ pollExternalChanges }),
     });
 
     tree.startPolling();
@@ -378,7 +643,7 @@ describe('FileTreeService rooted search and external polling', () => {
     vi.useFakeTimers();
     const pollExternalChanges = vi.fn().mockResolvedValue(true);
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({ pollExternalChanges }),
+      proxy: mock<ComposedViewClient>({ pollExternalChanges }),
     });
 
     tree.startPolling();
@@ -400,7 +665,7 @@ describe('FileTreeService rooted search and external polling', () => {
     vi.useFakeTimers();
     const pollExternalChanges = vi.fn().mockResolvedValue(undefined);
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({ pollExternalChanges }),
+      proxy: mock<ComposedViewClient>({ pollExternalChanges }),
     });
 
     tree.startPolling();
@@ -425,7 +690,7 @@ describe('FileTreeService rooted search and external polling', () => {
     vi.useFakeTimers();
     const pending = Promise.withResolvers<void>();
     const report = vi.fn<(aggregate: ExternalPollTelemetry) => void>();
-    const proxy = mock<FileSystemClient>({ pollExternalChanges: vi.fn().mockReturnValue(pending.promise) });
+    const proxy = mock<ComposedViewClient>({ pollExternalChanges: vi.fn().mockReturnValue(pending.promise) });
     const { tree, disposeChannel } = createTreeHarness({ proxy, onExternalPollTelemetry: report });
 
     tree.startPolling();
@@ -457,12 +722,47 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
     vi.clearAllMocks();
   });
 
+  it('keeps agent exact listings independent of resolved UI tree rows', async () => {
+    const { tree, proxy, disposeChannel } = createTreeHarness();
+    vi.mocked(proxy.readDirectory).mockResolvedValueOnce([textNode('deleted.ts')]);
+    await tree.listDirectory('');
+    vi.mocked(proxy.readDirectoryExact).mockResolvedValueOnce([
+      { name: 'added.ts', type: 'file', size: 5, mtimeMs: 100, contentKind: 'text', lineCount: 2 },
+    ]);
+
+    await expect(tree.listDirectoryExact('')).resolves.toEqual([
+      { name: 'added.ts', type: 'file', size: 5, mtimeMs: 100, contentKind: 'text', lineCount: 2 },
+    ]);
+    expect(tree.getTreeSnapshot().has('deleted.ts')).toBe(true);
+    expect(proxy.readDirectoryExact).toHaveBeenCalledWith(workspaceRoot);
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('clears an exact count when a shallow refresh cannot prove it is still current', async () => {
+    vi.useFakeTimers();
+    const { tree, proxy, disposeChannel } = createTreeHarness();
+    vi.mocked(proxy.readDirectory).mockResolvedValueOnce([textNode('a.ts', { size: 5, mtimeMs: 100, lineCount: 2 })]);
+    await tree.listDirectory('');
+    vi.mocked(proxy.readDirectory).mockResolvedValueOnce([
+      { id: 'a.ts', name: 'a.ts', size: 5, mtimeMs: 100, contentKind: 'text' },
+    ]);
+
+    tree.scheduleRefresh('');
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect('lineCount' in (tree.getTreeSnapshot().get('a.ts') ?? {})).toBe(false);
+    tree.dispose();
+    disposeChannel();
+    vi.useRealTimers();
+  });
+
   it('should preserve FileEntry object identity when disk listing is unchanged', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const listen = vi.fn().mockReturnValue(vi.fn());
     const paths = new WorkspacePathResolver(workspaceRoot);
-    const channel = new WorkerChangeChannel({ transport: { listen }, paths });
-    const proxy = mock<FileSystemClient>({
+    const channel = new WorkerChangeChannel({ transport: { listen } });
+    const proxy = mock<ComposedViewClient>({
       readDirectory: vi.fn(),
       readdir: vi.fn().mockResolvedValue([]),
       stat: vi.fn().mockResolvedValue(textStat()),
@@ -488,10 +788,56 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
     vi.useRealTimers();
   });
 
-  it('should keep a pending root refresh when a narrower write arrives inside the debounce window', async () => {
+  /*
+   * W4 sweep (W14): a row is stale when *any* provenance field moved, not only
+   * `source` and `agentAccess` — an `exports/**` file becoming versioned, or a
+   * project file taking over an overlay unit (`overrides`), changes what the
+   * pane draws while size and mtime stand still.
+   */
+  it.each([
+    {
+      row: 'file',
+      node: (versioned: boolean): FileTreeNode => ({
+        ...textNode('a.ts', { size: 1 }),
+        provenance: provenanceOf(versioned),
+      }),
+    },
+    {
+      row: 'directory',
+      node: (versioned: boolean): FileTreeNode => ({
+        ...directoryNode('exports'),
+        provenance: provenanceOf(versioned),
+      }),
+    },
+  ])('should refresh a $row row whose provenance alone changed', async ({ node }) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { tree, proxy, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({
+        readDirectory: vi.fn().mockResolvedValue([node(false)]),
+        readdir: vi.fn().mockResolvedValue([]),
+        stat: vi.fn().mockResolvedValue(textStat()),
+        getDirectoryStat: vi.fn().mockResolvedValue([]),
+      }),
+    });
+    try {
+      await tree.listDirectory('');
+      const listed = [...tree.getTreeSnapshot().keys()];
+      vi.mocked(proxy.readDirectory).mockResolvedValue([node(true)]);
+      tree.scheduleRefresh('');
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(tree.getTreeSnapshot().get(listed[0] ?? '')?.provenance).toMatchObject({ versioned: true });
+    } finally {
+      tree.dispose();
+      disposeChannel();
+      vi.useRealTimers();
+    }
+  });
+
+  it("should keep a pending root refresh and re-read the narrower write's directory in the same window", async () => {
     vi.useFakeTimers();
     const { tree, proxy, emitFileChanged, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi.fn().mockResolvedValue([]),
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -507,17 +853,22 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
     vi.mocked(proxy.readDirectory).mockClear();
 
     tree.scheduleRefresh('');
-    emitFileChanged({ type: 'fileWritten', path: '/projects/abc/src/main.ts', backend: 'indexeddb' });
+    emitFileChanged({ type: 'fileWritten', path: 'src/main.ts', backend: 'indexeddb' });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(proxy.readDirectory).toHaveBeenCalledOnce();
+    /* The narrower write keeps the root re-read and adds its own directory:
+     * a root re-read lists only the root's children (W2d F2). */
+    expect(proxy.readDirectory).toHaveBeenCalledTimes(2);
     expect(proxy.readDirectory).toHaveBeenCalledWith('/projects/abc');
+    expect(proxy.readDirectory).toHaveBeenCalledWith('/projects/abc/src');
     tree.dispose();
     disposeChannel();
     vi.useRealTimers();
   });
 
-  it('should deeply resync every still-resolved directory after backendChanged under traffic', async () => {
+  /* A rooted watch spells topology loss as `{ type: 'reset' }`; the same loss
+   * reaches the tree's file-change channel as `backendChanged`. */
+  it('should re-list every loaded directory after a rooted topology reset', async () => {
     vi.useFakeTimers();
     let updated = false;
     const readDirectory = vi.fn(async (path: string): Promise<FileTreeNode[]> => {
@@ -533,7 +884,7 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
       return [];
     });
     const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory,
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -548,11 +899,9 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
     readDirectory.mockClear();
 
     emitFileChanged({ type: 'backendChanged', backend: 'indexeddb' });
-    emitFileChanged({ type: 'fileWritten', path: '/projects/abc/src/other.ts', backend: 'indexeddb' });
     await vi.waitFor(() => {
       expect(tree.getTreeSnapshot().has('src/nested/new.ts')).toBe(true);
     });
-    await vi.advanceTimersByTimeAsync(100);
 
     expect(tree.getTreeSnapshot().has('src/nested/old.ts')).toBe(false);
     expect(readDirectory).toHaveBeenCalledWith('/projects/abc');
@@ -571,7 +920,7 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
       .mockReturnValueOnce(resync.promise)
       .mockResolvedValue([textNode('leak.ts')]);
     const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory,
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -606,7 +955,7 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
       .mockResolvedValueOnce([textNode('file.ts')])
       .mockResolvedValueOnce([]);
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory,
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -630,7 +979,7 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
 
   it('should remove tree entries when disk children disappear', async () => {
     const { tree, proxy, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi.fn(),
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -653,9 +1002,9 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
   it('should set isDirectoryResolved on root when initialEntries bootstrap runs', () => {
     const listen = vi.fn().mockReturnValue(vi.fn());
     const paths = new WorkspacePathResolver(workspaceRoot);
-    const channel = new WorkerChangeChannel({ transport: { listen }, paths });
+    const channel = new WorkerChangeChannel({ transport: { listen } });
     const tree = new FileTreeService({
-      proxy: mock<FileSystemClient>(),
+      proxy: mock<ComposedViewClient>(),
       paths,
       channel,
       visibility: headlessVisibilityProvider,
@@ -671,9 +1020,9 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
   it('should not mark root resolved when initialEntries is empty', () => {
     const listen = vi.fn().mockReturnValue(vi.fn());
     const paths = new WorkspacePathResolver(workspaceRoot);
-    const channel = new WorkerChangeChannel({ transport: { listen }, paths });
+    const channel = new WorkerChangeChannel({ transport: { listen } });
     const tree = new FileTreeService({
-      proxy: mock<FileSystemClient>(),
+      proxy: mock<ComposedViewClient>(),
       paths,
       channel,
       visibility: headlessVisibilityProvider,
@@ -693,6 +1042,86 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
     expect(entry?.type).toBe('dir');
     disposeChannel();
   });
+
+  it('should process duplicate directory notifications without traversing the retained tree', () => {
+    const { tree, proxy, emitFileChanged, disposeChannel } = createTreeHarness({
+      initialEntries: [
+        directoryEntry('existing'),
+        ...Array.from({ length: 2048 }, (_, index) => textEntry(`file-${index}.ts`)),
+      ],
+    });
+    const snapshot = tree.getTreeSnapshot();
+    const existing = snapshot.get('existing');
+    const iterate = vi.spyOn(snapshot, Symbol.iterator);
+    const changed = vi.fn();
+    const unsubscribe = tree.subscribeTree(changed);
+    try {
+      for (let index = 0; index < 32; index++) {
+        emitFileChanged({ type: 'directoryCreated', path: 'existing', backend: 'indexeddb' });
+      }
+      expect(tree.getTreeSnapshot()).toBe(snapshot);
+      expect(tree.getTreeSnapshot().get('existing')).toBe(existing);
+      expect(changed).not.toHaveBeenCalled();
+      expect(proxy.readDirectory).not.toHaveBeenCalled();
+      // Work budget: redundant provider notifications cannot enumerate unrelated retained entries.
+      expect(iterate).not.toHaveBeenCalled();
+      iterate.mockRestore();
+      emitFileChanged({ type: 'directoryCreated', path: 'new-directory', backend: 'indexeddb' });
+      expect(tree.getTreeSnapshot().get('new-directory')).toMatchObject({ type: 'dir', path: 'new-directory' });
+      expect(changed).toHaveBeenCalledOnce();
+    } finally {
+      iterate.mockRestore();
+      unsubscribe();
+      tree.dispose();
+      disposeChannel();
+    }
+  });
+
+  it('should invalidate a pending parent listing on an already retained directory notification', async () => {
+    const pending = Promise.withResolvers<FileTreeNode[]>();
+    const readDirectory = vi
+      .fn<ComposedViewClient['readDirectory']>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue([directoryNode('existing'), textNode('current.ts')]);
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+      initialEntries: [directoryEntry('source'), directoryEntry('source/existing')],
+    });
+    const listing = tree.listDirectory('source');
+    try {
+      expect(readDirectory).toHaveBeenCalledOnce();
+      emitFileChanged({ type: 'directoryCreated', path: 'source/existing', backend: 'indexeddb' });
+      pending.resolve([directoryNode('existing'), textNode('stale.ts')]);
+      const entries = await listing;
+      expect(entries.map(({ name }) => name).toSorted()).toEqual(['current.ts', 'existing']);
+      expect(tree.getTreeSnapshot().has('source/stale.ts')).toBe(false);
+      expect(readDirectory).toHaveBeenCalledTimes(2);
+    } finally {
+      pending.resolve([]);
+      await listing;
+      tree.dispose();
+      disposeChannel();
+    }
+  });
+
+  /* A thumbnail capture rewrites `thumbnail.webp` on every render; dropping the
+   * stamp until the parent re-read redrew every file-tree row twice per commit. */
+  it.each(['machine', 'user', 'editor'] as const)(
+    "should keep a listed file's provenance when the %s writes its content",
+    (source) => {
+      const provenance = provenanceOf(false);
+      const { tree, disposeChannel } = createTreeHarness({
+        initialEntries: [{ ...textEntry('thumbnail.webp'), provenance }],
+      });
+      const emit = connectContentService(tree);
+
+      emit({ type: 'written', path: 'thumbnail.webp', data: new Uint8Array([1, 2, 3]), source });
+
+      expect(tree.getTreeSnapshot().get('thumbnail.webp')).toMatchObject({ size: 3, provenance });
+      tree.dispose();
+      disposeChannel();
+    },
+  );
 
   it('should drop directory descendants on directoryDeleted content events', () => {
     const { tree, disposeChannel } = createTreeHarness({
@@ -723,6 +1152,121 @@ describe('FileTreeService mergeChildren / isDirectoryResolved', () => {
   });
 });
 
+/*
+ * A restore replaces a file by renaming it aside and a staged copy into place
+ * (`packages/revisions/src/apply-tree.ts`). Each row is one way the tree lost
+ * the replaced file for good while the kernel still read it (W2d F2, T9): the
+ * swap's own events cannot re-add a path whose staged name the tree never
+ * listed, so the parent's re-read is the only repair, and it must not be lost.
+ */
+describe('FileTreeService after a rename swap (W2d F2)', () => {
+  const models = 'public/models';
+  const staged = `${models}/.honeycomb.js.tau-staged.0.tmp`;
+  const backup = `${models}/.honeycomb.js.tau-backup.0.tmp`;
+  const final = [textNode('box-corner.js'), textNode('honeycomb.js')];
+
+  const startSwapTree = (
+    readModels: () => Promise<FileTreeNode[]>,
+  ): ReturnType<typeof createTreeHarness> & { readDirectory: ReturnType<typeof vi.fn> } => {
+    const readDirectory = vi.fn(async (path: string): Promise<FileTreeNode[]> => {
+      if (path === `${workspaceRoot}/${models}`) {
+        return readModels();
+      }
+      const listings: Record<string, FileTreeNode[]> = {
+        [workspaceRoot]: [directoryNode('public'), directoryNode('src')],
+        [`${workspaceRoot}/public`]: [directoryNode('models')],
+        [`${workspaceRoot}/src`]: [textNode('main.ts')],
+      };
+      return listings[path] ?? [];
+    });
+    const harness = createTreeHarness({
+      proxy: mock<ComposedViewClient>({
+        readDirectory,
+        readdir: vi.fn().mockResolvedValue([]),
+        stat: vi.fn().mockResolvedValue(textStat()),
+        getDirectoryStat: vi.fn().mockResolvedValue([]),
+      }),
+      initialEntries: [
+        { ...directoryEntry('public'), isDirectoryResolved: true },
+        { ...directoryEntry(models), isDirectoryResolved: true },
+        { ...textEntry(`${models}/box-corner.js`), name: 'box-corner.js' },
+        { ...textEntry(`${models}/honeycomb.js`), name: 'honeycomb.js' },
+        { ...directoryEntry('src'), isDirectoryResolved: true },
+      ],
+    });
+    return { ...harness, readDirectory };
+  };
+
+  const swap = (emit: (event: ChangeEvent) => void): void => {
+    emit({ type: 'fileRenamed', oldPath: `${models}/honeycomb.js`, newPath: backup, backend: 'indexeddb' });
+    emit({ type: 'fileRenamed', oldPath: staged, newPath: `${models}/honeycomb.js`, backend: 'indexeddb' });
+    emit({ type: 'fileDeleted', path: backup, backend: 'indexeddb' });
+  };
+
+  const modelsListing = (tree: FileTreeService): readonly string[] =>
+    [...tree.getTreeSnapshot().keys()].filter((path) => path.startsWith(`${models}/`)).toSorted();
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('re-reads the swapped directory when a write elsewhere lands in the same window', async () => {
+    vi.useFakeTimers();
+    const { tree, emitFileChanged, disposeChannel } = startSwapTree(async () => final);
+
+    emitFileChanged({ type: 'fileWritten', path: staged, backend: 'indexeddb' });
+    emitFileChanged({ type: 'fileWritten', path: 'src/main.ts', backend: 'indexeddb' });
+    swap(emitFileChanged);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(modelsListing(tree)).toEqual([`${models}/box-corner.js`, `${models}/honeycomb.js`]);
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it("keeps a directory's re-read when another directory's refresh starts before it answers", async () => {
+    vi.useFakeTimers();
+    const slow = Promise.withResolvers<FileTreeNode[]>();
+    const { tree, emitFileChanged, disposeChannel } = startSwapTree(async () => slow.promise);
+
+    emitFileChanged({ type: 'fileWritten', path: staged, backend: 'indexeddb' });
+    swap(emitFileChanged);
+    await vi.advanceTimersByTimeAsync(500);
+    emitFileChanged({ type: 'fileWritten', path: 'src/main.ts', backend: 'indexeddb' });
+    await vi.advanceTimersByTimeAsync(500);
+    slow.resolve(final);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(modelsListing(tree)).toEqual([`${models}/box-corner.js`, `${models}/honeycomb.js`]);
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('re-reads after the swap when a listing taken mid-swap answers late', async () => {
+    vi.useFakeTimers();
+    const midSwap = Promise.withResolvers<FileTreeNode[]>();
+    let reads = 0;
+    const { tree, emitFileChanged, disposeChannel } = startSwapTree(async () => {
+      reads++;
+      return reads === 1 ? midSwap.promise : final;
+    });
+
+    emitFileChanged({ type: 'fileWritten', path: staged, backend: 'indexeddb' });
+    await vi.advanceTimersByTimeAsync(500);
+    swap(emitFileChanged);
+    midSwap.resolve([
+      textNode('box-corner.js'),
+      textNode('.honeycomb.js.tau-backup.0.tmp'),
+      textNode('.honeycomb.js.tau-staged.0.tmp'),
+    ]);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(modelsListing(tree)).toEqual([`${models}/box-corner.js`, `${models}/honeycomb.js`]);
+    tree.dispose();
+    disposeChannel();
+  });
+});
+
 describe('FileTreeService listDirectory / subscribePath', () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -730,7 +1274,7 @@ describe('FileTreeService listDirectory / subscribePath', () => {
 
   it('should reject with NotFound when readDirectory fails with ENOENT', async () => {
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi.fn().mockRejectedValue(Object.assign(new Error('enoent'), { code: 'ENOENT' })),
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -745,7 +1289,7 @@ describe('FileTreeService listDirectory / subscribePath', () => {
 
   it('should return sync entries after cold load without empty array on success', async () => {
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi
           .fn()
           .mockResolvedValueOnce([textNode('a.ts', { size: 1 })])
@@ -764,7 +1308,7 @@ describe('FileTreeService listDirectory / subscribePath', () => {
 
   it('should propagate size and mtimeMs from readDirectory into listed rows', async () => {
     const { tree, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi
           .fn()
           .mockResolvedValueOnce([
@@ -794,7 +1338,7 @@ describe('FileTreeService listDirectory / subscribePath', () => {
       resolveRead = resolve;
     });
     const { tree, proxy, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi.fn().mockReturnValue(readPromise),
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -812,7 +1356,7 @@ describe('FileTreeService listDirectory / subscribePath', () => {
 
   it('should notify subscribePath when mergeChildren updates that directory', async () => {
     const { tree, proxy, disposeChannel } = createTreeHarness({
-      proxy: mock<FileSystemClient>({
+      proxy: mock<ComposedViewClient>({
         readDirectory: vi.fn(),
         readdir: vi.fn().mockResolvedValue([]),
         stat: vi.fn().mockResolvedValue(textStat()),
@@ -824,6 +1368,473 @@ describe('FileTreeService listDirectory / subscribePath', () => {
     vi.mocked(proxy.readDirectory).mockResolvedValueOnce([textNode('n.ts')]);
     await tree.listDirectory('');
     expect(callback).toHaveBeenCalled();
+    disposeChannel();
+  });
+});
+
+describe('directory observation bootstrap and shared cancellation', () => {
+  it('should preserve a selected directory owner until its delayed first acquisition after cache pressure', async () => {
+    const ready = Promise.withResolvers<void>();
+    const closed = Promise.withResolvers<void>();
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('initial.ts')]);
+    const unsubscribe = vi.fn();
+    let onWatch = (_event: WatchEvent): void => undefined;
+    const watchReady = vi
+      .fn<NonNullable<WorkerChangeChannelTransport['watchReady']>>()
+      .mockImplementation((_request, handler) => {
+        onWatch = handler;
+        return { ready: ready.promise, closed: closed.promise, unsubscribe };
+      });
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+      watchReady,
+    });
+    try {
+      const selected = tree.observeDirectory('source');
+      for (let index = 0; index < 501; index++) {
+        tree.observeDirectory(`unmounted-${index}`);
+      }
+      expect(watchReady).not.toHaveBeenCalled();
+      expect(readDirectory).not.toHaveBeenCalled();
+      const lease = selected.acquire();
+      const peer = tree.observeDirectory('source').acquire();
+      const notified = vi.fn();
+      const off = lease.subscribe(notified);
+      try {
+        expect.soft(tree.observeDirectory('source')).toBe(selected);
+        expect(watchReady).toHaveBeenCalledOnce();
+        expect(lease.getSnapshot().status).toBe('registering');
+        expect(readDirectory).not.toHaveBeenCalled();
+        ready.resolve();
+        await vi.waitFor(() => {
+          expect(lease.getSnapshot()).toMatchObject({
+            status: 'ready',
+            value: { kind: 'ready', entries: [{ name: 'initial.ts' }] },
+          });
+        });
+        expect(peer.getSnapshot()).toBe(lease.getSnapshot());
+        expect(readDirectory).toHaveBeenCalledOnce();
+        notified.mockClear();
+        readDirectory.mockResolvedValue([textNode('current.ts')]);
+        emitFileChanged({ type: 'directoryChanged', path: 'source', backend: 'indexeddb' });
+        onWatch({ type: 'reset' });
+        await vi.waitFor(() => {
+          expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'current.ts' }] });
+        });
+        expect.soft(notified).toHaveBeenCalled();
+        expect(peer.getSnapshot()).toBe(lease.getSnapshot());
+        expect(readDirectory).toHaveBeenCalledTimes(2);
+        peer.release();
+        expect(unsubscribe).not.toHaveBeenCalled();
+        closed.resolve();
+        await vi.waitFor(() => {
+          expect(lease.getSnapshot().status).toBe('closed');
+        });
+      } finally {
+        off();
+        peer.release();
+        lease.release();
+      }
+      expect(unsubscribe).toHaveBeenCalledOnce();
+    } finally {
+      ready.resolve();
+      closed.resolve();
+      tree.dispose();
+      disposeChannel();
+    }
+  });
+
+  it('should retain released directory identity while disposing active watches on root replacement and teardown', async () => {
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('initial.ts')]);
+    const unsubscribe = vi.fn();
+    const watchReady = vi.fn<NonNullable<WorkerChangeChannelTransport['watchReady']>>().mockImplementation(() => ({
+      ready: Promise.resolve(),
+      closed: Promise.withResolvers<void>().promise,
+      unsubscribe,
+    }));
+    const { tree, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+      watchReady,
+    });
+    try {
+      const selected = tree.observeDirectory('source');
+      const first = selected.acquire();
+      await vi.waitFor(() => {
+        expect(first.getSnapshot().status).toBe('ready');
+      });
+      for (let index = 0; index < 501; index++) {
+        tree.observeDirectory(`active-peer-${index}`);
+      }
+      expect(tree.observeDirectory('source')).toBe(selected);
+      expect(watchReady).toHaveBeenCalledOnce();
+      first.release();
+      expect(unsubscribe).toHaveBeenCalledOnce();
+      for (let index = 0; index < 501; index++) {
+        tree.observeDirectory(`released-peer-${index}`);
+      }
+      expect(tree.observeDirectory('source')).toBe(selected);
+      readDirectory.mockResolvedValue([textNode('fresh.ts')]);
+      const second = selected.acquire();
+      await vi.waitFor(() => {
+        expect(second.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'fresh.ts' }] });
+      });
+      tree.reset('/projects/replacement');
+      expect(unsubscribe).toHaveBeenCalledTimes(2);
+      second.release();
+      expect(unsubscribe).toHaveBeenCalledTimes(2);
+      const replacement = tree.observeDirectory('source');
+      expect(replacement).not.toBe(selected);
+      const third = replacement.acquire();
+      await vi.waitFor(() => {
+        expect(third.getSnapshot().status).toBe('ready');
+      });
+      tree.dispose();
+      expect(unsubscribe).toHaveBeenCalledTimes(3);
+      third.release();
+      expect(unsubscribe).toHaveBeenCalledTimes(3);
+    } finally {
+      tree.dispose();
+      disposeChannel();
+    }
+  });
+
+  it('should ignore stale finalized directory identity after root replacement', () => {
+    const callbacks: Array<(held: unknown) => void> = [];
+    const registrations: unknown[] = [];
+    const nativeRegistry = globalThis.FinalizationRegistry;
+    class ControlledRegistry extends nativeRegistry<unknown> {
+      public constructor(callback: (held: unknown) => void) {
+        super(callback);
+        callbacks.push(callback);
+      }
+
+      public override register(...args: Parameters<FinalizationRegistry<unknown>['register']>): void {
+        registrations.push(args[1]);
+        super.register(...args);
+      }
+    }
+    vi.stubGlobal('FinalizationRegistry', ControlledRegistry);
+    const { tree, disposeChannel } = createTreeHarness({ proxy: mock<ComposedViewClient>() });
+    try {
+      const old = tree.observeDirectory('source');
+      expect(registrations).toHaveLength(1);
+      const stale = registrations[0];
+      tree.reset('/projects/replacement');
+      const current = tree.observeDirectory('source');
+      expect(current).not.toBe(old);
+      expect(registrations).toHaveLength(2);
+      callbacks[0]!(stale);
+      expect(tree.observeDirectory('source')).toBe(current);
+      expect(current.getSnapshot().status).toBe('registering');
+    } finally {
+      tree.dispose();
+      disposeChannel();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should read fresh rows after reacquisition acknowledges without background refresh', async () => {
+    const ready = Promise.withResolvers<void>();
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('old.ts')]);
+    const unsubscribe = vi.fn();
+    const watchReady = vi
+      .fn<NonNullable<WorkerChangeChannelTransport['watchReady']>>()
+      .mockReturnValueOnce({ ready: Promise.resolve(), closed: Promise.withResolvers<void>().promise, unsubscribe })
+      .mockReturnValue({ ready: ready.promise, closed: Promise.withResolvers<void>().promise, unsubscribe: vi.fn() });
+    const { tree, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+      watchReady,
+    });
+    const observation = tree.observeDirectory('source');
+    const first = observation.acquire();
+    await vi.waitFor(() => {
+      expect(first.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'old.ts' }] });
+    });
+    first.release();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    readDirectory.mockResolvedValue([textNode('fresh.ts')]);
+    const second = observation.acquire();
+    expect(watchReady).toHaveBeenCalledTimes(2);
+    await Promise.resolve();
+    expect(readDirectory).toHaveBeenCalledOnce();
+    ready.resolve();
+    await vi.waitFor(() => {
+      expect(second.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'fresh.ts' }] });
+    });
+    expect(readDirectory).toHaveBeenCalledTimes(2);
+    second.release();
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should surface a current scheduled refresh failure and recover on explicit retry', async () => {
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('safe.ts')]);
+    const { tree, disposeChannel } = createTreeHarness({ proxy: mock<ComposedViewClient>({ readDirectory }) });
+    const lease = tree.observeDirectory('source').acquire();
+    try {
+      await vi.waitFor(() => {
+        expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready' });
+      });
+      readDirectory.mockRejectedValueOnce(new Error('current scheduled failure'));
+      tree.scheduleRefresh('source');
+      await vi.waitFor(() => {
+        expect(lease.getSnapshot().value).toMatchObject({ kind: 'error' });
+      });
+      readDirectory.mockResolvedValue([textNode('recovered.ts')]);
+      lease.refresh();
+      await vi.waitFor(() => {
+        expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'recovered.ts' }] });
+      });
+      expect(readDirectory).toHaveBeenCalledTimes(3);
+    } finally {
+      lease.release();
+      tree.dispose();
+      disposeChannel();
+    }
+  });
+
+  it('should ignore an older scheduled refresh failure after an observed listing publishes newer rows', async () => {
+    const held = Promise.withResolvers<FileTreeNode[]>();
+    const readDirectory = vi
+      .fn<ComposedViewClient['readDirectory']>()
+      .mockReturnValueOnce(held.promise)
+      .mockResolvedValue([textNode('fresh.ts')]);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { tree, disposeChannel } = createTreeHarness({ proxy: mock<ComposedViewClient>({ readDirectory }) });
+    tree.scheduleRefresh('source');
+    await vi.waitFor(() => {
+      expect(readDirectory).toHaveBeenCalledOnce();
+    });
+    const lease = tree.observeDirectory('source').acquire();
+    try {
+      await vi.waitFor(() => {
+        expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'fresh.ts' }] });
+      });
+      const fresh = lease.getSnapshot().value;
+      const failure = new Error('obsolete scheduled refresh');
+      held.reject(failure);
+      await vi.waitFor(() => {
+        expect(logged).toHaveBeenCalledWith('[FileTreeService] refresh failed:', failure);
+      });
+      for (let index = 0; index < 12; index++) {
+        // oxlint-disable-next-line no-await-in-loop -- Drain the rejected refresh notification and its causal observation read.
+        await Promise.resolve();
+      }
+      expect(lease.getSnapshot()).toEqual({ status: 'ready', value: fresh });
+      expect(lease.getSnapshot().value).toBe(fresh);
+      expect(readDirectory).toHaveBeenCalledTimes(2);
+      await expect(tree.listDirectory('source')).resolves.toMatchObject([{ name: 'fresh.ts' }]);
+    } finally {
+      lease.release();
+      tree.dispose();
+      disposeChannel();
+      logged.mockRestore();
+    }
+  });
+
+  it('should preserve explicit scheduled refresh for an actively observed directory', async () => {
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('safe.ts')]);
+    const { tree, disposeChannel } = createTreeHarness({ proxy: mock<ComposedViewClient>({ readDirectory }) });
+    const lease = tree.observeDirectory('source').acquire();
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().status).toBe('ready');
+    });
+    readDirectory.mockClear();
+    readDirectory.mockResolvedValue([textNode('fresh.ts')]);
+    tree.scheduleRefresh('source');
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'fresh.ts' }] });
+    });
+    expect(readDirectory).toHaveBeenCalledOnce();
+    lease.release();
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should share one authoritative reset read across exact watch and root channel delivery', async () => {
+    let onWatch = (_event: WatchEvent): void => undefined;
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('safe.ts')]);
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+      watchReady: (_request, handler) => {
+        onWatch = handler;
+        return { ready: Promise.resolve(), closed: Promise.withResolvers<void>().promise, unsubscribe: vi.fn() };
+      },
+    });
+    const lease = tree.observeDirectory('source').acquire();
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().status).toBe('ready');
+    });
+    readDirectory.mockClear();
+    emitFileChanged({ type: 'backendChanged', backend: 'indexeddb' });
+    onWatch({ type: 'reset' });
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().status).toBe('ready');
+    });
+    expect(readDirectory).toHaveBeenCalledOnce();
+    lease.release();
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should bound sustained directory invalidations and refuse stale rows until quiescence', async () => {
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('safe.ts')]);
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+    });
+    const owner = tree.observeDirectory('source');
+    const first = owner.acquire();
+    const second = owner.acquire();
+    await vi.waitFor(() => {
+      expect(first.getSnapshot().status).toBe('ready');
+    });
+    const safe = first.getSnapshot().value;
+    const pending: Array<PromiseWithResolvers<FileTreeNode[]>> = [];
+    readDirectory.mockImplementation(async () => {
+      const read = Promise.withResolvers<FileTreeNode[]>();
+      pending.push(read);
+      return read.promise;
+    });
+    for (let round = 0; round < 3; round++) {
+      for (let index = 0; index < 20; index++) {
+        emitFileChanged({ type: 'directoryChanged', path: 'source', backend: 'indexeddb' });
+      }
+      expect(pending).toHaveLength(round + 1);
+      expect(first.getSnapshot()).toMatchObject({ status: 'pending', value: safe });
+      if (round === 0) {
+        first.release();
+      }
+      pending[round]!.resolve([textNode('stale.ts')]);
+      // oxlint-disable-next-line no-await-in-loop -- Each held generation must finish before its single trailing read starts.
+      await vi.waitFor(() => {
+        expect(pending).toHaveLength(round + 2);
+      });
+      expect(tree.listDirectorySync('source')).toMatchObject([{ name: 'safe.ts' }]);
+    }
+    pending[3]!.resolve([textNode('current.ts')]);
+    await vi.waitFor(() => {
+      expect(second.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'current.ts' }] });
+    });
+    expect(readDirectory).toHaveBeenCalledTimes(5);
+    expect(owner.diagnostics.activeWatches).toBe(1);
+    second.release();
+    expect(owner.diagnostics.activeWatches).toBe(0);
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should refresh an observed shallow directory on child changes without refreshing unrelated directories', async () => {
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('alpha.ts')]);
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+    });
+    const lease = tree.observeDirectory('source').acquire();
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().status).toBe('ready');
+    });
+    readDirectory.mockClear();
+    readDirectory.mockResolvedValue([textNode('beta.ts')]);
+    emitFileChanged({ type: 'fileWritten', path: 'other/file.ts', backend: 'indexeddb' });
+    expect(readDirectory).not.toHaveBeenCalled();
+    emitFileChanged({ type: 'fileWritten', path: 'source/beta.ts', backend: 'indexeddb' });
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'beta.ts' }] });
+    });
+    expect(readDirectory).toHaveBeenCalledOnce();
+    lease.release();
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should expose a failed authoritative update and retry fresh rows without revisiting', async () => {
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockResolvedValue([textNode('alpha.ts')]);
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+    });
+    const lease = tree.observeDirectory('').acquire();
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'alpha.ts' }] });
+    });
+    readDirectory.mockRejectedValueOnce(new Error('provider unavailable'));
+    emitFileChanged({ type: 'directoryChanged', path: '', backend: 'indexeddb' });
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().value).toMatchObject({ kind: 'error' });
+    });
+    readDirectory.mockResolvedValue([textNode('beta.ts')]);
+    const reads = readDirectory.mock.calls.length;
+    lease.refresh();
+    await vi.waitFor(() => {
+      expect(lease.getSnapshot().value).toMatchObject({ kind: 'ready', entries: [{ name: 'beta.ts' }] });
+    });
+    expect(readDirectory.mock.calls.length).toBeGreaterThan(reads);
+    lease.release();
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should catch up once after a burst invalidates a held bootstrap read', async () => {
+    const first = Promise.withResolvers<FileTreeNode[]>();
+    const readDirectory = vi
+      .fn<ComposedViewClient['readDirectory']>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce([textNode('latest.ts')]);
+    const { tree, emitFileChanged, disposeChannel } = createTreeHarness({
+      proxy: mock<ComposedViewClient>({ readDirectory }),
+    });
+    const listing = tree.listDirectory('');
+    for (let index = 0; index < 100; index++) {
+      emitFileChanged({ type: 'fileWritten', path: 'latest.ts', backend: 'indexeddb' });
+    }
+    expect(readDirectory).toHaveBeenCalledOnce();
+    first.resolve([]);
+    await expect(listing).resolves.toMatchObject([{ name: 'latest.ts' }]);
+    expect(readDirectory).toHaveBeenCalledTimes(2);
+    tree.dispose();
+    disposeChannel();
+  });
+
+  it('should not let the first caller cancellation cancel a shared directory read', async () => {
+    const pending = Promise.withResolvers<FileTreeNode[]>();
+    const readDirectory = vi.fn<ComposedViewClient['readDirectory']>().mockReturnValue(pending.promise);
+    const { tree, disposeChannel } = createTreeHarness({ proxy: mock<ComposedViewClient>({ readDirectory }) });
+    const controller = new AbortController();
+    const first = tree.listDirectory('', { signal: controller.signal });
+    const second = tree.listDirectory('');
+    controller.abort();
+    pending.resolve([textNode('current.ts')]);
+    await expect(first).rejects.toMatchObject({ listing: { code: DirectoryListingErrorCode.Aborted } });
+    await expect(second).resolves.toMatchObject([{ name: 'current.ts' }]);
+    expect(readDirectory).toHaveBeenCalledOnce();
+    tree.dispose();
+    disposeChannel();
+  });
+});
+
+describe('directory capability replacement', () => {
+  it('should fence a held old-root listing without deleting the new root read', async () => {
+    const oldRead = Promise.withResolvers<FileTreeNode[]>();
+    const newRead = Promise.withResolvers<FileTreeNode[]>();
+    const readDirectory = vi
+      .fn<ComposedViewClient['readDirectory']>()
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(newRead.promise);
+    const { tree, disposeChannel } = createTreeHarness({ proxy: mock<ComposedViewClient>({ readDirectory }) });
+    const oldListing = (async (): Promise<unknown> => {
+      try {
+        return await tree.listDirectory('');
+      } catch (error) {
+        return error;
+      }
+    })();
+    tree.reset('/projects/new');
+    const newListing = tree.listDirectory('');
+    oldRead.resolve([textNode('old.ts')]);
+    expect(await oldListing).toBeInstanceOf(DirectoryListingFailedError);
+    expect(tree.listDirectorySync('')).toBeUndefined();
+    newRead.resolve([textNode('new.ts')]);
+    await expect(newListing).resolves.toMatchObject([{ name: 'new.ts' }]);
+    expect(readDirectory).toHaveBeenCalledTimes(2);
+    tree.dispose();
     disposeChannel();
   });
 });

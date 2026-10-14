@@ -7,8 +7,11 @@
   "license": "Apache-2.0",
   "exports": {
     ".": "./src/index.ts",
+    "./builtin": "./src/builtin.ts",
     "./fixtures": "./src/fixture-loader.ts",
     "./manifest": "./src/manifest.ts",
+    "./runtime": "./scripts/runtime.ts",
+    "./test-fixtures": "./src/test-fixtures.ts",
     "./thumbnails": "./src/thumbnail.assets.ts"
   },
   "imports": {
@@ -24,11 +27,24 @@
     "@taucad/middleware": "workspace:*",
     "@taucad/opencascade": "workspace:*",
     "@taucad/openrscad": "workspace:*",
+    "@taucad/picogk": "workspace:*",
+    "@taucad/picovoxel": "workspace:*",
     "@taucad/replicad": "workspace:*",
-    "@taucad/runtime": "workspace:*"
+    "@taucad/runtime": "workspace:*",
+    "@taucad/tscircuit": "workspace:*",
+    "@taucad/types": "workspace:*"
   },
   "devDependencies": {
+    "@jscad/modeling": "catalog:",
+    "@taucad/build123d": "workspace:*",
+    "@taucad/geometry-core": "workspace:*",
+    "@taucad/kinematics": "workspace:*",
     "geospec": "workspace:*",
+    "libcascade": "catalog:",
+    "manifold-3d": "catalog:",
+    "picovoxel": "catalog:",
+    "replicad": "catalog:",
+    "replicad-opencascadejs": "catalog:",
     "sharp": "^0.34.5"
   }
 }

@@ -2,7 +2,7 @@ import { bundlePattern, workspace } from '@taucad/nx';
 import { defineConfig } from 'tsdown';
 import type { UserConfig } from 'tsdown';
 // oxlint-disable-next-line no-restricted-imports -- Build config consumes its adjacent declaration assembly hook.
-import { assembleBundledDeclarations } from './scripts/assemble-bundled-declarations.mts';
+import { assembleRuntimeDeclarations } from './scripts/assemble-bundled-declarations.mts';
 
 export const runtimeCopyTargets = (outDirectory: string): Array<{ from: string; to: string; rename?: string }> => [
   {
@@ -16,6 +16,10 @@ export const runtimeCopyTargets = (outDirectory: string): Array<{ from: string; 
     rename: 'THIRD_PARTY_LICENSES.md',
   },
   {
+    from: 'NOTICE',
+    to: outDirectory,
+  },
+  {
     from: 'src/nextjs/package-assets-loader.mjs',
     to: `${outDirectory}/nextjs`,
   },
@@ -25,6 +29,13 @@ const baseConfig: UserConfig = {
   entry: [
     'src/index.ts',
     'src/client/index.ts',
+    'src/configuration/index.ts',
+    'src/configuration/zod.ts',
+    'src/jobs/index.ts',
+    'src/machines/index.ts',
+    'src/machines/settings.ts',
+    'src/host/index.ts',
+    'src/host/node.ts',
     'src/types/index.ts',
     'src/plugins/plugin-entry.ts',
     'src/plugins/kernel-plugin-entry.ts',
@@ -59,12 +70,12 @@ const baseConfig: UserConfig = {
   ],
   sourcemap: true,
   clean: ['dist'],
-  dts: true,
+  dts: { eager: true },
   minify: true,
   copy: ({ outDir }) => runtimeCopyTargets(outDir),
   hooks: {
     // eslint-disable-next-line @typescript-eslint/naming-convention -- tsdown's hook API uses colon-delimited names.
-    'build:done': async ({ options }) => assembleBundledDeclarations(process.cwd(), options.outDir),
+    'build:done': async ({ options }) => assembleRuntimeDeclarations(process.cwd(), options.outDir),
   },
   tsconfig: 'tsconfig.build.json',
   target: 'es2024',

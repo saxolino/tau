@@ -1,3 +1,4 @@
+import { workbenchPaths, workbenchRecords } from '@taucad/workbench';
 /**
  * RPC Handlers Browser Adapter
  *
@@ -8,19 +9,19 @@
  * adapts browser-specific deps into the abstract RpcDependencies interface.
  */
 import type { ActorRefFrom, SnapshotFrom } from 'xstate';
-import { awaitFreshRender, AwaitFreshRenderTimeoutError } from '#machines/await-fresh-render.js';
+import { awaitFreshRender, AwaitFreshOperationTimeoutError } from '#machines/await-fresh-render.js';
 import type {
   RpcCall,
   RpcClientErrorCode,
   RpcResult,
-  GetKernelResultRpcResult,
+  EvaluateModelRpcResult,
   CaptureImagesRpcResult,
   CaptureImagesRpcInput,
   RunGeoSpecTestsRpcResult,
 } from '@taucad/chat';
 import { rpcClientErrorCode, rpcClientErrorCodeSchema } from '@taucad/chat';
 import { mutatingRpcNames } from '@taucad/chat/constants';
-import { createRpcDispatcher } from '@taucad/chat/rpc';
+import { applyClientTextMutation, createExactReplacementPlan, createRpcDispatcher } from '@taucad/chat/rpc';
 import type {
   RpcDependencies,
   RpcFileSystem,
@@ -29,26 +30,36 @@ import type {
   RpcGraphicsClient,
   RpcImageClient,
   RpcGeoSpecClient,
-  RpcGraphicsExportGeometryResult,
+  RpcGraphicsExportModelResult,
   RpcDirectoryEntry,
 } from '@taucad/chat/rpc';
-import type { FileExtension, FileStat } from '@taucad/types';
-import type { KernelIssue } from '@taucad/runtime';
+import type { CheckedFileWrite, CheckedFileWriteResult, FileStat, FileWritePrecondition } from '@taucad/types';
+import { assertRootedPath, resolveAuthorityPath } from '@taucad/utils/path';
+import { asKnownArtifact } from '@taucad/runtime';
+import type { KernelIssue, ViewOffer } from '@taucad/runtime';
 import { DirectoryListingFailedError, DirectoryListingErrorCode } from '@taucad/fs-client/directory-listing';
 import { FileNotFoundError } from '@taucad/fs-client/file-content-errors';
 import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
 import { getErrno } from '@taucad/utils/error';
+import { randomUuid } from '@taucad/utils/id';
 import { recordRpcOutcome } from '#services/rpc-ledger.js';
 import type { projectMachine } from '#machines/project.machine.js';
+import { selectCadFailureIssues } from '#machines/cad.machine.js';
 import type { cadMachine } from '#machines/cad.machine.js';
-import type { graphicsMachine } from '#machines/graphics.machine.js';
-import { createSourceModelInteractionUnitId } from '#machines/model-interaction.machine.js';
+import type { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
+import { createSourceModelInteractionUnitId } from '@taucad/viewer/machines/model-interaction.machine';
 import { decodeTextFile, encodeTextFile } from '#utils/filesystem.utils.js';
-import { bestRouteForActiveKernel, exportWithRuntimeValidatedInput } from '#utils/export-formats.utils.js';
 import { createSkillResolver } from '#lib/skill-resolver.js';
 import type { HeadlessImageService } from '#services/headless-image.service.js';
 import type { RuntimeFileSystem } from '@taucad/runtime/filesystem';
-import { canonicalCaptureViews, captureCadImages, captureFilesToDataUrls } from '#services/headless-capture.js';
+import { ResourceQueue } from '@taucad/filesystem';
+import { z } from 'zod';
+import {
+  canonicalCaptureViews,
+  captureCadImages,
+  captureFilesToDataUrls,
+  omittedSectionCutsNotice,
+} from '#services/headless-capture.js';
 
 /** Source of file write operations */
 type FileWriteSource = 'editor' | 'user' | 'machine';
@@ -59,6 +70,7 @@ type FileWriteSource = 'editor' | 'user' | 'machine';
 type RpcHandlerTreeService = {
   exists(path: string): Promise<boolean>;
   listDirectory(path: string): ReturnType<FileTreeService['listDirectory']>;
+  listDirectoryExact(path: string): ReturnType<FileTreeService['listDirectoryExact']>;
 };
 
 /**
@@ -71,14 +83,8 @@ type RpcHandlerTreeService = {
  * (chat-utils, error-text JSON) would have to defensively re-validate.
  */
 function extractRpcClientErrorCode(execError: unknown): RpcClientErrorCode {
-  if (execError && typeof execError === 'object' && 'code' in execError) {
-    const candidate: unknown = (execError as { code: unknown }).code;
-    const parsed = rpcClientErrorCodeSchema.safeParse(candidate);
-    if (parsed.success) {
-      return parsed.data;
-    }
-  }
-  return rpcClientErrorCode.unknown;
+  const parsed = z.object({ code: rpcClientErrorCodeSchema }).safeParse(execError);
+  return parsed.success ? parsed.data.code : rpcClientErrorCode.unknown;
 }
 
 /**
@@ -88,6 +94,14 @@ export type RpcHandlerDependencies = {
   /** Active chat thread identifier (ledger + Socket.IO room correlation). */
   chatId: string;
   fileManager: {
+    fileManagerRef: { getSnapshot(): { context: { rootDirectory: string } } };
+    workbenchFiles: {
+      writeFileChecked(input: Omit<CheckedFileWrite, 'signal'>): Promise<CheckedFileWriteResult>;
+      deleteFileChecked(input: {
+        path: string;
+        preconditions: readonly FileWritePrecondition[];
+      }): Promise<CheckedFileWriteResult>;
+    };
     readFile: (path: string) => Promise<Uint8Array<ArrayBuffer>>;
     writeFile: (path: string, data: Uint8Array<ArrayBuffer>, options: { source: FileWriteSource }) => Promise<void>;
     deleteFile: (path: string, options: { source: FileWriteSource }) => Promise<void>;
@@ -95,7 +109,12 @@ export type RpcHandlerDependencies = {
     whenServicesReady: () => Promise<{ treeService: RpcHandlerTreeService }>;
     runtimeFileSystem: RuntimeFileSystem;
   };
-  projectRef: ActorRefFrom<typeof projectMachine>;
+  projectRef?: ActorRefFrom<typeof projectMachine>;
+  /** Headless overrides retained independently of the visible project route. */
+  kernelClient?: RpcRuntimeClient;
+  graphicsClient?: RpcGraphicsClient;
+  imageClient?: RpcImageClient;
+  geoSpecClient?: RpcGeoSpecClient;
   headlessImageService?: Pick<HeadlessImageService, 'export'>;
   /**
    * Creates a runtime client owned by the GeoSpec test runner.
@@ -116,46 +135,155 @@ export type RpcHandlers = {
   executeRpcCall<C extends RpcCallInput>(rpcCall: C): Promise<RpcResult<C['rpcName']>>;
 };
 
+const mutationQueuesByAuthority = new WeakMap<RuntimeFileSystem, ResourceQueue>();
+
+const mutationQueueFor = (authority: RuntimeFileSystem): ResourceQueue => {
+  const existing = mutationQueuesByAuthority.get(authority);
+  if (existing) {
+    return existing;
+  }
+  const queue = new ResourceQueue();
+  mutationQueuesByAuthority.set(authority, queue);
+  return queue;
+};
+
 function createBrowserRpcFileSystem(fileManager: RpcHandlerDependencies['fileManager']): RpcFileSystem {
+  const mutationQueue = mutationQueueFor(fileManager.runtimeFileSystem);
+  const absolute = (path: string): string =>
+    resolveAuthorityPath(`${fileManager.fileManagerRef.getSnapshot().context.rootDirectory}/${assertRootedPath(path)}`);
+  const absolutePreconditions = (preconditions: readonly FileWritePrecondition[]): FileWritePrecondition[] =>
+    preconditions.map((precondition) => ({ ...precondition, path: absolute(precondition.path) }));
+  const readFileBytes = async (path: string): Promise<Uint8Array<ArrayBuffer>> =>
+    new Uint8Array(await fileManager.readFile(path));
+  const writeFileIfUnchanged = async (
+    path: string,
+    expected: Uint8Array<ArrayBuffer>,
+    replacement: Uint8Array<ArrayBuffer>,
+  ): Promise<
+    | Readonly<{ status: 'committed'; committedBytes: Uint8Array<ArrayBuffer> }>
+    | Readonly<{ status: 'conflict'; currentBytes: Uint8Array<ArrayBuffer> }>
+  > =>
+    mutationQueue.queueFor(path, async () => {
+      const currentBytes = await readFileBytes(path);
+      const unchanged =
+        currentBytes.byteLength === expected.byteLength &&
+        currentBytes.every((byte, index) => byte === expected[index]);
+      if (!unchanged) {
+        return { status: 'conflict', currentBytes } as const;
+      }
+      await fileManager.writeFile(path, new Uint8Array(replacement), { source: 'machine' });
+      return { status: 'committed', committedBytes: await readFileBytes(path) } as const;
+    });
+  const stat = async (path: string): Promise<RpcFileStat> => {
+    const s = await fileManager.stat(path);
+    const isoDate = new Date(s.mtimeMs).toISOString();
+    if (s.type === 'dir') {
+      return {
+        size: s.size,
+        isDirectory: true,
+        createdAt: isoDate,
+        modifiedAt: isoDate,
+      };
+    }
+    return s.contentKind === 'text'
+      ? {
+          size: s.size,
+          isDirectory: false,
+          createdAt: isoDate,
+          modifiedAt: isoDate,
+          contentKind: 'text',
+          lineCount: s.lineCount,
+        }
+      : {
+          size: s.size,
+          isDirectory: false,
+          createdAt: isoDate,
+          modifiedAt: isoDate,
+          contentKind: 'binary',
+        };
+  };
+
   return {
+    async readBinaryFile(path: string): Promise<Uint8Array<ArrayBuffer>> {
+      const rootedPath = assertRootedPath(path);
+      const maximumReadBytes = 256 * 1024 * 1024;
+      const metadata = await fileManager.stat(rootedPath);
+      if (metadata.type === 'dir' || metadata.size > maximumReadBytes) {
+        throw Object.assign(new Error(`File '${path}' exceeds the binary read limit or is a directory.`), {
+          code: rpcClientErrorCode.resultTooLarge,
+        });
+      }
+      const data = await readFileBytes(rootedPath);
+      if (data.byteLength > maximumReadBytes) {
+        throw Object.assign(new Error(`File '${path}' exceeds the binary read limit.`), {
+          code: rpcClientErrorCode.resultTooLarge,
+        });
+      }
+      return data;
+    },
     async readFile(path: string): Promise<string> {
       const data = await fileManager.readFile(path);
-      return decodeTextFile(data);
+      try {
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- `ignoreBOM` is the native TextDecoder option name.
+        return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data);
+      } catch {
+        throw Object.assign(new Error(`File '${path}' is not valid UTF-8 text.`), {
+          code: rpcClientErrorCode.invalidTextEncoding,
+        });
+      }
     },
     async writeFile(path: string, content: string): Promise<void> {
-      await fileManager.writeFile(path, encodeTextFile(content), {
-        source: 'machine',
+      const data = encodeTextFile(content);
+      await mutationQueue.queueFor(path, async () =>
+        fileManager.writeFile(path, data, {
+          source: 'machine',
+        }),
+      );
+    },
+    async writeFileChecked(input) {
+      return fileManager.workbenchFiles.writeFileChecked({
+        path: absolute(input.path),
+        data: input.data,
+        preconditions: absolutePreconditions(input.preconditions),
+      });
+    },
+    async deleteFileChecked(input) {
+      return fileManager.workbenchFiles.deleteFileChecked({
+        path: absolute(input.path),
+        preconditions: absolutePreconditions(input.preconditions),
       });
     },
     async writeBinaryFile(path: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
-      await fileManager.writeFile(path, new Uint8Array(data), { source: 'machine' });
+      const ownedData = new Uint8Array(data);
+      await mutationQueue.queueFor(path, async () => fileManager.writeFile(path, ownedData, { source: 'machine' }));
     },
     async deleteFile(path: string): Promise<void> {
-      await fileManager.deleteFile(path, { source: 'machine' });
+      await mutationQueue.queueFor(path, async () => fileManager.deleteFile(path, { source: 'machine' }));
     },
     async readdir(path: string): Promise<RpcDirectoryEntry[]> {
       const { treeService } = await fileManager.whenServicesReady();
       try {
-        const entries = await treeService.listDirectory(path);
-        return entries.map((entry) => {
+        const entries = await treeService.listDirectoryExact(path);
+        return entries.map((entry): RpcDirectoryEntry => {
           const modifiedAt = entry.mtimeMs > 0 ? new Date(entry.mtimeMs).toISOString() : undefined;
-          if (entry.isFolder) {
+          const common = {
+            name: entry.name,
+            size: entry.size,
+            ...(modifiedAt ? { modifiedAt } : {}),
+            ...(entry.provenance === undefined ? {} : { provenance: entry.provenance }),
+          };
+          if (entry.type === 'dir') {
             return {
-              name: entry.name,
+              ...common,
               type: 'dir',
-              size: entry.size,
-              ...(modifiedAt ? { modifiedAt } : {}),
+              ...(entry.provenance !== undefined && entry.provenance.source !== 'project'
+                ? { traverseOnImplicitSearch: false }
+                : {}),
             };
           }
-          return {
-            name: entry.name,
-            type: 'file',
-            size: entry.size,
-            ...(entry.contentKind === 'text'
-              ? { contentKind: 'text', lineCount: entry.lineCount }
-              : { contentKind: 'binary' }),
-            ...(modifiedAt ? { modifiedAt } : {}),
-          };
+          return entry.contentKind === 'text'
+            ? { ...common, type: 'file', contentKind: 'text', lineCount: entry.lineCount }
+            : { ...common, type: 'file', contentKind: 'binary' };
         });
       } catch (error) {
         if (error instanceof DirectoryListingFailedError) {
@@ -173,82 +301,66 @@ function createBrowserRpcFileSystem(fileManager: RpcHandlerDependencies['fileMan
       return treeService.exists(path);
     },
     async appendFile(path: string, content: string): Promise<void> {
-      let existing = '';
-      try {
-        const data = await fileManager.readFile(path);
-        existing = decodeTextFile(data);
-      } catch (error) {
-        if (!(error instanceof FileNotFoundError) && getErrno(error) !== 'ENOENT') {
-          throw error;
+      await mutationQueue.queueFor(path, async () => {
+        let existing = '';
+        try {
+          const data = await fileManager.readFile(path);
+          existing = decodeTextFile(data);
+        } catch (error) {
+          if (!(error instanceof FileNotFoundError) && getErrno(error) !== 'ENOENT') {
+            throw error;
+          }
         }
-      }
 
-      await fileManager.writeFile(path, encodeTextFile(existing + content), {
-        source: 'machine',
+        await fileManager.writeFile(path, encodeTextFile(existing + content), {
+          source: 'machine',
+        });
       });
     },
-    // oxlint-disable-next-line max-params -- list of args is consistent with other file operations
-    async editFile(
-      path: string,
-      oldString: string,
-      newString: string,
-      replaceAll?: boolean,
-    ): Promise<{ occurrences: number }> {
-      const data = await fileManager.readFile(path);
-      const content = decodeTextFile(data);
-
-      let updated: string;
-      let occurrences: number;
-
-      if (replaceAll) {
-        occurrences = content.split(oldString).length - 1;
-        updated = occurrences > 0 ? content.replaceAll(oldString, newString) : content;
-      } else {
-        occurrences = content.includes(oldString) ? 1 : 0;
-        updated = occurrences > 0 ? content.replace(oldString, newString) : content;
+    async editFile({ targetFile: path, oldString, newString, replaceAll, expectedDigest }) {
+      const result = await applyClientTextMutation({
+        targetFile: path,
+        expectedDigest,
+        fileSystem: {
+          stat,
+          readFileBytes,
+          writeFileIfUnchanged:
+            expectedDigest === undefined
+              ? writeFileIfUnchanged
+              : async (target, expected, replacement) => {
+                  const committed = await fileManager.workbenchFiles.writeFileChecked({
+                    path: absolute(target),
+                    data: replacement,
+                    preconditions: [{ path: absolute(target), expected }],
+                  });
+                  if (committed.status === 'conflict') {
+                    throw Object.assign(
+                      new Error('Reviewed bytes changed before commit. Read and review the file again.'),
+                      { code: rpcClientErrorCode.editConflict },
+                    );
+                  }
+                  return { status: 'committed', committedBytes: new Uint8Array(committed.content) };
+                },
+        },
+        plan: createExactReplacementPlan({ oldString, newString, replaceAll, expectedDigest }),
+      });
+      if (!result.ok) {
+        throw Object.assign(new Error(result.message), { code: result.errorCode });
       }
-
-      if (occurrences === 0) {
-        throw new Error(`String not found in ${path}`);
-      }
-
-      await fileManager.writeFile(path, encodeTextFile(updated), { source: 'machine' });
-      return { occurrences };
+      return {
+        occurrences: result.occurrences,
+        ...(result.staleRecovered ? { staleRecovered: true } : {}),
+        diffStats: result.diffStats,
+        digest: result.digest,
+      };
     },
-    async stat(path: string): Promise<RpcFileStat> {
-      const s = await fileManager.stat(path);
-      const isoDate = new Date(s.mtimeMs).toISOString();
-      if (s.type === 'dir') {
-        return {
-          size: s.size,
-          isDirectory: true,
-          createdAt: isoDate,
-          modifiedAt: isoDate,
-        };
-      }
-      return s.contentKind === 'text'
-        ? {
-            size: s.size,
-            isDirectory: false,
-            createdAt: isoDate,
-            modifiedAt: isoDate,
-            contentKind: 'text',
-            lineCount: s.lineCount,
-          }
-        : {
-            size: s.size,
-            isDirectory: false,
-            createdAt: isoDate,
-            modifiedAt: isoDate,
-            contentKind: 'binary',
-          };
-    },
+    stat,
   };
 }
 
 /**
- * Resolves the compilation-unit actor for `targetFile`, bootstrapping it via
- * `createGeometryUnit` if it does not already exist, then awaits a *fresh*
+ * Claims the compilation-unit actor for `targetFile`, creating or resuming it
+ * as needed, then awaits a *fresh*
  * render to settle (per `awaitFreshRender` in `apps/ui/app/lib/`).
  *
  * Runtime, export, and image operations route through this helper so they
@@ -256,13 +368,14 @@ function createBrowserRpcFileSystem(fileManager: RpcHandlerDependencies['fileMan
  * render generation.
  */
 /** Subset of {@link RpcClientErrorCode} emitted by `ensureGeometryUnit` only. */
-export type EnsureGeometryUnitErrorCode = Extract<RpcClientErrorCode, 'UNKNOWN' | 'RENDER_TIMEOUT'>;
+export type EnsureGeometryUnitErrorCode = Extract<RpcClientErrorCode, 'UNKNOWN' | 'OPERATION_TIMEOUT'>;
 
 export type EnsureGeometryUnitResult =
   | {
       ok: true;
       cadUnit: ActorRefFrom<typeof cadMachine>;
       cadSnapshot: SnapshotFrom<typeof cadMachine>;
+      release: () => void;
     }
   | {
       ok: false;
@@ -273,20 +386,23 @@ export type EnsureGeometryUnitResult =
 async function ensureGeometryUnit(
   projectRef: ActorRefFrom<typeof projectMachine>,
   targetFile: string,
+  options: {
+    operationTimeoutForFile: (path: string) => Promise<number | undefined>;
+    signal?: AbortSignal;
+  },
 ): Promise<EnsureGeometryUnitResult> {
+  const claimId = randomUuid();
+  let retained = false;
   try {
-    const projectSnapshot = projectRef.getSnapshot();
-    const { geometryUnits } = projectSnapshot.context;
-    let cadUnit = geometryUnits.get(targetFile);
-
-    if (!cadUnit) {
-      projectRef.send({
-        type: 'createGeometryUnit',
-        entryPath: targetFile,
-      });
-      const refreshed = projectRef.getSnapshot();
-      cadUnit = refreshed.context.geometryUnits.get(targetFile);
-    }
+    const operationTimeout = await options.operationTimeoutForFile(targetFile);
+    options.signal?.throwIfAborted();
+    projectRef.send({
+      type: 'claimGeometryUnit',
+      claimId,
+      entryPath: targetFile,
+      operationTimeout,
+    });
+    const cadUnit = projectRef.getSnapshot().context.geometryUnits.get(targetFile);
 
     if (!cadUnit) {
       return {
@@ -296,14 +412,22 @@ async function ensureGeometryUnit(
       };
     }
 
-    const cadSnapshot = await awaitFreshRender(cadUnit);
+    const cadSnapshot = await awaitFreshRender(cadUnit, { signal: options.signal });
 
-    return { ok: true, cadUnit, cadSnapshot };
+    retained = true;
+    return {
+      ok: true,
+      cadUnit,
+      cadSnapshot,
+      release: () => {
+        projectRef.send({ type: 'releaseGeometryUnit', claimId });
+      },
+    };
   } catch (error) {
-    if (error instanceof AwaitFreshRenderTimeoutError) {
+    if (error instanceof AwaitFreshOperationTimeoutError) {
       return {
         ok: false,
-        errorCode: rpcClientErrorCode.renderTimeout,
+        errorCode: rpcClientErrorCode.operationTimeout,
         message: `Render for ${targetFile} did not settle in time. Inspect recent model changes, kernel diagnostics, and parameter values; fix the render blocker or increase render timeout for legitimately long operations.`,
       };
     }
@@ -312,41 +436,88 @@ async function ensureGeometryUnit(
       errorCode: rpcClientErrorCode.unknown,
       message: error instanceof Error ? error.message : 'Unknown error',
     };
+  } finally {
+    if (!retained) {
+      projectRef.send({ type: 'releaseGeometryUnit', claimId });
+    }
   }
 }
 
-function getLatestGeometryFailure(
-  cadSnapshot: SnapshotFrom<typeof cadMachine>,
-  targetFile: string,
-): KernelIssue[] | undefined {
-  if (cadSnapshot.context.latestGeometryOutcome !== 'failure') {
-    return undefined;
-  }
-  return cadSnapshot.context.kernelIssues.get(targetFile) ?? [];
+function geometryFailureMessage(issues: readonly KernelIssue[]): string {
+  return issues.map((issue) => issue.message).join('; ');
 }
 
-function geometryFailureMessage(issues: KernelIssue[], targetFile: string): string {
-  return issues.map((issue) => issue.message).join('; ') || `Render for ${targetFile} failed`;
-}
-
-function createBrowserRuntimeClient(projectRef: ActorRefFrom<typeof projectMachine>): RpcRuntimeClient {
+function createBrowserRuntimeClient(
+  projectRef: ActorRefFrom<typeof projectMachine>,
+  operationTimeoutForFile: (path: string) => Promise<number | undefined>,
+): RpcRuntimeClient {
   return {
-    async getKernelResult(targetFile: string): Promise<GetKernelResultRpcResult> {
-      const resolved = await ensureGeometryUnit(projectRef, targetFile);
+    async evaluateModel({ targetFile, includeCapabilities }, context): Promise<EvaluateModelRpcResult> {
+      const resolved = await ensureGeometryUnit(projectRef, targetFile, {
+        operationTimeoutForFile,
+        signal: context?.signal,
+      });
       if (!resolved.ok) {
         return { success: false, errorCode: resolved.errorCode, message: resolved.message };
       }
-
-      const { cadSnapshot } = resolved;
-      const kernelIssues = cadSnapshot.context.kernelIssues.get(targetFile);
-      const hasErrors = kernelIssues?.some((issue) => issue.severity === 'error') ?? false;
-      const status = cadSnapshot.value === 'error' || hasErrors ? 'error' : 'ready';
-
-      return {
-        success: true,
-        status,
-        kernelIssues: kernelIssues ?? [],
-      };
+      try {
+        const { cadSnapshot } = resolved;
+        context?.signal?.throwIfAborted();
+        const { evaluation, kernelClient, activeKernelId } = cadSnapshot.context;
+        const lastProjection =
+          cadSnapshot.context.lastProjection?.evaluationId === evaluation?.id
+            ? cadSnapshot.context.lastProjection
+            : undefined;
+        const kernelIssues = cadSnapshot.context.kernelIssues.get(targetFile) ?? [];
+        const ready =
+          evaluation?.success === true &&
+          (evaluation.views.length === 0 || cadSnapshot.context.latestRenderingOutcome === 'success');
+        const offered = evaluation?.success
+          ? {
+              views: evaluation.views.map(({ id }) => id),
+              instances: Object.fromEntries(
+                evaluation.views
+                  .filter(({ instances }) => instances !== undefined)
+                  .map(({ id, instances }) => [id, [...(instances ?? [])]]),
+              ),
+              exports: Object.fromEntries(evaluation.exports.map(({ id, extension }) => [id, extension])),
+            }
+          : {};
+        const metadata = (options: ViewOffer['options']) => ({
+          schema: Object.fromEntries(Object.entries(options?.schema ?? { type: 'object', properties: {} })),
+          defaults: z.record(z.string(), z.json()).parse(options?.defaults ?? {}),
+        });
+        const capabilities =
+          includeCapabilities && evaluation?.success
+            ? {
+                capabilities: {
+                  views: Object.fromEntries(evaluation.views.map(({ id, options }) => [id, metadata(options)])),
+                  exports: Object.fromEntries(evaluation.exports.map(({ id, options }) => [id, metadata(options)])),
+                  targets: [
+                    ...new Set([
+                      ...evaluation.exports.map(({ id }) => id),
+                      ...evaluation.exports.map(({ extension }) => extension),
+                      ...(kernelClient?.capabilities?.routes
+                        .filter((route) => route.kernelId === activeKernelId)
+                        .map(({ targetFormat }) => targetFormat) ?? []),
+                    ]),
+                  ],
+                },
+              }
+            : {};
+        return {
+          success: true,
+          status: ready ? 'ready' : 'error',
+          kernelIssues,
+          ...((lastProjection?.sourceRevision ?? evaluation?.sourceRevision)
+            ? { sourceRevision: lastProjection?.sourceRevision ?? evaluation?.sourceRevision }
+            : {}),
+          ...offered,
+          ...capabilities,
+        };
+      } finally {
+        resolved.release();
+      }
     },
   };
 }
@@ -370,73 +541,63 @@ function createBrowserGeoSpecClient(createGeoSpecClient: (() => RpcGeoSpecClient
   };
 }
 
-function createBrowserGraphicsClient(projectRef: ActorRefFrom<typeof projectMachine>): RpcGraphicsClient {
+function createBrowserGraphicsClient(
+  projectRef: ActorRefFrom<typeof projectMachine>,
+  operationTimeoutForFile: (path: string) => Promise<number | undefined>,
+): RpcGraphicsClient {
   return {
-    async exportGeometry({
-      targetFile,
-      format,
-    }: {
-      targetFile: string;
-      format: string;
-    }): Promise<RpcGraphicsExportGeometryResult> {
-      const resolved = await ensureGeometryUnit(projectRef, targetFile);
+    async exportModel({ targetFile, to, options }, context): Promise<RpcGraphicsExportModelResult> {
+      const resolved = await ensureGeometryUnit(projectRef, targetFile, {
+        operationTimeoutForFile,
+        signal: context?.signal,
+      });
       if (!resolved.ok) {
         return { success: false, errorCode: resolved.errorCode, message: resolved.message };
       }
 
-      const { cadSnapshot } = resolved;
-      const { kernelClient } = cadSnapshot.context;
-      if (!kernelClient) {
-        return {
-          success: false,
-          errorCode: rpcClientErrorCode.unknown,
-          message: `Runtime client not connected for ${targetFile}`,
-        };
-      }
-
-      const failedIssues = getLatestGeometryFailure(cadSnapshot, targetFile);
-      if (failedIssues) {
-        return {
-          success: false,
-          errorCode: rpcClientErrorCode.unknown,
-          message: geometryFailureMessage(failedIssues, targetFile),
-        };
-      }
-      if (cadSnapshot.context.latestGeometryOutcome !== 'success') {
-        return {
-          success: false,
-          errorCode: rpcClientErrorCode.unknown,
-          message: `No current successful geometry is available for ${targetFile}`,
-        };
-      }
-
       try {
-        const route = bestRouteForActiveKernel(
-          kernelClient,
-          format as FileExtension,
-          cadSnapshot.context.activeKernelId,
-        );
-        if (!route) {
+        const { cadSnapshot } = resolved;
+        const { document, evaluation } = cadSnapshot.context;
+        if (!document) {
           return {
             success: false,
             errorCode: rpcClientErrorCode.unknown,
-            message: `Export format ${format} is not available for ${targetFile}`,
+            message: `Runtime client not connected for ${targetFile}`,
           };
         }
 
-        const exportResult = await exportWithRuntimeValidatedInput(kernelClient, route);
-        if (!exportResult.success) {
-          const message = exportResult.issues.map((issue) => issue.message).join('; ') || 'Geometry export failed';
-          return { success: false, errorCode: rpcClientErrorCode.unknown, message };
+        if (!evaluation?.success) {
+          const failedIssues = evaluation?.issues ?? selectCadFailureIssues(cadSnapshot) ?? [];
+          return {
+            success: false,
+            errorCode: rpcClientErrorCode.unknown,
+            message: geometryFailureMessage(failedIssues) || `Model evaluation failed for ${targetFile}`,
+          };
         }
+        try {
+          context?.signal?.throwIfAborted();
+          const exportResult = await document.export(to, { options, signal: context?.signal });
+          if (!exportResult.success) {
+            const message = exportResult.issues.map((issue) => issue.message).join('; ') || 'Geometry export failed';
+            return { success: false, errorCode: rpcClientErrorCode.unknown, message };
+          }
 
-        return { success: true, files: exportResult.data };
-      } catch (error) {
-        return {
-          success: false,
-          errorCode: rpcClientErrorCode.unknown,
-          message: error instanceof Error ? error.message : 'Geometry export failed',
-        };
+          return {
+            success: true,
+            exportId: exportResult.exportId,
+            files: [...exportResult.files],
+            issues: [...exportResult.issues],
+            ...(exportResult.sourceRevision === undefined ? {} : { sourceRevision: exportResult.sourceRevision }),
+          };
+        } catch (error) {
+          return {
+            success: false,
+            errorCode: rpcClientErrorCode.unknown,
+            message: error instanceof Error ? error.message : 'Geometry export failed',
+          };
+        }
+      } finally {
+        resolved.release();
       }
     },
   };
@@ -445,7 +606,7 @@ function createBrowserGraphicsClient(projectRef: ActorRefFrom<typeof projectMach
 function createBrowserImageClient(
   projectRef: ActorRefFrom<typeof projectMachine>,
   imageService: Pick<HeadlessImageService, 'export'>,
-  fileSystem: RuntimeFileSystem,
+  operationTimeoutForFile: (path: string) => Promise<number | undefined>,
 ): RpcImageClient {
   const findGraphicsRef = (targetFile: string): ActorRefFrom<typeof graphicsMachine> | undefined => {
     const unitId = createSourceModelInteractionUnitId(targetFile);
@@ -458,50 +619,62 @@ function createBrowserImageClient(
   };
 
   return {
-    async captureImages(input: CaptureImagesRpcInput): Promise<CaptureImagesRpcResult> {
-      const resolved = await ensureGeometryUnit(projectRef, input.targetFile);
+    async captureImages(input: CaptureImagesRpcInput, context): Promise<CaptureImagesRpcResult> {
+      const resolved = await ensureGeometryUnit(projectRef, input.targetFile, {
+        operationTimeoutForFile,
+        signal: context?.signal,
+      });
       if (!resolved.ok) {
         return { success: false, errorCode: resolved.errorCode, message: resolved.message };
       }
-      if (!resolved.cadSnapshot.context.entryPath) {
-        return {
-          success: false,
-          errorCode: rpcClientErrorCode.unknown,
-          message: `Settled geometry unit for ${input.targetFile} has no entry path`,
-        };
-      }
-
-      const includeEdges = input.includeEdges ?? true;
       try {
-        const files = await captureCadImages({
-          cadRef: resolved.cadUnit,
-          graphicsRef: findGraphicsRef(input.targetFile),
-          fileSystem,
-          imageService,
-          recipe: {
-            purpose: 'agent',
-            mode: input.mode === 'single' ? 'isometric' : 'orthographic',
-            includeEdges,
-          },
-        });
-        const views =
-          resolved.cadSnapshot.context.geometry?.format === 'svg'
-            ? (['drawing'] as const)
-            : input.mode === 'single'
-              ? (['isometric'] as const)
-              : canonicalCaptureViews.map((view) => view.id);
-        const dataUrls = captureFilesToDataUrls(files);
-        const images = views.map((view, index) => ({
-          view,
-          dataUrl: dataUrls[index]!,
-        }));
-        return { success: true, images };
-      } catch (error) {
-        return {
-          success: false,
-          errorCode: rpcClientErrorCode.ioError,
-          message: error instanceof Error ? error.message : 'Image capture failed',
-        };
+        if (!resolved.cadSnapshot.context.entryPath) {
+          return {
+            success: false,
+            errorCode: rpcClientErrorCode.unknown,
+            message: `Settled geometry unit for ${input.targetFile} has no entry path`,
+          };
+        }
+
+        const includeEdges = input.includeEdges ?? true;
+        try {
+          const { files, omittedSectionCutIds } = await captureCadImages({
+            cadRef: resolved.cadUnit,
+            graphicsRef: findGraphicsRef(input.targetFile),
+            imageService,
+            recipe: {
+              purpose: 'agent',
+              mode: input.mode === 'single' ? 'isometric' : 'orthographic',
+              includeEdges,
+            },
+          });
+          const views =
+            resolved.cadSnapshot.context.rendering?.success &&
+            asKnownArtifact(resolved.cadSnapshot.context.rendering.artifact)?.mimeType === 'image/svg+xml'
+              ? (['drawing'] as const)
+              : input.mode === 'single'
+                ? (['isometric'] as const)
+                : canonicalCaptureViews.map((view) => view.id);
+          const dataUrls = captureFilesToDataUrls(files);
+          const images = views.map((view, index) => ({
+            view,
+            dataUrl: dataUrls[index]!,
+          }));
+          // One line, so the agent never describes a cut the images do not show.
+          return {
+            success: true,
+            images,
+            ...(omittedSectionCutIds.length > 0 ? { message: omittedSectionCutsNotice } : {}),
+          };
+        } catch (error) {
+          return {
+            success: false,
+            errorCode: rpcClientErrorCode.ioError,
+            message: error instanceof Error ? error.message : 'Image capture failed',
+          };
+        }
+      } finally {
+        resolved.release();
       }
     },
   };
@@ -514,6 +687,29 @@ function createBrowserImageClient(
  */
 export function createRpcHandlers(deps: RpcHandlerDependencies): RpcHandlers {
   const { chatId, fileManager, projectRef, headlessImageService, createGeoSpecClient } = deps;
+  const operationTimeoutForFile = async (path: string): Promise<number | undefined> => {
+    let bytes: Uint8Array<ArrayBuffer>;
+    try {
+      bytes = await fileManager.readFile(workbenchPaths.entries);
+    } catch (error) {
+      if (error instanceof FileNotFoundError || getErrno(error) === 'ENOENT') {
+        return undefined;
+      }
+      throw error;
+    }
+    const read = workbenchRecords.entries.read(bytes);
+    // Refuse rather than render with an assumed default timeout the person never chose.
+    if (read.status !== 'current') {
+      const record = `\`${workbenchPaths.entries}\``;
+      const stopped = 'so rendering stopped rather than assume a default render timeout.';
+      throw new Error(
+        read.code === 'NEWER_RECORD'
+          ? `${record} was written by a newer Tau, ${stopped} Update Tau to use it; do not rewrite it to work around this.`
+          : `${record} is not valid, ${stopped} The person can review it from the project's Settings not applied action; do not rewrite it to work around this. ${read.message}`,
+      );
+    }
+    return read.record.entries[path]?.renderTimeout;
+  };
   const fileSystem = createBrowserRpcFileSystem(fileManager);
   const skillResolver = createSkillResolver({
     async readFile(path) {
@@ -527,13 +723,27 @@ export function createRpcHandlers(deps: RpcHandlerDependencies): RpcHandlers {
 
   const rpcDeps: RpcDependencies = {
     fileSystem,
-    kernelClient: createBrowserRuntimeClient(projectRef),
-    geospec: createBrowserGeoSpecClient(createGeoSpecClient),
+    kernelClient:
+      deps.kernelClient ??
+      (projectRef
+        ? createBrowserRuntimeClient(projectRef, operationTimeoutForFile)
+        : {
+            evaluateModel: async () => ({
+              success: false,
+              errorCode: rpcClientErrorCode.unknown,
+              message: 'No project runtime is available',
+            }),
+          }),
+    geospec: deps.geoSpecClient ?? createBrowserGeoSpecClient(createGeoSpecClient),
     skillResolver,
-    graphics: createBrowserGraphicsClient(projectRef),
-    images: headlessImageService
-      ? createBrowserImageClient(projectRef, headlessImageService, fileManager.runtimeFileSystem)
-      : undefined,
+    graphics:
+      deps.graphicsClient ??
+      (projectRef ? createBrowserGraphicsClient(projectRef, operationTimeoutForFile) : undefined),
+    images:
+      deps.imageClient ??
+      (projectRef && headlessImageService
+        ? createBrowserImageClient(projectRef, headlessImageService, operationTimeoutForFile)
+        : undefined),
   };
 
   const dispatcher = createRpcDispatcher(rpcDeps);

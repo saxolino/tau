@@ -1,4 +1,7 @@
 import type { Config } from '@react-router/dev/config';
+import { resolveTauCloudBuildEnabled } from './build-environment';
+
+const tauCloudEnabled = resolveTauCloudBuildEnabled(process.env['TAU_CLOUD_ENABLED']);
 
 /**
  * Concurrency for parallel prerender requests. React Router defaults to 1
@@ -8,23 +11,14 @@ import type { Config } from '@react-router/dev/config';
  *
  * 4 matches the React Router docs example
  * (https://reactrouter.com/how-to/pre-rendering#concurrency) and is a safe
- * ceiling on a 22 MB SSR Function bundle: enough parallelism to cut the
- * ~40-page prerender pass to a few seconds, low enough to not blow memory in
- * CI runners. Bump cautiously — N > 8 has produced OOMs in similar setups.
+ * ceiling on a 22 MB SSR Function bundle: enough parallelism to shorten the
+ * prerender pass, low enough to not blow memory in CI runners. Bump cautiously
+ * — N > 8 has produced OOMs in similar setups.
  */
 const prerenderConcurrency = 4;
 
 /**
- * Pre-render docs URLs by walking the Fumadocs MDX content tree directly
- * with `fumadocs-core/source` helpers (canonical Fumadocs + React Router wiring,
- * see https://www.fumadocs.dev/docs/manual-installation/react-router).
- *
- * `/llms.mdx/*` is intentionally NOT prerendered: nested URL segments and the
- * parent route would both write under `build/client/llms.mdx/...`, causing
- * `EISDIR` (file vs directory collision). Those routes rely on the
- * `Netlify-CDN-Cache-Control` headers on the SSR loader instead.
- *
- * `getStaticPaths()` is NOT used: most static routes here (`/projects`,
+ * `getStaticPaths()` is not used: most routes here (`/projects`,
  * `/files`, `/usage`, `/settings_`, `/health/*`, `/action/set-theme`,
  * `/api/*`, `/_index`) are auth-gated, runtime-only, or proxy endpoints that
  * would fail prerender. Each safelisted path below is one that genuinely has
@@ -36,12 +30,30 @@ const prerenderConcurrency = 4;
  */
 export default {
   ssr: true,
+  /**
+   * `buildEnd` is the only hook that runs after prerendering, so it is where
+   * the offline shell worker is generated from the emitted `/usage` document
+   * and the Vite build manifest (B5 R3). The desktop and daemon configs are
+   * separate files and never run this: both already boot from a packaged SPA
+   * index fallback.
+   */
+  async buildEnd({ reactRouterConfig }) {
+    if (!tauCloudEnabled) {
+      return;
+    }
+    const { generateOfflineShell } = await import('./scripts/generate-offline-shell');
+    const { listOfflineShellPaths } = await import('./app/lib/static-paths');
+    await generateOfflineShell({
+      clientDirectory: `${reactRouterConfig.buildDirectory}/client`,
+      workerSourcePath: `${reactRouterConfig.appDirectory}/offline/offline-shell-worker.ts`,
+      documentPaths: listOfflineShellPaths(),
+    });
+  },
   prerender: {
     async paths() {
       const { listStaticPrerenderPaths } = await import('./app/lib/static-paths');
-      return listStaticPrerenderPaths();
+      return listStaticPrerenderPaths().filter((path) => tauCloudEnabled || path !== '/usage');
     },
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- React Router config field is `unstable_concurrency` (snake_case in upstream API).
-    unstable_concurrency: prerenderConcurrency,
+    concurrency: prerenderConcurrency,
   },
 } satisfies Config;

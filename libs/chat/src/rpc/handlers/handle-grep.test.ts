@@ -45,57 +45,106 @@ describe('handleGrep', () => {
     expect(result.success && result.matches[0]?.content).toContain('hello');
   });
 
-  it.each(['', '.', './', '/'] as const)(
-    'should resolve root alias %j before recursively reading project-relative paths',
-    async (rootAlias) => {
-      const fileSystem = mock<RpcFileSystem>();
-      fileSystem.stat.mockResolvedValue({
-        size: 0,
-        isDirectory: true,
-        createdAt: '2026-05-12T00:00:00.000Z',
-        modifiedAt: '2026-05-12T00:00:00.000Z',
-      });
-      fileSystem.readdir.mockImplementation(async (path) => {
-        if (path === '') {
-          return [{ name: 'checks', type: 'dir', size: 0 }];
-        }
-        if (path === 'checks') {
-          return [textEntry('existing.geospec.ts', 24, 1)];
-        }
-        throw new Error(`Unexpected non-canonical project path: ${path}`);
-      });
-      fileSystem.readFile.mockImplementation(async (path) => {
-        if (path === 'checks/existing.geospec.ts') {
-          return "it('should retain this check')";
-        }
-        throw new Error(`Unexpected non-canonical project path: ${path}`);
-      });
+  it('should recursively read the canonical project root', async () => {
+    const fileSystem = mock<RpcFileSystem>();
+    fileSystem.stat.mockResolvedValue({
+      size: 0,
+      isDirectory: true,
+      createdAt: '2026-05-12T00:00:00.000Z',
+      modifiedAt: '2026-05-12T00:00:00.000Z',
+    });
+    fileSystem.readdir.mockImplementation(async (path) => {
+      if (path === '') {
+        return [{ name: 'checks', type: 'dir', size: 0 }];
+      }
+      if (path === 'checks') {
+        return [textEntry('existing.geospec.ts', 24, 1)];
+      }
+      throw new Error(`Unexpected non-canonical project path: ${path}`);
+    });
+    fileSystem.readFile.mockImplementation(async (path) => {
+      if (path === 'checks/existing.geospec.ts') {
+        return "it('should retain this check')";
+      }
+      throw new Error(`Unexpected non-canonical project path: ${path}`);
+    });
 
-      const result = await handleGrep({ pattern: 'retain', path: rootAlias }, fileSystem);
+    const result = await handleGrep({ pattern: 'retain', path: '' }, fileSystem);
 
-      expect(result).toEqual({
-        success: true,
-        matches: [
+    expect(result).toEqual({
+      success: true,
+      matches: [
+        {
+          file: 'checks/existing.geospec.ts',
+          line: 1,
+          content: "it('should retain this check')",
+        },
+      ],
+      totalMatches: 1,
+      truncated: false,
+      appliedHeadLimit: 50,
+      appliedOffset: 0,
+    });
+  });
+
+  it('should skip explicit-only system resources unless the search is scoped to skills', async () => {
+    const fileSystem = mock<RpcFileSystem>();
+    fileSystem.readdir.mockImplementation(async (path) => {
+      if (path === '') {
+        return [
           {
-            file: 'checks/existing.geospec.ts',
-            line: 1,
-            content: "it('should retain this check')",
+            name: '.agents',
+            type: 'dir',
+            size: 0,
+            traverseOnImplicitSearch: false,
           },
-        ],
-        totalMatches: 1,
-        truncated: false,
-        appliedHeadLimit: 50,
-        appliedOffset: 0,
-      });
-    },
-  );
+          textEntry('main.ts', 12),
+        ];
+      }
+      if (path === '.agents/skills/cad-demo') {
+        return [textEntry('api-index.md', 20, 2)];
+      }
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    fileSystem.stat.mockResolvedValue({
+      size: 0,
+      isDirectory: true,
+      createdAt: '1970-01-01T00:00:00.000Z',
+      modifiedAt: '1970-01-01T00:00:00.000Z',
+    });
+    fileSystem.readFile.mockImplementation(async (path) => (path === 'main.ts' ? 'project needle' : 'system needle'));
+
+    const unscoped = await handleGrep({ pattern: 'needle', path: '' }, fileSystem);
+    expect(unscoped.success && unscoped.matches.map(({ file }) => file)).toEqual(['main.ts']);
+    expect(fileSystem.readFile).toHaveBeenCalledTimes(1);
+
+    fileSystem.readFile.mockClear();
+    const scoped = await handleGrep({ pattern: 'needle', path: '.agents/skills/cad-demo' }, fileSystem);
+    expect(scoped.success && scoped.matches.map(({ file }) => file)).toEqual(['.agents/skills/cad-demo/api-index.md']);
+    expect(fileSystem.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['.', './', '/'] as const)('should reject noncanonical root alias %j', async (path) => {
+    const fileSystem = mock<RpcFileSystem>();
+
+    const result = await handleGrep({ pattern: 'retain', path }, fileSystem);
+
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: rpcClientErrorCode.validationError,
+    });
+    expect(fileSystem.stat).not.toHaveBeenCalled();
+  });
 
   it('should reject paths outside the project before filesystem access', async () => {
     const fileSystem = mock<RpcFileSystem>();
 
     const result = await handleGrep({ pattern: 'x', path: '../secret' }, fileSystem);
 
-    expect(result).toMatchObject({ success: false, errorCode: rpcClientErrorCode.validationError });
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: rpcClientErrorCode.validationError,
+    });
     expect(fileSystem.stat).not.toHaveBeenCalled();
     expect(fileSystem.readdir).not.toHaveBeenCalled();
     expect(fileSystem.readFile).not.toHaveBeenCalled();
@@ -109,7 +158,10 @@ describe('handleGrep', () => {
 
     const result = await handleGrep({ pattern: 'foo', path: 'missing-dir' }, fileSystem);
 
-    expect(result).toMatchObject({ success: false, errorCode: rpcClientErrorCode.fileNotFound });
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: rpcClientErrorCode.fileNotFound,
+    });
   });
 
   // ===========================================================================
@@ -140,7 +192,11 @@ describe('handleGrep', () => {
         totalMatches: 1,
       });
       expect(result.success && result.matches[0]).toEqual(
-        expect.objectContaining({ file: 'src/app.ts', line: 2, content: 'foo bar' }),
+        expect.objectContaining({
+          file: 'src/app.ts',
+          line: 2,
+          content: 'foo bar',
+        }),
       );
       expect(fileSystem.readdir).not.toHaveBeenCalled();
     });
@@ -215,7 +271,7 @@ describe('handleGrep', () => {
       expect(result.success && result.matches.at(-1)?.content).toBe('match line 14');
     });
 
-    it('should truncate match lines longer than 500 chars with `[line truncated: N chars]` while preserving file/line', async () => {
+    it('should keep the first 500 characters of long matching lines while preserving file/line', async () => {
       const fileSystem = mock<RpcFileSystem>();
       fileSystem.stat.mockResolvedValue(textStat(5000, 3));
       const longLine = `${'a'.repeat(2000)}foo${'b'.repeat(3000)}`;
@@ -226,8 +282,87 @@ describe('handleGrep', () => {
       expect(result.success && result.matches[0]).toEqual({
         file: 'big.ts',
         line: 2,
-        content: `[line truncated: ${longLine.length} chars]`,
+        // CL6 adopts head truncation so the model retains useful match context.
+        content: longLine.slice(0, 500),
       });
+    });
+  });
+
+  it('should let a recursive glob match files under dot-directories such as .agents/skills', async () => {
+    const fileSystem = mock<RpcFileSystem>();
+    fileSystem.stat.mockResolvedValue({
+      size: 0,
+      isDirectory: true,
+      createdAt: '1970-01-01T00:00:00.000Z',
+      modifiedAt: '1970-01-01T00:00:00.000Z',
+    });
+    fileSystem.readdir.mockImplementation(async (path) => {
+      if (path === '.agents/skills/cad-picogk') {
+        return [textEntry('api-index.md', 20), textEntry('SKILL.ts', 20)];
+      }
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    fileSystem.readFile.mockResolvedValue('Voxels needle');
+
+    const result = await handleGrep(
+      { pattern: 'needle', path: '.agents/skills/cad-picogk', glob: '**/*.md' },
+      fileSystem,
+    );
+
+    expect(result.success && result.matches.map(({ file }) => file)).toEqual([
+      '.agents/skills/cad-picogk/api-index.md',
+    ]);
+  });
+
+  describe('context lines', () => {
+    const kcl = '// Leading doc.\nfn box(\n  width: number,\n\n  depth: number,\n)\n';
+
+    it('should omit before/after when context is not requested', async () => {
+      const fileSystem = mock<RpcFileSystem>();
+      fileSystem.stat.mockResolvedValue(textStat(kcl.length, 6));
+      fileSystem.readFile.mockResolvedValue(kcl);
+
+      const result = await handleGrep({ pattern: '^fn box', path: 'box.kcl' }, fileSystem);
+
+      expect(result.success && result.matches).toEqual([{ file: 'box.kcl', line: 2, content: 'fn box(' }]);
+    });
+
+    it('should return surrounding lines, including blank ones, clipped at file edges', async () => {
+      const fileSystem = mock<RpcFileSystem>();
+      fileSystem.stat.mockResolvedValue(textStat(kcl.length, 6));
+      fileSystem.readFile.mockResolvedValue(kcl);
+
+      const result = await handleGrep({ pattern: '^fn box', path: 'box.kcl', context: 4 }, fileSystem);
+
+      expect(result.success && result.matches).toEqual([
+        {
+          file: 'box.kcl',
+          line: 2,
+          content: 'fn box(',
+          before: ['// Leading doc.'],
+          // The trailing newline does not add a phantom empty line.
+          after: ['  width: number,', '', '  depth: number,', ')'],
+        },
+      ]);
+    });
+
+    it('should cap context lines at 500 characters', async () => {
+      const fileSystem = mock<RpcFileSystem>();
+      const longLine = 'x'.repeat(2000);
+      fileSystem.stat.mockResolvedValue(textStat(3000, 2));
+      fileSystem.readFile.mockResolvedValue(`needle\n${longLine}`);
+
+      const result = await handleGrep({ pattern: 'needle', path: 'big.ts', context: 1 }, fileSystem);
+
+      expect(result.success && result.matches[0]?.after).toEqual([longLine.slice(0, 500)]);
+    });
+
+    it('should bound context to 0-20 lines at the schema layer', async () => {
+      const { grepInputSchema } = await import('#schemas/tools/grep.tool.schema.js');
+
+      expect(grepInputSchema.safeParse({ pattern: 'foo', context: 20 }).success).toBe(true);
+      expect(grepInputSchema.safeParse({ pattern: 'foo', context: 21 }).success).toBe(false);
+      expect(grepInputSchema.safeParse({ pattern: 'foo', context: -1 }).success).toBe(false);
     });
   });
 

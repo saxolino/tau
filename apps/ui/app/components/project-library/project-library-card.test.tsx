@@ -7,8 +7,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { projectToManifest } from '@taucad/types';
 import { ProjectLibraryCard } from '#components/project-library/project-library.js';
 import type { ProjectActions } from '#components/project-library/project-library.js';
-import { TooltipProvider } from '#components/ui/tooltip.js';
-import type { ProjectListItem } from '#types/project.types.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
+import type { ProjectListItem } from '#types/project-library.types.js';
 
 const mockProject: ProjectListItem = {
   ...projectToManifest({
@@ -19,7 +19,7 @@ const mockProject: ProjectListItem = {
     assets: { main: { entryPath: 'main.scad' } },
   }),
   lastActivityAt: 0,
-  locator: { backend: 'indexeddb', storageRootKey: 'indexeddb:tau-', relativeDirectory: '/library' },
+  locator: { backend: 'indexeddb', storageRootKey: 'indexeddb:tau-', relativeDirectory: 'library' },
   slugs: { workspaceSlug: 'home', projectSlug: 'library' },
 };
 
@@ -40,28 +40,41 @@ vi.mock('#components/project-library/project-action-dropdown.js', () => ({
   ProjectActionDropdown: () => <button type='button'>Actions</button>,
 }));
 
-vi.mock('#hooks/use-file-manager.js', () => ({
-  useFileManager: () => ({
-    client: { readFile: vi.fn().mockRejectedValue(new Error('not found')) },
+vi.mock('#hooks/use-file-manager.js', () => {
+  // Stable like the provider's memoized value: thumbnails are observed per record client and watch.
+  const missing = Object.assign(new Error('not found'), { code: 'ENOENT' });
+  const fileManager = {
+    client: { readFile: vi.fn().mockRejectedValue(missing) },
+    recordFiles: { readFile: vi.fn().mockRejectedValue(missing) },
+    watchRecordFile: () => ({
+      ready: Promise.resolve(),
+      closed: new Promise<never>(() => {
+        // Never closes.
+      }),
+      dispose: () => undefined,
+    }),
     contentService: undefined,
-  }),
-  SharedWorkerGate: ({ children }: { readonly children: React.ReactNode }) => (
-    <div data-testid='shared-worker-gate'>{children}</div>
-  ),
-  HomeFileManagerProvider: ({
-    children,
-    projectId,
-    rootDirectory,
-  }: {
-    readonly children: React.ReactNode;
-    readonly projectId: string;
-    readonly rootDirectory: string;
-  }) => (
-    <FileManagerProbe projectId={projectId} rootDirectory={rootDirectory}>
-      {children}
-    </FileManagerProbe>
-  ),
-}));
+  };
+  return {
+    useFileManager: () => fileManager,
+    SharedWorkerGate: ({ children }: { readonly children: React.ReactNode }) => (
+      <div data-testid='shared-worker-gate'>{children}</div>
+    ),
+    HomeFileManagerProvider: ({
+      children,
+      projectId,
+      rootDirectory,
+    }: {
+      readonly children: React.ReactNode;
+      readonly projectId: string;
+      readonly rootDirectory: string;
+    }) => (
+      <FileManagerProbe projectId={projectId} rootDirectory={rootDirectory}>
+        {children}
+      </FileManagerProbe>
+    ),
+  };
+});
 
 function FileManagerProbe({
   children,
@@ -143,11 +156,11 @@ describe('ProjectLibraryCard live preview', () => {
   it('should render the static thumbnail and no project-scoped FM until preview is toggled', () => {
     renderCard();
 
-    expect(screen.getByRole('img', { name: 'Library Preview Demo' })).toBeInTheDocument();
+    expect(screen.getByRole('presentation')).toBeInTheDocument();
     expect(screen.getAllByRole('link')).toHaveLength(1);
     const cardLink = screen.getByRole('link', { name: 'Open Library Preview Demo' });
     expect(cardLink).toHaveAttribute('href', '/w/home/library');
-    expect(cardLink.parentElement).toHaveClass('hover:border-primary/60');
+    expect(cardLink.parentElement).toHaveClass('hover:border-foreground/30');
     expect(screen.getByText('Open')).toBeInTheDocument();
     expect(screen.queryByText('Test project')).not.toBeInTheDocument();
     expect(screen.queryByText('Mechanical')).not.toBeInTheDocument();
@@ -173,7 +186,7 @@ describe('ProjectLibraryCard live preview', () => {
         locator: {
           backend: 'webaccess',
           storageRootKey: 'webaccess:wsp_workshop',
-          relativeDirectory: '/library',
+          relativeDirectory: 'library',
           workspaceId: 'wsp_workshop',
         },
         slugs: { workspaceSlug: 'workshop', projectSlug: 'library' },
@@ -192,7 +205,7 @@ describe('ProjectLibraryCard live preview', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Preview model' }));
 
-    expect(screen.queryByRole('img', { name: 'Library Preview Demo' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('presentation')).not.toBeInTheDocument();
     expect(screen.getByTestId('shared-worker-gate')).toBeInTheDocument();
 
     const fm = screen.getByTestId('file-manager-provider');
@@ -203,7 +216,7 @@ describe('ProjectLibraryCard live preview', () => {
     expect(preview).toHaveAttribute('data-project-id', mockProject.id);
     expect(preview).toHaveAttribute('data-main-file', 'main.scad');
     expect(preview).toHaveAttribute('data-has-files', 'false');
-    expect(screen.getByTestId('cad-preview-viewer')).toBeInTheDocument();
+    expect(await screen.findByTestId('cad-preview-viewer')).toBeInTheDocument();
   });
 
   it('should unmount the preview subtree when preview is toggled off', async () => {
@@ -214,7 +227,7 @@ describe('ProjectLibraryCard live preview', () => {
     expect(screen.getByTestId('file-manager-provider')).toBeInTheDocument();
 
     await userEvent.click(previewToggle);
-    expect(screen.getByRole('img', { name: 'Library Preview Demo' })).toBeInTheDocument();
+    expect(screen.getByRole('presentation')).toBeInTheDocument();
     expect(screen.queryByTestId('file-manager-provider')).not.toBeInTheDocument();
     expect(screen.queryByTestId('cad-preview-provider')).not.toBeInTheDocument();
   });

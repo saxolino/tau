@@ -4,11 +4,12 @@ import type {
   GeometryComponentManifest,
   GeometryComponentNode,
   GeometryComponentReference,
-  ScreenshotOptions,
 } from '@taucad/types';
 
 const duplicateDurableIdField = `persistent${'Id'}` as const;
 const duplicateDurableKeyField = `persistent${'Key'}` as const;
+const clearcoatExtension = 'KHR_materials_clearcoat';
+const unlitExtension = 'KHR_materials_unlit';
 
 describe('geometry component shared contracts', () => {
   it('should type geometry component references as stable tau-cad selectors', () => {
@@ -61,6 +62,16 @@ describe('geometry component shared contracts', () => {
             color: '#ff0000',
             colors: ['#ff0000', '#0000ff'],
             materialNames: ['red paint', 'blue paint'],
+            materials: [
+              {
+                materialIndex: 0,
+                name: 'red paint',
+                textures: { baseColor: { index: 2, texCoord: 1 } },
+                extensions: { [clearcoatExtension]: { clearcoatFactor: 0.7 } },
+              },
+              { materialIndex: 1, name: 'red paint' },
+              {},
+            ],
           },
           capabilities: {
             canHide: true,
@@ -84,23 +95,15 @@ describe('geometry component shared contracts', () => {
     expectTypeOf<GeometryComponentNode>().not.toHaveProperty(duplicateDurableKeyField);
   });
 
-  it('should type screenshot options for scene-wide capture settings', () => {
-    const options = {
-      aspectRatio: 1,
-      maxResolution: 800,
-      zoomLevel: 1.2,
-      cameraAngles: [{ label: 'front', phi: 90, theta: 270 }],
-      output: {
-        format: 'image/webp',
-        quality: 0.9,
-        isPreview: true,
-      },
-    } satisfies ScreenshotOptions;
-
-    expectTypeOf(options.cameraAngles[0]!.label).toEqualTypeOf<string>();
-    expectTypeOf(options.output.format).toEqualTypeOf<'image/webp'>();
-    expectTypeOf<ScreenshotOptions>().not.toHaveProperty('target');
-    expectTypeOf<ScreenshotOptions>().not.toHaveProperty('camera');
-    expectTypeOf<ScreenshotOptions>().not.toHaveProperty('display');
+  it('should require JSON descriptors for source material metadata', () => {
+    const material: NonNullable<GeometryComponentAppearance['materials']>[number] = {
+      materialIndex: 0,
+      name: 'finish',
+      textures: { baseColor: { index: 2 } },
+      extensions: { [unlitExtension]: {} },
+    };
+    expectTypeOf(material.name).toEqualTypeOf<string | undefined>();
+    // @ts-expect-error Texture descriptors are JSON objects, not display labels.
+    material.textures = { baseColor: 'paint' };
   });
 });

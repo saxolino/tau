@@ -12,7 +12,10 @@
     "**/dist/**",
     "**/dist-*/**",
     "**/generated/**",
-    "**/native/opencascade/geospec_opencascade_single.*",
+    // `@taucad/api-extractor` output: eight kernels emit `agent/resources.{js,d.ts}` verbatim from
+    // their published API, and a generator is not edited to satisfy a style rule.
+    "**/agent/resources.js",
+    "**/agent/resources.d.ts",
     "**/wasm/**",
     "**/out-tsc/**",
     "**/coverage/**",
@@ -26,10 +29,17 @@
     "**/public/**",
     "**/content/docs/**",
     "experiments/**",
-    // Opt-in benchmark/parity CLIs run by hand against a locally built native
-    // addon; unpublished (`files` excludes them) and outside every tsconfig.
-    "bench/**",
+    // Compute-reuse baseline harness (charter W0): opt-in benchmark code
+    // reaching runtime-internal seams through a loader hook; outside tsconfig.
+    "apps/runtime-e2e/src/compute-baseline/harness/**",
+    // Pinned external CAD model sources are fixture bytes, not GeoSpec library code.
+    "packages/geospec-engine-native/bench/fixtures/performance-lab/workspace/**",
     "**/*.jscad.js",
+    // Same class: PicoVoxel example sources are byte-pinned upstream ports (`provenance.json`
+    // hashes, `picovoxel-provenance.test.ts`). Only Tau's `main.ts` adapters and GeoSpec suites are linted.
+    "libs/tau-examples/src/kernels/picovoxel/*/*.ts",
+    "!libs/tau-examples/src/kernels/picovoxel/*/main.ts",
+    "!libs/tau-examples/src/kernels/picovoxel/*/*.geospec.ts",
     "**/fixtures/scripts/**"
   ],
   "plugins": [
@@ -112,6 +122,10 @@
     "tau-lint/no-scene-override-material": "error",
     "tau-lint/no-impl-in-index": "error",
     "tau-lint/plugin-capability-filename": "error",
+    "tau-lint/no-authored-pointer-cursor": "error",
+    "tau-lint/no-inline-actor-selector": "error",
+    // Agent substrate contract (docs/policy/xstate-policy.md, MC-R1–MC-R30). No options, so no override can replace them.
+    "tau-lint/xstate-contract": "error",
     "unicorn/no-accessor-recursion": "error",
     "unicorn/no-anonymous-default-export": "error",
     "unicorn/no-array-callback-reference": "error",
@@ -459,7 +473,20 @@
     "no-restricted-imports": [
       "error",
       {
-        "paths": ["error", "domain", "freelist", "smalloc", "punycode", "sys", "querystring", "colors"],
+        "paths": [
+          "error",
+          "domain",
+          "freelist",
+          "smalloc",
+          "punycode",
+          "sys",
+          "querystring",
+          "colors",
+          {
+            "name": "@nx/vite/plugins/nx-tsconfig-paths.plugin",
+            "message": "nxViteTsPaths applies tsconfig paths to every importer before Vite's resolver. Resolve # through package.json#imports, or add a scoped resolve.alias. See docs/research/scoped-hash-import-resolution.md."
+          }
+        ],
         "patterns": [
           {
             "regex": "^\\.",
@@ -473,7 +500,7 @@
       "error",
       "always",
       {
-        "ignorePattern": "pragma|ignore|prettier-ignore|webpack\\w+:|c8|v8 ignore|type-coverage:|async-iife:",
+        "ignorePattern": "pragma|ignore|prettier-ignore|webpack\\w+:|c8|v8 ignore|type-coverage:|async-iife:|ponytail:",
         "ignoreInlineComments": true,
         "ignoreConsecutiveComments": true
       }
@@ -977,6 +1004,20 @@
   },
   "overrides": [
     {
+      // Generated standalone CAD projects must keep relative imports when copied outside this workspace.
+      "files": ["packages/warehouse/parts/**/*.ts"],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // The compiler reports a real redeclaration (ts(2451)); the core rule only misreads a
+      // type and a same-named value (`type Placement` + `const Placement`). Mirrors
+      // typescript-eslint's `eslint-recommended`.
+      "files": ["**/*.{ts,tsx,mts,cts}"],
+      "rules": {
+        "no-redeclare": "off"
+      }
+    },
+    {
       /*
        * NestJS overrides:
        * - consistent-type-imports: off — DI requires runtime imports, type-only imports would break injection.
@@ -1005,6 +1046,7 @@
           {
             "capIsNewExceptions": [
               "Injectable",
+              "LlmGatewayPrincipal",
               "Module",
               "Controller",
               "Get",
@@ -1046,6 +1088,31 @@
       "rules": {
         "import/extensions": "off",
         "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": ["apps/ui/app/**/*.{ts,tsx}"],
+      // Tests and route entries retain the uncompiled React Router/Vitest transform paths.
+      "excludeFiles": [
+        "apps/ui/app/**/*.{test,spec}.{ts,tsx}",
+        "apps/ui/app/root.{ts,tsx}",
+        "apps/ui/app/routes/*.{ts,tsx}",
+        "apps/ui/app/routes/**/route.{ts,tsx}"
+      ],
+      "rules": {
+        "react/error-boundaries": "error",
+        "react/globals": "error",
+        "react/immutability": "error",
+        "react/incompatible-library": "error",
+        "react/preserve-manual-memoization": "error",
+        "react/purity": "error",
+        "react/refs": "error",
+        "react/set-state-in-effect": "error",
+        "react/set-state-in-render": "error",
+        "react/static-components": "error",
+        "react/unsupported-syntax": "error",
+        "react/use-memo": "error",
+        "react/void-use-memo": "error"
       }
     },
     {
@@ -1177,7 +1244,8 @@
         "jsdoc-js/informative-docs": "warn",
         // Catches empty JSDoc blocks (/** */) that satisfy require-jsdoc but carry zero information.
         "jsdoc-js/no-blank-blocks": "warn",
-        // Enforces consistent tag ordering: @template → @param → @returns → @throws → @example → @see.
+        // Enforces eslint-plugin-jsdoc's default tag order, including the visibility tags:
+        // @template → @internal → @param → @returns → @throws → @public → @see → @example.
         // Only checks order, not spacing between groups (formatting is handled by oxfmt).
         "jsdoc-js/sort-tags": [
           "warn",
@@ -1186,6 +1254,17 @@
             "reportIntraTagGroupSpacing": false
           }
         ]
+      },
+      "plugins": ["jsdoc"]
+    },
+    {
+      // React components in the design system always return an element; a
+      // `@returns` on each one restates the signature without adding meaning.
+      "files": ["packages/ui/src/components/**/*.tsx"],
+      "rules": {
+        "jsdoc/require-returns": "off",
+        "jsdoc/require-returns-description": "off",
+        "jsdoc-js/sort-tags": "off"
       },
       "plugins": ["jsdoc"]
     },
@@ -1267,10 +1346,16 @@
       // CAD examples may not always follow typical conventions. For example, it's
       // easier to read d_x rather than dX, so we relax the rules here.
       // Multi-file Tau examples are also editor-loadable fixture trees, so they
-      // use local relative imports rather than Tau-only package aliases.
-      "files": ["libs/tau-examples/src/kernels/**/*.ts"],
+      // use local relative imports rather than Tau-only package aliases. Bundler
+      // fixtures also author `.tsx`/`.js`/`.jsx` modules, pragma JSX and directory
+      // index imports that the library tsconfig cannot type, so `any` operands are
+      // warnings like the other unsafe-`any` rules.
+      "files": ["libs/tau-examples/src/kernels/**/*.{ts,tsx,js,jsx}"],
       "rules": {
         "no-restricted-imports": "off",
+        "tau-lint/no-impl-in-index": "off",
+        "react/react-in-jsx-scope": "off",
+        "@typescript-eslint/restrict-plus-operands": "warn",
         "import/extensions": "off",
         "import/consistent-type-specifier-style": "off",
         "no-barrel-files/no-barrel-files": "off",
@@ -1292,6 +1377,121 @@
         "max-params": "warn"
       },
       "plugins": ["typescript"]
+    },
+    {
+      // Hooks are below components and routes; W1 removes the billing exceptions.
+      "files": ["apps/ui/app/hooks/**/*.{ts,tsx,mts,cts}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": ["error", "domain", "freelist", "smalloc", "punycode", "sys", "querystring", "colors"],
+            "patterns": [
+              {
+                "group": ["#components/*", "#routes/*"],
+                "message": "Hooks must not import from UI components or routes. Move the dependency down or inject it."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // Infrastructure layers may not depend on hooks, components, or routes.
+      "files": [
+        "apps/ui/app/machines/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/lib/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/services/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/utils/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/constants/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/filesystem/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/db/**/*.{ts,tsx,mts,cts}",
+        "apps/ui/app/workers/**/*.{ts,tsx,mts,cts}"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": ["error", "domain", "freelist", "smalloc", "punycode", "sys", "querystring", "colors"],
+            "patterns": [
+              {
+                "group": ["#components/*", "#hooks/*", "#routes/*"],
+                "message": "Infrastructure must not import from hooks, UI components, or routes. Move the dependency down or inject it."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // Current UI primitive/component inversions. -- W2
+      "files": [
+        "apps/ui/app/hooks/active-chat-provider.test.tsx",
+        "apps/ui/app/hooks/use-draft-image-error-toast.ts",
+        "apps/ui/app/hooks/use-favicon.ts",
+        "apps/ui/app/hooks/use-models.tsx",
+        "apps/ui/app/hooks/use-project-creation-location-error.test.ts",
+        "apps/ui/app/hooks/use-project-creation-location-error.ts",
+        "apps/ui/app/hooks/use-project-creation-location.test.ts",
+        "apps/ui/app/hooks/use-project-creation-location.ts",
+        "apps/ui/app/hooks/use-service-worker.tsx",
+        "apps/ui/app/utils/at-reference.utils.ts",
+        "apps/ui/app/utils/magic-link-plugin.ts"
+      ],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // Current graphics inversions. -- W3
+      "files": [
+        "apps/ui/app/machines/resolve-screenshot-overlay.ts",
+        "apps/ui/app/machines/screenshot-capability.machine.test.ts",
+        "apps/ui/app/machines/screenshot-capability.machine.ts",
+        "apps/ui/app/machines/screenshot-capability.utils.test.ts"
+      ],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // Current file/telemetry inversion. -- W4
+      "files": [
+        "apps/ui/app/utils/workspace-telemetry.utils.test.ts",
+        "apps/ui/app/utils/workspace-telemetry.utils.ts"
+      ],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // Current chat inversions. -- W6
+      "files": [
+        "apps/ui/app/hooks/use-chat.tsx",
+        "apps/ui/app/lib/skill-resolver.ts",
+        "apps/ui/app/lib/system-skills-catalog.test.ts",
+        "apps/ui/app/services/chat-session-store.ts",
+        "apps/ui/app/utils/chat.utils.test.ts",
+        "apps/ui/app/utils/chat.utils.ts"
+      ],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // Current revision inversions. -- W8
+      "files": [
+        "apps/ui/app/hooks/use-restore-to-point.ts",
+        "apps/ui/app/hooks/use-revisions.test.tsx",
+        "apps/ui/app/hooks/use-revisions.ts"
+      ],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // Current publish/import inversions. -- W9
+      "files": [
+        "apps/ui/app/lib/github-api.ts",
+        "apps/ui/app/machines/import-disk.machine.test.ts",
+        "apps/ui/app/machines/import-disk.machine.ts"
+      ],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      // Current settings inversion. -- W10
+      "files": ["apps/ui/app/constants/route.constants.ts"],
+      "rules": { "no-restricted-imports": "off" }
     },
     {
       // libcascade exposes generated OCCT/Emscripten names whose constructor
@@ -1466,6 +1666,47 @@
       }
     },
     {
+      // Revisions-policy Rule 1: engineering vocabulary never reaches product copy.
+      // Scoped to the UI app, the only place that authors words a person reads.
+      // See docs/policy/revisions-policy.md Rule 1.
+      "files": ["apps/ui/app/**/*.{ts,tsx}"],
+      "rules": {
+        "tau-lint/no-engineering-vocabulary-in-copy": "error"
+      }
+    },
+    {
+      // Page Composition Policy gates (docs/policy/page-composition-policy.md, Enforcement).
+      // Product page components only: tests and `[__e2e]` fixture routes author no product copy.
+      // Autofixable rules are errors; judgment rules warn for one release, then become errors.
+      "files": ["apps/ui/app/**/*.tsx", "packages/ui/src/**/*.tsx"],
+      "excludeFiles": ["**/*.{test,spec}.tsx", "apps/ui/app/routes/?__e2e?.*/**"],
+      "rules": {
+        "tau-lint/no-ascii-ellipsis": "error",
+        "tau-lint/require-accessible-name": "warn",
+        "tau-lint/no-label-replacing-loader": "warn",
+        "tau-lint/no-arbitrary-pixel-size": "error",
+        "tau-lint/no-accent-hover": "warn",
+        "tau-lint/no-button-size-override": "warn",
+        "tau-lint/no-raw-page-heading": "warn",
+        // The jsx-a11y subset that fits Tau's patterns (Page Composition Policy Rules 7 and 13).
+        // Left off: prefer-tag-over-role (codified role="status"), anchor-is-valid (Link `to`),
+        // no-autofocus (UX Policy inline editors), control-has-associated-label and
+        // label-has-associated-control (cannot see Button/SearchInput; require-accessible-name covers them).
+        "jsx-a11y/tabindex-no-positive": "error",
+        "jsx-a11y/no-noninteractive-tabindex": "error",
+        "jsx-a11y/aria-props": "error",
+        "jsx-a11y/aria-proptypes": "error",
+        "jsx-a11y/aria-role": "error",
+        "jsx-a11y/role-has-required-aria-props": "error",
+        "jsx-a11y/role-supports-aria-props": "error",
+        "jsx-a11y/alt-text": "error",
+        "jsx-a11y/heading-has-content": "error",
+        "jsx-a11y/anchor-has-content": "error",
+        "jsx-a11y/iframe-has-title": "error",
+        "jsx-a11y/no-access-key": "error"
+      }
+    },
+    {
       // Static `new URL(literal, import.meta.url)` invariant for the runtime.
       // Computed first arguments silently opt out of
       // bundler asset emission and break downstream consumers.
@@ -1474,9 +1715,89 @@
       "rules": {
         "tau-lint/static-import-meta-url": "error"
       }
+    },
+    {
+      // Agent substrate owner machines in published packages (docs/policy/xstate-policy.md, MC-R1–MC-R30).
+      // `portable`: MC-R2 import boundary. `spec`: the owner has a TLA+ spec, so MC-R27 (`transitionMeta`) applies.
+      "files": [
+        "packages/revisions/src/*.machine.ts",
+        "packages/agent-host/src/**/*.machine.ts",
+        "packages/agent-host/src/**/*.logic.ts",
+        "packages/host/src/**/*.machine.ts"
+      ],
+      "rules": {
+        "tau-lint/xstate-owner-machine": ["error", { "portable": true, "spec": true }]
+      }
+    },
+    {
+      // Agent substrate owner machines in the UI (MC-Q5: owner mode, not portable; no spec yet, so no MC-R27).
+      "files": [
+        "apps/ui/app/machines/{chat-session,project-session,sessions,composer-record}.machine.ts",
+        "apps/ui/app/machines/*.logic.ts",
+        "apps/ui/app/hooks/{chat-persistence,draft}.machine.ts"
+      ],
+      "rules": {
+        "tau-lint/xstate-owner-machine": "error"
+      }
+    },
+    /*
+     * Ratchet (MC-S6). Each entry lists exactly the message ids its files violate today; overrides replace
+     * options, so each restates the full options. The owning change deletes its entry. Keep these after the
+     * owner globs above: the last matching override wins.
+     */
+    {
+      // Ratchet, W5 (revisions machines).
+      "files": ["packages/revisions/src/*.machine.ts"],
+      "rules": {
+        "tau-lint/xstate-owner-machine": [
+          "error",
+          { "portable": true, "spec": true, "pending": ["rootOnError", "version", "transitionMeta"] }
+        ]
+      }
+    },
+    {
+      // Ratchet, W5.
+      "files": ["packages/revisions/src/sync.machine.ts"],
+      "rules": {
+        "tau-lint/xstate-owner-machine": [
+          "error",
+          { "portable": true, "spec": true, "pending": ["impure", "rootOnError", "version", "transitionMeta"] }
+        ]
+      }
+    },
+    {
+      // Ratchet, W5.
+      "files": ["packages/revisions/src/project-revisions.machine.ts"],
+      "rules": {
+        "tau-lint/xstate-owner-machine": [
+          "error",
+          {
+            "portable": true,
+            "spec": true,
+            "pending": ["rootOnError", "snapshotRead", "spawnByKey", "version", "transitionMeta"]
+          }
+        ]
+      }
+    },
+    {
+      // Ratchet, W9: `admitTurn` and `settleTurn` are deleted in PV-S13.
+      "files": ["apps/ui/app/machines/chat-session.machine.ts"],
+      "rules": {
+        "tau-lint/xstate-owner-machine": ["error", { "pending": ["fromSafeAsync"] }]
+      }
     }
   ],
   "settings": {
+    // Let jsx-a11y see the design-system primitives as the elements they render.
+    "jsx-a11y": {
+      "components": {
+        "Button": "button",
+        "Input": "input",
+        "SearchInput": "input",
+        "Link": "a",
+        "NavLink": "a"
+      }
+    },
     "jsdoc": {
       "definedTags": ["vitest-environment", "remarks", "internal"]
     }

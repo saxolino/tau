@@ -15,8 +15,13 @@
   "dependencies": {
     "@inkjs/ui": "catalog:",
     "playwright": "catalog:",
+    "@taucad/agent-host": "workspace:*",
+    "@taucad/chat": "workspace:*",
+    "@taucad/esbuild": "workspace:*",
+    "@taucad/jscad": "workspace:*",
     "@taucad/openrscad": "workspace:*",
     "@taucad/runtime": "workspace:*",
+    "@taucad/ui": "workspace:*",
     "@taulabs/openrscad-engine": "catalog:",
     "ink": "catalog:",
     "ipaddr.js": "catalog:",

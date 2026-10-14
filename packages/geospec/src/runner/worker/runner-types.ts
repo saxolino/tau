@@ -1,5 +1,5 @@
-import type { GeoSpecRunResult, RunGeoSpecModuleOptions } from '#runner/types.js';
-import type { GeoSpecRunProfile } from '#runner/profile.js';
+import type { GeoSpecRunResult, RunGeoSpecModuleOptions, GeoSpecTestAccounting } from '#runner/types.js';
+import type { ManagedGeoSpecNativeModelLoader } from '#model/native-model-loader.js';
 import type { VmFileSystem, VmIssue } from '@taucad/esbuild/vm';
 
 /**
@@ -40,6 +40,20 @@ export type GeoSpecRunnerResult = {
   issues?: VmIssue[];
   /** Wall-clock cost of the whole run, in milliseconds (R1). */
   durationMs?: number;
+  /** Complete requested-file accounting; discovery may remain unknown in unstarted or broken modules. */
+  accounting?: GeoSpecRunnerAccounting;
+  /** Coherence of the consumed source graphs, not a geometry verdict. */
+  lineageStatus?: 'complete' | 'unavailable' | 'mixed';
+};
+
+/** File and observed-test accounting for a worker run. @public */
+export type GeoSpecRunnerAccounting = GeoSpecTestAccounting & {
+  requestedFiles: readonly string[];
+  completedFiles: readonly string[];
+  notRunFiles: readonly string[];
+  discoveryComplete: boolean;
+  cancelled: boolean;
+  bailed: boolean;
 };
 
 /**
@@ -96,21 +110,19 @@ export type GeoSpecRunnerRunOptions = {
 };
 
 /**
- * Shared options for Node and browser GeoSpec runner factories.
+ * Shared options for GeoSpec runner factories.
  *
  * @public
  */
 export type GeoSpecRunnerOptions = {
   /** Filesystem containing the project and test modules. */
   filesystem: VmFileSystem;
-  /** Model loader exposed to authored tests through `geospec/model`. */
-  modelLoader?: RunGeoSpecModuleOptions['modelLoader'];
-  /** STEP loader exposed to authored tests through `geospec/step`. */
-  stepLoader?: RunGeoSpecModuleOptions['stepLoader'];
+  /** Protocol-3 assertion client shared by every authored assertion and model admission. */
+  nativeAssertions: RunGeoSpecModuleOptions['nativeAssertions'];
+  /** Managed native model loader released after each settled run. */
+  nativeModelLoader?: ManagedGeoSpecNativeModelLoader;
   /** Additional in-memory modules made available to the VM. */
   builtinModules?: RunGeoSpecModuleOptions['builtinModules'];
-  /** Internal profile counters used by opt-in benchmark tooling. */
-  internalProfile?: GeoSpecRunProfile;
 };
 
 /**

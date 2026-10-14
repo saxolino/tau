@@ -3,20 +3,20 @@ import { useNavigate } from 'react-router';
 import { Download, Check, ChevronDown, ArrowUpRight } from 'lucide-react';
 import { deriveExportFormatOptions } from '#routes/_index/hero-viewer.utils.js';
 import type { ExportFormatOption } from '#routes/_index/hero-viewer.utils.js';
-import { Parameters } from '#components/geometry/parameters/parameters.js';
-import { ModelViewer, RuntimeStatusOverlay } from '#components/model-viewer.js';
+import { Parameters } from '@taucad/viewer/parameters/parameters';
+import { ModelViewer, RuntimeStatusOverlay } from '@taucad/viewer/model-viewer';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import { useProjectCreationLocationError } from '#hooks/use-project-creation-location-error.js';
 import { useRuntime } from '@taucad/react';
+import type { Artifact } from '@taucad/runtime';
 import { parameterEntryPath } from '@taucad/types';
-import type { Geometry } from '@taucad/types';
-import { Button } from '#components/ui/button.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { Button } from '@taucad/ui/components/button';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
 import { toast } from '#components/ui/sonner.js';
 import { encodeTextFile } from '#utils/filesystem.utils.js';
-import { Loader } from '#components/ui/loader.js';
-import type { Units } from '#components/geometry/parameters/rjsf-context.js';
+import { Loader } from '@taucad/ui/components/loader';
+import type { Units } from '@taucad/viewer/parameters/rjsf-context';
 import { downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { createParameterEntry, serializeParameterEntry } from '#utils/parameter-config.utils.js';
 import { projectUrl } from '#utils/project-url.utils.js';
@@ -48,8 +48,8 @@ export type KernelDemoConfig = {
     readonly tags: readonly string[];
     readonly forkedFrom: string;
   };
-  /** Optional live verification overlay, given the current geometry. */
-  readonly renderVerification?: (geometry: Geometry | undefined) => React.ReactNode;
+  /** Optional live verification overlay, given the current rendering. */
+  readonly renderVerification?: (artifact: Artifact | undefined) => React.ReactNode;
   /** Optional note under the viewer (e.g. the QR scan hint). */
   readonly note?: string;
 };
@@ -73,14 +73,24 @@ export function KernelDemo({
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  const { geometry, status, defaultParameters, jsonSchema, exportGeometry, capabilities, setParameters } = useRuntime({
+  const {
+    artifact,
+    artifactHash,
+    status,
+    defaultParameters,
+    jsonSchema,
+    parameterManifest,
+    exportModel,
+    capabilities,
+    setParameters,
+  } = useRuntime({
     clientOptions,
     // `files` is a wide `Record<string, string>`, so the runtime needs an
     // explicit entry point (it can't infer a single literal key).
     source: { files, entry: mainFile },
   });
 
-  const hasParameters = Boolean(jsonSchema);
+  const hasParameters = Boolean(jsonSchema && parameterManifest);
 
   type DemoExportFormatOption = ExportFormatOption;
 
@@ -107,10 +117,10 @@ export function KernelDemo({
     // oxlint-disable-next-line tau-lint/no-async-iife -- export is async.
     void (async () => {
       try {
-        const result = await exportGeometry(activeFormat.format);
+        const result = await exportModel(activeFormat.format);
         if (result.success) {
           const filename = `${exportName}.${activeFormat.format}`;
-          await downloadExportArtifactSet(result.data, {
+          await downloadExportArtifactSet(result.files, {
             singleFileName: filename,
             archiveName: `${exportName}-${activeFormat.format}.zip`,
           });
@@ -126,7 +136,7 @@ export function KernelDemo({
         setIsExporting(false);
       }
     })();
-  }, [activeFormat, isExporting, exportGeometry, exportName]);
+  }, [activeFormat, isExporting, exportModel, exportName]);
 
   const handleFormatSelect = useCallback(
     (value: string) => {
@@ -172,8 +182,8 @@ export function KernelDemo({
   }, [isCreatingProject, currentParams, projectManager, navigate, project, mainFile, files, presentLocationError]);
 
   return (
-    <div className='flex flex-col overflow-hidden rounded-xl border bg-sidebar md:h-[560px] md:flex-row'>
-      <div className='relative h-[300px] md:h-full md:flex-1'>
+    <div className='flex flex-col overflow-hidden rounded-xl border bg-sidebar md:h-140 md:flex-row'>
+      <div className='relative h-75 md:h-full md:flex-1'>
         <RuntimeStatusOverlay status={status} className='top-auto right-4 bottom-4' />
 
         <Button
@@ -188,10 +198,15 @@ export function KernelDemo({
         </Button>
 
         {renderVerification ? (
-          <div className='absolute top-2 left-2 z-10 flex flex-col gap-1.5'>{renderVerification(geometry)}</div>
+          <div className='absolute top-2 left-2 z-10 flex flex-col gap-1.5'>{renderVerification(artifact)}</div>
         ) : null}
 
-        <ModelViewer geometry={geometry} enablePan graphicsOptions={{ enableGrid: true, enableAxes: true }} />
+        <ModelViewer
+          artifact={artifact}
+          artifactHash={artifactHash}
+          enablePan
+          graphicsOptions={{ enableGrid: true, enableAxes: true }}
+        />
 
         {note ? (
           <p className='absolute right-0 bottom-2 left-0 text-center text-xs text-muted-foreground'>{note}</p>
@@ -205,14 +220,16 @@ export function KernelDemo({
               <h3 className='text-sm font-semibold'>Parameters</h3>
               <p className='text-xs text-muted-foreground'>Adjust and watch it rebuild</p>
             </div>
-            <div className='h-[280px] overflow-hidden md:h-auto md:flex-1'>
+            <div className='h-70 overflow-hidden md:h-auto md:flex-1'>
               <Parameters
                 isInitialExpanded={isInitialExpanded}
                 parameters={currentParams}
                 defaultParameters={defaultParameters}
                 jsonSchema={jsonSchema}
+                parameterManifest={parameterManifest!}
+                parameterEdit={{ kind: 'transient' }}
                 units={units}
-                emptyDescription='Loading parameters...'
+                emptyDescription='Loading parameters…'
                 onParametersChange={handleParametersChange}
               />
             </div>
@@ -221,7 +238,7 @@ export function KernelDemo({
                 {exportFormatOptions.length > 0 && activeFormat ? (
                   <>
                     <ComboBoxResponsive
-                      searchPlaceHolder='Search formats...'
+                      searchPlaceHolder='Search formats…'
                       title='Export Format'
                       description='Select a format to export the model'
                       groupedItems={[{ name: 'Formats', items: exportFormatOptions }]}

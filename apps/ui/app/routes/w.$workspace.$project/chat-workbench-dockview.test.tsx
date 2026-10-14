@@ -1,8 +1,12 @@
 /* oxlint-disable @typescript-eslint/consistent-type-assertions -- Dockview structural test doubles cover only exercised fields */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { isValidElement, useEffect, useState, StrictMode, Fragment } from 'react';
+import { MemoryRouter } from 'react-router';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { createPortal } from 'react-dom';
+import { Printer } from 'lucide-react';
 import type {
   DockviewApi,
   DockviewDidDropEvent,
@@ -19,20 +23,37 @@ import type { FileContentResult } from '@taucad/fs-client/file-content-service';
 import { tauFileDragMime, tauViewerPanelDragMime } from '@taucad/types/constants';
 import type { PendingFilePlacement } from '#routes/w.$workspace.$project/chat-workbench-dockview.js';
 import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/project-workspace-context.js';
-import { TooltipProvider } from '#components/ui/tooltip.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
 
-const { mobileState, mockOpenPanel, mockProjectSend, mockToastError } = vi.hoisted(() => ({
-  mobileState: { value: false },
-  mockOpenPanel: vi.fn(),
-  mockProjectSend: vi.fn(),
-  mockToastError: vi.fn(),
+const { featureState, mobileState, mockOpenPanel, mockProjectSend, mockToastError, mockPrintBody, mockExportBody } =
+  vi.hoisted(() => ({
+    featureState: { value: false },
+    mobileState: { value: false },
+    mockOpenPanel: vi.fn(),
+    mockProjectSend: vi.fn(),
+    mockToastError: vi.fn(),
+    mockPrintBody: vi.fn(),
+    mockExportBody: vi.fn(),
+  }));
+
+vi.mock('#routes/w.$workspace.$project/chat-print.js', () => ({
+  PrintPanelBody: ({ isShown }: { readonly isShown?: boolean }) => {
+    mockPrintBody(isShown);
+    return <div data-testid='print-body' />;
+  },
+}));
+vi.mock('#routes/w.$workspace.$project/chat-converter.js', () => ({
+  ConverterPanelBody: ({ isShown }: { readonly isShown?: boolean }) => {
+    mockExportBody(isShown);
+    return <div data-testid='export-body' />;
+  },
 }));
 
 vi.mock('sonner', () => ({ toast: { error: mockToastError } }));
 vi.mock('#components/panes/use-is-top-right-group.js', () => ({
   useIsTopRightGroup: () => true,
 }));
-vi.mock('#hooks/use-mobile.js', () => ({ useIsMobile: () => mobileState.value }));
+vi.mock('@taucad/ui/hooks/use-mobile', () => ({ useIsMobile: () => mobileState.value }));
 vi.mock('#components/panes/dockview-split-action.js', () => ({
   DockviewSplitAction: ({
     containerApi,
@@ -55,7 +76,7 @@ vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (imp
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-file-tree.js', () => ({
-  FileTreePanelBody: ({ actionsContainer }: { readonly actionsContainer?: Element | DocumentFragment | null }) => (
+  FileTreePanelBody: ({ actionsContainer }: { readonly actionsContainer?: Element | DocumentFragment }) => (
     <>
       {actionsContainer
         ? createPortal(
@@ -91,41 +112,83 @@ const mockContentSaveEditor = vi.fn(async () => undefined);
 const mockAcquireModel = vi.fn(async () => undefined);
 const mockReleaseModel = vi.fn();
 const mockIsApplyingFilesystemContent = vi.fn(() => false);
+const mockHasSyncedModel = vi.fn((_path: string) => false);
 const mockSaveEditor = vi.fn<(path: string, data: Uint8Array<ArrayBuffer>) => Promise<void>>(async () => undefined);
 const mockModelService = {
   acquireModel: mockAcquireModel,
   releaseModel: mockReleaseModel,
   isApplyingFilesystemContent: mockIsApplyingFilesystemContent,
+  hasSyncedModel: mockHasSyncedModel,
   saveEditor: mockSaveEditor,
 };
 
-const mockUseFileContent = vi.fn<(path: string | undefined) => FileContentResult>();
+const mockUseFileContent =
+  vi.fn<
+    (
+      path: string | undefined,
+    ) => FileContentResult & { observation?: { status: string; error?: string }; retry?: () => void }
+  >();
 
 vi.mock('#hooks/use-file-content.js', () => ({
-  useFileContent: (path: string | undefined) => mockUseFileContent(path),
+  useFileContent: (path: string | undefined) => {
+    const result = mockUseFileContent(path);
+    return {
+      ...result,
+      observation: result.observation ?? { status: 'ready' },
+      retry: result.retry ?? (() => undefined),
+    };
+  },
 }));
 
+const mockFileManager = {
+  contentService: { resolve: mockResolve, readRawBytes: mockReadRawBytes, saveEditor: mockContentSaveEditor },
+  writeFile: mockWriteFile,
+};
+
 vi.mock('#hooks/use-file-manager.js', () => ({
-  useFileManager: () => ({
-    contentService: { resolve: mockResolve, readRawBytes: mockReadRawBytes, saveEditor: mockContentSaveEditor },
-    writeFile: mockWriteFile,
-  }),
+  useFileManager: () => mockFileManager,
+  /* The pane's read-only answer reads the file tree's provenance, and the tree
+   * reader takes the *optional* manager so presentation-only surfaces can render
+   * outside a provider. */
+  useOptionalFileManager: () => mockFileManager,
 }));
 
 const editorMachineSnapshot = {
   context: {
     openFiles: [] as Array<{ paneId: string; path: string; readOnly?: boolean }>,
+    fileSidebars: {} as Record<string, number>,
     panelState: { desktopLayout: { workbenchOpen: true } },
   },
+  matches: () => true,
   status: 'active',
   output: undefined,
   error: undefined,
 };
 
+let currentEditorSnapshot = editorMachineSnapshot;
+type EditorListener =
+  | ((snapshot: typeof editorMachineSnapshot) => void)
+  | { next: (snapshot: typeof editorMachineSnapshot) => void };
+const editorListeners = new Set<EditorListener>();
+const publishOpenFiles = (openFiles: typeof editorMachineSnapshot.context.openFiles): void => {
+  currentEditorSnapshot = { ...editorMachineSnapshot, context: { ...editorMachineSnapshot.context, openFiles } };
+  for (const listener of editorListeners) {
+    if (typeof listener === 'function') {
+      listener(currentEditorSnapshot);
+    } else {
+      listener.next(currentEditorSnapshot);
+    }
+  }
+};
+
 const mockEditorRef = {
+  on: () => ({ unsubscribe: () => undefined }),
   send: vi.fn(),
-  getSnapshot: () => editorMachineSnapshot,
-  subscribe: () => ({ unsubscribe: vi.fn() }),
+  getSnapshot: () => currentEditorSnapshot,
+  subscribe: (listener: EditorListener) => {
+    editorListeners.add(listener);
+    return { unsubscribe: () => editorListeners.delete(listener) };
+  },
 };
 
 vi.mock('#hooks/use-project.js', () => ({
@@ -148,22 +211,28 @@ vi.mock('#hooks/use-kernel-diagnostics.js', () => ({
 }));
 
 vi.mock('#flags/use-feature.js', () => ({
-  useFeature: () => false,
+  useFeature: () => featureState.value,
 }));
 
+vi.mock('#hooks/use-monaco-configuration.js', () => ({ useConfiguredMonaco: () => undefined }));
+
 vi.mock('@monaco-editor/react', () => ({
-  useMonaco: () => undefined,
+  /* `configureMonaco` hands the loader the editor module; under jsdom nothing
+   * is loaded, so the mock only has to accept the call (W14 sweep). */
+  loader: { config: vi.fn() },
 }));
 
 const defaultViewer = ({
   filePath,
   content,
+  isEditorReady,
 }: {
   filePath: string;
   content: string;
   onChange?: (value: string) => void;
+  isEditorReady?: boolean;
 }) => (
-  <div data-testid='viewer'>
+  <div data-testid='viewer' data-editor-ready={isEditorReady}>
     <div data-testid='viewer-path'>{filePath}</div>
     <div data-testid='viewer-content'>{content}</div>
   </div>
@@ -180,7 +249,7 @@ vi.mock('#routes/w.$workspace.$project/file-viewers/built-in-viewers.js', () => 
           render: (request: {
             readonly binaryFallback?: { readonly onForceOpen: () => void };
             readonly renderPane: (content: { readonly body: React.ReactNode }) => React.ReactNode;
-          }) =>
+          }): React.ReactNode =>
             request.renderPane({
               body: (
                 <div>
@@ -209,12 +278,15 @@ vi.mock('#routes/w.$workspace.$project/file-viewers/built-in-viewers.js', () => 
         render: (request: {
           readonly path: string;
           readonly resource: { readonly outcome: FileContentResult };
-          readonly textEditor?: { readonly onChange: (value: string | undefined) => void };
+          readonly textEditor?: {
+            readonly isReady: boolean;
+            readonly onChange: (value: string | undefined) => void;
+          };
           readonly renderPane: (content: {
             readonly actions?: React.ReactNode;
             readonly body: React.ReactNode;
           }) => React.ReactNode;
-        }) => {
+        }): React.ReactNode => {
           const { outcome } = request.resource;
           const content = outcome.kind === 'text' ? new TextDecoder().decode(outcome.content) : '';
           return request.renderPane({
@@ -228,6 +300,7 @@ vi.mock('#routes/w.$workspace.$project/file-viewers/built-in-viewers.js', () => 
               <Viewer
                 filePath={request.path}
                 content={content}
+                isEditorReady={request.textEditor?.isReady}
                 onChange={request.textEditor?.onChange as (value: string) => void}
               />
             ),
@@ -239,7 +312,19 @@ vi.mock('#routes/w.$workspace.$project/file-viewers/built-in-viewers.js', () => 
 }));
 
 vi.mock('#components/files/file-selector.js', () => ({
-  FileSelector: () => <div data-testid='file-selector' />,
+  FileSelector: ({
+    onSelect,
+    placeholder,
+  }: {
+    readonly onSelect?: (path: string) => void;
+    readonly placeholder?: string;
+  }) => (
+    <div data-testid='file-selector'>
+      <button type='button' aria-label={placeholder} onClick={() => onSelect?.('src/peer.ts')}>
+        Select peer file
+      </button>
+    </div>
+  ),
 }));
 
 const {
@@ -248,6 +333,7 @@ const {
   handleWorkbenchPanelRemoved,
   isWorkbenchPanelFilesContext,
   openWorkbenchUtility,
+  isWorkbenchSurfaceAllowed,
   openWorkbenchFiles,
   openFilesFromPlaceholder,
   createWorkbenchNewTab,
@@ -259,11 +345,44 @@ const {
   WorkbenchEmptyGroupWatermark,
   WorkbenchDockviewTab,
   WorkbenchLeftActions,
+  getWorkbenchTabIcon,
   WorkbenchPlaceholderPanel,
   WorkbenchRightHeaderActions,
   workbenchSurfaces,
   workbenchPanels,
+  PrintWorkbenchPanel,
+  ExportWorkbenchPanel,
 } = await import('#routes/w.$workspace.$project/chat-workbench-dockview.js');
+
+const actualWorkspace = await vi.importActual<typeof ProjectWorkspaceContext>(
+  '#routes/w.$workspace.$project/project-workspace-context.js',
+);
+
+describe('hidden workbench operation panels', () => {
+  it.each([
+    ['Print', PrintWorkbenchPanel, mockPrintBody],
+    ['Export', ExportWorkbenchPanel, mockExportBody],
+  ] as const)('passes hidden visibility to mounted %s body and wakes it on reveal', (_name, Panel, body) => {
+    let onVisibilityChange: (() => void) | undefined;
+    const api = {
+      isVisible: false,
+      onDidVisibilityChange: (listener: () => void) => {
+        onVisibilityChange = listener;
+        return { dispose: vi.fn() };
+      },
+    } as unknown as IDockviewPanelProps['api'];
+    const properties = { api } as IDockviewPanelProps;
+
+    render(<Panel {...properties} />);
+    expect(body).toHaveBeenLastCalledWith(false);
+
+    act(() => {
+      Object.assign(api, { isVisible: true });
+      onVisibilityChange?.();
+    });
+    expect(body).toHaveBeenLastCalledWith(true);
+  });
+});
 
 const createTabProperties = ({
   id,
@@ -333,6 +452,19 @@ const mockPanelApi = {
   setTitle: vi.fn(),
 } as unknown as IDockviewPanelProps['api'];
 
+describe('getWorkbenchTabIcon', () => {
+  it('should mark printer files with the printer icon, as the viewer tab does, and leave other files to their extension', () => {
+    const icon = (id: string, params: Record<string, unknown>): React.ReactNode =>
+      getWorkbenchTabIcon(createTabProperties({ id, title: id, params }));
+    for (const filePath of ['exports/main.gcode.3mf', 'prints/bracket.gcode']) {
+      const element = icon('file-1', { filePath });
+      expect(isValidElement(element) && element.type).toBe(Printer);
+    }
+    expect(icon('file-2', { filePath: 'main.scad' })).toBeUndefined();
+    expect(icon('file-3', { filePath: 'exports/main.3mf' })).toBeUndefined();
+  });
+});
+
 describe('WorkbenchRightHeaderActions', () => {
   beforeEach(() => {
     mobileState.value = false;
@@ -369,20 +501,94 @@ describe('FileEditor routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     editorMachineSnapshot.context.openFiles = [];
+    currentEditorSnapshot = editorMachineSnapshot;
+    editorListeners.clear();
     mockIsApplyingFilesystemContent.mockReturnValue(false);
     mockSaveEditor.mockResolvedValue(undefined);
     mockContentSaveEditor.mockResolvedValue(undefined);
     mockUseMonacoServices.mockReturnValue({ modelService: mockModelService });
+    mockHasSyncedModel.mockImplementation(() => false);
     mockResolveViewer.mockReturnValue(defaultViewer);
   });
 
-  it('should render the loader when outcome is loading', () => {
+  it('should render the pane placeholder when outcome is loading', () => {
     mockUseFileContent.mockReturnValue({ kind: 'loading' });
 
-    const { container } = render(<FileEditor paneId='test-pane' filePath='mystery.dat' panelApi={mockPanelApi} />);
+    render(<FileEditor paneId='test-pane' filePath='mystery.dat' panelApi={mockPanelApi} />);
 
-    expect(container.querySelector('[data-slot="loader"], svg')).toBeTruthy();
+    const placeholder = screen.getByRole('status');
+    expect(placeholder).toHaveAttribute('data-slot', 'editor-pane-placeholder');
+    expect(placeholder).toHaveTextContent('Loading mystery.dat');
     expect(screen.getAllByRole('group', { name: 'File actions for mystery.dat' })).toHaveLength(1);
+  });
+
+  it('does not rerender for unrelated or unchanged open file entries', () => {
+    mockUseMonacoServices.mockReturnValue({ modelService: undefined });
+    mockUseFileContent.mockReturnValue({ kind: 'loading' });
+    editorMachineSnapshot.context.openFiles = [{ paneId: 'pane-1', path: 'image.png' }];
+    render(<FileEditor paneId='pane-1' filePath='image.png' panelApi={mockPanelApi} />);
+    const renders = mockUseFileContent.mock.calls.length;
+
+    act(() => {
+      publishOpenFiles([
+        { paneId: 'pane-1', path: 'image.png' },
+        { paneId: 'other-pane', path: 'other.txt' },
+      ]);
+    });
+    expect(mockUseFileContent).toHaveBeenCalledTimes(renders);
+
+    act(() => {
+      publishOpenFiles([{ paneId: 'pane-1', path: 'image.png', readOnly: true }]);
+    });
+    expect(mockUseFileContent).toHaveBeenCalledTimes(renders + 1);
+
+    act(() => {
+      publishOpenFiles([{ paneId: 'pane-1', path: 'renamed.png', readOnly: true }]);
+    });
+    expect(mockUseFileContent).toHaveBeenLastCalledWith('renamed.png');
+  });
+
+  /* I3: an editor that mounts before the model is bound creates the model
+   * itself, and the workspace file system then adopts it unsubscribed. */
+  it('should hold the text editor until the pane model is bound', async () => {
+    const hold = Promise.withResolvers<undefined>();
+    mockAcquireModel.mockReturnValueOnce(hold.promise);
+    mockUseFileContent.mockReturnValue({ kind: 'text', content: new TextEncoder().encode('x') });
+
+    render(<FileEditor paneId='test-pane' filePath='main.ts' panelApi={mockPanelApi} />);
+
+    expect(screen.getByTestId('viewer')).toHaveAttribute('data-editor-ready', 'false');
+    expect(mockAcquireModel).toHaveBeenCalledWith('main.ts');
+    await act(async () => {
+      hold.resolve(undefined);
+      await hold.promise;
+    });
+    expect(screen.getByTestId('viewer')).toHaveAttribute('data-editor-ready', 'true');
+  });
+
+  it('should hold the text editor while Monaco services are unavailable', () => {
+    mockUseMonacoServices.mockReturnValue({ modelService: undefined });
+    mockUseFileContent.mockReturnValue({ kind: 'text', content: new TextEncoder().encode('x') });
+
+    render(<FileEditor paneId='test-pane' filePath='main.ts' panelApi={mockPanelApi} />);
+
+    expect(screen.getByTestId('viewer')).toHaveAttribute('data-editor-ready', 'false');
+    expect(mockAcquireModel).not.toHaveBeenCalled();
+  });
+
+  /* A rename moves the bound model to the new path; the pane stays mounted. */
+  it('should keep the editor ready for a path whose model is already bound', () => {
+    mockHasSyncedModel.mockImplementation((path) => path === 'main.ts');
+    mockAcquireModel.mockReturnValueOnce(
+      new Promise(() => {
+        /* A hold that never settles: the panel must stay on its loading state. */
+      }),
+    );
+    mockUseFileContent.mockReturnValue({ kind: 'text', content: new TextEncoder().encode('x') });
+
+    render(<FileEditor paneId='test-pane' filePath='main.ts' panelApi={mockPanelApi} />);
+
+    expect(screen.getByTestId('viewer')).toHaveAttribute('data-editor-ready', 'true');
   });
 
   it('should render the binary warning when outcome is binary, regardless of filename', () => {
@@ -469,6 +675,72 @@ describe('FileEditor routing', () => {
     expect(screen.getAllByRole('group', { name: 'File actions for mystery.dat' })).toHaveLength(1);
   });
 
+  it.each(['Select peer file', 'Select file to edit…'])(
+    'keeps the original pane identity until a picker selection is materialized (%s)',
+    async (selector) => {
+      const original = panel('pane-original', { filePath: 'src/original.ts', paneId: 'pane-original' });
+      const dockview = createTestDockview([original]);
+      original.api.updateParameters.mockImplementation((parameters: Record<string, unknown>) => {
+        Object.assign(original.params, parameters);
+      });
+      editorMachineSnapshot.context.openFiles = [openFile('pane-original', 'src/original.ts')];
+      mockUseFileContent.mockReturnValue({ kind: 'orphaned' });
+      render(
+        <FileEditor
+          paneId='pane-original'
+          filePath='src/original.ts'
+          panelApi={original.api as unknown as IDockviewPanelProps['api']}
+        />,
+      );
+
+      const picker = screen.getAllByRole('button', { name: selector });
+      expect(picker).toHaveLength(selector === 'Select peer file' ? 2 : 1);
+      await userEvent.click(picker[0]!);
+      expect(mockEditorRef.send).toHaveBeenCalledWith({ type: 'openFile', path: 'src/peer.ts', source: 'user' });
+      // The machine has not published the selected file while its model acquisition is pending.
+      expect(original.params['filePath']).toBe('src/original.ts');
+      expect(original.api.setTitle).not.toHaveBeenCalled();
+      expect(dockview.panels).toHaveLength(1);
+
+      const materialized = [openFile('pane-original', 'src/original.ts'), openFile('pane-peer', 'src/peer.ts')];
+      act(() => {
+        publishOpenFiles(materialized);
+      });
+      const pending = reconcileWorkbenchFiles({
+        api: dockview.api,
+        openFiles: materialized,
+        activePaneId: 'pane-peer',
+        isMobile: false,
+        pendingUserFilePath: 'src/peer.ts',
+        pendingFilePlacements: new Map(),
+      });
+      expect(pending).toBeUndefined();
+      expect(dockview.panels.find((candidate) => candidate.id === 'pane-peer')?.api.setActive).toHaveBeenCalledOnce();
+      expect(original.params['filePath']).toBe('src/original.ts');
+    },
+  );
+
+  it('should keep the same editor body while unavailable observation offers Retry', async () => {
+    const content = new TextEncoder().encode('unsaved edit');
+    const retry = vi.fn();
+    mockUseFileContent.mockReturnValue({ kind: 'text', content, observation: { status: 'ready' }, retry });
+    const pane = render(<FileEditor paneId='test-pane' filePath='main.ts' panelApi={mockPanelApi} />);
+    const editor = screen.getByTestId('viewer');
+    mockUseFileContent.mockReturnValue({
+      kind: 'text',
+      content,
+      observation: { status: 'closed', error: 'watch closed' },
+      retry,
+    });
+    pane.rerender(
+      <FileEditor paneId='test-pane' filePath='main.ts' panelApi={mockPanelApi} parameters={{ filePath: 'main.ts' }} />,
+    );
+    expect(screen.getByTestId('viewer')).toBe(editor);
+    expect(screen.getByRole('status')).toHaveTextContent('File updates unavailable');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry file updates' }));
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it('should render the resolved viewer with decoded text content when outcome is text', () => {
     const content = new TextEncoder().encode('hello world');
     mockUseFileContent.mockReturnValue({ kind: 'text', content });
@@ -504,6 +776,78 @@ describe('FileEditor routing', () => {
 
     await userEvent.click(toggle);
     expect(mockPanelApi.updateParameters).toHaveBeenCalledWith({ filesOpen: false });
+  });
+
+  it('should apply restored Files widths in the same render without replacing the viewer', () => {
+    mockUseFileContent.mockReturnValue({ kind: 'text', content: new TextEncoder().encode('hello') });
+    const { rerender } = render(
+      <FileEditor
+        paneId='test-pane'
+        filePath='main.ts'
+        parameters={{ filePath: 'main.ts', filesOpen: true, filesWidth: 200 }}
+        panelApi={mockPanelApi}
+      />,
+    );
+    const region = screen.getByRole('region', { name: 'Files for main.ts' });
+    const toggle = screen.getByRole('button', { name: 'Hide files for main.ts' });
+    toggle.focus();
+
+    rerender(
+      <FileEditor
+        paneId='test-pane'
+        filePath='main.ts'
+        parameters={{ filePath: 'main.ts', filesOpen: true, filesWidth: 344 }}
+        panelApi={mockPanelApi}
+      />,
+    );
+
+    expect(region).toHaveStyle({ width: '344px' });
+    expect(toggle).toHaveFocus();
+    expect(screen.getByRole('region', { name: 'Files for main.ts' })).toBe(region);
+  });
+
+  it('should keep drag widths local and discard cancelled gestures before the next resize', () => {
+    mockUseFileContent.mockReturnValue({ kind: 'text', content: new TextEncoder().encode('hello') });
+    render(
+      <FileEditor
+        paneId='test-pane'
+        filePath='main.ts'
+        parameters={{ filePath: 'main.ts', filesOpen: true, filesWidth: 240 }}
+        panelApi={mockPanelApi}
+      />,
+    );
+    // The jsdom environment has no PointerEvent; pointer capture only needs the native event's id.
+    const pointer = (type: string, clientX = 0): MouseEvent => {
+      const event = new MouseEvent(type, { bubbles: true, button: 0, clientX });
+      Object.defineProperty(event, 'pointerId', { value: 1 });
+      return event;
+    };
+    const region = screen.getByRole('region', { name: 'Files for main.ts' });
+    const sash = screen.getByRole('separator', { name: 'Resize Files pane' });
+    vi.mocked(mockPanelApi.updateParameters).mockClear();
+    mockEditorRef.send.mockClear();
+
+    fireEvent(sash, pointer('pointerdown', 500));
+    fireEvent(sash, pointer('pointermove', 440));
+    expect(region).toHaveStyle({ width: '300px' });
+    expect(mockPanelApi.updateParameters).not.toHaveBeenCalled();
+    expect(mockEditorRef.send).not.toHaveBeenCalled();
+
+    fireEvent(sash, pointer('pointercancel'));
+    expect(region).toHaveStyle({ width: '240px' });
+    fireEvent(sash, pointer('pointermove', 400));
+    fireEvent(sash, pointer('pointerup'));
+    expect(mockPanelApi.updateParameters).not.toHaveBeenCalled();
+
+    fireEvent(sash, pointer('pointerdown', 500));
+    fireEvent(sash, pointer('pointermove', 460));
+    fireEvent(sash, pointer('pointerup'));
+    expect(mockPanelApi.updateParameters).toHaveBeenCalledExactlyOnceWith({ filesWidth: 280 });
+    expect(mockEditorRef.send).toHaveBeenCalledExactlyOnceWith({
+      type: 'setFileSidebarWidth',
+      path: 'main.ts',
+      width: 280,
+    });
   });
 
   it('should show file-tree actions before the Files toggle only while the pane is open', () => {
@@ -686,7 +1030,7 @@ describe('FileEditor routing', () => {
         kind: 'text',
         content: new TextEncoder().encode('restored content'),
       });
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -726,7 +1070,7 @@ describe('FileEditor routing', () => {
       // we exercise the resolver via a direct call: capture the
       // handler from FileEditor by mocking the viewer to invoke it.
 
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -753,7 +1097,7 @@ describe('FileEditor routing', () => {
         kind: 'text',
         content: new TextEncoder().encode('hello'),
       });
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -779,7 +1123,7 @@ describe('FileEditor routing', () => {
         kind: 'text',
         content: new TextEncoder().encode('hello'),
       });
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -812,7 +1156,7 @@ describe('FileEditor routing', () => {
         kind: 'text',
         content: new TextEncoder().encode('hello'),
       });
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -840,7 +1184,7 @@ describe('FileEditor routing', () => {
         kind: 'text',
         content: new TextEncoder().encode('hello'),
       });
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -864,7 +1208,7 @@ describe('FileEditor routing', () => {
         kind: 'text',
         content: new TextEncoder().encode('read only'),
       });
-      mockResolveViewer.mockReturnValueOnce(({ onChange }: { readonly onChange: (value: string) => void }) => (
+      mockResolveViewer.mockReturnValue(({ onChange }: { readonly onChange: (value: string) => void }) => (
         <button
           type='button'
           data-testid='trigger-change'
@@ -967,7 +1311,7 @@ describe('normalizeFilePaneState', () => {
 
   it('should apply eligible-pane and viewer defaults to legacy parameters', () => {
     expect(normalizeFilePaneState({ parameters: {}, requestsFiles: true, presentation: markdownPresentation })).toEqual(
-      { filesOpen: true, filesWidth: 240, viewId: 'preview' },
+      { filesOpen: true, filesWidth: 176, viewId: 'preview' },
     );
   });
 
@@ -990,6 +1334,10 @@ describe('normalizeFilePaneState', () => {
 });
 
 describe('Workbench file reconciliation', () => {
+  beforeEach(() => {
+    featureState.value = false;
+  });
+
   it('creates a real New tab panel in the invoking group', () => {
     const dockview = createTestDockview();
 
@@ -1078,6 +1426,16 @@ describe('Workbench file reconciliation', () => {
     );
   });
 
+  it('seeds the shared profile directly into Parameters', () => {
+    const dockview = createTestDockview();
+
+    seedFreshWorkbench({ api: dockview.api, profile: 'shared' });
+
+    expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: 'workbench:parameters', component: 'parameters', title: 'Parameters' }),
+    );
+  });
+
   it('offers the guided selector only in the seeded launcher', async () => {
     const user = userEvent.setup();
     const launcher = panel('workbench-tab-test', { mode: 'launcher' });
@@ -1096,8 +1454,35 @@ describe('Workbench file reconciliation', () => {
 
     const parametersButton = screen.getByRole('button', { name: /Parameters/ });
     expect(parametersButton).toHaveClass('h-7', 'text-[13px]');
-    expect(parametersButton.parentElement).toHaveClass('mx-auto', 'py-6');
-    expect(parametersButton.parentElement?.parentElement).toHaveClass('scroll-shadows-y', 'overflow-y-auto');
+    expect(parametersButton.parentElement).toHaveAttribute('aria-label', 'Design');
+    expect(parametersButton.parentElement?.parentElement).toHaveClass('mx-auto', 'py-6');
+    expect(parametersButton.parentElement?.parentElement?.parentElement).toHaveClass(
+      'scroll-shadows-y',
+      'overflow-y-auto',
+    );
+    expect(screen.getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual([
+      'Design',
+      'Activity',
+      'Project',
+    ]);
+    expect(within(screen.getByRole('group', { name: 'Design' })).getByRole('button', { name: /Model/ })).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Revisions/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Agents/ }),
+    ).toBeVisible();
+    expect(within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Jobs/ })).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: /Export/ }),
+    ).toBeVisible();
+    expect(within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: /Share/ })).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: /Details/ }),
+    ).toBeVisible();
+    expect(within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: /Files/ })).toBeVisible();
+    expect(screen.queryByRole('group', { name: 'Diagnostics' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('separator')).toHaveLength(3);
     expect(screen.getByRole('button', { name: 'Close tab' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Telemetry' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Parameters/ }));
@@ -1109,6 +1494,92 @@ describe('Workbench file reconciliation', () => {
     );
     expect(close).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'opens the real Files shell from one context command across delayed connection (connected=%s, strict=%s)',
+    async (connected, strict) => {
+      const launcher = panel('delayed-files-launcher', { mode: 'launcher' });
+      const dockview = createTestDockview([launcher]);
+      Object.assign(dockview.api, { activePanel: launcher });
+      Object.assign(launcher.api, { id: launcher.id, group: dockview.group });
+
+      function MountedWorkbench(): React.JSX.Element {
+        const workspace = actualWorkspace.useProjectWorkspace();
+        const [mounted, setMounted] = useState(connected);
+        const [parameters, setParameters] = useState({
+          mode: 'launcher' as 'launcher' | 'open-file',
+          filesOpen: false,
+        });
+        launcher.api.updateParameters.mockImplementation((patch: typeof parameters) => {
+          Object.assign(launcher.params, patch);
+          setParameters((current) => ({ ...current, ...patch }));
+        });
+        useEffect(() => {
+          if (!mounted) {
+            return;
+          }
+          return workspace.connectWorkbench((id) => {
+            if (id === 'files') {
+              openWorkbenchFiles({ api: dockview.api });
+            }
+          });
+        }, [mounted, workspace]);
+        return (
+          <>
+            <button
+              type='button'
+              onClick={() => {
+                workspace.openPanel('files');
+              }}
+            >
+              Request Files once
+            </button>
+            <button
+              type='button'
+              onClick={() => {
+                setMounted(true);
+              }}
+            >
+              Mount workbench
+            </button>
+            {mounted ? (
+              <WorkbenchPlaceholderPanel
+                api={launcher.api as unknown as IDockviewPanelProps['api']}
+                containerApi={dockview.api}
+                params={parameters}
+              />
+            ) : undefined}
+          </>
+        );
+      }
+
+      const Lifecycle = strict ? StrictMode : Fragment;
+      render(
+        <Lifecycle>
+          <MemoryRouter>
+            <KeyboardProvider>
+              <actualWorkspace.ProjectWorkspaceProvider>
+                <MountedWorkbench />
+              </actualWorkspace.ProjectWorkspaceProvider>
+            </KeyboardProvider>
+          </MemoryRouter>
+        </Lifecycle>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Request Files once' }));
+      if (!connected) {
+        expect(screen.queryByRole('region', { name: 'Files for Open file' })).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Mount workbench' }));
+      }
+      expect(await screen.findByRole('region', { name: 'Files for Open file' })).toBeVisible();
+      expect(screen.getByTestId('file-tree')).toBeInTheDocument();
+      expect(launcher.api.setTitle).toHaveBeenCalledWith('Open file');
+    },
+  );
 
   it('should render Open file inside the same pane-owned Files shell', () => {
     const placeholder = panel('open-file-pane', { mode: 'open-file', filesOpen: true, filesWidth: 280 });
@@ -1137,6 +1608,37 @@ describe('Workbench file reconciliation', () => {
     render(<WorkbenchLeftActions {...properties} />);
     await user.click(screen.getByRole('button', { name: 'Open workbench tab' }));
 
+    expect(screen.getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual([
+      'Design',
+      'Activity',
+      'Project',
+    ]);
+    expect(
+      within(screen.getByRole('group', { name: 'Design' })).getByRole('menuitem', { name: /Model/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Revisions/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Agents/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Jobs/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Project' })).getByRole('menuitem', { name: /Export/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Project' })).getByRole('menuitem', { name: /Share/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Project' })).getByRole('menuitem', { name: /Details/ }),
+    ).toBeVisible();
+    expect(
+      within(screen.getByRole('group', { name: 'Project' })).getByRole('menuitem', { name: /Files/ }),
+    ).toBeVisible();
+    expect(screen.queryByRole('group', { name: 'Diagnostics' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('separator')).toHaveLength(2);
     expect(screen.getByRole('menuitem', { name: /Parameters/ })).toHaveClass('py-1', 'text-[13px]');
     expect(screen.queryByRole('menuitem', { name: /Close tab/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /Telemetry/ })).not.toBeInTheDocument();
@@ -1148,6 +1650,27 @@ describe('Workbench file reconciliation', () => {
       }),
     );
     expect(dockview.addPanel).not.toHaveBeenCalledWith(expect.objectContaining({ component: 'newTab' }));
+  });
+
+  it('adds one Diagnostics group when debug surfaces are enabled', async () => {
+    const user = userEvent.setup();
+    const dockview = createTestDockview([panel(workbenchPanels.model.id)]);
+    const properties = { group: dockview.group, containerApi: dockview.api } as IDockviewHeaderActionsProps;
+    featureState.value = true;
+
+    render(<WorkbenchLeftActions {...properties} />);
+    await user.click(screen.getByRole('button', { name: 'Open workbench tab' }));
+
+    expect(screen.getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual([
+      'Design',
+      'Activity',
+      'Project',
+      'Diagnostics',
+    ]);
+    const diagnostics = screen.getByRole('group', { name: 'Diagnostics' });
+    expect(within(diagnostics).getByRole('menuitem', { name: 'Telemetry' })).toBeVisible();
+    expect(within(diagnostics).getByRole('menuitem', { name: 'Console' })).toBeVisible();
+    expect(screen.getAllByRole('separator')).toHaveLength(3);
   });
 
   it('opens a closable New tab launcher in a newly split group', async () => {
@@ -1196,6 +1719,7 @@ describe('Workbench file reconciliation', () => {
     render(<WorkbenchEmptyGroupWatermark containerApi={dockview.api} group={group} />);
 
     expect(screen.getByRole('button', { name: /Parameters/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Share/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close split' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Parameters/ }));
     expect(dockview.addPanel).toHaveBeenCalledWith(
@@ -1239,13 +1763,31 @@ describe('Workbench file reconciliation', () => {
     expect(workbenchSurfaces.map(({ id }) => id)).toEqual([
       'parameters',
       'model',
+      'print',
+      'kinematics',
       'revisions',
+      'agents',
+      'jobs',
       'export',
+      'share',
       'details',
       'files',
       'kernel',
       'console',
     ]);
+    expect(workbenchSurfaces.find(({ id }) => id === 'share')?.shortcut).toBeUndefined();
+  });
+
+  it('keeps Share editor-only while retaining shared viewer utilities', () => {
+    expect(isWorkbenchSurfaceAllowed('share', 'editor')).toBe(true);
+    expect(isWorkbenchSurfaceAllowed('share', 'shared')).toBe(false);
+    expect(isWorkbenchSurfaceAllowed('agents', 'editor')).toBe(true);
+    expect(isWorkbenchSurfaceAllowed('agents', 'shared')).toBe(false);
+    expect(isWorkbenchSurfaceAllowed('jobs', 'editor')).toBe(true);
+    expect(isWorkbenchSurfaceAllowed('jobs', 'shared')).toBe(false);
+    expect(isWorkbenchSurfaceAllowed('export', 'shared')).toBe(true);
+    // Posing is transient view state, so shared and builtin example pages offer it too.
+    expect(isWorkbenchSurfaceAllowed('kinematics', 'shared')).toBe(true);
   });
 
   it('clears corrupt layouts and removes restored debug panels when the flag is off', () => {
@@ -1273,6 +1815,29 @@ describe('Workbench file reconciliation', () => {
     restoreWorkbenchLayout({ api: dockview.api, layout: {} as SerializedDockview, isTauDebugEnabled: true });
 
     expect(dockview.removePanel).toHaveBeenCalledExactlyOnceWith(legacyFiles);
+  });
+
+  it('replaces a legacy Machines utility with the Print pane in its group', () => {
+    const legacyMachines = panel('workbench:machines');
+    const dockview = createTestDockview([legacyMachines]);
+
+    restoreWorkbenchLayout({ api: dockview.api, layout: {} as SerializedDockview, isTauDebugEnabled: true });
+
+    expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: workbenchPanels.print.id, component: 'print', title: 'Print' }),
+    );
+    expect(dockview.removePanel).toHaveBeenCalledExactlyOnceWith(legacyMachines);
+    expect(dockview.panels.map(({ id }) => id)).toEqual([workbenchPanels.print.id]);
+  });
+
+  it('keeps Share in a restored editor layout', () => {
+    const share = panel(workbenchPanels.share.id);
+    const dockview = createTestDockview([share]);
+
+    restoreWorkbenchLayout({ api: dockview.api, layout: {} as SerializedDockview, isTauDebugEnabled: true });
+
+    expect(dockview.restoreJson).toHaveBeenCalledOnce();
+    expect(dockview.removePanel).not.toHaveBeenCalledWith(share);
   });
 
   it('removes stale launchers when a restored layout already has substantive tabs', () => {
@@ -1402,6 +1967,20 @@ describe('Workbench file reconciliation', () => {
     const existing = dockview.panels[0]!;
     dockview.addPanel.mockClear();
     openWorkbenchUtility(dockview.api, 'parameters');
+    expect(existing.api.setActive).toHaveBeenCalledOnce();
+    expect(dockview.addPanel).not.toHaveBeenCalled();
+  });
+
+  it('opens Share as a fixed-ID singleton', () => {
+    const dockview = createTestDockview();
+    openWorkbenchUtility(dockview.api, 'share');
+    expect(dockview.addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'workbench:share', component: 'share', title: 'Share' }),
+    );
+
+    const existing = dockview.panels[0]!;
+    dockview.addPanel.mockClear();
+    openWorkbenchUtility(dockview.api, 'share');
     expect(existing.api.setActive).toHaveBeenCalledOnce();
     expect(dockview.addPanel).not.toHaveBeenCalled();
   });

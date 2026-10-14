@@ -3,7 +3,7 @@ title: 'Context Engineering Policy'
 description: 'Comprehensive guide to optimizing system prompts, tool definitions, and context pipelines for LLM agents. Covers foundational principles, placement framework, cache economics, compaction safety, subagent criteria, untrusted content, and eval discipline.'
 status: active
 created: '2026-03-09'
-updated: '2026-07-10'
+updated: '2026-09-30'
 related:
   - docs/policy/filesystem-context-policy.md
   - docs/research/transcript-search-architecture.md
@@ -213,7 +213,7 @@ Use XML tags or Markdown headers for distinct sections:
 ```
 ## Workflow
 1. Read existing files before editing
-2. Verify with get_kernel_result after changes
+2. Verify with evaluate_model after changes
 ```
 
 The tool descriptions already explain HOW; the prompt only needs WHEN.
@@ -355,13 +355,15 @@ For long-horizon tasks, optimize context based on the upcoming plan: next-k-task
 
 Subagents are **context-isolation devices first**, parallelism devices second: a worker may burn tens of thousands of tokens exploring but returns a condensed 1,000–2,000-token summary to the lead agent's clean window (`anthropic-2025-effective-context-engineering`).
 
-| Question                    | Rule                                                                                                                                                                                                                                                   |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Read or write?              | Read-heavy, parallelizable work (exploration, research, review, verification) fans out. Write paths stay single-threaded — parallel writes carry conflicting implicit decisions no merge step reconciles (`cognition-2026-multi-agents-whats-working`) |
-| What returns?               | A condensed summary/report, never the raw exploration transcript                                                                                                                                                                                       |
-| Shared context?             | Review/verification agents perform better with a clean slate than with the author's pre-shared context (`cognition-2026-multi-agents-whats-working`)                                                                                                   |
-| Is fan-out actually better? | Under equal token budgets, single agents often match multi-agent quality — justify fan-out by context-isolation relief or wall-clock, not assumed quality (`single-agent-2026-token-budget-parity`)                                                    |
-| Orchestration prompt        | Embed explicit effort-scaling rules in the lead agent so simple tasks don't fan out (`anthropic-2025-multi-agent-research-system`)                                                                                                                     |
+| Question                    | Rule                                                                                                                                                                                                                                                                                                 |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read or write?              | Read-heavy independent work fans out. Shared files and architectural decisions have one coordinator; concurrent writers require mechanically disjoint path ownership and integration review. Uncoordinated writes risk conflicting implicit decisions (`cognition-2026-multi-agents-whats-working`). |
+| What returns?               | A condensed summary/report, never the raw exploration transcript                                                                                                                                                                                                                                     |
+| Shared context?             | Review/verification agents perform better with a clean slate than with the author's pre-shared context (`cognition-2026-multi-agents-whats-working`)                                                                                                                                                 |
+| Is fan-out actually better? | Under equal token budgets, single agents often match multi-agent quality — justify fan-out by context-isolation relief or wall-clock, not assumed quality (`single-agent-2026-token-budget-parity`)                                                                                                  |
+| Orchestration prompt        | Embed explicit effort-scaling rules in the lead agent so simple tasks don't fan out (`anthropic-2025-multi-agent-research-system`)                                                                                                                                                                   |
+
+For Tau research and development work, persist substantive lane outputs and checkpoints under the owning research document's artifact tree using `.agents/skills/create-research/artifacts.md`. Return a concise summary with artifact references. When the harness requires text-only worker results, the coordinator saves them promptly; a denied write is not a persisted result. This is the local persistence convention, separate from the source studies' findings above.
 
 ### Context Compaction
 
@@ -375,6 +377,7 @@ Order of escalation as the window fills:
 
 - Safety- and governance-relevant instructions live in the **system prompt or a pinned/memory channel**, never only in conversation history.
 - The compaction pipeline must preserve pinned content (Tau: `keepContextTags`) verbatim, and a regression test must assert survival of `<safety>`-class instructions across a compaction cycle.
+- The compaction pipeline's engineering invariants (decide over the durable log, atomic persist, always-evicting cut, degrade instead of refuse, resumable failures) are owned by `docs/policy/filesystem-context-policy.md` §5.
 
 ### Evolving Contexts (ACE Framework, Zhang 2025)
 

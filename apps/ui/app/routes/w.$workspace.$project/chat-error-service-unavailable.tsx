@@ -1,41 +1,64 @@
 import { memo } from 'react';
 import type React from 'react';
-import { RefreshCcw, WifiOff } from 'lucide-react';
-import { Button } from '#components/ui/button.js';
-import { cn } from '#utils/ui.utils.js';
+import { Play, RefreshCcw, WifiOff } from 'lucide-react';
+import { Button } from '@taucad/ui/components/button';
 import { useChatActions } from '#hooks/use-chat.js';
+import { ChatErrorCard, turnSavedSentence } from '#routes/w.$workspace.$project/chat-error-card.js';
 
+/**
+ * Tau or the model provider could not be reached.
+ *
+ * The category routes several codes here and the host resumes only some of
+ * them (`BILLING_RECOVERY_UNAVAILABLE` ends its run for good), so the promise
+ * and the verb follow `resumable`, never the card.
+ */
 export const ChatErrorServiceUnavailable = memo(function ({
   className,
+  resumable,
+  title = 'Unable to reach Tau',
+  description,
 }: {
   readonly className?: string;
+  /** Whether the host will continue this run rather than replay it. */
+  readonly resumable: boolean;
+  readonly title?: string;
+  readonly description?: string;
 }): React.JSX.Element {
-  const { continueChat } = useChatActions();
+  const { continueChat, regenerate } = useChatActions();
+  const reason =
+    description ??
+    (resumable
+      ? 'Check your connection.'
+      : "We couldn't connect to the Tau service. This could be due to a network issue or the service may be temporarily unavailable. Please check your connection and try again.");
 
   return (
-    <div className={cn('flex flex-col gap-2 rounded-md border border-warning/20 bg-warning/10 p-3 text-sm', className)}>
-      <div className='flex items-center gap-2'>
-        <WifiOff className='size-4 shrink-0 text-warning' />
-        <p className='font-medium text-foreground'>Unable to reach Tau</p>
-      </div>
-      <p className='text-xs text-muted-foreground'>
-        We couldn&apos;t connect to the Tau service. This could be due to a network issue or the service may be
-        temporarily unavailable. Please check your connection and try again.
-      </p>
-      <div className='flex justify-end'>
+    <ChatErrorCard
+      tone='warning'
+      icon={WifiOff}
+      className={className}
+      title={title}
+      description={
+        <>
+          <p>{reason}</p>
+          {resumable ? <p>{turnSavedSentence}</p> : undefined}
+        </>
+      }
+      actions={
         <Button
           variant='outline'
-          size='sm'
+          size='xs'
           onClick={() => {
-            // Recover the interrupted stream without slicing the trailing
-            // assistant tail that the user already saw.
-            continueChat();
+            if (resumable) {
+              continueChat();
+            } else {
+              regenerate();
+            }
           }}
         >
-          <RefreshCcw className='size-3.5' />
-          Try again
+          {resumable ? <Play className='size-3.5' /> : <RefreshCcw className='size-3.5' />}
+          {resumable ? 'Resume' : 'Try again'}
         </Button>
-      </div>
-    </div>
+      }
+    />
   );
 });

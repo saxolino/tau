@@ -5,7 +5,7 @@ import {
   CopyPlus,
   Pencil,
   Trash,
-  MoreHorizontal,
+  EllipsisVertical,
   X as CloseIcon,
   Download,
   Box,
@@ -13,12 +13,13 @@ import {
 } from 'lucide-react';
 import { useCallback, memo, useState, useMemo, useRef, useEffect } from 'react';
 import { useSelector } from '@xstate/react';
-import type { ActorRefFrom } from 'xstate';
+import type { ActorRefFrom, SnapshotFrom } from 'xstate';
 import type { PaneviewApi, PaneviewPanelApi } from 'dockview-react';
-import { PaneviewReact } from 'dockview-react';
+import { Paneview } from '#components/panes/paneview.js';
 import { hasJsonSchemaObjectProperties } from '@taucad/utils/schema';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
+import { toast } from '#components/ui/sonner.js';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -28,7 +29,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
-} from '#components/ui/context-menu.js';
+} from '@taucad/ui/components/context-menu';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,7 +39,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from '#components/ui/dropdown-menu.js';
+} from '@taucad/ui/components/dropdown-menu';
 import { ExportSelector } from '#components/files/export-selector.js';
 import {
   FloatingPanel,
@@ -49,25 +50,34 @@ import {
   FloatingPanelContentHeaderActions,
   FloatingPanelContentTitle,
 } from '#components/ui/floating-panel.js';
-import { SearchInput } from '#components/search-input.js';
-import { Button } from '#components/ui/button.js';
-import { Input } from '#components/ui/input.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
+import { Button } from '@taucad/ui/components/button';
+import { Input } from '@taucad/ui/components/input';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
+import { nestedActionVariants } from '@taucad/ui/components/nested-action.variants';
 import {
   PaneviewHeader,
   PaneviewHeaderAction,
   PaneviewHeaderActionGroup,
-  PaneviewHeaderControls,
   PaneviewHeaderContentActions,
+  PaneviewHeaderControls,
+  paneviewAttachedBodyClassName,
   paneviewAttachedSurfaceStyleOverrides,
   paneviewHeaderSize,
 } from '#components/panes/paneview-header.js';
-import { ModifiedIndicator } from '#components/ui/modified-indicator.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import { useProject, useMainGraphics } from '#hooks/use-project.js';
-import { Parameters } from '#components/geometry/parameters/parameters.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { ModifiedIndicator } from '@taucad/ui/components/modified-indicator';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { useProject, useMainGraphics, useParameterSetActor } from '#hooks/use-project.js';
+import { Parameters } from '@taucad/viewer/parameters/parameters';
+import type { ParameterCommit, ParameterEdit } from '@taucad/viewer/parameters/rjsf-context';
 import type { cadMachine } from '#machines/cad.machine.js';
+import type { ParameterManifest } from '@taucad/parameters';
 import { getActiveGroupValues } from '@taucad/types';
+import type { FileParameterEntry, JSONValue } from '@taucad/types';
+import type { ParameterSetService } from '#services/parameter-set-service.js';
+import type { ParameterDraft } from '@taucad/viewer/parameters/parameter-edit';
+import { withPointerValue } from '#services/parameter-set-service.js';
 import { createDefaultEntry } from '#utils/parameter-config.utils.js';
 import { sortGeometryUnitEntries } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
 import {
@@ -75,8 +85,114 @@ import {
   getInitialPanelOptions,
 } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import type { parameterSetMachine } from '@taucad/parameters/set-machine';
 
 const toggleParametersKeyCombination = projectWorkspaceKeyCombinations.parameters;
+
+type ParameterSetActor = NonNullable<ReturnType<ParameterSetService['actor']>>;
+type ParameterSetState = SnapshotFrom<typeof parameterSetMachine>;
+type ParameterGroupState = FileParameterEntry['groups'][string] | undefined;
+
+const currentEntryOf = (state: ParameterSetState | undefined): FileParameterEntry | undefined =>
+  state?.context.current?.entry;
+const activeGroupOf = (state: ParameterSetState | undefined): string | undefined => currentEntryOf(state)?.activeGroup;
+const activeGroupValuesOf = (state: ParameterSetState | undefined): Record<string, unknown> =>
+  getActiveGroupValues(currentEntryOf(state));
+const activeParameterGroupOf = (state: ParameterSetState | undefined): ParameterGroupState => {
+  const entry = currentEntryOf(state);
+  return entry === undefined ? undefined : entry.groups[entry.activeGroup];
+};
+
+/* The record is re-parsed per snapshot, so the group needs a value comparison to stay
+ * identity-stable. ponytail: only the authored unit claims are compared, because this group reaches
+ * the form solely as the unit refinement of each field's binding; values travel their own path. */
+const sameGroupClaims = (left: ParameterGroupState, right: ParameterGroupState): boolean =>
+  left === right ||
+  (JSON.stringify(left?.units) === JSON.stringify(right?.units) &&
+    JSON.stringify(left?.sourceUnits) === JSON.stringify(right?.sourceUnits));
+
+const sameManifestRevision = (left: ParameterManifest | undefined, right: ParameterManifest | undefined): boolean =>
+  left === right || (left?.revision !== undefined && left.revision === right?.revision);
+
+/**
+ * Ensure the entry's authority actor exists and follow it. `resolve` is idempotent; a retired actor
+ * (rename rollback, delete and recreate, retried close) leaves the store and is resolved again.
+ */
+const useResolvedParameterActor = (
+  entryPath: string,
+  manifest: ParameterManifest | undefined,
+): ParameterSetActor | undefined => {
+  const { resolveParameterEntry } = useProject();
+  const actor = useParameterSetActor(entryPath);
+  // Resolve once per actor and manifest revision: a failed load stays on screen with its own retry,
+  // so re-rendering with an equal manifest must not reload it again.
+  const resolved = useRef<Readonly<{ actor: ParameterSetActor | undefined; revision: string }>>(undefined);
+  useEffect(() => {
+    if (manifest === undefined) {
+      return;
+    }
+    const previous = resolved.current;
+    if (actor !== undefined && previous?.actor === actor && previous.revision === manifest.revision) {
+      return;
+    }
+    if (actor?.getSnapshot().context.current?.manifest.revision !== manifest.revision) {
+      resolveParameterEntry(entryPath, manifest);
+    }
+    resolved.current = { actor, revision: manifest.revision };
+  }, [actor, entryPath, manifest, resolveParameterEntry]);
+  return actor;
+};
+
+const authorityFailureOf = (
+  state: ParameterSetState | undefined,
+): Readonly<{ code: string; message: string }> | undefined =>
+  state?.matches({ open: 'disconnected' }) === true || state?.matches({ open: 'uncertain' }) === true
+    ? state.context.diagnostic
+    : undefined;
+
+/** The single invalid-record policy refuses every unreadable record with this one code. */
+const unreadableRecordCode = 'INVALID_RECORD';
+
+/** A typed load failure with the one recovery that fits it: reset an unreadable record, or retry. */
+function ParameterAuthorityFailure({
+  entryPath,
+  manifest,
+  actor,
+  failure,
+}: {
+  readonly entryPath: string;
+  readonly manifest: ParameterManifest;
+  readonly actor: ParameterSetActor;
+  readonly failure: Readonly<{ code: string; message: string }>;
+}): React.JSX.Element {
+  const { parameterService } = useProject();
+  const unreadable = failure.code === unreadableRecordCode;
+  return (
+    <div role='alert' className='flex flex-col items-start gap-2 p-3 text-sm'>
+      <p className='text-feature'>
+        {unreadable ? 'Saved parameter values for this model cannot be read.' : 'Parameters could not be loaded.'}
+      </p>
+      <p className='text-muted-foreground'>{failure.message}</p>
+      <Button
+        size='sm'
+        variant='outline'
+        onClick={async () => {
+          if (!unreadable) {
+            actor.send({ type: 'resolve', resolution: manifest.identity.resolution });
+            return;
+          }
+          try {
+            await parameterService.resetRecord(entryPath);
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Parameters could not be reset.');
+          }
+        }}
+      >
+        {unreadable ? 'Reset to model defaults' : 'Retry'}
+      </Button>
+    </div>
+  );
+}
 
 type ParameterGroupItem = {
   name: string;
@@ -96,10 +212,12 @@ type ParameterGroupSelectorItem =
 
 function ParameterGroupSelector({
   filePath,
+  manifest,
   groups,
   activeGroup,
 }: {
   readonly filePath: string;
+  readonly manifest: ParameterManifest | undefined;
   readonly groups: Record<string, { values: Record<string, unknown> }>;
   readonly activeGroup: string;
 }): React.JSX.Element {
@@ -134,9 +252,11 @@ function ParameterGroupSelector({
         setIsCreating(true);
         return;
       }
-      switchParameterGroup(filePath, value);
+      if (manifest !== undefined) {
+        switchParameterGroup(filePath, manifest, value);
+      }
     },
-    [switchParameterGroup, filePath, activeGroup],
+    [switchParameterGroup, filePath, activeGroup, manifest],
   );
 
   const shouldCloseOnSelect = useCallback((value: string) => value !== createNewGroupValue, []);
@@ -148,10 +268,16 @@ function ParameterGroupSelector({
       return;
     }
     const currentValues = groups[activeGroup]?.values ?? {};
-    createParameterGroup(filePath, trimmed, currentValues);
-    switchParameterGroup(filePath, trimmed);
+    if (manifest === undefined) {
+      return;
+    }
+    createParameterGroup(filePath, manifest, {
+      groupName: trimmed,
+      values: currentValues,
+    });
+    switchParameterGroup(filePath, manifest, trimmed);
     setIsCreating(false);
-  }, [createValue, groups, activeGroup, filePath, createParameterGroup, switchParameterGroup]);
+  }, [createValue, groups, activeGroup, filePath, createParameterGroup, switchParameterGroup, manifest]);
 
   const handleCancelCreate = useCallback(() => {
     setIsCreating(false);
@@ -168,9 +294,14 @@ function ParameterGroupSelector({
       setRenamingGroup(undefined);
       return;
     }
-    renameParameterGroup(filePath, renamingGroup, trimmed);
+    if (manifest !== undefined) {
+      renameParameterGroup(filePath, manifest, {
+        oldName: renamingGroup,
+        newName: trimmed,
+      });
+    }
     setRenamingGroup(undefined);
-  }, [renameValue, renamingGroup, groups, filePath, renameParameterGroup]);
+  }, [renameValue, renamingGroup, groups, filePath, renameParameterGroup, manifest]);
 
   const handleCancelRename = useCallback(() => {
     setRenamingGroup(undefined);
@@ -178,9 +309,11 @@ function ParameterGroupSelector({
 
   const handleDelete = useCallback(
     (groupName: string) => {
-      deleteParameterGroup(filePath, groupName);
+      if (manifest !== undefined) {
+        deleteParameterGroup(filePath, manifest, groupName);
+      }
     },
-    [deleteParameterGroup, filePath],
+    [deleteParameterGroup, filePath, manifest],
   );
 
   const getItemValue = useCallback((item: ParameterGroupSelectorItem) => item.name, []);
@@ -313,9 +446,9 @@ function ParameterGroupSelector({
               <Pencil className='size-3' />
             </Button>
             <Button
-              variant='ghost'
-              size='icon'
-              className='size-6 hover:bg-destructive/20!'
+              variant='destructive'
+              size='icon-xs'
+              aria-label={`Delete ${item.name}`}
               disabled={item.isActive}
               onClick={(event) => {
                 event.stopPropagation();
@@ -353,14 +486,14 @@ function ParameterGroupSelector({
         getValue={getItemValue}
         value={selectedItem}
         placeholder='Select a parameter group'
-        searchPlaceHolder='Search groups...'
+        searchPlaceHolder='Search groups…'
         title='Parameter Groups'
         description='Select a parameter group to apply.'
         isSearchEnabled={groupItems.length > 5}
         shouldCloseOnSelect={shouldCloseOnSelect}
         popoverProperties={{
           align: 'end',
-          className: 'w-[260px]',
+          className: 'w-65',
         }}
         onSelect={handleSelect}
       >
@@ -368,7 +501,10 @@ function ParameterGroupSelector({
           <button
             type='button'
             aria-label='Parameter groups'
-            className='flex h-6 max-w-28 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors duration-150 motion-reduce:transition-none'
+            className={nestedActionVariants({
+              className:
+                'flex h-6 max-w-28 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground duration-150 outline-none focus-visible:focus-outline motion-reduce:transition-none',
+            })}
           >
             <span className='truncate'>{activeGroup}</span>
             <ChevronDown className='size-2.5 shrink-0 opacity-60' />
@@ -377,6 +513,170 @@ function ParameterGroupSelector({
       </ComboBoxResponsive>
       <TooltipContent side='top'>Parameter groups</TooltipContent>
     </Tooltip>
+  );
+}
+
+/** Longest last render that keeps a drag live on a kernel that cannot cancel a render. Milliseconds. */
+const liveDragRenderBudget = 250;
+
+/**
+ * Whether this unit's last settled render took at most {@link liveDragRenderBudget}.
+ *
+ * Timed from the default subscription entering `rendering` to reaching `ready`.
+ * Repeated rendering status for the same CAD attempt is ignored; a replaced attempt starts fresh.
+ * A failed projection or one already running at mount is never counted.
+ */
+function useLastRenderWithinBudget(cadRef: ActorRefFrom<typeof cadMachine>): boolean {
+  const [isWithinBudget, setIsWithinBudget] = useState(false);
+
+  useEffect(() => {
+    let selectedView = cadRef.getSnapshot().context.defaultView;
+    let startedAt: number | undefined;
+    let previousStatus: 'rendering' | 'ready' | 'error' | 'closed' | undefined;
+    let startedAttempt: number | undefined;
+    let startedEvaluationId: string | undefined;
+    const listen = (view: typeof selectedView): (() => void) | undefined =>
+      view?.on('status', (status) => {
+        const { openAttempt, evaluation } = cadRef.getSnapshot().context;
+        if (status === 'rendering') {
+          if (
+            previousStatus !== 'rendering' ||
+            startedAttempt !== openAttempt ||
+            startedEvaluationId !== evaluation?.id
+          ) {
+            startedAt = previousStatus === undefined ? undefined : performance.now();
+            startedAttempt = openAttempt;
+            startedEvaluationId = evaluation?.id;
+          }
+        } else {
+          if (
+            status === 'ready' &&
+            startedAt !== undefined &&
+            startedAttempt === openAttempt &&
+            startedEvaluationId === evaluation?.id
+          ) {
+            setIsWithinBudget(performance.now() - startedAt <= liveDragRenderBudget);
+          }
+          startedAt = undefined;
+        }
+        previousStatus = status;
+      });
+    let unlisten = listen(selectedView);
+    const subscription = cadRef.subscribe((snapshot: SnapshotFrom<typeof cadMachine>) => {
+      if (snapshot.context.defaultView === selectedView) {
+        return;
+      }
+      unlisten?.();
+      selectedView = snapshot.context.defaultView;
+      startedAt = undefined;
+      previousStatus = undefined;
+      startedAttempt = undefined;
+      startedEvaluationId = undefined;
+      unlisten = listen(selectedView);
+    });
+    return () => {
+      subscription.unsubscribe();
+      unlisten?.();
+    };
+  }, [cadRef]);
+
+  return isWithinBudget;
+}
+
+/**
+ * Drag-time dispatch for one geometry unit (D2).
+ *
+ * The pump holds the newest sample and hands it to the unit on an animation frame, but only while
+ * no render is in flight: a sample per frame regardless of render cost starves the lane, because
+ * every dispatch supersedes the render before it can settle (S2). Samples in between are dropped,
+ * which is what latest-wins means. Nothing here is persisted; the released value is committed
+ * through the ordinary checked write.
+ *
+ * Cancellation only matters at release, when the commit supersedes the last sample, so a kernel
+ * that cannot cancel stays live while its last render fits the budget. Otherwise `scrub` is absent
+ * and the row previews the value on its own. `endScrub` stays, so a drag that loses the lane
+ * mid-gesture still ends the samples it sent.
+ */
+function useScrubDispatch(cadRef: ActorRefFrom<typeof cadMachine>): Pick<ParameterCommit, 'scrub' | 'endScrub'> {
+  const isCooperative = useSelector(cadRef, (state) => {
+    const kernelId = state.context.activeKernelId;
+    return (
+      kernelId !== undefined && state.context.capabilities?.renderCapabilities[kernelId]?.cancellation === 'cooperative'
+    );
+  });
+  const isLastRenderWithinBudget = useLastRenderWithinBudget(cadRef);
+  const canScrub = isCooperative || isLastRenderWithinBudget;
+
+  const pending = useRef<Readonly<{ generation: number; parameters: Record<string, unknown> }> | undefined>(undefined);
+  const frame = useRef<number | undefined>(undefined);
+  const latestGeneration = useRef(0);
+  const activeGeneration = useRef<Readonly<{ generation: number; sent: boolean }> | undefined>(undefined);
+
+  const lane = useMemo(() => {
+    const clearPending = (): void => {
+      pending.current = undefined;
+      if (frame.current !== undefined) {
+        cancelAnimationFrame(frame.current);
+        frame.current = undefined;
+      }
+    };
+    function pump(): void {
+      frame.current = undefined;
+      if (pending.current === undefined) {
+        return;
+      }
+      if (cadRef.getSnapshot().hasTag('cad-loading')) {
+        frame.current = requestAnimationFrame(pump);
+        return;
+      }
+      const next = pending.current;
+      pending.current = undefined;
+      cadRef.send({ type: 'scrubParameters', parameters: next.parameters });
+      if (activeGeneration.current?.generation === next.generation) {
+        activeGeneration.current = { ...activeGeneration.current, sent: true };
+      }
+    }
+    return {
+      scrub(field: Readonly<{ pointer: string; value: JSONValue }>): void {
+        activeGeneration.current ??= { generation: ++latestGeneration.current, sent: false };
+        pending.current = {
+          generation: activeGeneration.current.generation,
+          parameters: withPointerValue({}, field.pointer, field.value),
+        };
+        frame.current ??= requestAnimationFrame(pump);
+      },
+      async stop(final?: Promise<boolean>): Promise<void> {
+        const completed = activeGeneration.current;
+        activeGeneration.current = undefined;
+        clearPending();
+        if (completed?.sent !== true) {
+          return;
+        }
+        if (final === undefined) {
+          cadRef.send({ type: 'restoreParameters' });
+          return;
+        }
+        const committed = await final;
+        if (!committed && latestGeneration.current === completed.generation) {
+          cadRef.send({ type: 'restoreParameters' });
+        }
+      },
+      dispose(): void {
+        activeGeneration.current = undefined;
+        clearPending();
+      },
+    };
+  }, [cadRef]);
+
+  useEffect(() => {
+    return () => {
+      lane.dispose();
+    };
+  }, [lane]);
+
+  return useMemo(
+    () => (canScrub ? { scrub: lane.scrub, endScrub: lane.stop } : { endScrub: lane.stop }),
+    [canScrub, lane],
   );
 }
 
@@ -395,34 +695,110 @@ function GeometryUnitParameters({
   readonly filterTerm: string;
   readonly isAllExpanded: boolean;
 }): React.JSX.Element {
-  const { parameterEntries, setGeometryUnitParameters } = useProject();
+  const { parameterService, setGeometryUnitParameters } = useProject();
   const graphicsActor = useMainGraphics();
 
-  const parameters = useMemo(
-    () => getActiveGroupValues(parameterEntries.get(entryPath)),
-    [parameterEntries, entryPath],
+  // The kernel republishes an equal manifest after every render; comparing revisions keeps this
+  // panel (and every row under it) from re-rendering on that notification.
+  const parameterManifest = useSelector(cadRef, (state) => state.context.parameterManifest, sameManifestRevision);
+  const defaultParameters = parameterManifest?.defaults ?? {};
+  const jsonSchema =
+    parameterManifest?.legacyProjection.status === 'usable' ? parameterManifest.legacyProjection.schema : undefined;
+  const parameterActor = useResolvedParameterActor(entryPath, parameterManifest);
+  const authorityFailure = useSelector(parameterActor, authorityFailureOf);
+  const activeGroup = useSelector(parameterActor, activeGroupOf);
+  const parameters = useSelector(parameterActor, activeGroupValuesOf);
+  const parameterGroup = useSelector(parameterActor, activeParameterGroupOf, sameGroupClaims);
+  const scrub = useScrubDispatch(cadRef);
+  const parameterCommit = useMemo(
+    () =>
+      parameterManifest === undefined || activeGroup === undefined
+        ? undefined
+        : {
+            target: parameterService.target(entryPath),
+            group: activeGroup,
+            draft: (pointer: string) =>
+              parameterService.draft({
+                target: parameterService.target(entryPath),
+                group: activeGroup,
+                pointer,
+              }),
+            setDraft: (pointer: string, draft: ParameterDraft | undefined) => {
+              parameterService.setDraft(
+                {
+                  target: parameterService.target(entryPath),
+                  group: activeGroup,
+                  pointer,
+                },
+                draft,
+              );
+            },
+            subscribeDrafts: parameterService.subscribeDrafts,
+            commit: async (field: Parameters<ParameterCommit['commit']>[0]) =>
+              parameterService.commitValue(parameterService.target(entryPath), parameterManifest, {
+                group: activeGroup,
+                ...field,
+              }),
+            setValue: async (field: Parameters<ParameterCommit['setValue']>[0]) =>
+              parameterService.submitValue(parameterService.target(entryPath), parameterManifest, {
+                group: activeGroup,
+                ...field,
+              }),
+            ...scrub,
+          },
+    [activeGroup, entryPath, parameterManifest, parameterService, scrub],
   );
-
-  const defaultParameters = useSelector(cadRef, (state) => state.context.defaultParameters);
-  const jsonSchema = useSelector(cadRef, (state) => state.context.jsonSchema);
-  const units = useSelector(graphicsActor, (state) => state?.context.units) ?? {
-    length: { symbol: 'mm', factor: 1 },
-  };
+  const displaySymbol = useSelector(graphicsActor, (state) => state?.context.displayUnits.length.symbol) ?? 'mm';
+  // `units` and `parameterEdit` feed the RJSF form context; rebuilding either per render would
+  // re-render every field template on an edit that changed one row.
+  const units = useMemo(() => ({ length: { displaySymbol } }) as const, [displaySymbol]);
+  const parameterEdit = useMemo<ParameterEdit | undefined>(
+    () => (parameterCommit === undefined ? undefined : { kind: 'authoritative', commit: parameterCommit }),
+    [parameterCommit],
+  );
 
   const handleParametersChange = useCallback(
     (newParams: Record<string, unknown>) => {
-      setGeometryUnitParameters(entryPath, newParams);
+      if (parameterManifest !== undefined) {
+        setGeometryUnitParameters(entryPath, parameterManifest, newParams);
+      }
     },
-    [setGeometryUnitParameters, entryPath],
+    [setGeometryUnitParameters, entryPath, parameterManifest],
   );
+
+  if (parameterManifest !== undefined && parameterActor !== undefined && authorityFailure !== undefined) {
+    return (
+      <div className={cn(paneviewAttachedBodyClassName, 'max-h-full overflow-y-auto')}>
+        <ParameterAuthorityFailure
+          entryPath={entryPath}
+          manifest={parameterManifest}
+          actor={parameterActor}
+          failure={authorityFailure}
+        />
+      </div>
+    );
+  }
+  if (parameterManifest === undefined || parameterEdit === undefined) {
+    return (
+      <div className={cn(paneviewAttachedBodyClassName, 'p-3 text-sm text-muted-foreground')}>
+        Loading parameter metadata…
+      </div>
+    );
+  }
 
   return (
     <Parameters
       parameters={parameters}
       defaultParameters={defaultParameters}
       jsonSchema={jsonSchema}
+      parameterManifest={parameterManifest}
+      parameterGroup={parameterGroup}
+      parameterEdit={parameterEdit}
       units={units}
-      className='overflow-hidden rounded-b-xl border border-border bg-card [&_[data-slot=parameter-catalog]]:m-0 [&_[data-slot=parameter-catalog]]:rounded-none [&_[data-slot=parameter-catalog]]:border-0 [&_[data-slot=parameter-catalog]]:bg-transparent [&_[data-slot=parameter-catalog]]:p-2'
+      className={cn(
+        paneviewAttachedBodyClassName,
+        '[&_[data-slot=parameter-catalog]]:m-0 [&_[data-slot=parameter-catalog]]:rounded-none [&_[data-slot=parameter-catalog]]:border-0 [&_[data-slot=parameter-catalog]]:bg-transparent [&_[data-slot=parameter-catalog]]:p-2',
+      )}
       enableSearch={false}
       filterTerm={filterTerm}
       isAllExpanded={isAllExpanded}
@@ -464,13 +840,21 @@ function ParametersPanelHeader({
   readonly api: PaneviewPanelApi;
   readonly params: ParametersPanelParams;
 }): React.JSX.Element {
-  const { parameterEntries, setGeometryUnitParameters, projectRef, geometryUnits, editorRef } = useProject();
-  const entry = parameterEntries.get(params.entryPath);
+  const { setGeometryUnitParameters, projectRef, geometryUnits, editorRef } = useProject();
+  const parameterManifest = useSelector(
+    params.cadRef,
+    (state) => state.context.parameterManifest,
+    sameManifestRevision,
+  );
+  const parameterActor = useResolvedParameterActor(params.entryPath, parameterManifest);
+  const entry = useSelector(parameterActor, currentEntryOf);
   const displayEntry = entry ?? createDefaultEntry();
-  const jsonSchema = useSelector(params.cadRef, (state) => state.context.jsonSchema);
   const projectName = useSelector(projectRef, (state) => state.context.project?.name) ?? 'model';
 
-  const showCollapseToggle = Boolean(jsonSchema && hasJsonSchemaObjectProperties(jsonSchema));
+  const showCollapseToggle = Boolean(
+    parameterManifest?.legacyProjection.status === 'usable' &&
+    hasJsonSchemaObjectProperties(parameterManifest.legacyProjection.schema),
+  );
 
   const hasModifiedParameters = useMemo(() => {
     return Object.keys(getActiveGroupValues(entry)).length > 0;
@@ -479,8 +863,10 @@ function ParametersPanelHeader({
   const isLastGeometryUnit = geometryUnits.size <= 1;
 
   const handleReset = useCallback(() => {
-    setGeometryUnitParameters(params.entryPath, {});
-  }, [setGeometryUnitParameters, params.entryPath]);
+    if (parameterManifest !== undefined) {
+      setGeometryUnitParameters(params.entryPath, parameterManifest, {});
+    }
+  }, [setGeometryUnitParameters, params.entryPath, parameterManifest]);
 
   const handleToggleAllExpanded = useCallback(() => {
     api.updateParameters({ isAllExpanded: !params.isAllExpanded });
@@ -490,7 +876,10 @@ function ParametersPanelHeader({
     if (isLastGeometryUnit) {
       return;
     }
-    projectRef.send({ type: 'destroyGeometryUnit', entryPath: params.entryPath });
+    projectRef.send({
+      type: 'destroyGeometryUnit',
+      entryPath: params.entryPath,
+    });
   }, [projectRef, params.entryPath, isLastGeometryUnit]);
 
   const handleOpenInViewer = useCallback(() => {
@@ -498,7 +887,11 @@ function ParametersPanelHeader({
   }, [projectRef, params.entryPath]);
 
   const handleOpenInEditor = useCallback(() => {
-    editorRef.send({ type: 'openFile', path: params.entryPath, source: 'user' });
+    editorRef.send({
+      type: 'openFile',
+      path: params.entryPath,
+      source: 'user',
+    });
   }, [editorRef, params.entryPath]);
 
   return (
@@ -506,23 +899,28 @@ function ParametersPanelHeader({
       <ContextMenuTrigger asChild>
         <div className='contents'>
           <PaneviewHeader api={api} title={params.entryPath}>
-            <PaneviewHeaderControls data-testid='paneview-header-controls'>
-              {hasModifiedParameters ? (
+            {hasModifiedParameters ? (
+              /* Status sits beside the file name, as a parameter's mark sits beside its label. */
+              <PaneviewHeaderControls className='ml-0'>
                 <ModifiedIndicator
                   onReset={handleReset}
                   tooltip='Reset parameters'
-                  className='size-6 [.dv-pane:hover_&]:**:data-[slot=dot]:opacity-0 [.dv-pane:hover_&]:**:data-[slot=icon]:opacity-100'
+                  className='size-6 group-hover/paneview-header:**:data-[slot=dot]:opacity-0 group-hover/paneview-header:**:data-[slot=icon]:opacity-100'
                 />
-              ) : null}
-              <ParameterGroupSelector
-                filePath={params.entryPath}
-                groups={displayEntry.groups}
-                activeGroup={displayEntry.activeGroup}
-              />
+              </PaneviewHeaderControls>
+            ) : null}
+            <PaneviewHeaderControls data-testid='paneview-header-controls'>
               <PaneviewHeaderActionGroup
                 data-testid='paneview-header-actions'
                 className='opacity-0 transition-opacity duration-150 group-focus-within/paneview-header:opacity-100 group-hover/paneview-header:opacity-100 motion-reduce:transition-none [&:has([data-state=open])]:opacity-100 [@media(hover:none)]:opacity-100'
               >
+                {/* Choosing a group is an action, not status: it is revealed with the others. */}
+                <ParameterGroupSelector
+                  filePath={params.entryPath}
+                  manifest={parameterManifest}
+                  groups={displayEntry.groups}
+                  activeGroup={displayEntry.activeGroup}
+                />
                 <PaneviewHeaderContentActions>
                   {showCollapseToggle ? (
                     <PaneviewHeaderAction
@@ -538,7 +936,7 @@ function ParametersPanelHeader({
                 <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
                     <PaneviewHeaderAction aria-label='Compilation unit actions' tooltip='More actions'>
-                      <MoreHorizontal />
+                      <EllipsisVertical />
                     </PaneviewHeaderAction>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align='end' side='bottom'>
@@ -659,7 +1057,12 @@ function ParametersPaneview({
           isExpanded: initial.isExpanded,
           minimumBodySize: 80,
           size: initial.size,
-          params: { entryPath, cadRef, filterTerm, isAllExpanded: true } satisfies ParametersPanelParams,
+          params: {
+            entryPath,
+            cadRef,
+            filterTerm,
+            isAllExpanded: true,
+          } satisfies ParametersPanelParams,
         });
       }
     },
@@ -677,7 +1080,7 @@ function ParametersPaneview({
   }, [filterTerm]);
 
   return (
-    <PaneviewReact
+    <Paneview
       key={paneviewKey}
       className={paneviewAttachedSurfaceStyleOverrides}
       components={paneviewComponents}
@@ -710,7 +1113,7 @@ export function ParametersPanelBody(): React.JSX.Element {
       <div data-slot='parameters-filter' className='shrink-0 bg-sidebar px-2 pt-2'>
         <SearchInput
           aria-label='Filter parameters'
-          placeholder='Filter parameters...'
+          placeholder='Filter parameters…'
           value={filterTerm}
           className='h-7 min-w-0 bg-background'
           onChange={(event) => {

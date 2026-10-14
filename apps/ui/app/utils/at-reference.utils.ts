@@ -1,5 +1,7 @@
 import type { FileEntry } from '@taucad/types';
-import type { Chat } from '@taucad/chat';
+import type { ChatRecord } from '@taucad/chat/schemas';
+import { cadReferenceTokenLabel, parseCadReferenceTokens } from '@taucad/chat/references';
+import type { CadReferenceTokenTarget } from '@taucad/chat/references';
 import type { ChipType } from '#components/chat/context-chip.js';
 
 /**
@@ -42,21 +44,25 @@ export function parseAtReferences(text: string): AtReferenceSegment[] {
   return segments;
 }
 
-const transcriptPathRegex = /^\.tau\/transcripts\/([^/]+)\.jsonl$/;
+/* The chat's own session log, which is where a chat actually is (W17). The
+ * `.tau/transcripts/<id>.jsonl` this used to spell was written by nothing and
+ * read from disk by nothing: an @-mention of a chat named a file that did not
+ * exist, so pasting one into the composer produced a chip pointing at ENOENT. */
+const chatLogPathRegex = /^\.tau\/chats\/([^/]+)\/events\.jsonl$/;
 
 /**
- * Check if a path matches the `.tau/transcripts/{id}.jsonl` pattern.
+ * Check if a path matches the `.tau/chats/{id}/events.jsonl` pattern.
  */
-export function isTranscriptPath(path: string): boolean {
-  return transcriptPathRegex.test(path);
+export function isChatLogPath(path: string): boolean {
+  return chatLogPathRegex.test(path);
 }
 
 /**
- * Extract the chat ID from a transcript path.
- * Returns `undefined` if the path doesn't match the transcript pattern.
+ * Extract the chat ID from a chat log path.
+ * Returns `undefined` if the path doesn't match the chat log pattern.
  */
-export function extractChatIdFromTranscriptPath(path: string): string | undefined {
-  const match = transcriptPathRegex.exec(path);
+export function extractChatIdFromChatLogPath(path: string): string | undefined {
+  const match = chatLogPathRegex.exec(path);
   return match?.[1];
 }
 
@@ -69,16 +75,16 @@ export type ResolvedAtReference =
  * Resolve an `@path` reference against the file tree and chats.
  * Returns resolved metadata for rendering, or `null` if the path is invalid.
  *
- * - Transcript paths (`.tau/transcripts/{id}.jsonl`) are resolved as chats via O(1) Map lookup
+ * - Chat log paths (`.tau/chats/{id}/events.jsonl`) are resolved as chats via O(1) Map lookup
  * - All other paths are resolved against the file tree via O(1) Map lookup
  */
 export function resolveAtReference(
   path: string,
   fileTree: Map<string, FileEntry>,
-  chatsById: Map<string, Chat>,
+  chatsById: Map<string, ChatRecord>,
 ): ResolvedAtReference | undefined {
-  if (isTranscriptPath(path)) {
-    const chatId = extractChatIdFromTranscriptPath(path);
+  if (isChatLogPath(path)) {
+    const chatId = extractChatIdFromChatLogPath(path);
     if (!chatId) {
       return undefined;
     }
@@ -102,89 +108,94 @@ export function resolveAtReference(
 }
 
 /**
- * Matches `/command-name` preceded by whitespace or at string start.
- * Command names may contain word characters and hyphens.
+ * Matches an agent invocation token — a Tau skill (`/brep-design`), a Codex skill
+ * (`$imagegen`, `$openai-templates:simple-dark`) or an ACP command (`/compact`) —
+ * preceded by whitespace or string start. Names are `:`-separated word/hyphen
+ * segments; a following `/`, `$` or word character rejects the match, so paths
+ * like `/usr/bin` stay prose.
  */
-export const slashCommandRegex = /(?:^|(?<=\s))\/([\w-]+)/g;
-
-export type SlashCommandSegment = { type: 'text'; value: string } | { type: 'slashCommand'; commandId: string };
-
-/**
- * Split text into alternating text and `/command` segments.
- */
-export function parseSlashCommands(text: string): SlashCommandSegment[] {
-  const segments: SlashCommandSegment[] = [];
-  let lastIndex = 0;
-
-  const regex = new RegExp(slashCommandRegex.source, slashCommandRegex.flags);
-  let match: RegExpExecArray | undefined;
-
-  while ((match = regex.exec(text) ?? undefined) !== undefined) {
-    const fullMatch = match[0];
-    const commandId = match[1] ?? '';
-    const matchStart = match.index + (fullMatch.length - commandId.length - 1);
-
-    if (matchStart > lastIndex) {
-      segments.push({ type: 'text', value: text.slice(lastIndex, matchStart) });
-    }
-
-    segments.push({ type: 'slashCommand', commandId });
-    lastIndex = matchStart + 1 + commandId.length;
-  }
-
-  if (lastIndex < text.length) {
-    segments.push({ type: 'text', value: text.slice(lastIndex) });
-  }
-
-  return segments;
-}
+export const invocationTokenRegex = /(?:^|(?<=\s))[$/][\w-]+(?::[\w-]+)*(?![\w$/-])/g;
 
 export type InlineReferenceSegment =
   | { type: 'text'; value: string }
   | { type: 'atReference'; path: string }
-  | { type: 'slashCommand'; commandId: string };
+  | { type: 'invocation'; token: string }
+  | { type: 'cadReference'; token: string; target: CadReferenceTokenTarget };
 
 /**
- * Compose `parseAtReferences` and `parseSlashCommands` into a single pass.
- * Runs `@path` parsing first, then scans remaining text segments for `/command` patterns.
+ * Split text into `@cad[...]` geometry references, `@path` references, invocation tokens and plain text.
+ * Runs `@cad[...]` parsing first, then `@path` parsing, then scans remaining text for invocation tokens.
+ * Whether a token is a real skill or command is the caller's decision.
  */
 export function parseInlineReferences(text: string): InlineReferenceSegment[] {
-  const atSegments = parseAtReferences(text);
+  const result: InlineReferenceSegment[] = [];
+  for (const segment of parseCadReferenceTokens(text)) {
+    if (segment.type === 'cadReference') {
+      result.push(segment);
+    } else {
+      result.push(...parsePathAndInvocationReferences(segment.value));
+    }
+  }
+  return result;
+}
+
+function parsePathAndInvocationReferences(text: string): InlineReferenceSegment[] {
   const result: InlineReferenceSegment[] = [];
 
-  for (const segment of atSegments) {
+  for (const segment of parseAtReferences(text)) {
     if (segment.type === 'reference') {
       result.push({ type: 'atReference', path: segment.path });
       continue;
     }
 
-    const slashSegments = parseSlashCommands(segment.value);
-    for (const slashSeg of slashSegments) {
-      if (slashSeg.type === 'text') {
-        result.push(slashSeg);
-      } else {
-        result.push(slashSeg);
+    let lastIndex = 0;
+    for (const match of segment.value.matchAll(invocationTokenRegex)) {
+      if (match.index > lastIndex) {
+        result.push({ type: 'text', value: segment.value.slice(lastIndex, match.index) });
       }
+      result.push({ type: 'invocation', token: match[0] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < segment.value.length) {
+      result.push({ type: 'text', value: segment.value.slice(lastIndex) });
     }
   }
 
   return result;
 }
 
-export type ResolvedSlashCommand = { type: 'skill'; commandId: string; label: string };
-
 /**
- * Resolve a `/command` against a set of known skill IDs.
- * O(1) Set lookup. Returns `undefined` for unknown commands.
+ * Backslash-escape the known `$` invocation tokens in markdown outside code, so
+ * single-dollar math does not pair `$imagegen … $brep-design` into a formula.
+ * Code spans and fences keep their text verbatim.
  */
-export function resolveSlashCommand(
-  commandId: string,
-  knownSkillIds: ReadonlySet<string>,
-): ResolvedSlashCommand | undefined {
-  if (!knownSkillIds.has(commandId)) {
-    return undefined;
+export function escapeDollarInvocations(markdown: string, knownTokens: ReadonlySet<string>): string {
+  if (!markdown.includes('$') || knownTokens.size === 0) {
+    return markdown;
   }
-  return { type: 'skill', commandId, label: `/${commandId}` };
+  return markdown
+    .split(/(```[\S\s]*?(?:```|$)|`[^\n`]*`)/)
+    .map((chunk, index) =>
+      index % 2 === 1
+        ? chunk
+        : chunk.replaceAll(invocationTokenRegex, (token) =>
+            token.startsWith('$') && knownTokens.has(token) ? `\\${token}` : token,
+          ),
+    )
+    .join('');
+}
+
+/** An agent command's exact invocation: `$`/`/`-prefixed names are kept, bare names get `/`. */
+export function commandInvocation(name: string): string {
+  return name.startsWith('$') || name.startsWith('/') ? name : `/${name}`;
+}
+
+/** Text of one inline segment exactly as the user wrote it. */
+export function inlineSegmentText(segment: InlineReferenceSegment): string {
+  if (segment.type === 'text') {
+    return segment.value;
+  }
+  return segment.type === 'atReference' ? `@${segment.path}` : segment.token;
 }
 
 export type PastedContentSegment =
@@ -201,18 +212,19 @@ export type PastedContentSegment =
 
 export type BuildPastedContentOptions = {
   fileTree: Map<string, FileEntry>;
-  chats: Chat[];
-  knownSkills?: ReadonlySet<string>;
+  chats: ChatRecord[];
+  /** Full invocation tokens the active agent offers (`/brep-design`, `$imagegen`). */
+  knownTokens?: ReadonlySet<string>;
 };
 
 /**
- * Parse pasted text and resolve `@path` and `/command` references.
+ * Parse pasted text and resolve `@cad[...]` geometry references, `@path` references and known invocation tokens.
  * Returns segments ready for insertion into the Tiptap editor.
  * Invalid references are kept as plain text.
  */
 export function buildPastedContent(
   text: string,
-  { fileTree, chats, knownSkills }: BuildPastedContentOptions,
+  { fileTree, chats, knownTokens }: BuildPastedContentOptions,
 ): PastedContentSegment[] {
   const chatsById = new Map(chats.map((c) => [c.id, c]));
   const parsed = parseInlineReferences(text);
@@ -240,20 +252,24 @@ export function buildPastedContent(
       continue;
     }
 
-    if (knownSkills) {
-      const resolved = resolveSlashCommand(segment.commandId, knownSkills);
-      if (resolved) {
-        result.push({
-          type: 'chip',
-          id: resolved.commandId,
-          label: resolved.label,
-          chipType: 'skill',
-        });
-        continue;
-      }
+    if (segment.type === 'cadReference') {
+      result.push({
+        type: 'chip',
+        id: segment.token,
+        label: cadReferenceTokenLabel(segment.target),
+        chipType: 'geometry',
+        path: segment.target.path,
+        referenceToken: segment.token,
+      });
+      continue;
     }
 
-    result.push({ type: 'text', value: `/${segment.commandId}` });
+    if (knownTokens?.has(segment.token)) {
+      result.push({ type: 'chip', id: segment.token, label: segment.token, chipType: 'skill' });
+      continue;
+    }
+
+    result.push({ type: 'text', value: segment.token });
   }
 
   return result;

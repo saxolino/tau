@@ -13,7 +13,7 @@
 
 import type { z } from 'zod';
 import type { RpcProtocol } from '@taucad/rpc';
-import type { RuntimeProtocol } from '#types/runtime-protocol.types.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
 import type { RuntimeTransportClient, TransportPlugin } from '#transport/runtime-transport.types.js';
 import type { TransportDescriptor } from '#transport/runtime-transport-descriptor.types.js';
 
@@ -35,6 +35,7 @@ const synthTransportCallable = <
   ClientOptions,
 >(definition: {
   readonly id: Id;
+  readonly clientOptionsSchema?: z.ZodType<ClientOptions>;
   readonly client: ClientLike<Protocol, BindingsExtra, Id, ClientOptions>;
 }): ((options: ClientOptions) => TransportPlugin<Protocol, BindingsExtra, Id>) => {
   const { client: clientFactory, id } = definition;
@@ -42,28 +43,32 @@ const synthTransportCallable = <
     throw new TypeError(`${id}: client factory is missing required static .describe(options)`);
   }
 
-  return (options: ClientOptions) => ({
-    id,
-    describe: (): TransportDescriptor<Id> => clientFactory.describe(options),
-    materialize: () => clientFactory(options),
-  });
+  return (options: ClientOptions) => {
+    const parsed = definition.clientOptionsSchema ? definition.clientOptionsSchema.parse(options) : options;
+    return {
+      id,
+      describe: (): TransportDescriptor<Id> => clientFactory.describe(parsed),
+      materialize: () => clientFactory(parsed),
+    };
+  };
 };
 
 /**
- * Define a transport whose client options are inferred from a Zod schema.
+ * Define a transport whose client options are inferred from a synchronous Zod schema.
+ * Asynchronous refinements and transforms are unsupported at this boundary.
  *
  * @public
  */
 export function defineRuntimeTransport<
   const Id extends string,
   ClientOptionsSchema extends z.ZodType,
-  Protocol extends RpcProtocol = RuntimeProtocol,
+  Protocol extends RpcProtocol = RuntimeDocumentProtocol,
   BindingsExtra extends Readonly<Record<string, unknown>> = Readonly<Record<never, never>>,
 >(definition: {
   readonly id: Id;
   readonly protocol?: Protocol;
   readonly clientOptionsSchema: ClientOptionsSchema;
-  readonly client: ClientLike<Protocol, BindingsExtra, Id, z.input<ClientOptionsSchema>>;
+  readonly client: ClientLike<Protocol, BindingsExtra, Id, z.output<ClientOptionsSchema>>;
 }): (options: z.input<ClientOptionsSchema>) => TransportPlugin<Protocol, BindingsExtra, Id>;
 
 /* ----- Implementation ---------------------------------------- */
@@ -73,8 +78,8 @@ export function defineRuntimeTransport<
 /* oxlint-disable @typescript-eslint/explicit-module-boundary-types -- runtime impl: type is provided by the public overloads above */
 
 /**
- * Strips the schema and protocol fields (consumed only at type-inference time and
- * by tooling) and returns a callable `(options) =>
+ * Parses options synchronously once, strips the type-only protocol field, and
+ * returns a callable `(options) =>
  * {@link TransportPlugin}`.
  *
  * @param definition - Transport plugin definition (one of the overloads above).
@@ -83,7 +88,7 @@ export function defineRuntimeTransport<
  * @public
  */
 export function defineRuntimeTransport(definition: any): any {
-  const { clientOptionsSchema: _cs, protocol: _p, ...rest } = definition;
+  const { protocol: _p, ...rest } = definition;
 
   /* oxlint-disable @typescript-eslint/consistent-type-assertions -- split definition for synth */
   return synthTransportCallable(rest as { readonly id: string; readonly client: ClientLike<any, any, any, any> });
@@ -109,19 +114,21 @@ export function defineRuntimeTransport(definition: any): any {
  * (R3): there is no stub `host()` on the exported callable —
  * bootstrap uses standalone host factories (`webWorkerHost`, …) or
  * in-process equivalents only where applicable.
+ * Its options schema must parse synchronously; asynchronous refinements and
+ * transforms are unsupported at this boundary.
  *
  * @public
  */
 export function definePassthroughTransport<
   const Id extends string,
   ClientOptionsSchema extends z.ZodType,
-  Protocol extends RpcProtocol = RuntimeProtocol,
+  Protocol extends RpcProtocol = RuntimeDocumentProtocol,
   BindingsExtra extends Readonly<Record<string, unknown>> = Readonly<Record<never, never>>,
 >(definition: {
   readonly id: Id;
   readonly protocol?: Protocol;
   readonly clientOptionsSchema: ClientOptionsSchema;
-  readonly client: ClientLike<Protocol, BindingsExtra, Id, z.input<ClientOptionsSchema>>;
+  readonly client: ClientLike<Protocol, BindingsExtra, Id, z.output<ClientOptionsSchema>>;
 }): (options: z.input<ClientOptionsSchema>) => TransportPlugin<Protocol, BindingsExtra, Id>;
 
 /**
@@ -132,7 +139,7 @@ export function definePassthroughTransport<
  */
 export function definePassthroughTransport<
   const Id extends string,
-  Protocol extends RpcProtocol = RuntimeProtocol,
+  Protocol extends RpcProtocol = RuntimeDocumentProtocol,
   BindingsExtra extends Readonly<Record<string, unknown>> = Readonly<Record<never, never>>,
 >(definition: {
   readonly id: Id;
@@ -154,7 +161,7 @@ export function definePassthroughTransport<
  * @public
  */
 export function definePassthroughTransport(definition: any): any {
-  const { clientOptionsSchema: _cs, protocol: _p, ...rest } = definition;
+  const { protocol: _p, ...rest } = definition;
   return synthTransportCallable(rest as { readonly id: string; readonly client: ClientLike<any, any, any, any> });
 }
 

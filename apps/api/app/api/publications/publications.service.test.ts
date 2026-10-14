@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import {
   BadRequestException,
@@ -12,36 +16,265 @@ import { publicationApiCode } from '@taucad/types/constants';
 import type { PublicationApiCode } from '@taucad/types/constants';
 import { publicationRowSchema } from '#api/publications/publications.dto.js';
 import { PublicationsService } from '#api/publications/publications.service.js';
-import type { ObjectStorageServiceContract } from '#storage/object-storage.service.js';
+import { createMemoryRepositoryStore, seedLease } from '#testing/publication-lease.fixture.js';
+import type { RepositoryStore } from '#api/git/store/port.js';
+import { hydrateLease } from '#api/git/store/lease.js';
+import { decodeManifest, encodeManifest } from '#api/git/store/manifest.js';
+import type { RepositoryLease } from '#api/git/store/lease.js';
+import { repositoryLocator } from '#api/git/store/locator.js';
+import {
+  isPublishableTreePath,
+  parseLfsPointer,
+  readPublishedTree,
+} from '#api/publications/publication-materializer.js';
+import type { MaterializerDependencies } from '#api/publications/publication-materializer.js';
+import { resolveLfsObjectLocation, tenantLfsObjectKey } from '#api/git/lfs-keys.js';
+import type { ObjectStorageServiceContract, PutBlobResult } from '#storage/object-storage.service.js';
 import { blobKeyFromSha256Hex, sha256HexFromBytes } from '#storage/sha256.utils.js';
 import * as schema from '#database/schema.js';
 
 type PublicationsServiceDeps = ConstructorParameters<typeof PublicationsService>;
 
 /**
+ * A real repository holding one named version of the given files.
+ *
+ * Publishing reads the tagged tree out of git now, so the fixture is a git
+ * repository rather than an upload map — every path rule, size rule and LFS
+ * pointer this suite exercises is exercised against the bytes git hands back.
+ * Written under `mktemp`, never inside this workspace.
+ */
+function seedRepository(files: Map<string, Uint8Array<ArrayBuffer>>, tag = 'v1'): string {
+  const repositoryPath = mkdtempSync(join(tmpdir(), 'tau-publication-'));
+  const git = (...args: readonly string[]): void => {
+    const result = spawnSync('git', ['-c', 'user.name=Tau', '-c', 'user.email=tau@test.invalid', ...args], {
+      cwd: repositoryPath,
+      env: isolatedGit,
+    });
+    if (result.status !== 0) {
+      throw new Error(`git ${args.join(' ')} failed: ${String(result.stderr)}`);
+    }
+  };
+  git('init', '--initial-branch=main', '.');
+  for (const [relativePath, bytes] of files) {
+    mkdirSync(dirname(join(repositoryPath, relativePath)), { recursive: true });
+    writeFileSync(join(repositoryPath, relativePath), bytes);
+  }
+  git('add', '-A');
+  git('commit', '-m', 'seed');
+  git('tag', '-a', tag, '-m', 'named');
+  return repositoryPath;
+}
+
+/** The revision a seeded name points at, as the server resolves it (R6). */
+function seededRevision(repositoryPath: string, tag = 'v1'): string {
+  const result = spawnSync('git', ['rev-parse', `refs/tags/${tag}^{commit}`], { cwd: repositoryPath });
+  if (result.status !== 0) {
+    throw new Error(`git rev-parse ${tag} failed: ${String(result.stderr)}`);
+  }
+  return result.stdout.toString('utf8').trim();
+}
+
+/**
+ * The store side of publishing: the repository this project pushed to.
+ *
+ * Publishing hydrates a lease of its own now, so the stub is a real store with
+ * the seeded repository committed into it — one repository, whatever locator it
+ * is asked for, because these suites have one project at a time.
+ *
+ * @param repositoryPath - The seeded repository, or `''` when the test never publishes.
+ * @returns The store the service is constructed with.
+ */
+function createStoreStub(repositoryPath: string): PublicationsServiceDeps[8] {
+  const store = createMemoryRepositoryStore();
+  const only = { ownerId: 'seeded', projectId: 'seeded' };
+  let seeding: Promise<void> | undefined;
+  const ready = async (): Promise<void> => {
+    seeding ??= (async () => {
+      if (repositoryPath !== '') {
+        const lease = await seedLease({
+          store,
+          ownerId: only.ownerId,
+          projectId: only.projectId,
+          source: repositoryPath,
+        });
+        await lease.dispose();
+      }
+    })();
+    await seeding;
+  };
+
+  const seeded: RepositoryStore = {
+    capabilities: store.capabilities,
+    readManifest: async () => {
+      await ready();
+      return store.readManifest(only);
+    },
+    commitManifest: async (_locator, next, expected) => store.commitManifest(only, next, expected),
+    // oxlint-disable-next-line max-params -- the port's own signature
+    putObject: async (_locator, key, body, options) => store.putObject(only, key, body, options),
+    getObject: async (_locator, key, range) => store.getObject(only, key, range),
+    listObjects: async function* listObjects(_locator, prefix) {
+      yield* store.listObjects(only, prefix);
+    },
+    deleteObjects: async (_locator, keys) => store.deleteObjects(only, keys),
+  };
+  return seeded as unknown as PublicationsServiceDeps[8];
+}
+
+/**
+ * The repository store and the lease runner over it, as the service's last two
+ * dependencies. The runner hydrates straight from the store: admission (disk,
+ * owner fairness, hydrate budgets) is `GitRepositoryService`'s and is proved in
+ * `git.service.test.ts`.
+ *
+ * @param repositoryPath - The repository to seed, or `''` for none.
+ * @returns The store and the runner, in constructor order.
+ */
+function leaseDependencies(repositoryPath: string): readonly [PublicationsServiceDeps[8], PublicationsServiceDeps[9]] {
+  const store = createStoreStub(repositoryPath);
+  const repositories = {
+    withLease: async <T>(
+      access: { ownerId: string; projectId: string },
+      work: (lease: RepositoryLease) => Promise<T>,
+    ): Promise<T> => {
+      const lease = await hydrateLease({ store, locator: repositoryLocator(access) });
+      try {
+        return await work(lease);
+      } finally {
+        await lease.dispose();
+      }
+    },
+  } as unknown as PublicationsServiceDeps[9];
+  return [store, repositories] as const;
+}
+
+/**
+ * The database a publish writes through, with the statements it makes recorded.
+ *
+ * Two selects (the project, then any publication already on this name), then
+ * one transaction that upserts the project, the publication, its reference
+ * counts and any access grants.
+ */
+function createPublishDatabase(args?: {
+  readonly transactionRejects?: boolean;
+  readonly projectRows?: unknown[];
+  readonly existingRows?: unknown[];
+}): {
+  readonly databaseService: PublicationsServiceDeps[0];
+  readonly txInserts: Array<{ table: unknown; payload: Record<string, unknown> }>;
+  readonly outerInsert: ReturnType<typeof vi.fn>;
+} {
+  const txInserts: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+  const tx = {
+    /* The project advisory lock the publish path takes (review F2). */
+    execute: vi.fn().mockResolvedValue(undefined),
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(args?.existingRows ?? []) }),
+      }),
+    }),
+    insert: vi.fn().mockImplementation((table: unknown) => ({
+      values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+        txInserts.push({ table, payload });
+        return { onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) };
+      }),
+    })),
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    }),
+  };
+
+  const outerInsert = vi.fn().mockReturnValue({
+    values: vi.fn().mockReturnValue({ onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) }),
+  });
+
+  const databaseService = {
+    database: {
+      /* Three reads, in order: the owner snapshot, the project mirror, then any
+         publication already on this name. Sequenced rather than shared, because
+         the last read is what decides create-versus-re-point. */
+      select: vi
+        .fn()
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(args?.projectRows ?? []) }),
+          }),
+        })
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(args?.existingRows ?? []) }),
+          }),
+        }),
+      insert: outerInsert,
+      /* The superseded manifest's decrement, which reports whether it fired. */
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ sha256: 'decremented' }]) }),
+        }),
+      }),
+      transaction: vi.fn(async <T>(callback: (innerTx: typeof tx) => Promise<T>): Promise<T> => {
+        if (args?.transactionRejects === true) {
+          throw new Error('transaction failed');
+        }
+        return callback(tx);
+      }),
+    },
+  } as unknown as PublicationsServiceDeps[0];
+
+  return { databaseService, txInserts, outerInsert };
+}
+
+/** The pointer a publish request carries, with the fixture's own defaults. */
+/**
+ * The pointer a dialog sends, for a repository this suite seeded.
+ *
+ * `revisionId` is read from the repository rather than invented, because the
+ * service now refuses a claim that does not match the name's target (R6).
+ *
+ * @param repositoryPath - The seeded repository, when the row publishes one.
+ * @param overrides - Fields this row cares about.
+ * @returns The request body.
+ */
+function publishRequest(
+  repositoryPath?: string,
+  overrides: Partial<Parameters<PublicationsService['publishFromRevision']>[0]['request']> = {},
+): Parameters<PublicationsService['publishFromRevision']>[0]['request'] {
+  const tag = overrides.tag ?? 'v1';
+  return {
+    projectId: 'proj_1',
+    projectName: 'Demo',
+    tag,
+    revisionId: repositoryPath === undefined ? 'b'.repeat(40) : seededRevision(repositoryPath, tag),
+    entryPath: 'main.ts',
+    visibility: 'private',
+    title: 'Hello',
+    ...overrides,
+  };
+}
+
+/**
  * Billing stub defaulting to a Pro projection so pre-existing private-flow
  * tests exercise the storage/DB behaviour, not the entitlement gate; gate
  * tests pass `canCreatePrivateShares: false` explicitly.
  */
-function createBillingStub(args?: { canCreatePrivateShares?: boolean }): PublicationsServiceDeps[7] {
+function createBillingStub(args?: {
+  canCreatePrivateShares?: boolean;
+  canSyncFiles?: boolean;
+}): PublicationsServiceDeps[7] {
   return {
     getEntitlements: vi.fn().mockResolvedValue({
       canCreatePrivateShares: args?.canCreatePrivateShares ?? true,
+      /* Publishing a named version presupposes the push that created it, so
+         `publishFromRevision` refuses without the sync entitlement before it
+         reaches `ensureRepository` (N5's second route, review C11). */
+      canSyncFiles: args?.canSyncFiles ?? true,
     }),
   } as unknown as PublicationsServiceDeps[7];
-}
-
-function createStubService(): PublicationsService {
-  return new PublicationsService(
-    {} as unknown as PublicationsServiceDeps[0],
-    {} as unknown as PublicationsServiceDeps[1],
-    {} as unknown as PublicationsServiceDeps[2],
-    {} as unknown as PublicationsServiceDeps[3],
-    {} as unknown as PublicationsServiceDeps[4],
-    {} as unknown as PublicationsServiceDeps[5],
-    {} as unknown as PublicationsServiceDeps[6],
-    createBillingStub(),
-  );
 }
 
 function createMetricsStub(): PublicationsServiceDeps[5] {
@@ -118,12 +351,17 @@ function createProjectShareService(args: { readonly selectRows: unknown[][] }): 
     createMetricsStub(),
     createEmailStub(),
     createBillingStub(),
+    ...leaseDependencies(''),
   );
 }
 
 function createStorageStub(): PublicationsServiceDeps[1] {
   const storage: ObjectStorageServiceContract = {
-    putBlob: vi.fn(async () => ({ etag: 'etag', alreadyExisted: false })),
+    putBlob: vi.fn(async (): Promise<PutBlobResult> => ({ lost: false, etag: 'etag', alreadyExisted: false })),
+    deleteBlobs: vi.fn(async () => ({ deleted: 0 })),
+    listObjects: vi.fn(async function* listObjectsStub() {
+      yield* [];
+    }),
     getBlob: vi.fn(async () => ({
       body: Readable.from([]),
       contentType: 'application/octet-stream',
@@ -133,6 +371,10 @@ function createStorageStub(): PublicationsServiceDeps[1] {
     deleteBlob: vi.fn(async () => undefined),
     presignGet: vi.fn(async () => 'https://example.invalid/get'),
     presignPut: vi.fn(async () => 'https://example.invalid/put'),
+    createMultipartUpload: vi.fn(async () => 'upload-id'),
+    presignUploadPart: vi.fn(async () => 'https://example.invalid/part'),
+    completeMultipartUpload: vi.fn(async () => undefined),
+    abortMultipartUpload: vi.fn(async () => undefined),
     publicUrl: vi.fn(() => 'https://example.invalid/public'),
     headProbeObject: vi.fn(async () => undefined),
     headPrivateBucket: vi.fn(async () => true),
@@ -163,7 +405,6 @@ const testManifestDocument = {
   version: 1,
   projectId: 'proj_x',
   entryPath: 'main.ts',
-  // eslint-disable-next-line @typescript-eslint/naming-convention -- file-path keys can't be camelCase
   files: { 'main.ts': `sha256:${testManifestSha}` },
   kernels: [],
   runtime: '@taucad/runtime@x',
@@ -182,6 +423,20 @@ function createManifestStorageStub(): PublicationsServiceDeps[1] {
   return storage;
 }
 
+/**
+ * The LFS endpoint's own resolver, bound to a stub (W4b): tenant key first, the
+ * pre-D24 key second, `undefined` when neither is there.
+ *
+ * @param storage - The storage stub whose `headBlob` answers for the fixture.
+ * @returns What the materializer's dependencies carry.
+ */
+function lfsResolver(storage: PublicationsServiceDeps[1]): MaterializerDependencies['resolveLfsObject'] {
+  return async (object) => {
+    const held = await resolveLfsObjectLocation(storage, object);
+    return held?.location;
+  };
+}
+
 function isBadRequestWithCode(error: unknown, code: PublicationApiCode): boolean {
   if (!(error instanceof BadRequestException)) {
     return false;
@@ -195,6 +450,23 @@ function isBadRequestWithCode(error: unknown, code: PublicationApiCode): boolean
   return 'code' in body && body.code === code;
 }
 
+/**
+ * The runner the API passes in, as a plain `spawnSync` so the suite exercises
+ * real `git` output rather than a stub of it.
+ *
+ * @param repositoryPath - Where the child runs.
+ * @param args - Arguments after `git`.
+ * @param stdin - Written to the child, when given.
+ * @returns The child's stdout.
+ */
+const realGit: MaterializerDependencies['git'] = async (repositoryPath, args, stdin) => {
+  const result = spawnSync('git', [...args], { cwd: repositoryPath, ...(stdin === undefined ? {} : { input: stdin }) });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} exited ${String(result.status)}`);
+  }
+  return new Uint8Array(result.stdout);
+};
+
 function encodeUtf8(text: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(text);
 }
@@ -207,192 +479,162 @@ function validWebpSignature(): Uint8Array<ArrayBuffer> {
   return new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
 }
 
-describe('PublicationsService.publishFromUpload validation', () => {
-  it('should reject when entry path is missing from upload map', async () => {
-    const service = createStubService();
+// A developer's global git config (e.g. `commit.gpgsign`) must not reach fixture commits: signing
+// through a busy gpg-agent fails intermittently under parallel test load.
+/* eslint-disable @typescript-eslint/naming-convention -- process environment names */
+const isolatedGit = {
+  PATH: process.env['PATH'] ?? '/usr/bin:/bin',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+} as unknown as NodeJS.ProcessEnv;
+/* eslint-enable @typescript-eslint/naming-convention -- end of the process environment map */
 
-    await expect(
-      service.publishFromUpload({
-        ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
-        },
-        files: new Map([['other.ts', encodeUtf8('// noop')]]),
-      }),
-    ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.MISSING_ENTRY_PATH));
+describe('publication tree rules', () => {
+  it('publishes nothing the project keeps to itself', () => {
+    expect(isPublishableTreePath('main.ts')).toBe(true);
+    expect(isPublishableTreePath('.tau/parameters/main.ts.json')).toBe(true);
+    expect(isPublishableTreePath('node_modules/evil/index.js')).toBe(false);
+    expect(isPublishableTreePath('src/node_modules/evil.js')).toBe(false);
+    expect(isPublishableTreePath('.tau/artifacts/cache.glb')).toBe(false);
+    expect(isPublishableTreePath('.tau/transcripts/chat_x.json')).toBe(false);
+    expect(isPublishableTreePath('../escape.ts')).toBe(false);
+    expect(isPublishableTreePath('')).toBe(false);
   });
 
-  it('should reject when file count exceeds limit', async () => {
-    const service = createStubService();
-    const files = new Map<string, Uint8Array<ArrayBuffer>>();
-    for (let index = 0; index < 201; index++) {
-      files.set(`f${index}.ts`, encodeUtf8('// x'));
-    }
+  it('reads a named version out of git, skipping what a viewer never sees', async () => {
+    const repositoryPath = seedRepository(
+      new Map([
+        ['main.ts', encodeUtf8('export default () => {}')],
+        ['.tau/parameters/main.ts.json', encodeUtf8('{}')],
+        ['.tau/artifacts/cache.glb', allocZeros(4)],
+        ['node_modules/evil/index.js', encodeUtf8('//')],
+      ]),
+    );
 
-    files.set('main.ts', encodeUtf8('export default () => {}'));
+    const files = await readPublishedTree(
+      {
+        databaseService: {} as unknown as PublicationsServiceDeps[0],
+        storage: createStorageStub(),
+        git: realGit,
+        resolveLfsObject: lfsResolver(createStorageStub()),
+      },
+      { directory: repositoryPath, projectId: 'proj_1', ownerId: 'user_1', tag: 'v1' },
+    );
+
+    expect([...files.keys()].sort()).toEqual(['.tau/parameters/main.ts.json', 'main.ts']);
+    expect(files.get('main.ts')).toStrictEqual(encodeUtf8('export default () => {}'));
+  });
+
+  it('refuses a named version with more user files than a publication may hold', async () => {
+    const files = new Map<string, Uint8Array<ArrayBuffer>>([['main.ts', encodeUtf8('code')]]);
+    for (let index = 0; index < 201; index++) {
+      files.set(`f${String(index)}.ts`, encodeUtf8(`// ${String(index)}`));
+    }
+    const repositoryPath = seedRepository(files);
 
     await expect(
-      service.publishFromUpload({
-        ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
+      readPublishedTree(
+        {
+          databaseService: {} as unknown as PublicationsServiceDeps[0],
+          storage: createStorageStub(),
+          git: realGit,
+          resolveLfsObject: lfsResolver(createStorageStub()),
         },
-        files,
-      }),
+        { directory: repositoryPath, projectId: 'proj_1', ownerId: 'user_1', tag: 'v1' },
+      ),
     ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.TOO_MANY_FILES));
   });
 
-  it('should reject a canonical thumbnail whose bytes are not WebP', async () => {
-    const service = createStubService();
+  it('refuses a name the project does not have', async () => {
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('code')]]));
 
     await expect(
-      service.publishFromUpload({
-        ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
+      readPublishedTree(
+        {
+          databaseService: {} as unknown as PublicationsServiceDeps[0],
+          storage: createStorageStub(),
+          git: realGit,
+          resolveLfsObject: lfsResolver(createStorageStub()),
         },
-        files: new Map([
-          ['main.ts', encodeUtf8('export default () => {}')],
-          ['thumbnail.webp', encodeUtf8('not-webp')],
-        ]),
-      }),
-    ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.INVALID_THUMBNAIL_WEBP));
+        { directory: repositoryPath, projectId: 'proj_1', ownerId: 'user_1', tag: 'v9' },
+      ),
+    ).rejects.toThrow(NotFoundException);
   });
 
-  it('should reject paths under node_modules', async () => {
-    const service = createStubService();
+  it('resolves a large file from the object store the push uploaded it to', async () => {
+    const stepBytes = encodeUtf8('ISO-10303-21;\nHEADER;\n');
+    const oid = sha256HexFromBytes(stepBytes);
+    const pointer = encodeUtf8(
+      `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${String(stepBytes.byteLength)}\n`,
+    );
+    expect(parseLfsPointer(pointer)).toStrictEqual({ oid, size: stepBytes.byteLength });
 
-    await expect(
-      service.publishFromUpload({
-        ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
-        },
-        files: new Map([
-          ['main.ts', encodeUtf8('export default () => {}')],
-          ['node_modules/evil/index.js', allocZeros(0)],
-        ]),
-      }),
-    ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.FORBIDDEN_PATH));
+    const repositoryPath = seedRepository(
+      new Map([
+        ['main.ts', encodeUtf8('code')],
+        ['part.step', pointer],
+      ]),
+    );
+    const storage = createStorageStub();
+    /* The push uploaded it under the owner's tenant prefix (D24), which is
+       where the shared resolver looks first. */
+    const held = { namespace: 'tenants', key: tenantLfsObjectKey('user_1', 'proj_1', oid), tier: 'private' };
+    vi.mocked(storage.headBlob).mockImplementation(async (args) =>
+      args.namespace === held.namespace && args.key === held.key
+        ? { contentType: 'application/octet-stream', size: stepBytes.byteLength, etag: 'etag', cacheControl: '' }
+        : undefined,
+    );
+    vi.mocked(storage.getBlob).mockImplementation(async () => ({
+      body: Readable.from([Buffer.from(stepBytes)]),
+      contentType: 'application/octet-stream',
+      etag: 'etag',
+    }));
+
+    const files = await readPublishedTree(
+      {
+        databaseService: {} as unknown as PublicationsServiceDeps[0],
+        storage,
+        git: realGit,
+        resolveLfsObject: lfsResolver(storage),
+      },
+      { directory: repositoryPath, projectId: 'proj_1', ownerId: 'user_1', tag: 'v1' },
+    );
+
+    expect(files.get('part.step')).toStrictEqual(stepBytes);
+    expect(vi.mocked(storage.getBlob).mock.calls[0]?.[0]).toMatchObject({
+      namespace: 'tenants',
+      key: tenantLfsObjectKey('user_1', 'proj_1', oid),
+      tier: 'private',
+    });
   });
 
-  it('should reject paths under .tau/artifacts', async () => {
-    const service = createStubService();
-
-    await expect(
-      service.publishFromUpload({
-        ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
-        },
-        files: new Map([
-          ['main.ts', encodeUtf8('export default () => {}')],
-          ['.tau/artifacts/cache.glb', allocZeros(1)],
-        ]),
-      }),
-    ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.FORBIDDEN_PATH));
+  it('treats a blob that merely looks like text as bytes', () => {
+    expect(parseLfsPointer(encodeUtf8('version https://git-lfs.github.com/spec/v1\n'))).toBeUndefined();
+    expect(parseLfsPointer(allocZeros(2048))).toBeUndefined();
   });
+});
 
-  it('should reject paths under .tau/transcripts', async () => {
-    const service = createStubService();
-
-    await expect(
-      service.publishFromUpload({
-        ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
-        },
-        files: new Map([
-          ['main.ts', encodeUtf8('export default () => {}')],
-          ['.tau/transcripts/chat_x.json', encodeUtf8('[]')],
-        ]),
-      }),
-    ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.FORBIDDEN_PATH));
-  });
-
-  it('should allow .tau/parameters overrides and include them in manifest files map', async () => {
+describe('PublicationsService.publishFromRevision', () => {
+  it('should include .tau/parameters overrides in the manifest files map', async () => {
     let capturedManifest: Record<string, unknown> | undefined;
 
     const storage = createStorageStub();
     vi.mocked(storage.putBlob).mockImplementation(async (args) => {
-      if (args.key.endsWith('manifest.json')) {
+      if (args.namespace === 'derivatives') {
         capturedManifest = JSON.parse(new TextDecoder().decode(args.body)) as Record<string, unknown>;
       }
-      return { etag: 'etag', alreadyExisted: false };
+      return { lost: false, etag: 'etag', alreadyExisted: false };
     });
 
-    const tx = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockImplementation(() => ({
-        values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
-          if ('manifestKey' in payload) {
-            return undefined;
-          }
-
-          return {
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-          };
-        }),
-      })),
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const databaseService = {
-      database: {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        }),
-        insert: vi.fn().mockReturnValue({
-          values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-          }),
-        }),
-        transaction: vi.fn(async (callback: (innerTx: typeof tx) => Promise<void>) => {
-          await callback(tx);
-        }),
-      },
-    } as unknown as PublicationsServiceDeps[0];
+    const repositoryPath = seedRepository(
+      new Map([
+        ['main.ts', encodeUtf8('export default () => {}')],
+        ['.tau/parameters/main.ts.json', encodeUtf8('{}')],
+      ]),
+    );
 
     const service = new PublicationsService(
-      databaseService,
+      createPublishDatabase().databaseService,
       storage,
       createConfigStub(),
       createRedisStub(),
@@ -400,178 +642,55 @@ describe('PublicationsService.publishFromUpload validation', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(repositoryPath),
     );
 
-    await service.publishFromUpload({
-      ownerId: 'user_1',
-      manifest: {
-        projectId: 'proj_1',
-        projectName: 'Demo',
-        entryPath: 'main.ts',
-        visibility: 'private',
-        title: 'Hello',
-      },
-      files: new Map([
-        ['main.ts', encodeUtf8('export default () => {}')],
-        ['.tau/parameters/main.ts.json', encodeUtf8('{}')],
-      ]),
-    });
+    await service.publishFromRevision({ ownerId: 'user_1', request: publishRequest(repositoryPath) });
 
     expect(capturedManifest).toBeDefined();
     const filesField = capturedManifest?.['files'] as Record<string, string> | undefined;
-    expect(filesField).toBeDefined();
     expect(filesField?.['main.ts']).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(filesField?.['.tau/parameters/main.ts.json']).toMatch(/^sha256:[a-f0-9]{64}$/u);
   });
 
   it('should create initial private access grants and notify recipients with frontend links', async () => {
-    const accessPayloads: Array<Record<string, unknown>> = [];
     const email = createEmailStub();
+    const { databaseService, txInserts } = createPublishDatabase();
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('code')]]));
 
-    const storage = createStorageStub();
-    const tx = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockImplementation((table: unknown) => ({
-        values: vi.fn().mockImplementation((payload: Record<string, unknown> | Array<Record<string, unknown>>) => {
-          if (table === schema.publicationAccess) {
-            accessPayloads.push(...(Array.isArray(payload) ? payload : [payload]));
-            return {
-              onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-            };
-          }
-
-          if (!Array.isArray(payload) && 'manifestKey' in payload) {
-            return undefined;
-          }
-
-          return {
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-          };
-        }),
-      })),
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const databaseService = {
-      database: {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        }),
-        insert: vi.fn().mockReturnValue({
-          values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-          }),
-        }),
-        transaction: vi.fn(async (callback: (innerTx: typeof tx) => Promise<void>) => {
-          await callback(tx);
-        }),
-      },
-    } as unknown as PublicationsServiceDeps[0];
-
-    const rateLimiter = createRateLimiterStub();
-    const metrics = createMetricsStub();
     const service = new PublicationsService(
       databaseService,
-      storage,
+      createStorageStub(),
       createConfigStub(),
       createRedisStub(),
-      rateLimiter,
-      metrics,
+      createRateLimiterStub(),
+      createMetricsStub(),
       email,
       createBillingStub(),
+      ...leaseDependencies(repositoryPath),
     );
 
-    const result = await service.publishFromUpload({
+    const result = await service.publishFromRevision({
       ownerId: 'user_1',
-      manifest: {
-        projectId: 'proj_1',
-        projectName: 'Demo',
-        entryPath: 'main.ts',
-        visibility: 'private',
-        title: 'Hello',
-        sharedEmails: ['friend@example.com', 'team@example.com'],
+      request: publishRequest(repositoryPath, {
+        sharedEmails: ['friend@example.com'],
         notifyRecipients: true,
-      },
-      files: new Map([['main.ts', encodeUtf8('export default () => {}')]]),
+      }),
     });
 
-    expect(accessPayloads.map((payload) => payload['recipientEmail'])).toEqual([
-      'friend@example.com',
-      'team@example.com',
-    ]);
-    expect(accessPayloads.every((payload) => payload['status'] === 'active')).toBe(true);
-    expect(result.urls.view).toBe(`http://app/v/${result.id}`);
-    expect(result.urls.share).toBe(result.urls.view);
-    expect(email.sendPublicationInvite).toHaveBeenCalledTimes(2);
-    expect(email.sendPublicationInvite).toHaveBeenCalledWith(
-      expect.objectContaining({
-        recipientEmail: 'friend@example.com',
-        publicationTitle: 'Hello',
-        url: result.urls.view,
-      }),
-    );
-    // The whole recipient batch is debited from the owner's daily budget in one call.
-    expect(rateLimiter.consumeInviteEmailSlots).toHaveBeenCalledWith({ ownerId: 'user_1', count: 2 });
-    expect(metrics.publicationInviteEmailsTotal.add).toHaveBeenCalledTimes(2);
-    expect(metrics.publicationInviteEmailsTotal.add).toHaveBeenCalledWith(1, { trigger: 'publish', outcome: 'sent' });
+    const accessPayloads = txInserts
+      .filter((entry) => entry.table === schema.publicationAccess)
+      .flatMap((entry) => (Array.isArray(entry.payload) ? entry.payload : [entry.payload]));
+    expect(accessPayloads).toHaveLength(1);
+    expect(accessPayloads[0]).toMatchObject({ recipientEmail: 'friend@example.com', status: 'active' });
+    expect(vi.mocked(email.sendPublicationInvite)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(email.sendPublicationInvite).mock.calls[0]?.[0]).toMatchObject({ url: result.urls.share });
   });
 
   it('should still publish successfully when the owner is over the invite-email cap', async () => {
     const email = createEmailStub();
-    const metrics = createMetricsStub();
-    const tx = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const databaseService = {
-      database: {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        }),
-        insert: vi.fn().mockReturnValue({
-          values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-          }),
-        }),
-        transaction: vi.fn(async (callback: (innerTx: typeof tx) => Promise<void>) => {
-          await callback(tx);
-        }),
-      },
-    } as unknown as PublicationsServiceDeps[0];
+    const { databaseService } = createPublishDatabase();
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('code')]]));
 
     const service = new PublicationsService(
       databaseService,
@@ -579,55 +698,48 @@ describe('PublicationsService.publishFromUpload validation', () => {
       createConfigStub(),
       createRedisStub(),
       createRateLimiterStub({ inviteAllowed: false }),
-      metrics,
+      createMetricsStub(),
       email,
       createBillingStub(),
+      ...leaseDependencies(repositoryPath),
     );
 
-    const result = await service.publishFromUpload({
+    const result = await service.publishFromRevision({
       ownerId: 'user_1',
-      manifest: {
-        projectId: 'proj_1',
-        projectName: 'Demo',
-        entryPath: 'main.ts',
-        visibility: 'private',
-        title: 'Hello',
-        sharedEmails: ['friend@example.com', 'team@example.com'],
-        notifyRecipients: true,
-      },
-      files: new Map([['main.ts', encodeUtf8('export default () => {}')]]),
+      request: publishRequest(repositoryPath, { sharedEmails: ['friend@example.com'], notifyRecipients: true }),
     });
 
-    // Publish completes and returns a coherent result; only the over-cap emails are dropped.
-    expect(result.urls.view).toBe(`http://app/v/${result.id}`);
-    expect(email.sendPublicationInvite).not.toHaveBeenCalled();
-    expect(metrics.publicationInviteEmailsSuppressedTotal.add).toHaveBeenCalledWith(2, {
-      trigger: 'publish',
-      reason: 'cap_exceeded',
-    });
+    expect(result.id).toMatch(/^pub_/u);
+    expect(vi.mocked(email.sendPublicationInvite)).not.toHaveBeenCalled();
   });
 
-  it('should reject when total payload exceeds limit', async () => {
-    const service = createStubService();
-    /** Three chunks under per-file max but combined exceed total upload cap (50 MiB). */
-    const chunkBytes = 17 * 1024 * 1024;
+  it('should refuse a named version larger than a publication may be', async () => {
+    const repositoryPath = seedRepository(
+      new Map([
+        ['main.ts', encodeUtf8('code')],
+        ['big-a.bin', allocZeros(20 * 1024 * 1024)],
+        ['big-b.bin', allocZeros(20 * 1024 * 1024)],
+        ['big-c.bin', allocZeros(20 * 1024 * 1024)],
+      ]),
+    );
+    const { databaseService } = createPublishDatabase();
+
+    const service = new PublicationsService(
+      databaseService,
+      createStorageStub(),
+      createConfigStub(),
+      createRedisStub(),
+      createRateLimiterStub(),
+      createMetricsStub(),
+      createEmailStub(),
+      createBillingStub(),
+      ...leaseDependencies(repositoryPath),
+    );
 
     await expect(
-      service.publishFromUpload({
+      service.publishFromRevision({
         ownerId: 'user_1',
-        manifest: {
-          projectId: 'proj_1',
-          projectName: 'Demo',
-          entryPath: 'main.ts',
-          visibility: 'private',
-          title: 'Hello',
-        },
-        files: new Map([
-          ['main.ts', encodeUtf8('export default () => {}')],
-          ['a.bin', allocZeros(chunkBytes)],
-          ['b.bin', allocZeros(chunkBytes)],
-          ['c.bin', allocZeros(chunkBytes)],
-        ]),
+        request: publishRequest(repositoryPath, { visibility: 'public' }),
       }),
     ).rejects.toSatisfy((error: unknown) => isBadRequestWithCode(error, publicationApiCode.PAYLOAD_TOO_LARGE));
   });
@@ -703,6 +815,7 @@ describe('PublicationsService.getProjectShareEnvelope', () => {
         [
           {
             id: 'pub_current',
+            tag: 'v1',
             title: 'Shared tray',
             description: 'Shared description',
             visibility: 'private',
@@ -729,11 +842,12 @@ describe('PublicationsService.getProjectShareEnvelope', () => {
       project: { id: 'proj_1', name: 'Tray', description: 'A tray' },
       currentPublication: {
         id: 'pub_current',
+        tag: 'v1',
         title: 'Shared tray',
         description: 'Shared description',
         visibility: 'private',
         createdAt: createdAt.toISOString(),
-        urls: { share: 'http://app/v/pub_current' },
+        urls: { share: 'http://app/s/tau~pub_current' },
         access: {
           grants: [
             {
@@ -779,6 +893,8 @@ describe('PublicationsService.getPublicationForViewer', () => {
   const publicationRow = {
     id: 'pub_test',
     projectId: 'proj_x',
+    tag: 'v1',
+    revisionId: 'a'.repeat(40),
     ownerId: 'user_owner',
     visibility: 'public',
     manifestKey: 'm.json',
@@ -853,6 +969,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.getPublicationForViewer({ publicationId: 'pub_test' });
@@ -874,6 +991,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     await service.getPublicationForViewer({ publicationId: 'pub_test' });
@@ -897,6 +1015,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     await service.getPublicationForViewer({ publicationId: 'pub_test' });
@@ -935,6 +1054,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.getPublicationForViewer({
@@ -957,6 +1077,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     await expect(service.getPublicationForViewer({ publicationId: 'pub_test' })).rejects.toBeInstanceOf(
@@ -975,6 +1096,12 @@ describe('PublicationsService.getPublicationForViewer', () => {
     const publicationWhere = vi.fn().mockReturnValue({ limit: publicationLimit });
     const publicationFrom = vi.fn().mockReturnValue({ where: publicationWhere });
 
+    /* Every publication read consults `project_git` first: derived state that is
+       behind the manifest is repaired before the row is served (D19). */
+    const derivedFrom = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ generation: 3, derivedGeneration: 3 }]) }),
+    });
+
     const userLimit = vi.fn().mockResolvedValue([{ email: 'Friend@Example.com', emailVerified: true }]);
     const userWhere = vi.fn().mockReturnValue({ limit: userLimit });
     const userFrom = vi.fn().mockReturnValue({ where: userWhere });
@@ -986,6 +1113,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
     const select = vi
       .fn()
       .mockReturnValueOnce({ from: publicationFrom })
+      .mockReturnValueOnce({ from: derivedFrom })
       .mockReturnValueOnce({ from: userFrom })
       .mockReturnValueOnce({ from: accessFrom });
     const database = { database: { select } } as unknown as PublicationsServiceDeps[0];
@@ -999,6 +1127,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.getPublicationForViewer({ publicationId: 'pub_test', viewerUserId: 'user_friend' });
@@ -1017,6 +1146,12 @@ describe('PublicationsService.getPublicationForViewer', () => {
     const publicationWhere = vi.fn().mockReturnValue({ limit: publicationLimit });
     const publicationFrom = vi.fn().mockReturnValue({ where: publicationWhere });
 
+    /* Every publication read consults `project_git` first: derived state that is
+       behind the manifest is repaired before the row is served (D19). */
+    const derivedFrom = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ generation: 3, derivedGeneration: 3 }]) }),
+    });
+
     const userLimit = vi.fn().mockResolvedValue([{ email: 'stranger@example.com', emailVerified: true }]);
     const userWhere = vi.fn().mockReturnValue({ limit: userLimit });
     const userFrom = vi.fn().mockReturnValue({ where: userWhere });
@@ -1028,6 +1163,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
     const select = vi
       .fn()
       .mockReturnValueOnce({ from: publicationFrom })
+      .mockReturnValueOnce({ from: derivedFrom })
       .mockReturnValueOnce({ from: userFrom })
       .mockReturnValueOnce({ from: accessFrom });
     const database = { database: { select } } as unknown as PublicationsServiceDeps[0];
@@ -1041,6 +1177,7 @@ describe('PublicationsService.getPublicationForViewer', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     await expect(
@@ -1053,6 +1190,8 @@ describe('PublicationsService.updateVisibility', () => {
   const publicationRow = {
     id: 'pub_access',
     projectId: 'proj_x',
+    tag: 'v1',
+    revisionId: 'a'.repeat(40),
     ownerId: 'user_owner',
     visibility: 'private',
     manifestKey: 'm.json',
@@ -1102,6 +1241,7 @@ describe('PublicationsService.updateVisibility', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     return { service, update, set, storage };
@@ -1212,7 +1352,7 @@ describe('PublicationsService.updateVisibility', () => {
       expect(lastPutOrder).toBeLessThan(firstUpdateOrder);
     });
 
-    it('should dual-home blobs into the private tier and delete the public manifest object on public → private', async () => {
+    it('should dual-home blobs into the private tier on public → private', async () => {
       const { service, storage } = createServiceWithVisibilityUpdate({
         ownerRows: [{ ...publicationRow, visibility: 'public' }],
         updatedRows: [{ id: 'pub_access', visibility: 'private' }],
@@ -1226,11 +1366,9 @@ describe('PublicationsService.updateVisibility', () => {
         .filter((callArgs) => callArgs.namespace === 'blobs');
       expect(blobPuts).toEqual([expect.objectContaining({ tier: 'private', cacheControl: 'private, no-cache' })]);
 
-      // The share-link-derivable public manifest key is removed from the anonymous origin.
-      expect(vi.mocked(storage.deleteBlob)).toHaveBeenCalledWith({
-        namespace: 'derivatives',
-        key: 'm.json',
-      });
+      /* A manifest is written to the private tier whatever the visibility, so
+         there is no anonymous-origin copy to delete any more (review R9). */
+      expect(vi.mocked(storage.deleteBlob)).not.toHaveBeenCalled();
     });
 
     it('should skip blob copies that already exist in the target tier', async () => {
@@ -1272,6 +1410,8 @@ describe('PublicationsService access grants', () => {
   const publicationRow = {
     id: 'pub_access',
     projectId: 'proj_x',
+    tag: 'v1',
+    revisionId: 'a'.repeat(40),
     ownerId: 'user_owner',
     visibility: 'private',
     manifestKey: 'm.json',
@@ -1320,6 +1460,7 @@ describe('PublicationsService access grants', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.listAccessGrants({ publicationId: 'pub_access', ownerId: 'user_owner' });
@@ -1353,6 +1494,8 @@ describe('PublicationsService access grants', () => {
       createRateLimiterStub(),
       createMetricsStub(),
       email,
+      createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.inviteAccess({
@@ -1390,6 +1533,8 @@ describe('PublicationsService access grants', () => {
       createRateLimiterStub(),
       createMetricsStub(),
       email,
+      createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.inviteAccess({
@@ -1404,7 +1549,7 @@ describe('PublicationsService access grants', () => {
       recipientEmail: 'friend@example.com',
       ownerName: 'Owner',
       publicationTitle: 'T',
-      url: 'http://app/v/pub_access',
+      url: 'http://app/s/tau~pub_access',
     });
   });
 
@@ -1433,6 +1578,8 @@ describe('PublicationsService access grants', () => {
       createRateLimiterStub({ inviteAllowed: false }),
       metrics,
       email,
+      createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.inviteAccess({
@@ -1476,6 +1623,8 @@ describe('PublicationsService access grants', () => {
       createRateLimiterStub({ inviteThrows: true }),
       metrics,
       email,
+      createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const result = await service.inviteAccess({
@@ -1498,6 +1647,8 @@ describe('PublicationsService.recordView', () => {
   const basePublicationRow = {
     id: 'pub_view',
     projectId: 'proj_x',
+    tag: 'v1',
+    revisionId: 'a'.repeat(40),
     ownerId: 'user_owner',
     visibility: 'public',
     manifestKey: 'm.json',
@@ -1531,6 +1682,7 @@ describe('PublicationsService.recordView', () => {
       args.metrics ?? createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
   }
 
@@ -1658,64 +1810,23 @@ describe('PublicationsService.recordView', () => {
 
 // === Private publication storage tiers ===
 
-describe('PublicationsService.publishFromUpload storage tiers (R2/R8)', () => {
-  function createPublishHarness(args?: { readonly transactionRejects?: boolean }): {
+describe('PublicationsService.publishFromRevision storage tiers (R2/R8)', () => {
+  function createPublishHarness(args?: {
+    readonly transactionRejects?: boolean;
+    readonly files?: Map<string, Uint8Array<ArrayBuffer>>;
+    readonly storage?: PublicationsServiceDeps[1];
+  }): {
     readonly storage: PublicationsServiceDeps[1];
-    readonly databaseService: PublicationsServiceDeps[0];
     readonly txInserts: Array<{ table: unknown; payload: Record<string, unknown> }>;
     readonly outerInsert: ReturnType<typeof vi.fn>;
     readonly service: PublicationsService;
+    readonly repositoryPath: string;
   } {
-    const txInserts: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
-
-    const tx = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockImplementation((table: unknown) => ({
-        values: vi.fn().mockImplementation((payload: Record<string, unknown>) => {
-          txInserts.push({ table, payload });
-          return { onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) };
-        }),
-      })),
-      update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined),
-        }),
-      }),
-    };
-
-    const outerInsert = vi.fn().mockReturnValue({
-      values: vi.fn().mockReturnValue({
-        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
-      }),
-    });
-
-    const databaseService = {
-      database: {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]),
-            }),
-          }),
-        }),
-        insert: outerInsert,
-        transaction: vi.fn(async (callback: (innerTx: typeof tx) => Promise<void>) => {
-          if (args?.transactionRejects === true) {
-            throw new Error('transaction failed');
-          }
-
-          await callback(tx);
-        }),
-      },
-    } as unknown as PublicationsServiceDeps[0];
-
-    const storage = createStorageStub();
+    const { databaseService, txInserts, outerInsert } = createPublishDatabase(
+      args?.transactionRejects === true ? { transactionRejects: true } : {},
+    );
+    const storage = args?.storage ?? createStorageStub();
+    const repositoryPath = seedRepository(args?.files ?? new Map([['main.ts', encodeUtf8('code')]]));
     const service = new PublicationsService(
       databaseService,
       storage,
@@ -1725,28 +1836,79 @@ describe('PublicationsService.publishFromUpload storage tiers (R2/R8)', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(repositoryPath),
     );
 
-    return { storage, databaseService, txInserts, outerInsert, service };
+    return { storage, txInserts, outerInsert, service, repositoryPath };
   }
 
-  const publishArgs = (visibility: 'private' | 'public', files: Map<string, Uint8Array<ArrayBuffer>>) =>
-    ({
-      ownerId: 'user_1',
-      manifest: {
-        projectId: 'proj_1',
-        projectName: 'Demo',
-        entryPath: 'main.ts',
-        visibility,
-        title: 'Hello',
+  /* R6: the row a viewer reads must say which revision it is being served, so
+     the server's own resolution wins and a stale claim is refused. */
+  it('R6: records the revision the server resolved, not the one the client claimed', async () => {
+    const { txInserts, service, repositoryPath } = createPublishHarness();
+
+    await service.publishFromRevision({ ownerId: 'user_1', request: publishRequest(repositoryPath) });
+
+    const publicationInsert = txInserts.find((insert) => 'tag' in insert.payload);
+    expect(publicationInsert?.payload['revisionId']).toBe(seededRevision(repositoryPath));
+  });
+
+  it('R6: refuses a publish whose claimed revision is not what the name points at', async () => {
+    const { service, repositoryPath } = createPublishHarness();
+
+    await expect(
+      service.publishFromRevision({
+        ownerId: 'user_1',
+        request: publishRequest(repositoryPath, { revisionId: 'c'.repeat(40) }),
+      }),
+    ).rejects.toMatchObject({ response: { code: publicationApiCode.REVISION_MOVED } });
+  });
+
+  /* D24 / RV-W9 M5: a lease hydrated before the ref-removal verb committed
+     still holds the removed name. Under the publication lock the name is read
+     from the store again, so the publish is refused rather than bringing back a
+     name the owner just removed. */
+  it('refuses a publish whose name the store no longer holds once it has the lock', async () => {
+    const { databaseService } = createPublishDatabase();
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('code')]]));
+    const [store, repositories] = leaseDependencies(repositoryPath);
+    const removed = {
+      ...store,
+      readManifest: async (locator: Parameters<RepositoryStore['readManifest']>[0]) => {
+        const read = await store.readManifest(locator);
+        if (read === undefined) {
+          return read;
+        }
+        const manifest = decodeManifest(read.manifest);
+        const references = Object.fromEntries(Object.entries(manifest.refs).filter(([ref]) => ref !== 'refs/tags/v1'));
+        return { ...read, manifest: encodeManifest({ ...manifest, refs: references }) };
       },
-      files,
-    }) as const;
+    } as unknown as PublicationsServiceDeps[8];
+    const service = new PublicationsService(
+      databaseService,
+      createStorageStub(),
+      createConfigStub(),
+      createRedisStub(),
+      createRateLimiterStub(),
+      createMetricsStub(),
+      createEmailStub(),
+      createBillingStub(),
+      removed,
+      repositories,
+    );
+
+    await expect(
+      service.publishFromRevision({ ownerId: 'user_1', request: publishRequest(repositoryPath) }),
+    ).rejects.toMatchObject({ response: { code: publicationApiCode.REVISION_MOVED } });
+  });
 
   it('should write private publication blobs and the manifest to the fail-closed private tier', async () => {
-    const { storage, service } = createPublishHarness();
+    const { storage, service, repositoryPath } = createPublishHarness();
 
-    await service.publishFromUpload(publishArgs('private', new Map([['main.ts', encodeUtf8('code')]])));
+    await service.publishFromRevision({
+      ownerId: 'user_1',
+      request: publishRequest(repositoryPath, { visibility: 'private' }),
+    });
 
     const putCalls = vi.mocked(storage.putBlob).mock.calls.map(([callArgs]) => callArgs);
     expect(putCalls.filter((callArgs) => callArgs.namespace === 'blobs')).toEqual([
@@ -1758,9 +1920,12 @@ describe('PublicationsService.publishFromUpload storage tiers (R2/R8)', () => {
   });
 
   it('should keep public publication blobs on the CDN tier while the manifest stays private', async () => {
-    const { storage, service } = createPublishHarness();
+    const { storage, service, repositoryPath } = createPublishHarness();
 
-    await service.publishFromUpload(publishArgs('public', new Map([['main.ts', encodeUtf8('code')]])));
+    await service.publishFromRevision({
+      ownerId: 'user_1',
+      request: publishRequest(repositoryPath, { visibility: 'public' }),
+    });
 
     const putCalls = vi.mocked(storage.putBlob).mock.calls.map(([callArgs]) => callArgs);
     expect(putCalls.filter((callArgs) => callArgs.namespace === 'blobs')).toEqual([
@@ -1774,17 +1939,17 @@ describe('PublicationsService.publishFromUpload storage tiers (R2/R8)', () => {
   });
 
   it('should exclude tau.json and thumbnail.webp from the 200-user-file limit and preserve their bytes', async () => {
-    const { storage, service } = createPublishHarness();
     const thumbnail = validWebpSignature();
     const tauManifest = encodeUtf8('{"schemaVersion":1}');
     const files = new Map<string, Uint8Array<ArrayBuffer>>([['main.ts', encodeUtf8('code')]]);
     for (let index = 0; index < 199; index++) {
-      files.set(`user-${index}.ts`, encodeUtf8(`file-${index}`));
+      files.set(`user-${String(index)}.ts`, encodeUtf8(`file-${String(index)}`));
     }
     files.set('tau.json', tauManifest);
     files.set('thumbnail.webp', thumbnail);
+    const { storage, service, repositoryPath } = createPublishHarness({ files });
 
-    await service.publishFromUpload(publishArgs('private', files));
+    await service.publishFromRevision({ ownerId: 'user_1', request: publishRequest(repositoryPath) });
 
     const blobCalls = vi
       .mocked(storage.putBlob)
@@ -1798,52 +1963,48 @@ describe('PublicationsService.publishFromUpload storage tiers (R2/R8)', () => {
   });
 
   it('should repair stale same-key thumbnail metadata without changing bytes', async () => {
-    const { storage, service } = createPublishHarness();
     const thumbnail = validWebpSignature();
-    vi.mocked(storage.putBlob).mockImplementation(async (args) => ({
-      etag: 'etag',
-      alreadyExisted: args.contentType === 'image/webp' && args.ifNoneMatch === '*',
-    }));
+    const storage = createStorageStub();
     vi.mocked(storage.headBlob).mockResolvedValue({
       contentType: 'application/octet-stream',
       size: thumbnail.byteLength,
       etag: 'etag',
       cacheControl: 'private, no-cache',
     });
+    const { service, repositoryPath } = createPublishHarness({
+      storage,
+      files: new Map([
+        ['main.ts', encodeUtf8('code')],
+        ['thumbnail.webp', thumbnail],
+      ]),
+    });
 
-    await service.publishFromUpload(
-      publishArgs(
-        'private',
-        new Map([
-          ['main.ts', encodeUtf8('code')],
-          ['thumbnail.webp', thumbnail],
-        ]),
-      ),
-    );
+    await service.publishFromRevision({ ownerId: 'user_1', request: publishRequest(repositoryPath) });
 
     const thumbnailWrites = vi
       .mocked(storage.putBlob)
       .mock.calls.map(([callArgs]) => callArgs)
       .filter((callArgs) => callArgs.namespace === 'blobs' && callArgs.contentType === 'image/webp');
-    expect(thumbnailWrites).toHaveLength(2);
-    expect(thumbnailWrites[0]?.body).toBe(thumbnail);
-    expect(thumbnailWrites[1]?.body).toBe(thumbnail);
-    expect(thumbnailWrites[1]).not.toHaveProperty('ifNoneMatch');
+    expect(thumbnailWrites).toHaveLength(1);
+    expect(thumbnailWrites[0]?.body).toStrictEqual(thumbnail);
+    // The object is already there under this digest, so the write repairs the
+    // content type rather than claiming the key.
+    expect(thumbnailWrites[0]).not.toHaveProperty('ifNoneMatch');
   });
 
   it('should upsert blob refcounts inside the publish transaction, aggregated per sha', async () => {
-    const { txInserts, outerInsert, service } = createPublishHarness();
+    const { txInserts, outerInsert, service, repositoryPath } = createPublishHarness({
+      files: new Map([
+        ['main.ts', encodeUtf8('same-bytes')],
+        ['copy.ts', encodeUtf8('same-bytes')],
+        ['other.ts', encodeUtf8('different-bytes')],
+      ]),
+    });
 
-    await service.publishFromUpload(
-      publishArgs(
-        'public',
-        new Map([
-          ['main.ts', encodeUtf8('same-bytes')],
-          ['copy.ts', encodeUtf8('same-bytes')],
-          ['other.ts', encodeUtf8('different-bytes')],
-        ]),
-      ),
-    );
+    await service.publishFromRevision({
+      ownerId: 'user_1',
+      request: publishRequest(repositoryPath, { visibility: 'public' }),
+    });
 
     const refInserts = txInserts.filter((entry) => entry.table === schema.blobRef);
     expect(refInserts).toHaveLength(2);
@@ -1863,13 +2024,273 @@ describe('PublicationsService.publishFromUpload storage tiers (R2/R8)', () => {
   });
 
   it('should reject the publish and issue no out-of-transaction refcount writes when the transaction fails', async () => {
-    const { outerInsert, service } = createPublishHarness({ transactionRejects: true });
+    const { outerInsert, service, repositoryPath } = createPublishHarness({ transactionRejects: true });
 
     await expect(
-      service.publishFromUpload(publishArgs('public', new Map([['main.ts', encodeUtf8('code')]]))),
+      service.publishFromRevision({
+        ownerId: 'user_1',
+        request: publishRequest(repositoryPath, { visibility: 'public' }),
+      }),
     ).rejects.toThrow('transaction failed');
 
     expect(outerInsert).not.toHaveBeenCalled();
+  });
+
+  it('should re-point an existing publication rather than creating a second one (AC13)', async () => {
+    const existing = {
+      id: 'pub_existing',
+      projectId: 'proj_1',
+      tag: 'v1',
+      manifestKey: 'publications/pub_existing/old.json',
+      visibility: 'public',
+      entryPath: 'main.ts',
+    };
+    const { databaseService, txInserts } = createPublishDatabase({ existingRows: [existing] });
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('code')]]));
+    const storage = createManifestStorageStub();
+    const service = new PublicationsService(
+      databaseService,
+      storage,
+      createConfigStub(),
+      createRedisStub(),
+      createRateLimiterStub(),
+      createMetricsStub(),
+      createEmailStub(),
+      createBillingStub(),
+      ...leaseDependencies(repositoryPath),
+    );
+
+    const result = await service.publishFromRevision({
+      ownerId: 'user_1',
+      request: publishRequest(repositoryPath, { visibility: 'public' }),
+    });
+
+    expect(result.id).toBe('pub_existing');
+    const publicationInsert = txInserts.find((entry) => entry.table === schema.publication);
+    expect(publicationInsert?.payload).toMatchObject({ id: 'pub_existing', tag: 'v1' });
+    expect(publicationInsert?.payload['manifestKey']).not.toBe(existing.manifestKey);
+  });
+});
+
+// === Materialization as derived state (D19) ===
+
+describe('PublicationsService derived-state repair', () => {
+  /**
+   * The database a repair reads and writes, answering by table rather than by
+   * call order: the repair reads `project_git`, then this project's
+   * publications, then writes both.
+   *
+   * @param args - The publication row, and the two generations on `project_git`.
+   * @returns The dependency, the row it mutates, and what it recorded.
+   */
+  function createDerivedDatabase(args: {
+    publication: Record<string, unknown>;
+    generation: number;
+    derivedGeneration: number;
+  }): {
+    readonly databaseService: PublicationsServiceDeps[0];
+    readonly publication: Record<string, unknown>;
+    readonly derivedWrites: Array<Record<string, unknown>>;
+  } {
+    const derivedWrites: Array<Record<string, unknown>> = [];
+    const state = { derivedGeneration: args.derivedGeneration };
+
+    const rowsFor = (table: unknown): unknown[] =>
+      table === schema.projectGit
+        ? [{ generation: args.generation, derivedGeneration: state.derivedGeneration }]
+        : [args.publication];
+
+    /* `where` is awaited directly by the materializer and narrowed with
+       `limit(1)` by the read path, so it is both. */
+    const selectable = (table: unknown): unknown => ({
+      // oxlint-disable-next-line typescript/promise-function-async -- Drizzle's own builder is a thenable, not an async function
+      where: vi.fn(() =>
+        Object.assign(Promise.resolve(rowsFor(table)), { limit: vi.fn().mockResolvedValue(rowsFor(table)) }),
+      ),
+    });
+
+    const writer = {
+      /* The project advisory lock the materializer takes (review F2). */
+      execute: vi.fn().mockResolvedValue(undefined),
+      /* The re-read under that lock, which this single caller always wins. */
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([args.publication]) })),
+        })),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({ onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) })),
+      })),
+      update: vi.fn((table: unknown) => ({
+        set: vi.fn((payload: Record<string, unknown>) => {
+          if (table === schema.projectGit) {
+            derivedWrites.push(payload);
+            state.derivedGeneration = Number(payload['derivedGeneration']);
+          } else {
+            Object.assign(args.publication, payload);
+          }
+          /* Both the plain update and the compare-and-swap, which this single
+             writer always wins. */
+          return { where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'moved' }]) })) };
+        }),
+      })),
+    };
+
+    const database = {
+      select: vi.fn(() => ({ from: vi.fn((table: unknown) => selectable(table)) })),
+      update: writer.update,
+      insert: writer.insert,
+      transaction: vi.fn(async <T>(callback: (tx: typeof writer) => Promise<T>): Promise<T> => callback(writer)),
+    };
+
+    return {
+      databaseService: { database } as unknown as PublicationsServiceDeps[0],
+      publication: args.publication,
+      derivedWrites,
+    };
+  }
+
+  it('should re-materialize from a lease and serve the repaired row when the derived generation is behind', async () => {
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('export default () => {}')]]));
+    /* A push that committed its manifest and was killed before it materialized:
+       the row still points at nothing (D19). */
+    const publication: Record<string, unknown> = {
+      id: 'pub_derived',
+      projectId: 'proj_1',
+      tag: 'v1',
+      revisionId: '',
+      ownerId: 'user_1',
+      visibility: 'public',
+      manifestKey: '',
+      ogImageKey: null,
+      thumbnailKey: null,
+      unpublishedAt: null,
+      parentPublicationId: null,
+      kernels: [],
+      entryPath: 'main.ts',
+      title: 'T',
+      description: null,
+      forkCount: 0,
+      viewCount: 0,
+      ownerSnapshot: { id: 'user_1', name: 'Owner' },
+      createdAt: new Date(),
+      runtimePin: '~0.1.0',
+    };
+    const database = createDerivedDatabase({ publication, generation: 4, derivedGeneration: 2 });
+
+    const service = new PublicationsService(
+      database.databaseService,
+      createManifestStorageStub(),
+      createConfigStub(),
+      createRedisStub(),
+      createRateLimiterStub(),
+      createMetricsStub(),
+      createEmailStub(),
+      createBillingStub(),
+      ...leaseDependencies(repositoryPath),
+    );
+
+    const result = await service.getPublicationForViewer({ publicationId: 'pub_derived' });
+
+    /* The viewer is served the version the push actually published, and the
+       marker now says so, so the next read costs one query. */
+    expect(result.publication.revisionId).toBe(seededRevision(repositoryPath));
+    expect(publication['manifestKey']).toBe(`publications/pub_derived/${seededRevision(repositoryPath)}.json`);
+    /* The marker is the git service's to advance, because its repair also
+       rebuilds accounting and the LFS marks (D19). */
+    expect(database.derivedWrites).toStrictEqual([]);
+  });
+
+  it('should serve without a lease when the marker is behind for work that is not this publication', async () => {
+    const repositoryPath = seedRepository(new Map([['main.ts', encodeUtf8('export default () => {}')]]));
+    /* The row already records the commit the manifest's tag names: the marker
+       is behind for the accounting or an LFS mark, neither of which is this
+       read's business, so nothing is hydrated. */
+    const publication: Record<string, unknown> = {
+      id: 'pub_current_tag',
+      projectId: 'proj_1',
+      tag: 'v1',
+      revisionId: seededRevision(repositoryPath),
+      ownerId: 'user_1',
+      visibility: 'public',
+      manifestKey: 'm.json',
+      ogImageKey: null,
+      thumbnailKey: null,
+      unpublishedAt: null,
+      parentPublicationId: null,
+      kernels: [],
+      entryPath: 'main.ts',
+      title: 'T',
+      description: null,
+      forkCount: 0,
+      viewCount: 0,
+      ownerSnapshot: { id: 'user_1', name: 'Owner' },
+      createdAt: new Date(),
+      runtimePin: '~0.1.0',
+    };
+    const database = createDerivedDatabase({ publication, generation: 4, derivedGeneration: 2 });
+
+    const service = new PublicationsService(
+      database.databaseService,
+      createManifestStorageStub(),
+      createConfigStub(),
+      createRedisStub(),
+      createRateLimiterStub(),
+      createMetricsStub(),
+      createEmailStub(),
+      createBillingStub(),
+      ...leaseDependencies(repositoryPath),
+    );
+
+    const result = await service.getPublicationForViewer({ publicationId: 'pub_current_tag' });
+
+    expect(result.publication.revisionId).toBe(seededRevision(repositoryPath));
+    expect(publication['manifestKey']).toBe('m.json');
+  });
+
+  it('should serve without a lease when the derived generation is current', async () => {
+    const publication: Record<string, unknown> = {
+      id: 'pub_current',
+      projectId: 'proj_1',
+      tag: 'v1',
+      revisionId: 'a'.repeat(40),
+      ownerId: 'user_1',
+      visibility: 'public',
+      manifestKey: 'm.json',
+      ogImageKey: null,
+      thumbnailKey: null,
+      unpublishedAt: null,
+      parentPublicationId: null,
+      kernels: [],
+      entryPath: 'main.ts',
+      title: 'T',
+      description: null,
+      forkCount: 0,
+      viewCount: 0,
+      ownerSnapshot: { id: 'user_1', name: 'Owner' },
+      createdAt: new Date(),
+      runtimePin: '~0.1.0',
+    };
+    const database = createDerivedDatabase({ publication, generation: 4, derivedGeneration: 4 });
+
+    const service = new PublicationsService(
+      database.databaseService,
+      createManifestStorageStub(),
+      createConfigStub(),
+      createRedisStub(),
+      createRateLimiterStub(),
+      createMetricsStub(),
+      createEmailStub(),
+      createBillingStub(),
+      /* No repository at all: a current publication must never hydrate one. */
+      ...leaseDependencies(''),
+    );
+
+    const result = await service.getPublicationForViewer({ publicationId: 'pub_current' });
+
+    expect(result.publication.revisionId).toBe('a'.repeat(40));
+    expect(publication['manifestKey']).toBe('m.json');
+    expect(database.derivedWrites).toStrictEqual([]);
   });
 });
 
@@ -1879,6 +2300,8 @@ describe('PublicationsService.resolvePublicationFile (R3)', () => {
   const privateRow = {
     id: 'pub_test',
     projectId: 'proj_x',
+    tag: 'v1',
+    revisionId: 'a'.repeat(40),
     ownerId: 'user_owner',
     visibility: 'private',
     manifestKey: 'm.json',
@@ -1911,6 +2334,7 @@ describe('PublicationsService.resolvePublicationFile (R3)', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
     return { service, storage };
   }
@@ -1918,6 +2342,12 @@ describe('PublicationsService.resolvePublicationFile (R3)', () => {
   function createGranteeDatabase(args: { readonly accessRows: unknown[] }): PublicationsServiceDeps[0] {
     const publicationLimit = vi.fn().mockResolvedValue([privateRow]);
     const publicationFrom = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: publicationLimit }) });
+
+    /* Every publication read consults `project_git` first: derived state that is
+       behind the manifest is repaired before the row is served (D19). */
+    const derivedFrom = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ generation: 3, derivedGeneration: 3 }]) }),
+    });
 
     const userLimit = vi.fn().mockResolvedValue([{ email: 'friend@example.com', emailVerified: true }]);
     const userFrom = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: userLimit }) });
@@ -1928,6 +2358,7 @@ describe('PublicationsService.resolvePublicationFile (R3)', () => {
     const select = vi
       .fn()
       .mockReturnValueOnce({ from: publicationFrom })
+      .mockReturnValueOnce({ from: derivedFrom })
       .mockReturnValueOnce({ from: userFrom })
       .mockReturnValueOnce({ from: accessFrom });
 
@@ -2048,6 +2479,7 @@ describe('PublicationsService.openPublicationFile (R3)', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const sha = 'f'.repeat(64);
@@ -2078,6 +2510,7 @@ describe('PublicationsService.openPublicationFile (R3)', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     await expect(service.openPublicationFile('f'.repeat(64), 'main.ts')).rejects.toThrow('denied');
@@ -2102,6 +2535,7 @@ describe('PublicationsService.openPublicationFile (R3)', () => {
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     const opened = await service.openPublicationFile('f'.repeat(64), 'thumbnail.webp');
@@ -2117,6 +2551,8 @@ describe('PublicationsService.getPublicationForViewer tiered file URLs (R4/R6)',
   const baseRow = {
     id: 'pub_test',
     projectId: 'proj_x',
+    tag: 'v1',
+    revisionId: 'a'.repeat(40),
     ownerId: 'user_owner',
     visibility: 'private',
     manifestKey: 'm.json',
@@ -2159,6 +2595,7 @@ describe('PublicationsService.getPublicationForViewer tiered file URLs (R4/R6)',
       createMetricsStub(),
       createEmailStub(),
       createBillingStub(),
+      ...leaseDependencies(''),
     );
 
     return { service, storage };
@@ -2167,12 +2604,10 @@ describe('PublicationsService.getPublicationForViewer tiered file URLs (R4/R6)',
   it('should emit authenticated proxy URLs with encoded paths for private publication files', async () => {
     const { service, storage } = createViewerService({
       row: baseRow,
-      /* eslint-disable @typescript-eslint/naming-convention -- file-path keys can't be camelCase */
       manifestFiles: {
         'main.ts': `sha256:${testManifestSha}`,
         'src/deep file.ts': `sha256:${'b'.repeat(64)}`,
       },
-      /* eslint-enable @typescript-eslint/naming-convention -- end file-path window */
     });
 
     const result = await service.getPublicationForViewer({ publicationId: 'pub_test', viewerUserId: 'user_owner' });
@@ -2222,14 +2657,13 @@ describe('PublicationsService.getPublicationForViewer tiered file URLs (R4/R6)',
 });
 
 describe('PublicationsService private-visibility entitlement gate (T4/T16)', () => {
-  const privateManifest = {
+  /* The gate refuses before anything is materialized, so this row needs no
+     repository and no real revision. */
+  const privateRequest = publishRequest(undefined, {
     projectId: 'proj_gate',
-    entryPath: 'main.ts',
     title: 'Gate test',
     visibility: 'private',
-  } as unknown as Parameters<PublicationsService['publishFromUpload']>[0]['manifest'];
-
-  const files = new Map<string, Uint8Array<ArrayBuffer>>([['main.ts', new Uint8Array([1])]]);
+  });
 
   function createGateDatabase(parentRows: unknown[]): PublicationsServiceDeps[0] {
     const limit = vi.fn().mockResolvedValue(parentRows);
@@ -2250,15 +2684,16 @@ describe('PublicationsService private-visibility entitlement gate (T4/T16)', () 
       createMetricsStub(),
       createEmailStub(),
       createBillingStub({ canCreatePrivateShares: args.entitled }),
+      ...leaseDependencies(seedRepository(new Map([['main.ts', new Uint8Array([1])]]))),
     );
   }
 
   it('rejects a private publish from a free-tier user with ENTITLEMENT_REQUIRED', async () => {
     const service = createGateService({ entitled: false, parentRows: [] });
 
-    const publishAttempt = service.publishFromUpload({ ownerId: 'user_free', manifest: privateManifest, files });
+    const publishAttempt = service.publishFromRevision({ ownerId: 'user_free', request: privateRequest });
 
-    await expect(publishAttempt).rejects.toThrowError(ForbiddenException);
+    await expect(publishAttempt).rejects.toThrow(ForbiddenException);
     await expect(publishAttempt).rejects.toMatchObject({
       response: { code: publicationApiCode.ENTITLEMENT_REQUIRED },
     });
@@ -2270,7 +2705,7 @@ describe('PublicationsService private-visibility entitlement gate (T4/T16)', () 
     // The gate passes and the publish proceeds until it needs the real config
     // plumbing — anything other than ENTITLEMENT_REQUIRED proves the gate opened.
     await expect(
-      service.publishFromUpload({ ownerId: 'user_free', manifest: privateManifest, files }),
+      service.publishFromRevision({ ownerId: 'user_free', request: privateRequest }),
     ).rejects.not.toMatchObject({ response: { code: publicationApiCode.ENTITLEMENT_REQUIRED } });
   });
 
@@ -2285,10 +2720,11 @@ describe('PublicationsService private-visibility entitlement gate (T4/T16)', () 
       createMetricsStub(),
       createEmailStub(),
       createBillingStub({ canCreatePrivateShares: true }),
+      ...leaseDependencies(seedRepository(new Map([['main.ts', new Uint8Array([1])]]))),
     );
 
     await expect(
-      service.publishFromUpload({ ownerId: 'user_pro', manifest: privateManifest, files }),
+      service.publishFromRevision({ ownerId: 'user_pro', request: privateRequest }),
     ).rejects.not.toMatchObject({ response: { code: publicationApiCode.ENTITLEMENT_REQUIRED } });
   });
 });

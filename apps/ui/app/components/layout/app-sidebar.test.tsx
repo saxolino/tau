@@ -1,15 +1,16 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppSidebar } from '#components/layout/app-sidebar.js';
 import { SidebarProvider } from '#components/ui/sidebar.js';
-import { TooltipProvider } from '#components/ui/tooltip.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { featureFlagDefaults } from '#flags/flag.constants.js';
 import type { FeatureFlags } from '#flags/flag.constants.js';
 
 const mockState = vi.hoisted(() => ({
   flags: undefined as FeatureFlags | undefined,
+  open: true,
 }));
 
 vi.mock('#flags/use-feature.js', () => ({
@@ -17,10 +18,10 @@ vi.mock('#flags/use-feature.js', () => ({
 }));
 
 vi.mock('#hooks/use-cookie.js', () => ({
-  useCookie: <T,>(_name: string, defaultValue: T) => [defaultValue, vi.fn()] as const,
+  useCookie: () => [mockState.open, vi.fn()] as const,
 }));
 
-vi.mock('#hooks/use-mobile.js', () => ({
+vi.mock('@taucad/ui/hooks/use-mobile', () => ({
   useIsMobile: () => false,
 }));
 
@@ -32,6 +33,10 @@ vi.mock('#components/layout/command-palette.js', () => ({
   Commands: () => <button type='button'>Search projects and chats</button>,
 }));
 
+vi.mock('#components/nav/project-navigation-command-items.js', () => ({
+  ProjectNavigationCommandItems: () => undefined,
+}));
+
 vi.mock('#components/nav/nav-chat.js', () => ({
   NavChat: () => null,
 }));
@@ -40,12 +45,8 @@ vi.mock('#components/nav/nav-user.js', () => ({
   NavUser: () => <button type='button'>Account</button>,
 }));
 
-vi.mock('#components/release-badge.js', () => ({
-  ReleaseBadge: () => <span>Alpha</span>,
-}));
-
 vi.mock('#components/icons/tau-wordmark.js', () => ({
-  TauWordmark: ({ className }: { readonly className?: string }) => <span className={className}>Tau</span>,
+  TauWordmark: ({ className }: { readonly className?: string }) => <svg aria-hidden className={className} />,
 }));
 
 function renderSidebar(): ReturnType<typeof render> {
@@ -69,6 +70,21 @@ function getNavLink(name: string): HTMLElement | undefined {
 describe('AppSidebar', () => {
   beforeEach(() => {
     mockState.flags = featureFlagDefaults;
+    mockState.open = true;
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('should show Parts by default and hide it when disabled', () => {
+    const view = renderSidebar();
+    expect(getNavLink('Parts')).toHaveAttribute('href', '/parts');
+    view.unmount();
+    mockState.flags = { ...featureFlagDefaults, partsWarehouse: false };
+    renderSidebar();
+    expect(getNavLink('Parts')).toBeUndefined();
   });
 
   it('should hide the Plugins nav item when the Plugins Store flag is disabled', () => {
@@ -88,15 +104,36 @@ describe('AppSidebar', () => {
     expect(getNavLink('Projects')).toHaveAttribute('href', '/projects');
   });
 
-  it('uses a flush desktop shell with neutral navigation selection', () => {
+  it('uses an Allotment-owned browser pane without duplicate titlebar controls', () => {
     const { container } = renderSidebar();
-    const sidebar = container.querySelector('[data-slot=sidebar][data-variant]');
+    const sidebar = screen.getByRole('complementary', { name: 'Application sidebar' });
     const projectsButton = getNavLink('Projects')?.querySelector('[data-sidebar=menu-button]');
 
-    expect(sidebar).toHaveAttribute('data-variant', 'sidebar');
-    expect(projectsButton).toHaveClass('data-[active=true]:text-sidebar-accent-foreground');
+    expect(sidebar).toHaveAttribute('id', 'app-sidebar');
+    expect(sidebar).toHaveClass('w-full', 'border-r');
+    expect(projectsButton).toHaveClass('data-[active=true]:text-foreground');
     expect(projectsButton).not.toHaveClass('data-[active=true]:text-primary');
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
-    expect(container.querySelector('[data-slot=sidebar-header] [data-slot=sidebar-trigger]')).toBeInTheDocument();
+    expect(container.querySelector('[data-slot=sidebar-header]')).toHaveClass('h-9');
+    expect(container.querySelector('[data-slot=sidebar-header] [data-slot=sidebar-trigger]')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Home' })).not.toBeInTheDocument();
+  });
+
+  it('keeps desktop identity beneath the native titlebar without duplicating its toggle', () => {
+    vi.stubEnv('TAU_TARGET', 'desktop');
+    const { container } = renderSidebar();
+
+    expect(container.querySelector('[data-slot=sidebar-header]')).toHaveClass('pt-9');
+    expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(container.querySelector('[data-slot=sidebar-header] [data-slot=sidebar-trigger]')).not.toBeInTheDocument();
+  });
+
+  it('removes the hidden Allotment pane from interaction and the accessibility tree', () => {
+    mockState.open = false;
+    const { container } = renderSidebar();
+    const sidebar = container.querySelector('#app-sidebar');
+
+    expect(sidebar).toHaveAttribute('aria-hidden', 'true');
+    expect(sidebar).toHaveAttribute('inert');
   });
 });

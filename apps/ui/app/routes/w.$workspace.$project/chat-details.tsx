@@ -3,7 +3,7 @@ import { useCallback } from 'react';
 import { useSelector } from '@xstate/react';
 import type { FileSystemBackend } from '@taucad/types';
 import { projectLocationDescriptor } from '#utils/project-creation-location.utils.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import {
   FloatingPanel,
   FloatingPanelClose,
@@ -13,12 +13,13 @@ import {
   FloatingPanelContentTitle,
   FloatingPanelContentBody,
 } from '#components/ui/floating-panel.js';
-import { Input } from '#components/ui/input.js';
-import { Textarea } from '#components/ui/textarea.js';
+import { Input } from '@taucad/ui/components/input';
+import { Textarea } from '@taucad/ui/components/textarea';
 import { Tags, TagsTrigger } from '#components/ui/input-tags.js';
 import { FileSelector } from '#components/files/file-selector.js';
 import { ChatDetailsUsage } from '#routes/w.$workspace.$project/chat-details-usage.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { PackagesPanel } from '#routes/w.$workspace.$project/packages-panel.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useProject } from '#hooks/use-project.js';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
@@ -45,21 +46,27 @@ function FileSystemInfo({
   const Icon = backendType === 'webaccess' ? FolderOpen : backendType === 'memory' ? MemoryStick : House;
 
   return (
-    <div className='space-y-2'>
-      <label className='text-sm font-medium text-foreground'>Location:</label>
-      <div className='flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2'>
+    <section aria-label='Storage' className='overflow-hidden rounded-xl border border-border bg-card'>
+      <h2 className='border-b px-3 py-2 text-[13px] font-medium text-foreground'>Storage</h2>
+      <div className='flex items-center gap-2 p-3'>
         <Icon className='size-4 shrink-0 text-muted-foreground' />
         <div className='flex flex-col gap-0.5'>
           <span className='text-sm font-medium'>{meta.label}</span>
           <span className='text-xs text-muted-foreground'>{meta.detail}</span>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
-export function DetailsPanelBody(): React.JSX.Element {
+export function DetailsPanelBody({
+  readOnly: sharedReadOnly = false,
+  enableHistory = true,
+}: { readonly readOnly?: boolean; readonly enableHistory?: boolean } = {}): React.JSX.Element {
   const { projectRef, updateName, updateDescription, updateTags } = useProject();
+  // A degraded tau.json is shown through a lossy view, so it is not edited here until it is repaired (R4).
+  const needsRepair = useSelector(projectRef, (state) => state.context.manifestIssue !== undefined);
+  const readOnly = sharedReadOnly || needsRepair;
 
   const projectName = useSelector(projectRef, (state) => state.context.project?.name ?? '');
   const projectDescription = useSelector(projectRef, (state) => state.context.project?.description ?? '');
@@ -85,60 +92,77 @@ export function DetailsPanelBody(): React.JSX.Element {
   );
 
   return (
-    <div className='space-y-4 p-3'>
-      {/* Project Information */}
-      <div className='space-y-3'>
-        <div className='space-y-2'>
-          <label className='text-sm font-medium text-foreground' htmlFor='project-name'>
-            Name:
-          </label>
-          <Input
-            id='project-name'
-            value={projectName}
-            placeholder='Enter your project name...'
-            onChange={(event) => {
-              updateName(event.target.value);
-            }}
-          />
-        </div>
+    <div data-slot='details-panel-body' className='size-full min-h-0 overflow-hidden bg-sidebar'>
+      <div className='size-full scroll-shadows-y overflow-y-auto p-2 [--scroll-fade-end:transparent] [--scroll-fade-size:28px]'>
+        <div className='flex min-h-full flex-col gap-2'>
+          <section aria-label='Project' className='overflow-hidden rounded-xl border border-border bg-card'>
+            <h2 className='border-b px-3 py-2 text-[13px] font-medium text-foreground'>Project</h2>
+            <div className='space-y-3 p-3'>
+              {needsRepair ? (
+                <p className='text-sm text-muted-foreground'>Repair tau.json to edit these details.</p>
+              ) : null}
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground' htmlFor='project-name'>
+                  Name
+                </label>
+                <Input
+                  id='project-name'
+                  value={projectName}
+                  disabled={readOnly}
+                  placeholder='Enter your project name…'
+                  onChange={(event) => {
+                    updateName(event.target.value);
+                  }}
+                />
+              </div>
 
-        <div className='space-y-2'>
-          <label className='text-sm font-medium text-foreground' htmlFor='project-description'>
-            Description:
-          </label>
-          <Textarea
-            id='project-description'
-            value={projectDescription}
-            placeholder="Describe what you're building..."
-            className='min-h-20'
-            onChange={(event) => {
-              updateDescription(event.target.value);
-            }}
-          />
-        </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground' htmlFor='project-description'>
+                  Description
+                </label>
+                <Textarea
+                  id='project-description'
+                  value={projectDescription}
+                  disabled={readOnly}
+                  placeholder="Describe what you're building…"
+                  className='min-h-20'
+                  onChange={(event) => {
+                    updateDescription(event.target.value);
+                  }}
+                />
+              </div>
 
-        <div className='space-y-2'>
-          <label className='text-sm font-medium text-foreground'>Tags:</label>
-          <Tags tags={projectTags} onTagsChange={handleTagsChange}>
-            <TagsTrigger placeholder='Add tags...' />
-          </Tags>
-        </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Tags</label>
+                {readOnly ? (
+                  <p className='text-sm text-muted-foreground'>{projectTags.join(', ') || 'No tags'}</p>
+                ) : (
+                  <Tags tags={projectTags} onTagsChange={handleTagsChange}>
+                    <TagsTrigger placeholder='Add tags…' />
+                  </Tags>
+                )}
+              </div>
 
-        <div className='space-y-2'>
-          <label className='text-sm font-medium text-foreground'>Main File:</label>
-          <FileSelector
-            selectedFile={mainFile}
-            placeholder='Select main file...'
-            title='Select Main File'
-            description='Choose the main file for your project'
-            emptyMessage='No files available'
-            onSelect={handleMainFileChange}
-          />
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Main file</label>
+                <FileSelector
+                  selectedFile={mainFile}
+                  placeholder='Select main file…'
+                  title='Select Main File'
+                  description='Choose the main file for your project'
+                  emptyMessage='No files available'
+                  isDisabled={readOnly}
+                  onSelect={handleMainFileChange}
+                />
+              </div>
+            </div>
+          </section>
+
+          <FileSystemInfo backendType={backendType} activeWorkspaceName={activeWorkspaceName} />
+          {sharedReadOnly ? null : <PackagesPanel />}
+          {sharedReadOnly ? null : <ChatDetailsUsage enabled={enableHistory} />}
         </div>
       </div>
-
-      <FileSystemInfo backendType={backendType} activeWorkspaceName={activeWorkspaceName} />
-      <ChatDetailsUsage />
     </div>
   );
 }
@@ -172,7 +196,7 @@ export function ChatDetails({
             />
           </FloatingPanelContentHeaderActions>
         </FloatingPanelContentHeader>
-        <FloatingPanelContentBody className='px-0 py-0'>
+        <FloatingPanelContentBody className='p-0'>
           <DetailsPanelBody />
         </FloatingPanelContentBody>
       </FloatingPanelContent>

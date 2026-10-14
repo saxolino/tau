@@ -1,11 +1,16 @@
 import type {
   ProviderCapabilities,
   FileSystemProvider,
+  FileStatOptions,
+  FileTreeNode,
+  HeadFileStat,
   ProjectDiscoveryEntry,
   ProjectLocator,
   ProjectRootConfig,
   ProjectRootDiscoveryStatus,
   RootedFileSystem,
+  RootedPorcelain,
+  MountConfig,
   StorageRootConfig,
   WatchEvent,
   WatchRequest,
@@ -13,13 +18,53 @@ import type {
   WorkspaceMutationError,
   WorkspaceScope,
 } from '@taucad/filesystem';
-import type { ChangeEvent, FileStat, FileStatEntry, ProjectManifestParseIssue } from '@taucad/types';
+import { pendingProjectCommitInputSchema } from '@taucad/filesystem';
+import type { ComposedView } from '@taucad/filesystem/composed-view';
+import type { ContentExportFilter } from '@taucad/filesystem/content-ops';
+import type {
+  ChangeEvent,
+  CheckedFileWrite,
+  CheckedFileWriteResult,
+  FileWritePrecondition,
+  FileProvenance,
+  FileStat,
+  FileStatEntry,
+  ProjectManifestParseIssue,
+  MachineSettingsRecord,
+  MachineSettingsSnapshot,
+  MachineSettingsEdit,
+  MachineSettingsSave,
+  MachineSettingsService,
+  MachineSettingsValue,
+} from '@taucad/types';
 import { projectManifestSchema, projectManifestSchemaUrl } from '@taucad/types';
+import { filesystemBackends } from '@taucad/types/constants';
 import type { BridgeProtocolSchemas } from '@taucad/rpc/bridge';
-import type { WireValidationResult, WireValidator } from '@taucad/rpc';
+import type { WireValidator } from '@taucad/rpc';
+import { assertRootedPath } from '@taucad/utils/path';
+import { z } from 'zod';
+import { cloneBoundedJson } from '@taucad/parameters/json';
 
-/** Current filesystem bridge protocol version. @public */
-export const fileSystemBridgeProtocolVersion = 1;
+/**
+ * Keep exact result branches while emitting a Zod 4.0-compatible union type.
+ * @param discriminator - The wire discriminator.
+ * @param branches - The validated result variants.
+ * @returns The discriminated parser under the stable union type.
+ */
+const discriminatedResultUnion = <
+  const Branches extends readonly [z.core.$ZodTypeDiscriminable, ...z.core.$ZodTypeDiscriminable[]],
+>(
+  discriminator: string,
+  branches: Branches,
+): z.ZodUnion<Branches> => z.discriminatedUnion(discriminator, branches);
+
+/**
+ * Current filesystem bridge protocol version.
+ *
+ * Version 6 adds authoritative stat head mode.
+ * @public
+ */
+export const fileSystemBridgeProtocolVersion = 6;
 
 const unavailableCapabilities = null;
 
@@ -66,9 +111,127 @@ export type FileSystemBridgeHello =
       };
     };
 
+/**
+ * What an unrooted (workspace) connection may name: **topology only**.
+ *
+ * Charter deviation H3 is closed here (W11, EQ3). The wire used to carry 21
+ * per-path content calls beside these nine, and the authority-global surface
+ * walks the raw provider — so every one of them was an unmasked read or write of
+ * a project tree, which is exactly what the reserved layout refuses everywhere
+ * else (authority Rule 16). Content is now the rooted surface's without
+ * exception: the members still exist on {@link WorkspaceFileService} as
+ * in-process members, because the mutation pipeline and the rooted views call
+ * them, and only the *wire* lost them.
+ */
 type WorkspaceBridgeMethodName =
-  | 'readFile'
+  | 'mount'
+  | 'unmount'
+  | 'configureProjectRoots'
+  | 'listProjectManifests'
+  | 'commitPendingProjectDirectory'
+  | 'adoptProjectDirectory'
+  | 'permanentlyDeleteProjectDirectory'
+  | 'disposeStorageRoot'
+  | 'pollExternalChanges';
+
+/**
+ * The `/files` browser's physical-scope reads, under their own wire names
+ * (charter D5, W11).
+ *
+ * Every path here names a {@link WorkspaceScope} the mount table does not route
+ * — a folder the person granted that no project claims — so no composed view
+ * exists to serve it and the authority reads it through a standalone provider.
+ * The names are the authority's own read members plus `Scoped`, because `scope`
+ * is **required** and a member called `readFile` on this surface would invite
+ * precisely the routed-path read W11 removed: a routed path is content, and
+ * content belongs to the root that owns it (D5, D12).
+ *
+ * @public
+ */
+export type FileSystemBridgeScopedReads = {
+  readScopedFile(path: string, options: { readonly encoding: 'utf8'; readonly scope: WorkspaceScope }): Promise<string>;
+  readScopedFile(path: string, options: { readonly scope: WorkspaceScope }): Promise<Uint8Array<ArrayBuffer>>;
+  readScopedShallowDirectory(path: string, options: { readonly scope: WorkspaceScope }): Promise<FileTreeNode[]>;
+  getScopedZippedDirectory(path: string, options: { readonly scope: WorkspaceScope }): Promise<Blob>;
+};
+
+/** Workspace-wide bridge calls, with signatures derived from the authority service. @public */
+export type FileSystemBridgeWorkspaceService = Pick<WorkspaceFileService, WorkspaceBridgeMethodName> &
+  FileSystemBridgeScopedReads;
+
+/** Rooted/runtime bridge calls, including watch registration that may cross an asynchronous authority boundary. @public */
+export type FileSystemBridgeRuntimeService = FileSystemProvider &
+  Partial<MachineSettingsService> & {
+    watch?: (request: WatchRequest, handler: (event: WatchEvent) => void) => (() => void) | Promise<() => void>;
+    /*
+     * Read content operations are the composition site's to serve (charter D2):
+     * a host that hands over a bare provider has no composed view to inherit a
+     * mask from, so it offers neither.
+     */
+    archive?: (path: string, options?: ArchiveOptions) => Promise<Blob>;
+    contents?: (path: string, options?: ArchiveOptions) => Promise<Record<string, Uint8Array<ArrayBuffer>>>;
+    /*
+     * Search and recursive stat are the root's index, masked by the view above it
+     * (charter D3): a bare provider has no index and offers neither.
+     */
+    search?: (query: string, options?: SearchOptions) => Promise<FileStatEntry[]>;
+    statTree?: (path: string) => Promise<FileStatEntry[]>;
+    /*
+     * The mutating porcelain is the rooted surface's too (charter D4): one batch
+     * in the mutation pipeline, mask-checked by the composed view above it. A
+     * host that hands over a bare provider serves none of it, so every row is
+     * optional — and `copyTree`'s entry filter is the *view's* own, never a
+     * caller's, because a predicate does not cross a wire.
+     */
+  } & Partial<RootedPorcelain>;
+
+/**
+ * Caller-owned filter on a read content operation.
+ *
+ * The view's mask is inherited, never re-declared. `versionedOnly` is the
+ * whole-project export's own choice: the registry's `versioned` rows are the
+ * bytes that are the project, so records, caches and generated output stay out
+ * of an archive a person shares.
+ *
+ * @public
+ */
+export type ArchiveOptions = ContentExportFilter;
+
+/**
+ * Caller-owned cap and shape of a rooted search.
+ *
+ * The mask is not here: the view applies its own policy before the index is
+ * asked, so `maxResults` counts only rows the consumer may see.
+ *
+ * @public
+ */
+export type SearchOptions = { readonly maxResults?: number; readonly includeDirectories?: boolean };
+
+type FileSystemBridgeReadFile = {
+  (path: string, options: 'utf8' | { readonly encoding: 'utf8' }): Promise<string>;
+  (path: string, options?: { readonly encoding?: undefined }): Promise<Uint8Array<ArrayBuffer>>;
+};
+
+/**
+ * What an **unrooted** (workspace) connection answers: the authority's topology
+ * and the `/files` browser's scoped reads, and nothing that names a routed path.
+ *
+ * @public
+ */
+export type FileSystemBridgeUnrootedCalls = FileSystemBridgeWorkspaceService;
+
+/**
+ * Per-path content the wire carries **only** on a rooted connection (W11, H3).
+ *
+ * The signatures stay the authority's, because the composed view and the raw
+ * rooted filesystem both answer them with those shapes; what changed is which
+ * connection may name them. `readFile` and `writeFileChecked` are re-declared
+ * because the wire carries neither an encoding-plus-scope bag nor an
+ * `AbortSignal`.
+ */
+type RootedBridgeContentMethodName =
   | 'writeFile'
+  | 'appendFile'
   | 'writeFiles'
   | 'mkdir'
   | 'readdir'
@@ -82,49 +245,65 @@ type WorkspaceBridgeMethodName =
   | 'bulkMove'
   | 'unlink'
   | 'rmdir'
-  | 'exists'
-  | 'getDirectoryStat'
-  | 'getDirectoryContents'
-  | 'duplicateFile'
-  | 'copyDirectory'
-  | 'getZippedDirectory'
-  | 'mount'
-  | 'unmount'
-  | 'configureProjectRoots'
-  | 'listProjectManifests'
-  | 'commitPendingProjectDirectory'
-  | 'adoptProjectDirectory'
-  | 'permanentlyDeleteProjectDirectory'
-  | 'readShallowDirectory'
-  | 'disposeStorageRoot'
-  | 'readDirectory'
-  | 'searchFiles'
-  | 'pollExternalChanges';
+  | 'exists';
 
-/** Workspace-wide bridge calls, with signatures derived from the authority service. @public */
-export type FileSystemBridgeWorkspaceService = Pick<WorkspaceFileService, WorkspaceBridgeMethodName>;
-
-/** Rooted/runtime bridge calls, with signatures derived from the captured filesystem service. @public */
-export type FileSystemBridgeRuntimeService = FileSystemProvider & Partial<Pick<RootedFileSystem, 'watch'>>;
-
-type FileSystemBridgeReadFile = {
-  (path: string, options: 'utf8' | { readonly encoding: 'utf8'; readonly scope?: WorkspaceScope }): Promise<string>;
-  (path: string, options?: { readonly scope?: WorkspaceScope }): Promise<Uint8Array<ArrayBuffer>>;
-};
-
-/** Complete callable surface supported by a filesystem bridge proxy. @public */
-export type FileSystemBridgeService = Omit<FileSystemBridgeWorkspaceService, 'readFile'> &
-  Pick<RootedFileSystem, 'rename'> & {
+/**
+ * What only a **rooted** connection answers (gate G-A F9, G-B G5; W11).
+ *
+ * `provenance` and `readdirWithStats` are the composed view's own and need a
+ * consumer; `rename` is the rooted spelling of a move; the read content
+ * operations, the index queries and the mutating porcelain are the rooted
+ * surface's (charter D2, D3, D4) — and since W11 so is every per-path call,
+ * masked by the view the connection named. An unrooted connection serves none of
+ * them, so they are not on {@link FileSystemBridgeUnrootedCalls}.
+ *
+ * @public
+ */
+export type FileSystemBridgeRootedCalls = MachineSettingsService &
+  Pick<RootedFileSystem, 'rename'> &
+  Pick<WorkspaceFileService, RootedBridgeContentMethodName> &
+  Pick<ComposedView, 'provenance' | 'readdirWithStats'> & {
     readFile: FileSystemBridgeReadFile;
+    writeFileChecked(input: Omit<CheckedFileWrite, 'signal'>): Promise<CheckedFileWriteResult>;
+    deleteFileChecked(input: {
+      path: string;
+      preconditions: readonly FileWritePrecondition[];
+    }): Promise<CheckedFileWriteResult>;
+    archive(path: string, options?: ArchiveOptions): Promise<Blob>;
+    contents(path: string, options?: ArchiveOptions): Promise<Record<string, Uint8Array<ArrayBuffer>>>;
+    search(query: string, options?: SearchOptions): Promise<FileStatEntry[]>;
+    statTree(path: string): Promise<FileStatEntry[]>;
+    copyTree(source: string, target: string): Promise<void>;
+    duplicate(source: string, target: string): Promise<void>;
   };
+
+/**
+ * Every call the wire carries, rooted and unrooted alike.
+ *
+ * This is the *schema* set — one validator row per call name — not a promise
+ * that any one connection serves all of it. A caller takes the half its
+ * connection has: `FileSystemBridgeWorkspaceProxy` or
+ * `FileSystemBridgeRootedProxy` in `filesystem-bridge.ts`.
+ *
+ * @public
+ */
+export type FileSystemBridgeService = FileSystemBridgeUnrootedCalls & FileSystemBridgeRootedCalls;
 
 type FileSystemBridgeCallName = keyof FileSystemBridgeService;
 type FileSystemBridgeCallArgs<Name extends FileSystemBridgeCallName> = Name extends 'readFile'
-  ? [path: string, options?: 'utf8' | { readonly encoding?: 'utf8'; readonly scope?: unknown }]
-  : Parameters<FileSystemBridgeService[Name]>;
-type FileSystemBridgeCallResult<Name extends FileSystemBridgeCallName> = Name extends 'readFile'
+  ? [path: string, options?: 'utf8' | { readonly encoding?: 'utf8' }]
+  : Name extends 'stat'
+    ? [path: string, options?: FileStatOptions]
+    : Name extends 'readdirWithStats'
+      ? [path: string, options?: { readonly content: 'head' }]
+      : Name extends 'readScopedFile'
+        ? [path: string, options: { readonly encoding?: 'utf8'; readonly scope: WorkspaceScope }]
+        : Parameters<FileSystemBridgeService[Name]>;
+type FileSystemBridgeCallResult<Name extends FileSystemBridgeCallName> = Name extends 'readFile' | 'readScopedFile'
   ? string | Uint8Array<ArrayBuffer>
-  : Awaited<ReturnType<FileSystemBridgeService[Name]>>;
+  : Name extends 'readdirWithStats'
+    ? Array<{ name: string } & (FileStat | HeadFileStat)>
+    : Awaited<ReturnType<FileSystemBridgeService[Name]>>;
 
 type FileSystemBridgeCallSchemas = {
   readonly [Name in FileSystemBridgeCallName]: {
@@ -133,67 +312,122 @@ type FileSystemBridgeCallSchemas = {
   };
 };
 
-const failure = (message: string, path: readonly PropertyKey[] = []): WireValidationResult<never> => ({
-  success: false,
-  error: { issues: [{ path, message }] },
-});
-
-const validator = <T>(check: (value: unknown) => boolean, message: string): WireValidator<T> => ({
-  safeParse(value) {
-    if (!check(value)) {
-      return failure(message);
-    }
-    // This is the single domain trust handoff: each predicate above this cast
-    // checks every bridge-owned known field while tolerating additive fields.
-    return { success: true, data: value as T };
-  },
-});
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-const isString = (value: unknown): value is string => typeof value === 'string';
-const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
-const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-const isBytes = (value: unknown): value is Uint8Array<ArrayBuffer> => value instanceof Uint8Array;
-const isStringArray = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every((item) => isString(item));
-const isOptionalBoolean = (value: unknown): boolean => value === undefined || isBoolean(value);
-const isOptionalString = (value: unknown): boolean => value === undefined || isString(value);
-const isProjectId = (value: unknown): value is string => projectManifestSchema.shape.id.safeParse(value).success;
-const hasOnlyKnownTypedFields = (
-  value: unknown,
-  fields: Readonly<Record<string, (field: unknown) => boolean>>,
-): value is Record<string, unknown> =>
-  isRecord(value) && Object.entries(fields).every(([name, check]) => !(name in value) || check(value[name]));
-
-const isCapabilities = (value: unknown): value is ProviderCapabilities =>
-  isRecord(value) && isBoolean(value['persistent']) && isBoolean(value['writable']) && isBoolean(value['quotaBased']);
-
-const isFileStat = (value: unknown): value is FileStat => {
-  if (!isRecord(value) || (value['type'] !== 'file' && value['type'] !== 'dir')) {
+const stringSchema = z.string();
+const finiteNumberSchema = z.number();
+const plainRecordSchema = z.custom<Record<string, unknown>>(
+  (value) => value !== null && typeof value === 'object' && !Array.isArray(value),
+);
+const bytesSchema: z.ZodType<Uint8Array<ArrayBuffer>> = z.instanceof(Uint8Array);
+const rootedPathSchema = z.string().refine((value) => {
+  try {
+    return assertRootedPath(value) === value;
+  } catch {
     return false;
   }
-  if (!isNumber(value['size']) || !isNumber(value['mtimeMs'])) {
+});
+const projectDirectoryPathSchema = rootedPathSchema.refine(
+  (value) => value !== '' && !value.includes('/') && !value.startsWith('.'),
+);
+const projectIdSchema = projectManifestSchema.shape.id;
+
+const durabilityClassValues = ['exclusive-append', 'stream-append', 'transactional-rewrite', 'ephemeral'] as const;
+const durabilityClassSchema = z.enum(durabilityClassValues);
+const providerCapabilitiesSchema: z.ZodType<ProviderCapabilities> = z.looseObject({
+  persistent: z.boolean(),
+  writable: z.boolean(),
+  quotaBased: z.boolean(),
+  // Version-1 peers sent only the three booleans. Current providers include durability.
+  durability: durabilityClassSchema.optional(),
+  coalescesWrites: z.boolean().optional(),
+});
+
+const fileStatSchema: z.ZodType<FileStat> = z.custom<FileStat>((value) => {
+  const record = plainRecordSchema.safeParse(value);
+  if (!record.success || !finiteNumberSchema.safeParse(record.data['size']).success) {
     return false;
   }
-  if (value['type'] === 'dir') {
+  if (!finiteNumberSchema.safeParse(record.data['mtimeMs']).success) {
+    return false;
+  }
+  if (record.data['type'] === 'dir') {
+    return true;
+  }
+  if (record.data['type'] !== 'file') {
+    return false;
+  }
+  return (
+    (record.data['contentKind'] === 'binary' && record.data['lineCount'] === undefined) ||
+    (record.data['contentKind'] === 'text' && finiteNumberSchema.safeParse(record.data['lineCount']).success)
+  );
+});
+
+const headFileStatSchema: z.ZodType<HeadFileStat> = z.custom<HeadFileStat>((value) => {
+  const record = plainRecordSchema.safeParse(value);
+  if (
+    !record.success ||
+    !finiteNumberSchema.safeParse(record.data['size']).success ||
+    !finiteNumberSchema.safeParse(record.data['mtimeMs']).success
+  ) {
+    return false;
+  }
+  if (record.data['type'] === 'dir') {
     return true;
   }
   return (
-    (value['contentKind'] === 'binary' && value['lineCount'] === undefined) ||
-    (value['contentKind'] === 'text' && isNumber(value['lineCount']))
+    record.data['type'] === 'file' &&
+    (record.data['contentKind'] === 'text' || record.data['contentKind'] === 'binary') &&
+    record.data['lineCount'] === undefined
   );
-};
+});
 
-const isFileStatEntry = (value: unknown): value is FileStatEntry => {
-  if (!isRecord(value)) {
-    return false;
-  }
-  const { path, name } = value;
-  return isFileStat(value) && isString(path) && isString(name);
-};
+const fileStatEntrySchema: z.ZodType<FileStatEntry> = z.custom<FileStatEntry>((value) => {
+  const record = plainRecordSchema.safeParse(value);
+  return (
+    record.success &&
+    fileStatSchema.safeParse(value).success &&
+    stringSchema.safeParse(record.data['path']).success &&
+    stringSchema.safeParse(record.data['name']).success
+  );
+});
 
-const mutationErrorCodes = new Set([
+const fileStatEntriesSchema: z.ZodType<FileStatEntry[]> = z.custom<FileStatEntry[]>(
+  (value) => Array.isArray(value) && value.every((entry) => fileStatEntrySchema.safeParse(entry).success),
+);
+
+const fileProvenanceSchema: z.ZodType<FileProvenance> = z.looseObject({
+  source: z.enum(['project', 'dependencies', 'system-skills']),
+  versioned: z.boolean(),
+  agentAccess: z.enum(['read-write', 'read-only']),
+  identity: z.string().optional(),
+  overrides: z.string().optional(),
+});
+
+const composedDirectoryRowSchema: z.ZodType<{ name: string } & (FileStat | HeadFileStat)> = z.custom<
+  { name: string } & (FileStat | HeadFileStat)
+>((value) => {
+  const record = plainRecordSchema.safeParse(value);
+  return (
+    record.success &&
+    stringSchema.safeParse(record.data['name']).success &&
+    (fileStatSchema.safeParse(value).success || headFileStatSchema.safeParse(value).success) &&
+    (record.data['provenance'] === undefined || fileProvenanceSchema.safeParse(record.data['provenance']).success)
+  );
+});
+
+const composedDirectoryRowsSchema: z.ZodType<Array<{ name: string } & (FileStat | HeadFileStat)>> = z.custom<
+  Array<{ name: string } & (FileStat | HeadFileStat)>
+>((value) => Array.isArray(value) && value.every((row) => composedDirectoryRowSchema.safeParse(row).success));
+
+/** Exact listing postcondition for a call made without the head option. @public */
+export const exactComposedDirectoryRowsSchema: z.ZodType<Array<{ name: string } & FileStat>> = z.custom<
+  Array<{ name: string } & FileStat>
+>(
+  (value) =>
+    Array.isArray(value) &&
+    value.every((row) => composedDirectoryRowSchema.safeParse(row).success && fileStatSchema.safeParse(row).success),
+);
+
+const mutationErrorCodeValues = [
   'NAME_EXISTS',
   'INVALID_NAME',
   'READ_ONLY_MOUNT',
@@ -201,565 +435,519 @@ const mutationErrorCodes = new Set([
   'MISSING_WORKSPACE_HANDLE',
   'NOT_FOUND',
   'OPERATION_FAILED',
+] as const;
+const mutationErrorWireShapeSchema = z.looseObject({
+  code: z.enum(mutationErrorCodeValues),
+  path: z.string(),
+  message: z.string(),
+  target: z.string().optional(),
+});
+const mutationErrorSchema = z.custom<WorkspaceMutationError>(
+  (value) => mutationErrorWireShapeSchema.safeParse(value).success,
+);
+const mutationResultSchema = z.union([z.literal(true), mutationErrorSchema]);
+
+const directoryHandleSchema = z.custom<FileSystemDirectoryHandle>(
+  (value) => value !== null && typeof value === 'object' && !Array.isArray(value),
+);
+const storageRootConfigSchema: z.ZodType<StorageRootConfig> = z.discriminatedUnion('backend', [
+  z.looseObject({ backend: z.literal('webaccess'), directoryHandle: directoryHandleSchema, workspaceId: z.string() }),
+  z.looseObject({ backend: z.literal('indexeddb') }),
+  z.looseObject({ backend: z.literal('opfs') }),
+  z.looseObject({ backend: z.literal('node'), path: z.string() }),
+]);
+const projectRootConfigSchema: z.ZodType<ProjectRootConfig> = z.discriminatedUnion('backend', [
+  z.looseObject({
+    projectId: projectIdSchema,
+    backend: z.literal('webaccess'),
+    workspaceId: z.string(),
+    providerBasePath: projectDirectoryPathSchema,
+    directoryHandle: z.undefined().optional(),
+  }),
+  z.looseObject({
+    projectId: projectIdSchema,
+    backend: z.literal('indexeddb'),
+    providerBasePath: projectDirectoryPathSchema,
+  }),
+  z.looseObject({
+    projectId: projectIdSchema,
+    backend: z.literal('opfs'),
+    providerBasePath: projectDirectoryPathSchema,
+  }),
+  z.looseObject({
+    projectId: projectIdSchema,
+    backend: z.literal('memory'),
+    storageRootKey: z.string(),
+    providerBasePath: projectDirectoryPathSchema,
+  }),
+  z.looseObject({
+    projectId: projectIdSchema,
+    backend: z.literal('node'),
+    path: z.string(),
+    providerBasePath: projectDirectoryPathSchema,
+  }),
+]);
+const projectLocatorSchema: z.ZodType<ProjectLocator> = z.discriminatedUnion('backend', [
+  z.looseObject({
+    backend: z.literal('webaccess'),
+    storageRootKey: z.string(),
+    relativeDirectory: projectDirectoryPathSchema,
+    workspaceId: z.string(),
+  }),
+  z.looseObject({
+    backend: z.literal('indexeddb'),
+    storageRootKey: z.string(),
+    relativeDirectory: projectDirectoryPathSchema,
+  }),
+  z.looseObject({
+    backend: z.literal('opfs'),
+    storageRootKey: z.string(),
+    relativeDirectory: projectDirectoryPathSchema,
+  }),
+  z.looseObject({
+    backend: z.literal('node'),
+    storageRootKey: z.string(),
+    relativeDirectory: projectDirectoryPathSchema,
+    path: z.string(),
+  }),
+]);
+const workspaceScopeVariants = [
+  z.looseObject({ backend: z.literal('webaccess'), directoryHandle: directoryHandleSchema, workspaceId: z.string() }),
+  z.looseObject({ backend: z.literal('indexeddb') }),
+  z.looseObject({ backend: z.literal('opfs') }),
+  z.looseObject({ backend: z.literal('memory'), storageRootKey: z.string() }),
+  z.looseObject({ backend: z.literal('node'), path: z.string() }),
+] as const;
+const workspaceScopeSchema: z.ZodType<WorkspaceScope> = z.discriminatedUnion('backend', workspaceScopeVariants);
+/* A mount config is a scope plus its registration-time classification (RC6 /
+ * S5 work 2). Same variants, one extra required field, so the wire cannot carry
+ * an unclassified mount across the bridge either. */
+const mountPathClassSchema = z.enum(['authored', 'derived', 'authority-metadata']);
+const mountConfigSchema: z.ZodType<MountConfig> = z.discriminatedUnion('backend', [
+  workspaceScopeVariants[0].extend({ class: mountPathClassSchema }),
+  workspaceScopeVariants[1].extend({ class: mountPathClassSchema }),
+  workspaceScopeVariants[2].extend({ class: mountPathClassSchema }),
+  workspaceScopeVariants[3].extend({ class: mountPathClassSchema }),
+  workspaceScopeVariants[4].extend({ class: mountPathClassSchema }),
 ]);
 
-const isMutationError = (value: unknown): value is WorkspaceMutationError =>
-  isRecord(value) &&
-  isString(value['code']) &&
-  mutationErrorCodes.has(value['code']) &&
-  isString(value['path']) &&
-  isString(value['message']) &&
-  isOptionalString(value['target']);
-
-const isWebAccessRoot = (value: Record<string, unknown>): boolean =>
-  isRecord(value['directoryHandle']) && isString(value['workspaceId']);
-
-const isStorageRootConfig = (value: unknown): value is StorageRootConfig => {
-  if (!isRecord(value) || !isString(value['backend'])) {
-    return false;
-  }
-  return value['backend'] === 'webaccess'
-    ? isWebAccessRoot(value)
-    : value['backend'] === 'indexeddb' || value['backend'] === 'opfs';
-};
-
-const isProjectRootConfig = (value: unknown): value is ProjectRootConfig => {
-  if (
-    !isRecord(value) ||
-    !isProjectId(value['projectId']) ||
-    !isString(value['providerBasePath']) ||
-    !isString(value['backend'])
-  ) {
-    return false;
-  }
-  if (value['backend'] === 'webaccess') {
-    return isWebAccessRoot(value);
-  }
-  if (value['backend'] === 'memory') {
-    return isString(value['storageRootKey']);
-  }
-  return value['backend'] === 'indexeddb' || value['backend'] === 'opfs';
-};
-
-const isProjectLocator = (value: unknown): value is ProjectLocator => {
-  if (
-    !isRecord(value) ||
-    !isString(value['backend']) ||
-    !isString(value['storageRootKey']) ||
-    !isString(value['relativeDirectory'])
-  ) {
-    return false;
-  }
-  if (value['backend'] === 'webaccess') {
-    return isString(value['workspaceId']);
-  }
-  return value['backend'] === 'indexeddb' || value['backend'] === 'opfs';
-};
-
-const isScope = (value: unknown): boolean => {
-  if (!isRecord(value) || !isString(value['backend'])) {
-    return false;
-  }
-  if (value['backend'] === 'webaccess') {
-    return isRecord(value['directoryHandle']) && isString(value['workspaceId']);
-  }
-  if (value['backend'] === 'memory') {
-    return isString(value['storageRootKey']);
-  }
-  return value['backend'] === 'indexeddb' || value['backend'] === 'opfs';
-};
-
-const isManifestIssue = (value: unknown): value is ProjectManifestParseIssue => {
-  if (!isRecord(value) || !isString(value['code'])) {
-    return false;
-  }
-  switch (value['code']) {
-    case 'manifest-unreadable':
-    case 'manifest-invalid-json': {
-      return isString(value['message']);
-    }
-    case 'manifest-too-large': {
-      return isNumber(value['maxBytes']);
-    }
-    case 'manifest-unknown-schema': {
-      return value['supported'] === projectManifestSchemaUrl;
-    }
-    case 'manifest-invalid': {
-      return Array.isArray(value['issues']);
-    }
-    default: {
-      return false;
-    }
-  }
-};
-
+const manifestIssueSchema = z.discriminatedUnion('code', [
+  z.looseObject({ code: z.literal('manifest-unreadable'), message: z.string() }),
+  z.looseObject({ code: z.literal('manifest-missing') }),
+  z.looseObject({ code: z.literal('manifest-invalid-json'), message: z.string() }),
+  z.looseObject({ code: z.literal('manifest-too-large'), maxBytes: z.number() }),
+  z.looseObject({
+    code: z.literal('manifest-unknown-schema'),
+    found: z.unknown().optional(),
+    supported: z.literal(projectManifestSchemaUrl),
+  }),
+  z.looseObject({ code: z.literal('manifest-invalid'), issues: z.array(z.unknown()) }),
+]) as z.ZodType<ProjectManifestParseIssue>;
 const adoptableProjectManifestSchema = projectManifestSchema.omit({ id: true });
-const isProjectManifest = (value: unknown): boolean => projectManifestSchema.safeParse(value).success;
-const isAdoptableProjectManifest = (value: unknown): boolean => adoptableProjectManifestSchema.safeParse(value).success;
-
-const isProjectDiscoveryEntry = (value: unknown): value is ProjectDiscoveryEntry => {
-  if (!isRecord(value) || !isString(value['status']) || !isProjectLocator(value['locator'])) {
-    return false;
-  }
-  switch (value['status']) {
-    case 'valid':
-    case 'duplicate-id':
-    case 'route-blocked': {
-      return isProjectManifest(value['manifest']);
-    }
-    case 'adoption-required': {
-      return isAdoptableProjectManifest(value['manifest']) && isManifestIssue(value['issue']);
-    }
-    case 'invalid': {
-      return isManifestIssue(value['issue']);
-    }
-    default: {
-      return false;
-    }
-  }
+/* An identified entry's `issue` marks a degraded manifest: it routes, and its bytes await Repair. */
+const identifiedEntryShape = {
+  manifest: projectManifestSchema,
+  locator: projectLocatorSchema,
+  issue: manifestIssueSchema.optional(),
 };
-
-const isProjectRootDiscoveryStatus = (value: unknown): value is ProjectRootDiscoveryStatus => {
-  if (!isRecord(value) || !isString(value['status']) || !isStorageRootConfig(value['root'])) {
-    return false;
-  }
-  return value['status'] === 'complete' || (value['status'] === 'inaccessible' && isString(value['reason']));
-};
-
-const isWatchRequest = (value: unknown): value is WatchRequest =>
-  isRecord(value) &&
-  isStringArray(value['paths']) &&
-  isOptionalBoolean(value['recursive']) &&
-  (value['includes'] === undefined || isStringArray(value['includes'])) &&
-  (value['excludes'] === undefined || isStringArray(value['excludes']));
-
-const isWatchEvent = (value: unknown): value is WatchEvent => {
-  if (!isRecord(value) || !isString(value['type'])) {
-    return false;
-  }
-  if (value['type'] === 'reset') {
-    return true;
-  }
-  if (value['type'] === 'change' || value['type'] === 'delete') {
-    return isString(value['path']);
-  }
-  return value['type'] === 'rename' && isString(value['oldPath']) && isString(value['newPath']);
-};
-
-const changeEventTypes = new Set([
-  'fileWritten',
-  'fileDeleted',
-  'fileRenamed',
-  'fileCopied',
-  'directoryCreated',
-  'directoryDeleted',
-  'directoryRenamed',
-  'directoryCopied',
-  'directoryChanged',
-  'backendChanged',
+const projectDiscoveryEntrySchema: z.ZodType<ProjectDiscoveryEntry> = z.discriminatedUnion('status', [
+  z.looseObject({ status: z.literal('valid'), ...identifiedEntryShape }),
+  z.looseObject({ status: z.literal('duplicate-id'), ...identifiedEntryShape }),
+  z.looseObject({ status: z.literal('route-blocked'), ...identifiedEntryShape }),
+  z.looseObject({
+    status: z.literal('adoption-required'),
+    manifest: adoptableProjectManifestSchema,
+    locator: projectLocatorSchema,
+    issue: manifestIssueSchema,
+  }),
+  z.looseObject({ status: z.literal('invalid'), locator: projectLocatorSchema, issue: manifestIssueSchema }),
 ]);
-const filesystemBackends = new Set(['indexeddb', 'opfs', 'webaccess', 'memory']);
-const isChangeEventStat = (value: unknown): boolean =>
-  isRecord(value) &&
-  (value['type'] === 'file' || value['type'] === 'dir') &&
-  isNumber(value['size']) &&
-  isNumber(value['mtimeMs']);
-const isChangeEvent = (value: unknown): value is ChangeEvent => {
-  if (
-    !isRecord(value) ||
-    !isString(value['type']) ||
-    !changeEventTypes.has(value['type']) ||
-    !isString(value['backend']) ||
-    !filesystemBackends.has(value['backend'])
-  ) {
-    return false;
-  }
-  const targetIsValid = value['target'] === undefined || isChangeEventStat(value['target']);
-  switch (value['type']) {
-    case 'backendChanged': {
-      return true;
-    }
-    case 'fileRenamed':
-    case 'directoryRenamed': {
-      return isString(value['oldPath']) && isString(value['newPath']) && targetIsValid;
-    }
-    case 'fileCopied':
-    case 'directoryCopied': {
-      return isString(value['sourcePath']) && isString(value['targetPath']) && targetIsValid;
-    }
-    default: {
-      return isString(value['path']) && targetIsValid;
-    }
-  }
-};
+const projectRootDiscoveryStatusSchema: z.ZodType<ProjectRootDiscoveryStatus> = z.discriminatedUnion('status', [
+  z.looseObject({ status: z.literal('complete'), root: storageRootConfigSchema }),
+  z.looseObject({ status: z.literal('inaccessible'), root: storageRootConfigSchema, reason: z.string() }),
+]);
 
-const isFileTreeNode = (value: unknown): boolean => {
-  if (
-    !isRecord(value) ||
-    !isString(value['id']) ||
-    !isString(value['name']) ||
-    !isNumber(value['size']) ||
-    !isNumber(value['mtimeMs'])
-  ) {
+const watchRequestSchema: z.ZodType<WatchRequest> = z.looseObject({
+  paths: z.array(z.string()),
+  recursive: z.boolean().optional(),
+  includes: z.array(z.string()).optional(),
+  excludes: z.array(z.string()).optional(),
+});
+const watchEventSchema: z.ZodType<WatchEvent> = z.discriminatedUnion('type', [
+  z.looseObject({ type: z.literal('reset') }),
+  z.looseObject({ type: z.literal('change'), path: z.string() }),
+  z.looseObject({ type: z.literal('delete'), path: z.string() }),
+  z.looseObject({ type: z.literal('rename'), oldPath: z.string(), newPath: z.string() }),
+]);
+
+const filesystemBackendSchema = z.enum(filesystemBackends);
+const changeEventStatSchema = z.looseObject({
+  type: z.enum(['file', 'dir']),
+  size: z.number(),
+  mtimeMs: z.number(),
+});
+const pathChangeEventSchema = (
+  type: 'fileWritten' | 'fileDeleted' | 'directoryCreated' | 'directoryDeleted' | 'directoryChanged',
+) =>
+  z.looseObject({
+    type: z.literal(type),
+    path: z.string(),
+    backend: filesystemBackendSchema,
+    target: changeEventStatSchema.optional(),
+  });
+const renameChangeEventSchema = (type: 'fileRenamed' | 'directoryRenamed') =>
+  z.looseObject({
+    type: z.literal(type),
+    oldPath: z.string(),
+    newPath: z.string(),
+    backend: filesystemBackendSchema,
+    target: changeEventStatSchema.optional(),
+  });
+const copyChangeEventSchema = (type: 'fileCopied' | 'directoryCopied') =>
+  z.looseObject({
+    type: z.literal(type),
+    sourcePath: z.string(),
+    targetPath: z.string(),
+    backend: filesystemBackendSchema,
+    target: changeEventStatSchema.optional(),
+  });
+const changeEventSchema: z.ZodType<ChangeEvent> = z.discriminatedUnion('type', [
+  pathChangeEventSchema('fileWritten'),
+  pathChangeEventSchema('fileDeleted'),
+  renameChangeEventSchema('fileRenamed'),
+  copyChangeEventSchema('fileCopied'),
+  pathChangeEventSchema('directoryCreated'),
+  pathChangeEventSchema('directoryDeleted'),
+  renameChangeEventSchema('directoryRenamed'),
+  copyChangeEventSchema('directoryCopied'),
+  pathChangeEventSchema('directoryChanged'),
+  z.looseObject({ type: z.literal('backendChanged'), backend: filesystemBackendSchema }),
+]);
+
+const fileTreeNodeSchema: z.ZodType<FileTreeNode> = z.custom<FileTreeNode>((value) => {
+  const record = plainRecordSchema.safeParse(value);
+  if (!record.success) {
     return false;
   }
-  if (value['children'] !== undefined) {
-    return Array.isArray(value['children']) && value['children'].every((child) => isFileTreeNode(child));
+  const node = record.data;
+  if (!stringSchema.safeParse(node['id']).success || !stringSchema.safeParse(node['name']).success) {
+    return false;
+  }
+  if (!finiteNumberSchema.safeParse(node['size']).success || !finiteNumberSchema.safeParse(node['mtimeMs']).success) {
+    return false;
+  }
+  if (node['children'] !== undefined) {
+    return (
+      Array.isArray(node['children']) && node['children'].every((child) => fileTreeNodeSchema.safeParse(child).success)
+    );
   }
   return (
-    (value['contentKind'] === 'binary' && value['lineCount'] === undefined) ||
-    (value['contentKind'] === 'text' && isNumber(value['lineCount']))
+    (node['contentKind'] === 'binary' && node['lineCount'] === undefined) ||
+    (node['contentKind'] === 'text' &&
+      (node['lineCount'] === undefined || finiteNumberSchema.safeParse(node['lineCount']).success))
   );
-};
-
-const args = <T extends unknown[]>(check: (items: unknown[]) => boolean, description: string): WireValidator<T> =>
-  validator<T>((value) => Array.isArray(value) && check(value), description);
-const result = <T>(check: (value: unknown) => boolean, description: string): WireValidator<T> =>
-  validator<T>(check, description);
+});
+const fileTreeNodesSchema: z.ZodType<FileTreeNode[]> = z.custom<FileTreeNode[]>(
+  (value) => Array.isArray(value) && value.every((node) => fileTreeNodeSchema.safeParse(node).success),
+);
+const directoryContentsSchema: z.ZodType<Record<string, Uint8Array<ArrayBuffer>>> = z.custom<
+  Record<string, Uint8Array<ArrayBuffer>>
+>((value) => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Reflect.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return false;
+  }
+  return Reflect.ownKeys(value).every((key) => {
+    if (typeof key !== 'string') {
+      return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && 'value' in descriptor && bytesSchema.safeParse(descriptor.value).success;
+  });
+});
 
 type NoArguments = Parameters<() => void>;
-const noArgs = args<NoArguments>((items) => items.length === 0, 'Expected no arguments');
-const oneStringArgument = args<[string]>((items) => items.length === 1 && isString(items[0]), 'Expected one string');
-const twoStringArgs = args<[string, string]>(
-  (items) => items.length === 2 && isString(items[0]) && isString(items[1]),
-  'Expected two strings',
-);
-/* `null` is admitted alongside `undefined` because a binary codec (msgpack)
- * encodes an absent response payload as nil and decodes it back as `null`;
- * the accepted value is normalised to `undefined` so a void call resolves
- * identically on every transport. */
-const voidResult: WireValidator<void> = {
-  safeParse: (value) =>
-    value === undefined || value === null ? { success: true, data: undefined } : failure('Expected no result'),
-};
-const booleanResult = result<boolean>(isBoolean, 'Expected a boolean');
-const statResult = result<FileStat>(isFileStat, 'Expected a filesystem stat');
+const noArgs: z.ZodType<NoArguments> = z.tuple([]);
+const oneStringArgument = z.tuple([z.string()]);
+const twoStringArgs = z.tuple([z.string(), z.string()]);
+/* `null` is admitted alongside `undefined` because msgpack decodes an absent
+ * response payload as nil. Normalize it so every transport resolves void alike. */
+const voidResult: z.ZodType<void> = z.union([z.undefined(), z.null()]).transform(() => undefined);
+const booleanResult = z.boolean();
+const recursiveOptionsSchema = z.looseObject({ recursive: z.boolean().optional() });
+const scopedOptionsSchema = z.looseObject({ scope: workspaceScopeSchema });
+/** The rooted read content operations take the caller's own export filter. */
+const archiveOptionsSchema = z.looseObject({ versionedOnly: z.boolean().optional() });
 
-const fileSystemBridgeHelloValidator: WireValidator<FileSystemBridgeHello> = {
-  safeParse(value) {
-    const receivedVersion = isRecord(value) ? value['v'] : undefined;
+const helloVersionProbeSchema = z.looseObject({ v: z.unknown().optional() });
+const fileSystemBridgeHelloValidator: z.ZodType<FileSystemBridgeHello> = z.preprocess(
+  (value) => {
+    const probe = helloVersionProbeSchema.safeParse(value);
+    const receivedVersion = probe.success ? probe.data.v : undefined;
     if (receivedVersion !== fileSystemBridgeProtocolVersion) {
       throw new FileSystemBridgeProtocolVersionError(receivedVersion);
     }
-    if (!isRecord(value) || !isString(value['state']) || !isBoolean(value['watchable'])) {
-      return failure('Expected a filesystem bridge hello');
-    }
-    if (value['state'] === 'ready' && isCapabilities(value['capabilities'])) {
-      return { success: true, data: value as FileSystemBridgeHello };
-    }
-    if (value['state'] === 'workspace' && value['capabilities'] === null) {
-      return { success: true, data: value as FileSystemBridgeHello };
-    }
-    if (
-      value['state'] === 'unavailable' &&
-      value['capabilities'] === null &&
-      !value['watchable'] &&
-      isRecord(value['error']) &&
-      value['error']['code'] === 'ROOT_UNAVAILABLE' &&
-      isString(value['error']['message'])
-    ) {
-      return { success: true, data: value as FileSystemBridgeHello };
-    }
-    return failure('Expected a valid filesystem bridge availability state');
+    return value;
   },
-};
+  z.discriminatedUnion('state', [
+    z.looseObject({
+      v: z.literal(fileSystemBridgeProtocolVersion),
+      state: z.literal('ready'),
+      capabilities: providerCapabilitiesSchema,
+      watchable: z.boolean(),
+    }),
+    z.looseObject({
+      v: z.literal(fileSystemBridgeProtocolVersion),
+      state: z.literal('workspace'),
+      capabilities: z.null(),
+      watchable: z.boolean(),
+    }),
+    z.looseObject({
+      v: z.literal(fileSystemBridgeProtocolVersion),
+      state: z.literal('unavailable'),
+      capabilities: z.null(),
+      watchable: z.literal(false),
+      error: z.looseObject({ code: z.literal('ROOT_UNAVAILABLE'), message: z.string() }),
+    }),
+  ]),
+);
+
+const readFileOptionsSchema = z.union([z.literal('utf8'), z.looseObject({ encoding: z.literal('utf8').optional() })]);
+const scopedReadFileOptionsSchema = z.looseObject({
+  encoding: z.literal('utf8').optional(),
+  scope: workspaceScopeSchema,
+});
+const writePayloadSchema = z.union([z.string(), bytesSchema]);
+const checkedWriteInputSchema: z.ZodType<Omit<CheckedFileWrite, 'signal'>> = z.object({
+  path: z.string(),
+  data: writePayloadSchema,
+  preconditions: z.array(z.object({ path: z.string(), expected: writePayloadSchema.nullable() })),
+});
+const checkedWriteResultSchema: z.ZodType<CheckedFileWriteResult> = z.discriminatedUnion('status', [
+  z.object({ status: z.enum(['applied', 'unchanged']), content: bytesSchema }),
+  z.object({
+    status: z.literal('conflict'),
+    conflicts: z.array(z.object({ path: z.string(), actual: bytesSchema.nullable() })),
+  }),
+]);
+const moveEditSchema = z.looseObject({ source: z.string(), target: z.string() });
+const bulkMoveResultSchema = z.looseObject({
+  moved: z.array(z.looseObject({ edit: moveEditSchema, stat: fileStatSchema })),
+  failed: z.array(z.looseObject({ edit: moveEditSchema, error: mutationErrorSchema })),
+});
+const projectRootConfigurationSchema = z.looseObject({
+  projects: z.array(projectRootConfigSchema),
+  roots: z.array(storageRootConfigSchema),
+});
+const projectDiscoveryResultSchema = z.looseObject({
+  entries: z.array(projectDiscoveryEntrySchema),
+  roots: z.array(projectRootDiscoveryStatusSchema),
+});
+const pendingProjectCommitResultSchema = discriminatedResultUnion('status', [
+  z.looseObject({ status: z.enum(['committed', 'already-committed', 'unidentifiable-manifest']) }),
+  z.looseObject({ status: z.literal('identity-mismatch'), actualProjectId: projectIdSchema }),
+]);
+const permanentDeleteInputSchema = z.looseObject({
+  projectId: projectIdSchema,
+  providerBasePath: projectDirectoryPathSchema,
+  scope: storageRootConfigSchema,
+});
+const permanentDeleteResultSchema = discriminatedResultUnion('status', [
+  z.looseObject({ status: z.enum(['deleted', 'absent', 'unidentifiable']) }),
+  z.looseObject({ status: z.literal('identity-mismatch'), actualProjectId: projectIdSchema }),
+]);
+const searchOptionsSchema = z.looseObject({
+  maxResults: z.number().optional(),
+  includeDirectories: z.boolean().optional(),
+});
+
+const machineSettingsTypeIdSchema = z.custom<MachineSettingsRecord['typeId']>(
+  (value) =>
+    typeof value === 'string' && value.length <= 64 && /^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$/u.test(value),
+);
+const settingsJsonSchema = z.custom<MachineSettingsValue>((value) => {
+  try {
+    cloneBoundedJson(value, {
+      code: 'MACHINE_SETTINGS_WIRE',
+      maximumDepth: 24,
+      maximumNodes: 8192,
+      maximumCharacters: 262_144,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+});
+const settingsKey = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((value) => !['__proto__', 'constructor', 'prototype'].includes(value));
+const machineSettingsRecordSchema: z.ZodType<MachineSettingsRecord> = z
+  .strictObject({
+    version: z.literal(1),
+    typeId: machineSettingsTypeIdSchema,
+    activeProfile: z.string().min(1).max(64),
+    profiles: z
+      .record(
+        settingsKey,
+        z.strictObject({
+          name: z.string().min(1).max(128),
+          configurations: z
+            .record(
+              settingsKey,
+              z.strictObject({
+                version: z.string().min(1).max(128),
+                values: z.record(settingsKey, settingsJsonSchema),
+              }),
+            )
+            .refine((value) => Object.keys(value).length <= 32),
+        }),
+      )
+      .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 16),
+  })
+  .refine((value) => Object.hasOwn(value.profiles, value.activeProfile));
+const machineSettingsSnapshotSchema: z.ZodType<MachineSettingsSnapshot> = z.discriminatedUnion('status', [
+  z.strictObject({
+    status: z.literal('current'),
+    record: machineSettingsRecordSchema,
+  }),
+  z.strictObject({ status: z.literal('absent') }),
+  z.strictObject({
+    status: z.literal('refused'),
+    code: z.enum(['INVALID_RECORD', 'NEWER_RECORD', 'MACHINE_TYPE_MISMATCH']),
+    message: z.string(),
+    pointer: z.string().optional(),
+  }),
+  z.strictObject({
+    status: z.literal('unavailable'),
+    code: z.literal('SETTINGS_UNAVAILABLE'),
+    message: z.string(),
+  }),
+]);
+const machineSettingsEditSchema: z.ZodType<MachineSettingsEdit> = z.strictObject({
+  operationId: z.string().min(1).max(128),
+  typeId: machineSettingsTypeIdSchema,
+  base: machineSettingsRecordSchema.nullable(),
+  next: machineSettingsRecordSchema,
+});
+const machineSettingsSaveSchema: z.ZodType<MachineSettingsSave> = z.union([
+  z.strictObject({
+    status: z.literal('saved'),
+    record: machineSettingsRecordSchema,
+  }),
+  z.strictObject({
+    status: z.literal('conflict'),
+    message: z.string(),
+    current: machineSettingsSnapshotSchema,
+  }),
+  z.strictObject({
+    status: z.enum(['refused', 'uncertain']),
+    message: z.string(),
+  }),
+]);
 
 const callSchemas = {
+  readMachineSettings: {
+    args: z.tuple([machineSettingsTypeIdSchema]),
+    result: machineSettingsSnapshotSchema,
+  },
+  editMachineSettings: {
+    args: z.tuple([machineSettingsEditSchema]),
+    result: machineSettingsSaveSchema,
+  },
+  machineSettingsSettlement: {
+    args: z.tuple([z.string().min(1).max(128)]),
+    result: machineSettingsSaveSchema,
+  },
   readFile: {
-    args: args<FileSystemBridgeCallArgs<'readFile'>>(
-      (items) =>
-        (items.length === 1 || items.length === 2) &&
-        isString(items[0]) &&
-        (items[1] === undefined ||
-          items[1] === 'utf8' ||
-          hasOnlyKnownTypedFields(items[1], {
-            encoding: (value) => value === undefined || value === 'utf8',
-            scope: (value) => value === undefined || isScope(value),
-          })),
-      'Expected readFile(path, options?)',
-    ),
-    result: result<FileSystemBridgeCallResult<'readFile'>>(
-      (value) => isString(value) || isBytes(value),
-      'Expected file bytes or UTF-8 text',
-    ),
+    args: z.tuple([z.string(), readFileOptionsSchema.optional()]),
+    result: z.union([z.string(), bytesSchema]),
   },
-  writeFile: {
-    args: args<FileSystemBridgeCallArgs<'writeFile'>>(
-      (items) => items.length === 2 && isString(items[0]) && (isString(items[1]) || isBytes(items[1])),
-      'Expected writeFile(path, bytesOrText)',
-    ),
-    result: voidResult,
+  writeFile: { args: z.tuple([z.string(), writePayloadSchema]), result: voidResult },
+  writeFileChecked: { args: z.tuple([checkedWriteInputSchema]), result: checkedWriteResultSchema },
+  deleteFileChecked: {
+    args: z.tuple([
+      z.object({
+        path: z.string(),
+        preconditions: z.array(z.object({ path: z.string(), expected: writePayloadSchema.nullable() })),
+      }),
+    ]),
+    result: checkedWriteResultSchema,
   },
+  appendFile: { args: z.tuple([z.string(), writePayloadSchema]), result: voidResult },
   writeFiles: {
-    args: args<FileSystemBridgeCallArgs<'writeFiles'>>(
-      (items) =>
-        items.length === 1 &&
-        isRecord(items[0]) &&
-        Object.values(items[0]).every(
-          (entry) => isRecord(entry) && (isBytes(entry['content']) || isString(entry['content'])),
-        ),
-      'Expected a path-to-binary-file map',
-    ),
+    args: z.tuple([z.record(z.string(), z.looseObject({ content: writePayloadSchema }))]),
     result: voidResult,
   },
-  mkdir: {
-    args: args<FileSystemBridgeCallArgs<'mkdir'>>(
-      (items) =>
-        (items.length === 1 || items.length === 2) &&
-        isString(items[0]) &&
-        (items[1] === undefined || hasOnlyKnownTypedFields(items[1], { recursive: isOptionalBoolean })),
-      'Expected mkdir(path, options?)',
-    ),
-    result: voidResult,
-  },
-  readdir: {
-    args: oneStringArgument,
-    result: result<string[]>(isStringArray, 'Expected an array of names'),
-  },
-  stat: { args: oneStringArgument, result: statResult },
-  lstat: { args: oneStringArgument, result: statResult },
-  move: { args: twoStringArgs, result: statResult },
-  canMove: {
-    args: twoStringArgs,
-    result: result<true | WorkspaceMutationError>(
-      (value) => value === true || isMutationError(value),
-      'Expected true or a workspace mutation error',
+  mkdir: { args: z.tuple([z.string(), recursiveOptionsSchema.optional()]), result: voidResult },
+  readdir: { args: oneStringArgument, result: z.array(z.string()) },
+  stat: {
+    args: z.tuple([z.string(), z.object({ content: z.literal('head') }).optional()]),
+    result: z.custom<FileStat | HeadFileStat>(
+      (value) => fileStatSchema.safeParse(value).success || headFileStatSchema.safeParse(value).success,
     ),
   },
-  canRename: {
-    args: twoStringArgs,
-    result: result<true | WorkspaceMutationError>(
-      (value) => value === true || isMutationError(value),
-      'Expected true or a workspace mutation error',
-    ),
-  },
-  canCreate: {
-    args: args<FileSystemBridgeCallArgs<'canCreate'>>(
-      (items) => items.length === 2 && isString(items[0]) && (items[1] === 'file' || items[1] === 'directory'),
-      "Expected canCreate(path, 'file' | 'directory')",
-    ),
-    result: result<true | WorkspaceMutationError>(
-      (value) => value === true || isMutationError(value),
-      'Expected true or a workspace mutation error',
-    ),
-  },
-  canDelete: {
-    args: oneStringArgument,
-    result: result<true | WorkspaceMutationError>(
-      (value) => value === true || isMutationError(value),
-      'Expected true or a workspace mutation error',
-    ),
-  },
-  bulkMove: {
-    args: args<FileSystemBridgeCallArgs<'bulkMove'>>(
-      (items) =>
-        items.length === 1 &&
-        Array.isArray(items[0]) &&
-        items[0].every((edit) => isRecord(edit) && isString(edit['source']) && isString(edit['target'])),
-      'Expected an array of move edits',
-    ),
-    result: result<FileSystemBridgeCallResult<'bulkMove'>>(
-      (value) =>
-        isRecord(value) &&
-        Array.isArray(value['moved']) &&
-        value['moved'].every(
-          (entry) =>
-            isRecord(entry) &&
-            isRecord(entry['edit']) &&
-            isString(entry['edit']['source']) &&
-            isString(entry['edit']['target']) &&
-            isFileStat(entry['stat']),
-        ) &&
-        Array.isArray(value['failed']) &&
-        value['failed'].every(
-          (entry) =>
-            isRecord(entry) &&
-            isRecord(entry['edit']) &&
-            isString(entry['edit']['source']) &&
-            isString(entry['edit']['target']) &&
-            isMutationError(entry['error']),
-        ),
-      'Expected a bulk-move result',
-    ),
-  },
+  lstat: { args: oneStringArgument, result: fileStatSchema },
+  move: { args: twoStringArgs, result: fileStatSchema },
+  canMove: { args: twoStringArgs, result: mutationResultSchema },
+  canRename: { args: twoStringArgs, result: mutationResultSchema },
+  canCreate: { args: z.tuple([z.string(), z.enum(['file', 'directory'])]), result: mutationResultSchema },
+  canDelete: { args: oneStringArgument, result: mutationResultSchema },
+  bulkMove: { args: z.tuple([z.array(moveEditSchema)]), result: bulkMoveResultSchema },
   unlink: { args: oneStringArgument, result: voidResult },
-  rmdir: {
-    args: args<FileSystemBridgeCallArgs<'rmdir'>>(
-      (items) =>
-        (items.length === 1 || items.length === 2) &&
-        isString(items[0]) &&
-        (items[1] === undefined || hasOnlyKnownTypedFields(items[1], { recursive: isOptionalBoolean })),
-      'Expected rmdir(path, options?)',
-    ),
-    result: voidResult,
-  },
+  rmdir: { args: z.tuple([z.string(), recursiveOptionsSchema.optional()]), result: voidResult },
   exists: { args: oneStringArgument, result: booleanResult },
-  getDirectoryStat: {
-    args: oneStringArgument,
-    result: result<FileStatEntry[]>(
-      (value) => Array.isArray(value) && value.every((entry) => isFileStatEntry(entry)),
-      'Expected filesystem stat entries',
-    ),
-  },
-  getDirectoryContents: {
-    args: oneStringArgument,
-    result: result<Record<string, Uint8Array<ArrayBuffer>>>(
-      (value) => isRecord(value) && Object.values(value).every((entry) => isBytes(entry)),
-      'Expected a path-to-bytes map',
-    ),
-  },
-  duplicateFile: { args: twoStringArgs, result: voidResult },
-  copyDirectory: { args: twoStringArgs, result: voidResult },
-  getZippedDirectory: {
-    args: args<FileSystemBridgeCallArgs<'getZippedDirectory'>>(
-      (items) =>
-        (items.length === 1 || items.length === 2) &&
-        isString(items[0]) &&
-        (items[1] === undefined ||
-          hasOnlyKnownTypedFields(items[1], { scope: (value) => value === undefined || isScope(value) })),
-      'Expected getZippedDirectory(path, options?)',
-    ),
-    result: result<Blob>((value) => value instanceof Blob, 'Expected a Blob'),
-  },
-  mount: {
-    args: args<FileSystemBridgeCallArgs<'mount'>>(
-      (items) => items.length === 2 && isString(items[0]) && isScope(items[1]),
-      'Expected mount(prefix, config)',
-    ),
-    result: voidResult,
-  },
+  mount: { args: z.tuple([z.string(), mountConfigSchema]), result: voidResult },
   unmount: { args: oneStringArgument, result: voidResult },
-  configureProjectRoots: {
-    args: args<FileSystemBridgeCallArgs<'configureProjectRoots'>>(
-      (items) =>
-        items.length === 1 &&
-        isRecord(items[0]) &&
-        Array.isArray(items[0]['projects']) &&
-        items[0]['projects'].every((project) => isProjectRootConfig(project)) &&
-        Array.isArray(items[0]['roots']) &&
-        items[0]['roots'].every((root) => isStorageRootConfig(root)),
-      'Expected a project-root configuration',
-    ),
-    result: voidResult,
-  },
-  listProjectManifests: {
-    args: noArgs,
-    result: result<FileSystemBridgeCallResult<'listProjectManifests'>>(
-      (value) =>
-        isRecord(value) &&
-        Array.isArray(value['entries']) &&
-        value['entries'].every((entry) => isProjectDiscoveryEntry(entry)) &&
-        Array.isArray(value['roots']) &&
-        value['roots'].every((root) => isProjectRootDiscoveryStatus(root)),
-      'Expected a project-discovery result',
-    ),
-  },
+  configureProjectRoots: { args: z.tuple([projectRootConfigurationSchema]), result: voidResult },
+  listProjectManifests: { args: noArgs, result: projectDiscoveryResultSchema },
   commitPendingProjectDirectory: {
-    args: args<FileSystemBridgeCallArgs<'commitPendingProjectDirectory'>>(
-      (items) =>
-        items.length === 1 &&
-        isRecord(items[0]) &&
-        isString(items[0]['providerBasePath']) &&
-        isStorageRootConfig(items[0]['scope']) &&
-        isRecord(items[0]['files']) &&
-        Object.values(items[0]['files']).every((entry) => isRecord(entry) && isBytes(entry['content'])) &&
-        isBytes(items[0]['manifest']),
-      'Expected a pending-project commit input',
-    ),
-    result: result<FileSystemBridgeCallResult<'commitPendingProjectDirectory'>>(
-      (value) =>
-        isRecord(value) &&
-        (value['status'] === 'committed' ||
-          value['status'] === 'already-committed' ||
-          value['status'] === 'unidentifiable-manifest' ||
-          (value['status'] === 'identity-mismatch' && isProjectId(value['actualProjectId']))),
-      'Expected a pending-project commit result',
-    ),
+    args: z.tuple([pendingProjectCommitInputSchema]),
+    result: pendingProjectCommitResultSchema,
   },
   adoptProjectDirectory: {
-    args: args<FileSystemBridgeCallArgs<'adoptProjectDirectory'>>(
-      (items) => items.length === 1 && isProjectLocator(items[0]),
-      'Expected a project locator',
-    ),
-    result: result<FileSystemBridgeCallResult<'adoptProjectDirectory'>>(
-      isProjectManifest,
-      'Expected a project manifest',
-    ),
+    args: z.tuple([projectLocatorSchema, z.object({ id: projectIdSchema.optional() }).optional()]),
+    result: projectManifestSchema,
   },
   permanentlyDeleteProjectDirectory: {
-    args: args<FileSystemBridgeCallArgs<'permanentlyDeleteProjectDirectory'>>(
-      (items) =>
-        items.length === 1 &&
-        isRecord(items[0]) &&
-        isProjectId(items[0]['projectId']) &&
-        isString(items[0]['providerBasePath']) &&
-        isStorageRootConfig(items[0]['scope']),
-      'Expected a permanent-delete input',
-    ),
-    result: result<FileSystemBridgeCallResult<'permanentlyDeleteProjectDirectory'>>(
-      (value) =>
-        isRecord(value) &&
-        (value['status'] === 'deleted' ||
-          value['status'] === 'absent' ||
-          value['status'] === 'unidentifiable' ||
-          (value['status'] === 'identity-mismatch' && isProjectId(value['actualProjectId']))),
-      'Expected a permanent-delete result',
-    ),
+    args: z.tuple([permanentDeleteInputSchema]),
+    result: permanentDeleteResultSchema,
   },
-  readShallowDirectory: {
-    args: args<FileSystemBridgeCallArgs<'readShallowDirectory'>>(
-      (items) =>
-        (items.length === 1 || items.length === 2) &&
-        isString(items[0]) &&
-        (items[1] === undefined ||
-          hasOnlyKnownTypedFields(items[1], { scope: (value) => value === undefined || isScope(value) })),
-      'Expected readShallowDirectory(path, options?)',
-    ),
-    result: result<FileSystemBridgeCallResult<'readShallowDirectory'>>(
-      (value) => Array.isArray(value) && value.every((node) => isFileTreeNode(node)),
-      'Expected file-tree nodes',
-    ),
+  /* The `/files` browser's three, every one of them scope-required (charter D5,
+   * W11): a routed path is content, and content answers on its own root. */
+  readScopedFile: {
+    args: z.tuple([z.string(), scopedReadFileOptionsSchema]),
+    result: z.union([z.string(), bytesSchema]),
   },
+  readScopedShallowDirectory: { args: z.tuple([z.string(), scopedOptionsSchema]), result: fileTreeNodesSchema },
+  getScopedZippedDirectory: { args: z.tuple([z.string(), scopedOptionsSchema]), result: z.instanceof(Blob) },
   disposeStorageRoot: { args: oneStringArgument, result: voidResult },
-  readDirectory: {
-    args: oneStringArgument,
-    result: result<FileSystemBridgeCallResult<'readDirectory'>>(
-      (value) => Array.isArray(value) && value.every((node) => isFileTreeNode(node)),
-      'Expected file-tree nodes',
-    ),
-  },
-  searchFiles: {
-    args: args<FileSystemBridgeCallArgs<'searchFiles'>>(
-      (items) =>
-        (items.length === 2 || items.length === 3) &&
-        isString(items[0]) &&
-        isString(items[1]) &&
-        (items[2] === undefined ||
-          hasOnlyKnownTypedFields(items[2], {
-            maxResults: (value) => value === undefined || isNumber(value),
-            includeDirectories: isOptionalBoolean,
-          })),
-      'Expected searchFiles(root, query, options?)',
-    ),
-    result: result<FileStatEntry[]>(
-      (value) => Array.isArray(value) && value.every((entry) => isFileStatEntry(entry)),
-      'Expected filesystem stat entries',
-    ),
-  },
   pollExternalChanges: {
-    args: args<FileSystemBridgeCallArgs<'pollExternalChanges'>>(
-      (items) => (items.length === 0 || items.length === 1) && isOptionalString(items[0]),
-      'Expected pollExternalChanges(root?)',
-    ),
+    args: z.union([z.tuple([]), z.tuple([z.string().optional()])]),
     result: booleanResult,
   },
   rename: { args: twoStringArgs, result: voidResult },
+  readdirWithStats: {
+    args: z.tuple([z.string(), z.object({ content: z.literal('head') }).optional()]),
+    result: composedDirectoryRowsSchema,
+  },
+  provenance: { args: oneStringArgument, result: fileProvenanceSchema },
+  archive: { args: z.tuple([z.string(), archiveOptionsSchema.optional()]), result: z.instanceof(Blob) },
+  contents: { args: z.tuple([z.string(), archiveOptionsSchema.optional()]), result: directoryContentsSchema },
+  search: {
+    args: z.tuple([z.string(), searchOptionsSchema.optional()]),
+    result: fileStatEntriesSchema,
+  },
+  statTree: { args: oneStringArgument, result: fileStatEntriesSchema },
+  copyTree: { args: twoStringArgs, result: voidResult },
+  duplicate: { args: twoStringArgs, result: voidResult },
 } satisfies FileSystemBridgeCallSchemas;
 
-const broadcastValidator = validator<{ readonly event: 'fileChanged'; readonly data: ChangeEvent }>(
-  (value) => isRecord(value) && value['event'] === 'fileChanged' && isChangeEvent(value['data']),
-  'Expected a filesystem change broadcast',
-);
+const broadcastValidator = z.looseObject({ event: z.literal('fileChanged'), data: changeEventSchema });
 
 /** Exact runtime-validator inventory for the filesystem bridge domain. @public */
 export const fileSystemBridgeSchemas = {
@@ -767,8 +955,8 @@ export const fileSystemBridgeSchemas = {
   calls: callSchemas,
   listens: {
     watch: {
-      args: validator<WatchRequest>(isWatchRequest, 'Expected a filesystem watch request'),
-      event: validator<WatchEvent>(isWatchEvent, 'Expected a filesystem watch event'),
+      args: watchRequestSchema,
+      event: watchEventSchema,
     },
     broadcast: { event: broadcastValidator },
   },

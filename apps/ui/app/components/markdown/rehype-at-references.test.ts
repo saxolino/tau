@@ -106,6 +106,19 @@ describe('rehypeAtReferences', () => {
     expect((p.children[0] as TextNode).value).toBe('hello @username');
   });
 
+  it('should mark a @cad component reference', () => {
+    const root = tree(element('p', text('the gear @cad[gears/main.ts#component:sun_gear] turns')));
+
+    runPlugin(root);
+
+    const p = root.children[0] as ElementNode;
+    expect(p.children).toHaveLength(3);
+    const mark = p.children[1] as ElementNode;
+    expect(mark.tagName).toBe('mark');
+    expect(mark.properties['data-cad-reference']).toBe('@cad[gears/main.ts#component:sun_gear]');
+    expect((p.children[2] as TextNode).value).toBe(' turns');
+  });
+
   it('should handle reference at start of text', () => {
     const root = tree(element('p', text('@main.scad is the file')));
 
@@ -119,7 +132,7 @@ describe('rehypeAtReferences', () => {
   });
 
   it('should preserve mark element content with @path text', () => {
-    const root = tree(element('p', text('see @.tau/transcripts/abc-123.jsonl')));
+    const root = tree(element('p', text('see @.tau/chats/abc-123/events.jsonl')));
 
     runPlugin(root);
 
@@ -127,17 +140,22 @@ describe('rehypeAtReferences', () => {
     const mark = p.children[1] as ElementNode;
     expect(mark.tagName).toBe('mark');
     const markText = mark.children[0] as TextNode;
-    expect(markText.value).toBe('@.tau/transcripts/abc-123.jsonl');
+    expect(markText.value).toBe('@.tau/chats/abc-123/events.jsonl');
   });
 
-  it('should leave /command text untouched in markdown without catalog context', () => {
-    const root = tree(element('p', text('/create-policy')));
+  it('should mark /command and $skill tokens for the chip to resolve against the chat', () => {
+    const root = tree(element('p', text('/create-policy then $imagegen')));
 
     runPlugin(root);
 
     const p = root.children[0] as ElementNode;
-    expect(p.children).toHaveLength(1);
-    expect((p.children[0] as TextNode).value).toBe('/create-policy');
+    expect(p.children).toHaveLength(3);
+    const [slash, gap, dollar] = p.children as [ElementNode, TextNode, ElementNode];
+    expect(slash.tagName).toBe('mark');
+    expect(slash.properties['data-invocation']).toBe('/create-policy');
+    expect((slash.children[0] as TextNode).value).toBe('/create-policy');
+    expect(gap.value).toBe(' then ');
+    expect(dollar.properties['data-invocation']).toBe('$imagegen');
   });
 
   it('should handle mixed @path and /command in same text node', () => {
@@ -148,7 +166,7 @@ describe('rehypeAtReferences', () => {
     const p = root.children[0] as ElementNode;
     expect(p.children).toHaveLength(3);
 
-    expect((p.children[0] as TextNode).value).toBe('/create-policy');
+    expect((p.children[0] as ElementNode).properties['data-invocation']).toBe('/create-policy');
     expect((p.children[1] as TextNode).value).toBe(' check ');
 
     const atMark = p.children[2] as ElementNode;
@@ -177,13 +195,13 @@ describe('rehypeAtReferences', () => {
     expect((code.children[0] as TextNode).value).toBe('/create-policy');
   });
 
-  it('should leave unknown /command as plain text', () => {
-    const root = tree(element('p', text('/unknown-command')));
+  it('should leave paths as plain text', () => {
+    const root = tree(element('p', text('/usr/bin/env')));
 
     runPlugin(root);
 
     const p = root.children[0] as ElementNode;
     expect(p.children).toHaveLength(1);
-    expect((p.children[0] as TextNode).value).toBe('/unknown-command');
+    expect((p.children[0] as TextNode).value).toBe('/usr/bin/env');
   });
 });

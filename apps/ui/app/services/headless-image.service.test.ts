@@ -1,87 +1,51 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { FilesystemRuntimeSource } from '@taucad/runtime/client';
-import { fromMemoryFs } from '@taucad/runtime/filesystem';
 import { createMockRuntimeClient } from '@taucad/runtime-testing';
 import type { ExportFile } from '@taucad/types';
-import type { runtime } from '#runtime/ui-runtime.definition.js';
-import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
+import type { imageRuntime } from '#runtime/image-runtime.definition.js';
 import { HeadlessImageError, HeadlessImageService } from '#services/headless-image.service.js';
 import type { HeadlessImageJob, HeadlessImageServiceDependencies } from '#services/headless-image.service.js';
 
-const { createRuntimeClient, webWorkerTransport } = vi.hoisted(() => ({
-  createRuntimeClient: vi.fn<(options: unknown) => AppRuntimeClient>(),
-  webWorkerTransport: vi.fn<(options: unknown) => { kind: 'worker-transport' }>(() => ({
-    kind: 'worker-transport',
-  })),
-}));
 const activeServices = new Set<HeadlessImageService>();
-const defaultFileSystem = fromMemoryFs();
-const createMockAppRuntimeClient = () => createMockRuntimeClient<typeof runtime>();
-
-vi.mock('@taucad/runtime/client', () => ({ createRuntimeClient }));
-vi.mock('@taucad/runtime/transport/web', () => ({ webWorkerTransport }));
-
-const imageJob = (
-  identity: string,
-  kind: 'automatic-thumbnail' | 'manual-thumbnail' | 'capture' = 'automatic-thumbnail',
-  path: FilesystemRuntimeSource['path'] = '/main.ts',
-): Extract<HeadlessImageJob, { sourceFormat: 'gltf' }> => ({
-  kind,
-  identity,
-  projectId: 'project-1',
-  sourceFormat: 'gltf',
-  fileSystem: defaultFileSystem,
-  format: 'webp',
-  source: { path },
-  includeEdges: true,
-  exportOptions: { width: 16, height: 16 },
-});
-
-const webpFiles = (bytes: Uint8Array<ArrayBuffer>): ExportFile[] => [
+const glb = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
+const files = (bytes = new Uint8Array([1, 2, 3])): ExportFile[] => [
   { name: 'thumbnail.webp', mimeType: 'image/webp', bytes },
 ];
-
-const svgJob = (identity: string, content: string): Extract<HeadlessImageJob, { sourceFormat: 'svg' }> => ({
+const thumbnailJob = (identity: string): WebpGlbJob => ({
+  kind: 'automatic-thumbnail',
+  identity,
+  projectId: 'project-1',
+  sourceFormat: 'glb',
+  sourcePath: 'main.ts',
+  geometryHash: 'geometry-hash',
+  content: glb,
+  format: 'webp',
+  exportOptions: { width: 16, height: 16 },
+});
+type WebpGlbJob = Extract<HeadlessImageJob, { readonly sourceFormat: 'glb'; readonly format: 'webp' }>;
+const captureJob = (identity: string, overrides: Partial<WebpGlbJob> = {}): WebpGlbJob => ({
   kind: 'capture',
   identity,
-  sourceFormat: 'svg',
-  sourcePath: '/drawing.ts',
-  content,
-  format: 'png',
-  exportOptions: {
-    width: 320,
-    height: 240,
-    label: 'drawing.ts',
-    axes: true,
-    scaleBar: true,
-    lengthSymbol: 'mm',
-  },
+  sourceFormat: 'glb',
+  sourcePath: 'main.ts',
+  geometryHash: 'geometry-hash',
+  content: glb,
+  format: 'webp',
+  exportOptions: { width: 16, height: 16 },
+  ...overrides,
 });
 
-const createClient = (): AppRuntimeClient => {
-  const client = createMockAppRuntimeClient();
-  vi.mocked(client.export).mockResolvedValue({
-    success: true,
-    data: webpFiles(new Uint8Array([1, 2, 3])),
-    issues: [],
+const createFixture = (dependencies: HeadlessImageServiceDependencies = {}) => {
+  const imageClient = createMockRuntimeClient<typeof imageRuntime>();
+  vi.mocked(imageClient.transcode).mockResolvedValue({ success: true, data: files(), issues: [] });
+  const service = new HeadlessImageService({
+    createImageClient: vi.fn().mockResolvedValue(imageClient),
+    isGpuAvailable: () => true,
+    isAutomaticGpuAvailable: () => true,
+    ...dependencies,
   });
-  return client;
-};
-
-const trackService = (service: HeadlessImageService): HeadlessImageService => {
   activeServices.add(service);
-  return service;
+  return { imageClient, service };
 };
-
-const createService = (client: AppRuntimeClient, idleTimeout = 60_000) =>
-  trackService(
-    new HeadlessImageService({
-      runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-      createClient: vi.fn().mockResolvedValue(client),
-      isGpuAvailable: () => true,
-      idleTimeout,
-    }),
-  );
 
 describe('HeadlessImageService', () => {
   afterEach(() => {
@@ -89,219 +53,440 @@ describe('HeadlessImageService', () => {
       service.dispose();
     }
     activeServices.clear();
-    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('should forward the exact entry path and add no warning when export succeeds', async () => {
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const sourceEntryPath = 'src/main.ts';
-    const client = createClient();
-    const service = createService(client);
-
-    await expect(service.export(imageJob('exact-source', 'automatic-thumbnail', sourceEntryPath))).resolves.toEqual(
-      webpFiles(new Uint8Array([1, 2, 3])),
-    );
-
-    expect(client.export).toHaveBeenCalledOnce();
-    const [, options] = vi.mocked(client.export).mock.calls[0]!;
-    if (!options) {
-      throw new Error('Expected request-scoped export options');
-    }
-    expect(options.source?.path).toBe(sourceEntryPath);
-    expect(warning).not.toHaveBeenCalled();
+  it('transcodes the settled thumbnail GLB without a kernel render or filesystem', async () => {
+    const { imageClient, service } = createFixture();
+    await expect(service.export(thumbnailJob('thumb'))).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledWith({
+      from: 'glb',
+      to: 'webp',
+      files: [{ name: 'render.glb', bytes: glb, mimeType: 'model/gltf-binary' }],
+      options: { width: 16, height: 16 },
+    });
   });
 
-  it('should render settled SVG through real resvg without probing GPU or creating a runtime client', async () => {
-    const createClient = vi.fn<NonNullable<HeadlessImageServiceDependencies['createClient']>>();
-    const isGpuAvailable = vi.fn(() => false);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        createClient,
-        isGpuAvailable,
-      }),
-    );
-    const content =
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><path d="M0 0H100V50H0Z" fill="none" stroke="#ef4444"/></svg>';
+  it('defers only cold automatic part batches and lets one explicit retry warm the shared worker', async () => {
+    const { imageClient, service } = createFixture();
+    vi.mocked(imageClient.transcode).mockRejectedValueOnce(new Error('Invalid GLB'));
+    const partBatch: WebpGlbJob = {
+      ...thumbnailJob('cold-part'),
+      exportOptions: { mode: 'batch', width: 256, height: 256, views: [] },
+    };
+    await expect(service.export(partBatch)).rejects.toMatchObject({ code: 'cold-start-deferred' });
+    expect(imageClient.connect).not.toHaveBeenCalled();
+    expect(imageClient.transcode).not.toHaveBeenCalled();
 
-    const files = await service.export(svgJob('svg-real', content));
+    await expect(service.export({ ...partBatch, kind: 'manual-thumbnail' })).rejects.toThrow('Invalid GLB');
+    expect(imageClient.connect).toHaveBeenCalledOnce();
+    await expect(service.export(partBatch)).rejects.toMatchObject({ code: 'cold-start-deferred' });
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
 
-    expect(files).toHaveLength(1);
-    expect(files?.[0]).toMatchObject({ mimeType: 'image/png' });
-    expect(files?.[0]?.bytes.subarray(0, 8)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]));
-    expect(createClient).not.toHaveBeenCalled();
-    expect(isGpuAvailable).not.toHaveBeenCalled();
+    await expect(service.export({ ...partBatch, kind: 'manual-thumbnail' })).resolves.toEqual(files());
+    await expect(service.export({ ...partBatch, identity: 'warm-part' })).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledTimes(3);
   });
 
-  it('should recover the shared queue after a typed SVG parse failure', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        isGpuAvailable: () => false,
-      }),
-    );
-    const valid = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0H10V10H0Z"/></svg>';
-
-    await expect(service.export(svgJob('svg-invalid', '<svg/>'))).rejects.toMatchObject({ code: 'parse' });
-    await expect(service.export(svgJob('svg-valid', valid))).resolves.toEqual([
-      expect.objectContaining({ mimeType: 'image/png' }),
-    ]);
+  it('transcodes settled GLB bytes without a kernel render or filesystem', async () => {
+    const { imageClient, service } = createFixture();
+    const job = captureJob('capture');
+    await expect(service.export(job)).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledWith({
+      from: 'glb',
+      to: 'webp',
+      files: [{ name: 'render.glb', bytes: job.content, mimeType: 'model/gltf-binary' }],
+      options: { width: 16, height: 16 },
+    });
   });
 
-  it('should serialize GPU exports and keep manual requests in FIFO order', async () => {
-    const releases: Array<() => void> = [];
-    const calls: string[] = [];
-    const client = createClient();
-    vi.mocked(client.export).mockImplementation(async (_format, options) => {
-      if (!options) {
-        throw new Error('Expected request-scoped export options');
-      }
-      const sourcePath = options.source?.path;
-      calls.push(sourcePath ?? '');
+  it('serializes jobs and runs explicit work before queued automatic work without terminating the client', async () => {
+    const { imageClient, service } = createFixture();
+    let release: (() => void) | undefined;
+    const completionOrder: string[] = [];
+    vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
       await new Promise<void>((resolve) => {
-        releases.push(resolve);
+        release = resolve;
       });
-      return { success: true, data: webpFiles(new Uint8Array([calls.length])), issues: [] };
+      return { success: true, data: files(), issues: [] };
     });
-    const service = createService(client);
-
-    const first = service.export({ ...imageJob('manual-1', 'manual-thumbnail'), source: { path: '/one.ts' } });
-    const second = service.export({ ...imageJob('manual-2', 'manual-thumbnail'), source: { path: '/two.ts' } });
+    const automatic = service.export(thumbnailJob('automatic'));
     await vi.waitFor(() => {
-      expect(calls).toEqual(['/one.ts']);
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
     });
-    releases.shift()?.();
-    await vi.waitFor(() => {
-      expect(calls).toEqual(['/one.ts', '/two.ts']);
-    });
-    releases.shift()?.();
-
-    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    const queuedAutomatic = (async () => {
+      await service.export(thumbnailJob('automatic-next'));
+      completionOrder.push('automatic');
+    })();
+    const capture = (async () => {
+      await service.export(captureJob('capture'));
+      completionOrder.push('capture');
+    })();
+    expect(imageClient.terminate).not.toHaveBeenCalled();
+    release?.();
+    await expect(Promise.all([automatic, queuedAutomatic, capture])).resolves.toHaveLength(3);
+    expect(completionOrder).toEqual(['capture', 'automatic']);
   });
 
-  it('should coalesce queued automatic work per project to the newest identity', async () => {
-    let releaseRunning: (() => void) | undefined;
-    const calls: string[] = [];
-    const client = createClient();
-    vi.mocked(client.export).mockImplementation(async (_format, options) => {
-      if (!options) {
-        throw new Error('Expected request-scoped export options');
-      }
-      const sourcePath = options.source?.path;
-      calls.push(sourcePath ?? '');
-      if (calls.length === 1) {
-        await new Promise<void>((resolve) => {
-          releaseRunning = resolve;
-        });
-      }
-      return { success: true, data: webpFiles(new Uint8Array([1])), issues: [] };
+  it('should bound queued capture bytes while counting shared buffers once and releasing aborted work', async () => {
+    const { imageClient, service } = createFixture();
+    const gate = Promise.withResolvers<void>();
+    vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
+      await gate.promise;
+      return { success: true, data: files(), issues: [] };
     });
-    const service = createService(client);
-
-    const running = service.export({ ...imageJob('running'), source: { path: '/running.ts' } });
+    const active = service.export(captureJob('active'));
     await vi.waitFor(() => {
-      expect(calls).toEqual(['/running.ts']);
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
     });
-    const superseded = service.export({ ...imageJob('old'), source: { path: '/old.ts' } });
-    const newest = service.export({ ...imageJob('new'), source: { path: '/new.ts' } });
-    await expect(superseded).resolves.toBeUndefined();
-    releaseRunning?.();
 
-    await expect(Promise.all([running, newest])).resolves.toHaveLength(2);
-    expect(calls).toEqual(['/running.ts', '/new.ts']);
+    const sharedBytes = new Uint8Array(33 * 1024 * 1024);
+    const firstAbort = new AbortController();
+    const sharedAbort = new AbortController();
+    const first = service.export(captureJob('first', { content: sharedBytes, signal: firstAbort.signal }));
+    const shared = service.export(
+      captureJob('shared', { content: sharedBytes.subarray(0), signal: sharedAbort.signal }),
+    );
+    const distinctBytes = new Uint8Array(33 * 1024 * 1024);
+    const overflow = service.export(captureJob('overflow', { content: distinctBytes }));
+    await expect(overflow).rejects.toBeInstanceOf(RangeError);
+    await expect(overflow).rejects.toThrow('Headless image queue is full');
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+
+    firstAbort.abort();
+    sharedAbort.abort();
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(shared).rejects.toMatchObject({ name: 'AbortError' });
+    const admitted = service.export(captureJob('admitted', { content: distinctBytes }));
+    gate.resolve();
+    await expect(Promise.all([active, admitted])).resolves.toHaveLength(2);
+    expect(imageClient.transcode).toHaveBeenCalledTimes(2);
   });
 
-  it('should preempt active automatic work and run explicit work before queued automatic work', async () => {
+  it('should bound the number of queued explicit exports even when they share one payload', async () => {
+    const { imageClient, service } = createFixture();
+    const gate = Promise.withResolvers<void>();
+    vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
+      await gate.promise;
+      return { success: true, data: files(), issues: [] };
+    });
+    const active = service.export(captureJob('active'));
+    await vi.waitFor(() => {
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
+    });
+    const accepted: Array<Promise<ExportFile[] | undefined>> = [];
+    for (let index = 0; index < 16; index += 1) {
+      accepted.push(service.export(captureJob(`queued-${index}`)));
+    }
+    const overflow = service.export(captureJob('seventeenth'));
+    await expect(overflow).rejects.toBeInstanceOf(RangeError);
+    await expect(overflow).rejects.toThrow('Headless image queue is full');
+    gate.resolve();
+    await expect(Promise.all([active, ...accepted])).resolves.toHaveLength(17);
+    expect(imageClient.transcode).toHaveBeenCalledTimes(17);
+  });
+
+  it('should bound automatic queued source bytes while allowing same-project replacement', async () => {
+    const { imageClient, service } = createFixture();
+    const gate = Promise.withResolvers<void>();
+    vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
+      await gate.promise;
+      return { success: true, data: files(), issues: [] };
+    });
+    const active = service.export(captureJob('active'));
+    await vi.waitFor(() => {
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
+    });
+    const first = service.export({
+      ...thumbnailJob('first'),
+      content: new Uint8Array(33 * 1024 * 1024),
+    });
+    const overflow = service.export({
+      ...thumbnailJob('overflow'),
+      projectId: 'other-project',
+      content: new Uint8Array(33 * 1024 * 1024),
+    });
+    await expect(overflow).resolves.toBeUndefined();
+    const replacement = service.export({
+      ...thumbnailJob('replacement'),
+      content: new Uint8Array(32 * 1024 * 1024),
+    });
+    await expect(first).resolves.toBeUndefined();
+    gate.resolve();
+    await expect(Promise.all([active, replacement])).resolves.toHaveLength(2);
+    expect(imageClient.transcode).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects pre-aborted and queued work without starting or poisoning sibling jobs', async () => {
+    const { imageClient, service } = createFixture();
+    const preAborted = new AbortController();
+    preAborted.abort(new DOMException('pre-aborted', 'AbortError'));
+    await expect(service.export(captureJob('pre', { signal: preAborted.signal }))).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(imageClient.transcode).not.toHaveBeenCalled();
+
+    const gate = Promise.withResolvers<void>();
+    vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
+      await gate.promise;
+      return { success: true, data: files(), issues: [] };
+    });
+    const active = service.export(captureJob('active'));
+    await vi.waitFor(() => {
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
+    });
+    const queuedAbort = new AbortController();
+    const cancelled = service.export(captureJob('cancelled', { signal: queuedAbort.signal }));
+    const sibling = service.export(captureJob('sibling', { geometryHash: 'sibling' }));
+    queuedAbort.abort(new DOMException('queued-abort', 'AbortError'));
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+
+    gate.resolve();
+    await expect(Promise.all([active, sibling])).resolves.toHaveLength(2);
+    expect(imageClient.transcode).toHaveBeenCalledTimes(2);
+  });
+
+  it('settles active cancellation promptly but joins non-cooperative work before starting its sibling', async () => {
+    const { imageClient, service } = createFixture();
+    const gate = Promise.withResolvers<void>();
+    vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
+      await gate.promise;
+      return { success: true, data: files(), issues: [] };
+    });
+    const controller = new AbortController();
+    const cancelled = service.export(captureJob('active-cancel', { signal: controller.signal }));
+    await vi.waitFor(() => {
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(imageClient.transcode).mock.calls[0]?.[0]).toMatchObject({ signal: controller.signal });
+    const sibling = service.export(captureJob('after-cancel', { geometryHash: 'after-cancel' }));
+    controller.abort(new DOMException('active-abort', 'AbortError'));
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+
+    gate.resolve();
+    await expect(sibling).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not start an aborted operation after shared client initialization and detaches its listener', async () => {
+    const imageClient = createMockRuntimeClient<typeof imageRuntime>();
+    vi.mocked(imageClient.transcode).mockResolvedValue({ success: true, data: files(), issues: [] });
+    const connected = Promise.withResolvers<void>();
+    vi.mocked(imageClient.connect).mockImplementation(async () => connected.promise);
+    const service = new HeadlessImageService({
+      createImageClient: vi.fn().mockResolvedValue(imageClient),
+      isGpuAvailable: () => true,
+    });
+    activeServices.add(service);
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const cancelled = service.export(captureJob('during-init', { signal: controller.signal }));
+    await vi.waitFor(() => {
+      expect(imageClient.connect).toHaveBeenCalledOnce();
+    });
+    controller.abort(new DOMException('init-abort', 'AbortError'));
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    connected.resolve();
+
+    await expect(service.export(captureJob('init-sibling', { geometryHash: 'init-sibling' }))).resolves.toEqual(
+      files(),
+    );
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+    expect(imageClient.terminate).not.toHaveBeenCalled();
+    expect(removeListener).toHaveBeenCalled();
+  });
+
+  it('joins an aborted non-cooperative SVG render and ignores its result before continuing', async () => {
+    const gate = Promise.withResolvers<void>();
+    const renderSvg = vi.fn(async (): Promise<ExportFile> => {
+      await gate.promise;
+      return { name: 'drawing.png', mimeType: 'image/png', bytes: new Uint8Array([1]) };
+    });
+    const { imageClient, service } = createFixture({ renderSvg });
+    const controller = new AbortController();
+    const svgJob = {
+      kind: 'capture',
+      identity: 'svg',
+      sourceFormat: 'svg',
+      sourcePath: 'drawing.svg',
+      content: '<svg/>',
+      format: 'png',
+      signal: controller.signal,
+    } as const satisfies HeadlessImageJob;
+    const cancelled = service.export(svgJob);
+    await vi.waitFor(() => {
+      expect(renderSvg).toHaveBeenCalledOnce();
+    });
+    const sibling = service.export(captureJob('after-svg', { geometryHash: 'after-svg' }));
+    controller.abort(new DOMException('svg-abort', 'AbortError'));
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    expect(imageClient.transcode).not.toHaveBeenCalled();
+
+    gate.resolve();
+    await expect(sibling).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+  });
+
+  it('retains the image client until owner disposal', async () => {
+    const { imageClient, service } = createFixture();
+    await service.export(thumbnailJob('thumb'));
+    await service.export(captureJob('capture'));
+    expect(imageClient.terminate).not.toHaveBeenCalled();
+    service.dispose();
+    expect(imageClient.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('terminates a client whose connection fails', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    let rejectAutomatic: ((error: Error) => void) | undefined;
-    const automaticClient = createClient();
-    vi.mocked(automaticClient.export).mockImplementation(
+    const { imageClient, service } = createFixture();
+    vi.mocked(imageClient.connect).mockRejectedValueOnce(new Error('worker handshake failed'));
+
+    await expect(service.export(captureJob('failed-connect'))).rejects.toThrow('worker handshake failed');
+
+    expect(imageClient.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a queued job when the drain fails before the export runs', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const service = new HeadlessImageService({
+      createImageClient: vi.fn(),
+      isGpuAvailable: () => true,
+      /*
+       * The drain reads this between dequeue and execute. Anything raised in
+       * that region used to reject `drain()` — whose only caller discards the
+       * rejection — leaving `export()` pending forever, which is how a
+       * `screenshot` in the agent-host worker stalled for 900 s with no error.
+       */
+      get debug(): boolean {
+        throw new Error('drain failed before execute');
+      },
+    });
+    activeServices.add(service);
+
+    await expect(service.export(captureJob('drain-failure'))).rejects.toThrow('drain failed before execute');
+  });
+
+  it('owns and terminates a connection that is still in progress during disposal', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { imageClient, service } = createFixture();
+    let finishConnect!: () => void;
+    vi.mocked(imageClient.connect).mockImplementationOnce(
       async () =>
-        new Promise((_resolve, reject) => {
-          rejectAutomatic = reject;
+        new Promise<void>((resolve) => {
+          finishConnect = resolve;
         }),
     );
-    vi.mocked(automaticClient.terminate).mockImplementation(() => {
-      rejectAutomatic?.(new Error('terminated'));
+
+    const pending = service.export(captureJob('pending-connect'));
+    await vi.waitFor(() => {
+      expect(imageClient.connect).toHaveBeenCalledOnce();
     });
-    const healthyClient = createClient();
-    const createClientSequence = vi.fn().mockResolvedValueOnce(automaticClient).mockResolvedValueOnce(healthyClient);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        createClient: createClientSequence,
-        isGpuAvailable: () => true,
+    service.dispose();
+
+    expect(imageClient.terminate).toHaveBeenCalledOnce();
+    finishConnect();
+    await expect(pending).rejects.toThrow('HeadlessImageService was disposed');
+    expect(imageClient.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('settles an active caller when a non-cooperative SVG renderer never returns', async () => {
+    const entered = Promise.withResolvers<void>();
+    const renderSvg = vi.fn(async (): Promise<ExportFile> => {
+      entered.resolve();
+      return new Promise<never>(() => {
+        // This backend deliberately ignores disposal and never settles.
+      });
+    });
+    const { service } = createFixture({ renderSvg });
+    const pending = service.export({
+      kind: 'capture',
+      identity: 'stalled-svg',
+      sourceFormat: 'svg',
+      sourcePath: 'drawing.svg',
+      content: '<svg/>',
+      format: 'png',
+    });
+    await entered.promise;
+
+    service.dispose();
+
+    await expect(pending).rejects.toThrow('HeadlessImageService was disposed');
+    expect(renderSvg).toHaveBeenCalledOnce();
+  });
+
+  it('reuses one immutable capture result for the same geometry and normalized options', async () => {
+    const { imageClient, service } = createFixture();
+    const first = await service.export(captureJob('first'));
+    first![0]!.bytes[0] = 255;
+
+    const repeated = await service.export(captureJob('repeat', { exportOptions: { height: 16, width: 16 } }));
+
+    expect(repeated).toEqual(files());
+    expect(repeated).not.toBe(first);
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+  });
+
+  it('misses the capture cache when geometry or render options change', async () => {
+    const { imageClient, service } = createFixture();
+    await service.export(captureJob('initial'));
+    await service.export(captureJob('geometry', { geometryHash: 'changed-geometry' }));
+    await service.export(captureJob('dimensions', { exportOptions: { width: 32, height: 16 } }));
+    await service.export(
+      captureJob('camera', {
+        exportOptions: {
+          width: 16,
+          height: 16,
+          camera: { framing: 'fit', direction: [1, 1, 1], up: [0, 0, 1], margin: 0.05 },
+        },
+      }),
+    );
+    await service.export(
+      captureJob('visibility', {
+        exportOptions: {
+          width: 16,
+          height: 16,
+          visiblePrimitives: [{ nodeIndex: 0, meshIndex: 0, primitiveIndex: 0 }],
+        },
       }),
     );
 
-    const automatic = service.export({ ...imageJob('active'), source: { path: '/active.ts' } });
-    await vi.waitFor(() => {
-      expect(automaticClient.export).toHaveBeenCalledOnce();
-    });
-    const queuedAutomatic = service.export({
-      ...imageJob('queued'),
-      projectId: 'project-2',
-      source: { path: '/queued.ts' },
-    });
-    const capture = service.export({ ...imageJob('capture', 'capture'), source: { path: '/capture.ts' } });
-
-    await expect(automatic).resolves.toBeUndefined();
-    await expect(capture).resolves.toEqual(webpFiles(new Uint8Array([1, 2, 3])));
-    await expect(queuedAutomatic).resolves.toEqual(webpFiles(new Uint8Array([1, 2, 3])));
-    expect(automaticClient.terminate).toHaveBeenCalledOnce();
-    const paths = vi.mocked(healthyClient.export).mock.calls.map(([, options]) => {
-      if (!options) {
-        throw new Error('Expected request-scoped export options');
-      }
-      return options.source?.path;
-    });
-    expect(paths).toEqual(['/capture.ts', '/queued.ts']);
+    expect(imageClient.transcode).toHaveBeenCalledTimes(5);
   });
 
-  it('should preempt automatic work while its lazy client is still being created', async () => {
-    let releaseClient: ((client: AppRuntimeClient) => void) | undefined;
-    const staleClient = createClient();
-    const healthyClient = createClient();
-    const createClientSequence = vi
-      .fn<NonNullable<HeadlessImageServiceDependencies['createClient']>>()
-      .mockImplementationOnce(
-        async () =>
-          new Promise<AppRuntimeClient>((resolve) => {
-            releaseClient = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(healthyClient);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        createClient: createClientSequence,
-        isGpuAvailable: () => true,
-      }),
-    );
+  it('does not cache failed captures', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { imageClient, service } = createFixture();
+    vi.mocked(imageClient.transcode)
+      .mockResolvedValueOnce({
+        success: false,
+        issues: [
+          {
+            message: 'encode failed',
+            code: 'RUNTIME',
+            type: 'runtime',
+            severity: 'error',
+            details: { type: 'render', code: 'encode' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ success: true, data: files(), issues: [] });
 
-    const automatic = service.export(imageJob('active'));
-    await vi.waitFor(() => {
-      expect(createClientSequence).toHaveBeenCalledOnce();
-    });
-    const capture = service.export(imageJob('capture', 'capture'));
-    releaseClient?.(staleClient);
-
-    await expect(automatic).resolves.toBeUndefined();
-    await expect(capture).resolves.toEqual(webpFiles(new Uint8Array([1, 2, 3])));
-    expect(staleClient.terminate).toHaveBeenCalledOnce();
-    expect(healthyClient.export).toHaveBeenCalledOnce();
+    await expect(service.export(captureJob('failed'))).rejects.toMatchObject({ code: 'encode' });
+    await expect(service.export(captureJob('retry'))).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith('Headless image job failed (capture/encode): encode failed');
   });
 
-  it('should suppress repeated automatic failures for the same identity but never manual work', async () => {
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const client = createClient();
-    vi.mocked(client.export).mockResolvedValue({
+  it('suppresses repeated automatic failures for one immutable identity', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { imageClient, service } = createFixture();
+    vi.mocked(imageClient.transcode).mockResolvedValue({
       success: false,
       issues: [
         {
-          message: 'encoder failed',
+          message: 'encode failed',
           code: 'RUNTIME',
           type: 'runtime',
           severity: 'error',
@@ -309,207 +494,184 @@ describe('HeadlessImageService', () => {
         },
       ],
     });
-    const service = createService(client);
-
-    await expect(service.export(imageJob('broken'))).rejects.toMatchObject({ code: 'encode' });
-    await expect(service.export(imageJob('broken'))).resolves.toBeUndefined();
-    expect(warning).toHaveBeenCalledOnce();
-    await expect(service.export(imageJob('broken', 'manual-thumbnail'))).rejects.toMatchObject({ code: 'encode' });
-    expect(client.export).toHaveBeenCalledTimes(2);
-    expect(warning).toHaveBeenCalledTimes(2);
+    await expect(service.export(thumbnailJob('broken'))).rejects.toMatchObject({ code: 'encode' });
+    await expect(service.export(thumbnailJob('broken'))).resolves.toBeUndefined();
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
   });
 
-  it('should preserve and suppress an unchanged driver-unsupported automatic failure without terminating the client', async () => {
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const client = createClient();
-    vi.mocked(client.export).mockResolvedValue({
-      success: false,
-      issues: [
-        {
-          message: 'WebP encoding is unsupported by this graphics driver',
-          code: 'RUNTIME',
-          type: 'runtime',
-          severity: 'error',
-          details: { type: 'render', code: 'driver-unsupported' },
-        },
-      ],
-    });
-    const service = createService(client);
-
-    const first = service.export(imageJob('unsupported-driver'));
-    await expect(first).rejects.toBeInstanceOf(HeadlessImageError);
-    await expect(first).rejects.toMatchObject({
-      code: 'driver-unsupported',
-      message: 'WebP encoding is unsupported by this graphics driver',
-    });
-    await expect(service.export(imageJob('unsupported-driver'))).resolves.toBeUndefined();
-
-    expect(client.export).toHaveBeenCalledOnce();
-    expect(client.terminate).not.toHaveBeenCalled();
-    expect(warning).toHaveBeenCalledOnce();
-  });
-
-  it('should terminate a faulted client so the next request creates a fresh one', async () => {
+  it('evicts the oldest automatic failure identity after the bounded history fills', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const failedClient = createClient();
-    vi.mocked(failedClient.export).mockResolvedValue({
+    const { imageClient, service } = createFixture();
+    vi.mocked(imageClient.transcode).mockResolvedValue({
       success: false,
       issues: [
         {
-          message: 'device lost',
+          message: 'encode failed',
           code: 'RUNTIME',
           type: 'runtime',
           severity: 'error',
-          details: { type: 'render', code: 'device-lost' },
+          details: { type: 'render', code: 'encode' },
         },
       ],
     });
-    const healthyClient = createClient();
-    vi.mocked(healthyClient.export).mockResolvedValue({
-      success: true,
-      data: webpFiles(new Uint8Array([9])),
-      issues: [],
-    });
-    const createClientSequence = vi.fn().mockResolvedValueOnce(failedClient).mockResolvedValueOnce(healthyClient);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        createClient: createClientSequence,
-        isGpuAvailable: () => true,
-      }),
-    );
 
-    await expect(service.export(imageJob('first', 'capture'))).rejects.toBeInstanceOf(HeadlessImageError);
-    await expect(service.export(imageJob('second', 'capture'))).resolves.toEqual(webpFiles(new Uint8Array([9])));
-    expect(failedClient.terminate).toHaveBeenCalledOnce();
-    expect(createClientSequence).toHaveBeenCalledTimes(2);
+    for (let index = 0; index <= 100; index++) {
+      // oxlint-disable-next-line no-await-in-loop -- Fill the sequential service history deterministically.
+      await expect(service.export(thumbnailJob(`broken-${index}`))).rejects.toMatchObject({ code: 'encode' });
+    }
+
+    await expect(service.export(thumbnailJob('broken-100'))).resolves.toBeUndefined();
+    await expect(service.export(thumbnailJob('broken-0'))).rejects.toMatchObject({ code: 'encode' });
+    expect(imageClient.transcode).toHaveBeenCalledTimes(102);
   });
 
-  it('should terminate the lazy client after the configured idle window', async () => {
-    vi.useFakeTimers();
-    const client = createClient();
-    vi.mocked(client.export).mockResolvedValue({
-      success: true,
-      data: webpFiles(new Uint8Array([1])),
-      issues: [],
+  it('renders SVG without probing GPU or creating the image runtime client', async () => {
+    const createImageClient = vi.fn();
+    const service = new HeadlessImageService({
+      createImageClient,
+      isGpuAvailable: () => false,
     });
-    const service = createService(client, 50);
-
-    await service.export(imageJob('idle', 'capture'));
-    await vi.advanceTimersByTimeAsync(49);
-    expect(client.terminate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(client.terminate).toHaveBeenCalledOnce();
-  });
-
-  it('should reuse by opaque filesystem identity and replace the client when that identity changes', async () => {
-    const firstFileSystem = fromMemoryFs();
-    const secondFileSystem = fromMemoryFs();
-    const firstClient = createClient();
-    const secondClient = createClient();
-    const createClientForFileSystem = vi.fn().mockResolvedValueOnce(firstClient).mockResolvedValueOnce(secondClient);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        createClient: createClientForFileSystem,
-        isGpuAvailable: () => true,
-      }),
-    );
-
-    await service.export({ ...imageJob('first', 'capture'), fileSystem: firstFileSystem });
-    await service.export({
-      ...imageJob('same-filesystem-different-project', 'capture'),
-      projectId: 'project-2',
-      fileSystem: firstFileSystem,
-    });
-    await service.export({ ...imageJob('second-filesystem', 'capture'), fileSystem: secondFileSystem });
-
-    expect(createClientForFileSystem).toHaveBeenNthCalledWith(1, firstFileSystem);
-    expect(createClientForFileSystem).toHaveBeenNthCalledWith(2, secondFileSystem);
-    expect(firstClient.terminate).toHaveBeenCalledOnce();
-    expect(firstClient.export).toHaveBeenCalledTimes(2);
-    expect(secondClient.export).toHaveBeenCalledOnce();
-  });
-
-  it('should inject only the job filesystem into the lazy worker transport', async () => {
-    const fileSystem = fromMemoryFs();
-    const client = createClient();
-    vi.mocked(client.export).mockResolvedValue({
-      success: true,
-      data: webpFiles(new Uint8Array([1])),
-      issues: [],
-    });
-    createRuntimeClient.mockReturnValueOnce(client);
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        isGpuAvailable: () => true,
-      }),
-    );
-
-    await expect(service.export({ ...imageJob('lazy', 'capture'), fileSystem })).resolves.toEqual(
-      webpFiles(new Uint8Array([1])),
-    );
-
-    expect(webWorkerTransport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fileSystem,
-      }),
-    );
-    expect(createRuntimeClient).toHaveBeenCalledWith(
-      expect.objectContaining({ transport: { kind: 'worker-transport' } }),
-    );
-    expect(webWorkerTransport.mock.calls[0]?.[0]).not.toHaveProperty('filePoolBuffer');
-  });
-
-  it('should reject a late result after disposal instead of publishing stale bytes', async () => {
-    let release: (() => void) | undefined;
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const client = createClient();
-    vi.mocked(client.export).mockImplementation(async () => {
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      return { success: true, data: webpFiles(new Uint8Array([7])), issues: [] };
-    });
-    const service = createService(client);
-    const result = service.export(imageJob('late', 'capture'));
-    await vi.waitFor(() => {
-      expect(client.export).toHaveBeenCalledOnce();
-    });
-
-    service.dispose();
-    release?.();
-
-    await expect(result).rejects.toThrow('after its client was disposed');
-    expect(client.terminate).toHaveBeenCalledOnce();
-    expect(warning).toHaveBeenCalledOnce();
-  });
-
-  it('should fail preflight with a stable adapter-unavailable code and one safe queue warning', async () => {
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const sourceEntryPath = 'src/main.ts';
-    const service = trackService(
-      new HeadlessImageService({
-        runtimeConfig: { tauApiUrl: 'https://example.test', tauWebSocketUrl: 'wss://example.test' },
-        isGpuAvailable: () => false,
-      }),
-    );
-
-    const result = service.export(imageJob('missing-1', 'capture', sourceEntryPath));
-    await expect(result).rejects.toBeInstanceOf(HeadlessImageError);
-    await expect(result).rejects.toMatchObject({
-      code: 'adapter-unavailable',
-      message: 'WebGPU is unavailable; update your browser or use the Tau CLI for image exports.',
-    });
-    expect(warning).toHaveBeenCalledOnce();
-    expect(warning).toHaveBeenCalledWith('Headless image job failed', {
+    activeServices.add(service);
+    const result = await service.export({
       kind: 'capture',
-      projectId: 'project-1',
-      identity: 'missing-1',
-      sourceLocator: sourceEntryPath,
-      code: 'adapter-unavailable',
-      message: 'WebGPU is unavailable; update your browser or use the Tau CLI for image exports.',
+      identity: 'svg',
+      sourceFormat: 'svg',
+      sourcePath: 'drawing.svg',
+      content: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0H10V10H0Z"/></svg>',
+      format: 'png',
+      exportOptions: { width: 32, height: 32 },
     });
+    expect(result?.[0]?.mimeType).toBe('image/png');
+    expect(createImageClient).not.toHaveBeenCalled();
+  });
+
+  it('selects direct SVG WebP rendering with the exact thumbnail options', async () => {
+    const webp: ExportFile = { name: 'render.webp', mimeType: 'image/webp', bytes: new Uint8Array([1, 2, 3]) };
+    const renderSvg = vi.fn(async () => webp);
+    const automaticGpuProbe = vi.fn(() => false);
+    const { imageClient, service } = createFixture({ renderSvg, isAutomaticGpuAvailable: automaticGpuProbe });
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32"/>';
+    const exportOptions = { width: 768, height: 576, quality: 0.9 };
+
+    await expect(
+      service.export({
+        kind: 'automatic-thumbnail',
+        identity: 'svg-webp',
+        projectId: 'project-1',
+        sourceFormat: 'svg',
+        sourcePath: 'drawing.svg',
+        content: svg,
+        format: 'webp',
+        exportOptions,
+      }),
+    ).resolves.toEqual([webp]);
+    expect(renderSvg).toHaveBeenCalledWith(svg, 'webp', exportOptions);
+    expect(automaticGpuProbe).not.toHaveBeenCalled();
+    expect(imageClient.transcode).not.toHaveBeenCalled();
+  });
+
+  it('routes SVG through the host client when the selected backend has no direct SVG renderer', async () => {
+    const { imageClient, service } = createFixture({ renderSvg: undefined, isGpuAvailable: undefined });
+    const png: ExportFile[] = [{ name: 'render.png', mimeType: 'image/png', bytes: new Uint8Array([1, 2, 3]) }];
+    vi.mocked(imageClient.transcode).mockResolvedValueOnce({ success: true, data: png, issues: [] });
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32"/>';
+    const options = { width: 128, height: 64, background: '#FFFFFF00', label: 'Part', margin: 0.15 };
+    await expect(
+      service.export({
+        kind: 'capture',
+        identity: 'desktop-svg',
+        sourceFormat: 'svg',
+        sourcePath: 'drawing.svg',
+        content: svg,
+        format: 'png',
+        exportOptions: options,
+      }),
+    ).resolves.toEqual(png);
+    expect(imageClient.transcode).toHaveBeenCalledWith({
+      from: 'svg',
+      to: 'png',
+      files: [{ name: 'render.svg', bytes: new TextEncoder().encode(svg), mimeType: 'image/svg+xml' }],
+      options,
+    });
+    expect(imageClient.open).not.toHaveBeenCalled();
+  });
+
+  it('does not probe renderer GPU when the selected execution host does not require it', async () => {
+    const requestAdapter = vi.fn().mockResolvedValue(null);
+    vi.stubGlobal('navigator', { gpu: { requestAdapter } });
+    try {
+      const { imageClient, service } = createFixture({ isGpuAvailable: undefined });
+      await expect(service.export(captureJob('desktop-no-gpu'))).resolves.toEqual(files());
+      expect(imageClient.transcode).toHaveBeenCalledOnce();
+      expect(requestAdapter).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a stable no-GPU failure before creating the image worker', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const service = new HeadlessImageService({
+      isGpuAvailable: () => false,
+    });
+    activeServices.add(service);
+    const result = service.export(captureJob('missing-gpu'));
+    await expect(result).rejects.toBeInstanceOf(HeadlessImageError);
+    await expect(result).rejects.toMatchObject({ code: 'adapter-unavailable' });
+  });
+
+  it('defers automatic previews on a software adapter without starting native rendering, while manual retry remains available', async () => {
+    const { imageClient, service } = createFixture({ isAutomaticGpuAvailable: () => false });
+    await expect(service.export(captureJob('software-preview', { kind: 'automatic-thumbnail' }))).rejects.toMatchObject(
+      {
+        code: 'driver-unsupported',
+      },
+    );
+    expect(imageClient.transcode).not.toHaveBeenCalled();
+    await expect(service.export(captureJob('software-retry', { kind: 'manual-thumbnail' }))).resolves.toEqual(files());
+    expect(imageClient.transcode).toHaveBeenCalledOnce();
+  });
+
+  it('does not enqueue an automatic preview when disposal wins during adapter admission', async () => {
+    const probe = Promise.withResolvers<boolean>();
+    const createImageClient = vi.fn();
+    const service = new HeadlessImageService({ createImageClient, isAutomaticGpuAvailable: async () => probe.promise });
+    const pending = service.export(captureJob('late-adapter', { kind: 'automatic-thumbnail' }));
+    service.dispose();
+    probe.resolve(true);
+    await expect(pending).rejects.toThrow('disposed');
+    expect(createImageClient).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { adapter: null, label: 'answers null' },
+    { adapter: undefined, label: 'rejects', reject: true },
+  ])('reports the same failure when navigator.gpu $label to requestAdapter', async ({ adapter, reject }) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    /*
+     * Playwright's Firefox and WebKit builds expose `navigator.gpu` and hand
+     * back no adapter. Without this probe the image worker spawns, the raster
+     * backend dereferences the null, and the `TypeError` escapes as an uncaught
+     * worker error instead of a tool result.
+     */
+    const createImageClient = vi.fn();
+    vi.stubGlobal('navigator', {
+      gpu: {
+        requestAdapter: async () => {
+          if (reject) {
+            throw new Error('WebGPU is disabled');
+          }
+          return adapter;
+        },
+      },
+    });
+    const service = new HeadlessImageService({ createImageClient });
+    activeServices.add(service);
+
+    await expect(service.export(captureJob('null-adapter'))).rejects.toMatchObject({
+      code: 'adapter-unavailable',
+    });
+    expect(createImageClient).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

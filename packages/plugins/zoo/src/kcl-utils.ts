@@ -1,8 +1,8 @@
 import type { PartialDeep, SetRequired } from 'type-fest';
 import type { Node } from '@taucad/kcl-wasm-lib/bindings/Node';
 import type { Program } from '@taucad/kcl-wasm-lib/bindings/Program';
-import type { KclValue } from '@taucad/kcl-wasm-lib/bindings/KclValue';
-import type { Operation } from '@taucad/kcl-wasm-lib/bindings/Operation';
+import type { KclValueView } from '@taucad/kcl-wasm-lib/bindings/KclValueView';
+import type { OperationsByModule } from '@taucad/kcl-wasm-lib/bindings/OperationsByModule';
 import type { ArtifactGraph } from '@taucad/kcl-wasm-lib/bindings/Artifact';
 import type { CompilationIssue as CompilationError } from '@taucad/kcl-wasm-lib/bindings/CompilationIssue';
 import type { DefaultPlanes } from '@taucad/kcl-wasm-lib/bindings/DefaultPlanes';
@@ -90,7 +90,7 @@ function normalizeKclExecutionResult(raw: unknown): KclExecutionResult {
 
   return {
     variables: (record['variables'] ?? {}) as KclExecutionResult['variables'],
-    operations: (record['operations'] ?? []) as Operation[],
+    operations: (record['operations'] ?? { map: {} }) as OperationsByModule,
     artifactGraph: (record['artifactGraph'] ?? { map: {}, itemCount: 0 }) as ArtifactGraph,
     errors: partitioned.errors,
     warnings: partitioned.warnings,
@@ -194,24 +194,16 @@ export class KclUtilities {
 
           // Update the literal value while preserving the structure
           if (typeof parameterValue === 'number') {
-            // `value` is mistyped - it always has a nested `value` property
-            (declaration.init.value as unknown) = {
-              value: parameterValue,
-              suffix: 'None',
-            };
-            declaration.init.raw = String(parameterValue);
-          } else if (typeof parameterValue === 'string') {
-            (declaration.init.value as unknown) = {
-              value: parameterValue,
-              suffix: 'None',
-            };
-            declaration.init.raw = `"${parameterValue}"`;
-          } else if (typeof parameterValue === 'boolean') {
-            (declaration.init.value as unknown) = {
-              value: parameterValue,
-              suffix: 'None',
-            };
-            declaration.init.raw = String(parameterValue);
+            // Keep the author's unit suffix (`0.25in` stays inches); dropping it re-types the value as the file default.
+            const original = declaration.init.value;
+            const isNumberLiteral = typeof original === 'object';
+            declaration.init.value = { value: parameterValue, suffix: isNumberLiteral ? original.suffix : 'None' };
+            const suffixText = isNumberLiteral ? (/[A-Z_a-z]+$/.exec(declaration.init.raw)?.[0] ?? '') : '';
+            declaration.init.raw = `${parameterValue}${suffixText}`;
+          } else if (typeof parameterValue === 'string' || typeof parameterValue === 'boolean') {
+            // String and bool literals are plain values; only numbers carry `{ value, suffix }`.
+            declaration.init.value = parameterValue;
+            declaration.init.raw = JSON.stringify(parameterValue);
           }
         }
       }
@@ -227,7 +219,7 @@ export class KclUtilities {
    * @param variables - name-to-value map produced by the KCL executor (only literal types are extracted)
    * @returns Object containing default parameters and JSON schema
    */
-  public static convertKclVariablesToJsonSchema(variables: Partial<Record<string, KclValue>>): {
+  public static convertKclVariablesToJsonSchema(variables: Partial<Record<string, KclValueView>>): {
     defaultParameters: Record<string, unknown>;
     jsonSchema: Record<string, unknown>;
   } {
@@ -388,9 +380,10 @@ export class KclUtilities {
     // Ensure WASM is initialized first
     await this.initializeWasm();
 
-    // Create and initialize engine manager
-    this.engineManager = await this.createEngineManager();
-    await this.engineManager.initialize();
+    // Keep the engine manager only once it initializes; a failed one has already closed its socket
+    const engineManager = await this.createEngineManager();
+    await engineManager.initialize();
+    this.engineManager = engineManager;
 
     this.engineSocketCloseUnsubscribe?.();
     this.engineSocketCloseUnsubscribe = this.engineManager.onSessionClosed(() => {

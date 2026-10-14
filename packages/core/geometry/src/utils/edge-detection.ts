@@ -1,4 +1,3 @@
-const hashPrecisionMultiplier = 10_000_000;
 const degreesToRadians = Math.PI / 180;
 
 type Vertex3 = [number, number, number];
@@ -9,14 +8,12 @@ type EdgeData = {
   normal: Vertex3;
 };
 
-/** Edge geometry represented as indexed line segments. @public */
+/** Edge geometry as a de-indexed line soup: every pair of vertices is one segment. @public */
 export type EdgeDetectionResult = {
   positions: Float32Array<ArrayBuffer>;
-  indices: Uint32Array<ArrayBuffer>;
 };
 
-const hashVertex = ([x, y, z]: Vertex3): string =>
-  `${Math.round(x * hashPrecisionMultiplier)},${Math.round(y * hashPrecisionMultiplier)},${Math.round(z * hashPrecisionMultiplier)}`;
+const hashVertex = ([x, y, z]: Vertex3): string => `${x},${y},${z}`;
 
 const computeNormal = (a: Vertex3, b: Vertex3, c: Vertex3): Vertex3 => {
   const cbx = c[0] - b[0];
@@ -37,14 +34,14 @@ const dot = (a: Vertex3, b: Vertex3): number => a[0] * b[0] + a[1] * b[1] + a[2]
 /**
  * Detect boundary and sharp dihedral edges in triangle positions.
  *
- * Vertices are welded by rounded position so indexed meshes and triangle soup
+ * Vertices are welded by exact Float32 position so indexed meshes and triangle soup
  * share the same classification. Boundary edges are always emitted; shared
  * edges are emitted when their face-normal angle meets the threshold.
  *
  * @param positions - Flat XYZ vertex positions.
  * @param indices - Optional triangle indices; omit for sequential triangle soup.
  * @param thresholdDegrees - Minimum face-normal angle classified as sharp.
- * @returns Indexed line-segment positions.
+ * @returns Line-segment positions, two vertices per segment and no index buffer.
  * @public
  */
 export const detectEdges = (
@@ -101,8 +98,5 @@ export const detectEdges = (
     }
   }
 
-  return {
-    positions: new Float32Array(edgeVertices),
-    indices: Uint32Array.from({ length: edgeVertices.length / 3 }, (_, index) => index),
-  };
+  return { positions: new Float32Array(edgeVertices) };
 };

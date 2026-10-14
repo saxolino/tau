@@ -15,9 +15,9 @@ import {
   EyeOff,
   List,
 } from 'lucide-react';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '#components/ui/table.js';
-import { Button } from '#components/ui/button.js';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '#components/ui/select.js';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@taucad/ui/components/table';
+import { Button } from '@taucad/ui/components/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@taucad/ui/components/select';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -26,10 +26,10 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '#components/ui/dropdown-menu.js';
-import { toTitleCase } from '#utils/string.utils.js';
-import { SearchInput } from '#components/search-input.js';
-import { cn } from '#utils/ui.utils.js';
+} from '@taucad/ui/components/dropdown-menu';
+import { toTitleCase } from '@taucad/ui/utils/label';
+import { SearchInput } from '@taucad/ui/components/search-input';
+import { cn } from '@taucad/ui/utils/cn';
 
 // =============================================================================
 // DataTable
@@ -48,6 +48,8 @@ export function DataTable<Data>({
   emptyMessage = 'No results.',
   onRowClick,
 }: DataTableProps<Data>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
   return (
     <Table>
       <TableHeader>
@@ -66,11 +68,22 @@ export function DataTable<Data>({
           table.getRowModel().rows.map((row) => (
             <TableRow
               key={row.id}
-              className={cn(row.getIsSelected() ? 'bg-muted/50' : undefined, onRowClick && 'cursor-pointer')}
+              className={cn(row.getIsSelected() ? 'bg-muted/50' : undefined, onRowClick && 'cursor-action')}
+              tabIndex={onRowClick ? 0 : undefined}
               onClick={
                 onRowClick
                   ? () => {
                       onRowClick(row.original);
+                    }
+                  : undefined
+              }
+              onKeyDown={
+                onRowClick
+                  ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onRowClick(row.original);
+                      }
                     }
                   : undefined
               }
@@ -119,9 +132,14 @@ export function DataTableVirtualized<Data>({
   overscan = 10,
   onRowClick,
 }: DataTableVirtualizedProps<Data>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
+  'use no memo';
+
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const { rows } = table.getRowModel();
 
+  // oxlint-disable-next-line react/incompatible-library -- This component is explicitly opted out because TanStack Virtual returns mutable functions that cannot be compiler-memoized safely.
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => tableContainerRef.current,
@@ -170,11 +188,22 @@ export function DataTableVirtualized<Data>({
                   <TableRow
                     key={row.id}
                     data-index={virtualRow.index}
-                    className={cn(row.getIsSelected() ? 'bg-muted/50' : undefined, onRowClick && 'cursor-pointer')}
+                    className={cn(row.getIsSelected() ? 'bg-muted/50' : undefined, onRowClick && 'cursor-action')}
+                    tabIndex={onRowClick ? 0 : undefined}
                     onClick={
                       onRowClick
                         ? () => {
                             onRowClick(row.original);
+                          }
+                        : undefined
+                    }
+                    onKeyDown={
+                      onRowClick
+                        ? (event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              onRowClick(row.original);
+                            }
                           }
                         : undefined
                     }
@@ -217,10 +246,12 @@ type DataTableSearchProps<Data> = {
 
 export function DataTableSearch<Data>({
   table,
-  placeholder = 'Search...',
+  placeholder = 'Search…',
   className,
   containerClassName,
 }: DataTableSearchProps<Data>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
   const globalFilter = table.getState().globalFilter as string;
 
   return (
@@ -259,86 +290,92 @@ export function DataTablePagination<Data>({
   withSelectedCount = true,
   itemName = 'row',
 }: DataTablePaginationProps<Data>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
   const selectedCount = table.getFilteredSelectedRowModel().rows.length;
   const totalCount = table.getFilteredRowModel().rows.length;
+  const { pageIndex, pageSize } = table.getState().pagination;
+  const firstVisible = Math.min(pageIndex * pageSize + 1, totalCount);
+  const lastVisible = Math.min((pageIndex + 1) * pageSize, totalCount);
 
   return (
-    <div className='flex items-center justify-between'>
-      {withSelectedCount ? (
-        <div className='flex-1 text-sm text-muted-foreground'>
-          {selectedCount} of {totalCount} {itemName}(s) selected.
-        </div>
-      ) : (
-        <div className='flex-1' />
-      )}
-      <div className='flex items-center space-x-6 lg:space-x-8'>
-        <div className='flex items-center space-x-2'>
-          <p className='text-sm font-medium whitespace-nowrap'>Items per page</p>
+    <div className='flex flex-wrap items-center justify-between gap-x-6 gap-y-2'>
+      <div className='text-sm text-muted-foreground'>
+        {withSelectedCount
+          ? `${selectedCount} of ${totalCount} ${itemName}(s) selected.`
+          : `${firstVisible}–${lastVisible} of ${totalCount} ${itemName}${totalCount === 1 ? '' : 's'}`}
+      </div>
+      <div className='flex flex-wrap items-center gap-x-6 gap-y-2 lg:gap-x-8'>
+        <div className='flex items-center gap-2'>
+          <p className='hidden text-sm font-medium whitespace-nowrap sm:block'>Items per page</p>
           <Select
-            value={`${table.getState().pagination.pageSize}`}
+            size='sm'
+            value={`${pageSize}`}
             onValueChange={(value) => {
               table.setPageSize(Number(value));
             }}
           >
-            <SelectTrigger size='sm' className='w-[70px] pr-2'>
-              <SelectValue placeholder={table.getState().pagination.pageSize} />
+            <SelectTrigger aria-label='Items per page'>
+              <SelectValue placeholder={pageSize} />
             </SelectTrigger>
             <SelectContent position='popper' side='top'>
-              {pageSizeOptions.map((pageSize) => (
-                <SelectItem key={pageSize} value={`${pageSize}`}>
-                  {pageSize}
+              {pageSizeOptions.map((option) => (
+                <SelectItem key={option} value={`${option}`}>
+                  {option}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
-        <div className='flex w-[100px] items-center justify-center text-sm font-medium'>
-          Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+        <div className='text-sm font-medium whitespace-nowrap'>
+          Page {pageIndex + 1} of {table.getPageCount()}
         </div>
-        <div className='flex items-center space-x-2'>
+        <div className='flex items-center gap-2'>
           <Button
             variant='outline'
-            className='hidden h-7 w-8 p-0 lg:flex'
+            size='icon-sm'
+            className='hidden lg:flex'
             disabled={!table.getCanPreviousPage()}
             onClick={() => {
               table.setPageIndex(0);
             }}
           >
             <span className='sr-only'>Go to first page</span>
-            <ChevronsLeft className='h-4 w-4' />
+            <ChevronsLeft />
           </Button>
           <Button
             variant='outline'
-            className='h-7 w-8 p-0'
+            size='icon-sm'
             disabled={!table.getCanPreviousPage()}
             onClick={() => {
               table.previousPage();
             }}
           >
             <span className='sr-only'>Go to previous page</span>
-            <ChevronLeft className='h-4 w-4' />
+            <ChevronLeft />
           </Button>
           <Button
             variant='outline'
-            className='h-7 w-8 p-0'
+            size='icon-sm'
             disabled={!table.getCanNextPage()}
             onClick={() => {
               table.nextPage();
             }}
           >
             <span className='sr-only'>Go to next page</span>
-            <ChevronRight className='h-4 w-4' />
+            <ChevronRight />
           </Button>
           <Button
             variant='outline'
-            className='hidden h-7 w-8 p-0 lg:flex'
+            size='icon-sm'
+            className='hidden lg:flex'
             disabled={!table.getCanNextPage()}
             onClick={() => {
               table.setPageIndex(table.getPageCount() - 1);
             }}
           >
             <span className='sr-only'>Go to last page</span>
-            <ChevronsRight className='h-4 w-4' />
+            <ChevronsRight />
           </Button>
         </div>
       </div>
@@ -361,6 +398,8 @@ export function DataTableColumnHeader<Data, Value>({
   title,
   className,
 }: DataTableColumnHeaderProps<Data, Value>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
   if (!column.getCanSort()) {
     return <div className={cn('text-sm font-medium', className)}>{title}</div>;
   }
@@ -425,6 +464,8 @@ type DataTableSortingDropdownProps<Data> = {
 };
 
 export function DataTableSortingDropdown<Data>({ table }: DataTableSortingDropdownProps<Data>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
   const sortingState = table.getState().sorting[0];
 
   // Dynamically get sortable columns from the table
@@ -495,6 +536,8 @@ type DataTableColumnVisibilityDropdownProps<Data> = {
 export function DataTableColumnVisibilityDropdown<Data>({
   table,
 }: DataTableColumnVisibilityDropdownProps<Data>): ReactNode {
+  // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
+  'use no memo';
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

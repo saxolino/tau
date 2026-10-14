@@ -46,8 +46,12 @@
   },
   "dependencies": {
     "@taucad/filesystem": "workspace:*",
+    "@taucad/parameters": "workspace:*",
     "@taucad/rpc": "workspace:*",
     "@taucad/types": "workspace:*",
     "@taucad/utils": "workspace:*"
+  },
+  "devDependencies": {
+    "zod": "catalog:"
   }
 }

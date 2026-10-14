@@ -1,10 +1,9 @@
-import { defineConfig } from 'vitest/config';
-import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  plugins: [nxViteTsPaths()],
   test: {
     environment: 'node',
+    exclude: [...configDefaults.exclude, '**/*.browser.test.ts'],
     typecheck: {
       enabled: true,
       include: ['**/*.test-d.ts'],

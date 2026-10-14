@@ -1,18 +1,24 @@
-import { assign, assertEvent, setup, enqueueActions } from 'xstate';
-import type { FileEntry, FileSystemBackend } from '@taucad/types';
-import type { FileSystemBridgeConnection } from '@taucad/fs-bridge';
+import { ENV } from '#environment.config.js';
+import { setup, types } from 'xstate';
+import type { EnqueueObject, EventObject, SystemRegistry } from 'xstate';
+import type { FileSystemBackend } from '@taucad/types';
+import type { FileSystemBridgeConnection, RootedBridgeConsumer } from '@taucad/fs-bridge';
+import type { ComputeBinding, ComputeStoreControl } from '@taucad/runtime';
+import { connectComputeStoreChannel } from '@taucad/runtime/host';
 import { safeDispose } from '@taucad/utils/dispose';
 import FileManagerWorker from '#machines/file-manager.worker.js?worker';
 import {
   getProjectFileSystemConfig,
   getWorkspace,
+  getWorkspaceMetadata,
   checkHandlePermission,
   getHomeStorageBackend,
   getProjectRootConfigs,
 } from '#filesystem/handle-store.js';
+import { desktopBridge } from '#filesystem/desktop-bridge.js';
 import { fileManagerWorkerName } from '#machines/file-manager-worker-name.js';
 import type { WorkspaceRootSkip } from '#filesystem/handle-store.js';
-import { fromSafeAsync } from '#lib/xstate.lib.js';
+import { eventSchemas, fromSafeAsync } from '#lib/xstate.lib.js';
 import { normalizePath } from '@taucad/utils/path';
 import { FileContentService } from '@taucad/fs-client/file-content-service';
 import { SharedPool } from '@taucad/memory';
@@ -22,7 +28,9 @@ import { WorkerChangeChannel } from '@taucad/fs-client/worker-change-channel';
 import { WorkspacePathResolver } from '@taucad/fs-client/workspace-path-resolver';
 import { RefreshGenerationGuard } from '@taucad/fs-client/refresh-generation-guard';
 import { createDomVisibilityProvider } from '@taucad/fs-client/visibility-provider';
-import { bundledTypesWorkspaceRootSegment } from '#lib/bundled-types-tree.constants.js';
+import { createComposedViewClient } from '@taucad/fs-client/composed-view-client';
+import type { ComposedViewClient } from '@taucad/fs-client/composed-view-client';
+import { dependencyMountRoot } from '#lib/bundled-types-tree.constants.js';
 import type { FileManagerProxy } from '#machines/file-manager.machine.types.js';
 import {
   formatWorkerError,
@@ -37,28 +45,96 @@ const fileCacheMaxSingleFileBytes = 1024 * 1024;
 
 const filePoolBytes = 50 * 1024 * 1024;
 
+const computeOpeners = (worker: Worker, admittedProjectId: string | undefined) => {
+  const openComputeStorePort = (projectId: string): MessagePort => {
+    if (!admittedProjectId || projectId !== admittedProjectId) {
+      throw new Error('Compute store project authority does not match the active project.');
+    }
+    const channel = new MessageChannel();
+    worker.postMessage({ type: 'computeStoreConnect', projectId, port: channel.port1 }, [channel.port1]);
+    return channel.port2;
+  };
+  const openComputeBinding = (projectId: string) => {
+    const connection = connectComputeStoreChannel(openComputeStorePort(projectId));
+    return { compute: { mode: 'durable', store: connection.store } as const, dispose: connection.dispose };
+  };
+  const computeControl = <Name extends keyof ComputeStoreControl>(
+    projectId: string,
+    action: Name,
+    input: Parameters<ComputeStoreControl[Name]>[0],
+  ): ReturnType<ComputeStoreControl[Name]> => {
+    if (!admittedProjectId || projectId !== admittedProjectId) {
+      throw new Error('Compute control project authority does not match the active project.');
+    }
+    const channel = new MessageChannel();
+    worker.postMessage({ type: 'computeStoreControl', projectId, action, ...input, port: channel.port1 }, [
+      channel.port1,
+    ]);
+    return new Promise<Awaited<ReturnType<ComputeStoreControl[Name]>>>((resolve, reject) => {
+      channel.port2.addEventListener('message', ({ data }: MessageEvent<{ result?: unknown; error?: string }>) => {
+        channel.port2.close();
+        if (data.error) {
+          reject(new Error(data.error));
+        } else {
+          resolve(data.result as Awaited<ReturnType<ComputeStoreControl[Name]>>);
+        }
+      });
+      channel.port2.start();
+    }) as ReturnType<ComputeStoreControl[Name]>;
+  };
+  /* W8 TS-S5: a port into this project's revision root for the resident agent host, as a placement session or a
+   * `revisions` tool reader. The worker serves it only once the page's own revision port has opened the root. */
+  const openRevisionSessionPort = (kind: 'placement' | 'reader', projectId: string): MessagePort => {
+    if (!admittedProjectId || projectId !== admittedProjectId) {
+      throw new Error('Revision session project authority does not match the active project.');
+    }
+    const channel = new MessageChannel();
+    worker.postMessage(
+      { type: kind === 'placement' ? 'placementConnect' : 'revisionsReaderConnect', projectId, port: channel.port1 },
+      [channel.port1],
+    );
+    return channel.port2;
+  };
+  return { openComputeBinding, openComputeStorePort, computeControl, openRevisionSessionPort };
+};
+
 /**
  * Why webaccess can't be initialized when the FM machine enters the
  * `webAccessUnavailable` recovery state. Drives the copy/recovery surface
  * rendered by `ProjectUnavailableOverlay` (R8) and the legacy
  * `chat-error-service-unavailable` component.
  *
- * - `missing` — the bound workspace doesn't exist in the handle store (the
- *   user deleted/forgot it, or the project was created on another device).
+ * - `missing` — the bound workspace metadata doesn't exist in this browser.
+ * - `disconnected` — workspace identity remains but its directory handle was
+ *   deliberately removed. Re-picking restores that exact identity.
  * - `permission` — the workspace's handle is intact but the browser
  *   revoked read/write permission. A user-gesture `Grant Access` flow
  *   recovers without a re-pick.
  */
-export type WorkspaceUnavailableReason = 'missing' | 'permission';
+export type WorkspaceUnavailableReason = 'missing' | 'disconnected' | 'permission';
+
+/** The worker connection this machine holds: the authority's surface, its change stream, and its death. */
+type FileManagerWorkerProxy = FileManagerProxy & {
+  listen?: (event: string, handler: (data: unknown) => void) => () => void;
+  /** Settles when the bridge channel closes, which is what a dead worker looks like (G2c-2). */
+  closed: Promise<void>;
+};
 
 type FileManagerContext = {
   worker: Worker | undefined;
-  proxy: (FileManagerProxy & { listen?: (event: string, handler: (data: unknown) => void) => () => void }) | undefined;
+  proxy: FileManagerWorkerProxy | undefined;
   bridgeDispose?: () => void;
-  openFileSystemBridge?: (root: string) => FileSystemBridgeConnection;
+  openFileSystemBridge?: (root: string, consumer: RootedBridgeConsumer) => FileSystemBridgeConnection;
+  openComputeBinding?: (projectId: string) => { compute: ComputeBinding; dispose: () => void };
+  openComputeStorePort?: (projectId: string) => MessagePort;
+  computeControl?: ReturnType<typeof computeOpeners>['computeControl'];
+  openRevisionSessionPort?: ReturnType<typeof computeOpeners>['openRevisionSessionPort'];
   filePoolBuffer: SharedArrayBuffer | undefined;
   contentService: FileContentService | undefined;
   treeService: FileTreeService | undefined;
+  /** The one composed client the file services and the Files pane both use. */
+  viewClient: ComposedViewClient | undefined;
+  disposeComposedView?: () => void;
   workerChangeChannel: WorkerChangeChannel | undefined;
   error: Error | undefined;
   rootDirectory: string;
@@ -92,6 +168,8 @@ type FileManagerContext = {
   activeWorkspaceName: string | undefined;
   projectId: string | undefined;
   sharedWorker: Worker | undefined;
+  /** Whether this mount restarted its worker within the last liveness bound; a second death then shows the error. */
+  restarted: boolean;
   onExternalPollTelemetry: ((aggregate: ExternalPollTelemetry) => void) | undefined;
   onRootSkipped: ((skip: WorkspaceRootSkip) => void) | undefined;
 };
@@ -101,9 +179,13 @@ type FileManagerContext = {
 type WorkerConnectedEvent = {
   type: 'workerConnected';
   worker: Worker;
-  proxy: FileManagerProxy & { listen?: (event: string, handler: (data: unknown) => void) => () => void };
+  proxy: FileManagerWorkerProxy;
   bridgeDispose: () => void;
-  openFileSystemBridge: (root: string) => FileSystemBridgeConnection;
+  openFileSystemBridge: (root: string, consumer: RootedBridgeConsumer) => FileSystemBridgeConnection;
+  openComputeBinding: (projectId: string) => { compute: ComputeBinding; dispose: () => void };
+  openComputeStorePort: (projectId: string) => MessagePort;
+  computeControl: ReturnType<typeof computeOpeners>['computeControl'];
+  openRevisionSessionPort: ReturnType<typeof computeOpeners>['openRevisionSessionPort'];
   filePoolBuffer: SharedArrayBuffer | undefined;
 };
 
@@ -117,10 +199,12 @@ type WorkerInitializedEvent = {
   configuredBackend: FileSystemBackend;
   activeWorkspaceId: string | undefined;
   activeWorkspaceName: string | undefined;
-  initialEntries: FileEntry[];
   contentService: FileContentService;
   treeService: FileTreeService;
+  viewClient: ComposedViewClient;
   workerChangeChannel: WorkerChangeChannel;
+  /** Releases the user's composed-view connection this init opened. */
+  disposeComposedView: () => void;
 };
 
 /**
@@ -144,6 +228,7 @@ const connectWorkerActor = fromSafeAsync<WorkerConnectedEvent, { context: FileMa
     context.contentService?.dispose();
     context.treeService?.dispose();
     context.workerChangeChannel?.dispose();
+    context.disposeComposedView?.();
 
     const { createFileSystemBridge, createFileSystemBridgeProxy, openFileSystemBridge, waitForWorkerReady } =
       await import('@taucad/fs-bridge');
@@ -157,8 +242,48 @@ const connectWorkerActor = fromSafeAsync<WorkerConnectedEvent, { context: FileMa
     // resolved here because `handle-store` owns the pin and runs on the main
     // thread only. Inherited workers already carry the mount, so nested file
     // managers never pay for the lookup.
-    const worker =
-      context.sharedWorker ?? new FileManagerWorker({ name: fileManagerWorkerName(await getHomeStorageBackend()) });
+    let worker = context.sharedWorker;
+    if (!worker) {
+      const homeBackend = await getHomeStorageBackend();
+      worker = new FileManagerWorker({ name: fileManagerWorkerName(homeBackend) });
+      // A node-backed Home needs its provider host before the worker can mount
+      // `/`, so the brokered port is handed over immediately after construction
+      // and the worker's module evaluation waits on it. One port per concern:
+      // the runtime's kernel port is brokered separately.
+      const bridge = homeBackend === 'node' ? desktopBridge() : undefined;
+      if (bridge) {
+        const deliverNodeFsPort = async (target: Worker): Promise<void> => {
+          const nodeFsPort = await bridge.nodeFs.connect();
+          target.postMessage({ type: 'nodeFsPort', port: nodeFsPort, homeRoot: bridge.nodeFs.homeRoot }, [nodeFsPort]);
+        };
+        // The services utility can die; main forks a fresh one on the next
+        // `connect()`. The worker asks for a replacement once its channel
+        // closes, so a host crash costs a resync instead of wedging the
+        // filesystem for the rest of the session.
+        const nodeWorker = worker;
+        // A refused replacement is answered too, so the worker can settle and ask again.
+        const replaceNodeFsPort = async (): Promise<void> => {
+          try {
+            await deliverNodeFsPort(nodeWorker);
+          } catch (error) {
+            try {
+              nodeWorker.postMessage({
+                type: 'nodeFsPortError',
+                message: error instanceof Error ? error.message : String(error),
+              });
+            } catch {
+              // The worker may already be disposed while the desktop is closing.
+            }
+          }
+        };
+        nodeWorker.addEventListener('message', (event: MessageEvent<{ type?: string }>) => {
+          if (event.data.type === 'nodeFsPortRequest') {
+            void replaceNodeFsPort();
+          }
+        });
+        await deliverNodeFsPort(nodeWorker);
+      }
+    }
 
     // Crash-aware error/messageerror/envelope listeners. Listeners are
     // installed before any await so a synchronous load failure (404 served as
@@ -168,6 +293,14 @@ const connectWorkerActor = fromSafeAsync<WorkerConnectedEvent, { context: FileMa
     // least visible in the console (the `crashSignal` Promise is only racy
     // during the connect phase — `armed` is flipped to `false` afterwards
     // so its callback no longer rejects).
+    //
+    // After readiness they stay logging, deliberately: a Worker `error` event
+    // is an uncaught exception inside a worker that is still running, and
+    // `messageerror` is one message that failed structured clone — neither
+    // means the proxies are dead, and nested file managers share this worker
+    // (`context.sharedWorker`), so treating one as fatal would tear down every
+    // project view at once. Death arrives on `proxy.closed` instead, which
+    // `ready` watches (G2c-2).
     let armed = true;
     let rejectOnCrash!: (error: Error) => void;
     const crashSignal = new Promise<never>((_resolve, reject) => {
@@ -247,15 +380,45 @@ const connectWorkerActor = fromSafeAsync<WorkerConnectedEvent, { context: FileMa
     const bridge = createFileSystemBridge(worker);
     const { dispose: bridgeDispose } = bridge;
     const proxy = createFileSystemBridgeProxy(bridge);
-    await proxy.configureProjectRoots(await getProjectRootConfigs(context.onRootSkipped));
-    const openBridge = (root: string): FileSystemBridgeConnection => openFileSystemBridge(worker, { root });
+    // Project roots are worker-global and every mutation re-syncs them (`syncProjectRoots`), so a
+    // nested mount inherits the root mount's configuration instead of rebuilding it (W21).
+    if (!context.sharedWorker) {
+      await proxy.configureProjectRoots(await getProjectRootConfigs(context.onRootSkipped));
+    }
+    const previewPrefix = '/previews/';
+    if (context.backendType === 'memory' && context.rootDirectory.startsWith(previewPrefix)) {
+      await proxy.mount(context.rootDirectory, {
+        backend: 'memory',
+        storageRootKey: `memory:preview:${context.rootDirectory.slice(previewPrefix.length)}`,
+        class: 'authored',
+      });
+    }
+    const openBridge = (root: string, consumer: RootedBridgeConsumer): FileSystemBridgeConnection =>
+      openFileSystemBridge(worker, { root, consumer });
+    worker.postMessage({ type: 'computeStoreAdmission', projectId: context.projectId });
+    const { openComputeBinding, openComputeStorePort, computeControl, openRevisionSessionPort } = computeOpeners(
+      worker,
+      context.projectId,
+    );
 
-    return { type: 'workerConnected', worker, proxy, bridgeDispose, openFileSystemBridge: openBridge, filePoolBuffer };
+    return {
+      type: 'workerConnected',
+      worker,
+      proxy,
+      bridgeDispose,
+      openFileSystemBridge: openBridge,
+      openComputeBinding,
+      openComputeStorePort,
+      computeControl,
+      openRevisionSessionPort,
+      filePoolBuffer,
+    };
   },
 );
 
 type ProjectConfigLookup = Awaited<ReturnType<typeof getProjectFileSystemConfig>>;
 
+// oxlint-disable complexity -- cancellation-safe resource handoff adds one lifecycle path to the existing initializer.
 const initializeServicesActor = fromSafeAsync<
   WorkerInitializedEvent | WebAccessUnavailableEvent,
   { context: FileManagerContext }
@@ -287,11 +450,12 @@ const initializeServicesActor = fromSafeAsync<
 
     const entry = requestedWorkspaceId ? await getWorkspace(requestedWorkspaceId) : undefined;
     if (!entry) {
+      const metadata = requestedWorkspaceId ? await getWorkspaceMetadata(requestedWorkspaceId) : undefined;
       return {
         type: 'webAccessUnavailable',
-        reason: 'missing',
+        reason: metadata ? 'disconnected' : 'missing',
         activeWorkspaceId: requestedWorkspaceId,
-        activeWorkspaceName: undefined,
+        activeWorkspaceName: metadata?.name,
       };
     }
 
@@ -308,118 +472,176 @@ const initializeServicesActor = fromSafeAsync<
     }
   }
 
-  let initialEntries: FileEntry[] = [];
-  try {
-    const rootPath = context.rootDirectory;
-    const absolutePath = normalizePath(rootPath);
-    if (backend === 'webaccess') {
-      await proxy.pollExternalChanges(absolutePath);
-    }
-    const rootNodes = await proxy.readDirectory(absolutePath);
-    for (const node of rootNodes) {
-      if (node.children !== undefined) {
-        initialEntries.push({
-          path: node.name,
-          name: node.name,
-          type: 'dir',
-          size: node.size,
-          mtimeMs: node.mtimeMs,
-          isLoaded: false,
-          isDirectoryResolved: false,
-        });
-      } else if (node.contentKind === 'text') {
-        initialEntries.push({
-          path: node.name,
-          name: node.name,
-          type: 'file',
-          size: node.size,
-          mtimeMs: node.mtimeMs,
-          isLoaded: false,
-          contentKind: 'text',
-          lineCount: node.lineCount,
-        });
-      } else {
-        initialEntries.push({
-          path: node.name,
-          name: node.name,
-          type: 'file',
-          size: node.size,
-          mtimeMs: node.mtimeMs,
-          isLoaded: false,
-          contentKind: 'binary',
-        });
-      }
-    }
-  } catch {
-    initialEntries = [];
-  }
-
   const filePool = context.filePoolBuffer ? new SharedPool(context.filePoolBuffer) : undefined;
 
   const paths = new WorkspacePathResolver(context.rootDirectory);
   const refreshGuard = new RefreshGenerationGuard();
-  const workerChangeChannel = new WorkerChangeChannel({
-    transport: { listen: proxy.listen! },
-    paths,
-  });
   const visibilityProvider = createDomVisibilityProvider();
 
-  const contentService = new FileContentService({
-    proxy,
-    paths,
-    channel: workerChangeChannel,
-    refreshGuard,
-    cacheOptions: {
-      maxEntries: fileCacheMaxEntries,
-      maxTotalBytes: fileCacheMaxTotalBytes,
-      maxSingleFileBytes: fileCacheMaxSingleFileBytes,
-    },
-    filePool,
-  });
-
-  const treeService = new FileTreeService({
-    proxy,
-    paths,
-    channel: workerChangeChannel,
-    visibility: visibilityProvider,
-    initialEntries,
-    onExternalPollTelemetry: context.onExternalPollTelemetry,
-  });
-
-  treeService.connectToContentService(contentService);
-
-  // Eagerly load `/node_modules` + each package directory through the regular
-  // treeService so the file tree renders the bundled-types subtree without
-  // user interaction (cmd+click was the smoking gun before R1). The mount is
-  // populated by the FM worker before `workerReady`, so these listings always
-  // see the full set of kernel typings.
-  try {
-    const rootEntries = await treeService.listDirectory(bundledTypesWorkspaceRootSegment, { signal });
-    await Promise.all(
-      rootEntries
-        .filter((entry) => entry.isFolder)
-        .map(async (entry) =>
-          treeService.listDirectory(`${bundledTypesWorkspaceRootSegment}/${entry.name}`, { signal }),
-        ),
-    );
-  } catch {
-    // Bundled types remain lazily loadable through the regular tree path.
-  }
-  return {
-    type: 'workerInitialized',
-    configuredBackend: backend,
-    activeWorkspaceId,
-    activeWorkspaceName,
-    initialEntries,
-    contentService,
-    treeService,
-    workerChangeChannel,
+  /*
+   * One composition, read by both consumers (charter D1). The user's view is a
+   * rooted bridge connection the file-manager worker composes; the agent's is
+   * the same function over its own rooted provider.
+   *
+   * One connection, and it carries the changes too (charter D12): reads, writes,
+   * porcelain, watch and `fileChanged` all ride this port, because the authority
+   * suppresses a port's own events by port identity. Split them and the UI hears
+   * its own writes back as somebody else's. Only the topology calls — mount,
+   * project roots, discovery — stay on the workspace surface, which owns no
+   * content.
+   */
+  const { createFileSystemBridgeProxy } = await import('@taucad/fs-bridge');
+  signal.throwIfAborted();
+  const viewConnection = context.openFileSystemBridge!(context.rootDirectory, 'user');
+  const viewProxy = createFileSystemBridgeProxy(viewConnection);
+  /*
+   * The dependency mount is the checkout's sibling, so no view of the checkout
+   * lists it — but a mount is a root, and since W11 it is read through a rooted
+   * `'user'` connection of its own rather than off the authority's global
+   * surface, which carries no content at all any more (H3, EQ3). Its lifetime is
+   * the project session's, exactly like the checkout's view.
+   */
+  const dependencyConnection = context.openFileSystemBridge!(dependencyMountRoot, 'user');
+  const dependencyProxy = createFileSystemBridgeProxy(dependencyConnection);
+  const disposeComposedView = (): void => {
+    safeDispose(() => {
+      viewProxy.dispose();
+    });
+    safeDispose(() => {
+      dependencyProxy.dispose();
+    });
   };
+  let workerChangeChannel: WorkerChangeChannel | undefined;
+  let contentService: FileContentService | undefined;
+  let treeService: FileTreeService | undefined;
+  let ownsConstructed = true;
+  const disposeConstructed = (): void => {
+    if (!ownsConstructed) {
+      return;
+    }
+    ownsConstructed = false;
+    safeDispose(() => contentService?.dispose());
+    safeDispose(() => treeService?.dispose());
+    safeDispose(() => workerChangeChannel?.dispose());
+    disposeComposedView();
+  };
+  const disposeOnAbort = (): void => {
+    disposeConstructed();
+  };
+  signal.addEventListener('abort', disposeOnAbort, { once: true });
+
+  try {
+    const initializedChangeChannel = new WorkerChangeChannel({
+      transport: {
+        listen: viewProxy.listen,
+        closed: viewProxy.closed,
+        watchReady: (request, handler) => {
+          const watch = viewProxy.watchReady(request, handler);
+          if (!ENV.TAU_DEBUG) {
+            return watch;
+          }
+          const fixture = (
+            globalThis as typeof globalThis & {
+              __tauE2eObservationWatch?: {
+                wrapViewWatch?(
+                  root: string,
+                  request: Parameters<typeof viewProxy.watchReady>[0],
+                  watch: ReturnType<typeof viewProxy.watchReady>,
+                ): ReturnType<typeof viewProxy.watchReady>;
+              };
+            }
+          ).__tauE2eObservationWatch;
+          try {
+            return fixture?.wrapViewWatch?.(context.rootDirectory, request, watch) ?? watch;
+          } catch (error) {
+            watch.unsubscribe();
+            throw error;
+          }
+        },
+      },
+    });
+    workerChangeChannel = initializedChangeChannel;
+    const client = createComposedViewClient({
+      workspace: proxy,
+      view: viewProxy,
+      dependencies: dependencyProxy,
+      paths,
+    });
+
+    const initializedContentService = new FileContentService({
+      proxy: client,
+      paths,
+      channel: initializedChangeChannel,
+      refreshGuard,
+      cacheOptions: {
+        maxEntries: fileCacheMaxEntries,
+        maxTotalBytes: fileCacheMaxTotalBytes,
+        maxSingleFileBytes: fileCacheMaxSingleFileBytes,
+      },
+      filePool,
+    });
+    contentService = initializedContentService;
+
+    const initializedTreeService = new FileTreeService({
+      proxy: client,
+      paths,
+      channel: initializedChangeChannel,
+      visibility: visibilityProvider,
+      onExternalPollTelemetry: context.onExternalPollTelemetry,
+    });
+    treeService = initializedTreeService;
+
+    initializedTreeService.connectToContentService(initializedContentService);
+
+    // Subscribe the resident tree before its first authoritative root listing.
+    if (backend === 'webaccess') {
+      await proxy.pollExternalChanges(normalizePath(context.rootDirectory));
+    }
+    // A project registered after worker boot answers ROOT_UNAVAILABLE until
+    // configureProjectRoots runs; its tree stays unresolved rather than failing start-up.
+    await viewProxy.ready;
+    if (viewProxy.hello.payload.state !== 'unavailable') {
+      await initializedTreeService.listDirectory('', { signal });
+    }
+
+    signal.throwIfAborted();
+    ownsConstructed = false;
+    return {
+      type: 'workerInitialized',
+      configuredBackend: backend,
+      activeWorkspaceId,
+      activeWorkspaceName,
+      contentService: initializedContentService,
+      treeService: initializedTreeService,
+      viewClient: client,
+      workerChangeChannel: initializedChangeChannel,
+      disposeComposedView,
+    };
+  } finally {
+    signal.removeEventListener('abort', disposeOnAbort);
+    disposeConstructed();
+  }
+});
+// oxlint-enable complexity
+
+/**
+ * Fails when the worker behind this connection dies (G2c-2).
+ *
+ * The bridge channel treats a dead port as the bye frame the peer never sent,
+ * so `closed` is the one signal that means the proxies `ready` published are
+ * gone. Invoked by `ready`, which means XState cancels it — and any transition
+ * it would have caused — the moment the machine leaves that state for another
+ * reason.
+ */
+const watchProxyClosedActor = fromSafeAsync<void, { proxy: FileManagerContext['proxy'] }>(async ({ input }) => {
+  await input.proxy?.closed;
+  throw new Error('The file service for this project stopped.');
 });
 
 const fileManagerActors = {
   connectWorkerActor,
   initializeServicesActor,
+  watchProxyClosedActor,
 } as const;
 
 // ============ Events ============
@@ -464,210 +686,151 @@ type FileManagerInput = {
   onRootSkipped?: (skip: WorkspaceRootSkip) => void;
 };
 
+type FileManagerEnqueue = EnqueueObject<FileManagerEvent, EventObject, SystemRegistry, typeof fileManagerActors>;
+type FileManagerPatch = Partial<FileManagerContext>;
+
+const setError = (error: unknown, enq: FileManagerEnqueue): FileManagerPatch => {
+  if (error instanceof Error) {
+    enq(() => {
+      console.error('[FileManager] error:', error);
+    });
+    return { error };
+  }
+  return { error: undefined };
+};
+
+/** Release the service graph; the worker, proxy, bridge opener and authority are not touched. */
+const disposeServices = (context: FileManagerContext): void => {
+  context.contentService?.dispose();
+  context.treeService?.dispose();
+  context.workerChangeChannel?.dispose();
+  context.disposeComposedView?.();
+};
+
+const destroyWorkerAndServices = (context: FileManagerContext, enq: FileManagerEnqueue): FileManagerPatch => {
+  enq(() => {
+    disposeServices(context);
+    safeDispose(() => context.proxy?.dispose());
+    safeDispose(context.bridgeDispose);
+
+    if (!context.sharedWorker) {
+      safeDispose(() => context.worker?.terminate());
+    }
+  });
+
+  return {
+    proxy: undefined,
+    bridgeDispose: undefined,
+    openFileSystemBridge: undefined,
+    openComputeBinding: undefined,
+    openComputeStorePort: undefined,
+    computeControl: undefined,
+    openRevisionSessionPort: undefined,
+    worker: context.sharedWorker ? context.worker : undefined,
+    contentService: undefined,
+    treeService: undefined,
+    viewClient: undefined,
+    workerChangeChannel: undefined,
+    disposeComposedView: undefined,
+  };
+};
+
+/** Reads the worker the destroy step left: only a shared worker survives a root change. */
+const updateRootAndReset = (
+  context: FileManagerContext,
+  event: Extract<FileManagerEvent, { type: 'setRoot' }>,
+  enq: FileManagerEnqueue,
+): FileManagerPatch => {
+  const { worker } = context;
+  if (worker) {
+    enq(() => {
+      worker.postMessage({ type: 'computeStoreAdmission', projectId: event.projectId });
+    });
+  }
+  const openers = worker ? computeOpeners(worker, event.projectId) : undefined;
+  return {
+    rootDirectory: event.path,
+    projectId: event.projectId,
+    openComputeBinding: openers?.openComputeBinding,
+    openComputeStorePort: openers?.openComputeStorePort,
+    computeControl: openers?.computeControl,
+    openRevisionSessionPort: openers?.openRevisionSessionPort,
+    error: undefined,
+    // Workspace identity is a per-init *output* of `initializeServicesActor`;
+    // it must NEVER survive a project transition. Clearing here closes the
+    // class of cross-project corruption bugs (see
+    // `docs/research/fm-workspace-binding-scope.md` Findings 1 & 3).
+    activeWorkspaceId: undefined,
+    activeWorkspaceName: undefined,
+    unavailableReason: undefined,
+  };
+};
+
+const stopPolling = (context: FileManagerContext, enq: FileManagerEnqueue): void => {
+  const { treeService } = context;
+  enq(() => {
+    treeService?.stopPolling();
+  });
+};
+
+const isRootChanged = (context: FileManagerContext, event: Extract<FileManagerEvent, { type: 'setRoot' }>): boolean =>
+  event.path !== context.rootDirectory || event.projectId !== context.projectId;
+
+/** Move to a new project root: stop, tear the worker graph down, then point at the new root. */
+const changeRoot =
+  (options: Readonly<{ whenChanged: boolean; stopPolling: boolean }>) =>
+  (
+    {
+      context,
+      event,
+    }: Readonly<{ context: FileManagerContext; event: Extract<FileManagerEvent, { type: 'setRoot' }> }>,
+    enq: FileManagerEnqueue,
+  ) => {
+    if (options.whenChanged && !isRootChanged(context, event)) {
+      return undefined;
+    }
+    if (options.stopPolling) {
+      stopPolling(context, enq);
+    }
+    const destroyed = destroyWorkerAndServices(context, enq);
+    return {
+      target: 'connectingWorker',
+      context: { ...destroyed, ...updateRootAndReset({ ...context, ...destroyed }, event, enq) },
+    };
+  };
+
 export const fileManagerMachine = setup({
-  types: {
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- type assertion required
-    context: {} as FileManagerContext,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- type assertion required
-    events: {} as FileManagerEvent,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- type assertion required
-    input: {} as FileManagerInput,
+  schemas: {
+    context: types<FileManagerContext>(),
+    events: eventSchemas<FileManagerEvent>(),
+    input: types<FileManagerInput>(),
   },
   actors: fileManagerActors,
-  actions: {
-    setError: assign({
-      error({ event }) {
-        if ('error' in event && event.error instanceof Error) {
-          console.error('[FileManager] error:', event.error);
-          return event.error;
-        }
-        return undefined;
-      },
-    }),
-
-    clearError: assign({ error: undefined }),
-
-    disposeServicesForReload({ context }) {
-      // Keep the successful service identity published until its replacement
-      // succeeds, but release the old service graph before constructing the
-      // next one. The worker, proxy, bridge opener, and authority stay alive.
-      context.contentService?.dispose();
-      context.treeService?.dispose();
-      context.workerChangeChannel?.dispose();
-    },
-
-    destroyWorkerAndServices: assign(({ context }) => {
-      context.contentService?.dispose();
-      context.treeService?.dispose();
-      context.workerChangeChannel?.dispose();
-      safeDispose(() => context.proxy?.dispose());
-      safeDispose(context.bridgeDispose);
-
-      if (!context.sharedWorker) {
-        safeDispose(() => context.worker?.terminate());
-      }
-
-      return {
-        proxy: undefined,
-        bridgeDispose: undefined,
-        openFileSystemBridge: undefined,
-        worker: context.sharedWorker ? context.worker : undefined,
-        contentService: undefined,
-        treeService: undefined,
-        workerChangeChannel: undefined,
-      };
-    }),
-
-    updateRootAndReset: assign({
-      rootDirectory({ event }) {
-        assertEvent(event, 'setRoot');
-        return event.path;
-      },
-      projectId({ event }) {
-        assertEvent(event, 'setRoot');
-        return event.projectId;
-      },
-      error: undefined,
-      // Workspace identity is a per-init *output* of `initializeServicesActor`;
-      // it must NEVER survive a project transition. Clearing here closes the
-      // class of cross-project corruption bugs (see
-      // `docs/research/fm-workspace-binding-scope.md` Findings 1 & 3).
-      activeWorkspaceId: undefined,
-      activeWorkspaceName: undefined,
-      unavailableReason: undefined,
-    }),
-
-    updateWorkerFromConnect: assign({
-      worker({ event }) {
-        assertEvent(event, 'workerConnected');
-        return event.worker;
-      },
-      proxy({ event }) {
-        assertEvent(event, 'workerConnected');
-        return event.proxy;
-      },
-      bridgeDispose({ event }) {
-        assertEvent(event, 'workerConnected');
-        return event.bridgeDispose;
-      },
-      openFileSystemBridge({ event }: { event: FileManagerEvent }) {
-        assertEvent(event, 'workerConnected');
-        return event.openFileSystemBridge;
-      },
-      filePoolBuffer({ event }) {
-        assertEvent(event, 'workerConnected');
-        return event.filePoolBuffer;
-      },
-    }),
-
-    updateBackendFromInit: assign({
-      backendType({ event }) {
-        assertEvent(event, 'workerInitialized');
-        return event.configuredBackend;
-      },
-      activeWorkspaceId({ event }) {
-        assertEvent(event, 'workerInitialized');
-        return event.activeWorkspaceId;
-      },
-      activeWorkspaceName({ event }) {
-        assertEvent(event, 'workerInitialized');
-        return event.activeWorkspaceName;
-      },
-      unavailableReason: undefined,
-      contentService({ event }) {
-        assertEvent(event, 'workerInitialized');
-        return event.contentService;
-      },
-      treeService({ event }) {
-        assertEvent(event, 'workerInitialized');
-        return event.treeService;
-      },
-      workerChangeChannel({ event }) {
-        assertEvent(event, 'workerInitialized');
-        return event.workerChangeChannel;
-      },
-    }),
-
-    recordWebAccessUnavailable: assign({
-      backendType: 'webaccess',
-      unavailableReason({ event }) {
-        assertEvent(event, 'webAccessUnavailable');
-        return event.reason;
-      },
-      activeWorkspaceId({ event }) {
-        assertEvent(event, 'webAccessUnavailable');
-        return event.activeWorkspaceId;
-      },
-      activeWorkspaceName({ event }) {
-        assertEvent(event, 'webAccessUnavailable');
-        return event.activeWorkspaceName;
-      },
-    }),
-
-    updateBackendType: assign({
-      backendType({ event }) {
-        assertEvent(event, 'setBackendType');
-        return event.backendType;
-      },
-    }),
-
-    startPolling({ context, self }) {
-      const { treeService } = context;
-      if (context.backendType === 'webaccess') {
-        treeService?.startPolling();
-        return;
-      }
-      if (treeService === undefined) {
-        return;
-      }
-      // async-iife: bootstrap — the root file manager also observes granted webaccess
-      // workspaces even when its own mounted backend is IndexedDB.
-      void (async () => {
-        try {
-          const configuration = await getProjectRootConfigs(context.onRootSkipped);
-          const snapshot = self.getSnapshot();
-          if (
-            snapshot.matches('ready') &&
-            snapshot.context.treeService === treeService &&
-            configuration.roots.some(({ backend }) => backend === 'webaccess')
-          ) {
-            treeService.startPolling();
-          }
-        } catch {
-          // Worker initialization remains usable if the handle registry cannot be enumerated.
-        }
-      })();
-    },
-
-    stopPolling({ context }) {
-      context.treeService?.stopPolling();
-    },
-  },
-  guards: {
-    isRootChanged({ context, event }) {
-      assertEvent(event, 'setRoot');
-      return event.path !== context.rootDirectory || event.projectId !== context.projectId;
-    },
-    isWebAccessUnavailable({ context }) {
-      return context.unavailableReason !== undefined;
-    },
+  delays: {
+    /** A worker that dies again within this bound of its restart is shown as failed (RV1-F1, T9 E4). Milliseconds. */
+    restartWindow: 3500,
   },
 }).createMachine({
   id: 'fileManager',
-  entry: enqueueActions(({ enqueue, context, self }) => {
+  entry: ({ context, self }, enq) => {
     if (context.shouldInitializeOnStart) {
-      enqueue.sendTo(self, { type: 'initialize' });
+      enq.sendTo(self, { type: 'initialize' });
     }
-  }),
+  },
   context: ({ input }) => ({
     worker: undefined,
     proxy: undefined,
     openFileSystemBridge: undefined,
+    openComputeBinding: undefined,
+    openComputeStorePort: undefined,
+    computeControl: undefined,
+    openRevisionSessionPort: undefined,
     // Seed with the parent's SAB when nested so the connect actor's gate
     // observes a non-undefined buffer and skips re-allocation.
     filePoolBuffer: input.sharedFilePoolBuffer,
     contentService: undefined,
     treeService: undefined,
+    viewClient: undefined,
     workerChangeChannel: undefined,
     error: undefined,
     rootDirectory: input.rootDirectory,
@@ -678,11 +841,15 @@ export const fileManagerMachine = setup({
     activeWorkspaceName: undefined,
     projectId: input.projectId,
     sharedWorker: input.sharedWorker,
+    restarted: false,
     onExternalPollTelemetry: input.onExternalPollTelemetry,
     onRootSkipped: input.onRootSkipped,
   }),
   initial: 'initializing',
-  exit: ['stopPolling', 'destroyWorkerAndServices'],
+  exit: ({ context }, enq) => {
+    stopPolling(context, enq);
+    return { context: destroyWorkerAndServices(context, enq) };
+  },
   states: {
     initializing: {
       on: {
@@ -691,81 +858,138 @@ export const fileManagerMachine = setup({
     },
 
     connectingWorker: {
-      entry: ['clearError'],
+      entry: () => ({ context: { error: undefined } }),
       on: {
-        setRoot: {
-          target: 'connectingWorker',
-          guard: 'isRootChanged',
-          actions: ['stopPolling', 'destroyWorkerAndServices', 'updateRootAndReset'],
-        },
+        setRoot: changeRoot({ whenChanged: true, stopPolling: true }),
         workerConnected: {
-          actions: ['updateWorkerFromConnect'],
+          context: ({ event }) => ({
+            worker: event.worker,
+            proxy: event.proxy,
+            bridgeDispose: event.bridgeDispose,
+            openFileSystemBridge: event.openFileSystemBridge,
+            openComputeBinding: event.openComputeBinding,
+            openComputeStorePort: event.openComputeStorePort,
+            computeControl: event.computeControl,
+            openRevisionSessionPort: event.openRevisionSessionPort,
+            filePoolBuffer: event.filePoolBuffer,
+          }),
         },
       },
       invoke: {
         src: 'connectWorkerActor',
-        input({ context }) {
-          return { context };
-        },
-        onDone: 'initializingServices',
-        onError: {
-          target: 'error',
-          actions: ['setError'],
-        },
+        input: ({ context }) => ({ context }),
+        onDone: { target: 'initializingServices' },
+        onError: ({ event }, enq) => ({ target: 'error', context: setError(event.error, enq) }),
       },
     },
 
     initializingServices: {
       on: {
-        setRoot: {
-          target: 'connectingWorker',
-          guard: 'isRootChanged',
-          actions: ['stopPolling', 'destroyWorkerAndServices', 'updateRootAndReset'],
-        },
+        setRoot: changeRoot({ whenChanged: true, stopPolling: true }),
         workerInitialized: {
-          actions: ['updateBackendFromInit'],
+          context: ({ event }) => ({
+            backendType: event.configuredBackend,
+            activeWorkspaceId: event.activeWorkspaceId,
+            activeWorkspaceName: event.activeWorkspaceName,
+            unavailableReason: undefined,
+            contentService: event.contentService,
+            disposeComposedView: event.disposeComposedView,
+            treeService: event.treeService,
+            viewClient: event.viewClient,
+            workerChangeChannel: event.workerChangeChannel,
+          }),
         },
         webAccessUnavailable: {
-          actions: ['recordWebAccessUnavailable'],
+          context: ({ event }) => ({
+            backendType: 'webaccess',
+            unavailableReason: event.reason,
+            activeWorkspaceId: event.activeWorkspaceId,
+            activeWorkspaceName: event.activeWorkspaceName,
+          }),
         },
       },
       invoke: {
         src: 'initializeServicesActor',
-        input({ context }) {
-          return { context };
-        },
-        onDone: [
-          // The actor returns either `workerInitialized` (success) or
-          // `webAccessUnavailable` (recoverable). XState fires the matching
-          // assignment action above before `onDone`, so we route by reading
-          // the freshly-stored `unavailableReason`.
-          { guard: 'isWebAccessUnavailable', target: 'webAccessUnavailable' },
-          { target: 'ready' },
-        ],
-        onError: {
-          target: 'error',
-          actions: ['setError'],
-        },
+        input: ({ context }) => ({ context }),
+        // The actor returns either `workerInitialized` (success) or
+        // `webAccessUnavailable` (recoverable). The matching assignment above
+        // runs before `onDone`, so we route by reading the freshly-stored
+        // `unavailableReason`.
+        onDone: ({ context }) => ({
+          target: context.unavailableReason === undefined ? 'ready' : 'webAccessUnavailable',
+        }),
+        onError: ({ event }, enq) => ({ target: 'error', context: setError(event.error, enq) }),
       },
     },
 
     ready: {
-      entry: ['startPolling'],
-      exit: ['stopPolling'],
+      entry: ({ context, self }, enq) => {
+        const { treeService, backendType, sharedWorker, onRootSkipped } = context;
+        enq(() => {
+          if (backendType === 'webaccess') {
+            treeService?.startPolling();
+            return;
+          }
+          // Only the root mount observes other workspaces; a nested project mount polls its own
+          // tree only when that project is itself webaccess, handled above (W21).
+          if (treeService === undefined || sharedWorker) {
+            return;
+          }
+          // async-iife: bootstrap — the root file manager also observes granted webaccess
+          // workspaces even when its own mounted backend is IndexedDB.
+          void (async () => {
+            try {
+              const configuration = await getProjectRootConfigs(onRootSkipped);
+              const snapshot = self.getSnapshot();
+              if (
+                snapshot.matches('ready') &&
+                snapshot.context.treeService === treeService &&
+                configuration.roots.some(({ backend }) => backend === 'webaccess')
+              ) {
+                treeService.startPolling();
+              }
+            } catch {
+              // Worker initialization remains usable if the handle registry cannot be enumerated.
+            }
+          })();
+        });
+      },
+      exit: ({ context }, enq) => {
+        stopPolling(context, enq);
+      },
+      after: {
+        restartWindow: () => ({ context: { restarted: false } }),
+      },
+      invoke: {
+        src: 'watchProxyClosedActor',
+        input: ({ context }) => ({ proxy: context.proxy }),
+        /* RV1-F1: the root mount restarts its own dead worker once without a click; a nested mount's worker is its
+         * parent's to restart, and a second death within the bound shows the error with "Try again". */
+        onError: ({ context, event }, enq) =>
+          context.sharedWorker === undefined && !context.restarted
+            ? {
+                target: 'connectingWorker',
+                context: { ...destroyWorkerAndServices(context, enq), restarted: true },
+              }
+            : {
+                target: 'error',
+                context: { ...setError(event.error, enq), ...destroyWorkerAndServices(context, enq) },
+              },
+      },
       on: {
-        setRoot: {
-          target: 'connectingWorker',
-          guard: 'isRootChanged',
-          actions: ['stopPolling', 'destroyWorkerAndServices', 'updateRootAndReset'],
-        },
+        setRoot: changeRoot({ whenChanged: true, stopPolling: true }),
 
-        setBackendType: {
-          actions: ['updateBackendType'],
-        },
+        setBackendType: { context: ({ event }) => ({ backendType: event.backendType }) },
 
-        reloadWorkspace: {
-          target: 'initializingServices',
-          actions: ['stopPolling', 'disposeServicesForReload', 'clearError'],
+        reloadWorkspace: ({ context }, enq) => {
+          stopPolling(context, enq);
+          // Keep the successful service identity published until its replacement
+          // succeeds, but release the old service graph before constructing the
+          // next one. The worker, proxy, bridge opener, and authority stay alive.
+          enq(() => {
+            disposeServices(context);
+          });
+          return { target: 'initializingServices', context: { error: undefined } };
         },
       },
     },
@@ -781,34 +1005,22 @@ export const fileManagerMachine = setup({
      */
     webAccessUnavailable: {
       on: {
-        setRoot: {
-          target: 'connectingWorker',
-          guard: 'isRootChanged',
-          actions: ['stopPolling', 'destroyWorkerAndServices', 'updateRootAndReset'],
-        },
-        reloadWorkspace: {
-          target: 'initializingServices',
-          actions: ['clearError'],
-        },
+        setRoot: changeRoot({ whenChanged: true, stopPolling: true }),
+        reloadWorkspace: { target: 'initializingServices', context: { error: undefined } },
       },
     },
 
     error: {
-      entry({ context }) {
-        console.error('[FileManager] state → error', context.error);
+      entry: ({ context }, enq) => {
+        const { error } = context;
+        enq(() => {
+          console.error('[FileManager] state → error', error);
+        });
       },
       on: {
-        setRoot: {
-          target: 'connectingWorker',
-          actions: ['destroyWorkerAndServices', 'updateRootAndReset'],
-        },
-        initialize: {
-          target: 'connectingWorker',
-        },
-        reloadWorkspace: {
-          target: 'connectingWorker',
-          actions: ['clearError'],
-        },
+        setRoot: changeRoot({ whenChanged: false, stopPolling: false }),
+        initialize: { target: 'connectingWorker' },
+        reloadWorkspace: { target: 'connectingWorker', context: { error: undefined } },
       },
     },
   },

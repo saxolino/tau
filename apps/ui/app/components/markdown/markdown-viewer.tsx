@@ -1,11 +1,16 @@
 import 'katex/dist/katex.min.css';
+import { cjk } from '@streamdown/cjk';
+import { code } from '@streamdown/code';
+import { createMathPlugin } from '@streamdown/math';
+import { mermaid } from '@streamdown/mermaid';
 import { defaultRehypePlugins, defaultRemarkPlugins as streamdownRemarkPlugins, Streamdown } from 'streamdown';
-import type { ControlsConfig, StreamdownProps } from 'streamdown';
-import remarkMath from 'remark-math';
+import type { Components, ControlsConfig, PluginConfig, StreamdownProps } from 'streamdown';
 import { memo, useMemo } from 'react';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { MarkdownHyperlink } from '#components/markdown/markdown-hyperlink.js';
 import { MarkdownCode } from '#components/markdown/markdown-code.js';
+import { publicationRehypeSanitize } from '#components/markdown/markdown-sanitize.js';
+import { useTheme } from '#hooks/use-theme.js';
 
 type MarkdownViewerProps = {
   readonly children: string;
@@ -24,12 +29,15 @@ type MarkdownViewerProps = {
    * Use this to override Streamdown's hardcoded spacing.
    */
   readonly streamdownClassName?: string;
+  /** Plugins that must inspect raw links before Streamdown's URL hardening. */
+  readonly rehypePluginsBeforeHarden?: StreamdownProps['rehypePlugins'];
 } & StreamdownProps;
 
+// oxlint-disable-next-line typescript/consistent-type-assertions -- Streamdown v2's string index signature conflicts with React Three Fiber's global JSX elements.
 export const defaultMarkdownComponents = {
   code: MarkdownCode,
   a: MarkdownHyperlink,
-} as const satisfies MarkdownViewerProps['components'];
+} as Components;
 
 export const defaultMarkdownControls = {
   // Disable built-in copy button (we have our own in CollapsibleCodeBlock)
@@ -39,11 +47,21 @@ export const defaultMarkdownControls = {
 
 const tauRemarkPlugins: StreamdownProps['remarkPlugins'] = Object.values({
   ...streamdownRemarkPlugins,
-  math: [remarkMath, { singleDollarTextMath: true }],
 });
 
-const { sanitize: _sanitize, ...unsanitizedRehypePlugins } = defaultRehypePlugins;
-const tauRehypePlugins: StreamdownProps['rehypePlugins'] = Object.values(unsanitizedRehypePlugins);
+const { sanitize: _sanitize, harden: hardenPlugin, ...beforeHardenPlugins } = defaultRehypePlugins;
+const tauRehypePlugins = Object.values(beforeHardenPlugins);
+const shikiThemes = {
+  default: ['github-light', 'github-dark'],
+  highContrast: ['github-light-high-contrast', 'github-dark-high-contrast'],
+} satisfies Record<string, NonNullable<StreamdownProps['shikiTheme']>>;
+
+const streamdownPlugins = {
+  cjk,
+  code,
+  math: createMathPlugin({ singleDollarTextMath: true }),
+  mermaid,
+} satisfies PluginConfig;
 
 export const MarkdownViewer = memo(function ({
   children,
@@ -51,20 +69,32 @@ export const MarkdownViewer = memo(function ({
   controls = defaultMarkdownControls,
   components,
   rehypePlugins: additionalRehypePlugins,
+  rehypePluginsBeforeHarden,
   className,
   streamdownClassName,
+  plugins = streamdownPlugins,
+  ...streamdownProperties
 }: MarkdownViewerProps): React.JSX.Element {
-  const memoizedComponents = useMemo(
-    () => ({
-      ...defaultMarkdownComponents,
-      ...components,
-    }),
+  const { isHighContrast } = useTheme();
+  const memoizedComponents = useMemo<Components>(
+    () =>
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- Streamdown v2's string index signature conflicts with React Three Fiber's global JSX elements.
+      ({
+        ...defaultMarkdownComponents,
+        ...components,
+      }) as Components,
     [components],
   );
 
   const mergedRehypePlugins = useMemo(
-    () => (additionalRehypePlugins ? [...tauRehypePlugins, ...additionalRehypePlugins] : tauRehypePlugins),
-    [additionalRehypePlugins],
+    () => [
+      ...tauRehypePlugins,
+      ...(rehypePluginsBeforeHarden ?? []),
+      ...(hardenPlugin === undefined ? [] : [hardenPlugin]),
+      ...(additionalRehypePlugins ?? []),
+      ...publicationRehypeSanitize,
+    ],
+    [additionalRehypePlugins, rehypePluginsBeforeHarden],
   );
 
   return (
@@ -77,12 +107,14 @@ export const MarkdownViewer = memo(function ({
       )}
     >
       <Streamdown
+        {...streamdownProperties}
         mode={isStreaming ? 'streaming' : 'static'}
         components={memoizedComponents}
         controls={controls}
         remarkPlugins={tauRemarkPlugins}
         rehypePlugins={mergedRehypePlugins}
-        shikiTheme={['github-light', 'github-dark']}
+        shikiTheme={isHighContrast ? shikiThemes.highContrast : shikiThemes.default}
+        plugins={plugins}
         className={streamdownClassName}
       >
         {children}

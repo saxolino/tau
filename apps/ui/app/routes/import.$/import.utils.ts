@@ -48,13 +48,44 @@ export type GitHubRepoInfo = {
   owner: string;
   repo: string;
   ref: string;
+  /** Repository folder to import, relative to the repository root; empty imports the whole repository. */
+  path: string;
   mainFile: string;
 };
 
 /**
- * Parse GitHub URL and extract owner/repo.
+ * Normalize a repository folder to `a/b` form: no leading, trailing or repeated
+ * slashes. A folder with a `.` or `..` segment names nothing importable and
+ * becomes the whole repository.
+ *
+ * @param path - The folder as typed or taken from a URL.
+ * @returns The normalized folder, or `''` for the repository root.
  */
-export function parseGitHubUrl(url: string): { owner: string; repo: string } | undefined {
+export function normalizeRepositoryFolder(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0);
+  return segments.some((segment) => segment === '.' || segment === '..') ? '' : segments.join('/');
+}
+
+const decodeSegment = (segment: string): string => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+};
+
+/**
+ * Parse a GitHub URL into owner and repository, plus the ref and folder of a
+ * `https://github.com/<owner>/<repo>/tree/<ref>/<folder>` address. The first
+ * segment after `tree` is taken as the ref; a ref containing `/` is chosen with
+ * `?ref=` or the branch selector instead.
+ *
+ * @param url - A github.com repository or folder URL.
+ * @returns The parsed target, or `undefined` when the URL names no GitHub repository.
+ */
+export function parseGitHubUrl(
+  url: string,
+): { owner: string; repo: string; ref: string | undefined; path: string } | undefined {
   try {
     const parsed = new URL(url);
 
@@ -63,20 +94,28 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string } | u
       return undefined;
     }
 
-    // Parse /owner/repo or /owner/repo.git
+    // Parse /owner/repo, /owner/repo.git or /owner/repo/tree/ref/folder
     const pathParts = parsed.pathname.split('/').filter(Boolean);
     if (pathParts.length < 2) {
       return undefined;
     }
 
-    const [owner, repoRaw] = pathParts;
+    const [owner, repoRaw, kind, ref, ...folder] = pathParts;
     if (!owner || !repoRaw) {
       return undefined;
     }
 
     const repo = repoRaw.replace(/\.git$/, '');
+    if (kind !== 'tree' || ref === undefined) {
+      return { owner, repo, ref: undefined, path: '' };
+    }
 
-    return { owner, repo };
+    return {
+      owner,
+      repo,
+      ref: decodeSegment(ref),
+      path: normalizeRepositoryFolder(folder.map((segment) => decodeSegment(segment)).join('/')),
+    };
   } catch {
     return undefined;
   }
@@ -124,6 +163,79 @@ export function normalizeGitHubUrl(splatPath: string): string {
   }
 
   return repoUrl;
+}
+
+/**
+ * Resolve the import target from the splat segment and query string.
+ *
+ * Pure URL parsing with no I/O, so both the route's `clientLoader` and its
+ * `meta` can call it. `meta` must not depend on loader data: a `clientLoader`
+ * route has none during the server render, and `/import/*` is routinely
+ * arrived at cold from an external link whose crawler only sees that render.
+ *
+ * @param splatPath - The `*` route parameter.
+ * @param search - The query string, including its leading `?`.
+ * @returns The target, or `undefined` when the splat is not a GitHub repo URL. `?ref=` and `?path=`
+ *   take precedence over a ref and folder in a `tree/<ref>/<folder>` splat.
+ */
+export function resolveGitHubImportTarget(splatPath: string, search: string): GitHubRepoInfo | undefined {
+  const parameters = new URLSearchParams(search);
+  const mainFile = parameters.get('main') ?? '';
+
+  // No splat: the route renders its "enter a repository" form.
+  if (!splatPath) {
+    return { owner: '', repo: '', ref: 'main', path: '', mainFile: '' };
+  }
+
+  const parsed = parseGitHubUrl(normalizeGitHubUrl(splatPath));
+  if (parsed === undefined) {
+    return undefined;
+  }
+  return {
+    owner: parsed.owner,
+    repo: parsed.repo,
+    ref: parameters.get('ref') ?? parsed.ref ?? 'main',
+    path: normalizeRepositoryFolder(parameters.get('path') ?? parsed.path),
+    mainFile,
+  };
+}
+
+/**
+ * What the import route opens: a GitHub repository, the empty form, or the form holding an address it cannot import.
+ *
+ * @param splatPath - The `*` route parameter.
+ * @param search - The query string, including its leading `?`.
+ * @returns The target; `rejectedUrl` names an address that is not a GitHub repository.
+ */
+export function resolveImportRoute(
+  splatPath: string,
+  search: string,
+): GitHubRepoInfo & { readonly rejectedUrl?: string } {
+  return (
+    resolveGitHubImportTarget(splatPath, search) ?? {
+      owner: '',
+      repo: '',
+      ref: 'main',
+      path: '',
+      mainFile: '',
+      rejectedUrl: normalizeGitHubUrl(splatPath),
+    }
+  );
+}
+
+/**
+ * Document title and description for a resolved import target.
+ *
+ * @param target - The resolved import target.
+ * @returns The title and description strings.
+ */
+export function describeGitHubImport(target: GitHubRepoInfo): { title: string; description: string } {
+  const folder = target.path ? `/${target.path}` : '';
+  const repo = `${target.owner}/${target.repo}${folder} ${target.ref === 'main' ? '' : `@ ${target.ref}`}`;
+  return {
+    title: `Import ${repo} from GitHub into Tau`,
+    description: `Get started with ${repo} by importing it into Tau.`,
+  };
 }
 
 /**

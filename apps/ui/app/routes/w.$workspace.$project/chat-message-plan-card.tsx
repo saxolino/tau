@@ -62,12 +62,12 @@ export function ChatMessagePlanCard({ targetFile, content, status }: ChatMessage
 
   if (status === 'loading') {
     return (
-      <ChatToolCard variant='minimal' status='loading' isDefaultOpen={false}>
+      <ChatToolCard variant='minimal' status='loading' isCollapsible={false}>
         <ChatToolCardHeader>
           <ChatToolCardIcon icon={FileText} />
           <ChatToolCardTitle>
             <ChatToolLabel verb='Creating'>
-              <ChatToolDescription>plan...</ChatToolDescription>
+              <ChatToolDescription>plan…</ChatToolDescription>
             </ChatToolLabel>
           </ChatToolCardTitle>
         </ChatToolCardHeader>
@@ -76,7 +76,7 @@ export function ChatMessagePlanCard({ targetFile, content, status }: ChatMessage
   }
 
   return (
-    <ChatToolCard variant='minimal' status='ready' isDefaultOpen isCookieDefaultOpen>
+    <ChatToolCard variant='minimal' status='ready' isDefaultOpen>
       <ChatToolCardHeader className='text-foreground'>
         <ChatToolCardIcon icon={FileText} />
         <ChatToolCardTitle>{title ?? 'Plan'}</ChatToolCardTitle>

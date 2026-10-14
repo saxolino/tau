@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import type { Model } from '@taucad/chat';
+import type { Model, ResolvedModel } from '#hooks/use-models.js';
 import { resolveKernel } from '@taucad/types/constants';
-import type { ResolvedModel } from '#hooks/use-models.js';
 import type { ChatComposerContextValue } from '#hooks/active-chat-provider.js';
 
 // The chat model selector reads AND writes through the unified composer
@@ -46,9 +45,13 @@ vi.mock('#hooks/active-chat-provider.js', () => ({
   useChatComposer: () => useChatComposerMock(),
 }));
 
-vi.mock('#hooks/use-keyboard.js', () => ({
-  useKeybinding: () => ({ formattedKeyCombination: '' }),
+const openSettingsDialogMock = vi.hoisted(() => vi.fn());
+vi.mock('#hooks/use-settings-dialog.js', () => ({
+  useSettingsDialog: () => ({ isOpen: false, section: 'general', open: openSettingsDialogMock, close: vi.fn() }),
 }));
+
+// `details.cost` is required by the catalog schema; the hover card renders it.
+const stubCost = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheWriteTokens: 1 };
 
 const modelCatalogue: Model[] = [
   {
@@ -56,35 +59,49 @@ const modelCatalogue: Model[] = [
     name: 'Cookie Model',
     description: '',
     provider: { id: 'openai', name: 'OpenAI' },
-    details: { family: 'gpt' },
+    details: { cost: stubCost, family: 'gpt' },
   } as unknown as Model,
   {
     id: 'next-model',
     name: 'Next Model',
     description: '',
     provider: { id: 'openai', name: 'OpenAI' },
-    details: { family: 'gpt' },
+    details: { cost: stubCost, family: 'gpt' },
   } as unknown as Model,
   {
     id: 'chat-local-model',
     name: 'Chat Local Model',
     description: '',
     provider: { id: 'openai', name: 'OpenAI' },
-    details: { family: 'gpt' },
+    details: { cost: stubCost, family: 'gpt' },
   } as unknown as Model,
   {
     id: 'xai-grok-4.6',
     name: 'Grok 4.6',
     description: '',
     provider: { id: 'xai', name: 'xAI' },
-    details: { family: 'grok' },
+    details: { cost: stubCost, family: 'grok' },
+  } as unknown as Model,
+  {
+    id: 'openai-gpt-6-astra',
+    name: 'Astra',
+    description: '',
+    provider: { id: 'openai', name: 'OpenAI' },
+    details: { cost: { ...stubCost, outputTokens: 50 }, family: 'gpt' },
+  } as unknown as Model,
+  {
+    id: 'anthropic-claude-sonnet-5',
+    name: 'Sonnet 5',
+    description: '',
+    provider: { id: 'anthropic', name: 'Anthropic' },
+    details: { cost: { ...stubCost, outputTokens: 10 }, family: 'claude' },
   } as unknown as Model,
   {
     id: 'together-kimi-k3',
     name: 'Kimi K3',
     description: '',
     provider: { id: 'together', name: 'Together AI' },
-    details: { family: 'kimi' },
+    details: { cost: stubCost, family: 'kimi' },
   } as unknown as Model,
 ];
 
@@ -119,7 +136,7 @@ const capturedComboBox: {
   renderLabel?: (item: Model, selectedItem?: Model) => React.ReactNode;
   value?: unknown;
 } = {};
-vi.mock('#components/ui/combobox-responsive.js', () => ({
+vi.mock('@taucad/ui/components/combobox-responsive', () => ({
   ComboBoxResponsive: (properties: {
     readonly groupedItems?: Array<{ name: string; items: Model[] }>;
     readonly onSelect?: (id: string) => void;
@@ -139,11 +156,11 @@ vi.mock('#components/icons/svg-icon.js', () => ({
   SvgIcon: ({ id }: { readonly id?: string }) => <span data-testid='svg-icon'>{id}</span>,
 }));
 
-vi.mock('#components/ui/badge.js', () => ({
+vi.mock('@taucad/ui/components/badge', () => ({
   Badge: ({ children }: { readonly children: React.ReactNode }) => <span>{children}</span>,
 }));
 
-vi.mock('#components/ui/hover-card.js', () => ({
+vi.mock('@taucad/ui/components/hover-card', () => ({
   HoverCard: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
   HoverCardTrigger: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
   HoverCardContent: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
@@ -242,5 +259,42 @@ describe('ChatModelSelector — chat-scoped read + dual-write', () => {
     render(label);
 
     expect(screen.getAllByTestId('svg-icon').map((icon) => icon.textContent)).toContain('kimi');
+  });
+});
+
+describe('ChatModelSelector — spend tiers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    chatModelState.current = stubModel;
+  });
+
+  const renderLabelFor = (modelId: string): void => {
+    renderSelector();
+    const model = capturedComboBox.groupedItems?.flatMap((group) => group.items).find((item) => item.id === modelId);
+    if (!model) {
+      throw new Error(`Expected ${modelId} in selector items`);
+    }
+    const label = capturedComboBox.renderLabel?.(model, undefined);
+    if (!label) {
+      throw new Error(`Expected a label renderer for ${modelId}`);
+    }
+    render(label);
+  };
+
+  it('groups by spend tier, cheapest first, instead of by provider', () => {
+    renderSelector();
+
+    expect(capturedComboBox.groupedItems?.map((group) => group.name)).toEqual(['Fast', 'Balanced', 'Frontier']);
+    const tierOf = (modelId: string): string | undefined =>
+      capturedComboBox.groupedItems?.find((group) => group.items.some((item) => item.id === modelId))?.name;
+    expect(tierOf('openai-gpt-6-astra')).toBe('Frontier');
+    expect(tierOf('anthropic-claude-sonnet-5')).toBe('Balanced');
+    expect(tierOf('cookie-model')).toBe('Fast');
+  });
+
+  it('shows no credit estimate on any row (operator ruling, 2026-09-23)', () => {
+    renderLabelFor('openai-gpt-6-astra');
+
+    expect(screen.queryByText(/credits/i)).not.toBeInTheDocument();
   });
 });

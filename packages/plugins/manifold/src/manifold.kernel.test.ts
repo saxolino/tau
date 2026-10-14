@@ -1,12 +1,15 @@
 // @vitest-environment node
 import { afterEach, describe, it, expect } from 'vitest';
 import { NodeIO } from '@gltf-transform/core';
-import type { JSONSchema7, GeometryResponse } from '@taucad/runtime/types';
+import type { ParameterManifest } from '@taucad/parameters';
+import { asKnownArtifact } from '@taucad/runtime/types';
 
 import { manifoldKernel } from '#manifold.kernel.js';
 import { esbuildBundler } from '@taucad/esbuild';
 import {
+  assertRenderingSuccess,
   createMockKernelRuntime,
+  expectKernelProjectionOrder,
   createGeometryTestHelpers,
   createTestGeometry,
   createTestRuntimeClient,
@@ -18,7 +21,7 @@ import { resolveRuntimePluginDefinition } from '@taucad/runtime/plugin';
 import { defineRuntime } from '@taucad/runtime/worker';
 
 const testRuntime = defineRuntime({ kernels: [manifoldKernel()], bundlers: [esbuildBundler()] });
-const testClients = new Set<ReturnType<typeof createTestRuntimeClient>>();
+const testClients = new Set<ReturnType<typeof createTestRuntimeClient<typeof testRuntime>>>();
 const createClient = (files: Record<string, string>) => {
   const client = createTestRuntimeClient({ runtime: testRuntime, files });
   testClients.add(client);
@@ -30,13 +33,8 @@ afterEach(async () => {
   testClients.clear();
 });
 
-const getParameters = async (
-  files: Record<string, string>,
-  mainFile: string,
-): Promise<{
-  jsonSchema: JSONSchema7;
-  defaultParameters: Record<string, unknown>;
-}> => getTestParameters({ runtime: testRuntime, files, mainFile });
+const getParameters = async (files: Record<string, string>, mainFile: string): Promise<ParameterManifest> =>
+  getTestParameters({ runtime: testRuntime, files, mainFile });
 
 const createGeometry = async (
   files: Record<string, string>,
@@ -46,8 +44,7 @@ const createGeometry = async (
   createTestGeometry({
     runtime: testRuntime,
     files,
-    mainFile,
-    parameters,
+    open: { source: { path: mainFile }, parameters },
   });
 
 const geometryHelpers = createGeometryTestHelpers();
@@ -71,23 +68,85 @@ const readGltfNodeMeshNames = async (
   };
 };
 
-const extractGltfBytes = (result: { data: GeometryResponse }): Uint8Array<ArrayBuffer> => {
-  if (result.data.format !== 'gltf') {
-    throw new Error(`Expected GLTF geometry, received ${result.data.format}`);
+const extractGltfBytes = (result: Awaited<ReturnType<typeof createTestGeometry>>): Uint8Array<ArrayBuffer> => {
+  if (!result.success) {
+    throw new Error(`Expected GLB rendering, received ${result.issues.map(({ message }) => message).join('; ')}`);
   }
-  return result.data.content;
+  const artifact = asKnownArtifact(result.artifact);
+  if (artifact?.mimeType !== 'model/gltf-binary') {
+    throw new Error(`Expected GLB artifact, received ${result.artifact.mimeType}`);
+  }
+  return artifact.content;
 };
 
-const readGlbJson = (bytes: Uint8Array<ArrayBuffer>): Record<string, unknown> => {
+const readGlbJson = (
+  bytes: Uint8Array<ArrayBuffer>,
+): {
+  extensionsUsed?: string[];
+  meshes?: Array<{ extensions?: Record<string, unknown> }>;
+} => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const jsonLength = view.getUint32(12, true);
-  return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + jsonLength))) as Record<string, unknown>;
+  return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + jsonLength))) as {
+    extensionsUsed?: string[];
+    meshes?: Array<{ extensions?: Record<string, unknown> }>;
+  };
 };
 
 describe('ManifoldWorker', () => {
+  it.each([false, true])('keeps %s geometry render and GLB export independent', async (empty) => {
+    const result = await createGeometry(
+      {
+        'model.ts': empty
+          ? `import { Manifold } from 'manifold-3d/manifoldCAD'; export default () => [];`
+          : `import { Manifold } from 'manifold-3d/manifoldCAD'; export default () => Manifold.cube([10, 10, 10]);`,
+      },
+      'model.ts',
+    );
+    assertRenderingSuccess(result);
+    const glb = extractGltfBytes(result);
+    const definition = await resolveRuntimePluginDefinition('kernel', manifoldKernel());
+    const runtime = createMockKernelRuntime();
+    const context = { manifoldCadModule: {} };
+    const handle = { glb };
+    const fresh = definition.deserializeHandle!(
+      {
+        serialized: definition.serializeHandle!({ handle }, runtime, context),
+      },
+      runtime,
+      context,
+    );
+    const render = async (value: typeof handle) => {
+      const projected = await definition.render!({ handle: value, view: 'model', options: {} }, runtime, context);
+      return projected.content;
+    };
+    const exportModel = async (value: typeof handle, coordinateSystem: 'y-up' | 'z-up') => {
+      const projected = await definition.export!(
+        {
+          exportId: 'glb',
+          handle: value,
+          options: {
+            coordinateSystem,
+            unit: { length: coordinateSystem === 'y-up' ? 'meter' : 'millimeter' },
+          },
+        },
+        runtime,
+        context,
+      );
+      return projected.files[0].bytes;
+    };
+    const ordered = await expectKernelProjectionOrder({
+      renderA: async () => render(handle),
+      renderB: async () => exportModel(handle, 'y-up'),
+      freshB: async () => exportModel(fresh, 'y-up'),
+      export: async () => exportModel(handle, 'z-up'),
+    });
+    expect(ordered.first).toEqual(glb);
+  });
+
   describe('getParameters', () => {
     it('should extract defaultParams from ESM module', async () => {
-      const { defaultParameters, jsonSchema } = await getParameters(
+      const { defaults, schema } = await getParameters(
         {
           'params.ts': `
             import { Manifold } from 'manifold-3d/manifoldCAD';
@@ -105,18 +164,18 @@ describe('ManifoldWorker', () => {
         'params.ts',
       );
 
-      expect(defaultParameters).toEqual({ size: 20, centered: true });
-      expect(jsonSchema).toMatchObject({
+      expect(defaults).toEqual({ size: 20, centered: true });
+      expect(schema).toMatchObject({
         type: 'object',
         properties: {
-          size: { type: 'integer', default: 20 },
+          size: { type: 'double', default: 20 },
           centered: { type: 'boolean', default: true },
         },
       });
     });
 
     it('should extract defaultParameters alias', async () => {
-      const { defaultParameters } = await getParameters(
+      const { defaults } = await getParameters(
         {
           'params.ts': `
             import { Manifold } from 'manifold-3d/manifoldCAD';
@@ -133,11 +192,11 @@ describe('ManifoldWorker', () => {
         'params.ts',
       );
 
-      expect(defaultParameters).toEqual({ radius: 15 });
+      expect(defaults).toEqual({ radius: 15 });
     });
 
     it('should return empty parameter defaults when none are exported', async () => {
-      const { defaultParameters } = await getParameters(
+      const { defaults } = await getParameters(
         {
           'no-params.ts': `
             import { Manifold } from 'manifold-3d/manifoldCAD';
@@ -150,7 +209,7 @@ describe('ManifoldWorker', () => {
         'no-params.ts',
       );
 
-      expect(defaultParameters).toEqual({});
+      expect(defaults).toEqual({});
     });
   });
 
@@ -175,8 +234,8 @@ describe('ManifoldWorker', () => {
       await geometryHelpers.expectBoundingBoxSize(result, [0.01, 0.01, 0.01], 0.0005);
       if (result.success) {
         const json = readGlbJson(extractGltfBytes(result));
-        expect(json['extensionsUsed']).toContain('EXT_mesh_manifold');
-        expect(json['meshes']?.[0]?.['extensions']?.['EXT_mesh_manifold']).toMatchObject({
+        expect(json.extensionsUsed).toContain('EXT_mesh_manifold');
+        expect(json.meshes?.[0]?.extensions?.['EXT_mesh_manifold']).toMatchObject({
           manifoldPrimitive: { mode: 4 },
         });
         const { nodeNames, meshNames } = await readGltfNodeMeshNames(extractGltfBytes(result));
@@ -199,11 +258,15 @@ describe('ManifoldWorker', () => {
       });
 
       const expectRenderedMesh = async () => {
-        const outcome = await client.render({ source: { path: 'tracked.ts' }, parameters: {} });
+        const document = client.open({ source: { path: 'tracked.ts' }, parameters: {}, watch: false });
+        const view = document.view('model');
+        const outcome = await view.rendering();
         expect(outcome.superseded).toBe(false);
         if (!outcome.superseded) {
-          await geometryHelpers.expectMeshCount(outcome.geometry, 1);
+          await geometryHelpers.expectMeshCount(outcome.rendering, 1);
         }
+        view.close();
+        document.close();
       };
 
       await expectRenderedMesh();
@@ -347,6 +410,154 @@ describe('ManifoldWorker', () => {
     });
   });
 
+  describe('normals', () => {
+    type TrianglePrimitive = {
+      readonly positions: Float32Array;
+      readonly normals: Float32Array | undefined;
+      readonly colors: Float32Array | undefined;
+    };
+
+    const renderTriangles = async (source: string): Promise<TrianglePrimitive[]> => {
+      const result = await createGeometry({ 'model.ts': source }, 'model.ts');
+      assertRenderingSuccess(result);
+      const document = await new NodeIO().readBinary(extractGltfBytes(result));
+      return document
+        .getRoot()
+        .listMeshes()
+        .flatMap((mesh) => mesh.listPrimitives())
+        .filter((primitive) => primitive.getMode() === 4)
+        .map((primitive) => ({
+          positions: primitive.getAttribute('POSITION')!.getArray() as Float32Array,
+          normals: primitive.getAttribute('NORMAL')?.getArray() as Float32Array | undefined,
+          colors: primitive.getAttribute('COLOR_0')?.getArray() as Float32Array | undefined,
+        }));
+    };
+
+    const vectors = (values: Float32Array): Array<[number, number, number]> =>
+      Array.from({ length: values.length / 3 }, (_, index) => [
+        values[index * 3]!,
+        values[index * 3 + 1]!,
+        values[index * 3 + 2]!,
+      ]);
+
+    const expectUnitNormals = (primitives: readonly TrianglePrimitive[]): void => {
+      expect(primitives.length).toBeGreaterThan(0);
+      for (const { positions, normals } of primitives) {
+        expect(normals).toBeDefined();
+        expect(normals!.length).toBe(positions.length);
+        for (const [x, y, z] of vectors(normals!)) {
+          expect(Math.hypot(x, y, z)).toBeCloseTo(1, 4);
+        }
+      }
+    };
+
+    it('supplies normals for a bare manifold, keeping box edges sharp and the manifold extension', async () => {
+      const result = await createGeometry(
+        {
+          'cube.ts': `
+            import { Manifold } from 'manifold-3d/manifoldCAD';
+            export default () => Manifold.cube([10, 10, 10], true);
+          `,
+        },
+        'cube.ts',
+      );
+      assertRenderingSuccess(result);
+      expect(readGlbJson(extractGltfBytes(result)).extensionsUsed).toContain('EXT_mesh_manifold');
+
+      const primitives = await renderTriangles(`
+        import { Manifold } from 'manifold-3d/manifoldCAD';
+        export default () => Manifold.cube([10, 10, 10], true);
+      `);
+      expectUnitNormals(primitives);
+      // 90° edges exceed the smoothing angle, so every normal is a face normal.
+      for (const normal of vectors(primitives[0]!.normals!)) {
+        expect(normal.map((component) => Math.abs(Math.round(component))).reduce((sum, value) => sum + value)).toBe(1);
+      }
+    });
+
+    it('labels normals on setMaterial parts that the node material does not govern', async () => {
+      const primitives = await renderTriangles(`
+        import { Manifold, setMaterial } from 'manifold-3d/manifoldCAD';
+        export default () =>
+          setMaterial(Manifold.cube([40, 40, 10], true), { baseColorFactor: [0, 0, 1] }).add(
+            setMaterial(Manifold.cylinder(30, 8, -1, 32, true), { baseColorFactor: [1, 0, 0] }),
+          );
+      `);
+      expect(primitives).toHaveLength(2);
+      expectUnitNormals(primitives);
+    });
+
+    it('appends normals after authored colour properties', async () => {
+      const primitives = await renderTriangles(`
+        import { GLTFNode, Manifold } from 'manifold-3d/manifoldCAD';
+        export default () => {
+          const node = new GLTFNode();
+          node.manifold = Manifold.cube([10, 10, 10], true).setProperties(3, (color, position) => {
+            color[0] = (position[0] + 5) / 10;
+            color[1] = (position[1] + 5) / 10;
+            color[2] = 0.25;
+          });
+          node.material = { attributes: ['COLOR_0'] };
+          return node;
+        };
+      `);
+      expectUnitNormals(primitives);
+      const [{ positions, colors }] = primitives as [TrianglePrimitive];
+      const expected = vectors(positions);
+      for (const [index, [red, green, blue]] of vectors(colors!).entries()) {
+        const [x, y] = expected[index]!;
+        expect(red).toBeCloseTo((x + 5) / 10, 5);
+        expect(green).toBeCloseTo((y + 5) / 10, 5);
+        expect(blue).toBeCloseTo(0.25, 5);
+      }
+    });
+
+    it('keeps normals the model authored', async () => {
+      // At 60° an octagonal prism's sides are smooth; the kernel's 30° would facet them.
+      const primitives = await renderTriangles(`
+        import { GLTFNode, Manifold } from 'manifold-3d/manifoldCAD';
+        export default () => {
+          const node = new GLTFNode();
+          node.manifold = Manifold.cylinder(10, 5, -1, 8, true).calculateNormals(0, 60);
+          node.material = { attributes: ['NORMAL'] };
+          return node;
+        };
+      `);
+      expectUnitNormals(primitives);
+      const [{ positions, normals }] = primitives as [TrianglePrimitive];
+      const sides = vectors(normals!)
+        .map((normal, index) => ({ normal, position: vectors(positions)[index]! }))
+        .filter(({ normal }) => Math.abs(normal[2]) < 0.5);
+      expect(sides.length).toBeGreaterThan(0);
+      for (const { normal, position } of sides) {
+        const radius = Math.hypot(position[0], position[1]);
+        expect(normal[0]).toBeCloseTo(position[0] / radius, 4);
+        expect(normal[1]).toBeCloseTo(position[1] / radius, 4);
+      }
+    });
+
+    it('gives a cross-section its plane normal', async () => {
+      const primitives = await renderTriangles(`
+        import { CrossSection } from 'manifold-3d/manifoldCAD';
+        export default () => CrossSection.square([10, 10], true).subtract(CrossSection.circle(3, 32));
+      `);
+      expectUnitNormals(primitives);
+      for (const normal of vectors(primitives[0]!.normals!)) {
+        expect(normal).toEqual([0, 0, 1]);
+      }
+    });
+
+    it('exports show() debug views as authored', async () => {
+      // The manifold-3d writer emits the captured debug mesh with the run's labels, which a NORMAL label would overrun.
+      const primitives = await renderTriangles(`
+        import { Manifold, show } from 'manifold-3d/manifoldCAD';
+        export default () => Manifold.cube([20, 20, 5], true).add(show(Manifold.cylinder(10, 3, -1, 16, true)));
+      `);
+      expect(primitives.length).toBeGreaterThan(0);
+      expect(primitives.every(({ normals }) => normals === undefined)).toBe(true);
+    });
+  });
+
   describe('exportGeometry', () => {
     it('should export GLB after successful geometry creation', async () => {
       const client = createClient({
@@ -359,11 +570,11 @@ describe('ManifoldWorker', () => {
         `,
       });
 
-      const exportResult = await client.export('glb', { source: { path: 'cube.ts' } });
+      const exportResult = await client.open({ source: { path: 'cube.ts' }, watch: false }).export('glb');
       expect(exportResult.success).toBe(true);
       if (exportResult.success) {
-        expect(exportResult.data[0]?.bytes).toBeInstanceOf(Uint8Array);
-        const { nodeNames, meshNames } = await readGltfNodeMeshNames(exportResult.data[0]!.bytes);
+        expect(exportResult.files[0].bytes).toBeInstanceOf(Uint8Array);
+        const { nodeNames, meshNames } = await readGltfNodeMeshNames(exportResult.files[0].bytes);
         expect(nodeNames).toEqual(['Shape 1']);
         expect(meshNames).toEqual(['Shape 1']);
       }
@@ -379,13 +590,12 @@ describe('ManifoldWorker', () => {
           }
         `,
       });
-      const zUp = await client.export('glb', {
-        source: { path: 'coordinate-evidence.ts' },
-        exportOptions: { coordinateSystem: 'z-up', unit: { length: 'millimeter' } },
+      const document = client.open({ source: { path: 'coordinate-evidence.ts' }, watch: false });
+      const zUp = await document.export('glb', {
+        options: { coordinateSystem: 'z-up', unit: { length: 'millimeter' } },
       });
-      const yUp = await client.export('glb', {
-        source: { path: 'coordinate-evidence.ts' },
-        exportOptions: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
+      const yUp = await document.export('glb', {
+        options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
       });
       expect(zUp.success).toBe(true);
       expect(yUp.success).toBe(true);
@@ -393,8 +603,8 @@ describe('ManifoldWorker', () => {
         return;
       }
 
-      const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.data[0]!.bytes });
-      const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.data[0]!.bytes });
+      const zUpEvidence = await readCoordinateEvidence({ bytes: zUp.files[0].bytes });
+      const yUpEvidence = await readCoordinateEvidence({ bytes: yUp.files[0].bytes });
       expect(yUpEvidence).toEqual(mapZupMillimetersToYupMeters(zUpEvidence));
     });
 
@@ -409,13 +619,13 @@ describe('ManifoldWorker', () => {
         `,
       });
 
-      const exportResult = await client.export('glb', { source: { path: 'empty.ts' } });
+      const exportResult = await client.open({ source: { path: 'empty.ts' }, watch: false }).export('glb');
       expect(exportResult.success).toBe(true);
       if (!exportResult.success) {
         return;
       }
 
-      const document = await new NodeIO().readBinary(exportResult.data[0]!.bytes);
+      const document = await new NodeIO().readBinary(exportResult.files[0].bytes);
       expect(document.getRoot().listMeshes()).toHaveLength(0);
     });
 
@@ -431,14 +641,14 @@ describe('ManifoldWorker', () => {
       });
 
       // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- deliberately bypasses the typed format union to test wire rejection.
-      const exportResult = await client.export('gltf' as 'glb', { source: { path: 'cube.ts' } });
+      const exportResult = await client.open({ source: { path: 'cube.ts' }, watch: false }).export('gltf' as 'glb');
       expect(exportResult.success).toBe(false);
       if (!exportResult.success) {
         expect(exportResult.issues[0]?.message).toContain('gltf');
       }
     });
 
-    it('should return error when exporting before creating geometry', async () => {
+    it('should reject export from a failed source without reusing earlier geometry', async () => {
       const client = createClient({
         'cube.ts': `
           import { Manifold } from 'manifold-3d/manifoldCAD';
@@ -449,7 +659,10 @@ describe('ManifoldWorker', () => {
         `,
       });
 
-      await expect(client.export('glb')).rejects.toThrow();
+      const document = client.open({ source: { path: 'missing.ts' }, watch: false });
+      const result = await document.export('glb');
+      expect(result.success).toBe(false);
+      expect(result.issues.length).toBeGreaterThan(0);
     });
 
     it('should return error for unsupported export formats', async () => {
@@ -464,7 +677,7 @@ describe('ManifoldWorker', () => {
       });
 
       // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- deliberately bypasses the typed format union to test wire rejection.
-      const exportResult = await client.export('step' as 'glb', { source: { path: 'cube.ts' } });
+      const exportResult = await client.open({ source: { path: 'cube.ts' }, watch: false }).export('step' as 'glb');
       expect(exportResult.success).toBe(false);
     });
   });
@@ -472,29 +685,29 @@ describe('ManifoldWorker', () => {
   describe('native-handle snapshots', () => {
     it('should round-trip GLB bytes through the durable native-handle hooks', async () => {
       const definition = await resolveRuntimePluginDefinition('kernel', manifoldKernel());
-      expect(definition.serializeNativeHandle).toBeDefined();
-      expect(definition.deserializeNativeHandle).toBeDefined();
+      expect(definition.serializeHandle).toBeDefined();
+      expect(definition.deserializeHandle).toBeDefined();
 
       const nativeHandle = { glb: new Uint8Array([0x67, 0x6c, 0x54, 0x46]) };
       const runtime = createMockKernelRuntime();
-      const { serializeNativeHandle, deserializeNativeHandle } = definition;
+      const { serializeHandle, deserializeHandle } = definition;
       const serialize =
-        serializeNativeHandle ??
+        serializeHandle ??
         (() => {
           throw new Error('Manifold native-handle serializer must be defined');
         });
       const deserialize =
-        deserializeNativeHandle ??
+        deserializeHandle ??
         (() => {
           throw new Error('Manifold native-handle deserializer must be defined');
         });
       const context = { manifoldCadModule: {} };
-      const serializedNativeHandle = serialize({ nativeHandle }, runtime, context);
-      const restored = deserialize({ serializedNativeHandle }, runtime, context);
+      const serializedHandle = serialize({ handle: nativeHandle }, runtime, context);
+      const restored = deserialize({ serialized: serializedHandle }, runtime, context);
 
       expect(restored.glb).toEqual(nativeHandle.glb);
       expect(restored.glb).not.toBe(nativeHandle.glb);
-      expect(serializedNativeHandle.glb).not.toBe(nativeHandle.glb);
+      expect(serializedHandle.glb).not.toBe(nativeHandle.glb);
     });
   });
 });

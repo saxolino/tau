@@ -22,4 +22,36 @@ describe('workspace generator skill parity', () => {
       expect(skill).toContain(`pnpm nx g @taucad/workspace-plugin:${name}`);
     },
   );
+
+  it('keeps the Create Package placement router as a four-column Markdown table', () => {
+    const skill = readFileSync(resolve(repositoryRoot, '.agents/skills/create-package/SKILL.md'), 'utf8');
+    const router = skill.split('## Placement Router\n')[1]?.split('\n## Usage')[0];
+    const rows = router?.split('\n').filter((line) => line.startsWith('|')) ?? [];
+
+    expect(rows).toHaveLength(7);
+    for (const row of rows) {
+      expect(row.split('|')).toHaveLength(6);
+    }
+    expect(router).toContain('| Code');
+    expect(router).toContain('`scope:shared` or `scope:ui`, `type:app-lib layer:<layer>`');
+  });
+
+  it('keeps the plugin generator and owning skill aligned on all six runtime roles', () => {
+    const skill = readFileSync(resolve(repositoryRoot, '.agents/skills/create-plugin/SKILL.md'), 'utf8');
+    const schema = readFileSync(
+      resolve(repositoryRoot, 'tools/workspace-plugin/src/generators/plugin/schema.json'),
+      'utf8',
+    );
+
+    for (const role of ['kernel', 'transcoder', 'middleware', 'bundler', 'job', 'machine']) {
+      expect(skill).toContain(`\`${role}\``);
+      expect(schema).toContain(`"${role}"`);
+    }
+    for (const subpath of ['@taucad/runtime/job', '@taucad/runtime/machine', '@taucad/runtime/configuration']) {
+      expect(skill).toContain(subpath);
+    }
+    expect(skill).toMatch(/not\s+the four-role CAD executor/u);
+    expect(skill).toMatch(/replace\s+generated\s+failure stubs/u);
+    expect(skill).toContain('generated type/build checks');
+  });
 });

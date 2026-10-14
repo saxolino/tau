@@ -12,12 +12,15 @@ export const supportedHighlightLanguages = [
   'kcl',
   'markdown',
   'openscad',
+  'python',
+  'csharp',
   'stepfile',
   'stl',
   'sysml',
   'tsx',
   'typescript',
   'usd',
+  'yaml',
 ] as const;
 
 export type HighlightLanguage = (typeof supportedHighlightLanguages)[number];
@@ -39,8 +42,11 @@ export const builtinHighlightLanguages = [
   'jsonc',
   'jsonl',
   'markdown',
+  'python',
+  'csharp',
   'tsx',
   'typescript',
+  'yaml',
 ] as const satisfies readonly HighlightLanguage[];
 
 export const customHighlightLanguages = [

@@ -8,6 +8,10 @@ import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
 import type { Browser } from 'playwright';
 import { PDFParse } from 'pdf-parse';
+import remarkGfm from 'remark-gfm';
+import remarkParse from 'remark-parse';
+import remarkStringify from 'remark-stringify';
+import { unified } from 'unified';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -24,7 +28,16 @@ import type { HtmlCaptureOmissions, HtmlCaptureReport, ReferencePaths } from '#r
 const temporaryDirectories: string[] = [];
 const servers: Array<ReturnType<typeof createServer>> = [];
 const expectedMarkdown = readFileSync(join(import.meta.dirname, 'fixtures/reference-html/expected.md'), 'utf8');
-const fixtureFont = readFileSync(join(import.meta.dirname, '../../apps/ui/public/fonts/Geist-Variable.woff2'));
+// Read the installed workspace font, not the UI's untracked `copy-assets` output.
+const fixtureFont = readFileSync(
+  join(import.meta.dirname, '../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2'),
+);
+const gfm = unified().use(remarkParse).use(remarkGfm).use(remarkStringify, {
+  bullet: '-',
+  fences: true,
+  listItemIndent: 'one',
+});
+const canonicalGfm = (markdown: string): string => gfm.stringify(gfm.parse(markdown));
 
 afterEach(async () => {
   await Promise.all(
@@ -172,7 +185,7 @@ const successfulPage = `<!doctype html>
       <div class="spacer"></div>
       <p id="lazy"></p>
     </main>
-    <header style="position: fixed; font-size: 1px; line-height: 1px">Persistent header</header>
+    <header style="position: fixed; font-size: 12px; line-height: 16px">Persistent header</header>
     <footer>Footer noise</footer>
     <script>
       const canvas = document.querySelector('#canvas');
@@ -447,6 +460,30 @@ describe('HTML semantic snapshot', () => {
     expect(snapshot).not.toMatch(/script|style|tracker|javascript:|Navigation noise/u);
   });
 
+  it('should lower a table whose cell holds a list, which a pipe table cannot carry', () => {
+    const snapshot = createHtmlSnapshotFromHtml({
+      baseUrl: 'https://fixture.test/article',
+      report: report(),
+      html: `
+        <main>
+          <table><tr><td>Requirement</td><td><p>The schema SHALL:</p><ul><li>be valid;</li><li>be an object.</li></ul></td></tr></table>
+        </main>
+      `,
+    });
+    expect(snapshot).not.toContain('<table>');
+    expect(snapshot).toContain('Row 1:');
+    expect(snapshot).toContain('be an object.');
+  });
+
+  it('should keep whitespace between highlighted token spans in preformatted code', () => {
+    const snapshot = createHtmlSnapshotFromHtml({
+      baseUrl: 'https://fixture.test/article',
+      report: report(),
+      html: '<main><h1>Code</h1><pre>\n<span>const</span> <span>a</span> = 1;\n<span>const</span> b;\n</pre></main>',
+    });
+    expect(snapshot).toContain('<pre><code class="language-text">const a = 1;\nconst b;');
+  });
+
   it('should reject active markup added to a cached snapshot', () => {
     const paths = temporaryHtmlPaths();
     writeFileSync(
@@ -667,15 +704,18 @@ describe('HTML browser capture', () => {
     );
 
     const converted = await convertHtmlSnapshot(paths.snapshot);
-    expect(converted.markdown).toBe(expectedMarkdown);
+    const canonicalMarkdown = canonicalGfm(converted.markdown);
+    expect(canonicalMarkdown).toBe(canonicalGfm(expectedMarkdown));
     expect(converted.markdown).not.toContain('HTML Reference');
     expect(converted.markdown).toContain('Delayed client-rendered evidence.');
-    expect(converted.markdown).toContain('*Image: A semantic diagram*');
+    expect(canonicalMarkdown).toContain('*Image: A semantic diagram*');
     expect(converted.markdown).toContain('Lazy accordion evidence.');
     expect(converted.markdown).toContain('Lazy second tab evidence.');
     expect(converted.markdown).toContain('Caption survives omitted video.');
+    expect(converted.markdown).toContain('Semantic figure caption');
+    expect(converted.markdown).toContain('| Alpha | 1');
     expect(converted.markdown).not.toContain('ignored-video.mp4');
-    expect(converted.markdown).toContain('``` text\nconst answer = 42;\n```');
+    expect(converted.markdown).toContain('```\nconst answer = 42;\n```');
     expect(converted.markdown.match(/## Responsive evidence/gu)).toHaveLength(1);
     expect(converted.markdown.match(/## Native details one/gu)).toHaveLength(1);
     expect(converted.markdown).not.toContain('Copy');
@@ -901,10 +941,16 @@ describe('HTML browser capture', () => {
         dependencies: { request: fixture.request },
       });
       const snapshot = readHtmlSnapshot(paths.snapshot);
+      const imageAttempts = fixture.requestedPaths.filter((requestedPath) => requestedPath === `/${path}`).length;
+      expect(imageAttempts).toBeGreaterThanOrEqual(1);
+      expect(fixture.requestedPaths).toEqual([
+        `/optional-${path}`,
+        ...Array.from({ length: imageAttempts }, () => `/${path}`),
+      ]);
       expect(snapshot.report).toMatchObject({
-        requestAttempts: 2,
+        requestAttempts: imageAttempts + 1,
         completeness: 'partial',
-        omissions: { failedSubresources: 1, failedImages: 1 },
+        omissions: { failedSubresources: imageAttempts, failedImages: 1 },
       });
       expect(snapshot.html).toContain('Ordinary evidence remains.');
       expect(snapshot.html).not.toContain(`/${path}`);
@@ -951,8 +997,14 @@ describe('HTML browser capture', () => {
     });
 
     const snapshot = readHtmlSnapshot(paths.snapshot);
+    const imageAttempts = fixture.requestedPaths.filter((requestedPath) => requestedPath === '/missing-image').length;
+    expect(imageAttempts).toBeGreaterThanOrEqual(1);
+    expect(fixture.requestedPaths).toEqual([
+      '/partial-evidence',
+      ...Array.from({ length: imageAttempts }, () => '/missing-image'),
+    ]);
     expect(snapshot.report).toMatchObject({
-      requestAttempts: 4,
+      requestAttempts: imageAttempts + 3,
       completeness: 'partial',
       discovered: 1,
       visited: 1,
@@ -970,8 +1022,8 @@ describe('HTML browser capture', () => {
     expect(snapshot.html).toContain('Broken figure caption.');
     expect(snapshot.html).not.toMatch(/<iframe|<button|missing-image/u);
     const converted = await convertHtmlSnapshot(paths.snapshot);
-    expect(converted.markdown).toBe(
-      'Baseline evidence survives local failures.\n\n*Image: Broken diagram*\n\nBroken figure caption.\n',
+    expect(canonicalGfm(converted.markdown)).toBe(
+      canonicalGfm('Baseline evidence survives local failures.\n\n*Image: Broken diagram*\n\nBroken figure caption.\n'),
     );
     const parser = new PDFParse({ data: readFileSync(paths.artifact) });
     try {

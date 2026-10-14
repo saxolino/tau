@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MarketingLanding } from '#routes/_index/marketing-landing.js';
 
 // Mock the interactive / data-fetching leaves so the presentational marketing
@@ -31,15 +32,24 @@ vi.mock('#components/ui/lazy-section.js', () => ({
 }));
 
 function renderLanding(): HTMLElement {
+  // The app root provides the shared QueryClient; the pricing cards read entitlements through it.
   const { container } = render(
-    <MemoryRouter>
-      <MarketingLanding />
-    </MemoryRouter>,
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter>
+        <MarketingLanding />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
   return container;
 }
 
 describe('MarketingLanding', () => {
+  it('should keep its navigation clickable inside the desktop drag band', () => {
+    renderLanding();
+
+    expect(screen.getByRole('banner')).toHaveClass('[app-region:no-drag]');
+  });
+
   it('should render the verification-led hero headline and primary composer CTA', () => {
     renderLanding();
 
@@ -54,10 +64,12 @@ describe('MarketingLanding', () => {
     expect(screen.getByText('Verify')).toBeInTheDocument();
   });
 
-  it('should never brand verification as "GeoSpec" on the marketing page (OQ1)', () => {
+  it('should tell the homepage design story as subordinate labels', () => {
     const container = renderLanding();
 
-    expect(container.textContent).not.toMatch(/geospec/i);
+    expect(container.textContent).toContain('Design. Verify. Print.');
+    expect(container.textContent).toContain('recorded GeoSpec run');
+    expect(container.textContent).toContain('not a live session or print job');
   });
 
   it('should render the pricing section with all three plan cards (T7/U6)', () => {

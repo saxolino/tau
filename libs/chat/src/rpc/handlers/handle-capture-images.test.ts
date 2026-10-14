@@ -33,14 +33,14 @@ describe('handleCaptureImages', () => {
       success: true,
       images: [{ view: 'isometric', dataUrl: 'data:image/webp;base64,AQ==' }],
     });
-    expect(images.captureImages).toHaveBeenCalledWith(input);
+    expect(images.captureImages).toHaveBeenCalledWith(input, undefined);
   });
 
   it('should propagate a typed client failure without changing it', async () => {
     const images = mock<RpcImageClient>();
     const failure: CaptureImagesRpcResult = {
       success: false,
-      errorCode: 'RENDER_TIMEOUT',
+      errorCode: 'OPERATION_TIMEOUT',
       message: 'Image render timed out',
     };
     images.captureImages.mockResolvedValue(failure);
@@ -53,5 +53,18 @@ describe('handleCaptureImages', () => {
       success: false,
       message: 'Headless image capture is unavailable',
     });
+  });
+
+  it('should pass the exact local invocation context separately from the parsed request', async () => {
+    const controller = new AbortController();
+    const context = { signal: controller.signal };
+    const images = mock<RpcImageClient>();
+    images.captureImages.mockResolvedValue({ success: true, images: [] });
+    const input = { mode: 'single', targetFile: 'main.ts' } as const;
+
+    await handleCaptureImages(input, images, context);
+
+    expect(images.captureImages).toHaveBeenCalledExactlyOnceWith(input, context);
+    expect(input).not.toHaveProperty('signal');
   });
 });

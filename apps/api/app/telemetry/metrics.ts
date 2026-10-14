@@ -10,24 +10,14 @@
 import { Injectable } from '@nestjs/common';
 import { metrics } from '@opentelemetry/api';
 import { TauMetrics } from '@taucad/telemetry';
+import type { z } from 'zod';
 
 @Injectable()
 export class MetricsService {
   private readonly apiMeter = metrics.getMeter('tau-api');
   private readonly clientMeter = metrics.getMeter('tau-client');
 
-  // WebSocket / RPC
-  public readonly rpcCallDuration = this.apiMeter.createHistogram(TauMetrics.rpcCallDuration.name, {
-    description: TauMetrics.rpcCallDuration.description,
-    unit: TauMetrics.rpcCallDuration.unit,
-    advice: { explicitBucketBoundaries: [...TauMetrics.rpcCallDuration.buckets] },
-  });
-
-  public readonly rpcActiveCalls = this.apiMeter.createUpDownCounter(TauMetrics.rpcActiveCalls.name, {
-    description: TauMetrics.rpcActiveCalls.description,
-    unit: TauMetrics.rpcActiveCalls.unit,
-  });
-
+  // WebSocket
   public readonly wsActiveConnections = this.apiMeter.createUpDownCounter(TauMetrics.wsActiveConnections.name, {
     description: TauMetrics.wsActiveConnections.description,
     unit: TauMetrics.wsActiveConnections.unit,
@@ -42,6 +32,11 @@ export class MetricsService {
     description: TauMetrics.wsMessageSize.description,
     unit: TauMetrics.wsMessageSize.unit,
     advice: { explicitBucketBoundaries: [...TauMetrics.wsMessageSize.buckets] },
+  });
+
+  public readonly wsUpgradeRejections = this.apiMeter.createCounter(TauMetrics.wsUpgradeRejections.name, {
+    description: TauMetrics.wsUpgradeRejections.description,
+    unit: TauMetrics.wsUpgradeRejections.unit,
   });
 
   // AI / LLM (GenAI semantic conventions)
@@ -144,16 +139,6 @@ export class MetricsService {
     description: TauMetrics.redisConnectionState.description,
   });
 
-  public readonly sseActiveConnections = this.apiMeter.createUpDownCounter(TauMetrics.sseActiveConnections.name, {
-    description: TauMetrics.sseActiveConnections.description,
-    unit: TauMetrics.sseActiveConnections.unit,
-  });
-
-  public readonly sseEvents = this.apiMeter.createCounter(TauMetrics.sseEvents.name, {
-    description: TauMetrics.sseEvents.description,
-    unit: TauMetrics.sseEvents.unit,
-  });
-
   public readonly publicationViewsTotal = this.apiMeter.createCounter(TauMetrics.publicationViewsTotal.name, {
     description: TauMetrics.publicationViewsTotal.description,
     unit: TauMetrics.publicationViewsTotal.unit,
@@ -190,6 +175,18 @@ export class MetricsService {
       unit: TauMetrics.publicationFileRequestsTotal.unit,
     },
   );
+
+  // Object storage
+  public readonly storageOperationDuration = this.apiMeter.createHistogram(TauMetrics.storageOperationDuration.name, {
+    description: TauMetrics.storageOperationDuration.description,
+    unit: TauMetrics.storageOperationDuration.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.storageOperationDuration.buckets] },
+  });
+
+  public readonly storageTransferBytes = this.apiMeter.createCounter(TauMetrics.storageTransferBytes.name, {
+    description: TauMetrics.storageTransferBytes.description,
+    unit: TauMetrics.storageTransferBytes.unit,
+  });
 
   // Client-reported metrics (ingested via TelemetryController)
   public readonly kernelExecutionDuration = this.clientMeter.createHistogram(TauMetrics.kernelExecutionDuration.name, {
@@ -236,4 +233,278 @@ export class MetricsService {
       advice: { explicitBucketBoundaries: [...TauMetrics.indexeddbOperationDuration.buckets] },
     },
   );
+
+  // --- Billing / credit ledger (C11/C12) ---
+
+  public readonly billingAttemptResolutions = this.apiMeter.createCounter(TauMetrics.billingAttemptResolutions.name, {
+    description: TauMetrics.billingAttemptResolutions.description,
+    unit: TauMetrics.billingAttemptResolutions.unit,
+  });
+
+  public readonly billingVoidedAdmissions = this.apiMeter.createCounter(TauMetrics.billingVoidedAdmissions.name, {
+    description: TauMetrics.billingVoidedAdmissions.description,
+    unit: TauMetrics.billingVoidedAdmissions.unit,
+  });
+
+  public readonly billingLedgerDrift = this.apiMeter.createGauge(TauMetrics.billingLedgerDrift.name, {
+    description: TauMetrics.billingLedgerDrift.description,
+    unit: TauMetrics.billingLedgerDrift.unit,
+  });
+
+  public readonly billingDriftedAccounts = this.apiMeter.createGauge(TauMetrics.billingDriftedAccounts.name, {
+    description: TauMetrics.billingDriftedAccounts.description,
+    unit: TauMetrics.billingDriftedAccounts.unit,
+  });
+
+  public readonly billingOpenFinancialCases = this.apiMeter.createGauge(TauMetrics.billingOpenFinancialCases.name, {
+    description: TauMetrics.billingOpenFinancialCases.description,
+    unit: TauMetrics.billingOpenFinancialCases.unit,
+  });
+
+  public readonly billingFundedOperationRecoveries = this.apiMeter.createCounter(
+    TauMetrics.billingFundedOperationRecoveries.name,
+    {
+      description: TauMetrics.billingFundedOperationRecoveries.description,
+      unit: TauMetrics.billingFundedOperationRecoveries.unit,
+    },
+  );
+
+  public readonly billingSupplierCostPicoUsd = this.apiMeter.createCounter(TauMetrics.billingSupplierCostPicoUsd.name, {
+    description: TauMetrics.billingSupplierCostPicoUsd.description,
+    unit: TauMetrics.billingSupplierCostPicoUsd.unit,
+  });
+
+  public readonly billingSupplierUnpricedOperations = this.apiMeter.createGauge(
+    TauMetrics.billingSupplierUnpricedOperations.name,
+    {
+      description: TauMetrics.billingSupplierUnpricedOperations.description,
+      unit: TauMetrics.billingSupplierUnpricedOperations.unit,
+    },
+  );
+
+  public readonly billingProviderAccountRefusals = this.apiMeter.createCounter(
+    TauMetrics.billingProviderAccountRefusals.name,
+    {
+      description: TauMetrics.billingProviderAccountRefusals.description,
+      unit: TauMetrics.billingProviderAccountRefusals.unit,
+    },
+  );
+
+  public readonly billingFundedOperationDenials = this.apiMeter.createCounter(
+    TauMetrics.billingFundedOperationDenials.name,
+    {
+      description: TauMetrics.billingFundedOperationDenials.description,
+      unit: TauMetrics.billingFundedOperationDenials.unit,
+    },
+  );
+
+  public readonly billingFundedOperationTerminals = this.apiMeter.createCounter(
+    TauMetrics.billingFundedOperationTerminals.name,
+    {
+      description: TauMetrics.billingFundedOperationTerminals.description,
+      unit: TauMetrics.billingFundedOperationTerminals.unit,
+    },
+  );
+
+  public readonly billingFundedOperationCurrent = this.apiMeter.createGauge(
+    TauMetrics.billingFundedOperationCurrent.name,
+    {
+      description: TauMetrics.billingFundedOperationCurrent.description,
+      unit: TauMetrics.billingFundedOperationCurrent.unit,
+    },
+  );
+
+  public readonly billingFundedOperationOldestDueAge = this.apiMeter.createGauge(
+    TauMetrics.billingFundedOperationOldestDueAge.name,
+    {
+      description: TauMetrics.billingFundedOperationOldestDueAge.description,
+      unit: TauMetrics.billingFundedOperationOldestDueAge.unit,
+    },
+  );
+
+  public readonly billingFundedOperationRecoveryBatchDuration = this.apiMeter.createHistogram(
+    TauMetrics.billingFundedOperationRecoveryBatchDuration.name,
+    {
+      description: TauMetrics.billingFundedOperationRecoveryBatchDuration.description,
+      unit: TauMetrics.billingFundedOperationRecoveryBatchDuration.unit,
+      advice: { explicitBucketBoundaries: [...TauMetrics.billingFundedOperationRecoveryBatchDuration.buckets] },
+    },
+  );
+
+  public readonly billingFundedOperationRecoveryProviderExecutions = this.apiMeter.createGauge(
+    TauMetrics.billingFundedOperationRecoveryProviderExecutions.name,
+    {
+      description: TauMetrics.billingFundedOperationRecoveryProviderExecutions.description,
+      unit: TauMetrics.billingFundedOperationRecoveryProviderExecutions.unit,
+    },
+  );
+
+  // --- Client-reported: agent usage (W36-C) ---
+
+  public readonly agentSessions = this.clientMeter.createCounter(TauMetrics.agentSessions.name, {
+    description: TauMetrics.agentSessions.description,
+    unit: TauMetrics.agentSessions.unit,
+  });
+
+  public readonly agentTurns = this.clientMeter.createCounter(TauMetrics.agentTurns.name, {
+    description: TauMetrics.agentTurns.description,
+    unit: TauMetrics.agentTurns.unit,
+  });
+
+  public readonly agentTurnDuration = this.clientMeter.createHistogram(TauMetrics.agentTurnDuration.name, {
+    description: TauMetrics.agentTurnDuration.description,
+    unit: TauMetrics.agentTurnDuration.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.agentTurnDuration.buckets] },
+  });
+
+  public readonly agentTimeToFirstUpdate = this.clientMeter.createHistogram(TauMetrics.agentTimeToFirstUpdate.name, {
+    description: TauMetrics.agentTimeToFirstUpdate.description,
+    unit: TauMetrics.agentTimeToFirstUpdate.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.agentTimeToFirstUpdate.buckets] },
+  });
+
+  public readonly agentToolCalls = this.clientMeter.createCounter(TauMetrics.agentToolCalls.name, {
+    description: TauMetrics.agentToolCalls.description,
+    unit: TauMetrics.agentToolCalls.unit,
+  });
+
+  public readonly agentTokens = this.clientMeter.createCounter(TauMetrics.agentTokens.name, {
+    description: TauMetrics.agentTokens.description,
+    unit: TauMetrics.agentTokens.unit,
+  });
+
+  public readonly agentErrors = this.clientMeter.createCounter(TauMetrics.agentErrors.name, {
+    description: TauMetrics.agentErrors.description,
+    unit: TauMetrics.agentErrors.unit,
+  });
+
+  // --- Client-reported: agent context ---
+
+  public readonly agentCallsBeforeFirstWrite = this.clientMeter.createHistogram(
+    TauMetrics.agentCallsBeforeFirstWrite.name,
+    {
+      description: TauMetrics.agentCallsBeforeFirstWrite.description,
+      unit: TauMetrics.agentCallsBeforeFirstWrite.unit,
+      advice: { explicitBucketBoundaries: [...TauMetrics.agentCallsBeforeFirstWrite.buckets] },
+    },
+  );
+
+  public readonly agentTimeToFirstWrite = this.clientMeter.createHistogram(TauMetrics.agentTimeToFirstWrite.name, {
+    description: TauMetrics.agentTimeToFirstWrite.description,
+    unit: TauMetrics.agentTimeToFirstWrite.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.agentTimeToFirstWrite.buckets] },
+  });
+
+  public readonly agentReferenceLookups = this.clientMeter.createCounter(TauMetrics.agentReferenceLookups.name, {
+    description: TauMetrics.agentReferenceLookups.description,
+    unit: TauMetrics.agentReferenceLookups.unit,
+  });
+
+  public readonly agentReferenceBytes = this.clientMeter.createHistogram(TauMetrics.agentReferenceBytes.name, {
+    description: TauMetrics.agentReferenceBytes.description,
+    unit: TauMetrics.agentReferenceBytes.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.agentReferenceBytes.buckets] },
+  });
+
+  public readonly agentSkillActivations = this.clientMeter.createCounter(TauMetrics.agentSkillActivations.name, {
+    description: TauMetrics.agentSkillActivations.description,
+    unit: TauMetrics.agentSkillActivations.unit,
+  });
+
+  public readonly agentEvaluations = this.clientMeter.createCounter(TauMetrics.agentEvaluations.name, {
+    description: TauMetrics.agentEvaluations.description,
+    unit: TauMetrics.agentEvaluations.unit,
+  });
+
+  public readonly agentCorrectionsAfterError = this.clientMeter.createHistogram(
+    TauMetrics.agentCorrectionsAfterError.name,
+    {
+      description: TauMetrics.agentCorrectionsAfterError.description,
+      unit: TauMetrics.agentCorrectionsAfterError.unit,
+      advice: { explicitBucketBoundaries: [...TauMetrics.agentCorrectionsAfterError.buckets] },
+    },
+  );
+
+  public readonly agentGeospecAssertions = this.clientMeter.createCounter(TauMetrics.agentGeospecAssertions.name, {
+    description: TauMetrics.agentGeospecAssertions.description,
+    unit: TauMetrics.agentGeospecAssertions.unit,
+  });
+
+  public readonly agentGeospecRuns = this.clientMeter.createCounter(TauMetrics.agentGeospecRuns.name, {
+    description: TauMetrics.agentGeospecRuns.description,
+    unit: TauMetrics.agentGeospecRuns.unit,
+  });
+
+  // --- Tau Sync ---
+
+  public readonly syncOperations = this.apiMeter.createCounter(TauMetrics.syncOperations.name, {
+    description: TauMetrics.syncOperations.description,
+    unit: TauMetrics.syncOperations.unit,
+  });
+
+  public readonly syncOperationDuration = this.apiMeter.createHistogram(TauMetrics.syncOperationDuration.name, {
+    description: TauMetrics.syncOperationDuration.description,
+    unit: TauMetrics.syncOperationDuration.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.syncOperationDuration.buckets] },
+  });
+
+  public readonly syncPackBytes = this.apiMeter.createHistogram(TauMetrics.syncPackBytes.name, {
+    description: TauMetrics.syncPackBytes.description,
+    unit: TauMetrics.syncPackBytes.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.syncPackBytes.buckets] },
+  });
+
+  public readonly syncLeaseDuration = this.apiMeter.createHistogram(TauMetrics.syncLeaseDuration.name, {
+    description: TauMetrics.syncLeaseDuration.description,
+    unit: TauMetrics.syncLeaseDuration.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.syncLeaseDuration.buckets] },
+  });
+
+  public readonly syncManifestConflicts = this.apiMeter.createCounter(TauMetrics.syncManifestConflicts.name, {
+    description: TauMetrics.syncManifestConflicts.description,
+    unit: TauMetrics.syncManifestConflicts.unit,
+  });
+
+  public readonly syncSweeps = this.apiMeter.createCounter(TauMetrics.syncSweeps.name, {
+    description: TauMetrics.syncSweeps.description,
+    unit: TauMetrics.syncSweeps.unit,
+  });
+
+  // Client-reported: Tau Sync
+
+  public readonly syncClientAttempts = this.clientMeter.createCounter(TauMetrics.syncClientAttempts.name, {
+    description: TauMetrics.syncClientAttempts.description,
+    unit: TauMetrics.syncClientAttempts.unit,
+  });
+
+  public readonly syncClientLag = this.clientMeter.createHistogram(TauMetrics.syncClientLag.name, {
+    description: TauMetrics.syncClientLag.description,
+    unit: TauMetrics.syncClientLag.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.syncClientLag.buckets] },
+  });
+
+  public readonly syncClientPending = this.clientMeter.createHistogram(TauMetrics.syncClientPending.name, {
+    description: TauMetrics.syncClientPending.description,
+    unit: TauMetrics.syncClientPending.unit,
+    advice: { explicitBucketBoundaries: [...TauMetrics.syncClientPending.buckets] },
+  });
+
+  // --- Billing workers ---
+
+  public readonly billingWorkerPasses = this.apiMeter.createCounter(TauMetrics.billingWorkerPasses.name, {
+    description: TauMetrics.billingWorkerPasses.description,
+    unit: TauMetrics.billingWorkerPasses.unit,
+  });
 }
+
+/** `ws.gateway` on the `ws.*` connection series: one value per upgrade route. */
+export type WsGateway = NonNullable<z.infer<typeof TauMetrics.wsActiveConnections.attributes>['ws.gateway']>;
+
+/** Bounded `ws.close.reason`, bound to the registry's enum so a new reason must be declared there. */
+export type WsCloseReason = NonNullable<z.infer<typeof TauMetrics.wsDisconnections.attributes>['ws.close.reason']>;
+
+/** Attributes of one `ws.upgrade.rejections` increment. */
+export type WsUpgradeRejection = z.infer<typeof TauMetrics.wsUpgradeRejections.attributes>;
+
+/** Attributes of one `tau.sync.operations` increment. */
+export type SyncOperationAttributes = z.infer<typeof TauMetrics.syncOperations.attributes>;

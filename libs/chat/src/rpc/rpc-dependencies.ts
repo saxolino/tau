@@ -7,17 +7,40 @@
  * - Node.js headless (via enhanced RuntimeFileSystem in the worker, runtime kernel)
  * - Workers or other JS runtimes
  */
+import type { RevisionChangeOutput, RevisionRowOutput } from '#schemas/tools/revisions.tool.schema.js';
+import type { SourceRevisionOutput } from '#schemas/tools/source-revision.schema.js';
+import type { DeterministicEditFileInput } from '#schemas/tools/edit-file.tool.schema.js';
 import type {
   CaptureImagesRpcResult,
   CaptureImagesRpcInput,
-  ExportGeometryRpcInput,
-  GetKernelResultRpcResult,
+  EvaluateModelRpcInput,
+  ExportModelRpcInput,
+  EvaluateModelRpcResult,
   RpcClientErrorCode,
   RunGeoSpecTestsRpcInput,
   RunGeoSpecTestsRpcResult,
   ResolveSkillRpcResult,
+  ApplyParameterOperationRpcInput,
+  ApplyParameterOperationRpcResult,
+  GetParametersRpcInput,
+  GetParametersRpcResult,
 } from '#schemas/rpc.schema.js';
-import type { ExportFile, FileContentMetadata } from '@taucad/types';
+import type { DiffStatsWithContent } from '#schemas/tools/diff.schema.js';
+import type {
+  CheckedFileWrite,
+  CheckedFileWriteResult,
+  FileWritePrecondition,
+  ExportFile,
+  FileContentMetadata,
+  FileProvenance,
+} from '@taucad/types';
+import type { KernelIssue } from '@taucad/runtime';
+
+/** Local execution metadata that never enters an RPC payload or durable record. @public */
+export type RpcInvocationContext = Readonly<{
+  /** Cancels only the active wait and its cooperative operation. */
+  signal?: AbortSignal;
+}>;
 /**
  * One direct child returned by {@link RpcFileSystem.readdir}.
  * `name` is a basename, never a path.
@@ -30,12 +53,18 @@ export type RpcDirectoryEntry =
       type: 'dir';
       size: number;
       modifiedAt?: string;
+      /** False for virtual directories that recursive project-wide search must skip. */
+      traverseOnImplicitSearch?: boolean;
+      /** What the composed view says about this entry. */
+      provenance?: FileProvenance;
     }
   | ({
       name: string;
       type: 'file';
       size: number;
       modifiedAt?: string;
+      /** What the composed view says about this entry. */
+      provenance?: FileProvenance;
     } & FileContentMetadata);
 
 /**
@@ -62,13 +91,26 @@ export type RpcFileSystem = {
    * pattern — never call `readFile` on agent-supplied paths without bounds.
    */
   readFile(path: string): Promise<string>;
+  /** Exact owned bytes from a canonical rooted path; refuses files above 256 MiB. */
+  readBinaryFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   writeFile(path: string, content: string): Promise<void>;
+  writeFileChecked(input: CheckedFileWrite): Promise<CheckedFileWriteResult>;
+  deleteFileChecked(input: {
+    path: string;
+    preconditions: readonly FileWritePrecondition[];
+  }): Promise<CheckedFileWriteResult>;
   writeBinaryFile(path: string, data: Uint8Array<ArrayBuffer>): Promise<void>;
   deleteFile(path: string): Promise<void>;
   readdir(path: string): Promise<RpcDirectoryEntry[]>;
   exists(path: string): Promise<boolean>;
   appendFile(path: string, content: string): Promise<void>;
-  editFile(path: string, oldString: string, newString: string, replaceAll?: boolean): Promise<{ occurrences: number }>;
+  editFile(input: DeterministicEditFileInput): Promise<{
+    occurrences: number;
+    staleRecovered?: true;
+    diffStats: DiffStatsWithContent;
+    /** R4: `sha256:` digest of the bytes the edit committed, when the adapter can prove them. */
+    digest?: string;
+  }>;
   stat(path: string): Promise<RpcFileStat>;
 };
 
@@ -91,12 +133,16 @@ export type RpcFileStat =
       isDirectory: true;
       createdAt: string;
       modifiedAt: string;
+      /** What the composed view says about this path. */
+      provenance?: FileProvenance;
     }
   | ({
       size: number;
       isDirectory: false;
       createdAt: string;
       modifiedAt: string;
+      /** What the composed view says about this path. */
+      provenance?: FileProvenance;
     } & FileContentMetadata);
 
 /**
@@ -105,17 +151,38 @@ export type RpcFileStat =
  * @public
  */
 export type RpcRuntimeClient = {
-  getKernelResult(targetFile: string): Promise<GetKernelResultRpcResult>;
+  evaluateModel(input: EvaluateModelRpcInput, context?: RpcInvocationContext): Promise<EvaluateModelRpcResult>;
+};
+
+/** Connected runtime's model-file predicate for workbench view entry paths. @public */
+export type RpcWorkbenchClient = {
+  isModelFile(path: string): Promise<boolean>;
+};
+
+/** Shared semantic parameter client attached by a host with checked authority. @public */
+export type RpcParameterClient = {
+  getParameters(input: GetParametersRpcInput, context?: RpcInvocationContext): Promise<GetParametersRpcResult>;
+  applyParameterOperation(
+    input: ApplyParameterOperationRpcInput,
+    context?: RpcInvocationContext,
+  ): Promise<ApplyParameterOperationRpcResult>;
 };
 
 /**
- * Success/failure surface for {@link RpcGraphicsClient.exportGeometry} before
+ * Success/failure surface for {@link RpcGraphicsClient.exportModel} before
  * the RPC handler persists bytes to `.tau/artifacts/`.
  *
  * @public
  */
-export type RpcGraphicsExportGeometryResult =
-  | { success: true; files: ExportFile[] }
+export type RpcGraphicsExportModelResult =
+  | {
+      success: true;
+      exportId: string;
+      files: ExportFile[];
+      sourceRevision?: SourceRevisionOutput;
+      /** The non-fatal issues the runtime returned with the files; the handler hands the warnings to the agent. */
+      issues?: KernelIssue[];
+    }
   | {
       success: false;
       errorCode: RpcClientErrorCode;
@@ -126,16 +193,20 @@ export type RpcGraphicsExportGeometryResult =
  * Geometry export client independent of image capture.
  *
  * Every method takes an explicit `targetFile` so the agent must name the
- * geometry unit it is acting on; there is no project-level fallback.
+ * geometry unit it is acting on; there is no project-level fallback. Export
+ * options, when present, are the host's and go to the runtime export as given.
  * @public
  */
 export type RpcGraphicsClient = {
-  exportGeometry(args: Pick<ExportGeometryRpcInput, 'targetFile' | 'format'>): Promise<RpcGraphicsExportGeometryResult>;
+  exportModel(
+    args: Pick<ExportModelRpcInput, 'targetFile' | 'to' | 'options'>,
+    context?: RpcInvocationContext,
+  ): Promise<RpcGraphicsExportModelResult>;
 };
 
 /** Browser/headless image capture client independent of a mounted viewport. @public */
 export type RpcImageClient = {
-  captureImages(args: CaptureImagesRpcInput): Promise<CaptureImagesRpcResult>;
+  captureImages(args: CaptureImagesRpcInput, context?: RpcInvocationContext): Promise<CaptureImagesRpcResult>;
 };
 
 /**
@@ -146,7 +217,7 @@ export type RpcImageClient = {
  * @public
  */
 export type RpcGeoSpecClient = {
-  runTests(args: RunGeoSpecTestsRpcInput): Promise<RunGeoSpecTestsRpcResult>;
+  runTests(args: RunGeoSpecTestsRpcInput, context?: RpcInvocationContext): Promise<RunGeoSpecTestsRpcResult>;
 };
 
 /**
@@ -164,6 +235,58 @@ export type RpcSkillResolver = {
 };
 
 /**
+ * The read half of a project's revision graph (S28).
+ *
+ * Read-only on purpose: an agent sees where it is, what changed and both sides of a conflict, and every
+ * verb that *moves* anything — branch, merge, restore, discard, sync — belongs
+ * to a person (I10). The host satisfies this with the same functions the
+ * Revisions pane and `tau revisions` call, so the three cannot disagree.
+ *
+ * @public
+ */
+export type RpcRevisionsClient = {
+  log(
+    request: Readonly<{
+      branch?: string | undefined;
+      limit?: number | undefined;
+    }>,
+  ): Promise<readonly RevisionRowOutput[]>;
+  diff(from: string | undefined, to: string): Promise<readonly RevisionChangeOutput[]>;
+  describe(): Promise<
+    Readonly<{
+      branch: string | undefined;
+      revisionNumber: number | undefined;
+      revisionId: string | undefined;
+      branches: ReadonlyArray<Readonly<{ name: string; revisionNumber: number; revisionId: string }>>;
+      line: string;
+    }>
+  >;
+  /**
+   * One conflicted revision's files as text (rule 8): the side the turn's checkout does not hold is otherwise
+   * unreadable, because no tree ever holds conflict markers.
+   *
+   * @param revision - The conflicted revision; absent for the one waiting on the current branch.
+   * @returns Its files, or `undefined` when no revision is named and none is waiting.
+   */
+  conflict(revision: string | undefined): Promise<
+    | Readonly<{
+        revisionId: string;
+        labels: Readonly<{ ours: string; theirs: string }>;
+        files: ReadonlyArray<
+          Readonly<{
+            path: string;
+            chooseOne: boolean;
+            base: string | undefined;
+            ours: string | undefined;
+            theirs: string | undefined;
+          }>
+        >;
+      }>
+    | undefined
+  >;
+};
+
+/**
  * Dependencies required by RPC handlers.
  * `graphics` is optional -- headless mode omits it, and handlers
  * return an error if a graphics operation is requested without it.
@@ -176,6 +299,9 @@ export type RpcDependencies = {
   images?: RpcImageClient;
   geospec?: RpcGeoSpecClient;
   skillResolver?: RpcSkillResolver;
+  revisions?: RpcRevisionsClient;
+  parameters?: RpcParameterClient;
+  workbench?: RpcWorkbenchClient;
 };
 
 /**
@@ -187,4 +313,5 @@ export type RpcHandlerError = {
   errorCode: RpcClientErrorCode;
   message: string;
   fileMetadata?: RpcFileMetadata;
+  retryable?: true;
 };

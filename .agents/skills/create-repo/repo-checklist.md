@@ -37,16 +37,17 @@ Applicability:
 
 ## C. Nx and releases
 
-| Kind | Check                                                                                                            |
-| ---- | ---------------------------------------------------------------------------------------------------------------- |
-| R    | One root Nx project uses `nx:run-commands`; `quality` fans into every gate.                                      |
-| R    | `namedInputs` include runtime and native toolchain fingerprints.                                                 |
-| R    | Nx Release uses Version Plans, standard pre-1.0 SemVer bumps, and git-inert settings.                            |
-| R    | Version-plan checks ignore only tests, docs, and governance paths that cannot change the package.                |
-| R    | `prepare-release.mjs` validates requested versus planned version.                                                |
-| R    | Release policy is a pure module with unit tests for PR, main, manual, and malformed release commits.             |
-| R    | Repo-local `release-<slug>` skill is operator-only and says CI owns publication, refs, releases, and deployment. |
-| R    | Only `chore(release): <slug> v<version>` can request stable publication.                                         |
+| Kind | Check                                                                                                                                                                              |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R    | One root Nx project uses `nx:run-commands`; `quality` fans into every gate.                                                                                                        |
+| R    | `namedInputs` include runtime and native toolchain fingerprints.                                                                                                                   |
+| R    | Nx Release uses Version Plans, standard pre-1.0 SemVer bumps, and git-inert settings.                                                                                              |
+| R    | Version-plan checks ignore only tests, docs, and governance paths that cannot change the package.                                                                                  |
+| R    | `prepare-release.mjs` validates requested versus planned version, supports `--from-plans`, runs `quality` once without `preVersionCommand`, and drops non-human changelog authors. |
+| R    | Release policy is a pure module with unit tests for PR, main, evidence-only dispatch, and malformed release commits; the lockfile is permitted, never required.                    |
+| R    | Repo-local `release-<slug>` skill is model-selectable, offers only `status` and `prepare`, and says CI owns publication, refs, releases, and deployment.                           |
+| R    | `release-pr.yml` runs after successful `main` CI, commits as `tau-release-bot` on `release/next`, and stages only files the release policy admits.                                 |
+| R    | Only `chore(release): <slug> v<version>` can request stable publication.                                                                                                           |
 
 ## D. CI and exact-candidate testing
 
@@ -63,9 +64,13 @@ Applicability:
 | R    | Every host/consumer job downloads and tests that candidate without rebuilding it.                                             |
 | R    | Candidate and consumer jobs run the bound host setup before executing host-dependent code.                                    |
 | R    | Browser jobs prove required adapters are usable on their bound runner and headless mode.                                      |
+| R    | Same-repository pull requests publish every tested package through one locked `pkg-pr-new` invocation.                        |
+| R    | Preview versions use `0.0.0-preview-<sha>` and sibling package references resolve through pkg.pr.new URLs.                    |
+| R    | A clean post-publish consumer installs hosted root previews, verifies sibling URLs and preview versions, and packs every URL. |
+| R    | Fork PRs skip preview publication and hosted consumer checks; `ci-gate` requires both only when eligible.                     |
 | R    | Publish job has `id-token: write`, no checkout, no registry token, and is idempotent.                                         |
 | R    | Existing registry versions are byte/provenance verified rather than overwritten.                                              |
-| R    | Registry verification installs by exact version and checks package, source repo, workflow, commit, integrity, and provenance. |
+| R    | Registry verification waits with bounded backoff, installs by exact version, and binds provenance to the run, any attempt.    |
 | R    | `ci-gate` names every required job and validates expected skips; branch protection requires only it.                          |
 | R    | Compatibility-table check marks map one-to-one to CI jobs.                                                                    |
 
@@ -99,27 +104,28 @@ Applicability:
 | R    | Installed binary subpaths resolve and load.                                                          |
 | R    | Documentation code fences typecheck against public package imports.                                  |
 | R    | Declared cross-host determinism compares semantic output or exact bytes.                             |
+| R    | A clean consumer can install a root and direct native preview URL and observe changed package bytes. |
 
 ## G. Hygiene and maintenance loop
 
-| Kind | Check                                                                                                                                           |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| R    | README has badges, one-line description, persona table, install, runnable quickstart, compatibility, stability, provenance, license, and links. |
-| R    | CONTRIBUTING has numbered PR steps, Version Plans, admission gestures, test commands, and release boundaries.                                   |
-| R    | SECURITY.md is concise and names private reporting.                                                                                             |
-| R    | MAINTAINER.md owns release, registry, Vercel, and governance operations.                                                                        |
-| R    | `license` is verbatim and NOTICE covers fonts plus vendored/forked code.                                                                        |
-| R    | Issue forms disable blank issues; pull-request template requests tests, plan, compatibility, and AI disclosure.                                 |
-| R    | Root `AGENTS.md` is under 150 lines; no `CLAUDE.md` exists.                                                                                     |
-| R    | `.agents/skills` is canonical; `.claude/skills` is a symlink; `.claude/launch.json` exists.                                                     |
-| R    | Three-job `claude.yml` separates untrusted notification, approved execution, and trusted execution.                                             |
-| R    | Untrusted code checkouts use `persist-credentials: false`.                                                                                      |
-| R    | The `claude` label exists and `ANTHROPIC_API_KEY` is available through repository or organization secrets.                                      |
-| R    | Dependabot covers npm, native dependencies, and Actions with 7/14-day cooldowns.                                                                |
-| R    | Repository auto-merge is enabled and the protected `ci-gate` check is active before Dependabot auto-merge runs.                                 |
-| R    | Only grouped patch and action-digest Dependabot updates auto-merge.                                                                             |
-| R    | OSV is report-only on PRs and fail-closed on main; suppressions contain `reason` and `ignoreUntil`.                                             |
-| R    | Rust repositories run `cargo deny`; cache cleanup is scheduled.                                                                                 |
+| Kind | Check                                                                                                                                                                                                                               |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R    | README has badges, one-line description, persona table, install, runnable quickstart, compatibility, stability, provenance, license, and links.                                                                                     |
+| R    | CONTRIBUTING has numbered PR steps, Version Plans, admission gestures, test commands, and release boundaries.                                                                                                                       |
+| R    | SECURITY.md is concise and names private reporting.                                                                                                                                                                                 |
+| R    | MAINTAINER.md owns release, registry, Vercel, and governance operations.                                                                                                                                                            |
+| R    | `license` is verbatim and NOTICE covers fonts plus vendored/forked code.                                                                                                                                                            |
+| R    | Issue forms disable blank issues; pull-request template requests tests, plan, compatibility, and AI disclosure.                                                                                                                     |
+| R    | Root AGENTS is ≤8 KiB, nested bodies ≤4 KiB, chains ≤16 KiB; every boundary has an exact `@AGENTS.md` Claude import.                                                                                                                |
+| R    | Unbound skill templates are not named `SKILL.md`; `.agents/skills` is canonical; `.claude/skills` resolves to it; native root/nested discovery and autonomous selection/composition pass; preserve applicable launch configuration. |
+| R    | Three-job `claude.yml` separates untrusted notification, approved execution, and trusted execution.                                                                                                                                 |
+| R    | Untrusted code checkouts use `persist-credentials: false`.                                                                                                                                                                          |
+| R    | The `claude` label exists and `ANTHROPIC_API_KEY` is available through repository or organization secrets.                                                                                                                          |
+| R    | Dependabot covers npm, native dependencies, and Actions with 7/14-day cooldowns.                                                                                                                                                    |
+| R    | Repository auto-merge is enabled and the protected `ci-gate` check is active before Dependabot auto-merge runs.                                                                                                                     |
+| R    | Only grouped patch and action-digest Dependabot updates auto-merge.                                                                                                                                                                 |
+| R    | OSV is report-only on PRs and fail-closed on main; suppressions contain `reason` and `ignoreUntil`.                                                                                                                                 |
+| R    | Rust repositories run `cargo deny`; cache cleanup is scheduled.                                                                                                                                                                     |
 
 ## H. Documentation and attribution
 
@@ -139,6 +145,8 @@ Applicability:
 | ---- | ----------------------------------------------------------------------------------------------------- |
 | R    | Default Actions token is read-only; Actions cannot approve pull requests.                             |
 | R    | `main` ruleset requires linear history and `ci-gate`, blocks force-push, and requires zero approvals. |
+| R    | Merges are squash-only and take the pull request title (`PR_TITLE`) as the commit subject.            |
+| R    | A `release-pr` environment holds the `tau-release-bot` App credentials for `release-pr.yml`.          |
 | R    | Secret scanning, push protection, and private vulnerability reporting are enabled.                    |
 | R    | Terraform records bespoke repo settings until the fleet-module trigger is met.                        |
 | Q    | Every published package has a trusted publisher only when proven absent; each workflow is `ci.yml`.   |

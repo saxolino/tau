@@ -91,6 +91,41 @@ const expectManifest = (
 };
 
 describe('project creation locations', () => {
+  test('restores the Home draft across reload and clears it before navigation after create', async ({ skip }) => {
+    skip(server.browser !== 'chromium', 'File System Access workflows run in Chromium.');
+    await installProjectCreationFixture({
+      pickerFixture: 'home-composer-record',
+      projectName: 'Composer Record Project',
+    });
+    await openHomepage();
+    await selectReplicad();
+    const editor = editorFor();
+    await target.fill(editor, 'Persist this Home composer draft');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 300);
+    });
+
+    await target.reload();
+    await target.expectVisible(editorFor(), 60_000);
+    expect(await target.textContent(editorFor())).toBe('Persist this Home composer draft');
+    const eventBaseline = await target.events();
+    await target.press(editorFor(), 'Enter');
+    await target.expectUrl(/\/w\/[^/]+\/[^/]+$/u, 60_000);
+    await target.expectVisible(selectors.getByRole('button', { name: 'Toggle Workbench lane' }).first(), 60_000);
+    const events = await target.events();
+    const projectProviderErrors = [
+      ...events.pageErrors.slice(eventBaseline.pageErrors.length),
+      ...events.consoleMessages.slice(eventBaseline.consoleMessages.length).map(({ text }) => text),
+    ].filter((message) => message.includes('useProject must be used within a ProjectProvider'));
+    expect(projectProviderErrors).toEqual([]);
+
+    await openHomepage();
+    expect(await target.textContent(editorFor())).toBe('');
+    const state = await readProjectStorageState();
+    expect(state.configs).toHaveLength(1);
+    expect(JSON.stringify(state)).not.toMatch(/homepage_main_chat_resource|chat_homepage_main/u);
+  });
+
   test('uses Home on first-use homepage creation and writes Home OPFS bytes', async ({ skip }) => {
     skip(server.browser !== 'chromium', 'File System Access workflows run in Chromium.');
     await installProjectCreationFixture({
@@ -118,7 +153,7 @@ describe('project creation locations', () => {
     const workspace = await seedWorkspace(fixture);
     await openHomepage();
     await target.click(selectors.getByRole('button', { name: /^Create in Home/u }));
-    await target.expectCount(selectors.getByPlaceholder('Search locations...'), 0);
+    await target.expectCount(selectors.getByPlaceholder('Search locations…'), 0);
     const homeOption = selectors.getByRole('option', { name: 'Home in this browser' });
     const workspaceOption = selectors.getByRole('option', { name: `${workspace.name} on your disk` });
     await target.expectVisible(homeOption.getByLabelText('Selected location'));
@@ -213,7 +248,7 @@ describe('project creation locations', () => {
     await target.click(selectors.getByRole('button', { name: 'Create in Home' }));
     const locationDrawer = selectors.getByRole('dialog', { name: 'Select a project location' });
     await target.expectVisible(locationDrawer);
-    await target.expectCount(locationDrawer.getByPlaceholder('Search locations...'), 0);
+    await target.expectCount(locationDrawer.getByPlaceholder('Search locations…'), 0);
     await target.click(locationDrawer.getByRole('option', { name: `${workspace.name} on your disk` }));
     await target.expectCount(locationDrawer, 0);
 
@@ -274,7 +309,7 @@ describe('project creation locations', () => {
     expect(await readOpfsTree(fixture)).toEqual(beforeTree);
   });
 
-  test('mobile Location selection closes options, restores focus, and creates on disk', async ({ skip }) => {
+  test('mobile Location selection restores focus to the editor and creates on disk', async ({ skip }) => {
     skip(server.browser !== 'chromium', 'File System Access workflows run in Chromium.');
     const fixture = 'mobile-disk-workspace';
     await target.setViewport({ width: 390, height: 844 });
@@ -284,16 +319,14 @@ describe('project creation locations', () => {
     await selectReplicad();
     const editor = editorFor();
     await target.fill(editor, 'Create this from mobile options');
-    await target.click(selectors.getByRole('button', { name: 'Open chat options' }));
-    const chatOptions = selectors.getByRole('dialog', { name: 'Chat Options' });
-    await target.expectVisible(chatOptions);
+    // The phone composer is the same bar: the location control sits in it.
     await target.click(selectors.getByRole('button', { name: 'Create in Home' }));
     const locationDrawer = selectors.getByRole('dialog', { name: 'Select a project location' });
     await target.expectVisible(locationDrawer);
-    await target.expectCount(locationDrawer.getByPlaceholder('Search locations...'), 0);
+    await target.expectCount(locationDrawer.getByPlaceholder('Search locations…'), 0);
     await target.press(locationDrawer.getByRole('option', { name: 'Home in this browser' }), 'Escape');
     await target.expectCount(locationDrawer, 0);
-    await target.expectVisible(chatOptions);
+    await target.expectFocused(editor);
     expect(await target.textContent(editor)).toBe('Create this from mobile options');
 
     await target.click(selectors.getByRole('button', { name: 'Create in Home' }));
@@ -303,7 +336,6 @@ describe('project creation locations', () => {
         .getByRole('option', { name: `${workspace.name} on your disk` }),
     );
 
-    await target.expectCount(chatOptions, 0);
     await target.expectFocused(editor);
     expect(await target.textContent(editor)).toBe('Create this from mobile options');
     await target.press(editor, 'Enter');

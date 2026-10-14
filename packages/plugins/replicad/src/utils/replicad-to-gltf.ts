@@ -2,6 +2,7 @@ import { Primitive } from '@gltf-transform/core';
 import { KHRMaterialsUnlit } from '@gltf-transform/extensions';
 import { cadEdgeOverlayMaterialDefaults, cadMaterialDefaults, tauCadTopologyExtension } from '@taucad/runtime/types';
 import {
+  compactTriangleIndices,
   transformNormalArray,
   transformVertexArray,
   srgbHexToLinearTuple,
@@ -9,33 +10,37 @@ import {
   writeGltfJson,
   resolveShapeName,
   uniqueShapeName,
-} from '@taucad/geometry-core';
-import type { GeometryOutputTransformOptions, GlbInput, GlbNode, GlbPrimitive } from '@taucad/geometry-core';
-import {
   formatComponentId,
   formatNamedComponentId,
   formatNodeSelector,
   formatPrimitiveSelector,
-} from '#utils/component-names.utils.js';
+  uniqueComponentId,
+  toMechanismKernelIssue,
+} from '@taucad/geometry-core';
+import type {
+  GeometryOutputTransformOptions,
+  GlbInput,
+  GlbResources,
+  GlbMaterial,
+  GlbNode,
+  GlbPrimitive,
+  TauCadTopologyComponent,
+  TauCadTopologyPayload,
+} from '@taucad/geometry-core';
+import { resolveMechanismComponents, transformMechanism } from '@taucad/kinematics';
+import type { Mechanism, TransformMechanismInput } from '@taucad/kinematics';
 import { normalizeColor } from '#utils/normalize-color.js';
 
 import type { GeometryReplicad } from '#replicad.types.js';
 import type { RuntimeLogger } from '@taucad/runtime/kernel';
 
-import type { JSONObject } from '@taucad/runtime/types';
+import type { JSONObject, KernelIssue } from '@taucad/runtime/types';
 
-type ReplicadTopologyComponent = {
-  id: string;
-  name: string;
+type ReplicadTopologyComponent = TauCadTopologyComponent & {
   kind: 'part';
-  selector: string;
   nodeIndex: number;
   faceGroups: GeometryReplicad['faces']['faceGroups'];
   edgeGroups: GeometryReplicad['edges']['edgeGroups'];
-  capabilities: {
-    exports: Array<{ fidelity: 'mesh' | 'brep'; formats: string[]; available: boolean }>;
-    hasPreciseTopology: boolean;
-  };
 };
 
 type ReplicadNodeBuildResult = {
@@ -43,17 +48,66 @@ type ReplicadNodeBuildResult = {
   component: Omit<ReplicadTopologyComponent, 'nodeIndex'>;
 };
 
-type ReplicadGltfOptions = GeometryOutputTransformOptions & {
-  geometries: GeometryReplicad[];
-  format?: 'glb' | 'gltf';
-  includeTauTopology?: boolean;
-  logger?: RuntimeLogger;
+type ReplicadGltfOptions = GeometryOutputTransformOptions &
+  GlbResources & {
+    geometries: GeometryReplicad[];
+    format?: 'glb' | 'gltf';
+    includeTauTopology?: boolean;
+    logger?: RuntimeLogger;
+    /** The entry module's `mechanism` export value, written to the topology payload in the output frame. */
+    mechanism?: unknown;
+    /** Receives mechanism diagnostics; the geometry is then written without a mechanism. */
+    onMechanismIssues?: (issues: KernelIssue[]) => void;
+  };
+
+type ConvertMechanismOptions = {
+  value: unknown;
+  componentIds: ReadonlyMap<string, string>;
+  transformOptions: GeometryOutputTransformOptions;
+  onIssues: ((issues: KernelIssue[]) => void) | undefined;
 };
+
+// ponytail: the frame change `createVertexTransform` applies to every vertex, (x, y, z) → (x, z, −y) from
+// Z-up to Y-up, as the column-major matrix `transformMechanism` takes; z-up output keeps the source frame.
+const zUpToYup: NonNullable<TransformMechanismInput['matrix']> = [1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1];
+
+/**
+ * Resolve the author's mechanism source against the component ids this glTF assigns, and express
+ * it in the same frame and length unit as the vertices.
+ *
+ * @param options - Authored value, shape name to component id map, and the vertex transform.
+ * @returns The wire mechanism, or undefined after reporting its issues.
+ */
+function convertMechanism({
+  value,
+  componentIds,
+  transformOptions,
+  onIssues,
+}: ConvertMechanismOptions): Mechanism | undefined {
+  const resolved = resolveMechanismComponents({ source: value, componentIds: Object.fromEntries(componentIds) });
+  const outcome =
+    resolved.status === 'resolved'
+      ? transformMechanism({
+          mechanism: resolved.mechanism,
+          units: {
+            length: transformOptions.unit?.length === 'millimeter' ? 'mm' : 'm',
+            angle: resolved.mechanism.units.angle,
+          },
+          ...(transformOptions.coordinateSystem === 'z-up' ? {} : { matrix: zUpToYup }),
+        })
+      : resolved;
+  if (outcome.status === 'invalid') {
+    onIssues?.(outcome.issues.map((issue) => toMechanismKernelIssue({ issue, kernelId: 'replicad' })));
+    return undefined;
+  }
+  return outcome.mechanism;
+}
 
 type BuildNodeFromReplicadGeometryOptions = {
   geometry: GeometryReplicad;
   nodeIndex: number;
   usedNames: Map<string, number>;
+  usedIds: Map<string, number>;
   transformOptions: GeometryOutputTransformOptions;
   includeTauTopology: boolean;
 };
@@ -68,6 +122,7 @@ function buildNodeFromReplicadGeometry({
   geometry,
   nodeIndex,
   usedNames,
+  usedIds,
   transformOptions,
   includeTauTopology,
 }: BuildNodeFromReplicadGeometryOptions): ReplicadNodeBuildResult | undefined {
@@ -79,13 +134,35 @@ function buildNodeFromReplicadGeometry({
 
   const resolvedName = resolveShapeName({ index: nodeIndex, name: geometry.name, source: 'generated' });
   const nodeName = uniqueShapeName(resolvedName, usedNames);
-  const componentId = formatNamedComponentId(nodeName, nodeIndex) ?? formatComponentId(nodeIndex);
+  const componentId = uniqueComponentId(
+    formatNamedComponentId(nodeName, nodeIndex) ?? formatComponentId(nodeIndex),
+    usedIds,
+  );
   const selector = formatNodeSelector(nodeIndex);
+  const faceOccurrences = faces.faceGroups.map((group, faceId) => ({ ...group, faceId }));
+  const compactedFaces =
+    faces.vertices.length > 0 && faces.triangles.length > 0
+      ? compactTriangleIndices({
+          positions: faces.vertices,
+          indices: faces.triangles,
+          groups: faceOccurrences,
+        })
+      : undefined;
+  const faceGroups = compactedFaces?.groups ?? [];
+  const edgeGroups = edges.edgeGroups.map((group, edgeId) => ({ ...group, edgeId }));
 
-  if (faces.vertices.length > 0 && faces.triangles.length > 0) {
+  if (compactedFaces && compactedFaces.indices.length > 0) {
     const positions = transformVertexArray(faces.vertices, transformOptions);
     const normals = transformNormalArray(faces.normals, transformOptions);
-    const indices = new Uint32Array(faces.triangles);
+    const tangents = faces.tangents ? Float32Array.from(faces.tangents) : undefined;
+    if (tangents && transformOptions.coordinateSystem !== 'z-up') {
+      for (let index = 0; index < tangents.length; index += 4) {
+        const y = tangents[index + 1]!;
+        tangents[index + 1] = tangents[index + 2]!;
+        tangents[index + 2] = -y;
+      }
+    }
+    const { indices } = compactedFaces;
 
     let baseColor: [number, number, number, number] = [
       cadMaterialDefaults.baseColorFactor[0],
@@ -104,55 +181,82 @@ function buildNodeFromReplicadGeometry({
       }
     }
 
+    let material: GlbMaterial | undefined = geometry.material;
+    const volume = material?.extensions?.KHR_materials_volume;
+    if (material && volume && transformOptions.unit?.length === 'millimeter') {
+      material = {
+        ...material,
+        extensions: {
+          ...material.extensions,
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- Standard glTF extension key.
+          KHR_materials_volume: {
+            ...volume,
+            ...(volume.thicknessFactor === undefined ? {} : { thicknessFactor: volume.thicknessFactor * 1000 }),
+            ...(volume.attenuationDistance === undefined
+              ? {}
+              : { attenuationDistance: volume.attenuationDistance * 1000 }),
+          },
+        },
+      };
+    }
+
     primitives.push({
       mode: Primitive.Mode['TRIANGLES']!,
       positions,
       normals,
       indices,
+      ...(faces.texCoords ? { texCoords: [new Float32Array(faces.texCoords)] } : {}),
+      ...(tangents ? { tangents } : {}),
       ...(includeTauTopology
         ? {
             extras: {
               tauComponentId: componentId,
               tauComponentKind: 'body',
               tauComponentSelector: formatPrimitiveSelector(nodeIndex, 'surface'),
-              faceGroups: geometry.faces.faceGroups,
+              faceGroups,
+              tauFaceGroupUnit: 'indices-v1',
             },
           }
         : {}),
-      material: {
-        baseColorFactor: baseColor,
-        metallicFactor: geometry.metalness ?? cadMaterialDefaults.metalnessFactor,
-        roughnessFactor: geometry.roughness ?? cadMaterialDefaults.roughnessFactor,
+      material: material ?? {
         doubleSided: true,
-        alphaMode: baseColor[3] < 1 ? 'BLEND' : 'OPAQUE',
+        pbrMetallicRoughness: {
+          baseColorFactor: baseColor,
+          metallicFactor: geometry.metalness ?? cadMaterialDefaults.metalnessFactor,
+          ...((geometry.roughness ?? cadMaterialDefaults.roughnessFactor) === 1
+            ? {}
+            : { roughnessFactor: geometry.roughness ?? cadMaterialDefaults.roughnessFactor }),
+        },
+        ...(baseColor[3] < 1 ? { alphaMode: 'BLEND' } : {}),
       },
     });
   }
 
   if (edges.lines.length > 0) {
     const linePositions = transformVertexArray(edges.lines, transformOptions);
-    const lineIndices = new Uint32Array(linePositions.length / 3);
-    for (let index = 0; index < lineIndices.length; index++) {
-      lineIndices[index] = index;
-    }
 
     primitives.push({
+      /* No index buffer: the edge overlay is already a de-indexed segment soup, and glTF draws
+       * arrays when `indices` is absent. */
       mode: Primitive.Mode['LINES']!,
       positions: linePositions,
-      indices: lineIndices,
       ...(includeTauTopology
         ? {
             extras: {
               tauComponentId: componentId,
               tauComponentKind: 'line',
               tauComponentSelector: formatPrimitiveSelector(nodeIndex, 'edges'),
-              edgeGroups: geometry.edges.edgeGroups,
+              edgeGroups,
+              tauEdgeGroupUnit: 'xyz-scalars-v1',
             },
           }
         : {}),
       material: {
-        ...cadEdgeOverlayMaterialDefaults,
-        baseColorFactor: [...cadEdgeOverlayMaterialDefaults.baseColorFactor],
+        doubleSided: cadEdgeOverlayMaterialDefaults.doubleSided,
+        pbrMetallicRoughness: {
+          baseColorFactor: [...cadEdgeOverlayMaterialDefaults.baseColorFactor],
+          metallicFactor: cadEdgeOverlayMaterialDefaults.metallicFactor,
+        },
         extensions: {
           [KHRMaterialsUnlit.EXTENSION_NAME]: {},
         },
@@ -183,8 +287,9 @@ function buildNodeFromReplicadGeometry({
       name: nodeName,
       kind: 'part',
       selector,
-      faceGroups: geometry.faces.faceGroups,
-      edgeGroups: geometry.edges.edgeGroups,
+      faceGroups,
+      edgeGroups,
+      sourceRefs: { kernelId: 'replicad', faceGroupUnit: 'indices-v1', edgeGroupUnit: 'xyz-scalars-v1' },
       capabilities: {
         exports: [
           { fidelity: 'mesh', formats: ['glb', 'stl'], available: true },
@@ -225,12 +330,15 @@ export function convertReplicadGeometriesToGltf(options: ReplicadGltfOptions): U
   const nodes: GlbNode[] = [];
   const topologyComponents: ReplicadTopologyComponent[] = [];
   const usedNames = new Map<string, number>();
+  const usedIds = new Map<string, number>();
+  const componentIds = new Map<string, string>();
 
   for (const geometry of geometries) {
     const result = buildNodeFromReplicadGeometry({
       geometry,
       nodeIndex: nodes.length,
       usedNames,
+      usedIds,
       transformOptions,
       includeTauTopology,
     });
@@ -239,13 +347,24 @@ export function convertReplicadGeometriesToGltf(options: ReplicadGltfOptions): U
       nodes.push(result.node);
       if (includeTauTopology) {
         topologyComponents.push({ ...result.component, nodeIndex });
+        componentIds.set(result.component.name, result.component.id);
       }
     }
   }
 
-  const topologyPayload = {
+  const mechanism =
+    topologyComponents.length > 0 && options.mechanism !== undefined
+      ? convertMechanism({
+          value: options.mechanism,
+          componentIds,
+          transformOptions,
+          onIssues: options.onMechanismIssues,
+        })
+      : undefined;
+  const topologyPayload: TauCadTopologyPayload = {
     schemaVersion: 1,
     components: topologyComponents,
+    ...(mechanism ? { mechanism } : {}),
   };
   const topologyData = new TextEncoder().encode(JSON.stringify(topologyPayload));
   const hasLinePrimitives = nodes.some((node) =>
@@ -257,6 +376,9 @@ export function convertReplicadGeometriesToGltf(options: ReplicadGltfOptions): U
   ];
   const input: GlbInput = {
     nodes,
+    images: options.images,
+    textures: options.textures,
+    samplers: options.samplers,
     ...(extensionsUsed.length > 0 ? { extensionsUsed } : {}),
     ...(topologyComponents.length > 0
       ? {

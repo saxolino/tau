@@ -1,7 +1,7 @@
 import type { DeleteFileRpcInput, DeleteFileRpcResult } from '#schemas/rpc.schema.js';
 import type { RpcFileSystem } from '#rpc/rpc-dependencies.js';
 import { toRpcError } from '#rpc/rpc-error.js';
-import { resolveRpcProjectPath } from '#rpc/rpc-project-path.js';
+import { assertRootedPath } from '@taucad/utils/path';
 
 /** @public */
 export async function handleDeleteFile(
@@ -9,7 +9,7 @@ export async function handleDeleteFile(
   fileSystem: RpcFileSystem,
 ): Promise<DeleteFileRpcResult> {
   try {
-    const targetFile = resolveRpcProjectPath(input.targetFile);
+    const targetFile = assertRootedPath(input.targetFile);
     // Capture pre-deletion content so restore can reconstruct the file (R7).
     // Reading here keeps the delete a single RPC round-trip (no extra read_file
     // call). Missing/binary/unreadable files yield no diffStats; the delete
@@ -26,6 +26,8 @@ export async function handleDeleteFile(
     return {
       success: true,
       message: `File deleted: ${targetFile}`,
+      // R4: a delete produces absence, recorded with the same sentinel a source closure uses.
+      revision: { path: targetFile, digest: 'missing' },
       diffStats:
         originalContent === undefined
           ? undefined

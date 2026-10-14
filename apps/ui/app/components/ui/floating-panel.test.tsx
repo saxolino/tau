@@ -4,21 +4,23 @@ import { createPortal } from 'react-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   FloatingPanel,
+  FloatingPanelClose,
   FloatingPanelContentHeader,
   FloatingPanelContentHeaderActions,
   FloatingPanelMenuButton,
   FloatingPanelContentTitle,
 } from '#components/ui/floating-panel.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
 const mockUseIsMobile = vi.fn(() => false);
-vi.mock('#hooks/use-mobile.js', () => ({
+vi.mock('@taucad/ui/hooks/use-mobile', () => ({
   useIsMobile: () => mockUseIsMobile(),
 }));
 
 const mockUseIsInsideDrawer = vi.fn(() => false);
-vi.mock('#components/ui/drawer.js', () => ({
+vi.mock('@taucad/ui/components/drawer', () => ({
   useIsInsideDrawer: () => mockUseIsInsideDrawer(),
   DrawerHandle: ({ children, ...props }: React.ComponentProps<'div'>) => (
     <div data-testid='drawer-handle' {...props}>
@@ -49,10 +51,92 @@ function setMobileDrawerContext(): void {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+describe('FloatingPanelContentHeader', () => {
+  it('matches the desktop Dockview tab-strip height', () => {
+    renderInPanel(<FloatingPanelContentHeader>Title</FloatingPanelContentHeader>);
+
+    expect(screen.getByText('Title')).toHaveClass('h-9');
+  });
+});
+
+describe('FloatingPanelClose', () => {
+  beforeEach(() => {
+    mockUseIsMobile.mockReset().mockReturnValue(false);
+    mockUseIsInsideDrawer.mockReset().mockReturnValue(false);
+  });
+
+  it('uses the same responsive rounding as other header buttons', () => {
+    renderInPanel(
+      <TooltipProvider>
+        <FloatingPanelClose icon={<span />} tooltipContent={() => 'Close'} />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Close panel' })).toHaveClass('max-md:rounded-md');
+    expect(screen.getByRole('button', { name: 'Close panel' })).not.toHaveClass('max-md:rounded-full');
+  });
+
+  // `DrawerClose` is Radix `Dialog.Close`; outside a drawer it throws "`DialogClose` must be used within `Dialog`".
+  it('should not wrap the button in DrawerClose on mobile outside a drawer', () => {
+    mockUseIsMobile.mockReturnValue(true);
+    mockUseIsInsideDrawer.mockReturnValue(false);
+
+    renderInPanel(
+      <TooltipProvider>
+        <FloatingPanelClose icon={<span />} tooltipContent={() => 'Close'} />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Close panel' })).toBeInTheDocument();
+    expect(screen.queryByTestId('drawer-close')).not.toBeInTheDocument();
+  });
+
+  it('should wrap the button in DrawerClose on mobile inside a drawer', () => {
+    setMobileDrawerContext();
+
+    renderInPanel(
+      <TooltipProvider>
+        <FloatingPanelClose icon={<span />} tooltipContent={() => 'Close'} />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByTestId('drawer-close')).toContainElement(screen.getByRole('button', { name: 'Close panel' }));
+  });
+});
+
 describe('FloatingPanelContentHeaderActions', () => {
   beforeEach(() => {
     mockUseIsMobile.mockReset().mockReturnValue(false);
     mockUseIsInsideDrawer.mockReset().mockReturnValue(false);
+  });
+
+  describe('desktop reveal', () => {
+    it('should stay visible for a focused action and finish the name fade under it', () => {
+      renderInPanel(
+        <FloatingPanelContentHeader>
+          <FloatingPanelContentTitle>Title</FloatingPanelContentTitle>
+          <FloatingPanelContentHeaderActions>
+            <FloatingPanelMenuButton aria-label='Test action'>Action</FloatingPanelMenuButton>
+          </FloatingPanelContentHeaderActions>
+        </FloatingPanelContentHeader>,
+      );
+
+      const slot = screen
+        .getByRole('button', { name: 'Test action' })
+        .closest('[data-slot=floating-panel-content-header-actions]');
+      // Hidden at rest on md+, revealed by pane hover — and by keyboard focus, so a tabbed-to
+      // action is never an invisible focus ring. The slot also carries the fade scrim so a
+      // `fade-label` beside it dissolves into the header rather than stopping at a glyph.
+      expect(slot?.parentElement).toHaveClass('fade-row', '[--fade-scrim-into:var(--sidebar-background)]');
+      expect(slot).toHaveClass(
+        'md:opacity-0',
+        'group-hover/floating-panel:opacity-100',
+        'md:focus-within:opacity-100',
+        'fade-action',
+        'relative',
+        'bg-(--fade-scrim-into)',
+      );
+    });
   });
 
   describe('mobile drawer context', () => {

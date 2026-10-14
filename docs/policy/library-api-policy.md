@@ -1,9 +1,9 @@
 ---
 title: 'Library API Policy'
-description: 'Design rules for world-class JavaScript/TypeScript library APIs: factories, defineX, flat options, max 3 params, naming, subpath exports, events, plugins, lazy init, escape hatches.'
+description: 'Design rules for world-class JavaScript/TypeScript library APIs: factories, defineX, named operation inputs, max 3 params, naming, subpath exports, events, plugins, and lazy init.'
 status: active
 created: '2026-02-23'
-updated: '2026-08-24'
+updated: '2026-10-12'
 related:
   - docs/policy/api-evolution-policy.md
   - docs/policy/resource-cleanup-policy.md
@@ -23,6 +23,14 @@ Consistent API design reduces cognitive load for consumers and plugin authors. T
 
 For versioning, stability tiers, and breaking change management, see [Version Policy](version-policy.md). For release mechanics, see [Release Policy](release-policy.md). For resource cleanup conventions (`Disposable`, `DisposableStore`, semantic cleanup names), see [Resource Cleanup Policy](resource-cleanup-policy.md). For API evolution, stability annotations, and advanced patterns, see [API Evolution Policy](api-evolution-policy.md).
 
+## 0. Design the API Before the Implementation
+
+A change to what a package exports, to a `defineX` contract or hook, to an operation input or outcome, to an error code, to a persisted or wire-visible name, or to an agent tool's name, schema or description starts as an **API design guide**, produced with the [`create-api`](../../.agents/skills/create-api/SKILL.md) workflow and its [TypeScript child](../../.agents/skills/create-ts-api/SKILL.md) and approved by the operator before implementation. The guide shows every audience's call site (consumer, plugin author, host, agent) as sketches that compile against Tau's real types, scores at least two options against the skill's review rubric, designs the failures, and lists the open questions. A blueprint work package that adds or reshapes an export is gated on its approved guide.
+
+Internal refactors with no exported or agent-visible change are exempt. A rename caught in review, or a correction the policy already decides (a fourth positional parameter becoming a named input), needs no guide; a new concept does.
+
+**Why**: The public surface is the part that is expensive to change; everything behind it is cheap. Reviewing prose about an API misses what a call site shows at a glance, and a sketch that compiles cannot describe a type that does not exist.
+
 ## 1. Factory Functions Over Classes
 
 Use `createX()` factory functions for consumer-facing instances. Keep class internals hidden behind the returned interface.
@@ -39,7 +47,9 @@ const client = new RuntimeWorkerClient(worker, onLog); // leaks implementation
 
 ## 2. Define Functions for Plugin Authors
 
-Use `defineX()` functions for plugin implementation contracts. For runtime capabilities, `defineKernel`, `defineMiddleware`, `defineBundler`, and `defineTranscoder` are the only public authoring primitives: each returns the callable plugin factory directly, and each factory call returns plain serializable metadata while carrying executable implementation through an internal non-enumerable slot owned by the worker or host runtime.
+Use `defineX()` functions for plugin implementation contracts. Runtime capability authoring uses `defineKernel`, `defineMiddleware`, `defineBundler`, `defineTranscoder`, `defineJobProvider`, and `defineMachine`: each returns the callable capability factory directly, and each factory call returns plain serializable metadata while carrying executable implementation through an internal non-enumerable slot owned by the worker or host runtime. Jobs and machines belong to host composition, not the CAD worker protocol. Extend the existing toolkit ABI explicitly when adding roles; never create an unversioned parallel plugin family.
+
+`defineConfiguration` is a pure schema authoring/admission utility, not another executable capability role or a configuration client. Keep it in runtime's configuration module and focused subpaths. Job configuration is owned by its job definition; boot configuration and secrets stay host-local. A toolkit may provide several schema-bearing job kinds without introducing a generic `invoke` interface or redundant solver authoring primitive.
 
 ```typescript
 export const myKernel = defineKernel({
@@ -47,8 +57,12 @@ export const myKernel = defineKernel({
   extensions: ['mycad'],
   name: 'MyKernel',
   version: '1.0.0',
-  async initialize(options, runtime) { ... },
-  async createGeometry(input, runtime, context) { ... },
+  views: {},
+  exports: {},
+  async initialize(options, services) { ... },
+  async resolve(input, services, context) { ... },
+  async describe(input, services, context) { ... },
+  async evaluate(input, services, context) { ... },
 });
 ```
 
@@ -92,6 +106,41 @@ render({ source, parameters, renderOptions });
 render(source, parameters, renderOptions);
 ```
 
+### Evolving public operations use named input objects
+
+Use a **named, exported, readonly object for evolving operation data**. I/O or a process/provider/plugin boundary makes cancellation, identity and preconditions important; it does not, by itself, require every argument to share one object. A stable subject or route discriminator may precede the named request when it improves call-site clarity or dependent inference, as in `export(format, input)`. Distinct framework-owned `runtime` or provider-owned `context` parameters may follow under the rules below. When the request's only current field is `signal`, keep it inside that request: an `AbortSignal` must not become the sole positional parameter.
+
+| Semantic shape                                | Signature                            | Reason                                                             |
+| --------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
+| Same-owner operation fields and controls      | `submit(input)`, `connect(input)`    | Identity, configuration and preconditions evolve together          |
+| Stable subject/route plus evolving request    | `export(format, input)`              | The route discriminates inferred options; controls stay extensible |
+| Operation, framework services, provider state | `evaluate(input, services, context)` | Three distinct ownership boundaries                                |
+| Scalar semantic construction                  | `quantity('length')`                 | No request lifecycle or unrelated control fields                   |
+| Standard event/lifecycle convention           | `on(event, handler)`, `close()`      | Preserve familiar stable contracts                                 |
+
+Do not migrate a signature merely to reduce its arity. Verify inference, ownership and actual callers; a wire envelope can differ from the ergonomic local call. New job/machine operations with several identities and preconditions normally use one named request. Do not pre-add unused fields.
+
+```typescript
+export type MachineSnapshotInput = {
+  readonly signal: AbortSignal;
+};
+
+// CORRECT: future freshness, consistency, or tracing controls can be added
+getSnapshot(input: MachineSnapshotInput): Promise<MachineSnapshot>;
+
+// INCORRECT: the next operation field requires a breaking signature change
+getSnapshot(signal: AbortSignal): Promise<MachineSnapshot>;
+
+// INCORRECT: technically extensible, but the public contract has no reusable name
+getSnapshot(input: { readonly signal: AbortSignal }): Promise<MachineSnapshot>;
+```
+
+Add future fields to the same operation object only when they share that operation's ownership. Provider-owned option keyspaces remain nested under a named property as required by §21; do not flatten them beside runtime-owned fields.
+
+This rule does not wrap conventional scalar utilities, standard callback/event shapes such as `on(event, handler)`, or zero-input lifecycle methods such as `close()` and `dispose()`. Those signatures are already stable conventions rather than evolving operation envelopes. The subject-plus-request form above is also valid for I/O operations; it still has one extensible operation-data object.
+
+**Why**: A named object lets an operation acquire cancellation, freshness, pagination, request identity, tracing, or other same-concern controls without a breaking positional change. Naming the type also gives documentation, tests, transports, and adapters one contract to reference instead of repeating anonymous object shapes.
+
 **2 params (primary + config)** -- When there is one clear "subject" and a bag of optional configuration. The first param answers "what", the second answers "how".
 
 ```typescript
@@ -104,22 +153,22 @@ on(event, handler)
 
 ```typescript
 // CORRECT: each param is a different architectural layer
-createGeometry(input, runtime, context)
+evaluate(input, services, context)
 //              ^       ^        ^
 //              |       |        └─ kernel state ("mine")
 //              |       └────────── framework services ("theirs")
 //              └────────────────── operation data ("what")
 
 // CORRECT: standard middleware/interceptor pattern
-wrapCreateGeometry(input, handler, runtime)
+wrapEvaluate(input, handler, services)
 //                  ^       ^        ^
 //                  |       |        └─ middleware context
 //                  |       └────────── next-in-chain function
 //                  └────────────────── operation data
 
 // INCORRECT: all three are the same concern (operation input data)
-createGeometry(file, parameters, tessellation?)
-// Should be: createGeometry({ file, parameters, tessellation? })
+evaluate(file, parameters, options?)
+// Should be: evaluate({ entryPath: file, parameters, options })
 ```
 
 **4+ params -- Never.** Refactor to an object pattern.
@@ -132,29 +181,29 @@ Three signals that indicate a parameter design violation:
 
 ```typescript
 // INCORRECT: developer must write _runtime, _ctx just to reach nativeHandle
-async exportGeometry({ format, tessellation }, _runtime, _ctx, nativeHandle) {
-  // Only uses format, tessellation, and nativeHandle
+async export({ exportId, options }, _services, _ctx, handle) {
+  // Only uses the selected export, options, and handle
 
-// CORRECT: nativeHandle is in the input object, no placeholders needed
-async exportGeometry({ format, tessellation, nativeHandle }, _runtime, _ctx) {
+// CORRECT: handle is in the input object, no extra positional argument
+async export({ exportId, options, handle }, _services, _ctx) {
   // Everything the developer needs is in the first param
 ```
 
-**2. Same-concern params.** If all parameters answer the same question ("what should this operation do?"), they belong in one object regardless of count. Three "input data" params is worse than one input object -- even though it's within max-3.
+**2. Same-concern params.** Group peer operation-data fields in one object regardless of count. A stable subject or route discriminator is the explicit exception above, not permission to split arbitrary data across positions. Three "input data" params is worse than one input object -- even though it's within max-3.
 
 ```typescript
 // INCORRECT: all three are operation input data
-createGeometry(file, parameters, tessellation?)
+evaluate(file, parameters, options?)
 
 // CORRECT: single input object
-createGeometry({ file, parameters, tessellation? })
+evaluate({ entryPath: file, parameters, options })
 ```
 
 **3. Inconsistent destructuring.** If you destructure the first param but pass others through as-is at the same conceptual level, the grouping is wrong. When params at the same level are split across positions, they should be merged.
 
 ### Consistency principle
 
-Within a contract interface (`KernelDefinition`, `BundlerDefinition`, middleware hooks), every method must follow the same positional pattern. A developer who learns `createGeometry(input, runtime, context)` should be able to predict the shape of `getParameters(input, runtime, context)` without reading docs. This consistency builds muscle memory and reduces cognitive load across all Tau packages.
+Within a contract interface (`KernelDefinition`, `BundlerDefinition`, middleware hooks), every operation follows its declared positional pattern. A developer who learns `evaluate(input, services, context)` can predict `describe(input, services, context)`; middleware follows `(input, next, services)`. This consistency builds muscle memory and preserves each argument's ownership.
 
 ### Rationale: why (input, runtime, context) is 3 params, not 2
 
@@ -163,7 +212,7 @@ The `context` and `runtime` parameters represent different ownership boundaries:
 - `**runtime`\*\* is "theirs" -- framework-provided services (filesystem, logger, tracer, bundler). The kernel author consumes these but doesn't own or create them.
 - `**context**` is "mine" -- the kernel's own state, created during `initialize` and threaded through every subsequent call. The kernel author owns and mutates this.
 
-Merging them into a single object would conflate ownership, require making `KernelRuntime` generic over every kernel's context type, and remove the visual signal at the call site that distinguishes framework services from kernel state. The 3-param pattern is also consistent with the middleware `(input, handler, runtime)` pattern -- a standard composition model used by Express, Koa, and gRPC interceptors.
+Merging them into a single object would conflate ownership, require making `KernelServices` generic over every kernel's context type, and remove the visual signal at the call site that distinguishes framework services from kernel state. The 3-param pattern is also consistent with the middleware `(input, next, services)` pattern -- a standard composition model used by Express, Koa, and gRPC interceptors.
 
 **Why**: Parameter conventions are enforced by `max-params: 3` in ESLint. The same-concern smell tests require semantic understanding and are enforced through code review and agentic documentation.
 
@@ -245,7 +294,9 @@ Each naming prefix signals a specific role:
 
 ### Callback and hook naming
 
-Always use the `on*` prefix for callbacks and framework hooks. Never use `*Callback` suffixes or bare verbs.
+Use the `on*` prefix for callbacks and framework lifecycle hooks. Never use `*Callback` suffixes.
+
+An operation hook declared by a plugin contract is named for the action every implementation performs. The runtime kernel contract uses `resolve`, `describe`, `evaluate`, `render`, and `export`, including non-geometric kernels. Sibling middleware uses `wrapDescribe`, `wrapEvaluate`, `wrapRender`, and `wrapExport`. Do not name a shared operation for one medium (`createGeometry`, `meshGeometry`) or retain an alias for the same hook. Lifecycle callbacks still use `onDispose`.
 
 ```typescript
 // CORRECT: on* prefix for callbacks
@@ -254,7 +305,7 @@ client.on('progress', handler)
 
 // CORRECT: on* prefix for framework hooks (subclass overrides)
 protected abstract onInitialize(input, runtime): Promise<Context>;
-protected abstract onCreateGeometry(input, runtime): Promise<Result>;
+protected abstract onEvaluate(input, services): Promise<Result>;
 
 // INCORRECT: bare verbs or *Callback suffix
 { print: (msg) => console.log(msg) }
@@ -277,7 +328,7 @@ replicad.plugin.ts             plugin.ts
 replicad.plugin.test.ts        plugin.test.ts
 ```
 
-Hyphens stay legal inside the name segment (`opencascade-native.kernel.ts`); only the role separator is a dot. Roles are `plugin`, `kernel`, `transcoder`, `middleware`, and `bundler`. Helper, schema, and scenario modules carry no role marker (`assimp-backend.ts`, `replicad.schemas.ts`, `image-import-failure.test.ts`) and are not governed. `tau-lint/plugin-capability-filename` enforces this for flat modules under `packages/plugins/*/src`.
+Hyphens stay legal inside the name segment (`geometry-cache.middleware.ts`); only the role separator is a dot. Roles are `plugin`, `kernel`, `transcoder`, `middleware`, `bundler`, `job`, and `machine`. Helper, schema, and scenario modules carry no role marker (`assimp-backend.ts`, `replicad.schemas.ts`, `image-import-failure.test.ts`) and are not governed. Keep `tau-lint/plugin-capability-filename` and the plugin generator aligned with these roles for flat modules under `packages/plugins/*/src`.
 
 **Why**: A capability is locatable by filename, and a test always sits next to the subject it covers instead of drifting one convention away from it.
 
@@ -444,6 +495,23 @@ type RuntimeFileSystem = {
 };
 ```
 
+When a capability is genuinely unavailable on some implementations and cannot be composed from required primitives, expose one required discriminated facet rather than an optional method:
+
+```typescript
+type StillCaptureCapability =
+  | { readonly type: 'unsupported' }
+  | {
+      readonly type: 'supported';
+      capture(input: CaptureStillInput): Promise<StillImage>;
+    };
+
+type MachineSession = {
+  readonly stillCapture: StillCaptureCapability;
+};
+```
+
+The discriminant makes absence explicit, gives consumers exhaustive narrowing, and leaves room for capability-specific metadata without multiplying optional properties.
+
 ## 12. TypeScript-First Design
 
 - Export types separately using `export type`
@@ -503,9 +571,9 @@ Every published plugin package declares `@taucad/runtime` in `peerDependencies`.
 
 Treat the five `Symbol.for('@taucad/runtime/...')` slot names and the shapes reachable through them as a frozen same-realm contract. Bump `runtimePluginAbiVersion` when either changes, and require the exact ABI integer on factory and instance brands. Do not send those brands over structured clone; validate the discriminated `CapabilitiesManifest.registrations` schema at worker and process boundaries.
 
-## 16. Type-Safe Options Constants
+## 16. Type-Safe Options Constants and Authored Config Files
 
-Use TypeScript's native `satisfies` operator for standalone options constants. Do not add identity functions whose only behavior is returning an options object unchanged.
+Use TypeScript's native `satisfies` operator for options constants inside library and application code.
 
 ```typescript
 import type { RuntimeClientOptions } from '@taucad/runtime';
@@ -518,7 +586,35 @@ const transport = inProcessTransport({ runtime });
 const options = { transport } satisfies RuntimeClientOptions<typeof runtime, typeof transport>;
 ```
 
-This keeps inference and excess-property checking without adding a runtime API or a second name for the options type.
+For a config file that users or agents author and a tool loads, such as `geospec.config.ts` or `tau.config.ts`, export a `defineConfig` helper from the package's config subpath. The default export of the file is `defineConfig({...})`. The helper is an identity at runtime. Its value is that `.ts`, `.mts`, `.js` and `.mjs` files are written the same way, and editors type-check all of them without a type-only import, a `satisfies` clause or a JSDoc `@type` annotation.
+
+Type the parameter non-generically as the config type. This gives the same checks as `satisfies`: excess properties, wrong field types, and contextual typing for inline callbacks. Do not write `<const T extends Config>(config: T): T`. A generic parameter accepts unknown keys without an error. Use a generic only for the part of the config that needs literal inference, the way `defineRuntime` infers plugins, and keep the remaining fields checked against the declared type.
+
+CORRECT:
+
+```typescript
+// geospec/config
+export function defineConfig(config: GeoSpecConfig): GeoSpecConfig {
+  return config;
+}
+
+// geospec.config.ts or geospec.config.mjs — identical source
+import { defineConfig } from 'geospec/config';
+export default defineConfig({ include: ['**/*.geospec.ts'], testTimeout: 120_000 });
+```
+
+INCORRECT:
+
+```typescript
+// Silently accepts { includes: [...] } typos: the generic absorbs excess keys
+export function defineConfig<const T extends GeoSpecConfig>(config: T): T {
+  return config;
+}
+```
+
+A config helper is not a plugin definition (§2). It holds no hidden slot and returns no factory, and it is not a second name for the config type. Loaders still validate the exported value at runtime, because a `.js` file or a value built without the helper skips type-checking. Hosts that load config files in sandboxed or bundled environments must resolve the helper's specifier.
+
+**Why**: `satisfies` is TypeScript-only syntax. A typed `defineConfig` (Vite, Vitest, Nuxt, ESLint) gives TS and JS authors one shape that copy-pastes between file extensions.
 
 ## 17. Options Override Patterns
 
@@ -625,7 +721,7 @@ export type RenderOutcome =
   | { readonly superseded: false; readonly geometry: HashedGeometryResult }
   | { readonly superseded: true };
 
-const outcome = await client.render({ source: { path: '/main.ts' }, parameters });
+const outcome = await client.render({ source: { path: 'main.ts' }, parameters });
 
 if (outcome.superseded) {
   // A newer public command or an autonomous watched-filesystem preview took
@@ -705,31 +801,33 @@ Provider capability declarations are positive-only. Omit an unsupported declarat
 CORRECT:
 
 ```typescript
-render: { content: ['includeEdges'] as const },
-exportFormats: {
-  glb: { optionsSchema: glbSchema, content: ['includeEdges'] as const },
-  step: { optionsSchema: stepSchema }, // format supported; no framework content
+views: { model: { title: 'Model', mimeType: 'model/gltf-binary', content: ['includeEdges'] } },
+exports: {
+  glb: { title: 'GLB', mimeType: 'model/gltf-binary', extension: 'glb', optionsSchema: glbSchema, content: ['includeEdges'] },
+  step: { title: 'STEP', mimeType: 'model/step', extension: 'step', optionsSchema: stepSchema },
 },
 ```
 
 INCORRECT:
 
 ```typescript
-render: { content: [] },
-exportFormats: {
-  glb: { optionsSchema: glbSchema, content: ['includeEdges', 'includeEdges'] },
+views: { model: { title: 'Model', mimeType: 'model/gltf-binary', content: [] } },
+exports: {
+  glb: { title: 'GLB', mimeType: 'model/gltf-binary', extension: 'glb', content: ['includeEdges', 'includeEdges'] },
 },
 ```
 
 Provider hook inputs follow the same contract: when a provider declares no content, its method input omits `content`; this is distinct from the consumer envelope, where requesting an unsupported property is a type and runtime error. Do not add empty capability objects or arrays to advertise absence.
 
-Hook return objects follow the same ownership rule and must avoid reserved-word member names when consumers are expected to destructure the result. Prefer `exportGeometry` over a hook member named `export`, because `const { export } = useRuntime()` is a syntax error.
+Hook return objects follow the same ownership rule and must avoid reserved-word member names when consumers are expected to destructure the result. Kernel hooks use `export` to produce declared export artifacts. Object methods may use reserved-word property names. Destructurable consumer return objects use a binding name such as `exportModel`, because `const { export } = useRuntime()` is a syntax error.
 
 ## 22. Temporal Values
 
-All numeric temporal values — durations, timeouts, intervals, delays, debounces, ages, windows, polling cadences — are in **milliseconds**. Never encode the unit in the identifier (no `Ms`, `Sec`, `S`, `Min`, `Seconds`, `Hours` suffixes; no `ms`/`s`/`min` prefixes).
+All numeric **operational timing** values — timeouts, retry delays, debounces, cache ages, polling cadences and wall-clock durations — are in **milliseconds**. Existing coherent-SI APIs retain their units unless explicitly migrated: physical time and simulation time are **seconds**, speed is metres per second, and frequency is inverse seconds. The runtime manifest owns each parameter's declared unit, quantity semantics, constraints and defaults. A durable parameter record stores only user-authored values and unit choices; it does not copy those declarations. Geometry and world-space coordinates remain metres. Never encode the unit in the identifier (no `Ms`, `Sec`, `S`, `Min`, `Seconds`, `Hours` suffixes; no `ms`/`s`/`min` prefixes), except the external-contract allowlist below.
 
-**Why**: A single canonical unit eliminates conversion bugs at module boundaries. Milliseconds is the JavaScript ecosystem's de facto temporal unit (`setTimeout`, `setInterval`, `Date.now`, `performance.now`, `AbortSignal.timeout`, `requestAnimationFrame` callback timestamp), so aligning with it removes ambient cognitive load. Allowing unit suffixes invites divergence — once one module accepts seconds for "human readability", every consumer must read JSDoc to know which unit applies, and every wire-protocol round-trip becomes a conversion-bug surface.
+Classify the semantic value, not its name: a solver's simulated duration is physical time, while its execution deadline is operational timing. Numeric defaults, bounds and examples use the unit selected by the owning contract. Convert explicitly at geometry/world-space, native-provider, external-protocol and legacy-model boundaries; do not reinterpret existing stored numbers merely by adding quantity metadata. Presentation unit preferences do not change the stored unit.
+
+**Why**: Operational timing follows JavaScript's millisecond APIs (`setTimeout`, `Date.now`, `performance.now`, `AbortSignal.timeout`). Runtime manifests keep producer semantics current, while the record's explicit marker distinguishes conversion from relabeling and explicit coherent-SI and geometry boundaries keep their established contracts.
 
 CORRECT:
 
@@ -762,7 +860,11 @@ client.setRenderTimeout(30_000); // `setRenderTimeoutMs` would be forbidden
 
 ### Documenting the unit
 
-Because the identifier carries no suffix, every public temporal field must declare `Milliseconds.` in its JSDoc — a single word on its own sentence. This is the only acceptable place for the unit to appear in source.
+Because the identifier carries no suffix, every public operational timing field must declare `Milliseconds.` in its JSDoc — a single word on its own sentence. Existing coherent-SI physical time declares `Seconds.` and its quantity semantics. Explicit parameter declarations carry their unit and quantity semantics in the runtime manifest. When either is absent, only the owning versioned runtime resolution profile may infer supported semantics; retain per-field provenance in that manifest and let declared-only consumers reject inferred results. Consumers must not guess semantics locally from field names.
+
+A record's `units[p]` is the unit the person chose. When `sourceUnits[p]` repeats that unit, the stored number is in the chosen unit and the runtime passes it as unit-bearing text for conversion at the kernel boundary. A `units`-only choice relabels the number without conversion. Public request documentation must state that a unit-bound field accepts either a number in its declared unit or unit-bearing text.
+
+The standalone public `@taucad/units` package owns unit parsing, conversion and quantity semantics. Runtime and other packages consume that owner rather than copying registries or conversion logic.
 
 CORRECT:
 
@@ -793,7 +895,7 @@ The full allowlist lives in `libs/oxlint/src/rules/no-time-unit-suffix.js`. Addi
 
 If a future API genuinely needs to accept multiple temporal units (e.g., a CLI surface that takes `--timeout 30s`), introduce a branded `Milliseconds` type and a converter (`seconds(30)` → `Milliseconds`). Do not solve unit ambiguity by reintroducing suffixes.
 
-**Enforced by**: `tau-lint/no-time-unit-suffix` (forbids `Ms`/`Sec`/`Min`/etc. suffixes on identifiers) and `tau-lint/no-bare-time-identifier` (requires the `Milliseconds.` JSDoc tag on temporal fields).
+**Enforced by**: `tau-lint/no-time-unit-suffix` (forbids unit suffixes except its explicit allowlist) and `tau-lint/no-bare-time-identifier` (requires descriptive timing names). Unit classification and JSDoc correctness require semantic review; the latter rule does not check unit tags.
 
 ## 23. Async Surface Hygiene (Antipatterns)
 
@@ -928,7 +1030,7 @@ export type RuntimeFileSystem = { readonly [opaqueBrand]: unique symbol };
 export const fromMemoryFs: () => RuntimeFileSystem;
 export const fromNodeFs: (basePath: string) => RuntimeFileSystem;
 export const fromBrowserFs: (...) => RuntimeFileSystem;
-// fsLike is already confined to virtual `/`; raw Node roots use fromNodeFs.
+// fsLike is already confined to one root; raw Node roots use fromNodeFs.
 export const fromFsLike: (fsLike: FsLike) => RuntimeFileSystem;
 export const fromFileSystemBridge: (open: () => FileSystemBridgeConnection) => RuntimeFileSystem;
 
@@ -945,7 +1047,7 @@ await client.connect();    // no arguments
 
 A Worker / in-process transport binds the FS bridge via `MessagePort` internally; a WebSocket transport carries it on a second socket (`/fs`) — no multiplexer exists; an Electron IPC transport binds it via `MessagePortMain`. The runtime client never types against any wire primitive — that responsibility lives entirely inside the wired {@link TransportPlugin} callable and its `.materialize()` handle.
 
-The opaque filesystem is also the complete runtime reachability contract. Plugin callbacks accept normalized runtime paths within the supplied filesystem; never add project roots, ids, grants, authorization callbacks, or wire-derived capability objects to kernel, bundler, middleware, or headless-service inputs. A leading `/` names the supplied filesystem's root, not the host OS root. Exact source requests keep their operation ownership local instead of mutating the active preview's public state.
+The opaque filesystem is also the complete runtime reachability contract. Plugin callbacks accept canonical root-relative runtime paths within the supplied filesystem; never add project roots, ids, grants, authorization callbacks, or wire-derived capability objects to kernel, bundler, middleware, or headless-service inputs. The empty path names the supplied filesystem's root. Exact source requests keep their operation ownership local instead of mutating the active preview's public state.
 
 ### Smell tests
 

@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import { CommunityProjectGrid } from '#components/project-grid.js';
-import { sampleProjects } from '#constants/project-examples.js';
+import { galleryProjects } from '#constants/project-examples.js';
 import { LazySection } from '#components/ui/lazy-section.js';
 import { LazyHeroViewer } from '#routes/_index/hero-viewer-gate.js';
 import { HeroImage } from '#routes/_index/hero-image.js';
@@ -33,12 +33,12 @@ export function LegacyLanding(): React.JSX.Element {
       <LazySection minHeight='400px' fallback={<CommunityGridSkeleton />}>
         <div className='container mx-auto px-4 py-8'>
           <div className='mb-2 flex flex-row items-center justify-between'>
-            <h1 className='text-lg font-medium tracking-tight'>From the Community</h1>
+            <h2 className='text-lg font-medium tracking-tight'>From the Community</h2>
             <Button asChild variant='link' size='lg' className='p-0'>
-              <Link to='/community'>View All</Link>
+              <Link to='/community'>View all</Link>
             </Button>
           </div>
-          <CommunityProjectGrid projects={sampleProjects} limit={10} />
+          <CommunityProjectGrid projects={galleryProjects} limit={10} />
         </div>
       </LazySection>
 

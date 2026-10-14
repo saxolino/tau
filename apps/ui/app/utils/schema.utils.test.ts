@@ -10,12 +10,12 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         age: {
           default: 30,
-          type: 'integer',
+          type: 'number',
         },
         name: {
           default: 'John Doe',
@@ -43,7 +43,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         deep: {
@@ -105,7 +105,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         lidClearance: {
@@ -118,11 +118,11 @@ describe('jsonSchemaFromJson', () => {
         },
         postDiameter: {
           default: 5,
-          type: 'integer',
+          type: 'number',
         },
         postHeight: {
           default: 7,
-          type: 'integer',
+          type: 'number',
         },
         postHole: {
           default: 2.8,
@@ -134,11 +134,11 @@ describe('jsonSchemaFromJson', () => {
         },
         ventCols: {
           default: 12,
-          type: 'integer',
+          type: 'number',
         },
         ventRows: {
           default: 3,
-          type: 'integer',
+          type: 'number',
         },
         ventDiameter: {
           default: 2.5,
@@ -146,11 +146,11 @@ describe('jsonSchemaFromJson', () => {
         },
         ventMargin: {
           default: 5,
-          type: 'integer',
+          type: 'number',
         },
         ventPitch: {
           default: 5,
-          type: 'integer',
+          type: 'number',
         },
       },
       required: [
@@ -178,13 +178,13 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         numbers: {
           items: {
             default: 1,
-            type: 'integer',
+            type: 'number',
           },
           type: 'array',
         },
@@ -211,7 +211,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         items: {
@@ -220,7 +220,7 @@ describe('jsonSchemaFromJson', () => {
             properties: {
               id: {
                 default: 1,
-                type: 'integer',
+                type: 'number',
               },
               name: {
                 default: 'Item 1',
@@ -246,7 +246,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         emptyArray: {
@@ -254,7 +254,7 @@ describe('jsonSchemaFromJson', () => {
         },
         value: {
           default: 1,
-          type: 'integer',
+          type: 'number',
         },
       },
       required: ['emptyArray', 'value'],
@@ -272,14 +272,14 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         matrix: {
           items: {
             items: {
               default: 1,
-              type: 'integer',
+              type: 'number',
             },
             type: 'array',
           },
@@ -300,12 +300,12 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         negative: {
           default: -5,
-          type: 'integer',
+          type: 'number',
         },
         negativeFloat: {
           default: -3.14,
@@ -313,7 +313,7 @@ describe('jsonSchemaFromJson', () => {
         },
         zero: {
           default: 0,
-          type: 'integer',
+          type: 'number',
         },
       },
       required: ['negative', 'negativeFloat', 'zero'],
@@ -329,7 +329,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         empty: {
@@ -359,7 +359,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         level1: {
@@ -373,7 +373,7 @@ describe('jsonSchemaFromJson', () => {
                   properties: {
                     value: {
                       default: 42,
-                      type: 'integer',
+                      type: 'number',
                     },
                   },
                   required: ['value'],
@@ -408,26 +408,26 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         // eslint-disable-next-line @typescript-eslint/naming-convention -- Test case
         PascalCase: {
           default: 4,
-          type: 'integer',
+          type: 'number',
         },
         camelCase: {
           default: 1,
-          type: 'integer',
+          type: 'number',
         },
         'kebab-case': {
           default: 3,
-          type: 'integer',
+          type: 'number',
         },
         // eslint-disable-next-line @typescript-eslint/naming-convention -- Test case
         snake_case: {
           default: 2,
-          type: 'integer',
+          type: 'number',
         },
       },
       required: ['PascalCase', 'camelCase', 'kebab-case', 'snake_case'],
@@ -442,7 +442,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         single: {
@@ -474,7 +474,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         boolean: {
@@ -487,11 +487,11 @@ describe('jsonSchemaFromJson', () => {
         },
         integer: {
           default: 42,
-          type: 'integer',
+          type: 'number',
         },
         negative: {
           default: -10,
-          type: 'integer',
+          type: 'number',
         },
         string: {
           default: 'text',
@@ -514,7 +514,7 @@ describe('jsonSchemaFromJson', () => {
     };
     const schema = await jsonSchemaFromJson(json);
     expect(schema).toEqual({
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       properties: {
         items: {
@@ -524,7 +524,7 @@ describe('jsonSchemaFromJson', () => {
             properties: {
               id: {
                 default: 1,
-                type: 'integer',
+                type: 'number',
               },
             },
             required: ['id'],
@@ -536,7 +536,7 @@ describe('jsonSchemaFromJson', () => {
           properties: {
             count: {
               default: 2,
-              type: 'integer',
+              type: 'number',
             },
             tags: {
               items: {
@@ -561,7 +561,7 @@ describe('jsonSchemaFromJson', () => {
 describe('hasJsonSchemaObjectProperties', () => {
   it('should return true if the JSON schema has any object properties', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       type: 'object',
       properties: {
@@ -575,7 +575,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return false if the JSON schema does not have any object properties', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       type: 'object',
       properties: {
@@ -589,7 +589,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true if the JSON schema has any object properties in an array', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       type: 'object',
       properties: {
@@ -603,7 +603,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return false if the JSON schema only has primitive properties', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       additionalProperties: false,
       type: 'object',
       properties: {
@@ -623,7 +623,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true for nested object within object', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         outer: {
           type: 'object',
@@ -645,7 +645,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true for nested array within object', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         outer: {
           type: 'object',
@@ -665,7 +665,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true when array contains objects', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         items: {
           type: 'array',
@@ -688,7 +688,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true when array contains arrays (nested arrays)', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         matrix: {
           type: 'array',
@@ -706,7 +706,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true for deeply nested object structures', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         level1: {
           type: 'object',
@@ -733,7 +733,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true when mixing primitives with arrays', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         name: {
           type: 'string',
@@ -754,7 +754,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true when mixing primitives with objects', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         name: {
           type: 'string',
@@ -780,7 +780,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true for schema with oneOf containing objects', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       type: 'object',
       properties: {
         value: {
@@ -805,7 +805,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true for schema with anyOf containing arrays', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       type: 'object',
       properties: {
         value: {
@@ -828,7 +828,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return false for schema with only primitive combinators', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       type: 'object',
       properties: {
         value: {
@@ -851,7 +851,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return false for empty schema with no properties', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       type: 'object',
     } as const;
     expect(hasJsonSchemaObjectProperties(jsonSchema)).toBe(false);
@@ -859,7 +859,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true when additionalProperties contains objects', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         dynamicFields: {
           type: 'object',
@@ -879,7 +879,7 @@ describe('hasJsonSchemaObjectProperties', () => {
 
   it('should return true when additionalProperties contains arrays', () => {
     const jsonSchema = {
-      $schema: 'http://json-schema.org/draft-06/schema#',
+      $schema: 'http://json-schema.org/draft-07/schema#',
       properties: {
         dynamicFields: {
           type: 'object',

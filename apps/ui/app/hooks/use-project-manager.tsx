@@ -1,3 +1,4 @@
+import { ObservationService } from '@taucad/fs-client/observation-service';
 import type { ReactNode } from 'react';
 import type { PartialDeep } from 'type-fest';
 import deepmerge from 'deepmerge';
@@ -6,8 +7,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useActorRef, useSelector } from '@xstate/react';
 import { waitFor } from 'xstate';
 import type { ActorRefFrom } from 'xstate';
-import { parseProjectManifestBytes, projectToManifest, serializeProjectManifest } from '@taucad/types';
-import type { ProjectManifest } from '@taucad/types';
+import { z } from 'zod';
+import { projectIdSchema, projectToManifest, readProjectManifestBytes, serializeProjectManifest } from '@taucad/types';
+import type { ProjectManifest, ProjectManifestReadResult } from '@taucad/types';
 import { idPrefix } from '@taucad/types/constants';
 import type { KernelProvider } from '@taucad/runtime';
 import type {
@@ -15,36 +17,61 @@ import type {
   ProjectDiscoveryResult,
   ProjectLocator,
   StorageRootConfig,
+  WatchEvent,
 } from '@taucad/filesystem';
 import { resolveStorageRootKey } from '@taucad/filesystem/storage-root-key';
-import type { Chat } from '@taucad/chat';
+import { consumableBytes } from '@taucad/fs-bridge';
+import type { CadAgentExecution, Chat } from '@taucad/chat';
+import type { ChatRecord } from '@taucad/chat/schemas';
+import { uint8ArrayToBase64 } from 'uint8array-extras';
 import { generatePrefixedId } from '@taucad/utils/id';
 import type { Remote } from 'comlink';
-import { messageRole, messageStatus } from '@taucad/chat/constants';
 import { projectManagerMachine } from '#hooks/project-manager.machine.js';
 import type { ObjectStoreWorker, InitialEditorState } from '#hooks/object-store.worker.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import {
+  createWorkspace,
+  createNodeWorkspace,
+  getWorkspaceMetadata,
+  isNodeWorkspace,
   setProjectFileSystemConfig,
   getProjectFileSystemConfig,
   getHomeStorageBackend,
   getProjectCreationLocation,
   getWorkspace,
   checkHandlePermission,
+  requestHandlePermission,
   deleteProjectFileSystemConfig,
   getAllProjectFileSystemConfigs,
   listWorkspaces,
   pinHomeStorageBackend,
+  requestHomeStoragePersistence,
   setProjectCreationLocation,
   subscribeProjectRootConfigurationChanges,
+  applyProjectFileSystemConfigChanges,
+  repairWorkspaceBindings as repairStoredWorkspaceBindings,
 } from '#filesystem/handle-store.js';
-import type { ProjectFileSystemConfig, WorkspaceEntry } from '#filesystem/handle-store.js';
+import type {
+  ProjectFileSystemConfig,
+  Workspace,
+  WorkspaceBindingRepair,
+  WorkspaceBindingRepairResult,
+  WorkspaceEntry,
+} from '#filesystem/handle-store.js';
+import { isOrphanedProjectRoute } from '#filesystem/orphaned-project-route.js';
+import { createChatFileStore } from '#db/chat-file-storage.js';
+import { composerRecordPaths, createComposerRecordStore } from '#db/composer-record-store.js';
 import { isBuildSuperseded } from '#filesystem/build-skew.js';
 import { WorkspaceDirectoryRequiredError } from '#filesystem/workspace-errors.js';
-import { isFileSystemAccessSupported } from '#constants/browser.constants.js';
+import { directoryPicker } from '#constants/browser.constants.js';
+import type { DirectoryPick } from '#constants/browser.constants.js';
+import { nodeHomeRoot } from '#filesystem/desktop-bridge.js';
 import { createInitialProject } from '#constants/project.constants.js';
-import { createMessage } from '#utils/chat.utils.js';
-import { getMainFile, getEmptyCode } from '#utils/kernel.utils.js';
+import { attachmentKind, attachmentReferenceOf } from '#utils/attachment.utils.js';
+import { buildUserMessage } from '#utils/chat.utils.js';
+import type { StoredAttachmentRef } from '#utils/attachment.utils.js';
+import { createAttachmentStore, createChatAttachmentStore, isNotFound } from '#db/attachment-store.js';
+import { getMainFile, getEmptyCode, getKernelDependencies, getKernelOption } from '#utils/kernel.utils.js';
 import { encodeTextFile } from '#utils/filesystem.utils.js';
 import { defaultProjectName } from '#constants/project-names.js';
 import type { AppUiPreferences, CommitCancelledDraftRestoreInput } from '#types/storage.types.js';
@@ -54,13 +81,31 @@ import type {
   PendingProjectRecoveryReason,
   PendingProjectStorage,
 } from '#types/pending-project-operation.types.js';
-import type { ProjectLibraryEntry, ProjectLibraryState } from '#types/project.types.js';
+import type { ProjectLibraryEntry, ProjectLibraryState } from '#types/project-library.types.js';
 import { allocateProjectDirectorySlug } from '#utils/project-directory.utils.js';
 import { directorySlug, homeWorkspaceSlug, projectSlugsOf } from '#utils/project-url.utils.js';
 import type { ProjectSlugs } from '#utils/project-url.utils.js';
 import { useProjectNameClient } from '#chat-clients/use-project-name-client.js';
 import { metaConfig } from '#constants/meta.constants.js';
 import type { ProjectCreationLocation } from '#types/project-creation-location.types.js';
+import { selectWorkspaceConnectionState, workspaceConnectionMachine } from '#hooks/workspace-connection.machine.js';
+import { useWorkspaceTelemetry } from '#utils/workspace-telemetry.utils.js';
+import { tauCloudIntent, withNamedLock } from '#hooks/use-cloud-projects.js';
+import { getChatRecencyAt } from '#utils/chat-recency.utils.js';
+import type {
+  PreparedWorkspaceCatalog,
+  RegisteredWorkspace,
+  WorkspaceConnectionState,
+} from '#hooks/workspace-connection.machine.js';
+
+/** A stored draft attachment, as the startup message references it. */
+export type InitialMessageAttachment = Omit<StoredAttachmentRef, 'byteLength'>;
+
+/** The operation field naming where a created chat's attachments are copied from, when not Home. */
+const attachmentSourceOf = (options: CreateProjectChatOptions): { attachmentSource?: string } => {
+  const source = options.initialMessage?.attachmentSource;
+  return source === undefined ? {} : { attachmentSource: source };
+};
 
 /**
  * Shared options for initial chat configuration.
@@ -75,7 +120,13 @@ type CreateProjectChatOptions = {
   /** If provided, add to chat and seed a one-shot startup request. */
   initialMessage?: {
     content: string;
-    imageUrls?: string[];
+    /**
+     * Draft attachments already stored in `attachmentSource`. Resume copies
+     * them into the new chat before its startup request is written.
+     */
+    attachments?: readonly InitialMessageAttachment[];
+    /** The composer directory holding those bytes. Defaults to the Home composer's. */
+    attachmentSource?: string;
   };
   /** Chat name (defaults to 'Initial design' with message, 'Initial chat' without) */
   chatName?: string;
@@ -84,12 +135,32 @@ type CreateProjectChatOptions = {
   /** Explicit product location. Omission resolves the last successful location. */
   location?: ProjectCreationLocation;
   /**
-   * Seed `Chat.activeModel` so the chat owns its model choice independent
+   * Create under an id that already exists elsewhere (W18 DEF-2).
+   *
+   * A device opening a project from Tau Cloud that it has never held must reuse
+   * the remote's id, because the id *is* the repository path there. Omitted
+   * everywhere else: a new project mints its own, and an id this device already
+   * holds is refused rather than duplicated.
+   */
+  id?: string;
+  /**
+   * Create the project and no chat at all (W18 DEF-2, review R5).
+   *
+   * Opening someone's own project from Tau Cloud must not invent a chat for
+   * them: `.tau/chats` is unversioned, so the open pull cannot take one away,
+   * and chats travel on their own record refs — an empty *Initial chat* minted
+   * here would be offered back to the account on the next push. Mutually
+   * exclusive with `initialMessage` and `chatName`, which are what a chat is
+   * *for*; every other caller leaves it out and gets the chat it always got.
+   */
+  chat?: false;
+  /**
+   * Seed `Chat.activeExecution` so the chat owns its execution choice independent
    * of the cookie default. Required when `initialMessage` is supplied so the
    * one-shot startup request runs with the caller's intended model rather
    * than whatever the cookie happens to hold at hydration time.
    */
-  activeModel?: string;
+  activeExecution?: CadAgentExecution;
   /**
    * Seed `Chat.activeKernel`. Defaults to the project's `kernel` field when
    * the project is created from a kernel template, otherwise undefined.
@@ -116,7 +187,7 @@ type CreateProjectFromData = CreateProjectChatOptions & {
   /** The project metadata to use */
   project: Omit<ProjectManifest, '$schema' | 'id'>;
   /** The files for the project */
-  files: Record<string, { content: Uint8Array<ArrayBuffer> }>;
+  files: Record<string, { content: Uint8Array<ArrayBuffer>; mode?: '100644' | '100755' }>;
 };
 
 /**
@@ -132,29 +203,60 @@ export type CreateProjectOptions = CreateProjectFromKernel | CreateProjectFromDa
  */
 export type CreatedProject = ProjectManifest & { readonly slugs: ProjectSlugs };
 
+export type ConnectedWorkspace = {
+  readonly workspace: Workspace;
+  readonly projectCount: number;
+  readonly minted: boolean;
+};
+
 type ProjectManagerContextType = {
+  discoveryObservationError: string | undefined;
+  metadataObservationError: string | undefined;
+  getMetadataObservationError: (resourceId: string) => string | undefined;
+  refreshFilesystemObservations: (resourceId?: string) => void;
   isLoading: boolean;
   error: Error | undefined;
   projectManagerRef: ActorRefFrom<typeof projectManagerMachine>;
+  workspaceConnection: WorkspaceConnectionState;
+  connectWorkspace: (handle?: FileSystemDirectoryHandle) => Promise<ConnectedWorkspace | undefined>;
+  retryWorkspaceConnection: () => Promise<ConnectedWorkspace | undefined>;
+  refreshWorkspaceCatalog: () => Promise<void>;
+  repairWorkspaceBindings: (workspaceId: string) => Promise<WorkspaceBindingRepairResult>;
   createProject: (options: CreateProjectOptions) => Promise<CreatedProject>;
+  /** Rejects while `tau.json` is degraded: the normalized view is lossy (blueprint R4). */
   updateProject: (projectId: string, update: PartialDeep<ProjectManifest>) => Promise<ProjectManifest | undefined>;
-  touchProject: (projectId: string) => Promise<ProjectLibraryState | undefined>;
+  /** Rewrite a degraded `tau.json` as its normalized strict manifest; refuses a JSON syntax error. */
+  repairProject: (projectId: string) => Promise<ProjectManifest | undefined>;
+  touchProject: (projectId: string, activityAt?: number) => Promise<ProjectLibraryState | undefined>;
+  setGeoSpecCandidateConsent: (projectId: string, enabled: boolean) => Promise<ProjectLibraryState | undefined>;
   duplicateProject: (projectId: string) => Promise<CreatedProject>;
   getProjects: (options?: { includeDeleted?: boolean }) => Promise<ProjectLibraryEntry[]>;
   getProjectListing: (options?: { includeDeleted?: boolean }) => Promise<ProjectListing>;
   getProject: (projectId: string) => Promise<ProjectManifest | undefined>;
   getProjectRouteAccess: (projectId: string) => Promise<ProjectRouteAccess>;
   getProjectLibraryState: (projectId: string) => Promise<ProjectLibraryState | undefined>;
-  setProjectRevisionState: (
-    projectId: string,
-    revisionState: NonNullable<ProjectLibraryState['revisionState']>,
-  ) => Promise<ProjectLibraryState | undefined>;
   restoreProject: (projectId: string) => Promise<boolean>;
   /** @returns whether a library row was actually trashed — a vanished row is not a success (DF3). */
   deleteProject: (projectId: string) => Promise<boolean>;
   permanentlyDeleteProject: (projectId: string) => Promise<void>;
-  /** Give an `adoption-required` directory a fresh identity so it becomes a real project (R11). */
+  /**
+   * Bumped whenever a project's library row moves in or out of the Trash.
+   *
+   * `getProjectRouteAccess` reads `deletedAt` once per call, so a route that
+   * resolved its access before the person deleted the project on screen would
+   * keep showing the closed notice until a reload (blueprint Finding 2). The
+   * project route depends on this counter, which makes that a live transition.
+   */
+  libraryRevision: number;
+  /**
+   * Give an `adoption-required` directory an identity so it becomes a real project (R11): the id its
+   * route last bound when no other directory claims it, otherwise a fresh one.
+   */
   adoptProject: (locator: ProjectLocator) => Promise<ProjectManifest>;
+  /** Bind a project id's route to one of the directories that claim it; writes no project file. */
+  chooseProjectDirectory: (locator: ProjectLocator, projectId: string) => Promise<void>;
+  /** Pending operations this session is still settling, or has given up on (DF11). */
+  recoveries: readonly PendingProjectRecovery[];
   /** Drop a pending operation the user has given up on (DF11). */
   discardRecovery: (operationId: string) => Promise<void>;
   assertWorkspaceMutationAllowed: (workspaceId: string) => Promise<void>;
@@ -163,7 +265,7 @@ type ProjectManagerContextType = {
   // Chat methods
   createChat: (
     resourceId: string,
-    chat: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt'> & {
+    chat: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt' | 'recencyAt'> & {
       id?: string;
     },
   ) => Promise<Chat>;
@@ -171,20 +273,18 @@ type ProjectManagerContextType = {
   updateChat: (chatId: string, update: PartialDeep<Chat>) => Promise<Chat | undefined>;
   applyGeneratedChatName: (chatId: string, name: string) => Promise<Chat | undefined>;
   patchChat: <K extends keyof Chat>(chatId: string, key: K, value: Chat[K]) => Promise<Chat | undefined>;
+  touchChatRecency: (chatId: string, requestedAt: number) => Promise<Chat | undefined>;
   consumeChatStartupRequest: (chatId: string, requestId: string) => Promise<Chat | undefined>;
   commitCancelledDraftRestore: (chatId: string, input: CommitCancelledDraftRestoreInput) => Promise<Chat | undefined>;
-  setMessageEdit: (
-    chatId: string,
-    messageId: string,
-    draft: NonNullable<Chat['messageEdits']>[string],
-  ) => Promise<Chat | undefined>;
-  clearMessageEdit: (chatId: string, messageId: string) => Promise<Chat | undefined>;
   softDeleteChat: (chatId: string) => Promise<Chat | undefined>;
-  duplicateChat: (chatId: string) => Promise<Chat>;
   getAllChats: (options?: { includeDeleted?: boolean }) => Promise<Chat[]>;
   getChatsForResource: (resourceId: string, options?: { includeDeleted?: boolean }) => Promise<Chat[]>;
-  getChat: (chatId: string) => Promise<Chat | undefined>;
+  getAllChatRecords: (options?: { includeDeleted?: boolean }) => Promise<ChatRecord[]>;
+  getChatRecordsForResource: (resourceId: string, options?: { includeDeleted?: boolean }) => Promise<ChatRecord[]>;
+  getChat: (chatId: string, projectId?: string) => Promise<Chat | undefined>;
+  invalidateProjectedChats: (resourceId: string, chatIds: readonly string[]) => void;
   deleteChat: (chatId: string) => Promise<void>;
+  purgeChat: (chatId: string) => Promise<void>;
 };
 
 export type ProjectDiscoveryConflict =
@@ -197,6 +297,13 @@ export type ProjectListing = {
   readonly projects: readonly ProjectLibraryEntry[];
   readonly conflicts: readonly ProjectDiscoveryConflict[];
   readonly recoveries: readonly PendingProjectRecovery[];
+  readonly workspaceBindingRepairs: readonly WorkspaceBindingRepairGroup[];
+};
+
+export type WorkspaceBindingRepairGroup = {
+  readonly canonicalWorkspaceId: string;
+  readonly workspaceName: string;
+  readonly projectCount: number;
 };
 
 export type ProjectRouteAccess =
@@ -209,14 +316,43 @@ export type ProjectRouteAccess =
     }
   | { readonly status: 'conflict' | 'unavailable' | 'missing' };
 
-const ProjectManagerContext = createContext<ProjectManagerContextType | undefined>(undefined);
+/* This module exports a hook as well as a provider, so React Refresh refuses it
+ * as a boundary (`isLikelyComponentType` wants a capitalised name) and the
+ * update is re-imported by whichever accepting importer is above it. A second
+ * `createContext` would put the provider and its consumers on different
+ * contexts, and `useProjectManager` would then throw through the root boundary
+ * — which re-renders the same tree, in a loop that floods the log. `hot.data`
+ * is keyed by module path, so the first context outlives every update. */
+const hotContexts = import.meta.hot?.data as
+  | { projectManagerContext?: React.Context<ProjectManagerContextType | undefined> }
+  | undefined;
+const ProjectManagerContext =
+  hotContexts?.projectManagerContext ?? createContext<ProjectManagerContextType | undefined>(undefined);
+if (hotContexts) {
+  hotContexts.projectManagerContext = ProjectManagerContext;
+}
 
 /**
  * Milliseconds. A single mutation fans out across seven worker event channels,
  * and a burst (project creation, import, an agent write pass) fires far faster
  * than a discovery rescan completes: one trailing-edge refetch per burst.
  */
-const discoveryInvalidationDebounce = 300;
+
+/** Concurrent disk-side library-state recoveries after IndexedDB eviction. */
+const libraryRecoveryConcurrency = 16;
+
+type WorkspaceConnectionTrace = {
+  readonly operationId: string;
+  startedAt: number;
+  workspaceId: string | undefined;
+  registeringDuration: number;
+  mountingDuration: number;
+  catalogDuration: number;
+  publishingDuration: number;
+  candidateCount: number;
+  projectCount: number;
+  conflictCount: number;
+};
 
 /**
  * Failure modes that a later attempt cannot change: the directory holds foreign
@@ -232,10 +368,25 @@ const terminalRecoveryReasons = new Set<PendingProjectRecoveryReason>([
 /** Attempts per pending operation per session, retryable reasons included. */
 const maxRecoveryAttempts = 3;
 
-const pendingStorageToConfig = (projectId: string, storage: PendingProjectStorage): ProjectFileSystemConfig => ({
-  projectId,
-  ...storage,
-});
+const pendingStorageToConfig = (projectId: string, storage: PendingProjectStorage): ProjectFileSystemConfig => {
+  if (storage.backend === 'webaccess') {
+    return {
+      projectId,
+      backend: storage.backend,
+      workspaceId: storage.workspaceId,
+      providerBasePath: storage.providerBasePath,
+    };
+  }
+  if (storage.backend === 'node') {
+    return {
+      projectId,
+      backend: storage.backend,
+      ...(storage.path === undefined ? {} : { path: storage.path }),
+      providerBasePath: storage.providerBasePath,
+    };
+  }
+  return { projectId, backend: storage.backend, providerBasePath: storage.providerBasePath };
+};
 
 class PendingProjectRecoveryError extends Error {
   public readonly reason: PendingProjectRecoveryReason;
@@ -271,7 +422,8 @@ const locatorKey = (storageRootKey: string, providerBasePath: string): string =>
  * Disk-side mirror of the profile-local library row. IndexedDB is evictable,
  * the workspace folder is not, so trash judgment lives here too.
  */
-type ProjectLibraryFile = { readonly deletedAt?: number };
+const projectLibraryFileSchema = z.strictObject({ deletedAt: z.number().nonnegative().optional() });
+type ProjectLibraryFile = z.infer<typeof projectLibraryFileSchema>;
 
 /** Minimal slice of the worker filesystem client the library tombstone needs. */
 type ProjectLibraryFileClient = {
@@ -288,7 +440,8 @@ const readProjectLibraryFile = async (
 ): Promise<ProjectLibraryFile> => {
   try {
     const parsed: unknown = JSON.parse(await client.readFile(projectLibraryFilePath(projectId), 'utf8'));
-    return typeof parsed === 'object' && parsed !== null ? (parsed as ProjectLibraryFile) : {};
+    const result = projectLibraryFileSchema.safeParse(parsed);
+    return result.success ? result.data : {};
   } catch {
     return {};
   }
@@ -319,15 +472,47 @@ const readManifestActivityAt = async (client: ProjectLibraryFileClient, projectI
 
 type PersistentStorageRoot =
   | { readonly backend: 'indexeddb' | 'opfs' }
-  | { readonly backend: 'webaccess'; readonly workspaceId: string };
+  | { readonly backend: 'webaccess'; readonly workspaceId: string }
+  /** `path` is absent on persisted rows, which name Home implicitly (see `ProjectFileSystemConfig`). */
+  | { readonly backend: 'node'; readonly path?: string };
 
 /**
  * The worker's own derivation, bound to this app shell's database prefix —
  * never a second implementation: the blocking decision in discovery compares
  * these keys across the worker boundary (R12).
  */
+/**
+ * Durable node-root discriminator: a picked folder names its absolute path, and
+ * Home names nothing — its `userData/home` path is ambient, so a Home row stays
+ * free of a machine-specific path (L2 deviation 1).
+ */
+const nodeRootPath = (path: string): { readonly path?: string } => (path === nodeHomeRoot() ? {} : { path });
+
 const persistentStorageRootKey = (root: PersistentStorageRoot): string =>
-  resolveStorageRootKey(root, metaConfig.databasePrefix);
+  resolveStorageRootKey(
+    root.backend === 'node' ? { backend: 'node', path: root.path ?? nodeHomeRoot() } : root,
+    metaConfig.databasePrefix,
+  );
+
+/** The persisted route that binds a project id to exactly this discovered directory. */
+const routeConfigFor = (projectId: string, locator: ProjectLocator): ProjectFileSystemConfig =>
+  locator.backend === 'webaccess'
+    ? {
+        projectId,
+        backend: 'webaccess',
+        workspaceId: locator.workspaceId,
+        providerBasePath: locator.relativeDirectory,
+      }
+    : locator.backend === 'node'
+      ? { projectId, backend: 'node', ...nodeRootPath(locator.path), providerBasePath: locator.relativeDirectory }
+      : { projectId, backend: locator.backend, providerBasePath: locator.relativeDirectory };
+
+/** Whether a persisted route already binds its project to exactly this directory. */
+const routeBindsLocator = (config: ProjectFileSystemConfig | undefined, locator: ProjectLocator): boolean =>
+  config !== undefined &&
+  config.backend !== 'memory' &&
+  persistentStorageRootKey(config) === locator.storageRootKey &&
+  config.providerBasePath === locator.relativeDirectory;
 
 /**
  * Allocate the physical directory for a new project at `root`: the name slug,
@@ -348,7 +533,7 @@ const allocateProjectBasePath = async (
       .filter((entry) => entry.locator.storageRootKey === storageRootKey)
       .flatMap((entry) => entry.locator.relativeDirectory.split('/').filter(Boolean).slice(-1)),
   );
-  return `/${allocateProjectDirectorySlug(name, taken)}`;
+  return allocateProjectDirectorySlug(name, taken);
 };
 
 const pendingStorageLocatorKey = (storage: PendingProjectStorage): string =>
@@ -358,17 +543,22 @@ const pendingStorageLocatorKey = (storage: PendingProjectStorage): string =>
 const quarantinedLocatorsOf = (recoveries: Iterable<PendingProjectRecovery>): ReadonlyMap<string, string> =>
   new Map([...recoveries].map((recovery) => [pendingStorageLocatorKey(recovery.storage), recovery.projectId]));
 
-const locatorToPendingStorage = (locator: ProjectLocator): PendingProjectStorage =>
-  locator.backend === 'webaccess'
-    ? {
-        backend: locator.backend,
-        workspaceId: locator.workspaceId,
-        providerBasePath: locator.relativeDirectory,
-      }
-    : {
-        backend: locator.backend,
-        providerBasePath: locator.relativeDirectory,
-      };
+const locatorToPendingStorage = (locator: ProjectLocator): PendingProjectStorage => {
+  if (locator.backend === 'webaccess') {
+    return {
+      backend: locator.backend,
+      workspaceId: locator.workspaceId,
+      providerBasePath: locator.relativeDirectory,
+    };
+  }
+  if (locator.backend === 'node') {
+    return { backend: 'node', ...nodeRootPath(locator.path), providerBasePath: locator.relativeDirectory };
+  }
+  return {
+    backend: locator.backend,
+    providerBasePath: locator.relativeDirectory,
+  };
+};
 
 const projectOccurrences = (discovery: ProjectDiscoveryResult, projectId: string) =>
   discovery.entries.filter(
@@ -382,7 +572,7 @@ const projectOccurrences = (discovery: ProjectDiscoveryResult, projectId: string
  * re-picking the folder, not connecting a first one (DF4).
  */
 const resolveWorkspaceForWrite = async (workspaceId: string): Promise<WorkspaceEntry> => {
-  if (!isFileSystemAccessSupported) {
+  if (directoryPicker().backend !== 'webaccess' || !directoryPicker().available) {
     throw new WorkspaceDirectoryRequiredError('unsupported', { workspaceId });
   }
   const rows = await listWorkspaces();
@@ -400,6 +590,9 @@ const resolveWorkspaceForWrite = async (workspaceId: string): Promise<WorkspaceE
 };
 
 const pendingStorageToScope = async (storage: PendingProjectStorage): Promise<StorageRootConfig> => {
+  if (storage.backend === 'node') {
+    return { backend: 'node', path: storage.path ?? nodeHomeRoot() };
+  }
   if (storage.backend !== 'webaccess') {
     return { backend: storage.backend };
   }
@@ -411,10 +604,149 @@ const pendingStorageToScope = async (storage: PendingProjectStorage): Promise<St
   };
 };
 
+/** Retain actual owner I/O, whose lifetime Query cancellation cannot shorten. */
+function createMetadataReadOwner(source: ReturnType<typeof createChatFileStore>) {
+  const pending = new Map<Promise<unknown>, string | undefined>();
+  let registration = Promise.withResolvers<Error | undefined>();
+  let connection = Promise.withResolvers<{
+    readonly signal: AbortSignal;
+    project(id: string): ObservationService<void>;
+  }>();
+  return {
+    connect(project: (id: string) => ObservationService<void>): () => void {
+      const abort = new AbortController();
+      connection.resolve({ project, signal: abort.signal });
+      return () => {
+        abort.abort(new Error('Chat observation was disposed.'));
+        connection = Promise.withResolvers();
+      };
+    },
+    hold(): void {
+      const previous = registration;
+      registration = Promise.withResolvers<Error | undefined>();
+      // A retired admission wakes its readers so they can follow the current registration.
+      previous.resolve(undefined);
+    },
+    ready(): void {
+      registration.resolve(undefined);
+    },
+    fail(error: Error): void {
+      const previous = registration;
+      registration = Promise.withResolvers<Error | undefined>();
+      previous.resolve(undefined);
+      registration.resolve(error);
+    },
+    async read<Value>(
+      operation: (source: ReturnType<typeof createChatFileStore>) => Promise<Value>,
+      projectId?: string,
+    ): Promise<Value> {
+      const owner = await connection.promise;
+      owner.signal.throwIfAborted();
+      const observation = projectId === undefined ? undefined : owner.project(projectId);
+      const lease = observation?.acquire();
+      try {
+        if (lease) {
+          await new Promise<void>((resolve, reject) => {
+            let unsubscribe = (): void => undefined;
+            const cleanup = (): void => {
+              unsubscribe();
+              owner.signal.removeEventListener('abort', aborted);
+            };
+            const aborted = (): void => {
+              cleanup();
+              reject(
+                owner.signal.reason instanceof Error
+                  ? owner.signal.reason
+                  : new Error('Chat observation was disposed.'),
+              );
+            };
+            const check = (): void => {
+              const snapshot = lease.getSnapshot();
+              // Pending starts only after watch.ready; a query refetch must not wait for its own invalidation to finish.
+              if (snapshot.status === 'ready' || snapshot.status === 'pending') {
+                cleanup();
+                resolve();
+              } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+                cleanup();
+                reject(new Error(snapshot.error ?? 'Chat updates unavailable.'));
+              }
+            };
+            unsubscribe = lease.subscribe(check);
+            owner.signal.addEventListener('abort', aborted, { once: true });
+            check();
+          });
+        } else {
+          let admitted: typeof registration;
+          do {
+            admitted = registration;
+            // oxlint-disable-next-line eslint/no-await-in-loop -- Follow the current registration after replacement.
+            const error = await admitted.promise;
+            if (admitted === registration && error) {
+              throw error;
+            }
+          } while (admitted !== registration);
+        }
+        owner.signal.throwIfAborted();
+        const promise = operation(source);
+        pending.set(promise, projectId);
+        try {
+          const value = await promise;
+          owner.signal.throwIfAborted();
+          return value;
+        } finally {
+          pending.delete(promise);
+        }
+      } finally {
+        lease?.release();
+      }
+    },
+    async settle(projectId?: string): Promise<void> {
+      const relevant = (): Array<Promise<unknown>> => {
+        const reads: Array<Promise<unknown>> = [];
+        for (const [promise, id] of pending) {
+          if (projectId === undefined || id === projectId) {
+            reads.push(promise);
+          }
+        }
+        return reads;
+      };
+      let reads = relevant();
+      while (reads.length > 0) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Include reads admitted while a prior non-abortable owner read is settling.
+        await Promise.allSettled(reads);
+        reads = relevant();
+      }
+    },
+  };
+}
+
 export function ProjectManagerProvider({ children }: { readonly children: ReactNode }): React.JSX.Element {
   const actorRef = useActorRef(projectManagerMachine);
   const fileManager = useFileManager();
   const queryClient = useQueryClient();
+  /**
+   * A chat is files in its project (D25, A30, W17): `.tau/chats/<id>/chat.json`
+   * read and written through the same worker filesystem client the rest of this
+   * provider uses. The browser object store holds no chat.
+   *
+   * Finding *which* project a chat id is in is the one thing the object store's
+   * single table gave for free. The inventory comes from the listing this
+   * provider already publishes into the query cache, rather than from a second
+   * discovery pass: a chat read for a known project never needs it at all, and
+   * the global chat inventory is a surface that only exists once the project
+   * list has rendered.
+   */
+  const chatStore = useMemo(
+    () =>
+      createChatFileStore({
+        client: fileManager.recordFiles,
+        projectIds: async () =>
+          (queryClient.getQueryData<ProjectListing>(['projects'])?.projects ?? []).map((entry) => entry.manifest.id),
+      }),
+    [fileManager.recordFiles, queryClient],
+  );
+  const metadataReadOwner = useMemo(() => createMetadataReadOwner(chatStore), [chatStore]);
+  const workspaceTelemetry = useWorkspaceTelemetry();
   const projectNameClient = useProjectNameClient();
   const discoveryReadinessRef = useRef<Promise<void> | undefined>(undefined);
   const recoveryLoopRef = useRef<Promise<void> | undefined>(undefined);
@@ -422,41 +754,84 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
   /** Settle attempts per pending operation this session (DF11 retry cap). */
   const recoveryAttemptsRef = useRef(new Map<string, number>());
   const discoveryPassRef = useRef<Promise<ProjectDiscoveryResult> | undefined>(undefined);
+  const discoveryPassEpochRef = useRef<number | undefined>(undefined);
+  const connectionTraceRef = useRef<WorkspaceConnectionTrace | undefined>(undefined);
+  const connectionPromiseRef = useRef<Promise<ConnectedWorkspace | undefined> | undefined>(undefined);
   /**
    * Bumped when a discovery pass starts and when the durable route
    * configuration changes underneath one. A pass whose epoch is no longer
    * current holds a stale snapshot and must not garbage-collect configs.
    */
   const discoveryEpochRef = useRef(0);
-  const [recoveryRevision, setRecoveryRevision] = useState(0);
+  const discoverySnapshotRef = useRef<{ epoch: number; result: ProjectDiscoveryResult } | undefined>(undefined);
+  /*
+   * What the provider publishes about pending recoveries. `recoveriesRef` stays
+   * the live map — settling is asynchronous, and one loop iteration must see
+   * what the last one wrote — and every write republishes this snapshot, which
+   * is what moves the context value and re-runs the consumers that read it.
+   *
+   * P66: the change signal is this value, never a dependency array. React
+   * Compiler infers a callback's dependencies from what its body reads and
+   * erases every listed entry it never touches, so a revision counter beside a
+   * ref read compiles to a callback whose identity never moves again.
+   */
+  const [recoveries, setRecoveries] = useState<readonly PendingProjectRecovery[]>([]);
 
   const invalidateProjectsList = useCallback(() => {
+    discoveryEpochRef.current++;
+    discoverySnapshotRef.current = undefined;
     void queryClient.invalidateQueries({ queryKey: ['projects'] });
   }, [queryClient]);
 
-  const invalidationTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const scheduleProjectsListInvalidation = useCallback(() => {
-    clearTimeout(invalidationTimerRef.current);
-    invalidationTimerRef.current = setTimeout(invalidateProjectsList, discoveryInvalidationDebounce);
-  }, [invalidateProjectsList]);
+  const invalidateChatQueries = useCallback(
+    (resourceId: string, chatId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ['chats', resourceId] });
+      void queryClient.invalidateQueries({ queryKey: ['all-chats'] });
+      void queryClient.invalidateQueries({ queryKey: ['chat', chatId] });
+    },
+    [queryClient],
+  );
 
-  useEffect(() => {
-    return () => {
-      clearTimeout(invalidationTimerRef.current);
-    };
+  const invalidateProjectedChats = useCallback(
+    (resourceId: string, chatIds: readonly string[]) => {
+      for (const chatId of chatIds) {
+        invalidateChatQueries(resourceId, chatId);
+      }
+    },
+    [invalidateChatQueries],
+  );
+
+  const discoveryObservationRef = useRef<ObservationService<void> | undefined>(undefined);
+  const metadataObservationRef = useRef<ObservationService<void> | undefined>(undefined);
+  const refreshProjectMetadataRef = useRef<((resourceId: string) => void) | undefined>(undefined);
+  const [discoveryObservationError, setDiscoveryObservationError] = useState<string>();
+  const [metadataObservationError, setMetadataObservationError] = useState<string>();
+  const [metadataObservationErrors, setMetadataObservationErrors] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  const getMetadataObservationError = useCallback(
+    (resourceId: string): string | undefined => metadataObservationErrors.get(resourceId),
+    [metadataObservationErrors],
+  );
+  const refreshFilesystemObservations = useCallback((resourceId?: string) => {
+    if (resourceId !== undefined) {
+      refreshProjectMetadataRef.current?.(resourceId);
+      return;
+    }
+    discoveryObservationRef.current?.refresh();
+    metadataObservationRef.current?.refresh();
+  }, []);
+  const scheduleProjectsListInvalidation = useCallback(() => {
+    discoveryEpochRef.current++;
+    discoverySnapshotRef.current = undefined;
+    discoveryObservationRef.current?.invalidate();
   }, []);
 
   useEffect(() => {
     const channel = fileManager.workerChangeChannel;
     if (!channel) {
-      return;
+      return undefined;
     }
-    /**
-     * Discovery-relevant change paths under the flat layout: the synthetic
-     * root event, a root-level directory (a project directory appearing or
-     * going away), and any `tau.json`. Dot-prefixed segments are workspace or
-     * project app state (`.tau/**`) and must never trigger a rescan (F1).
-     */
     const isManifestPath = (path: string): boolean => {
       const segments = path.split('/').filter(Boolean);
       if (segments.length === 0) {
@@ -467,22 +842,350 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       }
       return segments.length === 1 || segments.at(-1) === 'tau.json';
     };
-    const subscription = { interestedIn: isManifestPath, handler: scheduleProjectsListInvalidation };
-    const unsubscribers = [
-      channel.onFileWritten(subscription),
-      channel.onFileDeleted(subscription),
-      channel.onFileRenamed(subscription),
-      channel.onDirectoryCreated(subscription),
-      channel.onDirectoryDeleted(subscription),
-      channel.onDirectoryRenamed(subscription),
-      channel.onDirectoryChanged(subscription),
-    ];
-    return () => {
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe();
+    let discoveryDirty = false;
+    const discovery = new ObservationService<void>({
+      resource: 'workspace/project-discovery',
+      refresh: () => {
+        discoveryDirty = true;
+      },
+      watch: (invalidate, reset) =>
+        channel.watchReady({ paths: [''], recursive: true }, (event) => {
+          if (event.type === 'reset') {
+            reset();
+            return;
+          }
+          const paths = event.type === 'rename' ? [event.oldPath, event.newPath] : [event.path];
+          if (paths.some((path) => isManifestPath(path))) {
+            invalidate();
+          }
+        }),
+      invalidate: () => {
+        discoveryDirty = true;
+        discoveryEpochRef.current++;
+        discoverySnapshotRef.current = undefined;
+        void queryClient.cancelQueries({ queryKey: ['projects'] });
+      },
+      read: async ({ isCurrent }) => {
+        if (!isCurrent() || !discoveryDirty) {
+          return;
+        }
+        discoveryDirty = false;
+        const heldPass = discoveryPassRef.current;
+        if (heldPass) {
+          await heldPass;
+        }
+        if (isCurrent()) {
+          await queryClient.invalidateQueries({ queryKey: ['projects'] }, { cancelRefetch: false });
+        }
+      },
+    });
+    discoveryObservationRef.current = discovery;
+    const resources = new Map<string, Set<string>>();
+    const projectMetadata = new Map<string, ObservationService<void>>();
+    const refreshProjectMetadata = (resourceId: string): void => {
+      projectMetadata.get(resourceId)?.refresh();
+    };
+    refreshProjectMetadataRef.current = refreshProjectMetadata;
+    const publishMetadataHealth = (id: string, error: string | undefined): void => {
+      setMetadataObservationErrors((previous) => {
+        if (previous.get(id) === error) {
+          return previous;
+        }
+        const next = new Map(previous);
+        if (error === undefined) {
+          next.delete(id);
+        } else {
+          next.set(id, error);
+        }
+        return next;
+      });
+    };
+    const projectSource = (id: string): ObservationService<void> => {
+      let source = projectMetadata.get(id);
+      if (!source) {
+        let unsubscribeHealth = (): void => undefined;
+        source = new ObservationService<void>({
+          resource: `/projects/${id}/.tau/chats`,
+          watch: (invalidate, reset) => {
+            const watch = fileManager.watchRecordFile(
+              `/projects/${id}/.tau/chats`,
+              (event) => {
+                if (projectMetadata.get(id) !== source || source?.activeLeaseCount === 0) {
+                  return;
+                }
+                if (event.type === 'reset') {
+                  resources.set(id, new Set());
+                  reset();
+                  return;
+                }
+                const paths = event.type === 'rename' ? [event.oldPath, event.newPath] : [event.path];
+                const chats = resources.get(id) ?? new Set<string>();
+                let changed = false;
+                for (const path of paths) {
+                  const segments = path.split('/');
+                  if (
+                    segments[0] === '.tau' &&
+                    segments[1] === 'chats' &&
+                    (segments.length <= 3 || (segments.length === 4 && segments[3] === 'chat.json'))
+                  ) {
+                    if (segments[2]) {
+                      chats.add(segments[2]);
+                    }
+                    changed = true;
+                  }
+                }
+                if (changed) {
+                  resources.set(id, chats);
+                  invalidate();
+                }
+              },
+              { recursive: true },
+            );
+            return {
+              ready: watch.ready,
+              closed: watch.closed,
+              dispose: () => {
+                watch.dispose();
+                if (source?.activeLeaseCount === 0) {
+                  unsubscribeHealth();
+                  if (projectMetadata.get(id) === source) {
+                    projectMetadata.delete(id);
+                    publishMetadataHealth(id, undefined);
+                  }
+                }
+              },
+            };
+          },
+          refresh: () => {
+            if (source?.getSnapshot().status !== 'registering') {
+              resources.set(id, new Set());
+            }
+          },
+          invalidate: () => {
+            if (
+              source?.activeLeaseCount === 0 ||
+              (!resources.has(id) && source?.getSnapshot().status === 'registering')
+            ) {
+              return;
+            }
+            void queryClient.cancelQueries({ queryKey: ['all-chats'] });
+            void queryClient.cancelQueries({ queryKey: ['chats', id] });
+            for (const chatId of resources.get(id) ?? []) {
+              void queryClient.cancelQueries({ queryKey: ['chat', chatId] });
+            }
+          },
+          read: async ({ isCurrent }) => {
+            const chats = resources.get(id);
+            if (!chats) {
+              return;
+            }
+            await metadataReadOwner.settle(id);
+            if (!isCurrent()) {
+              return;
+            }
+            resources.delete(id);
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['chats', id] }, { cancelRefetch: false }),
+              ...[...chats].map(async (chatId) =>
+                queryClient.invalidateQueries({ queryKey: ['chat', chatId] }, { cancelRefetch: false }),
+              ),
+            ]);
+            await metadataReadOwner.settle(id);
+          },
+        });
+        projectMetadata.set(id, source);
+        unsubscribeHealth = source.subscribe(() => {
+          if (!source || projectMetadata.get(id) !== source) {
+            return;
+          }
+          const snapshot = source.getSnapshot();
+          if (snapshot.status === 'ready') {
+            publishMetadataHealth(id, undefined);
+          } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+            publishMetadataHealth(id, snapshot.error ?? 'Chat updates unavailable.');
+          }
+        });
+      }
+      return source;
+    };
+    const disconnect = metadataReadOwner.connect(projectSource);
+    let membership = false;
+    const metadata = new ObservationService<void>({
+      resource: 'workspace/chat-metadata',
+      refresh: () => {
+        membership = true;
+      },
+      watch: (invalidate, reset) => {
+        const onEvent = (event: WatchEvent): void => {
+          if (event.type === 'reset') {
+            membership = true;
+            reset();
+            return;
+          }
+          const paths = event.type === 'rename' ? [event.oldPath, event.newPath] : [event.path];
+          let changed = false;
+          for (const path of paths) {
+            const segments = path.split('/').filter(Boolean);
+            if (segments.length <= 1) {
+              membership = true;
+              changed = true;
+              continue;
+            }
+            if (segments[0] !== 'projects') {
+              continue;
+            }
+            const projectId = segments[1]!;
+            if (segments.length === 2 || (segments[2] === '.tau' && segments.length === 3)) {
+              membership = true;
+              changed = true;
+            } else if (
+              segments[2] === '.tau' &&
+              segments[3] === 'chats' &&
+              (segments.length <= 5 || (segments[5] === 'chat.json' && segments.length === 6))
+            ) {
+              const chats = resources.get(projectId) ?? new Set<string>();
+              if (segments[4]) {
+                chats.add(segments[4]);
+              }
+              resources.set(projectId, chats);
+              changed = true;
+            }
+          }
+          if (changed) {
+            for (const id of resources.keys()) {
+              projectMetadata.get(id)?.invalidate();
+            }
+            invalidate();
+          }
+        };
+        const home = channel.watchReady({ paths: [''], recursive: true }, onEvent);
+        let listing = queryClient.getQueryData<ProjectListing>(['projects']);
+        const synchronize = (): void => {
+          const next = queryClient.getQueryData<ProjectListing>(['projects']);
+          if (next === listing) {
+            return;
+          }
+          listing = next;
+          membership = true;
+          invalidate();
+        };
+        const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+          if (event.query.queryKey.length === 1 && event.query.queryKey[0] === 'projects') {
+            synchronize();
+          }
+        });
+        return {
+          ready: home.ready,
+          closed: home.closed,
+          dispose: () => {
+            unsubscribe();
+            home.dispose();
+          },
+        };
+      },
+      invalidate: () => {
+        metadataReadOwner.hold();
+        void queryClient.cancelQueries({ queryKey: ['all-chats'] });
+        if (membership) {
+          void queryClient.cancelQueries({ queryKey: ['chats'] });
+          void queryClient.cancelQueries({ queryKey: ['chat'] });
+        } else {
+          for (const [resourceId, chatIds] of resources) {
+            void queryClient.cancelQueries({ queryKey: ['chats', resourceId] });
+            for (const chatId of chatIds) {
+              void queryClient.cancelQueries({ queryKey: ['chat', chatId] });
+            }
+          }
+        }
+      },
+      read: async (read) => {
+        const { isCurrent } = read;
+        const listing = queryClient.getQueryData<ProjectListing>(['projects']);
+        const ids = new Set(listing ? listing.projects.map(({ manifest }) => manifest.id) : resources.keys());
+        for (const id of resources.keys()) {
+          if (!ids.has(id)) {
+            resources.delete(id);
+          }
+        }
+        for (const [id, source] of projectMetadata) {
+          if (!ids.has(id) && source.activeLeaseCount === 0) {
+            projectMetadata.delete(id);
+          }
+        }
+        const changed = membership || resources.size > 0;
+        const results = await Promise.allSettled([...ids].map(async (id) => read.observe(projectSource(id))));
+        if (!isCurrent()) {
+          return;
+        }
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure?.status === 'rejected') {
+          metadataReadOwner.fail(new Error(String(failure.reason)));
+        } else {
+          metadataReadOwner.ready();
+        }
+        if (!changed) {
+          return;
+        }
+        await metadataReadOwner.settle();
+        if (!isCurrent()) {
+          return;
+        }
+        const pending: Array<Promise<void>> = [];
+        if (membership) {
+          membership = false;
+          pending.push(queryClient.invalidateQueries({ queryKey: ['chats'] }, { cancelRefetch: false }));
+          pending.push(queryClient.invalidateQueries({ queryKey: ['chat'] }, { cancelRefetch: false }));
+        }
+        pending.push(queryClient.invalidateQueries({ queryKey: ['all-chats'] }, { cancelRefetch: false }));
+        await Promise.all(pending);
+        await metadataReadOwner.settle();
+      },
+    });
+    metadataObservationRef.current = metadata;
+    const updateDiscoveryHealth = (): void => {
+      const snapshot = discovery.getSnapshot();
+      if (snapshot.status === 'ready') {
+        setDiscoveryObservationError(undefined);
+      } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+        setDiscoveryObservationError(snapshot.error);
       }
     };
-  }, [fileManager.workerChangeChannel, scheduleProjectsListInvalidation]);
+    const updateMetadataHealth = (): void => {
+      const snapshot = metadata.getSnapshot();
+      if (snapshot.status === 'ready') {
+        setMetadataObservationError(undefined);
+      } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+        metadataReadOwner.fail(new Error(snapshot.error ?? 'Chat updates unavailable.'));
+        setMetadataObservationError(snapshot.error);
+      }
+    };
+    const unsubscribeDiscovery = discovery.subscribe(updateDiscoveryHealth);
+    const unsubscribeMetadata = metadata.subscribe(updateMetadataHealth);
+    metadataReadOwner.hold();
+    const discoveryLease = discovery.acquire();
+    const metadataLease = metadata.acquire();
+    updateDiscoveryHealth();
+    updateMetadataHealth();
+    return () => {
+      unsubscribeDiscovery();
+      unsubscribeMetadata();
+      if (refreshProjectMetadataRef.current === refreshProjectMetadata) {
+        refreshProjectMetadataRef.current = undefined;
+      }
+      if (metadataObservationRef.current === metadata) {
+        metadataObservationRef.current = undefined;
+      }
+      if (discoveryObservationRef.current === discovery) {
+        discoveryObservationRef.current = undefined;
+      }
+      discoveryLease.release();
+      metadataLease.release();
+      disconnect();
+      projectMetadata.clear();
+      setMetadataObservationErrors((previous) => (previous.size === 0 ? previous : new Map()));
+      metadataReadOwner.fail(new Error('Chat observation was disposed.'));
+    };
+  }, [fileManager.workerChangeChannel, fileManager.watchRecordFile, metadataReadOwner, queryClient]);
 
   // Select state from the machine
   const error = useSelector(actorRef, (state) => state.context.error);
@@ -550,6 +1253,84 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     [fileManager.client],
   );
 
+  /** The attachment store a composer directory names; the Home composer's when none is named. */
+  const composerAttachments = useCallback(
+    (directory: string | undefined) =>
+      directory === undefined
+        ? createComposerRecordStore(fileManager.recordFiles, composerRecordPaths.newProject).attachments
+        : createAttachmentStore(fileManager.recordFiles, directory),
+    [fileManager.recordFiles],
+  );
+
+  /**
+   * Copy a new chat's referenced attachments out of the composer directory the
+   * operation names. Idempotent by hash, so a resumed operation repeats it safely.
+   */
+  const promoteDraftAttachments = useCallback(
+    async (operation: PendingProjectOperation, chats: readonly Chat[]): Promise<void> => {
+      // Only a create carries a fresh draft; a duplicate's chats already own their bytes.
+      if (operation.kind !== 'create') {
+        return;
+      }
+      const source = composerAttachments(operation.attachmentSource);
+      await Promise.all(
+        chats.map(async (chat) => {
+          const target = createChatAttachmentStore(fileManager.recordFiles, operation.manifest.id, chat.id);
+          const references = chat.messages.flatMap((message) =>
+            message.parts.flatMap((part) => {
+              const reference = part.type === 'file' ? attachmentReferenceOf(part) : undefined;
+              return reference === undefined ? [] : [reference];
+            }),
+          );
+          await Promise.all(references.map(async (reference) => source.copyTo(target, reference)));
+        }),
+      );
+    },
+    [composerAttachments, fileManager.recordFiles],
+  );
+
+  /**
+   * Images for the naming profile, which needs bytes over HTTP. Documents are
+   * not sent to it (blueprint §Legacy arms).
+   */
+  const namingImageUrls = useCallback(
+    async (message: NonNullable<CreateProjectChatOptions['initialMessage']>): Promise<string[]> => {
+      const source = composerAttachments(message.attachmentSource);
+      const urls = await Promise.all(
+        (message.attachments ?? [])
+          .filter((attachment) => attachmentKind(attachment.mediaType) === 'image')
+          .map(async (attachment) => {
+            const bytes = await source.read(attachment);
+            return bytes && `data:${attachment.mediaType};base64,${uint8ArrayToBase64(bytes)}`;
+          }),
+      );
+      return urls.filter((url) => url !== undefined);
+    },
+    [composerAttachments],
+  );
+
+  /**
+   * Reclaim a permanently deleted project's composer records (blueprint D11).
+   *
+   * Every per-chat record for the project, and the draft-stage attachments
+   * beside them, live under the one Home-workspace directory, so the subtree
+   * goes in a single recursive removal keyed on the project id — no other
+   * project's records are under it. A project that never held a draft has no
+   * directory at all, and that absence is not a failure.
+   */
+  const removeProjectComposerRecords = useCallback(
+    async (projectId: string): Promise<void> => {
+      try {
+        await fileManager.recordFiles.rmdir(composerRecordPaths.project(projectId), { recursive: true });
+      } catch (error) {
+        if (!isNotFound(error)) {
+          throw error;
+        }
+      }
+    },
+    [fileManager.recordFiles],
+  );
+
   const resumePendingProjectOperation = useCallback(
     async (operation: PendingProjectOperation, suppliedWorker?: Remote<ObjectStoreWorker>): Promise<void> => {
       const worker = suppliedWorker ?? (await getReadiedWorker());
@@ -576,6 +1357,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         }
         try {
           await worker.deleteProjectResources(operation.projectId);
+          await removeProjectComposerRecords(operation.projectId);
           const updatedPreferences = await worker.setProjectDisclosure(operation.projectId, undefined);
           if (updatedPreferences) {
             void queryClient.invalidateQueries({ queryKey: ['app-ui-preferences'] });
@@ -595,12 +1377,18 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           await pinHomeStorageBackend(operation.backend);
         }
         const scope = await pendingStorageToScope(operation);
-        result = await fileManager.client.commitPendingProjectDirectory({
+        /* The bytes are handed over: this attempt owns them, and a retry reads
+         * the durable pending operation again (`getPendingProjectOperations`),
+         * so the bridge transfers them instead of copying the whole import. */
+        const input = {
           providerBasePath: operation.providerBasePath,
           scope,
           files: Object.fromEntries(Object.entries(operation.files).filter(([path]) => path !== 'tau.json')),
           manifest: serializeProjectManifest(operation.manifest),
-        });
+        };
+        result = await fileManager.client.commitPendingProjectDirectory(
+          Object.assign(input, { [consumableBytes]: true }),
+        );
       } catch (error) {
         throw new PendingProjectRecoveryError(
           error instanceof WorkspaceDirectoryRequiredError ? 'workspace-unavailable' : 'filesystem-error',
@@ -614,48 +1402,86 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       try {
         await setProjectFileSystemConfig(pendingStorageToConfig(operation.manifest.id, operation));
         await fileManager.workspace.syncProjectRoots();
-        await worker.resumePendingProjectOperationResources(operation.operationId);
+        /* The project's root is mounted by the line above, so the chats this
+         * operation carries can be written where they live: files inside it. */
+        const chats = await worker.resumePendingProjectOperationResources(operation.operationId);
+        // The bytes land before the record that makes the startup request runnable.
+        await promoteDraftAttachments(operation, chats);
+        await Promise.all(chats.map(async (chat) => chatStore.putChatRecord(chat)));
         await worker.completePendingProjectOperation(operation.operationId);
       } catch (error) {
         throw new PendingProjectRecoveryError('local-state-error', { cause: error });
       }
+      if (operation.backend === 'indexeddb' || operation.backend === 'opfs') {
+        void requestHomeStoragePersistence();
+      }
     },
-    [assertProjectAbsentAfterDelete, fileManager, getReadiedWorker, queryClient],
+    [
+      assertProjectAbsentAfterDelete,
+      chatStore,
+      fileManager,
+      getReadiedWorker,
+      promoteDraftAttachments,
+      queryClient,
+      removeProjectComposerRecords,
+    ],
   );
 
-  const createProject = useCallback(
+  const createProjectOnce = useCallback(
     async (options: CreateProjectOptions): Promise<CreatedProject> => {
+      /* The id is a directory here and a repository name on the Tau Hosted
+         Remote, so a supplied one is checked against the same rule a minted one
+         satisfies — before anything is readied, allocated or written (W18 DEF-2). */
+      if (options.id !== undefined && !projectIdSchema.safeParse(options.id).success) {
+        throw new Error(`Not a project id: ${options.id}`);
+      }
+      /* One id is one local project (review R4). The *From Tau Cloud* row is
+         offered from a cached listing against an asynchronous discovery pass, so
+         the same row can be clicked twice — and two directories under one id is
+         a `duplicate-id` conflict neither of them recovers from. The route
+         config is the durable record of what this device holds. */
+      if (options.id !== undefined && (await getProjectFileSystemConfig(options.id)) !== undefined) {
+        throw new Error(`That project is already on this device: ${options.id}`);
+      }
       const worker = await getReadiedWorker();
 
       const { location: explicitLocation } = options;
       let location = explicitLocation;
       if (!location) {
         const { location: preferredLocation } = await getProjectCreationLocation({
-          webAccessSupported: isFileSystemAccessSupported,
+          webAccessSupported: directoryPicker().available,
         });
         location = preferredLocation;
       }
-      let storageRoot:
-        | { readonly backend: 'indexeddb' | 'opfs' }
-        | { readonly backend: 'webaccess'; readonly workspaceId: string };
+      let storageRoot: PersistentStorageRoot;
       // The workspace is resolved here, so the result can carry the canonical
       // URL its caller navigates to instead of riding an id-addressed redirect.
       let workspaceSlug: string;
       if (location.kind === 'workspace') {
-        const entry = await resolveWorkspaceForWrite(location.workspaceId);
-        storageRoot = {
-          backend: 'webaccess',
-          workspaceId: entry.workspace.workspaceId,
-        };
-        workspaceSlug = entry.workspace.slug;
+        const picked = await getWorkspaceMetadata(location.workspaceId);
+        if (picked && isNodeWorkspace(picked)) {
+          // A node workspace is a directory on disk: nothing to grant, nothing
+          // to reconnect. Its row existing is the whole admission check.
+          storageRoot = { backend: 'node', path: picked.path };
+          workspaceSlug = picked.slug;
+        } else {
+          const entry = await resolveWorkspaceForWrite(location.workspaceId);
+          storageRoot = {
+            backend: 'webaccess',
+            workspaceId: entry.workspace.workspaceId,
+          };
+          workspaceSlug = entry.workspace.slug;
+        }
       } else {
         storageRoot = { backend: await getHomeStorageBackend() };
         workspaceSlug = homeWorkspaceSlug;
       }
 
+      const projectId = options.id ?? generatePrefixedId(idPrefix.project);
+
       // Determine project data and files based on pattern
       let projectData: Omit<ProjectManifest, '$schema' | 'id'>;
-      let files: Record<string, { content: Uint8Array<ArrayBuffer> }>;
+      let files: Record<string, { content: Uint8Array<ArrayBuffer>; mode?: '100644' | '100755' }>;
       let kernel: KernelProvider | undefined;
 
       if ('kernel' in options) {
@@ -664,10 +1490,17 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         const { projectName: requestedProjectName } = options;
         let projectName = requestedProjectName;
         if (!projectName && options.initialMessage) {
-          const generated = await projectNameClient.generate({
-            text: options.initialMessage.content,
-            imageUrls: options.initialMessage.imageUrls,
-          });
+          const generated = await projectNameClient
+            .generate({
+              projectId,
+              text: options.initialMessage.content,
+              imageUrls: await namingImageUrls(options.initialMessage),
+            })
+            /* Naming is a courtesy from the API, not a prerequisite: with the
+             * API unreachable (a daemon-served page, desktop offline) the
+             * project is still created, under the same default an empty
+             * suggestion gets. */
+            .catch((): string => '');
           projectName = generated.trim() || defaultProjectName;
         }
         const mainFileName = getMainFile(options.kernel);
@@ -676,6 +1509,8 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           projectName: projectName ?? defaultProjectName,
           mainFileName,
           emptyCodeContent: encodeTextFile(emptyCode),
+          language: getKernelOption(options.kernel).language,
+          dependencies: await getKernelDependencies(options.kernel),
         });
         projectData = result.projectData;
         files = result.files;
@@ -685,7 +1520,6 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         files = options.files;
       }
 
-      const projectId = generatePrefixedId(idPrefix.project);
       const manifest = projectToManifest({ ...projectData, id: projectId });
       const providerBasePath = await allocateProjectBasePath(fileManager.client, storageRoot, manifest.name);
       const pendingStorage: PendingProjectStorage = { ...storageRoot, providerBasePath };
@@ -694,13 +1528,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       // for display purposes. The permission to run it automatically after
       // route hydration is separate one-shot command state on the chat row.
       const initialUserMessage = options.initialMessage
-        ? createMessage({
-            content: options.initialMessage.content,
-            role: messageRole.user,
-            metadata: {
-              status: messageStatus.pending,
-            },
-            imageUrls: options.initialMessage.imageUrls,
+        ? buildUserMessage({
+            text: options.initialMessage.content,
+            attachments: options.initialMessage.attachments,
           })
         : undefined;
       const chatMessages = initialUserMessage ? [initialUserMessage] : [];
@@ -709,6 +1539,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
             id: generatePrefixedId(idPrefix.request),
             kind: 'regenerate-tail',
             messageId: initialUserMessage.id,
+            message: initialUserMessage,
             source: 'homepage-initial-message',
             createdAt: Date.now(),
           }
@@ -720,24 +1551,47 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       // cookie change in another tab does not mutate the active selection
       // for this freshly-created chat. Defaults to the kernel chosen by
       // the creation flow when not explicitly supplied.
-      const seededActiveModel = options.activeModel;
+      const seededActiveExecution = options.activeExecution;
       const seededActiveKernel = options.activeKernel ?? kernel;
 
       // Single atomic call to create project + chat + Editor state
       const operation = await worker.prepareProjectCreation({
         manifest,
-        chat: {
-          name: chatName,
-          messages: chatMessages,
-          activeModel: seededActiveModel,
-          activeKernel: seededActiveKernel,
-          ...(startupRequest ? { startupRequest } : {}),
-        },
+        ...(options.chat === false
+          ? {}
+          : {
+              chat: {
+                name: chatName,
+                messages: chatMessages,
+                activeExecution: seededActiveExecution,
+                activeKernel: seededActiveKernel,
+                ...(startupRequest ? { startupRequest } : {}),
+              },
+              ...attachmentSourceOf(options),
+            }),
         editorState: options.editorState,
         files,
         storage: pendingStorage,
       });
       await resumePendingProjectOperation(operation, worker);
+      /* D19: a project born with no remote backs up to Tau Cloud from its first
+         revision — a template, a fork, a file or zip import. A caller that
+         supplies the id is adopting an identity that has a remote of its own (a
+         Tau Cloud open, a materialized project, a linked GitHub import), so it
+         is left alone. The session decides once it knows the account (W11). */
+      if (options.id === undefined) {
+        tauCloudIntent.set(projectId, 'default');
+      }
+      /* Route callers navigate with the returned slugs immediately. Publish
+       * the completed filesystem commit to every active project-list query
+       * before that navigation can ask the sole slug resolver for its id. */
+      const previous = discoveryPassRef.current;
+      if (previous) {
+        await previous.catch(() => undefined);
+      }
+      discoveryEpochRef.current++;
+      discoverySnapshotRef.current = undefined;
+      await queryClient.invalidateQueries({ queryKey: ['projects'] });
       try {
         await setProjectCreationLocation(location);
       } catch (error) {
@@ -746,14 +1600,28 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
       return { ...operation.manifest, slugs: { workspaceSlug, projectSlug: directorySlug(providerBasePath) } };
     },
-    [fileManager.client, getReadiedWorker, projectNameClient, resumePendingProjectOperation],
+    [
+      fileManager.client,
+      getReadiedWorker,
+      namingImageUrls,
+      projectNameClient,
+      queryClient,
+      resumePendingProjectOperation,
+    ],
   );
 
   const runDiscoveryPass = useCallback(
     async (options?: { quarantinedLocators?: ReadonlyMap<string, string> }) => {
       const epoch = ++discoveryEpochRef.current;
-      const discovered = await fileManager.client.listProjectManifests();
+      const [discovered, persistedConfigs] = await Promise.all([
+        fileManager.client.listProjectManifests(),
+        getAllProjectFileSystemConfigs(),
+      ]);
       const quarantinedLocators = options?.quarantinedLocators ?? quarantinedLocatorsOf(recoveriesRef.current.values());
+      // One cursor pass over the route configs serves duplicate anchoring, the
+      // per-entry reconcile below and the orphan sweep after it. Mid-loop writes
+      // update the map so the sweep judges the route this pass just published.
+      const configs = new Map(persistedConfigs.map((config) => [config.projectId, config] as const));
       const occurrenceCount = new Map<string, number>();
       for (const entry of discovered.entries) {
         if (entry.status === 'valid' || entry.status === 'duplicate-id' || entry.status === 'route-blocked') {
@@ -765,7 +1633,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           if (entry.status !== 'valid' && entry.status !== 'duplicate-id') {
             return entry;
           }
-          return (occurrenceCount.get(entry.manifest.id) ?? 0) > 1
+          /* A copy never demotes the directory its route already binds: only an
+           * unbound copy is quarantined, and with no binding every copy is
+           * (blueprint R7; no scan-order winner, F10). */
+          return (occurrenceCount.get(entry.manifest.id) ?? 0) > 1 &&
+            !routeBindsLocator(configs.get(entry.manifest.id), entry.locator)
             ? { ...entry, status: 'duplicate-id' }
             : { ...entry, status: 'valid' };
         })
@@ -796,36 +1668,22 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       // "workspace not scanned this pass", which is why the store is consulted.
       const workspaces = await listWorkspaces();
       const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.workspaceId));
-      // One cursor pass over the route configs serves both the per-entry
-      // reconcile below and the orphan sweep after it. Mid-loop writes update
-      // the map so the sweep judges the route this pass just published.
-      const persistedConfigs = await getAllProjectFileSystemConfigs();
-      const configs = new Map(persistedConfigs.map((config) => [config.projectId, config] as const));
-      let routesChanged = false;
+      const configUpserts: ProjectFileSystemConfig[] = [];
+      const configDeletes: string[] = [];
       const blockedProjectIds = new Set<string>();
-      /* oxlint-disable eslint/no-await-in-loop -- Discovery reconciles each durable locator before publishing the route snapshot. */
       for (const entry of result.entries) {
         if (entry.status !== 'valid') {
           continue;
         }
         const existing = configs.get(entry.manifest.id);
-        const next: ProjectFileSystemConfig =
-          entry.locator.backend === 'webaccess'
-            ? {
-                projectId: entry.manifest.id,
-                backend: 'webaccess',
-                workspaceId: entry.locator.workspaceId,
-                providerBasePath: entry.locator.relativeDirectory,
-              }
-            : {
-                projectId: entry.manifest.id,
-                backend: entry.locator.backend,
-                providerBasePath: entry.locator.relativeDirectory,
-              };
+        const next = routeConfigFor(entry.manifest.id, entry.locator);
         if (existing) {
+          // Which physical root the row names: the workspace for webaccess, the
+          // absolute path for node. Every other backend has exactly one root.
           const sameWorkspace =
-            existing.backend !== 'webaccess' ||
-            (next.backend === 'webaccess' && existing.workspaceId === next.workspaceId);
+            existing.backend === 'webaccess'
+              ? next.backend === 'webaccess' && existing.workspaceId === next.workspaceId
+              : existing.backend !== 'node' || (next.backend === 'node' && existing.path === next.path);
           if (
             existing.backend === next.backend &&
             existing.providerBasePath === next.providerBasePath &&
@@ -843,9 +1701,8 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
             continue;
           }
         }
-        await setProjectFileSystemConfig(next);
+        configUpserts.push(next);
         configs.set(next.projectId, next);
-        routesChanged = true;
       }
       if (blockedProjectIds.size > 0) {
         result = {
@@ -888,15 +1745,17 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           ) {
             // Chats, editor layout and library rows are keyed by project id, so
             // they must go with the config or they re-attach if the folder returns.
-            await worker.deleteProjectResources(config.projectId);
-            await deleteProjectFileSystemConfig(config.projectId);
-            routesChanged = true;
+            configDeletes.push(config.projectId);
           }
         }
+        await Promise.all(configDeletes.map(async (projectId) => worker.deleteProjectResources(projectId)));
       }
-      /* oxlint-enable eslint/no-await-in-loop -- End ordered locator reconciliation. */
-      if (routesChanged) {
+      if (configUpserts.length > 0 || configDeletes.length > 0) {
+        await applyProjectFileSystemConfigChanges({ upserts: configUpserts, deletes: configDeletes });
         await fileManager.workspace.syncProjectRoots();
+      }
+      if (epoch === discoveryEpochRef.current) {
+        discoverySnapshotRef.current = { epoch, result };
       }
       return result;
     },
@@ -916,9 +1775,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           return await runDiscoveryPass(options);
         } finally {
           discoveryPassRef.current = undefined;
+          discoveryPassEpochRef.current = undefined;
         }
       })();
       discoveryPassRef.current = pass;
+      discoveryPassEpochRef.current = discoveryEpochRef.current;
       return pass;
     },
     [runDiscoveryPass],
@@ -946,7 +1807,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           reason: error instanceof PendingProjectRecoveryError ? error.reason : 'filesystem-error',
         });
       }
-      setRecoveryRevision((revision) => revision + 1);
+      setRecoveries([...recoveriesRef.current.values()]);
       invalidateProjectsList();
     },
     [invalidateProjectsList, resumePendingProjectOperation],
@@ -980,6 +1841,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
   useEffect(() => {
     return subscribeProjectRootConfigurationChanges(async () => {
       discoveryEpochRef.current++;
+      discoverySnapshotRef.current = undefined;
       // The channel invokes this listener with nowhere to put a rejection, so
       // the body owns its own failures (DF10).
       try {
@@ -1002,7 +1864,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       // is exactly what discarding needs.
       await worker.completePendingProjectOperation(operationId);
       recoveriesRef.current.delete(operationId);
-      setRecoveryRevision((revision) => revision + 1);
+      setRecoveries([...recoveriesRef.current.values()]);
       invalidateProjectsList();
     },
     [getReadiedWorker, invalidateProjectsList],
@@ -1018,7 +1880,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       recoveriesRef.current = new Map(
         operations.map((operation) => [operation.operationId, pendingOperationRecovery(operation)]),
       );
-      setRecoveryRevision((revision) => revision + 1);
+      setRecoveries([...recoveriesRef.current.values()]);
       await discoverProjects({ quarantinedLocators: quarantinedLocatorsOf(recoveriesRef.current.values()) });
 
       const loop = (async (): Promise<void> => {
@@ -1039,15 +1901,90 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     }
   }, [discoverProjects, getReadiedWorker, settleRecovery]);
 
-  const getProject = useCallback(
-    async (projectId: string): Promise<ProjectManifest | undefined> => {
+  /**
+   * Release the rows a cleared browser left behind for a project id (R14).
+   *
+   * The route config, editor layout and library state are keyed by the id and
+   * survive the browser deleting every file, so re-importing the same project
+   * met "already on this device" with nothing in the library to open. Only a
+   * Home route whose folder is proven to hold no file is released; its rows go
+   * the way the discovery sweep removes an orphan's, and the import proceeds.
+   * Folders on disk, unreadable folders and folders with any file left keep
+   * the refusal.
+   */
+  const releaseOrphanedProjectRoute = useCallback(
+    async (projectId: string, worker: Remote<ObjectStoreWorker>): Promise<void> => {
+      const config = await getProjectFileSystemConfig(projectId);
+      if (config === undefined || !(await isOrphanedProjectRoute(config, fileManager.scopedStorage))) {
+        return;
+      }
+      /* A `tau.json` naming the id anywhere else is the project, not an orphan:
+       * releasing its route would let this import create a second copy. */
+      const { entries } = await discoverProjects();
+      if (entries.some((entry) => 'manifest' in entry && 'id' in entry.manifest && entry.manifest.id === projectId)) {
+        return;
+      }
+      await worker.deleteProjectResources(projectId);
+      await deleteProjectFileSystemConfig(projectId);
+      await fileManager.workspace.syncProjectRoots();
+    },
+    [discoverProjects, fileManager.scopedStorage, fileManager.workspace],
+  );
+
+  /* A supplied id is checked and then written, so two creations of it — an
+     *Open* racing materialize on sign-in, or two tabs — hold one lock per id
+     across the check and the write; the second sees the first's project and is
+     refused. A minted id cannot collide, so it takes no lock.
+     An earlier creation of the id that never finished — a reload, a re-init or
+     a tab closed between its directory commit and its route config (R2) — is
+     finished here rather than repeated: this page's own recovery first, then
+     any journal row another tab left since. Its directory is quarantined from
+     the library meanwhile, so a caller asking again cannot tell it is there. */
+  const createProject = useCallback(
+    async (options: CreateProjectOptions): Promise<CreatedProject> => {
+      const { id } = options;
+      if (id === undefined) {
+        return createProjectOnce(options);
+      }
+      return withNamedLock(`tau:create-project:${id}`, async () => {
+        await ensureDiscoveryReady();
+        await recoveryLoopRef.current;
+        const worker = await getReadiedWorker();
+        const operations = await worker.getPendingProjectOperations();
+        const unfinished = operations.find(
+          (operation) => operation.kind !== 'permanent-delete' && operation.manifest.id === id,
+        );
+        if (unfinished !== undefined) {
+          await settleRecovery(unfinished, worker);
+          if (recoveriesRef.current.has(unfinished.operationId)) {
+            throw new Error(`An earlier creation of this project has not finished on this device: ${id}`);
+          }
+        } else if (
+          !operations.some((operation) => operation.kind === 'permanent-delete' && operation.projectId === id)
+        ) {
+          await releaseOrphanedProjectRoute(id, worker);
+        }
+        return createProjectOnce(options);
+      });
+    },
+    [createProjectOnce, ensureDiscoveryReady, getReadiedWorker, releaseOrphanedProjectRoute, settleRecovery],
+  );
+
+  /**
+   * The routed project's manifest: strict, or degraded with the issue that
+   * write-protects it (blueprint R3/R4). The route supplies the id only when the
+   * bytes lost theirs; a different id there is another project, not this one.
+   */
+  const readProjectManifest = useCallback(
+    async (projectId: string): Promise<Extract<ProjectManifestReadResult, { success: true }> | undefined> => {
       await ensureDiscoveryReady();
-      const read = async (): Promise<ProjectManifest | undefined> => {
+      const read = async (): Promise<Extract<ProjectManifestReadResult, { success: true }> | undefined> => {
         try {
-          const parsed = parseProjectManifestBytes(
-            await fileManager.client.readFile(`/projects/${projectId}/tau.json`),
+          const result = readProjectManifestBytes(
+            await fileManager.recordFiles.readFile(`/projects/${projectId}/tau.json`),
+            { id: projectId },
           );
-          return parsed.success ? parsed.data : undefined;
+          return result.success && result.data.id === projectId ? result : undefined;
         } catch {
           return undefined;
         }
@@ -1056,10 +1993,19 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       if (current) {
         return current;
       }
+      await recoveryLoopRef.current;
       await discoverProjects();
       return read();
     },
-    [discoverProjects, ensureDiscoveryReady, fileManager.client],
+    [discoverProjects, ensureDiscoveryReady, fileManager.recordFiles],
+  );
+
+  const getProject = useCallback(
+    async (projectId: string): Promise<ProjectManifest | undefined> => {
+      const read = await readProjectManifest(projectId);
+      return read?.data;
+    },
+    [readProjectManifest],
   );
 
   /**
@@ -1075,8 +2021,8 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         return existing;
       }
       const [tombstone, lastActivityAt] = await Promise.all([
-        readProjectLibraryFile(fileManager.client, projectId),
-        readManifestActivityAt(fileManager.client, projectId),
+        readProjectLibraryFile(fileManager.recordFiles, projectId),
+        readManifestActivityAt(fileManager.recordFiles, projectId),
       ]);
       return worker.createProjectLibraryState({
         projectId,
@@ -1084,74 +2030,168 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         ...(tombstone.deletedAt === undefined ? {} : { deletedAt: tombstone.deletedAt }),
       });
     },
-    [fileManager.client],
+    [fileManager.recordFiles],
+  );
+
+  const ensureProjectLibraryStates = useCallback(
+    async (
+      worker: Remote<ObjectStoreWorker>,
+      projectIds: readonly string[],
+    ): Promise<ReadonlyMap<string, ProjectLibraryState>> => {
+      const states = await worker.getProjectLibraryStates(projectIds);
+      const byProjectId = new Map(states.map((state) => [state.projectId, state] as const));
+      const missing = projectIds.filter((projectId) => !byProjectId.has(projectId));
+      const recovered: ProjectLibraryState[] = [];
+      for (let offset = 0; offset < missing.length; offset += libraryRecoveryConcurrency) {
+        recovered.push(
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Chunked filesystem reads bound handle pressure.
+          ...(await Promise.all(
+            missing.slice(offset, offset + libraryRecoveryConcurrency).map(async (projectId) => {
+              const [tombstone, lastActivityAt] = await Promise.all([
+                readProjectLibraryFile(fileManager.recordFiles, projectId),
+                readManifestActivityAt(fileManager.recordFiles, projectId),
+              ]);
+              return {
+                projectId,
+                lastActivityAt,
+                ...(tombstone.deletedAt === undefined ? {} : { deletedAt: tombstone.deletedAt }),
+              };
+            }),
+          )),
+        );
+      }
+      const created = recovered.length === 0 ? [] : await worker.createProjectLibraryStates(recovered);
+      for (const state of created) {
+        byProjectId.set(state.projectId, state);
+      }
+      return byProjectId;
+    },
+    [fileManager.recordFiles],
   );
 
   const getProjectRouteAccess = useCallback(
     async (projectId: string): Promise<ProjectRouteAccess> => {
       await ensureDiscoveryReady();
-      const recovery = [...recoveriesRef.current.values()].find((entry) => entry.projectId === projectId);
-      if (recovery?.status === 'recovering') {
-        return { status: 'recovering', recovery };
+      const worker = await getReadiedWorker();
+      // A manifest/root event can supersede a shared pass while it is in flight.
+      /* oxlint-disable no-await-in-loop -- A route must retry sequentially until its discovery epoch is current. */
+      for (;;) {
+        const recovery = [...recoveriesRef.current.values()].find((entry) => entry.projectId === projectId);
+        if (recovery?.status === 'recovering') {
+          return { status: 'recovering', recovery };
+        }
+        if (recovery?.status === 'failed') {
+          return { status: 'recovery-failed', recovery };
+        }
+        const snapshot = discoverySnapshotRef.current;
+        let epoch = discoveryEpochRef.current;
+        let discovery: ProjectDiscoveryResult;
+        if (snapshot?.epoch === epoch) {
+          discovery = snapshot.result;
+        } else {
+          const pending = discoverProjects();
+          epoch = discoveryPassEpochRef.current ?? epoch;
+          discovery = await pending;
+          if (epoch !== discoveryEpochRef.current) {
+            continue;
+          }
+        }
+        const valid = discovery.entries.find(
+          (entry): entry is Extract<ProjectDiscoveryEntry, { status: 'valid' }> =>
+            entry.status === 'valid' && entry.manifest.id === projectId,
+        );
+        if (valid) {
+          const library = await ensureProjectLibraryState(worker, projectId);
+          if (epoch !== discoveryEpochRef.current) {
+            continue;
+          }
+          return library.deletedAt === undefined
+            ? { status: 'ready', project: valid.manifest }
+            : { status: 'trashed', project: valid.manifest };
+        }
+        if (discovery.entries.some((entry) => entry.status === 'route-blocked' && entry.manifest.id === projectId)) {
+          return { status: 'unavailable' };
+        }
+        if (discovery.entries.some((entry) => entry.status === 'duplicate-id' && entry.manifest.id === projectId)) {
+          return { status: 'conflict' };
+        }
+        const config = await getProjectFileSystemConfig(projectId);
+        if (epoch !== discoveryEpochRef.current) {
+          continue;
+        }
+        if (
+          config &&
+          config.backend !== 'memory' &&
+          discovery.roots.some(
+            (root) =>
+              root.status === 'inaccessible' &&
+              persistentStorageRootKey(root.root) === persistentStorageRootKey(config),
+          )
+        ) {
+          return { status: 'unavailable' };
+        }
+        return { status: 'missing' };
       }
-      if (recovery?.status === 'failed') {
-        return { status: 'recovery-failed', recovery };
-      }
-      const discovery = await discoverProjects();
-      const valid = discovery.entries.find(
-        (entry): entry is Extract<ProjectDiscoveryEntry, { status: 'valid' }> =>
-          entry.status === 'valid' && entry.manifest.id === projectId,
-      );
-      if (valid) {
-        const worker = await getReadiedWorker();
-        const library = await ensureProjectLibraryState(worker, projectId);
-        return library.deletedAt === undefined
-          ? { status: 'ready', project: valid.manifest }
-          : { status: 'trashed', project: valid.manifest };
-      }
-      if (discovery.entries.some((entry) => entry.status === 'route-blocked' && entry.manifest.id === projectId)) {
-        return { status: 'unavailable' };
-      }
-      if (discovery.entries.some((entry) => entry.status === 'duplicate-id' && entry.manifest.id === projectId)) {
-        return { status: 'conflict' };
-      }
-      const config = await getProjectFileSystemConfig(projectId);
-      if (
-        config &&
-        config.backend !== 'memory' &&
-        discovery.roots.some(
-          (root) =>
-            root.status === 'inaccessible' && persistentStorageRootKey(root.root) === persistentStorageRootKey(config),
-        )
-      ) {
-        return { status: 'unavailable' };
-      }
-      return { status: 'missing' };
+      /* oxlint-enable no-await-in-loop */
     },
-    [discoverProjects, ensureDiscoveryReady, ensureProjectLibraryState, getReadiedWorker, recoveryRevision],
+    [discoverProjects, ensureDiscoveryReady, ensureProjectLibraryState, getReadiedWorker],
   );
 
   const updateProject = useCallback(
     async (projectId: string, update: PartialDeep<ProjectManifest>): Promise<ProjectManifest | undefined> => {
-      const project = await getProject(projectId);
+      const project = await readProjectManifest(projectId);
       if (!project) {
         return undefined;
       }
-      const updated = deepmerge(project, update) as ProjectManifest;
-      await fileManager.client.writeFile(
+      // A degraded view is lossy (dropped keys, clamped text), so writing it
+      // back would erase what a person or a newer build wrote (blueprint R4).
+      if (project.issue) {
+        throw new Error('tau.json needs repair before Tau can change it. Repair it, or fix it in the editor.');
+      }
+      const updated = deepmerge(project.data, update) as ProjectManifest;
+      await fileManager.recordFiles.writeFile(
         `/projects/${projectId}/tau.json`,
         serializeProjectManifest(projectToManifest(updated)),
       );
       return updated;
     },
-    [fileManager.client, getProject],
+    [fileManager.recordFiles, readProjectManifest],
+  );
+
+  const repairProject = useCallback(
+    async (projectId: string): Promise<ProjectManifest | undefined> => {
+      const project = await readProjectManifest(projectId);
+      if (!project?.issue) {
+        return project?.data;
+      }
+      // Defaults would erase text a person can still fix by hand.
+      if (project.issue.code === 'manifest-invalid-json') {
+        throw new Error('tau.json is not valid JSON. Fix it in the editor; Repair would discard its text.');
+      }
+      await fileManager.recordFiles.writeFile(
+        `/projects/${projectId}/tau.json`,
+        serializeProjectManifest(project.data),
+      );
+      invalidateProjectsList();
+      return project.data;
+    },
+    [fileManager.recordFiles, invalidateProjectsList, readProjectManifest],
   );
 
   const touchProject = useCallback(
-    async (projectId: string): Promise<ProjectLibraryState | undefined> => {
+    async (projectId: string, activityAt?: number): Promise<ProjectLibraryState | undefined> => {
       await ensureDiscoveryReady();
       const worker = await getReadiedWorker();
-      return worker.touchProjectActivity(projectId);
+      return worker.touchProjectActivity(projectId, activityAt);
+    },
+    [ensureDiscoveryReady, getReadiedWorker],
+  );
+
+  const setGeoSpecCandidateConsent = useCallback(
+    async (projectId: string, enabled: boolean): Promise<ProjectLibraryState | undefined> => {
+      await ensureDiscoveryReady();
+      const worker = await getReadiedWorker();
+      return worker.setGeoSpecCandidateConsent(projectId, enabled);
     },
     [ensureDiscoveryReady, getReadiedWorker],
   );
@@ -1161,18 +2201,6 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       await ensureDiscoveryReady();
       const worker = await getReadiedWorker();
       return worker.getProjectLibraryState(projectId);
-    },
-    [ensureDiscoveryReady, getReadiedWorker],
-  );
-
-  const setProjectRevisionState = useCallback(
-    async (
-      projectId: string,
-      revisionState: NonNullable<ProjectLibraryState['revisionState']>,
-    ): Promise<ProjectLibraryState | undefined> => {
-      await ensureDiscoveryReady();
-      const worker = await getReadiedWorker();
-      return worker.setProjectRevisionState(projectId, revisionState);
     },
     [ensureDiscoveryReady, getReadiedWorker],
   );
@@ -1215,8 +2243,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         workspaceSlug = homeWorkspaceSlug;
       }
 
+      /* The source's own composed view supplies authored files and the
+         registry-selected writable records. The fresh manifest is written by
+         the commit, so the source's own `tau.json` is dropped. */
       const sourceFiles = Object.fromEntries(
-        Object.entries(await fileManager.client.getDirectoryContents(`/projects/${projectId}`))
+        Object.entries(await fileManager.readDuplicateProjectFiles(`/projects/${projectId}`))
           .filter(([path]) => path !== 'tau.json')
           .map(([path, content]) => [path, { content }]),
       );
@@ -1225,57 +2256,406 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         targetManifest,
         files: sourceFiles,
         storage,
+        sourceChats: await chatStore.getChatsForResource(projectId),
       });
       await resumePendingProjectOperation(operation, worker);
+      /* D19: a copy has no remote of its own, so it backs up by default too. */
+      tauCloudIntent.set(targetId, 'default');
       return { ...operation.manifest, slugs: { workspaceSlug, projectSlug: directorySlug(providerBasePath) } };
     },
-    [ensureDiscoveryReady, getProject, getReadiedWorker, resumePendingProjectOperation],
+    [chatStore, ensureDiscoveryReady, fileManager, getProject, getReadiedWorker, resumePendingProjectOperation],
   );
   // (getProjectFileSystemConfig / getWorkspace are stable module-level
   // bindings — intentionally omitted from the dep array.)
 
-  const getProjectListing = useCallback(
-    async (options?: { includeDeleted?: boolean }): Promise<ProjectListing> => {
+  const deriveWorkspaceBindingRepairs = useCallback(async (discovery: ProjectDiscoveryResult) => {
+    if (!discovery.entries.some((entry) => entry.status === 'route-blocked' && entry.locator.backend === 'webaccess')) {
+      return [];
+    }
+    const [configs, workspaces] = await Promise.all([getAllProjectFileSystemConfigs(), listWorkspaces()]);
+    const configByProjectId = new Map(configs.map((config) => [config.projectId, config] as const));
+    const workspaceById = new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace] as const));
+    const completeWorkspaceIds = new Set(
+      discovery.roots.flatMap(({ root, status }) =>
+        status === 'complete' && root.backend === 'webaccess' ? [root.workspaceId] : [],
+      ),
+    );
+    const blocked = discovery.entries.filter(
+      (
+        entry,
+      ): entry is Extract<ProjectDiscoveryEntry, { status: 'route-blocked' }> & {
+        locator: Extract<ProjectLocator, { backend: 'webaccess' }>;
+      } =>
+        entry.status === 'route-blocked' &&
+        entry.locator.backend === 'webaccess' &&
+        completeWorkspaceIds.has(entry.locator.workspaceId) &&
+        projectOccurrences(discovery, entry.manifest.id).length === 1,
+    );
+    const sourceWorkspaceIds = new Set(
+      blocked.flatMap((entry) => {
+        const config = configByProjectId.get(entry.manifest.id);
+        return config?.backend === 'webaccess' ? [config.workspaceId] : [];
+      }),
+    );
+    const sourceEntries = await Promise.all(
+      [...sourceWorkspaceIds].map(async (workspaceId) => ({ workspaceId, entry: await getWorkspace(workspaceId) })),
+    );
+    const connectedSources = new Set(
+      sourceEntries.filter(({ entry }) => entry !== undefined).map(({ workspaceId }) => workspaceId),
+    );
+    const candidates = blocked.flatMap((entry) => {
+      const config = configByProjectId.get(entry.manifest.id);
+      if (
+        config?.backend !== 'webaccess' ||
+        config.workspaceId === entry.locator.workspaceId ||
+        config.providerBasePath !== entry.locator.relativeDirectory ||
+        !workspaceById.has(config.workspaceId) ||
+        connectedSources.has(config.workspaceId)
+      ) {
+        return [];
+      }
+      return [
+        {
+          canonicalWorkspaceId: entry.locator.workspaceId,
+          workspaceName: workspaceById.get(entry.locator.workspaceId)?.name ?? entry.locator.workspaceId,
+          repair: {
+            projectId: entry.manifest.id,
+            sourceWorkspaceId: config.workspaceId,
+            providerBasePath: config.providerBasePath,
+          } satisfies WorkspaceBindingRepair,
+        },
+      ];
+    });
+    const byWorkspace = Map.groupBy(candidates, ({ canonicalWorkspaceId }) => canonicalWorkspaceId);
+    return [...byWorkspace].map(([canonicalWorkspaceId, group]) => ({
+      canonicalWorkspaceId,
+      workspaceName: group[0]!.workspaceName,
+      projectCount: group.length,
+      repairs: group.map(({ repair }) => repair),
+    }));
+  }, []);
+
+  const buildProjectListing = useCallback(
+    async (discovery: ProjectDiscoveryResult): Promise<ProjectListing> => {
       const worker = await getReadiedWorker();
-      await ensureDiscoveryReady();
-      const discovery = await discoverProjects();
       const validEntries = discovery.entries.filter(
         (entry): entry is Extract<ProjectDiscoveryEntry, { status: 'valid' }> => entry.status === 'valid',
       );
       // Slugs come from the same pass that produced the locators, so every
       // listing-fed surface can render its canonical `/w/…` link without a
       // second lookup (blueprint L1).
-      const workspaces = await listWorkspaces();
-      const projects: ProjectLibraryEntry[] = await Promise.all(
-        validEntries.map(async (entry) => {
-          const { locator } = entry;
-          const slugs = projectSlugsOf(locator, workspaces);
-          const workspaceName =
-            locator.backend === 'webaccess'
-              ? workspaces.find((workspace) => workspace.workspaceId === locator.workspaceId)?.name
-              : undefined;
-          return {
-            manifest: entry.manifest,
-            library: await ensureProjectLibraryState(worker, entry.manifest.id),
-            locator,
-            ...(slugs === undefined ? {} : { slugs }),
-            ...(workspaceName === undefined ? {} : { workspaceName }),
-          };
-        }),
-      );
+      const [workspaces, libraryStates, workspaceBindingRepairs] = await Promise.all([
+        listWorkspaces(),
+        ensureProjectLibraryStates(
+          worker,
+          validEntries.map(({ manifest }) => manifest.id),
+        ),
+        deriveWorkspaceBindingRepairs(discovery),
+      ]);
+      const projects: ProjectLibraryEntry[] = validEntries.map((entry) => {
+        const { locator } = entry;
+        const slugs = projectSlugsOf(locator, workspaces);
+        const workspaceName =
+          locator.backend === 'webaccess'
+            ? workspaces.find((workspace) => workspace.workspaceId === locator.workspaceId)?.name
+            : undefined;
+        return {
+          manifest: entry.manifest,
+          library: libraryStates.get(entry.manifest.id)!,
+          locator,
+          ...(slugs === undefined ? {} : { slugs }),
+          ...(workspaceName === undefined ? {} : { workspaceName }),
+          ...(entry.issue === undefined ? {} : { issue: entry.issue }),
+        };
+      });
       const conflicts: ProjectDiscoveryConflict[] = discovery.entries.filter(
         (entry): entry is Exclude<ProjectDiscoveryEntry, { status: 'valid' }> => entry.status !== 'valid',
       );
       return {
-        projects: options?.includeDeleted
-          ? projects
-          : projects.filter((project) => project.library.deletedAt === undefined),
+        projects,
         conflicts,
         recoveries: [...recoveriesRef.current.values()],
+        workspaceBindingRepairs: workspaceBindingRepairs.map(({ repairs: _repairs, ...group }) => group),
       };
     },
-    [discoverProjects, ensureDiscoveryReady, ensureProjectLibraryState, getReadiedWorker, recoveryRevision],
+    [deriveWorkspaceBindingRepairs, ensureProjectLibraryStates, getReadiedWorker],
   );
+
+  const getProjectListing = useCallback(
+    async (options?: { includeDeleted?: boolean }): Promise<ProjectListing> => {
+      await ensureDiscoveryReady();
+      const listing = await buildProjectListing(await discoverProjects());
+      return options?.includeDeleted
+        ? listing
+        : {
+            ...listing,
+            projects: listing.projects.filter((project) => project.library.deletedAt === undefined),
+          };
+    },
+    [buildProjectListing, discoverProjects, ensureDiscoveryReady],
+  );
+
+  const prepareCurrentWorkspaceCatalog = useCallback(
+    async (selected?: Workspace, signal?: AbortSignal): Promise<PreparedWorkspaceCatalog> => {
+      const previous = discoveryPassRef.current;
+      if (previous) {
+        await previous.catch(() => undefined);
+      }
+      signal?.throwIfAborted();
+      await retryFailedRecoveries();
+      const listing = await buildProjectListing(await discoverProjects());
+      signal?.throwIfAborted();
+      // A node workspace is addressed by its absolute host path — the same
+      // physical identity `resolveStorageRootKey` derives — where a webaccess
+      // one is addressed by its retained-handle id.
+      const isSelectedWorkspace = (locator: ProjectLocator): boolean => {
+        if (selected === undefined) {
+          return false;
+        }
+        return isNodeWorkspace(selected)
+          ? locator.backend === 'node' && locator.path === selected.path
+          : locator.backend === 'webaccess' && locator.workspaceId === selected.workspaceId;
+      };
+      const selectedProjects = listing.projects.filter(({ locator }) => isSelectedWorkspace(locator));
+      const selectedConflicts = listing.conflicts.filter(({ locator }) => isSelectedWorkspace(locator));
+      return {
+        projectCount: selectedProjects.length,
+        candidateCount: selectedProjects.length + selectedConflicts.length,
+        conflictCount: selectedConflicts.length,
+        publish: async () => {
+          queryClient.setQueryData(['projects'], listing);
+        },
+      };
+    },
+    [buildProjectListing, discoverProjects, queryClient, retryFailedRecoveries],
+  );
+
+  const refreshWorkspaceCatalog = useCallback(async (): Promise<void> => {
+    const catalog = await prepareCurrentWorkspaceCatalog(undefined);
+    await catalog.publish();
+  }, [prepareCurrentWorkspaceCatalog]);
+
+  const repairWorkspaceBindings = useCallback(
+    async (canonicalWorkspaceId: string): Promise<WorkspaceBindingRepairResult> => {
+      await ensureDiscoveryReady();
+      const groups = await deriveWorkspaceBindingRepairs(await discoverProjects());
+      const group = groups.find((candidate) => candidate.canonicalWorkspaceId === canonicalWorkspaceId);
+      if (!group) {
+        return { repairedProjectCount: 0, removedWorkspaceIds: [], skipped: [] };
+      }
+      const result = await repairStoredWorkspaceBindings({ canonicalWorkspaceId, repairs: group.repairs });
+      if (result.repairedProjectCount === 0) {
+        return result;
+      }
+      await fileManager.workspace.syncProjectRoots();
+      const catalog = await prepareCurrentWorkspaceCatalog(undefined);
+      await catalog.publish();
+      return result;
+    },
+    [
+      deriveWorkspaceBindingRepairs,
+      discoverProjects,
+      ensureDiscoveryReady,
+      fileManager.workspace,
+      prepareCurrentWorkspaceCatalog,
+    ],
+  );
+
+  const workspaceConnectionServices = useMemo(
+    () => ({
+      registerWorkspace: async (selection: DirectoryPick, signal: AbortSignal) => {
+        const startedAt = performance.now();
+        signal.throwIfAborted();
+        try {
+          const connection =
+            selection.backend === 'webaccess'
+              ? await createWorkspace(selection.handle)
+              : await createNodeWorkspace(selection.path);
+          signal.throwIfAborted();
+          if (connectionTraceRef.current) {
+            connectionTraceRef.current.workspaceId = connection.workspaceId;
+          }
+          return { workspace: connection, minted: connection.minted };
+        } finally {
+          if (connectionTraceRef.current) {
+            connectionTraceRef.current.registeringDuration += performance.now() - startedAt;
+          }
+        }
+      },
+      mountWorkspace: async (_workspace: RegisteredWorkspace, selection: DirectoryPick, signal: AbortSignal) => {
+        const startedAt = performance.now();
+        signal.throwIfAborted();
+        try {
+          // A node folder was chosen in a native dialog: the shell already holds
+          // it, so the probe short-circuits to granted.
+          if (selection.backend === 'webaccess' && (await checkHandlePermission(selection.handle)) !== 'granted') {
+            throw new DOMException('Tau needs access to this workspace folder.', 'NotAllowedError');
+          }
+          await fileManager.workspace.syncProjectRoots();
+          signal.throwIfAborted();
+        } finally {
+          if (connectionTraceRef.current) {
+            connectionTraceRef.current.mountingDuration += performance.now() - startedAt;
+          }
+        }
+      },
+      prepareWorkspaceCatalog: async (
+        workspace: RegisteredWorkspace,
+        signal: AbortSignal,
+      ): Promise<PreparedWorkspaceCatalog> => {
+        const startedAt = performance.now();
+        try {
+          const catalog = await prepareCurrentWorkspaceCatalog(workspace.workspace, signal);
+          const trace = connectionTraceRef.current;
+          if (trace) {
+            trace.candidateCount = catalog.candidateCount;
+            trace.projectCount = catalog.projectCount;
+            trace.conflictCount = catalog.conflictCount;
+          }
+          return {
+            ...catalog,
+            publish: async () => {
+              const publishStartedAt = performance.now();
+              try {
+                await catalog.publish();
+              } finally {
+                if (connectionTraceRef.current) {
+                  connectionTraceRef.current.publishingDuration += performance.now() - publishStartedAt;
+                }
+              }
+            },
+          };
+        } finally {
+          if (connectionTraceRef.current) {
+            connectionTraceRef.current.catalogDuration += performance.now() - startedAt;
+          }
+        }
+      },
+    }),
+    [fileManager.workspace, prepareCurrentWorkspaceCatalog],
+  );
+  const workspaceConnectionRef = useActorRef(workspaceConnectionMachine, { input: workspaceConnectionServices });
+  const workspaceConnection = useSelector(workspaceConnectionRef, selectWorkspaceConnectionState);
+
+  const waitForWorkspaceConnection = useCallback(
+    async (operationId: string): Promise<ConnectedWorkspace> =>
+      new Promise<ConnectedWorkspace>((resolve, reject) => {
+        const settle = (snapshot: ReturnType<typeof workspaceConnectionRef.getSnapshot>): void => {
+          if (snapshot.context.operationId !== operationId) {
+            return;
+          }
+          if (snapshot.matches('ready')) {
+            subscription.unsubscribe();
+            resolve({
+              workspace: snapshot.context.workspace!.workspace,
+              projectCount: snapshot.context.catalog!.projectCount,
+              minted: snapshot.context.workspace!.minted,
+            });
+          } else if (snapshot.matches('failed')) {
+            subscription.unsubscribe();
+            const failure = snapshot.context.error;
+            reject(failure instanceof Error ? failure : new Error('Workspace connection failed.', { cause: failure }));
+          }
+        };
+        const subscription = workspaceConnectionRef.subscribe(settle);
+        settle(workspaceConnectionRef.getSnapshot());
+      }),
+    [workspaceConnectionRef],
+  );
+
+  const connectWorkspace = useCallback(
+    async (selectedHandle?: FileSystemDirectoryHandle): Promise<ConnectedWorkspace | undefined> => {
+      const picker = directoryPicker();
+      if (!picker.available) {
+        return undefined;
+      }
+      if (connectionPromiseRef.current) {
+        return connectionPromiseRef.current;
+      }
+      const connection = (async (): Promise<ConnectedWorkspace | undefined> => {
+        const operationId = generatePrefixedId(idPrefix.request);
+        workspaceConnectionRef.send({ type: 'beginSelection', operationId });
+        let selection: DirectoryPick | undefined =
+          selectedHandle === undefined ? undefined : { backend: 'webaccess', handle: selectedHandle };
+        try {
+          selection ??= await picker.pick({ id: 'tau-workspace', mode: 'readwrite' });
+          if (selection === undefined) {
+            workspaceConnectionRef.send({ type: 'selectionCancelled' });
+            return undefined;
+          }
+        } catch (error) {
+          workspaceConnectionRef.send({ type: 'selectionCancelled' });
+          throw error;
+        }
+        connectionTraceRef.current = {
+          operationId,
+          startedAt: performance.now(),
+          workspaceId: undefined,
+          registeringDuration: 0,
+          mountingDuration: 0,
+          catalogDuration: 0,
+          publishingDuration: 0,
+          candidateCount: 0,
+          projectCount: 0,
+          conflictCount: 0,
+        };
+        const completion = waitForWorkspaceConnection(operationId);
+        workspaceConnectionRef.send({ type: 'workspaceSelected', operationId, selection });
+        try {
+          const connected = await completion;
+          const trace = connectionTraceRef.current;
+          if (trace.operationId === operationId) {
+            const { startedAt, ...metrics } = trace;
+            workspaceTelemetry.workspaceConnection({
+              ...metrics,
+              outcome: 'ready',
+              totalMs: performance.now() - startedAt,
+            });
+          }
+          return connected;
+        } catch (error) {
+          const trace = connectionTraceRef.current;
+          if (trace.operationId === operationId) {
+            const { startedAt, ...metrics } = trace;
+            workspaceTelemetry.workspaceConnection({
+              ...metrics,
+              outcome: 'failed',
+              totalMs: performance.now() - startedAt,
+            });
+          }
+          throw error;
+        }
+      })();
+      connectionPromiseRef.current = connection;
+      try {
+        return await connection;
+      } finally {
+        if (connectionPromiseRef.current === connection) {
+          connectionPromiseRef.current = undefined;
+        }
+      }
+    },
+    [waitForWorkspaceConnection, workspaceConnectionRef, workspaceTelemetry],
+  );
+
+  const retryWorkspaceConnection = useCallback(async (): Promise<ConnectedWorkspace | undefined> => {
+    const current = selectWorkspaceConnectionState(workspaceConnectionRef.getSnapshot());
+    if (current.phase !== 'failed') {
+      return undefined;
+    }
+    if (current.retry === 'pick-again') {
+      return connectWorkspace();
+    }
+    if (current.retry === 'grant-access') {
+      const { selection } = workspaceConnectionRef.getSnapshot().context;
+      if (selection?.backend !== 'webaccess' || !(await requestHandlePermission(selection.handle))) {
+        return undefined;
+      }
+    }
+    const completion = waitForWorkspaceConnection(current.operationId);
+    workspaceConnectionRef.send({ type: 'retry' });
+    return completion;
+  }, [connectWorkspace, waitForWorkspaceConnection, workspaceConnectionRef]);
 
   const getProjects = useCallback(
     async (options?: { includeDeleted?: boolean }): Promise<ProjectLibraryEntry[]> => {
@@ -1285,6 +2665,16 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     [getProjectListing],
   );
 
+  /*
+   * One counter, not a subscription: trash and restore are rare, deliberate acts,
+   * and the route's access effect already knows how to re-resolve. A library
+   * event channel would be a second source of truth for the same fact.
+   */
+  const [libraryRevision, setLibraryRevision] = useState(0);
+  const bumpLibraryRevision = useCallback((): void => {
+    setLibraryRevision((revision) => revision + 1);
+  }, []);
+
   const deleteProject = useCallback(
     async (projectId: string): Promise<boolean> => {
       await ensureDiscoveryReady();
@@ -1293,10 +2683,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       if (trashed?.deletedAt === undefined) {
         return false;
       }
-      await writeProjectLibraryFile(fileManager.client, projectId, { deletedAt: trashed.deletedAt });
+      await writeProjectLibraryFile(fileManager.recordFiles, projectId, { deletedAt: trashed.deletedAt });
+      bumpLibraryRevision();
       return true;
     },
-    [ensureDiscoveryReady, fileManager.client, getReadiedWorker],
+    [bumpLibraryRevision, ensureDiscoveryReady, fileManager.recordFiles, getReadiedWorker],
   );
 
   const restoreProject = useCallback(
@@ -1307,10 +2698,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       if (!restored) {
         return false;
       }
-      await writeProjectLibraryFile(fileManager.client, projectId, {});
+      await writeProjectLibraryFile(fileManager.recordFiles, projectId, {});
+      bumpLibraryRevision();
       return true;
     },
-    [ensureDiscoveryReady, fileManager.client, getReadiedWorker],
+    [bumpLibraryRevision, ensureDiscoveryReady, fileManager.recordFiles, getReadiedWorker],
   );
 
   const permanentlyDeleteProject = useCallback(
@@ -1325,19 +2717,60 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         throw new Error(`Pending project operation not found: ${operationId}`);
       }
       await resumePendingProjectOperation(operation, worker);
+      bumpLibraryRevision();
     },
-    [discoverPermanentDeleteStorage, ensureDiscoveryReady, getReadiedWorker, resumePendingProjectOperation],
+    [
+      bumpLibraryRevision,
+      discoverPermanentDeleteStorage,
+      ensureDiscoveryReady,
+      getReadiedWorker,
+      resumePendingProjectOperation,
+    ],
   );
 
   const adoptProject = useCallback(
     async (locator: ProjectLocator): Promise<ProjectManifest> => {
-      const manifest = await fileManager.client.adoptProjectDirectory(locator);
+      await ensureDiscoveryReady();
+      // The route that last bound this directory keys its chats, library row and
+      // editor state: restore that id unless another directory now claims it (R6).
+      const [configs, discovery] = await Promise.all([getAllProjectFileSystemConfigs(), discoverProjects()]);
+      const remembered = configs.find((config) => routeBindsLocator(config, locator))?.projectId;
+      const claimed = discovery.entries.some(
+        (entry) => 'manifest' in entry && 'id' in entry.manifest && entry.manifest.id === remembered,
+      );
+      const manifest = await fileManager.client.adoptProjectDirectory(
+        locator,
+        remembered === undefined || claimed ? undefined : { id: remembered },
+      );
       // The next discovery pass reconciles the route config from the manifest
       // now on disk, so nothing else has to be written here.
       invalidateProjectsList();
       return manifest;
     },
-    [fileManager.client, invalidateProjectsList],
+    [discoverProjects, ensureDiscoveryReady, fileManager.client, invalidateProjectsList],
+  );
+
+  const chooseProjectDirectory = useCallback(
+    async (locator: ProjectLocator, projectId: string): Promise<void> => {
+      await ensureDiscoveryReady();
+      // Re-verify on a fresh scan: the folder may have changed since the card
+      // rendered. Only the route binding moves; no project file is written (R7).
+      const discovery = await discoverProjects();
+      const chosen = discovery.entries.find(
+        (entry) =>
+          (entry.status === 'duplicate-id' || entry.status === 'valid') &&
+          entry.manifest.id === projectId &&
+          entry.locator.storageRootKey === locator.storageRootKey &&
+          entry.locator.relativeDirectory === locator.relativeDirectory,
+      );
+      if (!chosen) {
+        throw new Error('This folder no longer holds that project.');
+      }
+      await setProjectFileSystemConfig(routeConfigFor(projectId, chosen.locator));
+      await fileManager.workspace.syncProjectRoots();
+      invalidateProjectsList();
+    },
+    [discoverProjects, ensureDiscoveryReady, fileManager.workspace, invalidateProjectsList],
   );
 
   const assertWorkspaceMutationAllowed = useCallback(
@@ -1370,126 +2803,82 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
   const createChat = useCallback(
     async (
       resourceId: string,
-      chatData: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt'> & {
+      chatData: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt' | 'recencyAt'> & {
         id?: string;
       },
     ): Promise<Chat> => {
-      const worker = await getReadiedWorker();
-      const chat = await worker.createChat(resourceId, chatData);
+      const chat = await chatStore.createChat(resourceId, chatData);
       await touchProject(resourceId);
       invalidateProjectsList();
       return chat;
     },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
+    [chatStore, invalidateProjectsList, touchProject],
   );
 
   const createNavigationRepairChat = useCallback(
     async (resourceId: string): Promise<Chat> => {
-      const worker = await getReadiedWorker();
-      return worker.createNavigationRepairChat(resourceId);
+      return chatStore.createNavigationRepairChat(resourceId);
     },
-    [getReadiedWorker],
+    [chatStore],
   );
 
   const updateChat = useCallback(
     async (chatId: string, update: PartialDeep<Chat>): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.updateChat(chatId, update);
-      if (result) {
-        await touchProject(result.resourceId);
-        invalidateProjectsList();
-      }
-
-      return result;
+      return chatStore.updateChat(chatId, update);
     },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
+    [chatStore],
   );
 
   const applyGeneratedChatName = useCallback(
     async (chatId: string, name: string): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      return worker.applyGeneratedChatName(chatId, name);
+      return chatStore.applyGeneratedChatName(chatId, name);
     },
-    [getReadiedWorker],
+    [chatStore],
   );
 
   const patchChat = useCallback(
     async <K extends keyof Chat>(chatId: string, key: K, value: Chat[K]): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.patchChat(chatId, key, value);
+      const result = await chatStore.patchChat(chatId, key, value);
       if (result) {
-        await touchProject(result.resourceId);
-        invalidateProjectsList();
+        invalidateChatQueries(result.resourceId, chatId);
       }
-
       return result;
     },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
+    [chatStore, invalidateChatQueries],
+  );
+
+  const touchChatRecency = useCallback(
+    async (chatId: string, requestedAt: number): Promise<Chat | undefined> => {
+      const result = await chatStore.touchChatRecency(chatId, requestedAt);
+      if (!result) {
+        return undefined;
+      }
+
+      invalidateChatQueries(result.resourceId, chatId);
+      await touchProject(result.resourceId, getChatRecencyAt(result));
+      invalidateProjectsList();
+      return result;
+    },
+    [chatStore, invalidateChatQueries, invalidateProjectsList, touchProject],
   );
 
   const consumeChatStartupRequest = useCallback(
     async (chatId: string, requestId: string): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.consumeChatStartupRequest(chatId, requestId);
-      if (result) {
-        invalidateProjectsList();
-      }
-
-      return result;
+      return chatStore.consumeChatStartupRequest(chatId, requestId);
     },
-    [getReadiedWorker, invalidateProjectsList],
+    [chatStore],
   );
 
   const commitCancelledDraftRestore = useCallback(
     async (chatId: string, input: CommitCancelledDraftRestoreInput): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.commitCancelledDraftRestore(chatId, input);
-      if (result) {
-        await touchProject(result.resourceId);
-        invalidateProjectsList();
-      }
-
-      return result;
+      return chatStore.commitCancelledDraftRestore(chatId, input);
     },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
-  );
-
-  const setMessageEdit = useCallback(
-    async (
-      chatId: string,
-      messageId: string,
-      draft: NonNullable<Chat['messageEdits']>[string],
-    ): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.setMessageEdit(chatId, messageId, draft);
-      if (result) {
-        await touchProject(result.resourceId);
-        invalidateProjectsList();
-      }
-
-      return result;
-    },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
-  );
-
-  const clearMessageEdit = useCallback(
-    async (chatId: string, messageId: string): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.clearMessageEdit(chatId, messageId);
-      if (result) {
-        await touchProject(result.resourceId);
-        invalidateProjectsList();
-      }
-
-      return result;
-    },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
+    [chatStore],
   );
 
   const softDeleteChat = useCallback(
     async (chatId: string): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      const result = await worker.softDeleteChat(chatId);
+      const result = await chatStore.softDeleteChat(chatId);
       if (result) {
         await touchProject(result.resourceId);
         invalidateProjectsList();
@@ -1497,76 +2886,98 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
       return result;
     },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
-  );
-
-  const duplicateChat = useCallback(
-    async (chatId: string): Promise<Chat> => {
-      const worker = await getReadiedWorker();
-      const chat = await worker.duplicateChat(chatId);
-      await touchProject(chat.resourceId);
-      invalidateProjectsList();
-      return chat;
-    },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
+    [chatStore, invalidateProjectsList, touchProject],
   );
 
   const getChatsForResource = useCallback(
     async (resourceId: string, options?: { includeDeleted?: boolean }): Promise<Chat[]> => {
-      const worker = await getReadiedWorker();
-      return worker.getChatsForResource(resourceId, options);
+      return metadataReadOwner.read(async (source) => source.getChatsForResource(resourceId, options), resourceId);
     },
-    [getReadiedWorker],
+    [metadataReadOwner],
   );
 
   const getAllChats = useCallback(
     async (options?: { includeDeleted?: boolean }): Promise<Chat[]> => {
-      const worker = await getReadiedWorker();
-      return worker.getAllChats(options);
+      return metadataReadOwner.read(async (source) => source.getAllChats(options));
     },
-    [getReadiedWorker],
+    [metadataReadOwner],
+  );
+
+  const getChatRecordsForResource = useCallback(
+    async (resourceId: string, options?: { includeDeleted?: boolean }): Promise<ChatRecord[]> =>
+      metadataReadOwner.read(async (source) => source.getChatRecordsForResource(resourceId, options), resourceId),
+    [metadataReadOwner],
+  );
+
+  const getAllChatRecords = useCallback(
+    async (options?: { includeDeleted?: boolean }): Promise<ChatRecord[]> =>
+      metadataReadOwner.read(async (source) => source.getAllChatRecords(options)),
+    [metadataReadOwner],
   );
 
   const getChat = useCallback(
-    async (chatId: string): Promise<Chat | undefined> => {
-      const worker = await getReadiedWorker();
-      return worker.getChat(chatId);
+    async (chatId: string, projectId?: string): Promise<Chat | undefined> => {
+      return metadataReadOwner.read(async (source) => source.getChat(chatId, projectId), projectId);
     },
-    [getReadiedWorker],
+    [metadataReadOwner],
   );
 
   const deleteChat = useCallback(
     async (chatId: string): Promise<void> => {
-      const worker = await getReadiedWorker();
-      const chat = await worker.getChat(chatId);
-      await worker.deleteChat(chatId);
+      const chat = await chatStore.getChat(chatId);
+      await chatStore.deleteChat(chatId);
       if (chat) {
         await touchProject(chat.resourceId);
       }
       invalidateProjectsList();
     },
-    [getReadiedWorker, invalidateProjectsList, touchProject],
+    [chatStore, invalidateProjectsList, touchProject],
+  );
+
+  const purgeChat = useCallback(
+    async (chatId: string): Promise<void> => {
+      const chat = await chatStore.getChat(chatId);
+      await chatStore.purgeChat(chatId);
+      if (chat) {
+        await touchProject(chat.resourceId);
+      }
+      invalidateProjectsList();
+    },
+    [chatStore, invalidateProjectsList, touchProject],
   );
 
   const value = useMemo<ProjectManagerContextType>(() => {
     return {
       isLoading,
       error,
+      discoveryObservationError,
+      metadataObservationError,
+      getMetadataObservationError,
+      refreshFilesystemObservations,
       projectManagerRef: actorRef,
+      workspaceConnection,
+      connectWorkspace,
+      retryWorkspaceConnection,
+      refreshWorkspaceCatalog,
+      repairWorkspaceBindings,
       createProject,
       updateProject,
+      repairProject,
       touchProject,
+      setGeoSpecCandidateConsent,
       duplicateProject,
       getProjects,
       getProjectListing,
       getProject,
       getProjectRouteAccess,
       getProjectLibraryState,
-      setProjectRevisionState,
       deleteProject,
       restoreProject,
       permanentlyDeleteProject,
+      libraryRevision,
       adoptProject,
+      chooseProjectDirectory,
+      recoveries,
       discardRecovery,
       assertWorkspaceMutationAllowed,
       getAppUiPreferences,
@@ -1576,35 +2987,50 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       updateChat,
       applyGeneratedChatName,
       patchChat,
+      touchChatRecency,
       consumeChatStartupRequest,
       commitCancelledDraftRestore,
-      setMessageEdit,
-      clearMessageEdit,
       softDeleteChat,
-      duplicateChat,
       getAllChats,
       getChatsForResource,
+      getAllChatRecords,
+      getChatRecordsForResource,
       getChat,
+      invalidateProjectedChats,
       deleteChat,
+      purgeChat,
     };
   }, [
     isLoading,
     error,
+    discoveryObservationError,
+    metadataObservationError,
+    getMetadataObservationError,
+    refreshFilesystemObservations,
     actorRef,
+    workspaceConnection,
+    connectWorkspace,
+    retryWorkspaceConnection,
+    refreshWorkspaceCatalog,
+    repairWorkspaceBindings,
     createProject,
     updateProject,
+    repairProject,
     touchProject,
+    setGeoSpecCandidateConsent,
     duplicateProject,
     getProjects,
     getProjectListing,
     getProject,
     getProjectRouteAccess,
     getProjectLibraryState,
-    setProjectRevisionState,
     deleteProject,
     restoreProject,
     permanentlyDeleteProject,
+    libraryRevision,
     adoptProject,
+    chooseProjectDirectory,
+    recoveries,
     discardRecovery,
     assertWorkspaceMutationAllowed,
     getAppUiPreferences,
@@ -1614,16 +3040,18 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     updateChat,
     applyGeneratedChatName,
     patchChat,
+    touchChatRecency,
     consumeChatStartupRequest,
     commitCancelledDraftRestore,
-    setMessageEdit,
-    clearMessageEdit,
     softDeleteChat,
-    duplicateChat,
     getAllChats,
     getChatsForResource,
+    getAllChatRecords,
+    getChatRecordsForResource,
     getChat,
+    invalidateProjectedChats,
     deleteChat,
+    purgeChat,
   ]);
 
   return <ProjectManagerContext.Provider value={value}>{children}</ProjectManagerContext.Provider>;

@@ -1,9 +1,10 @@
 import { useCallback, useState } from 'react';
 import type { ActorRefFrom } from 'xstate';
 import type { FileExtension } from '@taucad/types';
+import { isRecord } from '@taucad/utils/schema';
 import { toast } from '#components/ui/sonner.js';
 import type { cadMachine } from '#machines/cad.machine.js';
-import type { AppRuntimeExportFormat } from '#types/runtime-client.alias.js';
+import { bestRouteForActiveKernel, exportDocumentWithValidatedInput } from '#utils/export-formats.utils.js';
 import { downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 
 export type UseExportToDiskResult = {
@@ -31,23 +32,26 @@ export function useExportToDisk(filenameBase: string): UseExportToDiskResult {
 
   const exportToDisk = useCallback(
     async (cadActor: ActorRefFrom<typeof cadMachine>, format: FileExtension): Promise<void> => {
-      const { kernelClient, activeKernelId } = cadActor.getSnapshot().context;
+      const { kernelClient, activeKernelId, document } = cadActor.getSnapshot().context;
 
-      if (!kernelClient || !activeKernelId) {
+      if (!kernelClient || !activeKernelId || !document) {
         toast.error('Export failed');
         return;
       }
 
       setIsExporting(true);
       try {
-        const route = kernelClient.bestRouteFor(format, activeKernelId);
+        const route = bestRouteForActiveKernel(kernelClient, format, activeKernelId);
         if (!route || route.kernelId !== activeKernelId) {
           toast.error(`Export failed: ${format.toUpperCase()} is not available for this model`);
           return;
         }
-        const exportFormat = route.targetFormat as AppRuntimeExportFormat;
-        const options = route.defaults;
-        const result = await kernelClient.export(exportFormat, { exportOptions: options });
+        const exportFormat = route.targetFormat;
+        // The runtime types route defaults as `any`; narrow them at the app boundary.
+        const options: Record<string, unknown> = isRecord(route.exportOptions.defaults)
+          ? route.exportOptions.defaults
+          : {};
+        const result = await exportDocumentWithValidatedInput(document, route, { options });
 
         if (!result.success) {
           const message = result.issues[0]?.message ?? 'Export failed';
@@ -55,7 +59,7 @@ export function useExportToDisk(filenameBase: string): UseExportToDiskResult {
           return;
         }
 
-        await downloadExportArtifactSet(result.data, {
+        await downloadExportArtifactSet(result.files, {
           singleFileName: `${filenameBase}.${exportFormat}`,
           archiveName: `${filenameBase}-${exportFormat}.zip`,
         });

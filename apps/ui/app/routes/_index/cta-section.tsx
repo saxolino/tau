@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { NewProjectChatComposer } from '#components/chat/new-project-chat-composer.js';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import { ChatComposerProvider } from '#hooks/active-chat-provider.js';
 
 export function CtaSection(): React.JSX.Element {
@@ -22,7 +22,7 @@ export function CtaSection(): React.JSX.Element {
           {/* Chat Input — composer-only mode (no chat session). The draft is
               held in memory only. The marketing CTA never persists; it just
               routes into project creation on submit. */}
-          <ChatComposerProvider>
+          <ChatComposerProvider surface='marketing'>
             <NewProjectChatComposer enableAutoFocus={false} />
           </ChatComposerProvider>
 

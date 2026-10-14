@@ -1,23 +1,30 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { reactRouter } from '@react-router/dev/vite';
 import netlifyReactRouter from '@netlify/vite-plugin-react-router';
-import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import devtoolsJson from '@silvenon/vite-plugin-devtools-json';
 import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
 import { visualizer } from 'rollup-plugin-visualizer';
-import mdx from 'fumadocs-mdx/vite';
 import { defineConfig } from 'vite';
-import type { Plugin } from 'vite';
-// oxlint-disable-next-line no-restricted-imports, import/extensions -- allowed for Fumadocs; .js for ESM
-import * as MdxConfig from './app/lib/fumadocs/source.config.js';
+import type { Plugin, UserConfig } from 'vite';
 import { tauRuntime } from '@taucad/runtime/vite';
 import { base64Loader } from '@taucad/vite/base64-loader';
+// oxlint-disable-next-line eslint/no-restricted-imports -- Vite configuration lives outside the app alias root.
+import { resolveTauCloudBuildEnabled } from './build-environment.js';
+// oxlint-disable-next-line eslint/no-restricted-imports -- Vite config cannot use app aliases.
+import { createGeoSpecMtAssets } from './geospec-mt-assets.vite-plugin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const testScriptsAlias = '#scripts';
+const uiReactCompilerPluginName = 'vite:react-compiler';
+const streamdownShikiFacade = path.resolve(__dirname, 'app/lib/streamdown-shiki.ts');
+/** The only specifiers `tau-ui-source-alias` resolves: `#` app aliases and Streamdown's `shiki`. */
+const uiSourceAliasIdFilter = /^#|^shiki$/u;
 
 const toOriginOrRaw = (value: string | undefined): string | undefined => {
   if (!value) {
@@ -32,74 +39,407 @@ const toOriginOrRaw = (value: string | undefined): string | undefined => {
 };
 
 const resolveBuildFrontendUrl = (environment: NodeJS.ProcessEnv): string | undefined => {
-  if (environment.TAU_FRONTEND_URL) {
+  if (environment['TAU_FRONTEND_URL']) {
     return undefined;
   }
 
-  if (environment.NETLIFY !== 'true' || environment.CONTEXT === 'production') {
+  if (environment['NETLIFY'] !== 'true' || environment['CONTEXT'] === 'production') {
     return undefined;
   }
 
   return (
-    toOriginOrRaw(environment.DEPLOY_PRIME_URL) ??
-    toOriginOrRaw(environment.DEPLOY_URL) ??
-    toOriginOrRaw(environment.NETLIFY_AI_GATEWAY_URL)
+    toOriginOrRaw(environment['DEPLOY_PRIME_URL']) ??
+    toOriginOrRaw(environment['DEPLOY_URL']) ??
+    toOriginOrRaw(environment['NETLIFY_AI_GATEWAY_URL'])
   );
 };
 
-const createUiSourceAliasPlugin = (): Plugin => ({
-  name: 'tau-ui-source-alias',
-  enforce: 'pre',
-  resolveId(source, importer) {
-    if (!source.startsWith('#')) {
-      return null;
-    }
+/**
+ * SSR externalisation policy, shared with `desktop/vite.config.ts` so the two
+ * builds cannot drift.
+ *
+ * `external`: only the three packages that emit sibling SSR chunks via static
+ * `new URL('./<file>.js', import.meta.url)` patterns (kernel plugins, worker
+ * bootstraps, middleware factories). Bundling those re-emits many
+ * `build/server/assets/*` chunks SSR never executes. Other `@taucad/*`
+ * packages bundle into the SSR output.
+ *
+ * Audit first-party sources: rg -n "new URL\(['\"]\.\..*\.(?:js|ts)['\"], import\.meta\.url\)" packages/
+ *
+ * `noExternal`: `@rjsf/*` ships bundled CJS whose named exports node's
+ * cjs-module-lexer cannot see, so an external SSR import of
+ * `customizeValidator` (and the `@rjsf/utils` names it re-imports) crashes the
+ * server at boot.
+ */
+export const uiSsrOptions = {
+  noExternal: ['@headless-tree/core', '@headless-tree/react', 'posthog-js', /^@rjsf\//u],
+  external: ['@taucad/runtime', '@taucad/openrscad', '@taulabs/openrscad-engine'],
+} as const satisfies UserConfig['ssr'];
 
-    const uiRoot = `${path.resolve(__dirname)}${path.sep}`;
-    if (importer !== undefined && !path.resolve(importer).startsWith(uiRoot)) {
-      return null;
-    }
+/**
+ * Module aliases shared with `desktop/vite.config.ts`.
+ *
+ * `@resvg/resvg-js`: `@taucad/tscircuit` (composed into the runtime worker)
+ * depends on `circuit-json-to-gltf`, whose `svg-to-png` chunk statically imports
+ * this native `.node` binding; the kernel never reaches it
+ * (`boardTextureResolution: 0`) but the dependency optimizer and the production
+ * bundle fail on the binary. See `app/lib/browser-stubs/resvg-js.ts` and the
+ * tscircuit EDA kernel charter (T8).
+ */
+export const uiResolveAlias = [
+  { find: '@resvg/resvg-js', replacement: path.resolve(__dirname, 'app/lib/browser-stubs/resvg-js.ts') },
+] as const satisfies NonNullable<UserConfig['resolve']>['alias'];
 
-    const [specifier, query] = source.split('?', 2);
-    if (specifier === undefined) {
-      return null;
-    }
+type UiSourceAliasPluginOptions = {
+  readonly emitModuleGraph?: boolean;
+  readonly tauCloudEnabled?: boolean;
+  readonly target?: 'web' | 'desktop';
+};
 
-    const appPath = path.resolve(__dirname, 'app', specifier.slice(1));
-    const candidatePaths = [appPath];
-    if (specifier.endsWith('.js')) {
-      const sourceBasePath = appPath.slice(0, -'.js'.length);
-      candidatePaths.push(
-        `${sourceBasePath}.ts`,
-        `${sourceBasePath}.tsx`,
-        `${sourceBasePath}.js`,
-        `${sourceBasePath}.jsx`,
-      );
-    }
+const cloudBoundarySpecifiers = new Set([
+  '#cloud/commercial-features.js',
+  '#cloud/environment-billing.js',
+  '#cloud/financial-purge.js',
+  '#cloud/gateway-model-transport.js',
+  '#cloud/nav-billing.js',
+  '#cloud/kernel-commerce.js',
+  '#cloud/root-billing.js',
+  '#cloud/settings-billing.js',
+  '#cloud/zoo-close-errors.js',
+  '#cloud/zoo-upgrade-banner.js',
+]);
 
-    for (const candidatePath of candidatePaths) {
-      if (existsSync(candidatePath)) {
-        return query === undefined ? candidatePath : `${candidatePath}?${query}`;
+const desktopSourceOverrides = new Map([
+  ['#constants/local-kernel-options.js', '#constants/local-kernel-options.desktop.js'],
+  ['#constants/ephemeral-kernel-options.js', '#constants/ephemeral-kernel-options.desktop.js'],
+  ['#runtime/converter-client-options.js', '#runtime/converter-client-options.desktop.js'],
+  ['#runtime/demo-client-options.js', '#runtime/demo-client-options.desktop.js'],
+  ['#services/headless-image-backend.js', '#services/headless-image-backend.desktop.js'],
+  ['#services/browser-agent-worker.js', '#services/browser-agent-worker.desktop.js'],
+  ['#services/browser-geospec-worker.js', '#services/browser-geospec-worker.desktop.js'],
+  ['#workers/measurement-exact.transport.js', '#workers/measurement-exact.transport.desktop.js'],
+  ['#components/layout/route-footer.js', '#components/layout/route-footer.desktop.js'],
+]);
+
+const selfHostSourceOverrides = new Map([
+  ['#components/chat/chat-model-selector.js', '#components/chat/chat-model-selector.self-host.js'],
+  ['#components/icons/svg-sprite-mount.js', '#components/icons/svg-sprite-mount.self-host.js'],
+  ['#hooks/use-credit-preflight.js', '#hooks/use-credit-preflight.self-host.js'],
+  ['#offline/offline-shell.js', '#offline/offline-shell.self-host.js'],
+  ['#utils/model-tier.js', '#utils/model-tier.self-host.js'],
+  ['#routes/_index/billing-section.js', '#routes/_index/billing-section.self-host.js'],
+  [
+    '#routes/w.$workspace.$project/chat-details-usage.js',
+    '#routes/w.$workspace.$project/chat-details-usage.self-host.js',
+  ],
+  [
+    '#routes/w.$workspace.$project/chat-error-credits.js',
+    '#routes/w.$workspace.$project/chat-error-credits.self-host.js',
+  ],
+  [
+    '#routes/w.$workspace.$project/chat-error-provider-account.js',
+    '#routes/w.$workspace.$project/chat-error-provider-account.self-host.js',
+  ],
+  [
+    '#routes/w.$workspace.$project/chat-message-data-usage.js',
+    '#routes/w.$workspace.$project/chat-message-data-usage.self-host.js',
+  ],
+]);
+
+const normalizeProvenancePath = (moduleId: string): string => {
+  const normalized = moduleId.replaceAll('\\', '/');
+  const workspaceRoot = `${path.resolve(__dirname, '../..').replaceAll('\\', '/')}/`;
+  return normalized.startsWith(workspaceRoot) ? normalized.slice(workspaceRoot.length) : normalized;
+};
+
+/** Shared with `desktop/vite.config.ts`, which reuses the web plugin list. */
+export const createUiSourceAliasPlugin = (options: UiSourceAliasPluginOptions = {}): Plugin => {
+  let viteRoot = __dirname;
+  let graphFileName: string | undefined;
+  let graphAssets: Array<{
+    fileName: string;
+    sourcePath: string;
+    sha256: string;
+  }> = [];
+  return {
+    name: 'tau-ui-source-alias',
+    enforce: 'pre',
+    configResolved(config) {
+      viteRoot = config.root;
+    },
+    resolveId: {
+      // Rolldown skips the JS call for every other specifier; the handler keeps
+      // its own checks for hosts that ignore hook filters.
+      filter: { id: uiSourceAliasIdFilter },
+      handler(source, importer) {
+        if (
+          source === 'shiki' &&
+          (importer?.includes('/@streamdown/code/') === true ||
+            (importer?.includes('/streamdown/') === true && importer.includes('/code-block-')))
+        ) {
+          return streamdownShikiFacade;
+        }
+        if (!source.startsWith('#')) {
+          return null;
+        }
+
+        // Every other package, @taucad/ui included, answers its own `#` specifiers
+        // through its package.json imports map in Vite's core resolver.
+        const uiRoot = `${path.resolve(__dirname)}${path.sep}`;
+        if (importer !== undefined && !path.resolve(importer).startsWith(uiRoot)) {
+          return null;
+        }
+
+        const [requestedSpecifier, query] = source.split('?', 2);
+        const hostSpecifier =
+          options.target === 'desktop' && requestedSpecifier
+            ? (desktopSourceOverrides.get(requestedSpecifier) ?? requestedSpecifier)
+            : requestedSpecifier;
+        const targetSpecifier =
+          options.tauCloudEnabled === false && hostSpecifier
+            ? (selfHostSourceOverrides.get(hostSpecifier) ?? hostSpecifier)
+            : hostSpecifier;
+        const specifier =
+          targetSpecifier && cloudBoundarySpecifiers.has(targetSpecifier)
+            ? targetSpecifier.replace(/\.js$/u, options.tauCloudEnabled ? '.cloud.js' : '.self-host.js')
+            : targetSpecifier;
+        if (specifier === undefined) {
+          return null;
+        }
+
+        const sourcePath = path.resolve(__dirname, 'app', specifier.slice(1));
+        const candidatePaths = [sourcePath];
+        if (specifier.endsWith('.js')) {
+          const sourceBasePath = sourcePath.slice(0, -'.js'.length);
+          candidatePaths.push(
+            `${sourceBasePath}.ts`,
+            `${sourceBasePath}.tsx`,
+            `${sourceBasePath}.js`,
+            `${sourceBasePath}.jsx`,
+          );
+        }
+
+        for (const candidatePath of candidatePaths) {
+          if (existsSync(candidatePath)) {
+            return query === undefined ? candidatePath : `${candidatePath}?${query}`;
+          }
+        }
+
+        return null;
+      },
+    },
+    generateBundle(_outputOptions, bundle) {
+      if (options.emitModuleGraph !== true || this.environment.config.consumer !== 'client') {
+        return;
       }
-    }
 
-    return null;
-  },
-});
+      const chunks = Object.values(bundle).filter((output) => output.type === 'chunk');
+      if (options.target !== 'desktop') {
+        const forbidden = chunks
+          .flatMap((chunk) => Object.keys(chunk.modules))
+          .find((moduleId) => /apps\/ui\/app\/.*\.desktop\.[jt]sx?(?:\?|$)/u.test(normalizeProvenancePath(moduleId)));
+        if (forbidden) {
+          this.error(`Desktop-only implementation in web bundle: ${normalizeProvenancePath(forbidden)}`);
+        }
+      }
+      const assets = Object.values(bundle).filter((output) => output.type === 'asset');
+      const emittedFileNames = new Set(Object.keys(bundle));
+      graphAssets = assets.map((asset) => ({
+        fileName: asset.fileName,
+        sourcePath: asset.originalFileNames[0]
+          ? normalizeProvenancePath(path.resolve(viteRoot, asset.originalFileNames[0]))
+          : '',
+        sha256: createHash('sha256').update(asset.source).digest('hex'),
+      }));
+      const graphReferenceId = this.emitFile({
+        type: 'asset',
+        name: 'tau-module-graph.json',
+        source: JSON.stringify({
+          chunks: chunks.map((chunk) => {
+            const importedChunks = chunk.imports
+              .map((importPath) => {
+                const fromOutputRoot = path.posix.normalize(
+                  path.posix.join(path.posix.dirname(chunk.fileName), importPath),
+                );
+                return emittedFileNames.has(importPath)
+                  ? importPath
+                  : emittedFileNames.has(fromOutputRoot)
+                    ? fromOutputRoot
+                    : undefined;
+              })
+              .filter((fileName): fileName is string => fileName !== undefined);
+            const forwardingOnly = this.parse(chunk.code).body.every(
+              (statement) =>
+                statement.type === 'ImportDeclaration' ||
+                statement.type === 'ExportAllDeclaration' ||
+                (statement.type === 'ExportNamedDeclaration' && statement.declaration === null),
+            );
+            return {
+              fileName: chunk.fileName,
+              // Loaded modules still cross a target boundary when Rolldown inlines
+              // their exports and reports renderedLength=0.
+              moduleIds: chunk.moduleIds.map(normalizeProvenancePath),
+              imports: importedChunks,
+              forwardingOnly,
+            };
+          }),
+          assets: graphAssets,
+        }),
+      });
+      graphFileName = this.getFileName(graphReferenceId);
+    },
+    writeBundle: {
+      order: 'post',
+      async handler(outputOptions, bundle) {
+        if (
+          options.emitModuleGraph !== true ||
+          this.environment.config.consumer !== 'client' ||
+          outputOptions.dir === undefined ||
+          graphFileName === undefined
+        ) {
+          return;
+        }
+
+        const outputRoot = path.resolve(outputOptions.dir);
+        const chunks = await Promise.all(
+          Object.values(bundle)
+            .filter((output) => output.type === 'chunk')
+            .map(async (chunk) => {
+              const chunkPath = path.resolve(outputRoot, chunk.fileName);
+              if (!existsSync(chunkPath)) {
+                return undefined;
+              }
+
+              const code = await readFile(chunkPath, 'utf8');
+              const program = this.parse(code);
+              const imports = program.body
+                .flatMap((statement) => {
+                  if (
+                    statement.type === 'ImportDeclaration' ||
+                    statement.type === 'ExportAllDeclaration' ||
+                    statement.type === 'ExportNamedDeclaration'
+                  ) {
+                    return statement.source?.value && typeof statement.source.value === 'string'
+                      ? [statement.source.value]
+                      : [];
+                  }
+                  return [];
+                })
+                .map((importPath) =>
+                  path.posix.normalize(path.posix.join(path.posix.dirname(chunk.fileName), importPath)),
+                )
+                .filter((fileName) => existsSync(path.resolve(outputRoot, fileName)));
+              return {
+                fileName: chunk.fileName,
+                moduleIds: chunk.moduleIds.map(normalizeProvenancePath),
+                imports,
+                forwardingOnly: program.body.every(
+                  (statement) =>
+                    statement.type === 'ImportDeclaration' ||
+                    statement.type === 'ExportAllDeclaration' ||
+                    (statement.type === 'ExportNamedDeclaration' && statement.declaration === null),
+                ),
+              };
+            }),
+        );
+        const assets = graphAssets.filter((asset) => existsSync(path.resolve(outputRoot, asset.fileName)));
+        await writeFile(
+          path.resolve(outputRoot, graphFileName),
+          JSON.stringify({
+            chunks: chunks.filter((chunk) => chunk !== undefined),
+            assets,
+          }),
+        );
+      },
+    },
+  };
+};
+
+/**
+ * Applies the native React Compiler without admitting the second JSX and Fast
+ * Refresh pipeline returned by the full Vite React plugin. React Router owns
+ * those transforms for this framework-mode app.
+ */
+export const createUiReactCompilerPlugin = (): Plugin => {
+  const compilerPlugins = react({
+    compiler: { target: '19', logDiagnostics: true },
+    include: ['**/apps/ui/app/**/*.{js,jsx,ts,tsx}'],
+    exclude: [
+      '**/node_modules/**',
+      '**/*.{test,spec}.{js,jsx,ts,tsx}',
+      // Oxc 0.148 cannot reset compiler caches during route-module HMR.
+      '**/apps/ui/app/root.{js,jsx,ts,tsx}',
+      '**/apps/ui/app/routes/*.{js,jsx,ts,tsx}',
+      '**/apps/ui/app/routes/**/route.{js,jsx,ts,tsx}',
+    ],
+  }).filter((plugin) => plugin.name === uiReactCompilerPluginName);
+
+  const [compilerPlugin] = compilerPlugins;
+  if (compilerPlugins.length !== 1 || compilerPlugin === undefined) {
+    throw new Error(`Expected one ${uiReactCompilerPluginName} plugin, received ${compilerPlugins.length}.`);
+  }
+  const compilerTransform = compilerPlugin.transform;
+  if (compilerTransform === undefined || typeof compilerTransform === 'function') {
+    throw new Error(`Expected a filtered ${uiReactCompilerPluginName} transform.`);
+  }
+
+  return {
+    ...compilerPlugin,
+    transform: {
+      ...compilerTransform,
+      filter: {
+        ...compilerTransform.filter,
+        // Oxc 0.148's React compiler emits undefined for BigInt literals, breaking
+        // credit arithmetic. Leave these modules to Vite's ordinary TSX transform.
+        // A match inside a comment/string only forgoes optional memoization.
+        code: { exclude: /\b(?:0[xX][\dA-Fa-f_]+|0[oO][0-7_]+|0[bB][01_]+|[\d_]+)n\b/u },
+      },
+    },
+    applyToEnvironment: (environment) => environment.config.consumer === 'client',
+  };
+};
 
 export default defineConfig(({ mode }) => {
+  const mtAssets = createGeoSpecMtAssets(process.env['GEOSPEC_MT_STAGED_PACKAGE_ROOT']);
   const isTest = mode === 'test';
-  const isNetlify = process.env['NETLIFY'] === 'true';
+  // Netlify's own CI sets NETLIFY=true; `netlify deploy` from GitHub Actions
+  // (deploy-ui.yml) builds with NETLIFY_LOCAL=true instead. Both need the SSR function.
+  const isNetlify = process.env['NETLIFY'] === 'true' || process.env['NETLIFY_LOCAL'] === 'true';
   const buildFrontendUrl = resolveBuildFrontendUrl(process.env);
+  const tauCloudEnabled = isTest ? true : resolveTauCloudBuildEnabled(process.env['TAU_CLOUD_ENABLED']);
 
   return {
     root: __dirname,
     cacheDir: '../../node_modules/.vite/apps/ui',
     define: {
       tauBuildFrontendUrl: JSON.stringify(buildFrontendUrl ?? ''),
+      // Ordered build identity for the stale-tab skew guard (blueprint DF20).
+      // Evaluated once per build / dev-server start, which is exactly the
+      // granularity at which a tab's app-logic vintage can diverge.
+      tauBuildId: JSON.stringify(Date.now()),
+      tauCloudBuildEnabled: JSON.stringify(tauCloudEnabled),
+      tauGeoSpecMtReceipts: JSON.stringify(mtAssets.receipts),
+      /*
+       * Compile-time host seam (charter D2). `desktop/vite.config.ts` sets
+       * `"desktop"`. Left undefined under `mode === 'test'` so unit tests can
+       * exercise both branches with `vi.stubEnv('TAU_TARGET', …)` — a `define`
+       * is a literal substitution `stubEnv` cannot reach.
+       */
+      // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
+      ...(isTest ? {} : { 'import.meta.env.TAU_TARGET': '"web"' }),
+      /*
+       * Offline shell seam (B5 R3). Only this config defines it, so only the
+       * web bundle registers the service worker: `desktop/vite.config.ts` and
+       * `serve/vite.config.ts` have their own `define` blocks and their own
+       * `react-router.config.ts` without the `buildEnd` that generates the
+       * worker, and both already boot offline from an SPA index fallback.
+       */
+      // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
+      ...(isTest ? {} : { 'import.meta.env.TAU_OFFLINE_SHELL': '"enabled"' }),
     },
     plugins: [
-      createUiSourceAliasPlugin(),
+      mtAssets.plugin,
+      createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled }),
 
       /*
        * @taucad/runtime contract: COOP/COEP for SharedArrayBuffer, keep .wasm
@@ -115,21 +455,13 @@ export default defineConfig(({ mode }) => {
         ? []
         : // In non-test mode, include the React Router plugin and the Netlify plugin
           [
+            createUiReactCompilerPlugin(),
             reactRouter(),
             // Netlify plugin is only needed for Netlify builds
             ...(isNetlify ? [netlifyReactRouter()] : []),
           ]),
       tailwindcss(),
       // RemixPWA(), // TODO: add PWA back after https://github.com/remix-pwa/monorepo/issues/284
-
-      // Paths - use nxViteTsPaths only (tsconfigPaths is redundant in Nx workspaces)
-      nxViteTsPaths(),
-
-      // Fumadocs
-      mdx(MdxConfig, {
-        configPath: path.resolve(__dirname, './app/lib/fumadocs/source.config.ts'),
-        outDir: path.resolve(__dirname, '../../node_modules/.cache/fumadocs/apps/ui'),
-      }), // Fumadocs
 
       // Browser DevTools JSON plugin.
       devtoolsJson(),
@@ -145,29 +477,15 @@ export default defineConfig(({ mode }) => {
     worker: {
       // Workers need their own plugins.
       // https://vite.dev/config/worker-options.html#worker-plugins
-      plugins: () => [createUiSourceAliasPlugin(), nxViteTsPaths()],
+      plugins: () => [createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled })],
     },
     resolve: {
-      alias: isTest
-        ? {
-            [testScriptsAlias]: path.resolve(__dirname, 'scripts'),
-          }
-        : {},
+      alias: [
+        ...uiResolveAlias,
+        ...(isTest ? [{ find: testScriptsAlias, replacement: path.resolve(__dirname, 'scripts') }] : []),
+      ],
     },
-
-    /*
-     * Externalise only workspace packages that emit sibling SSR chunks via
-     * static `new URL('./<file>.js', import.meta.url)` patterns (kernel plugins,
-     * worker bootstraps, middleware factories). Bundling those re-emits many
-     * `build/server/assets/*` chunks SSR never executes. Other `@taucad/*`
-     * packages bundle into the SSR output.
-     *
-     * Audit: rg -n "new URL\(['\"]\.\..*\.(?:js|ts)['\"], import\.meta\.url\)" packages/ kernels/
-     */
-    ssr: {
-      noExternal: ['@headless-tree/core', '@headless-tree/react', 'posthog-js'],
-      external: ['@taucad/runtime', '@taucad/openrscad', '@taulabs/openrscad-engine'],
-    },
+    ssr: uiSsrOptions,
 
     server: {
       port: 3000,
@@ -175,6 +493,13 @@ export default defineConfig(({ mode }) => {
       // HTTPS is intentionally a `nx serve ui --https` concern (handled by `apps/ui/server.ts`),
       // not a `nx dev ui` concern; dev is plain HTTP regardless of TTY/--host.
       allowedHosts: true,
+      // `runtime-ssr-assets.vite-plugin.ts` rewrites package-owned `import.meta.resolve`
+      // assets (resvg WASM, Geist fonts, occt/rhino WASM) to `/@fs/<abs path>` URLs at
+      // serve time, and those paths live in sibling packages. Vite 8 refuses to serve
+      // them unless the workspace root is allowed. NOT the skill-read widening it was
+      // originally commented as: the skills moved to JSON modules and no longer need it,
+      // but the runtime assets always did.
+      fs: { allow: [path.resolve(__dirname, '../..')] },
     },
     build: {
       /*
@@ -194,11 +519,22 @@ export default defineConfig(({ mode }) => {
         return undefined;
       },
       target: 'es2022',
+      /*
+       * The offline shell allowlist is generated from this manifest
+       * (`scripts/generate-offline-shell.ts`), so hashed filenames are never
+       * hand-maintained. It only lists public build outputs.
+       */
+      manifest: true,
     },
 
     test: {
       globals: true, // Required by @testing-library/jest-dom, which uses `expect` implicitly
       environment: 'jsdom',
+      // Keep mock library matchers on this runner's Vitest instance; externalizing it can load a second peer instance.
+      server: { deps: { inline: ['vitest-mock-extended'] } },
+      // *.browser.test.ts(x) files need a real browser (OPFS, Web Locks, WebGL) and run
+      // under their own vitest browser configs, not the jsdom sweep.
+      exclude: ['**/node_modules/**', '**/dist/**', '**/*.browser.test.ts', '**/*.browser.test.tsx'],
       typecheck: {
         enabled: true,
         include: ['**/*.test-d.ts'],

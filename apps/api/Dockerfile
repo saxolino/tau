@@ -4,7 +4,7 @@
 #
 # Stages: base -> deps -> build -> pruned -> runtime
 #   base    : node:24-slim with pnpm pinned via `npm i -g` (no Corepack).
-#   deps    : workspace skeleton only (lockfile + every workspace package.json
+#   deps    : workspace skeleton only (lockfile, pnpmfile + every workspace package.json
 #             + patches); cache key independent of source edits.
 #   build   : full source + `pnpm nx build api`; reuses deps layer cache.
 #   pruned  : `pnpm deploy --prod` to materialise a self-contained app dir.
@@ -25,7 +25,7 @@
 #     missing-module error before `nx build api` can even start. Full install
 #     is required; the cold-cache cost is ~70s (network-bound, same as filtered).
 
-ARG NODE_VERSION=24.3.0
+ARG NODE_VERSION=24.19.0
 ARG PNPM_VERSION=10.30.3
 
 # ── Base ──────────────────────────────────────────────────────────────────
@@ -39,40 +39,74 @@ WORKDIR /app
 
 # ── Deps: workspace skeleton only (cache key = lockfile + package.jsons) ──
 FROM base AS deps
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .pnpmfile.cjs ./
 COPY patches/ ./patches/
 # `--parents` (BuildKit syntax 1.20+) preserves directory tree so each
 # workspace package.json lands at its real path. Matches pnpm-workspace.yaml
-# globs apps/*, libs/*, packages/*, packages/kernels/*, tools/*. The nested
-# `apps/libs/*` and `packages/kernels/*` workspaces need their own patterns
-# because `*/*/package.json` is only two levels deep. (`scripts/` is one
-# level deep and intentionally dockerignored — pnpm tolerates it.)
-COPY --parents */*/package.json apps/libs/*/package.json packages/kernels/*/package.json ./
+# globs apps/*, libs/*, packages/*, packages/plugins/*, packages/core/*, and
+# tools/*. Nested workspace placements need explicit patterns because
+# `*/*/package.json` is only two levels deep, and `scripts/` is one level deep.
+COPY --parents scripts/package.json */*/package.json apps/libs/*/package.json apps/react-e2e/apps/*/package.json packages/plugins/*/package.json packages/core/*/package.json ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --prefer-offline
 
 # ── Build ─────────────────────────────────────────────────────────────────
 FROM deps AS build
 COPY . .
+# The deps stage installed from the frozen lockfile moments ago. pnpm's
+# pre-run dependency check would otherwise re-run a full install here and
+# exhaust the builder's 2 GB Node heap, so it only warns, as CI does.
+ENV pnpm_config_verify_deps_before_run=warn
+# Nx's native PTY runner intermittently segfaults; CI turns it off the same way
+# in .github/actions/setup-nx.
+ENV NX_NATIVE_COMMAND_RUNNER=false
+# The script builds the API without the GeoSpec native engine's Darwin-only artifact gate;
+# its header says why the runtime image does not need it.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     --mount=type=cache,id=nx,target=/app/.nx/cache \
     --mount=type=secret,id=nx_cloud_token,env=NX_CLOUD_ACCESS_TOKEN \
-    pnpm nx build api
+    node apps/api/scripts/build-image.mts
 
 # ── Prune to production deploy tree ───────────────────────────────────────
 FROM build AS pruned
+# Peer auto-install is off because the legacy deploy resolves every workspace
+# package's peers from the registry, and `@taucad/camera` (a type-only peer of
+# `@taucad/workbench`) is not published; the API's runtime dependencies are all
+# declared directly.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm --filter=@taucad/api --prod deploy /pruned --legacy
+    pnpm --config.auto-install-peers=false --filter=@taucad/api --prod deploy /pruned --legacy
 
 # ── Runtime ───────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-slim AS runtime
 LABEL fly_launch_runtime="NestJS"
 WORKDIR /app
 
+# The Tau Hosted Remote is git's own binaries behind HTTP (charter D15):
+# `git upload-pack|receive-pack --stateless-rpc` serve a lease hydrated from the
+# object store, and `git-lfs` is present so a repository written by the API is one
+# a stock client can also maintain. Readiness fails by name when either is
+# missing (`git-toolchain-health.indicator.ts`).
+#
+# Pinned (charter W8), because these two binaries decide the bytes of every pack
+# this service writes: an unpinned `apt-get install` means a rebuild of an unchanged
+# commit can ship a different git. Both versions are the bookworm candidates of the
+# `node:24-slim` base. When Debian rolls a point release the old version leaves the
+# index and this build fails loudly — bump the two ARGs, which is the intended
+# maintenance, rather than dropping the pin.
+ARG GIT_VERSION=1:2.39.5-0+deb12u3
+ARG GIT_LFS_VERSION=3.3.0-1+deb12u1
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends "git=${GIT_VERSION}" "git-lfs=${GIT_LFS_VERSION}" && \
+    rm -rf /var/lib/apt/lists/*
+
 # Create non-root user before COPY so --chown can write directly into the
 # layer instead of doubling its size with a follow-up `chown -R`.
 RUN groupadd --system --gid 1001 nodejs && \
     useradd --system --uid 1001 --gid nodejs --home /app --shell /usr/sbin/nologin nestjs
+
+# No `/data`: the repositories volume is gone (charter S3). A lease is a temporary
+# working copy under `os.tmpdir()`, which on this image is the rootfs's own `/tmp`
+# — world-writable, so the non-root user needs nothing prepared here.
 COPY --from=pruned --chown=nestjs:nodejs /pruned /app
 USER nestjs
 

@@ -1,0 +1,506 @@
+/**
+ * Renderer-side half of the node filesystem backend.
+ *
+ * Runs inside the file-manager worker and forwards the 8 abstract provider
+ * primitives to a host that owns `node:fs` (the Electron services utility, or
+ * a plain Node peer in tests). Contains no `node:*` import by construction —
+ * the browser barrel re-exports this file, so a stray one would drag `node:fs`
+ * into the worker bundle.
+ */
+
+import type { z } from 'zod';
+import { Topic } from '@taucad/events';
+import { AbstractFileSystemProvider } from '#backend/abstract-provider.js';
+import type { CheckedFileWrite, CheckedFileWriteResult, FileWritePrecondition } from '@taucad/types';
+import { streamChunkSize, validateFileReadStreamOptions } from '#backend/stream-utils.js';
+import type {
+  ExternalChangeFact,
+  FileMode,
+  FileReadStreamOptions,
+  FileStatOptions,
+  FileStat,
+  HeadFileStat,
+  ProviderCapabilities,
+  WatchRequest,
+} from '#types.js';
+import type { NodeFsPort } from '#backend/node/port.js';
+import type { NodeFsRequest, NodeFsResponse, NodeFsWatchEvent } from '#backend/node/protocol.js';
+import {
+  nodeFsProtocolVersion,
+  nodeFsResponseSchema,
+  nodeFsResultSchemas,
+  parseNodeFsFrame,
+} from '#backend/node/protocol.js';
+
+type Pending = {
+  readonly op: NodeFsRequest['op'];
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: unknown) => void;
+};
+
+/**
+ * The channel to the filesystem host is gone — the host process died, or the
+ * channel was disposed. Distinguishable on purpose: a caller can tell a dead
+ * transport from a filesystem error (`ENOENT`, `EACCES`) and resync instead of
+ * treating the root as broken.
+ * @public
+ */
+/** The kernel's own cache burst must never reach the tree (blueprint Q-R3). */
+const hostWatchExcludes = ['.tau/cache/**'];
+
+/**
+ * Translate one host watch event into the port's fact vocabulary.
+ *
+ * @param event - One event the host published for this root.
+ * @returns The equivalent {@link ExternalChangeFact}.
+ */
+const toExternalChangeFact = (event: NodeFsWatchEvent): ExternalChangeFact => {
+  if (event.type === 'reset') {
+    return { kind: 'reset' };
+  }
+  return event.type === 'delete'
+    ? { kind: 'deleted', path: event.path }
+    : { kind: 'modified', path: event.path, entry: event.kind };
+};
+
+export class NodeFsChannelClosedError extends Error {
+  public override readonly name = 'NodeFsChannelClosedError';
+
+  /** @param message - What closed the channel. */
+  public constructor(message = 'The node filesystem channel is closed.') {
+    super(message);
+  }
+}
+
+const toError = (frame: Extract<NodeFsResponse, { type: 'error' }>): Error => {
+  const error = new Error(frame.message);
+  if (frame.code !== undefined) {
+    (error as NodeJS.ErrnoException).code = frame.code;
+  }
+  if (frame.applicationState !== undefined) {
+    Object.assign(error, { applicationState: frame.applicationState });
+  }
+  return error;
+};
+
+/**
+ * One multiplexed connection to a node filesystem host.
+ *
+ * A single port serves every node root: each request carries its `root`, which
+ * is the rooted-view half of the process-seam contract (substrate invariant 1).
+ * One port per concern, never a socket multiplexer.
+ *
+ * @public
+ */
+export class NodeFsChannel {
+  private readonly _port: NodeFsPort;
+  private readonly _pending = new Map<number, Pending>();
+  private readonly _watchers = new Map<number, (event: NodeFsWatchEvent) => void>();
+  private readonly _close = new Topic<void>({ name: 'NodeFsChannel.close' });
+  private _nextId = 1;
+  private _closed = false;
+
+  /**
+   * Bind a channel to an already-connected port.
+   *
+   * @param port - Transport to the host; a browser `MessagePort` works as-is,
+   * other flavours go through `toNodeFsPort`.
+   */
+  public constructor(port: NodeFsPort) {
+    this._port = port;
+    port.addEventListener('message', (event) => {
+      this._receive(event.data);
+    });
+    // A dead host is otherwise invisible: nothing settles the pending map and
+    // every in-flight request hangs forever. The far end disentangling fires
+    // `close` here; `messageerror` means the wire itself is unusable.
+    for (const event of ['close', 'messageerror'] as const) {
+      port.addEventListener(event, () => {
+        this.close();
+      });
+    }
+    port.start?.();
+  }
+
+  /** Whether the channel has been closed (host death or disposal). @returns `true` once closed. */
+  public get closed(): boolean {
+    return this._closed;
+  }
+
+  /**
+   * Run `listener` when the channel closes, once. Callers that cache providers
+   * bound to this channel use it to evict them.
+   *
+   * @param listener - Invoked on the single close transition.
+   */
+  public onClose(listener: () => void): void {
+    if (this._closed) {
+      listener();
+      return;
+    }
+    this._close.subscribe(listener);
+  }
+
+  /**
+   * Send one request and await its result.
+   *
+   * @param request - Request frame minus its version and id.
+   * @returns The host's validated result for the requested operation.
+   */
+  public async request<Request extends Omit<NodeFsRequest, 'v' | 'id'>>(
+    request: Request,
+  ): Promise<z.infer<(typeof nodeFsResultSchemas)[Request['op']]>> {
+    if (this._closed) {
+      throw new NodeFsChannelClosedError();
+    }
+    const id = this._nextId++;
+    return (await new Promise<unknown>((resolve, reject) => {
+      this._pending.set(id, { op: request.op, resolve, reject });
+      this._port.postMessage({ ...request, v: nodeFsProtocolVersion, id });
+    })) as z.infer<(typeof nodeFsResultSchemas)[Request['op']]>;
+  }
+
+  /**
+   * Subscribe to host-side watch events for `root`.
+   *
+   * Arming is asynchronous by construction: the watcher lives in another
+   * process, so — unlike the runtime's in-process adapter, which arms
+   * synchronously to close the subscribe-versus-read window — the caller must
+   * await this promise before treating its own reads as watched.
+   *
+   * @param root - Absolute host directory the subscription is rooted at.
+   * @param request - Paths (root-relative) and options to watch.
+   * @param handler - Receives every event until the returned unsubscribe runs.
+   * @returns Unsubscribe function once the host has armed; safe to call twice.
+   */
+  public async watch(
+    root: string,
+    request: WatchRequest,
+    handler: (event: NodeFsWatchEvent) => void,
+  ): Promise<() => void> {
+    const id = this._nextId++;
+    this._watchers.set(id, handler);
+    const unsubscribe = (): void => {
+      if (!this._watchers.delete(id) || this._closed) {
+        return;
+      }
+      this._port.postMessage({ v: nodeFsProtocolVersion, id, op: 'unwatch' });
+    };
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this._pending.set(id, {
+          op: 'watch',
+          resolve: () => {
+            resolve();
+          },
+          reject,
+        });
+        this._port.postMessage({
+          v: nodeFsProtocolVersion,
+          id,
+          root,
+          op: 'watch',
+          request: { paths: request.paths, recursive: request.recursive, excludes: request.excludes },
+        });
+      });
+    } catch (error) {
+      this._watchers.delete(id);
+      throw error;
+    }
+    return unsubscribe;
+  }
+
+  /** Fail every in-flight request and stop accepting new ones. */
+  public close(): void {
+    if (this._closed) {
+      return;
+    }
+    this._closed = true;
+    for (const pending of this._pending.values()) {
+      pending.reject(new NodeFsChannelClosedError('The node filesystem channel closed before the request settled.'));
+    }
+    this._pending.clear();
+    for (const handler of this._watchers.values()) {
+      handler({ type: 'reset' });
+    }
+    this._watchers.clear();
+    this._port.close?.();
+    this._close.emit();
+  }
+
+  private _receive(raw: unknown): void {
+    let frame: NodeFsResponse;
+    try {
+      frame = parseNodeFsFrame(nodeFsResponseSchema, raw);
+    } catch {
+      // An unparseable frame is a host defect; dropping it is safer than
+      // resolving a caller with an unvalidated value.
+      return;
+    }
+    if (frame.type === 'watch') {
+      this._watchers.get(frame.id)?.(frame.event);
+      return;
+    }
+    const pending = this._pending.get(frame.id);
+    if (!pending) {
+      return;
+    }
+    this._pending.delete(frame.id);
+    if (frame.type === 'error') {
+      pending.reject(toError(frame));
+      return;
+    }
+    const parsed = nodeFsResultSchemas[pending.op].safeParse(frame.value);
+    if (parsed.success) {
+      pending.resolve(parsed.data);
+    } else {
+      pending.reject(new Error(`The node filesystem host returned an invalid ${pending.op} result.`));
+    }
+  }
+}
+
+/**
+ * `FileSystemProvider` over a {@link NodeFsChannel}, rooted at one host path.
+ *
+ * Derived operations (`exists`, `lstat`, recursive `mkdir`, `appendFile`) come
+ * from {@link AbstractFileSystemProvider} so the node backend obeys the same
+ * path-tree contract as every browser backend without a second implementation.
+ *
+ * ponytail: `lstat` therefore reports the target, not the link. Nothing in the
+ * service distinguishes them today; forward a dedicated `lstat` op if that changes.
+ *
+ * @public
+ */
+export class NodeFsProviderClient extends AbstractFileSystemProvider {
+  /** @returns `true` for the supported head listing mode. */
+  public get supportsHeadListing(): true {
+    return true;
+  }
+  public readonly capabilities: ProviderCapabilities = {
+    persistent: true,
+    writable: true,
+    quotaBased: false,
+    durability: 'transactional-rewrite',
+  };
+
+  private readonly _channel: NodeFsChannel;
+  private readonly _root: string;
+
+  /**
+   * @param channel - Shared connection to the host.
+   * @param root - Absolute host directory this provider is rooted at.
+   */
+  public constructor(channel: NodeFsChannel, root: string) {
+    super();
+    this._channel = channel;
+    this._root = root;
+  }
+
+  /**
+   * Backend identifier, carrying the physical root so two node providers are
+   * distinguishable in diagnostics.
+   * @returns `node:<absolute host path>`.
+   */
+  public get id(): string {
+    return `node:${this._root}`;
+  }
+
+  /** Absolute host directory this provider is rooted at. @returns The root path. */
+  public get root(): string {
+    return this._root;
+  }
+
+  public async writeFile(path: string, data: Uint8Array<ArrayBuffer> | string): Promise<void> {
+    this._assertRootedPath(path);
+    await this._channel.request({ root: this._root, op: 'writeFile', path, data });
+  }
+
+  public async writeFileChecked(input: Omit<CheckedFileWrite, 'signal'>): Promise<CheckedFileWriteResult> {
+    this._assertRootedPath(input.path);
+    for (const precondition of input.preconditions) {
+      this._assertRootedPath(precondition.path);
+    }
+    try {
+      return await this._channel.request({ root: this._root, op: 'writeFileChecked', ...input });
+    } catch (error) {
+      if ((error as { applicationState?: unknown }).applicationState !== undefined) {
+        throw error;
+      }
+      throw Object.assign(
+        new Error('Checked write outcome is unknown because its reply was unavailable.', { cause: error }),
+        {
+          code: 'CHECKED_WRITE_POTENTIALLY_APPLIED',
+          applicationState: 'potentially-applied',
+        },
+      );
+    }
+  }
+
+  public async deleteFileChecked(input: {
+    path: string;
+    preconditions: readonly FileWritePrecondition[];
+  }): Promise<CheckedFileWriteResult> {
+    this._assertRootedPath(input.path);
+    for (const precondition of input.preconditions) {
+      this._assertRootedPath(precondition.path);
+    }
+    try {
+      return await this._channel.request({ root: this._root, op: 'deleteFileChecked', ...input });
+    } catch (error) {
+      if ((error as { applicationState?: unknown }).applicationState !== undefined) {
+        throw error;
+      }
+      throw Object.assign(
+        new Error('Checked delete outcome is unknown because its reply was unavailable.', { cause: error }),
+        {
+          code: 'CHECKED_WRITE_POTENTIALLY_APPLIED',
+          applicationState: 'potentially-applied',
+        },
+      );
+    }
+  }
+
+  public async readdir(path: string): Promise<string[]> {
+    this._assertRootedPath(path);
+    return this._channel.request({ root: this._root, op: 'readdir', path });
+  }
+
+  /**
+   * One request per directory instead of one per entry: the host already has to
+   * `stat` each row, and each of those was a round trip across the seam.
+   *
+   * @param path - Absolute directory path to enumerate.
+   * @returns Each entry's name paired with its stat metadata.
+   */
+  public readdirWithStats(path: string): Promise<Array<{ name: string } & FileStat>>;
+  public readdirWithStats(
+    path: string,
+    options: { readonly content: 'head' },
+  ): Promise<Array<{ name: string } & HeadFileStat>>;
+  public async readdirWithStats(
+    path: string,
+    options?: { readonly content: 'head' },
+  ): Promise<Array<{ name: string } & (FileStat | HeadFileStat)>> {
+    this._assertRootedPath(path);
+    return options === undefined
+      ? this._channel.request({ root: this._root, op: 'readdirWithStats', path })
+      : this._channel.request({ root: this._root, op: 'readdirHeadWithStats', path });
+  }
+
+  public async stat(path: string): Promise<FileStat>;
+  public async stat(path: string, options: FileStatOptions): Promise<FileStat | HeadFileStat>;
+  public async stat(path: string, options?: FileStatOptions): Promise<FileStat | HeadFileStat> {
+    this._assertRootedPath(path);
+    return options?.content === 'head'
+      ? this._channel.request({ root: this._root, op: 'headStat', path })
+      : this._channel.request({ root: this._root, op: 'stat', path });
+  }
+
+  public async getFileMode(path: string): Promise<FileMode> {
+    this._assertRootedPath(path);
+    return this._channel.request({ root: this._root, op: 'getFileMode', path });
+  }
+
+  public async setFileMode(path: string, mode: FileMode): Promise<void> {
+    this._assertRootedPath(path);
+    await this._channel.request({ root: this._root, op: 'setFileMode', path, mode });
+  }
+
+  public async unlink(path: string): Promise<void> {
+    this._assertRootedPath(path);
+    await this._channel.request({ root: this._root, op: 'unlink', path });
+  }
+
+  public async rmdir(path: string): Promise<void> {
+    this._assertRootedPath(path);
+    await this._channel.request({ root: this._root, op: 'rmdir', path });
+  }
+
+  public async rename(from: string, to: string): Promise<void> {
+    this._assertRootedPath(from);
+    this._assertRootedPath(to);
+    await this._channel.request({ root: this._root, op: 'rename', from, to });
+  }
+
+  /**
+   * Subscribe to host-side change events under this root.
+   *
+   * @param request - Root-relative paths and options to watch.
+   * @param handler - Receives every event until the returned unsubscribe runs.
+   * @returns Unsubscribe function, once the host has armed the watcher.
+   */
+  public async watch(request: WatchRequest, handler: (event: NodeFsWatchEvent) => void): Promise<() => void> {
+    return this._channel.watch(this._root, request, handler);
+  }
+
+  /**
+   * Observe this root through the host's own watcher (charter D13).
+   *
+   * The watcher lives with the bytes in the host; a `reset` event — the host lost
+   * a watcher — becomes a `reset` fact, exactly as a lost browser observer does.
+   * A node root has no snapshot fallback, so a refused arming rejects rather than
+   * resolving `undefined`.
+   *
+   * @param listener - Receives every normalised fact batch.
+   * @returns A disposer, once the host has armed the watcher.
+   */
+  public async observe(listener: (facts: readonly ExternalChangeFact[]) => void): Promise<() => void> {
+    return this.watch({ paths: [''], recursive: true, excludes: hostWatchExcludes }, (event) => {
+      listener([toExternalChangeFact(event)]);
+    });
+  }
+
+  /**
+   * Stream a file from the host one bounded chunk at a time, as `NodeFsProvider.readFileStream` does locally. Each
+   * pull asks the host for the next chunk of the range; a short or empty chunk is the end of the file, and a
+   * cancelled or aborted stream asks for nothing more.
+   *
+   * @param path - Rooted path of the file.
+   * @param options - Byte range and abort signal.
+   * @returns The file's bytes in chunks of at most `streamChunkSize`.
+   */
+  public readFileStream(path: string, options?: FileReadStreamOptions): ReadableStream<Uint8Array<ArrayBuffer>> {
+    this._assertRootedPath(path);
+    validateFileReadStreamOptions(options);
+    const start = options?.position ?? 0;
+    const { length } = options ?? {};
+    if (length !== undefined && start > Number.MAX_SAFE_INTEGER - length) {
+      throw new RangeError('position plus length must not exceed the safe integer range.');
+    }
+    const end = length === undefined ? Number.MAX_SAFE_INTEGER : start + length;
+    let offset = start;
+    return new ReadableStream({
+      pull: async (controller) => {
+        options?.signal?.throwIfAborted();
+        const wanted = Math.min(streamChunkSize, end - offset);
+        if (wanted <= 0) {
+          controller.close();
+          return;
+        }
+        const chunk = await this._channel.request({
+          root: this._root,
+          op: 'readFileRange',
+          path,
+          position: offset,
+          length: wanted,
+        });
+        options?.signal?.throwIfAborted();
+        if (chunk.byteLength > 0) {
+          controller.enqueue(chunk);
+          offset += chunk.byteLength;
+        }
+        if (chunk.byteLength < wanted) {
+          controller.close();
+        }
+      },
+    });
+  }
+
+  protected async readFileRaw(path: string): Promise<Uint8Array<ArrayBuffer>> {
+    return this._channel.request({ root: this._root, op: 'readFile', path });
+  }
+
+  protected async mkdirSingle(path: string): Promise<void> {
+    await this._channel.request({ root: this._root, op: 'mkdir', path });
+  }
+}

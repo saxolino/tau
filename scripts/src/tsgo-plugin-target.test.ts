@@ -1,8 +1,11 @@
+/* oxlint-disable no-restricted-imports -- the Nx plugin under test is workspace tooling under tools/, with no package specifier */
+
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { CreateNodesContextV2 } from '@nx/devkit';
+// eslint-disable-next-line @nx/enforce-module-boundaries -- the Nx plugin under test is workspace tooling, not a project
 import { createNodesV2 } from '../../tools/tsgo.plugin.js';
 
 /**
@@ -44,15 +47,15 @@ describe('tsgo plugin typecheck target', () => {
   it('should run the spec config even when the app config fails', async () => {
     const { command, parallel } = await typecheckOptionsFor('apps/api/tsconfig.json', 'apps/api');
 
-    expect(command).toContain('tsgo -p tsconfig.app.json');
-    expect(command).toContain('tsgo -p tsconfig.spec.json');
+    expect(command).toContain('tsconfig.app.json');
+    expect(command).toContain('tsconfig.spec.json');
     // Neither short-circuiting shape: no `&&` between the checks, and no
     // reliance on nx's parallel mode, which kills siblings on first failure.
     expect(command).not.toContain('&&');
     expect(parallel).toBeUndefined();
-    // The app check's failure is recorded and deferred, not propagated early.
-    expect(command).toMatch(/tsgo -p tsconfig\.app\.json[^;]*\|\| status=1;/u);
-    expect(command).toMatch(/exit \$\{status:-0\}$/u);
+    expect(command).toContain('node "../../scripts/src/typecheck-projects.ts"');
+    expect(command).not.toContain('||');
+    expect(command).not.toContain('${status');
   });
 
   it('should short-circuit for no project in the workspace', async () => {

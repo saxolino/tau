@@ -2,26 +2,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { modelSupportsInput } from '@taucad/chat';
 import { toolName } from '@taucad/chat/constants';
 import type { ConfigService } from '@nestjs/config';
-import { modelList } from '#api/models/model.constants.js';
+import { isModelListEntryEnabled, modelList } from '#api/models/model.constants.js';
 import { ModelService } from '#api/models/model.service.js';
-import type { Model } from '#api/models/model.schema.js';
+import { gatewayModelRoutes } from '#api/providers/provider-gateway.js';
 import { ProviderService } from '#api/providers/provider.service.js';
-import type { TauReplayModelProvider } from '#api/tau-replay/tau-replay.contract.js';
 import type { Environment } from '#config/environment.config.ts';
 
 const maxEffectiveContextWindow = 200_000;
 
 const cappedModelIds = [
+  'anthropic-claude-fable-5.1',
   'anthropic-claude-fable-5',
+  'anthropic-claude-opus-5.5',
   'anthropic-claude-opus-5',
   'anthropic-claude-opus-4.8',
+  'anthropic-claude-sonnet-5.5',
   'anthropic-claude-sonnet-5',
+  'openai-gpt-6-astra',
+  'openai-gpt-6-sol',
+  'openai-gpt-6-luna',
   'openai-gpt-5.6-sol',
   'openai-gpt-5.6-terra',
   'openai-gpt-5.6-luna',
   'openai-gpt-5.5',
+  'google-gemini-4-argon',
   'google-gemini-3.1-pro',
-  'google-gemini-3.7-flash',
+  'google-gemini-3.8-flash',
   'google-gemini-3.5-flash-lite',
   'google-gemini-3.5-flash',
   'together-glm-5.1',
@@ -31,16 +37,46 @@ const cappedModelIds = [
   'together-llama-4-maverick',
   'morph-qwen-3.5-397b',
   'morph-deepseek-v4-flash',
+  'xai-grok-4.7',
   'xai-grok-4.6',
   'moonshot-kimi-k3',
 ] as const;
+
+/** Every model Tau sends a PDF to; each is on a proven Anthropic or OpenAI codec (blueprint D20, Finding 13). */
+const pdfInputModelIds = [
+  'anthropic-claude-fable-5.1',
+  'anthropic-claude-fable-5',
+  'anthropic-claude-opus-5.5',
+  'anthropic-claude-opus-5',
+  'anthropic-claude-opus-4.8',
+  'anthropic-claude-sonnet-5.5',
+  'anthropic-claude-sonnet-5',
+  'anthropic-claude-sonnet-4.6',
+  'anthropic-claude-haiku-5.5',
+  'openai-gpt-6-astra',
+  'openai-gpt-6-sol',
+  'openai-gpt-6-luna',
+  'openai-gpt-5.6-sol',
+  'openai-gpt-5.6-terra',
+  'openai-gpt-5.6-luna',
+  'openai-gpt-5.5',
+];
 
 const getCloudCatalogEntries = () => Object.values(modelList).flatMap((modelsBySlug) => Object.values(modelsBySlug));
 
 const createModelService = () => {
   const providerService = {} satisfies Partial<ProviderService>;
   const configService = {
-    get: vi.fn().mockReturnValue(false),
+    get: vi.fn((key: string) => {
+      if (key === 'OLLAMA_ENABLED' || key === 'TAU_CLOUD_ENABLED') {
+        return false;
+      }
+      if (key === 'GOOGLE_VERTEX_AI_CREDENTIALS') {
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Google service-account wire keys
+        return { client_email: 'test@example.com', private_key: 'test-key', project_id: 'test-project' };
+      }
+      return 'test-key';
+    }),
   } satisfies Pick<ConfigService<Environment>, 'get'>;
 
   return new ModelService(
@@ -50,6 +86,12 @@ const createModelService = () => {
 };
 
 describe('modelList', () => {
+  it('marks every cloud catalog entry as explicitly Tau-hosted', () => {
+    for (const model of getCloudCatalogEntries()) {
+      expect(model.providerKind, model.id).toBe('tau-hosted');
+    }
+  });
+
   it('caps every cloud catalog effective context window at 200K tokens', () => {
     for (const model of getCloudCatalogEntries()) {
       expect(model.details.contextWindow, model.id).toBeLessThanOrEqual(maxEffectiveContextWindow);
@@ -62,9 +104,111 @@ describe('modelList', () => {
       expect(model.support?.modalities?.output.length, model.id).toBeGreaterThan(0);
     }
   });
+
+  describe('reasoning levels', () => {
+    /** The effort a row sends by default, in the shared vocabulary, per the codec that forwards it. */
+    const forwardedDefault = (model: ReturnType<typeof getCloudCatalogEntries>[number]): string | undefined => {
+      const { configuration } = model;
+      switch (model.provider.id) {
+        case 'anthropic': {
+          return configuration.thinking?.type === 'adaptive' ? configuration.outputConfig?.effort : undefined;
+        }
+        case 'vertexai': {
+          return configuration.thinkingLevel?.toLowerCase();
+        }
+        case 'openai':
+        case 'xai': {
+          return configuration.reasoning?.effort;
+        }
+        default: {
+          // The completions codec forwards no effort for any other provider.
+          return undefined;
+        }
+      }
+    };
+
+    it('should offer levels on exactly the rows whose codec forwards an effort', () => {
+      for (const model of getCloudCatalogEntries()) {
+        expect(model.support?.reasoning !== undefined, model.id).toBe(forwardedDefault(model) !== undefined);
+      }
+    });
+
+    it('should include every row default in its own levels, sent at high', () => {
+      for (const model of getCloudCatalogEntries()) {
+        const levels: readonly string[] | undefined = model.support?.reasoning?.levels;
+        if (levels !== undefined) {
+          expect(levels, model.id).toContain(forwardedDefault(model));
+          expect(forwardedDefault(model), model.id).toBe('high');
+        }
+      }
+    });
+
+    it('should only offer xhigh and max on models that accept them', () => {
+      const extraHigh = getCloudCatalogEntries()
+        .filter((model) => model.support?.reasoning?.levels.includes('xhigh'))
+        .map((model) => model.id);
+      expect(extraHigh).toEqual([
+        'anthropic-claude-fable-5.1',
+        'anthropic-claude-fable-5',
+        'anthropic-claude-opus-5.5',
+        'anthropic-claude-opus-5',
+        'anthropic-claude-opus-4.8',
+        'anthropic-claude-sonnet-5.5',
+        'openai-gpt-6-astra',
+      ]);
+      expect(
+        getCloudCatalogEntries()
+          .filter((model) => model.support?.reasoning?.levels.includes('max'))
+          .map((model) => model.id),
+      ).toEqual(['anthropic-claude-sonnet-5.5']);
+    });
+  });
+
+  it('declares PDF input on exactly the proven Anthropic and OpenAI codec models', () => {
+    const pdfModelIds = getCloudCatalogEntries()
+      .filter((model) => modelSupportsInput(model.support, 'pdf'))
+      .map((model) => model.id);
+
+    expect(pdfModelIds).toEqual(pdfInputModelIds);
+  });
+
+  it('never declares PDF input outside a proven codec, a vision model, or on Vertex AI', () => {
+    const wireByRouteId = new Map(gatewayModelRoutes().map((route) => [route.routeId, route]));
+
+    for (const model of getCloudCatalogEntries().filter((entry) => modelSupportsInput(entry.support, 'pdf'))) {
+      // Provider PDF support rasterises pages, so it is only offered on a vision-capable model.
+      expect(modelSupportsInput(model.support, 'image'), model.id).toBe(true);
+      // Vertex AI stays ungated until the live document check in the blueprint's manual row 12 passes.
+      expect(model.provider.id, model.id).not.toBe('vertexai');
+      if (isModelListEntryEnabled(model)) {
+        expect(wireByRouteId.get(model.id)?.wire, model.id).toBeOneOf([
+          'anthropic',
+          'openai-responses',
+          'openai-completions',
+        ]);
+      }
+    }
+  });
 });
 
 describe('ModelService', () => {
+  it('advertises only configured providers and keeps direct-only providers out of Cloud', async () => {
+    const configService = {
+      get: vi.fn((key: string) => {
+        if (key === 'TAU_CLOUD_ENABLED') {
+          return true;
+        }
+        return key === 'CEREBRAS_API_KEY' ? 'test-key' : false;
+      }),
+    } satisfies Pick<ConfigService<Environment>, 'get'>;
+    const service = new ModelService({} as ProviderService, configService as unknown as ConfigService<Environment>);
+
+    expect(await service.getModels()).toEqual([]);
+    configService.get.mockImplementation((key: string) => (key === 'CEREBRAS_API_KEY' ? 'test-key' : false));
+    const models = await service.getModels();
+    expect(models.every((model) => model.provider.id === 'cerebras')).toBe(true);
+  });
+
   it('returns the 200K effective context window for all capped model IDs', async () => {
     const service = createModelService();
     await service.getModels();
@@ -74,25 +218,46 @@ describe('ModelService', () => {
     }
   });
 
-  it('recommends Opus 5 instead of Opus 4.8', async () => {
+  it('recommends Sonnet 5.5 while retaining Sonnet 5', async () => {
+    const listedModels = await createModelService().getModels();
+    expect(listedModels.find((model) => model.id === 'anthropic-claude-sonnet-5.5')).toMatchObject({
+      recommended: true,
+      model: 'claude-sonnet-5-5',
+      provider: { id: 'anthropic', name: 'Anthropic' },
+      support: {
+        reasoning: { levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+        toolChoice: false,
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+      },
+      details: {
+        contextWindow: maxEffectiveContextWindow,
+        maxTokens: 128_000,
+        cost: { inputTokens: 2, outputTokens: 10, cacheReadTokens: 0.2, cacheWriteTokens: 2.5 },
+      },
+      configuration: { thinking: { type: 'adaptive', display: 'summarized' }, outputConfig: { effort: 'high' } },
+    });
+    expect(modelList.anthropic['claude-sonnet-5']?.recommended).toBe(false);
+  });
+
+  it('recommends Opus 5.5 instead of Opus 5', async () => {
     const service = createModelService();
     const listedModels = await service.getModels();
-    const opus5 = listedModels.find((model) => model.id === 'anthropic-claude-opus-5');
+    const opus5 = listedModels.find((model) => model.id === 'anthropic-claude-opus-5.5');
 
     expect(opus5).toMatchObject({
       recommended: true,
-      model: 'claude-opus-5',
+      model: 'claude-opus-5-5',
       provider: { id: 'anthropic', name: 'Anthropic' },
       support: {
         toolChoice: false,
-        modalities: { input: ['text', 'image'], output: ['text'] },
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
       },
       details: {
         family: 'claude',
         contextWindow: maxEffectiveContextWindow,
         maxTokens: 128_000,
-        knowledgeCutoff: '2026-05',
-        cost: { inputTokens: 5, outputTokens: 25, cacheReadTokens: 0.5, cacheWriteTokens: 6.25 },
+        knowledgeCutoff: '2026-06',
+        cost: { inputTokens: 4, outputTokens: 20, cacheReadTokens: 0.2, cacheWriteTokens: 5 },
       },
       configuration: {
         streaming: true,
@@ -102,7 +267,38 @@ describe('ModelService', () => {
       },
     });
     expect(opus5?.configuration).toHaveProperty('max_tokens', 120_000);
-    expect(modelList.anthropic['claude-4.8-opus']?.recommended).toBe(false);
+    expect(modelList.anthropic['claude-opus-5']?.recommended).toBe(false);
+  });
+
+  it('recommends Fable 5.1 while retaining Fable 5', async () => {
+    const service = createModelService();
+    const listedModels = await service.getModels();
+    const fable51 = listedModels.find((model) => model.id === 'anthropic-claude-fable-5.1');
+
+    expect(fable51).toMatchObject({
+      recommended: true,
+      model: 'claude-fable-5-1',
+      provider: { id: 'anthropic', name: 'Anthropic' },
+      support: {
+        toolChoice: false,
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+      },
+      details: {
+        family: 'claude',
+        contextWindow: maxEffectiveContextWindow,
+        maxTokens: 128_000,
+        knowledgeCutoff: '2026-06',
+        cost: { inputTokens: 10, outputTokens: 50, cacheReadTokens: 0.25, cacheWriteTokens: 12.5 },
+      },
+      configuration: {
+        streaming: true,
+        maxTokens: 120_000,
+        thinking: { type: 'adaptive', display: 'summarized' },
+        outputConfig: { effort: 'high' },
+      },
+    });
+    expect(fable51?.configuration).toHaveProperty('max_tokens', 120_000);
+    expect(modelList.anthropic['claude-fable-5']?.recommended).toBe(false);
   });
 
   it('lists every GPT-5.6 tier and keeps GPT-5.5 non-recommended', async () => {
@@ -116,14 +312,40 @@ describe('ModelService', () => {
     expect(modelList.openai['gpt-5.5']?.recommended).toBe(false);
   });
 
-  it('recommends Gemini 3.7 Flash instead of the Gemini 3.5 models', async () => {
+  it('lists GPT-6 Astra as a recommended OpenAI model', async () => {
     const service = createModelService();
     const listedModels = await service.getModels();
     const listedModelIds = listedModels.map((model) => model.id);
-    const newModelIds = ['google-gemini-3.7-flash', 'google-gemini-3.5-flash-lite'];
+
+    expect(listedModelIds).toContain('openai-gpt-6-astra');
+    expect(modelList.openai['gpt-6-astra']?.recommended).toBe(true);
+  });
+
+  it('should list Gemini 4 Argon with image input and selectable reasoning', async () => {
+    const listedModels = await createModelService().getModels();
+    const argon = listedModels.find((model) => model.id === 'google-gemini-4-argon');
+
+    expect(argon).toMatchObject({
+      model: 'gemini-4-argon',
+      provider: { id: 'vertexai', name: 'Google' },
+      support: {
+        tools: true,
+        toolChoice: false,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        reasoning: { levels: ['low', 'medium', 'high'] },
+      },
+    });
+  });
+
+  it('recommends Gemini 3.8 Flash instead of the Gemini 3.5 models', async () => {
+    const service = createModelService();
+    const listedModels = await service.getModels();
+    const listedModelIds = listedModels.map((model) => model.id);
+    const newModelIds = ['google-gemini-3.8-flash', 'google-gemini-3.5-flash-lite'];
 
     expect(listedModelIds).toEqual(expect.arrayContaining([...newModelIds, 'google-gemini-3.5-flash']));
-    expect(modelList.vertexai['gemini-3.7-flash']?.recommended).toBe(true);
+    expect(modelList.vertexai['gemini-3.7-flash']).toBeUndefined();
+    expect(modelList.vertexai['gemini-3.8-flash']?.recommended).toBe(true);
     expect(modelList.vertexai['gemini-3.5-flash-lite']?.recommended).toBe(false);
     expect(modelList.vertexai['gemini-3.5-flash']?.recommended).toBe(false);
   });
@@ -139,14 +361,14 @@ describe('ModelService', () => {
     expect(modelSupportsInput(glm?.support, 'image')).toBe(false);
   });
 
-  it('lists Grok 4.6 as the recommended image-capable xAI model', async () => {
+  it('lists Grok 4.7 as the recommended image-capable xAI model', async () => {
     const service = createModelService();
     const listedModels = await service.getModels();
-    const grok = listedModels.find((model) => model.id === 'xai-grok-4.6');
+    const grok = listedModels.find((model) => model.id === 'xai-grok-4.7');
 
     expect(grok).toMatchObject({
       recommended: true,
-      model: 'grok-4.6',
+      model: 'grok-4.7',
       provider: { id: 'xai', name: 'xAI' },
       support: {
         tools: true,
@@ -157,7 +379,7 @@ describe('ModelService', () => {
         family: 'grok',
         contextWindow: maxEffectiveContextWindow,
         maxTokens: 64_000,
-        knowledgeCutoff: '2026-02',
+        knowledgeCutoff: '2026-05',
         cost: { inputTokens: 2, outputTokens: 6, cacheReadTokens: 0.5, cacheWriteTokens: 0 },
       },
       configuration: {
@@ -166,6 +388,7 @@ describe('ModelService', () => {
         reasoning: { effort: 'high', summary: 'auto' },
       },
     });
+    expect(modelList.xai['grok-4.6']?.recommended).toBe(false);
   });
 
   it('lists Together Kimi K3 while retaining Moonshot as a hidden fallback', async () => {
@@ -241,82 +464,8 @@ describe('ModelService', () => {
     expect(
       service.filterProviderToolNamesForModel({
         modelId: 'together-glm-5.2',
-        toolNames: [toolName.screenshot, toolName.testModel, toolName.getKernelResult, toolName.exportGeometry],
+        toolNames: [toolName.screenshot, toolName.testModel, toolName.evaluateModel, toolName.exportModel],
       }),
-    ).toEqual([toolName.testModel, toolName.getKernelResult, toolName.exportGeometry]);
-  });
-});
-
-/**
- * The replay seam is optional DI: `TauReplayModule` binds it only under
- * TAU_TEST_MODE, and it is absent in production. These exercise the real
- * ModelService — the integration suites stub ModelService wholesale, so nothing
- * else would notice if this wiring went missing.
- */
-describe('ModelService tau replay seam', () => {
-  const replayModel: Model = {
-    id: 'tau-replay',
-    name: 'Tau Replay (test)',
-    slug: 'tau-replay',
-    model: 'tau-replay',
-    provider: { id: 'tau', name: 'Tau' },
-    details: {
-      family: 'tau',
-      families: ['tau'],
-      contextWindow: 200_000,
-      maxTokens: 64_000,
-      cost: { inputTokens: 1.5, outputTokens: 9, cacheReadTokens: 0.15, cacheWriteTokens: 0 },
-    },
-    configuration: { streaming: true },
-  };
-
-  const createServiceWithReplay = (tauReplay?: TauReplayModelProvider) => {
-    const configService = {
-      get: vi.fn().mockReturnValue(false),
-    } satisfies Pick<ConfigService<Environment>, 'get'>;
-
-    return new ModelService(
-      {} as unknown as ProviderService,
-      configService as unknown as ConfigService<Environment>,
-      tauReplay,
-    );
-  };
-
-  it('appends replay models to the listed catalog when the seam is bound', async () => {
-    const service = createServiceWithReplay({
-      listModels: () => [replayModel],
-      createModel: () => {
-        throw new Error('not used');
-      },
-    });
-
-    const listed = await service.getModels();
-
-    expect(listed.map((model) => model.id)).toContain('tau-replay');
-  });
-
-  it('registers the replay model for buildModel lookups', async () => {
-    const service = createServiceWithReplay({
-      listModels: () => [replayModel],
-      createModel: () => {
-        throw new Error('not used');
-      },
-    });
-
-    await service.getModels();
-
-    // `buildModel` resolves against `models`, so a replay model missing here is
-    // unreachable even when the provider factory exists.
-    expect(service.models.map((model) => model.id)).toContain('tau-replay');
-    expect(service.getProviderId('tau-replay')).toBe('tau');
-  });
-
-  it('omits replay models entirely when the seam is unbound', async () => {
-    const service = createServiceWithReplay();
-
-    const listed = await service.getModels();
-
-    expect(listed.map((model) => model.id)).not.toContain('tau-replay');
-    expect(service.models.map((model) => model.id)).not.toContain('tau-replay');
+    ).toEqual([toolName.testModel, toolName.evaluateModel, toolName.exportModel]);
   });
 });

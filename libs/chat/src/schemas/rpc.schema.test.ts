@@ -7,8 +7,13 @@ describe('rpcClientErrorCodeSchema', () => {
     expect(rpcClientErrorCodeSchema.parse('FILE_NOT_FOUND')).toBe('FILE_NOT_FOUND');
   });
 
-  it('should parse RENDER_TIMEOUT for runtime render-timeout failures', () => {
-    expect(rpcClientErrorCodeSchema.parse('RENDER_TIMEOUT')).toBe('RENDER_TIMEOUT');
+  it('should parse OPERATION_TIMEOUT for runtime render-timeout failures', () => {
+    expect(rpcClientErrorCodeSchema.parse('OPERATION_TIMEOUT')).toBe('OPERATION_TIMEOUT');
+    expect(rpcClientErrorCodeSchema.safeParse('RENDER_TIMEOUT').success).toBe(false);
+  });
+
+  it('should parse AUTHENTICATION_ERROR for runtime authentication failures', () => {
+    expect(rpcClientErrorCodeSchema.parse('AUTHENTICATION_ERROR')).toBe('AUTHENTICATION_ERROR');
   });
 
   it('should parse VALIDATION_ERROR for handler-level input rejections', () => {
@@ -86,6 +91,24 @@ describe('grep RPC schema — additive envelope fields', () => {
   it('should reject headLimit greater than 1000 at the schema layer', () => {
     expect(grep.inputSchema.safeParse({ pattern: 'foo', headLimit: 1001 }).success).toBe(false);
   });
+
+  it('should reject regexes vulnerable to catastrophic backtracking through the RPC registry', () => {
+    expect(grep.inputSchema.safeParse({ pattern: '(a+)+$' }).success).toBe(false);
+  });
+});
+
+describe('edit_file RPC schema', () => {
+  const editFile = rpcSchemasRegistry[rpcName.editFile];
+
+  it('should reject edit text larger than the canonical 256 KB tool limit through the RPC registry', () => {
+    expect(
+      editFile.inputSchema.safeParse({
+        targetFile: 'main.ts',
+        oldString: 'old',
+        newString: 'x'.repeat(256 * 1024 + 1),
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('read_file RPC schema — metadata envelope fields', () => {
@@ -129,24 +152,33 @@ describe('read_file RPC schema — metadata envelope fields', () => {
 
 describe('capture_images RPC schema', () => {
   const captureImages = rpcSchemasRegistry[rpcName.captureImages];
-  const canonicalViews = ['isometric', 'front', 'back', 'right', 'left', 'top', 'bottom'] as const;
+  const canonicalAngles = ['isometric', 'front', 'back', 'right', 'left', 'top', 'bottom'] as const;
 
-  it('should accept every canonical screenshot view', () => {
+  it('accepts a declared view with every canonical 3D camera angle and a planar view without one', () => {
     const parsed = captureImages.resultSchema.parse({
       success: true,
-      images: canonicalViews.map((view) => ({ view, dataUrl: `data:image/webp;base64,${view}` })),
+      images: [
+        ...canonicalAngles.map((angle) => ({ view: 'board', angle, dataUrl: `data:image/webp;base64,${angle}` })),
+        { view: 'schematic', instance: 'sheet-1', dataUrl: 'data:image/png;base64,AQ==' },
+      ],
     });
 
-    expect(parsed).toMatchObject({ success: true, images: canonicalViews.map((view) => ({ view })) });
+    expect(parsed).toMatchObject({
+      success: true,
+      images: [
+        ...canonicalAngles.map((angle) => ({ view: 'board', angle })),
+        { view: 'schematic', instance: 'sheet-1' },
+      ],
+    });
   });
 
-  it('should reject empty image sets, composite and unknown views, and unknown image keys', () => {
+  it('rejects empty images, non-camera angles and unknown image keys', () => {
     expect(captureImages.resultSchema.safeParse({ success: true, images: [] }).success).toBe(false);
-    for (const view of ['composite', 'current']) {
+    for (const angle of ['composite', 'drawing']) {
       expect(
         captureImages.resultSchema.safeParse({
           success: true,
-          images: [{ view, dataUrl: 'data:image/webp;base64,AQ==' }],
+          images: [{ view: 'board', angle, dataUrl: 'data:image/webp;base64,AQ==' }],
         }).success,
       ).toBe(false);
     }

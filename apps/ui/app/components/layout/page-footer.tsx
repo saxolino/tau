@@ -8,7 +8,7 @@ import { CookiePreferencesDialog } from '#components/cookie-consent.js';
 
 const navigationLinks = [
   { label: 'Home', href: '/' },
-  { label: 'Docs', href: '/docs' },
+  { label: 'Docs', href: 'https://docs.tau.new' },
   { label: 'Legal', href: '/legal' },
 ];
 
@@ -21,7 +21,7 @@ const footerColumns: FooterColumn[] = [
   {
     heading: 'Product',
     links: [
-      { label: 'Docs', to: '/docs' },
+      { label: 'Docs', to: 'https://docs.tau.new' },
       { label: 'Community', to: '/community' },
       { label: 'Convert', to: '/convert' },
       { label: 'Import', to: '/import' },
@@ -33,6 +33,7 @@ const footerColumns: FooterColumn[] = [
       { label: 'Terms', to: '/legal/terms' },
       { label: 'Privacy', to: '/legal/privacy' },
       { label: 'Acceptable use', to: '/legal/acceptable-use' },
+      { label: 'Open source', to: '/legal/open-source' },
     ],
   },
 ];

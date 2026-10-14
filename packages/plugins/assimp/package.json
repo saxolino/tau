@@ -1,6 +1,6 @@
 {
   "name": "@taucad/assimp",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0-beta.1",
   "description": "Assimp-backed import and export toolkit for @taucad/runtime",
   "type": "module",
   "sideEffects": false,
@@ -58,14 +58,20 @@
   },
   "dependencies": {
     "@taucad/geometry-core": "workspace:*",
-    "libassimp": "^0.1.0"
+    "libassimp": "catalog:"
   },
   "devDependencies": {
+    "@taucad/esbuild": "workspace:*",
+    "@taucad/manifold": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/runtime-testing": "workspace:*",
     "zod": "catalog:"
   },
   "taucad": {
     "hostTarget": "browser"
+  },
+  "tau": {
+    "skills": null,
+    "reason": "Transcoder; its options are already tool schemas"
   }
 }

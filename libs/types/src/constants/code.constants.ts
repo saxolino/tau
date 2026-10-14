@@ -13,10 +13,13 @@ export const codeLanguages = {
   jsx: 'jsx',
   tsx: 'tsx',
   bash: 'bash',
+  python: 'python',
+  csharp: 'csharp',
   json: 'json',
   jsonl: 'jsonl',
   jsonc: 'jsonc',
   markdown: 'markdown',
+  yaml: 'yaml',
 } as const;
 
 /**
@@ -40,6 +43,8 @@ export const languageFromExtension = {
   ts: 'typescript',
   tsx: 'tsx',
   sh: 'bash',
+  py: 'python',
+  cs: 'csharp',
   json: 'json',
   jsonl: 'jsonl',
   jsonc: 'jsonc',
@@ -52,4 +57,6 @@ export const languageFromExtension = {
   mdwn: 'markdown',
   mdtxt: 'markdown',
   mdtext: 'markdown',
+  yaml: 'yaml',
+  yml: 'yaml',
 } as const;

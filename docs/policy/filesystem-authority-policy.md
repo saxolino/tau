@@ -3,25 +3,34 @@ title: 'Filesystem Authority Policy'
 description: 'The single-filesystem-authority invariant: one FM-worker authority per host, one provider instance per storage root, mounts as pure routing from persistent config, manifest-based discovery, cross-tab coherence, and webaccess handle lifecycle rules.'
 status: active
 created: '2026-07-13'
-updated: '2026-08-21'
+updated: '2026-09-29'
 related:
   - docs/policy/filesystem-policy.md
+  - docs/policy/revisions-policy.md
+  - docs/research/github-repository-import-and-linked-revisions-blueprint.md
   - docs/policy/runtime-api-policy.md
   - docs/policy/project-manifest-policy.md
   - docs/policy/storage-policy.md
   - docs/research/headless-thumbnail-rendering-architecture-v4.md
   - docs/research/runtime-model-load-project-root-regression-v3.md
   - docs/research/tau-json-project-library-state-boundary.md
+  - docs/research/tau-json-manifest-failure-recovery-blueprint.md
   - docs/research/pending-project-import-recovery-bootstrap-isolation.md
   - docs/research/filesystem-post-implementation-congruency-audit.md
   - docs/research/workspace-naming-and-storage-backend-abstraction.md
+  - docs/research/workspace-immediate-disconnect-undo-blueprint.md
+  - docs/research/rooted-filesystem-root-relative-path-unification.md
+  - docs/research/client-host-topology-and-filesystem-authority.md
+  - docs/research/agent-revisions-and-compute-cache-spike-closeout-blueprint.md
+  - docs/research/agent-host-closeout-v2-charter.md
+  - docs/research/filesystem-revisions-closeout-blueprint.md
 ---
 
 # Filesystem Authority Policy
 
 Internal reference for filesystem topology: who owns storage, who may instantiate providers, how routing is configured, how projects are discovered, and how tabs stay coherent. Read/write semantics, watch pipelines, and RPC patterns stay in `docs/policy/filesystem-policy.md`; this policy governs the layer beneath them.
 
-This policy absorbs the former "Backend & Provider Rules" of `docs/policy/filesystem-policy.md` (old Rules 11–13e — mapping table at the end). The ZenFS-era mechanics those rules prescribed (`resolveMountConfig`, `IndexedDBStore` preload) are retired; the live architecture is `MountTable` + `ProviderRegistry` + direct providers (`libs/filesystem/src/{mount-table,provider-registry}.ts`, `backend/direct-idb-provider.ts`).
+This policy absorbs the former "Backend & Provider Rules" of `docs/policy/filesystem-policy.md` (old Rules 11–13e — mapping table at the end). The ZenFS-era mechanics those rules prescribed (`resolveMountConfig`, `IndexedDBStore` preload) are retired; the live architecture is `MountTable` + `ProviderRegistry` + direct providers (`packages/filesystem/src/{mount-table,provider-registry}.ts`, `backend/direct-idb-provider.ts`).
 
 ## Rationale
 
@@ -31,14 +40,14 @@ The thumbnail refresh-loss bug class (v3 forensics) had two structural causes: e
 
 Requirements the filesystem must satisfy at all times:
 
-| Req | Statement                                                                                                                                      |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| A   | One canonical authority-global namespace (`/projects/<id>/…`) resolvable at any time from any consumer — never dependent on which page is open |
-| B   | Heterogeneous storage roots: IndexedDB database(s), the OPFS root, N webaccess directory handles, ephemeral memory scratch                     |
-| C   | Coherence: two reads of the same path through any route observe the same bytes; a write is immediately visible to every consumer in the tab    |
-| D   | Reactivity: watchers fire for all writers — in-app, cross-tab, external-on-disk — including the appearance of new projects                     |
-| E   | All consumers reach storage through one authority; runtime consumers receive only writable rooted views, never the authority-global namespace  |
-| F   | Cross-tab safety: serialized writes and change propagation                                                                                     |
+| Req | Statement                                                                                                                                                                                 |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A   | One canonical authority-global namespace (`/projects/<id>/…`) resolvable at any time from any consumer — never dependent on which page is open                                            |
+| B   | Heterogeneous storage roots: IndexedDB database(s), the OPFS root, N webaccess directory handles, ephemeral memory scratch                                                                |
+| C   | Coherence: two reads of the same path through any route observe the same bytes; a write is immediately visible to every consumer in the tab                                               |
+| D   | Reactivity: watchers fire for all writers — in-app, cross-tab, external-on-disk — including the appearance of new projects                                                                |
+| E   | All consumers reach storage through one authority; runtime consumers receive writable rooted authored-data views, never the authority-global namespace; host-owned records follow Rule 15 |
+| F   | Cross-tab safety: serialized writes and change propagation                                                                                                                                |
 
 The invariant that satisfies them: **one provider instance per storage root, shared by every mount routing into that root; mounts are pure routing entries registered from persistent config at authority boot, never from page lifecycle.**
 
@@ -46,13 +55,13 @@ The invariant that satisfies them: **one provider instance per storage root, sha
 
 ### 1. Single filesystem authority per host
 
-All filesystem I/O runs in one place per host — the file-manager worker in the browser, or the caller-supplied rooted filesystem in CLI/Node environments. Trusted administration uses the authority-global namespace to select and configure project routes. Runtime, GeoSpec, preview, chat, and headless consumers receive only an opaque, fully writable rooted filesystem whose virtual `/` is one selected project. No feature worker may instantiate providers, open backing stores, inspect global routes, or receive the authority-global shared file pool. The main thread remains the writer of asset thumbnail files declared by `tau.json`.
+All filesystem I/O runs in one place per host — the file-manager worker in the browser, or the caller-supplied rooted filesystem in CLI/Node environments. Trusted administration uses the authority-global namespace to select and configure project and checkout routes. Runtime, GeoSpec, preview, chat, and headless consumers receive only an opaque rooted filesystem with full authored-data write semantics for one selected checkout; that capability's root is `''`, and host-owned records follow Rule 15. No feature worker may instantiate providers, open backing stores, inspect global routes, or receive the authority-global shared file pool. The main thread remains the host writer of asset thumbnail files declared by `tau.json`.
 
 **Why**: Requirement C is unenforceable with more than one writer topology; every coherence mechanism in this policy assumes a single chokepoint.
 
 ### 2. One provider instance per storage root
 
-A storage root is one IndexedDB database, the origin's OPFS root, one webaccess directory entry, or an explicitly named memory root. Exactly one provider instance exists per `storageRootKey`: `indexeddb:<database-prefix>`, `opfs:origin`, `webaccess:<workspaceId>`, or a caller-supplied `memory:<nonempty-scope>`. Reject missing, malformed, or cross-backend memory keys before provider lookup; never mint an implicit counter key. Mount resolution and scoped reads reuse that instance — per-mount fresh instances are forbidden. Webaccess workspace creation uses `FileSystemDirectoryHandle.isSameEntry()` to preserve the existing `workspaceId` when the user selects the same physical directory again; folder names are never identity.
+A storage root is one IndexedDB database, the origin's OPFS root, one webaccess directory entry, or an explicitly named memory root. Exactly one provider instance exists per `storageRootKey`: `indexeddb:<database-prefix>`, `opfs:origin`, `webaccess:<workspaceId>`, or a caller-supplied `memory:<nonempty-scope>`. Reject missing, malformed, or cross-backend memory keys before provider lookup; never mint an implicit counter key. Mount resolution and scoped reads reuse that instance — per-mount fresh instances are forbidden. Webaccess workspace creation uses `FileSystemDirectoryHandle.isSameEntry()` to preserve the existing `workspaceId` when the user selects the same physical directory again; folder names are never identity. The store must reject an exact reconnect that would attach one physical directory under a second connected workspace id.
 
 **Why**: Providers hydrate in-memory indexes once per instance (`DirectIdbProvider._paths`); two instances over one database means one instance's writes are invisible to the other's index — the ENOENT-despite-row-exists class.
 
@@ -77,23 +86,25 @@ mountTable.mount(prefix, provider, config);
 
 **Why**: Requirement A — a path that resolves only while its page is open is not a filesystem, and every consumer that outlives the page (thumbnail worker, discovery, cross-tab events) breaks.
 
-Reserve `/projects/<id>` for boot-owned persistent project routes. Every configured physical project base, including named memory fixtures, must already be canonical and be an immediate child of `/projects`; reject `/`, `/projects`, ancestors, descendants, and overlapping project bases before provider acquisition. Public dynamic mount/unmount is allowed only at `/previews/<instance>` and the boot-owned `/node_modules` projection, and both prefix and provider base must already be canonical before provider lookup. Authority bootstrap installs `/` directly through `MountTable`; no public dynamic root mount exists. Preview snapshots never replace a project route.
+Reserve `/projects/<id>` for boot-owned persistent project routes and `/checkouts/<id>` for persistent linked-checkout routes installed from project-root configuration. A checkout route uses the project's storage root, resolves the linked checkout's private physical base, and is invisible to project discovery. Every configured project route, checkout route, and named memory fixture must already be canonical and be an immediate child of its reserved `/projects` or `/checkouts` family; reject `/`, either family root, ancestors, descendants, and overlapping bases before provider acquisition. Public dynamic mount/unmount is allowed only at `/previews/<instance>` and the boot-owned `/node_modules` projection, and both prefix and provider base must already be canonical before provider lookup. Authority bootstrap installs `/` directly through `MountTable`; no public dynamic root mount exists. Preview snapshots never replace a project or checkout route.
 
 Serialize complete project-root configuration calls in invocation order. Disposal removes matching routes and discovery roots together; a later discovery scan must not recreate a disposed provider from stale topology.
 
 ### 4. Use the namespace owned by each boundary
 
-Trusted authority and administration APIs take canonical authority-global virtual paths such as `/projects/<id>/…`. A rooted runtime filesystem takes normalized runtime paths such as `/src/main.ts`; its `/` is the already-selected filesystem root, not the authority-global or host OS root. Neither boundary accepts relative paths, backslashes, URLs, drive-letter paths, control characters, or traversal above its own `/`. Do not infer a project root from a filename or ambient "current project" state.
+Trusted authority and administration APIs take canonical authority-global paths such as `/projects/<id>/…`. A rooted runtime filesystem takes canonical root-relative paths such as `src/main.ts`, with `''` representing its already-selected root. Authority APIs require the leading slash; rooted APIs reject it. Both boundaries reject backslashes, URLs, drive-letter paths, control characters, noncanonical spellings, and traversal above their own root. Do not infer a project root from a filename or ambient "current project" state.
 
 **Why**: Global paths select authority routes; local paths operate inside an already-selected filesystem. Mixing those namespaces leaks routing and authorization concerns into runtime code.
 
 ### 5. Project discovery is manifest-based
 
-The authority owns a discovery plane: scan configured storage roots for `/projects/*/tau.json`, parse and validate manifests as untrusted input (`docs/policy/project-manifest-policy.md` Rules 4 and 14), preserve the physical `ProjectLocator`, detect duplicate logical IDs, serve the project list, and emit change events when projects appear or disappear. Use `FileSystemObserver` where available and visibility-aware polling otherwise. An invalid manifest, adoption-required directory, or duplicate ID quarantines only that entry with a structured status; it must never sink the whole list.
+The authority owns a discovery plane: scan configured storage roots for `/projects/*/tau.json`, parse and validate manifests as untrusted input (`docs/policy/project-manifest-policy.md` Rules 4 and 14), preserve the physical `ProjectLocator`, detect duplicate logical IDs, serve the project list, and emit change events when projects appear or disappear. Use `FileSystemObserver` where available and visibility-aware polling otherwise. A manifest whose identity reads but whose declaration is defective is a routable project carrying a structured issue (`docs/policy/project-manifest-policy.md` Rule 15). An unreadable, oversize or foreign-schema manifest, an adoption-required directory (including one that holds `.tau/` but no `tau.json`), or a duplicate ID quarantines only that entry with a structured status that names the reason; it must never sink the whole list. A duplicate never demotes the directory the persisted route binding names.
 
 After discovery, the UI may left-join host-local `ProjectLibraryState` for recency, soft-delete visibility, and revision initialization. That row never establishes existence, supplies manifest content, or changes the physical locator. A missing row is seeded only after a valid manifest is discovered; an inaccessible, omitted, or incomplete root does not prove absence and must not trigger rebind or local-state cleanup. Only a recognized not-found/type-mismatch result from a complete current scan establishes absence; permission, security, and I/O failures remain uncertainty. React Query remains the current listing cache. The authority gains no additional memory or persistent manifest projection without a measured need and a separately reviewed rebuild/invalidation contract.
 
 Project bootstrap MUST establish pending-operation quarantine before locator reconciliation. It reads the durable journal once per application session, derives the exact physical locator for each pending operation, and removes those locators from ordinary adoption, conflict, and route-cleanup decisions. Initial discovery then publishes unrelated valid projects before one fully observed session-owned recovery loop starts.
+
+A linked remote bootstrap uses this same quarantine and recovery loop. Persist its exact operation id, storage locator, source and target ref identities, reviewed setup digest, and phase before exposing a provisional directory. Mark the operation-owned physical directory in protected control-plane metadata so a second client also quarantines it; a missing manifest is never permission to remove an unowned directory. Only the project revision actor may access the provisional rooted view, and only its checkout actor may mint the zero-or-one setup revision. Publish the verified authored tree and `tau.json` manifest last, then clear the bootstrap marker and journal in replay-safe order. Remote push acknowledgement is not part of local project publication.
 
 Route access and project listing classify against a current discovery pass after this discovery-readiness barrier; they do not await recovery completion. A slow or failed operation produces a typed recovery state for only its own project. Failure to initialize the worker, read the journal, synchronize roots, or perform discovery remains a systemic error and must reject rather than appear as an empty library. Root-configuration changes synchronize authority routes and invalidate the React Query listing; they do not restart the session recovery loop.
 
@@ -101,7 +112,7 @@ Route access and project listing classify against a current discovery pass after
 
 ### 6. Cross-tab coherence has one mechanism
 
-Cross-tab writes serialize via Web Locks (`tau-fs-write:<path>`) and propagate via BroadcastChannel (`tau-fs-changes`) — `libs/filesystem/src/cross-tab-coordinator.ts`. The provider index-repair fallback (consult the backing store on index miss before reporting ENOENT) is defense-in-depth for cross-tab races only; within a tab, Rule 2 makes index staleness structurally impossible. Do not add new coherence side channels.
+Cross-tab writes serialize via Web Locks (`tau-fs-write:<path>`) and propagate via BroadcastChannel (`tau-fs-changes`) — `packages/filesystem/src/cross-tab-coordinator.ts`. The provider index-repair fallback (consult the backing store on index miss before reporting ENOENT) is defense-in-depth for cross-tab races only; within a tab, Rule 2 makes index staleness structurally impossible. Do not add new coherence side channels.
 
 ### 7. Backend isolation
 
@@ -111,7 +122,7 @@ Each backend (`indexeddb`, `webaccess`, `opfs`, `memory`) is an independent stor
 
 Standalone providers (used to browse or discover a backend without mounting it, e.g. the files route grid) reuse the same per-root instances from `ProviderRegistry` (Rule 2). Feature code receives read-only discovery results, never a raw provider. Mutations normally use a mounted authority path; generic scoped `unlink`/`rmdir` APIs and Files-route mutations are forbidden. The narrow exceptions—journal-backed project commit at an allocated physical basename and confirmed permanent deletion at an observed `ProjectLocator`—remain named `WorkspaceFileService` authority operations. They take an explicit durable storage scope and exact physical path, acquire logical-project and canonical physical locks, re-establish identity, and publish ordinary authority invalidation/events. Directory invalidations include the physical identity because a pending locator may still be quarantined and therefore have no logical mount in a sibling tab.
 
-Adoption and re-mint remain read-only quarantine outcomes until a product requirement justifies one named expected-manifest mutation. Never write a new manifest through a stale discovery result or a generic conditional-write surface.
+Adopt and Repair are the named expected-manifest mutations. Adopt writes a strictly valid manifest into an adoption-required directory after a fresh scan, restoring the id the route binding remembers when no discovered project holds it. Repair canonicalizes a degraded manifest only on explicit request, and never for a JSON syntax error. Choosing the canonical directory for a duplicate ID re-verifies it with a fresh scan and only writes the binding; it never writes project files. Re-mint stays unimplemented until a copy's chat identities can be re-keyed. Never write a new manifest through a stale discovery result or a generic conditional-write surface.
 
 Before journaling permanent deletion, run a fresh uniqueness-aware discovery and require exactly one valid current occurrence. Check `deletedAt` and insert the pending operation in one existing IndexedDB transaction; Restore rejects while that operation exists. Re-discover after an `absent` result before local cleanup. If final directory removal fails after marker unlink, best-effort restore the exact manifest bytes already verified and retain replay state.
 
@@ -122,7 +133,9 @@ Before journaling permanent deletion, run a fresh uniqueness-aware discovery and
 The `webaccess` backend is multi-workspace: every `FileSystemDirectoryHandle` lives behind a first-class `workspaceId` (plain `string`, `wsp_*` prefix) and is owned by the multi-store `tau-fs-handles` IndexedDB schema (`workspaces`, `handles`, `configs`, `meta`). The legacy single-`'root'` handle pattern is forbidden.
 
 - Hand-off to the worker uses structured clone (handles are not transferable). The FM machine resolves the project's bound `workspaceId` from `configs[projectId]`, reads its handle from `handles[workspaceId]`, then mounts the webaccess prefix in a single discriminated call: `proxy.mount(prefix, { backend: 'webaccess', directoryHandle, workspaceId, preservePath: true })`. The worker is stateless w.r.t. webaccess identity — no `setDirectoryHandle` knob, no ambient "active handle" between RPCs.
-- Permission must be re-requested from a user gesture after page reload. The FM machine surfaces a structured `unavailableReason` (`'missing' | 'permission'`) — silent downgrade to IndexedDB is forbidden (Rule 10).
+- Permission must be re-requested from a user gesture after page reload. The FM machine surfaces a structured `unavailableReason` (`'missing' | 'disconnected' | 'permission'`) — silent downgrade to IndexedDB is forbidden (Rule 10).
+- Disconnect removes only `handles[workspaceId]`; it MUST preserve workspace metadata, project configs, creation-location preference, and the on-disk marker. Undo conditionally restores the captured handle only while no newer handle exists. A known row without a handle is reported as `disconnected` telemetry, not a missing-handle warning.
+- Generic connection resolves a matching live handle first and normalizes its marker to that id. Otherwise, a marker naming a known handle-less row reconnects that row with `minted: false`; a marker naming a row with a different live handle denotes a copy and receives a fresh id. Exact-id reconnect validates both live-handle ownership and the marker before writing and returns a typed `WorkspaceIdentityConflictError` on collision.
 - Cross-workspace project access is forbidden. If a project's bound `workspaceId` does not match the currently active workspace, the FM machine must refuse to open and route through the `webAccessUnavailable` state (no implicit re-binding).
 
 ### 10. Product location selection never silently downgrades
@@ -146,9 +159,11 @@ Workspace identifiers must be minted via `generatePrefixedId(idPrefix.workspace)
 
 `ProjectFileSystemConfig.workspaceId` is the **single source of truth** for the project ↔ workspace binding. The `fileManagerMachine` MUST NOT carry that identity as ambient context; the machine's `activeWorkspaceId` / `activeWorkspaceName` fields are per-init _outputs_ populated by `initializeServicesActor` and cleared on every `setRoot` transition. The machine MUST NOT mutate `ProjectFileSystemConfig` directly — there is no actor-side self-persist branch.
 
-Any user-driven workspace change MUST go through the binding-transaction helper `bindProjectToWorkspace` on `useFileManager`. The helper performs three steps in order: (1) write `ProjectFileSystemConfig` with the new `{ projectId, backend: 'webaccess', workspaceId }`, (2) emit the `workspaceSwap` telemetry event, (3) dispatch `reloadWorkspace` (no payload) on the FM machine. The machine then re-runs `initializeServicesActor`, which reads the fresh persistent record. Subsequent project loads are silent because the persistent record already has the right binding.
+Any user-driven project binding change MUST go through the binding-transaction helper `bindProjectToWorkspace` on `useFileManager`. The helper performs three steps in order: (1) write `ProjectFileSystemConfig` with the new `{ projectId, backend: 'webaccess', workspaceId }`, (2) emit the `workspaceSwap` telemetry event, (3) dispatch `reloadWorkspace` (no payload) on the FM machine. Reconnecting a disconnected workspace is not a binding change: replace its handle under the existing id and dispatch `reloadWorkspace` without rewriting the config. The machine then re-runs `initializeServicesActor`, which reads the persistent record. Subsequent project loads are silent because that record already has the right binding.
 
-Missing or stale bindings surface `WorkspaceDirectoryRequiredError('missing')` via the recovery overlay; legacy projects without an explicit `workspaceId` are prompted on first load. The v2 → v3 IDB migration only promotes the legacy `'root'` handle to a regular workspace row — it does not auto-bind projects.
+Missing or stale bindings surface `WorkspaceDirectoryRequiredError('missing')` via the recovery overlay; a known workspace row without a handle surfaces `disconnected` and retains its id/name for exact-id recovery. Legacy projects without an explicit `workspaceId` are prompted on first load. The v2 → v3 IDB migration only promotes the legacy `'root'` handle to a regular workspace row — it does not auto-bind projects.
+
+Ordinary discovery MUST NOT rebind a project away from a known incomplete workspace root. Historical duplicate identities may be repaired only by an explicit user-confirmed transaction after a fresh complete canonical-root scan proves one unique matching project id and provider path, the source row has no handle, and the config is unchanged. That transaction may update configs, creation preference, and now-unreferenced source rows; it must not write project files.
 
 ### 12. Project creation is journal → authority commit → local resources
 
@@ -170,7 +185,7 @@ The authority worker's private `/` fallback remains IndexedDB; it is infrastruct
 
 ### 14. Provider disposal is keyed by canonical `storageRootKey`
 
-`ProviderRegistry` caches one provider per canonical `storageRootKey`. Webaccess entries MUST NOT be keyed by `handle.name` — two folders can share a name and one physical directory may be renamed. The filesystem client exposes `disposeStorageRoot(storageRootKey)`, which disposes exactly that provider. Changing or forgetting a workspace disposes `webaccess:<workspaceId>` before the next route sync/read; whole-authority teardown uses `disposeAll()`.
+`ProviderRegistry` caches one provider per canonical `storageRootKey`. Webaccess entries MUST NOT be keyed by `handle.name` — two folders can share a name and one physical directory may be renamed. The filesystem client exposes `disposeStorageRoot(storageRootKey)`, which disposes exactly that provider. Changing, disconnecting, restoring, reconnecting, or repairing a workspace disposes each affected `webaccess:<workspaceId>` before the next route sync/read; a successful multi-binding repair performs one root synchronization after its durable commit. Whole-authority teardown uses `disposeAll()`.
 
 Failure to dispose after replacing a handle is a bug — the registry would otherwise continue serving the previous provider instance under the stable root key.
 
@@ -178,13 +193,70 @@ After provider initialization settles, `getProvider()` must verify that the prom
 
 ### 15. Rooted views are the runtime reachability boundary
 
-`WorkspaceFileService.createRootedFileSystem(authorityRoot)` must resolve `authorityRoot` once to an exact project mount and return the ordinary full read/write/watch filesystem surface rebased to local `/`. Reads, writes, directory operations, rename operands, existence checks, and watches all resolve segment-by-segment inside that captured subtree. `..` may collapse local segments but may never ascend above `/`; a mount replacement invalidates the captured view instead of retargeting it.
+`WorkspaceFileService.createRootedFileSystem(authorityRoot)` must resolve `authorityRoot` once to an exact project or checkout mount and return the ordinary full read/write/watch filesystem surface rebased to the root-relative namespace. Reads, writes, directory operations, rename operands, existence checks, and watches all resolve segment-by-segment inside that captured subtree. Public rooted operations accept only canonical paths (`''`, `main.ts`, `lib/part.ts`), so dot segments never reach provider I/O; a mount replacement invalidates the captured view instead of retargeting it.
 
 The captured mount entry also owns every post-I/O side effect. An admitted old-provider operation may complete against that provider, but it must not update a replacement route's pool, tree, or watches. Qualify remote facts with the existing physical pair `{ storageRootKey, providerBasePath }`; apply them only to matching projections after provider refresh completes.
 
-The view is not read-only. Source files, generated files, `/.tau/cache`, and project-local `/node_modules` are all writable and persist through the underlying provider. No rights matrix, write allowlist, grant lifecycle, route generation, receipt, or service worker participates in this boundary. Runtime and headless code receive the opaque filesystem and local path only; project selection and authority-global routing remain in trusted composition code.
+The view is not read-only. Source files, generated files, `.tau/cache`, and project-local `node_modules` remain writable and persist through the underlying provider. Preserve those semantics rather than introducing cache-only writes or a general rights matrix. Runtime and headless code receive the opaque filesystem and local path only; checkout selection and authority-global routing remain in trusted composition code.
+
+The host-record ownership exception is the registry's `records` class: agents may read but not author `.tau/chats/**`, `.tau/runs/**`, `.tau/export/**`, `.tau/artifacts/**`, `.tau/tool-results/**`, `.tau/offloaded-tool-results/**`, `exports/**`, or `thumbnail.webp`. Hosts write every record through the protected owner path of the selected checkout's authority; they do not use a parallel store or bypass the checkout's rooted watch plane. Enforce this at the authority-owned admission boundary for every agent-reachable mutation route, including tools and agent-authored CAD/kernel code, not only one RPC wrapper. Reject canonical protected mutations before provider I/O; establish equivalent backing-object ownership for aliases before mutation. Preflight direct/batch writes, appends, both rename operands and ancestor removal/replacement before the first mutation; authorization preflight does not promise an atomic storage transaction. Refuse an unsafe route when its confinement cannot be established, including native execution with unqualified ambient filesystem access. Do not remove normal authored-data writes, hide readable records, or expose a raw provider/shared mutable buffer that bypasses the boundary. Protection follows the captured logical view and record ownership, never the spelling of a backing path.
+
+Authenticated host event/control writers use the same storage authority through its protected owner path; a caller-supplied flag or claimed actor identity must not grant that access. E-D requires remote agent hosts to append through the workspace authority, not a local shadow log. Its durable acknowledgement contract is owned by the filesystem context policy; local rooting, an advisory lock file or best-effort diagnostic append does not qualify ownership, fencing or durability. These rules state the required boundary, not that current rooted/provider adapters already implement it.
 
 **Why**: Reachability is enforced once, before provider I/O, without asking every runtime layer to reproduce authorization logic.
+
+### 16. Private stores and control metadata live outside authored identity
+
+Every workspace has exactly four storage classes, each with one owner; a byte is never in two of them and none is inferred from a path spelling alone:
+
+| Class                                                                                                                                                                                                                          | Owner and location                                                                                      | Authored identity                                                           | Agent's rooted view                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Authored: `tau.json`, sources, inputs, authored `.tau` controls, `.gitignore`, and `.gitattributes`; generated `.tau/types/**`, `.tau/tsconfig.generated.json`, and `.tau/lockfile.json` remain authored-class but unversioned | The selected checkout under the single authority; the path registry alone decides versioning            | Yes only where the registry says `versioned`; these bytes form the revision | Read and write (Rule 15)                                                                                    |
+| Records: `.tau/workbench/**`                                                                                                                                                                                                   | The live-root authority; agents and the page write, UI watches                                          | No                                                                          | Read and write (Rule 15)                                                                                    |
+| Records: `.tau/chats/**`, `.tau/runs/**`, `.tau/export/**`, `.tau/artifacts/**`, `.tau/tool-results/**`, `.tau/offloaded-tool-results/**`, `exports/**`, `thumbnail.webp`                                                      | The selected checkout authority's protected owner path; hosts write, agents may only read               | No                                                                          | Read-only (Rule 15, I-MASK)                                                                                 |
+| Cache: `.tau/cache/**`, `node_modules/**`                                                                                                                                                                                      | Regenerable storage in or composed over the selected checkout; never a private compute-store projection | No                                                                          | Read and write; watch behavior follows provenance and Rule 26                                               |
+| Control plane: revision objects, refs and transactional metadata; binding, epoch, head-routing and idempotency state (`.git/**` on every host, `.jj/**`, `refs/tau/*`, `.tau/binding.json`), wherever in the tree they sit     | The revision authority, written only through `RevisionPort` and authority admission                     | No: a revision hash never covers its own store, refs, or control state      | Refused by every view, before provider I/O; the unmasked authority is reachable only by trusted composition |
+
+Classification is trusted and structural, never a glob: the authority names each class at admission, the generated ignore file is a convenience barrier, and a post-snapshot membership audit proves that no record, cache, control, or private byte entered a revision and no authored `.tau` control was excluded. Already-tracked bytes stay tracked; force-add attempts and symlink escapes into a private store are refused.
+
+Do not infer that every `node_modules` tree is unwatched. Immutable composed dependency overlays stay outside ordinary content watches; live runtime dependency trees retain the dependency watch and invalidation behavior required by `docs/policy/filesystem-policy.md` Rule 26.
+
+Private capability stores are outside the four workspace classes: keep the executing host's compute L2 and every future per-host derived store physically outside every authored project root, revision root, and linked checkout. Candidate checkouts share that store through a capability, never through a copied cache inside the checkout.
+
+Deleting one project releases that project's owners and pins in the private store, not the workspace store; two workspace grants stay isolated even for identical content; a moved physical host starts cold with no implicit store transfer. Ordinary garbage collection and candidate or worker teardown preserve every pin a live owner holds; an explicit clear-all refuses while such pins exist, or first moves the required content under an existing durable artifact owner.
+
+**Why**: The revision id is the outer cache key and must be stable across hosts, so nothing host-local, transactional or derived may enter it; the agent is confined by placement, so nothing it can reach may alter control state.
+
+These four classes are ratified. `classify()` is their sole executable registry: callers never infer class, versioning, agent access, watch plane, or generated ignore membership from ad hoc prefixes or globs.
+
+Control-plane paths are refused by every composed view before provider I/O, whichever consumer the view serves and whichever operation reaches it — a read, a walk, a search, an archive, a copy or a transfer. The unmasked authority is reachable only by trusted composition: the revision port, host record writers and project-directory lifecycle. A consumer-facing content operation that runs over the unmasked authority is a bypass, not a shortcut.
+
+### 17. What a path policy must satisfy
+
+A path policy is one function, `classify(path) → PathClassification`, answering four questions about every path in a project: its storage class (Rule 16), whether it is `versioned`, its `agentAccess` (`read-write`, `read-only`, `hidden` — `hidden` is hidden from people too), and its `watch` plane. It is a `.gitignore` that answers four questions instead of one. Tau's instance, `tauPathPolicy`, is the registry table in `packages/filesystem/src/path-registry.ts`; it describes Tau's reserved layout and is not user-editable. The person's own ignore rules stay in their `.gitignore`, whose generated block is derived from the same rows.
+
+Every path policy — Tau's or a test's — satisfies these:
+
+| #   | Property                                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PP1 | **Total**: `classify` answers for every canonical relative path; it never throws and never returns a partial answer                                                                                                                                                                                                                                                                                    |
+| PP2 | **Hidden is inherited**: if a directory is hidden, every path beneath it is hidden, at any depth                                                                                                                                                                                                                                                                                                       |
+| PP3 | **Fold, then match every registry row; match control-plane rows at any depth**: normalize every segment to NFC, lower-case it, strip trailing dots and spaces, and drop its `:` suffix before matching. A `control-plane` row matches the folded segment wherever it appears, so the answer depends on neither repository depth nor spelling                                                           |
+| PP4 | **Project-relative, and the view owes the rebase**: `classify` takes a path relative to the project root (the `.tau/*`, `exports` and `thumbnail.webp` rows are root-matched by design). The Home `/` view rebases project, checkout and preview descendants before classification; other parent views either rebase or do not serve them. PP3 makes the control plane safe regardless                 |
+| PP5 | **`versioned` and generated ignore content use the same layout**: every registry row whose classification is unversioned contributes its ignore entry, and the reserved `.tau` fallback contributes `/.tau/*` followed by a `!` line for each versioned row directly inside it (never `/.tau/`, which git cannot re-include beneath); filesystem folding remains the capture boundary's responsibility |
+| PP6 | **Unversioned is never less restrictive than versioned for an agent** is _not_ required — generated and cache rows (`.tau/types`, `.tau/lockfile.json`, `.tau/cache`, `node_modules`) and the `.tau/workbench/**` records row are unversioned and agent-writable by design; the workbench row is UI-watched; recorded so nobody "fixes" it                                                             |
+
+Hiding a path also means refusing to remove or move beneath it (CI1): a composed view walks the subtree of a recursive removal or a directory move first, refuses the project's own control plane and reserved records to every consumer, and refuses a nested store to an agent while a person's removal carries it with its directory. The same mask filters the view's watch stream, since an event names paths nobody asked about.
+
+A row therefore carries two independent facts, never one flag for both: `anchored` is the generated ignore pattern's spelling, and `match` (`'root' | 'segment'`) is how the row classifies a path. Conflating them is what let a nested `.git` be captured into revisions and written by an agent.
+
+Every row of Tau's own registry is compared as the filesystem folds it rather than as spelled — case, trailing dots and spaces, and a segment's NTFS data-stream suffix (`.git::$INDEX_ALLOCATION/config` is `.git/config`). One rule, no row that is reserved under one spelling and the person's under another: a revision tree has never been allowed to carry a case alias of a reserved path (`portable-tree.ts` refuses it before materializing), so classifying one as authored only moved the failure to a commit nobody could check out. Accepted cost: on a case-sensitive disk a directory a person named `Exports` is Tau's `exports`. Win32 8.3 short names (`GIT~1`) are a recorded non-goal — no Windows target ships, and the alias is minted by the filesystem rather than spelled by a caller.
+
+PP5 is a property of the rows, not of every spelling of them: the generated block is the person's own `.gitignore`, which git matches case-sensitively on a case-sensitive disk, and widening it with Tau's fold would put Tau's case rules into their file. The capture's `exclude` (`!classify(path).versioned`) is what keeps a folded spelling out of every tree. The same holds in the other direction under the `/.tau/*` head: on a case-sensitive disk `.tau/Parameters/x` is versioned by `classify` but ignored by stock Git, because the `!/.tau/parameters` negation is spelled as the row is; Tau's capture still carries it.
+
+There is no user-configurable policy, no per-project policy file, no plugin API for rows and no policy registry. If a second layout becomes real, inject its policy into both halves of the capability and pass that policy's own layout (rows and reserved directory) to `generatedIgnoreContent`; the properties above still apply.
+
+**Why**: The mask, the capture filter and the generated ignore file are three readings of one table; they agree by property, not by coincidence.
 
 ## Anti-Patterns
 
@@ -196,7 +268,8 @@ The view is not read-only. Source files, generated files, `/.tau/cache`, and pro
 - Adding a second cross-tab coherence channel instead of using `CrossTabCoordinator` (Rule 6).
 - Treating `ProjectLibraryState` as a discovery registry or using it to recover manifest fields (Rule 5).
 - Passing an authority-global bridge, global file-pool buffer, project id, or global `/projects/<id>` path into runtime/headless code instead of issuing a rooted view (Rules 4 and 15).
-- Reintroducing read-only source views or cache-only write allowlists; a rooted runtime filesystem is fully writable inside its virtual tree (Rule 15).
+- Reintroducing read-only source views or cache-only write allowlists; full authored-data writes remain available, with the registry's complete host-record ownership exception (Rule 15).
+- Writing revision store, ref, binding or epoch state through the authored filesystem surface, excluding it by a blanket `.tau` or `dist` glob, or copying a private cache into a candidate slot (Rule 16).
 
 ## Rule Mapping (former filesystem-policy numbering)
 
@@ -215,7 +288,7 @@ Code and docs citing the old numbers resolve here:
 
 ## References
 
-- Implementation: `libs/filesystem/src/{mount-table.ts,provider-registry.ts,cross-tab-coordinator.ts,workspace-file-service.ts}`, `libs/filesystem/src/backend/direct-idb-provider.ts`, `apps/ui/app/filesystem/{handle-store.ts,workspace-errors.ts}`, `apps/ui/app/machines/file-manager.{machine,worker}.ts`
+- Implementation: `packages/filesystem/src/{mount-table.ts,provider-registry.ts,cross-tab-coordinator.ts,workspace-file-service.ts}`, `packages/filesystem/src/backend/direct-idb-provider.ts`, `apps/ui/app/filesystem/{handle-store.ts,workspace-errors.ts}`, `apps/ui/app/machines/file-manager.{machine,worker}.ts`
 - Research: `docs/research/headless-thumbnail-rendering-architecture-v4.md` (Finding 5, R3)
 - Research: `docs/research/runtime-model-load-project-root-regression-v3.md` (rooted runtime filesystem boundary)
 - Research: `docs/research/workspace-naming-and-storage-backend-abstraction.md` (Home identity and engine pinning)

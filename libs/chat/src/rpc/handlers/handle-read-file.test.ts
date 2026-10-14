@@ -14,19 +14,26 @@ const textStat = (size: number, lineCount: number): RpcFileStat => ({
 });
 
 describe('handleReadFile', () => {
-  it.each(['/src/a.ts', './src/a.ts'])(
-    'should normalize agent path %j before every filesystem call',
-    async (targetFile) => {
-      const fileSystem = mock<RpcFileSystem>();
-      fileSystem.stat.mockResolvedValue(textStat(1, 1));
-      fileSystem.readFile.mockResolvedValue('x');
+  it('should pass a canonical rooted path through unchanged', async () => {
+    const fileSystem = mock<RpcFileSystem>();
+    fileSystem.stat.mockResolvedValue(textStat(1, 1));
+    fileSystem.readFile.mockResolvedValue('x');
 
-      await handleReadFile({ targetFile }, fileSystem);
+    await handleReadFile({ targetFile: 'src/a.ts' }, fileSystem);
 
-      expect(fileSystem.stat).toHaveBeenCalledWith('src/a.ts');
-      expect(fileSystem.readFile).toHaveBeenCalledWith('src/a.ts');
-    },
-  );
+    expect(fileSystem.stat).toHaveBeenCalledWith('src/a.ts');
+    expect(fileSystem.readFile).toHaveBeenCalledWith('src/a.ts');
+  });
+
+  it.each(['/src/a.ts', './src/a.ts'])('should reject noncanonical rooted path %j', async (targetFile) => {
+    const fileSystem = mock<RpcFileSystem>();
+
+    const result = await handleReadFile({ targetFile }, fileSystem);
+
+    expect(result).toMatchObject({ success: false, errorCode: rpcClientErrorCode.validationError });
+    expect(fileSystem.stat).not.toHaveBeenCalled();
+    expect(fileSystem.readFile).not.toHaveBeenCalled();
+  });
 
   it('should reject paths outside the project before filesystem access', async () => {
     const fileSystem = mock<RpcFileSystem>();
@@ -66,7 +73,8 @@ describe('handleReadFile', () => {
 
     expect(result).toMatchObject({
       success: true,
-      content: 'gamma\ndelta',
+      // CL6 requires every truncated page to carry its exact continuation offset.
+      content: 'gamma\ndelta\n\ntruncated; continue with offset=5',
       startLine: 3,
     });
   });
@@ -113,7 +121,8 @@ describe('handleReadFile', () => {
 
     expect(result).toMatchObject({
       success: true,
-      content: 'b\nc',
+      // CL6 requires every truncated page to carry its exact continuation offset.
+      content: 'b\nc\n\ntruncated; continue with offset=4',
       totalLines: 5,
       startLine: 2,
     });
@@ -155,7 +164,7 @@ describe('handleReadFile', () => {
 
       expect(result).toMatchObject({ success: true, totalLines: 5000, truncated: true });
       const content = result.success ? result.content : '';
-      expect(content.split('\n').length).toBe(2000);
+      expect(content).toContain('truncated; continue with offset=2001');
     });
 
     it('should clamp an explicit limit > 2000 at the server boundary even if the schema is bypassed', async () => {
@@ -172,7 +181,7 @@ describe('handleReadFile', () => {
       );
 
       const content = result.success ? result.content : '';
-      expect(content.split('\n').length).toBe(2000);
+      expect(content).toContain('truncated; continue with offset=2001');
       expect(result).toMatchObject({ success: true, truncated: true });
     });
 
@@ -191,6 +200,21 @@ describe('handleReadFile', () => {
 
       expect(result).toMatchObject({ success: true, totalLines: 3 });
       expect(result.success && result.truncated).toBeUndefined();
+    });
+
+    it('should cap paginated reads by UTF-8 bytes and provide the exact continuation offset', async () => {
+      const fileSystem = mock<RpcFileSystem>();
+      const lines = Array.from({ length: 1000 }, (_, index) => `${index}:${'é'.repeat(100)}`);
+      fileSystem.readFile.mockResolvedValue(lines.join('\n'));
+      fileSystem.stat.mockResolvedValue(textStat(512 * 1024, lines.length));
+
+      const result = await handleReadFile({ targetFile: 'big.ts', offset: 1, limit: 1000 }, fileSystem);
+
+      expect(result).toMatchObject({ success: true, truncated: true });
+      if (result.success) {
+        expect(new TextEncoder().encode(result.content).byteLength).toBeLessThanOrEqual(50 * 1024);
+        expect(result.content).toMatch(/truncated; continue with offset=\d+$/u);
+      }
     });
   });
 

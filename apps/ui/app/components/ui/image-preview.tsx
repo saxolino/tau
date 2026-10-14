@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-import { cn } from '#utils/ui.utils.js';
-import { Dialog, DialogContent } from '#components/ui/dialog.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { Dialog, DialogContent } from '@taucad/ui/components/dialog';
 
 type ImagePreviewContextValue = {
   src: string;
@@ -76,7 +76,7 @@ function ImagePreview({ src, alt, label, onError, children, dialogProps }: Image
             )}
             <DialogContent
               {...dialogProps}
-              className='shadow-lg z-101! flex h-[80vh]! max-h-none! w-auto! max-w-none! items-center justify-center overflow-visible rounded-lg border bg-background p-2 *:data-[slot=dialog-close]:bg-background'
+              className='z-101! flex h-[80vh]! max-h-none! w-auto! max-w-none! items-center justify-center overflow-visible rounded-lg border bg-background p-2 shadow-lg *:data-[slot=dialog-close]:bg-background'
             >
               <div className='relative h-full'>
                 <img
@@ -113,6 +113,7 @@ function ImagePreviewTrigger({ children }: ImagePreviewTriggerProps): React.JSX.
     <div
       role='button'
       tabIndex={0}
+      className='group/image-preview rounded-md outline-none focus-visible:focus-outline'
       onMouseDown={(event) => {
         // Prevent blur events from firing on parent elements (e.g., textarea losing focus)
         event.preventDefault();
@@ -142,7 +143,15 @@ type ImagePreviewImageProps = {
 function ImagePreviewImage({ className }: ImagePreviewImageProps): React.JSX.Element {
   const { src, alt, onError } = useImagePreviewContext();
 
-  return <img src={src} alt={alt} className={cn('cursor-pointer', className)} loading='lazy' onError={onError} />;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={cn('transition-opacity group-hover/image-preview:opacity-80', className)}
+      loading='lazy'
+      onError={onError}
+    />
+  );
 }
 
 export { ImagePreview, ImagePreviewTrigger, ImagePreviewImage };

@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import type { ContextUsageData } from '@taucad/chat';
 import { resolveKernel } from '@taucad/types/constants';
-import { TooltipProvider } from '#components/ui/tooltip.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { ChatComposerContextValue } from '#hooks/active-chat-provider.js';
 
 // Mock the unified composer context so the connected `<ChatContextIndicator>`
@@ -37,7 +37,7 @@ const createUsageData = (overrides?: Partial<ContextUsageData>): ContextUsageDat
   totalInputTokens: 108_200,
   contextWindow: 200_000,
   percentUsed: 54.1,
-  modelId: 'anthropic-claude-haiku-4.5',
+  modelId: 'anthropic-claude-haiku-5.5',
   ...overrides,
 });
 
@@ -83,7 +83,8 @@ describe('ChatContextIndicatorDisplay', () => {
     const meter = screen.getByRole('meter');
     await userEvent.hover(meter);
 
-    expect((await screen.findAllByText('Overflow retry trimmed context')).length).toBeGreaterThanOrEqual(1);
+    const overflowRows = await screen.findAllByText('Overflow retry trimmed context');
+    expect(overflowRows.length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Trigger: provider overflow').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -102,7 +103,8 @@ describe('ChatContextIndicatorDisplay', () => {
     const meter = screen.getByRole('meter');
     await userEvent.hover(meter);
 
-    expect((await screen.findAllByText('Compaction scheduled next turn')).length).toBeGreaterThanOrEqual(1);
+    const scheduledRows = await screen.findAllByText('Compaction scheduled next turn');
+    expect(scheduledRows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('should clamp aria-valuenow at 100 for overflow', () => {
@@ -122,16 +124,16 @@ describe('getFillColor', () => {
     expect(getFillColor(60)).toContain('warning');
   });
 
-  it('should return destructive stroke for high usage', () => {
-    expect(getFillColor(85)).toContain('destructive');
+  it('should return feature stroke for high usage', () => {
+    expect(getFillColor(85)).toContain('feature');
   });
 
   it('should return success stroke after compaction', () => {
     expect(getFillColor(20, 'compacted')).toContain('success');
   });
 
-  it('should return destructive stroke when compaction is scheduled', () => {
-    expect(getFillColor(20, 'compacted', 'scheduled_next_turn')).toContain('destructive');
+  it('should return feature stroke when compaction is scheduled', () => {
+    expect(getFillColor(20, 'compacted', 'scheduled_next_turn')).toContain('feature');
   });
 });
 
@@ -144,16 +146,16 @@ describe('getTrackColor', () => {
     expect(getTrackColor(70)).toContain('warning');
   });
 
-  it('should return destructive track for high usage', () => {
-    expect(getTrackColor(90)).toContain('destructive');
+  it('should return feature track for high usage', () => {
+    expect(getTrackColor(90)).toContain('feature');
   });
 
   it('should return warning track after overflow retry', () => {
     expect(getTrackColor(20, 'overflow_retry_succeeded')).toContain('warning');
   });
 
-  it('should return destructive track when compaction is scheduled', () => {
-    expect(getTrackColor(20, 'compacted', 'scheduled_next_turn')).toContain('destructive');
+  it('should return feature track when compaction is scheduled', () => {
+    expect(getTrackColor(20, 'compacted', 'scheduled_next_turn')).toContain('feature');
   });
 });
 

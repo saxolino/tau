@@ -1,13 +1,27 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mock } from 'vitest-mock-extended';
+import { createChannelServer, wrapMessagePort } from '@taucad/rpc';
+import type { ChannelServerHandle } from '@taucad/rpc';
 
+import type { MachineChannelClient } from '#machines/machine-channel.js';
 import {
+  awaitElectronRelayedPort,
   createElectronClientOptions,
   electronUtilityTransport,
   getElectronRuntimeBridge,
   requestElectronRuntimePort,
 } from '#electron/renderer.js';
+import { protocolVersion } from '#types/protocol-header.types.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
+import { createRuntimeWorker, defineRuntime } from '#worker/index.js';
+import { createDocumentWorkerDispatcher } from '#transport/_internal/runtime-document-dispatcher.js';
+import { KernelRuntimeWorker } from '#framework/kernel-runtime-worker.js';
+import { createRuntimeClient } from '#client/runtime-document-client-core.js';
+import { registerElectronRuntimeHostRelease } from '#electron/_internal/runtime-host-lease.js';
+import { fromMemoryFs } from '#filesystem/runtime-filesystem.js';
+import { resolveRuntimeFileSystem } from '#transport/_internal/runtime-filesystem-handle.js';
 
 const runtimeRelayTag = 'tau-runtime-port';
 const hostExitRelayTag = 'tau-runtime-host-exit';
@@ -20,8 +34,8 @@ const hostExitRelayTag = 'tau-runtime-host-exit';
  * @param ports - Transferred ports, if any.
  * @returns A message event shaped like the real relay.
  */
-const relayEvent = (data: unknown, ports: MessagePort[] = []): MessageEvent =>
-  ({ data, ports, origin: location.origin, source: globalThis }) as unknown as MessageEvent;
+const relayEvent = (data: unknown, ports: MessagePort[] = [], origin = location.origin): MessageEvent =>
+  ({ data, ports, origin, source: globalThis }) as unknown as MessageEvent;
 
 /**
  * Renderer harness that captures every listener the helper registers on the
@@ -54,8 +68,8 @@ const setupRendererHarness = (hostId: string) => {
     }),
   } as unknown as Window;
   const bridge = {
-    requestRuntimePort: vi.fn(() => {
-      dispatch('message', relayEvent({ taucadRelay: runtimeRelayTag, hostId }, [port]));
+    requestRuntimePort: vi.fn((requestId: string) => {
+      dispatch('message', relayEvent({ taucadRelay: runtimeRelayTag, hostId, requestId }, [port]));
     }),
     releaseRuntimeHost: vi.fn(),
     relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
@@ -64,6 +78,217 @@ const setupRendererHarness = (hostId: string) => {
 };
 
 describe('Electron renderer runtime helpers', () => {
+  it.each(['default', 'repeated', 'terminate'] as const)(
+    'disposes the real worker once on %s client shutdown',
+    async (mode) => {
+      const { port1, port2 } = new MessageChannel();
+      const gate = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const disposed = vi.fn();
+      class OwnedWorker extends KernelRuntimeWorker {
+        protected override async onCleanup(): Promise<void> {
+          disposed();
+          entered.resolve();
+          await gate.promise;
+          await super.onCleanup();
+        }
+      }
+      const worker = new OwnedWorker({ runtime: defineRuntime({}) });
+      const filesystem = resolveRuntimeFileSystem(fromMemoryFs());
+      if (filesystem.kind !== 'inline') {
+        throw new Error('Expected inline owned filesystem');
+      }
+      const server = createDocumentWorkerDispatcher(worker, wrapMessagePort(port2), {
+        inlineFileSystem: filesystem.create(),
+      });
+      const release = vi.fn();
+      registerElectronRuntimeHostRelease(port1, release);
+      const client = createRuntimeClient({ transport: electronUtilityTransport({ port: port1 }) });
+      try {
+        await client.connect();
+        if (mode === 'terminate') {
+          client.terminate();
+        }
+        const closing = client.shutdown();
+        if (mode === 'repeated') {
+          void client.shutdown();
+        }
+        await entered.promise;
+        expect(disposed).toHaveBeenCalledOnce();
+        expect(release).not.toHaveBeenCalled();
+        gate.resolve();
+        await closing;
+        await vi.waitFor(() => {
+          expect(release).toHaveBeenCalledExactlyOnceWith('requested');
+        });
+        expect(disposed).toHaveBeenCalledOnce();
+      } finally {
+        gate.resolve();
+        await client.shutdown();
+        server.dispose();
+        port2.close();
+        await worker.cleanup();
+      }
+    },
+  );
+
+  it.each(['error', 'host-exit', 'operation-timeout'] as const)(
+    'releases its own utility when cleanup encounters %s',
+    async (mode) => {
+      const { port1, port2 } = new MessageChannel();
+      const gate = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const cleanup = vi.fn(async () => {
+        entered.resolve();
+        if (mode === 'error') {
+          throw new Error('Owned cleanup refused');
+        }
+        await gate.promise;
+        return undefined;
+      });
+      const server = createChannelServer<RuntimeDocumentProtocol>({
+        port: wrapMessagePort(port2),
+        sessionKey: 'tau.runtime/v1',
+        hello: { server: 'kernel-runtime-worker', runtimeVersion: 'test', protocolVersion },
+        impl: {
+          async call(_context, name) {
+            if (name !== 'dispose') {
+              throw new Error('Only document dispose is served');
+            }
+            await cleanup();
+            throw new Error('Cleanup response unavailable after hard termination');
+          },
+          notify: () => undefined,
+          listen: () => {
+            throw new Error('No listeners');
+          },
+        },
+      });
+      const release = vi.fn();
+      registerElectronRuntimeHostRelease(port1, release);
+      const transport = electronUtilityTransport({ port: port1 }).materialize();
+      try {
+        await transport.open();
+        const closing = transport.close();
+        await entered.promise;
+        if (mode === 'host-exit') {
+          server.dispose();
+          port2.close();
+          await expect(transport.closed).resolves.toMatchObject({ cause: 'host-exit', phase: 'session' });
+        } else if (mode === 'operation-timeout') {
+          if (transport.operationTimeoutRecovery.kind !== 'terminable') {
+            throw new Error('Expected hard timeout recovery');
+          }
+          await transport.operationTimeoutRecovery.terminate();
+          await expect(transport.closed).resolves.toEqual({ cause: 'operation-timeout' });
+        }
+        await closing;
+        expect(release).toHaveBeenCalledExactlyOnceWith(
+          mode === 'operation-timeout' ? 'operation-timeout' : 'requested',
+        );
+        expect(cleanup).toHaveBeenCalledOnce();
+      } finally {
+        gate.resolve();
+        await transport.close();
+        server.dispose();
+        port2.close();
+      }
+    },
+  );
+
+  it('acknowledges owned worker cleanup before releasing repeated close callers', async () => {
+    const { port1, port2 } = new MessageChannel();
+    const siblingPorts = new MessageChannel();
+    const siblingWorker = createRuntimeWorker({ runtime: defineRuntime({}) });
+    const siblingCleanup = vi.spyOn(siblingWorker, 'cleanup');
+    const siblingServer = createDocumentWorkerDispatcher(siblingWorker, wrapMessagePort(siblingPorts.port2));
+    const siblingRelease = vi.fn();
+    registerElectronRuntimeHostRelease(siblingPorts.port1, siblingRelease);
+    const sibling = electronUtilityTransport({ port: siblingPorts.port1 }).materialize();
+    const worker = createRuntimeWorker({ runtime: defineRuntime({}) });
+    const cleanupGate = Promise.withResolvers<void>();
+    const cleanupEntered = Promise.withResolvers<void>();
+    const originalCleanup = worker.cleanup.bind(worker);
+    const cleanup = vi.spyOn(worker, 'cleanup').mockImplementation(async () => {
+      cleanupEntered.resolve();
+      await cleanupGate.promise;
+      await originalCleanup();
+    });
+    const server = createDocumentWorkerDispatcher(worker, wrapMessagePort(port2));
+    let receive: ((event: MessageEvent) => void) | undefined;
+    const bridge = {
+      requestRuntimePort: vi.fn((requestId: string) => {
+        receive?.(relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'cleanup-owned', requestId }, [port1]));
+      }),
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+    const target = {
+      addEventListener: (_name: string, listener: (event: MessageEvent) => void) => {
+        receive = listener;
+      },
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+    const options = await createElectronClientOptions({ bridge, target })();
+    const transport = options.transport.materialize();
+    let settled = 0;
+    try {
+      await transport.open();
+      await sibling.open();
+      const trackClose = async (): Promise<void> => {
+        await transport.close();
+        settled += 1;
+      };
+      const first = trackClose();
+      const second = trackClose();
+      await vi.waitFor(() => {
+        expect(cleanup).toHaveBeenCalledOnce();
+      });
+      await cleanupEntered.promise;
+      expect(settled).toBe(0);
+      expect(bridge.releaseRuntimeHost).not.toHaveBeenCalled();
+      cleanupGate.resolve();
+      await Promise.all([first, second]);
+      expect(settled).toBe(2);
+      expect(bridge.releaseRuntimeHost).toHaveBeenCalledExactlyOnceWith('cleanup-owned', 'requested');
+      expect(siblingCleanup).not.toHaveBeenCalled();
+      expect(siblingRelease).not.toHaveBeenCalled();
+    } finally {
+      cleanupGate.resolve();
+      await transport.close();
+      server.dispose();
+      port2.close();
+      await originalCleanup();
+      await sibling.close();
+      siblingServer.dispose();
+      siblingPorts.port2.close();
+    }
+  });
+
+  it.each(['cold', 'opening', 'failed-open'] as const)(
+    'releases %s clients without waiting for unavailable cleanup',
+    async (mode) => {
+      const { port1, port2 } = new MessageChannel();
+      const release = vi.fn();
+      registerElectronRuntimeHostRelease(port1, release);
+      const transport = electronUtilityTransport({ port: port1 }).materialize();
+      try {
+        const opening = mode === 'cold' ? undefined : expect(transport.open()).rejects.toThrow();
+        if (mode === 'failed-open') {
+          port2.close();
+          await opening;
+        }
+        await Promise.all([transport.close(), transport.close()]);
+        await opening;
+        await expect(transport.open()).rejects.toThrow();
+        expect(release).toHaveBeenCalledExactlyOnceWith('requested');
+      } finally {
+        await transport.close();
+        port2.close();
+      }
+    },
+  );
+
   afterEach(() => {
     Reflect.deleteProperty(globalThis as unknown as Record<string, unknown>, 'taucad');
   });
@@ -81,8 +306,8 @@ describe('Electron renderer runtime helpers', () => {
       }),
       removeEventListener: vi.fn(),
     } as unknown as Window;
-    const requestRuntimePort = vi.fn(() => {
-      listener?.(relayEvent({ taucadRelay: 'taucad:connect-runtime:port', hostId: 'host-1' }, [port]));
+    const requestRuntimePort = vi.fn((requestId: string) => {
+      listener?.(relayEvent({ taucadRelay: 'taucad:connect-runtime:port', hostId: 'host-1', requestId }, [port]));
     });
     const bridge = {
       requestRuntimePort,
@@ -93,13 +318,84 @@ describe('Electron renderer runtime helpers', () => {
     const received = await requestElectronRuntimePort({ bridge, target });
 
     expect(received).toBe(port);
-    expect(requestRuntimePort).toHaveBeenCalledTimes(1);
+    expect(requestRuntimePort).toHaveBeenCalledExactlyOnceWith(expect.any(String), undefined);
     expect(target.addEventListener).toHaveBeenCalledWith('message', expect.any(Function));
     expect(target.removeEventListener).toHaveBeenCalledWith('message', expect.any(Function));
   });
 
+  it('correlates overlapping runtime requests when replies arrive out of order', async () => {
+    let handlers: Array<(event: MessageEvent) => void> = [];
+    const removeEventListener = vi.fn((_name: string, handler: (event: MessageEvent) => void) => {
+      handlers = handlers.filter((entry) => entry !== handler);
+    });
+    const target = {
+      addEventListener: vi.fn((_name: string, handler: (event: MessageEvent) => void) => {
+        handlers = [...handlers, handler];
+      }),
+      removeEventListener,
+    } as unknown as Window;
+    const dispatch = (event: MessageEvent): void => {
+      for (const handler of handlers) {
+        handler(event);
+      }
+    };
+    const requestRuntimePort = vi.fn((..._args: unknown[]) => undefined);
+    const bridge = {
+      requestRuntimePort,
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+    const contexts = [
+      { definition: 'default', projectRoot: '/projects/a' },
+      { definition: 'default', projectRoot: '/projects/b' },
+      { definition: 'default', projectRoot: '/projects/c' },
+    ];
+    const pending = contexts.map(async (context) => requestElectronRuntimePort({ bridge, context, target }));
+    const requestHandlers = [...handlers];
+    const requestIds = requestRuntimePort.mock.calls.map(([requestId]) => requestId as string);
+
+    dispatch(
+      relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'host-without-request' }, [new MessageChannel().port1]),
+    );
+    dispatch(
+      relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'host-wrong-request', requestId: 'wrong-request' }, [
+        new MessageChannel().port1,
+      ]),
+    );
+    expect(handlers).toEqual(requestHandlers);
+
+    const ports = [new MessageChannel().port1, new MessageChannel().port1, new MessageChannel().port1];
+    for (const index of [2, 0, 1]) {
+      dispatch(
+        relayEvent({ taucadRelay: runtimeRelayTag, hostId: `host-${index}`, requestId: requestIds[index] }, [
+          ports[index]!,
+        ]),
+      );
+    }
+
+    const received = await Promise.all(pending);
+    expect(received).toEqual(ports);
+    expect(new Set(requestIds).size).toBe(3);
+    expect(requestRuntimePort.mock.calls).toEqual(contexts.map((context, index) => [requestIds[index], context]));
+    expect(requestIds.every((requestId) => /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/u.test(requestId))).toBe(true);
+    for (const requestHandler of requestHandlers) {
+      expect(
+        removeEventListener.mock.calls.filter(([name, handler]) => name === 'message' && handler === requestHandler),
+      ).toHaveLength(1);
+    }
+
+    const clients = received.map((port) => electronUtilityTransport({ port }).materialize());
+    await clients[2]!.close();
+    await clients[0]!.close();
+    await clients[1]!.close();
+    expect(bridge.releaseRuntimeHost.mock.calls).toEqual([
+      ['host-2', 'requested'],
+      ['host-0', 'requested'],
+      ['host-1', 'requested'],
+    ]);
+  });
+
   it('creates an async client-options provider backed by electronUtilityTransport', async () => {
-    const port = new MessageChannel().port1;
     let listener: ((event: MessageEvent) => void) | undefined;
     const target = {
       addEventListener: vi.fn((_name: 'message', handler: (event: MessageEvent) => void) => {
@@ -107,8 +403,11 @@ describe('Electron renderer runtime helpers', () => {
       }),
       removeEventListener: vi.fn(),
     } as unknown as Window;
-    const requestRuntimePort = vi.fn(() => {
-      listener?.(relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'host-2' }, [port]));
+    let hostNumber = 0;
+    const requestRuntimePort = vi.fn((requestId: string) => {
+      hostNumber += 1;
+      const port = new MessageChannel().port1;
+      listener?.(relayEvent({ taucadRelay: runtimeRelayTag, hostId: `host-${hostNumber}`, requestId }, [port]));
     });
     const bridge = {
       requestRuntimePort,
@@ -116,11 +415,24 @@ describe('Electron renderer runtime helpers', () => {
       relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
     };
 
-    const provider = createElectronClientOptions({ bridge, target, renderTimeout: 1234 });
+    const provider = createElectronClientOptions({
+      bridge,
+      context: { projectRoot: '/projects/a' },
+      operationTimeout: 1234,
+      target,
+    });
     const options = await provider();
+    const nextOptions = await provider();
 
-    expect(requestRuntimePort).toHaveBeenCalledOnce();
-    expect(options.renderTimeout).toBe(1234);
+    /* The per-request fork context survives the provider's own destructuring
+     * and reaches preload unchanged. */
+    expect(requestRuntimePort.mock.calls).toEqual([
+      [expect.any(String), { projectRoot: '/projects/a' }],
+      [expect.any(String), { projectRoot: '/projects/a' }],
+    ]);
+    expect(requestRuntimePort.mock.calls[0]?.[0]).not.toBe(requestRuntimePort.mock.calls[1]?.[0]);
+    expect(options.transport).not.toBe(nextOptions.transport);
+    expect(options.operationTimeout).toBe(1234);
     expect(options.transport.id).toBe('electron-utility');
     expect(options.transport.describe()).toMatchObject({
       fileSystem: 'host-local',
@@ -132,11 +444,195 @@ describe('Electron renderer runtime helpers', () => {
     });
 
     const transport = options.transport.materialize();
-    if (transport.renderTimeoutRecovery.kind !== 'terminable') {
+    if (transport.operationTimeoutRecovery.kind !== 'terminable') {
       throw new Error('Expected terminable Electron transport');
     }
-    await transport.renderTimeoutRecovery.terminate();
-    expect(bridge.releaseRuntimeHost).toHaveBeenCalledExactlyOnceWith('host-2', 'render-timeout');
+    await transport.operationTimeoutRecovery.terminate();
+    const nextTransport = nextOptions.transport.materialize();
+    if (nextTransport.operationTimeoutRecovery.kind !== 'terminable') {
+      throw new Error('Expected terminable Electron transport');
+    }
+    await nextTransport.operationTimeoutRecovery.terminate();
+    expect(bridge.releaseRuntimeHost.mock.calls).toEqual([
+      ['host-1', 'operation-timeout'],
+      ['host-2', 'operation-timeout'],
+    ]);
+  });
+
+  it('should negotiate the machines facet the shell brokered and dial it on first use', async () => {
+    let listener: ((event: MessageEvent) => void) | undefined;
+    const target = {
+      addEventListener: vi.fn((_name: 'message', handler: (event: MessageEvent) => void) => {
+        listener = handler;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+    const requestRuntimePort = vi.fn((requestId: string) => {
+      listener?.(
+        relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'host-m', requestId }, [new MessageChannel().port1]),
+      );
+    });
+    const bridge = {
+      requestRuntimePort,
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+    const channel = mock<MachineChannelClient>();
+    channel.listProviders.mockResolvedValue([]);
+    const connect = vi.fn(() => channel);
+
+    const options = await createElectronClientOptions({
+      bridge,
+      context: { projectRoot: '/projects/a' },
+      target,
+      machines: { available: true, connect },
+    })();
+    const transport = options.transport.materialize();
+
+    /* Brokered up front, dialled lazily: a page that never opens the Print
+     * pane never opens the channel. */
+    expect(connect).not.toHaveBeenCalled();
+    const { machines } = transport;
+    if (!machines?.available) {
+      throw new Error('Expected the machines facet the shell offered');
+    }
+    await expect(machines.listProviders({})).resolves.toEqual([]);
+    await machines.list({});
+    /* One channel for every operation, however many times the facet is used. */
+    expect(connect).toHaveBeenCalledOnce();
+    expect(channel.listProviders).toHaveBeenCalledOnce();
+    expect(channel.list).toHaveBeenCalledOnce();
+
+    const bareOptions = await createElectronClientOptions({
+      bridge,
+      context: { projectRoot: '/projects/a' },
+      target,
+    })();
+    expect(bareOptions.transport.materialize().machines).toEqual({ available: false, reason: 'unsupported' });
+  });
+
+  it('should deliver a hello the utility sent before the runtime client subscribed', async () => {
+    const { port1, port2 } = new MessageChannel();
+    let listener: ((event: MessageEvent) => void) | undefined;
+    const target = {
+      addEventListener: vi.fn((_name: string, handler: (event: MessageEvent) => void) => {
+        listener = handler;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+    let server: ChannelServerHandle<RuntimeDocumentProtocol> | undefined;
+    const bridge = {
+      requestRuntimePort: vi.fn((requestId: string) => {
+        listener?.(relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'host-warm', requestId }, [port1]));
+        /* A warm utility serves the moment main hands it the other leg, so its
+         * hello is on the wire before the renderer has built the client. */
+        server = createChannelServer<RuntimeDocumentProtocol>({
+          port: wrapMessagePort<unknown>(port2, { label: 'warm-utility' }),
+          sessionKey: 'tau.runtime/v1',
+          hello: { server: 'kernel-runtime-worker', runtimeVersion: 'test', protocolVersion },
+          impl: {
+            async call() {
+              throw new Error('The hello is all this utility serves.');
+            },
+            notify: () => undefined,
+            listen: () => {
+              throw new Error('The hello is all this utility serves.');
+            },
+          },
+        });
+      }),
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+    const options = await createElectronClientOptions({ bridge, target })();
+    /* The CAD machine builds its client only once the project's file manager
+     * is ready, which a project card waits hundreds of milliseconds for. */
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    const client = options.transport.materialize();
+
+    try {
+      const opened = await Promise.race([
+        client.open().then(() => 'ready'),
+        new Promise((resolve) => {
+          setTimeout(resolve, 1000, 'no hello');
+        }),
+      ]);
+
+      expect(opened).toBe('ready');
+    } finally {
+      await client.close();
+      server?.dispose();
+      port2.close();
+    }
+  });
+
+  it('materialises inline binary bytes on the copy-only Electron transport', async () => {
+    const client = electronUtilityTransport({ port: new MessageChannel().port1 }).materialize();
+
+    await expect(client.resolveBinary({ bytes: new Uint8Array([1, 2, 3]), delivery: 'inline' })).resolves.toEqual(
+      new Uint8Array([1, 2, 3]),
+    );
+
+    await client.close();
+  });
+
+  it('should reject a runtime port request with the reason main refused it for', async () => {
+    let listener: ((event: MessageEvent) => void) | undefined;
+    const target = {
+      addEventListener: vi.fn((_name: 'message', handler: (event: MessageEvent) => void) => {
+        listener = handler;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+    const bridge = {
+      /* A refusal carries a reason and no lease: the utility whose `hostId` a
+       * served request reports was never forked. */
+      requestRuntimePort: vi.fn((requestId: string) => {
+        listener?.(
+          relayEvent({
+            taucadRelay: runtimeRelayTag,
+            requestId,
+            error: 'registerElectronRuntimeMain: refusing to exceed 1 utility processes',
+          }),
+        );
+      }),
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+
+    await expect(requestElectronRuntimePort({ bridge, target })).rejects.toThrow(
+      'refusing to exceed 1 utility processes',
+    );
+    expect(target.removeEventListener).toHaveBeenCalledWith('message', expect.any(Function));
+  });
+
+  it('should close a relayed port that carries no host lease and say so', async () => {
+    const port = new MessageChannel().port1;
+    const close = vi.spyOn(port, 'close');
+    let listener: ((event: MessageEvent) => void) | undefined;
+    const target = {
+      addEventListener: vi.fn((_name: 'message', handler: (event: MessageEvent) => void) => {
+        listener = handler;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+    const bridge = {
+      /* A port with neither a lease nor a reason: the caller could never
+       * release the utility behind it, so the port is closed rather than used. */
+      requestRuntimePort: vi.fn((requestId: string) => {
+        listener?.(relayEvent({ taucadRelay: runtimeRelayTag, requestId }, [port]));
+      }),
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+
+    await expect(requestElectronRuntimePort({ bridge, target })).rejects.toThrow(
+      'preload relay omitted the runtime host ID',
+    );
+    expect(close).toHaveBeenCalledOnce();
+    expect(bridge.releaseRuntimeHost).not.toHaveBeenCalled();
   });
 
   it('releases the utility lease when the renderer page is hidden', async () => {
@@ -186,10 +682,10 @@ describe('Electron renderer runtime helpers', () => {
       removeEventListener: vi.fn(),
     } as unknown as Window;
     const bridge = {
-      requestRuntimePort: vi.fn(() => {
+      requestRuntimePort: vi.fn((requestId: string) => {
         for (const listener of listeners) {
           listener({
-            data: { taucadRelay: runtimeRelayTag, hostId: 'forged' },
+            data: { taucadRelay: runtimeRelayTag, hostId: 'forged', requestId },
             ports: [port],
             origin: location.origin,
             source: { note: 'a frame that is not this window' },
@@ -211,32 +707,194 @@ describe('Electron renderer runtime helpers', () => {
     expect(target.removeEventListener).not.toHaveBeenCalled();
   });
 
-  it('notifies the client of a utility exit code and stops listening after release', async () => {
+  it('accepts the relay when an opaque document reports origin "null"', async () => {
+    /* Electron 43 on a `file://` document: `location.origin` is `'file://'`
+     * while the same-window relay event carries `'null'`. Under 36 both sides
+     * stringified as `'null'`. Source identity is what fences the relay; the
+     * origin strings must not decide it. See L5's diagnosis in
+     * `desktop-shell-topology-blueprint.md`. */
+    const port = new MessageChannel().port1;
+    let listener: ((event: MessageEvent) => void) | undefined;
+    const target = {
+      addEventListener: vi.fn((_name: 'message', handler: (event: MessageEvent) => void) => {
+        listener = handler;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as Window;
+    const bridge = {
+      requestRuntimePort: vi.fn((requestId: string) => {
+        /* A foreign frame first, with the same opaque origin: rejected on
+         * source identity alone, exactly as with a matching origin. */
+        listener?.({
+          data: { taucadRelay: runtimeRelayTag, hostId: 'forged', requestId },
+          ports: [new MessageChannel().port1],
+          origin: 'null',
+          source: { note: 'a frame that is not this window' },
+        } as unknown as MessageEvent);
+        listener?.(relayEvent({ taucadRelay: runtimeRelayTag, hostId: 'host-file', requestId }, [port], 'null'));
+      }),
+      releaseRuntimeHost: vi.fn(),
+      relayTag: { hostExit: hostExitRelayTag, runtime: runtimeRelayTag },
+    };
+
+    await expect(requestElectronRuntimePort({ bridge, target })).resolves.toBe(port);
+  });
+
+  describe('awaitElectronRelayedPort', () => {
+    /**
+     * A listener-capturing target plus the four relays the guard must
+     * separate: a foreign frame, the wrong tag, a non-matching payload, and
+     * the real one. Every non-runtime Electron port hand-off in the tree
+     * lands on this predicate, so all four are asserted in one place.
+     *
+     * @returns The target and a dispatcher over its captured listeners.
+     */
+    const relayTarget = () => {
+      /* Every removal replaces the array rather than splicing it, so the
+       * reference this loop holds stays safe when a handler unsubscribes. */
+      let listeners: Array<(event: MessageEvent) => void> = [];
+      const target = {
+        addEventListener: vi.fn((_name: string, handler: (event: MessageEvent) => void) => {
+          listeners = [...listeners, handler];
+        }),
+        removeEventListener: vi.fn((_name: string, handler: (event: MessageEvent) => void) => {
+          listeners = listeners.filter((entry) => entry !== handler);
+        }),
+      } as unknown as Window;
+      const deliver = (event: MessageEvent): void => {
+        for (const listener of listeners) {
+          listener(event);
+        }
+      };
+      return { deliver, target };
+    };
+
+    const servicesTag = 'tau:services-port';
+
+    it('resolves on a same-window relay whose payload matches', async () => {
+      const { deliver, target } = relayTarget();
+      const port = new MessageChannel().port1;
+      const pending = awaitElectronRelayedPort(servicesTag, (payload) => payload['requestId'] === 'req-1', target);
+
+      deliver(relayEvent({ taucadRelay: servicesTag, requestId: 'req-1' }, [port]));
+
+      await expect(pending).resolves.toBe(port);
+      expect(target.removeEventListener).toHaveBeenCalledWith('message', expect.any(Function));
+    });
+
+    it('accepts an opaque document reporting origin "null"', async () => {
+      const { deliver, target } = relayTarget();
+      const port = new MessageChannel().port1;
+      const pending = awaitElectronRelayedPort(servicesTag, () => true, target);
+
+      deliver(relayEvent({ taucadRelay: servicesTag }, [port], 'null'));
+
+      await expect(pending).resolves.toBe(port);
+    });
+
+    it('should reject a relayed port request that main refuses', async () => {
+      const { deliver, target } = relayTarget();
+      const pending = awaitElectronRelayedPort(servicesTag, (payload) => payload['requestId'] === 'req-1', target);
+
+      deliver(relayEvent({ taucadRelay: servicesTag, requestId: 'req-1', error: 'services.untrusted-root' }));
+
+      await expect(pending).rejects.toThrow('services.untrusted-root');
+      expect(target.removeEventListener).toHaveBeenCalledWith('message', expect.any(Function));
+    });
+
+    it('ignores a foreign source, a foreign tag, and a payload the matcher rejects', async () => {
+      const { deliver, target } = relayTarget();
+      const mine = new MessageChannel().port1;
+      const pending = awaitElectronRelayedPort(servicesTag, (payload) => payload['requestId'] === 'mine', target);
+
+      deliver({
+        data: { taucadRelay: servicesTag, requestId: 'mine' },
+        ports: [new MessageChannel().port1],
+        origin: 'null',
+        source: { note: 'a frame that is not this window' },
+      } as unknown as MessageEvent);
+      deliver(relayEvent({ taucadRelay: 'other:tag', requestId: 'mine' }, [new MessageChannel().port1]));
+      deliver(relayEvent({ taucadRelay: servicesTag, requestId: 'theirs' }, [new MessageChannel().port1]));
+
+      const settlement = await Promise.race([
+        pending.then(() => 'resolved'),
+        new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        }).then(() => 'pending'),
+      ]);
+      expect(settlement).toBe('pending');
+      expect(target.removeEventListener).not.toHaveBeenCalled();
+
+      deliver(relayEvent({ taucadRelay: servicesTag, requestId: 'mine' }, [mine]));
+      await expect(pending).resolves.toBe(mine);
+    });
+  });
+
+  it('notifies the client of a utility exit report and retires the listener with it', async () => {
     const { takeElectronRuntimeHostExit } = await import('#electron/_internal/runtime-host-lease.js');
     const { bridge, target, dispatch } = setupRendererHarness('host-exit-code');
     const received = await requestElectronRuntimePort({ bridge, target });
-    const codes: Array<number | undefined> = [];
-    takeElectronRuntimeHostExit(received)?.((exitCode) => codes.push(exitCode));
+    const reports: unknown[] = [];
+    takeElectronRuntimeHostExit(received)?.((detail) => reports.push(detail));
 
-    dispatch('message', relayEvent({ taucadRelay: hostExitRelayTag, hostId: 'host-exit-code', exitCode: 7 }));
-    expect(codes).toEqual([7]);
-
-    dispatch('pagehide');
+    dispatch(
+      'message',
+      relayEvent({
+        taucadRelay: hostExitRelayTag,
+        hostId: 'host-exit-code',
+        exitCode: 7,
+        released: false,
+        stderrTail: 'boot: missing entry\n',
+      }),
+    );
+    expect(reports).toEqual([{ exitCode: 7, released: false, stderrTail: 'boot: missing entry\n' }]);
     expect(target.removeEventListener).toHaveBeenCalledWith('message', expect.any(Function));
 
     dispatch('message', relayEvent({ taucadRelay: hostExitRelayTag, hostId: 'host-exit-code', exitCode: 9 }));
-    expect(codes).toEqual([7]);
+    expect(reports).toHaveLength(1);
+  });
+
+  it('keeps the host-exit listener alive across release so a kill is still explained', async () => {
+    const { takeElectronRuntimeHostExit } = await import('#electron/_internal/runtime-host-lease.js');
+    const { bridge, target, dispatch } = setupRendererHarness('host-released');
+    const received = await requestElectronRuntimePort({ bridge, target });
+    const reports: unknown[] = [];
+    takeElectronRuntimeHostExit(received)?.((detail) => reports.push(detail));
+    const client = electronUtilityTransport({ port: received }).materialize();
+
+    /* `release()` asks main to kill; main's relay lands after it. */
+    await client.close();
+    expect(bridge.releaseRuntimeHost).toHaveBeenCalledExactlyOnceWith('host-released', 'requested');
+
+    dispatch(
+      'message',
+      relayEvent({ taucadRelay: hostExitRelayTag, hostId: 'host-released', exitCode: 0, released: true }),
+    );
+    expect(reports).toEqual([{ exitCode: 0, released: true }]);
+  });
+
+  it('stops listening for a host exit once the page is hidden', async () => {
+    const { takeElectronRuntimeHostExit } = await import('#electron/_internal/runtime-host-lease.js');
+    const { bridge, target, dispatch } = setupRendererHarness('host-hidden-exit');
+    const received = await requestElectronRuntimePort({ bridge, target });
+    const reports: unknown[] = [];
+    takeElectronRuntimeHostExit(received)?.((detail) => reports.push(detail));
+
+    dispatch('pagehide');
+    dispatch('message', relayEvent({ taucadRelay: hostExitRelayTag, hostId: 'host-hidden-exit', exitCode: 9 }));
+
+    expect(reports).toEqual([]);
   });
 
   it('ignores a host-exit relay addressed to another host', async () => {
     const { takeElectronRuntimeHostExit } = await import('#electron/_internal/runtime-host-lease.js');
     const { bridge, target, dispatch } = setupRendererHarness('host-mine');
     const received = await requestElectronRuntimePort({ bridge, target });
-    const codes: Array<number | undefined> = [];
-    takeElectronRuntimeHostExit(received)?.((exitCode) => codes.push(exitCode));
+    const reports: unknown[] = [];
+    takeElectronRuntimeHostExit(received)?.((detail) => reports.push(detail));
 
     dispatch('message', relayEvent({ taucadRelay: hostExitRelayTag, hostId: 'host-theirs', exitCode: 7 }));
 
-    expect(codes).toEqual([]);
+    expect(reports).toEqual([]);
   });
 });

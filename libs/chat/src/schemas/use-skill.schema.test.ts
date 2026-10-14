@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toolName } from '#constants/tool.constants.js';
-import { uiMessagesSchema } from '#schemas/message.schema.js';
+import { safeValidateUiMessages, validateUiMessages } from '#schemas/message.schema.js';
 import { useSkillInputSchema, useSkillOutputSchema } from '#schemas/tools/use-skill.tool.schema.js';
 import { toolInputSchemas } from '#schemas/tool-input.registry.js';
 
@@ -18,6 +18,8 @@ describe('use_skill schemas', () => {
       skillPath: '.agents/skills/woodworking/SKILL.md',
       baseDirectory: '.agents/skills/woodworking',
       source: 'user',
+      version: '1.0.0',
+      whenToUse: 'Use for joinery.',
       fingerprint: 'abc123',
       frontmatter: { name: 'woodworking' },
       content: '# Woodworking\n\nNo read_file gutters here.',
@@ -25,6 +27,8 @@ describe('use_skill schemas', () => {
     });
 
     expect(input.skillName).toBe('woodworking');
+    expect(output.version).toBe('1.0.0');
+    expect(output.whenToUse).toBe('Use for joinery.');
     expect(output.content).not.toContain('\t# Woodworking');
   });
 
@@ -56,8 +60,8 @@ describe('use_skill schemas', () => {
 });
 
 describe('use_skill message parts', () => {
-  it('should validate a tool-use_skill message part', () => {
-    const messages = uiMessagesSchema.parse([
+  it('should validate a tool-use_skill message part', async () => {
+    const messages = await validateUiMessages([
       {
         id: 'msg_1',
         role: 'assistant',
@@ -86,30 +90,30 @@ describe('use_skill message parts', () => {
     expect(messages[0]?.parts[0]?.type).toBe('tool-use_skill');
   });
 
-  it('should reject legacy skill usage data message parts', () => {
+  it('should reject legacy skill usage data message parts', async () => {
     const legacyPartType = ['data', 'skill', 'use'].join('-');
     const legacyDataType = ['skill', 'use'].join('-');
 
-    expect(() =>
-      uiMessagesSchema.parse([
-        {
-          id: 'msg_1',
-          role: 'assistant',
-          parts: [
-            {
-              type: legacyPartType,
+    const result = await safeValidateUiMessages([
+      {
+        id: 'msg_1',
+        role: 'assistant',
+        parts: [
+          {
+            type: legacyPartType,
+            id: 'dat_123',
+            data: {
+              type: legacyDataType,
               id: 'dat_123',
-              data: {
-                type: legacyDataType,
-                id: 'dat_123',
-                skillName: 'woodworking',
-                skillPath: '.agents/skills/woodworking/SKILL.md',
-                source: 'user',
-              },
+              skillName: 'woodworking',
+              skillPath: '.agents/skills/woodworking/SKILL.md',
+              source: 'user',
             },
-          ],
-        },
-      ]),
-    ).toThrow();
+          },
+        ],
+      },
+    ]);
+
+    expect(result.success).toBe(false);
   });
 });

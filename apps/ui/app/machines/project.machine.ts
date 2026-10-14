@@ -1,27 +1,27 @@
-import { assign, assertEvent, setup, emit, enqueueActions } from 'xstate';
-import type { ActorRefFrom, AnyStateMachine } from 'xstate';
+import { createAsyncLogic, setup, types, waitFor } from 'xstate';
+import type {
+  ActorFromLogic,
+  ActorRefFrom,
+  AnyActor,
+  AnyActorRef,
+  EnqueueObject,
+  SnapshotFrom,
+  SystemRegistry,
+} from 'xstate';
 import { produce } from 'immer';
-import type { FileParameterEntry, ProjectManifest } from '@taucad/types';
-import { normalizePath } from '@taucad/utils/path';
+import type { ProjectManifest, ProjectManifestParseIssue } from '@taucad/types';
+import { assertRootedPath, normalizePath } from '@taucad/utils/path';
+import { classify } from '@taucad/filesystem/path-registry';
 import { isBrowser } from '#constants/browser.constants.js';
 import type { LazyKernelOptionsFactory } from '#types/runtime-client.alias.js';
-import type { PersistedRevisionState } from '#types/project.types.js';
-import type { GraphicsViewSettings } from '#constants/editor.constants.js';
-import { defaultGraphicsSettings } from '#constants/editor.constants.js';
-import { fromSafeAsync } from '#lib/xstate.lib.js';
-import { cadMachine } from '#machines/cad.machine.js';
-import { graphicsMachine } from '#machines/graphics.machine.js';
+import type { GraphicsOwnedSettings, GraphicsViewSettings } from '@taucad/viewer/graphics/graphics-settings';
+import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settings';
+import { actorIdOf, eventSchemas, fromSafeAsync } from '#lib/xstate.lib.js';
+import { cadMachine, closeCadRuntime, disposeCadRuntime } from '#machines/cad.machine.js';
+import { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import { logMachine } from '#machines/logs.machine.js';
-import { modelInteractionMachine } from '#machines/model-interaction.machine.js';
+import { modelInteractionMachine } from '@taucad/viewer/machines/model-interaction.machine';
 import type { fileManagerMachine } from '#machines/file-manager.machine.js';
-import {
-  updateGroupValues,
-  createGroup,
-  createDefaultEntry,
-  deleteGroup,
-  renameGroup,
-  switchActiveGroup,
-} from '#utils/parameter-config.utils.js';
 
 /**
  * Project Machine Context
@@ -29,27 +29,45 @@ import {
 export type ProjectContext = {
   projectId: string;
   project: ProjectManifest | undefined;
-  revisionState: PersistedRevisionState | undefined;
+  /**
+   * Why `tau.json` on disk is not the canonical manifest `project` holds (blueprint R4/R5).
+   *
+   * Set by the load for a degraded manifest, and by the change observer when the
+   * bytes stop identifying this project while it is open. While set, implicit
+   * writes are refused; `repairManifest` is the one explicit write.
+   */
+  manifestIssue: ProjectManifestParseIssue | undefined;
   error: Error | undefined;
   isLoading: boolean;
   shouldLoadModelOnStart: boolean;
   kernelOptionsFactory: LazyKernelOptionsFactory;
   fileManagerRef: ActorRefFrom<typeof fileManagerMachine>;
+  fileSystemRoot: string;
+  /** Bytes each geometry unit's first render stages (see {@link ProjectInput}). */
+  stage: Record<string, Uint8Array<ArrayBuffer>> | undefined;
   /** Per-viewer-panel graphics machines, keyed by Dockview panel ID */
   viewGraphics: Map<string, ActorRefFrom<typeof graphicsMachine>>;
   /** Project-scoped model appearance shared by every viewer of the same geometry unit. */
   modelInteractionRef: ActorRefFrom<typeof modelInteractionMachine>;
   /** Dynamic geometry units keyed by entry path. Each is a headless CadMachine+KernelMachine. */
   geometryUnits: Map<string, ActorRefFrom<typeof cadMachine>>;
-  /** Geometry unit file paths that currently have geometry and at least one export route. */
-  exportableGeometryUnitPaths: Set<string>;
+  /** Visible viewer panels and explicit operations are the runtime's entry-scoped demand. */
+  viewerGeometryDemand: Map<string, string>;
+  operationGeometryDemand: Map<string, string>;
+  runtimeParked: boolean;
+  /**
+   * Why this project has no kernel, and which unit said so (R4).
+   *
+   * One word, because the row says one sentence — but tagged with its reporter,
+   * because the clear rides on a unit *entering* `connecting`: an untagged word
+   * would let a second view's first connect attempt erase the refusal its
+   * still-refused sibling reported (V2-3). Only the unit that reported a
+   * refusal can take it back.
+   */
+  kernelRefusal: { actorId: string; reason: string } | undefined;
   /** The main entry path from project.assets.main.entryPath. Set after project loads. */
   mainEntryPath: string;
   logRef: ActorRefFrom<typeof logMachine>;
-  /** Per-geometry unit parameter entries, keyed by entry path. */
-  parameterEntries: Map<string, FileParameterEntry>;
-  /** Geometry unit file paths whose parameter entries need writing to disk. */
-  dirtyParameterPaths: Set<string>;
 };
 
 /**
@@ -59,7 +77,10 @@ type ProjectInput = {
   projectId: string;
   shouldLoadModelOnStart?: boolean;
   fileManagerRef: ActorRefFrom<typeof fileManagerMachine>;
+  fileSystemRoot: string;
   kernelOptionsFactory: LazyKernelOptionsFactory;
+  /** Bytes each geometry unit's first render stages, for a memory-mounted project whose kernel cannot see the mount. */
+  stage?: Record<string, Uint8Array<ArrayBuffer>>;
 };
 
 export type ProjectLoadInput = { readonly projectId: string };
@@ -67,8 +88,8 @@ export type ProjectLoadInput = { readonly projectId: string };
 export type ProjectRetrievedEvent = {
   readonly type: 'projectRetrieved';
   readonly project: ProjectManifest;
-  readonly revisionState: PersistedRevisionState | undefined;
-  readonly parameterEntries: Map<string, FileParameterEntry>;
+  /** Present when `project` is the normalized view of a degraded manifest. */
+  readonly issue?: ProjectManifestParseIssue;
 };
 
 // Define the actors that the machine can invoke
@@ -78,33 +99,33 @@ const loadProjectActor = fromSafeAsync<ProjectRetrievedEvent, ProjectLoadInput>(
   );
 });
 
-const writeProjectActor = fromSafeAsync<void, { project: ProjectManifest }>(async () => {
+const writeProjectActor = fromSafeAsync<void, { project: ProjectManifest; repair?: boolean }>(async () => {
   throw new Error(
     'Not implemented. Please supply the `provide.actors.writeProjectActor` option to the project machine.',
   );
 });
 
-const writeParameterFileActor = fromSafeAsync<void, { projectId: string; filePath: string; entry: FileParameterEntry }>(
-  async () => {
-    throw new Error(
-      'Not implemented. Please supply the `provide.actors.writeParameterFileActor` option to the project machine.',
-    );
-  },
-);
-
 const projectActors = {
   loadProjectActor,
   writeProjectActor,
-  writeParameterFileActor,
+  closeRuntimeActor: createAsyncLogic<void, { units: ReadonlyArray<ActorRefFrom<typeof cadMachine>> }>({
+    run: async ({ input, signal }) => {
+      const outcomes = await Promise.allSettled(input.units.map(async (unit) => closeCadRuntime(unit, signal)));
+      const failures: unknown[] = [];
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected') {
+          const reason: unknown = outcome.reason;
+          failures.push(reason);
+        }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'Project runtime shutdown failed');
+      }
+    },
+  }),
   graphics: graphicsMachine,
   modelInteraction: modelInteractionMachine,
-  // Having the cadMachine typed results in:
-  // `The inferred type of this node exceeds the maximum length the compiler will serialize`.
-  // We need to dig into this and possibly simplify the external type inferred from the machine.
-  //
-  // This has no impact on machine consumer typings, only to this machine where
-  // some types will need to be manually asserted (Eslint will report those places).
-  cad: cadMachine as AnyStateMachine,
+  cad: cadMachine,
   logs: logMachine,
 } as const;
 
@@ -119,24 +140,23 @@ export type ProjectFileActivityOperation =
   | 'deleted'
   | 'directoryDeleted';
 
+/**
+ * Whether a filesystem event is activity on the project's own content.
+ *
+ * The path registry answers it: versioned bytes are content. `tau.json` is
+ * the one exception — it is project metadata, so a rename or description
+ * edit is not work on the design.
+ *
+ * @param projectRelativePath - Path relative to the project root.
+ * @returns `true` when the path is versioned project content.
+ */
 export function isProjectContentActivityPath(projectRelativePath: string): boolean {
   const normalized = normalizePath(projectRelativePath).replace(/^\/+/, '');
-  if (normalized === '' || normalized === '.') {
+  if (normalized === '' || normalized === '.' || normalized === 'tau.json') {
     return false;
   }
 
-  const firstSegment = normalized.split('/').find((segment) => segment.length > 0);
-  if (firstSegment === undefined) {
-    return false;
-  }
-
-  return (
-    normalized !== 'tau.json' &&
-    normalized !== 'thumbnail.webp' &&
-    firstSegment !== '.tau' &&
-    firstSegment !== '.cache' &&
-    firstSegment !== 'node_modules'
-  );
+  return classify(normalized).versioned;
 }
 
 /**
@@ -144,27 +164,27 @@ export function isProjectContentActivityPath(projectRelativePath: string): boole
  */
 type ProjectEventInternal =
   | { type: 'reloadProject' }
+  | { type: 'closeRuntime' }
+  | { type: 'geometryUnit.runtimeClosed'; unit: ActorRefFrom<typeof cadMachine> }
+  /* The change observer: tau.json no longer identifies this project; keep the last good manifest open. */
+  | { type: 'manifestIssueObserved'; issue: ProjectManifestParseIssue }
+  /* The one explicit write over a degraded or unidentifiable tau.json: the manifest this workspace holds. */
+  | { type: 'repairManifest' }
   | { type: 'updateName'; name: string }
   | { type: 'updateDescription'; description: string }
   | { type: 'updateTags'; tags: string[] }
-  | { type: 'updateRevisionState'; revisionState: PersistedRevisionState }
-  | {
-      type: 'updateCodeParameters';
-      files: Record<string, { content: Uint8Array<ArrayBuffer> }>;
-      parameters: Record<string, unknown>;
-    }
-  | { type: 'setParameters'; parameters: Record<string, unknown> }
-  | { type: 'setGeometryUnitParameters'; filePath: string; parameters: Record<string, unknown> }
-  | { type: 'parameterFileChanged'; filePath: string; entry: FileParameterEntry }
-  | { type: 'switchParameterGroup'; filePath: string; groupName: string }
-  | { type: 'createParameterGroup'; filePath: string; groupName: string; values?: Record<string, unknown> }
-  | { type: 'deleteParameterGroup'; filePath: string; groupName: string }
-  | { type: 'renameParameterGroup'; filePath: string; oldName: string; newName: string }
   | { type: 'loadModel' }
   | { type: 'setMainFile'; path: string }
-  | { type: 'createGeometryUnit'; entryPath: string }
-  | { type: 'geometryUnit.exportAvailabilityChanged'; actorId: string; available: boolean }
+  | { type: 'createGeometryUnit'; entryPath: string; operationTimeout?: number }
+  | { type: 'setViewerGeometryDemand'; viewId: string; entryPath?: string }
+  | { type: 'claimGeometryUnit'; claimId: string; entryPath: string; operationTimeout?: number }
+  | { type: 'releaseGeometryUnit'; claimId: string }
+  /* R4: a unit reporting whether its kernel was refused, and why. */
+  | { type: 'geometryUnit.kernelRefused'; actorId: string; reason: string | undefined }
   | { type: 'openInViewer'; entryPath: string }
+  /* R3: the live session's park signal, relayed to the kernels this project owns. */
+  | { type: 'parkRuntime' }
+  | { type: 'resumeRuntime' }
   | { type: 'destroyGeometryUnit'; entryPath: string }
   | {
       type: 'createViewGraphics';
@@ -172,6 +192,7 @@ type ProjectEventInternal =
       settings?: GraphicsViewSettings;
     }
   | { type: 'destroyViewGraphics'; viewId: string }
+  | { type: 'reconcileViewManifest'; unitId: string }
   // Filesystem participant intents — fired by the
   // `file-operation-participants.ts` adapter on rename/delete events.
   // The participant is the single source of truth; UI components must
@@ -179,7 +200,11 @@ type ProjectEventInternal =
   | { type: 'fileMoved'; oldPath: string; newPath: string }
   | { type: 'fileDeleted'; path: string }
   | { type: 'directoryDeleted'; path: string }
-  | { type: 'projectFileActivity'; operation: ProjectFileActivityOperation; paths: readonly string[] }
+  | {
+      type: 'projectFileActivity';
+      operation: ProjectFileActivityOperation;
+      paths: readonly string[];
+    }
   | { type: 'flushNow' };
 
 type ProjectEvent = ProjectEventInternal | ProjectRetrievedEvent;
@@ -191,8 +216,209 @@ type ProjectEmitted =
   | { type: 'error'; error: Error }
   | { type: 'projectUpdated'; project: ProjectManifest }
   | { type: 'projectActivity' }
-  | { type: 'revisionStateUpdated'; revisionState: PersistedRevisionState }
   | { type: 'viewerFileRequested'; entryPath: string };
+
+type ProjectEnqueue = EnqueueObject<ProjectEvent, ProjectEmitted, SystemRegistry, typeof projectActors>;
+type ProjectPatch = Partial<ProjectContext>;
+type ProjectArgs<EventType extends ProjectEvent['type']> = Readonly<{
+  context: ProjectContext;
+  event: Extract<ProjectEvent, { type: EventType }>;
+  self: AnyActorRef;
+}>;
+type CadUnitRef = ActorRefFrom<typeof cadMachine>;
+
+const isCadChild = (child: AnyActor | undefined): child is ActorFromLogic<typeof cadMachine> => child?.src === 'cad';
+
+const setError = (error: unknown): ProjectPatch => ({
+  error: error instanceof Error ? error : new Error('Unknown error'),
+  isLoading: false,
+});
+
+/** Implicit writes never replace a degraded manifest: its normalized view is lossy (blueprint R4). */
+const isManifestWritable = (context: ProjectContext): boolean => context.manifestIssue === undefined;
+
+/** Repair is refused for a JSON syntax error, whose defaults would erase text a person can still fix. */
+const isManifestRepairable = (context: ProjectContext): boolean =>
+  context.project !== undefined &&
+  context.manifestIssue !== undefined &&
+  context.manifestIssue.code !== 'manifest-invalid-json';
+
+const shouldUpdateProjectName = (context: ProjectContext, event: Extract<ProjectEvent, { type: 'updateName' }>) =>
+  Boolean(isManifestWritable(context) && context.project && context.project.name !== event.name);
+
+/** Rewrite the loaded manifest, or leave context alone when no project is loaded. */
+const withProject = (context: ProjectContext, recipe: (project: ProjectManifest) => void): ProjectPatch =>
+  context.project ? { project: produce(context.project, recipe) } : {};
+
+/**
+ * Spawn one headless CAD unit for an entry and ask it to render that entry.
+ *
+ * XState assigns each invocation its own id, so a retired unit may finish
+ * closing while a replacement renders the same entry.
+ */
+const spawnGeometryUnit = (
+  context: ProjectContext,
+  enq: ProjectEnqueue,
+  unit: Readonly<{
+    self: AnyActorRef;
+    entryPath: string;
+    options: Readonly<{ shouldInitializeKernelOnStart: boolean; operationTimeout?: number }>;
+  }>,
+): CadUnitRef => {
+  const { self, entryPath, options } = unit;
+  const cadUnit = enq.spawn('cad', {
+    input: {
+      shouldInitializeKernelOnStart: options.shouldInitializeKernelOnStart,
+      parentRef: self,
+      logRef: context.logRef,
+      fileManagerRef: context.fileManagerRef,
+      kernelOptionsFactory: context.kernelOptionsFactory,
+      fileSystemRoot: context.fileSystemRoot,
+      ...(options.operationTimeout === undefined ? {} : { operationTimeout: options.operationTimeout }),
+    },
+  });
+  enq.sendTo(cadUnit, { type: 'initializeModel', entryPath, ...(context.stage ? { stage: context.stage } : {}) });
+  return cadUnit;
+};
+
+/**
+ * Render the project's main entry, spawning its unit the first time.
+ *
+ * The load that follows opening the project also points `mainEntryPath` at an
+ * existing unit; an explicit `loadModel` leaves the pointer where it is.
+ */
+const loadMainModel = (
+  context: ProjectContext,
+  enq: ProjectEnqueue,
+  load: Readonly<{ self: AnyActorRef; options: Readonly<{ pointAtExistingUnit: boolean }> }>,
+): ProjectPatch => {
+  const { self, options } = load;
+  const mainAsset = context.project?.assets.main;
+  if (!mainAsset) {
+    return {};
+  }
+  const mainFile = mainAsset.entryPath;
+  const existingUnit = context.geometryUnits.get(mainFile);
+  if (existingUnit) {
+    enq.sendTo(existingUnit, { type: 'initializeModel', entryPath: mainFile });
+    return options.pointAtExistingUnit ? { mainEntryPath: mainFile } : {};
+  }
+  const geometryUnits = new Map(context.geometryUnits);
+  geometryUnits.set(
+    mainFile,
+    spawnGeometryUnit(context, enq, { self, entryPath: mainFile, options: { shouldInitializeKernelOnStart: false } }),
+  );
+  return { geometryUnits, mainEntryPath: mainFile };
+};
+
+const createViewGraphics = ({ context, event }: ProjectArgs<'createViewGraphics'>, enq: ProjectEnqueue) => {
+  // No-op if a graphics actor already exists for this view
+  if (context.viewGraphics.has(event.viewId)) {
+    return {};
+  }
+
+  const settings = event.settings ?? defaultGraphicsSettings;
+
+  /* Every graphics-owned key, spelled out: a key added to the partition fails to compile here
+   * until the spawn seeds it, which is what makes Law 1's declaration reach the actor. */
+  const graphicsSeed: { [K in keyof Required<GraphicsOwnedSettings>]: GraphicsOwnedSettings[K] } = {
+    enableSurfaces: settings.enableSurfaces,
+    enableLines: settings.enableLines,
+    enableGizmo: settings.enableGizmo,
+    enableGrid: settings.enableGrid,
+    enableAxes: settings.enableAxes,
+    enableMatcap: settings.enableMatcap,
+    enablePostProcessing: settings.enablePostProcessing,
+    upDirection: settings.upDirection,
+    pinnedMeasurements: settings.pinnedMeasurements,
+    sectionView: settings.sectionView,
+    graphicsBackend: settings.graphicsBackend ?? 'webgl',
+  };
+
+  const gfx = enq.spawn('graphics', {
+    id: `graphics-view-${context.projectId}-${event.viewId}`,
+    input: {
+      ...graphicsSeed,
+      modelInteractionRef: context.modelInteractionRef,
+    },
+  });
+
+  const viewGraphics = new Map(context.viewGraphics);
+  viewGraphics.set(event.viewId, gfx);
+  return { context: { viewGraphics } };
+};
+
+/** The project owns the shared manifest until its last presented GLB pane leaves. */
+const reconcileViewManifest = (
+  context: ProjectContext,
+  enq: ProjectEnqueue,
+  { unitId, excludedViewId }: Readonly<{ unitId: string; excludedViewId?: string }>,
+): void => {
+  for (const [viewId, graphics] of context.viewGraphics) {
+    if (viewId === excludedViewId) {
+      continue;
+    }
+    const view = graphics.getSnapshot().context;
+    if (view.artifact?.mimeType === 'model/gltf-binary' && view.modelInteractionUnitId === unitId) {
+      return;
+    }
+  }
+  enq.sendTo(context.modelInteractionRef, { type: 'clearManifest', unitId, source: 'viewer' });
+  enq.sendTo(context.modelInteractionRef, { type: 'clearSelection', unitId, source: 'viewer' });
+  enq.sendTo(context.modelInteractionRef, { type: 'clearFocus', unitId, source: 'viewer' });
+};
+
+const destroyViewGraphics = ({ context, event }: ProjectArgs<'destroyViewGraphics'>, enq: ProjectEnqueue) => {
+  const gfx = context.viewGraphics.get(event.viewId);
+  if (!gfx) {
+    return {};
+  }
+  enq.stop(gfx);
+  const unitId = gfx.getSnapshot().context.modelInteractionUnitId;
+  if (unitId) {
+    reconcileViewManifest(context, enq, { unitId, excludedViewId: event.viewId });
+  }
+  const viewGraphics = new Map(context.viewGraphics);
+  viewGraphics.delete(event.viewId);
+  return { context: { viewGraphics } };
+};
+
+/** Drop the units a deletion matched and a main pointer into them. */
+const withoutUnits = (context: ProjectContext, matches: (entryPath: string) => boolean): ProjectPatch => {
+  const geometryUnits = new Map(context.geometryUnits);
+  for (const key of context.geometryUnits.keys()) {
+    if (matches(key)) {
+      geometryUnits.delete(key);
+    }
+  }
+  return {
+    geometryUnits,
+    viewerGeometryDemand: new Map([...context.viewerGeometryDemand].filter(([, path]) => !matches(path))),
+    operationGeometryDemand: new Map([...context.operationGeometryDemand].filter(([, path]) => !matches(path))),
+    ...(matches(context.mainEntryPath) ? { mainEntryPath: '' } : {}),
+  };
+};
+
+const hasOperationDemand = (context: ProjectContext, entryPath: string): boolean =>
+  [...context.operationGeometryDemand.values()].includes(entryPath);
+
+const shouldRunUnit = (context: ProjectContext, entryPath: string): boolean =>
+  hasOperationDemand(context, entryPath) ||
+  (!context.runtimeParked &&
+    (entryPath === context.mainEntryPath || [...context.viewerGeometryDemand.values()].includes(entryPath)));
+
+const reconcileUnitRuntime = (
+  { previous, next, entryPath }: { previous: ProjectContext; next: ProjectContext; entryPath: string },
+  enq: ProjectEnqueue,
+): void => {
+  if (shouldRunUnit(previous, entryPath) === shouldRunUnit(next, entryPath)) {
+    return;
+  }
+  const unit = next.geometryUnits.get(entryPath);
+  if (unit) {
+    enq.sendTo(unit, { type: shouldRunUnit(next, entryPath) ? 'resumeRuntime' : 'parkRuntime' });
+  }
+};
 
 /**
  * Project Machine
@@ -209,612 +435,17 @@ type ProjectEmitted =
  * - error: An error occurred
  */
 export const projectMachine = setup({
-  types: {
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    context: {} as ProjectContext,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    events: {} as ProjectEvent,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    emitted: {} as ProjectEmitted,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    input: {} as ProjectInput,
+  schemas: {
+    context: types<ProjectContext>(),
+    events: eventSchemas<ProjectEvent>(),
+    emitted: eventSchemas<ProjectEmitted>(),
+    input: types<ProjectInput>(),
   },
   actors: projectActors,
-  actions: {
-    setError: assign({
-      error({ event }) {
-        if ('error' in event && event.error instanceof Error) {
-          return event.error;
-        }
-
-        return new Error('Unknown error');
-      },
-      isLoading: false,
-    }),
-    clearError: assign({
-      error: undefined,
-    }),
-    setLoading: assign({
-      isLoading: true,
-    }),
-    clearLoading: assign({
-      isLoading: false,
-    }),
-    setProject: assign({
-      project({ event }) {
-        assertEvent(event, 'projectRetrieved');
-        return event.project;
-      },
-      parameterEntries({ event }) {
-        assertEvent(event, 'projectRetrieved');
-        return event.parameterEntries;
-      },
-      revisionState({ event }) {
-        assertEvent(event, 'projectRetrieved');
-        return event.revisionState;
-      },
-      isLoading: false,
-    }),
-    clearProject: assign({
-      project: undefined,
-    }),
-    updateName: assign(({ context, event }) => {
-      assertEvent(event, 'updateName');
-      if (!context.project || context.project.name === event.name) {
-        return {};
-      }
-
-      return produce(context, (draft) => {
-        draft.project!.name = event.name;
-      });
-    }),
-    updateDescription: assign(({ context, event }) => {
-      assertEvent(event, 'updateDescription');
-      if (!context.project) {
-        return {};
-      }
-
-      return produce(context, (draft) => {
-        draft.project!.description = event.description;
-      });
-    }),
-    updateTags: assign(({ context, event }) => {
-      assertEvent(event, 'updateTags');
-      if (!context.project) {
-        return {};
-      }
-
-      // Deduplicate tags to ensure uniqueness
-      const uniqueTags = [...new Set(event.tags)];
-
-      return produce(context, (draft) => {
-        draft.project!.tags = uniqueTags;
-        // Don't update updatedAt for tags - they're metadata
-      });
-    }),
-    updateRevisionState: assign(({ event }) => {
-      assertEvent(event, 'updateRevisionState');
-      return { revisionState: event.revisionState };
-    }),
-    updateCodeParametersInContext: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'updateCodeParameters');
-
-      if (!context.project) {
-        return;
-      }
-      enqueue.assign(({ context }) => {
-        const filePath = context.mainEntryPath;
-        const entry = context.parameterEntries.get(filePath) ?? createDefaultEntry();
-        const updated = updateGroupValues(entry, { groupName: entry.activeGroup, values: event.parameters });
-        const parameterEntries = new Map(context.parameterEntries);
-        parameterEntries.set(filePath, updated);
-        return { parameterEntries };
-      });
-    }),
-    setParametersInContext: assign(({ context, event }) => {
-      assertEvent(event, 'setParameters');
-      const filePath = context.mainEntryPath;
-      const entry = context.parameterEntries.get(filePath) ?? createDefaultEntry();
-      const { activeGroup } = entry;
-      const updated = updateGroupValues(entry, { groupName: activeGroup, values: event.parameters });
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(filePath, updated);
-      return { parameterEntries: newEntries };
-    }),
-    setGeometryUnitParametersInContext: assign(({ context, event }) => {
-      assertEvent(event, 'setGeometryUnitParameters');
-      const entry = context.parameterEntries.get(event.filePath) ?? createDefaultEntry();
-      const { activeGroup } = entry;
-      const updated = updateGroupValues(entry, { groupName: activeGroup, values: event.parameters });
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(event.filePath, updated);
-      return { parameterEntries: newEntries };
-    }),
-    handleParameterFileChanged: assign(({ context, event }) => {
-      assertEvent(event, 'parameterFileChanged');
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(event.filePath, event.entry);
-      return { parameterEntries: newEntries };
-    }),
-    handleSwitchParameterGroup: assign(({ context, event }) => {
-      assertEvent(event, 'switchParameterGroup');
-      const entry = context.parameterEntries.get(event.filePath) ?? createDefaultEntry();
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(event.filePath, switchActiveGroup(entry, event.groupName));
-      return { parameterEntries: newEntries };
-    }),
-    handleCreateParameterGroup: assign(({ context, event }) => {
-      assertEvent(event, 'createParameterGroup');
-      const entry = context.parameterEntries.get(event.filePath) ?? createDefaultEntry();
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(event.filePath, createGroup(entry, { groupName: event.groupName, values: event.values ?? {} }));
-      return { parameterEntries: newEntries };
-    }),
-    handleDeleteParameterGroup: assign(({ context, event }) => {
-      assertEvent(event, 'deleteParameterGroup');
-      const entry = context.parameterEntries.get(event.filePath) ?? createDefaultEntry();
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(event.filePath, deleteGroup(entry, event.groupName));
-      return { parameterEntries: newEntries };
-    }),
-    handleRenameParameterGroup: assign(({ context, event }) => {
-      assertEvent(event, 'renameParameterGroup');
-      const entry = context.parameterEntries.get(event.filePath) ?? createDefaultEntry();
-      const newEntries = new Map(context.parameterEntries);
-      newEntries.set(event.filePath, renameGroup(entry, { oldName: event.oldName, newName: event.newName }));
-      return { parameterEntries: newEntries };
-    }),
-    setMainFileInContext: assign(({ context, event }) => {
-      assertEvent(event, 'setMainFile');
-      if (!context.project) {
-        return {};
-      }
-
-      return produce(context, (draft) => {
-        if (draft.project) {
-          draft.project.assets.main.entryPath = event.path;
-        }
-      });
-    }),
-    stopStatefulActors: enqueueActions(({ enqueue, context }) => {
-      // Stop the old stateful actors (they'll be garbage collected)
-
-      // Stop all geometry units
-      for (const unit of context.geometryUnits.values()) {
-        enqueue.stopChild(unit);
-      }
-
-      // Stop all view graphics machines
-      for (const gfx of context.viewGraphics.values()) {
-        enqueue.stopChild(gfx);
-      }
-
-      enqueue.stopChild(context.modelInteractionRef);
-    }),
-    updateGeometryUnitExportAvailability: assign(({ context, event }) => {
-      assertEvent(event, 'geometryUnit.exportAvailabilityChanged');
-
-      let entryPath: string | undefined;
-      for (const [candidateEntryPath, actor] of context.geometryUnits) {
-        if (actor.id === event.actorId) {
-          entryPath = candidateEntryPath;
-          break;
-        }
-      }
-
-      if (!entryPath) {
-        return {};
-      }
-
-      const isCurrentlyExportable = context.exportableGeometryUnitPaths.has(entryPath);
-      if (isCurrentlyExportable === event.available) {
-        return {};
-      }
-
-      const next = new Set(context.exportableGeometryUnitPaths);
-      if (event.available) {
-        next.add(entryPath);
-      } else {
-        next.delete(entryPath);
-      }
-      return { exportableGeometryUnitPaths: next };
-    }),
-    initializeKernelIfNeeded: enqueueActions(({ enqueue, context, self }) => {
-      if (!context.shouldLoadModelOnStart) {
-        return;
-      }
-
-      const mainAsset = context.project?.assets.main;
-      if (!mainAsset) {
-        return;
-      }
-
-      const mainFile = mainAsset.entryPath;
-
-      if (context.geometryUnits.has(mainFile)) {
-        enqueue.assign({ mainEntryPath: mainFile });
-        const existingUnit = context.geometryUnits.get(mainFile)!;
-        enqueue.sendTo(existingUnit, {
-          type: 'initializeModel',
-          entryPath: mainFile,
-        });
-      } else {
-        enqueue.assign(({ spawn, context }) => {
-          const cadUnit = spawn('cad', {
-            id: `cad-${context.projectId}-${mainFile.replaceAll('/', '-')}`,
-            input: {
-              shouldInitializeKernelOnStart: false,
-              parentRef: self,
-              logRef: context.logRef,
-              fileManagerRef: context.fileManagerRef,
-              kernelOptionsFactory: context.kernelOptionsFactory,
-              fileSystemRoot: `/projects/${context.projectId}`,
-            },
-          });
-
-          cadUnit.send({
-            type: 'initializeModel',
-            entryPath: mainFile,
-          });
-
-          const newUnits = new Map(context.geometryUnits);
-          newUnits.set(mainFile, cadUnit as ActorRefFrom<typeof cadMachine>);
-          return { geometryUnits: newUnits, mainEntryPath: mainFile };
-        });
-      }
-    }),
-    loadModel: enqueueActions(({ enqueue, context, self }) => {
-      const mainAsset = context.project?.assets.main;
-      if (!mainAsset) {
-        return;
-      }
-
-      const mainFile = mainAsset.entryPath;
-
-      const mainUnit = context.geometryUnits.get(mainFile);
-      if (mainUnit) {
-        enqueue.sendTo(mainUnit, {
-          type: 'initializeModel',
-          entryPath: mainFile,
-        });
-      } else {
-        enqueue.assign(({ spawn, context }) => {
-          const cadUnit = spawn('cad', {
-            id: `cad-${context.projectId}-${mainFile.replaceAll('/', '-')}`,
-            input: {
-              shouldInitializeKernelOnStart: false,
-              parentRef: self,
-              logRef: context.logRef,
-              fileManagerRef: context.fileManagerRef,
-              kernelOptionsFactory: context.kernelOptionsFactory,
-              fileSystemRoot: `/projects/${context.projectId}`,
-            },
-          });
-
-          cadUnit.send({
-            type: 'initializeModel',
-            entryPath: mainFile,
-          });
-
-          const newUnits = new Map(context.geometryUnits);
-          newUnits.set(mainFile, cadUnit as ActorRefFrom<typeof cadMachine>);
-          return { geometryUnits: newUnits, mainEntryPath: mainFile };
-        });
-      }
-    }),
-    createGeometryUnit: enqueueActions(({ enqueue, context, event, self }) => {
-      assertEvent(event, 'createGeometryUnit');
-
-      // No-op if a geometry unit already exists for this entry path
-      if (context.geometryUnits.has(event.entryPath)) {
-        return;
-      }
-
-      // Spawn is only available inside assign callbacks in XState v5.
-      enqueue.assign(({ spawn, context }) => {
-        const cadUnit = spawn('cad', {
-          id: `cad-${context.projectId}-${event.entryPath.replaceAll('/', '-')}`,
-          input: {
-            shouldInitializeKernelOnStart: true,
-            parentRef: self,
-            logRef: context.logRef,
-            fileManagerRef: context.fileManagerRef,
-            kernelOptionsFactory: context.kernelOptionsFactory,
-            fileSystemRoot: `/projects/${context.projectId}`,
-          },
-        });
-
-        cadUnit.send({
-          type: 'initializeModel',
-          entryPath: event.entryPath,
-        });
-
-        const newUnits = new Map(context.geometryUnits);
-        newUnits.set(event.entryPath, cadUnit as ActorRefFrom<typeof cadMachine>);
-        return {
-          geometryUnits: newUnits,
-          ...(context.mainEntryPath === '' ? { mainEntryPath: event.entryPath } : {}),
-        };
-      });
-    }),
-    openInViewer: enqueueActions(({ enqueue, event }) => {
-      assertEvent(event, 'openInViewer');
-      enqueue.raise({
-        type: 'createGeometryUnit',
-        entryPath: event.entryPath,
-      });
-      enqueue.emit({ type: 'viewerFileRequested', entryPath: event.entryPath });
-    }),
-    destroyGeometryUnit: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'destroyGeometryUnit');
-
-      const unit = context.geometryUnits.get(event.entryPath);
-      if (!unit) {
-        return;
-      }
-
-      enqueue.stopChild(unit);
-      enqueue.assign(({ context }) => {
-        const newUnits = new Map(context.geometryUnits);
-        newUnits.delete(event.entryPath);
-        const exportableGeometryUnitPaths = new Set(context.exportableGeometryUnitPaths);
-        exportableGeometryUnitPaths.delete(event.entryPath);
-        return {
-          geometryUnits: newUnits,
-          exportableGeometryUnitPaths,
-          ...(context.mainEntryPath === event.entryPath ? { mainEntryPath: '' } : {}),
-        };
-      });
-    }),
-    // ─────────────────────────────────────────────────────────────
-    // Filesystem-participant actions
-    //
-    // These actions are invoked by `file-operation-participants.ts`
-    // in response to {@link ContentChangeEvent}s, NOT by UI
-    // components. They re-key every path-indexed map in the project
-    // context so the open viewers + CAD actors + parameter entries +
-    // main entry pointer all survive a rename / delete.
-    // ─────────────────────────────────────────────────────────────
-    applyFileMoved: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'fileMoved');
-      const { oldPath, newPath } = event;
-      const matches = (path: string): boolean => path === oldPath || path.startsWith(`${oldPath}/`);
-      const rewrite = (path: string): string =>
-        path === oldPath ? newPath : path.startsWith(`${oldPath}/`) ? `${newPath}${path.slice(oldPath.length)}` : path;
-
-      enqueue.sendTo(context.modelInteractionRef, {
-        type: 'rekeySourceUnits',
-        oldPath,
-        newPath,
-      });
-
-      enqueue.assign(({ context }) => {
-        // ParameterEntries: Map<filePath, entry>
-        const newEntries = new Map(context.parameterEntries);
-        let mutatedEntries = false;
-        for (const [key, value] of context.parameterEntries) {
-          if (matches(key)) {
-            newEntries.delete(key);
-            newEntries.set(rewrite(key), value);
-            mutatedEntries = true;
-          }
-        }
-
-        // GeometryUnits: Map<entryPath, ActorRef>
-        const newUnits = new Map(context.geometryUnits);
-        let mutatedUnits = false;
-        for (const [key, value] of context.geometryUnits) {
-          if (matches(key)) {
-            newUnits.delete(key);
-            newUnits.set(rewrite(key), value);
-            mutatedUnits = true;
-          }
-        }
-
-        // Exportable geometry units: Set<entryPath>
-        const newExportablePaths = new Set(context.exportableGeometryUnitPaths);
-        let mutatedExportablePaths = false;
-        for (const key of context.exportableGeometryUnitPaths) {
-          if (matches(key)) {
-            newExportablePaths.delete(key);
-            newExportablePaths.add(rewrite(key));
-            mutatedExportablePaths = true;
-          }
-        }
-
-        const next: Partial<ProjectContext> = {};
-        if (mutatedEntries) {
-          next.parameterEntries = newEntries;
-        }
-        if (mutatedUnits) {
-          next.geometryUnits = newUnits;
-        }
-        if (mutatedExportablePaths) {
-          next.exportableGeometryUnitPaths = newExportablePaths;
-        }
-        if (matches(context.mainEntryPath)) {
-          next.mainEntryPath = rewrite(context.mainEntryPath);
-        }
-        return next;
-      });
-
-      // If the main file was renamed, persist its entry pointer.
-      // Recency is stamped separately by `projectFileActivity`, so this
-      // mechanical metadata rewrite does not decide project activity itself.
-      if (matches(context.project?.assets.main.entryPath ?? '')) {
-        enqueue.assign(({ context }) =>
-          produce(context, (draft) => {
-            if (draft.project) {
-              draft.project.assets.main.entryPath = rewrite(draft.project.assets.main.entryPath);
-            }
-          }),
-        );
-      }
-    }),
-    applyProjectFileActivity: emit(({ context, event }) => {
-      assertEvent(event, 'projectFileActivity');
-      if (!context.project || !event.paths.some(isProjectContentActivityPath)) {
-        return { type: 'projectActivity' };
-      }
-      return { type: 'projectActivity' };
-    }),
-    applyFileDeleted: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'fileDeleted');
-      const { path } = event;
-      enqueue.sendTo(context.modelInteractionRef, { type: 'pruneSourceUnits', path });
-      const unit = context.geometryUnits.get(path);
-      if (unit) {
-        enqueue.stopChild(unit);
-      }
-      enqueue.assign(({ context }) => {
-        const newUnits = new Map(context.geometryUnits);
-        newUnits.delete(path);
-        const exportableGeometryUnitPaths = new Set(context.exportableGeometryUnitPaths);
-        exportableGeometryUnitPaths.delete(path);
-        const newEntries = new Map(context.parameterEntries);
-        newEntries.delete(path);
-        return {
-          geometryUnits: newUnits,
-          exportableGeometryUnitPaths,
-          parameterEntries: newEntries,
-          ...(context.mainEntryPath === path ? { mainEntryPath: '' } : {}),
-        };
-      });
-    }),
-    applyDirectoryDeleted: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'directoryDeleted');
-      const { path } = event;
-      enqueue.sendTo(context.modelInteractionRef, { type: 'pruneSourceUnits', path });
-      const prefix = `${path}/`;
-      const matches = (filePath: string): boolean => filePath === path || filePath.startsWith(prefix);
-
-      for (const [key, unit] of context.geometryUnits) {
-        if (matches(key)) {
-          enqueue.stopChild(unit);
-        }
-      }
-      enqueue.assign(({ context }) => {
-        const newUnits = new Map(context.geometryUnits);
-        const newEntries = new Map(context.parameterEntries);
-        for (const key of context.geometryUnits.keys()) {
-          if (matches(key)) {
-            newUnits.delete(key);
-          }
-        }
-        const newExportablePaths = new Set(context.exportableGeometryUnitPaths);
-        for (const key of context.exportableGeometryUnitPaths) {
-          if (matches(key)) {
-            newExportablePaths.delete(key);
-          }
-        }
-        for (const key of context.parameterEntries.keys()) {
-          if (matches(key)) {
-            newEntries.delete(key);
-          }
-        }
-        return {
-          geometryUnits: newUnits,
-          exportableGeometryUnitPaths: newExportablePaths,
-          parameterEntries: newEntries,
-          ...(matches(context.mainEntryPath) ? { mainEntryPath: '' } : {}),
-        };
-      });
-    }),
-    createViewGraphics: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'createViewGraphics');
-
-      // No-op if a graphics actor already exists for this view
-      if (context.viewGraphics.has(event.viewId)) {
-        return;
-      }
-
-      const settings = event.settings ?? defaultGraphicsSettings;
-
-      enqueue.assign(({ spawn, context }) => {
-        const gfx = spawn('graphics', {
-          id: `graphics-view-${context.projectId}-${event.viewId}`,
-          input: {
-            defaultCameraFovAngle: settings.cameraFovAngle,
-            measureSnapDistance: 40,
-            enableSurfaces: settings.enableSurfaces,
-            enableLines: settings.enableLines,
-            enableGizmo: settings.enableGizmo,
-            enableGrid: settings.enableGrid,
-            enableAxes: settings.enableAxes,
-            enableMatcap: settings.enableMatcap,
-            enablePostProcessing: settings.enablePostProcessing,
-            upDirection: settings.upDirection,
-            environmentPreset: settings.environmentPreset,
-            pinnedMeasurements: settings.pinnedMeasurements,
-            graphicsBackendPreference: settings.graphicsBackend ?? 'webgl',
-            modelInteractionRef: context.modelInteractionRef,
-          },
-        });
-
-        const newMap = new Map(context.viewGraphics);
-        newMap.set(event.viewId, gfx);
-        return { viewGraphics: newMap };
-      });
-    }),
-    destroyViewGraphics: enqueueActions(({ enqueue, context, event }) => {
-      assertEvent(event, 'destroyViewGraphics');
-
-      const gfx = context.viewGraphics.get(event.viewId);
-      if (!gfx) {
-        return;
-      }
-
-      enqueue.stopChild(gfx);
-      enqueue.assign(({ context }) => {
-        const newMap = new Map(context.viewGraphics);
-        newMap.delete(event.viewId);
-        return { viewGraphics: newMap };
-      });
-    }),
-    addDirtyParameterPath: assign(({ context, event }) => {
-      const filePath = 'filePath' in event ? (event as { filePath: string }).filePath : context.mainEntryPath;
-      const next = new Set(context.dirtyParameterPaths);
-      next.add(filePath);
-      return { dirtyParameterPaths: next };
-    }),
-    removeWrittenParameterPath: assign(({ context }) => {
-      const next = new Set(context.dirtyParameterPaths);
-      const [first] = next;
-      if (first !== undefined) {
-        next.delete(first);
-      }
-      return { dirtyParameterPaths: next };
-    }),
-    emitProjectUpdated: emit(({ context }) => ({
-      type: 'projectUpdated',
-      project: context.project!,
-    })),
-    emitRevisionStateUpdated: emit(({ event }) => {
-      assertEvent(event, 'updateRevisionState');
-      return { type: 'revisionStateUpdated', revisionState: event.revisionState };
-    }),
-  },
+  /* Provided by hosts and tests that pin the environment instead of reading `isBrowser`. */
   guards: {
-    isNotBrowser() {
-      return !isBrowser;
-    },
-    shouldAutoLoad() {
-      return isBrowser;
-    },
-    shouldUpdateProjectName({ context, event }) {
-      assertEvent(event, 'updateName');
-      return Boolean(context.project && context.project.name !== event.name);
-    },
-    hasVisibleProjectFileActivity({ context, event }) {
-      assertEvent(event, 'projectFileActivity');
-      return Boolean(context.project && event.paths.some(isProjectContentActivityPath));
-    },
-    hasParameterEntries({ context }) {
-      return context.parameterEntries.size > 0;
-    },
-    hasRemainingDirtyPaths({ context }) {
-      return context.dirtyParameterPaths.size > 1;
-    },
+    isNotBrowser: () => !isBrowser,
+    shouldAutoLoad: () => isBrowser,
   },
   delays: {
     /** Zero-delay batching step so `pending` can handle `flushNow` before transitioning to `writing`. */
@@ -822,21 +453,27 @@ export const projectMachine = setup({
   },
 }).createMachine({
   id: 'project',
-  context({ input, spawn }) {
-    const { projectId, shouldLoadModelOnStart = true, fileManagerRef, kernelOptionsFactory } = input;
+  context: ({ input, spawn, actors }) => {
+    const {
+      projectId,
+      shouldLoadModelOnStart = true,
+      fileManagerRef,
+      fileSystemRoot,
+      kernelOptionsFactory,
+      stage,
+    } = input;
 
-    const logRef = spawn('logs', {
+    const logRef = spawn(actors.logs, {
       id: `log-${projectId}`,
     });
-    const modelInteractionRef = spawn('modelInteraction', {
+    const modelInteractionRef = spawn(actors.modelInteraction, {
       id: `model-interaction-${projectId}`,
       input: {},
     });
 
     // Compilation units are created dynamically after project loads (when we know the main file).
-    // The primary geometry unit is created by initializeKernelIfNeeded.
-    const geometryUnits = new Map<string, ActorRefFrom<typeof cadMachine>>();
-    const exportableGeometryUnitPaths = new Set<string>();
+    // The primary geometry unit is created once the project loads.
+    const geometryUnits = new Map<string, CadUnitRef>();
 
     // View graphics are created dynamically by Dockview viewer panels.
     const viewGraphics = new Map<string, ActorRefFrom<typeof graphicsMachine>>();
@@ -844,93 +481,146 @@ export const projectMachine = setup({
     return {
       projectId,
       project: undefined,
-      revisionState: undefined,
+      manifestIssue: undefined,
       error: undefined,
       isLoading: true,
       shouldLoadModelOnStart,
       kernelOptionsFactory,
       fileManagerRef,
+      fileSystemRoot,
+      stage,
       viewGraphics,
       modelInteractionRef,
       geometryUnits,
-      exportableGeometryUnitPaths,
+      viewerGeometryDemand: new Map(),
+      operationGeometryDemand: new Map(),
+      runtimeParked: false,
+      kernelRefusal: undefined,
       mainEntryPath: '',
       logRef,
-      parameterEntries: new Map(),
-      dirtyParameterPaths: new Set(),
     };
   },
   on: {
+    closeRuntime: { target: '.runtimeClosing', context: { error: undefined } },
     // eslint-disable-next-line @typescript-eslint/naming-convention -- XState event name
-    'geometryUnit.exportAvailabilityChanged': {
-      actions: 'updateGeometryUnitExportAvailability',
+    'geometryUnit.runtimeClosed': ({ context, event, children }, enq) => {
+      const owned = Object.values(children).some((child) => child === event.unit);
+      const active = [...context.geometryUnits.values()].includes(event.unit);
+      if (owned && !active && event.unit.getSnapshot().matches('runtimeClosed')) {
+        enq.stop(event.unit);
+      }
+      return {};
+    },
+    /* R4: the project keeps the refusal so its live session can report the
+     * runtime region failed, which is what puts the reason on the row. */
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- XState event name
+    'geometryUnit.kernelRefused': {
+      context: ({ context, event }) => ({
+        kernelRefusal:
+          event.reason === undefined
+            ? /* Another unit trying again says nothing about this one. */
+              context.kernelRefusal?.actorId === event.actorId
+              ? undefined
+              : context.kernelRefusal
+            : { actorId: event.actorId, reason: event.reason },
+      }),
+    },
+    /* R3: the session knows hidden-and-idle, this owns the units. One loop. */
+    parkRuntime: ({ context }, enq) => {
+      for (const [path, unit] of context.geometryUnits) {
+        if (!hasOperationDemand(context, path)) {
+          enq.sendTo(unit, { type: 'parkRuntime' });
+        }
+      }
+      return { context: { runtimeParked: true } };
+    },
+    resumeRuntime: ({ context }, enq) => {
+      const resumed = { ...context, runtimeParked: false };
+      for (const path of context.geometryUnits.keys()) {
+        reconcileUnitRuntime({ previous: context, next: resumed, entryPath: path }, enq);
+      }
+      return { context: { runtimeParked: false } };
     },
   },
-  exit: ['stopStatefulActors'],
+  /* Stop the stateful children; they'll be garbage collected. */
+  exit: ({ context, children }, enq) => {
+    for (const child of Object.values(children).filter((child) => isCadChild(child))) {
+      enq(() => {
+        disposeCadRuntime(child.getSnapshot().context);
+      });
+      enq.stop(child);
+    }
+    for (const gfx of context.viewGraphics.values()) {
+      enq.stop(gfx);
+    }
+    enq.stop(context.modelInteractionRef);
+  },
   initial: 'checkEnvironment',
   states: {
+    runtimeClosing: {
+      on: { closeRuntime: {}, parkRuntime: {}, resumeRuntime: {} },
+      invoke: {
+        src: 'closeRuntimeActor',
+        input: ({ self }) => ({
+          units: Object.values(self.getSnapshot().children).filter((child) => isCadChild(child)),
+        }),
+        onDone: { target: 'runtimeClosed' },
+        onError: ({ event }) => ({ target: 'runtimeCloseFailed', context: setError(event.error) }),
+      },
+    },
+    runtimeClosed: { on: { closeRuntime: {}, parkRuntime: {}, resumeRuntime: {} } },
+    runtimeCloseFailed: { on: { parkRuntime: {}, resumeRuntime: {} } },
     checkEnvironment: {
-      always: [
-        {
-          guard: 'isNotBrowser',
-          target: 'ssr',
-        },
-        {
-          guard: 'shouldAutoLoad',
-          target: 'loading',
-        },
-        {
-          target: 'idle',
-        },
-      ],
+      always: ({ guards }) => {
+        if (guards.isNotBrowser()) {
+          return { target: 'ssr' };
+        }
+        return { target: guards.shouldAutoLoad() ? 'loading' : 'idle' };
+      },
     },
     ssr: {
       type: 'final',
     },
     idle: {
       on: {
-        reloadProject: {
-          target: 'loading',
-          actions: 'setLoading',
-        },
+        reloadProject: { target: 'loading', context: { isLoading: true } },
         // Accept view graphics lifecycle events in idle state so they
         // are not silently dropped if a useEffect fires before loading starts.
-        createViewGraphics: {
-          actions: 'createViewGraphics',
-        },
-        destroyViewGraphics: {
-          actions: 'destroyViewGraphics',
+        createViewGraphics,
+        destroyViewGraphics,
+        reconcileViewManifest: ({ context, event }, enq) => {
+          reconcileViewManifest(context, enq, { unitId: event.unitId });
+          return {};
         },
       },
     },
     loading: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined } }),
       on: {
         // Accept view graphics lifecycle events during loading.
         // These are safe to process in any state -- they only depend on
         // context.projectId (always set) and defaultGraphicsSettings, with
         // zero dependency on context.project or any loaded data.
-        createViewGraphics: {
-          actions: 'createViewGraphics',
-        },
-        destroyViewGraphics: {
-          actions: 'destroyViewGraphics',
+        createViewGraphics,
+        destroyViewGraphics,
+        reconcileViewManifest: ({ context, event }, enq) => {
+          reconcileViewManifest(context, enq, { unitId: event.unitId });
+          return {};
         },
         projectRetrieved: {
-          actions: ['setProject', 'clearLoading'],
+          context: ({ event }) => ({ project: event.project, manifestIssue: event.issue, isLoading: false }),
         },
       },
       invoke: {
         src: 'loadProjectActor',
         input: ({ context }) => ({ projectId: context.projectId }),
-        onDone: {
+        onDone: ({ context, self }, enq) => ({
           target: 'ready',
-          actions: ['initializeKernelIfNeeded'],
-        },
-        onError: {
-          target: 'error',
-          actions: ['setError'],
-        },
+          context: context.shouldLoadModelOnStart
+            ? loadMainModel(context, enq, { self, options: { pointAtExistingUnit: true } })
+            : {},
+        }),
+        onError: ({ event }) => ({ target: 'error', context: setError(event.error) }),
       },
     },
     ready: {
@@ -942,80 +632,239 @@ export const projectMachine = setup({
             idle: {},
           },
           on: {
-            reloadProject: {
-              target: '#project.loading',
-              actions: 'setLoading',
+            reloadProject: { target: '#project.loading', context: { isLoading: true } },
+            manifestIssueObserved: ({ event }) => ({ context: { manifestIssue: event.issue } }),
+            updateName: ({ context, event }) =>
+              shouldUpdateProjectName(context, event)
+                ? {
+                    context: withProject(context, (project) => {
+                      project.name = event.name;
+                    }),
+                  }
+                : undefined,
+            updateDescription: ({ context, event }) =>
+              isManifestWritable(context)
+                ? {
+                    context: withProject(context, (project) => {
+                      project.description = event.description;
+                    }),
+                  }
+                : undefined,
+            updateTags: ({ context, event }) => {
+              if (!isManifestWritable(context)) {
+                return undefined;
+              }
+              // Deduplicate tags to ensure uniqueness
+              const uniqueTags = [...new Set(event.tags)];
+              return {
+                context: withProject(context, (project) => {
+                  project.tags = uniqueTags;
+                  // Don't update updatedAt for tags - they're metadata
+                }),
+              };
             },
-            updateName: {
-              guard: 'shouldUpdateProjectName',
-              actions: ['updateName'],
+            loadModel: ({ context, self }, enq) => ({
+              context: loadMainModel(context, enq, { self, options: { pointAtExistingUnit: false } }),
+            }),
+            setMainFile: ({ context, event }) =>
+              isManifestWritable(context)
+                ? {
+                    context: withProject(context, (project) => {
+                      project.assets.main.entryPath = event.path;
+                    }),
+                  }
+                : undefined,
+            createGeometryUnit: ({ context, event, self }, enq) => {
+              assertRootedPath(event.entryPath);
+
+              // No-op if a geometry unit already exists for this entry path
+              if (context.geometryUnits.has(event.entryPath)) {
+                return {};
+              }
+
+              const geometryUnits = new Map(context.geometryUnits);
+              const unit = spawnGeometryUnit(context, enq, {
+                self,
+                entryPath: event.entryPath,
+                options: {
+                  shouldInitializeKernelOnStart: true,
+                  ...(event.operationTimeout === undefined ? {} : { operationTimeout: event.operationTimeout }),
+                },
+              });
+              geometryUnits.set(event.entryPath, unit);
+              return {
+                context: {
+                  geometryUnits,
+                  ...(context.mainEntryPath === '' ? { mainEntryPath: event.entryPath } : {}),
+                },
+              };
             },
-            updateDescription: {
-              actions: ['updateDescription'],
+            setViewerGeometryDemand: ({ context, event }, enq) => {
+              const previousPath = context.viewerGeometryDemand.get(event.viewId);
+              const viewerGeometryDemand = new Map(context.viewerGeometryDemand);
+              if (event.entryPath === undefined) {
+                viewerGeometryDemand.delete(event.viewId);
+              } else {
+                assertRootedPath(event.entryPath);
+                viewerGeometryDemand.set(event.viewId, event.entryPath);
+              }
+              const next = { ...context, viewerGeometryDemand };
+              if (previousPath !== undefined && previousPath !== event.entryPath) {
+                reconcileUnitRuntime({ previous: context, next, entryPath: previousPath }, enq);
+              }
+              if (event.entryPath !== undefined) {
+                if (context.geometryUnits.has(event.entryPath)) {
+                  reconcileUnitRuntime({ previous: context, next, entryPath: event.entryPath }, enq);
+                } else {
+                  enq.raise({ type: 'createGeometryUnit', entryPath: event.entryPath });
+                }
+              }
+              return { context: { viewerGeometryDemand } };
             },
-            updateTags: {
-              actions: ['updateTags'],
+            claimGeometryUnit: ({ context, event }, enq) => {
+              assertRootedPath(event.entryPath);
+              const operationGeometryDemand = new Map(context.operationGeometryDemand);
+              const previousPath = operationGeometryDemand.get(event.claimId);
+              operationGeometryDemand.set(event.claimId, event.entryPath);
+              const next = { ...context, operationGeometryDemand };
+              if (previousPath !== undefined && previousPath !== event.entryPath) {
+                reconcileUnitRuntime({ previous: context, next, entryPath: previousPath }, enq);
+              }
+              if (context.geometryUnits.has(event.entryPath)) {
+                reconcileUnitRuntime({ previous: context, next, entryPath: event.entryPath }, enq);
+              } else {
+                enq.raise({
+                  type: 'createGeometryUnit',
+                  entryPath: event.entryPath,
+                  operationTimeout: event.operationTimeout,
+                });
+              }
+              return { context: { operationGeometryDemand } };
             },
-            updateRevisionState: {
-              actions: ['updateRevisionState', 'emitRevisionStateUpdated'],
+            releaseGeometryUnit: ({ context, event }, enq) => {
+              const entryPath = context.operationGeometryDemand.get(event.claimId);
+              if (entryPath === undefined) {
+                return {};
+              }
+              const operationGeometryDemand = new Map(context.operationGeometryDemand);
+              operationGeometryDemand.delete(event.claimId);
+              reconcileUnitRuntime(
+                { previous: context, next: { ...context, operationGeometryDemand }, entryPath },
+                enq,
+              );
+              return { context: { operationGeometryDemand } };
             },
-            updateCodeParameters: {
-              actions: ['updateCodeParametersInContext'],
+            openInViewer: ({ event }, enq) => {
+              assertRootedPath(event.entryPath);
+              enq.raise({ type: 'createGeometryUnit', entryPath: event.entryPath });
+              enq.emit({ type: 'viewerFileRequested', entryPath: event.entryPath });
+              return {};
             },
-            setParameters: {
-              actions: ['setParametersInContext'],
+            destroyGeometryUnit: ({ context, event }, enq) => {
+              const unit = context.geometryUnits.get(event.entryPath);
+              if (!unit) {
+                return {};
+              }
+
+              enq.sendTo(unit, { type: 'closeRuntime' });
+              return {
+                context: {
+                  ...withoutUnits(context, (entryPath) => entryPath === event.entryPath),
+                  /* A still-open viewer may explicitly reopen this unit. */
+                  viewerGeometryDemand: context.viewerGeometryDemand,
+                  /* R4: a unit nobody holds cannot keep a row red. */
+                  ...(context.kernelRefusal?.actorId === actorIdOf(unit) ? { kernelRefusal: undefined } : {}),
+                },
+              };
             },
-            setGeometryUnitParameters: {
-              actions: ['setGeometryUnitParametersInContext'],
+            createViewGraphics,
+            destroyViewGraphics,
+            reconcileViewManifest: ({ context, event }, enq) => {
+              reconcileViewManifest(context, enq, { unitId: event.unitId });
+              return {};
             },
-            parameterFileChanged: {
-              actions: ['handleParameterFileChanged'],
+            // ─────────────────────────────────────────────────────────────
+            // Filesystem-participant transitions
+            //
+            // These are driven by `file-operation-participants.ts` in
+            // response to {@link ContentChangeEvent}s, NOT by UI
+            // components. They re-key every path-indexed map in the project
+            // context so the open viewers + CAD actors +
+            // main entry pointer all survive a rename / delete.
+            // ─────────────────────────────────────────────────────────────
+            fileMoved: ({ context, event }, enq) => {
+              const { oldPath, newPath } = event;
+              const matches = (path: string): boolean => path === oldPath || path.startsWith(`${oldPath}/`);
+              const rewrite = (path: string): string =>
+                path === oldPath
+                  ? newPath
+                  : path.startsWith(`${oldPath}/`)
+                    ? `${newPath}${path.slice(oldPath.length)}`
+                    : path;
+
+              enq.sendTo(context.modelInteractionRef, { type: 'rekeySourceUnits', oldPath, newPath });
+
+              // A moved unit renders its new path, so its geometry and parameter manifest follow the file.
+              const geometryUnits = new Map(context.geometryUnits);
+              let mutatedUnits = false;
+              for (const [key, unit] of context.geometryUnits) {
+                if (matches(key)) {
+                  enq.sendTo(unit, { type: 'setEntryPath', entryPath: rewrite(key) });
+                  geometryUnits.delete(key);
+                  geometryUnits.set(rewrite(key), unit);
+                  mutatedUnits = true;
+                }
+              }
+
+              return {
+                context: {
+                  ...(mutatedUnits ? { geometryUnits } : {}),
+                  viewerGeometryDemand: new Map(
+                    [...context.viewerGeometryDemand].map(([viewId, entryPath]) => [viewId, rewrite(entryPath)]),
+                  ),
+                  operationGeometryDemand: new Map(
+                    [...context.operationGeometryDemand].map(([claimId, entryPath]) => [claimId, rewrite(entryPath)]),
+                  ),
+                  ...(matches(context.mainEntryPath) ? { mainEntryPath: rewrite(context.mainEntryPath) } : {}),
+                  // If the main file was renamed, persist its entry pointer.
+                  // Recency is stamped separately by `projectFileActivity`, so this
+                  // mechanical metadata rewrite does not decide project activity itself.
+                  ...(matches(context.project?.assets.main.entryPath ?? '')
+                    ? withProject(context, (project) => {
+                        project.assets.main.entryPath = rewrite(project.assets.main.entryPath);
+                      })
+                    : {}),
+                },
+              };
             },
-            switchParameterGroup: {
-              actions: ['handleSwitchParameterGroup'],
+            fileDeleted: ({ context, event }, enq) => {
+              const { path } = event;
+              enq.sendTo(context.modelInteractionRef, { type: 'pruneSourceUnits', path });
+              const unit = context.geometryUnits.get(path);
+              if (unit) {
+                enq.sendTo(unit, { type: 'closeRuntime' });
+              }
+              return { context: withoutUnits(context, (entryPath) => entryPath === path) };
             },
-            createParameterGroup: {
-              actions: ['handleCreateParameterGroup'],
+            directoryDeleted: ({ context, event }, enq) => {
+              const { path } = event;
+              enq.sendTo(context.modelInteractionRef, { type: 'pruneSourceUnits', path });
+              const prefix = `${path}/`;
+              const matches = (filePath: string): boolean => filePath === path || filePath.startsWith(prefix);
+
+              for (const [key, unit] of context.geometryUnits) {
+                if (matches(key)) {
+                  enq.sendTo(unit, { type: 'closeRuntime' });
+                }
+              }
+              return { context: withoutUnits(context, matches) };
             },
-            deleteParameterGroup: {
-              actions: ['handleDeleteParameterGroup'],
-            },
-            renameParameterGroup: {
-              actions: ['handleRenameParameterGroup'],
-            },
-            loadModel: {
-              actions: 'loadModel',
-            },
-            setMainFile: {
-              actions: 'setMainFileInContext',
-            },
-            createGeometryUnit: {
-              actions: 'createGeometryUnit',
-            },
-            openInViewer: {
-              actions: 'openInViewer',
-            },
-            destroyGeometryUnit: {
-              actions: 'destroyGeometryUnit',
-            },
-            createViewGraphics: {
-              actions: 'createViewGraphics',
-            },
-            destroyViewGraphics: {
-              actions: 'destroyViewGraphics',
-            },
-            fileMoved: {
-              actions: 'applyFileMoved',
-            },
-            fileDeleted: {
-              actions: 'applyFileDeleted',
-            },
-            directoryDeleted: {
-              actions: 'applyDirectoryDeleted',
-            },
-            projectFileActivity: {
-              guard: 'hasVisibleProjectFileActivity',
-              actions: 'applyProjectFileActivity',
+            projectFileActivity: ({ context, event }, enq) => {
+              if (!context.project || !event.paths.some(isProjectContentActivityPath)) {
+                return undefined;
+              }
+              enq.emit({ type: 'projectActivity' });
+              return {};
             },
           },
         },
@@ -1024,210 +873,59 @@ export const projectMachine = setup({
           states: {
             idle: {
               on: {
-                updateName: {
-                  guard: 'shouldUpdateProjectName',
-                  target: 'writing',
-                },
-                updateDescription: {
-                  target: 'writing',
-                },
-                updateTags: {
-                  target: 'writing',
-                },
-                setMainFile: {
-                  target: 'writing',
-                },
+                flushNow: ({ context }) =>
+                  context.error === undefined || !isManifestWritable(context) ? undefined : { target: 'writing' },
+                updateName: ({ context, event }) =>
+                  shouldUpdateProjectName(context, event) ? { target: 'writing' } : undefined,
+                updateDescription: ({ context }) => (isManifestWritable(context) ? { target: 'writing' } : undefined),
+                updateTags: ({ context }) => (isManifestWritable(context) ? { target: 'writing' } : undefined),
+                setMainFile: ({ context }) => (isManifestWritable(context) ? { target: 'writing' } : undefined),
+                repairManifest: ({ context }) => (isManifestRepairable(context) ? { target: 'repairing' } : undefined),
               },
             },
             pending: {
               after: {
-                pendingToWriting: 'writing',
+                pendingToWriting: { target: 'writing' },
               },
               on: {
-                updateName: {
-                  guard: 'shouldUpdateProjectName',
-                  target: 'pending',
-                  reenter: true,
-                },
-                updateDescription: {
-                  target: 'pending',
-                  reenter: true,
-                },
-                updateTags: {
-                  target: 'pending',
-                  reenter: true,
-                },
-                setMainFile: {
-                  target: 'pending',
-                  reenter: true,
-                },
+                updateName: ({ context, event }) =>
+                  shouldUpdateProjectName(context, event) ? { target: 'pending', reenter: true } : undefined,
+                updateDescription: ({ context }) =>
+                  isManifestWritable(context) ? { target: 'pending', reenter: true } : undefined,
+                updateTags: ({ context }) =>
+                  isManifestWritable(context) ? { target: 'pending', reenter: true } : undefined,
+                setMainFile: ({ context }) =>
+                  isManifestWritable(context) ? { target: 'pending', reenter: true } : undefined,
                 flushNow: { target: 'writing' },
               },
             },
             writing: {
               invoke: {
                 src: 'writeProjectActor',
-                input({ context }) {
-                  return { project: context.project! };
+                input: ({ context }) => ({ project: context.project! }),
+                onDone: ({ context }, enq) => {
+                  enq.emit({ type: 'projectUpdated', project: context.project! });
+                  return { target: 'idle', context: { error: undefined } };
                 },
-                onDone: {
-                  target: 'idle',
-                  actions: ['emitProjectUpdated'],
-                },
-                onError: {
-                  target: 'idle',
-                  actions: ['setError'],
-                },
+                onError: ({ event }) => ({ target: 'idle', context: setError(event.error) }),
               },
               on: {
-                updateName: {
-                  guard: 'shouldUpdateProjectName',
-                  target: 'pending',
-                },
-                updateDescription: {
-                  target: 'pending',
-                },
-                updateTags: {
-                  target: 'pending',
-                },
-                setMainFile: {
-                  target: 'pending',
-                },
+                updateName: ({ context, event }) =>
+                  shouldUpdateProjectName(context, event) ? { target: 'pending' } : undefined,
+                updateDescription: ({ context }) => (isManifestWritable(context) ? { target: 'pending' } : undefined),
+                updateTags: ({ context }) => (isManifestWritable(context) ? { target: 'pending' } : undefined),
+                setMainFile: ({ context }) => (isManifestWritable(context) ? { target: 'pending' } : undefined),
               },
             },
-          },
-        },
-        parameterStoring: {
-          initial: 'idle',
-          states: {
-            idle: {
-              on: {
-                setParameters: { guard: 'hasParameterEntries', target: 'writing', actions: ['addDirtyParameterPath'] },
-                setGeometryUnitParameters: {
-                  guard: 'hasParameterEntries',
-                  target: 'writing',
-                  actions: ['addDirtyParameterPath'],
-                },
-                switchParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'writing',
-                  actions: ['addDirtyParameterPath'],
-                },
-                createParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'writing',
-                  actions: ['addDirtyParameterPath'],
-                },
-                deleteParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'writing',
-                  actions: ['addDirtyParameterPath'],
-                },
-                renameParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'writing',
-                  actions: ['addDirtyParameterPath'],
-                },
-              },
-            },
-            pending: {
-              after: {
-                pendingToWriting: 'writing',
-              },
-              on: {
-                setParameters: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  reenter: true,
-                  actions: ['addDirtyParameterPath'],
-                },
-                setGeometryUnitParameters: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  reenter: true,
-                  actions: ['addDirtyParameterPath'],
-                },
-                switchParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  reenter: true,
-                  actions: ['addDirtyParameterPath'],
-                },
-                createParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  reenter: true,
-                  actions: ['addDirtyParameterPath'],
-                },
-                deleteParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  reenter: true,
-                  actions: ['addDirtyParameterPath'],
-                },
-                renameParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  reenter: true,
-                  actions: ['addDirtyParameterPath'],
-                },
-              },
-            },
-            writing: {
+            repairing: {
               invoke: {
-                src: 'writeParameterFileActor',
-                input({ context }) {
-                  const [filePath] = context.dirtyParameterPaths;
-                  return {
-                    projectId: context.projectId,
-                    filePath: filePath!,
-                    entry: context.parameterEntries.get(filePath!)!,
-                  };
+                src: 'writeProjectActor',
+                input: ({ context }) => ({ project: context.project!, repair: true }),
+                onDone: ({ context }, enq) => {
+                  enq.emit({ type: 'projectUpdated', project: context.project! });
+                  return { target: 'idle', context: { manifestIssue: undefined, error: undefined } };
                 },
-                onDone: [
-                  {
-                    guard: 'hasRemainingDirtyPaths',
-                    target: 'writing',
-                    reenter: true,
-                    actions: ['removeWrittenParameterPath'],
-                  },
-                  {
-                    target: 'idle',
-                    actions: ['removeWrittenParameterPath'],
-                  },
-                ],
-                onError: {
-                  target: 'idle',
-                  actions: ['removeWrittenParameterPath', 'setError'],
-                },
-              },
-              on: {
-                setParameters: { guard: 'hasParameterEntries', target: 'pending', actions: ['addDirtyParameterPath'] },
-                setGeometryUnitParameters: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  actions: ['addDirtyParameterPath'],
-                },
-                switchParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  actions: ['addDirtyParameterPath'],
-                },
-                createParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  actions: ['addDirtyParameterPath'],
-                },
-                deleteParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  actions: ['addDirtyParameterPath'],
-                },
-                renameParameterGroup: {
-                  guard: 'hasParameterEntries',
-                  target: 'pending',
-                  actions: ['addDirtyParameterPath'],
-                },
+                onError: ({ event }) => ({ target: 'idle', context: setError(event.error) }),
               },
             },
           },
@@ -1236,11 +934,34 @@ export const projectMachine = setup({
     },
     error: {
       on: {
-        reloadProject: {
-          target: 'loading',
-          actions: 'setLoading',
-        },
+        reloadProject: { target: 'loading', context: { isLoading: true } },
       },
     },
   },
 });
+
+/** Close every project CAD owner after persistence, before its session stops. */
+export const closeProjectRuntime = async (actor: ActorRefFrom<typeof projectMachine>): Promise<void> => {
+  actor.send({ type: 'closeRuntime' });
+  const snapshot = await waitFor(
+    actor,
+    (state) => state.matches('runtimeClosed') || state.matches('runtimeCloseFailed'),
+  );
+  if (snapshot.matches('runtimeCloseFailed')) {
+    const error: unknown = snapshot.context.error;
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('Project runtime shutdown failed');
+  }
+};
+
+/**
+ * Why this project has no kernel, or `undefined` when it has one (R4).
+ *
+ * @param snapshot - The project machine's snapshot.
+ * @returns The reason a unit reported, or `undefined`.
+ * @public
+ */
+export const selectProjectKernelRefusal = (snapshot: SnapshotFrom<typeof projectMachine>): string | undefined =>
+  snapshot.context.kernelRefusal?.reason;

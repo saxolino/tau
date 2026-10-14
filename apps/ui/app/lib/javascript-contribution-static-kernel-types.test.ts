@@ -6,7 +6,7 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Test fixtures are keyed by canonical filesystem paths and package export specifiers. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import type { WorkspaceScope } from '@taucad/filesystem';
+
 import type { ActivationContext } from '#lib/monaco-language-registry.js';
 import type { MonacoTestStub } from '#lib/testing/monaco-language-stub.js';
 import { tsContribution } from '#lib/typescript-contribution.js';
@@ -15,9 +15,15 @@ import { LanguageContributionRegistry } from '#lib/monaco-language-registry.js';
 import { TypeAcquisitionService } from '#lib/type-acquisition-service.js';
 import { createMonacoTestStub } from '#lib/testing/monaco-language-stub.js';
 import { attachTypescriptShim } from '#lib/testing/monaco-typescript-shim.js';
-import type { FileManagerRef, FileManagerProxy } from '#machines/file-manager.machine.types.js';
+import type { ComposedViewClient } from '@taucad/fs-client/composed-view-client';
+import type { FileManagerRef } from '#machines/file-manager.machine.types.js';
 
-function createMountProxy(fileContents: Record<string, string>): FileManagerProxy {
+/**
+ * The mount as the composed client answers it (W11): the dependency mount is a
+ * root of its own, read through its rooted `'user'` connection, so the editor's
+ * typings and the file tree's rows come off one composition.
+ */
+function createMountProxy(fileContents: Record<string, string>): ComposedViewClient {
   const files = new Map<string, string>();
   const directories = new Map<string, Set<string>>();
   const addDirectoryEntry = (directory: string, entry: string): void => {
@@ -40,7 +46,7 @@ function createMountProxy(fileContents: Record<string, string>): FileManagerProx
     addFile(path, content);
   }
 
-  const proxy: FileManagerProxy = mock<FileManagerProxy>();
+  const proxy: ComposedViewClient = mock<ComposedViewClient>();
   vi.mocked(proxy.readdir).mockImplementation(async (path: string) => {
     const entries = directories.get(path);
     if (entries) {
@@ -49,14 +55,11 @@ function createMountProxy(fileContents: Record<string, string>): FileManagerProx
     throw new Error(`unexpected readdir: ${path}`);
   });
 
-  function readFile(
-    path: string,
-    options: 'utf8' | { readonly encoding: 'utf8'; readonly scope?: WorkspaceScope },
-  ): Promise<string>;
-  function readFile(path: string, options?: { readonly scope?: WorkspaceScope }): Promise<Uint8Array<ArrayBuffer>>;
+  function readFile(path: string, options: 'utf8' | { readonly encoding: 'utf8' }): Promise<string>;
+  function readFile(path: string, options?: { readonly encoding?: undefined }): Promise<Uint8Array<ArrayBuffer>>;
   async function readFile(
     path: string,
-    options?: 'utf8' | { readonly encoding?: 'utf8'; readonly scope?: WorkspaceScope },
+    options?: 'utf8' | { readonly encoding?: 'utf8' },
   ): Promise<string | Uint8Array<ArrayBuffer>> {
     const content = files.get(path);
     if (content === undefined) {
@@ -70,12 +73,12 @@ function createMountProxy(fileContents: Record<string, string>): FileManagerProx
   return proxy;
 }
 
-function createMockContext(stub: MonacoTestStub, proxy: FileManagerProxy): ActivationContext {
+function createMockContext(stub: MonacoTestStub, proxy: ComposedViewClient): ActivationContext {
   const context = mock<ActivationContext>();
   context.monaco = stub.monaco;
   const fileManagerRef = mock<FileManagerRef>();
   const snapshot = mock<ReturnType<FileManagerRef['getSnapshot']>>();
-  snapshot.context.proxy = proxy;
+  snapshot.context.viewClient = proxy;
   vi.mocked(fileManagerRef.getSnapshot).mockReturnValue(snapshot);
   context.fileManagerRef = fileManagerRef;
   return context;
@@ -129,7 +132,7 @@ describe('tsContribution static kernel types', () => {
     expect(JSON.parse(packageCall![0])).toEqual({ name: 'replicad', types: 'index.d.ts' });
   });
 
-  it('should use /node_modules bytes from the file-manager proxy for each package', async () => {
+  it('should use /node_modules bytes from the composed client for each package', async () => {
     const proxy = createMountProxy({
       '/node_modules/replicad/index.d.ts': 'export declare const fromMount: 42;',
       '/node_modules/replicad/package.json': JSON.stringify({ name: 'replicad', types: 'index.d.ts' }),
@@ -177,11 +180,12 @@ describe('tsContribution static kernel types', () => {
   it('should register generated GeoSpec package and subpath declarations from the bundled-types mount', async () => {
     const proxy = createMountProxy({
       '/node_modules/geospec/index.d.ts': 'export declare const describe: unknown;',
-      '/node_modules/geospec/brep/index.d.ts': 'export declare const analyzeBrep: unknown;',
+      '/node_modules/geospec/assertion-client/index.d.ts':
+        'export declare const createGeoSpecAssertionClient: unknown;',
       '/node_modules/geospec/model/index.d.ts': 'export declare const loadModel: unknown;',
-      '/node_modules/geospec/runner/web/index.d.ts': 'export declare const createGeoSpecWebRunner: unknown;',
+      '/node_modules/geospec/runner/native/index.d.ts': 'export declare const createNativeGeoSpecRunner: unknown;',
       '/node_modules/geospec/runner/worker/index.d.ts': 'export type GeoSpecRunnerResult = unknown;',
-      '/node_modules/geospec/step/index.d.ts': 'export declare const loadStep: unknown;',
+      '/node_modules/geospec/mesh/index.d.ts': 'export type GeometryDiagnostic = unknown;',
       '/node_modules/geospec/package.json': JSON.stringify({ name: 'geospec', types: 'index.d.ts' }),
     });
     const context = createMockContext(stub, proxy);
@@ -196,28 +200,32 @@ describe('tsContribution static kernel types', () => {
 
     const tsPaths = tsAdd.mock.calls.map((c) => c[1]!);
     expect(tsPaths).toContain('file:///node_modules/geospec/index.d.ts');
-    expect(tsPaths).toContain('file:///node_modules/geospec/brep/index.d.ts');
+    expect(tsPaths).toContain('file:///node_modules/geospec/assertion-client/index.d.ts');
     expect(tsPaths).toContain('file:///node_modules/geospec/model/index.d.ts');
-    expect(tsPaths).toContain('file:///node_modules/geospec/runner/web/index.d.ts');
+    expect(tsPaths).toContain('file:///node_modules/geospec/runner/native/index.d.ts');
     expect(tsPaths).toContain('file:///node_modules/geospec/runner/worker/index.d.ts');
-    expect(tsPaths).toContain('file:///node_modules/geospec/step/index.d.ts');
+    expect(tsPaths).toContain('file:///node_modules/geospec/mesh/index.d.ts');
 
     const modelCall = tsAdd.mock.calls.find((c) => c[1] === 'file:///node_modules/geospec/model/index.d.ts');
     expect(modelCall?.[0]).toContain('loadModel');
 
-    const stepCall = tsAdd.mock.calls.find((c) => c[1] === 'file:///node_modules/geospec/step/index.d.ts');
-    expect(stepCall?.[0]).toContain('loadStep');
+    const meshCall = tsAdd.mock.calls.find((c) => c[1] === 'file:///node_modules/geospec/mesh/index.d.ts');
+    expect(meshCall?.[0]).toContain('GeometryDiagnostic');
 
-    const runnerWebCall = tsAdd.mock.calls.find((c) => c[1] === 'file:///node_modules/geospec/runner/web/index.d.ts');
-    expect(runnerWebCall?.[0]).toContain('createGeoSpecWebRunner');
+    const runnerNativeCall = tsAdd.mock.calls.find(
+      (c) => c[1] === 'file:///node_modules/geospec/runner/native/index.d.ts',
+    );
+    expect(runnerNativeCall?.[0]).toContain('createNativeGeoSpecRunner');
 
     const runnerWorkerCall = tsAdd.mock.calls.find(
       (c) => c[1] === 'file:///node_modules/geospec/runner/worker/index.d.ts',
     );
     expect(runnerWorkerCall?.[0]).toContain('GeoSpecRunnerResult');
 
-    const brepCall = tsAdd.mock.calls.find((c) => c[1] === 'file:///node_modules/geospec/brep/index.d.ts');
-    expect(brepCall?.[0]).toContain('analyzeBrep');
+    const assertionClientCall = tsAdd.mock.calls.find(
+      (c) => c[1] === 'file:///node_modules/geospec/assertion-client/index.d.ts',
+    );
+    expect(assertionClientCall?.[0]).toContain('createGeoSpecAssertionClient');
   });
 
   it('should register scoped and unscoped subpath declarations for both TypeScript and JavaScript', async () => {
@@ -258,10 +266,10 @@ describe('tsContribution static kernel types', () => {
     const packageJsonContent = JSON.stringify({
       name: 'geospec',
       types: 'index.d.ts',
-      exports: { './runner/web': { types: './runner/web/index.d.ts' } },
+      exports: { './runner/native': { types: './runner/native/index.d.ts' } },
     });
     const proxy = createMountProxy({
-      '/node_modules/geospec/runner/web/index.d.ts': 'export declare const createGeoSpecWebRunner: unknown;',
+      '/node_modules/geospec/runner/native/index.d.ts': 'export declare const createNativeGeoSpecRunner: unknown;',
       '/node_modules/geospec/index.d.ts': 'export declare const describe: unknown;',
       '/node_modules/geospec/package.json': packageJsonContent,
     });

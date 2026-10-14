@@ -1,7 +1,7 @@
 import { ChevronRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { NavLink } from 'react-router';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '#components/ui/collapsible.js';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -12,8 +12,8 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from '#components/ui/sidebar.js';
-import { Loader } from '#components/ui/loader.js';
-import { cn } from '#utils/ui.utils.js';
+import { Loader } from '@taucad/ui/components/loader';
+import { cn } from '@taucad/ui/utils/cn';
 
 export function NavMain({
   items,
@@ -57,8 +57,8 @@ export function NavMain({
             <Collapsible key={item.title} asChild defaultOpen={item.isActive} className='group/collapsible'>
               <SidebarMenuItem>
                 <NavLink to={item.url}>
-                  {({ isActive, isPending }) => (
-                    <CollapsibleTrigger asChild>
+                  {({ isActive, isPending }) => {
+                    const row = (
                       <SidebarMenuButton asChild isActive={isActive}>
                         <span>
                           {isPending ? <Loader /> : item.icon ? <item.icon className='size-4 shrink-0' /> : null}
@@ -68,8 +68,11 @@ export function NavMain({
                           ) : null}
                         </span>
                       </SidebarMenuButton>
-                    </CollapsibleTrigger>
-                  )}
+                    );
+
+                    // Leaf rows control nothing, so they must not carry the trigger's aria-expanded/aria-controls.
+                    return hasItems ? <CollapsibleTrigger asChild>{row}</CollapsibleTrigger> : row;
+                  }}
                 </NavLink>
                 {hasItems ? (
                   <CollapsibleContent asChild>

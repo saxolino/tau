@@ -16,8 +16,66 @@ type PublishableManifest = {
   type?: unknown;
 };
 
+/** Concrete, relative assets from a package's npm `files` list that the strict consumer must see. */
+export const declaredPublishAssets = (files: unknown): string[] => {
+  if (!Array.isArray(files)) {
+    return [];
+  }
+  return files.flatMap((entry: unknown) => {
+    if (typeof entry !== 'string' || entry.startsWith('!')) {
+      return [];
+    }
+    const segments = entry.split('/');
+    if (
+      !/^[\w./-]+$/u.test(entry) ||
+      segments.some((segment) => segment === '' || segment === '.' || segment === '..' || segment === 'node_modules')
+    ) {
+      throw new Error(`unsafe package files entry: ${entry}`);
+    }
+    return entry === 'dist' || entry.startsWith('dist/') ? [] : [entry];
+  });
+};
+
+/** JSON default exports need a CommonJS-shaped declaration, without a JavaScript CJS branch. */
+export const isJsonTypesDeclaration = (value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 2 &&
+    typeof record['types'] === 'string' &&
+    record['types'].endsWith('.d.cts') &&
+    record['default'] === `${record['types'].slice(0, -'.d.cts'.length)}.json`
+  );
+};
+
 const recordKeys = (value: unknown): string[] =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.keys(value).sort() : [];
+
+/**
+ * Identify literal Wasm asset exports, not conditional entries that can resolve to code.
+ *
+ * @param exports - The publish-shaped exports map.
+ * @returns Concrete raw Wasm subpaths and their built targets.
+ */
+export const publishedRawWasmAssets = (exports: unknown): Array<{ subpath: string; target: string }> => {
+  if (typeof exports !== 'object' || exports === null || Array.isArray(exports)) {
+    return [];
+  }
+  return Object.entries(exports)
+    .flatMap(([subpath, target]) =>
+      subpath.startsWith('.') &&
+      !subpath.includes('*') &&
+      typeof target === 'string' &&
+      target.startsWith('./') &&
+      !target.split('/').includes('..') &&
+      target.endsWith('.wasm')
+        ? [{ subpath, target }]
+        : [],
+    )
+    .sort((left, right) => left.subpath.localeCompare(right.subpath));
+};
 
 export const packageMetadataIssues = (
   packageJson: PackageMetadata,
@@ -34,9 +92,16 @@ export const packageMetadataIssues = (
     issues.push(`development exports is missing published export: ${specifier}`);
   }
 
+  for (const { subpath, target } of publishedRawWasmAssets(packageJson.publishConfig?.exports)) {
+    if (!pathExists(target)) {
+      issues.push(`published raw Wasm asset is missing: ${subpath} -> ${target}`);
+    }
+  }
+
   if (Array.isArray(packageJson.files)) {
     for (const path of packageJson.files) {
-      if (typeof path !== 'string' || pathExists(path)) {
+      // A `!` entry excludes from the packed set rather than naming a path to pack.
+      if (typeof path !== 'string' || path.startsWith('!') || pathExists(path)) {
         continue;
       }
       issues.push(`files entry does not exist: ${path}`);
@@ -89,24 +154,6 @@ export const publishableManifestIssues = ({
   return issues.sort();
 };
 
-export const bundleOwnershipIssues = (roots: Array<{ owner: string; bundled: string[] }>): string[] => {
-  const owners = new Map<string, string>();
-  const issues: string[] = [];
-
-  for (const { owner, bundled } of roots) {
-    for (const packageName of bundled) {
-      const previousOwner = owners.get(packageName);
-      if (previousOwner) {
-        issues.push(`${packageName} is bundled by both ${previousOwner} and ${owner}`);
-      } else {
-        owners.set(packageName, owner);
-      }
-    }
-  }
-
-  return issues.sort();
-};
-
 type PrivateLibraryManifest = {
   readonly name: string;
   readonly dependencies?: Readonly<Record<string, string>>;
@@ -152,8 +199,7 @@ export const bundleDeclarationClosure = (
  * The second witness on bundling: every library a build actually mirrored into
  * an owner's `dist` must be one the manifest/tag rule permits that owner to
  * bundle. A package always mirrors its own sources, so it is not a candidate.
- * The converse invariant — one library, one permitted owner — is the rule's own
- * (`bundleOwnershipIssues` in `@taucad/nx`), not a mirror-side failure.
+ * Multiple owners may independently bundle the same permitted private library.
  */
 export const bundleWitnessIssues = (
   mirroredByOwner: ReadonlyArray<{ owner: string; bundled: readonly string[] }>,
@@ -284,13 +330,20 @@ export type PeerRule = {
   readonly dependencyLeafAllowlist?: readonly string[];
 };
 
+/** Leaves under npm-policy Rule 1: they never re-export schemas or runtime types, so they satisfy peers with dependencies. */
+const leafPackages = ['@taucad/cli', 'geospec', '@taucad/geospec-engine'];
+
 /** The one registry shared by publishable-peer and internal-library rules. */
 export const peerRules: readonly PeerRule[] = [
-  { name: 'zod', reason: 'schema instance and type identity must not fork across an install' },
+  {
+    name: 'zod',
+    reason: 'schema instance and type identity must not fork across an install',
+    dependencyLeafAllowlist: leafPackages,
+  },
   {
     name: '@taucad/runtime',
     reason: 'one runtime instance must own protocol and type identity across an install',
-    dependencyLeafAllowlist: ['@taucad/cli', 'geospec', '@taucad/geospec-engine'],
+    dependencyLeafAllowlist: leafPackages,
   },
 ];
 
@@ -664,6 +717,9 @@ export const nodeOnlyDependencies: readonly string[] = [
   'ws',
 ];
 
+const hostTargets = ['browser', 'daemon', 'native', 'node', 'python'] as const;
+const expectedHostTargets = hostTargets.map((value) => `"${value}"`).join(', ');
+
 /**
  * `taucad.hostTarget` was inert metadata read once at scaffold time. This is the
  * gate that makes the declaration mean something.
@@ -680,14 +736,14 @@ export const hostTargetIssues = ({
   readonly hasPayloadGuardTest: boolean;
 }): string[] => {
   if (hostTarget === undefined) {
-    return [`${packageName}: package.json taucad.hostTarget is not declared (expected "browser" or "node")`];
+    return [`${packageName}: package.json taucad.hostTarget is not declared (expected ${expectedHostTargets})`];
   }
-  if (hostTarget !== 'browser' && hostTarget !== 'node') {
+  if (!hostTargets.includes(hostTarget as (typeof hostTargets)[number])) {
     return [
-      `${packageName}: package.json taucad.hostTarget is ${JSON.stringify(hostTarget)} (expected "browser" or "node")`,
+      `${packageName}: package.json taucad.hostTarget is ${JSON.stringify(hostTarget)} (expected ${expectedHostTargets})`,
     ];
   }
-  if (hostTarget === 'node') {
+  if (hostTarget !== 'browser') {
     return [];
   }
 
@@ -740,6 +796,37 @@ export const doubledPathSegments = (paths: readonly string[]): string[] => {
   return [...issues].sort();
 };
 
+/** `new Worker(new URL('<literal>', import.meta.url)` and its `SharedWorker` twin, in source or minified output. */
+const workerUrlPattern = /new\s+(?:Shared)?Worker\(\s*new\s+URL\(\s*(["'`])([^"'`]+)\1\s*,\s*import\.meta\.url\s*\)/g;
+
+/**
+ * Worker URLs in emitted modules that name no emitted file. A `new URL()` literal is not an import: outside a bundler
+ * it resolves against the emitting module, so a `.ts` source name, a `#` subpath or an unemitted worker loads nothing.
+ *
+ * @param modules - Emitted JavaScript modules as `dist`-relative POSIX paths with their source text.
+ * @param emitted - Every `dist`-relative POSIX path the build emitted.
+ * @returns One issue per worker URL whose target is not in `emitted`, sorted.
+ */
+export const workerUrlIssues = (
+  modules: ReadonlyArray<{ path: string; source: string }>,
+  emitted: ReadonlySet<string>,
+): string[] => {
+  const issues: string[] = [];
+  for (const module of modules) {
+    for (const match of module.source.matchAll(workerUrlPattern)) {
+      const literal = match[2]!;
+      const base = new URL(module.path, 'file:///dist/');
+      const target = new URL(literal, base);
+      const path = target.protocol === 'file:' ? target.pathname.replace(/^\/dist\//, '') : undefined;
+      if (path === undefined || target.hash !== '' || !emitted.has(path)) {
+        issues.push(`${module.path}: worker URL '${literal}' names no emitted file`);
+      }
+    }
+  }
+
+  return issues.sort();
+};
+
 /**
  * Workspace projects a package actually bundled, detected from the mirror
  * directories `unbundle: true` emits for sources outside the package root
@@ -756,10 +843,10 @@ export const bundledWorkspaceMirrors = (
     .sort();
 
 /**
- * Every published subpath as an importable specifier, minus the ones with a
- * recorded reason. Wildcards cannot be probed. A reason naming a subpath the
- * package does not publish is itself an issue, so a stale excuse cannot linger
- * after the export it excused moved or was removed.
+ * Every published subpath as an importable specifier, minus binary assets and
+ * the ones with a recorded reason. Wildcards cannot be probed. A reason naming
+ * a subpath the package does not publish is itself an issue, so a stale excuse
+ * cannot linger after the export it excused moved or was removed.
  */
 export const probedSpecifiers = (
   packageName: string,
@@ -769,16 +856,63 @@ export const probedSpecifiers = (
   const published = recordKeys(exports).filter(
     (subpath) => subpath.startsWith('.') && !subpath.includes('*') && subpath !== './package.json',
   );
+  const rawWasmAssets = new Set(publishedRawWasmAssets(exports).map(({ subpath }) => subpath));
 
   return {
     specifiers: published
-      .filter((subpath) => !(subpath in exclusions))
+      .filter((subpath) => !(subpath in exclusions) && !rawWasmAssets.has(subpath))
       .map((subpath) => `${packageName}${subpath.slice(1)}`),
     issues: Object.keys(exclusions)
       .filter((subpath) => !published.includes(subpath))
       .sort()
       .map((subpath) => `recorded strict-consumer exclusion names a subpath this package does not publish: ${subpath}`),
   };
+};
+
+/**
+ * A third-party declaration defect the strict-consumer probe reaches through a
+ * dependency. Unlike a subpath exclusion it drops only the matching diagnostic,
+ * so every other error in the same subpath still fails the probe.
+ */
+export type KnownDeclarationDefect = {
+  /** Matches one `file(line,col): error TSnnnn: message` line of `tsc --pretty false`. */
+  readonly diagnostic: RegExp;
+  readonly reason: string;
+};
+
+export const knownDeclarationDefects: readonly KnownDeclarationDefect[] = [
+  {
+    diagnostic:
+      /@anthropic-ai\/sdk\/internal\/types\.d\.mts\(\d+,\d+\): error TS2307: Cannot find module '(?:\.\.\/)+node_modules\/undici(?:-types)?\/index\.d\.ts'/u,
+    reason:
+      '@anthropic-ai/sdk 0.91.1 (pinned by pi-ai) puts `@ts-ignore` on the same line as its relative undici-types fallbacks, so it suppresses nothing under pnpm; fixed in 0.103.0',
+  },
+];
+
+/**
+ * Split `tsc --pretty false` output into the diagnostics a known third-party
+ * defect explains and the ones that remain. Continuation lines (indented)
+ * stay with the diagnostic they belong to.
+ */
+export const partitionConsumerDiagnostics = (
+  output: string,
+  defects: readonly KnownDeclarationDefect[],
+): { remaining: string[]; explained: string[] } => {
+  const remaining: string[] = [];
+  const explained: string[] = [];
+  let target: string[] | undefined;
+  for (const line of output.split('\n')) {
+    if (line.trim() === '') {
+      continue;
+    }
+    if (/^\s/u.test(line) && target !== undefined) {
+      target.push(line);
+      continue;
+    }
+    target = defects.some(({ diagnostic }) => diagnostic.test(line)) ? explained : remaining;
+    target.push(line);
+  }
+  return { remaining, explained };
 };
 
 export const strictConsumerCompilerOptions = (moduleResolution: 'bundler' | 'nodenext'): Record<string, unknown> => ({

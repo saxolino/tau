@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { ProjectLocator } from '@taucad/filesystem';
 import type { Workspace } from '#filesystem/handle-store.js';
 import {
-  exampleUrl,
   projectChatIdFromSearch,
   projectChatUrl,
   projectPreviewUrl,
@@ -39,6 +38,16 @@ describe('project URL grammar', () => {
     expect(projectChatUrl(slugs, 'chat /+?&')).toBe('/w/my%20ws/a%2Fb?chat=chat+%2F%2B%3F%26');
   });
 
+  it('merges the current search instead of discarding unrelated parameters', () => {
+    const slugs = { workspaceSlug: 'ws', projectSlug: 'p' };
+
+    expect(projectChatUrl(slugs, 'chat_42', '?workbench=share&chat=chat_1')).toBe(
+      '/w/ws/p?workbench=share&chat=chat_42',
+    );
+    expect(projectChatUrl(slugs, undefined, '?workbench=share&chat=chat_1')).toBe('/w/ws/p?workbench=share');
+    expect(projectChatUrl(slugs, undefined, '?chat=chat_1')).toBe('/w/ws/p');
+  });
+
   it('parses a non-empty chat selection from strings and URLSearchParams', () => {
     expect(projectChatIdFromSearch('?chat=chat+%2F%2B%3F%26')).toBe('chat /+?&');
     expect(projectChatIdFromSearch(new URLSearchParams({ chat: 'chat_42' }))).toBe('chat_42');
@@ -71,7 +80,39 @@ describe('project URL grammar', () => {
     expect(projectSlugsOf(webaccessLocator, [])).toBeUndefined();
   });
 
-  it('namespaces static examples away from the project id space', () => {
-    expect(exampleUrl('proj_hollow_box')).toBe('/examples/proj_hollow_box');
+  it('names the picked node folder that owns the project, not Home', () => {
+    const pickedRow: Workspace = {
+      workspaceId: 'wsp_picked',
+      name: 'tau-desktop-workspace',
+      lastConnectedAt: 2,
+      slug: 'tau-desktop-workspace',
+      path: '/tmp/pick/tau-desktop-workspace',
+    };
+
+    expect(
+      projectSlugsOf(
+        {
+          backend: 'node',
+          storageRootKey: '/tmp/pick/tau-desktop-workspace',
+          relativeDirectory: '/cube-with-cutout',
+          path: '/tmp/pick/tau-desktop-workspace',
+        },
+        [workspaceRow, pickedRow],
+      ),
+    ).toEqual({ workspaceSlug: 'tau-desktop-workspace', projectSlug: 'cube-with-cutout' });
+  });
+
+  it('keeps desktop Home on the reserved slug — it has no workspace row', () => {
+    expect(
+      projectSlugsOf(
+        {
+          backend: 'node',
+          storageRootKey: '/home-root',
+          relativeDirectory: '/cube',
+          path: '/home-root',
+        },
+        [],
+      ),
+    ).toEqual({ workspaceSlug: 'home', projectSlug: 'cube' });
   });
 });

@@ -1,20 +1,20 @@
 ---
 name: create-plugin
-description: Create or update a publishable Tau runtime plugin toolkit with the workspace plugin generator. Use when adding kernel, transcoder, middleware, or bundler capabilities under packages/plugins or completing their package and host integration.
+description: Create or update a publishable Tau runtime plugin toolkit with the workspace plugin generator. Use when adding kernel, transcoder, middleware, bundler, job, or machine capabilities under packages/plugins or completing their package and host integration. Agents should select this skill autonomously when the request clearly creates or changes that toolkit boundary.
 ---
 
 # Create Plugin
 
 Create or update one `@taucad/*` runtime plugin toolkit. For a kernel-specific
-implementation, use `.agents/skills/new-kernel/SKILL.md` after this routing step.
+implementation, use `.agents/skills/create-kernel/SKILL.md` after this routing step.
 
 ## Resolve
 
 Inspect the request, `tools/workspace-plugin/src/generators/plugin/schema.json`,
 the nearest same-role package, and every applicable host roster. Infer:
 
-- one or more requested capabilities: `kernel`, `transcoder`, `middleware`, or
-  `bundler`;
+- one or more requested capabilities: `kernel`, `transcoder`, `middleware`,
+  `bundler`, `job`, or `machine`;
 - `hostTarget`: `browser`, `node`, `daemon`, `python`, or `native`;
 - whether the package already exists.
 
@@ -34,6 +34,12 @@ pnpm nx g @taucad/workspace-plugin:plugin <name> \
 
 If the package exists, update it in place instead of rerunning the generator.
 
+New plugin projects receive a local `AGENTS.md` naming only the selected
+capabilities, host target, generated entrypoints and real Nx commands, plus an
+adjacent `CLAUDE.md` containing exactly `@AGENTS.md`. The shared writer preserves
+authored instruction bytes and fills only a missing pair member. Maintain these
+instructions in place after creation.
+
 ## Complete
 
 Generation is not completion. Implement every requested role, replace generated
@@ -43,8 +49,16 @@ role-named source file per selected capability, public JSDoc, Apache-2.0
 metadata, and browser payload isolation where applicable.
 
 Use public runtime authoring subpaths only. Never import runtime internals or app
-code. Route kernel details and product surfaces through `/new-kernel`; do not
+code. Route kernel details and product surfaces through `/create-kernel`; do not
 duplicate that workflow here.
+
+Author jobs through `@taucad/runtime/job`, machines through
+`@taucad/runtime/machine`, and their schemas through the pure
+`@taucad/runtime/configuration` entrypoint. Retain Zod as a peer only when selected
+capabilities import it. Job and machine roles belong to host composition, not
+the four-role CAD executor. ABI 2 plugins must declare a runtime peer range that
+excludes ABI 1 releases before publication; a generated range is not release
+qualification.
 
 Wire only the consumers and host rosters in the request. Record why an
 incompatible roster is skipped. Remove superseded code after behavior parity.
@@ -66,3 +80,7 @@ Also inspect strict public imports, packed files, package size, generated
 declarations, payload isolation, host wiring, README quick start, and license
 provenance. Do not hand off with stubs, placeholder budgets, leaked host
 dependencies, or failing checks.
+
+When changing the generator, exercise mixed, job-only and machine-only output:
+schema literals, six capability buckets and presets, role-selected dependencies,
+and generated type/build checks must agree with the public authoring APIs.

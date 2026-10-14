@@ -16,7 +16,8 @@ export type * from '#types/project.types.js';
 export type * from '#types/publication.types.js';
 export type * from '#types/schema.types.js';
 export {
-  parseAdoptableProjectManifestBytes,
+  checkProjectManifestReplacement,
+  describeProjectManifestIssue,
   parseProjectManifestBytes,
   projectIdSchema,
   projectManifestMaxBytes,
@@ -24,14 +25,15 @@ export {
   projectManifestSchemaUrl,
   projectRelativePathSchema,
   projectToManifest,
+  readProjectManifestBytes,
   serializeProjectManifest,
 } from '#schemas/project-manifest.schema.js';
 export type {
   AdoptableProjectManifest,
-  AdoptableProjectManifestParseResult,
   ProjectManifest,
   ProjectManifestParseIssue,
   ProjectManifestParseResult,
+  ProjectManifestReadResult,
 } from '#schemas/project-manifest.schema.js';
 export {
   parseWorkspaceMarker,
@@ -49,3 +51,5 @@ export {
   parametersDirectory,
 } from '#schemas/file-parameter-entry.schema.js';
 export type { FileParameterEntry, ParameterGroup } from '#schemas/file-parameter-entry.schema.js';
+
+export type * from '#types/machine-settings.types.js';

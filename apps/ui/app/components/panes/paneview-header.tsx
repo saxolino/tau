@@ -1,8 +1,10 @@
 import { ChevronDown } from 'lucide-react';
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { PaneviewPanelApi } from 'dockview-react';
-import { cn } from '#utils/ui.utils.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { paneSpacingClassName } from '@taucad/ui/components/pane-spacing.variants';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { nestedActionVariants } from '@taucad/ui/components/nested-action.variants';
 
 const defaultExpandedHeight = 200;
 
@@ -11,18 +13,15 @@ export const paneviewHeaderSize = 40;
 /**
  * Shared CSS variable overrides for PaneviewReact containers.
  *
- * Removes Paneview's full-width header separator and configures sash (resize
- * handle) appearance to match the Allotment sash pattern used in the main
- * editor layout.
+ * Removes Paneview's header separator; the shared resize owner paints centered
+ * neutral pills independently of the engine's pointer target.
  */
 export const paneviewStyleOverrides = cn(
   'h-full',
   '[--dv-paneview-header-border-color:transparent]',
   '[--dv-paneview-active-outline-color:transparent]',
   '[--dv-sash-color:transparent]',
-  '[--dv-active-sash-color:var(--primary)]',
-  '[--dv-active-sash-transition-duration:0.1s]',
-  '[--dv-active-sash-transition-delay:0.5s]',
+  '[--dv-active-sash-color:transparent]',
   '[&_.dv-split-view-container.dv-vertical_>_.dv-sash-container_>_.dv-sash.dv-enabled]:!cursor-row-resize',
   '[&_.dv-split-view-container.dv-vertical_>_.dv-sash-container_>_.dv-sash.dv-maximum]:!cursor-row-resize',
   '[&_.dv-split-view-container.dv-vertical_>_.dv-sash-container_>_.dv-sash.dv-minimum]:!cursor-row-resize',
@@ -31,11 +30,18 @@ export const paneviewStyleOverrides = cn(
 /** Paneview layout overrides for headers visually attached to bordered panel bodies. */
 export const paneviewAttachedSurfaceStyleOverrides = cn(
   paneviewStyleOverrides,
-  '[&_.dv-pane-body]:overflow-y-hidden! [&_.dv-pane-body]:px-2! [&_.dv-pane-body]:pb-2!',
-  '[&_[data-slot=paneview-header]]:mt-2! [&_[data-slot=paneview-header]]:mb-0!',
+  paneSpacingClassName,
+  'pb-(--pane-unit-gap)',
+  '[&_.dv-pane-body]:overflow-y-hidden! [&_.dv-pane-body]:px-2!',
+  '[&_[data-slot=paneview-header]]:mt-(--pane-unit-gap)! [&_[data-slot=paneview-header]]:mb-0!',
+  // oxlint-disable-next-line tau-lint/no-arbitrary-pixel-size -- Dockview allocates paneviewHeaderSize physical pixels, including the shared gap.
+  '[&_[data-slot=paneview-header]]:h-[calc(40px-var(--pane-unit-gap))]!',
   '[&_[data-slot=paneview-header][data-state=open]]:rounded-b-none!',
   '[&_[data-slot=paneview-header][data-state=open]]:border-b-0!',
 );
+
+/** The bordered card a panel body draws under an attached header, in every state (loading, empty, error, loaded). */
+export const paneviewAttachedBodyClassName = 'overflow-hidden rounded-b-xl border border-border bg-card';
 
 type PaneviewHeaderContextValue = { expanded: boolean };
 
@@ -58,6 +64,11 @@ function usePaneviewHeaderContext(): PaneviewHeaderContextValue {
  *
  * Provides expansion state via context for compound child components.
  * When `title` is provided, renders a `PaneviewHeaderTitle` before children.
+ *
+ * The disclosure button wraps only the chevron and title, so a child rendered
+ * right after it (a status mark) sits beside the name rather than at the
+ * trailing edge. Blank header space still toggles through the root's click,
+ * which ignores bubbled clicks from children.
  */
 export function PaneviewHeader({
   api,
@@ -109,6 +120,15 @@ export function PaneviewHeader({
     }
   }, [api, expanded]);
 
+  const handleRootClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.target === event.currentTarget) {
+        handleClick();
+      }
+    },
+    [handleClick],
+  );
+
   const contextValue = useMemo<PaneviewHeaderContextValue>(() => ({ expanded }), [expanded]);
 
   return (
@@ -117,17 +137,23 @@ export function PaneviewHeader({
         ref={rootRef}
         data-slot='paneview-header'
         data-state={expanded ? 'open' : 'closed'}
+        /* The sidebar row's lit states and colour (`sidebarRowClass`): hover, focus-within and
+         * an open nested menu light `bg-sidebar-accent`, so an action's `nested-action-hover`
+         * reads as a surface on top. `data-[state=open]` is the pane's expansion, whose
+         * `bg-card` needs the compound variants to yield to the lit states. */
         className={cn(
           'group/paneview-header mx-2 my-1 flex h-8 min-w-0 items-center overflow-hidden rounded-lg border border-transparent bg-transparent pr-1 text-[13px] select-none',
-          'transition-colors duration-150 hover:bg-accent data-[state=open]:border-border data-[state=open]:bg-card data-[state=open]:hover:bg-accent motion-reduce:transition-none',
+          'hover:bg-sidebar-accent focus-within:bg-sidebar-accent has-[[aria-haspopup=menu][data-state=open]]:bg-sidebar-accent',
+          'data-[state=open]:border-border data-[state=open]:bg-card data-[state=open]:hover:bg-sidebar-accent data-[state=open]:focus-within:bg-sidebar-accent data-[state=open]:has-[[aria-haspopup=menu][data-state=open]]:bg-sidebar-accent',
         )}
+        onClick={handleRootClick}
       >
         <button
           type='button'
           aria-expanded={expanded}
           aria-label={title === undefined ? 'Toggle panel' : undefined}
           draggable
-          className='flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
+          className='flex h-full min-w-0 items-center gap-2 rounded-lg px-2 text-left outline-none focus-visible:focus-outline'
           onClick={handleClick}
         >
           <ChevronDown
@@ -170,7 +196,8 @@ export function PaneviewHeaderTitle({
  *
  * Pushes content to the trailing edge via `ml-auto`. Accepts arbitrary div
  * attributes (e.g. `data-testid`) — internal event handlers are not
- * overridable since they own the propagation contract.
+ * overridable since they own the propagation contract. It sets no tone on
+ * the buttons inside: each control owns its own through `nestedActionVariants`.
  */
 export function PaneviewHeaderControls({
   children,
@@ -181,15 +208,7 @@ export function PaneviewHeaderControls({
     <div
       {...rest}
       data-slot='paneview-header-controls'
-      className={cn(
-        'ml-auto flex items-center gap-1',
-        '[&_button]:rounded-md [&_button]:text-muted-foreground [&_button]:transition-colors [&_button]:duration-150 [&_button]:outline-none',
-        '[&_button:hover]:bg-muted-foreground/10 [&_button:hover]:text-foreground',
-        '[&_button:focus-visible]:bg-muted-foreground/10 [&_button:focus-visible]:text-foreground [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-ring',
-        '[&_button[data-state=open]]:bg-muted-foreground/10 [&_button[data-state=open]]:text-foreground',
-        'motion-reduce:[&_button]:transition-none',
-        className,
-      )}
+      className={cn('ml-auto flex items-center gap-1', className)}
       onPointerDown={(event) => {
         event.stopPropagation();
       }}
@@ -230,8 +249,9 @@ export function PaneviewHeaderContentActions({
 /**
  * Compact icon button for paneview panel headers.
  *
- * Sized at 24px (`size-6`) for a compact WCAG 2.2 target. Wraps in a
- * `Tooltip` when the `tooltip` prop is provided.
+ * Sized at 24px (`size-6`) for a compact WCAG 2.2 target, toned by
+ * `nestedActionVariants` — the sidebar row's action, so it reads as a surface
+ * on the lit header. Wraps in a `Tooltip` when the `tooltip` prop is provided.
  */
 export function PaneviewHeaderAction({
   tooltip,
@@ -246,16 +266,17 @@ export function PaneviewHeaderAction({
   const button = (
     <button
       type='button'
-      className={cn(
-        'flex size-6 items-center justify-center rounded-md',
-        'text-muted-foreground transition-colors duration-150 motion-reduce:transition-none',
-        'hover:bg-muted-foreground/10 hover:text-foreground',
-        'outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        'disabled:pointer-events-none disabled:opacity-50',
-        "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
-        'shrink-0 select-none',
-        className,
-      )}
+      className={nestedActionVariants({
+        className: cn(
+          'flex size-6 items-center justify-center rounded-md',
+          'text-muted-foreground',
+          'outline-none focus-visible:bg-nested-action-hover focus-visible:text-foreground focus-visible:focus-outline',
+          'disabled:pointer-events-none disabled:opacity-50',
+          "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
+          'shrink-0 select-none',
+          className,
+        ),
+      })}
       {...properties}
     >
       {children}

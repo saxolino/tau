@@ -1,7 +1,7 @@
-import { assign, assertEvent, setup, emit } from 'xstate';
-import type { AnyActorRef } from 'xstate';
+import { assertEvent, setup, types } from 'xstate';
+import type { AnyActorRef, EnqueueObject } from 'xstate';
 import JSZip from 'jszip';
-import { fromSafeAsync } from '#lib/xstate.lib.js';
+import { eventSchemas, fromSafeAsync } from '#lib/xstate.lib.js';
 import type { FileMap } from '#utils/file-reader.utils.js';
 import {
   readFromFileList,
@@ -9,8 +9,18 @@ import {
   readFromDirectoryHandle,
   normalizeFilePaths,
   getImportName,
+  isExcludedImportPath,
 } from '#utils/file-reader.utils.js';
 import { findMainFile } from '#routes/import.$/import.utils.js';
+
+/**
+ * What {@link isExcludedImportPath} leaves behind, dropped at the one place
+ * every read actor's result enters the machine — so the repository a zip
+ * carried reaches neither the main-file picker, nor `filesReady`, nor
+ * `createProject`.
+ */
+const withoutExcludedImportPaths = (files: FileMap): FileMap =>
+  new Map([...files].filter(([path]) => !isExcludedImportPath(path)));
 
 /**
  * Import Disk Machine Context
@@ -44,7 +54,8 @@ type ImportDiskEventInternal =
   | { type: 'selectMainFile'; file: string }
   | { type: 'confirmImport' }
   | { type: 'retry' }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  | { type: 'externalError'; error: Error };
 
 /**
  * Import Disk Machine Emitted Events
@@ -151,6 +162,43 @@ const importDiskActors = {
 
 type ImportDiskEvent = ImportDiskEventInternal | FilesReadResult | ProjectCreatedResult;
 
+type ImportDiskEnqueue = EnqueueObject<ImportDiskEvent, ImportDiskEmitted>;
+
+const reset = {
+  files: new Map(),
+  importName: 'Uploaded Files',
+  selectedMainFile: undefined,
+  error: undefined,
+  progress: { processed: 0, total: 0 },
+  projectId: undefined,
+} satisfies Partial<ImportDiskContext>;
+
+/* A failure is remembered and said once. */
+const fail = (error: unknown, enq: ImportDiskEnqueue) => {
+  const known = error instanceof Error ? error : new Error('Unknown error');
+  enq.emit({ type: 'error', error: known });
+  return { target: 'error', context: { error: known } };
+};
+
+/* The handlers every reading state shares: the files land, and progress is reported as it moves. */
+const readingHandlers = {
+  filesRead: (
+    { event }: Readonly<{ event: Extract<ImportDiskEvent, { type: 'filesRead' }> }>,
+    enq: ImportDiskEnqueue,
+  ) => {
+    const files = withoutExcludedImportPaths(event.files);
+    enq.emit({ type: 'filesReady', files, importName: event.importName });
+    return { context: { files, importName: event.importName, selectedMainFile: findMainFile([...files.keys()]) } };
+  },
+  updateProgress: (
+    { event }: Readonly<{ event: Extract<ImportDiskEvent, { type: 'updateProgress' }> }>,
+    enq: ImportDiskEnqueue,
+  ) => {
+    enq.emit({ type: 'progress', processed: event.processed, total: event.total });
+    return { context: { progress: { processed: event.processed, total: event.total } } };
+  },
+};
+
 /**
  * Import Disk Machine
  *
@@ -166,96 +214,16 @@ type ImportDiskEvent = ImportDiskEventInternal | FilesReadResult | ProjectCreate
  * - error: An error occurred during import
  */
 export const importDiskMachine = setup({
-  types: {
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    context: {} as ImportDiskContext,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    events: {} as ImportDiskEvent,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    input: {} as ImportDiskInput,
-    // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- xstate setup
-    emitted: {} as ImportDiskEmitted,
+  schemas: {
+    context: types<ImportDiskContext>(),
+    events: eventSchemas<ImportDiskEvent>(),
+    input: types<ImportDiskInput>(),
+    emitted: eventSchemas<ImportDiskEmitted>(),
   },
   actors: importDiskActors,
   guards: {
-    hasSelectedMainFile({ context }) {
-      return context.selectedMainFile !== undefined && context.selectedMainFile.length > 0;
-    },
-    hasFiles({ context }) {
-      return context.files.size > 0;
-    },
-  },
-  actions: {
-    setError: assign({
-      error({ event }) {
-        if ('error' in event && event.error instanceof Error) {
-          return event.error;
-        }
-
-        return new Error('Unknown error');
-      },
-    }),
-    clearError: assign({
-      error: undefined,
-    }),
-    setProgress: assign({
-      progress({ event }) {
-        assertEvent(event, 'updateProgress');
-
-        return { processed: event.processed, total: event.total };
-      },
-    }),
-    setFilesFromResult: assign({
-      files({ event }) {
-        assertEvent(event, 'filesRead');
-        return event.files;
-      },
-      importName({ event }) {
-        assertEvent(event, 'filesRead');
-        return event.importName;
-      },
-    }),
-    initializeSelectedMainFile: assign({
-      selectedMainFile({ context }) {
-        const fileNames = [...context.files.keys()];
-        return findMainFile(fileNames);
-      },
-    }),
-    setSelectedMainFile: assign({
-      selectedMainFile({ event }) {
-        assertEvent(event, 'selectMainFile');
-
-        return event.file;
-      },
-    }),
-    setProjectId: assign({
-      projectId({ event }) {
-        assertEvent(event, 'projectCreated');
-        return event.projectId;
-      },
-    }),
-    reset: assign({
-      files: new Map(),
-      importName: 'Uploaded Files',
-      selectedMainFile: undefined,
-      error: undefined,
-      progress: { processed: 0, total: 0 },
-      projectId: undefined,
-    }),
-    emitProgress: emit(({ context }) => ({
-      type: 'progress',
-      processed: context.progress.processed,
-      total: context.progress.total,
-    })),
-    emitFilesReady: emit(({ context }) => ({
-      type: 'filesReady',
-      files: context.files,
-      importName: context.importName,
-    })),
-    emitError: emit(({ context }) => ({
-      type: 'error',
-      error: context.error ?? new Error('Unknown error'),
-    })),
+    hasSelectedMainFile: (context: ImportDiskContext) =>
+      context.selectedMainFile !== undefined && context.selectedMainFile.length > 0,
   },
 }).createMachine({
   id: 'importDisk',
@@ -272,6 +240,7 @@ export const importDiskMachine = setup({
   states: {
     idle: {
       on: {
+        externalError: ({ event }, enq) => fail(event.error, enq),
         processFiles: {
           target: 'reading',
         },
@@ -285,12 +254,12 @@ export const importDiskMachine = setup({
           target: 'extracting',
         },
         reset: {
-          actions: 'reset',
+          context: reset,
         },
       },
     },
     reading: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined } }),
       invoke: {
         src: 'readFilesActor',
         input({ event, self }) {
@@ -306,22 +275,12 @@ export const importDiskMachine = setup({
         onDone: {
           target: 'selectingMainFile',
         },
-        onError: {
-          target: 'error',
-          actions: ['setError', 'emitError'],
-        },
+        onError: ({ event }, enq) => fail(event.error, enq),
       },
-      on: {
-        filesRead: {
-          actions: ['setFilesFromResult', 'initializeSelectedMainFile', 'emitFilesReady'],
-        },
-        updateProgress: {
-          actions: ['setProgress', 'emitProgress'],
-        },
-      },
+      on: readingHandlers,
     },
     readingDataTransfer: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined } }),
       invoke: {
         src: 'readDataTransferActor',
         input({ event, self }) {
@@ -337,22 +296,12 @@ export const importDiskMachine = setup({
         onDone: {
           target: 'selectingMainFile',
         },
-        onError: {
-          target: 'error',
-          actions: ['setError', 'emitError'],
-        },
+        onError: ({ event }, enq) => fail(event.error, enq),
       },
-      on: {
-        filesRead: {
-          actions: ['setFilesFromResult', 'initializeSelectedMainFile', 'emitFilesReady'],
-        },
-        updateProgress: {
-          actions: ['setProgress', 'emitProgress'],
-        },
-      },
+      on: readingHandlers,
     },
     readingDirectoryHandle: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined } }),
       invoke: {
         src: 'readDirectoryHandleActor',
         input({ event, self }) {
@@ -368,22 +317,12 @@ export const importDiskMachine = setup({
         onDone: {
           target: 'selectingMainFile',
         },
-        onError: {
-          target: 'error',
-          actions: ['setError', 'emitError'],
-        },
+        onError: ({ event }, enq) => fail(event.error, enq),
       },
-      on: {
-        filesRead: {
-          actions: ['setFilesFromResult', 'initializeSelectedMainFile', 'emitFilesReady'],
-        },
-        updateProgress: {
-          actions: ['setProgress', 'emitProgress'],
-        },
-      },
+      on: readingHandlers,
     },
     extracting: {
-      entry: 'clearError',
+      entry: () => ({ context: { error: undefined } }),
       invoke: {
         src: 'extractZipActor',
         input({ event, self }) {
@@ -399,32 +338,20 @@ export const importDiskMachine = setup({
         onDone: {
           target: 'selectingMainFile',
         },
-        onError: {
-          target: 'error',
-          actions: ['setError', 'emitError'],
-        },
+        onError: ({ event }, enq) => fail(event.error, enq),
       },
-      on: {
-        filesRead: {
-          actions: ['setFilesFromResult', 'initializeSelectedMainFile', 'emitFilesReady'],
-        },
-        updateProgress: {
-          actions: ['setProgress', 'emitProgress'],
-        },
-      },
+      on: readingHandlers,
     },
     selectingMainFile: {
       on: {
         selectMainFile: {
-          actions: 'setSelectedMainFile',
+          context: ({ event }) => ({ selectedMainFile: event.file }),
         },
-        confirmImport: {
-          target: 'creating',
-          guard: 'hasSelectedMainFile',
-        },
+        confirmImport: ({ context, guards }) =>
+          guards.hasSelectedMainFile(context) ? { target: 'creating' } : undefined,
         reset: {
           target: 'idle',
-          actions: 'reset',
+          context: reset,
         },
       },
     },
@@ -439,14 +366,11 @@ export const importDiskMachine = setup({
         onDone: {
           target: 'success',
         },
-        onError: {
-          target: 'error',
-          actions: ['setError', 'emitError'],
-        },
+        onError: ({ event }, enq) => fail(event.error, enq),
       },
       on: {
         projectCreated: {
-          actions: 'setProjectId',
+          context: ({ event }) => ({ projectId: event.projectId }),
         },
       },
     },
@@ -457,11 +381,11 @@ export const importDiskMachine = setup({
       on: {
         retry: {
           target: 'idle',
-          actions: 'clearError',
+          context: { error: undefined },
         },
         reset: {
           target: 'idle',
-          actions: 'reset',
+          context: reset,
         },
       },
     },

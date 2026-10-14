@@ -5,13 +5,17 @@
     "app/**/*.tsx",
     "app/**/*.js",
     "app/**/*.jsx",
-    "content/docs/**/examples/**/*.ts",
+    "desktop/**/*.ts",
+    "desktop/**/*.tsx",
     "server.ts",
+    "netlify/edge-functions/*.ts",
+    "geospec-mt-assets.vite-plugin.ts",
+    "geospec-mt-assets-cache-key.ts",
+    "vite.calibration.config.ts",
     "react-router.config.ts",
     "vite-environment.d.ts",
     "types/**/*.d.ts",
     ".react-router/types/**/*",
-    "../../node_modules/.cache/fumadocs/apps/ui/**/*", // Fumadocs collections
     "package.json"
   ],
   "compilerOptions": {
@@ -23,12 +27,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
-    "target": "ES2024",
-    "paths": {
-      "package.json": ["./package.json"],
-      "#*": ["./app/*"],
-      "fumadocs-mdx:collections/*": ["../../node_modules/.cache/fumadocs/apps/ui/*"]
-    }
+    "target": "ES2024"
   },
   "exclude": [
     "tests/**/*.spec.ts",
@@ -40,6 +39,7 @@
     "tests/**/*.spec.jsx",
     "tests/**/*.test.jsx",
     "app/**/*.test.ts",
+    "netlify/**/*.test.ts",
     "app/**/*.spec.ts",
     "app/**/*.test.tsx",
     "app/**/*.spec.tsx",

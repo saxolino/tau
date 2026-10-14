@@ -1,31 +1,15 @@
-import { defineRuntime } from '@taucad/runtime/worker';
-import { inProcessTransport } from '@taucad/runtime/transport/in-process';
-import { fromMemoryFs } from '@taucad/runtime/filesystem';
-import { jscad } from '@taucad/jscad';
-import { parameterCache, geometryCache, gltfCoordinateTransform } from '@taucad/middleware';
-import { esbuild } from '@taucad/esbuild';
-import { assimp } from '@taucad/assimp';
 import gearJscad from '#components/geometry/splash/gear.jscad.js?raw';
 import { KernelDemo } from '#routes/_index/demo/kernel-demo.js';
 import { VerificationOverlay } from '#routes/_index/demo/verification-overlay.js';
-import type { Units } from '#components/geometry/parameters/rjsf-context.js';
+import type { Units } from '@taucad/viewer/parameters/rjsf-context';
+import { gearClientOptions } from '#runtime/demo-client-options.js';
 
 const gearMainFile = 'main.js';
 
 // Pure-JS JSCAD kernel: the primary demo path carries no WASM kernel, keeping
 // this lazy chunk light. The gear regenerates near-instantly, so "live
 // parameters" actually feels live (OQ3).
-const gearRuntime = defineRuntime({
-  plugins: [assimp(), jscad(), esbuild()],
-  middleware: [parameterCache(), geometryCache(), gltfCoordinateTransform()],
-});
-
-const gearClientOptions = {
-  runtime: gearRuntime,
-  transport: inProcessTransport({ runtime: gearRuntime, fileSystem: fromMemoryFs() }),
-};
-
-const gearUnits: Units = { length: { symbol: 'mm', factor: 1 } };
+const gearUnits: Units = { length: { displaySymbol: 'mm' } };
 
 export function GearDemo(): React.JSX.Element {
   return (
@@ -42,7 +26,7 @@ export function GearDemo(): React.JSX.Element {
         tags: ['jscad', 'parametric', 'gear'],
         forkedFrom: 'demo-gear',
       }}
-      renderVerification={(geometry) => <VerificationOverlay geometry={geometry} />}
+      renderVerification={(artifact) => <VerificationOverlay artifact={artifact} />}
     />
   );
 }

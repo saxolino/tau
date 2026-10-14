@@ -1,45 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSelector } from '@xstate/react';
-import { Skeleton } from '#components/ui/skeleton.js';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import { useProject } from '#hooks/use-project.js';
 import { ActiveChatProvider } from '#hooks/active-chat-provider.js';
-
-/**
- * Renders a low-fidelity placeholder shaped like the chat panel chrome
- * (header bar -> scrolling message stubs -> textarea footer) while the
- * editor machine is running `ensureFocusedChatActor` to re-establish the
- * focused-chat invariant at runtime (e.g. after the user deletes the
- * last chat).
- *
- * Scoped to the chat pane only — every other pane in
- * `<ChatInterfaceDesktop>` keeps its own loading behaviour, so the user
- * never sees the editor shell flash or remount.
- */
-export function ChatPaneSkeleton({ variant }: { readonly variant: 'loading' | 'ensuring' }): React.JSX.Element {
-  return (
-    <div
-      className='flex size-full flex-col bg-sidebar/50'
-      data-slot='floating-panel'
-      data-testid={`chat-pane-skeleton-${variant}`}
-      aria-busy='true'
-      aria-label={variant === 'loading' ? 'Loading editor state…' : 'Preparing chat session…'}
-    >
-      <div className='flex h-10 shrink-0 items-center gap-2 border-b px-3'>
-        <Skeleton className='h-5 w-32' />
-        <Skeleton className='ml-auto h-5 w-5 rounded-full' />
-      </div>
-      <div className='flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-3 py-4'>
-        <Skeleton className='h-16 w-3/4 self-start rounded-md' />
-        <Skeleton className='h-12 w-2/3 self-end rounded-md' />
-        <Skeleton className='h-20 w-4/5 self-start rounded-md' />
-      </div>
-      <div className='mx-2 mb-2 shrink-0'>
-        <Skeleton className='h-20 w-full rounded-sm' />
-      </div>
-    </div>
-  );
-}
+import { ChatTurnHost } from '#chat-clients/chat-turn-host.js';
+import { DebugProbes } from '#chat-clients/debug-probes.js';
+import { ENV } from '#environment.config.js';
+import { ChatPaneSkeleton } from '#routes/w.$workspace.$project/chat-pane-skeleton.js';
 
 /**
  * Renders when `ensureFocusedChatActor` rejects. Surfaces the typed
@@ -104,12 +71,15 @@ export function ChatInterfaceSessionGate({
   readonly children: React.ReactNode;
   readonly fallback: React.ReactNode;
 }): React.JSX.Element {
-  const { editorRef } = useProject();
+  'use no memo';
+
+  const { editorRef, projectId } = useProject();
   const focusedChatId = useSelector(editorRef, (state) => state.context.focusedChatId);
   const [lastValidChatId, setLastValidChatId] = useState<string | undefined>(focusedChatId);
 
   useEffect(() => {
     if (focusedChatId !== undefined && focusedChatId !== lastValidChatId) {
+      // oxlint-disable-next-line react/set-state-in-effect -- The `use no memo` boundary preserves the provider's same-commit chat handoff.
       setLastValidChatId(focusedChatId);
     }
   }, [focusedChatId, lastValidChatId]);
@@ -119,7 +89,16 @@ export function ChatInterfaceSessionGate({
     return <>{fallback}</>;
   }
 
-  return <ActiveChatProvider chatId={lastValidChatId}>{children}</ActiveChatProvider>;
+  return (
+    <ActiveChatProvider chatId={lastValidChatId} projectId={projectId}>
+      {/* The chat's one turn host: it owns the agent-host binding and the
+          bodyless body factory, which every consumer of `useCadChatClient`
+          used to write over each other. */}
+      <ChatTurnHost />
+      {ENV.TAU_DEBUG ? <DebugProbes /> : null}
+      {children}
+    </ActiveChatProvider>
+  );
 }
 
 /**

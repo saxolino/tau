@@ -10,6 +10,11 @@ import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { createNodeVmFileSystem } from '@taucad/geospec-engine/node-filesystem';
+import { Engine } from '@taucad/geospec-engine-native/node';
+import { createExampleRuntimeClient } from '@taucad/tau-examples/runtime';
+import type { GeoSpecRuntimeClient } from 'geospec/model';
+import { createNativeGeoSpecRunner } from 'geospec/runner/native';
 import { describe, it, expect } from 'vitest';
 
 const execFileAsync = promisify(execFile);
@@ -71,11 +76,67 @@ const runGeoSpecSuite = async (
 };
 
 describe('geospec example suites (regression backbone)', () => {
+  it.each(['bench-vise', 'spur-gearbox', 'standing-fan', 'wheelbarrow', 'kestrel-240-quadcopter'])(
+    'Community motion assembly %s geospec suite passes',
+    { timeout: 1_500_000 },
+    async (name) => {
+      const report = await runGeoSpecSuite(`libs/tau-examples/src/kernels/replicad/${name}`);
+      const unpassed = (report.files ?? []).flatMap(({ file, tests }) =>
+        (tests ?? [])
+          .filter(({ status }) => status !== 'passed')
+          .map(({ suite, name: test, status, diagnostics }) => ({
+            test: [file, ...suite, test].join(' > '),
+            status,
+            codes: diagnostics?.map(({ code }) => code),
+          })),
+      );
+      expect(unpassed).toStrictEqual([]);
+      expect(report.success).toBe(true);
+    },
+  );
+
+  it('PicoVoxel hello-world geospec suite passes on the exact serial path', { timeout: 180_000 }, async () => {
+    const report = await runGeoSpecSuite('libs/tau-examples/src/kernels/picovoxel/hello-world');
+    expect(report.failed).toBe(0);
+    expect(report.success).toBe(true);
+  });
+
+  it('PicoVoxel lead-screw-stage geospec suite passes', { timeout: 180_000 }, async () => {
+    const report = await runGeoSpecSuite('libs/tau-examples/src/kernels/picovoxel/lead-screw-stage');
+    expect(report.failed, JSON.stringify(report.files)).toBe(0);
+    expect(report.success).toBe(true);
+  });
+
   it('logo-keychain geospec suite passes', { timeout: 180_000 }, async () => {
     const report = await runGeoSpecSuite('libs/tau-examples/src/kernels/replicad/logo-keychain');
     expect(report.failed).toBe(0);
     expect(report.success).toBe(true);
   });
+
+  it.skipIf(!process.env['TAU_PICOGK_RESOURCE_ROOT'])(
+    'PicoGK turbofan geospec suite passes with its native SDK resource',
+    { timeout: 1_500_000 },
+    async () => {
+      const projectPath = resolve(repoRoot, 'libs/tau-examples/src/kernels/picogk/turbofan');
+      const engine = new Engine();
+      const runner = createNativeGeoSpecRunner({
+        filesystem: createNodeVmFileSystem(projectPath),
+        nativeAssertions: { engine },
+        model: {
+          projectPath,
+          runtime: async () => createExampleRuntimeClient(projectPath) as unknown as GeoSpecRuntimeClient,
+        },
+      });
+      try {
+        const report = await runner.run({ files: ['main.geospec.ts'], testTimeout: 300_000 });
+        expect(report.failed, JSON.stringify(report.files, null, 2)).toBe(0);
+        expect(report.success).toBe(true);
+      } finally {
+        await runner.close();
+        engine.close();
+      }
+    },
+  );
 
   it('v8-engine-rev2 geospec suite passes', { timeout: 1_500_000 }, async () => {
     /*

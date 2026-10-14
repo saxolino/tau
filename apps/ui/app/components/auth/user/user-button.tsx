@@ -1,9 +1,9 @@
 import { useAuth, useSession } from '@better-auth-ui/react';
-import { ChevronsUpDown, LogIn, LogOut, Settings, UserPlus2 } from 'lucide-react';
+import { ChevronsUpDown, LogIn, LogOut, Settings } from 'lucide-react';
 import { isValidElement } from 'react';
 import type { ComponentType, ReactElement, ReactNode } from 'react';
 
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,8 +11,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '#components/ui/dropdown-menu.js';
-import { cn } from '#utils/ui.utils.js';
+} from '@taucad/ui/components/dropdown-menu';
+import { cn } from '@taucad/ui/utils/cn';
 import { UserAvatar } from '#components/auth/user/user-avatar.js';
 import { UserView } from '#components/auth/user/user-view.js';
 /** Auth states a `UserButton` link can be visible in. */
@@ -40,12 +40,14 @@ export type UserButtonProps = {
   align?: 'center' | 'end' | 'start' | undefined;
   side?: 'top' | 'right' | 'bottom' | 'left';
   sideOffset?: number;
-  size?: 'default' | 'icon';
+  size?: 'default' | 'icon' | 'sm';
   variant?: 'default' | 'destructive' | 'ghost' | 'link' | 'outline' | 'secondary';
   /** Additional menu entries rendered above the built-in items. */
   links?: Array<UserButtonLink | ReactElement>;
   /** Hide the built-in "Settings" link. Useful when replacing it via `links`. */
-  hideSettings?: boolean;
+  shouldHideSettings?: boolean;
+  /** Signed-in content shown under the account label, above the menu entries. */
+  header?: ReactNode;
 };
 
 function renderUserLink(
@@ -72,16 +74,7 @@ function renderUserLink(
  * Render a user dropdown button that shows user info, settings, theme controls, and authentication actions.
  *
  * Includes user profile, settings link, optional multi-session account switching, theme picker,
- * and sign-in/sign-up/sign-out actions depending on authentication state.
- *
- * @param className - Additional CSS classes applied to the button trigger
- * @param align - Alignment of the dropdown menu relative to the trigger
- * @param sideOffset - Offset between the trigger and the dropdown menu
- * @param size - "icon" renders only the avatar; "default" renders a full button with label and chevron
- * @param variant - Visual variant of the trigger button
- * @param links - Additional menu entries rendered above the built-in items
- * @param hideSettings - Hide the built-in "Settings" link
- * @returns The dropdown menu component with user actions
+ * and login/sign-out actions depending on authentication state.
  */
 export function UserButton({
   className,
@@ -91,11 +84,13 @@ export function UserButton({
   size = 'default',
   variant = 'ghost',
   links,
-  hideSettings = false,
-}: UserButtonProps) {
+  shouldHideSettings = false,
+  header,
+}: UserButtonProps): React.JSX.Element {
   const { authClient, basePaths, viewPaths, localization, plugins, Link } = useAuth();
 
   const { data: session, isPending: sessionPending } = useSession(authClient);
+  const isCompact = size === 'sm';
 
   const userLinks = links?.flatMap((link, index) => {
     if (!isValidElement(link)) {
@@ -114,26 +109,32 @@ export function UserButton({
     <DropdownMenu>
       <DropdownMenuTrigger
         className={cn(
-          size === 'icon' && 'rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          size === 'icon' && 'rounded-full outline-none focus-visible:focus-outline',
           size === 'icon' && className,
         )}
-        asChild={size === 'default'}
+        asChild={size !== 'icon'}
       >
         {size === 'icon' ? (
           <UserAvatar />
         ) : (
-          <Button variant={variant} className={cn('py-2.5 h-auto font-normal', className)} size='lg'>
+          <Button
+            variant={variant}
+            className={cn('font-normal', size === 'default' && 'h-auto py-2.5', className)}
+            size={isCompact ? 'sm' : 'lg'}
+          >
             {(session ?? sessionPending) ? (
-              <UserView />
+              <UserView isCompact={isCompact} />
             ) : (
               <>
-                <UserAvatar />
+                <UserAvatar className={cn(isCompact && 'size-4 text-[10px]')} />
 
                 <div className='grid flex-1 text-left text-sm leading-tight'>{localization.auth.account}</div>
               </>
             )}
+            {/* The pending view is only skeletons: keep the trigger named while the session loads. */}
+            {!session && sessionPending ? <span className='sr-only'>{localization.auth.account}</span> : null}
 
-            <ChevronsUpDown className='ml-auto' />
+            {isCompact ? null : <ChevronsUpDown className='ml-auto' />}
           </Button>
         )}
       </DropdownMenuTrigger>
@@ -143,8 +144,8 @@ export function UserButton({
         sideOffset={sideOffset}
         side={side}
         align={align}
-        onCloseAutoFocus={(e) => {
-          e.preventDefault();
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
         }}
       >
         {session && (
@@ -152,6 +153,8 @@ export function UserButton({
             <DropdownMenuLabel className='text-sm font-normal'>
               <UserView />
             </DropdownMenuLabel>
+
+            {header}
 
             <DropdownMenuSeparator />
           </>
@@ -161,7 +164,7 @@ export function UserButton({
           <>
             {userLinks}
 
-            {!hideSettings && (
+            {!shouldHideSettings && (
               <DropdownMenuItem asChild>
                 <Link href={`${basePaths.settings}/${viewPaths.settings.account}`}>
                   <Settings className='text-muted-foreground' />
@@ -192,16 +195,7 @@ export function UserButton({
             <DropdownMenuItem asChild>
               <Link href={`${basePaths.auth}/${viewPaths.auth.signIn}`}>
                 <LogIn className='text-muted-foreground' />
-
-                {localization.auth.signIn}
-              </Link>
-            </DropdownMenuItem>
-
-            <DropdownMenuItem asChild>
-              <Link href={`${basePaths.auth}/${viewPaths.auth.signUp}`}>
-                <UserPlus2 className='text-muted-foreground' />
-
-                {localization.auth.signUp}
+                Log in
               </Link>
             </DropdownMenuItem>
 

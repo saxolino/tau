@@ -3,15 +3,16 @@ import type { ErrorInfo, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { AlertCircle, RefreshCcw, RotateCcw } from 'lucide-react';
 import { cva } from 'class-variance-authority';
-import { cn } from '#utils/ui.utils.js';
-import { Button } from '#components/ui/button.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { Button } from '@taucad/ui/components/button';
 import { PaneButton } from '#components/ui/pane-button.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
-import { DrawerClose, DrawerHandle, useIsInsideDrawer } from '#components/ui/drawer.js';
-import { useIsMobile } from '#hooks/use-mobile.js';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { DrawerClose, DrawerHandle, useIsInsideDrawer } from '@taucad/ui/components/drawer';
+import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import { CollapsibleCodeBlock } from '#components/ui/collapsible-code-block.js';
 import { useAnalytics } from '#hooks/use-analytics.js';
 import type { Analytics } from '#hooks/use-analytics.js';
+import { isDesktopTarget } from '#lib/build-target.js';
 
 type Side = 'left' | 'right';
 type TooltipSide = 'left' | 'right' | 'top' | 'bottom';
@@ -29,8 +30,13 @@ const chainStopPropagation = <E extends React.SyntheticEvent>(
 const floatingPanelContentHeaderVariants = cva(
   cn(
     'group/floating-panel-content-header',
-    'flex h-7.75 shrink-0 max-md:h-10 items-center justify-between',
+    'flex shrink-0 items-center justify-between',
+    'h-9',
+    isDesktopTarget() ? '[app-region:drag] [&_button]:[app-region:no-drag]' : 'max-md:h-10',
     'border-b bg-sidebar py-0.5',
+    /* The header owns the fade its title may use (`fade-label`): the row widens the mask once its
+     * actions are reachable, and the actions' scrim resolves against this background. */
+    'fade-row [--fade-scrim-into:var(--sidebar-background)]',
     'text-sm font-medium text-muted-foreground',
   ),
   {
@@ -218,7 +224,7 @@ function FloatingPanelClose({ icon, className, children, tooltipContent }: Float
       tooltipSide='top'
       className={cn(
         'text-muted-foreground',
-        'max-md:rounded-full max-md:border max-md:bg-background/70 max-md:backdrop-blur-lg',
+        'max-md:border max-md:bg-background/70 max-md:backdrop-blur-lg',
         className,
       )}
       aria-label='Close panel'
@@ -442,9 +448,14 @@ function FloatingPanelContentHeaderActions({
   return (
     <div
       className={cn(
-        'flex items-center pl-1 max-md:gap-1.5',
-        'md:opacity-0 md:transition-opacity md:duration-150 md:ease-in-out',
-        'group-hover/floating-panel:opacity-100',
+        // `gap-1` and no inset: the same spacing the Dockview pane-action rows use.
+        'flex items-center max-md:gap-1',
+        /* The trailing control of a `fade-row` header: `fade-action` paints the scrim that
+         * finishes a `fade-label` name's dissolve, over the row's own background. */
+        'fade-action relative bg-(--fade-scrim-into)',
+        'md:opacity-0',
+        // Keyboard focus reveals the slot too, or a tabbed-to action is an invisible focus ring.
+        'group-hover/floating-panel:opacity-100 md:focus-within:opacity-100',
         className,
       )}
       data-slot='floating-panel-content-header-actions'
@@ -556,8 +567,8 @@ function FloatingPanelErrorContent({
     <div className={cn('flex h-full flex-col items-center justify-center gap-4 p-6', className)}>
       <div className='flex w-full max-w-sm flex-col items-center gap-3 text-center'>
         {/* Error Icon */}
-        <div className='flex size-12 items-center justify-center rounded-full bg-destructive/10'>
-          <AlertCircle className='size-6 text-destructive' />
+        <div className='flex size-12 items-center justify-center rounded-full bg-feature/10'>
+          <AlertCircle className='size-6 text-feature' />
         </div>
 
         {/* Error Title */}
@@ -579,12 +590,12 @@ function FloatingPanelErrorContent({
             title={errorMessage ?? 'Error'}
             text={errorStack}
             collapsedLineCount={3}
-            className='text-left text-destructive/80'
+            className='text-left text-feature/80'
             containerClassName='w-full'
           />
         ) : errorMessage ? (
-          <div className='w-full rounded-md border border-destructive/20 bg-destructive/5 p-3 text-left'>
-            <p className='text-xs font-medium text-destructive/80'>{errorMessage}</p>
+          <div className='w-full rounded-md border border-feature/20 bg-feature/5 p-3 text-left'>
+            <p className='text-xs font-medium text-feature/80'>{errorMessage}</p>
           </div>
         ) : undefined}
       </div>

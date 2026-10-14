@@ -3,7 +3,6 @@
  * These are plain objects -- no class instances, no hidden state.
  */
 
-import type { FileExtension } from '@taucad/types';
 import type { RuntimeContentKey } from '#types/runtime-content.types.js';
 
 /** Capability discriminants used by the runtime manifest. @public */
@@ -15,15 +14,25 @@ export type RuntimePluginKind = (typeof runtimeCapabilityKinds)[number];
 declare const __exportFormats: unique symbol;
 declare const __renderOptions: unique symbol;
 declare const __kernelId: unique symbol;
+declare const __evaluateSchema: unique symbol;
+declare const __views: unique symbol;
+declare const __exports: unique symbol;
 declare const __renderContent: unique symbol;
 declare const __exportContent: unique symbol;
 declare const __middlewareRenderContent: unique symbol;
 declare const __middlewareExportContent: unique symbol;
+declare const __middlewareViewContent: unique symbol;
 declare const __transcodeEdges: unique symbol;
 declare const __transcodeFrom: unique symbol;
 declare const __transcoderId: unique symbol;
 declare const __transcodeContent: unique symbol;
 declare const __transcodePinnedSourceOptions: unique symbol;
+declare const __transcodeEdge: unique symbol;
+
+/** Correlated source/options carrier used inside a transcoder's phantom edge map. @public */
+export type TranscoderEdgeType<From extends string, Options> = {
+  readonly [__transcodeEdge]: { readonly from: From; readonly options: Options };
+};
 
 /**
  * Permissions declared by a runtime plugin for store and host review.
@@ -68,17 +77,25 @@ export type KernelPlugin<
   RenderContent extends RuntimeContentKey = RuntimeContentKey,
   ExportContent extends Record<string, RuntimeContentKey> = Record<string, RuntimeContentKey>,
   Extensions extends readonly string[] = readonly string[],
+  EvaluateSchema = unknown,
+  Views = unknown,
+  Exports = unknown,
 > = RuntimePluginDeclaration & {
   /** Unique identifier for this kernel */
   id: Id;
   /** File extensions this kernel handles (e.g., ['scad'], ['ts', 'js']). '*' is a catch-all. */
   extensions: Extensions;
-  /** Export formats declared by the kernel definition. */
-  exportFormats?: readonly string[];
   /** Regex to match against file content for kernel selection */
-  detectImport?: RegExp;
+  detectImport?: RegExp | Readonly<{ source: string; flags: string }>;
   /** Bare-specifier module names this kernel provides for bundler-assisted detection */
   builtinModuleNames?: string[];
+  /**
+   * The npm `dependencies` entries for the packages this kernel runs as builtin modules, in
+   * `package.json` form: `{ "replicad": "npm:@taulabs/replicad@1.1.0-taulabs.0" }` for a package
+   * Tau runs under another name, `{ "manifold-3d": "3.4.1" }` otherwise. A project declares these
+   * so it runs outside Tau with the same libraries.
+   */
+  builtinDependencies?: Readonly<Record<string, string>>;
   /** Kernel-specific options passed to initialize() */
   options?: Record<string, unknown>;
   /**
@@ -107,7 +124,21 @@ export type KernelPlugin<
   readonly [__renderContent]?: { readonly keys: RenderContent };
   /** @internal */
   readonly [__exportContent]?: ExportContent;
-};
+  /** @internal */
+  readonly [__evaluateSchema]?: EvaluateSchema;
+  /** @internal */
+  readonly [__views]?: Views;
+  /** @internal */
+  readonly [__exports]?: Exports;
+} & (unknown extends Exports
+    ? { readonly exports?: Readonly<Record<string, Readonly<{ extension: string }>>> }
+    : {
+        readonly exports: Readonly<{
+          [Key in keyof Exports]: Readonly<{
+            extension: Exports[Key] extends { readonly extension: infer Extension extends string } ? Extension : string;
+          }>;
+        }>;
+      });
 
 /**
  * Registration object for a middleware plugin. Returned by factory functions like `parameterCache()`.
@@ -117,6 +148,7 @@ export type MiddlewarePlugin<
   Id extends string = string,
   RenderContent extends RuntimeContentKey = RuntimeContentKey,
   ExportContent extends Record<string, RuntimeContentKey> = Record<string, RuntimeContentKey>,
+  ViewContent extends Record<string, RuntimeContentKey> = Record<string, RuntimeContentKey>,
 > = RuntimePluginDeclaration & {
   /** Unique identifier for this middleware */
   id: Id;
@@ -126,6 +158,8 @@ export type MiddlewarePlugin<
   readonly [__middlewareRenderContent]?: { readonly keys: RenderContent };
   /** @internal */
   readonly [__middlewareExportContent]?: ExportContent;
+  /** MIME-keyed view content metadata; no executable middleware definition crosses the client graph. @internal */
+  readonly [__middlewareViewContent]?: ViewContent;
 };
 
 /**
@@ -145,8 +179,9 @@ export type BundlerPlugin<Id extends string = string> = RuntimePluginDeclaration
 /**
  * Registration object for a transcoder plugin. Returned by `defineTranscoder(...)` factories.
  *
- * The `EdgeMap` phantom type parameter carries compile-time type information
- * about per-target-format option schemas from statically declared edges.
+ * The `EdgeMap` phantom type parameter carries each real `from` → `to` edge
+ * together with its option schema, preserving edge correlation when one
+ * plugin declares multiple source and target formats.
  * The `From` phantom carries the source format that this transcoder converts from,
  * enabling `MergeExportMap` to merge kernel source-format options into transcoded targets.
  * The `Id` phantom carries the transcoder's literal identifier so consumers can derive
@@ -274,7 +309,7 @@ type TranscoderPinnedSourceOptionsMapOf<T> =
  * ```
  */
 export type CollectExportFormats<Plugins extends readonly AnyKernelPlugin[]> =
-  keyof CollectFormatMap<Plugins> extends never ? FileExtension : FileExtension & keyof CollectFormatMap<Plugins>;
+  keyof CollectFormatMap<Plugins> extends never ? string : Extract<keyof CollectFormatMap<Plugins>, string>;
 
 /**
  * Detects the exact `Record<string, never>` shape that Zod 4 infers from
@@ -439,11 +474,59 @@ export type CollectTranscodeMap<Transcoders extends readonly AnyTranscoderPlugin
   ? Record<never, never>
   : CollectTranscodeMapInner<Transcoders>;
 
+type TranscoderEdgeOptionsOf<Edge> = Edge extends TranscoderEdgeType<string, infer Options> ? Options : Edge;
+
 type CollectTranscodeMapInner<Transcoders extends readonly AnyTranscoderPlugin[]> = {
-  [K in keyof UnionToIntersection<TranscoderEdgeMapOf<Transcoders[number]>>]: UnionToIntersection<
-    TranscoderEdgeMapOf<Transcoders[number]>
-  >[K];
+  [K in keyof UnionToIntersection<TranscoderEdgeMapOf<Transcoders[number]>>]: TranscoderEdgeOptionsOf<
+    UnionToIntersection<TranscoderEdgeMapOf<Transcoders[number]>>[K]
+  >;
 };
+
+type TranscodeRouteOfValue<To, Value, FallbackFrom> =
+  Value extends TranscoderEdgeType<infer From, infer Options>
+    ? { readonly from: From; readonly to: To; readonly options: Options }
+    : { readonly from: FallbackFrom; readonly to: To; readonly options: Value };
+
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
+
+type TranscodeRoutesOf<Transcoder extends AnyTranscoderPlugin> =
+  IsAny<ExtractEdgeMap<Transcoder>> extends true
+    ? { readonly from: string; readonly to: string; readonly options: Record<string, unknown> }
+    : keyof ExtractEdgeMap<Transcoder> extends never
+      ? string extends ExtractFrom<Transcoder>
+        ? { readonly from: string; readonly to: string; readonly options: Record<string, unknown> }
+        : never
+      : {
+          [To in keyof ExtractEdgeMap<Transcoder>]: TranscodeRouteOfValue<
+            To,
+            ExtractEdgeMap<Transcoder>[To],
+            ExtractFrom<Transcoder>
+          >;
+        }[keyof ExtractEdgeMap<Transcoder>];
+
+type ExcludeRegisteredTranscodeRoutes<Routes, Registered> = Routes extends {
+  readonly from: infer From;
+  readonly to: infer To;
+}
+  ? Extract<Registered, { readonly from: From; readonly to: To }> extends never
+    ? Routes
+    : never
+  : never;
+
+type CollectTupleTranscodeRoutes<
+  Transcoders extends readonly AnyTranscoderPlugin[],
+  Registered = never,
+> = Transcoders extends readonly [infer First extends AnyTranscoderPlugin, ...infer Rest extends AnyTranscoderPlugin[]]
+  ?
+      | ExcludeRegisteredTranscodeRoutes<TranscodeRoutesOf<First>, Registered>
+      | CollectTupleTranscodeRoutes<Rest, Registered | TranscodeRoutesOf<First>>
+  : never;
+
+/** Collect the first registered route for every source-target pair in a transcoder tuple. @public */
+export type CollectTranscodeRoutes<Transcoders extends readonly AnyTranscoderPlugin[]> =
+  number extends Transcoders['length']
+    ? TranscodeRoutesOf<Transcoders[number]>
+    : CollectTupleTranscodeRoutes<Transcoders>;
 
 /** Extract the `EdgeMap` phantom from a `TranscoderPlugin`. */
 type ExtractEdgeMap<T extends AnyTranscoderPlugin> = TranscoderEdgeMapOf<T>;
@@ -454,7 +537,7 @@ type ExtractFrom<T extends AnyTranscoderPlugin> = TranscoderFromOf<T>;
 /**
  * For a single transcoder, compute merged target options.
  * When `From` is a literal that matches a key in `FormatMap`, each target gets
- * `FormatMap[From] & EdgeOptions[Target]`. Source-format options already have
+ * source-owned options plus edge-owned options. Source-format options already have
  * natural optionality from `z.input` (`.default()` fields are optional).
  * Otherwise, edge-only options.
  *
@@ -472,10 +555,20 @@ type PinnedSourceOptionKeys<
 
 type OmitPinnedSourceOptions<Source, Keys extends PropertyKey> = Source extends unknown ? Omit<Source, Keys> : never;
 
+type MergeOwnedRouteOptions<Source, Edge, Pinned extends PropertyKey> = OmitPinnedSourceOptions<Source, Pinned> &
+  Omit<Edge, keyof Source>;
+
+type MergedTranscoderEdge<FormatMap extends Record<string, unknown>, T extends AnyTranscoderPlugin, Target, Edge> =
+  Edge extends TranscoderEdgeType<infer From, infer Options>
+    ? From extends keyof FormatMap
+      ? MergeOwnedRouteOptions<FormatMap[From], Options, PinnedSourceOptionKeys<T, Target>>
+      : Options
+    : ExtractFrom<T> extends keyof FormatMap
+      ? MergeOwnedRouteOptions<FormatMap[ExtractFrom<T>], Edge, PinnedSourceOptionKeys<T, Target>>
+      : Edge;
+
 type MergedEdgesForTranscoder<FormatMap extends Record<string, unknown>, T extends AnyTranscoderPlugin> = {
-  [Target in keyof ExtractEdgeMap<T>]: ExtractFrom<T> extends keyof FormatMap
-    ? OmitPinnedSourceOptions<FormatMap[ExtractFrom<T>], PinnedSourceOptionKeys<T, Target>> & ExtractEdgeMap<T>[Target]
-    : ExtractEdgeMap<T>[Target];
+  [Target in keyof ExtractEdgeMap<T>]: MergedTranscoderEdge<FormatMap, T, Target, ExtractEdgeMap<T>[Target]>;
 };
 
 /**
@@ -568,8 +661,8 @@ export type CollectTranscoderTargets<Transcoders extends readonly AnyTranscoderP
   Transcoders['length'] extends 0
     ? never
     : keyof CollectTranscodeMap<Transcoders> extends never
-      ? FileExtension
-      : FileExtension & keyof CollectTranscodeMap<Transcoders>;
+      ? string
+      : Extract<keyof CollectTranscodeMap<Transcoders>, string>;
 
 /**
  * Resolves to the union of every target format reachable from the given
@@ -600,7 +693,7 @@ export type KnownSourceFormats<Kernels extends readonly AnyKernelPlugin[]> = Col
  * union of every reachable target format. When both bags are wide-default
  * (`KernelPlugin[]` / `TranscoderPlugin[]`) and yield no inferable formats,
  * falls back to {@link KnownTargetFormats} so the wide-default client still
- * accepts any `FileExtension` on `export`.
+ * accepts any declared string format on `export`.
  *
  * @public
  */
@@ -623,11 +716,11 @@ export type ExportOptionsFor<
   Kernels extends readonly AnyKernelPlugin[],
   Transcoders extends readonly AnyTranscoderPlugin[],
   F,
-> = Kernels extends readonly [AnyKernelPlugin]
-  ? F extends keyof MergeExportMap<CollectFormatMap<Kernels>, Transcoders>
+> = string extends keyof MergeExportMap<CollectFormatMap<Kernels>, Transcoders>
+  ? Record<string, unknown>
+  : F extends keyof MergeExportMap<CollectFormatMap<Kernels>, Transcoders>
     ? MergeExportMap<CollectFormatMap<Kernels>, Transcoders>[F]
-    : Record<string, unknown> | undefined
-  : Record<string, unknown>;
+    : Record<string, unknown> | undefined;
 
 /**
  * Resolves the render-options input type for a specific kernel id within a

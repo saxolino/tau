@@ -1,11 +1,11 @@
 import { XIcon } from 'lucide-react';
 import { createContext, useContext, useMemo, useRef, useState } from 'react';
 import type { ComponentProps, MouseEventHandler, ReactNode } from 'react';
-import { Badge } from '#components/ui/badge.js';
-import type { CommandGroup } from '#components/ui/command.js';
-import { Command, CommandEmpty, CommandItem, CommandList } from '#components/ui/command.js';
-import { Popover, PopoverContent, PopoverTrigger } from '#components/ui/popover.js';
-import { cn } from '#utils/ui.utils.js';
+import { Badge } from '@taucad/ui/components/badge';
+import type { CommandGroup } from '@taucad/ui/components/command';
+import { Command, CommandEmpty, CommandItem, CommandList } from '@taucad/ui/components/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@taucad/ui/components/popover';
+import { cn } from '@taucad/ui/utils/cn';
 import { stringToColor } from '#utils/color.utils.js';
 
 type TagsContextType = {
@@ -72,7 +72,7 @@ export type TagsTriggerProps = {
 export function TagsTrigger({
   id,
   className,
-  placeholder = 'Type to add tags...',
+  placeholder = 'Type to add tags…',
   inputAriaLabel,
   disabled,
 }: TagsTriggerProps): React.JSX.Element {
@@ -137,7 +137,7 @@ export function TagsTrigger({
       <div
         className={cn(
           'group/tags-trigger flex h-auto min-h-9 w-full cursor-text flex-wrap items-center gap-1 rounded-md border border-input bg-background p-2 text-sm shadow-xs transition-[box-shadow] outline-none dark:bg-input/30',
-          'has-[[data-slot=input-tags-input]:focus-visible]:ring-2 has-[[data-slot=input-tags-input]:focus-visible]:ring-ring',
+          'has-[[data-slot=input-tags-input]:focus-visible]:focus-outline',
           disabled && 'cursor-not-allowed opacity-50',
           className,
         )}
@@ -162,7 +162,7 @@ export function TagsTrigger({
           value={value}
           disabled={disabled}
           placeholder={tags.length === 0 ? placeholder : ''}
-          className='w-0 flex-1 bg-transparent px-0.5 py-px text-base outline-none group-focus-within/tags-trigger:w-[120px] placeholder:text-muted-foreground md:text-sm'
+          className='w-0 flex-1 bg-transparent px-0.5 py-px text-base outline-none group-focus-within/tags-trigger:w-30 placeholder:text-muted-foreground md:text-sm'
           onChange={(event) => {
             setValue(event.target.value);
           }}
@@ -206,7 +206,7 @@ export function TagsValue({
           type='button'
           data-tag-remove
           aria-label={`Remove ${children}`}
-          className='size-auto cursor-pointer rounded-full outline-none hover:bg-primary-foreground/30 focus-visible:ring-2 focus-visible:ring-ring'
+          className='size-auto rounded-full outline-none hover:bg-primary-foreground/30 focus-visible:focus-outline'
           onClick={handleRemove}
           onPointerDown={handlePointerDown}
         >
@@ -221,7 +221,7 @@ export type TagsContentProps = ComponentProps<typeof PopoverContent>;
 export function TagsContent({ className, children, ...props }: TagsContentProps): React.JSX.Element {
   const { value, setValue } = useTagsContext();
   return (
-    <PopoverContent className={cn('w-[300px] p-0', className)} align='start' {...props}>
+    <PopoverContent className={cn('w-75 p-0', className)} align='start' {...props}>
       <Command value={value} onValueChange={setValue}>
         {children}
       </Command>
@@ -231,7 +231,7 @@ export function TagsContent({ className, children, ...props }: TagsContentProps)
 
 export type TagsListProps = ComponentProps<typeof CommandList>;
 export function TagsList({ className, ...props }: TagsListProps): React.JSX.Element {
-  return <CommandList className={cn('max-h-[200px]', className)} {...props} />;
+  return <CommandList className={cn('max-h-50', className)} {...props} />;
 }
 
 export type TagsEmptyProps = ComponentProps<typeof CommandEmpty>;
@@ -247,4 +247,4 @@ export function TagsItem({ className, ...props }: TagsItemProps): React.JSX.Elem
 }
 
 // oxlint-disable-next-line no-barrel-files/no-barrel-files -- allowed for component reuse.
-export { CommandGroup as TagsGroup } from '#components/ui/command.js';
+export { CommandGroup as TagsGroup } from '@taucad/ui/components/command';

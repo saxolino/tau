@@ -3,7 +3,7 @@ title: 'glTF Construction Policy'
 description: 'Rules for constructing glTF/GLB binaries in the runtime, governing the direct writer, buffer layout, material encoding, and kernel integration patterns'
 status: active
 created: '2026-03-24'
-updated: '2026-08-17'
+updated: '2026-10-12'
 related:
   - docs/policy/geometry-naming-policy.md
   - docs/policy/rendering-pipeline-policy.md
@@ -26,7 +26,7 @@ This policy codifies the decision to use a direct GLB binary writer on the rende
 
 ## 1. Use the Direct Writer on the Render Hot Path
 
-Use `writeGlb()` and `writeGltfJson()` from `packages/runtime/src/utils/glb-writer.ts` for all render-path GLB construction. Do not use `@gltf-transform/core` `Document` + `NodeIO` on the render hot path.
+Use `writeGlb()` and `writeGltfJson()` from `packages/core/geometry/src/utils/glb-writer.ts` for all render-path GLB construction. Do not use `@gltf-transform/core` `Document` + `NodeIO` on the render hot path.
 
 **Why**: The direct writer is synchronous, allocates no intermediate document model, and produces spec-compliant GLB in a single pass. Profiling shows this eliminates the `Document` construction and `NodeIO.writeBinary()` overhead that dominated short renders.
 
@@ -75,15 +75,24 @@ const glb = await new NodeIO().writeBinary(document);
 
 `@gltf-transform/core` remains a dependency for use cases that require **reading** or **mutating** existing GLB documents:
 
-| Use case                        | File                                      | Why direct writer is insufficient                                                    |
-| ------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------ |
-| Edge detection middleware       | `gltf-edge-detection.middleware.ts`       | Reads GLB, adds LINES primitives, writes back — requires document model for mutation |
-| Coordinate transform middleware | `gltf-coordinate-transform.middleware.ts` | Reads GLB, applies transforms, writes back                                           |
-| Manifold kernel                 | `manifold.kernel.ts`                      | Uses `manifold-3d`'s own `GLTFNodesToGLTFDoc` which returns a `Document`             |
-| OpenRSCAD kernel                | `openrscad.kernel.ts`                     | Uses `openrscad-engine`'s native GLB output                                          |
-| Test assertions                 | `*.test.ts`                               | `NodeIO().readBinary()` to parse and verify output structure                         |
+| Use case                  | File                                | Why direct writer is insufficient                                                    |
+| ------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------ |
+| Edge detection middleware | `gltf-edge-detection.middleware.ts` | Reads GLB, adds LINES primitives, writes back — requires document model for mutation |
+| Manifold kernel           | `manifold.kernel.ts`                | Uses `manifold-3d`'s own `GLTFNodesToGLTFDoc` which returns a `Document`             |
+| OpenRSCAD kernel          | `openrscad.kernel.ts`               | Uses `openrscad-engine`'s native GLB output                                          |
+| Test assertions           | `*.test.ts`                         | `NodeIO().readBinary()` to parse and verify output structure                         |
 
 Do not add new `@gltf-transform/core` `Document` + `NodeIO().writeBinary()` calls to kernel render paths. If a new kernel produces mesh data (positions, normals, indices), map it to `GlbInput` and call `writeGlb()`.
+
+### 1.2 Shared Assets and Named Occurrences
+
+Keep the existing inline node input. Reuse an immutable primitive-array and topology identity for occurrences of one mesh asset; the writer numbers assets on first encounter. Each node retains its own name, extras, component identity and placement. Equal values alone do not establish asset identity. Share compatible accessor and buffer-view identities across material variants without merging authored material metadata or incompatible vertex layouts.
+
+Serialize local placement through the existing column-major `SpatialMatrix` type. Validate finite affine TRS, excluding shear and zero scale, before serialization. Preserve the supplied matrix exactly. Apply coordinate and unit conversion once at the mapping/export boundary. When a producer cannot preserve its actual float geometry through placement, bake that geometry instead. Do not silently decompose or approximate a placement.
+
+### 1.3 Lossless Index Width
+
+Preserve supplied Uint16 or Uint32 indices. Uint16 is valid only when every referenced index is at most **65,534**; 65,535 is the forbidden primitive-restart value. Use Uint32 for larger indices. Validate the numeric elements that will be serialized, including their vertex range, rather than an overridable iterator. Omit indices only for genuinely sequential triangle or line soup; never deindex a shared mesh or split it merely to force Uint16.
 
 ## 2. Non-Interleaved Buffer Layout
 
@@ -101,7 +110,7 @@ The direct writer uses **non-interleaved** (Structure of Arrays) buffer layout: 
 
 The GPU benefit is negligible for two reasons: (1) we have only two vertex attributes (POSITION + NORMAL), where modern GPU prefetchers handle dual-stream access efficiently, and (2) OCCT's Delaunay-based tessellation produces spatially coherent index sequences with good cache locality regardless of buffer layout.
 
-Additionally, the edge detection and coordinate transform middleware re-serialize through `@gltf-transform/core` (which interleaves by default), so the Three.js viewer receives interleaved data whenever middleware is active.
+Additionally, edge detection middleware re-serializes through `@gltf-transform/core` (which interleaves by default), so the Three.js viewer receives interleaved data when that middleware is active.
 
 Three.js `GLTFLoader` handles both layouts. The UI code (`gltf-edges.ts`) has explicit `InterleavedBufferAttribute` handling for the middleware-interleaved path, and regular `BufferAttribute` handling for the direct-writer non-interleaved path.
 
@@ -125,22 +134,24 @@ All GLB output must comply with the glTF 2.0 specification. The direct writer mu
 
 ### 3.2 Required JSON Properties
 
-| Property                           | Requirement                                                                        |
-| ---------------------------------- | ---------------------------------------------------------------------------------- |
-| `asset.version`                    | Must be `"2.0"`                                                                    |
-| `asset.generator`                  | Must be `"tau-runtime"`                                                            |
-| `scene`                            | Must be `0` (index of default scene)                                               |
-| `scenes[0].nodes`                  | Array of root node indices                                                         |
-| `bufferViews[].target`             | `34962` (ARRAY_BUFFER) for vertex data, `34963` (ELEMENT_ARRAY_BUFFER) for indices |
-| `accessors[].min/max`              | Required on POSITION accessors (bounding box). Omit on NORMAL and index accessors. |
-| `accessors[].componentType`        | `5126` (FLOAT) for positions/normals, `5125` (UNSIGNED_INT) for indices            |
-| `accessors[].type`                 | `"VEC3"` for positions/normals, `"SCALAR"` for indices                             |
-| `materials[].pbrMetallicRoughness` | Always present with `baseColorFactor`, `metallicFactor`, `roughnessFactor`         |
-| `materials[].doubleSided`          | Always `true` for CAD geometry                                                     |
+| Property                           | Requirement                                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `asset.version`                    | Must be `"2.0"`                                                                                              |
+| `asset.generator`                  | Must be `"tau-runtime"`                                                                                      |
+| `scene`                            | Must be `0` (index of default scene)                                                                         |
+| `scenes[0].nodes`                  | Array of root node indices                                                                                   |
+| `bufferViews[].target`             | `34962` (ARRAY_BUFFER) for vertex data, `34963` (ELEMENT_ARRAY_BUFFER) for indices                           |
+| `accessors[].min/max`              | Required on POSITION accessors (bounding box). Omit on NORMAL and index accessors.                           |
+| `accessors[].componentType`        | `5126` (FLOAT) for positions/normals; `5123` (UNSIGNED_SHORT) or `5125` (UNSIGNED_INT) for validated indices |
+| `accessors[].type`                 | `"VEC3"` for positions/normals, `"SCALAR"` for indices                                                       |
+| `materials[].pbrMetallicRoughness` | Always present with `baseColorFactor`, `metallicFactor`, `roughnessFactor`                                   |
+| `materials[].doubleSided`          | Always `true` for CAD geometry                                                                               |
 
 ### 3.3 Material Encoding
 
 Follow `cadMaterialDefaults` and `cadEdgeOverlayMaterialDefaults` from `@taucad/types/constants` (see `docs/policy/rendering-pipeline-policy.md`):
+
+These are generated CAD defaults. Preserve explicitly authored or imported standard material alpha modes (`"OPAQUE"`, `"MASK"`, `"BLEND"`) and their `alphaCutoff`; do not replace authored `"MASK"` with a generated default. Supported rendering remains subject to the selected consumer's profile.
 
 | Property                 | Surface primitives                       | Tau-generated auxiliary edge overlays |
 | ------------------------ | ---------------------------------------- | ------------------------------------- |
@@ -233,7 +244,7 @@ Each kernel maps its geometry output to `GlbInput` before calling `writeGlb()`. 
 | Replicad       | `GeometryReplicad` (faces, edges, colors) | `replicad-to-gltf.ts` | Pre-transformed positions/normals, indices, optional edge lines                                                             |
 | JSCAD          | Named `geom3` part descriptors            | `jscad-to-gltf.ts`    | One named node/mesh per part, fresh export-only retessellation, triangle normalization, and owner-local topology edge lines |
 | OpenRSCAD      | Native OpenRSCAD geometry                 | `openrscad-engine`    | Native GLB (out of scope — OpenRSCAD owns construction)                                                                     |
-| Manifold       | `manifold-3d` GLTF nodes                  | `manifold.kernel.ts`  | Uses `@gltf-transform/core` (out of scope — manifold-3d owns the Document)                                                  |
+| Manifold       | `manifold-3d` GLTF nodes                  | `manifold.kernel.ts`  | manifold-3d owns the Document; the kernel supplies normals and their labels before it is written (§6.1)                     |
 | OpenCASCADE    | `TopoDS_Shape`                            | `opencascade-mesh.ts` | Native `RWGltf_CafWriter` (out of scope — OCCT produces GLB directly)                                                       |
 
 ### 6.1 Kernel Mapping Responsibilities
@@ -249,6 +260,8 @@ The kernel-specific mapping file (not the GLB writer) is responsible for:
 - Splitting geometry into per-color primitives (for per-material alpha modes)
 
 The GLB writer accepts only pre-processed, ready-to-serialize data.
+
+Every `TRIANGLES` primitive a kernel emits carries `NORMAL`. The headless renderer requires it, and only the kernel knows the crease angle that keeps hard edges sharp and curved faces smooth. This holds when a third-party library owns the Document: the Manifold kernel calls `calculateNormals` before `GLTFNodesToGLTFDoc` and labels the new channels on every run material, because computing normals on the written Document would split vertices that `EXT_mesh_manifold` shares. Renderer fallbacks do not replace this: glTF defines a primitive without `NORMAL` as flat-shaded, so a consumer can only ever recover flat normals, never the kernel's creases. Import kernels follow the same rule for foreign files: the glTF kernel gives flat normals to primitives that lack them, leaving authored ones indexed, and the Assimp kernel runs libassimp's `generateNormals` step.
 
 ### 6.2 Naming Responsibilities
 
@@ -299,7 +312,7 @@ Do not assert only byte length, byte inequality, or `instanceof Uint8Array` — 
 - Producing GLB without `asset.generator: "tau-runtime"` (breaks traceability)
 - Testing GLB output with only `expect(result).toBeInstanceOf(Uint8Array)` without parsing
 - Omitting `min`/`max` on POSITION accessors (breaks bounding box computation in viewers)
-- Using `alphaMode: "MASK"` (not used in CAD; use `"BLEND"` for transparent, `"OPAQUE"` for opaque)
+- Choosing `alphaMode: "MASK"` as a generated CAD default; use `"BLEND"` for transparent or `"OPAQUE"` for opaque defaults, while preserving explicitly authored/imported standard modes
 - Returning GLB content as a non-zero-offset typed-array view
 - Adding app or example `bytesToArrayBuffer` helpers to compensate for an unenforced runtime byte-view invariant
 
@@ -312,6 +325,8 @@ Do not assert only byte length, byte inequality, or `instanceof Uint8Array` — 
 - [ ] Headless scene consumption preserves core node transforms and repeated mesh references for both surfaces and lines
 - [ ] `asset.generator` is `"tau-runtime"`
 - [ ] POSITION accessors have `min`/`max`
+- [ ] Shared assets retain independent named nodes and validated local placement
+- [ ] Uint16 indices never exceed 65534; larger indices remain Uint32
 - [ ] `bufferView.target` is set (34962 for vertex, 34963 for index)
 - [ ] Materials use `cadMaterialDefaults` from `@taucad/types/constants`
 - [ ] Tau-generated auxiliary edges use `cadEdgeOverlayMaterialDefaults` and `KHR_materials_unlit`

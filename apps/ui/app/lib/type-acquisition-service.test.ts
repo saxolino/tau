@@ -169,25 +169,15 @@ function createMockMonaco(): {
 }
 
 // =============================================================================
-// Mock es-module-lexer
+// Mock the pure-JavaScript es-module-lexer entry.
 // =============================================================================
 
-// Mock the entire module to avoid WASM initialization in tests
-vi.mock('es-module-lexer', () => {
+vi.mock('es-module-lexer/js', () => {
   type MockImport = { n: string; s: number; e: number; ss: number; se: number; d: number };
   type MockExport = { s: number; e: number; ls: number; le: number; n: string; ln: string };
 
-  let initialized = false;
   return {
-    // oxlint-disable-next-line promise/prefer-await-to-then -- test setup
-    init: Promise.resolve().then(() => {
-      initialized = true;
-    }),
     parse(code: string): [MockImport[], MockExport[]] {
-      if (!initialized) {
-        throw new Error('es-module-lexer not initialized');
-      }
-
       // Simple regex-based import parser for tests
       const imports: MockImport[] = [];
       const importRegex = /import\s+(?:.*?\s+from\s+)?["']([^"']+)["']/g;
@@ -320,7 +310,7 @@ describe('TypeAcquisitionService', () => {
       expect(JSON.parse(packageCall![0] as string)).toEqual({ name: 'replicad', types: 'index.d.ts' });
     });
 
-    it('should wrap content in declare module format', () => {
+    it('should register static declaration content verbatim', () => {
       service.initialize(mockMonaco.monaco, {
         staticTypes: [staticReplicad],
       });
@@ -329,8 +319,7 @@ describe('TypeAcquisitionService', () => {
       const call = tsDefaults.addExtraLib.mock.calls[0]!;
       const content = call[0] as string;
 
-      expect(content).toContain("declare module 'replicad'");
-      expect(content).toContain('export function draw(): void;');
+      expect(content).toBe(staticReplicad.content);
     });
 
     it('should use correct filePath format', () => {
@@ -456,15 +445,14 @@ describe('TypeAcquisitionService', () => {
       );
     });
 
+    /* `startWatching` scans existing models at once, so the model starts without imports and gains
+     * one through an edit: only the edit's scan is debounced. */
     it('should debounce content changes at 500ms', () => {
-      const { model, fireContentChange } = createMockModel({
-        content: "import lodash from 'lodash';",
-      });
+      const { model, fireContentChange } = createMockModel({ content: '' });
       mockMonaco.monaco._addModel(model);
 
       service.startWatching();
-
-      // Fire content change
+      model._setContent("import lodash from 'lodash';");
       fireContentChange();
 
       // Fetch should not be called yet (within debounce window)
@@ -472,17 +460,16 @@ describe('TypeAcquisitionService', () => {
       expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
 
       // After 500ms debounce, scan should trigger
-      vi.advanceTimersByTime(400);
-      // Note: scan is async but fetch should be called
+      vi.advanceTimersByTime(300);
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledOnce();
     });
 
     it('should reset debounce on rapid changes', () => {
-      const { model, fireContentChange } = createMockModel({
-        content: "import lodash from 'lodash';",
-      });
+      const { model, fireContentChange } = createMockModel({ content: '' });
       mockMonaco.monaco._addModel(model);
 
       service.startWatching();
+      model._setContent("import lodash from 'lodash';");
 
       // Rapid changes
       fireContentChange();
@@ -493,6 +480,9 @@ describe('TypeAcquisitionService', () => {
 
       // Only 300ms after last change, should not have triggered scan
       expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(500);
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledOnce();
     });
   });
 
@@ -800,6 +790,101 @@ describe('TypeAcquisitionService', () => {
   });
 
   // =========================================================================
+  // Lock-following acquisition
+  // =========================================================================
+
+  describe('projects with a package-lock.json', () => {
+    const typesFetch = (): ReturnType<typeof vi.fn> =>
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: { get: (header: string) => (header === 'X-TypeScript-Types' ? '/lodash.d.ts' : null) },
+        })
+        .mockResolvedValueOnce({ ok: true, text: async () => 'export function debounce(): void;' });
+
+    const lockWith = (entries: Record<string, { version: string; name?: string }>): string =>
+      JSON.stringify({ lockfileVersion: 3, requires: true, packages: { '': {}, ...entries } });
+
+    async function scan(files: Record<string, string>, content = "import lodash from 'lodash';"): Promise<void> {
+      service.initialize(mockMonaco.monaco, {
+        staticTypes: [],
+        readProjectFile: async (path) => files[path],
+      });
+      mockMonaco.monaco._addModel(createMockModel({ content }).model);
+      service.startWatching();
+      await vi.advanceTimersByTimeAsync(50);
+    }
+
+    it('should fetch the locked version instead of latest', async () => {
+      const mockFetch = typesFetch();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await scan({ 'package-lock.json': lockWith({ 'node_modules/lodash': { version: '4.17.20' } }) });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://esm.sh/lodash@4.17.20', expect.anything());
+      expect(mockMonaco.monaco.typescript.typescriptDefaults.addExtraLib).toHaveBeenCalledWith(
+        expect.stringContaining('export function debounce(): void;'),
+        'file:///node_modules/lodash/index.d.ts',
+      );
+    });
+
+    it('should fetch an alias row by its real package name', async () => {
+      const mockFetch = typesFetch();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await scan({
+        'package-lock.json': lockWith({ 'node_modules/lodash': { name: 'lodash-es', version: '4.17.21' } }),
+      });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://esm.sh/lodash-es@4.17.21', expect.anything());
+    });
+
+    it('should prefer the installed declarations of the locked version over the network', async () => {
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await scan({
+        'package-lock.json': lockWith({ 'node_modules/lodash': { version: '4.17.20' } }),
+        'node_modules/lodash/package.json': JSON.stringify({
+          name: 'lodash',
+          version: '4.17.20',
+          types: './types/index.d.ts',
+        }),
+        'node_modules/lodash/types/index.d.ts': 'export function installedOnly(): void;',
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockMonaco.monaco.typescript.typescriptDefaults.addExtraLib).toHaveBeenCalledWith(
+        expect.stringContaining('export function installedOnly(): void;'),
+        'file:///node_modules/lodash/index.d.ts',
+      );
+    });
+
+    it('should ignore installed declarations of another version', async () => {
+      const mockFetch = typesFetch();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await scan({
+        'package-lock.json': lockWith({ 'node_modules/lodash': { version: '4.17.20' } }),
+        'node_modules/lodash/package.json': JSON.stringify({ version: '4.17.19', types: 'index.d.ts' }),
+        'node_modules/lodash/index.d.ts': 'export function stale(): void;',
+      });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://esm.sh/lodash@4.17.20', expect.anything());
+    });
+
+    it('should fetch latest for a package the lock does not list, or without a lock', async () => {
+      const mockFetch = typesFetch();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await scan({ 'package-lock.json': lockWith({ 'node_modules/three': { version: '0.170.0' } }) });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://esm.sh/lodash', expect.anything());
+    });
+  });
+
+  // =========================================================================
   // Epoch / session safety
   // =========================================================================
 
@@ -1061,7 +1146,7 @@ describe('TypeAcquisitionService', () => {
       // Static types are injected during initialize, before any network calls
       const tsDefaults = mockMonaco.monaco.typescript.typescriptDefaults;
       expect(tsDefaults.addExtraLib).toHaveBeenCalledWith(
-        expect.stringContaining("declare module 'replicad'"),
+        expect.stringContaining('export function draw(): void;'),
         'file:///node_modules/replicad/index.d.ts',
       );
     });

@@ -3,7 +3,9 @@ import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 
 import { Spinner } from '#components/ui/spinner.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { useCloudFinancialPurge } from '#cloud/financial-purge.js';
+import { authErrorMessage } from '#utils/auth-error.utils.js';
 
 export type SignOutProps = {
   className?: string;
@@ -15,12 +17,13 @@ export type SignOutProps = {
  * @param className - Optional additional class names appended to the root element
  * @returns The spinner shown during sign-out
  */
-export function SignOut({ className }: SignOutProps) {
+export function SignOut({ className }: SignOutProps): React.JSX.Element {
   const { authClient, basePaths, navigate, viewPaths } = useAuth();
+  const purgeFinancial = useCloudFinancialPurge();
 
   const { mutate: signOut } = useSignOut(authClient, {
     onError: (error) => {
-      toast.error(error.error?.message ?? error.message);
+      toast.error(authErrorMessage(error));
 
       navigate({
         to: `${basePaths.auth}/${viewPaths.auth.signIn}`,
@@ -43,8 +46,9 @@ export function SignOut({ className }: SignOutProps) {
     }
     hasSignedOut.current = true;
 
+    purgeFinancial?.('logout');
     signOut();
-  }, [signOut]);
+  }, [purgeFinancial, signOut]);
 
   return <Spinner className={cn('mx-auto my-auto', className)} />;
 }

@@ -1,5 +1,6 @@
 export {
   bindMutationContextForPort,
+  consumableBytes,
   createFileSystemBridgeProxy,
   createFileSystemBridgePort,
   createTransferredFileSystemBridgeProxy,
@@ -8,8 +9,10 @@ export {
   filesystemBridgeConnectMessageType,
   filesystemBridgeReadyMessageType,
   openFileSystemBridge,
+  serveFileSystemBridgePort,
   waitForWorkerReady,
   workerReadyMessageType,
+  workspaceBridgeService,
 } from '#filesystem-bridge.js';
 
 export type {
@@ -21,9 +24,13 @@ export type {
   FileSystemBridgeConnection,
   FileSystemBridgePort,
   FileSystemBridgeProxy,
+  FileSystemBridgeProxyTransport,
+  FileSystemBridgeRootedProxy,
+  FileSystemBridgeWorkspaceProxy,
   FileSystemBridgeOptions,
   MutationMethodNameInternal,
   MutationOverrideMapInternal,
+  RootedBridgeConsumer,
   RootedFileSystemHandlerFactory,
 } from '#filesystem-bridge.js';
 
@@ -36,7 +43,14 @@ export {
 
 export type {
   FileSystemBridgeHello,
+  FileSystemBridgeRootedCalls,
+  FileSystemBridgeScopedReads,
   FileSystemBridgeRuntimeService,
   FileSystemBridgeService,
+  FileSystemBridgeUnrootedCalls,
   FileSystemBridgeWorkspaceService,
 } from '#filesystem-bridge-protocol.js';
+
+export { slowFileSystemBridgeCalls, slowFileSystemBridgeCallThreshold } from '#filesystem-bridge-slow-calls.js';
+
+export type { SlowFileSystemBridgeCall } from '#filesystem-bridge-slow-calls.js';

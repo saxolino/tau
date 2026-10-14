@@ -1,6 +1,11 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type { RootedFileSystem, WorkspaceFileService } from '@taucad/filesystem';
-import { createFileSystemBridgePort, createFileSystemBridgeProxy, fileSystemBridgeSchemas } from '@taucad/fs-bridge';
+import {
+  createFileSystemBridgePort,
+  createFileSystemBridgeProxy,
+  fileSystemBridgeProtocolVersion,
+  fileSystemBridgeSchemas,
+} from '@taucad/fs-bridge';
 import type {
   FileSystemBridgeHello,
   FileSystemBridgePort,
@@ -29,8 +34,15 @@ describe('filesystem bridge protocol contract', () => {
     expectTypeOf<Parameters<typeof createFileSystemBridgePort>[0]>().toEqualTypeOf<FileSystemBridgeRuntimeService>();
   });
 
-  it('derives the full workspace handler from WorkspaceFileService', () => {
-    expectTypeOf<WorkspaceFileService>().toExtend<FileSystemBridgeWorkspaceService>();
+  /*
+   * The authority no longer satisfies its own wire (W11): the wire's three
+   * scoped reads are named for the scope they require, so a host has to go
+   * through `workspaceBridgeService` and cannot hand a caller a routed-path read
+   * by handing over the service.
+   */
+  it('should derive the topology half of the workspace handler from WorkspaceFileService', () => {
+    expectTypeOf<WorkspaceFileService>().toExtend<Pick<FileSystemBridgeWorkspaceService, 'mount' | 'unmount'>>();
+    expectTypeOf<WorkspaceFileService>().not.toExtend<FileSystemBridgeWorkspaceService>();
     expectTypeOf<{
       readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
     }>().not.toExtend<FileSystemBridgeWorkspaceService>();
@@ -38,6 +50,7 @@ describe('filesystem bridge protocol contract', () => {
 
   it('preserves canonical method overloads, arguments, and results on the proxy', () => {
     expectTypeOf<FileSystemBridgeProxy['readFile']>().toEqualTypeOf<FileSystemBridgeService['readFile']>();
+    expectTypeOf<FileSystemBridgeProxy['appendFile']>().toEqualTypeOf<FileSystemBridgeService['appendFile']>();
     expectTypeOf<FileSystemBridgeProxy['rename']>().toEqualTypeOf<RootedFileSystem['rename']>();
     expectTypeOf<FileSystemBridgeProxy['stat']>().toEqualTypeOf<FileSystemBridgeService['stat']>();
     expectTypeOf(createFileSystemBridgeProxy).returns.toEqualTypeOf<FileSystemBridgeProxy>();
@@ -47,17 +60,21 @@ describe('filesystem bridge protocol contract', () => {
     // @ts-expect-error The version is mandatory.
     const noVersion: FileSystemBridgeHello = {
       state: 'ready',
-      capabilities: { persistent: false, writable: true, quotaBased: false },
+      capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
       watchable: false,
     };
     // @ts-expect-error Availability is never inferred from missing capabilities.
     const noState: FileSystemBridgeHello = {
-      v: 1,
-      capabilities: { persistent: false, writable: true, quotaBased: false },
+      v: fileSystemBridgeProtocolVersion,
+      capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
       watchable: false,
     };
     // @ts-expect-error Ready runtime peers must publish concrete capabilities.
-    const noCapabilities: FileSystemBridgeHello = { v: 1, state: 'ready', watchable: false };
+    const noCapabilities: FileSystemBridgeHello = {
+      v: fileSystemBridgeProtocolVersion,
+      state: 'ready',
+      watchable: false,
+    };
     expectTypeOf(noVersion).toExtend<FileSystemBridgeHello>();
     expectTypeOf(noState).toExtend<FileSystemBridgeHello>();
     expectTypeOf(noCapabilities).toExtend<FileSystemBridgeHello>();
@@ -65,6 +82,7 @@ describe('filesystem bridge protocol contract', () => {
 
   it('exports an exact validator inventory for every bridged call and listen', () => {
     expectTypeOf(fileSystemBridgeSchemas.calls).toHaveProperty('readFile');
+    expectTypeOf(fileSystemBridgeSchemas.calls).toHaveProperty('appendFile');
     expectTypeOf(fileSystemBridgeSchemas.calls).toHaveProperty('rename');
     expectTypeOf(fileSystemBridgeSchemas.listens).toHaveProperty('watch');
     expectTypeOf(fileSystemBridgeSchemas.listens).toHaveProperty('broadcast');

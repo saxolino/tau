@@ -5,9 +5,9 @@ import { idPrefix } from '@taucad/types/constants';
 import type { Chat } from '@taucad/chat';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { IndexedDbStorageProvider } from '#db/indexeddb-storage.js';
-import type { AppUiPreferences, CommitCancelledDraftRestoreInput } from '#types/storage.types.js';
+import type { AppUiPreferences } from '#types/storage.types.js';
 import type { EditorState, EditorStateInput, OpenFile } from '#types/editor.types.js';
-import type { PersistedRevisionState, ProjectLibraryState } from '#types/project.types.js';
+import type { ProjectLibraryState } from '#types/project-library.types.js';
 import type {
   PendingCreateProjectOperation,
   PendingDuplicateProjectOperation,
@@ -16,6 +16,8 @@ import type {
 } from '#types/pending-project-operation.types.js';
 import { defaultPanelState } from '#constants/editor.constants.js';
 import { mergePanelState } from '#utils/panel-state.utils.js';
+import { compareChatsByRecency } from '#utils/chat-recency.utils.js';
+import { seedInitialWorkbenchFiles } from '#workbench-records/initial-files.js';
 
 /**
  * Type for initial editor state overrides during project creation.
@@ -30,7 +32,7 @@ const storage = new IndexedDbStorageProvider();
 /**
  * Pick the focused chat id to persist on a duplicated project. Prefers the
  * source project's mapped chat (so reopening the duplicate matches the
- * source's last focus), falling back to the most-recently-updated cloned
+ * source's last focus), falling back to the most-recently-active cloned
  * chat. Returns `undefined` only when no chats were cloned (in which case
  * the caller skips the editor-state write entirely — the editor machine's
  * load-time `ensureFocusedChat` actor will auto-create a chat on first
@@ -60,7 +62,7 @@ export function pickDuplicatedFocusedChatId(args: {
   let mostRecent = clonedChats[0]!;
   for (let i = 1; i < clonedChats.length; i++) {
     const candidate = clonedChats[i]!;
-    if (candidate.updatedAt > mostRecent.updatedAt) {
+    if (compareChatsByRecency(candidate, mostRecent) < 0) {
       mostRecent = candidate;
     }
   }
@@ -69,7 +71,8 @@ export function pickDuplicatedFocusedChatId(args: {
 
 const createInitialEditorState = (args: {
   readonly project: ProjectManifest;
-  readonly chatId: string;
+  /** Absent when the project was created without a chat (review R5). */
+  readonly chatId: string | undefined;
   readonly overrides?: InitialEditorState;
   readonly timestamp: number;
 }): EditorState => {
@@ -97,10 +100,10 @@ const createInitialEditorState = (args: {
     activePaneId: args.overrides?.activePaneId ?? seedPaneId,
     focusedChatId: args.chatId,
     panelState,
-    workbenchLayout: args.overrides?.workbenchLayout as EditorState['workbenchLayout'],
-    viewerLayout: args.overrides?.viewerLayout as EditorState['viewerLayout'],
-    viewSettings: (args.overrides?.viewSettings ?? {}) as EditorState['viewSettings'],
-    modelComponentDisplay: args.overrides?.modelComponentDisplay as EditorState['modelComponentDisplay'],
+    fileSidebars: (args.overrides?.fileSidebars ?? {}) as EditorState['fileSidebars'],
+    graphicsBackendPreferences: (args.overrides?.graphicsBackendPreferences ??
+      {}) as EditorState['graphicsBackendPreferences'],
+    previousLayout: args.overrides?.previousLayout as EditorState['previousLayout'],
     updatedAt: args.timestamp,
   };
 };
@@ -126,20 +129,27 @@ const objectStoreWorker = {
   /** Prepare stable replay data before any cross-store project creation writes. */
   async prepareProjectCreation(options: {
     manifest: ProjectManifest;
-    chat: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt'>;
+    /** Omitted to create the project and no chat at all (review R5). */
+    chat?: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt' | 'recencyAt'>;
+    /** Where the chat's attachment references are copied from; see `PendingCreateProjectOperation`. */
+    attachmentSource?: string;
     editorState?: InitialEditorState;
-    files: Record<string, { content: Uint8Array<ArrayBuffer> }>;
+    files: Record<string, { content: Uint8Array<ArrayBuffer>; mode?: '100644' | '100755' }>;
     storage: PendingProjectStorage;
   }): Promise<PendingCreateProjectOperation> {
     const timestamp = Date.now();
     const project = options.manifest;
-    const chat: Chat = {
-      ...options.chat,
-      id: generatePrefixedId(idPrefix.chat),
-      resourceId: project.id,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const chat: Chat | undefined =
+      options.chat === undefined
+        ? undefined
+        : {
+            ...options.chat,
+            id: generatePrefixedId(idPrefix.chat),
+            resourceId: project.id,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            recencyAt: timestamp,
+          };
     const operationId = generatePrefixedId(idPrefix.request);
     const operation: PendingCreateProjectOperation = {
       operationId,
@@ -147,11 +157,12 @@ const objectStoreWorker = {
       ...options.storage,
       manifest: project,
       library: { projectId: project.id, lastActivityAt: timestamp },
-      files: options.files,
-      chat,
+      files: seedInitialWorkbenchFiles(options.files, project.assets.main.entryPath),
+      ...(chat === undefined ? {} : { chat }),
+      ...(options.attachmentSource === undefined ? {} : { attachmentSource: options.attachmentSource }),
       editorState: createInitialEditorState({
         project,
-        chatId: chat.id,
+        chatId: chat?.id,
         overrides: options.editorState,
         timestamp,
       }),
@@ -166,10 +177,12 @@ const objectStoreWorker = {
     targetManifest: ProjectManifest;
     files: Record<string, { content: Uint8Array<ArrayBuffer> }>;
     storage: PendingProjectStorage;
+    /** The source project's chats, read from its files by the caller (W17). */
+    sourceChats: readonly Chat[];
   }): Promise<PendingDuplicateProjectOperation> {
     const timestamp = Date.now();
     const newProject = options.targetManifest;
-    const sourceChats = await storage.getChatsForResource(options.sourceManifest.id);
+    const { sourceChats } = options;
     const chatIdMapping: Record<string, string> = {};
     const clonedChats = sourceChats.map((chat): Chat => {
       const id = generatePrefixedId(idPrefix.chat);
@@ -180,6 +193,7 @@ const objectStoreWorker = {
         resourceId: newProject.id,
         createdAt: timestamp,
         updatedAt: timestamp,
+        recencyAt: timestamp,
         deletedAt: undefined,
       };
     });
@@ -196,10 +210,9 @@ const objectStoreWorker = {
           activePaneId: sourceEditorState?.activePaneId,
           focusedChatId: mappedFocusedChatId,
           panelState: mergePanelState(defaultPanelState, sourceEditorState?.panelState),
-          workbenchLayout: sourceEditorState?.workbenchLayout,
-          viewerLayout: sourceEditorState?.viewerLayout,
-          viewSettings: sourceEditorState?.viewSettings ?? {},
-          modelComponentDisplay: sourceEditorState?.modelComponentDisplay,
+          fileSidebars: sourceEditorState?.fileSidebars ?? {},
+          graphicsBackendPreferences: sourceEditorState?.graphicsBackendPreferences ?? {},
+          previousLayout: sourceEditorState?.previousLayout,
           updatedAt: timestamp,
         }
       : undefined;
@@ -211,7 +224,7 @@ const objectStoreWorker = {
       sourceProjectId: options.sourceManifest.id,
       manifest: newProject,
       library: { projectId: newProject.id, lastActivityAt: timestamp },
-      files: options.files,
+      files: seedInitialWorkbenchFiles(options.files, newProject.assets.main.entryPath),
       chats: clonedChats,
       editorState,
     };
@@ -231,17 +244,30 @@ const objectStoreWorker = {
     });
   },
 
-  async resumePendingProjectOperationResources(operationId: string): Promise<void> {
+  /**
+   * Replay one pending operation's browser-store rows.
+   *
+   * The chats it carries are *returned* rather than written: a chat is
+   * `.tau/chats/<id>/chat.json` inside the project, and this worker has no
+   * filesystem — the caller, which has just mounted the project's root, writes
+   * them (W17).
+   *
+   * @param operationId - The operation to replay.
+   * @returns The chats whose records the caller still has to write.
+   */
+  async resumePendingProjectOperationResources(operationId: string): Promise<readonly Chat[]> {
     const operation = await storage.getPendingProjectOperation(operationId);
     if (!operation || operation.kind === 'permanent-delete') {
-      return;
+      return [];
     }
-    const chats = operation.kind === 'create' ? [operation.chat] : operation.chats;
     await storage.createProjectLibraryState(operation.library);
-    await Promise.all(chats.map(async (chat) => storage.putChatRecord(chat)));
     if (operation.editorState) {
       await storage.putEditorStateRecord(operation.editorState);
     }
+    if (operation.kind !== 'create') {
+      return operation.chats;
+    }
+    return operation.chat === undefined ? [] : [operation.chat];
   },
 
   async completePendingProjectOperation(operationId: string): Promise<void> {
@@ -259,9 +285,8 @@ const objectStoreWorker = {
     return operationId;
   },
 
+  /* The project's chats go with its directory: they are files inside it (W17). */
   async deleteProjectResources(projectId: string): Promise<void> {
-    const chats = await storage.getChatsForResource(projectId, { includeDeleted: true });
-    await Promise.all(chats.map(async (chat) => storage.deleteChatRecord(chat.id)));
     await storage.deleteEditorState(projectId);
     await storage.deleteProjectLibraryState(projectId);
   },
@@ -278,8 +303,16 @@ const objectStoreWorker = {
     return storage.createProjectLibraryState(state);
   },
 
+  async createProjectLibraryStates(states: readonly ProjectLibraryState[]): Promise<ProjectLibraryState[]> {
+    return storage.createProjectLibraryStates(states);
+  },
+
   async touchProjectActivity(projectId: string, activityAt?: number): Promise<ProjectLibraryState | undefined> {
     return storage.touchProjectActivity(projectId, activityAt);
+  },
+
+  async setGeoSpecCandidateConsent(projectId: string, enabled: boolean): Promise<ProjectLibraryState | undefined> {
+    return storage.setGeoSpecCandidateConsent(projectId, enabled);
   },
 
   async trashProject(projectId: string, deletedAt?: number): Promise<ProjectLibraryState | undefined> {
@@ -288,91 +321,6 @@ const objectStoreWorker = {
 
   async restoreProject(projectId: string): Promise<ProjectLibraryState | undefined> {
     return storage.restoreProject(projectId);
-  },
-
-  async setProjectRevisionState(
-    projectId: string,
-    revisionState: PersistedRevisionState,
-  ): Promise<ProjectLibraryState | undefined> {
-    return storage.setProjectRevisionState(projectId, revisionState);
-  },
-
-  // ============================================================================
-  // Chat Methods
-  // ============================================================================
-
-  async createChat(
-    resourceId: string,
-    chat: Omit<Chat, 'id' | 'resourceId' | 'createdAt' | 'updatedAt'> & { id?: string },
-  ): Promise<Chat> {
-    return storage.createChat(resourceId, chat);
-  },
-
-  async createNavigationRepairChat(resourceId: string): Promise<Chat> {
-    return storage.createNavigationRepairChat(resourceId);
-  },
-
-  async updateChat(chatId: string, update: PartialDeep<Chat>): Promise<Chat | undefined> {
-    return storage.updateChat(chatId, update);
-  },
-
-  async applyGeneratedChatName(chatId: string, name: string): Promise<Chat | undefined> {
-    return storage.applyGeneratedChatName(chatId, name);
-  },
-
-  async patchChat<K extends keyof Chat>(chatId: string, key: K, value: Chat[K]): Promise<Chat | undefined> {
-    return storage.patchChat(chatId, key, value);
-  },
-
-  async consumeChatStartupRequest(chatId: string, requestId: string): Promise<Chat | undefined> {
-    return storage.consumeChatStartupRequest(chatId, requestId);
-  },
-
-  async commitCancelledDraftRestore(
-    chatId: string,
-    input: CommitCancelledDraftRestoreInput,
-  ): Promise<Chat | undefined> {
-    return storage.commitCancelledDraftRestore(chatId, input);
-  },
-
-  async setMessageEdit(
-    chatId: string,
-    messageId: string,
-    draft: NonNullable<Chat['messageEdits']>[string],
-  ): Promise<Chat | undefined> {
-    return storage.setMessageEdit(chatId, messageId, draft);
-  },
-
-  async clearMessageEdit(chatId: string, messageId: string): Promise<Chat | undefined> {
-    return storage.clearMessageEdit(chatId, messageId);
-  },
-
-  async softDeleteChat(chatId: string): Promise<Chat | undefined> {
-    return storage.softDeleteChat(chatId);
-  },
-
-  async getChat(chatId: string): Promise<Chat | undefined> {
-    return storage.getChat(chatId);
-  },
-
-  async getAllChats(options?: { includeDeleted?: boolean }): Promise<Chat[]> {
-    return storage.getAllChats(options);
-  },
-
-  async getChatsForResource(resourceId: string, options?: { includeDeleted?: boolean }): Promise<Chat[]> {
-    return storage.getChatsForResource(resourceId, options);
-  },
-
-  async deleteChat(chatId: string): Promise<void> {
-    return storage.deleteChat(chatId);
-  },
-
-  async duplicateChat(chatId: string): Promise<Chat> {
-    return storage.duplicateChat(chatId);
-  },
-
-  async duplicateResourceChats(sourceResourceId: string, targetResourceId: string): Promise<Record<string, string>> {
-    return storage.duplicateResourceChats(sourceResourceId, targetResourceId);
   },
 
   // ============================================================================

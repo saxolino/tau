@@ -1,12 +1,13 @@
 import { loader } from '@monaco-editor/react';
+import { Topic } from '@taucad/events';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 import { shikiToMonaco, textmateThemeToMonacoTheme } from '@shikijs/monaco';
-import { registerCompletion } from 'monacopilot';
-import type { CompletionRegistration, CompletionCopilot } from 'monacopilot';
+import type { CompletionRegistration } from 'monacopilot';
 import type * as Monaco from 'monaco-editor';
-import { ENV } from '#environment.config.js';
+import { z } from 'zod';
+import { projectManifestSchema, projectManifestSchemaUrl } from '@taucad/types';
 import {
   createJsonTokensProvider,
   generateJsonBracketHighlightColors,
@@ -24,6 +25,8 @@ import { usdContribution } from '#lib/usd-language/usd-register-language.js';
 import { sysmlContribution } from '#lib/sysml-language/sysml-register-language.js';
 import { markdownContribution } from '#lib/markdown-language/markdown-register-language.js';
 import { bashContribution } from '#lib/bash-language/bash-register-language.js';
+import { pythonContribution } from '#lib/python-language/python-register-language.js';
+import { csharpContribution } from '#lib/csharp-language/csharp-register-language.js';
 import { jsContribution } from '#lib/javascript-contribution.js';
 import { tsContribution } from '#lib/typescript-contribution.js';
 
@@ -51,28 +54,102 @@ registry.addContribution(usdContribution);
 registry.addContribution(sysmlContribution);
 registry.addContribution(markdownContribution);
 registry.addContribution(bashContribution);
+registry.addContribution(pythonContribution);
+registry.addContribution(csharpContribution);
 registry.addContribution(tsContribution);
 registry.addContribution(jsContribution);
 
+/**
+ * Where Monaco's one-time configuration stands.
+ *
+ * `ready` carries the configured instance; only then has `loader.config` run,
+ * so only then may anything call `loader.init()` (directly, through
+ * `useMonaco`, or by mounting `Editor`) without the loader fetching a second
+ * Monaco from its CDN default.
+ */
+export type MonacoConfiguration =
+  | { readonly status: 'idle' }
+  | { readonly status: 'pending' }
+  | { readonly status: 'ready'; readonly monaco: typeof Monaco }
+  | { readonly status: 'failed'; readonly error: Error };
+
 // Guard to ensure configureMonaco runs only once. shikiToMonaco monkey-patches
 // monaco.editor.create and monaco.editor.setTheme, creating chained wrappers
-// on repeated calls. This flag prevents that during HMR or multiple call sites.
-let isConfigured = false;
+// on repeated calls. This promise prevents that during HMR or multiple call
+// sites. A failed attempt (typically an offline chunk load) clears it so the
+// next caller retries.
+let configuration: Promise<typeof Monaco | undefined> | undefined;
+let configurationSnapshot: MonacoConfiguration = { status: 'idle' };
+const configurationTopic = new Topic<void>({ name: 'monaco-configuration' });
+
+const publishConfiguration = (next: MonacoConfiguration): void => {
+  configurationSnapshot = next;
+  configurationTopic.emit();
+};
 
 /**
  * Configure the Monaco editor.
  *
  * This custom loader supports Vite bundling and ensures a minimal
  * bundle size. Idempotent -- safe to call from multiple entry points.
+ * Call it from effects or event handlers, never at module evaluation: its
+ * dynamic imports can resolve to the chunk that is still evaluating the caller.
+ *
+ * @returns The configured Monaco instance, or `undefined` outside a browser.
  */
-export const configureMonaco = async (): Promise<void> => {
+export const configureMonaco = async (): Promise<typeof Monaco | undefined> => {
   // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- can be undefined in SSR
-  if (isConfigured || globalThis.self === undefined) {
-    return;
+  if (globalThis.self === undefined) {
+    return undefined;
   }
+  configuration ??= startConfiguration();
+  return configuration;
+};
 
-  isConfigured = true;
+const startConfiguration = async (): Promise<typeof Monaco> => {
+  publishConfiguration({ status: 'pending' });
+  try {
+    const monaco = await initializeMonaco();
+    publishConfiguration({ status: 'ready', monaco });
+    return monaco;
+  } catch (error) {
+    configuration = undefined;
+    publishConfiguration({ status: 'failed', error: error instanceof Error ? error : new Error(String(error)) });
+    throw error;
+  }
+};
 
+/**
+ * The current configuration state, for `useSyncExternalStore`.
+ *
+ * @returns The latest snapshot; a new object only when the state changes.
+ */
+export const getMonacoConfiguration = (): MonacoConfiguration => configurationSnapshot;
+
+/**
+ * Subscribe to configuration changes, starting configuration if it has not
+ * started (or retrying it after a failure). Subscribing happens in React's
+ * commit phase, so configuration never starts during module evaluation.
+ *
+ * @param listener - Called after every state change.
+ * @returns The unsubscribe function.
+ */
+export const subscribeMonacoConfiguration = (listener: () => void): (() => void) => {
+  const unsubscribe = configurationTopic.subscribe(listener);
+  if (configurationSnapshot.status !== 'ready') {
+    // async-iife: bootstrap -- a `useSyncExternalStore` subscribe callback cannot await; the snapshot carries the outcome.
+    void (async () => {
+      try {
+        await configureMonaco();
+      } catch {
+        // `configureMonaco` records the failure on the configuration snapshot.
+      }
+    })();
+  }
+  return unsubscribe;
+};
+
+const initializeMonaco = async (): Promise<typeof Monaco> => {
   // Prime Geist Mono before Monaco's first DomCharWidthReader pass.
   //
   // Monaco caches char-width measurements as "trusted" on the first read
@@ -84,9 +161,11 @@ export const configureMonaco = async (): Promise<void> => {
   // first reading uses Geist Mono advances. `.catch` keeps offline users
   // working with fallback metrics (no worse than today).
   // Sizes mirror code-editor.client.tsx (14 desktop, 16 mobile).
-  await Promise.all([document.fonts.load("14px 'Geist Mono'"), document.fonts.load("16px 'Geist Mono'")]).catch(
-    () => undefined,
-  );
+  // `document.fonts` is absent under jsdom, where there is nothing to prime.
+  const fontSet = Reflect.get(document, 'fonts') as FontFaceSet | undefined;
+  await Promise.all(
+    fontSet === undefined ? [] : [fontSet.load("14px 'Geist Mono'"), fontSet.load("16px 'Geist Mono'")],
+  ).catch(() => undefined);
 
   globalThis.self.MonacoEnvironment = {
     getWorker(_, label) {
@@ -138,7 +217,7 @@ export const configureMonaco = async (): Promise<void> => {
   // Mono above, additional weights/styles or HMR re-injection can change
   // the cached advances; `monaco.editor.remeasureFonts()` clears
   // FontMeasurementsImpl._cache and triggers per-editor re-render.
-  document.fonts.addEventListener('loadingdone', () => {
+  fontSet?.addEventListener('loadingdone', () => {
     monaco.editor.remeasureFonts();
   });
 
@@ -149,6 +228,11 @@ export const configureMonaco = async (): Promise<void> => {
   // Languages
   await import('monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js');
   await import('monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js');
+  // Python and C# carry no Tau-side syntax: Monaco's own contributions own them.
+  // They load here, with the other basic languages, because a static import from
+  // a non-`.client` module drags `monaco-editor` into the SSR build.
+  await import('monaco-editor/esm/vs/basic-languages/python/python.contribution.js');
+  await import('monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution.js');
   // Capture jsonDefaults to disable the built-in JSON tokenizer below.
   // Monaco's ESM .d.ts for this contribution declares only `export {}`, but
   // the module exposes `jsonDefaults` at runtime.
@@ -156,7 +240,9 @@ export const configureMonaco = async (): Promise<void> => {
   const { jsonDefaults } = (await import('monaco-editor/esm/vs/language/json/monaco.contribution.js')) as unknown as {
     jsonDefaults: {
       readonly modeConfiguration: Record<string, boolean>;
+      readonly diagnosticsOptions: Record<string, unknown>;
       setModeConfiguration(config: Record<string, boolean>): void;
+      setDiagnosticsOptions(options: Record<string, unknown>): void;
     };
   };
   await import('monaco-editor/esm/vs/language/typescript/monaco.contribution.js');
@@ -171,13 +257,33 @@ export const configureMonaco = async (): Promise<void> => {
     ...jsonDefaults.modeConfiguration,
     tokens: false,
   });
+  // The project manifest `tau.json`: the strict v1 schema flags an unknown key
+  // where it is typed, not after discovery reads the file (blueprint R9). The
+  // published copy is asserted equal to this generated one.
+  jsonDefaults.setDiagnosticsOptions({
+    ...jsonDefaults.diagnosticsOptions,
+    validate: true,
+    schemas: [
+      {
+        uri: projectManifestSchemaUrl,
+        fileMatch: ['tau.json'],
+        schema: z.toJSONSchema(projectManifestSchema, { target: 'draft-7' }),
+      },
+    ],
+  });
 
   // Phase 1: Register language metadata for all contributions (idempotent)
   registry.registerAll(monaco);
 
+  // Monaco's built-in JS/TS contributions do not register React language IDs.
+  monaco.languages.register({ id: monacoLanguages.typescriptreact, aliases: ['TSX', 'tsx'], extensions: ['.tsx'] });
+  monaco.languages.register({ id: monacoLanguages.javascriptreact, aliases: ['JSX', 'jsx'], extensions: ['.jsx'] });
+
   // JSONL is deliberately metadata-only: Shiki owns tokenization, and there is
   // no JSON language service validation for multi-root newline-delimited JSON.
   monaco.languages.register({ id: monacoLanguages.jsonl, aliases: ['JSON Lines', 'jsonl'], extensions: ['.jsonl'] });
+  // YAML is metadata-only too: Shiki owns tokenization.
+  monaco.languages.register({ id: monacoLanguages.yaml, aliases: ['YAML', 'yaml'], extensions: ['.yaml', '.yml'] });
 
   const highlighter = await getHighlighter();
 
@@ -194,69 +300,37 @@ export const configureMonaco = async (): Promise<void> => {
 
   // Augment GitHub themes with JSON-specific depth and value rules
   // derived from each theme's own scope colors.
-  for (const themeId of ['github-dark', 'github-light'] as const) {
+  for (const themeId of [
+    'github-dark',
+    'github-light',
+    'github-dark-high-contrast',
+    'github-light-high-contrast',
+  ] as const) {
     const shikiTheme = highlighter.getTheme(themeId);
     // MonacoTheme extends monaco-editor-core's IStandaloneThemeData which is
     // structurally identical to monaco-editor's but TypeScript can't unify
     // the two package namespaces.
     const monacoTheme = textmateThemeToMonacoTheme(shikiTheme) as unknown as Monaco.editor.IStandaloneThemeData;
+    if (themeId === 'github-dark-high-contrast') {
+      monacoTheme.base = 'hc-black';
+    } else if (themeId === 'github-light-high-contrast') {
+      monacoTheme.base = 'hc-light';
+    }
     monacoTheme.rules.push(...generateJsonThemeRules(shikiTheme));
     Object.assign(monacoTheme.colors, generateJsonBracketHighlightColors(shikiTheme));
     monaco.editor.defineTheme(themeId, monacoTheme);
   }
+
+  return monaco;
 };
 
 /**
- * Languages that should use monacopilot AI code completion.
+ * Return the disabled AI-completion lifecycle registration.
  *
  * @returns A no-op registration while AI completion is disabled.
  */
-export const completionLanguages = [
-  monacoLanguages.typescript,
-  monacoLanguages.typescriptreact,
-  monacoLanguages.javascript,
-  monacoLanguages.javascriptreact,
-  monacoLanguages.json,
-] as const;
-
-/**
- * Register completions for languages that use monacopilot AI code completion.
- *
- * One completion provider is registered per language defined in
- * {@link completionLanguages}. The returned {@link CompletionRegistration}
- * aggregates every individual registration so the caller can
- * deregister, trigger, or update options for all of them at once.
- *
- * @param editor - The editor instance.
- * @param monaco - The Monaco instance.
- * @returns A combined completion registration for all languages.
- */
-export const registerCompletions = (
-  editor: Monaco.editor.IStandaloneCodeEditor,
-  monaco: typeof Monaco,
-): CompletionRegistration => {
+export const registerCompletions = (): CompletionRegistration => {
   const registrations: CompletionRegistration[] = [];
-  // oxlint-disable-next-line capitalized-comments -- UI kill switch while /v1/code-completion points at an unmaintained model.
-  // const registrations: CompletionRegistration[] = completionLanguages.map((language) =>
-  //   registerCompletion(monaco, editor, {
-  //     endpoint: `${ENV.TAU_API_URL}/v1/code-completion`,
-  //     language,
-  //     trigger: 'onTyping',
-  //     async requestHandler(request) {
-  //       const response = await fetch(`${ENV.TAU_API_URL}/v1/code-completion`, {
-  //         method: 'POST',
-  //         headers: {
-  //           'Content-Type': 'application/json',
-  //         },
-  //         body: JSON.stringify(request.body),
-  //         credentials: 'include',
-  //       });
-  //       const data = (await response.json()) as Awaited<ReturnType<CompletionCopilot['complete']>>;
-
-  //       return data;
-  //     },
-  //   }),
-  // );
 
   return {
     trigger() {

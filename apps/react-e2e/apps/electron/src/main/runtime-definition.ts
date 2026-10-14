@@ -1,7 +1,7 @@
 import { esbuild } from '@taucad/esbuild';
 import { middleware } from '@taucad/middleware';
 import { replicad } from '@taucad/replicad';
-import { defineKernel } from '@taucad/runtime/kernel';
+import { createKernelParameterDeclaration, defineKernel } from '@taucad/runtime/kernel';
 import { defineRuntime } from '@taucad/runtime/worker';
 
 /** Packaged-Electron hard-recovery fixture: deliberately never yields back to the utility event loop. */
@@ -10,27 +10,34 @@ const blocking = defineKernel({
   extensions: ['block'],
   name: 'BlockingKernel',
   version: '1.0.0',
-  exportFormats: {},
+  views: {},
+  exports: {},
   async initialize() {
     return {};
   },
-  async getDependencies({ entryPath }) {
+  async resolve({ entryPath }) {
     return { resolved: [entryPath], unresolved: [] };
   },
-  async getParameters() {
+  async describe() {
     return {
       success: true,
-      data: { defaultParameters: {}, jsonSchema: { type: 'object', properties: {} } },
+      data: {
+        parameters: createKernelParameterDeclaration(
+          {},
+          { type: 'object', properties: {} },
+          {
+            id: 'urn:taucad:test:blocking-electron',
+            name: 'BlockingElectronParameters',
+          },
+        ),
+      },
       issues: [],
     };
   },
-  async createGeometry() {
+  async evaluate() {
     const lock = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
     Atomics.wait(lock, 0, 0);
     throw new Error('Blocking Electron recovery fixture unexpectedly resumed.');
-  },
-  async exportGeometry() {
-    return { success: false, issues: [] };
   },
 });
 

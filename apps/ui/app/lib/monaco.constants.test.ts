@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { languageFromExtension } from '@taucad/types/constants';
-import { codeLanguageToMonacoLanguage, extensionToMonacoLanguage, monacoLanguages } from '#lib/monaco.constants.js';
+import {
+  codeLanguageToMonacoLanguage,
+  extensionToMonacoLanguage,
+  getMonacoLanguage,
+  monacoLanguages,
+} from '#lib/monaco.constants.js';
+import { resolveHighlightLanguageForPath } from '#lib/code-language-resolution.js';
 
 describe('JSON-family language mappings', () => {
   describe('jsonl', () => {
@@ -65,5 +71,16 @@ describe('derived Monaco language mapping', () => {
     expect(languageFromExtension.sh).toBe('bash');
     expect(extensionToMonacoLanguage['sh']).toBe(monacoLanguages.bash);
     expect(extensionToMonacoLanguage['bash']).toBe(monacoLanguages.bash);
+  });
+
+  it("should map C# files to Monaco's built-in C# language", () => {
+    expect(languageFromExtension.cs).toBe('csharp');
+    expect(extensionToMonacoLanguage['cs']).toBe(monacoLanguages.csharp);
+  });
+
+  it('should map both YAML extensions to the Shiki-highlighted yaml language', () => {
+    expect(getMonacoLanguage('.tau/chats/todo.yaml')).toBe(monacoLanguages.yaml);
+    expect(getMonacoLanguage('config.yml')).toBe(monacoLanguages.yaml);
+    expect(resolveHighlightLanguageForPath('config.yml').shikiLanguage).toBe('yaml');
   });
 });

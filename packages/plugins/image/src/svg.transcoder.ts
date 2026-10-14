@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Resvg as ResvgType, ResvgRenderOptions } from '@resvg/resvg-wasm';
 import { compileWasmStreaming, defineTranscoder, loadWasmBinary } from '@taucad/runtime/transcoder';
 import type { ExportFile } from '@taucad/runtime/types';
+import { loadImageBackend } from '#image-backend.js';
 import {
   renderImageAnnotatedMinDimension,
   renderImageBackgroundPattern,
@@ -77,10 +78,18 @@ export const svgPngOptionsSchema = z
     }
   });
 
+/** Strict SVG-to-WebP options, including encoder quality. @public */
+export const svgWebpOptionsSchema = svgPngOptionsSchema.safeExtend({
+  quality: z.number().min(0).max(1).default(1),
+});
+
 /** SVG rendering options accepted by {@link renderSvgPng}. @public */
 export type SvgPngOptions = z.input<typeof svgPngOptionsSchema>;
+/** SVG rendering options accepted by {@link renderSvgWebp}. @public */
+export type SvgWebpOptions = z.input<typeof svgWebpOptionsSchema>;
 type ParsedSvgPngOptions = z.output<typeof svgPngOptionsSchema>;
-type SvgFailureCode = 'parse' | 'encode';
+type ParsedSvgWebpOptions = z.output<typeof svgWebpOptionsSchema>;
+type SvgFailureCode = 'parse' | 'backend' | 'encode';
 
 /** Stable failure returned by direct SVG rendering and mapped by the service. @public */
 export class SvgRenderError extends Error {
@@ -122,22 +131,6 @@ const escapeXml = (value: string): string =>
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;');
-
-const viewBoxPattern = /\bviewBox\s*=\s*(["'])([^"']+)\1/u;
-const parseViewBox = (svg: string): readonly [number, number, number, number] | undefined => {
-  const match = viewBoxPattern.exec(svg);
-  if (!match) {
-    return undefined;
-  }
-  const values = match[2]!
-    .trim()
-    .split(/[\s,]+/u)
-    .map(Number);
-  if (values.length !== 4 || values.some((value) => !Number.isFinite(value)) || values[2]! <= 0 || values[3]! <= 0) {
-    throw new SvgRenderError('parse', 'SVG viewBox must contain four finite numbers with positive width and height');
-  }
-  return values as unknown as readonly [number, number, number, number];
-};
 
 const niceLength = (target: number): number => {
   if (!(target > 0) || !Number.isFinite(target)) {
@@ -229,14 +222,11 @@ const labelMarkup = (options: ParsedSvgPngOptions, layout: Layout): string => {
   return `${chip({ x: layout.inset, y, width, height: layout.chipHeight, radius: layout.fontSize * 0.55 })}<text x="${layout.inset + width / 2}" y="${y + layout.chipHeight * 0.67}" text-anchor="middle" font-family="Geist" font-size="${fontSize}" fill="#000000">${escapeXml(options.label)}</text>`;
 };
 
-const scaleMarkup = (options: ParsedSvgPngOptions, layout: Layout, viewBoxWidth: number | undefined): string => {
+const scaleMarkup = (options: ParsedSvgPngOptions, layout: Layout, sourceWidth: number): string => {
   if (!options.scaleBar) {
     return '';
   }
-  if (viewBoxWidth === undefined) {
-    throw new SvgRenderError('parse', 'SVG scale bar requires a finite viewBox');
-  }
-  const unitsPerPixel = viewBoxWidth / layout.contentWidth;
+  const unitsPerPixel = sourceWidth / layout.contentWidth;
   const targetPixels = layout.scaleWidth * 0.55;
   const length = niceLength(unitsPerPixel * targetPixels);
   const barWidth = length / unitsPerPixel;
@@ -295,41 +285,52 @@ const assertPng = (bytes: Uint8Array<ArrayBuffer>, width: number, height: number
   }
 };
 
-/**
- * Render one canonical SVG artifact to a deterministic annotated PNG.
- * @param svg - Complete source SVG document.
- * @param rawOptions - Output size and annotation options.
- * @returns The rendered PNG artifact.
- * @public
- */
-export const renderSvgPng = async (svg: string, rawOptions: SvgPngOptions = {}): Promise<ExportFile> => {
-  let options: ParsedSvgPngOptions;
+const assertWebp = (bytes: Uint8Array<ArrayBuffer>): void => {
+  if (
+    bytes.length < 12 ||
+    textDecoder.decode(bytes.subarray(0, 4)) !== 'RIFF' ||
+    textDecoder.decode(bytes.subarray(8, 12)) !== 'WEBP'
+  ) {
+    throw new SvgRenderError('encode', 'image backend returned invalid WebP bytes');
+  }
+};
+
+type RenderedSvgImage = ReturnType<InstanceType<ResvgConstructor>['render']>;
+
+const withRenderedSvg = async <Result>(
+  svg: string,
+  options: ParsedSvgPngOptions,
+  consume: (image: RenderedSvgImage) => Promise<Result> | Result,
+): Promise<Result> => {
+  let backend: ResvgBackend;
   try {
-    options = svgPngOptionsSchema.parse(rawOptions);
+    backend = await loadBackend();
+  } catch (error) {
+    throw new SvgRenderError('backend', error instanceof Error ? error.message : String(error), { cause: error });
+  }
+
+  const { resvgConstructor, font } = backend;
+  let sourceProbe: InstanceType<ResvgConstructor>;
+  try {
+    // oxlint-disable-next-line new-cap -- The dynamically imported class is held in a camel-case variable by naming policy.
+    sourceProbe = new resvgConstructor(svg, resvgOptions(font));
   } catch (error) {
     throw new SvgRenderError('parse', error instanceof Error ? error.message : String(error), { cause: error });
   }
-  if (!svg.trim().startsWith('<svg') || !svg.includes('</svg>')) {
-    throw new SvgRenderError('parse', 'Expected a complete SVG document');
+  let sourceWidth: number;
+  let sourceHeight: number;
+  try {
+    sourceWidth = sourceProbe.width;
+    sourceHeight = sourceProbe.height;
+  } finally {
+    sourceProbe.free();
+  }
+  if (!(sourceWidth > 0) || !Number.isFinite(sourceWidth) || !(sourceHeight > 0) || !Number.isFinite(sourceHeight)) {
+    throw new SvgRenderError('parse', 'SVG has invalid intrinsic dimensions');
   }
 
   try {
-    const { resvgConstructor, font } = await loadBackend();
-    const viewBox = parseViewBox(svg);
-    const sourceAspect = viewBox ? viewBox[2] / viewBox[3] : undefined;
-    // oxlint-disable-next-line new-cap -- The dynamically imported class is held in a camel-case variable by naming policy.
-    const sourceProbe = new resvgConstructor(svg, resvgOptions(font));
-    let resolvedAspect: number;
-    try {
-      resolvedAspect = sourceAspect ?? sourceProbe.width / sourceProbe.height;
-    } finally {
-      sourceProbe.free();
-    }
-    if (!(resolvedAspect > 0) || !Number.isFinite(resolvedAspect)) {
-      throw new SvgRenderError('parse', 'SVG has invalid intrinsic dimensions');
-    }
-
-    const layout = createLayout(options, resolvedAspect);
+    const layout = createLayout(options, sourceWidth / sourceHeight);
     // oxlint-disable-next-line new-cap -- The dynamically imported class is held in a camel-case variable by naming policy.
     const sourceRenderer = new resvgConstructor(svg, {
       ...resvgOptions(font),
@@ -346,18 +347,27 @@ export const renderSvgPng = async (svg: string, rawOptions: SvgPngOptions = {}):
       options.background.length === 9
         ? `<rect width="100%" height="100%" fill="${options.background.slice(0, 7)}" fill-opacity="${Number.parseInt(options.background.slice(7), 16) / 255}"/>`
         : `<rect width="100%" height="100%" fill="${options.background}"/>`;
-    const wrapper = `<svg xmlns="http://www.w3.org/2000/svg" width="${options.width}" height="${options.height}" viewBox="0 0 ${options.width} ${options.height}" color="#111827">${background}<image href="${internalImageUrl}" x="${layout.contentX}" y="${layout.contentY}" width="${layout.contentWidth}" height="${layout.contentHeight}"/>${labelMarkup(options, layout)}${scaleMarkup(options, layout, viewBox?.[2])}${axesMarkup(options, layout)}</svg>`;
+    const wrapper = `<svg xmlns="http://www.w3.org/2000/svg" width="${options.width}" height="${options.height}" viewBox="0 0 ${options.width} ${options.height}" color="#111827">${background}<image href="${internalImageUrl}" x="${layout.contentX}" y="${layout.contentY}" width="${layout.contentWidth}" height="${layout.contentHeight}"/>${labelMarkup(options, layout)}${scaleMarkup(options, layout, sourceWidth)}${axesMarkup(options, layout)}</svg>`;
     // oxlint-disable-next-line new-cap -- The dynamically imported class is held in a camel-case variable by naming policy.
     const finalRenderer = new resvgConstructor(wrapper, resvgOptions(font));
     try {
       const unresolved = finalRenderer.imagesToResolve() as unknown[];
       if (!unresolved.includes(internalImageUrl)) {
-        throw new SvgRenderError('parse', 'resvg did not expose the internal drawing image for resolution');
+        throw new SvgRenderError('backend', 'resvg did not expose the internal drawing image for resolution');
       }
       finalRenderer.resolveImage(internalImageUrl, sourcePng);
-      const bytes = renderPng(finalRenderer);
-      assertPng(bytes, options.width, options.height);
-      return { name: 'render.png', mimeType: 'image/png', bytes };
+      const image = finalRenderer.render();
+      try {
+        if (image.width !== options.width || image.height !== options.height) {
+          throw new SvgRenderError(
+            'encode',
+            `resvg returned ${image.width}×${image.height} instead of ${options.width}×${options.height}`,
+          );
+        }
+        return await consume(image);
+      } finally {
+        image.free();
+      }
     } finally {
       finalRenderer.free();
     }
@@ -365,8 +375,70 @@ export const renderSvgPng = async (svg: string, rawOptions: SvgPngOptions = {}):
     if (error instanceof SvgRenderError) {
       throw error;
     }
+    throw new SvgRenderError('backend', error instanceof Error ? error.message : String(error), { cause: error });
+  }
+};
+
+/**
+ * Render one canonical SVG artifact to a deterministic annotated PNG.
+ * @param svg - Complete source SVG document.
+ * @param rawOptions - Output size and annotation options.
+ * @returns The rendered PNG artifact.
+ * @public
+ */
+export const renderSvgPng = async (svg: string, rawOptions: SvgPngOptions = {}): Promise<ExportFile> => {
+  let options: ParsedSvgPngOptions;
+  try {
+    options = svgPngOptionsSchema.parse(rawOptions);
+  } catch (error) {
     throw new SvgRenderError('parse', error instanceof Error ? error.message : String(error), { cause: error });
   }
+
+  return withRenderedSvg(svg, options, (image) => {
+    const bytes = new Uint8Array(image.asPng());
+    assertPng(bytes, options.width, options.height);
+    return { name: 'render.png', mimeType: 'image/png', bytes };
+  });
+};
+
+/**
+ * Render one canonical SVG artifact to deterministic annotated WebP.
+ * @param svg - Complete source SVG document.
+ * @param rawOptions - Output size, annotations, and encoder quality.
+ * @returns The rendered WebP artifact.
+ * @public
+ */
+export const renderSvgWebp = async (svg: string, rawOptions: SvgWebpOptions = {}): Promise<ExportFile> => {
+  let options: ParsedSvgWebpOptions;
+  try {
+    options = svgWebpOptionsSchema.parse(rawOptions);
+  } catch (error) {
+    throw new SvgRenderError('parse', error instanceof Error ? error.message : String(error), { cause: error });
+  }
+
+  return withRenderedSvg(svg, options, async (image) => {
+    let backend: Awaited<ReturnType<typeof loadImageBackend>>;
+    try {
+      backend = await loadImageBackend();
+    } catch (error) {
+      throw new SvgRenderError('backend', error instanceof Error ? error.message : String(error), { cause: error });
+    }
+    try {
+      const bytes = await backend.encodeRgbaWebp(new Uint8Array(image.pixels), {
+        width: options.width,
+        height: options.height,
+        quality: options.quality,
+        alpha: 'premultiplied',
+      });
+      assertWebp(bytes);
+      return { name: 'render.webp', mimeType: 'image/webp', bytes };
+    } catch (error) {
+      if (error instanceof SvgRenderError) {
+        throw error;
+      }
+      throw new SvgRenderError('encode', error instanceof Error ? error.message : String(error), { cause: error });
+    }
+  });
 };
 
 const edges = [
@@ -375,6 +447,12 @@ const edges = [
     to: 'png',
     fidelity: 'mesh',
     optionsSchema: svgPngOptionsSchema,
+  },
+  {
+    from: 'svg',
+    to: 'webp',
+    fidelity: 'mesh',
+    optionsSchema: svgWebpOptionsSchema,
   },
 ] as const;
 
@@ -391,7 +469,7 @@ export const svgTranscoder = defineTranscoder({
   async initialize() {
     return {};
   },
-  async transcode(input, runtime) {
+  async transcode(input, services) {
     if (input.files.length !== 1) {
       return {
         success: false,
@@ -406,9 +484,11 @@ export const svgTranscoder = defineTranscoder({
       };
     }
     try {
-      runtime.logger.log('Rendering SVG → png');
+      services.logger.log(`Rendering SVG → ${input.to}`);
       const svg = textDecoder.decode(input.files[0]!.bytes);
-      return { success: true, data: [await renderSvgPng(svg, input.options)], issues: [] };
+      const rendered =
+        input.to === 'webp' ? await renderSvgWebp(svg, input.options) : await renderSvgPng(svg, input.options);
+      return { success: true, data: [rendered], issues: [] };
     } catch (error) {
       const failure = error instanceof SvgRenderError ? error : new SvgRenderError('parse', String(error));
       return {

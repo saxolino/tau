@@ -11,19 +11,24 @@
 
 import type { TelemetryEntry } from '@taucad/runtime/types';
 import { createHash } from 'node:crypto';
-import { cpus } from 'node:os';
-import { createRuntimeClient } from '@taucad/runtime/client';
+import { cpus, loadavg } from 'node:os';
+import { asKnownArtifact, createRuntimeClient } from '@taucad/runtime/client';
 import { inProcessTransport } from '@taucad/runtime/transport/in-process';
 import { fromMemoryFs } from '@taucad/runtime/filesystem';
 import { replicadKernel } from '@taucad/replicad';
 import { openrscadKernel } from '@taucad/openrscad';
-import { openrscadNativeKernel } from '@taucad/openrscad-native';
 import { esbuild } from '@taucad/esbuild';
+import { parameterFileResolver } from '@taucad/middleware';
+import { serializeParameterRecord } from '@taucad/parameters';
+import { fileParameterEntrySchema, parametersDirectory } from '@taucad/types';
 import { defineRuntime } from '@taucad/runtime/worker';
 import { getGeometryStatsFromInspect, getInspectReport } from '@taucad/runtime-testing';
 import type { BenchmarkCase, BenchmarkKernel } from '#benchmarks/benchmark-suite.js';
 import type { CpuProfile, CpuProfiler } from '#benchmarks/cpu-profiler.js';
 import type { ProfileAnalysis } from '#benchmarks/profile-analyzer.js';
+import { noRendererAdapter, readContention } from '#benchmarks/measurement-tags.js';
+import { mergeRuntimeTrace } from '#benchmarks/runtime-trace.js';
+import type { MeasurementTags } from '#benchmarks/measurement-tags.js';
 
 // =============================================================================
 // Types
@@ -116,6 +121,8 @@ export type BenchmarkRunResult = {
   totalDurationMs: number;
   wasmSizes?: WasmSizeInfo;
   provenance?: BuildProvenance;
+  /** Conditions this run was measured under (charter D14); gates comparison and budget binding. */
+  measurement: MeasurementTags;
 };
 
 /** Options for configuring a benchmark run. */
@@ -249,13 +256,30 @@ function extractLibrarySummary(telemetryBatches: TelemetryEntry[][]): TraceSumma
 // Runner
 // =============================================================================
 
-const projectRoot = '/';
 const steadyStateWarmups = 8;
 
 const sha256 = (value: string | Uint8Array<ArrayBuffer>): string => createHash('sha256').update(value).digest('hex');
 
 const durationOf = (entries: readonly TelemetryEntry[], names: readonly string[]): number =>
   entries.filter(({ name }) => names.includes(name)).reduce((total, { duration }) => total + duration, 0);
+
+/**
+ * The conditions this run is measured under (charter D14). The renderer tag is
+ * `none` because the runner drives the kernel in-process with no graphics
+ * device at all, and the process identity is this process.
+ */
+const measurementTags = (wasm: NonNullable<BenchmarkRunnerOptions['wasm']>): MeasurementTags => ({
+  build: process.env['NODE_ENV'] === 'production' ? 'production' : 'development',
+  wasmVariant: typeof wasm === 'string' ? wasm : wasm.wasmUrl,
+  adapter: noRendererAdapter,
+  kernelProcess: { kind: 'in-process', role: 'runtime-e2e benchmark runner', pid: process.pid },
+  crossOriginIsolated: false,
+  contention: readContention({
+    loadAverage1m: loadavg()[0] ?? 0,
+    cpuCount: cpus().length,
+    operatorTag: process.env['TAU_MEASUREMENT_CONTENTION'],
+  }),
+});
 
 const runnerFingerprint = sha256(
   JSON.stringify({
@@ -274,18 +298,11 @@ const runnerFingerprint = sha256(
  * @returns Aggregated results with per-case statistics and optional OC tracing summaries
  */
 // oxlint-disable-next-line complexity -- intentional sequential loop
-/**
- * The kernel a case is authored for. Exactly one is registered per case:
- * `openrscad` and `openrscad-native` declare the same capability id, so
- * registering both would be a collision, not a fallback pair.
- */
+/** The kernel a case is authored for. Exactly one is registered per case. */
 function kernelForCase(kernel: BenchmarkKernel | undefined, replicadOptions: Record<string, unknown>) {
   switch (kernel) {
     case 'openrscad': {
       return openrscadKernel();
-    }
-    case 'openrscad-native': {
-      return openrscadNativeKernel();
     }
     default: {
       return replicadKernel(replicadOptions);
@@ -313,6 +330,8 @@ export async function runBenchmarks(
   } = options;
   const totalWork = cases.length;
   const results: BenchmarkResult[] = [];
+  /* Read before the first case so the load average describes the run, not its own heat. */
+  const measurement = measurementTags(wasm);
   const runStart = performance.now();
 
   for (const [caseIndex, benchCase] of cases.entries()) {
@@ -332,11 +351,6 @@ export async function runBenchmarks(
     /** Milliseconds. */
     let firstRender = 0;
 
-    const absoluteFiles: Record<string, string> = {};
-    for (const [filename, content] of Object.entries(benchCase.files)) {
-      absoluteFiles[`${projectRoot}${filename}`] = content;
-    }
-
     const kernelOptions = {
       ocTracing,
       libraryTracing,
@@ -346,18 +360,22 @@ export async function runBenchmarks(
     const renderOptions = tessellation ? { tessellation } : undefined;
     const caseOperation = benchCase.operation ?? operation;
 
-    const fileSystem = fromMemoryFs(absoluteFiles);
+    const fileSystem = fromMemoryFs(benchCase.files);
+    const isParameterCase = benchCase.parameterSequence !== undefined || benchCase.stageSequence !== undefined;
+    const sidecarPath = `${parametersDirectory}/${benchCase.mainFile}.json`;
     const runtime = defineRuntime({
       plugins: [esbuild()],
       kernels: [kernelForCase(benchCase.kernel, kernelOptions)],
+      /* Parameter cases resolve values the way the UI does: from the committed record, with overrides on top. */
+      middleware: isParameterCase ? [parameterFileResolver()] : [],
     });
     const transport = inProcessTransport({ runtime, fileSystem });
     const client = createRuntimeClient({
       transport,
     });
 
-    client.on('telemetry', (entries) => {
-      telemetryBatches.push(entries);
+    client.on('telemetry', (batch) => {
+      telemetryBatches.push([...batch.entries]);
     });
     client.on('log', (entry) => {
       // Surface kernel-side info/warn lines (e.g. WASM auto-selection log,
@@ -398,37 +416,58 @@ export async function runBenchmarks(
 
       const start = performance.now();
       const parameters = benchCase.parameterSequence?.[iter % benchCase.parameterSequence.length] ?? {};
+      const committed = benchCase.stageSequence?.[iter % benchCase.stageSequence.length];
       let failureMessage: string | undefined;
-      if (caseOperation === 'render') {
-        const renderResult = await client.render({
-          source: { path: `${projectRoot}${benchCase.mainFile}` },
-          parameters,
-          content: { includeEdges },
-          renderOptions,
-        });
-        if (renderResult.superseded) {
-          failureMessage = 'render was unexpectedly superseded';
-        } else if (renderResult.geometry.success) {
-          geometryHash = renderResult.geometry.data.hash;
-          if (renderResult.geometry.data.format === 'gltf') {
-            outputBytes = renderResult.geometry.data.content;
+      const document = client.open({
+        source: { path: benchCase.mainFile },
+        parameters,
+        ...(caseOperation !== 'render' || committed === undefined
+          ? {}
+          : {
+              stage: {
+                [sidecarPath]: serializeParameterRecord(
+                  fileParameterEntrySchema.parse({
+                    activeGroup: 'default',
+                    groups: { default: { values: committed } },
+                  }),
+                ),
+              },
+            }),
+      });
+      try {
+        if (caseOperation === 'render') {
+          const view = document.view('model', {
+            content: { includeEdges },
+            ...(renderOptions === undefined ? {} : { options: renderOptions }),
+          });
+          const outcome = await view.rendering().finally(() => {
+            view.close();
+          });
+          if (outcome.superseded) {
+            failureMessage = 'render was unexpectedly superseded';
+          } else if (outcome.rendering.success) {
+            geometryHash = outcome.rendering.hash;
+            const artifact = asKnownArtifact(outcome.rendering.artifact);
+            if (artifact?.mimeType === 'model/gltf-binary') {
+              outputBytes = artifact.content;
+            }
+          } else {
+            failureMessage = outcome.rendering.issues.map((issue) => issue.message).join('; ');
           }
         } else {
-          failureMessage = renderResult.geometry.issues.map((issue) => issue.message).join('; ');
+          const exportResult = await document.export('glb', {
+            content: { includeEdges },
+            ...(renderOptions === undefined ? {} : { options: renderOptions }),
+          });
+          if (exportResult.success) {
+            outputBytes =
+              exportResult.files.find(({ name }) => name.endsWith('.glb'))?.bytes ?? exportResult.files[0].bytes;
+          } else {
+            failureMessage = exportResult.issues.map((issue) => issue.message).join('; ');
+          }
         }
-      } else {
-        const exportResult = await client.export('glb', {
-          source: { path: `${projectRoot}${benchCase.mainFile}` },
-          parameters,
-          content: { includeEdges },
-          ...(renderOptions === undefined ? {} : { exportOptions: renderOptions }),
-        });
-        if (exportResult.success) {
-          outputBytes =
-            exportResult.data.find(({ name }) => name.endsWith('.glb'))?.bytes ?? exportResult.data[0]?.bytes;
-        } else {
-          failureMessage = exportResult.issues.map((issue) => issue.message).join('; ');
-        }
+      } finally {
+        document.close();
       }
       const elapsed = performance.now() - start;
       onIterationProgress?.({
@@ -467,7 +506,7 @@ export async function runBenchmarks(
       profileAnalysis = analyzeProfile(cpuProfileResult, allTelemetry);
     }
 
-    client.terminate();
+    await client.shutdown();
     globalThis.gc?.();
 
     const stats = computeStats(timings);
@@ -489,6 +528,7 @@ export async function runBenchmarks(
         mode,
         operation: caseOperation,
         parameterSequence: benchCase.parameterSequence,
+        stageSequence: benchCase.stageSequence,
         renderOptions,
         tessellationInstancing,
         wasm: typeof wasm === 'string' ? wasm : wasm.wasmUrl,
@@ -523,6 +563,17 @@ export async function runBenchmarks(
   onProgress?.(totalWork, totalWork, 'done');
 
   const wasmSizes = await collectWasmSizes();
+  /* W28: the dispatcher's sink already wrote this run's spans, one file per producer, wherever the
+   * operator pointed `TAU_TELEMETRY_DIR`. Naming the merge in the artifact is what lets a regression
+   * be read rather than guessed — the same file the open-to-frame driver records. */
+  const traceDirectory = process.env['TAU_TELEMETRY_DIR'];
+  const trace =
+    traceDirectory === undefined
+      ? undefined
+      : await mergeRuntimeTrace({
+          directory: `${traceDirectory}/traces`,
+          destination: `${traceDirectory}/benchmark-trace.jsonl`,
+        });
 
   return {
     timestamp: new Date().toISOString(),
@@ -530,6 +581,7 @@ export async function runBenchmarks(
     results,
     totalDurationMs: performance.now() - runStart,
     wasmSizes,
+    measurement: trace === undefined ? measurement : { ...measurement, runtimeTraceJsonl: trace.file },
   };
 }
 

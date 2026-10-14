@@ -1,4 +1,4 @@
-import { resolveVirtualPath, VirtualPathError } from '@taucad/utils/path';
+import { assertRootedPath, resolveAuthorityPath } from '@taucad/utils/path';
 
 /**
  * Thrown when an agent-supplied path would resolve outside the workspace root
@@ -75,21 +75,27 @@ function isAbsoluteGlobalNodeModules(absoluteNorm: string): boolean {
   );
 }
 
-function resolveUnderWorkspaceRoot(rootNorm: string, relativePath: string, originalInput: string): string {
-  try {
-    const resolved = resolveVirtualPath(`${rootNorm === '/' ? '' : rootNorm}/${relativePath}`);
-    if (rootNorm === '/' || resolved === rootNorm || resolved.startsWith(`${rootNorm}/`)) {
-      return resolved;
-    }
-  } catch (error) {
-    if (!(error instanceof VirtualPathError)) {
-      throw error;
-    }
-  }
-  throw new WorkspacePathEscapeError(`Path escapes workspace: "${originalInput}" resolves outside root "${rootNorm}"`, {
-    input: originalInput,
-    root: rootNorm,
-  });
+/**
+ * Whether an absolute path is the worker's global `/node_modules` alias.
+ *
+ * The one mount that lives outside every checkout, and the one path
+ * {@link WorkspacePathResolver.toRelativePath} answers for without consulting
+ * the root — so a caller that routes on that answer has to be able to tell the
+ * branch apart. At a project root the alias falls outside the root prefix
+ * anyway; at the Home root (`/`) nothing else would exclude it, and the view
+ * rooted there is confined to Home's own provider (gate G-D, H9).
+ *
+ * @param absolutePath - Host absolute path to classify.
+ * @returns Whether the path is the global dependency mount or one of its members.
+ * @public
+ */
+export function isGlobalNodeModulesPath(absolutePath: string): boolean {
+  return isAbsoluteGlobalNodeModules(resolveAuthorityPath(absolutePath));
+}
+
+function resolveUnderWorkspaceRoot(rootNorm: string, relativePath: string): string {
+  assertRootedPath(relativePath);
+  return relativePath === '' ? rootNorm : resolveAuthorityPath(`${rootNorm === '/' ? '' : rootNorm}/${relativePath}`);
 }
 
 /**
@@ -111,7 +117,7 @@ export class WorkspacePathResolver {
   private rootDirectory: string;
 
   public constructor(rootDirectory: string) {
-    this.rootDirectory = resolveVirtualPath(rootDirectory);
+    this.rootDirectory = resolveAuthorityPath(rootDirectory);
   }
 
   /**
@@ -138,14 +144,14 @@ export class WorkspacePathResolver {
    */
   public toRelativePath(absolutePath: string): string | undefined {
     const rootNorm = this.rootDirectory;
-    const absNorm = resolveVirtualPath(absolutePath);
+    const absNorm = resolveAuthorityPath(absolutePath);
     if (isAbsoluteGlobalNodeModules(absNorm)) {
       return absNorm === `/${bundledTypesWorkspaceRootSegment}` ? bundledTypesWorkspaceRootSegment : absNorm.slice(1);
     }
     if (absNorm === rootNorm) {
       return '';
     }
-    const prefix = `${rootNorm}/`;
+    const prefix = this.rootPrefix;
     if (!absNorm.startsWith(prefix)) {
       return undefined;
     }
@@ -158,88 +164,30 @@ export class WorkspacePathResolver {
    * @returns Joined absolute path under the configured workspace root.
    */
   public toAbsolutePath(relativePath: string): string {
+    assertRootedPath(relativePath);
     if (isWorkspaceRelativeGlobalNodeModules(relativePath)) {
-      return resolveVirtualPath(`/${relativePath}`);
+      return resolveAuthorityPath(`/${relativePath}`);
     }
-    return resolveUnderWorkspaceRoot(this.rootDirectory, relativePath, relativePath);
+    return resolveUnderWorkspaceRoot(this.rootDirectory, relativePath);
   }
 
   /**
-   * Canonical absolute path under this workspace for tool/agent inputs.
-   * Treats `''`, `'.'`, `'./'`, `'/'` and the workspace root path as the root.
-   * A single leading-slash segment (e.g. `'/src'`) is workspace-root-relative
-   * (not host `joinPath` absolute reset). Multi-segment absolute paths outside
-   * the workspace throw {@link WorkspacePathEscapeError}.
+   * Translate a canonical workspace-rooted path to its authority-global path.
    *
-   * @param input - Raw path from an agent or UI (often not normalized).
+   * @param input - Canonical rooted path from the UI or project facade.
    * @returns Normalized absolute path under the workspace.
    * @throws {WorkspacePathEscapeError} When the path escapes the workspace.
    * @public
    */
   public toAbsoluteWorkspacePath(input: string): string {
-    const rootNorm = this.rootDirectory;
-    const trimmed = input.trim();
-
-    if (trimmed === '' || trimmed === '.' || trimmed === '/' || trimmed === './') {
-      return rootNorm;
+    try {
+      return this.toAbsolutePath(assertRootedPath(input));
+    } catch {
+      throw new WorkspacePathEscapeError(
+        `Path escapes workspace: "${input}" is not a canonical rooted path under "${this.rootDirectory}"`,
+        { input, root: this.rootDirectory },
+      );
     }
-
-    // Paths without a leading `/` are workspace-relative. Do not run them through
-    // `normalizePath` first: it prepends `/`, which would send `.tau/cache` and
-    // `src/a.ts` through the "absolute path" branch and incorrectly throw.
-    if (!trimmed.startsWith('/')) {
-      let trimmedRelative = trimmed;
-      while (trimmedRelative.startsWith('./')) {
-        trimmedRelative = trimmedRelative.slice(2);
-      }
-
-      if (trimmedRelative === '' || trimmedRelative === '.') {
-        return rootNorm;
-      }
-
-      if (isWorkspaceRelativeGlobalNodeModules(trimmedRelative)) {
-        return resolveVirtualPath(`/${trimmedRelative}`);
-      }
-
-      return resolveUnderWorkspaceRoot(rootNorm, trimmedRelative, input);
-    }
-
-    const absNormalized = resolveVirtualPath(trimmed);
-    if (isAbsoluteGlobalNodeModules(absNormalized)) {
-      return absNormalized;
-    }
-    if (absNormalized === rootNorm || absNormalized.startsWith(`${rootNorm}/`)) {
-      return absNormalized;
-    }
-
-    if (absNormalized.startsWith('/')) {
-      const withoutLeadingSlash = absNormalized.slice(1);
-      const topLevelSegments = withoutLeadingSlash.split('/').filter((s) => s.length > 0 && s !== '.');
-
-      if (topLevelSegments.length > 1) {
-        throw new WorkspacePathEscapeError(
-          `Path escapes workspace: "${input}" is not under workspace root "${rootNorm}"`,
-          { input, root: rootNorm },
-        );
-      }
-
-      if (topLevelSegments.length === 0) {
-        return rootNorm;
-      }
-
-      return resolveUnderWorkspaceRoot(rootNorm, topLevelSegments.join('/'), input);
-    }
-
-    let trimmedRelative = trimmed;
-    while (trimmedRelative.startsWith('./')) {
-      trimmedRelative = trimmedRelative.slice(2);
-    }
-
-    if (trimmedRelative === '' || trimmedRelative === '.') {
-      return rootNorm;
-    }
-
-    return resolveUnderWorkspaceRoot(rootNorm, trimmedRelative, input);
   }
 
   /**
@@ -260,21 +208,11 @@ export class WorkspacePathResolver {
    * @param rootDirectory - New absolute root path for subsequent resolution.
    */
   public reset(rootDirectory: string): void {
-    this.rootDirectory = resolveVirtualPath(rootDirectory);
+    this.rootDirectory = resolveAuthorityPath(rootDirectory);
   }
 
   /**
-   * Validate and normalize a caller-supplied key to its canonical
-   * workspace-relative form for use as an internal cache / subscriber key.
-   *
-   * Accepts:
-   * - Workspace-relative keys (`main.scad`, `src/a.ts`, `''`/`.`/`/` → root).
-   * - Absolute paths that lie under the workspace root (e.g.
-   *   `/projects/abc/main.scad` for root `/projects/abc`).
-   *
-   * Rejects (throws {@link WorkspaceScopeViolationError}):
-   * - Absolute paths foreign to the workspace root.
-   * - Relative paths whose `..` segments climb above the root.
+   * Validate a caller-supplied canonical rooted key for internal caches and subscribers.
    *
    * This is the boundary helper for scoped facades such as
    * `FileContentService.write*` / `delete` / `rename` / `duplicate`. Cross-
@@ -301,16 +239,19 @@ export class WorkspacePathResolver {
           { method, input, root: rootNorm },
         );
       }
-      return absolute.slice(prefix.length);
+      return input;
     } catch (error) {
-      if (error instanceof WorkspacePathEscapeError) {
-        throw new WorkspaceScopeViolationError(`${method}: key "${input}" escapes workspace root "${error.root}"`, {
+      if (error instanceof WorkspaceScopeViolationError) {
+        throw error;
+      }
+      throw new WorkspaceScopeViolationError(
+        `${method}: key "${input}" escapes workspace root "${this.rootDirectory}"`,
+        {
           method,
           input,
-          root: error.root,
-        });
-      }
-      throw error;
+          root: this.rootDirectory,
+        },
+      );
     }
   }
 }

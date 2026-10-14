@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/naming-convention -- test data uses virtual paths as object keys */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { wrapMessagePort } from '@taucad/rpc';
 import type { Port } from '@taucad/rpc';
@@ -9,23 +8,32 @@ import {
   MountTable,
   ProviderRegistry,
   ResourceQueue,
+  RootedFileSystemError,
   tagEventOrigin,
   WorkspaceFileService,
   WorkspaceMutationError,
 } from '@taucad/filesystem';
 import { MemoryProvider } from '@taucad/filesystem/backend';
+import { tauPathPolicy } from '@taucad/filesystem/path-registry';
 import type { WatchEvent, WatchRequest, WorkspaceScope } from '@taucad/filesystem';
 import type { ChangeEvent } from '@taucad/types';
+import type { FileSystemBridgeHello, FileSystemBridgeProxy } from '@taucad/fs-bridge';
 import {
   bindMutationContextForPort,
+  consumableBytes,
   createFileSystemBridge,
   createFileSystemBridgeProxy,
   createTransferredFileSystemBridgeProxy,
+  fileSystemBridgeProtocolVersion,
   fileSystemBridgeSchemas,
   filesystemBridgeConnectMessageType,
 } from '@taucad/fs-bridge';
 import { createBridgeCall, createBridgeServer } from '@taucad/rpc/bridge';
-import { exposeFileSystemForTesting as exposeFileSystem } from '#filesystem-bridge.js';
+import {
+  exposeFileSystem as exposeFileSystemPublic,
+  exposeFileSystemForTesting as exposeFileSystem,
+  workspaceBridgeService,
+} from '#filesystem-bridge.js';
 import { createFileSystemBridgeHello } from '#filesystem-bridge-protocol.js';
 
 const testBackend = 'memory';
@@ -38,6 +46,65 @@ function fsBridgePort(port: MessagePort, label: string): Port<unknown> {
     wrapped.start();
   }
   return wrapped;
+}
+
+it('rejects shallow metadata from an exact bridge listing', async () => {
+  const channel = new MessageChannel();
+  const row = { name: 'large.txt', type: 'file', size: 2048, mtimeMs: 1, contentKind: 'text' };
+  const server = createBridgeServer(
+    { readdirWithStats: async () => [row], stat: async () => row },
+    fsBridgePort(channel.port1, 'listing-server'),
+    {
+      hello: createFileSystemBridgeHello({
+        state: 'ready',
+        capabilities: { persistent: false, writable: true, quotaBased: false },
+        watchable: false,
+      }),
+      protocolSchemas: fileSystemBridgeSchemas,
+    },
+  );
+  const proxy = createFileSystemBridgeProxy({
+    port: fsBridgePort(channel.port2, 'listing-client'),
+    dispose: () => {
+      channel.port2.close();
+    },
+  });
+  try {
+    await expect(proxy.readdirWithStats('')).rejects.toThrow('missing required metadata');
+    await expect(proxy.readdirWithStats('', { content: 'head' })).resolves.toEqual([row]);
+    await expect(proxy.stat('large.txt')).rejects.toThrow('missing required metadata');
+    await expect(proxy.stat('large.txt', { content: 'head' })).resolves.toEqual(row);
+  } finally {
+    proxy.dispose();
+    server.dispose();
+    channel.port1.close();
+  }
+});
+
+/** A proxy over a bridge server that answers only `commitPendingProjectDirectory`. */
+function pendingCommitBridge(
+  label: string,
+  commitPendingProjectDirectory: (input: unknown) => Promise<unknown>,
+): { proxy: FileSystemBridgeProxy; close: () => void } {
+  const channel = new MessageChannel();
+  createBridgeServer({ commitPendingProjectDirectory }, fsBridgePort(channel.port1, `${label}-server`), {
+    hello: createFileSystemBridgeHello({
+      state: 'ready',
+      capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
+      watchable: false,
+    }),
+    protocolSchemas: fileSystemBridgeSchemas,
+  });
+  const proxy = createFileSystemBridgeProxy({
+    port: fsBridgePort(channel.port2, `${label}-client`),
+    dispose: channel.port2.close.bind(channel.port2),
+  });
+  const close = (): void => {
+    proxy.dispose();
+    channel.port1.close();
+    vi.useRealTimers();
+  };
+  return { proxy, close };
 }
 
 function firstFailedBulkMoveError(result: unknown): unknown {
@@ -60,6 +127,8 @@ type AnyAsync = (...args: unknown[]) => Promise<unknown>;
 function makeMutatingFakeHandlers() {
   return {
     writeFile: vi.fn<AnyAsync>().mockResolvedValue(undefined),
+    writeFileChecked: vi.fn<AnyAsync>().mockResolvedValue({ status: 'applied', content: new Uint8Array([1]) }),
+    appendFile: vi.fn<AnyAsync>().mockResolvedValue(undefined),
     writeFiles: vi.fn<AnyAsync>().mockResolvedValue(undefined),
     mkdir: vi.fn<AnyAsync>().mockResolvedValue(undefined),
     move: vi.fn<AnyAsync>().mockResolvedValue({ type: 'file', size: 0, mtimeMs: 0 }),
@@ -70,8 +139,6 @@ function makeMutatingFakeHandlers() {
     canDelete: vi.fn<AnyAsync>().mockResolvedValue(true),
     unlink: vi.fn<AnyAsync>().mockResolvedValue(undefined),
     rmdir: vi.fn<AnyAsync>().mockResolvedValue(undefined),
-    duplicateFile: vi.fn<AnyAsync>().mockResolvedValue(undefined),
-    copyDirectory: vi.fn<AnyAsync>().mockResolvedValue(undefined),
     commitPendingProjectDirectory: vi.fn<AnyAsync>().mockResolvedValue({ status: 'committed' }),
     readFile: vi.fn<AnyAsync>().mockResolvedValue(new Uint8Array()),
     readdir: vi.fn<AnyAsync>().mockResolvedValue([]),
@@ -92,6 +159,22 @@ describe('bindMutationContextForPort', () => {
       await wrapper.writeFile('/x.txt', data);
       expect(handlers.writeFile).toHaveBeenCalledTimes(1);
       expect(handlers.writeFile.mock.calls[0]).toEqual(['/x.txt', data, mutationContext]);
+    });
+
+    it('writeFileChecked(input) lands as service.writeFileChecked(input, context)', async () => {
+      const handlers = makeMutatingFakeHandlers();
+      const wrapper = bindMutationContextForPort(handlers, mutationContext);
+      const input = { path: '/x.txt', data: 'new', preconditions: [{ path: '/x.txt', expected: 'old' }] };
+      await wrapper.writeFileChecked(input);
+      expect(handlers.writeFileChecked.mock.calls[0]).toEqual([input, mutationContext]);
+    });
+
+    it('appendFile(path, data) lands as service.appendFile(path, data, context)', async () => {
+      const handlers = makeMutatingFakeHandlers();
+      const wrapper = bindMutationContextForPort(handlers, mutationContext);
+      const data = new TextEncoder().encode('tail');
+      await wrapper.appendFile('/x.txt', data);
+      expect(handlers.appendFile.mock.calls[0]).toEqual(['/x.txt', data, mutationContext]);
     });
 
     it('writeFiles(files) lands as service.writeFiles(files, context)', async () => {
@@ -174,26 +257,12 @@ describe('bindMutationContextForPort', () => {
       expect(handlers.rmdir.mock.calls[0]).toEqual(['/d', options, mutationContext]);
     });
 
-    it('duplicateFile(source, dest) lands as service.duplicateFile(source, dest, context)', async () => {
-      const handlers = makeMutatingFakeHandlers();
-      const wrapper = bindMutationContextForPort(handlers, mutationContext);
-      await wrapper.duplicateFile('/a', '/b');
-      expect(handlers.duplicateFile.mock.calls[0]).toEqual(['/a', '/b', mutationContext]);
-    });
-
-    it('copyDirectory(source, dest) lands as service.copyDirectory(source, dest, context)', async () => {
-      const handlers = makeMutatingFakeHandlers();
-      const wrapper = bindMutationContextForPort(handlers, mutationContext);
-      await wrapper.copyDirectory('/d1', '/d2');
-      expect(handlers.copyDirectory.mock.calls[0]).toEqual(['/d1', '/d2', mutationContext]);
-    });
-
     it('commitPendingProjectDirectory(input) appends the mutation context', async () => {
       const handlers = makeMutatingFakeHandlers();
       const wrapper = bindMutationContextForPort(handlers, mutationContext);
       const input: Parameters<typeof wrapper.commitPendingProjectDirectory>[0] = {
         projectId: 'proj_ppppppppppppppppppppp',
-        providerBasePath: '/pending',
+        providerBasePath: 'pending',
         scope: { backend: 'memory', storageRootKey: 'memory:0' },
         files: { 'main.ts': { content: new Uint8Array([1]) } },
         manifest: new Uint8Array([2]),
@@ -363,15 +432,20 @@ describe('createFileSystemBridge', () => {
     }
   });
 
-  it('sends the requested root only in the trusted connection envelope', () => {
+  it('sends the requested root and its consumer in the trusted connection envelope', () => {
     const postMessage = vi.fn<(message: unknown, transfer: Transferable[]) => void>();
     const worker = { postMessage } as unknown as Worker;
 
-    const handle = createFileSystemBridge(worker, { root: '/projects/alpha' });
+    const handle = createFileSystemBridge(worker, { root: '/projects/alpha', consumer: 'user' });
 
     expect(postMessage).toHaveBeenCalledOnce();
     const [envelope, transfer] = postMessage.mock.calls[0]!;
-    expect(envelope).toMatchObject({ v: 1, type: filesystemBridgeConnectMessageType, root: '/projects/alpha' });
+    expect(envelope).toMatchObject({
+      v: fileSystemBridgeProtocolVersion,
+      type: filesystemBridgeConnectMessageType,
+      root: '/projects/alpha',
+      consumer: 'user',
+    });
     const { port } = envelope as { readonly port: unknown };
     expect(port).toBeInstanceOf(MessagePort);
     expect(transfer).toEqual([port]);
@@ -380,13 +454,58 @@ describe('createFileSystemBridge', () => {
 });
 
 describe('createFileSystemBridgeProxy', () => {
+  /* The other half of the W2 pairing: a worker left over from before the deploy
+   * answers with a version-1 hello, and the client refuses it with the typed
+   * protocol error rather than hanging or reporting a blank success. */
+  it('should reject a version-1 hello from a stale server with the typed protocol error', async () => {
+    const channel = new MessageChannel();
+    const staleHello = {
+      v: 1,
+      state: 'ready',
+      capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
+      watchable: false,
+    } as unknown as FileSystemBridgeHello;
+    createBridgeServer({ exists: async () => true }, fsBridgePort(channel.port1, 'fs-bridge-stale-hello-server'), {
+      hello: staleHello,
+      protocolSchemas: fileSystemBridgeSchemas,
+    });
+    const proxy = createFileSystemBridgeProxy({
+      port: fsBridgePort(channel.port2, 'fs-bridge-stale-hello-client'),
+      dispose: () => {
+        channel.port2.close();
+      },
+    });
+
+    await expect(proxy.ready).rejects.toMatchObject({ code: 'FILESYSTEM_BRIDGE_PROTOCOL_VERSION_MISMATCH' });
+
+    proxy.dispose();
+    channel.port1.close();
+  });
+
+  /* React's development render log diffs old props by reading `$$typeof`; a
+   * client disposed on a re-root is still the old prop, and a throw there aborts
+   * the commit that brings the new client in. */
+  it('should answer a disposed proxy probed for `$$typeof` with undefined', () => {
+    const channel = new MessageChannel();
+    const proxy = createFileSystemBridgeProxy({
+      port: fsBridgePort(channel.port2, 'fs-bridge-disposed-probe-client'),
+      dispose: () => {
+        channel.port2.close();
+      },
+    });
+    proxy.dispose();
+
+    expect(Reflect.get(proxy, '$$typeof')).toBeUndefined();
+    channel.port1.close();
+  });
+
   it('rejects malformed method arguments before a mutating handler runs', async () => {
     const channel = new MessageChannel();
     const writeFile = vi.fn();
     createBridgeServer({ writeFile }, fsBridgePort(channel.port1, 'fs-bridge-invalid-args-server'), {
       hello: createFileSystemBridgeHello({
         state: 'ready',
-        capabilities: { persistent: false, writable: true, quotaBased: false },
+        capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
         watchable: false,
       }),
       protocolSchemas: fileSystemBridgeSchemas,
@@ -398,7 +517,7 @@ describe('createFileSystemBridgeProxy', () => {
       },
     });
 
-    await expect(proxy.writeFile('/main.ts', 42 as unknown as string)).rejects.toThrow(/server-call-args 'writeFile'/);
+    await expect(proxy.writeFile('main.ts', 42 as unknown as string)).rejects.toThrow(/server-call-args 'writeFile'/);
     expect(writeFile).not.toHaveBeenCalled();
     proxy.dispose();
   });
@@ -408,7 +527,7 @@ describe('createFileSystemBridgeProxy', () => {
     createBridgeServer({ exists: async () => 'yes' }, fsBridgePort(channel.port1, 'fs-bridge-invalid-result-server'), {
       hello: createFileSystemBridgeHello({
         state: 'ready',
-        capabilities: { persistent: false, writable: true, quotaBased: false },
+        capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
         watchable: false,
       }),
       protocolSchemas: fileSystemBridgeSchemas,
@@ -420,7 +539,7 @@ describe('createFileSystemBridgeProxy', () => {
       },
     });
 
-    await expect(proxy.exists('/main.ts')).rejects.toMatchObject({
+    await expect(proxy.exists('main.ts')).rejects.toMatchObject({
       name: 'WireValidationError',
       site: 'client-call-result',
       entry: 'exists',
@@ -476,7 +595,7 @@ describe('createFileSystemBridgeProxy', () => {
     await expect(
       proxy.permanentlyDeleteProjectDirectory({
         projectId: 'proj_000000000000000000000',
-        providerBasePath: '/project',
+        providerBasePath: 'project',
         scope: { backend: 'indexeddb' },
       }),
     ).rejects.toMatchObject({
@@ -529,7 +648,7 @@ describe('createFileSystemBridgeProxy', () => {
       },
     });
 
-    await expect(proxy.canDelete('/main.ts')).rejects.toMatchObject({
+    await expect(proxy.canDelete('main.ts')).rejects.toMatchObject({
       name: 'WireValidationError',
       site: 'client-call-result',
       entry: 'canDelete',
@@ -543,7 +662,7 @@ describe('createFileSystemBridgeProxy', () => {
     createBridgeServer({ watch }, fsBridgePort(channel.port1, 'fs-bridge-invalid-watch-request-server'), {
       hello: createFileSystemBridgeHello({
         state: 'ready',
-        capabilities: { persistent: false, writable: true, quotaBased: false },
+        capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
         watchable: true,
       }),
       protocolSchemas: fileSystemBridgeSchemas,
@@ -574,7 +693,7 @@ describe('createFileSystemBridgeProxy', () => {
       {
         hello: createFileSystemBridgeHello({
           state: 'ready',
-          capabilities: { persistent: false, writable: true, quotaBased: false },
+          capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
           watchable: true,
         }),
         protocolSchemas: fileSystemBridgeSchemas,
@@ -588,7 +707,7 @@ describe('createFileSystemBridgeProxy', () => {
     });
     const handler = vi.fn();
 
-    const subscription = proxy.watchReady({ paths: ['/main.ts'] }, handler);
+    const subscription = proxy.watchReady({ paths: ['main.ts'] }, handler);
     await subscription.ready;
     await expect(subscription.closed).rejects.toMatchObject({
       name: 'WireValidationError',
@@ -599,44 +718,25 @@ describe('createFileSystemBridgeProxy', () => {
     proxy.dispose();
   });
 
-  it('clones pending-commit bytes before transfer and exempts only that method from the bridge deadline', async () => {
+  it('clones pending-commit bytes before transfer and outlives the default bridge deadline', async () => {
     vi.useFakeTimers();
-    const channel = new MessageChannel();
     let resolveCommit!: () => void;
     const commitGate = new Promise<void>((resolve) => {
       resolveCommit = resolve;
     });
     const received = vi.fn();
-    createBridgeServer(
-      {
-        async commitPendingProjectDirectory(input: unknown): Promise<{ status: 'committed' }> {
-          received(input);
-          await commitGate;
-          return { status: 'committed' };
-        },
-      },
-      fsBridgePort(channel.port1, 'fs-bridge-pending-commit-server'),
-      {
-        hello: createFileSystemBridgeHello({
-          state: 'ready',
-          capabilities: { persistent: false, writable: true, quotaBased: false },
-          watchable: false,
-        }),
-        protocolSchemas: fileSystemBridgeSchemas,
-      },
-    );
-    const proxy = createFileSystemBridgeProxy({
-      port: fsBridgePort(channel.port2, 'fs-bridge-pending-commit-client'),
-      dispose() {
-        channel.port2.close();
-      },
+    const { proxy, close } = pendingCommitBridge('fs-bridge-pending-commit', async (input) => {
+      received(input);
+      await commitGate;
+      return { status: 'committed' };
     });
     const content = new Uint8Array([1, 2, 3]);
     const manifest = new Uint8Array([4, 5, 6]);
 
     try {
+      await proxy.ready;
       const pending = proxy.commitPendingProjectDirectory({
-        providerBasePath: '/pending',
+        providerBasePath: 'pending',
         scope: { backend: 'indexeddb' },
         files: { 'main.ts': { content } },
         manifest,
@@ -649,10 +749,67 @@ describe('createFileSystemBridgeProxy', () => {
       await expect(pending).resolves.toEqual({ status: 'committed' });
       expect(received).toHaveBeenCalledOnce();
     } finally {
-      proxy.dispose();
-      channel.port1.close();
-      vi.useRealTimers();
+      close();
     }
+  });
+
+  it('should time out a project commit that never answers', async () => {
+    vi.useFakeTimers();
+    // `Promise.race([])` never settles: the peer accepted the call and died.
+    const { proxy, close } = pendingCommitBridge('fs-bridge-stalled-commit', async () => Promise.race<never>([]));
+
+    try {
+      // `ready` first, or the channel's 30 s hello deadline closes it instead.
+      await proxy.ready;
+      const pending = proxy.commitPendingProjectDirectory({
+        providerBasePath: 'pending',
+        scope: { backend: 'indexeddb' },
+        files: { 'main.ts': { content: new Uint8Array([1, 2, 3]) } },
+        manifest: new Uint8Array([4, 5, 6]),
+      });
+
+      // Attached before the clock moves: an unhandled rejection inside
+      // `advanceTimersByTimeAsync` fails the run.
+      const rejection = expect(pending).rejects.toThrow("Bridge call 'commitPendingProjectDirectory' timed out");
+      await vi.advanceTimersByTimeAsync(300_001);
+      await rejection;
+    } finally {
+      close();
+    }
+  });
+
+  /*
+   * G2c-2: a host that dies after its consumer is ready takes its port with it,
+   * and the channel already treats that death as the bye frame the peer never
+   * sent. `closed` is how a consumer above the transport learns of it — the
+   * Worker `error` event does not mean the proxies are dead, and this does.
+   */
+  it('should settle `closed` when the served port dies, and refuse calls afterwards', async () => {
+    const channel = new MessageChannel();
+    createBridgeServer({ exists: async () => true }, fsBridgePort(channel.port1, 'fs-bridge-port-death-server'), {
+      hello: createFileSystemBridgeHello({
+        state: 'ready',
+        capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
+        watchable: false,
+      }),
+      protocolSchemas: fileSystemBridgeSchemas,
+    });
+    const proxy = createFileSystemBridgeProxy({
+      port: fsBridgePort(channel.port2, 'fs-bridge-port-death-client'),
+      dispose: () => {
+        channel.port2.close();
+      },
+    });
+
+    await proxy.ready;
+    await expect(proxy.exists('main.ts')).resolves.toBe(true);
+
+    channel.port1.close();
+
+    await expect(proxy.closed).resolves.toBeUndefined();
+    await expect(proxy.exists('main.ts')).rejects.toThrow(/closed/i);
+
+    proxy.dispose();
   });
 });
 
@@ -676,30 +833,61 @@ describe('exposeFileSystem coalesced delivery', () => {
 
   it('publishes the filesystem bridge protocol version in hello', async () => {
     const handle = exposeFileSystem({
-      capabilities: { persistent: false, writable: true, quotaBased: false },
+      capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' },
     });
     const channel = new MessageChannel();
     messageHandlers[0]!(
       new MessageEvent('message', {
-        data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
       }),
     );
     const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
 
     await proxy.ready;
-    expect(proxy.hello.payload).toMatchObject({ v: 1 });
+    expect(proxy.hello.payload).toMatchObject({ v: fileSystemBridgeProtocolVersion });
 
     proxy.dispose();
     handle.cleanup();
     channel.port1.close();
   });
 
-  it('rejects a mismatched connect envelope with a typed protocol error', async () => {
+  it('should carry a scoped workspace archive and its blob across the wire', async () => {
+    /* The archive is the one workspace call whose result is a `Blob` and whose
+     * options bag is read by the authority, not by the proxy: a transport that
+     * dropped either would leave the `/files` browser's folder download silently
+     * wrong rather than failing. Every *routed* archive belongs to the rooted
+     * surface now (charter D2); the physical scope no view roots survives here. */
+    const getScopedZippedDirectory = vi.fn(async () => new Blob(['PK\u0003\u0004'], { type: 'application/zip' }));
+    const handle = exposeFileSystem({ getScopedZippedDirectory });
+    const channel = new MessageChannel();
+    messageHandlers[0]!(
+      new MessageEvent('message', {
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+      }),
+    );
+    const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
+
+    await proxy.ready;
+    const scope = { backend: 'memory', storageRootKey: 'memory:files' } satisfies WorkspaceScope;
+    const archive = await proxy.getScopedZippedDirectory('/models', { scope });
+
+    expect(getScopedZippedDirectory).toHaveBeenCalledWith('/models', { scope });
+    /* `text()` on the result is what proves a real `Blob` survived the wire. */
+    await expect(archive.text()).resolves.toBe('PK\u0003\u0004');
+
+    proxy.dispose();
+    handle.cleanup();
+    channel.port1.close();
+  });
+
+  /* A version-1 peer predates the required `consumer` (W2), so the pairing is
+   * refused by version rather than by a confusing `ROOT_UNAVAILABLE`. */
+  it('rejects a version-1 connect envelope with a typed protocol error', async () => {
     const handle = exposeFileSystem({});
     const channel = new MessageChannel();
     messageHandlers[0]!(
       new MessageEvent('message', {
-        data: { v: 2, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 },
       }),
     );
     const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
@@ -718,6 +906,7 @@ describe('exposeFileSystem coalesced delivery', () => {
     const handle = exposeFileSystem(
       {},
       {
+        policy: tauPathPolicy,
         changeEventBus: bus,
         createCoalescer: (deliver, coalescingWindow, onOverflow) =>
           new EventCoalescer(deliver, { coalescingWindow, maxQueueDepth: 2, onOverflow }),
@@ -725,7 +914,11 @@ describe('exposeFileSystem coalesced delivery', () => {
     );
     const channel = new MessageChannel();
     for (const h of messageHandlers) {
-      h(new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 } }));
+      h(
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        }),
+      );
     }
     const serverHandle = [...handle.serverHandles.values()][0]!;
     const emitSpy = vi.spyOn(serverHandle, 'emit');
@@ -748,11 +941,13 @@ describe('exposeFileSystem coalesced delivery', () => {
     const channel = new MessageChannel();
     for (const handler of messageHandlers) {
       handler(
-        new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 } }),
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        }),
       );
     }
     const client = createTransferredFileSystemBridgeProxy(channel.port2);
-    const watch = client.watchReady({ paths: ['/main.ts'] }, vi.fn());
+    const watch = client.watchReady({ paths: ['main.ts'] }, vi.fn());
     await watch.ready;
     expect(handle.activePorts.size).toBe(1);
 
@@ -772,6 +967,7 @@ describe('exposeFileSystem coalesced delivery', () => {
     const handle = exposeFileSystem(
       {},
       {
+        policy: tauPathPolicy,
         changeEventBus: bus,
         createCoalescer: (deliver, coalescingWindow, onOverflow) =>
           new EventCoalescer(deliver, { coalescingWindow, onOverflow }),
@@ -780,7 +976,9 @@ describe('exposeFileSystem coalesced delivery', () => {
     const channel = new MessageChannel();
     for (const handler of messageHandlers) {
       handler(
-        new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 } }),
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        }),
       );
     }
     const emitSpy = vi.spyOn([...handle.serverHandles.values()][0]!, 'emit');
@@ -834,15 +1032,17 @@ describe('exposeFileSystem skip-originator dispatch', () => {
           bus.emit(event);
         },
       },
-      {
-        changeEventBus: bus,
-      },
+      { policy: tauPathPolicy, changeEventBus: bus },
     );
 
     const fireConnect = (port: MessagePort) => {
       const mh = messageHandlers[0];
       expect(mh).toBeDefined();
-      mh!(new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port } }));
+      mh!(
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port },
+        }),
+      );
     };
 
     const chA = new MessageChannel();
@@ -883,11 +1083,11 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     chB.port2.close();
   });
 
-  it('should deliver a batch write to a peer exact watcher while suppressing the author echo', async () => {
+  it('should append through the workspace bridge while suppressing the author echo', async () => {
     const providerRegistry = new ProviderRegistry();
     const provider = await providerRegistry.getProvider({ backend: 'memory', storageRootKey: 'memory:bridge-test' });
     const mountTable = new MountTable();
-    mountTable.mount('/', provider, { backend: 'memory', storageRootKey: 'memory:bridge-test' });
+    mountTable.mount('/', provider, { class: 'authored', backend: 'memory', storageRootKey: 'memory:bridge-test' });
     const bus = new ChangeEventBus();
     const crossTabCoordinator = new CrossTabCoordinator();
     const service = new WorkspaceFileService({
@@ -897,11 +1097,15 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       crossTabCoordinator,
       mountTable,
     });
-    const handle = exposeFileSystem(service, { changeEventBus: bus });
+    const handle = exposeFileSystem(service, { policy: tauPathPolicy, changeEventBus: bus });
     const fireConnect = (port: MessagePort): void => {
       const messageHandler = messageHandlers[0];
       expect(messageHandler).toBeDefined();
-      messageHandler!(new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port } }));
+      messageHandler!(
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port },
+        }),
+      );
     };
     const channelA = new MessageChannel();
     const channelB = new MessageChannel();
@@ -927,12 +1131,19 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     try {
       await peerWatch.ready;
       await clientA.writeFiles({ [path]: { content: 'cube([10, 10, 10]);' } });
+      await clientA.appendFile(path, '\nsphere(5);');
       await vi.waitFor(() => {
-        expect(peerWatchEvents).toEqual([{ type: 'change', path }]);
-        expect(peerEvents).toEqual([{ type: 'fileWritten', path, backend: 'memory' }]);
+        /* Two writes coalesce into one watch change only when they land inside one batch; under load they arrive as two. */
+        expect(peerWatchEvents.length).toBeGreaterThan(0);
+        expect(peerWatchEvents.every((event) => event.type === 'change' && event.path === path)).toBe(true);
+        expect(peerEvents).toEqual([
+          { type: 'fileWritten', path, backend: 'memory' },
+          { type: 'fileWritten', path, backend: 'memory' },
+        ]);
       });
 
       expect(authorEvents).toEqual([]);
+      await expect(clientA.readFile(path, 'utf8')).resolves.toBe('cube([10, 10, 10]);\nsphere(5);');
     } finally {
       peerWatch.unsubscribe();
       stopAuthorEvents();
@@ -987,6 +1198,11 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       handler: buildEmitter((a) => ({ type: 'fileWritten', path: a[0] as string, backend: 'memory' })),
     },
     {
+      name: 'appendFile',
+      args: ['/x.txt', new TextEncoder().encode('tail')],
+      handler: buildEmitter((a) => ({ type: 'fileWritten', path: a[0] as string, backend: 'memory' })),
+    },
+    {
       name: 'writeFiles',
       args: [Object.fromEntries([['/a.txt', { content: 'hi' }]])],
       handler: buildEmitter(() => ({ type: 'fileWritten', path: '/a.txt', backend: 'memory' })),
@@ -1006,16 +1222,6 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       args: ['/d'],
       handler: buildEmitter(() => ({ type: 'directoryChanged', path: '/', backend: 'memory' })),
     },
-    {
-      name: 'duplicateFile',
-      args: ['/a', '/b'],
-      handler: buildEmitter((a) => ({ type: 'fileWritten', path: a[1] as string, backend: 'memory' })),
-    },
-    {
-      name: 'copyDirectory',
-      args: ['/d1', '/d2'],
-      handler: buildEmitter(() => ({ type: 'directoryChanged', path: '/', backend: 'memory' })),
-    },
   ];
 
   it.each(echoCases)('should suppress echo to the originating port on $name', async ({ name, args, handler }) => {
@@ -1031,12 +1237,16 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       await handler(context, bus, userArgs);
     };
 
-    const handle = exposeFileSystem(handlers, { changeEventBus: bus });
+    const handle = exposeFileSystem(handlers, { policy: tauPathPolicy, changeEventBus: bus });
 
     const fireConnect = (port: MessagePort): void => {
       const mh = messageHandlers[0];
       expect(mh).toBeDefined();
-      mh!(new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port } }));
+      mh!(
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port },
+        }),
+      );
     };
 
     const chA = new MessageChannel();
@@ -1075,7 +1285,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
 
   it('declares read bytes on the response transfer list instead of cloning them', async () => {
     const provider = new MemoryProvider();
-    await provider.writeFile('/data.bin', new Uint8Array([4, 5, 6]));
+    await provider.writeFile('data.bin', new Uint8Array([4, 5, 6]));
     const channel = new MessageChannel();
     const posted: Array<{ frame: unknown; transfer: readonly Transferable[] | undefined }> = [];
     const postMessage = channel.port1.postMessage.bind(channel.port1);
@@ -1089,13 +1299,13 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     const handle = exposeFileSystem({ readFile: provider.readFile.bind(provider) });
     messageHandlers[0]!(
       new MessageEvent('message', {
-        data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
       }),
     );
     const client = createBridgeCall(fsBridgePort(channel.port2, 'fs-bridge-transfer-list-client'));
 
     try {
-      await expect(client.call('readFile', ['/data.bin'])).resolves.toEqual(new Uint8Array([4, 5, 6]));
+      await expect(client.call('readFile', ['data.bin'])).resolves.toEqual(new Uint8Array([4, 5, 6]));
 
       const responses = posted.filter(({ frame }) => (frame as { k?: string }).k === 'rs');
       expect(responses).toHaveLength(1);
@@ -1109,22 +1319,79 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     }
   });
 
+  /* A write is copied because the caller keeps its bytes. An import does not
+   * keep them: marked consumable, the caller's own buffers ride the transfer
+   * list instead of being copied first (W9c). */
+  it('should transfer a consumable batch and copy an unmarked one', async () => {
+    const written: Array<Record<string, { content: Uint8Array<ArrayBuffer> }>> = [];
+    const handle = exposeFileSystem({
+      writeFiles: async (files: Record<string, { content: Uint8Array<ArrayBuffer> }>) => {
+        written.push(files);
+      },
+    });
+    const channel = new MessageChannel();
+    const posted: Array<readonly Transferable[] | undefined> = [];
+    const postMessage = channel.port2.postMessage.bind(channel.port2);
+    vi.spyOn(channel.port2, 'postMessage').mockImplementation(
+      (frame: unknown, transfer?: readonly Transferable[] | StructuredSerializeOptions) => {
+        const transferList = Array.isArray(transfer) ? (transfer as readonly Transferable[]) : undefined;
+        posted.push(transferList);
+        Reflect.apply(postMessage, channel.port2, [frame, transferList]);
+      },
+    );
+    messageHandlers[0]!(
+      new MessageEvent('message', {
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+      }),
+    );
+    const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
+
+    try {
+      /* The default transfers a *copy*: the caller's own buffer is not on the
+       * list and its bytes survive the call. */
+      const kept = { '/kept.bin': { content: new Uint8Array([1, 2, 3]) } };
+      const keptBuffer = kept['/kept.bin'].content.buffer;
+      posted.length = 0;
+      await proxy.writeFiles(kept);
+      const copied = posted.filter((transfer) => transfer !== undefined);
+      expect(copied.length).toBe(1);
+      expect(copied[0]!.includes(keptBuffer)).toBe(false);
+      expect(kept['/kept.bin'].content.byteLength).toBe(3);
+
+      const handedOver = { '/given.bin': { content: new Uint8Array([4, 5, 6]) } };
+      const givenBuffer = handedOver['/given.bin'].content.buffer;
+      posted.length = 0;
+      await proxy.writeFiles(Object.assign(handedOver, { [consumableBytes]: true }));
+
+      const transferred = posted.filter((transfer) => transfer !== undefined);
+      expect(transferred.length).toBe(1);
+      expect(transferred[0]!.length === 1 && transferred[0]![0] === givenBuffer).toBe(true);
+      expect(givenBuffer.byteLength).toBe(0);
+      expect(written.map((files) => Object.keys(files))).toEqual([['/kept.bin'], ['/given.bin']]);
+    } finally {
+      proxy.dispose();
+      handle.cleanup();
+      channel.port1.close();
+      channel.port2.close();
+    }
+  });
+
   it('transfers provider-owned reads without detaching authoritative bytes', async () => {
     const provider = new MemoryProvider();
-    await provider.writeFile('/data.bin', new Uint8Array([1, 2, 3]));
+    await provider.writeFile('data.bin', new Uint8Array([1, 2, 3]));
     const handle = exposeFileSystem({ readFile: provider.readFile.bind(provider) });
     const channel = new MessageChannel();
     messageHandlers[0]!(
       new MessageEvent('message', {
-        data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
       }),
     );
     const client = createBridgeCall(fsBridgePort(channel.port2, 'fs-bridge-owned-read-client'));
 
     try {
-      await expect(client.call('readFile', ['/data.bin'])).resolves.toEqual(new Uint8Array([1, 2, 3]));
-      await expect(client.call('readFile', ['/data.bin'])).resolves.toEqual(new Uint8Array([1, 2, 3]));
-      await expect(provider.readFile('/data.bin')).resolves.toEqual(new Uint8Array([1, 2, 3]));
+      await expect(client.call('readFile', ['data.bin'])).resolves.toEqual(new Uint8Array([1, 2, 3]));
+      await expect(client.call('readFile', ['data.bin'])).resolves.toEqual(new Uint8Array([1, 2, 3]));
+      await expect(provider.readFile('data.bin')).resolves.toEqual(new Uint8Array([1, 2, 3]));
     } finally {
       client.dispose();
       handle.cleanup();
@@ -1136,16 +1403,13 @@ describe('exposeFileSystem skip-originator dispatch', () => {
   it('should deliver observer-sourced bus events to every connected port', async () => {
     const bus = new ChangeEventBus();
 
-    const handle = exposeFileSystem(
-      { readFile: vi.fn() },
-      {
-        changeEventBus: bus,
-      },
-    );
+    const handle = exposeFileSystem({ readFile: vi.fn() }, { policy: tauPathPolicy, changeEventBus: bus });
 
     const fireConnect = (port: MessagePort) => {
       messageHandlers[0]!(
-        new MessageEvent('message', { data: { v: 1, type: filesystemBridgeConnectMessageType, port } }),
+        new MessageEvent('message', {
+          data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port },
+        }),
       );
     };
 
@@ -1192,7 +1456,11 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       storageRootKey: 'memory:bridge-stale-root',
     });
     const mountTable = new MountTable();
-    mountTable.mount('/', rootProvider, { backend: 'memory', storageRootKey: 'memory:bridge-stale-root' });
+    mountTable.mount('/', rootProvider, {
+      class: 'authored',
+      backend: 'memory',
+      storageRootKey: 'memory:bridge-stale-root',
+    });
     const bus = new ChangeEventBus();
     const service = new WorkspaceFileService({
       providerRegistry,
@@ -1205,7 +1473,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
         {
           projectId,
           ...oldScope,
-          providerBasePath: `/${projectId}`,
+          providerBasePath: projectId,
         },
       ],
       roots: [],
@@ -1220,7 +1488,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       await originalWrite(path, data);
     });
     const rooted = service.createRootedFileSystem(`/projects/${projectId}`);
-    const queuedWrite = rooted.writeFile('/queued.txt', 'old provider');
+    const queuedWrite = rooted.writeFile('queued.txt', 'old provider');
     await started.promise;
     await service.configureProjectRoots({
       projects: [
@@ -1228,17 +1496,17 @@ describe('exposeFileSystem skip-originator dispatch', () => {
           projectId,
           backend: 'memory',
           storageRootKey: 'memory:bridge-stale-new',
-          providerBasePath: `/${projectId}`,
+          providerBasePath: projectId,
         },
       ],
       roots: [],
     });
 
-    const handle = exposeFileSystem(service, { changeEventBus: bus });
+    const handle = exposeFileSystem(service, { policy: tauPathPolicy, changeEventBus: bus });
     const channel = new MessageChannel();
     messageHandlers[0]!(
       new MessageEvent('message', {
-        data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
       }),
     );
     const client = createBridgeCall(fsBridgePort(channel.port2, 'fs-bridge-stale-route-client'));
@@ -1253,7 +1521,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       });
 
       expect(received).toEqual([]);
-      await expect(oldProvider.readFile(`/${projectId}/queued.txt`, 'utf8')).resolves.toBe('old provider');
+      await expect(oldProvider.readFile(`${projectId}/queued.txt`, 'utf8')).resolves.toBe('old provider');
       await expect(service.exists(`/projects/${projectId}/queued.txt`)).resolves.toBe(false);
     } finally {
       release.resolve();
@@ -1266,7 +1534,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     }
   });
 
-  it('captures one rooted handler per scoped port and excludes scoped ports from global broadcasts', async () => {
+  it('captures one rooted handler per scoped port and scopes every broadcast to that port root', async () => {
     const alphaProjectId = 'proj_aaaaaaaaaaaaaaaaaaaaa';
     const betaProjectId = 'proj_bbbbbbbbbbbbbbbbbbbbb';
     const providerRegistry = new ProviderRegistry();
@@ -1275,7 +1543,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       storageRootKey: 'memory:bridge-root',
     });
     const mountTable = new MountTable();
-    mountTable.mount('/', rootProvider, { backend: 'memory' });
+    mountTable.mount('/', rootProvider, { class: 'authored', backend: 'memory' });
     const bus = new ChangeEventBus();
     const service = new WorkspaceFileService({
       providerRegistry,
@@ -1289,13 +1557,13 @@ describe('exposeFileSystem skip-originator dispatch', () => {
           projectId: alphaProjectId,
           backend: 'memory',
           storageRootKey: 'memory:bridge-alpha',
-          providerBasePath: `/${alphaProjectId}`,
+          providerBasePath: alphaProjectId,
         },
         {
           projectId: betaProjectId,
           backend: 'memory',
           storageRootKey: 'memory:bridge-beta',
-          providerBasePath: `/${betaProjectId}`,
+          providerBasePath: betaProjectId,
         },
       ],
       roots: [],
@@ -1303,11 +1571,17 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     const handlerForRoot = vi.fn((root: string, context: { originClientId?: string }) =>
       service.createRootedFileSystem(root, context),
     );
-    const handle = exposeFileSystem(service, { changeEventBus: bus, handlerForRoot });
+    const handle = exposeFileSystem(service, { policy: tauPathPolicy, changeEventBus: bus, handlerForRoot });
     const connect = (port: MessagePort, root: string): void => {
       messageHandlers[0]!(
         new MessageEvent('message', {
-          data: { v: 1, type: filesystemBridgeConnectMessageType, port, root },
+          data: {
+            v: fileSystemBridgeProtocolVersion,
+            type: filesystemBridgeConnectMessageType,
+            port,
+            root,
+            consumer: 'working-copy',
+          },
         }),
       );
     };
@@ -1320,20 +1594,28 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     const globalEvents: unknown[] = [];
     const stopBroadcast = alpha.listen('fileChanged', (event) => globalEvents.push(event));
     const watchEvents: WatchEvent[] = [];
-    const stopWatch = alpha.watch({ paths: ['/'], recursive: true }, (event) => watchEvents.push(event));
+    const stopWatch = alpha.watch({ paths: [''], recursive: true }, (event) => watchEvents.push(event));
 
     try {
-      await alpha.writeFile('/same.ts', 'alpha');
-      await beta.writeFile('/same.ts', 'beta');
+      await alpha.writeFile('same.ts', 'alpha');
+      await beta.writeFile('same.ts', 'beta');
       await service.writeFile(`/projects/${alphaProjectId}/external.ts`, 'external');
 
-      await expect(alpha.readFile('/same.ts', 'utf8')).resolves.toBe('alpha');
-      await expect(beta.readFile('/same.ts', 'utf8')).resolves.toBe('beta');
+      await expect(alpha.readFile('same.ts', 'utf8')).resolves.toBe('alpha');
+      await expect(beta.readFile('same.ts', 'utf8')).resolves.toBe('beta');
       await vi.waitFor(() => {
-        expect(watchEvents).toContainEqual({ type: 'change', path: '/external.ts' });
+        expect(watchEvents).toContainEqual({ type: 'change', path: 'external.ts' });
       });
-      expect(watchEvents).not.toContainEqual({ type: 'change', path: '/same.ts' });
-      expect(globalEvents).toEqual([]);
+      expect(watchEvents).not.toContainEqual({ type: 'change', path: 'same.ts' });
+      /* Alpha hears the external write in its own namespace, never its own
+       * write and never beta's, whose path lies outside alpha's root (L4). */
+      await vi.waitFor(() => {
+        expect(globalEvents).toContainEqual(expect.objectContaining({ type: 'fileWritten', path: 'external.ts' }));
+      });
+      expect(globalEvents).not.toContainEqual(expect.objectContaining({ path: 'same.ts' }));
+      expect(globalEvents).not.toContainEqual(
+        expect.objectContaining({ path: `/projects/${alphaProjectId}/external.ts` }),
+      );
       expect(handlerForRoot).toHaveBeenCalledTimes(2);
       expect(handlerForRoot.mock.calls[0]?.[0]).toBe(`/projects/${alphaProjectId}`);
       expect(handlerForRoot.mock.calls[0]?.[1].originClientId).toMatch(/^port_/u);
@@ -1351,12 +1633,97 @@ describe('exposeFileSystem skip-originator dispatch', () => {
     }
   });
 
+  /*
+   * North-star W2 red pin (execution-queue ruling P2): a rooted port is a
+   * composed view of one checkout, and "events ride the view" (architecture
+   * L4). Today `deliverToHandles` skips every scoped port outright
+   * (`filesystem-bridge.ts:526`), so a UI reading a checkout through a rooted
+   * port never learns that another port wrote into it. Remove `.fails` in the
+   * change that gives scoped ports their in-root fan-out.
+   */
+  it('should deliver a peer port write under a scoped port root to that scoped port', async () => {
+    const projectId = 'proj_ccccccccccccccccccccc';
+    const providerRegistry = new ProviderRegistry();
+    const rootProvider = await providerRegistry.getProvider({
+      backend: 'memory',
+      storageRootKey: 'memory:bridge-fanout-root',
+    });
+    const mountTable = new MountTable();
+    mountTable.mount('/', rootProvider, { class: 'authored', backend: 'memory' });
+    const bus = new ChangeEventBus();
+    const service = new WorkspaceFileService({
+      providerRegistry,
+      resourceQueue: new ResourceQueue(),
+      eventBus: bus,
+      mountTable,
+    });
+    await service.configureProjectRoots({
+      projects: [
+        {
+          projectId,
+          backend: 'memory',
+          storageRootKey: 'memory:bridge-fanout',
+          providerBasePath: projectId,
+        },
+      ],
+      roots: [],
+    });
+    const handle = exposeFileSystem(service, {
+      policy: tauPathPolicy,
+      changeEventBus: bus,
+      handlerForRoot: (root, context) => service.createRootedFileSystem(root, context),
+    });
+    const connect = (port: MessagePort, root?: string): void => {
+      messageHandlers[0]!(
+        new MessageEvent('message', {
+          data: {
+            v: fileSystemBridgeProtocolVersion,
+            type: filesystemBridgeConnectMessageType,
+            port,
+            ...(root === undefined ? {} : { root, consumer: 'working-copy' }),
+          },
+        }),
+      );
+    };
+    const readerChannel = new MessageChannel();
+    const writerChannel = new MessageChannel();
+    connect(readerChannel.port1, `/projects/${projectId}`);
+    connect(writerChannel.port1, `/projects/${projectId}`);
+    const reader = createTransferredFileSystemBridgeProxy(readerChannel.port2);
+    const writer = createTransferredFileSystemBridgeProxy(writerChannel.port2);
+    const received: unknown[] = [];
+    const stopListening = reader.listen('fileChanged', (event) => received.push(event));
+
+    try {
+      await reader.ready;
+      await writer.ready;
+      await writer.writeFile('peer.ts', 'peer');
+      await vi.waitFor(() => {
+        expect(received).toContainEqual(expect.objectContaining({ type: 'fileWritten', path: 'peer.ts' }));
+      });
+    } finally {
+      stopListening();
+      reader.dispose();
+      writer.dispose();
+      handle.cleanup();
+      service.dispose();
+      readerChannel.port1.close();
+      writerChannel.port1.close();
+    }
+  });
+
   it('returns a typed root error over RPC instead of exposing the authority namespace', async () => {
-    const handle = exposeFileSystem({}, { handlerForRoot: () => undefined });
+    const handle = exposeFileSystem({}, { policy: tauPathPolicy, handlerForRoot: () => undefined });
     const channel = new MessageChannel();
     messageHandlers[0]!(
       new MessageEvent('message', {
-        data: { v: 1, type: filesystemBridgeConnectMessageType, port: channel.port1, root: '/projects/missing' },
+        data: {
+          v: fileSystemBridgeProtocolVersion,
+          type: filesystemBridgeConnectMessageType,
+          port: channel.port1,
+          root: '/projects/missing',
+          consumer: 'working-copy',
+        },
       }),
     );
     const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
@@ -1369,7 +1736,7 @@ describe('exposeFileSystem skip-originator dispatch', () => {
         watchable: false,
         error: { code: 'ROOT_UNAVAILABLE' },
       });
-      await expect(proxy.readFile('/main.ts')).rejects.toMatchObject({
+      await expect(proxy.readFile('main.ts')).rejects.toMatchObject({
         code: 'ROOT_UNAVAILABLE',
         message: 'The requested filesystem root is unavailable.',
       });
@@ -1377,6 +1744,286 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       proxy.dispose();
       handle.cleanup();
       channel.port1.close();
+    }
+  });
+
+  /*
+   * Invariant CI2 (blueprint W2, EQ2): `consumer` is a required member of a
+   * rooted connect envelope. An absent or unknown value is refused with
+   * `ROOT_UNAVAILABLE` and never reaches `handlerForRoot` — no code path
+   * treats absence as a value.
+   */
+  const connectRooted = (
+    envelope: Record<string, unknown>,
+  ): {
+    readonly handlerForRoot: ReturnType<typeof vi.fn>;
+    readonly proxy: FileSystemBridgeProxy;
+    readonly cleanup: () => void;
+  } => {
+    const handlerForRoot = vi.fn(() => ({
+      capabilities: { persistent: false, writable: true, quotaBased: false, durability: 'ephemeral' } as const,
+      readFile: async () => new Uint8Array([1]),
+    }));
+    const handle = exposeFileSystem({}, { policy: tauPathPolicy, handlerForRoot });
+    const channel = new MessageChannel();
+    messageHandlers.at(-1)!(
+      new MessageEvent('message', {
+        data: {
+          v: fileSystemBridgeProtocolVersion,
+          type: filesystemBridgeConnectMessageType,
+          port: channel.port1,
+          root: '/projects/alpha',
+          ...envelope,
+        },
+      }),
+    );
+    const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
+    return {
+      handlerForRoot,
+      proxy,
+      cleanup: () => {
+        proxy.dispose();
+        handle.cleanup();
+        channel.port1.close();
+      },
+    };
+  };
+
+  it('should refuse a rooted connection whose consumer is not a recognised value', async () => {
+    const { handlerForRoot, proxy, cleanup } = connectRooted({ consumer: 'agnet' });
+
+    try {
+      await proxy.ready;
+      expect(proxy.hello.payload).toMatchObject({ state: 'unavailable', error: { code: 'ROOT_UNAVAILABLE' } });
+      await expect(proxy.readFile('main.ts')).rejects.toMatchObject({
+        code: 'ROOT_UNAVAILABLE',
+        message: 'The requested filesystem root is unavailable.',
+      });
+      expect(handlerForRoot).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('should refuse a rooted connection that names no consumer', async () => {
+    const { handlerForRoot, proxy, cleanup } = connectRooted({});
+
+    try {
+      await proxy.ready;
+      expect(proxy.hello.payload).toMatchObject({ state: 'unavailable', error: { code: 'ROOT_UNAVAILABLE' } });
+      /* Absent and unknown are the same refusal, down to the message (CI2). */
+      await expect(proxy.readFile('main.ts')).rejects.toMatchObject({
+        code: 'ROOT_UNAVAILABLE',
+        message: 'The requested filesystem root is unavailable.',
+      });
+      expect(handlerForRoot).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('should hand the handler the literal consumer the rooted envelope named', async () => {
+    const user = connectRooted({ consumer: 'user' });
+    const agent = connectRooted({ consumer: 'agent' });
+    const workingCopy = connectRooted({ consumer: 'working-copy' });
+
+    try {
+      await Promise.all([user.proxy.ready, agent.proxy.ready, workingCopy.proxy.ready]);
+      expect(user.handlerForRoot.mock.calls[0]?.[2]).toBe('user');
+      expect(agent.handlerForRoot.mock.calls[0]?.[2]).toBe('agent');
+      expect(workingCopy.handlerForRoot.mock.calls[0]?.[2]).toBe('working-copy');
+      expect(workingCopy.proxy.hello.payload).toMatchObject({ state: 'ready' });
+    } finally {
+      user.cleanup();
+      agent.cleanup();
+      workingCopy.cleanup();
+    }
+  });
+
+  /*
+   * G0-12: the refusal the hello states is the refusal the caller gets. A
+   * `VirtualPathError` from `resolveAuthorityPath` used to reach the client as
+   * itself while the hello said `ROOT_UNAVAILABLE`.
+   */
+  const connectThrowingHandler = (
+    error: unknown,
+  ): { readonly proxy: FileSystemBridgeProxy; readonly cleanup: () => void } => {
+    const handle = exposeFileSystem(
+      {},
+      {
+        policy: tauPathPolicy,
+        handlerForRoot: () => {
+          throw error;
+        },
+      },
+    );
+    const channel = new MessageChannel();
+    messageHandlers.at(-1)!(
+      new MessageEvent('message', {
+        data: {
+          v: fileSystemBridgeProtocolVersion,
+          type: filesystemBridgeConnectMessageType,
+          port: channel.port1,
+          root: '/projects/alpha',
+          consumer: 'agent',
+        },
+      }),
+    );
+    const proxy = createTransferredFileSystemBridgeProxy(channel.port2);
+    return {
+      proxy,
+      cleanup: () => {
+        proxy.dispose();
+        handle.cleanup();
+        channel.port1.close();
+      },
+    };
+  };
+
+  it('should answer the refusal its hello states when the rooted handler throws another error', async () => {
+    const { proxy, cleanup } = connectThrowingHandler(
+      Object.assign(new Error('VIRTUAL_PATH: /projects/../alpha'), { code: 'VIRTUAL_PATH' }),
+    );
+
+    try {
+      await proxy.ready;
+      expect(proxy.hello.payload).toMatchObject({ state: 'unavailable', error: { code: 'ROOT_UNAVAILABLE' } });
+      await expect(proxy.readFile('main.ts')).rejects.toMatchObject({
+        code: 'ROOT_UNAVAILABLE',
+        message: 'The requested filesystem root is unavailable.',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('should carry a stale rooted filesystem to the caller as itself', async () => {
+    const { proxy, cleanup } = connectThrowingHandler(new RootedFileSystemError('ESTALE'));
+
+    try {
+      await proxy.ready;
+      await expect(proxy.readFile('main.ts')).rejects.toMatchObject({
+        code: 'ESTALE',
+        message: 'The rooted filesystem is stale and must be reopened.',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+/**
+ * The authority's wire is topology, the `/files` browser's scoped reads and
+ * `pollExternalChanges` (H3 closed, W11/EQ3).
+ *
+ * `workspaceBridgeService` is the one place that decides it, so this suite
+ * drives the public {@link exposeFileSystem} over a real authority exactly as
+ * the file-manager worker composes it: a per-path content call does not merely
+ * fail to typecheck, it is not a method the served object has.
+ */
+describe('workspaceBridgeService', () => {
+  let messageHandlers: Array<(event: MessageEvent) => void>;
+
+  beforeEach(() => {
+    messageHandlers = [];
+    vi.stubGlobal('self', {
+      addEventListener: (_type: string, handler: (event: MessageEvent) => void) => {
+        messageHandlers.push(handler);
+      },
+      removeEventListener: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const w11Scope: WorkspaceScope = { backend: 'memory', storageRootKey: 'memory:w11' };
+
+  const authority = async (): Promise<WorkspaceFileService> => {
+    const providerRegistry = new ProviderRegistry();
+    const provider = await providerRegistry.getProvider(w11Scope);
+    await provider.writeFile('secret.txt', new TextEncoder().encode('project bytes'));
+    const mountTable = new MountTable();
+    mountTable.mount('/', provider, { class: 'authored', ...w11Scope });
+    return new WorkspaceFileService({
+      providerRegistry,
+      resourceQueue: new ResourceQueue(),
+      eventBus: new ChangeEventBus(),
+      crossTabCoordinator: new CrossTabCoordinator(),
+      mountTable,
+    });
+  };
+
+  const connect = async (): Promise<{ call: ReturnType<typeof createBridgeCall>; cleanup: () => void }> => {
+    const handle = exposeFileSystemPublic(workspaceBridgeService(await authority()));
+    const channel = new MessageChannel();
+    messageHandlers.at(-1)!(
+      new MessageEvent('message', {
+        data: { v: fileSystemBridgeProtocolVersion, type: filesystemBridgeConnectMessageType, port: channel.port1 },
+      }),
+    );
+    const call = createBridgeCall(fsBridgePort(channel.port2, 'w11-unrooted-client'));
+    return {
+      call,
+      cleanup: () => {
+        call.dispose();
+        handle.cleanup();
+        channel.port1.close();
+        channel.port2.close();
+      },
+    };
+  };
+
+  /**
+   * All 21 of them, each with arguments its own wire schema accepts, so the
+   * refusal is the server's dispatch and never an argument shape.
+   */
+  const perPathCalls: ReadonlyArray<readonly [name: string, args: unknown[]]> = [
+    ['readFile', ['/secret.txt']],
+    ['writeFile', ['/secret.txt', 'x']],
+    ['writeFileChecked', [{ path: '/secret.txt', data: 'x', preconditions: [] }]],
+    ['appendFile', ['/secret.txt', 'x']],
+    ['writeFiles', [{ '/secret.txt': { content: 'x' } }]],
+    ['mkdir', ['/dir']],
+    ['readdir', ['/']],
+    ['stat', ['/secret.txt']],
+    ['lstat', ['/secret.txt']],
+    ['move', ['/secret.txt', '/moved.txt']],
+    ['canMove', ['/secret.txt', '/moved.txt']],
+    ['canRename', ['/secret.txt', 'moved.txt']],
+    ['canCreate', ['/new.txt', 'file']],
+    ['canDelete', ['/secret.txt']],
+    ['bulkMove', [[]]],
+    ['unlink', ['/secret.txt']],
+    ['rmdir', ['/dir']],
+    ['exists', ['/secret.txt']],
+    ['getZippedDirectory', ['/', { scope: w11Scope }]],
+    ['readShallowDirectory', ['/', { scope: w11Scope }]],
+    ['readDirectory', ['/']],
+  ];
+
+  it('should answer Unknown method for every per-path content call on an unrooted port', async () => {
+    const { call, cleanup } = await connect();
+    try {
+      for (const [name, args] of perPathCalls) {
+        // oxlint-disable-next-line no-await-in-loop -- One connection, one call at a time; the point is the refusal, not throughput.
+        await expect(call.call(name, args)).rejects.toThrow(`Unknown method: ${name}`);
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('should still serve the scoped read the `/files` browser makes', async () => {
+    const { call, cleanup } = await connect();
+    try {
+      await expect(call.call('readScopedFile', ['/secret.txt', { encoding: 'utf8', scope: w11Scope }])).resolves.toBe(
+        'project bytes',
+      );
+      await expect(call.call('pollExternalChanges', [])).resolves.toBe(false);
+    } finally {
+      cleanup();
     }
   });
 });

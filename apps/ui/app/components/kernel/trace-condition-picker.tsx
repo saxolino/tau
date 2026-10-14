@@ -1,14 +1,15 @@
 import { useCallback } from 'react';
-import { ChevronDown, Clock, Copy, Tag, Circle, Plus, X, Trash2 } from 'lucide-react';
+import { ChevronDown, Clock, Tag, Circle, Plus, X, Trash2 } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '#components/ui/dropdown-menu.js';
-import { Button } from '#components/ui/button.js';
-import { Input } from '#components/ui/input.js';
-import { cn } from '#utils/ui.utils.js';
+} from '@taucad/ui/components/dropdown-menu';
+import { Button } from '@taucad/ui/components/button';
+import { CopyButton } from '@taucad/ui/components/copy-button';
+import { Input } from '@taucad/ui/components/input';
+import { cn } from '@taucad/ui/utils/cn';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,7 +147,7 @@ function ConditionRow({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button type='button' variant='outline' size='xs' className='h-7 min-w-20 gap-1 px-2 font-normal'>
-              <span className='flex-1 text-left'>{condition.value || 'Select...'}</span>
+              <span className='flex-1 text-left'>{condition.value || 'Select…'}</span>
               <ChevronDown className='size-3 text-muted-foreground' />
             </Button>
           </DropdownMenuTrigger>
@@ -216,15 +217,16 @@ export function TraceConditionPicker({
     onChange([]);
   }, [onChange]);
 
-  const handleCopy = useCallback(() => {
-    const text = conditions
-      .map((c) => {
-        const config = fieldConfigs[c.field];
-        return `${config.label} ${c.operator} ${c.value}${config.unit ?? ''}`;
-      })
-      .join(' AND ');
-    void navigator.clipboard.writeText(text);
-  }, [conditions]);
+  const getConditionsText = useCallback(
+    () =>
+      conditions
+        .map((c) => {
+          const config = fieldConfigs[c.field];
+          return `${config.label} ${c.operator} ${c.value}${config.unit ?? ''}`;
+        })
+        .join(' AND '),
+    [conditions],
+  );
 
   return (
     <div className='flex flex-col gap-2'>
@@ -233,9 +235,7 @@ export function TraceConditionPicker({
         <div className='flex items-center gap-1'>
           {conditions.length > 0 && (
             <>
-              <Button variant='ghost' size='xs' aria-label='Copy filters' onClick={handleCopy}>
-                <Copy className='size-3' />
-              </Button>
+              <CopyButton size='icon-xs' tooltip='Copy filters' aria-label='Copy filters' getText={getConditionsText} />
               <Button variant='ghost' size='xs' aria-label='Clear filters' onClick={handleClear}>
                 <Trash2 className='size-3' />
               </Button>

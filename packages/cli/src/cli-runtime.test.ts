@@ -19,21 +19,35 @@ const builtInKernelIds = [
   'openrscad',
   'jscad',
   'manifold',
+  'picovoxel',
   'gltf',
   'brep',
   'rhino',
+  'tscircuit',
+  'zoo',
   'assimp',
 ];
 
 const composeCli = async (options: CliRuntimeOptions = {}) =>
   resolveRuntimeDefinition(await createCliRuntime(options), undefined);
 
-const taucadImports = (source: string): string[] =>
-  ts
-    .preProcessFile(source, true, true)
-    .importedFiles.map(({ fileName }) => fileName)
-    .filter((specifier) => specifier.startsWith('@taucad/'))
-    .map((specifier) => specifier.split('/').slice(0, 2).join('/'));
+const taucadImports = (source: string): string[] => [
+  ...new Set(
+    ts
+      .preProcessFile(source, true, true)
+      .importedFiles.map(({ fileName }) => fileName)
+      .filter((specifier) => specifier.startsWith('@taucad/'))
+      .map((specifier) => specifier.split('/').slice(0, 2).join('/')),
+  ),
+];
+
+const picogkOptions = {
+  workerExecutable: '/picogk/Tau.PicoGK.Worker',
+  workerSha256: 'a'.repeat(64),
+  resourceFiles: [{ path: '/picogk/PicoGK.dll', sha256: 'b'.repeat(64), label: 'PicoGK' }],
+  requestTimeout: 120_000,
+  maxArtifactBytes: 512 * 1024 * 1024,
+};
 
 const novelPlugin = definePlugin({
   meta: { name: '@example/novel' },
@@ -65,11 +79,51 @@ describe('createCliRuntime', () => {
     const [source, manifestSource] = await Promise.all([readFile(sourceUrl, 'utf8'), readFile(manifestUrl, 'utf8')]);
     const manifest = JSON.parse(manifestSource) as { dependencies?: Record<string, string> };
     const expected = Object.keys(manifest.dependencies ?? {}).filter(
-      (name) => name.startsWith('@taucad/') && name !== '@taucad/runtime',
+      (name) =>
+        name.startsWith('@taucad/') &&
+        ![
+          '@taucad/agent-host',
+          // Machine providers, loaded by `tau serve --machines`, not runtime plugins.
+          '@taucad/bambu',
+          // Package install support used by `tau install`, not runtime plugins.
+          '@taucad/bundler-core',
+          '@taucad/filesystem',
+          '@taucad/host',
+          '@taucad/jobs-solvers',
+          '@taucad/parameters',
+          '@taucad/runtime',
+          '@taucad/skills',
+        ].includes(name),
     );
     const actual = taucadImports(source).filter((name) => name !== '@taucad/runtime');
 
     expect(actual.toSorted()).toEqual(expected.toSorted());
+  });
+
+  it('routes KCL to Zoo through the named Tau proxy, never with a credential in its options', async () => {
+    const runtime = await composeCli({ zooProxyUrl: 'ws://localhost:4001/v1/kernels/zoo' });
+    const zooKernel = runtime.kernels.find(({ id }) => id === 'zoo');
+
+    expect(zooKernel?.extensions).toEqual(['kcl']);
+    expect(zooKernel?.options).toMatchObject({
+      baseUrl: 'ws://localhost:4001/v1/kernels/zoo',
+      closeErrors: { 4401: expect.stringContaining('TAU_API_TOKEN') as unknown },
+    });
+    expect(zooKernel?.options).not.toHaveProperty('token');
+  });
+
+  it('defaults Zoo to the Tau Cloud proxy', async () => {
+    const runtime = await composeCli();
+
+    expect(runtime.kernels.find(({ id }) => id === 'zoo')?.options).toMatchObject({
+      baseUrl: 'wss://api.tau.new/v1/kernels/zoo',
+    });
+  });
+
+  it('keeps the built-in PicoVoxel kernel on its default wasm selection', async () => {
+    const runtime = await composeCli();
+
+    expect(runtime.kernels.find(({ id }) => id === 'picovoxel')).not.toHaveProperty('options.wasm');
   });
 
   it('composes every built-in plugin in declared order', async () => {
@@ -78,7 +132,7 @@ describe('createCliRuntime', () => {
     expect(runtime.kernels.map(({ id }) => id)).toEqual(builtInKernelIds);
     expect(runtime.bundlers.map(({ id }) => id)).toEqual(['esbuild']);
     expect(runtime.middleware.length).toBeGreaterThan(0);
-    expect(runtime.transcoders.map(({ id }) => id)).toEqual(['gltf', 'assimp', 'image', 'svg-image']);
+    expect(runtime.transcoders.map(({ id }) => id)).toEqual(['gltf', 'slicer', 'assimp', 'image', 'svg-image']);
   });
 
   it('registers the assimp import kernel through the pinned "all" preset', async () => {
@@ -87,6 +141,17 @@ describe('createCliRuntime', () => {
 
     expect(extensions).toContain('ts');
     expect(extensions).toContain('obj');
+  });
+
+  it('registers PicoGK when the host supplies its native resources', async () => {
+    const runtime = await composeCli({ picogk: picogkOptions });
+
+    expect(runtime.kernels.map(({ id }) => id)).toEqual([
+      ...builtInKernelIds.slice(0, -1),
+      'picogk',
+      builtInKernelIds.at(-1),
+    ]);
+    expect(deriveImportExtensions(runtime)).toContain('cs');
   });
 
   it('rejects an explicit plugin that duplicates a built-in', async () => {
@@ -140,8 +205,28 @@ describe('createCliRuntime', () => {
       sources.map(async (entry) => {
         const path = join(entry.parentPath, entry.name);
         const content = await readFile(path, 'utf8');
+        const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true);
         for (const extension of extensions) {
-          if (content.includes(`'${extension}'`)) {
+          let ownsExtension = false;
+          const visit = (node: ts.Node): void => {
+            if (ts.isStringLiteral(node) && node.text === extension) {
+              const { parent } = node;
+              const comparedExpression = ts.isBinaryExpression(parent)
+                ? parent.left === node
+                  ? parent.right
+                  : parent.left
+                : undefined;
+              const isComputeMode =
+                comparedExpression !== undefined &&
+                ts.isPropertyAccessExpression(comparedExpression) &&
+                comparedExpression.name.text === 'computeMode';
+              ownsExtension ||= !isComputeMode;
+            }
+            ts.forEachChild(node, visit);
+          };
+          visit(source);
+          // oxlint-disable-next-line typescript/no-unnecessary-condition -- recursive AST traversal mutates this flag.
+          if (ownsExtension) {
             offenders.push(`${entry.name}: '${extension}'`);
           }
         }

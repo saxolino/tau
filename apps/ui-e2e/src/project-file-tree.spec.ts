@@ -3,19 +3,16 @@ import { page as selectors } from 'vitest/browser';
 import type { Locator } from 'vitest/browser';
 import { stringToBase64 } from 'uint8array-extras';
 import * as target from '#support/external-target.js';
+import { expandPath, expectFilesPane, filesPane, treeItem } from '#support/file-tree.js';
 
 const seedRoute = '/__e2e/project-file-tree';
 const seedProjectName = 'sgenoud/models file-tree e2e';
 
-const filesPane = (): Locator => selectors.getByRole('region', { name: /^Files for /u }).first();
-
-function treeItem(path: string): Locator {
-  return filesPane().getByCss(`[data-testid="file-tree-item"][data-file-tree-path="${path}"]`);
-}
-
-async function expectFilesPane(): Promise<void> {
-  await target.expectVisible(filesPane(), 15_000);
-}
+const fileActions = (): Locator =>
+  selectors
+    .getByCss('[data-file-pane-id]:has([role="region"][aria-label^="Files for "])')
+    .first()
+    .getByRole('group', { name: /^File actions for /u });
 
 async function openSeededProject(): Promise<void> {
   await target.navigate(seedRoute);
@@ -38,7 +35,7 @@ async function openSeededProject(): Promise<void> {
     const searchButton = selectors.getByRole('button', { name: /Search/u });
     await target.expectVisible(searchButton);
     await target.click(searchButton);
-    const commandSearch = selectors.getByPlaceholder('Search projects, chats, and actions...');
+    const commandSearch = selectors.getByPlaceholder('Search projects, chats, and actions…');
     await target.expectVisible(commandSearch);
     await target.fill(commandSearch, 'Open files');
     await target.click(selectors.getByText('Open files', { exact: true }));
@@ -48,42 +45,23 @@ async function openSeededProject(): Promise<void> {
   await target.expectVisible(treeItem('public'), 60_000);
 }
 
-async function expandPath(path: string): Promise<void> {
-  await expectFilesPane();
-  const segments = path.split('/');
-  let current = '';
-  for (const segment of segments) {
-    current = current ? `${current}/${segment}` : segment;
-    const item = treeItem(current);
-    // oxlint-disable-next-line no-await-in-loop -- Directory expansion is sequential; each child row only exists after its parent opens.
-    await target.expectVisible(item, 15_000);
-    // oxlint-disable-next-line no-await-in-loop -- Directory expansion is sequential; each child row only exists after its parent opens.
-    if ((await target.getAttribute(item, 'aria-expanded')) !== 'true') {
-      // oxlint-disable-next-line no-await-in-loop -- Directory expansion is sequential; each child row only exists after its parent opens.
-      await target.click(item, { position: { x: 8, y: 14 } });
-    }
-    // oxlint-disable-next-line no-await-in-loop -- Directory expansion is sequential; each child row only exists after its parent opens.
-    await target.expectAttribute(item, 'aria-expanded', 'true', 15_000);
-  }
-}
-
+/**
+ * Select an open folder, so the toolbar's create actions target it.
+ *
+ * Clicking the row's name is the selection gesture, and on a folder it also
+ * toggles — so selection is what this asserts, and the folder is reopened after.
+ */
 async function focusFolder(path: string): Promise<void> {
-  await expectFilesPane();
+  await expandPath(path);
   const item = treeItem(path);
-  if ((await target.getAttribute(item, 'aria-expanded')) !== 'true') {
-    await target.click(item, { position: { x: 8, y: 14 } });
-  }
-  await target.expectAttribute(item, 'aria-expanded', 'true', 15_000);
   await target.click(item, { position: { x: 40, y: 14 } });
-  if ((await target.getAttribute(item, 'aria-expanded')) !== 'true') {
-    await target.click(item, { position: { x: 8, y: 14 } });
-  }
-  await target.expectAttribute(item, 'aria-expanded', 'true', 15_000);
+  await target.expectAttribute(item, 'aria-selected', 'true', 15_000);
+  await expandPath(path);
 }
 
 async function createFolder(parentPath: string, name: string): Promise<string> {
   await focusFolder(parentPath);
-  await target.click(filesPane().getByRole('button', { name: 'Create new folder' }));
+  await target.click(fileActions().getByRole('button', { name: 'Create new folder' }));
   const input = filesPane().getByPlaceholder('Folder name');
   await target.fill(input, name);
   await target.press(input, 'Enter');
@@ -95,7 +73,7 @@ async function createFolder(parentPath: string, name: string): Promise<string> {
 
 async function createBlankFile(parentPath: string, name: string): Promise<string> {
   await focusFolder(parentPath);
-  const createButton = filesPane().getByRole('button', { name: 'Create new file' });
+  const createButton = fileActions().getByRole('button', { name: 'Create new file' });
   await target.focus(createButton);
   await target.press(createButton, 'Enter');
   const blankMenuItem = selectors.getByRole('menuitem', { name: 'Blank' });
@@ -109,6 +87,19 @@ async function createBlankFile(parentPath: string, name: string): Promise<string
   await expectFilesPane();
   await target.expectVisible(treeItem(createdPath));
   return createdPath;
+}
+
+/**
+ * Put a new file at the project root, which re-lists the root.
+ *
+ * Duplicate, not the toolbar: the toolbar creates beside the active file, and a
+ * file row is not a selection target, so it cannot be aimed at the root.
+ */
+async function duplicateRootFile(path: string, copyPath: string): Promise<string> {
+  await openContextMenu(path);
+  await target.click(selectors.getByRole('menuitem', { name: 'Duplicate' }));
+  await target.expectVisible(treeItem(copyPath), 15_000);
+  return copyPath;
 }
 
 async function openContextMenu(path: string): Promise<void> {
@@ -410,14 +401,14 @@ test.describe('project file tree', () => {
     await expandPath('public/models');
     await target.expectVisible(treeItem('public/models/honeycomb.js'));
 
-    const searchInput = filesPane().getByPlaceholder('Filter files...');
+    const searchInput = filesPane().getByPlaceholder('Filter files…');
     await target.fill(searchInput, 'strainer');
     await target.press(searchInput, 'Enter');
     await expandPath('public/models/nested');
     await target.expectVisible(treeItem('public/models/nested/strainer.js'));
     await target.press(searchInput, 'Escape');
 
-    await target.click(filesPane().getByRole('button', { name: 'Collapse all folders' }));
+    await target.click(fileActions().getByRole('button', { name: 'Collapse all folders' }));
     await target.expectCount(treeItem('public/models/honeycomb.js'), 0);
 
     await expandPath('public/models');
@@ -445,5 +436,14 @@ test.describe('project file tree', () => {
     await expectNoMenuItem('Delete');
     await expectNoMenuItem('Download as ZIP');
     await target.expectVisible(selectors.getByRole('menuitem', { name: 'Copy Path' }));
+  });
+
+  test('should keep bundled dependencies after creating a root file', async () => {
+    await openSeededProject();
+    const createdPath = await duplicateRootFile('package.json', 'package copy.json');
+
+    await target.expectVisible(treeItem('node_modules'));
+
+    await deletePath(createdPath);
   });
 });

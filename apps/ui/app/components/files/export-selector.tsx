@@ -1,20 +1,20 @@
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import type { FileExtension } from '@taucad/types';
 import { useSelector } from '@xstate/react';
 import type { ActorRefFrom } from 'xstate';
-import { Button } from '#components/ui/button.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { Button } from '@taucad/ui/components/button';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
-import { Popover, PopoverContent, PopoverTrigger } from '#components/ui/popover.js';
-import { cn } from '#utils/ui.utils.js';
+import { Popover, PopoverContent, PopoverTrigger } from '@taucad/ui/components/popover';
+import { cn } from '@taucad/ui/utils/cn';
 import { ExportFormatGrid } from '#components/files/export-format-grid.js';
 import type { ExportFormatLayout } from '#components/files/export-format-grid.js';
 import { useExportToDisk } from '#components/files/use-export-to-disk.js';
 import { deriveAvailableFormats } from '#utils/export-formats.utils.js';
 import type { FormatEntry } from '#utils/export-formats.utils.js';
-import { sortGeometryUnitEntries } from '#routes/projects_.$id/geometry-unit.utils.js';
+import { sortGeometryUnitEntries } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
 import type { cadMachine } from '#machines/cad.machine.js';
 
 type GeometryUnitEntry = {
@@ -155,7 +155,7 @@ function GeometryUnitPicker({
         getValue={getCuValue}
         value={defaultValue}
         placeholder='Select file'
-        searchPlaceHolder='Filter files...'
+        searchPlaceHolder='Filter files…'
         title='Select geometry unit'
         description='Choose which file to export geometry from.'
         isSearchEnabled={entries.length > 5}
@@ -208,7 +208,7 @@ function ExportSelectorBody({
   const kernelClient = useSelector(selectedActor, (state) => state?.context.kernelClient);
 
   const availableFormats = useMemo(
-    () => deriveAvailableFormats(kernelClient, activeKernelId),
+    () => (capabilities === undefined ? [] : deriveAvailableFormats(kernelClient, activeKernelId)),
     [kernelClient, activeKernelId, capabilities],
   );
 
@@ -301,11 +301,9 @@ export function ExportSelector({
   const initialEntryPath = defaultEntryPath ?? mainEntryPath ?? entries[0]?.entryPath ?? '';
   const [selectedEntryPath, setSelectedEntryPath] = useState(initialEntryPath);
 
-  useEffect(() => {
-    if (!entries.some((entry) => entry.entryPath === selectedEntryPath)) {
-      setSelectedEntryPath(entries[0]?.entryPath ?? initialEntryPath);
-    }
-  }, [entries, selectedEntryPath, initialEntryPath]);
+  if (!entries.some((entry) => entry.entryPath === selectedEntryPath)) {
+    setSelectedEntryPath(entries[0]?.entryPath ?? initialEntryPath);
+  }
 
   const selectedActor = entries.find((entry) => entry.entryPath === selectedEntryPath)?.actor ?? entries[0]?.actor;
 

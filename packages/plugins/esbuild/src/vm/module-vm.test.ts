@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createEsbuildModuleVm } from '#vm/module-vm.js';
 import type { ModuleVm } from '#vm/module-vm.js';
@@ -92,6 +93,38 @@ describe('createEsbuildModuleVm', () => {
         },
       });
     }
+  });
+
+  it('should bind a builtin global name only from its registry expression', async () => {
+    vi.stubGlobal('__moduleVmBuiltinScopeA', { token: 'A' });
+    const filesystem = new MemoryFileSystem();
+    filesystem.setText(
+      'project/main.ts',
+      'export const result = { scoped: scopedBuiltin.token, unbound: typeof unboundBuiltin };',
+    );
+
+    const vm = await createEsbuildModuleVm({ filesystem });
+    activeVm = vm;
+    vm.registerModule('scoped-builtin', {
+      version: '1.0.0',
+      code: 'export default globalThis.__moduleVmBuiltinScopeA;',
+      globalName: 'scopedBuiltin',
+      registryExpression: 'globalThis.__moduleVmBuiltinScopeA',
+    });
+    vm.registerModule('unbound-builtin', {
+      version: '1.0.0',
+      code: 'export default {};',
+      globalName: 'unboundBuiltin',
+    });
+
+    const bundled = await vm.bundle('project/main.ts');
+    expect(bundled.success).toBe(true);
+    expect(bundled.code).toContain('const scopedBuiltin = globalThis.__moduleVmBuiltinScopeA;');
+    expect(bundled.code).not.toContain('unboundBuiltin =');
+    expect(bundled.code).not.toContain('__KERNEL_MODULES__');
+
+    const executed = await vm.execute<{ result: unknown }>(bundled.code);
+    expect(executed).toMatchObject({ success: true, value: { result: { scoped: 'A', unbound: 'undefined' } } });
   });
 
   it('should return a structured bundle issue for unsupported private package imports', async () => {
@@ -207,7 +240,7 @@ describe('createEsbuildModuleVm', () => {
   });
 
   it('should re-execute identical code by default for repeatable VM consumers', async () => {
-    const key = '__TAUCAD_VM_REPEATABLE_DEFAULT__';
+    const key = '__TAU_VM_REPEATABLE_DEFAULT__';
     const filesystem = new MemoryFileSystem();
     const vm = await createEsbuildModuleVm({ filesystem });
     activeVm = vm;
@@ -233,7 +266,7 @@ describe('createEsbuildModuleVm', () => {
   });
 
   it('should reuse identical code only when execution caching is enabled', async () => {
-    const key = '__TAUCAD_VM_CACHED_EXECUTION__';
+    const key = '__TAU_VM_CACHED_EXECUTION__';
     const filesystem = new MemoryFileSystem();
     const vm = await createEsbuildModuleVm({
       filesystem,
@@ -244,11 +277,14 @@ describe('createEsbuildModuleVm', () => {
     try {
       const code = [
         `globalThis.${key} = (globalThis.${key} ?? 0) + 1;`,
+        'export function fail() {',
+        '  throw new Error("cached stack");',
+        '}',
         `export const count = globalThis.${key};`,
       ].join('\n');
 
-      const first = await vm.execute<{ count: number }>(code);
-      const second = await vm.execute<{ count: number }>(code);
+      const first = await vm.execute<{ count: number; fail: () => void }>(code);
+      const second = await vm.execute<{ count: number; fail: () => void }>(code);
 
       expect(first.success).toBe(true);
       expect(second.success).toBe(true);
@@ -256,14 +292,51 @@ describe('createEsbuildModuleVm', () => {
         expect(first.value).toBe(second.value);
         expect(first.value.count).toBe(1);
         expect(second.value.count).toBe(1);
+        expect(first.entryUrl).toMatch(/^file:\/\//u);
+        expect(second.entryUrl).toBe(first.entryUrl);
+        if (first.entryUrl === undefined || second.entryUrl === undefined) {
+          throw new Error('Expected both successful executions to have an entry URL.');
+        }
+
+        const thrownStack = (fail: () => void): string => {
+          try {
+            fail();
+          } catch (error) {
+            if (error instanceof Error) {
+              return error.stack ?? '';
+            }
+          }
+          throw new Error('Expected the cached module function to throw an Error.');
+        };
+        expect(thrownStack(first.value.fail)).toContain(`${fileURLToPath(first.entryUrl)}:3:`);
+        expect(thrownStack(second.value.fail)).toContain(`${fileURLToPath(second.entryUrl)}:3:`);
       }
 
       vm.clearExecutionCache(code);
-      const third = await vm.execute<{ count: number }>(code);
+      const third = await vm.execute<{ count: number; fail: () => void }>(code);
       expect(third.success).toBe(true);
-      if (third.success) {
+      if (third.success && first.success) {
         expect(third.value.count).toBe(2);
+        expect(third.entryUrl).not.toBe(first.entryUrl);
       }
+    } finally {
+      Reflect.deleteProperty(globalThis, key);
+    }
+  });
+
+  it('should retry failed executions when execution caching is enabled', async () => {
+    const key = '__TAU_VM_FAILED_EXECUTION__';
+    const vm = await createEsbuildModuleVm({ filesystem: new MemoryFileSystem(), cacheExecution: true });
+    activeVm = vm;
+
+    try {
+      const code = [`globalThis.${key} = (globalThis.${key} ?? 0) + 1;`, 'throw new Error("retry me");'].join('\n');
+      const first = await vm.execute(code);
+      const second = await vm.execute(code);
+
+      expect(first).toMatchObject({ success: false, issues: [{ message: 'retry me' }] });
+      expect(second).toMatchObject({ success: false, issues: [{ message: 'retry me' }] });
+      expect(Reflect.get(globalThis, key)).toBe(2);
     } finally {
       Reflect.deleteProperty(globalThis, key);
     }

@@ -3,11 +3,11 @@ import { CheckCircle2, CircleAlert, LogIn } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router';
 
-import { Button } from '#components/ui/button.js';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '#components/ui/card.js';
+import { Button } from '@taucad/ui/components/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@taucad/ui/components/card';
 import { Spinner } from '#components/ui/spinner.js';
 import { sanitizeVerifyEmailRedirectTo } from '#components/auth/verify-email.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 /** Milliseconds. */
 const redirectDelay = 900;
@@ -19,8 +19,8 @@ type MagicLinkVerifyClient = {
     readonly verify: (args: {
       readonly query: {
         readonly token: string;
-        readonly callbackURL: string;
       };
+      // oxlint-disable-next-line typescript/no-restricted-types -- Better Auth answers a successful call with `error: null`.
     }) => Promise<{ readonly error?: { readonly message?: string } | null }>;
   };
 };
@@ -32,16 +32,14 @@ export type MagicLinkVerifyProps = {
 export function MagicLinkVerify({ className }: MagicLinkVerifyProps): React.JSX.Element {
   const { authClient, basePaths, viewPaths, navigate, Link } = useAuth();
   const location = useLocation();
-  const [status, setStatus] = useState<MagicLinkVerifyStatus>('verifying');
-
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const token = searchParams.get('token');
+  const [status, setStatus] = useState<MagicLinkVerifyStatus>(() => (token ? 'verifying' : 'missing-token'));
   const redirectTo = sanitizeVerifyEmailRedirectTo(searchParams.get('redirectTo') ?? undefined);
   const signInPath = `${basePaths.auth}/${viewPaths.auth.signIn}`;
 
   useEffect(() => {
     if (!token) {
-      setStatus('missing-token');
       return;
     }
 
@@ -51,8 +49,10 @@ export function MagicLinkVerify({ className }: MagicLinkVerifyProps): React.JSX.
 
     const verifyMagicLink = async (): Promise<void> => {
       try {
+        /* No `callbackURL`: Better Auth would resolve it against its own base URL, the API host, and redirect
+         * there after signing the user in. Without one it answers with the session, and the page navigates itself. */
         const result = await magicLinkClient.magicLink.verify({
-          query: { token, callbackURL: redirectTo },
+          query: { token },
         });
 
         if (result.error) {

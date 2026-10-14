@@ -12,40 +12,40 @@
  * it via a transport-internal acquirer hook.
  */
 
-import { MessageChannel } from 'node:worker_threads';
+import { MessageChannel, Worker as NodeWorker } from 'node:worker_threads';
+import type { WorkerOptions } from 'node:worker_threads';
 import { describe, it, expect, vi } from 'vitest';
-import type { Geometry } from '@taucad/types';
+import { createRuntimeClient } from '#client/runtime-document-client-core.js';
+import { fromMemoryFs } from '#filesystem/runtime-filesystem.js';
 import type { KernelWorker } from '#framework/kernel-worker.js';
 import { nodeWorkerHost } from '#transport/node-worker-host.js';
+import { nodeWorkerTransport } from '#transport/node-worker-transport.js';
 import * as nodeParentPortModule from '#transport/_internal/node-parent-port.js';
-
-const testGeometry = { format: 'gltf', content: new Uint8Array([1]), hash: 'mock' } satisfies Geometry;
 
 const createMockKernelWorker = (): KernelWorker => {
   const base = {
     initialize: vi.fn().mockResolvedValue(undefined),
-    render: vi.fn().mockResolvedValue({ success: true, data: testGeometry, issues: [] }),
-    exportGeometry: vi.fn().mockResolvedValue({
-      success: true,
-      data: [
-        { name: 'model.gltf', mimeType: 'model/gltf+json', bytes: new Uint8Array([1]) },
-        { name: 'model.bin', mimeType: 'application/octet-stream', bytes: new Uint8Array([2]) },
-      ],
-      issues: [],
-    }),
+    describe: vi.fn().mockResolvedValue({ success: true, data: { parameters: {} }, issues: [] }),
+    exportDocument: vi.fn().mockResolvedValue({ success: true, data: [], issues: [] }),
+    snapshotSource: vi.fn().mockResolvedValue({ success: true, data: { files: [] }, issues: [] }),
+    transcode: vi.fn().mockResolvedValue({ success: true, data: [], issues: [] }),
     cleanup: vi.fn().mockResolvedValue(undefined),
     notifyFileChanged: vi.fn().mockResolvedValue(undefined),
-    handleOpenFile: vi.fn(),
-    handleStageAndOpenFile: vi.fn().mockResolvedValue(undefined),
-    handleUpdateParameters: vi.fn(),
-    handleSetOptions: vi.fn(),
+    handleOpenDocument: vi.fn(),
+    handleUpdateDocument: vi.fn(),
+    handleCloseDocument: vi.fn(),
+    handleOpenView: vi.fn(),
+    handleUpdateView: vi.fn(),
+    handleCloseView: vi.fn(),
+    handleOperationAbort: vi.fn(),
     ensureLoadedBundler: vi.fn().mockResolvedValue(undefined),
     setTelemetrySend: vi.fn(),
     setDevtoolsTelemetryEnabled: vi.fn(),
     setCompiledWasmModules: vi.fn(),
     flushTelemetry: vi.fn(),
     setSignalBuffer: vi.fn(),
-    handleWireAbort: vi.fn(),
+    setComputeBinding: vi.fn(),
+    permitComputePublication: vi.fn(),
     capabilitiesManifest: { routes: [], renderCapabilities: {} },
   };
   return base as unknown as KernelWorker;
@@ -66,7 +66,6 @@ describe('nodeWorkerHost — real port acquisition (R3)', () => {
       expect(host.id).toBe('node-worker');
       expect(typeof host.open).toBe('function');
       expect(typeof host.adoptInitialize).toBe('function');
-      expect(typeof host.encodeGeometry).toBe('function');
       expect(host.closed).toBeInstanceOf(Promise);
     } finally {
       acquireSpy.mockRestore();
@@ -127,4 +126,42 @@ describe('nodeWorkerHost — real port acquisition (R3)', () => {
       acquireSpy.mockRestore();
     }
   });
+});
+
+/** Runs the `.ts` fixture entry under tsx; the transport's own `workerCtor` seam. */
+class TsxWorker extends NodeWorker {
+  public constructor(url: string | URL, options?: WorkerOptions) {
+    super(url, { ...options, execArgv: ['--import', 'tsx'] });
+  }
+}
+
+describe('nodeWorkerTransport — workerData', () => {
+  it('should hand the consumer workerData to the worker entry', async () => {
+    const client = createRuntimeClient({
+      transport: nodeWorkerTransport({
+        url: new URL('node-worker-transport.fixture.ts', import.meta.url),
+        workerCtor: TsxWorker,
+        workerData: { projectRoot: '/projects/a', nested: { depth: 2 } },
+        fileSystem: fromMemoryFs({ 'main.fixture': 'workerData' }),
+      }),
+    });
+    const document = client.open({ source: { path: 'main.fixture' }, watch: false });
+    const view = document.view('model');
+    try {
+      const outcome = await view.rendering();
+      if (outcome.superseded || !outcome.rendering.success) {
+        throw new Error(`Expected one successful rendering: ${JSON.stringify(outcome)}`);
+      }
+      const report = JSON.parse(
+        new TextDecoder().decode(outcome.rendering.artifact.content as Uint8Array<ArrayBuffer>),
+      ) as {
+        workerData: unknown;
+      };
+      expect(report.workerData).toEqual({ projectRoot: '/projects/a', nested: { depth: 2 } });
+    } finally {
+      view.close();
+      document.close();
+      await client.shutdown();
+    }
+  }, 30_000);
 });

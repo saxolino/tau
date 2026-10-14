@@ -1,8 +1,8 @@
 import type { LucideIcon } from 'lucide-react';
 import { LoaderCircle } from 'lucide-react';
-import { Badge } from '#components/ui/badge.js';
+import { Badge } from '@taucad/ui/components/badge';
 import { AnimatedShinyText } from '#components/magicui/animated-shiny-text.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 
 type ChatToolInlineStatus = 'loading' | 'success' | 'error';
 
@@ -51,12 +51,16 @@ export function ChatToolInline({
 
   return (
     <Badge
-      variant={isError ? 'destructive' : 'outline'}
-      className={cn('flex max-w-full flex-row items-center gap-2', className)}
+      variant='outline'
+      className={cn(
+        'flex max-w-full flex-row items-center gap-2',
+        isError && 'border-transparent bg-feature/10 text-feature',
+        className,
+      )}
     >
       {isLoading ? (
         <>
-          <LoaderCircle className='size-3 shrink-0 animate-spin text-inherit' />
+          <LoaderCircle className='size-3 shrink-0 animate-spin text-inherit motion-reduce:animate-none' />
           <AnimatedShinyText className='min-w-0 truncate'>{children}</AnimatedShinyText>
         </>
       ) : (
@@ -64,7 +68,7 @@ export function ChatToolInline({
           {image ? (
             <img src={image.src} alt={image.alt} className='size-3 shrink-0 rounded-full' />
           ) : Icon ? (
-            <Icon className={cn('size-3 shrink-0', isError ? 'text-destructive' : 'text-muted-foreground')} />
+            <Icon className={cn('size-3 shrink-0', isError ? 'text-feature' : 'text-muted-foreground')} />
           ) : undefined}
           <span className='min-w-0 truncate'>{children}</span>
         </>

@@ -15,7 +15,12 @@
       "inputs": [
         "{projectRoot}/src/extract-replicad-api.ts",
         "{workspaceRoot}/node_modules/replicad/dist/replicad.d.ts",
-        "sharedGlobals"
+        "sharedGlobals",
+        "{workspaceRoot}/packages/plugins/replicad/src/model.ts",
+        "{workspaceRoot}/packages/plugins/replicad/src/annotations/interface-declarations.ts",
+        "{workspaceRoot}/packages/core/geometry/src/utils/glb-material.ts",
+        "{workspaceRoot}/libs/types/src/types/json-value.types.ts",
+        "{workspaceRoot}/pnpm-lock.yaml"
       ],
       "outputs": ["{projectRoot}/src/generated/replicad"]
     },
@@ -42,10 +47,27 @@
       "cache": true,
       "inputs": [
         "{projectRoot}/src/extract-geospec-types.ts",
+        "{projectRoot}/src/emit-package-declarations.ts",
         "{workspaceRoot}/packages/geospec/src/**/*",
         "sharedGlobals"
       ],
       "outputs": ["{projectRoot}/src/generated/geospec"]
+    },
+    "extract-kinematics": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsx src/extract-kinematics-types.ts",
+        "cwd": "libs/api-extractor"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/extract-kinematics-types.ts",
+        "{projectRoot}/src/emit-package-declarations.ts",
+        "{workspaceRoot}/packages/kinematics/src/types.ts",
+        "{workspaceRoot}/packages/spatial/src/**/*",
+        "sharedGlobals"
+      ],
+      "outputs": ["{projectRoot}/src/generated/kinematics"]
     },
     "extract-kcl": {
       "executor": "nx:run-commands",
@@ -68,11 +90,7 @@
         "cwd": "libs/api-extractor"
       },
       "cache": true,
-      "inputs": [
-        "{projectRoot}/src/extract-manifold-types.ts",
-        "{workspaceRoot}/packages/runtime/node_modules/manifold-3d/**/*.d.ts",
-        "sharedGlobals"
-      ],
+      "inputs": ["{projectRoot}/src/extract-manifold-types.ts", "{workspaceRoot}/pnpm-lock.yaml", "sharedGlobals"],
       "outputs": ["{projectRoot}/src/generated/manifold"]
     },
     "extract-opencascade": {
@@ -82,12 +100,95 @@
         "cwd": "libs/api-extractor"
       },
       "cache": true,
+      "inputs": ["{projectRoot}/src/extract-opencascade-types.ts", "{workspaceRoot}/pnpm-lock.yaml", "sharedGlobals"],
+      "outputs": ["{projectRoot}/src/generated/opencascade"]
+    },
+    "extract-picovoxel": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsx src/extract-picovoxel-types.ts",
+        "cwd": "libs/api-extractor"
+      },
+      "cache": true,
       "inputs": [
-        "{projectRoot}/src/extract-opencascade-types.ts",
-        "{workspaceRoot}/node_modules/libcascade/dist/types.d.ts",
+        "{projectRoot}/src/extract-picovoxel-types.ts",
+        "{workspaceRoot}/packages/plugins/picovoxel/src/model.ts",
+        "{workspaceRoot}/packages/core/geometry/src/utils/glb-material.ts",
+        "{workspaceRoot}/libs/types/src/types/json-value.types.ts",
+        "{workspaceRoot}/pnpm-lock.yaml",
         "sharedGlobals"
       ],
-      "outputs": ["{projectRoot}/src/generated/opencascade"]
+      "outputs": ["{projectRoot}/src/generated/picovoxel"]
+    },
+    "collect-usage": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsx src/usage/collect-usage.ts",
+        "cwd": "libs/api-extractor"
+      },
+      "cache": false
+    },
+    "extract-tscircuit": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsx src/extract-tscircuit-types.ts",
+        "cwd": "libs/api-extractor"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/extract-tscircuit-types.ts",
+        "{projectRoot}/src/languages/typescript/extract.ts",
+        "{projectRoot}/src/languages/typescript/tscircuit.ts",
+        "{workspaceRoot}/pnpm-lock.yaml",
+        "sharedGlobals"
+      ],
+      "outputs": ["{projectRoot}/src/generated/tscircuit"]
+    },
+    "generate-bundles": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsx src/bundle/generate.ts",
+        "cwd": "libs/api-extractor"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/bundle/**/*.ts",
+        "{projectRoot}/src/languages/**/*.ts",
+        "{projectRoot}/src/model/**/*.ts",
+        "{projectRoot}/src/render/**/*.ts",
+        "{projectRoot}/src/generated/**/*",
+        "{workspaceRoot}/packages/plugins/*/agent/*.md",
+        "{workspaceRoot}/packages/geospec/agent/doctrine.md",
+        "{workspaceRoot}/packages/workbench/agent/doctrine.md",
+        "{workspaceRoot}/pnpm-lock.yaml",
+        "sharedGlobals"
+      ],
+      "outputs": [
+        "{workspaceRoot}/packages/plugins/build123d/agent/cad-build123d",
+        "{workspaceRoot}/packages/plugins/jscad/agent/cad-jscad",
+        "{workspaceRoot}/packages/plugins/manifold/agent/cad-manifold",
+        "{workspaceRoot}/packages/plugins/opencascade/agent/cad-opencascadejs",
+        "{workspaceRoot}/packages/plugins/openrscad/agent/cad-openscad",
+        "{workspaceRoot}/packages/plugins/picogk/agent/cad-picogk",
+        "{workspaceRoot}/packages/plugins/picovoxel/agent/cad-picovoxel",
+        "{workspaceRoot}/packages/plugins/replicad/agent/cad-replicad",
+        "{workspaceRoot}/packages/plugins/zoo/agent/cad-zoo",
+        "{workspaceRoot}/packages/plugins/tscircuit/agent/cad-tscircuit",
+        "{workspaceRoot}/packages/geospec/agent/geospec-authoring",
+        "{workspaceRoot}/packages/workbench/agent/workbench",
+        "{workspaceRoot}/packages/workbench/agent/resources.js",
+        "{workspaceRoot}/packages/workbench/agent/resources.d.ts",
+        "{workspaceRoot}/packages/workbench/agent/skills.json",
+        "{workspaceRoot}/packages/workbench/agent/skills.d.cts",
+        "{workspaceRoot}/packages/plugins/*/agent/resources.js",
+        "{workspaceRoot}/packages/plugins/*/agent/resources.d.ts",
+        "{workspaceRoot}/packages/plugins/*/agent/skills.json",
+        "{workspaceRoot}/packages/plugins/*/agent/skills.d.cts",
+        "{workspaceRoot}/packages/geospec/agent/resources.js",
+        "{workspaceRoot}/packages/geospec/agent/resources.d.ts",
+        "{workspaceRoot}/packages/geospec/agent/skills.json",
+        "{workspaceRoot}/packages/geospec/agent/skills.d.cts"
+      ]
     }
   }
 }

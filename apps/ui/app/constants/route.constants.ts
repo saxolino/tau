@@ -1,9 +1,9 @@
-import { BookOpen, ChartColumn, Files, Hammer, Import, Plug, Settings, Shuffle, UsersRound } from 'lucide-react';
+import { Hammer, Import, Plug, Shuffle, UsersRound } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { openSettingsDialog } from '#hooks/use-settings-dialog.js';
 import type { FeatureFlagName } from '#flags/flag.constants.js';
+import { PartsIcon } from '#components/icons/parts.js';
 
-type NavRoute = {
+export type NavRoute = {
   title: string;
   url: string;
   icon: LucideIcon;
@@ -14,7 +14,6 @@ type NavRoute = {
 
 export const navRoutes: {
   navMain: NavRoute[];
-  navSecondary: NavRoute[];
 } = {
   navMain: [
     {
@@ -42,6 +41,12 @@ export const navRoutes: {
       icon: UsersRound,
     },
     {
+      title: 'Parts',
+      url: '/parts',
+      icon: PartsIcon,
+      featureFlag: 'partsWarehouse',
+    },
+    {
       title: 'Convert',
       url: '/convert',
       icon: Shuffle,
@@ -61,31 +66,6 @@ export const navRoutes: {
       url: '/plugins',
       icon: Plug,
       featureFlag: 'pluginsStore',
-    },
-    {
-      title: 'Usage',
-      url: '/usage',
-      icon: ChartColumn,
-    },
-  ],
-  navSecondary: [
-    {
-      title: 'Files',
-      url: '/files',
-      icon: Files,
-    },
-    {
-      title: 'Documentation',
-      url: '/docs',
-      icon: BookOpen,
-    },
-    {
-      title: 'Settings',
-      url: '/settings',
-      icon: Settings,
-      action(): void {
-        openSettingsDialog();
-      },
     },
   ],
 };

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+// oxlint-disable-next-line import/no-unassigned-import -- installs Vitest DOM matchers.
 import '@testing-library/jest-dom/vitest';
 import { act, render, screen } from '@testing-library/react';
 import type React from 'react';
@@ -56,35 +57,38 @@ describe('MagicLinkVerify', () => {
     vi.useRealTimers();
   });
 
-  it('verifies the token and redirects to a sanitized app path', async () => {
+  it('should verify the token without a callback URL and navigate to the app path itself', async () => {
     authMocks.verifyMagicLink.mockResolvedValue({ data: {}, error: null });
 
-    renderMagicLinkVerify('/auth/magic-link/verify?token=abc&redirectTo=%2Fv%2Fpub_123');
+    renderMagicLinkVerify('/auth/magic-link/verify?token=abc&redirectTo=%2Fs%2Ftau%7Epub_123');
 
     await flushAsyncEffects();
 
-    expect(authMocks.verifyMagicLink).toHaveBeenCalledWith({
-      query: { token: 'abc', callbackURL: '/v/pub_123' },
-    });
+    // Better Auth resolves a relative callback URL against the API host, so the page sends none.
+    expect(authMocks.verifyMagicLink).toHaveBeenCalledWith({ query: { token: 'abc' } });
     expect(screen.getByText('Magic link verified')).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(900);
     });
 
-    expect(authMocks.navigate).toHaveBeenCalledWith({ to: '/v/pub_123', replace: true });
+    expect(authMocks.navigate).toHaveBeenCalledWith({ to: '/s/tau~pub_123', replace: true });
   });
 
-  it('falls back to home when redirectTo is external', async () => {
+  it('should navigate home when redirectTo is external', async () => {
     authMocks.verifyMagicLink.mockResolvedValue({ data: {}, error: null });
 
     renderMagicLinkVerify('/auth/magic-link/verify?token=abc&redirectTo=https%3A%2F%2Fexample.com%2Fsteal');
 
     await flushAsyncEffects();
 
-    expect(authMocks.verifyMagicLink).toHaveBeenCalledWith({
-      query: { token: 'abc', callbackURL: '/' },
+    expect(authMocks.verifyMagicLink).toHaveBeenCalledWith({ query: { token: 'abc' } });
+
+    act(() => {
+      vi.advanceTimersByTime(900);
     });
+
+    expect(authMocks.navigate).toHaveBeenCalledWith({ to: '/', replace: true });
   });
 
   it('shows a recovery state when the token is missing', () => {
@@ -98,7 +102,7 @@ describe('MagicLinkVerify', () => {
   it('shows a recovery state when verification fails', async () => {
     authMocks.verifyMagicLink.mockResolvedValue({ data: null, error: { message: 'expired' } });
 
-    renderMagicLinkVerify('/auth/magic-link/verify?token=abc&redirectTo=%2Fv%2Fpub_123');
+    renderMagicLinkVerify('/auth/magic-link/verify?token=abc&redirectTo=%2Fs%2Ftau%7Epub_123');
 
     await flushAsyncEffects();
 

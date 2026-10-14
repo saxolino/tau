@@ -2,13 +2,13 @@ import { memo, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { Check } from 'lucide-react';
 import type { KernelProvider } from '@taucad/runtime';
-import type { KernelConfiguration } from '@taucad/types/constants';
-import { kernelConfigurations } from '@taucad/types/constants';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import type { KernelConfiguration, kernelConfigurations } from '@taucad/types/constants';
+import { availableKernelConfigurations } from '#constants/available-kernel-configurations.js';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '#components/ui/hover-card.js';
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@taucad/ui/components/hover-card';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { KernelTierBadge } from '#components/tier-badge.js';
+import { KernelCommercialBadge } from '#cloud/kernel-commerce.js';
 
 function formatKernelDimensions(dimensions: KernelConfiguration['dimensions']): string {
   return dimensions.map((d) => `${d}D`).join(' & ');
@@ -28,6 +28,10 @@ function formatKernelLanguage(language: KernelConfiguration['language']): string
       return 'TypeScript';
     }
 
+    case 'python': {
+      return 'Python';
+    }
+
     default: {
       return language;
     }
@@ -39,14 +43,12 @@ type ChatKernelSelectorProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'child
   readonly onClose?: () => void;
   readonly children: (props: { selectedKernel: (typeof kernelConfigurations)[number] }) => ReactNode;
   readonly popoverProperties?: React.ComponentProps<typeof ComboBoxResponsive>['popoverProperties'];
-  readonly isNested?: boolean;
 };
 
 export const ChatKernelSelector = memo(function ({
   onSelect,
   onClose,
   children,
-  isNested,
   ...properties
 }: ChatKernelSelectorProps): React.JSX.Element {
   // Read AND write through the unified composer context. The active
@@ -56,10 +58,9 @@ export const ChatKernelSelector = memo(function ({
   const {
     kernel: { kernel: selectedKernel, setActiveKernel },
   } = useChatComposer();
-
   const handleSelectKernel = useCallback(
     (item: string) => {
-      const kernel = kernelConfigurations.find((k) => k.id === item);
+      const kernel = availableKernelConfigurations().find((k) => k.id === item);
 
       if (kernel) {
         setActiveKernel(kernel.id);
@@ -72,16 +73,16 @@ export const ChatKernelSelector = memo(function ({
   return (
     <ComboBoxResponsive
       {...properties}
-      className="data-[slot='popover-content']:w-[300px]"
+      className="data-[slot='popover-content']:w-75"
       popoverProperties={properties.popoverProperties}
       emptyListMessage='No kernels found.'
-      searchPlaceHolder='Search kernels...'
+      searchPlaceHolder='Search kernels…'
       title='Select a kernel'
       description='Select the kernel to use for the chat. This will be used to generate a response.'
       groupedItems={[
         {
           name: 'CAD Kernels',
-          items: [...kernelConfigurations],
+          items: [...availableKernelConfigurations()],
         },
       ]}
       renderLabel={(item, selectedItem) => (
@@ -93,7 +94,7 @@ export const ChatKernelSelector = memo(function ({
                 <div className='flex min-w-0 flex-col'>
                   <span className='flex min-w-0 items-center gap-1.5 truncate'>
                     {item.name}
-                    <KernelTierBadge kernelId={item.id} />
+                    <KernelCommercialBadge kernelId={item.id} />
                   </span>
                   <span className='truncate text-xs text-muted-foreground'>{item.description}</span>
                 </div>
@@ -107,7 +108,7 @@ export const ChatKernelSelector = memo(function ({
                 <SvgIcon id={item.id} className='size-5 shrink-0' />
                 <h4 className='flex items-center gap-1.5 text-sm font-semibold'>
                   {item.name}
-                  <KernelTierBadge kernelId={item.id} />
+                  <KernelCommercialBadge kernelId={item.id} />
                 </h4>
               </div>
               <p className='text-sm text-muted-foreground'>{item.longDescription}</p>
@@ -122,7 +123,6 @@ export const ChatKernelSelector = memo(function ({
       getValue={(item) => item.id}
       placeholder='Select a kernel'
       value={selectedKernel}
-      isNested={isNested}
       onSelect={handleSelectKernel}
       onClose={onClose}
     >

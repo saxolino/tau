@@ -1,12 +1,48 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { TooltipProvider } from '#components/ui/tooltip.js';
+import { useCallback } from 'react';
+import { mock } from 'vitest-mock-extended';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
+import { FileContentService } from '@taucad/fs-client/file-content-service';
+import type { ComposedViewClient } from '@taucad/fs-client/composed-view-client';
+import { RefreshGenerationGuard } from '@taucad/fs-client/refresh-generation-guard';
+import { WorkerChangeChannel } from '@taucad/fs-client/worker-change-channel';
+import { WorkspacePathResolver } from '@taucad/fs-client/workspace-path-resolver';
+import { useFileContent } from '#hooks/use-file-content.js';
 import { NativeImageViewer } from '#routes/w.$workspace.$project/file-viewers/native-image-viewer.js';
 import { nativeImageFormats } from '#routes/w.$workspace.$project/file-viewers/native-image-format.js';
 import type { FileViewerPaneContent } from '#routes/w.$workspace.$project/file-viewers/file-viewer.types.js';
 
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const fileManager = vi.hoisted(() => ({ contentService: undefined as FileContentService | undefined }));
+vi.mock('#hooks/use-file-manager.js', () => ({ useFileManager: () => fileManager }));
+
+function ImageFromFileContentService(): React.JSX.Element {
+  const result = useFileContent('preview.png');
+  const service = fileManager.contentService;
+  const binarySize = result.kind === 'binary' ? result.size : undefined;
+  const readAll = useCallback(async (): Promise<Uint8Array<ArrayBuffer>> => {
+    if (binarySize === undefined || !service) {
+      throw new Error('Image bytes are unavailable');
+    }
+    return service.readRawBytes('preview.png', { sizeLimit: binarySize });
+  }, [binarySize, service]);
+  if (result.kind !== 'binary') {
+    return <span>Loading file…</span>;
+  }
+  return (
+    <TooltipProvider>
+      <NativeImageViewer
+        name='preview.png'
+        format={nativeImageFormats.png}
+        revision={result.revision}
+        readAll={readAll}
+        renderPane={renderPane('preview.png')}
+      />
+    </TooltipProvider>
+  );
+}
 
 const renderPane =
   (name: string) =>
@@ -46,6 +82,7 @@ describe('NativeImageViewer', () => {
   });
 
   afterEach(() => {
+    fileManager.contentService = undefined;
     vi.restoreAllMocks();
   });
 
@@ -131,13 +168,108 @@ describe('NativeImageViewer', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first');
   });
 
+  it('should keep the live image after a no-op file refresh and reload changed tail bytes', async () => {
+    let bytes = new Uint8Array(600);
+    bytes.set(png);
+    const proxy = mock<ComposedViewClient>({
+      stat: vi.fn().mockImplementation(async () => ({ size: bytes.byteLength })),
+      readFile: vi.fn().mockImplementation(async () => new Uint8Array(bytes)),
+    });
+    let emitFileChanged: (event: unknown) => void = () => undefined;
+    const watches = new Set<(event: { type: 'change'; path: string }) => void>();
+    /* As the worker reports a write: the exact authority watch, then the coalesced tree notification. */
+    const writeFile = (): void => {
+      for (const watch of watches) {
+        watch({ type: 'change', path: 'preview.png' });
+      }
+      emitFileChanged({ type: 'fileWritten', path: 'preview.png', backend: 'indexeddb' });
+    };
+    const channel = new WorkerChangeChannel({
+      transport: {
+        listen: (_event, callback) => {
+          emitFileChanged = callback;
+          return () => undefined;
+        },
+        watchReady: (_request, handler) => {
+          watches.add(handler);
+          return {
+            ready: Promise.resolve(),
+            closed: new Promise<void>(() => {
+              // Never closes.
+            }),
+            unsubscribe: () => {
+              watches.delete(handler);
+            },
+          };
+        },
+      },
+    });
+    const service = new FileContentService({
+      proxy,
+      paths: new WorkspacePathResolver('/project'),
+      channel,
+      refreshGuard: new RefreshGenerationGuard(),
+    });
+    fileManager.contentService = service;
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest');
+    vi.mocked(URL.createObjectURL).mockReturnValueOnce('blob:first').mockReturnValueOnce('blob:second');
+    const mounted = render(<ImageFromFileContentService />);
+    try {
+      const image = await screen.findByRole('img', { name: 'preview.png' });
+      expect(image).toHaveAttribute('src', 'blob:first');
+      Object.defineProperties(image, {
+        naturalWidth: { configurable: true, value: 800 },
+        naturalHeight: { configurable: true, value: 600 },
+      });
+      fireEvent.load(image);
+      await userEvent.click(screen.getByRole('button', { name: 'Actual size' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+      expect(screen.getByText('125%')).toBeInTheDocument();
+      const firstOutcome = service.peekOutcome('preview.png');
+      // The viewer's raw bytes come from the classified content the service already cached.
+      expect(proxy.readFile).toHaveBeenCalledOnce();
+
+      act(writeFile);
+      await waitFor(() => {
+        expect(proxy.readFile).toHaveBeenCalledTimes(2);
+        expect(digest).toHaveBeenCalledTimes(2);
+      });
+      await act(async () => {
+        await digest.mock.results[1]!.value;
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      });
+      expect(service.peekOutcome('preview.png')).toBe(firstOutcome);
+      expect(screen.getByRole('img', { name: 'preview.png' })).toBe(image);
+      expect(screen.getByText('125%')).toBeInTheDocument();
+      expect(URL.createObjectURL).toHaveBeenCalledOnce();
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+
+      bytes = new Uint8Array(bytes);
+      bytes[bytes.length - 1] = 1;
+      act(writeFile);
+      await waitFor(() => {
+        expect(screen.getByRole('img', { name: 'preview.png' })).toHaveAttribute('src', 'blob:second');
+      });
+      expect(proxy.readFile).toHaveBeenCalledTimes(3);
+      expect(digest).toHaveBeenCalledTimes(3);
+      expect(service.peekOutcome('preview.png')).not.toBe(firstOutcome);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first');
+    } finally {
+      mounted.unmount();
+      service.dispose();
+      channel.dispose();
+    }
+  });
+
   it('shows a stable error when the browser cannot decode matching image bytes', async () => {
     render(viewer({ name: 'broken.png' }));
     const image = await screen.findByRole('img', { name: 'broken.png' });
 
     fireEvent.error(image);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/browser could not decode/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be decoded/i);
     expect(screen.queryByRole('img', { name: 'broken.png' })).not.toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'File actions for broken.png' })).toBeEmptyDOMElement();
     expect(URL.createObjectURL).toHaveBeenCalledOnce();

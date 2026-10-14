@@ -2,15 +2,17 @@ import { useRef, useMemo, useEffect } from 'react';
 import type { RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { Points, Group } from 'three';
-import { useThreeGraphicsBackend } from '#components/geometry/graphics/three/three-graphics-backend-context.js';
+import type { Group, Mesh } from 'three';
+import { useThreeGraphicsBackend } from '@taucad/viewer/graphics/three/three-graphics-backend-context';
 import { createMorphingPointsNodeMaterial } from '#components/geometry/splash/morphing-points-material.node.js';
 import {
   createMorphingPointsMaterial,
+  createMorphingPointsGeometry,
   updateMorphProgress,
   updateMorphTime,
   updateMorphOpacity,
   updateMorphPointer,
+  updateMorphViewport,
 } from '#components/geometry/splash/morphing-points-material.js';
 import {
   updateMorphAnimation,
@@ -34,6 +36,38 @@ export type MorphingPointerState = {
 /** Scratch vector for the per-frame world→local pointer conversion. */
 const localPointerScratch = new THREE.Vector3();
 
+const updatePointerRadius = (material: THREE.ShaderMaterial, radius: number): void => {
+  const uniform = material.uniforms['uPointerRadius'];
+  if (uniform) {
+    uniform.value = radius;
+  }
+};
+
+type NodeHandles = ReturnType<typeof createMorphingPointsNodeMaterial>['handles'];
+
+const updateNodeHandles = ({
+  handles,
+  progress,
+  elapsedTime,
+  opacity,
+  pointer,
+}: {
+  handles: NodeHandles;
+  progress: number;
+  elapsedTime: number;
+  opacity: number;
+  pointer: MorphingPointerState | undefined;
+}): void => {
+  handles.uProgress.value = progress;
+  handles.uTime.value = elapsedTime;
+  handles.uOpacity.value = opacity;
+  if (pointer) {
+    (handles.uPointer.value as THREE.Vector3).copy(localPointerScratch);
+    handles.uPointerStrength.value = pointer.strength;
+    handles.uPointerRadius.value = pointer.radius;
+  }
+};
+
 export type MorphingPointsProperties = {
   /**
    * Sampled points from the source geometry.
@@ -49,10 +83,10 @@ export type MorphingPointsProperties = {
    */
   readonly targetProgress: number;
   /**
-   * Animation speed for progress interpolation.
-   * @default 2
+   * Time for progress to travel the full 0→1 range, in milliseconds.
+   * @default 1400
    */
-  readonly animationSpeed?: number;
+  readonly duration?: number;
   /**
    * Source color for particles.
    * @default '#14b8a6'
@@ -73,6 +107,11 @@ export type MorphingPointsProperties = {
    * @default 2
    */
   readonly explosionStrength?: number;
+  /**
+   * Additive (luminous) blending instead of opaque grains.
+   * @default false
+   */
+  readonly isAdditive?: boolean;
   /**
    * Static rotation to apply to the points group (for coordinate system correction).
    */
@@ -143,12 +182,13 @@ export function MorphingPoints({
   sourcePoints,
   targetPoints,
   targetProgress,
-  animationSpeed = 2,
+  duration = 1400,
   // oxlint-disable-next-line tau-lint/no-hardcoded-color -- Three.js point color
   sourceColor = '#14b8a6',
   targetColor,
   pointSize = 3,
   explosionStrength = 2,
+  isAdditive = false,
   rotation,
   initialRotationY = 0,
   enableAutoRotate = false,
@@ -159,9 +199,7 @@ export function MorphingPoints({
   pointerRef,
 }: MorphingPointsProperties): React.JSX.Element {
   const backend = useThreeGraphicsBackend();
-  const nodeHandlesRef = useRef<ReturnType<typeof createMorphingPointsNodeMaterial>['handles'] | undefined>(undefined);
-
-  const pointsRef = useRef<Points>(null);
+  const pointsRef = useRef<Mesh>(null);
   const rotationGroupRef = useRef<Group>(null);
   const currentRotationYaxisRef = useRef(initialRotationY);
   const hasSetInitialRotationRef = useRef(false);
@@ -173,41 +211,23 @@ export function MorphingPoints({
 
   // Create the geometry with morph attributes
   const geometry = useMemo(() => {
-    const geo = new THREE.BufferGeometry();
-
-    // Set source positions as the base position attribute
-    geo.setAttribute('position', new THREE.BufferAttribute(sourcePoints.positions, 3));
-
-    // Set target positions as a custom attribute
-    geo.setAttribute('aTargetPosition', new THREE.BufferAttribute(targetPoints.positions, 3));
-
-    // Set random offsets for organic movement
-    geo.setAttribute('aRandomOffset', new THREE.BufferAttribute(sourcePoints.randomOffsets, 1));
-
-    return geo;
+    return createMorphingPointsGeometry({
+      sourcePositions: sourcePoints.positions,
+      targetPositions: targetPoints.positions,
+      randomOffsets: sourcePoints.randomOffsets,
+    });
   }, [sourcePoints, targetPoints]);
 
   // Create the morphing points material — GLSL ShaderMaterial or TSL PointsNodeMaterial.
-  const material = useMemo(() => {
+  const { material, nodeHandles } = useMemo(() => {
+    const options = { color: sourceColor, targetColor, pointSize, explosionStrength, additive: isAdditive };
     if (backend === 'webgpu') {
-      const built = createMorphingPointsNodeMaterial({
-        color: sourceColor,
-        targetColor,
-        pointSize,
-        explosionStrength,
-      });
-      nodeHandlesRef.current = built.handles;
-      return built.material;
+      const built = createMorphingPointsNodeMaterial(options);
+      return { material: built.material, nodeHandles: built.handles };
     }
 
-    nodeHandlesRef.current = undefined;
-    return createMorphingPointsMaterial({
-      color: sourceColor,
-      targetColor,
-      pointSize,
-      explosionStrength,
-    });
-  }, [backend, explosionStrength, pointSize, sourceColor, targetColor]);
+    return { material: createMorphingPointsMaterial(options), nodeHandles: undefined };
+  }, [backend, explosionStrength, isAdditive, pointSize, sourceColor, targetColor]);
 
   // Reset hasReachedTarget when target changes
   useEffect(() => {
@@ -258,7 +278,7 @@ export function MorphingPoints({
       },
       targetProgress,
       delta,
-      animationSpeed,
+      duration,
       onComplete() {
         onMorphComplete?.(currentRotationYaxisRef.current);
       },
@@ -274,25 +294,23 @@ export function MorphingPoints({
       pointsRef.current.worldToLocal(localPointerScratch.copy(pointer.position));
     }
 
-    if (nodeHandlesRef.current) {
-      nodeHandlesRef.current.uProgress.value = currentProgress;
-      nodeHandlesRef.current.uTime.value = state.clock.elapsedTime;
-      nodeHandlesRef.current.uOpacity.value = opacity;
-      if (pointer) {
-        (nodeHandlesRef.current.uPointer.value as THREE.Vector3).copy(localPointerScratch);
-        nodeHandlesRef.current.uPointerStrength.value = pointer.strength;
-        nodeHandlesRef.current.uPointerRadius.value = pointer.radius;
-      }
+    if (nodeHandles) {
+      updateNodeHandles({
+        handles: nodeHandles,
+        progress: currentProgress,
+        elapsedTime: state.clock.elapsedTime,
+        opacity,
+        pointer,
+      });
     } else {
-      const shaderMaterial = material as THREE.ShaderMaterial;
+      const shaderMaterial = material;
       updateMorphProgress(shaderMaterial, currentProgress);
       updateMorphTime(shaderMaterial, state.clock.elapsedTime);
       updateMorphOpacity(shaderMaterial, opacity);
+      updateMorphViewport(shaderMaterial, state.size.width, state.size.height);
       if (pointer) {
         updateMorphPointer(shaderMaterial, localPointerScratch, pointer.strength);
-        if (shaderMaterial.uniforms['uPointerRadius']) {
-          shaderMaterial.uniforms['uPointerRadius'].value = pointer.radius;
-        }
+        updatePointerRadius(shaderMaterial, pointer.radius);
       }
     }
   });
@@ -300,7 +318,7 @@ export function MorphingPoints({
   return (
     <group ref={rotationGroupRef}>
       <group rotation={rotation}>
-        <points ref={pointsRef} geometry={geometry} material={material} />
+        <mesh ref={pointsRef} frustumCulled={false} geometry={geometry} material={material} />
       </group>
     </group>
   );

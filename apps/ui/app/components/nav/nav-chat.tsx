@@ -1,28 +1,27 @@
 import { PackagePlus } from 'lucide-react';
 import { NavLink, useMatch, useNavigate } from 'react-router';
 import { SidebarGroup, SidebarMenuButton } from '#components/ui/sidebar.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import { Loader } from '#components/ui/loader.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { Loader } from '@taucad/ui/components/loader';
 
 export function NavChat(): React.JSX.Element {
   const navigate = useNavigate();
-  const isMatch = useMatch('/');
+  const isMatch = useMatch('/projects/new');
   const { formattedKeyCombination } = useKeybinding(
     {
       key: 'n',
       ctrlKey: true,
     },
     () => {
-      if (!isMatch) {
-        void navigate('/');
-      }
+      // Already there: replace, so repeated presses do not stack history entries.
+      void navigate('/projects/new', { replace: Boolean(isMatch) });
     },
   );
   return (
     // Elevate the sidebar group above the other items to ensure the new project button is always clickable
     <SidebarGroup className='z-10 px-0'>
-      <NavLink to='/'>
+      <NavLink to='/projects/new'>
         {({ isActive, isPending }) => (
           <SidebarMenuButton
             asChild

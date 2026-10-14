@@ -43,6 +43,15 @@ type MenuItemVisualState = {
   readonly color: string;
 };
 
+type MenuRowGeometry = {
+  readonly borderRadius: string;
+  readonly columnGap: string;
+  readonly height: number;
+  readonly iconOffset: number;
+  readonly paddingLeft: string;
+  readonly width: number;
+};
+
 async function dismissCookieBanner(): Promise<void> {
   const declineCookies = selectors.getByRole('button', { name: /^decline$/i });
   await target.click(declineCookies, { timeout: 5000 }).catch(() => undefined);
@@ -54,6 +63,22 @@ async function readMenuItemVisualState(locator: Locator): Promise<MenuItemVisual
     return {
       backgroundColor: style.backgroundColor,
       color: style.color,
+    };
+  });
+}
+
+async function readMenuRowGeometry(locator: Locator): Promise<MenuRowGeometry> {
+  return target.evaluateLocator(locator, (element) => {
+    const rect = element.getBoundingClientRect();
+    const iconRect = element.querySelector('svg')?.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {
+      borderRadius: style.borderRadius,
+      columnGap: style.columnGap,
+      height: rect.height,
+      iconOffset: (iconRect?.left ?? rect.left) - rect.left,
+      paddingLeft: style.paddingLeft,
+      width: rect.width,
     };
   });
 }
@@ -188,27 +213,24 @@ async function hasHoverAtPoint(
   return false;
 }
 
-async function findComponentHitPoint(bridgeIndex?: number): Promise<{ x: number; y: number }> {
-  let projectedComponentPoints: Array<{ x: number; y: number; visible: boolean }> = [];
-  if (bridgeIndex !== undefined) {
-    projectedComponentPoints = await target.evaluate((nextBridgeIndex) => {
-      const bridge = (globalThis as unknown as ViewerContextMenuBridgeWindow).__TAU_SECTION_VIEW_TEST_BRIDGES__?.[
-        nextBridgeIndex
-      ];
-      if (!bridge) {
-        throw new Error(`Viewer bridge ${nextBridgeIndex} is not installed.`);
-      }
-      return bridge
-        .getModelComponents()
-        .flatMap(({ id }) => bridge.projectModelComponent(id))
-        .filter((point) => point.visible);
-    }, bridgeIndex);
+async function findComponentHitPoint(bridgeIndex = 0): Promise<{ x: number; y: number }> {
+  const projectedComponentPoints = await target.evaluate((nextBridgeIndex) => {
+    const bridge = (globalThis as unknown as ViewerContextMenuBridgeWindow).__TAU_SECTION_VIEW_TEST_BRIDGES__?.[
+      nextBridgeIndex
+    ];
+    if (!bridge) {
+      throw new Error(`Viewer bridge ${nextBridgeIndex} is not installed.`);
+    }
+    return bridge
+      .getModelComponents()
+      .flatMap(({ id }) => bridge.projectModelComponent(id))
+      .filter((point) => point.visible);
+  }, bridgeIndex);
 
-    for (const screenPoint of projectedComponentPoints) {
-      // oxlint-disable-next-line no-await-in-loop -- Each projected component must be verified against the live raycast.
-      if (await hasHoverAtPoint(screenPoint, bridgeIndex, 3)) {
-        return { x: screenPoint.x, y: screenPoint.y };
-      }
+  for (const screenPoint of projectedComponentPoints) {
+    // oxlint-disable-next-line no-await-in-loop -- Each projected component must be verified against the live raycast.
+    if (await hasHoverAtPoint(screenPoint, bridgeIndex, 3)) {
+      return { x: screenPoint.x, y: screenPoint.y };
     }
   }
 
@@ -246,6 +268,16 @@ async function openSeededProject(): Promise<void> {
   await target.expectVisible(selectors.getByTestId('cad-viewer-canvas-region'), 60_000);
   await target.expectVisible(selectors.getByCss(canvasSelector), 60_000);
   await waitForViewerBridge();
+  await target.waitFor(
+    () => {
+      const bridge = (globalThis as unknown as ViewerContextMenuBridgeWindow).__TAU_SECTION_VIEW_TEST_BRIDGES__?.[0];
+      return (
+        bridge?.getModelComponents().some(({ id }) => bridge.getRenderedModelComponentState(id).visibleMeshCount > 0) ??
+        false
+      );
+    },
+    { timeout: 60_000 },
+  );
   await driveStableCamera();
 }
 
@@ -258,22 +290,100 @@ test.describe('Chat viewer model component context menu', () => {
 
     const focusMenuItem = selectors.getByRole('menuitem', { name: /focus on part/i });
     const addToChatMenuItem = selectors.getByRole('menuitem', { name: /add to chat/i });
+    const isolateMenuItem = selectors.getByRole('menuitem', { name: /^isolate$/i });
+    const resetOpacityMenuItem = selectors.getByRole('menuitem', { name: 'Reset opacity' });
+    const opacityInput = selectors.getByRole('spinbutton', { name: 'Opacity' });
+    const opacityRow = selectors.getByCss('[data-slot="viewer-model-component-action-slider-item"]');
     await target.expectVisible(focusMenuItem, 15_000);
     await target.expectVisible(addToChatMenuItem);
     await target.expectVisible(selectors.getByRole('menuitem', { name: /^hide$/i }));
-    await target.expectVisible(selectors.getByRole('menuitem', { name: /^isolate$/i }));
+    await target.expectVisible(isolateMenuItem);
     await target.expectVisible(selectors.getByText('Opacity'));
+    await target.expectVisible(opacityInput);
+    await target.expectVisible(resetOpacityMenuItem);
+    if (target.currentWebGpuProfile() === 'hardware') {
+      const preview = selectors.getByRole('menu').getByCss('img[src^="blob:"]').first();
+      await target.expectVisible(preview, 15_000);
+      await expect
+        .poll(async () => target.evaluateLocator(preview, (image) => (image as HTMLImageElement).naturalWidth))
+        .toBeGreaterThan(0);
+      expect(
+        await target.evaluateLocator(preview, (image) => (image as HTMLImageElement).getBoundingClientRect().width),
+      ).toBe(24);
+    } else if (target.currentWebGpuProfile() === 'software') {
+      await target.expectVisible(selectors.getByRole('alert', { name: 'Preview status' }));
+      await target.expectVisible(selectors.getByRole('menuitem', { name: 'Retry preview' }));
+    }
 
-    const initialFocusVisualState = await readMenuItemVisualState(focusMenuItem);
+    const rowSpacing = await target.evaluateLocator(resetOpacityMenuItem, (resetOpacityElement) => {
+      const menu = resetOpacityElement.parentElement;
+      const opacityElement = menu?.querySelector<HTMLElement>(
+        '[data-slot="viewer-model-component-action-slider-item"]',
+      );
+      const sidebarMenu = document.querySelector<HTMLElement>('[data-slot="sidebar-menu"][class~="gap-0.5"]');
+      if (!menu || !opacityElement || !sidebarMenu) {
+        throw new Error('Expected viewer and sidebar menu collection owners.');
+      }
+
+      return {
+        adjacentGap: resetOpacityElement.getBoundingClientRect().top - opacityElement.getBoundingClientRect().bottom,
+        menuRowGap: Number.parseFloat(getComputedStyle(menu).rowGap),
+        sidebarRowGap: Number.parseFloat(getComputedStyle(sidebarMenu).rowGap),
+      };
+    });
+    expect(Math.abs(rowSpacing.menuRowGap - rowSpacing.sidebarRowGap)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(rowSpacing.adjacentGap - rowSpacing.sidebarRowGap)).toBeLessThanOrEqual(0.5);
+
+    const [isolateGeometry, opacityGeometry] = await Promise.all([
+      readMenuRowGeometry(isolateMenuItem),
+      readMenuRowGeometry(opacityRow),
+    ]);
+    expect(Math.abs(opacityGeometry.height - isolateGeometry.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs(opacityGeometry.width - isolateGeometry.width)).toBeLessThanOrEqual(1);
+    expect(opacityGeometry.borderRadius).toBe(isolateGeometry.borderRadius);
+    expect(opacityGeometry.paddingLeft).toBe(isolateGeometry.paddingLeft);
+    expect(opacityGeometry.columnGap).toBe(isolateGeometry.columnGap);
+    expect(Math.abs(opacityGeometry.iconOffset - isolateGeometry.iconOffset)).toBeLessThanOrEqual(1);
+    expect(
+      await target.evaluateLocator(
+        opacityRow,
+        (element) => element.querySelectorAll('[data-slot="slider-track"], [data-slot="slider-thumb"]').length,
+      ),
+    ).toBe(0);
+    // A pointer opened the menu, so the menu holds focus and no row starts highlighted.
+    expect(await target.evaluate(() => document.activeElement?.getAttribute('role'))).toBe('menu');
+    const restVisualState = await readMenuItemVisualState(focusMenuItem);
     await target.hover(addToChatMenuItem);
-    await expect.poll(async () => readMenuItemVisualState(addToChatMenuItem)).toEqual(initialFocusVisualState);
     await expect
       .poll(async () => {
-        const visualState = await readMenuItemVisualState(focusMenuItem);
+        const visualState = await readMenuItemVisualState(addToChatMenuItem);
         return visualState.backgroundColor;
       })
-      .not.toBe(initialFocusVisualState.backgroundColor);
+      .not.toBe(restVisualState.backgroundColor);
+    expect(await readMenuItemVisualState(focusMenuItem)).toEqual(restVisualState);
 
+    await target.click(opacityRow);
+    await expect
+      .poll(async () => {
+        const inputState = await target.read(opacityInput);
+        return inputState.focused;
+      })
+      .toBe(true);
+    expect(
+      await target.evaluateLocator(opacityInput, (element) => {
+        const input = element as HTMLInputElement;
+        return [input.selectionStart, input.selectionEnd, input.value.length];
+      }),
+    ).toEqual([0, 3, 3]);
+    await target.expectVisible(selectors.getByText('Opacity'));
+    await target.expectVisible(selectors.getByText('%'));
+    await target.fill(opacityInput, '77');
+    await target.keyboardPress('Escape');
+    await target.expectVisible(focusMenuItem);
+    const revertedOpacityInput = await target.read(opacityInput);
+    expect(revertedOpacityInput.value).toBe('100');
+
+    // The first Escape only reverted the edit; the next one closes the menu.
     await target.keyboardPress('Escape');
     await target.expectCount(focusMenuItem, 0);
 
@@ -328,7 +438,7 @@ test.describe('Chat viewer model component context menu', () => {
 
     await target.mouseClick(firstHit.x, firstHit.y, { button: 'right' });
     const showAll = selectors.getByRole('menuitem', { name: 'Show all' });
-    const resetOpacities = selectors.getByRole('menuitem', { name: 'Reset all opacities' });
+    const resetOpacities = selectors.getByRole('menuitem', { name: 'Reset opacity' });
     await target.expectVisible(showAll);
     expect(await target.getAttribute(showAll, 'disabled')).not.toBeNull();
     expect(await target.getAttribute(resetOpacities, 'disabled')).not.toBeNull();
@@ -354,23 +464,76 @@ test.describe('Chat viewer model component context menu', () => {
     }
     const initialOpacityStates = await readRenderedComponentStates(opacityComponentId);
     await target.mouseClick(opacityHit.x, opacityHit.y, { button: 'right' });
-    const opacitySlider = selectors.getByRole('slider').last();
-    await target.click(opacitySlider);
-    await target.keyboardPress('ArrowLeft');
-    await expect.poll(async () => Number(await target.getAttribute(opacitySlider, 'aria-valuenow')) < 100).toBe(true);
+    const opacityInput = selectors.getByRole('spinbutton', { name: 'Opacity' });
+    const opacityRow = selectors.getByCss('[data-slot="viewer-model-component-action-slider-item"]');
+    const eventBaseline = await target.events();
+    await target.expectVisible(opacityInput);
+
+    await target.fill(opacityInput, '150');
+    await target.press(opacityInput, 'Enter');
+    await expect
+      .poll(async () => {
+        const inputState = await target.read(opacityInput);
+        return inputState.value;
+      })
+      .toBe('100');
+    await expect.poll(async () => readRenderedComponentStates(opacityComponentId)).toEqual(initialOpacityStates);
+
+    await target.fill(opacityInput, '42');
+    await target.press(opacityInput, 'Enter');
+    await target.expectVisible(opacityInput);
+    await expect
+      .poll(async () => {
+        const inputState = await target.read(opacityInput);
+        return inputState.value;
+      })
+      .toBe('42');
     await expect
       .poll(async () => {
         const states = await readRenderedComponentStates(opacityComponentId);
         return (
           states.length === 2 &&
-          states.every(
-            (state) => state.materialOpacities.length > 0 && state.materialOpacities.every((opacity) => opacity < 1),
-          )
+          states.every((state) => state.materialOpacities.some((opacity) => Math.abs(opacity - 0.42) < 0.001))
+        );
+      })
+      .toBe(true);
+
+    const opacityRowBox = await target.boundingBox(opacityRow);
+    if (!opacityRowBox) {
+      throw new Error('Expected the Opacity row to have a bounding box.');
+    }
+    const scrubY = opacityRowBox.y + opacityRowBox.height / 2;
+    const scrubStartX = opacityRowBox.x + opacityRowBox.width * 0.75;
+    await target.mouseMove(scrubStartX, scrubY);
+    await target.mouseDown();
+    await target.mouseMove(scrubStartX - 32, scrubY);
+    await target.mouseUp();
+    await expect
+      .poll(async () => {
+        const inputState = await target.read(opacityInput);
+        return Number(inputState.value) < 42;
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => {
+        const states = await readRenderedComponentStates(opacityComponentId);
+        return (
+          states.length === 2 && states.every((state) => state.materialOpacities.some((opacity) => opacity < 0.42))
         );
       })
       .toBe(true);
     expect(await target.getAttribute(resetOpacities, 'disabled')).toBeNull();
     await target.click(resetOpacities);
     await expect.poll(async () => readRenderedComponentStates(opacityComponentId)).toEqual(initialOpacityStates);
+    const interactionEvents = await target.events();
+    expect(interactionEvents.pageErrors.slice(eventBaseline.pageErrors.length)).toEqual([]);
+    // The UI-only fixture has no API server; ignore its expected resource failure, but no interaction error.
+    expect(
+      interactionEvents.consoleMessages
+        .slice(eventBaseline.consoleMessages.length)
+        .filter(
+          ({ text, type }) => type === 'error' && text !== 'Failed to load resource: net::ERR_CONNECTION_REFUSED',
+        ),
+    ).toEqual([]);
   });
 });

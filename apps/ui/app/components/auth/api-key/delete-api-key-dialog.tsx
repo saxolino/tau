@@ -13,21 +13,22 @@ import {
   AlertDialogHeader,
   AlertDialogMedia,
   AlertDialogTitle,
-} from '#components/ui/alert-dialog.js';
-import { Button } from '#components/ui/button.js';
-import { Field } from '#components/ui/field.js';
-import { Input } from '#components/ui/input.js';
-import { Label } from '#components/ui/label.js';
+} from '@taucad/ui/components/alert-dialog';
+import { Button } from '@taucad/ui/components/button';
+import { Field } from '@taucad/ui/components/field';
+import { Input } from '@taucad/ui/components/input';
+import { Label } from '@taucad/ui/components/label';
 import { Spinner } from '#components/ui/spinner.js';
 import { apiKeyPlugin } from '#utils/api-key-plugin.js';
 
 export type DeleteApiKeyDialogProps = {
+  // oxlint-disable-next-line react-js/boolean-prop-naming -- mirrors Radix Dialog's controlled `open` prop API.
   open: boolean;
   onOpenChange: (open: boolean) => void;
   apiKey: ListedApiKey;
 };
 
-export function DeleteApiKeyDialog({ open, onOpenChange, apiKey }: DeleteApiKeyDialogProps) {
+export function DeleteApiKeyDialog({ open, onOpenChange, apiKey }: DeleteApiKeyDialogProps): React.JSX.Element {
   const { authClient, localization } = useAuth();
   const { localization: apiKeyLocalization } = useAuthPlugin(apiKeyPlugin);
   const preview = `${apiKey.start}${'*'.repeat(16)}`;

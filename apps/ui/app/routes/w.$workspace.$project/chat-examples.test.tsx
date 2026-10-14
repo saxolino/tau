@@ -14,7 +14,7 @@ import type { CadAgentConfigInput, MyUIMessage } from '@taucad/chat';
 const submitMock = vi.fn();
 const cadAgent: CadAgentConfigInput = {
   profile: 'cad',
-  model: 'openai-gpt-5.5',
+  execution: { kind: 'tau', model: 'openai-gpt-5.5' },
   kernel: 'replicad',
   mode: 'agent',
   toolChoice: 'auto',
@@ -57,7 +57,7 @@ vi.mock('#constants/chat-prompt-examples.js', () => ({
   ],
 }));
 
-vi.mock('#components/ui/button.js', () => ({
+vi.mock('@taucad/ui/components/button', () => ({
   Button: ({ children, onClick }: { readonly children: React.ReactNode; readonly onClick?: () => void }) => (
     <button type='button' onClick={onClick}>
       {children}
@@ -65,8 +65,8 @@ vi.mock('#components/ui/button.js', () => ({
   ),
 }));
 
-vi.mock('#components/ui/empty-items.js', () => ({
-  EmptyItems: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
+vi.mock('#components/ui/collection-empty-state.js', () => ({
+  CollectionEmptyState: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
 }));
 
 const { ChatExamples } = await import('#routes/w.$workspace.$project/chat-examples.js');
@@ -98,8 +98,11 @@ describe('ChatExamples — submit routes through useCadChatClient', () => {
     };
     const wireBody = {
       id: 'chat_test',
+      projectId: 'project_test',
       messages: [userMessage],
       agent: cadAgent,
+      admission: { version: 1, idempotencyKey: 'request_0000000001' },
+      execution: { hostId: 'host_test', workspaceId: 'workspace_test', baseRevisionId: 'rev_test' },
     };
 
     expect(() => chatTurnRequestSchema.parse(wireBody)).not.toThrow();

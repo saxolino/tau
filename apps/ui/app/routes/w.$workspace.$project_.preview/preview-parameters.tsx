@@ -2,16 +2,16 @@ import { useState, useCallback } from 'react';
 import { useSelector } from '@xstate/react';
 import { RefreshCcw, ChevronRight, Search } from 'lucide-react';
 import { hasJsonSchemaObjectProperties } from '@taucad/utils/schema';
-import { Button } from '#components/ui/button.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
-import { Parameters } from '#components/geometry/parameters/parameters.js';
-import { cn } from '#utils/ui.utils.js';
+import { Button } from '@taucad/ui/components/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { Parameters } from '@taucad/viewer/parameters/parameters';
+import { cn } from '@taucad/ui/utils/cn';
 import { useCadPreview } from '#hooks/use-cad-preview.js';
 
 export function PreviewParameters(): React.JSX.Element {
-  const { cadRef, graphicsRef, defaultParameters, jsonSchema, setParameters } = useCadPreview();
-  const parameters = useSelector(cadRef, (snapshot) => snapshot.context.parameters);
-  const units = useSelector(graphicsRef, (state) => state.context.units);
+  const { graphicsRef, defaultParameters, jsonSchema, parameterManifest, parameters, setParameters } = useCadPreview();
+  const displaySymbol = useSelector(graphicsRef, (state) => state.context.displayUnits.length.symbol);
+  const units = { length: { displaySymbol } } as const;
 
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [isAllExpanded, setIsAllExpanded] = useState(true);
@@ -94,16 +94,22 @@ export function PreviewParameters(): React.JSX.Element {
         </div>
       </div>
       <div className='flex-1 overflow-hidden'>
-        <Parameters
-          parameters={parameters}
-          defaultParameters={defaultParameters}
-          jsonSchema={jsonSchema}
-          units={units}
-          enableSearch={isSearchVisible}
-          isAllExpanded={isAllExpanded}
-          emptyDescription='This model has no parameters'
-          onParametersChange={handleParametersChange}
-        />
+        {parameterManifest ? (
+          <Parameters
+            parameters={parameters}
+            defaultParameters={defaultParameters}
+            jsonSchema={jsonSchema}
+            parameterManifest={parameterManifest}
+            parameterEdit={{ kind: 'transient' }}
+            units={units}
+            enableSearch={isSearchVisible}
+            isAllExpanded={isAllExpanded}
+            emptyDescription='This model has no parameters'
+            onParametersChange={handleParametersChange}
+          />
+        ) : (
+          <div className='p-3 text-sm text-muted-foreground'>Loading parameter metadata…</div>
+        )}
       </div>
     </div>
   );

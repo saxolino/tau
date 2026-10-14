@@ -12,7 +12,9 @@
  * - frame declarations do NOT masquerade as semantic GD&T datums (F1: the
  *   DATUM/DATUM_FEATURE/DATUM_SYSTEM family is reserved for GD&T-grade data);
  * - unit statics are pinned per export (F5/§9), so the file always declares
- *   its units explicitly.
+ *   its units explicitly;
+ * - surface colours are the sRGB encoding of the glTF base colour, and a shape
+ *   without an authored colour carries none.
  *
  * The three-way gate: live, reheated, and deserialized native handles must
  * produce structurally identical STEP (products, subshape names, datum
@@ -21,9 +23,11 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { NodeIO } from '@gltf-transform/core';
+import { converter } from 'culori';
 import { replicadKernel } from '#replicad.kernel.js';
 import { esbuildBundler } from '@taucad/esbuild';
-import { assertSuccess, createTestRuntimeClient } from '@taucad/runtime-testing';
+import { createTestRuntimeClient } from '@taucad/runtime-testing';
 import { defineRuntime } from '@taucad/runtime/worker';
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -88,15 +92,63 @@ const extractStepEvidence = (stepText: string): StepEvidence => ({
 
 const runtime = defineRuntime({ kernels: [replicadKernel()], bundlers: [esbuildBundler()] });
 
-const exportStepText = async (): Promise<string> => {
-  const client = createTestRuntimeClient({ runtime, files: { 'main.ts': conformanceModelSource } });
+const exportModel = async (format: 'step' | 'glb', source: string): Promise<Uint8Array<ArrayBuffer>> => {
+  const client = createTestRuntimeClient({ runtime, files: { 'main.ts': source } });
   try {
-    const exportResult = await client.export('step', { source: { path: 'main.ts' } });
-    assertSuccess(exportResult, 'conformance STEP export');
-    return unwrapStepLines(new TextDecoder().decode(exportResult.data[0]!.bytes));
+    const exportResult = await client.open({ source: { path: 'main.ts' } }).export(format);
+    /* Throw the export issues so rejection cases can match the message. */
+    if (!exportResult.success) {
+      throw new Error(exportResult.issues.map((issue) => issue.message).join('\n'));
+    }
+    return exportResult.files[0].bytes;
   } finally {
     await client.shutdown();
   }
+};
+
+const exportStepText = async (source = conformanceModelSource): Promise<string> =>
+  unwrapStepLines(new TextDecoder().decode(await exportModel('step', source)));
+
+const toSrgb = converter('rgb');
+const colourKey = (rgb: readonly number[]): string => rgb.map((channel) => channel.toFixed(5)).join(',');
+const predefinedColours: Record<string, readonly number[]> = { white: [1, 1, 1], red: [1, 0, 0] };
+
+/** Every distinct surface colour a STEP file declares, as sRGB keys. */
+const extractStepColours = (stepText: string): string[] =>
+  [
+    ...new Set([
+      ...[...stepText.matchAll(/COLOUR_RGB\('[^']*',([^,]+),([^,]+),([^)]+)\)/g)].map(([, ...rgb]) =>
+        colourKey(rgb.map(Number)),
+      ),
+      ...[...stepText.matchAll(/DRAUGHTING_PRE_DEFINED_COLOUR\('([^']+)'\)/g)].map(([, name]) =>
+        colourKey(predefinedColours[name!] ?? [Number.NaN]),
+      ),
+    ]),
+  ].sort();
+
+/** Occurrence names that context-bound styles colour: style context → placement shape → NAUO. */
+const extractStyledOccurrences = (stepText: string): string[] =>
+  [...stepText.matchAll(/PRESENTATION_STYLE_BY_CONTEXT\(\([^)]*\),#(\d+)\)/g)].map(([, context]) => {
+    const placement = new RegExp(`SHAPE_DEFINITION_REPRESENTATION\\(#(\\d+),#${context}\\)`).exec(stepText)?.[1];
+    const usage = new RegExp(`#${placement}\\s*=\\s*PRODUCT_DEFINITION_SHAPE\\('[^']*','[^']*',#(\\d+)`).exec(
+      stepText,
+    )?.[1];
+    const name = new RegExp(`#${usage}\\s*=\\s*NEXT_ASSEMBLY_USAGE_OCCURRENCE\\('[^']*','([^']*)'`).exec(stepText)?.[1];
+    return name ?? `unresolved context #${context}`;
+  });
+
+/** Every distinct glTF base colour, per the glTF default for an omitted factor, sRGB-encoded as STEP stores it. */
+const extractGltfColours = async (glb: Uint8Array<ArrayBuffer>): Promise<string[]> => {
+  const { json } = await new NodeIO().binaryToJSON(glb);
+  return [
+    ...new Set(
+      (json.materials ?? []).map((material) => {
+        const [r = 1, g = 1, b = 1] = material.pbrMetallicRoughness?.baseColorFactor ?? [];
+        const srgb = toSrgb({ mode: 'lrgb', r, g, b });
+        return colourKey([srgb.r, srgb.g, srgb.b]);
+      }),
+    ),
+  ].sort();
 };
 
 describe('Replicad — AP242 writer conformance', () => {
@@ -157,4 +209,133 @@ describe('Replicad — AP242 writer conformance', () => {
     expect(extractStepEvidence(secondText)).toEqual(liveEvidence);
     expect(extractStepEvidence(thirdText)).toEqual(liveEvidence);
   });
+});
+
+describe('Replicad — STEP appearance', () => {
+  it('should write no colour for shapes without an authored colour', async () => {
+    const stepText = await exportStepText(`
+      import { makeBox } from 'replicad';
+
+      export default function main() {
+        return [
+          { shape: makeBox([0, 0, 0], [10, 10, 10]), name: 'plain' },
+          { shape: makeBox([20, 0, 0], [30, 10, 10]), name: 'finishOnly', opacity: 0.5, metalness: 1, roughness: 0.2 },
+        ];
+      }
+    `);
+
+    expect(stepText).toContain("PRODUCT('plain'");
+    expect(stepText).toContain("PRODUCT('finishOnly'");
+    expect(stepText).not.toMatch(/STYLED_ITEM|COLOUR_RGB|DRAUGHTING_PRE_DEFINED_COLOUR|SURFACE_STYLE/);
+  });
+
+  it('should write each authored colour as the sRGB encoding of the glTF base colour', async () => {
+    const source = `
+      import { makeBox } from 'replicad';
+
+      export default function main() {
+        return [
+          { shape: makeBox([0, 0, 0], [10, 10, 10]), name: 'legacy', color: '#3366cc', opacity: 0.5 },
+          {
+            shape: makeBox([20, 0, 0], [30, 10, 10]),
+            name: 'authored',
+            material: { pbrMetallicRoughness: { baseColorFactor: [0.05, 0.6, 0.25, 1] } },
+          },
+          { shape: makeBox([40, 0, 0], [50, 10, 10]), name: 'authoredDefault', material: {} },
+        ];
+      }
+    `;
+    const stepText = await exportStepText(source);
+    const gltfColours = await extractGltfColours(await exportModel('glb', source));
+
+    expect(gltfColours).toHaveLength(3);
+    expect(extractStepColours(stepText)).toEqual(gltfColours);
+    expect(stepText).toMatch(/SURFACE_STYLE_TRANSPARENT\(0\.5\)/);
+  });
+
+  it('should keep an uncoloured occurrence from inheriting its coloured sibling through their shared product', async () => {
+    const stepText = await exportStepText(`
+      import { makeBox } from 'replicad';
+
+      export default function main() {
+        const bolt = makeBox([0, 0, 0], [5, 5, 20]);
+        return [
+          { shape: bolt.clone(), name: 'highlighted', color: '#3366cc' },
+          { shape: bolt.clone().translate([30, 0, 0]), name: 'plain' },
+        ];
+      }
+    `);
+
+    // One shared product without a colour of its own; only the coloured occurrence is styled, in its assembly context.
+    expect([...stepText.matchAll(/NEXT_ASSEMBLY_USAGE_OCCURRENCE/g)]).toHaveLength(2);
+    expect(stepText).not.toMatch(/PRESENTATION_STYLE_ASSIGNMENT/);
+    expect([...new Set(extractStyledOccurrences(stepText))]).toEqual(['highlighted']);
+    expect(extractStepColours(stepText)).toEqual([colourKey([0.2, 0.4, 0.8])]);
+  });
+});
+
+describe('Replicad — STEP physical density', () => {
+  it('should share one exact prototype when both occurrences declare the same density', async () => {
+    const stepText = await exportStepText(`
+      import { makeBox } from 'replicad';
+      export default function main() {
+        const box = makeBox([0, 0, 0], [10, 8, 6]);
+        return [
+          { shape: box.clone(), name: 'first', density: 1.55 },
+          { shape: box.clone().translate([20, 0, 0]), name: 'second', density: 1.55 },
+        ];
+      }
+    `);
+    expect(extractStepEvidence(stepText).products).toEqual(['assembly', 'first']);
+    expect([...stepText.matchAll(/NEXT_ASSEMBLY_USAGE_OCCURRENCE/g)]).toHaveLength(2);
+    expect([...stepText.matchAll(/POSITIVE_RATIO_MEASURE\(1\.55\)/g)]).toHaveLength(1);
+  });
+
+  it('should reject conflicting densities for occurrences sharing one exact prototype', async () => {
+    await expect(
+      exportStepText(`
+      import { makeBox } from 'replicad';
+      export default function main() {
+        const box = makeBox([0, 0, 0], [10, 8, 6]);
+        return [
+          { shape: box.clone(), name: 'aluminium', density: 1.55 },
+          { shape: box.clone().translate([20, 0, 0]), name: 'steel', density: 7.85 },
+        ];
+      }
+    `),
+    ).rejects.toThrow(/conflicting densities/);
+  });
+
+  it.each([
+    [undefined, 1.55],
+    [1.55, undefined],
+  ])('should reject missing and known density in either order: %s then %s', async (first, second) => {
+    const densityField = (value: number | undefined): string => (value === undefined ? '' : `, density: ${value}`);
+    await expect(
+      exportStepText(`
+      import { makeBox } from 'replicad';
+      export default function main() {
+        const box = makeBox([0, 0, 0], [10, 8, 6]);
+        return [
+          { shape: box.clone(), name: 'first'${densityField(first)} },
+          { shape: box.clone().translate([20, 0, 0]), name: 'second'${densityField(second)} },
+        ];
+      }
+    `),
+    ).rejects.toThrow(/conflicting densities/);
+  });
+
+  it.each(['-1', '0', 'Number.NaN', 'Number.POSITIVE_INFINITY'])(
+    'should reject invalid density %s instead of silently omitting it',
+    async (density) => {
+      await expect(
+        exportStepText(`
+        import { makeBox } from 'replicad';
+        export default function main() {
+          return { shape: makeBox([0, 0, 0], [10, 8, 6]), name: 'invalid', density: ${density} };
+        }
+      `),
+      ).rejects.toThrow(/finite positive density/);
+    },
+  );
 });

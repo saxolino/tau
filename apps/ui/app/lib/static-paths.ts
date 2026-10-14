@@ -1,41 +1,51 @@
-import { glob } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createGetUrl, getSlugs } from 'fumadocs-core/source';
-
-const getDocumentUrl = createGetUrl('/docs');
-
-/** Repo root for `apps/ui` (directory containing `content/docs`). */
-export function getUiRootDirectory(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), '../..');
-}
-
-const docsContentRoot = join(getUiRootDirectory(), 'content/docs');
-
 /**
- * Canonical list of paths prerendered at build time and/or listed in
- * `sitemap.xml`. Keep in sync with {@link react-router.config.ts} `prerender.paths`.
+ * Public, crawlable paths. These are the only entries `sitemap.xml` advertises.
  */
-export async function listStaticPrerenderPaths(): Promise<string[]> {
-  const documentPages: string[] = [];
-  for await (const entry of glob('**/*.mdx', { cwd: docsContentRoot })) {
-    documentPages.push(getDocumentUrl(getSlugs(entry)));
-  }
-
+function listPublicStaticPaths(): string[] {
   return [
     '/manifest.webmanifest',
     '/robots.txt',
     '/sitemap.xml',
-    '/llms.txt',
-    '/llms-full.txt',
-    ...documentPages,
     '/legal',
     '/legal/terms',
     '/legal/privacy',
     '/legal/cookies',
     '/legal/subprocessors',
     '/legal/acceptable-use',
+    '/legal/open-source',
   ];
 }
 
-export { docsContentRoot, getDocumentUrl };
+/**
+ * Account routes prerendered as a neutral document so a cold offline start has
+ * HTML to boot (B5 R2). They carry `noindex, nofollow` route meta and are
+ * deliberately absent from {@link listSitemapPaths}: prerendering is a build
+ * artefact, not a statement that the route is public content.
+ */
+const offlineShellPaths = ['/usage'];
+
+/** Paths the sitemap advertises. */
+export function listSitemapPaths(): string[] {
+  return listPublicStaticPaths();
+}
+
+/** Paths the React Router build prerenders to static HTML. */
+export function listStaticPrerenderPaths(): string[] {
+  return [...listPublicStaticPaths(), ...offlineShellPaths];
+}
+
+/** The neutral prerendered documents the offline shell worker may cache. */
+export function listOfflineShellPaths(): readonly string[] {
+  return offlineShellPaths;
+}
+
+/**
+ * Whether a pathname is served by the offline shell.
+ *
+ * @param pathname - URL pathname, with or without a trailing slash.
+ * @returns `true` when the offline shell owns this document.
+ */
+export function isOfflineShellPath(pathname: string): boolean {
+  const normalized = pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return offlineShellPaths.includes(normalized);
+}

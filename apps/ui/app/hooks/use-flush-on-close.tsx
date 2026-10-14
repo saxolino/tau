@@ -1,18 +1,55 @@
-import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Which half of A38's two-phase unload is running.
+ *
+ * `hidden` is the real close in a browser: the document is still alive, so a
+ * callback can send, await and see an answer. `pagehide` is best-effort — the
+ * document is going away and nothing asynchronous will finish — so a callback
+ * that has one last thing to say says it there and expects no reply.
+ *
+ * @public
+ */
+export type FlushPhase = 'hidden' | 'pagehide';
+
+/** Producer flushes settle before session close preparation begins. */
+export type FlushStage = 'producer' | 'session';
+
+type FlushCallback = (phase: FlushPhase) => void | Promise<void>;
+
 type FlushRegistration = {
   id: symbol;
-  callbackRef: React.RefObject<() => void>;
+  stage: FlushStage;
+  callbackRef: React.RefObject<FlushCallback>;
 };
 
 type UnloadContextValue = {
   register: (registration: FlushRegistration) => void;
   unregister: (id: symbol) => void;
+  flushProducers: () => Promise<void>;
+};
+
+/** Run one stage's callbacks in the phase that can still await, and wait for every one to settle. */
+const flushStage = async (registrations: readonly FlushRegistration[], stage: FlushStage): Promise<void> => {
+  const outcomes = await Promise.allSettled(
+    registrations
+      .filter((registration) => registration.stage === stage)
+      .map(async (registration) => registration.callbackRef.current('hidden')),
+  );
+  const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  if (failures.length > 0) {
+    const reasons = failures.map((failure) => failure.reason as unknown);
+    // The quit hold shows this message: it names what is not saved, not the stage.
+    throw new AggregateError(
+      reasons,
+      reasons.map((reason) => (reason instanceof Error ? reason.message : `${stage} flush failed`)).join(' '),
+    );
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -28,53 +65,82 @@ const UnloadContext = createContext<UnloadContextValue | undefined>(undefined);
 /**
  * Global unload service provider.
  *
- * Attaches a single set of window-level listeners for `beforeunload` and
- * `visibilitychange` events. When either fires, all registered flush
- * callbacks are invoked synchronously. Must be placed near the root of
- * the React tree.
+ * Attaches one set of document-level listeners for A38's two-phase unload:
+ * `visibilitychange: hidden`, which is the real close and the phase that can
+ * still do work, and `pagehide`, which is best-effort. `beforeunload` is gone:
+ * `pagehide` fires wherever it did, fires for the back/forward cache too, and
+ * does not make the browser consider showing a leave-site prompt.
  *
- * Individual services register their flush callbacks via {@link useFlushOnClose}.
+ * Individual services register their flush callbacks via {@link useFlushOnClose};
+ * a close the page hears about first runs the producers via {@link useFlushProducers}.
  */
 export function UnloadProvider({ children }: { readonly children: ReactNode }): React.JSX.Element {
   const registryRef = useRef(new Set<FlushRegistration>());
 
   // Stable register/unregister functions
-  const register = useRef((registration: FlushRegistration): void => {
+  const register = useCallback((registration: FlushRegistration): void => {
     registryRef.current.add(registration);
-  }).current;
+  }, []);
 
-  const unregister = useRef((id: symbol): void => {
+  const unregister = useCallback((id: symbol): void => {
     for (const reg of registryRef.current) {
       if (reg.id === id) {
         registryRef.current.delete(reg);
         break;
       }
     }
-  }).current;
+  }, []);
+
+  const flushProducers = useCallback(async (): Promise<void> => {
+    await flushStage([...registryRef.current], 'producer');
+  }, []);
 
   useEffect(() => {
-    const flush = (): void => {
-      for (const reg of registryRef.current) {
-        reg.callbackRef.current();
+    const flushHidden = async (): Promise<void> => {
+      const registrations = [...registryRef.current];
+      await flushStage(registrations, 'producer');
+      await flushStage(registrations, 'session');
+    };
+    const flushHiddenSafely = async (): Promise<void> => {
+      try {
+        await flushHidden();
+      } catch (error) {
+        console.error('Pending changes could not be saved before the page was hidden.', error);
+      }
+    };
+    const flushPageHide = (): void => {
+      for (const registration of registryRef.current) {
+        if (registration.stage === 'session') {
+          /* Synchronous by contract: pagehide can only emit data prepared by
+           * hidden and cannot wait for a fresh producer flush. */
+          void registration.callbackRef.current('pagehide');
+        }
       }
     };
 
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') {
-        flush();
+        // async-iife: bootstrap -- visibility events have no caller to await the producer stage.
+        void flushHiddenSafely();
       }
     };
+    const handlePageHide = (): void => {
+      flushPageHide();
+    };
 
-    globalThis.addEventListener('beforeunload', flush);
+    globalThis.addEventListener('pagehide', handlePageHide);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      globalThis.removeEventListener('beforeunload', flush);
+      globalThis.removeEventListener('pagehide', handlePageHide);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
-  const contextValue = useMemo<UnloadContextValue>(() => ({ register, unregister }), [register, unregister]);
+  const contextValue = useMemo<UnloadContextValue>(
+    () => ({ register, unregister, flushProducers }),
+    [register, unregister, flushProducers],
+  );
 
   return <UnloadContext.Provider value={contextValue}>{children}</UnloadContext.Provider>;
 }
@@ -90,37 +156,46 @@ function useUnloadContext(): UnloadContextValue {
   const context = useContext(UnloadContext);
 
   if (!context) {
-    throw new Error('useFlushOnClose must be used within an UnloadProvider');
+    throw new Error('useFlushOnClose and useFlushProducers must be used within an UnloadProvider');
   }
 
   return context;
 }
 
 /**
- * Register a callback to be called when the page is about to unload or
- * becomes hidden. Useful for flushing debounced state to prevent data loss.
+ * Register a callback for both phases of the unload (A38).
+ *
+ * Producer callbacks run first and may await their persistence acknowledgements
+ * during `hidden`; session callbacks run only after all producers settle.
+ * `pagehide` invokes session callbacks synchronously and skips producers, so it
+ * can send prepared data but cannot start another persistence flush.
  *
  * The callback is stored via ref -- it never causes re-registration when
  * the closure changes. Registration is effect-based and StrictMode-safe.
  *
  * @example
  * ```tsx
- * useFlushOnClose(() => {
+ * useFlushOnClose(async () => {
  *   actorRef.send({ type: 'flushNow' });
- * });
+ *   await waitUntilIdle(actorRef);
+ * }, { stage: 'producer' });
  * ```
  */
-export function useFlushOnClose(callback: () => void): void {
+export function useFlushOnClose(callback: FlushCallback, options: Readonly<{ stage: FlushStage }>): void {
   const { register, unregister } = useUnloadContext();
 
   // Stable callback ref -- updated every render, read in handler
   const callbackRef = useRef(callback);
-  callbackRef.current = callback;
+
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
 
   useEffect(() => {
     const id = Symbol('flush-on-close');
     const registration: FlushRegistration = {
       id,
+      stage: options.stage,
       callbackRef,
     };
 
@@ -129,5 +204,21 @@ export function useFlushOnClose(callback: () => void): void {
     return () => {
       unregister(id);
     };
-  }, [register, unregister]);
+  }, [options.stage, register, unregister]);
+}
+
+/**
+ * The producer stage of `hidden`, on demand, for a close the page is told about
+ * while it can still work.
+ *
+ * The desktop quit hold (D31) runs it before any session closes: on Electron,
+ * `hidden` comes at window teardown, after main has disposed the services
+ * utility that producers such as the Home draft write through. Producers see
+ * the `hidden` phase, the one that can await; session callbacks are left to
+ * the caller's own close.
+ *
+ * @returns Run every producer now; resolves once each has settled.
+ */
+export function useFlushProducers(): () => Promise<void> {
+  return useUnloadContext().flushProducers;
 }

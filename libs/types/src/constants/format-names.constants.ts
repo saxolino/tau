@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/naming-convention -- format names */
 import type { FileExtension } from '#types/mime-types.types.js';
 
 type FormatConfiguration = {
@@ -56,6 +55,11 @@ export const formatConfigurations = {
     name: 'Caligari Object (COB)',
     description: 'Developed by Caligari Corporation for use in truSpace, a 3D modeling and animation format.',
   },
+  csv: {
+    name: 'Comma-Separated Values (CSV)',
+    description:
+      'Plain-text tabular format with one record per line; produced by EDA kernels for bill-of-materials exports.',
+  },
   dae: {
     name: 'COLLADA (DAE)',
     description:
@@ -86,6 +90,22 @@ export const formatConfigurations = {
     description:
       'Developed by the Khronos Group for use in transmitting 3D models and scenes efficiently, particularly in web applications and real-time rendering.',
   },
+  avif: {
+    name: 'AV1 Image File Format (AVIF)',
+    description: 'Modern image format based on AV1 compression with support for transparency and high dynamic range.',
+  },
+  bmp: {
+    name: 'Bitmap Image (BMP)',
+    description: 'Raster image format commonly used for uncompressed or losslessly compressed bitmap data.',
+  },
+  gif: {
+    name: 'Graphics Interchange Format (GIF)',
+    description: 'Palette-based raster image format with transparency and animation support.',
+  },
+  ico: {
+    name: 'Icon Image (ICO)',
+    description: 'Container format for one or more icon images at different sizes and color depths.',
+  },
   png: {
     name: 'Portable Network Graphics (PNG)',
     description:
@@ -104,6 +124,11 @@ export const formatConfigurations = {
   jpg: {
     name: 'JPEG Image (JPG)',
     description: 'Conventional file-extension alias for JPEG raster images produced by the runtime image transcoder.',
+  },
+  json: {
+    name: 'JavaScript Object Notation (JSON)',
+    description:
+      'Structured text interchange format; produced by EDA kernels for the settled circuit JSON that backs every other export.',
   },
   ifc: {
     name: 'Industry Foundation Classes (IFC)',
@@ -124,6 +149,16 @@ export const formatConfigurations = {
     name: 'LightWave Object (LWO)',
     description:
       'Developed by NewTek for use in LightWave 3D, storing object data for 3D modeling and animation in film and television production.',
+  },
+  gcode: {
+    name: 'G-code (GCODE)',
+    description:
+      'Numerical-control toolpath text consumed by FFF printers and CNC machines, listing motion, temperature and extrusion commands layer by layer.',
+  },
+  'gcode.3mf': {
+    name: 'Bambu print container (GCODE.3MF)',
+    description:
+      'Bambu Lab print-ready 3MF package carrying sliced plate G-code beside its metadata, produced by a slicer for direct upload to the printer.',
   },
   md2: {
     name: 'Quake 2 Model (MD2)',
@@ -181,10 +216,19 @@ export const formatConfigurations = {
     description:
       'Developed by 3D Systems for use in stereolithography, serving as the de facto standard format for 3D printing and rapid prototyping.',
   },
+  svg: {
+    name: 'Scalable Vector Graphics (SVG)',
+    description:
+      'W3C vector graphics format for two-dimensional drawings, diagrams, and illustrations with resolution-independent geometry.',
+  },
   stp: {
     name: 'STEP (STP)',
     description:
       'Developed by ISO for use in representing product manufacturing information, facilitating interoperability between different CAD systems.',
+  },
+  txt: {
+    name: 'Plain Text (TXT)',
+    description: 'Unstructured plain-text format; produced by EDA kernels for human-readable netlist exports.',
   },
   usda: {
     name: 'Universal Scene Description ASCII (USDA)',

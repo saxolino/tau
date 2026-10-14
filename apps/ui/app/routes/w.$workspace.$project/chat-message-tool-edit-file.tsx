@@ -2,7 +2,7 @@ import { Pencil } from 'lucide-react';
 import type { ToolInvocation } from '@taucad/chat';
 import { toolName } from '@taucad/chat/constants';
 import { CollapsibleFileOperation } from '#components/chat/chat-tool-file-operation.js';
-import { CopyButton } from '#components/copy-button.js';
+import { CopyButton } from '@taucad/ui/components/copy-button';
 import { ChatToolError } from '#components/chat/chat-tool-error.js';
 import {
   ChatToolCard,
@@ -23,20 +23,18 @@ export function ChatMessageToolFileEdit({
     case 'input-streaming':
     case 'input-available': {
       const { input } = part;
-      const { targetFile = '', codeEdit = '' } = input ?? {};
+      // oxlint-disable-next-line typescript/no-deprecated -- Historical Morph inputs remain readable alongside deterministic edits.
+      const targetFile = input?.targetFile ?? '';
+      const content = input?.newString ?? input?.codeEdit ?? '';
 
       return (
-        <CollapsibleFileOperation
-          targetFile={targetFile}
-          toolStatus={part.state}
-          content={codeEdit}
-          pendingLabel='Editing file...'
-        />
+        <CollapsibleFileOperation operation='edit' targetFile={targetFile} toolStatus={part.state} content={content} />
       );
     }
 
     case 'output-available': {
       const { input, output } = part;
+      // oxlint-disable-next-line typescript/no-deprecated -- Historical completed edits still link to their original target file.
       const { targetFile = '' } = input;
       const { diffStats } = output;
 
@@ -63,6 +61,7 @@ export function ChatMessageToolFileEdit({
 
       return (
         <CollapsibleFileOperation
+          operation='edit'
           enableFileLink
           targetFile={targetFile}
           toolStatus={part.state}
@@ -70,6 +69,7 @@ export function ChatMessageToolFileEdit({
           diffStats={diffStats}
           actions={
             <CopyButton
+              aria-label='Copy'
               size='xs'
               className='**:data-[slot=label]:hidden @xs/code:**:data-[slot=label]:flex'
               getText={() => displayContent}

@@ -1,0 +1,259 @@
+import { useSyncExternalStore } from 'react';
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const { projectManager, query, registry, useQuery, worker, chats } = vi.hoisted(() => {
+  const listeners = new Set<
+    (snapshot: { context: { refs: Readonly<Record<string, Record<string, unknown>>> } }) => void
+  >();
+  let references: Readonly<Record<string, Record<string, unknown>>> = {};
+  const operations: string[] = [];
+  const queryState: { isLoading: boolean; data: unknown } = { isLoading: false, data: undefined };
+  const actor = {
+    getSnapshot: () => ({ context: { refs: references } }),
+    subscribe: (
+      listener: (snapshot: { context: { refs: Readonly<Record<string, Record<string, unknown>>> } }) => void,
+    ) => {
+      listeners.add(listener);
+      return { unsubscribe: () => listeners.delete(listener) };
+    },
+    send: (event: { readonly type: string; readonly projectId?: string }) => {
+      if (event.type !== 'close' || event.projectId === undefined) {
+        return;
+      }
+      operations.push(`close:${event.projectId}`);
+      references = Object.fromEntries(Object.entries(references).filter(([id]) => id !== event.projectId));
+      for (const listener of listeners) {
+        listener(actor.getSnapshot());
+      }
+    },
+  };
+  return {
+    projectManager: {
+      getChatsForResource: vi.fn(async (): Promise<Array<{ id: string }>> => []),
+      deleteProject: vi.fn(async (projectId: string) => {
+        operations.push(`trash:${projectId}`);
+        return true;
+      }),
+      permanentlyDeleteProject: vi.fn(async (projectId: string) => {
+        operations.push(`delete:${projectId}`);
+      }),
+    },
+    query: queryState,
+    registry: {
+      actor,
+      live: (projectId: string) => {
+        references = { ...references, [projectId]: {} };
+      },
+      reset: () => {
+        references = {};
+        listeners.clear();
+        operations.length = 0;
+      },
+      operations,
+    },
+    useQuery: vi.fn((_options: Record<string, unknown>) => ({
+      data: queryState.data,
+      /* TanStack reports a *disabled* query as pending-but-not-loading, which is
+       * the whole point of the readiness pin below. */
+      isLoading: queryState.isLoading,
+      error: undefined,
+      refetch: vi.fn(),
+    })),
+    worker: { isLoading: false },
+    chats: {
+      observed: [] as string[],
+      projection: undefined as { ledger: { position: { cursor: number } }; endCursor: number } | undefined,
+      plan: { liveChatIds: [] as string[] },
+    },
+  };
+});
+
+vi.mock('@tanstack/react-query', () => ({
+  useQuery,
+  useQueryClient: () => ({ invalidateQueries: vi.fn(), removeQueries: vi.fn() }),
+}));
+
+vi.mock('#hooks/use-project-manager.js', () => ({
+  useProjectManager: () => ({
+    getProjectListing: vi.fn(),
+    getChatsForResource: projectManager.getChatsForResource,
+    updateProject: vi.fn(),
+    getProject: vi.fn(),
+    deleteProject: projectManager.deleteProject,
+    restoreProject: vi.fn(),
+    permanentlyDeleteProject: projectManager.permanentlyDeleteProject,
+    duplicateProject: vi.fn(),
+    isLoading: worker.isLoading,
+  }),
+}));
+
+vi.mock('#hooks/use-sessions.js', () => ({ useSessions: () => registry.actor }));
+vi.mock('#hooks/chat-session-store-provider.js', () => ({
+  useChatSessionStore: () => ({
+    observedChatIdsOf: () => chats.observed,
+    getProjection: () => chats.projection,
+    getProjectClosePlan: async () => chats.plan,
+    removeProject: async (projectId: string) => {
+      registry.operations.push(`remove-composers:${projectId}`);
+    },
+  }),
+}));
+
+const { useProjects } = await import('#hooks/use-projects.js');
+
+const listingQueryOptions = (): Record<string, unknown> => {
+  useQuery.mockClear();
+  renderHook(() => useProjects());
+  return useQuery.mock.calls[0]![0];
+};
+
+describe('useProjects readiness', () => {
+  afterEach(() => {
+    worker.isLoading = false;
+    query.isLoading = false;
+    registry.reset();
+  });
+
+  /*
+   * The worker window is the one shape that used to render `No projects yet`
+   * over a live project: the query is disabled until the object store is up,
+   * and a disabled query is not `isLoading`, so every consumer read "no
+   * projects" from a listing that had not run once (P67).
+   */
+  it('reports loading across the window where its own query is disabled', () => {
+    worker.isLoading = true;
+    useQuery.mockClear();
+    const { result } = renderHook(() => useProjects());
+
+    expect(useQuery.mock.calls[0]![0]['enabled']).toBe(false);
+    expect(result.current.isLoading).toBe(true);
+  });
+
+  it('leaves loading to the query once the worker is up', () => {
+    useQuery.mockClear();
+    const { result } = renderHook(() => useProjects());
+
+    expect(useQuery.mock.calls[0]![0]['enabled']).toBe(true);
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('reports loading while the worker is up and its query is loading', () => {
+    query.isLoading = true;
+    useQuery.mockClear();
+    const { result } = renderHook(() => useProjects());
+
+    expect(useQuery.mock.calls[0]![0]['enabled']).toBe(true);
+    expect(result.current.isLoading).toBe(true);
+  });
+});
+
+describe('useProjects deletion', () => {
+  afterEach(() => {
+    registry.reset();
+    chats.observed = [];
+    chats.projection = undefined;
+    chats.plan = { liveChatIds: [] };
+    projectManager.getChatsForResource.mockResolvedValue([]);
+    vi.clearAllMocks();
+  });
+
+  it('refuses permanent deletion without a caught-up projection for every stored chat', async () => {
+    projectManager.getChatsForResource.mockResolvedValue([{ id: 'unseen-chat' }]);
+    const { result } = renderHook(() => useProjects());
+    await expect(result.current.permanentlyDeleteProject('proj_closed')).rejects.toThrow(/Restore.*open/u);
+    expect(projectManager.permanentlyDeleteProject).not.toHaveBeenCalled();
+  });
+
+  it('refuses Trash while an observed run is continuing, before closing the session', async () => {
+    registry.live('proj_live');
+    projectManager.getChatsForResource.mockResolvedValue([{ id: 'unseen-chat' }]);
+    chats.observed = ['unseen-chat'];
+    chats.projection = { ledger: { position: { cursor: 1 } }, endCursor: 1 };
+    chats.plan = { liveChatIds: ['unseen-chat'] };
+    const { result } = renderHook(() => useProjects());
+    await expect(result.current.deleteProject('proj_live')).rejects.toThrow(/running/u);
+    expect(registry.operations).toEqual([]);
+    expect(projectManager.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it('closes a live project before trashing it so the live header drops with the row', async () => {
+    registry.live('proj_live');
+    const { result } = renderHook(() => {
+      const { deleteProject } = useProjects();
+      const liveCount = useSyncExternalStore(
+        (listener) => {
+          const subscription = registry.actor.subscribe(listener);
+          return () => subscription.unsubscribe();
+        },
+        () => Object.keys(registry.actor.getSnapshot().context.refs).length,
+      );
+      return { deleteProject, header: `Live now · ${String(liveCount)} project` };
+    });
+    expect(result.current.header).toBe('Live now · 1 project');
+
+    await act(async () => result.current.deleteProject('proj_live'));
+
+    expect(result.current.header).toBe('Live now · 0 project');
+    expect(registry.actor.getSnapshot().context.refs).not.toHaveProperty('proj_live');
+    expect(registry.operations).toEqual(['close:proj_live', 'trash:proj_live']);
+    expect(projectManager.deleteProject).toHaveBeenCalledExactlyOnceWith('proj_live');
+  });
+
+  it('closes a live project before permanently deleting it', async () => {
+    registry.live('proj_live');
+    const { result } = renderHook(() => useProjects());
+
+    await act(async () => result.current.permanentlyDeleteProject('proj_live'));
+
+    expect(registry.actor.getSnapshot().context.refs).not.toHaveProperty('proj_live');
+    // Live composer records stop before their directory goes, so none is written back (D11).
+    expect(registry.operations).toEqual(['close:proj_live', 'remove-composers:proj_live', 'delete:proj_live']);
+    expect(projectManager.permanentlyDeleteProject).toHaveBeenCalledExactlyOnceWith('proj_live');
+  });
+});
+
+describe('useProjects listing query', () => {
+  it('does not poll: worker filesystem events and cross-tab broadcasts drive invalidation', () => {
+    expect(listingQueryOptions()).not.toHaveProperty('refetchInterval');
+  });
+
+  it('keeps a short stale window so rapid navigations reuse the last scan', () => {
+    expect(listingQueryOptions()['staleTime']).toBe(3000);
+  });
+
+  it('leaves window-focus refetching at its default so a backgrounded tab refreshes on return', () => {
+    expect(listingQueryOptions()).not.toHaveProperty('refetchOnWindowFocus');
+  });
+
+  /* Two keys meant two whole-workspace discovery passes per navigation (W21 / D19). */
+  it('reads one key whichever deleted filter the caller asks for', () => {
+    useQuery.mockClear();
+    renderHook(() => useProjects());
+    renderHook(() => useProjects({ includeDeleted: true }));
+
+    const keys = useQuery.mock.calls.map((call) => JSON.stringify(call[0]['queryKey']));
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  it('filters the deleted rows out of the shared listing', () => {
+    const entry = (id: string, deletedAt?: number) => ({
+      manifest: { id, name: id },
+      library: { lastActivityAt: 1, ...(deletedAt === undefined ? {} : { deletedAt }) },
+      locator: { backend: 'indexeddb' },
+    });
+    query.data = {
+      projects: [entry('proj_live'), entry('proj_trashed', 5)],
+      conflicts: [],
+      recoveries: [],
+      workspaceBindingRepairs: [],
+    };
+
+    const visible = renderHook(() => useProjects());
+    const all = renderHook(() => useProjects({ includeDeleted: true }));
+
+    expect(visible.result.current.projects.map(({ id }) => id)).toEqual(['proj_live']);
+    expect(all.result.current.projects.map(({ id }) => id)).toEqual(['proj_live', 'proj_trashed']);
+    query.data = undefined;
+  });
+});

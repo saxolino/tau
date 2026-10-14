@@ -3,9 +3,12 @@
  * Converts various error formats into a structured JSON format for the UI.
  */
 
+import process from 'node:process';
 import { errorCategory } from '@taucad/types/constants';
 import type { ErrorCategory, ChatError } from '@taucad/types';
 import { httpStatusToCategory, errorCategoryTitles } from '@taucad/chat/utils';
+import { isAbortError as isProviderAbortError } from '@ai-sdk/provider-utils';
+import { z } from 'zod';
 import { decodeProviderErrorBody } from '#api/chat/utils/provider-error-decoder.js';
 import { isCompactionPipelineError } from '#api/chat/utils/compaction-errors.js';
 
@@ -50,102 +53,84 @@ const langChainCodeToCategory: Record<LangChainErrorCode, ErrorCategory> = {
 };
 /* eslint-enable @typescript-eslint/naming-convention -- re-enable after SCREAMING_SNAKE_CASE section */
 
-/**
- * Checks if error has a status property (Anthropic/OpenAI SDK errors).
- */
-function hasStatus(error: unknown): error is { status: number } {
-  return typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number';
-}
+/* eslint-disable @typescript-eslint/naming-convention -- provider SDK and HTTP body schemas mirror wire keys. */
+const providerSdkRootFields = {
+  status: z.number().optional(),
+  requestID: z.string().optional(),
+  request_id: z.string().optional(),
+  lc_error_code: z.string().optional(),
+} as const;
 
-/**
- * Checks if error has a requestID property (Anthropic SDK errors).
- */
-function hasRequestId(
-  error: unknown,
-): error is { requestID: string } | { request_id: string } | { error: { request_id: string } } {
-  if (typeof error !== 'object' || error === null) {
-    return false;
-  }
+const directProviderSdkErrorSchema = z
+  .looseObject(providerSdkRootFields)
+  .refine(
+    (error) =>
+      error.status !== undefined ||
+      error.requestID !== undefined ||
+      error.request_id !== undefined ||
+      error.lc_error_code !== undefined,
+  )
+  .transform((error) => ({
+    status: error.status,
+    requestId: error.requestID ?? error.request_id,
+    lcErrorCode: error.lc_error_code,
+    nestedMessage: undefined as string | undefined,
+  }));
 
-  if ('requestID' in error && typeof error.requestID === 'string') {
-    return true;
-  }
+const nestedProviderSdkErrorSchema = z
+  .looseObject({
+    ...providerSdkRootFields,
+    error: z
+      .looseObject({
+        request_id: z.string().optional(),
+        message: z.string().optional(),
+      })
+      .refine((error) => error.request_id !== undefined || error.message !== undefined),
+  })
+  .transform((error) => ({
+    status: error.status,
+    requestId: error.requestID ?? error.request_id ?? error.error.request_id,
+    lcErrorCode: error.lc_error_code,
+    nestedMessage: error.error.message,
+  }));
 
-  if ('request_id' in error && typeof error.request_id === 'string') {
-    return true;
-  }
+const nestedAnthropicSdkErrorSchema = z
+  .looseObject({
+    ...providerSdkRootFields,
+    error: z.looseObject({
+      request_id: z.string().optional(),
+      message: z.string().optional(),
+      error: z.looseObject({ message: z.string() }),
+    }),
+  })
+  .transform((error) => ({
+    status: error.status,
+    requestId: error.requestID ?? error.request_id ?? error.error.request_id,
+    lcErrorCode: error.lc_error_code,
+    nestedMessage: error.error.error.message,
+  }));
 
-  if (
-    'error' in error &&
-    typeof error.error === 'object' &&
-    error.error !== null &&
-    'request_id' in error.error &&
-    typeof error.error.request_id === 'string'
-  ) {
-    return true;
-  }
+const providerSdkErrorSchema = z.union([
+  nestedAnthropicSdkErrorSchema,
+  nestedProviderSdkErrorSchema,
+  directProviderSdkErrorSchema,
+]);
 
-  return false;
-}
+const jsonRecordSchema = z.looseObject({});
+const anthropicErrorBodySchema = z.looseObject({
+  type: z.literal('error'),
+  error: z.looseObject({
+    message: z.string().optional(),
+    type: z.string().optional(),
+  }),
+});
+const requestIdBodySchema = z.looseObject({ request_id: z.string() });
+/* eslint-enable @typescript-eslint/naming-convention -- end provider wire schemas. */
 
-/**
- * Extracts requestId from error.
- */
-function extractRequestId(error: unknown): string | undefined {
-  if (!hasRequestId(error)) {
-    return undefined;
-  }
-
-  // The hasRequestId type guard ensures one of these properties exists
-  const errorObject = error as Record<string, unknown>;
-
-  if ('requestID' in error && typeof errorObject['requestID'] === 'string') {
-    return errorObject['requestID'];
-  }
-
-  if ('request_id' in error && typeof errorObject['request_id'] === 'string') {
-    return errorObject['request_id'];
-  }
-
-  const nestedError = errorObject['error'] as Record<string, unknown> | undefined;
-  if (nestedError && typeof nestedError['request_id'] === 'string') {
-    return nestedError['request_id'];
-  }
-
-  return undefined;
-}
-
-/**
- * Extracts the nested Anthropic error message from LangChain-wrapped errors.
- * LangChain wraps Anthropic errors with structure: error.error = { type, error: { type, message }, request_id }
- */
-function extractNestedAnthropicMessage(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null) {
-    return undefined;
-  }
-
-  const errorRecord = error as Record<string, unknown>;
-
-  // Check for error.error.error.message (LangChain wrapped Anthropic structure)
-  if ('error' in errorRecord && typeof errorRecord['error'] === 'object' && errorRecord['error'] !== null) {
-    const outerError = errorRecord['error'] as Record<string, unknown>;
-
-    if ('error' in outerError && typeof outerError['error'] === 'object' && outerError['error'] !== null) {
-      const innerError = outerError['error'] as Record<string, unknown>;
-
-      if (typeof innerError['message'] === 'string') {
-        return innerError['message'];
-      }
-    }
-
-    // Also check error.error.message directly
-    if (typeof outerError['message'] === 'string') {
-      return outerError['message'];
-    }
-  }
-
-  return undefined;
-}
+const parseJsonRecord = (value: string): Record<string, unknown> | undefined => {
+  const result = jsonRecordSchema.safeParse(JSON.parse(value));
+  return result.success ? result.data : undefined;
+};
 
 /**
  * Extracts help/troubleshooting URL from error message.
@@ -154,13 +139,6 @@ function extractNestedAnthropicMessage(error: unknown): string | undefined {
 function extractHelpUrl(message: string): string | undefined {
   const match = /troubleshooting url:\s*(https?:\/\/\S+)/i.exec(message);
   return match?.[1]?.replace(/[!),.:;>?\]}]+$/, ''); // Strip trailing punctuation
-}
-
-/**
- * Checks if error has a LangChain error code.
- */
-function hasLcErrorCode(error: unknown): error is { lc_error_code: string } {
-  return typeof error === 'object' && error !== null && 'lc_error_code' in error;
 }
 
 /**
@@ -174,7 +152,7 @@ function parseJsonFromMessage(message: string): {
   const statusPrefixMatch = /^(\d{3})\s+({.+})$/s.exec(message);
   if (statusPrefixMatch?.[1] && statusPrefixMatch[2]) {
     try {
-      const parsed = JSON.parse(statusPrefixMatch[2]) as Record<string, unknown>;
+      const parsed = parseJsonRecord(statusPrefixMatch[2]);
       return { parsed, statusPrefix: Number.parseInt(statusPrefixMatch[1], 10) };
     } catch {
       // Fall through
@@ -184,7 +162,7 @@ function parseJsonFromMessage(message: string): {
   // Try direct JSON parsing
   if (message.startsWith('{')) {
     try {
-      const parsed = JSON.parse(message) as Record<string, unknown>;
+      const parsed = parseJsonRecord(message);
       return { parsed };
     } catch {
       // Fall through
@@ -198,60 +176,12 @@ function parseJsonFromMessage(message: string): {
  * Checks if an error is an abort error (from AbortController).
  */
 function isAbortError(error: unknown): boolean {
-  if (error instanceof Error) {
-    // Standard AbortError name used by AbortController
-    if (error.name === 'AbortError') {
-      return true;
-    }
-
-    // LangGraph/LangChain may wrap abort errors with specific messages
-    const lowerMessage = error.message.toLowerCase();
-    if (lowerMessage.includes('aborted') || lowerMessage.includes('abort')) {
-      return true;
-    }
-  }
-
-  return false;
+  return isProviderAbortError(error) || (error instanceof Error && error.message.toLowerCase().includes('abort'));
 }
 
 function extractRegexGroup(message: string, pattern: RegExp): string | undefined {
   const match = pattern.exec(message);
   return match?.[1];
-}
-
-/**
- * First-party ledger exhaustion (billing B2). The marker + µ$ amounts survive
- * the agent stream's error channel inside `error.message` (only the string
- * crosses `toUIMessageStream`); this re-extracts them into the friendly copy
- * `chat-error-credits.tsx` renders.
- */
-function normalizeInsufficientCreditsError(
-  rawMessage: string,
-): Pick<ChatError, 'category' | 'code' | 'message' | 'raw'> | undefined {
-  if (!rawMessage.includes('INSUFFICIENT_CREDITS')) {
-    return undefined;
-  }
-  const balanceMicro = extractRegexGroup(rawMessage, /balanceMicro=(-?\d+)/);
-  const requiredMicro = extractRegexGroup(rawMessage, /requiredMicro=(-?\d+)/);
-  const formatMicro = (value: string | undefined): string | undefined => {
-    if (value === undefined) {
-      return undefined;
-    }
-    const micro = Number(value);
-    return Number.isFinite(micro) ? (micro / 1_000_000).toFixed(2) : undefined;
-  };
-  const balance = formatMicro(balanceMicro);
-  const required = formatMicro(requiredMicro);
-  const details =
-    balance !== undefined && required !== undefined
-      ? `Your credit balance is $${balance} and this request needs about $${required}. Add credits to continue.`
-      : 'Your credit balance is too low for this request. Add credits to continue.';
-  return {
-    category: errorCategory.credits,
-    code: 'INSUFFICIENT_CREDITS',
-    message: details,
-    raw: rawMessage,
-  };
 }
 
 function normalizeTauImplementationBugError(
@@ -359,6 +289,8 @@ function detectPatternCategory(message: string): ErrorCategory | undefined {
 export function normalizeError(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const decodedProviderError = decodeProviderErrorBody(rawMessage);
+  const providerSdkErrorResult = providerSdkErrorSchema.safeParse(error);
+  const providerSdkError = providerSdkErrorResult.success ? providerSdkErrorResult.data : undefined;
   let category: ErrorCategory = errorCategory.generic;
   let code: string | undefined;
   let httpStatus: number | undefined;
@@ -373,13 +305,6 @@ export function normalizeError(error: unknown): string {
     category = errorCategory.cancelled;
   }
 
-  const insufficientCreditsError = normalizeInsufficientCreditsError(rawMessage);
-  if (insufficientCreditsError && category !== errorCategory.cancelled) {
-    category = insufficientCreditsError.category;
-    code = insufficientCreditsError.code;
-    message = insufficientCreditsError.message;
-  }
-
   const tauImplementationBugError = normalizeTauImplementationBugError(error, rawMessage);
   if (tauImplementationBugError && category !== errorCategory.cancelled && code === undefined) {
     category = tauImplementationBugError.category;
@@ -388,8 +313,8 @@ export function normalizeError(error: unknown): string {
   }
 
   // 1. Check for LangChain error codes
-  if (category === errorCategory.generic && hasLcErrorCode(error)) {
-    const lcCode = error.lc_error_code as LangChainErrorCode;
+  if (category === errorCategory.generic && providerSdkError?.lcErrorCode) {
+    const lcCode = providerSdkError.lcErrorCode as LangChainErrorCode;
     if (lcCode in langChainCodeToCategory) {
       category = langChainCodeToCategory[lcCode];
       code = lcCode;
@@ -397,11 +322,11 @@ export function normalizeError(error: unknown): string {
   }
 
   // 2. Check for HTTP status (SDK errors)
-  if (hasStatus(error)) {
-    httpStatus = error.status;
+  if (providerSdkError?.status !== undefined) {
+    httpStatus = providerSdkError.status;
     // Only override category if we don't have a more specific LangChain code
     if (category === errorCategory.generic) {
-      category = httpStatusToCategory(error.status);
+      category = httpStatusToCategory(providerSdkError.status);
     }
   }
 
@@ -413,11 +338,11 @@ export function normalizeError(error: unknown): string {
   }
 
   // Extract request ID
-  requestId = extractRequestId(error);
+  requestId = providerSdkError?.requestId;
 
   // 2.5. Try to extract message from nested Anthropic error structure on the error object
   // LangChain wraps Anthropic errors with: error.error = { type, error: { type, message }, request_id }
-  const nestedMessage = extractNestedAnthropicMessage(error);
+  const nestedMessage = providerSdkError?.nestedMessage;
   if (nestedMessage) {
     message = nestedMessage;
   }
@@ -443,19 +368,20 @@ export function normalizeError(error: unknown): string {
 
     // Handle Anthropic error format: {"type":"error","error":{...}}
     // Only extract message if we didn't already get it from nested error structure
-    if (parsed['type'] === 'error' && typeof parsed['error'] === 'object' && parsed['error'] !== null) {
-      const errorBody = parsed['error'] as Record<string, unknown>;
-      if (!nestedMessage && typeof errorBody['message'] === 'string') {
-        ({ message } = errorBody as { message: string });
+    const anthropicBody = anthropicErrorBodySchema.safeParse(parsed);
+    if (anthropicBody.success) {
+      const errorBody = anthropicBody.data.error;
+      if (!nestedMessage && errorBody.message !== undefined) {
+        message = errorBody.message;
       }
 
-      if (typeof errorBody['type'] === 'string') {
-        code ??= errorBody['type'];
+      if (errorBody.type !== undefined) {
+        code ??= errorBody.type;
 
         // Map Anthropic error types to categories
         if (category === errorCategory.generic) {
           // oxlint-disable-next-line eslint/max-depth -- nested within JSON parsing conditional
-          switch (errorBody['type']) {
+          switch (errorBody.type) {
             case 'invalid_request_error': {
               category = errorCategory.toolError;
               break;
@@ -491,8 +417,9 @@ export function normalizeError(error: unknown): string {
     }
 
     // Extract request_id from parsed JSON
-    if (typeof parsed['request_id'] === 'string' && !requestId) {
-      requestId = parsed['request_id'];
+    const parsedRequestId = requestIdBodySchema.safeParse(parsed);
+    if (parsedRequestId.success && !requestId) {
+      requestId = parsedRequestId.data.request_id;
     }
   }
 
@@ -506,12 +433,18 @@ export function normalizeError(error: unknown): string {
     category = patternCategory;
   }
 
-  // Build the normalized error
+  // Build the normalized error. `rawMessage` is uncurated driver/library text
+  // (a DrizzleQueryError embeds the failed SQL plus bound parameter values), so it
+  // never crosses to the client in production - neither as `raw`, nor as `message`
+  // when no branch above replaced it with curated provider copy.
+  // ponytail: `message !== rawMessage` is the curation test; swap it for an explicit
+  // flag if a curated branch ever legitimately reproduces the raw message verbatim.
+  const disclosesInternals = process.env.NODE_ENV !== 'production';
   const normalizedError: ChatError = {
     category,
     title: errorCategoryTitles[category],
-    message,
-    raw: rawMessage,
+    message: disclosesInternals || message !== rawMessage ? message : errorCategoryTitles[category],
+    ...(disclosesInternals ? { raw: rawMessage } : {}),
   };
 
   if (code) {

@@ -4,6 +4,9 @@
  * Uses Zod for validation
  */
 import { z } from 'zod';
+import { cloudClientEnvironmentKeys, cloudEnvironmentShape } from '#cloud/environment-billing.js';
+import type { CloudBillingEnvironment } from '#cloud/environment-billing.types.js';
+import { isDesktopTarget } from '#lib/build-target.js';
 
 type RawEnvironment = Record<string, string | undefined>;
 
@@ -22,6 +25,10 @@ const toOriginOrRaw = (value: string | undefined): string | undefined => {
 export const resolveFrontendUrl = (rawEnvironment: RawEnvironment): string | undefined => {
   if (rawEnvironment['TAU_FRONTEND_URL']) {
     return rawEnvironment['TAU_FRONTEND_URL'];
+  }
+
+  if (rawEnvironment['PORTLESS_URL']) {
+    return rawEnvironment['PORTLESS_URL'];
   }
 
   if (rawEnvironment['NETLIFY'] !== 'true' || rawEnvironment['CONTEXT'] === 'production') {
@@ -51,6 +58,7 @@ const environmentSchema = z.preprocess(
   z.object({
     /* eslint-disable @typescript-eslint/naming-convention -- environment variables are not camelCase */
     TAU_API_URL: z.url(),
+    ...cloudEnvironmentShape,
     TAU_WEBSOCKET_URL: z.url().describe('WebSocket URL for the API (e.g., wss://api.tau.new or ws://localhost:4001)'),
     TAU_FRONTEND_URL: z.url(),
     /**
@@ -65,8 +73,22 @@ const environmentSchema = z.preprocess(
       .optional()
       .transform((value) => (value === undefined ? false : /^(1|true)$/i.test(value)))
       .describe('Enable in-app debug surfaces (debug panel, inspectors). Default false.'),
+    /**
+     * Let *Connect* accept a private or loopback `http://` git address (P50).
+     *
+     * A test posture, and only for the two rules a local git http-backend
+     * breaks: a credential in the address and a non-git path stay refused. The
+     * API reads a value of the same name for its own half of the proxy rule —
+     * each host passes what its own deployment allows, and nothing about the
+     * posture travels over the wire. Accepts `'1'`/`'true'`; anything else is
+     * `false`.
+     */
+    TAU_GIT_REMOTE_ALLOW_PRIVATE: z
+      .string()
+      .optional()
+      .transform((value) => (value === undefined ? false : /^(1|true)$/i.test(value)))
+      .describe('Accept private/loopback http git remotes in Connect. Default false.'),
     NODE_ENV: z.enum(['development', 'production', 'test']),
-    GITHUB_API_TOKEN: z.string().optional().describe('GitHub API token for the GitHub API client.'),
 
     // PostHog Analytics
     POSTHOG_API_HOST: z.string().default('https://us.i.posthog.com').describe('PostHog host for the PostHog client.'),
@@ -76,11 +98,15 @@ const environmentSchema = z.preprocess(
       .default('us-assets.i.posthog.com')
       .describe('PostHog asset host for the PostHog client.'),
     POSTHOG_CLIENT_KEY: z.string().optional().describe('PostHog client key. Set to enable analytics.'),
+
+    // Sentry error reporting (launch gate OBS-7). Written to the Netlify site by tau-cloud; a DSN is public by design.
+    SENTRY_DSN: z.string().optional().describe('Sentry DSN for browser error reporting. Set to enable it.'),
+    SENTRY_ENVIRONMENT: z.string().optional().describe('Sentry environment name, such as staging or production.'),
     /* eslint-enable @typescript-eslint/naming-convention -- environment variables are not camelCase */
   }),
 );
 
-export type Environment = z.infer<typeof environmentSchema>;
+export type Environment = z.infer<typeof environmentSchema> & CloudBillingEnvironment;
 
 const parseEnvironment = (rawEnvironment: RawEnvironment): Environment => {
   const result = environmentSchema.safeParse(rawEnvironment);
@@ -103,52 +129,97 @@ export const getEnvironment = async (): Promise<Environment> => parseEnvironment
  * keys, feature flags). Everything else stays server-only and is read through
  * `getEnvironment()`.
  */
-const clientEnvironmentKeys = [
+const baseClientEnvironmentKeys = [
   'TAU_API_URL',
   'TAU_WEBSOCKET_URL',
   'TAU_FRONTEND_URL',
   'TAU_DEBUG',
+  'TAU_GIT_REMOTE_ALLOW_PRIVATE',
   'NODE_ENV',
   'POSTHOG_API_HOST',
   'POSTHOG_UI_HOST',
   'POSTHOG_ASSET_HOST',
   'POSTHOG_CLIENT_KEY',
+  'SENTRY_DSN',
+  'SENTRY_ENVIRONMENT',
 ] as const satisfies ReadonlyArray<keyof Environment>;
+const clientEnvironmentKeys = [...baseClientEnvironmentKeys, ...cloudClientEnvironmentKeys] as const;
 
-export type ClientEnvironment = Pick<Environment, (typeof clientEnvironmentKeys)[number]>;
+export type ClientEnvironment = Pick<
+  Environment,
+  (typeof baseClientEnvironmentKeys)[number] | keyof CloudBillingEnvironment
+>;
 
-const selectClientEnvironment = (environment: Environment): ClientEnvironment => {
+const selectClientEnvironment = (environment: Environment): Partial<ClientEnvironment> => {
   // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- fromEntries cannot retain tuple-key completeness.
-  return Object.fromEntries(clientEnvironmentKeys.map((key) => [key, environment[key]])) as ClientEnvironment;
+  return Object.fromEntries(clientEnvironmentKeys.map((key) => [key, environment[key]])) as Partial<ClientEnvironment>;
 };
 
 /**
  * The allowlisted subset safe to inject into the document. Use this — never
  * `getEnvironment()` — for anything that reaches a loader's return value.
  */
-export const getClientEnvironment = async (): Promise<ClientEnvironment> =>
+export const getClientEnvironment = async (): Promise<Partial<ClientEnvironment>> =>
   selectClientEnvironment(await getEnvironment());
 
 /**
  * Isomorphic environment access, narrowed to the client-safe allowlist so a
  * server-only key cannot be read from code that also runs in the browser.
  * Server-only code reads the full environment via `getEnvironment()`.
+ *
+ * Any host that sets `window.ENV` before app-module evaluation is a valid
+ * environment producer. The injected object may be partial when loader data
+ * is unavailable; consumers of required values must fail explicitly.
  */
-const resolveIsomorphicClientEnvironment = (): ClientEnvironment => {
+const resolveIsomorphicClientEnvironment = (): Partial<ClientEnvironment> => {
   // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- globalThis.window is absent during SSR.
   if (globalThis.window) {
-    return globalThis.window.ENV;
+    return globalThis.window.ENV ?? {};
+  }
+
+  /* Desktop SPA generation runs in Node before preload injects window.ENV,
+   * but remains an unbootstrapped client, not a web server. A Web Worker has
+   * neither `window` nor `process`: it is a client without a
+   * document, not a server. Treating "no window" as "node" dereferenced
+   * `process.env` and threw, which is how one `ENV.TAU_DEBUG` read inside the
+   * agent-host worker abandoned a queued capture job for 900 s
+   * (`agent-host-transports-and-offline.md` § "Addendum: FIX-SCREENSHOT",
+   * defect 1). A worker gets the same empty environment SSR would get from an
+   * absent injection: `requireClientEnvironment` still names the missing key. */
+  // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- globalThis.process is absent in a worker.
+  if (!globalThis.process || isDesktopTarget()) {
+    return {};
   }
 
   return selectClientEnvironment(parseEnvironment(globalThis.process.env));
 };
+
+/** Resolve one required host-injected value at the point it is used. */
+export const requireClientEnvironment = <Key extends keyof ClientEnvironment>(
+  key: Key,
+): NonNullable<ClientEnvironment[Key]> => {
+  const value = resolveIsomorphicClientEnvironment()[key];
+  if (value === undefined) {
+    throw new Error(`Missing ${key}: the host must inject it through window.ENV before app-module evaluation.`);
+  }
+  return value;
+};
+
+/** Resolve a required client base URL without its optional trailing slash. */
+export const requireClientEnvironmentUrl = (key: 'TAU_API_URL' | 'TAU_WEBSOCKET_URL'): string =>
+  requireClientEnvironment(key).replace(/\/$/u, '');
 
 const createEnvironmentFacade = (): ClientEnvironment => {
   const facade = {};
   for (const key of clientEnvironmentKeys) {
     Object.defineProperty(facade, key, {
       enumerable: true,
-      get: () => resolveIsomorphicClientEnvironment()[key],
+      get: () => {
+        if (key === 'TAU_API_URL' || key === 'TAU_WEBSOCKET_URL') {
+          return requireClientEnvironmentUrl(key);
+        }
+        return resolveIsomorphicClientEnvironment()[key];
+      },
     });
   }
   // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- every ClientEnvironment key is defined above.

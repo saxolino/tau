@@ -1,3 +1,5 @@
+import { bundlePattern, workspace } from '@taucad/nx';
+import { assembleBundledDeclarations } from '@taucad/nx/bundled-declarations';
 import { defineConfig } from 'tsdown';
 import type { UserConfig } from 'tsdown';
 
@@ -26,24 +28,27 @@ const baseConfig: UserConfig = {
   entry: ['src/index.ts'],
   sourcemap: false,
   clean: ['dist'],
-  dts: true,
+  dts: { eager: true },
   minify: true,
+  hooks: {
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- tsdown's hook API uses colon-delimited names.
+    'build:done': async ({ options }) => assembleBundledDeclarations(process.cwd(), options.outDir, 'cli'),
+  },
   tsconfig: 'tsconfig.build.json',
   unbundle: true,
 };
 
-const packageConfig: UserConfig = {
-  ...baseConfig,
-  format: 'esm',
-  outDir: 'dist',
-};
-
 const cliConfig: UserConfig = {
-  entry: { taucad: 'src/bin.ts' },
+  entry: {
+    tau: 'src/bin.ts',
+    'host-runtime-child': 'src/host-runtime-child.ts',
+    'compute-store-worker': 'src/compute-store.worker.ts',
+    'runtime-worker': 'src/runtime.worker.ts',
+  },
   format: 'esm',
   outDir: 'dist/bin',
   platform: 'node',
-  target: 'node22',
+  target: 'node24',
   clean: ['dist/bin'],
   dts: false,
   minify: false,
@@ -53,4 +58,13 @@ const cliConfig: UserConfig = {
   banner: { js: '#!/usr/bin/env node' },
 };
 
-export default defineConfig([packageConfig, cliConfig]);
+export default defineConfig(async () => {
+  const pattern = bundlePattern(await workspace(), 'cli');
+  const packageConfig: UserConfig = {
+    ...baseConfig,
+    format: 'esm',
+    outDir: 'dist',
+    deps: { alwaysBundle: [pattern], dts: { neverBundle: [pattern] } },
+  };
+  return [packageConfig, cliConfig];
+});

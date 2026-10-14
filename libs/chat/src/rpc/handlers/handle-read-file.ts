@@ -1,7 +1,7 @@
 import type { ReadFileRpcInput, ReadFileRpcResult } from '#schemas/rpc.schema.js';
 import type { RpcFileMetadata, RpcFileStat, RpcFileSystem } from '#rpc/rpc-dependencies.js';
 import { toRpcError } from '#rpc/rpc-error.js';
-import { resolveRpcProjectPath } from '#rpc/rpc-project-path.js';
+import { assertRootedPath } from '@taucad/utils/path';
 import { rpcClientErrorCode } from '#schemas/rpc.schema.js';
 
 /**
@@ -9,6 +9,12 @@ import { rpcClientErrorCode } from '#schemas/rpc.schema.js';
  * Mirrors claude-code's `FileReadTool.MAX_LINES_TO_READ`.
  */
 const maxReadLines = 2000;
+
+/** Byte ceiling for paginated text returned in one RPC result. */
+const maxPaginatedReadBytes = 50 * 1024;
+const continuationHintReserveBytes = 64;
+const maxPaginatedContentBytes = maxPaginatedReadBytes - continuationHintReserveBytes;
+const textEncoder = new TextEncoder();
 
 /**
  * Bytes ceiling for whole-file reads. Triggers the directive `RESULT_TOO_LARGE`
@@ -30,7 +36,7 @@ export async function handleReadFile(input: ReadFileRpcInput, fileSystem: RpcFil
   const limit = Math.min(requestedLimit, maxReadLines);
 
   try {
-    const targetFile = resolveRpcProjectPath(input.targetFile);
+    const targetFile = assertRootedPath(input.targetFile);
     let fileStat: RpcFileStat | undefined;
     try {
       fileStat = await fileSystem.stat(targetFile);
@@ -73,14 +79,31 @@ export async function handleReadFile(input: ReadFileRpcInput, fileSystem: RpcFil
 
     const startIndex = Math.max(0, offset - 1);
     const endIndex = Math.min(lines.length, startIndex + limit);
-    const selectedLines = lines.slice(startIndex, endIndex);
-    const content = selectedLines.join('\n');
-    const truncated = totalLines - startIndex > limit;
+    const selectedLines: string[] = [];
+    let selectedBytes = 0;
+    for (let index = startIndex; index < endIndex; index += 1) {
+      const line = lines[index] ?? '';
+      const lineBytes = textEncoder.encode(`${selectedLines.length > 0 ? '\n' : ''}${line}`).byteLength;
+      if (selectedBytes + lineBytes > maxPaginatedContentBytes) {
+        if (selectedLines.length === 0) {
+          const bytes = textEncoder.encode(line).subarray(0, maxPaginatedContentBytes);
+          selectedLines.push(new TextDecoder().decode(bytes, { stream: true }));
+        }
+        break;
+      }
+      selectedLines.push(line);
+      selectedBytes += lineBytes;
+    }
+
+    const nextOffset = startIndex + selectedLines.length + 1;
+    const truncated = nextOffset <= totalLines;
+    const continuationHint = truncated ? `\n\ntruncated; continue with offset=${nextOffset}` : '';
+    const content = `${selectedLines.join('\n')}${continuationHint}`;
 
     return {
       success: true,
       content,
-      size: fileStat?.isDirectory === false ? fileStat.size : new TextEncoder().encode(text).byteLength,
+      size: fileStat?.isDirectory === false ? fileStat.size : textEncoder.encode(text).byteLength,
       contentKind: 'text',
       totalLines,
       startLine: startIndex + 1,

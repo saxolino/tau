@@ -2,9 +2,10 @@ import { useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { ModelComponentViewerMenuItems } from '#components/geometry/cad/model-component-action-menu.js';
 import type { ModelComponentActionMenuData } from '#components/geometry/cad/model-component-action-menu.js';
-import { Popover, PopoverAnchor, PopoverContent } from '#components/ui/popover.js';
-import { menuContentVariants } from '#components/ui/menu.variants.js';
-import { cn } from '#utils/ui.utils.js';
+import { Popover, PopoverAnchor, PopoverContent } from '@taucad/ui/components/popover';
+import { menuContentVariants } from '@taucad/ui/components/menu.variants';
+import { preventMenuSliderEscapeDismissal } from '@taucad/ui/components/menu-slider-item';
+import { cn } from '@taucad/ui/utils/cn';
 
 export type ViewerModelComponentActionMenuPoint = {
   readonly clientX: number;
@@ -45,11 +46,20 @@ export function ViewerModelComponentActionMenu({
           collisionPadding={8}
           className={cn(
             menuContentVariants(),
-            'max-h-[min(24rem,calc(100vh-1rem))] w-auto min-w-56 overflow-x-hidden overflow-y-auto border-0 p-0.75 shadow-menu',
+            'max-h-[min(24rem,calc(100vh-1rem))] w-auto min-w-56 overflow-x-hidden overflow-y-auto [&>*]:shrink-0',
           )}
+          onOpenAutoFocus={(event) => {
+            // Only a pointer opens this menu, so it takes focus itself, as Radix menus do, instead of
+            // the popover focusing and highlighting its first row.
+            event.preventDefault();
+            if (event.currentTarget instanceof HTMLElement) {
+              event.currentTarget.focus({ preventScroll: true });
+            }
+          }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
           }}
+          onEscapeKeyDown={preventMenuSliderEscapeDismissal}
         >
           <ModelComponentViewerMenuItems {...data} onRequestClose={handleRequestClose} />
         </PopoverContent>

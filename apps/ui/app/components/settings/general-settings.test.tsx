@@ -1,16 +1,26 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement, ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { entitlementsFromTier } from '@taucad/billing';
 import { GeneralSettings } from '#components/settings/general-settings.js';
+import type { ThemeOption } from '#hooks/use-theme.js';
+
+const clientEnvironment = globalThis.window.ENV;
+const useEntitlementsMock = vi.hoisted(() => vi.fn());
+vi.mock('@taucad/billing/hooks/use-entitlements', () => ({
+  useEntitlements: useEntitlementsMock,
+}));
 
 const mockSetTheme = vi.fn();
 const mockSetHue = vi.fn();
 const mockResetHue = vi.fn();
 const mockUpdatePreferences = vi.fn();
 const mockSetCodeInlayHints = vi.fn();
+const mockSetPointerCursors = vi.fn();
 
 let mockCodeInlayHintsValue: boolean;
+let mockPointerCursorsValue: boolean;
 
 vi.mock('react-router', () => ({
   Link: ({ children, className, to }: { children: ReactNode; className?: string; to: string }): ReactElement => (
@@ -18,11 +28,15 @@ vi.mock('react-router', () => ({
       {children}
     </a>
   ),
+  /* `useCommercialFeatures` reaches the settings dialog, which is URL state. */
+  useSearchParams: (): [URLSearchParams, () => void] => [new URLSearchParams(), vi.fn()],
 }));
+
+let mockAllowsUsageMetrics: boolean;
 
 vi.mock('#hooks/use-privacy-preferences.js', () => ({
   usePrivacyPreferences: () => ({
-    preferences: { allowsAiTraining: false },
+    preferences: { allowsAiTraining: false, allowsUsageMetrics: mockAllowsUsageMetrics },
     isLoading: false,
     error: undefined,
     updatePreferences: mockUpdatePreferences,
@@ -31,10 +45,14 @@ vi.mock('#hooks/use-privacy-preferences.js', () => ({
 }));
 
 vi.mock('#hooks/use-theme.js', () => {
+  /* eslint-disable @typescript-eslint/naming-convention -- Mirrors the production Theme values. */
   const Theme = {
     LIGHT: 'light',
     DARK: 'dark',
+    BLACK: 'black',
+    HIGH_CONTRAST: 'high-contrast',
   } as const;
+  /* eslint-enable @typescript-eslint/naming-convention -- Re-enable project naming checks. */
 
   const systemOption = {
     id: null,
@@ -55,11 +73,22 @@ vi.mock('#hooks/use-theme.js', () => {
         name: 'Dark',
         description: 'Easy on the eyes',
       },
+      {
+        id: Theme.BLACK,
+        name: 'Black',
+        description: 'True black with ultra-dark surfaces',
+      },
+      {
+        id: Theme.HIGH_CONTRAST,
+        name: 'High Contrast',
+        description: 'Stronger text, borders, and focus indicators',
+      },
       systemOption,
     ],
     useTheme: () => ({
       themeWithSystem: null,
       theme: Theme.LIGHT,
+      isHighContrast: false,
       setTheme: mockSetTheme,
       currentOption: systemOption,
     }),
@@ -76,13 +105,47 @@ vi.mock('#hooks/use-color.js', () => ({
 
 vi.mock('#hooks/use-cookie.js', () => ({
   useCookie: (name: string, defaultValue: boolean) => {
-    const value = name === 'code-inlay-hints' ? mockCodeInlayHintsValue : defaultValue;
-    return [value, name === 'code-inlay-hints' ? mockSetCodeInlayHints : vi.fn()];
+    if (name === 'code-inlay-hints') {
+      return [mockCodeInlayHintsValue, mockSetCodeInlayHints];
+    }
+    if (name === 'pointer-cursors') {
+      return [mockPointerCursorsValue, mockSetPointerCursors];
+    }
+    return [defaultValue, vi.fn()];
   },
 }));
 
-vi.mock('#components/ui/combobox-responsive.js', () => ({
-  ComboBoxResponsive: ({ children }: { children: ReactNode }): ReactElement => <div>{children}</div>,
+vi.mock('@taucad/ui/components/combobox-responsive', () => ({
+  ComboBoxResponsive: ({
+    children,
+    groupedItems,
+    renderLabel,
+    onSelect,
+    value,
+  }: {
+    children: ReactNode;
+    groupedItems: Array<{ items: ThemeOption[] }>;
+    renderLabel: (item: ThemeOption, selectedItem?: ThemeOption) => ReactNode;
+    onSelect: (value: string) => void;
+    value?: ThemeOption;
+  }): ReactElement => (
+    <div>
+      {children}
+      {groupedItems.flatMap(({ items }) =>
+        items.map((item) => (
+          <button
+            key={String(item.id)}
+            type='button'
+            onClick={() => {
+              onSelect(String(item.id));
+            }}
+          >
+            {renderLabel(item, value)}
+          </button>
+        )),
+      )}
+    </div>
+  ),
 }));
 
 vi.mock('#components/ui/color-picker.js', () => ({
@@ -92,7 +155,103 @@ vi.mock('#components/ui/color-picker.js', () => ({
 describe('GeneralSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useEntitlementsMock.mockReturnValue(entitlementsFromTier('free'));
     mockCodeInlayHintsValue = false;
+    mockPointerCursorsValue = false;
+    mockAllowsUsageMetrics = true;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    globalThis.window.ENV = clientEnvironment;
+  });
+
+  it('replaces the consent toggle with the no-train guarantee on paid tiers (T15/AD15)', () => {
+    useEntitlementsMock.mockReturnValue(entitlementsFromTier('pro'));
+
+    render(<GeneralSettings />);
+
+    expect(screen.getByText(/no-train guarantee/i)).toBeDefined();
+    expect(screen.getByText(/never trains on your data/i)).toBeDefined();
+    expect(screen.queryByText(/privacy mode enabled/i)).toBeNull();
+    expect(screen.queryByText(/data sharing enabled/i)).toBeNull();
+  });
+
+  it('keeps the consent selector for free-tier users', () => {
+    render(<GeneralSettings />);
+
+    expect(screen.getByText(/privacy mode enabled/i)).toBeDefined();
+    expect(screen.queryByText(/no-train guarantee/i)).toBeNull();
+  });
+
+  it.each(['free', 'pro'] as const)(
+    'should link privacy details to the privacy page of the deployment serving the app (%s)',
+    (tier) => {
+      useEntitlementsMock.mockReturnValue(entitlementsFromTier(tier));
+
+      render(<GeneralSettings />);
+
+      const links = screen.getAllByRole('link', { name: 'Learn more' });
+      expect(links.length).toBeGreaterThan(0);
+      for (const link of links) {
+        expect(link).toHaveAttribute('href', '/legal/privacy#9.2.1');
+        expect(link).toHaveAttribute('target', '_blank');
+      }
+    },
+  );
+
+  it.each(['free', 'pro'] as const)(
+    'should link privacy details to the bound web deployment on desktop, which ships no legal pages (%s)',
+    (tier) => {
+      useEntitlementsMock.mockReturnValue(entitlementsFromTier(tier));
+      vi.stubEnv('TAU_TARGET', 'desktop');
+      globalThis.window.ENV = {
+        ...clientEnvironment,
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- `window.ENV`'s keys are the deployment's own environment variable names.
+        TAU_FRONTEND_URL: 'https://taucad.dev',
+      };
+
+      render(<GeneralSettings />);
+
+      const links = screen.getAllByRole('link', { name: 'Learn more' });
+      expect(links.length).toBeGreaterThan(0);
+      for (const link of links) {
+        expect(link).toHaveAttribute('href', 'https://taucad.dev/legal/privacy#9.2.1');
+      }
+    },
+  );
+
+  it.each(['free', 'pro'] as const)(
+    'should offer the usage metrics switch beside the training choice on every tier (%s)',
+    (tier) => {
+      useEntitlementsMock.mockReturnValue(entitlementsFromTier(tier));
+
+      render(<GeneralSettings />);
+
+      const toggle = screen.getByRole('switch', { name: 'Share anonymous usage metrics' });
+      expect(toggle).toHaveAttribute('data-state', 'checked');
+      expect(toggle).toHaveAccessibleDescription(/no prompts, code, file names or identity/i);
+    },
+  );
+
+  it('should persist switching usage metrics off', async () => {
+    render(<GeneralSettings />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('switch', { name: 'Share anonymous usage metrics' }));
+
+    expect(mockUpdatePreferences).toHaveBeenCalledWith({ allowsUsageMetrics: false });
+  });
+
+  it('should render usage metrics as off when the user switched them off', () => {
+    mockAllowsUsageMetrics = false;
+
+    render(<GeneralSettings />);
+
+    expect(screen.getByRole('switch', { name: 'Share anonymous usage metrics' })).toHaveAttribute(
+      'data-state',
+      'unchecked',
+    );
   });
 
   it('should render code inlay hints disabled by default', () => {
@@ -100,14 +259,14 @@ describe('GeneralSettings', () => {
 
     expect(screen.getByText('Code Inlay Hints')).toBeInTheDocument();
     expect(screen.getByText('Show inline parameter names in code editors')).toBeInTheDocument();
-    expect(screen.getByRole('switch')).toHaveAttribute('data-state', 'unchecked');
+    expect(screen.getByRole('switch', { name: 'Code Inlay Hints' })).toHaveAttribute('data-state', 'unchecked');
   });
 
   it('should persist code inlay hints when toggled', async () => {
     render(<GeneralSettings />);
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('switch'));
+    await user.click(screen.getByRole('switch', { name: 'Code Inlay Hints' }));
 
     expect(mockSetCodeInlayHints).toHaveBeenCalledWith(true);
   });
@@ -117,6 +276,36 @@ describe('GeneralSettings', () => {
 
     render(<GeneralSettings />);
 
-    expect(screen.getByRole('switch')).toHaveAttribute('data-state', 'checked');
+    expect(screen.getByRole('switch', { name: 'Code Inlay Hints' })).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('should render pointer cursors disabled by default', () => {
+    render(<GeneralSettings />);
+
+    expect(screen.getByText('Use pointer cursors')).toBeInTheDocument();
+    expect(
+      screen.getByText('Change the cursor to a pointer when hovering over interactive elements'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Use pointer cursors' })).toHaveAttribute('data-state', 'unchecked');
+  });
+
+  it('should persist the pointer cursor preference when toggled', async () => {
+    render(<GeneralSettings />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('switch', { name: 'Use pointer cursors' }));
+
+    expect(mockSetPointerCursors).toHaveBeenCalledWith(true);
+  });
+
+  it('should expose and select the High Contrast theme', async () => {
+    const user = userEvent.setup();
+    render(<GeneralSettings />);
+
+    await user.click(
+      screen.getByRole('button', { name: /high contrast stronger text, borders, and focus indicators/i }),
+    );
+
+    expect(mockSetTheme).toHaveBeenCalledWith('high-contrast');
   });
 });

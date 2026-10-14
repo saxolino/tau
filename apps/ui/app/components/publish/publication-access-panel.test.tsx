@@ -7,7 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { ReactElement } from 'react';
 import { PublicationAccessPanel } from '#components/publish/publication-access-panel.js';
-import { TooltipProvider } from '#components/ui/tooltip.js';
+import { TooltipProvider } from '@taucad/ui/components/tooltip';
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -50,7 +50,7 @@ describe('PublicationAccessPanel', () => {
       <PublicationAccessPanel
         apiBaseUrl='https://api.example'
         publicationId='pub_panel'
-        shareUrl='https://tau.example/v/pub_panel'
+        shareUrl='https://tau.example/s/tau~pub_panel'
         visibility='private'
         grants={[
           {
@@ -76,7 +76,7 @@ describe('PublicationAccessPanel', () => {
       <PublicationAccessPanel
         apiBaseUrl='https://api.example'
         publicationId='pub_panel'
-        shareUrl='https://tau.example/v/pub_panel'
+        shareUrl='https://tau.example/s/tau~pub_panel'
         visibility='private'
         grants={[
           {
@@ -104,7 +104,7 @@ describe('PublicationAccessPanel', () => {
       <PublicationAccessPanel
         apiBaseUrl='https://api.example'
         publicationId='pub_panel'
-        shareUrl='https://tau.example/v/pub_panel'
+        shareUrl='https://tau.example/s/tau~pub_panel'
         visibility='private'
         grants={[]}
         onVisibilityChange={vi.fn()}
@@ -132,7 +132,7 @@ describe('PublicationAccessPanel', () => {
       <PublicationAccessPanel
         apiBaseUrl='https://api.example'
         publicationId='pub_panel'
-        shareUrl='https://tau.example/v/pub_panel'
+        shareUrl='https://tau.example/s/tau~pub_panel'
         visibility='private'
         grants={[
           {
@@ -166,7 +166,7 @@ describe('PublicationAccessPanel', () => {
       <PublicationAccessPanel
         apiBaseUrl='https://api.example'
         publicationId='pub_panel'
-        shareUrl='https://tau.example/v/pub_panel'
+        shareUrl='https://tau.example/s/tau~pub_panel'
         visibility='public'
         grants={[
           {

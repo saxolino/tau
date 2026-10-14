@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Check, ChevronDown, FolderOpen, House, Plus, Settings, ShieldAlert, Unplug } from 'lucide-react';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
-import { Button } from '#components/ui/button.js';
-import { menuItemVariants } from '#components/ui/menu.variants.js';
-import { Tooltip, TooltipContent, TooltipTrigger } from '#components/ui/tooltip.js';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
+import { Button } from '@taucad/ui/components/button';
+import { menuItemVariants } from '@taucad/ui/components/menu.variants';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import type {
   ProjectCreationLocationOption,
   ProjectCreationLocationState,
@@ -13,12 +13,12 @@ import {
   projectCreationLocationAccessibleName,
   projectCreationLocationsEqual,
 } from '#utils/project-creation-location.utils.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { isDesktopTarget } from '#lib/build-target.js';
 
 type WorkspaceSelectorProperties = Omit<React.HTMLAttributes<HTMLDivElement>, 'onSelect'> & {
   readonly state: ProjectCreationLocationState;
   readonly variant: 'toolbar' | 'field';
-  readonly isNested?: boolean;
   readonly onSelectionComplete?: () => void;
   readonly onRequestFocus?: () => void;
 };
@@ -32,10 +32,29 @@ const optionValue = (option: ProjectCreationLocationOption): string =>
 const isReadyOption = (option: ProjectCreationLocationOption | undefined): boolean =>
   option?.status === 'ready' || option?.status === 'connected';
 
+/** The trigger's two finishes: the composer's ghost pill, and a form field. */
+const triggerStyles = {
+  /* The composer's ghost pill (D6): glyph first, its label the first to leave when the bar needs room. */
+  toolbar: {
+    variant: 'ghost',
+    button:
+      'h-7 max-w-48 gap-1 rounded-full px-2.5 pr-2 font-normal text-muted-foreground hover:text-foreground group-data-[hide-kernel]/bar:gap-0.5 group-data-[hide-kernel]/bar:px-1.5',
+    icon: 'size-4 shrink-0',
+    label: 'text-xs group-data-[hide-kernel]/bar:hidden',
+    chevron: 'size-3 shrink-0',
+  },
+  field: {
+    variant: 'outline',
+    button: 'h-auto w-full justify-start px-2 py-2',
+    icon: 'size-3.5',
+    label: 'min-w-0 flex-1 text-left',
+    chevron: 'ml-auto opacity-60',
+  },
+} as const;
+
 export function WorkspaceSelector({
   state,
   variant,
-  isNested = false,
   onSelectionComplete,
   onRequestFocus,
   className,
@@ -68,7 +87,9 @@ export function WorkspaceSelector({
 
   const tooltipCopy =
     state.value.kind === 'home'
-      ? 'Home uses browser storage, which can be cleared. Select to change location.'
+      ? isDesktopTarget()
+        ? 'Home keeps projects in a folder on your computer. Select to change location.'
+        : 'Home uses browser storage, which can be cleared. Select to change location.'
       : 'Projects are saved directly to this folder on your disk. Select to change location.';
   const recovery = state.selectedWorkspaceRecovery;
   const recoveryLabel = recovery?.kind === 'grant' ? 'Grant access' : 'Reconnect folder';
@@ -107,24 +128,19 @@ export function WorkspaceSelector({
     completeAction();
   };
 
+  const styles = triggerStyles[variant];
+  const LocationIcon = state.value.kind === 'home' ? House : FolderOpen;
   const trigger = (
     <Button
       type='button'
-      variant={variant === 'field' ? 'outline' : 'ghost'}
+      variant={styles.variant}
       size='sm'
-      className={cn(
-        'min-w-0',
-        variant === 'toolbar'
-          ? 'h-7 max-w-48 rounded-full text-muted-foreground'
-          : 'h-auto w-full justify-start px-2 py-2',
-      )}
+      className={cn('min-w-0', styles.button)}
       aria-label={projectCreationLocationAccessibleName(state.selectedOption)}
     >
-      {state.value.kind === 'home' ? <House className='size-3.5' /> : <FolderOpen className='size-3.5' />}
-      <span className={cn('truncate', variant === 'field' && 'min-w-0 flex-1 text-left')}>
-        {state.selectedOption.label}
-      </span>
-      <ChevronDown className={cn('opacity-60', variant === 'field' && 'ml-auto')} />
+      <LocationIcon className={styles.icon} />
+      <span className={cn('truncate', styles.label)}>{state.selectedOption.label}</span>
+      <ChevronDown className={styles.chevron} />
     </Button>
   );
 
@@ -157,26 +173,27 @@ export function WorkspaceSelector({
       getValue={optionValue}
       value={state.selectedOption}
       emptyListMessage='No locations found.'
-      searchPlaceHolder='Search locations...'
+      searchPlaceHolder='Search locations…'
       isSearchEnabled={state.options.length >= 5}
       title='Select a project location'
       description='Choose where new project files are stored.'
-      isNested={isNested}
       isOpen={open}
       onOpenChange={setOpen}
       onSelect={select}
-      onClose={isNested ? undefined : onRequestFocus}
+      onClose={onRequestFocus}
       shouldCloseOnSelect={(value) => isReadyOption(optionForValue(value))}
       footer={
         <>
           <div className='border-t' />
-          <div className='p-1'>
+          <div className='flex flex-col gap-0.5 p-1'>
             {recovery ? (
               <>
                 <button
                   type='button'
                   className={cn(menuItemVariants({ highlight: 'selected' }), 'h-auto w-full')}
-                  onClick={() => void recover()}
+                  onClick={() => {
+                    void recover();
+                  }}
                 >
                   {recovery.kind === 'grant' ? <ShieldAlert /> : <Unplug />}
                   {recoveryLabel}
@@ -187,7 +204,9 @@ export function WorkspaceSelector({
             <button
               type='button'
               className={cn(menuItemVariants({ highlight: 'selected' }), 'h-auto w-full')}
-              onClick={() => void connect()}
+              onClick={() => {
+                void connect();
+              }}
             >
               <Plus />
               Connect a folder…

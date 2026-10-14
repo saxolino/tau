@@ -2,7 +2,8 @@ import process from 'node:process';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MyUIMessage } from '@taucad/chat';
 import {
-  createMessage,
+  buildEditedUserMessage,
+  buildUserMessage,
   finalizeInterruptedToolParts,
   serializeMessage,
   serializeTranscript,
@@ -11,12 +12,137 @@ import {
 import type { RequestTerminationCause } from '#hooks/chat-persistence.machine.js';
 import { clearLedger, recordRpcOutcome } from '#services/rpc-ledger.js';
 import { metaConfig } from '#constants/meta.constants.js';
+import { storedRef } from '#utils/attachment.test-utils.js';
+import { Chat } from '@ai-sdk/react';
+import { initialChatProjection, materializeTranscript, reduceChatProjection } from '#machines/chat-projection.logic.js';
+import { lifecycleRow, logRow } from '#machines/chat-projection.fixture.js';
+import { openRunWatch } from '#chat-clients/_internal/run-watch.js';
+import { BrowserPlacementChatTransport } from '#chat-clients/_internal/browser-agent-host-transport.js';
 
 const baseMessage = (parts: MyUIMessage['parts']): MyUIMessage => ({
   id: 'msg-1',
   role: 'assistant',
   parts,
 });
+
+it.each([1, 16, 113])(
+  'should converge live, reload and export for 55 calls and 9 edits in batches of %s',
+  async (size) => {
+    const rows = [lifecycleRow(0, 'admitted'), lifecycleRow(1, 'running')];
+    for (let index = 0; index < 55; index++) {
+      const edit = index >= 46;
+      const content = edit
+        ? [
+            {
+              type: 'diff',
+              path: index % 2 === 0 ? 'main.cs' : 'main.geospec.ts',
+              oldText: 'before',
+              newText: `after-${String(index)}`,
+            },
+          ]
+        : { result: index };
+      const call = { toolCallId: `vendor-${String(index)}`, kind: edit ? 'edit' : 'execute', content };
+      const identity = {
+        toolCallId: `call-${String(index)}`,
+        toolName: edit ? 'applyPatch' : 'shell',
+        metadata: { tauInternal: { kind: 'external-tool', origin: 'external' } },
+      };
+      rows.push(
+        logRow(rows.length, {
+          type: 'message.appended',
+          message: {
+            ...identity,
+            id: `in-${String(index)}`,
+            role: 'tool-input',
+            content: { index },
+            call: { ...call, status: 'pending' },
+          },
+        }),
+      );
+      rows.push(
+        logRow(rows.length, {
+          type: 'message.appended',
+          message: {
+            ...identity,
+            id: `out-${String(index)}`,
+            role: 'tool-output',
+            content,
+            call: { ...call, status: 'completed' },
+            isError: false,
+          },
+        }),
+      );
+    }
+    rows.push(lifecycleRow(rows.length, 'completed'));
+    const prefix = 24; // The first 11 calls are visible before call 12's progress.
+    let projection = reduceChatProjection(initialChatProjection, {
+      type: 'batch',
+      answer: { status: 'batch', cursor: 0, nextCursor: prefix, endCursor: rows.length, events: rows.slice(0, prefix) },
+    }).state;
+    const listeners = new Set<() => void>();
+    const watch = openRunWatch({
+      runId: 'run_1',
+      getProjection: () => projection,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const transport = new BrowserPlacementChatTransport<MyUIMessage>();
+    transport.arm(watch.stream);
+    const errors: Error[] = [];
+    const chat = new Chat<MyUIMessage>({ id: 'convergence', transport, onError: (error) => errors.push(error) });
+    try {
+      const request = chat.sendMessage({ role: 'user', parts: [{ type: 'text', text: 'fixture' }] });
+      projection = reduceChatProjection(projection, {
+        type: 'live',
+        event: {
+          type: 'tool-output-update',
+          chatId: 'convergence',
+          runId: 'run_1',
+          messageId: 'in-11',
+          contentIndex: 0,
+          toolCallId: 'call-11',
+          toolName: 'shell',
+          output: 'early',
+          isError: false,
+        },
+      }).state;
+      for (const listener of listeners) {
+        listener();
+      }
+      for (let cursor = prefix; cursor < rows.length; cursor += size) {
+        const events = rows.slice(cursor, cursor + size);
+        projection = reduceChatProjection(projection, {
+          type: 'batch',
+          answer: { status: 'batch', cursor, nextCursor: cursor + events.length, endCursor: rows.length, events },
+        }).state;
+        for (const listener of listeners) {
+          listener();
+        }
+      }
+      await request;
+      const restored = await materializeTranscript(projection);
+      const tools = (messages: MyUIMessage[]) =>
+        messages.flatMap((message) => message.parts).filter((part) => part.type === 'dynamic-tool');
+      expect(errors).toEqual([]);
+      expect(chat.status).toBe('ready');
+      expect(tools(chat.messages)).toEqual(tools(restored));
+      expect(new Set(tools(restored).map((part) => part.toolCallId)).size).toBe(55);
+      expect(tools(restored).every((part) => part.state === 'output-available')).toBe(true);
+      expect(tools(restored).filter((part) => part.toolName === 'applyPatch')).toHaveLength(9);
+      const exported = serializeTranscript(restored, 'Recovered fixture');
+      expect(exported.match(/<tool_call /gu)).toHaveLength(55);
+      expect(exported.match(/"type": "diff"/gu)).toHaveLength(9);
+      expect(exported).toContain('main.cs');
+      expect(exported).toContain('main.geospec.ts');
+      expect(exported).not.toMatch(/\[Pending\.\.\.\]|\[Streaming\.\.\.\]/u);
+      expect(listeners.size).toBe(0);
+    } finally {
+      watch.detach();
+    }
+  },
+);
 
 describe('serializeMessage', () => {
   describe('text parts', () => {
@@ -129,18 +255,37 @@ describe('serializeMessage', () => {
             reasoningTokens: 0,
             cacheReadTokens: 0,
             cacheWriteTokens: 0,
-            inputTokensCost: 0,
-            outputTokensCost: 0,
-            cacheReadTokensCost: 0,
-            cacheWriteTokensCost: 0,
-            totalCost: 0,
           },
         },
       ]);
       expect(serializeMessage(message)).toBe('Model: gpt-4 | Tokens: 10 in / 20 out');
     });
 
-    it('includes cost when totalCost > 0', () => {
+    /* V6: an external turn's tokens are the vendor's own report, and Tau quotes
+     * no price for them — it did not sell them. The agent is named instead. */
+    it('names the external agent and quotes no Tau price for its usage', () => {
+      const message = baseMessage([
+        {
+          type: 'data-usage',
+          data: {
+            type: 'usage',
+            id: 'u1',
+            agent: 'codex',
+            model: 'gpt-5.3-codex',
+            inputTokens: 1200,
+            outputTokens: 300,
+            reasoningTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe('Agent: codex | Model: gpt-5.3-codex | Tokens: 1200 in / 300 out');
+    });
+
+    /* B4 R2: an export names the funded operations whose receipts hold the
+     * charge; it never quotes a locally multiplied amount. */
+    it('names the funded Tau operations instead of quoting a price', () => {
       const message = baseMessage([
         {
           type: 'data-usage',
@@ -153,18 +298,31 @@ describe('serializeMessage', () => {
             reasoningTokens: 0,
             cacheReadTokens: 0,
             cacheWriteTokens: 0,
-            inputTokensCost: 0,
-            outputTokensCost: 0,
-            cacheReadTokensCost: 0,
-            cacheWriteTokensCost: 0,
-            totalCost: 0.002,
+            operationId: 'op_b',
+            attemptId: 'att_1',
+            billingStatus: 'terminal',
+          },
+        },
+        {
+          type: 'data-usage',
+          data: {
+            type: 'usage',
+            id: 'u2',
+            model: 'claude-3',
+            inputTokens: 1,
+            outputTokens: 2,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            operationId: 'op_a',
           },
         },
       ]);
-      expect(serializeMessage(message)).toBe('Model: claude-3 | Tokens: 5 in / 15 out | Cost: $0.0020');
+      const serialized = serializeMessage(message);
+      expect(serialized).toBe('Model: claude-3 | Tokens: 6 in / 17 out | Tau operations: op_a, op_b');
+      expect(serialized).not.toContain('$');
     });
 
-    it('aggregates multiple data-usage parts into one line with summed tokens and cost', () => {
+    it('aggregates multiple data-usage parts into one line with summed tokens', () => {
       const message = baseMessage([
         {
           type: 'data-usage',
@@ -177,11 +335,6 @@ describe('serializeMessage', () => {
             reasoningTokens: 0,
             cacheReadTokens: 0,
             cacheWriteTokens: 0,
-            inputTokensCost: 0,
-            outputTokensCost: 0,
-            cacheReadTokensCost: 0,
-            cacheWriteTokensCost: 0,
-            totalCost: 0.001,
           },
         },
         {
@@ -195,15 +348,10 @@ describe('serializeMessage', () => {
             reasoningTokens: 0,
             cacheReadTokens: 0,
             cacheWriteTokens: 0,
-            inputTokensCost: 0,
-            outputTokensCost: 0,
-            cacheReadTokensCost: 0,
-            cacheWriteTokensCost: 0,
-            totalCost: 0.002,
           },
         },
       ]);
-      expect(serializeMessage(message)).toBe('Model: claude-3 | Tokens: 15 in / 35 out | Cost: $0.0030');
+      expect(serializeMessage(message)).toBe('Model: claude-3 | Tokens: 15 in / 35 out');
     });
   });
 
@@ -257,6 +405,74 @@ describe('serializeMessage', () => {
   });
 
   describe('tool parts', () => {
+    it('serializes the arrange call keys and written record paths', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-arrange_workbench',
+          toolCallId: 'arrange-1',
+          state: 'output-available',
+          input: { open: [{ kind: 'pane', pane: 'details' }], lanes: { workbench: true } },
+          output: {
+            status: 'written',
+            revisions: [{ path: '.tau/workbench/layout.json', digest: 'missing', previousDigest: 'missing' }],
+            visible: [{ kind: 'pane', pane: 'details' }],
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="arrange_workbench">\narrange_workbench(open, lanes)\n</tool_call>\n<tool_result>\n-> .tau/workbench/layout.json\n</tool_result>',
+      );
+    });
+    it('serializes the requested package edits and what was locked or refused', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-install_packages',
+          toolCallId: 'install-1',
+          state: 'output-available',
+          input: { add: { alea: '^1.0.1', 'simplex-noise': '^9.0.0' }, remove: ['lodash'] },
+          output: {
+            manifestChanged: false,
+            lockChanged: false,
+            packages: [{ name: 'alea', version: '1.0.1', path: 'node_modules/alea' }],
+            issues: [{ code: 'no-matching-version', name: 'simplex-noise', message: 'No published version matches.' }],
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="install_packages">\nadd: alea@^1.0.1\nadd: simplex-noise@^9.0.0\nremove: lodash\n</tool_call>\n<tool_result>\nalea@1.0.1\nno-matching-version: No published version matches.\n</tool_result>',
+      );
+    });
+    it('serializes the questions with lettered options and the answers with their source', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-ask_questions',
+          toolCallId: 'ask-1',
+          state: 'output-available',
+          input: {
+            chatId: 'chat_a',
+            questions: [
+              {
+                id: 'form',
+                header: 'Form',
+                question: 'Which form?',
+                options: [
+                  { label: 'Ribbon', description: 'Prints without supports.' },
+                  { label: 'Gem', description: 'Crisp facets.' },
+                ],
+              },
+            ],
+          },
+          output: {
+            status: 'defaulted',
+            path: '.tau/chats/chat_a/questions.yaml',
+            answers: [{ id: 'form', answer: 'Ribbon', source: 'recommended' }],
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="ask_questions">\nWhich form?\n  A. Ribbon\n  B. Gem\n</tool_call>\n<tool_result>\nform: Ribbon (recommended, no reply)\n</tool_result>',
+      );
+    });
     it('serializes tool-web_search output-available', () => {
       const message = baseMessage([
         {
@@ -416,6 +632,26 @@ describe('serializeMessage', () => {
       );
     });
 
+    it('serializes tool-grep context lines with ripgrep-style separators', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-grep',
+          toolCallId: 'c1',
+          state: 'output-available',
+          input: { pattern: 'fn', context: 1 },
+          output: {
+            matches: [{ file: 'a.kcl', line: 2, content: 'fn box(', before: ['// Box.'], after: ['  w: number,'] }],
+            totalMatches: 1,
+            appliedHeadLimit: 50,
+            appliedOffset: 0,
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="grep">\npattern: fn\ncontext: 1\n</tool_call>\n<tool_result>\nTotal: 1\na.kcl-1- // Box.\na.kcl:2: fn box(\na.kcl-3-   w: number,\n</tool_result>',
+      );
+    });
+
     it('serializes tool-test_model output-available with [targetFile] prefix on each failure', () => {
       const message = baseMessage([
         {
@@ -451,10 +687,10 @@ describe('serializeMessage', () => {
       );
     });
 
-    it('serializes tool-get_kernel_result output-available', () => {
+    it('serializes tool-evaluate_model output-available', () => {
       const message = baseMessage([
         {
-          type: 'tool-get_kernel_result',
+          type: 'tool-evaluate_model',
           toolCallId: 'c1',
           state: 'output-available',
           input: { targetFile: 'main.kcl' },
@@ -465,22 +701,7 @@ describe('serializeMessage', () => {
         },
       ]);
       expect(serializeMessage(message)).toBe(
-        '<tool_call name="get_kernel_result">\ntargetFile: main.kcl\n</tool_call>\n<tool_result>\nStatus: error\nIssues:\n  - Syntax error\n</tool_result>',
-      );
-    });
-
-    it('serializes tool-transfer_to_cad_expert output-available', () => {
-      const message = baseMessage([
-        {
-          type: 'tool-transfer_to_cad_expert',
-          toolCallId: 'c1',
-          state: 'output-available',
-          input: {},
-          output: 'Transferred',
-        },
-      ]);
-      expect(serializeMessage(message)).toBe(
-        '<tool_call name="transfer_to_cad_expert">\n</tool_call>\n<tool_result>\nTransferred\n</tool_result>',
+        '<tool_call name="evaluate_model">\ntargetFile: main.kcl\n</tool_call>\n<tool_result>\nStatus: error\nIssues:\n  - Syntax error\n</tool_result>',
       );
     });
 
@@ -782,25 +1003,129 @@ describe('finalizeInterruptedToolParts', () => {
   });
 });
 
-describe('createMessage', () => {
-  it('creates a message with text and optional images', () => {
-    const message = createMessage({
-      content: 'Hello',
-      role: 'user',
-      metadata: {},
-    });
-    expect(message.role).toBe('user');
-    expect(message.parts).toHaveLength(1);
-    expect(message.parts[0]).toEqual({ type: 'text', text: 'Hello' });
+describe('buildUserMessage', () => {
+  // P38: the one user-message builder; the data-URL builders it replaced are gone.
+  it('should be the only user-message builder the module exports', async () => {
+    const exported = Object.keys(await import('#utils/chat.utils.js'));
+    expect(exported).toContain('buildUserMessage');
+    expect(exported).not.toContain('createMessage');
+    expect(exported).not.toContain('extractMimeTypeFromDataUrl');
   });
 
-  it('trims content', () => {
-    const message = createMessage({
-      content: '  trimmed  ',
-      role: 'user',
-      metadata: {},
+  const imageHash = 'a'.repeat(64);
+  const documentHash = 'b'.repeat(64);
+
+  it('should put each attachment reference ahead of the trimmed text', () => {
+    const message = buildUserMessage({
+      text: '  model the bracket  ',
+      attachments: [
+        storedRef({ hash: imageHash, mediaType: 'image/jpeg' }),
+        storedRef({ hash: documentHash, mediaType: 'application/pdf', filename: 'bracket-spec.pdf' }),
+      ],
     });
-    expect((message.parts[0] as { type: 'text'; text: string }).text).toBe('trimmed');
+
+    expect(message).toMatchObject({ id: expect.stringMatching(/^msg_/u) as unknown, role: 'user' });
+    expect(message.metadata).toMatchObject({ status: 'pending', createdAt: expect.any(Number) as unknown });
+    expect(message.parts).toEqual([
+      { type: 'file', mediaType: 'image/jpeg', url: `attachments/${imageHash}.jpg` },
+      {
+        type: 'file',
+        mediaType: 'application/pdf',
+        filename: 'bracket-spec.pdf',
+        url: `attachments/${documentHash}.pdf`,
+      },
+      { type: 'text', text: 'model the bracket' },
+    ]);
+  });
+
+  it('should carry the byte length only when the reference knows it (P29)', () => {
+    const message = buildUserMessage({
+      text: '',
+      attachments: [storedRef({ hash: imageHash, mediaType: 'image/png', byteLength: 42 })],
+    });
+
+    expect(message.parts).toEqual([
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        url: `attachments/${imageHash}.png`,
+        providerMetadata: { common: { byteLength: 42 } },
+      },
+    ]);
+  });
+
+  it('should omit an empty text part and give every message its own id', () => {
+    const first = buildUserMessage({ text: '   ' });
+    const second = buildUserMessage({ text: 'x' });
+
+    expect(first.parts).toEqual([]);
+    expect(first.id).not.toBe(second.id);
+  });
+
+  describe('geometry references', () => {
+    const picked = {
+      resource: { kind: 'workspace-file', path: 'gears/main.ts', revision: 'hash-1' },
+      target: {
+        kind: 'component',
+        componentId: 'component:sun_gear',
+        selector: 'node/3',
+        label: 'Sun gear',
+        componentKind: 'part',
+      },
+    } as const;
+
+    it('should carry the chip reference for each token in the text, and a bare one for a typed token', () => {
+      const message = buildUserMessage({
+        text: 'Widen @cad[gears/main.ts#component:sun_gear] and @cad[b.ts#x], again @cad[gears/main.ts#component:sun_gear]',
+        references: [picked],
+      });
+      expect(message.metadata?.references).toEqual([
+        picked,
+        {
+          resource: { kind: 'workspace-file', path: 'b.ts' },
+          target: { kind: 'component', componentId: 'x', label: 'x', componentKind: 'unknown' },
+        },
+      ]);
+    });
+
+    it('should drop a chip reference whose token left the text, and stamp nothing without tokens', () => {
+      expect(buildUserMessage({ text: 'Plain text', references: [picked] }).metadata).not.toHaveProperty('references');
+    });
+
+    describe('when a message is edited', () => {
+      const original = {
+        ...buildUserMessage({ text: 'Widen @cad[gears/main.ts#component:sun_gear]', references: [picked] }),
+        id: 'msg_original',
+      };
+
+      it("should drop the original's references when the edit removes their tokens", () => {
+        const edited = buildEditedUserMessage(original, { text: 'Widen the plate instead' });
+        expect(edited.id).toBe('msg_original');
+        expect(edited.metadata).not.toHaveProperty('references');
+      });
+
+      it("should keep the original's reference for a token the edit kept, and add a token the edit typed", () => {
+        const edited = buildEditedUserMessage(original, {
+          text: 'Widen @cad[gears/main.ts#component:sun_gear] and @cad[b.ts#x]',
+        });
+        expect(edited.metadata?.references).toEqual([
+          picked,
+          {
+            resource: { kind: 'workspace-file', path: 'b.ts' },
+            target: { kind: 'component', componentId: 'x', label: 'x', componentKind: 'unknown' },
+          },
+        ]);
+      });
+
+      it("should prefer the edit composer's chip over the original's reference for the same token", () => {
+        const repicked = { ...picked, resource: { ...picked.resource, revision: 'hash-2' } };
+        const edited = buildEditedUserMessage(original, {
+          text: 'Widen @cad[gears/main.ts#component:sun_gear]',
+          references: [repicked],
+        });
+        expect(edited.metadata?.references).toEqual([repicked]);
+      });
+    });
   });
 });
 
@@ -866,4 +1191,18 @@ describe('stampMessageCreatedAt', () => {
 
     expect(stamped[0]?.metadata).toEqual({ status: 'success', createdAt: 4000 });
   });
+});
+
+it('exports an unregistered static tool through generic recorded-data serialization', () => {
+  const part = {
+    type: 'tool-unregistered_operation',
+    toolCallId: 'unknown',
+    state: 'output-available',
+    input: { note: 'Recorded input' },
+    output: 'Recorded output',
+  } as unknown as MyUIMessage['parts'][number];
+  const transcript = serializeMessage(baseMessage([part]));
+  expect(transcript).toContain('<tool_call name="unregistered_operation">');
+  expect(transcript).toContain('Recorded input');
+  expect(transcript).toContain('Recorded output');
 });

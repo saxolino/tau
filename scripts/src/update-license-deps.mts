@@ -20,7 +20,7 @@ const rootDirectory = join(__dirname, '../..');
 const runtimeDirectory = join(rootDirectory, 'packages/runtime');
 const outputFile = join(rootDirectory, 'license-deps');
 
-type PackageInfo = {
+export type PackageInfo = {
   name: string;
   version: string;
   license: string;
@@ -29,9 +29,9 @@ type PackageInfo = {
 };
 
 /** A resolved package plus the real directory it was resolved from. */
-type ScannedPackage = PackageInfo & { directory: string };
+export type ScannedPackage = PackageInfo & { directory: string };
 
-type PackageJsonRaw = {
+export type PackageJsonRaw = {
   name?: string;
   version?: string;
   license?: string | { type?: string };
@@ -41,6 +41,8 @@ type PackageJsonRaw = {
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  os?: string[];
+  cpu?: string[];
 };
 
 type LicenseGroup = {
@@ -84,7 +86,7 @@ function normalizeGithubUrl(url: string): string {
 /**
  * Read and parse package.json from a directory.
  */
-async function readManifest(packagePath: string): Promise<PackageJsonRaw | undefined> {
+export async function readManifest(packagePath: string): Promise<PackageJsonRaw | undefined> {
   try {
     return JSON.parse(await readFile(join(packagePath, 'package.json'), 'utf8')) as PackageJsonRaw;
   } catch {
@@ -95,7 +97,7 @@ async function readManifest(packagePath: string): Promise<PackageJsonRaw | undef
 /**
  * Extract the attribution fields Tau publishes for one package.
  */
-function toPackageInfo(packageJson: PackageJsonRaw): PackageInfo | undefined {
+export function toPackageInfo(packageJson: PackageJsonRaw): PackageInfo | undefined {
   const {
     name,
     version,
@@ -163,7 +165,7 @@ async function isDirectory(path: string): Promise<boolean> {
  * in the node_modules beside its real path, so resolving from the real path of
  * each dependent walks the true closure rather than the hoisted root.
  */
-async function resolvePackageDirectory(name: string, fromDirectory: string): Promise<string | undefined> {
+export async function resolvePackageDirectory(name: string, fromDirectory: string): Promise<string | undefined> {
   let directory = fromDirectory;
 
   for (;;) {
@@ -324,9 +326,9 @@ function getLicenseNotice(license: string): string[] {
     return [
       '> **AGPL-3.0 License Notice**',
       '>',
-      '> This component is licensed under AGPL-3.0-only. Source is available at',
-      '> https://github.com/taucad/tau, and the component ships with the AGPL text',
-      "> plus Tau's applicable Section 7 additional permission.",
+      '> This third-party component is licensed under AGPL-3.0. Preserve its license',
+      '> text and satisfy the upstream source-availability terms when distributing or',
+      '> operating a covered modified version.',
       '>',
       '> Full license text: https://www.gnu.org/licenses/agpl-3.0.html',
       '',
@@ -420,10 +422,9 @@ function generateMarkdown(groups: LicenseGroup[]): string {
     '',
     '## Licensing Overview',
     '',
-    'Tau-authored source is **[Apache-2.0](./license)** by default, including the applications,',
-    'libraries, tools, examples, and published packages. The only exception is the GeoSpec engine,',
-    'which is fair source under FSL-1.1-Apache-2.0 and converts to Apache-2.0 two years after each release.',
-    'Routing map: **[LICENSING.md](./LICENSING.md)**.',
+    'All Tau-authored source is **[Apache-2.0](./license)**, including the applications,',
+    'libraries, tools, examples, GeoSpec engine, and other published packages.',
+    'Repository licensing details: **[LICENSING.md](./LICENSING.md)**.',
     '',
     'Some third-party dependencies impose additional obligations on **combined',
     'distributions** that include them:',

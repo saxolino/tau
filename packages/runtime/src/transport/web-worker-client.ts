@@ -13,8 +13,7 @@
 import { createChannelClient } from '@taucad/rpc';
 import type { Channel, Port } from '@taucad/rpc';
 import { Topic } from '@taucad/events';
-import { runtimeProtocolSchemas } from '#types/runtime-protocol.schemas.js';
-import type { Geometry } from '@taucad/types';
+import { runtimeDocumentProtocolSchemas } from '#types/runtime-document-protocol.schemas.js';
 import type {
   RuntimeInitializeMemoryHandle,
   RuntimeInitializePayload,
@@ -23,22 +22,19 @@ import type {
   TransportClientReady,
 } from '#transport/runtime-transport.types.js';
 import type { TransportDescriptor } from '#transport/runtime-transport-descriptor.types.js';
-import { runtimeChannelSessionKey } from '#transport/_internal/runtime-worker-dispatcher.js';
+import { runtimeChannelSessionKey } from '#transport/_internal/runtime-channel-bindings.js';
 import { isRuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
 import type { RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
-import { materialiseGeometry } from '#transport/_internal/geometry-materialiser.js';
-import { materialiseExportResult } from '#transport/_internal/export-materialiser.js';
-import type {
-  GeometryTransport,
-  RuntimeExportResultTransport,
-  RuntimeInitializeResult,
-  RuntimeProtocol,
-} from '#types/runtime-protocol.types.js';
+import { materialiseBinaryContent } from '#transport/_internal/export-materialiser.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
+import type { BinaryContentDelivery, RuntimeInitializeResult } from '#types/runtime-wire.types.js';
 import { allocatePools } from '#transport/_internal/sab-pools.js';
-import { reservePreview, triggerRenderTimeout } from '#transport/_internal/abort-channel.js';
+import { signalDocumentAbort } from '#transport/_internal/abort-channel.js';
 import { buildFileSystemBridge } from '#transport/_internal/file-system-bridge.js';
 import { webWorkerId } from '#transport/_internal/web-worker-id.js';
 import type { WebWorkerId } from '#transport/_internal/web-worker-id.js';
+import type { ComputeBinding } from '#types/runtime-compute.types.js';
+import { buildComputeStoreBridge } from '#transport/_internal/compute-store-bridge.js';
 
 /**
  * Subset of the DOM `Worker` surface the transport depends on. Tests
@@ -84,6 +80,7 @@ export type WebWorkerTransportOptions = {
   readonly devtoolsTelemetry?: boolean;
   /** Host-compiled WASM modules cloned into the worker during initialization. */
   readonly compiledWasmModules?: RuntimeInitializeMemoryHandle['compiledWasmModules'];
+  readonly compute?: ComputeBinding;
 };
 
 const wrapWorkerAsPort = (worker: WebWorkerLike): Port<unknown> => {
@@ -164,7 +161,7 @@ export const webWorkerClientDescribe = (options: WebWorkerTransportOptions): Tra
  */
 export const webWorkerClient = (
   options: WebWorkerTransportOptions,
-): RuntimeTransportClient<RuntimeProtocol, Readonly<Record<never, never>>, WebWorkerId> => {
+): RuntimeTransportClient<RuntimeDocumentProtocol, Readonly<Record<never, never>>, WebWorkerId> => {
   const workerCtor: typeof Worker | undefined =
     options.workerCtor ?? (typeof Worker === 'function' ? Worker : undefined);
   if (typeof options.createWorker !== 'function' && typeof workerCtor !== 'function') {
@@ -184,10 +181,11 @@ export const webWorkerClient = (
   };
 
   let bridge: ReturnType<typeof buildFileSystemBridge>;
+  let computeBridge: ReturnType<typeof buildComputeStoreBridge> | undefined;
   let openPromise: Promise<TransportClientReady> | undefined;
   let worker: WebWorkerLike | undefined;
   let port: Port<unknown> | undefined;
-  let channel: Channel<RuntimeProtocol> | undefined;
+  let channel: Channel<RuntimeDocumentProtocol> | undefined;
   let removeWorkerFailureListeners: (() => void) | undefined;
   let isClosed = false;
 
@@ -220,6 +218,11 @@ export const webWorkerClient = (
     }
     try {
       bridge?.dispose();
+    } catch {
+      /* Best-effort */
+    }
+    try {
+      computeBridge?.dispose();
     } catch {
       /* Best-effort */
     }
@@ -268,10 +271,10 @@ export const webWorkerClient = (
         eventWorker.removeEventListener('messageerror', onWorkerFailure);
       };
       port = wrapWorkerAsPort(worker);
-      channel = createChannelClient<RuntimeProtocol>({
+      channel = createChannelClient<RuntimeDocumentProtocol>({
         port,
         sessionKey: runtimeChannelSessionKey,
-        protocolSchemas: runtimeProtocolSchemas,
+        protocolSchemas: runtimeDocumentProtocolSchemas,
       });
       // We deliberately do NOT `await channel.ready` here — the fake
       // worker used in unit tests never replies. The runtime client
@@ -284,18 +287,13 @@ export const webWorkerClient = (
 
   return {
     id: webWorkerId,
-    reservePreview() {
-      return reservePreview(ensurePools().signalBuffer);
+    signalDocumentAbort(evaluationId, generation, reason) {
+      return signalDocumentAbort(ensurePools().signalBuffer, evaluationId, generation, reason);
     },
-    renderTimeoutRecovery: {
+    operationTimeoutRecovery: {
       kind: 'terminable',
-      abortRender(target): void {
-        if (channel) {
-          triggerRenderTimeout(channel, ensurePools().signalBuffer, target);
-        }
-      },
       async terminate(): Promise<void> {
-        await finish({ cause: 'render-timeout' });
+        await finish({ cause: 'operation-timeout' });
       },
     },
     describe(): TransportDescriptor<WebWorkerId> {
@@ -310,15 +308,17 @@ export const webWorkerClient = (
         throw new Error('webWorkerTransport: channel unavailable after open()');
       }
       bridge ??= buildFileSystemBridge(options.fileSystem);
+      computeBridge ??= buildComputeStoreBridge(options.compute);
       const pooled = ensurePools();
       const memoryHandle: RuntimeInitializeMemoryHandle = {
         ...(pooled.signalBuffer ? { signalBuffer: pooled.signalBuffer } : {}),
         ...(pooled.geometryPoolBuffer ? { geometryPoolBuffer: pooled.geometryPoolBuffer } : {}),
         ...(bridge ? { fileSystemPort: bridge.port } : {}),
+        ...computeBridge.memoryHandle,
         ...(options.devtoolsTelemetry === true ? { devtoolsTelemetry: true } : {}),
         ...(options.compiledWasmModules ? { compiledWasmModules: options.compiledWasmModules } : {}),
       };
-      const transferables: Transferable[] = bridge ? [bridge.port] : [];
+      const transferables: Transferable[] = [...(bridge ? [bridge.port] : []), ...computeBridge.transfer];
       const args = { ...input, memoryHandle };
       try {
         const result = await channel.call(
@@ -334,16 +334,13 @@ export const webWorkerClient = (
             bridge = undefined;
           }
         }
+        computeBridge.dispose();
+        computeBridge = undefined;
         throw error;
       }
     },
-    async resolveGeometry(transport: GeometryTransport): Promise<Geometry> {
-      return materialiseGeometry(transport, ensurePools().geometryPool, (key) => {
-        channel?.notify('binaryMaterialised', { key });
-      });
-    },
-    async resolveExport(transport: RuntimeExportResultTransport) {
-      return materialiseExportResult(transport, ensurePools().geometryPool, (key) => {
+    async resolveBinary(transport: BinaryContentDelivery): Promise<Uint8Array<ArrayBuffer>> {
+      return materialiseBinaryContent(transport, ensurePools().geometryPool, (key) => {
         channel?.notify('binaryMaterialised', { key });
       });
     },

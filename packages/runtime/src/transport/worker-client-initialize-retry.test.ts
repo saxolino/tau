@@ -3,11 +3,14 @@ import type * as RpcModule from '@taucad/rpc';
 import { createFileSystemBridgePort, createTransferredFileSystemBridgeProxy } from '@taucad/fs-bridge';
 import { fromMemoryFs } from '#filesystem/runtime-filesystem.js';
 import { nodeWorkerClient } from '#transport/node-worker-client.js';
+import type { NodeWorkerLike } from '#transport/node-worker-client.js';
 import type { RuntimeInitializePayload } from '#transport/runtime-transport.types.js';
 import { webWorkerClient } from '#transport/web-worker-client.js';
 import { resolveRuntimeFileSystem, wrapAsRuntimeFileSystem } from '#transport/_internal/runtime-filesystem-handle.js';
 import { inProcessClient } from '#transport/in-process-client.js';
 import { defineRuntime } from '#worker/runtime-definition.js';
+import { _registerComputeStore } from '#cache/kernel-compute-runtime.js';
+import type { ComputeGeneration, ComputeStore, ComputeStoreControl } from '#types/runtime-compute.types.js';
 
 const mocks = vi.hoisted(() => {
   const channel = {
@@ -31,8 +34,32 @@ type InitializeCallPayload = {
   value?: {
     memoryHandle?: {
       fileSystemPort?: MessagePort;
+      computeBindingMode?: 'off' | 'memory' | 'durable';
+      computeStorePort?: MessagePort;
     };
   };
+};
+
+const registeredComputeStore = (): ComputeStore => {
+  const generation = 0 as ComputeGeneration;
+  const control: ComputeStoreControl = {
+    inspect: async () => ({
+      entries: 0,
+      logicalBytes: 0,
+      pinnedBytes: 0,
+      pendingBytes: 0,
+      generation,
+      physicalBytes: { status: 'unsupported' },
+    }),
+    clear: async () => ({ status: 'cleared', generation, retained: 0 }),
+    collect: async () => ({ status: 'complete', reclaimed: 0 }),
+  };
+  return _registerComputeStore({
+    spec: Object.freeze({}) as ComputeStore,
+    workspace: 'test',
+    engine: { open: vi.fn() },
+    control,
+  });
 };
 
 const createWebWorker = (): Worker => {
@@ -57,12 +84,16 @@ const createNodeWorkerCtor = () => {
     const listeners = new Set<(data: unknown) => void>();
     const worker = {
       postMessage: vi.fn(),
-      on: vi.fn((_event: 'message', listener: (data: unknown) => void) => {
-        listeners.add(listener);
+      on: vi.fn((event: string, listener: (data: unknown) => void) => {
+        if (event === 'message') {
+          listeners.add(listener);
+        }
         return worker;
       }),
-      off: vi.fn((_event: 'message', listener: (data: unknown) => void) => {
-        listeners.delete(listener);
+      off: vi.fn((event: string, listener: (data: unknown) => void) => {
+        if (event === 'message') {
+          listeners.delete(listener);
+        }
         return worker;
       }),
       terminate: vi.fn(async () => {
@@ -72,7 +103,7 @@ const createNodeWorkerCtor = () => {
     };
     created.push(worker);
     return worker;
-  };
+  } as unknown as new (url: string | URL) => NodeWorkerLike;
   return { workerCtor, created };
 };
 
@@ -94,7 +125,7 @@ const createChannelBackedFileSystem = () => {
 const initializePayload = {
   config: {},
 } satisfies RuntimeInitializePayload;
-const mainFilePath = '/main.ts';
+const mainFilePath = 'main.ts';
 const mainFileSource = 'export default 1;';
 
 const expectTransferredFileSystem = async (payload: InitializeCallPayload): Promise<void> => {
@@ -119,6 +150,46 @@ describe('worker transport initialize filesystem bridge retries', () => {
     mocks.channel.notify.mockReset();
     mocks.channel.close.mockReset();
     mocks.createChannelClient.mockClear();
+  });
+
+  it('public worker factories bind modes and mint independent durable authority ports', async () => {
+    const store = registeredComputeStore();
+    const web = webWorkerClient({ createWorker: createWebWorker, compute: { mode: 'off' } });
+    mocks.channel.call.mockResolvedValue({});
+    await web.initialize(initializePayload);
+    const offPayload = mocks.channel.call.mock.calls.at(-1)?.[1] as InitializeCallPayload;
+    const offMemory =
+      offPayload.value?.memoryHandle ??
+      (
+        offPayload as {
+          memoryHandle?: { computeBindingMode?: 'off' | 'memory' | 'durable'; computeStorePort?: MessagePort };
+        }
+      ).memoryHandle;
+    expect(offMemory).toMatchObject({ computeBindingMode: 'off' });
+    expect(offMemory?.computeStorePort).toBeUndefined();
+    await web.close();
+
+    const { workerCtor } = createNodeWorkerCtor();
+    const first = nodeWorkerClient({ url: new URL('about:blank'), workerCtor, compute: { mode: 'durable', store } });
+    const second = nodeWorkerClient({ url: new URL('about:blank'), workerCtor, compute: { mode: 'durable', store } });
+    await first.initialize(initializePayload);
+    const firstPayload = mocks.channel.call.mock.calls.at(-1)?.[1] as InitializeCallPayload;
+    await second.initialize(initializePayload);
+    const secondPayload = mocks.channel.call.mock.calls.at(-1)?.[1] as InitializeCallPayload;
+    expect(firstPayload.value?.memoryHandle).toMatchObject({ computeBindingMode: 'durable' });
+    expect(firstPayload.value?.memoryHandle?.computeStorePort).toBeInstanceOf(MessagePort);
+    expect(secondPayload.value?.memoryHandle?.computeStorePort).not.toBe(
+      firstPayload.value?.memoryHandle?.computeStorePort,
+    );
+    await first.close();
+    await second.close();
+  });
+
+  it('public worker factory refuses a forged durable capability', async () => {
+    const forged = Object.freeze({}) as ComputeStore;
+    const client = webWorkerClient({ createWorker: createWebWorker, compute: { mode: 'durable', store: forged } });
+    await expect(client.initialize(initializePayload)).rejects.toThrow(/unregistered or foreign/);
+    await client.close();
   });
 
   it('should rebuild inline web-worker filesystem bridges after failed initialize', async () => {

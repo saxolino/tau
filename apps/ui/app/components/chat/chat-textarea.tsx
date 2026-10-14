@@ -1,30 +1,33 @@
 import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useSelector } from '@xstate/react';
+import { waitFor } from 'xstate';
 import type { ActorRefFrom } from 'xstate';
 import type { ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
 import { useChatTextareaLogic } from '#components/chat/chat-textarea-types.js';
 import { ChatTextareaDesktop } from '#components/chat/chat-textarea-desktop.js';
-import { ChatTextareaMobile } from '#components/chat/chat-textarea-mobile.js';
-import { useIsMobile } from '#hooks/use-mobile.js';
-import { ClientOnly } from '#components/ui/utils/client-only.js';
+import { ClientOnly } from '@taucad/ui/components/client-only';
 import { ChatTextareaSkeleton } from '#components/chat/chat-textarea-skeleton.js';
 import { useProject } from '#hooks/use-project.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { useChats } from '#hooks/use-chats.js';
+import { useChatRecords } from '#hooks/use-chat-records.js';
 import { useDraftActions } from '#hooks/use-chat.js';
 import { toast } from '#components/ui/sonner.js';
-import type { graphicsMachine } from '#machines/graphics.machine.js';
-import type { cadMachine } from '#machines/cad.machine.js';
+import { randomUuid } from '@taucad/utils/id';
+import type { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import type { ContextSuggestionItem } from '#components/chat/tiptap/suggestion-types.js';
 import { takeScreenshotGroup } from '#components/chat/tiptap/context-suggestion.utils.js';
 import { useChatContextInsertion } from '#components/chat/chat-context-insertion.js';
 import type { ChatContextReference } from '#components/chat/chat-context-insertion.js';
+import { ChatApprovalBanner } from '#components/chat/chat-approval-banner.js';
+import { useChatComposer } from '#hooks/active-chat-provider.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
-import { captureCadImages, captureFilesToDataUrls } from '#services/headless-capture.js';
+import { useChatSessionSnapshot } from '#hooks/use-chat-session.js';
+import { latestAcpSessionData } from '#services/agent-host-event-projection.js';
+import { findEntryGraphics, listGeometryEntryPaths } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
 
 /**
- * Main chat textarea component that conditionally renders either the
- * desktop or mobile version based on the `useIsMobile()` hook.
+ * Main chat textarea: one composer on every device (C11) — a phone gets the
+ * same editor, menus, meter and bar, and its pickers open as drawers.
  *
  * All logic is shared via the `useChatTextareaLogic` hook.
  * Project context data (treeService, chats) is fetched here and passed
@@ -40,14 +43,12 @@ export const ChatTextarea = memo(function ({
   className,
   enableContextActions = true,
   enableKernelSelector = true,
+  creationLocationControl,
+  isSubmitDisabled = false,
   mode = 'main',
 }: ChatTextareaProperties): React.JSX.Element {
-  const isMobile = useIsMobile();
-
-  // Mutable ref populated by ChatTextareaDesktop (or, on mobile, by an effect
-  // below) so that drops anywhere on the outer container can route file/editor
-  // chips into the platform-appropriate sink (Tiptap node insert vs `@<path>`
-  // text append).
+  // Mutable refs populated by ChatTextareaDesktop so that drops anywhere on the
+  // outer container can route file/editor chips into Tiptap nodes.
   const addContextChipsRef = useRef<((paths: string[]) => void) | undefined>(undefined);
   const addContextReferencesRef = useRef<((references: ChatContextReference[]) => void) | undefined>(undefined);
   const { registerContextReferenceInserter } = useChatContextInsertion();
@@ -80,14 +81,23 @@ export const ChatTextarea = memo(function ({
     onEscapePressed,
     onBlur,
     mode,
+    isSubmitDisabled,
     onViewerScreenshotDrop: handleViewerScreenshotDrop,
     onAddContextChips: handleAddContextChips,
   });
 
   const projectContext = useProject({ enableNoContext: true });
-  const { treeService, runtimeFileSystem } = useFileManager();
+  const { treeService } = useFileManager();
   const imageService = useHeadlessImageService();
-  const { chats } = useChats(projectContext?.projectId ?? '');
+  const { chats } = useChatRecords(projectContext?.projectId ?? '');
+  const {
+    session,
+    execution: { execution },
+  } = useChatComposer();
+  const acpAgentId = execution.kind === 'acp' ? execution.agentId : undefined;
+  const acpSessionData = useChatSessionSnapshot(session?.activeChatId ?? '', (active) =>
+    acpAgentId === undefined ? undefined : latestAcpSessionData(active?.messages ?? [], acpAgentId),
+  );
   const { setDraftText: setMainDraftText, setEditDraftText } = useDraftActions();
 
   const setDraftText = useCallback(
@@ -121,12 +131,12 @@ export const ChatTextarea = memo(function ({
 
   const geometryUnits = projectContext?.geometryUnits;
   const mainEntryPath = projectContext?.mainEntryPath;
-  const mainGeometryFormat = useSelector(
-    mainEntryPath ? geometryUnits?.get(mainEntryPath) : undefined,
-    (state) => state?.context.geometry?.format,
+  const viewRecords = projectContext?.viewRecords;
+  const mainGeometryFormat = useSelector(mainEntryPath ? geometryUnits?.get(mainEntryPath) : undefined, (state) =>
+    state?.context.rendering?.success ? state.context.rendering.artifact.mimeType : undefined,
   );
   const screenshotActionItems = useMemo((): ContextSuggestionItem[] => {
-    if (!geometryUnits || !logic.imageInputSupported) {
+    if (!geometryUnits || !viewRecords || !logic.imageInputSupported) {
       return [];
     }
 
@@ -140,7 +150,7 @@ export const ChatTextarea = memo(function ({
         screenshotAction: { type: 'single' },
       },
     ];
-    if (mainGeometryFormat === 'gltf') {
+    if (mainGeometryFormat === 'model/gltf-binary') {
       items.push({
         id: 'screenshot-orthographic',
         label: 'Orthographic views x 6',
@@ -151,7 +161,7 @@ export const ChatTextarea = memo(function ({
       });
     }
 
-    for (const [entryPath] of geometryUnits) {
+    for (const entryPath of listGeometryEntryPaths(geometryUnits, viewRecords, mainEntryPath ?? '')) {
       if (entryPath === mainEntryPath) {
         continue;
       }
@@ -167,7 +177,7 @@ export const ChatTextarea = memo(function ({
     }
 
     return items;
-  }, [geometryUnits, mainEntryPath, mainGeometryFormat, logic.imageInputSupported]);
+  }, [geometryUnits, viewRecords, mainEntryPath, mainGeometryFormat, logic.imageInputSupported]);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -179,18 +189,19 @@ export const ChatTextarea = memo(function ({
 
   // Refs for stable callback — avoids recreating handleScreenshotAction on every render
   const projectContextRef = useRef(projectContext);
-  projectContextRef.current = projectContext;
   const handleAddImageRef = useRef(logic.handleAddImage);
-  handleAddImageRef.current = logic.handleAddImage;
   const imageInputSupportedRef = useRef(logic.imageInputSupported);
-  imageInputSupportedRef.current = logic.imageInputSupported;
   const rejectUnsupportedImageInputRef = useRef(logic.rejectUnsupportedImageInput);
-  rejectUnsupportedImageInputRef.current = logic.rejectUnsupportedImageInput;
+  useEffect(() => {
+    projectContextRef.current = projectContext;
+    handleAddImageRef.current = logic.handleAddImage;
+    imageInputSupportedRef.current = logic.imageInputSupported;
+    rejectUnsupportedImageInputRef.current = logic.rejectUnsupportedImageInput;
+  }, [logic.handleAddImage, logic.imageInputSupported, logic.rejectUnsupportedImageInput, projectContext]);
 
   /**
    * Resolve the per-view graphics actor whose pane currently shows `entryPath`.
    * Falls back to the main entry's pane when no specific entry is requested,
-   * and finally to the first registered view as a last resort.
    */
   const resolveGraphicsRefForEntry = useCallback(
     (entryPath: string | undefined): ActorRefFrom<typeof graphicsMachine> | undefined => {
@@ -198,58 +209,44 @@ export const ChatTextarea = memo(function ({
       if (!currentProjectContext) {
         return undefined;
       }
-      const { viewGraphics, editorRef, mainEntryPath: mainEntry } = currentProjectContext;
-      const { viewSettings } = editorRef.getSnapshot().context;
-      const target = entryPath ?? mainEntry;
-
-      for (const [viewId, gRef] of viewGraphics) {
-        if (viewSettings[viewId]?.entryPath === target) {
-          return gRef;
-        }
-      }
-
-      if (entryPath === undefined) {
-        return viewGraphics.values().next().value;
-      }
-      return undefined;
-    },
-    [],
-  );
-
-  /** Resolve the CAD actor matching a viewer entry path. */
-  const resolveCadRefForEntry = useCallback(
-    (entryPath: string | undefined): ActorRefFrom<typeof cadMachine> | undefined => {
-      const currentProjectContext = projectContextRef.current;
-      if (!currentProjectContext) {
-        return undefined;
-      }
-      const { geometryUnits, mainEntryPath: mainEntry } = currentProjectContext;
-      const target = entryPath ?? mainEntry;
-      if (target && geometryUnits.has(target)) {
-        return geometryUnits.get(target);
-      }
-      if (entryPath === undefined) {
-        return geometryUnits.values().next().value;
-      }
-      return undefined;
+      const { viewGraphics, viewEntryPaths, mainEntryPath: mainEntry } = currentProjectContext;
+      return findEntryGraphics(viewGraphics, viewEntryPaths, entryPath ?? mainEntry);
     },
     [],
   );
 
   const captureEntry = useCallback(
     async (entryPath: string | undefined, captureMode: 'current' | 'orthographic', successToast = false) => {
-      const cadRef = resolveCadRefForEntry(entryPath);
-      if (!cadRef) {
+      const currentProjectContext = projectContextRef.current;
+      const target = [
+        entryPath,
+        currentProjectContext?.mainEntryPath,
+        currentProjectContext?.geometryUnits.keys().next().value,
+      ].find((candidate) => candidate !== undefined && candidate !== '');
+      if (!currentProjectContext || !target) {
         toast.error('No CAD view available for image capture');
         return;
       }
+      const claimId = randomUuid();
+      const { projectRef } = currentProjectContext;
+      projectRef.send({ type: 'claimGeometryUnit', claimId, entryPath: target });
       try {
-        const files = await captureCadImages({
+        const unit = await waitFor(projectRef, (state) => state.context.geometryUnits.has(target), { timeout: 30_000 });
+        const cadRef = unit.context.geometryUnits.get(target);
+        if (!cadRef) {
+          throw new Error('No CAD view available for image capture');
+        }
+        const { captureCadImages, captureFilesToDataUrls, omittedSectionCutsNotice } =
+          await import('#services/headless-capture.js');
+        const graphicsRef = resolveGraphicsRefForEntry(entryPath);
+        const { files, omittedSectionCutIds } = await captureCadImages({
           cadRef,
-          graphicsRef: resolveGraphicsRefForEntry(entryPath),
+          graphicsRef,
           imageService,
-          fileSystem: runtimeFileSystem,
-          recipe: { purpose: 'chat', mode: captureMode },
+          recipe:
+            captureMode === 'current' && !graphicsRef
+              ? { purpose: 'chat', mode: 'isometric' }
+              : { purpose: 'chat', mode: captureMode },
         });
         if (!mounted.current) {
           return;
@@ -260,13 +257,18 @@ export const ChatTextarea = memo(function ({
         if (successToast) {
           toast.success('Added screenshot to chat');
         }
+        if (omittedSectionCutIds.length > 0) {
+          toast.warning(omittedSectionCutsNotice);
+        }
       } catch (error) {
         if (mounted.current) {
           toast.error(error instanceof Error ? error.message : 'Image capture failed');
         }
+      } finally {
+        projectRef.send({ type: 'releaseGeometryUnit', claimId });
       }
     },
-    [imageService, resolveCadRefForEntry, resolveGraphicsRefForEntry, runtimeFileSystem],
+    [imageService, resolveGraphicsRefForEntry],
   );
 
   // Viewer-drop screenshots use the same settled-geometry adapter as menu actions.
@@ -299,121 +301,43 @@ export const ChatTextarea = memo(function ({
     [captureEntry],
   );
 
-  // Mobile drag-drop chip insertion: append `@<path>` segments and lean on the
-  // existing draft-text rehydration to render them as chips.
-  const handleAddTextRef = useRef(logic.handleAddText);
-  handleAddTextRef.current = logic.handleAddText;
-  useEffect(() => {
-    if (!isMobile) {
-      return;
-    }
-    addContextChipsRef.current = (paths: string[]): void => {
-      if (paths.length === 0) {
-        return;
-      }
-      const segment = paths.map((path) => `@${path}`).join(' ');
-      const needsLeadingSpace = inputTextRefForChips.current.length > 0 && !inputTextRefForChips.current.endsWith(' ');
-      handleAddTextRef.current(`${needsLeadingSpace ? ' ' : ''}${segment} `);
-    };
-    addContextReferencesRef.current = (references: ChatContextReference[]): void => {
-      if (references.length === 0) {
-        return;
-      }
-      const segment = references
-        .map((reference) => reference.referenceToken ?? `@${reference.path ?? reference.label}`)
-        .join(' ');
-      const needsLeadingSpace = inputTextRefForChips.current.length > 0 && !inputTextRefForChips.current.endsWith(' ');
-      handleAddTextRef.current(`${needsLeadingSpace ? ' ' : ''}${segment} `);
-    };
-    return () => {
-      addContextChipsRef.current = undefined;
-      addContextReferencesRef.current = undefined;
-    };
-  }, [isMobile]);
-
-  // Track the current input text for the mobile chip-insertion leading-space
-  // heuristic without re-running the registration effect on every keystroke.
-  const inputTextRefForChips = useRef(logic.inputText);
-  inputTextRefForChips.current = logic.inputText;
-
   const skeleton = <ChatTextareaSkeleton className={className} />;
-
-  if (isMobile) {
-    return (
-      <ClientOnly fallback={skeleton}>
-        <ChatTextareaMobile
-          className={className}
-          enableAutoFocus={enableAutoFocus}
-          enableContextActions={enableContextActions}
-          enableKernelSelector={enableKernelSelector}
-          // State
-          dragKind={logic.dragKind}
-          showContextMenu={logic.showContextMenu}
-          contextSearchQuery={logic.contextSearchQuery}
-          selectedMenuIndex={logic.selectedMenuIndex}
-          isSubmitting={logic.isSubmitting}
-          inputText={logic.inputText}
-          images={logic.images}
-          selectedToolChoice={logic.selectedToolChoice}
-          status={logic.status}
-          selectedModel={logic.selectedModel}
-          imageInputSupported={logic.imageInputSupported}
-          formattedCancelKeyCombination={logic.formattedCancelKeyCombination}
-          // Refs
-          textareaReference={logic.textareaReference}
-          fileInputReference={logic.fileInputReference}
-          containerReference={logic.containerReference}
-          // Handlers
-          handleSubmit={logic.handleSubmit}
-          handleCancelClick={logic.handleCancelClick}
-          handleTextareaKeyDown={logic.handleTextareaKeyDown}
-          handleDragOver={logic.handleDragOver}
-          handleDragLeave={logic.handleDragLeave}
-          handleDrop={logic.handleDrop}
-          handlePaste={logic.handlePaste}
-          handleFileSelect={logic.handleFileSelect}
-          handleFileChange={logic.handleFileChange}
-          handleTextChange={logic.handleTextChange}
-          handleContextMenuSelect={logic.handleContextMenuSelect}
-          handleContextImageAdd={logic.handleContextImageAdd}
-          handleAddText={logic.handleAddText}
-          handleAddImage={logic.handleAddImage}
-          handleTextareaBlur={logic.handleTextareaBlur}
-          handlePointerDown={logic.handlePointerDown}
-          focusInput={logic.focusInput}
-          removeImage={logic.removeImage}
-          setShowContextMenu={logic.setShowContextMenu}
-          setAtSymbolPosition={logic.setAtSymbolPosition}
-          setContextSearchQuery={logic.setContextSearchQuery}
-          setSelectedMenuIndex={logic.setSelectedMenuIndex}
-          setDraftToolChoice={logic.setDraftToolChoice}
-        />
-      </ClientOnly>
-    );
-  }
+  /* A paused run is answered from the composer, not the transcript. Only the
+   * main composer, and only under a real session: the new-project composer runs
+   * on `ChatComposerProvider`, which has no chat to be paused. */
+  const approvalBanner = mode === 'main' && projectContext && session ? <ChatApprovalBanner /> : undefined;
 
   return (
     <ClientOnly fallback={skeleton}>
+      {approvalBanner}
       <ChatTextareaDesktop
         className={className}
         enableAutoFocus={enableAutoFocus}
         enableContextActions={enableContextActions}
         enableKernelSelector={enableKernelSelector}
+        creationLocationControl={creationLocationControl}
+        isSubmitDisabled={logic.isSubmitDisabled}
+        mode={mode}
         // State
         dragKind={logic.dragKind}
         isSubmitting={logic.isSubmitting}
+        canResume={logic.canResume}
+        isAttaching={logic.isAttaching}
         inputText={logic.inputText}
-        images={logic.images}
-        selectedToolChoice={logic.selectedToolChoice}
+        attachments={logic.attachments}
+        attachmentDirectory={logic.attachmentDirectory}
+        sendBlockReason={logic.sendBlockReason}
+        attachmentAccept={logic.attachmentAccept}
+        attachmentInputSupported={logic.attachmentInputSupported}
         status={logic.status}
-        selectedModel={logic.selectedModel}
-        imageInputSupported={logic.imageInputSupported}
         formattedCancelKeyCombination={logic.formattedCancelKeyCombination}
         // Context data for Tiptap
         treeService={treeService}
         chats={chats}
         actionItems={screenshotActionItems}
         setDraftText={setDraftText}
+        acpAgentId={acpAgentId}
+        acpSessionData={acpSessionData}
         // Refs
         fileInputReference={logic.fileInputReference}
         containerReference={logic.containerReference}
@@ -433,8 +357,7 @@ export const ChatTextarea = memo(function ({
         onScreenshotAction={handleScreenshotAction}
         onEscapePressed={onEscapePressed}
         handleTextareaBlur={logic.handleTextareaBlur}
-        removeImage={logic.removeImage}
-        setDraftToolChoice={logic.setDraftToolChoice}
+        removeAttachment={logic.removeAttachment}
       />
     </ClientOnly>
   );

@@ -1,0 +1,209 @@
+/**
+ * Cross-tab write coordinator using `navigator.locks` and `BroadcastChannel`.
+ *
+ * Provides exclusive resource locks to prevent concurrent write conflicts
+ * across browser tabs. Notifies other tabs of mutations via `BroadcastChannel`.
+ *
+ * Progressive enhancement: no-op when `navigator.locks` is unavailable.
+ */
+
+import { z } from 'zod';
+import { assertRootedPath, resolveAuthorityPath } from '@taucad/utils/path';
+import { projectRoute } from '#project-routes.js';
+
+const lockPrefix = 'tau-fs-write:';
+const channelName = 'tau-fs-changes';
+
+const canonicalAuthorityPathSchema = z.string().refine((value) => {
+  try {
+    return resolveAuthorityPath(value) === value;
+  } catch {
+    return false;
+  }
+});
+const canonicalProviderPathSchema = z.string().refine((value) => {
+  try {
+    return assertRootedPath(value) === value;
+  } catch {
+    return false;
+  }
+});
+const physicalAuthoritySchema = z.object({
+  storageRootKey: z.string().min(1),
+  providerBasePath: canonicalProviderPathSchema,
+});
+const changeNotificationSchema = z.object({
+  type: z.enum(['write', 'mkdir', 'delete', 'rmdir', 'directory-change', 'project-unavailable']),
+  path: canonicalAuthorityPathSchema,
+  authority: physicalAuthoritySchema,
+});
+
+/** Cloneable canonical physical authority identity. @public */
+export type PhysicalAuthority = Readonly<z.infer<typeof physicalAuthoritySchema>>;
+
+/** Cross-authority invalidation published to sibling tabs. @public */
+export type ChangeNotification = Readonly<
+  Omit<z.infer<typeof changeNotificationSchema>, 'authority'> & { authority: PhysicalAuthority }
+>;
+
+/**
+ * Acquire the existing ordered mutation locks without owning a notification channel.
+ *
+ * @param paths - Logical and physical resource tokens.
+ * @param operation - Body executed under all selected locks.
+ * @returns The operation result, or its rejection.
+ * @internal
+ */
+export const withCrossTabLocks = async <T>(paths: readonly string[], operation: () => Promise<T>): Promise<T> => {
+  if (typeof navigator === 'undefined' || !('locks' in navigator)) {
+    return operation();
+  }
+  const sortedPaths = [...new Set(paths)].sort();
+  const acquire = async (index: number): Promise<T> => {
+    const path = sortedPaths[index];
+    if (path === undefined) {
+      return operation();
+    }
+    return navigator.locks.request(`${lockPrefix}${path}`, { mode: 'exclusive' }, async () => acquire(index + 1));
+  };
+  return acquire(0);
+};
+
+/** Acquire browser authority locks, refusing when the platform cannot provide exclusion. @internal */
+export const withRequiredCrossTabLocks = async <T>(
+  paths: readonly string[],
+  operation: () => Promise<T>,
+): Promise<T> => {
+  if (typeof navigator === 'undefined' || !('locks' in navigator)) {
+    throw Object.assign(new Error('Checked filesystem writes require navigator.locks or a provider authority.'), {
+      code: 'CHECKED_WRITE_UNSUPPORTED',
+      applicationState: 'known-not-applied',
+      metadata: { applicationState: 'known-not-applied' },
+    });
+  }
+  return withCrossTabLocks(paths, operation);
+};
+
+/**
+ * Coordinates filesystem writes across browser tabs.
+ *
+ * - Uses `navigator.locks` for supplied logical/physical resource serialization
+ * - Uses `BroadcastChannel` to notify other tabs of mutations
+ * - Progressive enhancement: executes operations directly when locks unavailable
+ *
+ * @public
+ */
+export class CrossTabCoordinator {
+  private _channel: BroadcastChannel | undefined;
+  private _changeHandler: ((notification: ChangeNotification) => void) | undefined;
+
+  public constructor() {
+    if (typeof BroadcastChannel !== 'undefined') {
+      this._channel = new BroadcastChannel(channelName);
+    }
+  }
+
+  /**
+   * Run a mutation under sorted exclusive locks and publish only after success.
+   *
+   * @param paths - Logical and physical lock tokens.
+   * @param notification - Invalidation published after the operation succeeds.
+   * @param operation - Mutation body.
+   * @returns The mutation result.
+   */
+  public async withMutationLocks<T>(
+    paths: readonly string[],
+    notification: ChangeNotification,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const run = async (): Promise<T> => {
+      const result = await operation();
+      this.notifyMutation(notification);
+      return result;
+    };
+    return this.withLocks(paths, run);
+  }
+
+  /**
+   * Execute an authority operation under supplied locks without implying mutation.
+   *
+   * @param paths - Lock tokens to acquire in deterministic order.
+   * @param operation - Operation body.
+   * @returns The operation result.
+   */
+  public async withLocks<T>(paths: readonly string[], operation: () => Promise<T>): Promise<T> {
+    return withCrossTabLocks(paths, operation);
+  }
+
+  /** Execute under required cross-tab exclusion, failing closed when unavailable. */
+  public async withRequiredLocks<T>(paths: readonly string[], operation: () => Promise<T>): Promise<T> {
+    return withRequiredCrossTabLocks(paths, operation);
+  }
+
+  /**
+   * Listen for change notifications from other tabs.
+   *
+   * @param handler - Called when another tab mutates a file.
+   */
+  public onRemoteChange(handler: (notification: ChangeNotification) => void): void {
+    this._changeHandler = handler;
+
+    if (this._channel) {
+      this._channel.addEventListener('message', (event: MessageEvent<unknown>) => {
+        const result = changeNotificationSchema.safeParse(event.data);
+        if (!result.success) {
+          console.warn('[CrossTabCoordinator] Dropped invalid change notification.');
+          return;
+        }
+        this._changeHandler?.(result.data);
+      });
+    }
+  }
+
+  /** Publish one already-committed mutation to sibling tabs. */
+  public notifyMutation(notification: ChangeNotification): void {
+    this._postChangeNotification(notification);
+  }
+
+  /**
+   * Notify sibling tabs before a project route becomes unavailable.
+   *
+   * @param projectId - Logical project identity being revoked.
+   */
+  public notifyProjectUnavailable(projectId: string, authority: PhysicalAuthority): void {
+    this._postChangeNotification({
+      type: 'project-unavailable',
+      path: projectRoute(projectId),
+      authority,
+    });
+  }
+
+  /**
+   * Invalidate one directory and all descendants in sibling tabs.
+   *
+   * @param path - Logical directory path.
+   * @param authority - Canonical physical provider and base-path identity.
+   */
+  public notifyDirectoryChange(path: string, authority: PhysicalAuthority): void {
+    this._postChangeNotification({
+      type: 'directory-change',
+      path,
+      authority,
+    });
+  }
+
+  /** Release resources. */
+  public dispose(): void {
+    this._channel?.close();
+    this._channel = undefined;
+    this._changeHandler = undefined;
+  }
+
+  private _postChangeNotification(notification: ChangeNotification): void {
+    try {
+      this._channel?.postMessage(notification);
+    } catch {
+      // Channel may be closed; safe to ignore
+    }
+  }
+}

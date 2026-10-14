@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { rootedFilePathSchema } from '#schemas/rooted-path.schema.js';
 
 /** @public */
 export const readFileInputSchema = z.object({
-  targetFile: z.string().describe('The path of the file to read, relative to the project root.'),
+  targetFile: rootedFilePathSchema.describe('The path of the file to read, relative to the project root.'),
   offset: z
     .number()
     .int()
@@ -28,7 +29,7 @@ export const readFileOutputSchema = z.object({
   truncated: z
     .boolean()
     .optional()
-    .describe('True when the returned slice was capped at MAX_READ_LINES (2000); use offset to paginate.'),
+    .describe('True when the returned slice was capped by the line or byte ceiling; use offset to paginate.'),
   modifiedAt: z
     .string()
     .optional()

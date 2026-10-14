@@ -1,9 +1,8 @@
 import { existsSync, globSync, readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { bundledLibraryProjects, workspace } from '@taucad/nx';
+import { bundledDeclarationProjects, rewriteDeclarationImports } from '@taucad/nx/bundled-declarations';
 import { describe, expect, it } from 'vitest';
-// oxlint-disable-next-line no-restricted-imports -- Unit test for this adjacent, unexported build script.
-import { bundledDeclarationProjects, rewriteDeclarationImports } from './assemble-bundled-declarations.mts';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 
@@ -19,6 +18,7 @@ describe('rewriteDeclarationImports', () => {
       'import type { SharedPool } from "@taucad/memory";',
       "export { joinPath } from '@taucad/utils/path';",
       "type Path = import('@taucad/utils/path').AbsolutePath;",
+      "import type { Quantity } from '@taucad/units/quantity';",
       "// import('@taucad/memory') stays documentation",
     ].join('\n');
 
@@ -27,6 +27,7 @@ describe('rewriteDeclarationImports', () => {
         'import type { SharedPool } from "../memory/src/index.mjs";',
         "export { joinPath } from '../utils/src/path.utils.mjs';",
         "type Path = import('../utils/src/path.utils.mjs').AbsolutePath;",
+        "import type { Quantity } from '@taucad/units/quantity';",
         "// import('@taucad/memory') stays documentation",
       ].join('\n'),
     );
@@ -78,9 +79,17 @@ describe('rewriteDeclarationImports', () => {
     }
 
     expect(directNames.has('@taucad/units')).toBe(false);
-    expect(bundled.map(({ packageName }) => packageName)).toContain('@taucad/units');
+    expect(bundled.map(({ packageName }) => packageName)).not.toContain('@taucad/units');
+    expect(workspaceValue.projects.find(({ manifest }) => manifest?.name === '@taucad/units')).toMatchObject({
+      root: 'packages/units',
+      manifest: { private: false },
+    });
+    expect(runtimeManifest.dependencies).toHaveProperty('@taucad/units', 'workspace:*');
+    expect(runtimeManifest.devDependencies).not.toHaveProperty('@taucad/units');
+    // A stale generated dist directory does not make units a private source library.
+    expect(existsSync(resolve(repositoryRoot, 'libs/units/package.json'))).toBe(false);
 
-    for (const name of ['types', 'json-schema', 'units']) {
+    for (const name of ['types', 'json-schema']) {
       expect(existsSync(resolve(repositoryRoot, `libs/${name}/dist/node_modules/.pnpm`))).toBe(false);
     }
 

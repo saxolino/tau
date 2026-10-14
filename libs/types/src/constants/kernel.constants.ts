@@ -7,7 +7,7 @@ import type { CodeLanguage } from '#types/code.types.js';
 export type KernelDimensions = 2 | 3;
 
 /** @public */
-export type KernelBackend = 'manifold' | 'opencascade' | 'zoo' | 'jscad';
+export type KernelBackend = 'manifold' | 'opencascade' | 'zoo' | 'jscad' | 'build123d' | 'picogk' | 'tscircuit';
 
 /**
  * Product catalog entry for a kernel offering, not an engine registry.
@@ -38,10 +38,92 @@ export type KernelConfiguration = {
   recommended: string;
   tags: string[];
   features: string[];
+  /** Runtime capability required before this offering may be selected. */
+  requiresRuntimeKernelId?: string;
 };
 
 /** @public */
 export const kernelConfigurations = [
+  {
+    id: 'picogk',
+    name: 'PicoGK',
+    dimensions: [3],
+    language: 'csharp',
+    description: 'Native C# voxel CAD for computational engineering',
+    mainFile: 'main.cs',
+    backendProvider: 'picogk',
+    longDescription:
+      'A native C# computational-engineering workflow backed by PicoGK and OpenVDB. Author strongly typed voxel models with live desktop rendering and mesh export.',
+    emptyCode: `using System.ComponentModel.DataAnnotations;
+using PicoGK;
+
+Library.Go(Params.VoxelSizeMm, () => { });
+
+public static class Params
+{
+    [Range(0.05, 5.0)]
+    [Display(Name = "Voxel size", Description = "OpenVDB voxel size in millimetres", Order = 0)]
+    public static float VoxelSizeMm { get; set; } = 0.5f;
+}
+`,
+    recommended: 'Native C# Voxel Engineering',
+    tags: ['C#', 'PicoGK', 'OpenVDB', 'Voxels', 'Desktop'],
+    features: ['CoreCLR JIT', 'Upstream PicoGK API', 'Interactive parameters', 'Topology-aware GLB'],
+    requiresRuntimeKernelId: 'picogk',
+  },
+  {
+    id: 'picovoxel',
+    name: 'PicoVoxel',
+    dimensions: [3],
+    language: 'typescript',
+    description: 'TypeScript voxel and implicit CAD that runs in the browser',
+    mainFile: 'main.ts',
+    // PicoVoxel is the PicoGK engine compiled to WebAssembly; the field is display-only.
+    backendProvider: 'picogk',
+    longDescription:
+      "PicoGK's OpenVDB voxel engine compiled to WebAssembly. Author voxel, implicit and lattice models in TypeScript with ShapeKernel and LatticeLibrary, in the browser, the desktop app or the CLI. The viewer shows a fast preview; exports and GeoSpec checks replay the model exactly.",
+    emptyCode: `import type { Pico, Voxels } from 'picovoxel';
+
+export const defaultParams = { voxelSize: 0.5 };
+
+export default function main(pico: Pico, params = defaultParams): Voxels[] {
+  return [];
+}
+`,
+    recommended: 'Voxel & Lattice CAD in the Browser',
+    tags: ['TypeScript', 'PicoGK', 'OpenVDB', 'Voxels', 'Implicit', 'Lattices', 'Browser'],
+    features: [
+      'ShapeKernel & LatticeLibrary',
+      'SDF expressions',
+      'Fast preview with exact export',
+      'Interactive parameters',
+    ],
+  },
+  {
+    id: 'build123d',
+    name: 'Build123d',
+    dimensions: [2, 3],
+    language: 'python',
+    description: 'Native Python BRep CAD for desktop engineering',
+    mainFile: 'main.py',
+    backendProvider: 'build123d',
+    longDescription:
+      'A best-in-class Python CAD API backed by native OpenCascade. Build precise parametric parts and assemblies with direct STEP export and topology-aware rendering in the Tau desktop app.',
+    emptyCode: `from dataclasses import dataclass
+from build123d import Shape
+
+@dataclass(frozen=True)
+class Params:
+    pass
+
+def main(params: Params) -> Shape | None:
+    return None
+`,
+    recommended: 'Native Python Engineering CAD',
+    tags: ['Python', 'OpenCascade', 'BRep', 'Desktop', 'Precision'],
+    features: ['Native performance', 'Python CAD API', 'Topology-aware GLB', 'STEP export'],
+    requiresRuntimeKernelId: 'build123d',
+  },
   {
     id: 'openscad',
     name: 'OpenSCAD',
@@ -107,7 +189,7 @@ export default function main(p = defaultParams) {}
     backendProvider: 'zoo',
     longDescription:
       "Geometry runs on Zoo's GPU-accelerated engine in the cloud rather than in your browser, so model complexity is bounded by the server, not by the tab. Best for large assemblies and detailed parts that stall a WASM kernel, with precise parametric geometry and STEP export.",
-    emptyCode: `@settings(defaultLengthUnit = mm, kclVersion = 1.0)
+    emptyCode: `@settings(defaultLengthUnit = mm, kclVersion = 3.0)
 `,
     recommended: 'Large Assemblies & Complex Parts',
     tags: ['GPU-Accelerated', 'Cloud Engine', 'Large Assemblies', 'Parametric', 'KCL'],
@@ -169,6 +251,28 @@ export default function main(p = defaultParams) {}
       'Advanced boolean operations',
       'Precise tolerancing',
     ],
+  },
+  {
+    id: 'tscircuit',
+    name: 'tscircuit',
+    dimensions: [2, 3],
+    language: 'tsx',
+    description: 'Electronics design in TSX: boards, schematics, PCB layouts and BOM',
+    mainFile: 'main.tsx',
+    backendProvider: 'tscircuit',
+    longDescription:
+      'Describe circuits as React-style TSX with tscircuit. Place resistors, capacitors, LEDs and chips on a board, wire them with traces and nets, then render the 3D board, the schematic or the PCB layout and export the BOM, netlist and circuit JSON.',
+    emptyCode: `export default () => (
+  <board width="20mm" height="20mm">
+    <resistor name="R1" resistance="1k" footprint="0402" pcbX={-4} pcbY={0} />
+    <led name="LED1" color="red" footprint="0603" pcbX={4} pcbY={0} />
+    <trace name="R1_LED1" from=".R1 > .pin2" to=".LED1 > .anode" />
+  </board>
+);
+`,
+    recommended: 'Electronics & PCB Design',
+    tags: ['tscircuit', 'TSX', 'Electronics', 'PCB', 'Schematic'],
+    features: ['3D board preview', 'Schematic and PCB SVG', 'Offline autorouting', 'BOM and netlist export'],
   },
 ] as const satisfies KernelConfiguration[];
 

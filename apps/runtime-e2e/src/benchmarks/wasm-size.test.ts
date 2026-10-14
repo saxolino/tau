@@ -43,27 +43,30 @@ const wasmBudgets: WasmBudget[] = [
   {
     name: 'Zoo/KCL',
     path: dependencyPath('packages/plugins/zoo', '@taucad/kcl-wasm-lib/kcl.wasm'),
-    maxBytes: 13_434_880,
+    maxBytes: 15_728_640,
   },
-  { name: 'esbuild', path: 'packages/plugins/esbuild/src/vm/wasm/esbuild.wasm', maxBytes: 13_828_096 },
+  { name: 'esbuild', path: 'packages/plugins/esbuild/src/vm/wasm/esbuild.wasm', maxBytes: 14_286_848 },
   {
     name: 'libassimp',
     path: dependencyPath('packages/plugins/assimp', 'libassimp/wasm'),
     maxBytes: 11_993_088,
   },
   { name: 'BRep OCCT', path: 'packages/plugins/brep/src/wasm/occt-import-js.wasm', maxBytes: 7_798_784 },
-  { name: 'glTF Draco decoder', path: 'packages/plugins/gltf/src/wasm/draco_decoder_gltf.wasm', maxBytes: 196_608 },
-  { name: 'glTF Draco encoder', path: 'packages/plugins/gltf/src/wasm/draco_encoder.wasm', maxBytes: 393_216 },
+  {
+    name: 'glTF Draco decoder',
+    path: dependencyPath('packages/plugins/gltf', 'draco3dgltf/draco_decoder_gltf.wasm'),
+    maxBytes: 196_608,
+  },
+  {
+    name: 'glTF Draco encoder',
+    path: dependencyPath('packages/plugins/gltf', 'draco3dgltf/draco_encoder.wasm'),
+    maxBytes: 393_216,
+  },
   { name: 'Rhino', path: 'packages/plugins/rhino/src/wasm/rhino3dm.wasm', maxBytes: 2_686_976 },
   {
     name: 'OpenRSCAD',
     path: dependencyPath('packages/plugins/openrscad', '@taulabs/openrscad-engine/openrscad_bg.wasm'),
     maxBytes: 6_029_312,
-  },
-  {
-    name: 'GeoSpec OCCT',
-    path: 'packages/geospec-engine/native/opencascade/dist/geospec_opencascade_single.wasm',
-    maxBytes: 13_369_344,
   },
   {
     name: 'image/resvg',

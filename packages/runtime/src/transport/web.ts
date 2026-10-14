@@ -30,7 +30,7 @@
 
 import { fromMemoryFs } from '#filesystem/runtime-filesystem.js';
 import type { RuntimeFileSystem } from '#filesystem/runtime-filesystem.js';
-import type { RuntimeClientOptionsWithTransport } from '#client/runtime-client-core.js';
+import type { RuntimeClientOptionsWithTransport } from '#client/runtime-document-client-core.js';
 import type { AnyRuntimeDefinition, RuntimeConfigInput, RuntimeConfigProvider } from '#worker/runtime-definition.js';
 import { webWorkerTransport } from '#transport/web-worker-transport.js';
 import type { WebWorkerTransportOptions } from '#transport/web-worker-client.js';
@@ -46,7 +46,7 @@ export { webWorkerClient } from '#transport/web-worker-client.js';
  *
  * @public
  */
-export type CreateWebWorkerClientOptionsOptions<Runtime extends AnyRuntimeDefinition | undefined = undefined> = Omit<
+export type WebWorkerClientOptionsInput<Runtime extends AnyRuntimeDefinition | undefined = undefined> = Omit<
   WebWorkerTransportOptions,
   'fileSystem'
 > & {
@@ -56,13 +56,13 @@ export type CreateWebWorkerClientOptionsOptions<Runtime extends AnyRuntimeDefini
    * Pass `fileSystem` for custom FS authority.
    */
   readonly files?: Record<string, string>;
-  /** Explicit transport-owned filesystem exposed to plugins as runtime `/`. Mutually exclusive with `files`. */
+  /** Explicit rooted filesystem exposed to plugins by this transport. Mutually exclusive with `files`. */
   readonly fileSystem?: RuntimeFileSystem;
   /**
    * Wall-clock deadline applied independently to each preview. Milliseconds.
    * Zero disables timeout enforcement.
    */
-  readonly renderTimeout?: number;
+  readonly operationTimeout?: number;
 } & ([RuntimeConfigInput<Runtime>] extends [never]
     ? { readonly config?: never }
     : undefined extends RuntimeConfigInput<Runtime>
@@ -89,26 +89,26 @@ export type CreateWebWorkerClientOptionsOptions<Runtime extends AnyRuntimeDefini
  *
  * const clientOptions = createWebWorkerClientOptions({
  *   createWorker: () => new Worker(new URL('./runtime.worker.ts', import.meta.url), { type: 'module' }),
- *   renderTimeout: 60_000,
+ *   operationTimeout: 60_000,
  * });
  * const client = createRuntimeClient(clientOptions);
  * ```
  */
 export const createWebWorkerClientOptions = <Runtime extends AnyRuntimeDefinition | undefined = undefined>(
-  options: CreateWebWorkerClientOptionsOptions<Runtime>,
+  options: WebWorkerClientOptionsInput<Runtime>,
 ): RuntimeClientOptionsWithTransport<Runtime, ReturnType<typeof webWorkerTransport>> => {
   if (options.files !== undefined && options.fileSystem !== undefined) {
     throw new TypeError('createWebWorkerClientOptions: pass either `files` or `fileSystem`, not both');
   }
 
-  const { config, files, fileSystem, renderTimeout, ...transportOptions } = options;
+  const { config, files, fileSystem, operationTimeout, ...transportOptions } = options;
   const clientOptions = {
     transport: webWorkerTransport({
       ...transportOptions,
       fileSystem: fileSystem ?? fromMemoryFs(files),
     }),
     ...(config === undefined ? {} : { config }),
-    ...(renderTimeout === undefined ? {} : { renderTimeout }),
+    ...(operationTimeout === undefined ? {} : { operationTimeout }),
   };
   return clientOptions as RuntimeClientOptionsWithTransport<Runtime, ReturnType<typeof webWorkerTransport>>;
 };

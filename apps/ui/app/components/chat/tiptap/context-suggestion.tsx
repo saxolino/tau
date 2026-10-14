@@ -7,8 +7,9 @@ import { File as FileIcon, Folder, MessageSquare, Camera, AlertCircle, ChevronRi
 import { Virtuoso } from 'react-virtuoso';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
-import { cn } from '#utils/ui.utils.js';
-import { Separator } from '#components/ui/separator.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { Separator } from '@taucad/ui/components/separator';
+import { menuContentVariants, menuItemVariants } from '@taucad/ui/components/menu.variants';
 import {
   getRecentFiles,
   getCategories,
@@ -149,6 +150,7 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
 }): React.JSX.Element | undefined {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [drilledCategory, setDrilledCategory] = useState<string | undefined>(undefined);
+  const [previousInput, setPreviousInput] = useState({ items: state.items, query: state.query });
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref requires null init
   const containerReference = useRef<HTMLDivElement>(null);
   const itemReferences = useRef<Map<number, HTMLButtonElement>>(new Map());
@@ -159,11 +161,11 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
 
   const hasQuery = query.length > 0;
 
-  // Reset drill state and selection when items or query change
-  useEffect(() => {
+  if (previousInput.items !== items || previousInput.query !== query) {
+    setPreviousInput({ items, query });
     setSelectedIndex(0);
     setDrilledCategory(undefined);
-  }, [items, query]);
+  }
 
   useEffect(() => {
     if (virtuosoRef.current) {
@@ -246,12 +248,10 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
         selectEntry(selectedIndex);
         return true;
       }
-      if (event.key === 'Escape') {
-        if (drilledCategory) {
-          handleDrillBack();
-          return true;
-        }
-        return false;
+      /* Escape, or Backspace before anything is typed, steps out of a category. */
+      if (drilledCategory && (event.key === 'Escape' || (event.key === 'Backspace' && !hasQuery))) {
+        handleDrillBack();
+        return true;
       }
       return false;
     };
@@ -259,7 +259,7 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
     return () => {
       keydownHandlerRef.current = undefined;
     };
-  }, [navigableEntries, selectedIndex, selectEntry, keydownHandlerRef, drilledCategory, handleDrillBack]);
+  }, [navigableEntries, selectedIndex, selectEntry, keydownHandlerRef, drilledCategory, handleDrillBack, hasQuery]);
 
   const rect = clientRect?.();
   if (!rect) {
@@ -281,11 +281,12 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
             }
           }}
           type='button'
-          className={cn(
-            'flex w-full items-center gap-2 rounded-sm px-2 h-7 text-left text-sm',
-            'hover:bg-accent hover:text-accent-foreground',
-            index === selectedIndex && 'bg-accent text-accent-foreground',
-          )}
+          className={cn(menuItemVariants({ highlight: 'selected' }), 'h-7 w-full px-2 text-left text-sm')}
+          data-selected={index === selectedIndex}
+          /* F2: a click must not move focus out of the editor — that would end an edit. */
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={() => {
             selectEntry(index);
           }}
@@ -312,11 +313,12 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
           }
         }}
         type='button'
-        className={cn(
-          'flex w-full items-center gap-2 rounded-sm px-2 h-7 text-left text-sm',
-          'hover:bg-accent hover:text-accent-foreground',
-          index === selectedIndex && 'bg-accent text-accent-foreground',
-        )}
+        className={cn(menuItemVariants({ highlight: 'selected' }), 'h-7 w-full px-2 text-left text-sm')}
+        data-selected={index === selectedIndex}
+        /* F2: a click must not move focus out of the editor — that would end an edit. */
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
         onClick={() => {
           selectEntry(index);
         }}
@@ -340,7 +342,7 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
       totalCount={entries.length}
       itemContent={(index) => renderEntry(entries[index]!, index)}
       components={{
-        List: (properties) => <div {...properties} className='px-0' />,
+        List: (properties) => <div {...properties} className='flex flex-col gap-0.5 px-0' />,
         Header: () => <div className='h-0.5' />,
         Footer: () => <div className='h-0.5' />,
       }}
@@ -357,7 +359,7 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
     return (
       <>
         {recentFiles.length > 0 && (
-          <div>
+          <div className='flex flex-col gap-0.5'>
             {recentFiles.map((file) => {
               const index = entryIndex++;
               return renderEntry({ kind: 'item', item: file }, index);
@@ -366,7 +368,7 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
         )}
         {recentFiles.length > 0 && categories.length > 0 && <Separator className='my-1' />}
         {categories.length > 0 && (
-          <div>
+          <div className='flex flex-col gap-0.5'>
             {categories.map((category) => {
               const index = entryIndex++;
               return renderEntry({ kind: 'category', category }, index);
@@ -383,10 +385,13 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
       <div className='sticky -top-1 z-10 -mt-1 bg-popover pt-1 pb-0.5'>
         <button
           type='button'
-          className='hover:text-accent-foreground flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent'
+          className={cn(menuItemVariants({ highlight: 'selected' }), 'h-7 w-full gap-1.5 px-2 text-left text-sm')}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={handleDrillBack}
         >
-          <ChevronLeft className='size-3 shrink-0' />
+          <ChevronLeft className='size-3 shrink-0 text-muted-foreground' />
           <Icon className='size-3 shrink-0' />
           {drilledCategory}
         </button>
@@ -452,9 +457,7 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
   return createPortal(
     <div
       ref={containerReference}
-      className={cn(
-        'fixed z-50 max-h-64 w-64 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md scroll-shadows-y',
-      )}
+      className={cn(menuContentVariants(), 'fixed max-h-64 w-64')}
       style={{
         left: rect.left,
         top: rect.top - 8,
@@ -462,7 +465,12 @@ export const ContextSuggestionDropdown = memo(function ContextSuggestionDropdown
       }}
       data-testid='context-suggestion-dropdown'
     >
-      {drilledCategory ? renderDrilledView() : hasQuery ? renderFlatSearch() : renderRootView()}
+      <div
+        className='flex min-h-0 scroll-shadows-y flex-col gap-0.5 overflow-x-hidden overflow-y-auto'
+        data-testid='context-suggestion-scroll-area'
+      >
+        {drilledCategory ? renderDrilledView() : hasQuery ? renderFlatSearch() : renderRootView()}
+      </div>
     </div>,
     document.body,
   );

@@ -27,6 +27,7 @@ import { fromNodeFs } from '@taucad/runtime/filesystem/node';
 import { createGeometryTestHelpers } from '@taucad/runtime-testing';
 import { webSocketTransport } from '@taucad/runtime/transport/websocket';
 import { webSocketHost } from '@taucad/runtime/transport/websocket-host';
+import { createSqliteComputeEngine, fromSqlite } from '@taucad/runtime/node';
 import type { WebSocketHostHandle, WebSocketHostOptions } from '@taucad/runtime/transport/websocket-host';
 import { createRuntimeWorker } from '@taucad/runtime/worker';
 
@@ -185,6 +186,71 @@ describe('webSocketHost (in-process, real ws server)', { concurrent: false }, ()
 
     expect(await expectUpgradeFailure(`${url}/nope`)).toContain('404');
     expect(await expectUpgradeFailure(`${url}/fs`)).toContain('400');
+    expect(await expectUpgradeFailure(`${url}/compute?session=private`)).toContain('404');
+  });
+
+  it('pairs an explicitly enabled private compute socket with its runtime session', async () => {
+    const url = await startHost({
+      fileSystem: fromNodeFs(await makeRoot()),
+      allowPrivateComputePairing: true,
+    });
+    const compute = createSqliteComputeEngine({ directory: join(await makeRoot(), 'compute') });
+    const client = createRuntimeClient({
+      transport: webSocketTransport({
+        url,
+        createSocket: (runtimeUrl) => new WebSocket(runtimeUrl),
+        compute: { mode: 'durable', store: fromSqlite({ store: compute, workspace: 'trusted-project' }) },
+      }),
+    });
+    const document = client.open({ source: { path: 'main.ts' } });
+    const view = document.view('model');
+    try {
+      await expect(view.rendering()).resolves.toMatchObject({
+        superseded: false,
+        rendering: { success: true },
+      });
+    } finally {
+      view.close();
+      document.close();
+      await client.shutdown();
+    }
+  });
+
+  it.each([{ mode: 'off' }, { mode: 'memory' }] as const)(
+    'admits a $mode runtime without a private compute pair',
+    async (compute) => {
+      const url = await startHost({
+        fileSystem: fromNodeFs(await makeRoot()),
+        allowPrivateComputePairing: true,
+        pairingTimeout: 100,
+      });
+      const client = createRuntimeClient({ transport: webSocketTransport({ url, compute }) });
+      const document = client.open({ source: { path: 'main.ts' } });
+      const view = document.view('model');
+      try {
+        await expect(view.rendering()).resolves.toMatchObject({
+          superseded: false,
+          rendering: { success: true },
+        });
+      } finally {
+        view.close();
+        document.close();
+        await client.shutdown();
+      }
+    },
+  );
+
+  it('requires a bounded matching pair only for declared durable compute', async () => {
+    const url = await startHost({
+      fileSystem: fromNodeFs(await makeRoot()),
+      allowPrivateComputePairing: true,
+      pairingTimeout: 100,
+    });
+    expect(await expectUpgradeFailure(`${url}/runtime?session=forged&compute=memory`)).toContain('400');
+    const missing = await openRawSocket(`${url}/runtime?session=missing&compute=durable`);
+    const [code, reason] = (await once(missing, 'close')) as [number, Uint8Array<ArrayBuffer>];
+    expect(code).toBe(1008);
+    expect(new TextDecoder().decode(reason)).toBe('no /compute socket paired for this session');
   });
 
   it('closes an unpaired /runtime socket with 1008 once the pairing bound elapses', async () => {
@@ -214,21 +280,25 @@ describe('webSocketHost (in-process, real ws server)', { concurrent: false }, ()
     const first = createRuntimeClient({ transport: webSocketTransport({ url }) });
     const second = createRuntimeClient({ transport: webSocketTransport({ url }) });
 
+    const firstDocument = first.open({ source: { path: 'main.ts' } });
+    const secondDocument = second.open({ source: { path: 'main.ts' } });
+    const firstView = firstDocument.view('model');
+    const secondView = secondDocument.view('model');
     try {
-      const [one, two] = await Promise.all([
-        first.render({ source: { path: 'main.ts' } }),
-        second.render({ source: { path: 'main.ts' } }),
-      ]);
+      const [one, two] = await Promise.all([firstView.rendering(), secondView.rendering()]);
       if (one.superseded || two.superseded) {
         throw new Error('Expected both socket clients to settle their own render');
       }
-      await geometryHelpers.expectValidGltf(one.geometry);
-      await geometryHelpers.expectValidGltf(two.geometry);
-      await geometryHelpers.expectMeshCount(one.geometry, 1);
-      await geometryHelpers.expectMeshCount(two.geometry, 1);
+      await geometryHelpers.expectValidGltf(one.rendering);
+      await geometryHelpers.expectValidGltf(two.rendering);
+      await geometryHelpers.expectMeshCount(one.rendering, 1);
+      await geometryHelpers.expectMeshCount(two.rendering, 1);
     } finally {
-      first.terminate();
-      second.terminate();
+      firstView.close();
+      secondView.close();
+      firstDocument.close();
+      secondDocument.close();
+      await Promise.all([first.shutdown(), second.shutdown()]);
     }
   });
 
@@ -252,8 +322,8 @@ describe('webSocketHost (in-process, real ws server)', { concurrent: false }, ()
     /* `close()` resolved, so every connection's dispatcher, fs proxy and worker
      * are already gone — no polling needed for this assertion. */
     expect(workerCleanups).toBe(2);
-    await expect(first.closed).resolves.toEqual({ cause: 'host-exit' });
-    await expect(second.closed).resolves.toEqual({ cause: 'host-exit' });
+    await expect(first.closed).resolves.toEqual({ cause: 'host-exit', phase: 'session' });
+    await expect(second.closed).resolves.toEqual({ cause: 'host-exit', phase: 'session' });
   });
 
   /* Finding 2 of daemon-websocket-prerequisites-blueprint.md, measured: the
@@ -308,15 +378,19 @@ describe('webSocketHost (in-process, real ws server)', { concurrent: false }, ()
       }),
     });
 
+    const document = client.open({ source: { path: 'main.ts' } });
+    const view = document.view('model');
     try {
-      const result = await client.render({ source: { path: 'main.ts' } });
+      const result = await view.rendering();
       if (result.superseded) {
         throw new Error('Expected the shared-server render to settle');
       }
-      await geometryHelpers.expectValidGltf(result.geometry);
-      await geometryHelpers.expectMeshCount(result.geometry, 1);
+      await geometryHelpers.expectValidGltf(result.rendering);
+      await geometryHelpers.expectMeshCount(result.rendering, 1);
     } finally {
-      client.terminate();
+      view.close();
+      document.close();
+      await client.shutdown();
     }
   }, 30_000);
 
@@ -358,14 +432,18 @@ describe('webSocketHost (in-process, real ws server)', { concurrent: false }, ()
       transport: webSocketTransport({ url: `${url}/?token=abc`, fileSystem: fromNodeFs(await makeRoot()) }),
     });
 
+    const document = client.open({ source: { path: 'main.ts' } });
+    const view = document.view('model');
     try {
-      const result = await client.render({ source: { path: 'main.ts' } });
+      const result = await view.rendering();
       if (result.superseded) {
         throw new Error('Expected the authorized render to settle');
       }
-      await geometryHelpers.expectValidGltf(result.geometry);
+      await geometryHelpers.expectValidGltf(result.rendering);
     } finally {
-      client.terminate();
+      view.close();
+      document.close();
+      await client.shutdown();
     }
 
     /* `buildSocketUrl` preserves the base URL's search params, so the token

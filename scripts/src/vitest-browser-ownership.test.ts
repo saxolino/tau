@@ -33,6 +33,9 @@ const textFiles = (): ReadonlyArray<readonly [path: string, source: string]> =>
     return source.includes('\0') ? [] : [[path, source] as const];
   });
 
+// Scan once before test timeouts start; every assertion uses the same complete Git inventory.
+const sourceFiles = textFiles();
+
 type ForbiddenPattern = readonly [pattern: string, label: string];
 
 const findForbiddenViolations = (
@@ -54,6 +57,13 @@ const facadePatterns = (): readonly ForbiddenPattern[] => [
   [['Test', 'Info'].join(''), 'Playwright-shaped test metadata'],
 ];
 
+const vitestPlaywrightConfigs = (): ReadonlyArray<readonly [path: string, source: string]> =>
+  sourceFiles.filter(
+    ([path, source]) =>
+      // Match the provider call, not its import: configs may wrap `playwright()` to retype it for their Vitest copy.
+      /vitest(?:\.[^.]+)*\.config\.ts$/u.test(path) && /provider:\s*playwright(?:Provider)?\(/u.test(source),
+  );
+
 describe('Vitest Browser test-runner ownership', () => {
   it('keeps removed runner packages, configs, commands, and artifacts out of the repository', () => {
     const driverName = ['play', 'wright'].join('');
@@ -65,7 +75,7 @@ describe('Vitest Browser test-runner ownership', () => {
       [`${driverName} test`, 'runner command'],
       [`dist/.${driverName}`, 'runner artifact root'],
     ] as const;
-    const violations = findForbiddenViolations(textFiles(), forbidden);
+    const violations = findForbiddenViolations(sourceFiles, forbidden);
 
     expect(violations).toEqual([]);
   });
@@ -73,7 +83,7 @@ describe('Vitest Browser test-runner ownership', () => {
   it('keeps the deleted facade protocol out of the repository', () => {
     const forbidden = facadePatterns();
 
-    expect(findForbiddenViolations(textFiles(), forbidden)).toEqual([]);
+    expect(findForbiddenViolations(sourceFiles, forbidden)).toEqual([]);
     for (const [pattern] of forbidden) {
       expect(findForbiddenViolations([['fixture.ts', pattern]], forbidden)).toHaveLength(1);
     }
@@ -81,7 +91,7 @@ describe('Vitest Browser test-runner ownership', () => {
 
   it('requires browser specs to import test and expect from Vitest', () => {
     const supportRunnerImport = /import\s*\{[^}]*\b(?:expect|test)\b[^}]*\}\s*from\s*['"][^'"]*support[^'"]*['"]/su;
-    const violations = textFiles()
+    const violations = sourceFiles
       .filter(([path, source]) => path.endsWith('.spec.ts') && supportRunnerImport.test(source))
       .map(([path]) => path);
 
@@ -92,34 +102,91 @@ describe('Vitest Browser test-runner ownership', () => {
   it('confines the direct browser driver and install command to privileged boundaries', () => {
     const allowedDriverFiles = new Set([
       '.agents/skills/audit-ui/scripts/axe-audit.mjs',
+      // The staging billing harness pays a hosted Stripe Checkout in headless Chromium, which Browser Mode cannot
+      // host; its specs reach the driver only through this module.
+      'apps/billing-e2e/src/support/checkout.ts',
+      'apps/desktop-e2e/src/desktop-assimp.spec.ts',
+      'apps/desktop-e2e/src/desktop-build123d.spec.ts',
+      'apps/desktop-e2e/src/desktop-chat-acp.spec.ts',
+      'apps/desktop-e2e/src/desktop-chat-in-project.spec.ts',
+      'apps/desktop-e2e/src/desktop-community-preview.spec.ts',
+      'apps/desktop-e2e/src/desktop-converter.spec.ts',
+      'apps/desktop-e2e/src/desktop-ephemeral-isolation.spec.ts',
+      'apps/desktop-e2e/src/desktop-kernel-utility-cap.spec.ts',
+      'apps/desktop-e2e/src/desktop-machine-profiles.spec.ts',
+      'apps/desktop-e2e/src/desktop-main-editor-kernels.spec.ts',
+      'apps/desktop-e2e/src/desktop-native-payload.spec.ts',
+      'apps/desktop-e2e/src/desktop-print-dry-run.spec.ts',
+      'apps/desktop-e2e/src/desktop-voice.spec.ts',
+      // Native projection scenarios and the launch-helper test stay inside the Electron driver boundary.
+      'apps/desktop-e2e/src/filesystem-projection-observation.spec.ts',
+      'apps/desktop-e2e/src/support/desktop-app.test.ts',
+      'apps/desktop-e2e/src/support/desktop-app.ts',
+      'apps/desktop-e2e/src/support/filesystem-projection-delivery.ts',
+      'apps/desktop-e2e/src/support/filesystem-projection-fixture.test.ts',
+      'apps/desktop-e2e/src/support/gateway-fixture.ts',
+      'apps/desktop-e2e/src/support/revisions-pane.ts',
+      'apps/desktop-e2e/src/support/scenario.ts',
+      'apps/desktop-e2e/src/support/two-client/browser-client.ts',
+      'apps/desktop-e2e/src/support/two-client/git-faults.test.ts',
+      'apps/desktop-e2e/src/support/two-client/git-faults.ts',
+      'apps/desktop-e2e/src/two-client.spec.ts',
+      'apps/docs/scripts/verify-browser.mts',
       'apps/react-e2e/browser-command.ts',
+      'apps/react-e2e/scripts/benchmark-bundler-products.mts',
+      'apps/ui-e2e/src/support/open-to-frame.ts',
+      'apps/ui/app/components/panes/pane-resize.vitest.browser.config.ts',
+      // The agent plugin's host suite serves the viewer page in a sandboxed host frame and drives `tau mcp` over
+      // stdio beside it, which Browser Mode cannot host.
+      'packages/agent-plugin/e2e/viewer-page.hosts.test.ts',
+      'packages/geospec-engine-native/bindings/browser-conformance/qualify-mt-product.mjs',
+      'packages/geospec-engine-native/bindings/browser-conformance/run-browser-conformance.ts',
+      'scripts/src/canvas-vite.config.test.ts',
+      'scripts/src/check-pack-install.ts',
+      // The README hero capture drives the Electron desktop app, which Browser Mode cannot host.
+      'scripts/src/readme-hero-capture.ts',
       'scripts/src/reference-html.test.ts',
       'scripts/src/reference-html.ts',
     ]);
     const directDriverImport = /from\s+['"]playwright(?:\/test)?['"]/u;
-    const driverFiles = textFiles()
+    const driverFiles = sourceFiles
       .filter(([, source]) => directDriverImport.test(source))
       .map(([path]) => path)
       .sort();
     const installCommand = `${['play', 'wright'].join('')} install`;
-    const installFiles = textFiles()
-      .filter(([, source]) => source.includes(installCommand))
-      .map(([path]) => path);
+    const installFiles = sourceFiles.filter(([, source]) => source.includes(installCommand)).map(([path]) => path);
 
     expect(driverFiles).toEqual([...allowedDriverFiles].sort());
-    expect(installFiles).toEqual(['.github/workflows/ci.yml']);
+    // The create-repo template is CI for generated repositories, not a Tau browser-driver site.
+    // The docs deployment gate installs Chromium on the Netlify builder unless one is supplied.
+    // The staging billing harness workflow installs Chromium for the hosted Checkout its rows pay.
+    // The pkg.pr.new consumer leg and the publish dry-run spike install Chromium for check-pack-install's browser checks.
+    expect(installFiles.sort()).toEqual(
+      [
+        '.agents/skills/create-repo/templates/ci.yml',
+        '.github/workflows/billing-staging-e2e.yml',
+        '.github/workflows/e2e-nightly.yml',
+        '.github/workflows/preview-packages.yml',
+        '.github/workflows/spike-publish-dry-run.yml',
+        'apps/docs/project.json',
+      ].sort(),
+    );
   });
 
   it('documents every Browser Mode write-access requirement', () => {
     const allowWrite = ['allow', 'Write: true'].join('');
     const documentedAllowWrite = new RegExp(
-      `// Artifact requirement: [^\\n]+\\n\\s*api: \\{ ${allowWrite.replace(' ', '\\s*')} \\}`,
+      String.raw`// Artifact requirement: [^\n]+\n\s*api: \{ ${allowWrite.replace(' ', String.raw`\s*`)} \}`,
       'u',
     );
-    const allowWriteFiles = textFiles().filter(([, source]) => source.includes(allowWrite));
+    const allowWriteFiles = sourceFiles.filter(([, source]) => source.includes(allowWrite));
 
     expect(allowWriteFiles.map(([path]) => path).sort()).toEqual(
-      ['apps/react-e2e/vitest.config.ts', 'apps/ui-e2e/vitest.config.ts'].sort(),
+      [
+        'apps/react-e2e/vitest.config.ts',
+        'apps/ui-e2e/vitest.config.ts',
+        'packages/plugins/rolldown/vitest.browser.benchmark.config.ts',
+      ].sort(),
     );
     for (const [, source] of allowWriteFiles) {
       expect(source).toMatch(documentedAllowWrite);
@@ -143,5 +210,75 @@ describe('Vitest Browser test-runner ownership', () => {
       expect(catalog).toContain(entry);
     }
     expect(new Set(lockedVersions)).toEqual(new Set(['4.1.11']));
+  });
+
+  it('launches every Vitest Playwright Chromium instance through managed full Chromium', () => {
+    const configs = vitestPlaywrightConfigs();
+    expect(configs.map(([path]) => path).sort()).toEqual(
+      [
+        'apps/react-e2e/vitest.bundlers.config.ts',
+        'apps/react-e2e/vitest.config.ts',
+        'apps/ui-e2e/vitest.config.ts',
+        'apps/ui/app/components/chat/chat-textarea.vitest.browser.config.ts',
+        'apps/ui/app/components/code/code-editor.vitest.browser.config.ts',
+        'apps/ui/app/components/geometry/viewer-resize.vitest.browser.config.ts',
+        'apps/ui/app/components/panes/editor-layout.vitest.browser.config.ts',
+        'apps/ui/app/components/panes/pane-resize.vitest.browser.config.ts',
+        'apps/ui/app/components/printer/printer.vitest.browser.config.ts',
+        'apps/ui/app/routes/w.$workspace.$project/chat-history.vitest.browser.config.ts',
+        'apps/ui/app/routes/w.$workspace.$project/chat-print.vitest.browser.config.ts',
+        'apps/ui/app/routes/w.$workspace.$project/chat-viewer.vitest.browser.config.ts',
+        'apps/ui/app/workers/agent-host.vitest.browser.config.ts',
+        'apps/ui/chat-revision-marker.vitest.browser.config.ts',
+        'packages/agent-host/vitest.browser.config.ts',
+        'packages/core/bundler/vitest.browser.config.ts',
+        'packages/plugins/openrscad/e2e/vitest.config.ts',
+        'packages/plugins/rolldown/vitest.browser.benchmark.config.ts',
+        'packages/plugins/rolldown/vitest.browser.config.ts',
+        'packages/plugins/rolldown/vitest.browser.nonisolated.config.ts',
+        'packages/ui/vitest.browser.config.ts',
+        'packages/viewer/src/graphics/svg/svg-viewer.vitest.browser.config.ts',
+        'packages/viewer/src/graphics/three/utils/gltf-batches.vitest.browser.config.ts',
+        'packages/viewer/src/graphics/three/viewer-resize.vitest.browser.config.ts',
+      ].sort(),
+    );
+
+    for (const [path, source] of configs) {
+      const chromiumInstances = source.match(/browser:\s*['"]chromium['"]/gu)?.length ?? 0;
+      const managedChannels = source.match(/channel:\s*['"]chromium['"]/gu)?.length ?? 0;
+      expect(chromiumInstances, `${path} must declare at least one Chromium instance`).toBeGreaterThan(0);
+      expect(managedChannels, `${path} must select managed full Chromium for every Chromium instance`).toBe(
+        chromiumInstances,
+      );
+      expect(source, `${path} must keep headless ownership at the Vitest Browser level`).toMatch(
+        /browser:\s*\{[\s\S]*?headless:\s*true/u,
+      );
+      expect(source, `${path} must not use ambient branded Chrome`).not.toMatch(/channel:\s*['"]chrome['"]/u);
+      expect(source, `${path} must not put headless inside Playwright launchOptions`).not.toMatch(
+        /launchOptions:\s*\{[^}]*headless:/u,
+      );
+    }
+  });
+
+  it('forbids capability skips in the required Chromium WebGPU cohort', () => {
+    const requiredSpecs = new Set([
+      'apps/ui-e2e/src/graphics-backend.spec.ts',
+      'apps/ui-e2e/src/section-view-contour-fill.spec.ts',
+      'apps/ui-e2e/src/section-view-control-restyle.spec.ts',
+      'apps/ui-e2e/src/section-view-overlap-cap-shading.spec.ts',
+      'apps/ui-e2e/src/section-view-overlap-performance-diagnostics.spec.ts',
+      'apps/ui-e2e/src/shader-fixture.spec.ts',
+      'apps/ui-e2e/src/user-project-thumbnail-generation.spec.ts',
+    ]);
+    const violations = sourceFiles
+      .filter(([path]) => requiredSpecs.has(path))
+      .flatMap(([path, source]) =>
+        [
+          source.includes('WebGPU is not available in this browser runtime.') ? `${path}: capability skip` : undefined,
+          source.includes('isWebGpuAvailable') ? `${path}: property-presence helper` : undefined,
+        ].filter((violation): violation is string => violation !== undefined),
+      );
+
+    expect(violations).toEqual([]);
   });
 });

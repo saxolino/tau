@@ -5,16 +5,16 @@ import { Virtuoso } from 'react-virtuoso';
 import { useDirectoryListing } from '@taucad/fs-client/react/use-directory-listing';
 import type { DirectoryListingError, ListedDirectoryEntry } from '@taucad/fs-client/directory-listing';
 import { classifyDirectoryListingError } from '@taucad/fs-client/directory-listing';
-import { useIsMobile } from '#hooks/use-mobile.js';
+import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import { useOptionalFileManager } from '#hooks/use-file-manager.js';
-import { Command, CommandInput, CommandItem, CommandList } from '#components/ui/command.js';
-import { Drawer, DrawerContent, DrawerDescription, DrawerTitle, DrawerTrigger } from '#components/ui/drawer.js';
-import { Popover, PopoverContent, PopoverTrigger } from '#components/ui/popover.js';
-import { Button } from '#components/ui/button.js';
+import { Command, CommandInput, CommandItem, CommandList } from '@taucad/ui/components/command';
+import { Drawer, DrawerContent, DrawerDescription, DrawerTitle, DrawerTrigger } from '@taucad/ui/components/drawer';
+import { Popover, PopoverContent, PopoverTrigger } from '@taucad/ui/components/popover';
+import { Button } from '@taucad/ui/components/button';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
-import { cn } from '#utils/ui.utils.js';
-import { menuItemLayoutClass } from '#components/ui/menu.variants.js';
-import { Loader } from '#components/ui/loader.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { menuItemLayoutClass } from '@taucad/ui/components/menu.variants';
+import { Loader } from '@taucad/ui/components/loader';
 import { OmniScroller } from '#components/ui/omni-scroller.js';
 
 export type FileSelectorEntry = {
@@ -268,7 +268,7 @@ function BreadcrumbNav({
 
   // Auto-scroll to show the current (last) breadcrumb when path changes
   useEffect(() => {
-    if (currentCrumbRef.current && scrollContainerRef.current) {
+    if (currentPath === crumbs.at(-1)?.path && currentCrumbRef.current && scrollContainerRef.current) {
       currentCrumbRef.current.scrollIntoView({ behavior: 'instant', inline: 'end', block: 'nearest' });
     }
   }, [currentPath]);
@@ -277,13 +277,13 @@ function BreadcrumbNav({
     <div className='flex items-center text-sm'>
       <OmniScroller
         ref={scrollContainerRef}
-        className='mx-2 flex flex-1 snap-x snap-mandatory [scrollbar-width:none] items-center gap-0.5 overscroll-x-none [&::-webkit-scrollbar]:hidden'
+        className='mx-1 flex flex-1 snap-x snap-mandatory [scrollbar-width:none] items-center gap-0.5 overscroll-x-none [&::-webkit-scrollbar]:hidden'
       >
         {/* "Files" root button - inside scrollable area */}
         <button
           type='button'
           className={cn(
-            'my-1.5 shrink-0 snap-start rounded-xs px-1 py-0.5 hover:bg-muted',
+            'my-1 shrink-0 snap-start rounded-xs px-1 py-0.5 hover:bg-muted',
             currentPath === '' && 'font-medium text-foreground',
             currentPath !== '' && 'text-muted-foreground',
           )}
@@ -297,7 +297,7 @@ function BreadcrumbNav({
         {crumbs.map((crumb, index) => {
           const isLast = index === crumbs.length - 1;
           return (
-            <div key={crumb.path} className='my-1.5 flex shrink-0 snap-start items-center gap-0.5'>
+            <div key={crumb.path} className='my-1 flex shrink-0 snap-start items-center gap-0.5'>
               <ChevronRight className='size-3 text-muted-foreground' />
               <button
                 ref={isLast ? currentCrumbRef : undefined}
@@ -433,7 +433,7 @@ function FileSelectorItemList({
         defaultItemHeight={40}
         itemContent={renderItem}
         components={{
-          List: (properties) => <div {...properties} className='px-1' />,
+          List: (properties) => <div {...properties} className='flex flex-col gap-0.5 px-1' />,
           Header: () => <div className='h-1' />,
           Footer: () => <div className='h-1' />,
         }}
@@ -442,7 +442,7 @@ function FileSelectorItemList({
   }
 
   return (
-    <div className='p-1'>
+    <div className='flex flex-col gap-0.5 p-1'>
       {items.map((item) => {
         const hint = isSearching ? getDirectoryHint(item.path, currentPath) : undefined;
         return (
@@ -509,7 +509,7 @@ function FileSelectorBrowseErrorRow({
 }): React.JSX.Element {
   return (
     <div className='flex flex-col items-center gap-2 p-4 text-center text-sm'>
-      <p className='text-destructive'>{message}</p>
+      <p className='text-feature'>{message}</p>
       <Button type='button' variant='outline' size='sm' onClick={onRetry}>
         Retry
       </Button>
@@ -523,14 +523,14 @@ export function FileSelector({
   shouldIncludeDirectories,
   selectedFile,
   onSelect,
-  placeholder = 'Select file...',
+  placeholder = 'Select file…',
   isLoading = false,
   isDisabled = false,
   children,
   className,
   title = 'Select File',
   description = 'Choose a file from the list',
-  searchPlaceholder = 'Filter files...',
+  searchPlaceholder = 'Filter files…',
   emptyMessage = 'No files found.',
   virtualizationThreshold = 50,
   popoverProperties,
@@ -590,7 +590,6 @@ export function FileSelector({
 
   useEffect(() => {
     if (!searchAdapter || !searchQuery) {
-      setSearchResults([]);
       return;
     }
     let cancelled = false;
@@ -698,7 +697,7 @@ export function FileSelector({
     [isExplicitBrowse, loadDirectoryExplicit],
   );
 
-  const selectedFileName = selectedFile?.split('/').pop();
+  const selectedFileName = selectedFile ? selectedFile.split('/').pop() : undefined;
 
   const triggerButton = children ?? (
     <Button variant='outline' className={cn('w-full justify-between', className)} disabled={isDisabled || isLoading}>
@@ -708,7 +707,7 @@ export function FileSelector({
         ) : selectedFile ? (
           <FileExtensionIcon filename={selectedFile} className='size-4 shrink-0' />
         ) : undefined}
-        <span className={cn('truncate', !selectedFile && 'text-muted-foreground')}>
+        <span className={cn('truncate', !selectedFile && 'font-normal text-muted-foreground')}>
           {selectedFileName ?? placeholder}
         </span>
       </div>
@@ -720,7 +719,7 @@ export function FileSelector({
     <Command shouldFilter={false} className='flex flex-col'>
       <BreadcrumbNav currentPath={currentPath} onNavigate={handleNavigate} />
       <CommandInput placeholder={searchPlaceholder} value={searchQuery} onValueChange={setSearchQuery} />
-      <CommandList className='max-h-[300px] scroll-shadows-y'>
+      <CommandList className='max-h-75 scroll-shadows-y'>
         {isSearching ? (
           <FileSelectorItemList
             items={displayItems}
@@ -774,7 +773,7 @@ export function FileSelector({
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>{triggerButton}</PopoverTrigger>
-      <PopoverContent {...popoverProperties} className={cn('w-[300px] p-0', popoverProperties?.className)}>
+      <PopoverContent {...popoverProperties} className={cn('w-75 p-0', popoverProperties?.className)}>
         {content}
       </PopoverContent>
     </Popover>

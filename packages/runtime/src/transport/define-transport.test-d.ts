@@ -24,7 +24,7 @@ import type {
   TransportHostOptions,
   TransportPluginId,
 } from '#transport/transport-projections.js';
-import type { RuntimeProtocol } from '#types/runtime-protocol.types.js';
+import type { RuntimeDocumentProtocol } from '#types/runtime-document-protocol.types.js';
 
 const stubDescribe =
   <Id extends string>(id: Id) =>
@@ -40,13 +40,13 @@ const stubDescribe =
 
 const stubClient = <Id extends string>(
   id: Id,
-): RuntimeTransportClient<RuntimeProtocol, Readonly<Record<never, never>>, Id> =>
-  ({ id }) as unknown as RuntimeTransportClient<RuntimeProtocol, Readonly<Record<never, never>>, Id>;
+): RuntimeTransportClient<RuntimeDocumentProtocol, Readonly<Record<never, never>>, Id> =>
+  ({ id }) as unknown as RuntimeTransportClient<RuntimeDocumentProtocol, Readonly<Record<never, never>>, Id>;
 
 const stubHost = <Id extends string>(
   id: Id,
-): RuntimeTransportHost<RuntimeProtocol, Readonly<Record<never, never>>, Id> =>
-  ({ id }) as unknown as RuntimeTransportHost<RuntimeProtocol, Readonly<Record<never, never>>, Id>;
+): RuntimeTransportHost<RuntimeDocumentProtocol, Readonly<Record<never, never>>, Id> =>
+  ({ id }) as unknown as RuntimeTransportHost<RuntimeDocumentProtocol, Readonly<Record<never, never>>, Id>;
 
 const schemaHost = z.object({ port: z.number().default(0) });
 
@@ -96,6 +96,23 @@ describe('defineRuntimeTransport generic inference (C11)', () => {
     type InferredClient = TransportClientOptions<typeof transport>;
     assertType<InferredClient>({ url: 'wss://example', retries: 5 });
     assertType<InferredClient>({ url: 'wss://example' });
+  });
+
+  it('accepts schema input while the client consumes transformed output', () => {
+    const clientFactory = (_args: { endpoint: URL }): RuntimeTransportClient => stubClient('transformed');
+    clientFactory.describe = (_args: { endpoint: URL }): TransportDescriptor<'transformed'> =>
+      stubDescribe('transformed')();
+    const transport = defineRuntimeTransport({
+      id: 'transformed',
+      clientOptionsSchema: z.object({ endpoint: z.string() }).transform(({ endpoint }) => ({
+        endpoint: new URL(endpoint),
+      })),
+      client: clientFactory,
+    });
+
+    transport({ endpoint: 'wss://example' });
+    // @ts-expect-error -- callers provide schema input, not transformed output.
+    transport({ endpoint: new URL('wss://example') });
   });
 
   it('projects host options from a standalone host factory', () => {

@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { createActor, waitFor } from 'xstate';
-import { getActiveGroupValues, projectToManifest } from '@taucad/types';
-import type { FileParameterEntry, ProjectManifest } from '@taucad/types';
-import { isProjectContentActivityPath, projectMachine } from '#machines/project.machine.js';
+import { projectToManifest } from '@taucad/types';
+import { createMockRuntimeClient } from '@taucad/runtime-testing';
+import type { GeometryComponentManifest, ProjectManifest, ProjectManifestParseIssue } from '@taucad/types';
+import { isProjectContentActivityPath, projectMachine, selectProjectKernelRefusal } from '#machines/project.machine.js';
+import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settings';
+import {
+  deriveModelInteractionUnitId,
+  getModelInteractionUnitState,
+} from '@taucad/viewer/machines/model-interaction.machine';
 import type { ProjectContext, ProjectLoadInput, ProjectRetrievedEvent } from '#machines/project.machine.js';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
-import { createDefaultEntry } from '#utils/parameter-config.utils.js';
 import type { KernelOptionsFactory, LazyKernelOptionsFactory } from '#types/runtime-client.alias.js';
 
 vi.mock('#constants/browser.constants.js', () => ({
@@ -39,54 +44,49 @@ const stubProjectWithMechanical = stubProject;
 // Factory helpers
 // ---------------------------------------------------------------------------
 
-type WriteParameterInput = { projectId: string; filePath: string; entry: FileParameterEntry };
-
 function createTestActor(options?: {
   loadResult?: ProjectManifest | (() => Promise<ProjectManifest>);
-  writeResult?: () => Promise<void>;
-  writeParameterResult?: (input?: WriteParameterInput) => Promise<void>;
-  parameterEntries?: Map<string, FileParameterEntry>;
+  /** Loads the project as the normalized view of a degraded manifest. */
+  loadIssue?: ProjectManifestParseIssue;
+  writeResult?: (input: { project: ProjectManifest; repair?: boolean }) => Promise<void>;
   shouldAutoLoad?: boolean;
   shouldLoadModelOnStart?: boolean;
   projectId?: string;
+  stage?: Record<string, Uint8Array<ArrayBuffer>>;
 }) {
   const loadResult = options?.loadResult ?? stubProject;
   const loadFunction = typeof loadResult === 'function' ? loadResult : async () => loadResult;
-  const parameterEntries = options?.parameterEntries;
 
+  const loadProjectActor = fromSafeAsync<ProjectRetrievedEvent, ProjectLoadInput>(async () => {
+    const project = await loadFunction();
+    return {
+      type: 'projectRetrieved',
+      project,
+      ...(options?.loadIssue === undefined ? {} : { issue: options.loadIssue }),
+    };
+  });
+  const { writeResult } = options ?? {};
   const machine = projectMachine.provide({
-    actors: {
-      loadProjectActor: fromSafeAsync<ProjectRetrievedEvent, ProjectLoadInput>(async () => {
-        const project = await loadFunction();
-        return {
-          type: 'projectRetrieved',
-          project,
-          revisionState: undefined,
-          parameterEntries: parameterEntries ?? new Map<string, FileParameterEntry>(),
-        };
-      }),
-      ...(options?.writeResult
-        ? {
-            writeProjectActor: fromSafeAsync(async () => {
-              await options.writeResult!();
-            }),
-          }
-        : {}),
-      ...(options?.writeParameterResult
-        ? {
-            writeParameterFileActor: fromSafeAsync<void, WriteParameterInput>(async ({ input }) => {
-              await options.writeParameterResult!(input);
-            }),
-          }
-        : {}),
-    },
+    actors:
+      writeResult === undefined
+        ? { loadProjectActor }
+        : {
+            loadProjectActor,
+            writeProjectActor: fromSafeAsync<void, { project: ProjectManifest; repair?: boolean }>(
+              async ({ input }) => {
+                await writeResult(input);
+              },
+            ),
+          },
     guards: {
       isNotBrowser: () => false,
       shouldAutoLoad: () => options?.shouldAutoLoad ?? false,
     },
   });
 
-  const fileManagerRef = mock<ProjectContext['fileManagerRef']>({ send: vi.fn() });
+  const fileManagerRef = mock<ProjectContext['fileManagerRef']>({
+    send: vi.fn(),
+  });
   const kernelOptionsFactory = createKernelOptionsFactory();
 
   return createActor(machine, {
@@ -94,7 +94,9 @@ function createTestActor(options?: {
       projectId: options?.projectId ?? 'test-project',
       shouldLoadModelOnStart: options?.shouldLoadModelOnStart ?? false,
       fileManagerRef,
+      fileSystemRoot: '/previews/test-project',
       kernelOptionsFactory,
+      ...(options?.stage ? { stage: options.stage } : {}),
     },
   });
 }
@@ -116,17 +118,202 @@ describe('projectMachine', () => {
     vi.restoreAllMocks();
   });
 
+  describe('acknowledged runtime close', () => {
+    it.each(['destroyGeometryUnit', 'fileDeleted', 'directoryDeleted'] as const)(
+      'should retain acknowledged private cleanup after %s removes file metadata',
+      async (type) => {
+        const actor = await startAndLoad();
+        const client = createMockRuntimeClient();
+        const cleaned = Promise.withResolvers<void>();
+        vi.spyOn(client, 'shutdown').mockImplementation(async () => cleaned.promise);
+        try {
+          actor.send({ type: 'createGeometryUnit', entryPath: 'retired/main.ts' });
+          const unit = actor.getSnapshot().context.geometryUnits.get('retired/main.ts');
+          if (!unit) {
+            expect.fail('Expected the actual owned CAD unit');
+          }
+          unit.send({ type: 'kernelAllocated', client, cleanups: [] });
+          if (type === 'destroyGeometryUnit') {
+            actor.send({ type, entryPath: 'retired/main.ts' });
+          } else {
+            actor.send({ type, path: type === 'fileDeleted' ? 'retired/main.ts' : 'retired' });
+          }
+          expect(actor.getSnapshot().context.geometryUnits.has('retired/main.ts')).toBe(false);
+          actor.send({ type: 'closeRuntime' });
+          await vi.waitFor(() => {
+            expect(client.shutdown).toHaveBeenCalledOnce();
+          });
+          expect(actor.getSnapshot().matches('runtimeClosed')).toBe(false);
+          cleaned.resolve();
+          await waitFor(actor, (state) => state.matches('runtimeClosed'));
+        } finally {
+          cleaned.resolve();
+          actor.stop();
+        }
+      },
+    );
+
+    it('should bind a retired acknowledgement to its old child while the same path reopens', async () => {
+      const actor = await startAndLoad();
+      const client = createMockRuntimeClient();
+      const cleaned = Promise.withResolvers<void>();
+      vi.spyOn(client, 'shutdown').mockImplementation(async () => cleaned.promise);
+      try {
+        actor.send({ type: 'createGeometryUnit', entryPath: 'reopen.ts' });
+        const old = actor.getSnapshot().context.geometryUnits.get('reopen.ts');
+        if (!old) {
+          expect.fail('Expected the original owned CAD unit');
+        }
+        old.send({ type: 'kernelAllocated', client, cleanups: [] });
+        actor.send({ type: 'destroyGeometryUnit', entryPath: 'reopen.ts' });
+        actor.send({ type: 'createGeometryUnit', entryPath: 'reopen.ts' });
+        const replacement = actor.getSnapshot().context.geometryUnits.get('reopen.ts');
+        expect(replacement).toBeDefined();
+        expect(replacement).not.toBe(old);
+        expect(Object.values(actor.getSnapshot().children)).toContain(old);
+        cleaned.resolve();
+        await vi.waitFor(() => {
+          expect(old.getSnapshot().status).toBe('stopped');
+        });
+        actor.send({ type: 'geometryUnit.runtimeClosed', unit: old });
+        expect(actor.getSnapshot().context.geometryUnits.get('reopen.ts')).toBe(replacement);
+        expect(Object.values(actor.getSnapshot().children)).toContain(replacement);
+        expect(replacement?.getSnapshot().status).toBe('active');
+      } finally {
+        cleaned.resolve();
+        actor.stop();
+      }
+    });
+
+    it('should retain a refused retired child and retry its cleanup before final close', async () => {
+      const actor = await startAndLoad();
+      const client = createMockRuntimeClient();
+      const refusal = new Error('retired cleanup refused');
+      const shutdown = vi.spyOn(client, 'shutdown').mockRejectedValue(refusal);
+      try {
+        actor.send({ type: 'createGeometryUnit', entryPath: 'retired.ts' });
+        const unit = actor.getSnapshot().context.geometryUnits.get('retired.ts');
+        if (!unit) {
+          expect.fail('Expected the retired child');
+        }
+        unit.send({ type: 'kernelAllocated', client, cleanups: [] });
+        actor.send({ type: 'destroyGeometryUnit', entryPath: 'retired.ts' });
+        await waitFor(unit, (state) => state.matches('runtimeCloseFailed'));
+        expect(Object.values(actor.getSnapshot().children)).toContain(unit);
+        actor.send({ type: 'closeRuntime' });
+        await waitFor(actor, (state) => state.matches('runtimeCloseFailed'));
+        expect(actor.getSnapshot().context.error).toBeInstanceOf(AggregateError);
+        shutdown.mockResolvedValue(undefined);
+        actor.send({ type: 'closeRuntime' });
+        await waitFor(actor, (state) => state.matches('runtimeClosed'));
+        expect(shutdown).toHaveBeenCalledTimes(3);
+      } finally {
+        actor.stop();
+      }
+    });
+
+    it('should await every CAD owner and fence new units without closing a sibling project', async () => {
+      const actor = await startAndLoad();
+      const sibling = await startAndLoad({ projectId: 'sibling' });
+      const first = createMockRuntimeClient();
+      const second = createMockRuntimeClient();
+      const firstClosed = Promise.withResolvers<void>();
+      const secondClosed = Promise.withResolvers<void>();
+      vi.spyOn(first, 'shutdown').mockImplementation(async () => firstClosed.promise);
+      vi.spyOn(second, 'shutdown').mockImplementation(async () => secondClosed.promise);
+      try {
+        actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+        actor.send({ type: 'createGeometryUnit', entryPath: 'second.ts' });
+        const units = [...actor.getSnapshot().context.geometryUnits.values()];
+        expect(units).toHaveLength(2);
+        units[0]!.send({ type: 'kernelAllocated', client: first, cleanups: [] });
+        units[1]!.send({ type: 'kernelAllocated', client: second, cleanups: [] });
+        actor.send({ type: 'closeRuntime' });
+        await vi.waitFor(() => {
+          expect(first.shutdown).toHaveBeenCalledOnce();
+          expect(second.shutdown).toHaveBeenCalledOnce();
+        });
+        actor.send({ type: 'createGeometryUnit', entryPath: 'too-late.ts' });
+        actor.send({ type: 'openInViewer', entryPath: 'also-too-late.ts' });
+        expect(actor.getSnapshot().context.geometryUnits.size).toBe(2);
+        firstClosed.resolve();
+        await Promise.resolve();
+        expect(actor.getSnapshot().matches('runtimeClosed')).toBe(false);
+        expect(sibling.getSnapshot().matches({ ready: {} })).toBe(true);
+        secondClosed.resolve();
+        await waitFor(actor, (state) => state.matches('runtimeClosed'));
+        actor.send({ type: 'closeRuntime' });
+        expect(first.shutdown).toHaveBeenCalledOnce();
+        expect(second.shutdown).toHaveBeenCalledOnce();
+      } finally {
+        firstClosed.resolve();
+        secondClosed.resolve();
+        actor.stop();
+        sibling.stop();
+      }
+    });
+
+    it('should retain exact cleanup refusal after attempting all units', async () => {
+      const actor = await startAndLoad();
+      const first = createMockRuntimeClient();
+      const second = createMockRuntimeClient();
+      const refusal = new Error('native cleanup refused');
+      vi.spyOn(first, 'shutdown').mockRejectedValue(refusal);
+      try {
+        actor.send({ type: 'createGeometryUnit', entryPath: 'first.ts' });
+        actor.send({ type: 'createGeometryUnit', entryPath: 'second.ts' });
+        const units = [...actor.getSnapshot().context.geometryUnits.values()];
+        units[0]!.send({ type: 'kernelAllocated', client: first, cleanups: [] });
+        units[1]!.send({ type: 'kernelAllocated', client: second, cleanups: [] });
+        actor.send({ type: 'closeRuntime' });
+        await waitFor(actor, (state) => state.matches('runtimeCloseFailed'));
+        expect(first.shutdown).toHaveBeenCalledOnce();
+        expect(second.shutdown).toHaveBeenCalledOnce();
+        expect(actor.getSnapshot().context.error).toBeInstanceOf(AggregateError);
+        const { error } = actor.getSnapshot().context;
+        if (!(error instanceof AggregateError)) {
+          expect.fail('Expected the actual aggregated cleanup refusal');
+        }
+        expect(error.errors).toEqual([refusal]);
+        expect(actor.getSnapshot().matches('runtimeClosed')).toBe(false);
+      } finally {
+        actor.stop();
+      }
+    });
+
+    it('should close a cold project without starting a CAD client', async () => {
+      const actor = await startAndLoad();
+      try {
+        expect(actor.getSnapshot().context.geometryUnits.size).toBe(0);
+        actor.send({ type: 'closeRuntime' });
+        await waitFor(actor, (state) => state.matches('runtimeClosed'));
+        expect(actor.getSnapshot().context.geometryUnits.size).toBe(0);
+      } finally {
+        actor.stop();
+      }
+    });
+  });
+
   describe('project content activity path classification', () => {
     it.each([
       ['', false],
       ['.', false],
       ['/', false],
-      ['.tau', false],
-      ['.tau/settings.json', false],
-      ['.cache', false],
-      ['.cache/render.bin', false],
+      // Project metadata, not work on the design.
+      ['tau.json', false],
+      // Records, cache and control plane are never content activity.
+      ['thumbnail.webp', false],
+      ['exports/model.step', false],
+      ['.tau/chats/chat-1/events.jsonl', false],
+      ['.tau/workbench/layout.json', false],
+      ['.tau/workbench/views/front.json', false],
+      ['.tau/cache/render.bin', false],
+      ['.git/HEAD', false],
       ['node_modules', false],
       ['node_modules/replicad/index.d.ts', false],
+      /* An authored `.tau` control *is* content: the blanket `.tau` exclusion
+       * this replaced swallowed parameter edits (Rule 16). */
+      ['.tau/parameters/main.json', true],
       ['main.ts', true],
       ['/main.ts', true],
       ['src', true],
@@ -162,8 +349,6 @@ describe('projectMachine', () => {
             return {
               type: 'projectRetrieved',
               project: stubProject,
-              revisionState: undefined,
-              parameterEntries: new Map(),
             };
           }),
         },
@@ -172,10 +357,17 @@ describe('projectMachine', () => {
           shouldAutoLoad: () => false,
         },
       });
-      const fileManagerRef = mock<ProjectContext['fileManagerRef']>({ send: vi.fn() });
+      const fileManagerRef = mock<ProjectContext['fileManagerRef']>({
+        send: vi.fn(),
+      });
       const kernelOptionsFactory = createKernelOptionsFactory();
       const actor = createActor(machine, {
-        input: { projectId: 'b', fileManagerRef, kernelOptionsFactory },
+        input: {
+          projectId: 'b',
+          fileManagerRef,
+          fileSystemRoot: '/projects/b',
+          kernelOptionsFactory,
+        },
       });
       actor.start();
       expect(actor.getSnapshot().value).toBe('ssr');
@@ -201,6 +393,34 @@ describe('projectMachine', () => {
       actor.start();
       actor.send({ type: 'createViewGraphics', viewId: 'v1' });
       expect(actor.getSnapshot().context.viewGraphics.has('v1')).toBe(true);
+      actor.stop();
+    });
+
+    /* The graphics actor is the live owner of its durable keys (Law 1), and `createViewGraphics` is
+     * the only path the app takes to build a view, so the record has to reach the spawn input. */
+    it('should seed a spawned view graphics actor with every durable key it owns', () => {
+      const actor = createTestActor();
+      actor.start();
+      actor.send({
+        type: 'createViewGraphics',
+        viewId: 'v1',
+        settings: {
+          ...defaultGraphicsSettings,
+          enableGrid: false,
+          sectionView: { active: true, cuts: [{ kind: 'plane', plane: 'xz', offset: 2, isFlipped: true }] },
+        },
+      });
+
+      const graphics = actor.getSnapshot().context.viewGraphics.get('v1');
+      expect(graphics).toBeDefined();
+      expect(graphics!.getSnapshot().context).toMatchObject({
+        enableGrid: false,
+        isSectionViewActive: true,
+        sectionCuts: [
+          { id: expect.stringMatching(/^cut_/u) as unknown, kind: 'plane', plane: 'xz', offset: 2, isFlipped: true },
+        ],
+      });
+      expect(graphics!.getSnapshot().matches({ operational: { section: 'on' } })).toBe(true);
       actor.stop();
     });
 
@@ -305,7 +525,6 @@ describe('projectMachine', () => {
         shouldLoadModelOnStart: false,
       });
       expect(actor.getSnapshot().context.geometryUnits.size).toBe(0);
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths.size).toBe(0);
       actor.stop();
     });
 
@@ -348,20 +567,6 @@ describe('projectMachine', () => {
       actor.stop();
     });
 
-    it('should keep revisionState outside the manifest and emit a field-scoped persistence event', async () => {
-      const actor = await startAndLoad();
-      const emitted: unknown[] = [];
-      actor.on('revisionStateUpdated', (event) => emitted.push(event.revisionState));
-
-      const revisionState = { headTurnId: 'u5', supersededTurnIds: ['u2'], dirty: false };
-      actor.send({ type: 'updateRevisionState', revisionState });
-
-      expect(actor.getSnapshot().context.revisionState).toEqual(revisionState);
-      expect(actor.getSnapshot().context.project).toEqual(stubProject);
-      expect(emitted).toEqual([revisionState]);
-      actor.stop();
-    });
-
     it('should update tags with deduplication', async () => {
       const actor = await startAndLoad();
       actor.send({ type: 'updateTags', tags: ['x', 'y', 'x', 'z', 'y'] });
@@ -370,7 +575,9 @@ describe('projectMachine', () => {
     });
 
     it('should set main file path in project assets', async () => {
-      const actor = await startAndLoad({ loadResult: stubProjectWithMechanical });
+      const actor = await startAndLoad({
+        loadResult: stubProjectWithMechanical,
+      });
       actor.send({ type: 'setMainFile', path: 'other.ts' });
       expect(actor.getSnapshot().context.project?.assets.main.entryPath).toBe('other.ts');
       actor.stop();
@@ -380,7 +587,11 @@ describe('projectMachine', () => {
       const actor = await startAndLoad();
       const emitted: string[] = [];
       actor.on('projectActivity', (event) => emitted.push(event.type));
-      actor.send({ type: 'projectFileActivity', operation: 'written', paths: ['main.ts'] });
+      actor.send({
+        type: 'projectFileActivity',
+        operation: 'written',
+        paths: ['main.ts'],
+      });
       expect(emitted).toEqual(['projectActivity']);
       actor.stop();
     });
@@ -392,9 +603,76 @@ describe('projectMachine', () => {
       actor.send({
         type: 'projectFileActivity',
         operation: 'batchWritten',
-        paths: ['', '.tau/project.json', '.cache/render.bin', 'node_modules/pkg/index.d.ts'],
+        paths: ['', 'tau.json', '.tau/cache/render.bin', '.git/HEAD', 'node_modules/pkg/index.d.ts'],
       });
       expect(emitted).toEqual([]);
+      actor.stop();
+    });
+  });
+
+  // =========================================================================
+  // State: ready – degraded manifest (blueprint R4/R5)
+  // =========================================================================
+  describe('ready – degraded manifest', () => {
+    const unknownAssetKey: ProjectManifestParseIssue = { code: 'manifest-invalid', issues: [] };
+
+    const startDegraded = async (loadIssue: ProjectManifestParseIssue = unknownAssetKey) => {
+      const writes: Array<{ project: ProjectManifest; repair?: boolean }> = [];
+      const actor = await startAndLoad({
+        loadIssue,
+        writeResult: async (input) => {
+          writes.push(input);
+        },
+      });
+      return { actor, writes };
+    };
+
+    it('opens with the issue and refuses implicit edits of the lossy view', async () => {
+      const { actor, writes } = await startDegraded();
+
+      actor.send({ type: 'updateName', name: 'Renamed' });
+      actor.send({ type: 'updateDescription', description: 'Changed' });
+      actor.send({ type: 'updateTags', tags: ['c'] });
+      actor.send({ type: 'setMainFile', path: 'second.cs' });
+
+      expect(actor.getSnapshot().context.manifestIssue).toEqual(unknownAssetKey);
+      expect(actor.getSnapshot().context.project).toEqual(stubProject);
+      expect(actor.getSnapshot().matches({ ready: { storing: 'idle' } })).toBe(true);
+      expect(writes).toEqual([]);
+      actor.stop();
+    });
+
+    it('repairs with one explicit write, then edits again', async () => {
+      const { actor, writes } = await startDegraded();
+
+      actor.send({ type: 'repairManifest' });
+      await waitFor(actor, (snapshot) => snapshot.matches({ ready: { storing: 'idle' } }));
+
+      expect(writes).toEqual([{ project: stubProject, repair: true }]);
+      expect(actor.getSnapshot().context.manifestIssue).toBeUndefined();
+      actor.send({ type: 'updateName', name: 'Renamed' });
+      expect(actor.getSnapshot().context.project?.name).toBe('Renamed');
+      actor.stop();
+    });
+
+    it('offers no Repair for a JSON syntax error, whose defaults would erase recoverable text', async () => {
+      const { actor, writes } = await startDegraded({ code: 'manifest-invalid-json', message: 'Unexpected token' });
+
+      actor.send({ type: 'repairManifest' });
+
+      expect(actor.getSnapshot().matches({ ready: { storing: 'idle' } })).toBe(true);
+      expect(writes).toEqual([]);
+      actor.stop();
+    });
+
+    it('keeps the last good manifest open when the file stops identifying the project', async () => {
+      const actor = await startAndLoad();
+
+      actor.send({ type: 'manifestIssueObserved', issue: { code: 'manifest-missing' } });
+      actor.send({ type: 'updateName', name: 'Renamed' });
+
+      expect(actor.getSnapshot().context.manifestIssue).toEqual({ code: 'manifest-missing' });
+      expect(actor.getSnapshot().context.project).toEqual(stubProject);
       actor.stop();
     });
   });
@@ -407,6 +685,135 @@ describe('projectMachine', () => {
       const actor = await startAndLoad();
       actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
       expect(actor.getSnapshot().context.geometryUnits.has('main.ts')).toBe(true);
+      expect(actor.getSnapshot().context.geometryUnits.get('main.ts')?.getSnapshot().context.fileSystemRoot).toBe(
+        '/previews/test-project',
+      );
+      actor.stop();
+    });
+
+    it('should carry the input stage onto a spawned unit', async () => {
+      const stage = { 'main.ts': new Uint8Array([1]) };
+      const actor = await startAndLoad({ stage });
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      expect(actor.getSnapshot().context.geometryUnits.get('main.ts')?.getSnapshot().context.parameterRender).toEqual({
+        kind: 'initial',
+        stage,
+      });
+      actor.stop();
+    });
+
+    /*
+     * R4 / V2-3: the row says one sentence, so the project keeps one refusal,
+     * tagged with the unit that reported it — the clear rides on a unit
+     * *entering* `connecting`, and a second view's first attempt must not green
+     * a row whose other unit is still refused.
+     */
+    it('keeps the refusal a unit reported until that unit takes it back', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      await vi.waitFor(() => {
+        expect(selectProjectKernelRefusal(actor.getSnapshot())).toBeDefined();
+      });
+      const refused = actor.getSnapshot().context.kernelRefusal?.actorId;
+
+      /* A second view opens and starts connecting: its own clear says nothing
+       * about the unit that is still refused. */
+      actor.send({ type: 'createGeometryUnit', entryPath: 'lib/cube.ts' });
+      expect(actor.getSnapshot().context.kernelRefusal?.actorId).toBe(refused);
+      expect(selectProjectKernelRefusal(actor.getSnapshot())).toBeDefined();
+
+      /* The unit that reported it tries again: only it can take it back. */
+      actor.getSnapshot().context.geometryUnits.get('main.ts')?.send({ type: 'initializeModel', entryPath: 'main.ts' });
+      expect(selectProjectKernelRefusal(actor.getSnapshot())).toBeUndefined();
+      actor.stop();
+    });
+
+    /* R4: a unit nobody holds cannot keep a row red. */
+    it('drops a refusal when the unit that reported it is closed', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'lib/cube.ts' });
+      await vi.waitFor(() => {
+        expect(selectProjectKernelRefusal(actor.getSnapshot())).toBeDefined();
+      });
+
+      actor.send({ type: 'destroyGeometryUnit', entryPath: 'lib/cube.ts' });
+
+      expect(selectProjectKernelRefusal(actor.getSnapshot())).toBeUndefined();
+      actor.stop();
+    });
+
+    /* R3: a returning project wakes only its demanded units. */
+    it('parks every unit and resumes only demanded geometry', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'createGeometryUnit', entryPath: 'lib/cube.ts' });
+      const units = () => [...actor.getSnapshot().context.geometryUnits.values()];
+      await vi.waitFor(() => {
+        expect(units().every((unit) => unit.getSnapshot().value === 'error')).toBe(true);
+      });
+
+      actor.send({ type: 'parkRuntime' });
+      expect(units().map((unit) => unit.getSnapshot().value)).toEqual(['parked', 'parked']);
+
+      actor.send({ type: 'resumeRuntime' });
+      expect(units().map((unit) => unit.getSnapshot().value)).toEqual(['connecting', 'parked']);
+      actor.stop();
+    });
+
+    it('parks a revealed secondary after its last visible view hides and wakes it on reveal', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'secondary', entryPath: 'lib/cube.ts' });
+      const main = actor.getSnapshot().context.geometryUnits.get('main.ts')!;
+      const secondary = actor.getSnapshot().context.geometryUnits.get('lib/cube.ts')!;
+      await vi.waitFor(() => {
+        expect(secondary.getSnapshot().value).toBe('error');
+      });
+
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'secondary' });
+      expect(secondary.getSnapshot().value).toBe('parked');
+      expect(main.getSnapshot().value).not.toBe('parked');
+      expect(actor.getSnapshot().context.geometryUnits.get('lib/cube.ts')).toBe(secondary);
+
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'secondary', entryPath: 'lib/cube.ts' });
+      expect(secondary.getSnapshot().value).toBe('connecting');
+      actor.stop();
+    });
+
+    it('holds a hidden secondary runtime for an explicit claim until release', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'secondary', entryPath: 'lib/cube.ts' });
+      const secondary = actor.getSnapshot().context.geometryUnits.get('lib/cube.ts')!;
+      await vi.waitFor(() => {
+        expect(secondary.getSnapshot().value).toBe('error');
+      });
+
+      actor.send({ type: 'claimGeometryUnit', claimId: 'capture', entryPath: 'lib/cube.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'secondary' });
+      expect(secondary.getSnapshot().value).not.toBe('parked');
+
+      actor.send({ type: 'releaseGeometryUnit', claimId: 'capture' });
+      await vi.waitFor(() => {
+        expect(secondary.getSnapshot().value).toBe('parked');
+      });
+      actor.stop();
+    });
+
+    it('keeps a shared secondary unit live until both viewer demands leave', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'left', entryPath: 'lib/cube.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'right', entryPath: 'lib/cube.ts' });
+      const secondary = actor.getSnapshot().context.geometryUnits.get('lib/cube.ts')!;
+      await vi.waitFor(() => {
+        expect(secondary.getSnapshot().value).toBe('error');
+      });
+
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'left' });
+      expect(secondary.getSnapshot().value).not.toBe('parked');
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'right' });
+      expect(secondary.getSnapshot().value).toBe('parked');
       actor.stop();
     });
 
@@ -447,6 +854,19 @@ describe('projectMachine', () => {
       actor.stop();
     });
 
+    it('shares one actor when viewer admission and explicit creation arrive in either order', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'first', entryPath: 'other.ts' });
+      const secondary = actor.getSnapshot().context.geometryUnits.get('other.ts');
+      actor.send({ type: 'createGeometryUnit', entryPath: 'other.ts' });
+      actor.send({ type: 'claimGeometryUnit', claimId: 'capture', entryPath: 'other.ts' });
+      expect(actor.getSnapshot().context.geometryUnits.get('other.ts')).toBe(secondary);
+      expect(actor.getSnapshot().context.geometryUnits.size).toBe(2);
+      actor.send({ type: 'releaseGeometryUnit', claimId: 'capture' });
+      actor.stop();
+    });
+
     it('should destroy a geometry unit', async () => {
       const actor = await startAndLoad();
       actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
@@ -475,6 +895,21 @@ describe('projectMachine', () => {
       actor.stop();
     });
 
+    it('keeps visible viewer demand across an explicit close so Reopen renderer can recreate the unit', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'secondary', entryPath: 'other.ts' });
+      const previous = actor.getSnapshot().context.geometryUnits.get('other.ts');
+
+      actor.send({ type: 'destroyGeometryUnit', entryPath: 'other.ts' });
+      expect(actor.getSnapshot().context.geometryUnits.has('other.ts')).toBe(false);
+      expect(actor.getSnapshot().context.viewerGeometryDemand.get('secondary')).toBe('other.ts');
+
+      actor.send({ type: 'createGeometryUnit', entryPath: 'other.ts' });
+      expect(actor.getSnapshot().context.geometryUnits.get('other.ts')).not.toBe(previous);
+      actor.stop();
+    });
+
     it('should no-op when destroying a non-existent geometry unit', async () => {
       const actor = await startAndLoad();
       actor.send({ type: 'destroyGeometryUnit', entryPath: 'nonexistent.ts' });
@@ -494,117 +929,35 @@ describe('projectMachine', () => {
       actor.stop();
     });
 
-    it('should add an exportable geometry unit path from a child availability event', async () => {
-      const actor = await startAndLoad();
-      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
-      const unit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      expect(unit).toBeDefined();
-
-      actor.send({
-        type: 'geometryUnit.exportAvailabilityChanged',
-        actorId: unit!.id,
-        available: true,
-      });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths).toEqual(new Set(['main.ts']));
-      actor.stop();
-    });
-
-    it('should track only the exportable secondary geometry unit when the main unit is unavailable', async () => {
-      const actor = await startAndLoad();
-      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
-      actor.send({ type: 'createGeometryUnit', entryPath: 'helper.ts' });
-      const mainUnit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      const helperUnit = actor.getSnapshot().context.geometryUnits.get('helper.ts');
-      expect(mainUnit).toBeDefined();
-      expect(helperUnit).toBeDefined();
-
-      actor.send({
-        type: 'geometryUnit.exportAvailabilityChanged',
-        actorId: mainUnit!.id,
-        available: false,
-      });
-      actor.send({
-        type: 'geometryUnit.exportAvailabilityChanged',
-        actorId: helperUnit!.id,
-        available: true,
-      });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths).toEqual(new Set(['helper.ts']));
-      actor.stop();
-    });
-
-    it('should remove an exportable geometry unit path when availability becomes false', async () => {
-      const actor = await startAndLoad();
-      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
-      const unit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      expect(unit).toBeDefined();
-
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: unit!.id, available: true });
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: unit!.id, available: false });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths.size).toBe(0);
-      actor.stop();
-    });
-
-    it('should ignore availability events from unknown geometry units', async () => {
-      const actor = await startAndLoad();
-
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: 'missing-actor', available: true });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths.size).toBe(0);
-      actor.stop();
-    });
-
-    it('should clear exportability when destroying a geometry unit', async () => {
-      const actor = await startAndLoad();
-      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
-      const unit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      expect(unit).toBeDefined();
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: unit!.id, available: true });
-
-      actor.send({ type: 'destroyGeometryUnit', entryPath: 'main.ts' });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths.size).toBe(0);
-      actor.stop();
-    });
-
-    it('should rekey exportability when a geometry unit file moves', async () => {
-      const actor = await startAndLoad();
-      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
-      const unit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      expect(unit).toBeDefined();
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: unit!.id, available: true });
-
-      actor.send({ type: 'fileMoved', oldPath: 'main.ts', newPath: 'renamed.ts' });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths).toEqual(new Set(['renamed.ts']));
-      actor.stop();
-    });
-
-    it('should clear exportability when a geometry unit file is deleted', async () => {
-      const actor = await startAndLoad();
-      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
-      const unit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      expect(unit).toBeDefined();
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: unit!.id, available: true });
-
-      actor.send({ type: 'fileDeleted', path: 'main.ts' });
-
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths.size).toBe(0);
-      actor.stop();
-    });
-
-    it('should clear exportability when a geometry unit directory is deleted', async () => {
+    it('should point a moved geometry unit at its new file', async () => {
       const actor = await startAndLoad();
       actor.send({ type: 'createGeometryUnit', entryPath: 'parts/main.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'parts-view', entryPath: 'parts/main.ts' });
+      actor.send({ type: 'claimGeometryUnit', claimId: 'export', entryPath: 'parts/main.ts' });
       const unit = actor.getSnapshot().context.geometryUnits.get('parts/main.ts');
-      expect(unit).toBeDefined();
-      actor.send({ type: 'geometryUnit.exportAvailabilityChanged', actorId: unit!.id, available: true });
 
+      actor.send({ type: 'fileMoved', oldPath: 'parts', newPath: 'models' });
+
+      expect(actor.getSnapshot().context.geometryUnits.get('models/main.ts')).toBe(unit);
+      expect(actor.getSnapshot().context.viewerGeometryDemand.get('parts-view')).toBe('models/main.ts');
+      expect(actor.getSnapshot().context.operationGeometryDemand.get('export')).toBe('models/main.ts');
+      expect(unit!.getSnapshot().context.entryPath).toBe('models/main.ts');
+      actor.stop();
+    });
+
+    it('should drop the geometry units a file or directory deletion matched', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createGeometryUnit', entryPath: 'main.ts' });
+      actor.send({ type: 'createGeometryUnit', entryPath: 'parts/helper.ts' });
+      actor.send({ type: 'setViewerGeometryDemand', viewId: 'parts-view', entryPath: 'parts/helper.ts' });
+      actor.send({ type: 'claimGeometryUnit', claimId: 'export', entryPath: 'parts/helper.ts' });
+
+      actor.send({ type: 'fileDeleted', path: 'main.ts' });
       actor.send({ type: 'directoryDeleted', path: 'parts' });
 
-      expect(actor.getSnapshot().context.exportableGeometryUnitPaths.size).toBe(0);
+      expect(actor.getSnapshot().context.geometryUnits.size).toBe(0);
+      expect(actor.getSnapshot().context.viewerGeometryDemand.size).toBe(0);
+      expect(actor.getSnapshot().context.operationGeometryDemand.size).toBe(0);
       actor.stop();
     });
   });
@@ -613,6 +966,91 @@ describe('projectMachine', () => {
   // State: ready – view graphics
   // =========================================================================
   describe('ready – view graphics', () => {
+    it('keeps a shared manifest while a sibling GLB pane is live and clears it after the last pane switches or closes', async () => {
+      const actor = await startAndLoad();
+      actor.send({ type: 'createViewGraphics', viewId: 'glb' });
+      actor.send({ type: 'createViewGraphics', viewId: 'sibling' });
+      const { viewGraphics, modelInteractionRef } = actor.getSnapshot().context;
+      const first = viewGraphics.get('glb')!;
+      const sibling = viewGraphics.get('sibling')!;
+      const unitId = deriveModelInteractionUnitId({ sourceFile: 'main.ts' });
+      const manifest: GeometryComponentManifest = {
+        schemaVersion: 1,
+        sourceFile: 'main.ts',
+        rootId: 'root',
+        nodeOrder: ['root'],
+        nodesById: {
+          root: {
+            id: 'root',
+            name: 'Model',
+            kind: 'model',
+            selector: 'root',
+            childIds: [],
+            depth: 0,
+            path: ['Model'],
+            meshNodeIndices: [],
+            primitiveIndices: [],
+            materialIndices: [],
+            capabilities: {
+              canHide: true,
+              canIsolate: true,
+              canFocus: true,
+              canAdjustOpacity: true,
+              hasDrawings: false,
+              hasPreciseTopology: false,
+              exports: [],
+            },
+          },
+        },
+        capabilities: {
+          canHide: true,
+          canIsolate: true,
+          canFocus: true,
+          canAdjustOpacity: true,
+          hasDrawings: false,
+          hasPreciseTopology: false,
+          exports: [],
+        },
+      };
+      const showGlb = (graphics: typeof first, hash: string): void => {
+        graphics.send({
+          type: 'updateArtifact',
+          artifact: { mimeType: 'model/gltf-binary', content: new Uint8Array([1]) },
+          hash,
+          sourceFile: 'main.ts',
+        });
+        graphics.send({
+          type: 'gltfPresentationCommitted',
+          revision: graphics.getSnapshot().context.gltfPresentation.requestedRevision,
+          key: hash,
+          unitId,
+          manifest,
+        });
+      };
+      const showSvg = (graphics: typeof first): void => {
+        graphics.send({
+          type: 'updateArtifact',
+          artifact: { mimeType: 'image/svg+xml', content: '<svg xmlns="http://www.w3.org/2000/svg" />' },
+          hash: 'drawing',
+          sourceFile: 'main.ts',
+        });
+        actor.send({ type: 'reconcileViewManifest', unitId });
+      };
+
+      showGlb(first, 'first');
+      showGlb(sibling, 'second');
+      showSvg(first);
+      expect(getModelInteractionUnitState(modelInteractionRef.getSnapshot().context, unitId).manifest).toBe(manifest);
+      showSvg(sibling);
+      expect(getModelInteractionUnitState(modelInteractionRef.getSnapshot().context, unitId).manifest).toBeUndefined();
+
+      showGlb(sibling, 'third');
+      expect(getModelInteractionUnitState(modelInteractionRef.getSnapshot().context, unitId).manifest).toBe(manifest);
+      actor.send({ type: 'destroyViewGraphics', viewId: 'sibling' });
+      expect(getModelInteractionUnitState(modelInteractionRef.getSnapshot().context, unitId).manifest).toBeUndefined();
+      actor.stop();
+    });
+
     it('should create a graphics actor for a view', async () => {
       const actor = await startAndLoad();
       actor.send({ type: 'createViewGraphics', viewId: 'panel-1' });
@@ -670,7 +1108,11 @@ describe('projectMachine', () => {
         },
       });
 
-      actor.send({ type: 'fileMoved', oldPath: 'main.ts', newPath: 'renamed.ts' });
+      actor.send({
+        type: 'fileMoved',
+        oldPath: 'main.ts',
+        newPath: 'renamed.ts',
+      });
       expect(modelInteractionRef.getSnapshot().context.unitsById['file:main.ts']).toBeUndefined();
       expect(modelInteractionRef.getSnapshot().context.unitsById['file:renamed.ts']?.hiddenComponentIds).toEqual([
         'node-1',
@@ -683,52 +1125,13 @@ describe('projectMachine', () => {
   });
 
   // =========================================================================
-  // State: ready – parameters
-  // =========================================================================
-  describe('ready – parameters', () => {
-    it('should update code parameters in the main entry sidecar state', async () => {
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const actor = await startAndLoad({
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        parameterEntries: entries,
-      });
-      actor.send({
-        type: 'updateCodeParameters',
-        files: {},
-        parameters: { height: 20 },
-      });
-      expect(getActiveGroupValues(actor.getSnapshot().context.parameterEntries.get('main.ts'))).toEqual({
-        height: 20,
-      });
-      expect(actor.getSnapshot().context.project).toEqual(stubProjectWithMechanical);
-      actor.stop();
-    });
-
-    it('should update parameters and forward to main geometry unit', async () => {
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const actor = await startAndLoad({
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        parameterEntries: entries,
-      });
-      const mainUnit = actor.getSnapshot().context.geometryUnits.get('main.ts');
-      expect(mainUnit).toBeDefined();
-
-      actor.send({ type: 'setParameters', parameters: { depth: 5 } });
-      const { parameterEntries } = actor.getSnapshot().context;
-      expect(parameterEntries.size).toBeGreaterThan(0);
-      expect(getActiveGroupValues(parameterEntries.get('main.ts'))).toEqual({ depth: 5 });
-      actor.stop();
-    });
-  });
-
-  // =========================================================================
   // State: ready – loadModel
   // =========================================================================
   describe('ready – loadModel', () => {
     it('should create geometry unit for main file when none exists', async () => {
-      const actor = await startAndLoad({ loadResult: stubProjectWithMechanical });
+      const actor = await startAndLoad({
+        loadResult: stubProjectWithMechanical,
+      });
       expect(actor.getSnapshot().context.geometryUnits.has('main.ts')).toBe(false);
       actor.send({ type: 'loadModel' });
       expect(actor.getSnapshot().context.geometryUnits.has('main.ts')).toBe(true);
@@ -956,384 +1359,6 @@ describe('projectMachine', () => {
       expect(context.mainEntryPath).toBe('');
       expect(context.geometryUnits.size).toBe(0);
       expect(context.viewGraphics.size).toBe(0);
-      actor.stop();
-    });
-  });
-
-  // =========================================================================
-  // State: ready – parameterStoring (immediate write, no debounce)
-  // =========================================================================
-  describe('ready – parameterStoring', () => {
-    it('should not transition to writing when parameterEntries is empty', async () => {
-      const actor = await startAndLoad();
-      expect(actor.getSnapshot().context.parameterEntries.size).toBe(0);
-
-      actor.send({ type: 'setParameters', parameters: { width: 10 } });
-      expect(actor.getSnapshot().matches({ ready: { parameterStoring: 'idle' } })).toBe(true);
-      actor.stop();
-    });
-
-    it('should enter writing after a parameter event when entries exist', async () => {
-      let resolveWrite!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        resolveWrite = resolve;
-      });
-
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async () => {
-          await gate;
-        },
-      });
-      expect(actor.getSnapshot().context.parameterEntries.size).toBeGreaterThan(0);
-
-      actor.send({ type: 'setParameters', parameters: { width: 10 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'writing' } }));
-      resolveWrite();
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-      actor.stop();
-    });
-
-    it('should coalesce rapid parameter events into fewer writes than events', async () => {
-      let writeCallCount = 0;
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async () => {
-          writeCallCount++;
-        },
-      });
-
-      actor.send({ type: 'setParameters', parameters: { width: 1 } });
-      actor.send({ type: 'setParameters', parameters: { width: 2 } });
-      actor.send({ type: 'setParameters', parameters: { width: 3 } });
-
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-      expect(writeCallCount).toBe(2);
-      actor.stop();
-    });
-
-    it('should coalesce events during writing into a follow-up write', async () => {
-      vi.useFakeTimers();
-      try {
-        let writeCallCount = 0;
-        const writeResolvers: Array<() => void> = [];
-        const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-        const actor = await startAndLoad({
-          parameterEntries: entries,
-          loadResult: stubProjectWithMechanical,
-          shouldLoadModelOnStart: true,
-          writeParameterResult: async () => {
-            writeCallCount++;
-            return new Promise<void>((resolve) => {
-              writeResolvers.push(resolve);
-            });
-          },
-        });
-
-        actor.send({ type: 'setParameters', parameters: { width: 1 } });
-        await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'writing' } }));
-        expect(writeCallCount).toBe(1);
-
-        actor.send({ type: 'setParameters', parameters: { width: 2 } });
-        await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'pending' } }));
-
-        await vi.advanceTimersByTimeAsync(0);
-        expect(writeCallCount).toBe(2);
-
-        writeResolvers[1]!();
-        await vi.advanceTimersByTimeAsync(0);
-        await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-        actor.stop();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it('should land in idle with error on parameter write failure and allow retry', async () => {
-      let writeCallCount = 0;
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async () => {
-          writeCallCount++;
-          if (writeCallCount === 1) {
-            throw new Error('write failed');
-          }
-        },
-      });
-
-      actor.send({ type: 'setParameters', parameters: { width: 1 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-      expect(writeCallCount).toBe(1);
-      expect(actor.getSnapshot().context.error?.message).toBe('write failed');
-
-      actor.send({ type: 'setParameters', parameters: { width: 2 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-      expect(writeCallCount).toBe(2);
-
-      actor.stop();
-    });
-
-    it('should write the correct geometry unit file path, not mainEntryPath', async () => {
-      const writtenPaths: string[] = [];
-      const entries = new Map<string, FileParameterEntry>([
-        ['main.ts', createDefaultEntry()],
-        ['other.ts', createDefaultEntry()],
-      ]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          writtenPaths.push(input!.filePath);
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'other.ts', parameters: { radius: 5 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      expect(writtenPaths).toEqual(['other.ts']);
-      actor.stop();
-    });
-
-    it('should drain dirty set and write both geometry units when two different geometry units change rapidly', async () => {
-      const writtenPaths: string[] = [];
-      const entries = new Map<string, FileParameterEntry>([
-        ['main.ts', createDefaultEntry()],
-        ['other.ts', createDefaultEntry()],
-      ]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          writtenPaths.push(input!.filePath);
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'main.ts', parameters: { width: 1 } });
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'other.ts', parameters: { radius: 2 } });
-
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      expect(writtenPaths).toContain('main.ts');
-      expect(writtenPaths).toContain('other.ts');
-      actor.stop();
-    });
-
-    it('should deduplicate same-geometry-unit rapid fire in dirty set', async () => {
-      const writtenPaths: string[] = [];
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          writtenPaths.push(input!.filePath);
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'main.ts', parameters: { width: 1 } });
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'main.ts', parameters: { width: 2 } });
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'main.ts', parameters: { width: 3 } });
-
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      expect(writtenPaths).toEqual(['main.ts', 'main.ts']);
-      const { parameterEntries } = actor.getSnapshot().context;
-      expect(getActiveGroupValues(parameterEntries.get('main.ts'))).toEqual({ width: 3 });
-      actor.stop();
-    });
-
-    it('should clear dirtyParameterPaths after all writes complete', async () => {
-      const entries = new Map<string, FileParameterEntry>([
-        ['main.ts', createDefaultEntry()],
-        ['other.ts', createDefaultEntry()],
-      ]);
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async () => {
-          /* Test stub: no side effects needed */
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'main.ts', parameters: { width: 1 } });
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'other.ts', parameters: { radius: 2 } });
-
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      expect(actor.getSnapshot().context.dirtyParameterPaths.size).toBe(0);
-      actor.stop();
-    });
-
-    it('should lazily create a default entry for a non-main geometry unit on setGeometryUnitParameters', async () => {
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const writtenInputs: WriteParameterInput[] = [];
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          writtenInputs.push(input!);
-        },
-      });
-
-      expect(actor.getSnapshot().context.parameterEntries.has('other.ts')).toBe(false);
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'other.ts', parameters: { radius: 5 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      const { parameterEntries } = actor.getSnapshot().context;
-      expect(parameterEntries.has('other.ts')).toBe(true);
-      expect(getActiveGroupValues(parameterEntries.get('other.ts'))).toEqual({ radius: 5 });
-
-      const otherWrite = writtenInputs.find((w) => w.filePath === 'other.ts');
-      expect(otherWrite).toBeDefined();
-      expect(otherWrite!.entry).toBeDefined();
-      actor.stop();
-    });
-
-    it('should lazily init and write valid entry for a non-main geometry unit without throwing', async () => {
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      let writeError: Error | undefined;
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          if (!input?.entry) {
-            writeError = new Error('entry was undefined');
-            throw writeError;
-          }
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'new-cu.ts', parameters: { height: 10 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      expect(writeError).toBeUndefined();
-      expect(actor.getSnapshot().context.error).toBeUndefined();
-      actor.stop();
-    });
-
-    it('should handle rapid parameter changes for a geometry unit that starts without an entry', async () => {
-      const entries = new Map<string, FileParameterEntry>([['main.ts', createDefaultEntry()]]);
-      const writtenInputs: WriteParameterInput[] = [];
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          writtenInputs.push(input!);
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'new-cu.ts', parameters: { x: 1 } });
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'new-cu.ts', parameters: { x: 2 } });
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'new-cu.ts', parameters: { x: 3 } });
-
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      const { parameterEntries } = actor.getSnapshot().context;
-      expect(getActiveGroupValues(parameterEntries.get('new-cu.ts'))).toEqual({ x: 3 });
-
-      const newCuWrites = writtenInputs.filter((w) => w.filePath === 'new-cu.ts');
-      expect(newCuWrites.length).toBeGreaterThan(0);
-      expect(newCuWrites.every((w) => Object.keys(w.entry.groups).length > 0)).toBe(true);
-      actor.stop();
-    });
-
-    it('should load multi-geometry-unit parameter entries from loadProjectActor and make all accessible', async () => {
-      const secondaryEntry: FileParameterEntry = {
-        activeGroup: 'preset-a',
-        groups: { 'preset-a': { values: { radius: 42, height: 100 } } },
-      };
-      const entries = new Map<string, FileParameterEntry>([
-        ['main.ts', createDefaultEntry()],
-        ['public/models/box-corner.js', secondaryEntry],
-      ]);
-
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-      });
-
-      const { parameterEntries } = actor.getSnapshot().context;
-      expect(parameterEntries.has('main.ts')).toBe(true);
-      expect(parameterEntries.has('public/models/box-corner.js')).toBe(true);
-      expect(getActiveGroupValues(parameterEntries.get('public/models/box-corner.js'))).toEqual({
-        radius: 42,
-        height: 100,
-      });
-      actor.stop();
-    });
-
-    it('should merge with pre-loaded non-main geometry unit entry on setGeometryUnitParameters', async () => {
-      const secondaryEntry: FileParameterEntry = {
-        activeGroup: 'default',
-        groups: { default: { values: { radius: 42, depth: 10 } } },
-      };
-      const entries = new Map<string, FileParameterEntry>([
-        ['main.ts', createDefaultEntry()],
-        ['other.ts', secondaryEntry],
-      ]);
-
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async () => {
-          /* Test stub: no side effects needed */
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'other.ts', parameters: { radius: 99 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      const { parameterEntries } = actor.getSnapshot().context;
-      expect(getActiveGroupValues(parameterEntries.get('other.ts'))).toEqual({ radius: 99 });
-      actor.stop();
-    });
-
-    it('should write pre-loaded non-main geometry unit entry content via writeParameterFileActor', async () => {
-      const secondaryEntry: FileParameterEntry = {
-        activeGroup: 'default',
-        groups: { default: { values: { radius: 42 } } },
-      };
-      const entries = new Map<string, FileParameterEntry>([
-        ['main.ts', createDefaultEntry()],
-        ['other.ts', secondaryEntry],
-      ]);
-      const writtenInputs: WriteParameterInput[] = [];
-
-      const actor = await startAndLoad({
-        parameterEntries: entries,
-        loadResult: stubProjectWithMechanical,
-        shouldLoadModelOnStart: true,
-        writeParameterResult: async (input) => {
-          writtenInputs.push(input!);
-        },
-      });
-
-      actor.send({ type: 'setGeometryUnitParameters', filePath: 'other.ts', parameters: { radius: 99 } });
-      await waitFor(actor, (s) => s.matches({ ready: { parameterStoring: 'idle' } }));
-
-      const otherWrite = writtenInputs.find((w) => w.filePath === 'other.ts');
-      expect(otherWrite).toBeDefined();
-      expect(otherWrite!.entry.activeGroup).toBe('default');
-      expect(otherWrite!.entry.groups['default']!.values).toEqual({ radius: 99 });
       actor.stop();
     });
   });

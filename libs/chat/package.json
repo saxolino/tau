@@ -21,6 +21,16 @@
       "import": "./src/utils/index.ts",
       "default": "./src/utils/index.ts"
     },
+    "./references": {
+      "types": "./src/references/index.ts",
+      "import": "./src/references/index.ts",
+      "default": "./src/references/index.ts"
+    },
+    "./prompts": {
+      "types": "./src/prompts/index.ts",
+      "import": "./src/prompts/index.ts",
+      "default": "./src/prompts/index.ts"
+    },
     "./rpc": {
       "types": "./src/rpc/index.ts",
       "import": "./src/rpc/index.ts",
@@ -36,15 +46,52 @@
       "import": "./src/schemas/tools/test-model.tool.schema.ts",
       "default": "./src/schemas/tools/test-model.tool.schema.ts"
     },
+    "./schemas/tools/evaluate-model": {
+      "types": "./src/schemas/tools/evaluate-model.tool.schema.ts",
+      "import": "./src/schemas/tools/evaluate-model.tool.schema.ts",
+      "default": "./src/schemas/tools/evaluate-model.tool.schema.ts"
+    },
+    "./schemas/tools/screenshot": {
+      "types": "./src/schemas/tools/screenshot.tool.schema.ts",
+      "import": "./src/schemas/tools/screenshot.tool.schema.ts",
+      "default": "./src/schemas/tools/screenshot.tool.schema.ts"
+    },
+    "./schemas/tools/export-model": {
+      "types": "./src/schemas/tools/export-model.tool.schema.ts",
+      "import": "./src/schemas/tools/export-model.tool.schema.ts",
+      "default": "./src/schemas/tools/export-model.tool.schema.ts"
+    },
+    "./schemas/rpc": {
+      "types": "./src/schemas/rpc.schema.ts",
+      "import": "./src/schemas/rpc.schema.ts",
+      "default": "./src/schemas/rpc.schema.ts"
+    },
     "./schemas/tools/test-model-input-normalizer": {
       "types": "./src/schemas/tools/test-model-input-normalizer.ts",
       "import": "./src/schemas/tools/test-model-input-normalizer.ts",
       "default": "./src/schemas/tools/test-model-input-normalizer.ts"
+    },
+    "./schemas/tools/project-path-input-normalizer": {
+      "types": "./src/schemas/tools/project-path-input-normalizer.ts",
+      "import": "./src/schemas/tools/project-path-input-normalizer.ts",
+      "default": "./src/schemas/tools/project-path-input-normalizer.ts"
     }
   },
   "dependencies": {
+    "@taucad/bundler-core": "workspace:*",
     "@taucad/types": "workspace:*",
-    "@taucad/utils": "workspace:*"
+    "@taucad/utils": "workspace:*",
+    "@taucad/workbench": "workspace:*",
+    "ai": "catalog:",
+    "diff": "^8.0.4",
+    "js-yaml": "catalog:",
+    "minimatch": "^10.2.5",
+    "safe-regex": "^2.1.1"
+  },
+  "devDependencies": {
+    "@taucad/runtime": "workspace:*",
+    "@types/js-yaml": "catalog:",
+    "zod": "catalog:"
   },
   "imports": {
     "#*.js": "./src/*.ts",

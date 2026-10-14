@@ -1,19 +1,26 @@
 /* eslint-disable @typescript-eslint/naming-convention -- package export maps use literal subpath keys */
 /* oxlint-disable no-restricted-imports, import/extensions -- Standalone tool tests import their adjacent helper. */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import madge from 'madge';
 import { describe, expect, it } from 'vitest';
 import {
   bundledArtifactIssues,
   bundledWorkspaceMirrors,
   bundleDeclarationClosure,
-  bundleOwnershipIssues,
   bundleWitnessIssues,
   copyTargetPaths,
+  declaredPublishAssets,
   doubledPathSegments,
   emittedSpecifiers,
   hostTargetIssues,
   internalImportsIssues,
+  isJsonTypesDeclaration,
+  knownDeclarationDefects,
   libDependencyIssues,
   packageMetadataIssues,
+  partitionConsumerDiagnostics,
   peerRules,
   peerDependencyIssues,
   pluginRuntimePeerDependencyIssues,
@@ -22,15 +29,72 @@ import {
   strictConsumerCompilerOptions,
   vendoredAssetIssues,
   vendoredNodeModulesIssues,
+  workerUrlIssues,
   workspaceRangeIssues,
 } from './pkgcheck-metadata.js';
 
+describe('pkgcheck cycles', () => {
+  it('ignores erased type imports but rejects runtime import cycles', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'pkgcheck-cycles-'));
+    try {
+      const first = join(directory, 'first.ts');
+      writeFileSync(
+        first,
+        "import type { Second } from './second.js';\nexport type First = Second;\nexport const value = 1;\n",
+      );
+      writeFileSync(
+        join(directory, 'second.ts'),
+        "import { value } from './first.js';\nexport type Second = number;\nexport const reverse = value;\n",
+      );
+
+      const options = { fileExtensions: ['ts'], detectiveOptions: { ts: { skipTypeImports: true } } };
+      const typeOnlyGraph = await madge(directory, options);
+      expect(typeOnlyGraph.circular()).toEqual([]);
+
+      writeFileSync(first, "import { reverse } from './second.js';\nexport const value = reverse;\n");
+      const runtimeGraph = await madge(directory, options);
+      expect(runtimeGraph.circular()).toHaveLength(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('pkgcheck metadata', () => {
+  it('recognizes only an exact JSON default with its CommonJS-shaped declaration', () => {
+    expect(isJsonTypesDeclaration({ types: './agent/skills.d.cts', default: './agent/skills.json' })).toBe(true);
+    expect(isJsonTypesDeclaration({ types: './dist/index.d.cts', default: './dist/index.mjs' })).toBe(false);
+    expect(isJsonTypesDeclaration({ types: './agent/skills.d.cts', default: './agent/other.json' })).toBe(false);
+    expect(
+      isJsonTypesDeclaration({
+        types: './agent/skills.d.cts',
+        default: './agent/skills.json',
+        require: './dist/index.cjs',
+      }),
+    ).toBe(false);
+  });
+
+  it('stages only declared safe package assets outside dist', () => {
+    expect(
+      declaredPublishAssets([
+        'dist',
+        '!dist/**/*.node',
+        'agent',
+        'trust/index.d.mts',
+        'README.md',
+        'LICENSE',
+        'CHANGELOG.md',
+      ]),
+    ).toEqual(['agent', 'trust/index.d.mts', 'README.md', 'LICENSE', 'CHANGELOG.md']);
+    expect(() => declaredPublishAssets(['agent', '../source'])).toThrow('unsafe package files entry');
+    expect(() => declaredPublishAssets(['agent', 'node_modules'])).toThrow('unsafe package files entry');
+  });
+
   it('reports development/publish export drift and missing packed files', () => {
     const issues = packageMetadataIssues(
       {
         exports: { '.': './src/index.ts', './node': './src/node.ts' },
-        files: ['dist', 'README.md'],
+        files: ['dist', 'README.md', '!dist/**/*.node'],
         publishConfig: { exports: { '.': './dist/index.mjs' } },
       },
       (path) => path === 'dist',
@@ -40,6 +104,17 @@ describe('pkgcheck metadata', () => {
       'publishConfig.exports is missing development export: ./node',
       'files entry does not exist: README.md',
     ]);
+  });
+
+  it('requires a literal published Wasm asset to exist in the build output', () => {
+    const manifest = {
+      exports: { './raw-wasm': './src/raw.wasm' },
+      publishConfig: { exports: { './raw-wasm': './dist/raw.wasm' } },
+    };
+    expect(packageMetadataIssues(manifest, () => false)).toEqual([
+      'published raw Wasm asset is missing: ./raw-wasm -> ./dist/raw.wasm',
+    ]);
+    expect(packageMetadataIssues(manifest, (path) => path === './dist/raw.wasm')).toEqual([]);
   });
 
   it('requires the common publishable manifest fields and packs an existing changelog', () => {
@@ -73,26 +148,15 @@ describe('pkgcheck metadata', () => {
     ]);
   });
 
-  it('reports workspace modules bundled by more than one publishable root', () => {
-    expect(
-      bundleOwnershipIssues([
-        { owner: '@taucad/runtime', bundled: ['@taucad/vm'] },
-        { owner: 'geospec', bundled: ['@taucad/vm'] },
-      ]),
-    ).toEqual(['@taucad/vm is bundled by both @taucad/runtime and geospec']);
-  });
-
-  it('reports a mirror the manifest/tag rule never permitted, and leaves multi-owner rules alone', () => {
+  it('permits independent mirrors while rejecting one outside an owner’s manifest/tag rule', () => {
     expect(
       bundleWitnessIssues(
         [
           { owner: '@taucad/runtime', bundled: ['@taucad/runtime', '@taucad/rpc', '@taucad/billing'] },
-          { owner: '@taucad/esbuild', bundled: ['@taucad/vm'] },
+          { owner: '@taucad/esbuild', bundled: ['@taucad/rpc', '@taucad/vm'] },
         ],
         new Map([
           ['@taucad/runtime', ['@taucad/rpc']],
-          // A library the rule permits two owners is the release resolver's own
-          // invariant (`bundleOwnershipIssues`), not a mirror-side witness failure.
           ['@taucad/esbuild', ['@taucad/vm', '@taucad/rpc']],
         ]),
       ),
@@ -177,6 +241,34 @@ describe('pkgcheck metadata', () => {
     ).toEqual(['dist/fonts/fonts', 'dist/kernels/kernels']);
   });
 
+  it('reports worker URLs in emitted modules that name no emitted file', () => {
+    const emitted = new Set([
+      'graphics/utils/client.mjs',
+      'graphics/utils/measure.worker.mjs',
+      'graphics/workers/caps.worker.mjs',
+    ]);
+    expect(
+      workerUrlIssues(
+        [
+          {
+            path: 'graphics/utils/client.mjs',
+            source: [
+              'new Worker(new URL(`measure.worker.mjs`,import.meta.url),{type:`module`});',
+              "new Worker(new URL('../workers/caps.worker.mjs', import.meta.url));",
+              "new Worker(new URL('topology.worker.ts', import.meta.url));",
+              'new SharedWorker(new URL("#graphics/workers/caps.worker.js",import.meta.url));',
+              "new URL('thumbnail.webp', import.meta.url);",
+            ].join('\n'),
+          },
+        ],
+        emitted,
+      ),
+    ).toEqual([
+      "graphics/utils/client.mjs: worker URL '#graphics/workers/caps.worker.js' names no emitted file",
+      "graphics/utils/client.mjs: worker URL 'topology.worker.ts' names no emitted file",
+    ]);
+  });
+
   it('detects bundled workspace projects from the mirror directories unbundled builds emit', () => {
     expect(
       bundledWorkspaceMirrors(
@@ -204,6 +296,24 @@ describe('pkgcheck metadata', () => {
         { './nextjs': 'next ships declaration errors of its own' },
       ),
     ).toEqual({ specifiers: ['@taucad/runtime', '@taucad/runtime/node'], issues: [] });
+  });
+
+  it('treats only a concrete raw Wasm export as an asset rather than a code entrypoint', () => {
+    expect(
+      probedSpecifiers(
+        '@taucad/example',
+        {
+          '.': './dist/index.mjs',
+          './raw-wasm': './dist/raw.wasm',
+          './mixed': { types: './dist/mixed.d.mts', import: './dist/mixed.mjs', default: './dist/mixed.wasm' },
+          './conditional': { browser: './dist/browser.wasm', default: './dist/node.mjs' },
+        },
+        {},
+      ),
+    ).toEqual({
+      specifiers: ['@taucad/example', '@taucad/example/conditional', '@taucad/example/mixed'],
+      issues: [],
+    });
   });
 
   it('reports a recorded reason for a subpath the package no longer publishes', () => {
@@ -391,6 +501,17 @@ describe('peerDependencyIssues', () => {
         manifest: { dependencies: { zod: 'catalog:', '@taucad/runtime': 'workspace:*' } },
         emitted: [{ path: 'dist/index.mjs', specifier: '@taucad/runtime' }],
         rules: zodRules,
+      }),
+    ).toEqual([]);
+  });
+
+  it('lets a named leaf satisfy zod with a dependency even when its own emit imports zod', () => {
+    expect(
+      peerDependencyIssues({
+        packageName: 'geospec',
+        manifest: { dependencies: { zod: 'catalog:' } },
+        emitted: [{ path: 'dist/mesh/analysis-result.mjs', specifier: 'zod' }],
+        rules: peerRules,
       }),
     ).toEqual([]);
   });
@@ -604,7 +725,7 @@ describe('vendoredAssetIssues', () => {
         ignoredPaths: ['packages/plugins/rhino/src/wasm/rhino3dm.wasm'],
         assetFiles: [
           { project: '@taucad/rhino', path: 'src/wasm/rhino3dm.wasm' },
-          { project: '@taucad/gltf', path: 'src/wasm/draco_decoder_gltf.wasm' },
+          { project: '@taucad/example', path: 'src/wasm/orphan.wasm' },
         ],
         upstreamExports: [],
         reasons: {
@@ -612,7 +733,7 @@ describe('vendoredAssetIssues', () => {
         },
       }),
     ).toEqual([
-      '@taucad/gltf: src/wasm/draco_decoder_gltf.wasm is not written by any copy-assets entry; vendored binaries must be generated from a declared dependency',
+      '@taucad/example: src/wasm/orphan.wasm is not written by any copy-assets entry; vendored binaries must be generated from a declared dependency',
     ]);
   });
 
@@ -703,7 +824,9 @@ describe('hostTargetIssues', () => {
         dependencyNames: [],
         hasPayloadGuardTest: false,
       }),
-    ).toEqual(['@taucad/occt-core: package.json taucad.hostTarget is not declared (expected "browser" or "node")']);
+    ).toEqual([
+      '@taucad/occt-core: package.json taucad.hostTarget is not declared (expected "browser", "daemon", "native", "node", "python")',
+    ]);
   });
 
   it('holds a browser package to its guard test and to browser-safe dependencies', () => {
@@ -737,5 +860,34 @@ describe('hostTargetIssues', () => {
         hasPayloadGuardTest: false,
       }),
     ).toEqual([]);
+  });
+
+  it.each(['daemon', 'native', 'python'] as const)('accepts the generator-supported %s host target', (hostTarget) => {
+    expect(
+      hostTargetIssues({
+        packageName: '@taucad/example',
+        hostTarget,
+        dependencyNames: ['ws'],
+        hasPayloadGuardTest: false,
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe('partitionConsumerDiagnostics', () => {
+  it('explains only the known SDK undici fallbacks and keeps every other diagnostic', () => {
+    const sdk = 'node_modules/@anthropic-ai/sdk/internal/types.d.mts';
+    const output = [
+      `${sdk}(48,181): error TS2307: Cannot find module '../../../node_modules/undici-types/index.d.ts' or its corresponding type declarations.`,
+      `${sdk}(49,170): error TS2307: Cannot find module '../../../../node_modules/undici/index.d.ts' or its corresponding type declarations.`,
+      `node_modules/@taucad/agent-host/dist/index.d.mts(3,1): error TS2322: Type 'string' is not assignable to type 'number'.`,
+      '  The expected type comes from property "count".',
+      `${sdk}(52,10): error TS2307: Cannot find module 'missing-thing' or its corresponding type declarations.`,
+    ].join('\n');
+
+    expect(partitionConsumerDiagnostics(output, knownDeclarationDefects)).toEqual({
+      explained: output.split('\n').slice(0, 2),
+      remaining: output.split('\n').slice(2),
+    });
   });
 });

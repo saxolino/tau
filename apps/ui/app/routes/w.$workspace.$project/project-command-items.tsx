@@ -1,6 +1,8 @@
 import {
   Activity,
   Clipboard,
+  Cloud,
+  CloudOff,
   Download,
   FileBox,
   Files,
@@ -8,10 +10,13 @@ import {
   History,
   ImageDown,
   Info,
-  RotateCcw,
+  RefreshCw,
+  Rotate3d,
+  Save,
   Share2,
   SlidersHorizontal,
   Terminal,
+  Undo2,
 } from 'lucide-react';
 import { useCallback } from 'react';
 import { useSelector } from '@xstate/react';
@@ -19,47 +24,84 @@ import type { UIMatch } from 'react-router';
 import { useProject, useMainGraphics } from '#hooks/use-project.js';
 import { toast } from '#components/ui/sonner.js';
 import { downloadBlob } from '@taucad/utils/file';
+import { randomUuid } from '@taucad/utils/id';
 import { useCommandPaletteItems } from '#components/layout/command-palette.js';
 import type { CommandPaletteItem } from '#components/layout/command-palette.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useFileTreeMap } from '#hooks/use-file-tree.js';
 import { useThumbnailGenerator } from '#hooks/use-thumbnail-generator.js';
-import { useVisibleRevisions } from '#hooks/use-revisions.js';
-import { useRestoreToPoint } from '#hooks/use-restore-to-point.js';
+import { useProjectRole, useRevisionCommands, useRevisionStatus } from '#hooks/use-revision-status.js';
+import { isSyncReadOnly } from '#hooks/use-cloud-projects.js';
+import { useSaveRevisionRequest } from '#routes/w.$workspace.$project/revision-save-shortcut.js';
+import { selectStripVerbs, useRevisionFacts } from '#routes/w.$workspace.$project/revision-vocabulary.js';
 import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
-import { useProjectShare } from '#routes/w.$workspace.$project/project-share-action.js';
+import { getFileTreeDownloadErrorMessage } from '#routes/w.$workspace.$project/file-tree-download-policy.js';
 import { useFeature } from '#flags/use-feature.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
-import { captureCadImages } from '#services/headless-capture.js';
-import { useCameraRegistryVersion } from '#hooks/use-graphics.js';
-import { getGraphicsCameraState, hasGraphicsCameraRig } from '#services/graphics-camera-registry.js';
+import { captureCadImages, omittedSectionCutsNotice } from '#services/headless-capture.js';
+import { useGraphicsCameraRigQuery } from '@taucad/viewer/hooks/use-graphics';
+import { getGraphicsCameraState } from '@taucad/viewer/services/graphics-camera-registry';
 
-export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch }): undefined {
+export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch }): React.JSX.Element | undefined {
+  const project = useProject({ enableNoContext: true });
+  return project === undefined ? undefined : <ProjectCommandPaletteItemsReady match={match} />;
+}
+
+function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch }): undefined {
   const { projectRef, geometryUnits, mainEntryPath } = useProject();
   const { openPanel } = useProjectWorkspace();
-  const { openShare } = useProjectShare();
   const isTauDebugEnabled = useFeature('tauDebug');
   const mainGraphicsRef = useMainGraphics();
   const { regenerate: regenerateThumbnail } = useThumbnailGenerator();
   const fileManager = useFileManager();
   const imageService = useHeadlessImageService();
   const fileTree = useFileTreeMap();
-  const hasExportableGeometry = useSelector(projectRef, (state) => state.context.exportableGeometryUnitPaths.size > 0);
   const project = useSelector(projectRef, (state) => state.context.project);
   const projectName = useSelector(projectRef, (state) => state.context.project?.name) ?? 'file';
 
   const mainCadRef = geometryUnits.get(mainEntryPath);
-  const geometryFormat = useSelector(mainCadRef, (state) => state?.context.geometry?.format);
-  useCameraRegistryVersion();
-  const cameraReady = hasGraphicsCameraRig(mainGraphicsRef);
+  const artifactMimeType = useSelector(mainCadRef, (state) =>
+    state?.context.rendering?.success ? state.context.rendering.artifact.mimeType : undefined,
+  );
+  const hasCameraRig = useGraphicsCameraRigQuery();
+  const cameraReady = hasCameraRig(mainGraphicsRef);
   const canCapturePng = Boolean(
-    geometryFormat && geometryFormat !== 'webrtc' && (geometryFormat !== 'gltf' || cameraReady),
+    artifactMimeType === 'image/svg+xml' || (artifactMimeType === 'model/gltf-binary' && cameraReady),
   );
   const fileCount = fileTree.size;
 
-  // Chat-restore time-travel (R13) — keyboard-first discovery of the pane + redo.
-  const { returnToLatest } = useRestoreToPoint();
-  const { canReturnToLatest } = useVisibleRevisions();
+  /* The Sync region is the surface; the palette is the keyboard path to it
+   * (DESIGN: a feature that only exists behind a pointer gesture is
+   * unfinished). Where Tau Cloud is comes from `useRevisionCommands`, the one
+   * page-side place that knows (S34). */
+  const revisionStatus = useRevisionStatus();
+  const projectRole = useProjectRole();
+  /* F1: the palette offers exactly what the Sync region offers. `fetchOnly`
+     alone left an enabled *Sync now* for a read collaborator, whose push the
+     API refuses — one shared predicate rather than two conditions. */
+  const syncReadOnly = isSyncReadOnly(revisionStatus?.remote, projectRole);
+  const { syncNow, undo, undoOperation } = useRevisionCommands();
+  /* D2, M1: *Undo restore* where the strip offers it and nowhere else — the restore row this
+     device's restore machine minted, still the head — in the strip's own words. Never after a
+     reload or another device's restore, which the machine would answer UNDO_UNAVAILABLE. */
+  const { where, status } = useRevisionFacts();
+  /* D15: *Undo* on the same condition as the strip, which *Undo restore* takes over when both apply. */
+  const { secondary: undoVerbs } = selectStripVerbs({
+    status,
+    where,
+    undoable: status?.restore.undoable === true,
+    canUndo: status?.restore.canUndo === true,
+    canWrite: projectRole !== 'read' && projectRole !== 'revoked',
+  });
+  const canUndoRestore = undoVerbs.includes('Undo restore');
+  const canUndo = undoVerbs.includes('Undo');
+  const saveRevision = useSaveRevisionRequest();
+  const isRemoteConnected = revisionStatus?.remote.kind !== undefined && revisionStatus.remote.kind !== 'none';
+  /* HQ7: backup verbs wait until the projection has located the line; before it, they could only fail. */
+  const isLineKnown = revisionStatus !== undefined && revisionStatus.line.kind !== 'unknown';
+  const handleOpenSync = useCallback(() => {
+    openPanel('revisions');
+  }, [openPanel]);
 
   const handleOpenExporter = useCallback(() => {
     openPanel('export');
@@ -71,37 +113,47 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
     }
 
     toast.promise(
-      async () => {
-        // Get mechanical asset files
-        const zipBlob = await fileManager.getZippedDirectory(`/projects/${project.id}`);
-        return zipBlob;
-      },
+      /* `''` is the file manager's own root, which follows the selected
+       * checkout: an absolute `/projects/<id>` is a foreign key to this
+       * workspace-relative facade, not an alias of its root. */
+      async () => fileManager.getZippedDirectory('', { versionedOnly: true }),
       {
-        loading: 'Creating ZIP archive...',
+        loading: 'Creating ZIP archive…',
         success(blob) {
           downloadBlob(blob, `${projectName}.zip`);
           return 'ZIP downloaded successfully';
         },
-        error: 'Failed to create ZIP archive',
+        error(error: unknown) {
+          return `Failed to create ZIP archive: ${getFileTreeDownloadErrorMessage(error)}`;
+        },
       },
     );
   }, [project, projectName, fileManager]);
 
   const capturePng = useCallback(async (): Promise<Blob> => {
-    if (!mainCadRef) {
-      throw new Error('No settled CAD unit is available');
+    const claimId = randomUuid();
+    projectRef.send({ type: 'claimGeometryUnit', claimId, entryPath: mainEntryPath });
+    try {
+      const claimedActor = projectRef.getSnapshot().context.geometryUnits.get(mainEntryPath) ?? mainCadRef;
+      if (!claimedActor) {
+        throw new Error('No settled CAD unit is available');
+      }
+      const { files, omittedSectionCutIds } = await captureCadImages({
+        cadRef: claimedActor,
+        graphicsRef: mainGraphicsRef,
+        cameraState: getGraphicsCameraState(mainGraphicsRef),
+        imageService,
+        recipe: { purpose: 'utility', mode: 'current' },
+      });
+      if (omittedSectionCutIds.length > 0) {
+        toast.warning(omittedSectionCutsNotice);
+      }
+      const file = files[0]!;
+      return new Blob([file.bytes], { type: file.mimeType });
+    } finally {
+      projectRef.send({ type: 'releaseGeometryUnit', claimId });
     }
-    const files = await captureCadImages({
-      cadRef: mainCadRef,
-      graphicsRef: mainGraphicsRef,
-      cameraState: getGraphicsCameraState(mainGraphicsRef),
-      imageService,
-      fileSystem: fileManager.runtimeFileSystem,
-      recipe: { purpose: 'utility', mode: 'current' },
-    });
-    const file = files[0]!;
-    return new Blob([file.bytes], { type: file.mimeType });
-  }, [fileManager.runtimeFileSystem, imageService, mainCadRef, mainGraphicsRef]);
+  }, [imageService, mainCadRef, mainEntryPath, mainGraphicsRef, projectRef]);
 
   const handleDownloadPng = useCallback(
     async (filename: string) => {
@@ -127,9 +179,24 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
   const handleUpdateThumbnail = useCallback(() => {
     // Force a regeneration through the thumbnail machine (off the main thread
     // via the runtime image transcoder); the render writes `thumbnail.webp` and
-    // repoints the project record when it settles.
-    regenerateThumbnail();
-    toast.success('Regenerating thumbnail…');
+    // repoints the project record when it settles. The toast reflects the
+    // machine's terminal result instead of assuming success.
+    toast.promise(
+      async () => {
+        const result = await regenerateThumbnail();
+        if (result.status === 'skipped') {
+          throw new Error(`Thumbnail skipped: ${result.reason}`);
+        }
+        if (result.status === 'failed') {
+          throw result.error;
+        }
+      },
+      {
+        loading: 'Regenerating thumbnail…',
+        success: 'Thumbnail updated',
+        error: (error: unknown) => (error instanceof Error ? error.message : 'Thumbnail regeneration failed'),
+      },
+    );
   }, [regenerateThumbnail]);
 
   const handleCopyPngToClipboard = useCallback(async () => {
@@ -139,7 +206,7 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
         await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
       },
       {
-        loading: `Copying ${projectName}.png to clipboard...`,
+        loading: `Copying ${projectName}.png to clipboard…`,
         success: `Copied ${projectName}.png to clipboard`,
         error: `Failed to copy ${projectName}.png to clipboard`,
       },
@@ -149,12 +216,77 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
   useCommandPaletteItems(
     match.id,
     (): CommandPaletteItem[] => [
+      ...(isRemoteConnected
+        ? [
+            {
+              id: 'change-backup',
+              label: 'Change backup',
+              group: 'Revisions',
+              icon: <Cloud />,
+              action: handleOpenSync,
+              visible: isLineKnown,
+            },
+            /* R29 names two verbs, not one wearing the other's id: *Change* and
+               *Disconnect* are different intents and both open the pane, which
+               is where the confirmation lives (C47). */
+            {
+              id: 'disconnect-remote',
+              label: 'Disconnect backup',
+              group: 'Revisions',
+              icon: <CloudOff />,
+              action: handleOpenSync,
+              visible: isLineKnown,
+            },
+          ]
+        : [
+            {
+              id: 'connect-tau-cloud',
+              label: 'Connect Tau Cloud',
+              group: 'Revisions',
+              icon: <Cloud />,
+              action: handleOpenSync,
+            },
+          ]),
+      {
+        id: 'sync-now',
+        label: 'Sync now',
+        group: 'Revisions',
+        icon: <RefreshCw />,
+        action: syncNow,
+        visible: isRemoteConnected,
+        disabled: revisionStatus?.remote.phase !== 'connected' || syncReadOnly,
+      },
+      {
+        id: 'save-revision',
+        label: 'Save revision',
+        group: 'Revisions',
+        icon: <Save />,
+        action: saveRevision,
+      },
+      {
+        id: 'undo-restore',
+        label: 'Undo restore',
+        group: 'Revisions',
+        icon: <Undo2 />,
+        action: undo,
+        visible: canUndoRestore,
+      },
+      {
+        id: 'undo-operation',
+        label: 'Undo',
+        group: 'Revisions',
+        icon: <Undo2 />,
+        action: undoOperation,
+        visible: canUndo,
+      },
       {
         id: 'share-project',
         label: 'Share project',
         group: 'Project',
         icon: <Share2 />,
-        action: openShare,
+        action: () => {
+          openPanel('share');
+        },
       },
       {
         id: 'open-parameters',
@@ -163,6 +295,15 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
         icon: <SlidersHorizontal />,
         action: () => {
           openPanel('parameters');
+        },
+      },
+      {
+        id: 'open-kinematics',
+        label: 'Open kinematics',
+        group: 'Workbench',
+        icon: <Rotate3d />,
+        action: () => {
+          openPanel('kinematics');
         },
       },
       {
@@ -222,20 +363,11 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
         },
       },
       {
-        id: 'restore-latest-revision',
-        label: 'Restore to latest revision',
-        group: 'Revisions',
-        icon: <RotateCcw />,
-        action: returnToLatest,
-        disabled: !canReturnToLatest,
-      },
-      {
         id: 'export',
         label: 'Export',
         group: 'Export',
         icon: <Download />,
         action: handleOpenExporter,
-        disabled: !hasExportableGeometry,
       },
       {
         id: 'download-zip',
@@ -273,7 +405,6 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
     ],
     [
       handleUpdateThumbnail,
-      openShare,
       openPanel,
       isTauDebugEnabled,
       mainCadRef,
@@ -282,9 +413,19 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
       handleDownloadPng,
       projectName,
       handleOpenExporter,
-      hasExportableGeometry,
       handleDownloadZip,
       fileCount,
+      isRemoteConnected,
+      isLineKnown,
+      handleOpenSync,
+      syncReadOnly,
+      revisionStatus?.remote.phase,
+      saveRevision,
+      syncNow,
+      undo,
+      canUndoRestore,
+      undoOperation,
+      canUndo,
     ],
   );
 

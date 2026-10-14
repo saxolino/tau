@@ -1,28 +1,50 @@
 // @vitest-environment node
 /* oxlint-disable max-lines -- RPC adapter coverage shares one typed actor/service fixture matrix. */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { handleGlobSearch, RpcDependencies, RpcFileSystem } from '@taucad/chat/rpc';
+import { createHash } from 'node:crypto';
+import type * as ChatRpc from '@taucad/chat/rpc';
+import type * as AwaitFreshRender from '#machines/await-fresh-render.js';
 import { rpcClientErrorCodeSchema } from '@taucad/chat';
 import { fromMemoryFs } from '@taucad/runtime/filesystem';
-import type { FileEntry, FileExtension, FileStat } from '@taucad/types';
+import type { Rendering } from '@taucad/runtime';
+import type { DirectoryStatRow } from '@taucad/filesystem';
+import type { FileEntry, FileStat } from '@taucad/types';
 import type { ListedDirectoryEntry } from '@taucad/fs-client/directory-listing';
 import { FileNotFoundError } from '@taucad/fs-client/file-content-errors';
 import { rpcName } from '@taucad/chat/constants';
 import type { RpcHandlerDependencies, RpcCallInput } from '#hooks/rpc-handlers.js';
+import { omittedSectionCutsNotice } from '#services/headless-capture.js';
+import type { SectionCut } from '@taucad/viewer/graphics/section-cuts';
+import { workbenchPaths, workbenchRecords } from '@taucad/workbench';
 
-const gltfGeometry = { format: 'gltf', content: new Uint8Array(), hash: 'geometry-hash' };
-const presentationGltfGeometry = {
-  format: 'gltf',
-  content: new TextEncoder().encode(
-    JSON.stringify({
-      scene: 0,
-      scenes: [{ nodes: [0, 1] }],
-      nodes: [{ mesh: 0 }, { mesh: 1 }],
-      meshes: [{ primitives: [{}] }, { primitives: [{}] }],
-    }),
-  ),
+type RpcDependencies = ChatRpc.RpcDependencies;
+type RpcFileSystem = ChatRpc.RpcFileSystem;
+
+const gltfRendering = {
+  success: true,
+  view: 'model',
+  artifact: { mimeType: 'model/gltf-binary', content: new Uint8Array([1]) },
+  hash: 'geometry-hash',
+  requestId: 'request-1',
+  evaluationId: 'evaluation-1',
+  transient: false,
+  issues: [],
+} satisfies Rendering;
+const presentationGltfRendering = {
+  ...gltfRendering,
+  artifact: {
+    mimeType: 'model/gltf-binary',
+    content: new TextEncoder().encode(
+      JSON.stringify({
+        scene: 0,
+        scenes: [{ nodes: [0, 1] }],
+        nodes: [{ mesh: 0 }, { mesh: 1 }],
+        meshes: [{ primitives: [{}] }, { primitives: [{}] }],
+      }),
+    ),
+  },
   hash: 'presentation-geometry-hash',
-};
+} satisfies Rendering;
 const captureWebp = (index = 0): Uint8Array<ArrayBuffer> => {
   const bytes = new Uint8Array(31);
   bytes.set(new TextEncoder().encode('RIFF'), 0);
@@ -54,12 +76,16 @@ const rpcDispatcherMocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
 }));
 
-vi.mock('@taucad/chat/rpc', () => ({
-  createRpcDispatcher: (deps: RpcDependencies) => {
-    capturedDeps = deps;
-    return { dispatch: rpcDispatcherMocks.dispatch };
-  },
-}));
+vi.mock('@taucad/chat/rpc', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChatRpc>();
+  return {
+    ...actual,
+    createRpcDispatcher: (deps: RpcDependencies) => {
+      capturedDeps = deps;
+      return { dispatch: rpcDispatcherMocks.dispatch };
+    },
+  };
+});
 
 const ledgerMocks = vi.hoisted(() => ({
   recordRpcOutcome: vi.fn(),
@@ -69,18 +95,20 @@ vi.mock('#services/rpc-ledger.js', () => ({
   recordRpcOutcome: ledgerMocks.recordRpcOutcome,
 }));
 
-const mockWaitFor = vi.fn();
-vi.mock('xstate', async () => {
-  const actual = await vi.importActual('xstate');
+const mockWaitFor = vi.fn<(...args: unknown[]) => Promise<unknown>>();
+vi.mock('#machines/await-fresh-render.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof AwaitFreshRender>();
   return {
-    ...(actual as Record<string, unknown>),
-    // oxlint-disable-next-line no-unsafe-return -- mock factory returns untyped
-    waitFor: (...args: unknown[]) => mockWaitFor(...args) as unknown,
+    ...actual,
+    awaitFreshRender: async (...args: unknown[]) => mockWaitFor(...args),
   };
 });
 
 const { createRpcHandlers } = await import('#hooks/rpc-handlers.js');
-const actualChatRpc = await vi.importActual<{ handleGlobSearch: typeof handleGlobSearch }>('@taucad/chat/rpc');
+const actualChatRpc = await vi.importActual<{
+  handleEditFile: typeof ChatRpc.handleEditFile;
+  handleGlobSearch: typeof ChatRpc.handleGlobSearch;
+}>('@taucad/chat/rpc');
 
 // ===================================================================
 // Factories
@@ -147,10 +175,23 @@ type FileManagerWriteCall = [string, Uint8Array<ArrayBuffer>, { source: string }
 
 function createMockTreeService(tree?: Map<string, FileEntry>) {
   const _tree = tree ?? new Map<string, FileEntry>();
+  const listDirectory = vi.fn(async (_path: string): Promise<readonly ListedDirectoryEntry[]> => []);
   return {
     getTreeSnapshot: () => _tree,
     exists: vi.fn(async (path: string) => _tree.has(path)),
-    listDirectory: vi.fn(async (_path: string): Promise<readonly ListedDirectoryEntry[]> => []),
+    listDirectory,
+    listDirectoryExact: vi.fn(async (path: string): Promise<DirectoryStatRow[]> => {
+      const entries = await listDirectory(path);
+      return entries.map((entry) => {
+        const common = { name: entry.name, size: entry.size, mtimeMs: entry.mtimeMs };
+        if (entry.isFolder) {
+          return { ...common, type: 'dir' };
+        }
+        return entry.contentKind === 'text'
+          ? { ...common, type: 'file', contentKind: 'text', lineCount: entry.lineCount ?? 1 }
+          : { ...common, type: 'file', contentKind: 'binary' };
+      });
+    }),
   };
 }
 
@@ -158,7 +199,14 @@ type MockTreeService = ReturnType<typeof createMockTreeService>;
 
 function createMockFileManager() {
   return {
-    readFile: vi.fn<(path: string) => Promise<Uint8Array<ArrayBuffer>>>(),
+    fileManagerRef: { getSnapshot: () => ({ context: { rootDirectory: '/projects/proj-test' } }) },
+    workbenchFiles: {
+      writeFileChecked: vi.fn<RpcHandlerDependencies['fileManager']['workbenchFiles']['writeFileChecked']>(),
+      deleteFileChecked: vi.fn<RpcHandlerDependencies['fileManager']['workbenchFiles']['deleteFileChecked']>(),
+    },
+    readFile: vi
+      .fn<(path: string) => Promise<Uint8Array<ArrayBuffer>>>()
+      .mockRejectedValue(new FileNotFoundError('missing', { path: workbenchPaths.entries })),
     writeFile: vi
       .fn<(path: string, data: Uint8Array<ArrayBuffer>, options: { source: string }) => Promise<void>>()
       .mockResolvedValue(undefined),
@@ -198,28 +246,49 @@ function createMockProjectRef(options?: {
 }
 
 function createMockCadUnit(options?: {
-  geometry?: { format: string; content: Uint8Array<ArrayBuffer> | string; hash: string };
+  rendering?: Rendering;
   kernelIssues?: Map<string, Array<{ message: string; type: string; severity: string }>>;
   value?: string;
   kernelClient?: unknown;
   entryPath?: string;
   parameters?: Record<string, unknown>;
-  latestGeometryOutcome?: 'success' | 'failure';
+  latestRenderingOutcome?: 'success' | 'failure';
+  document?: { export: ReturnType<typeof vi.fn> } | false;
 }) {
-  return {
-    getSnapshot: vi.fn().mockReturnValue({
-      value: options?.value ?? 'idle',
-      context: {
-        geometry: options?.geometry,
-        latestGeometryOutcome: options?.latestGeometryOutcome ?? (options?.geometry ? 'success' : undefined),
-        kernelIssues:
-          options?.kernelIssues ?? new Map<string, Array<{ message: string; type: string; severity: string }>>(),
-        ...(options?.kernelClient === undefined ? {} : { kernelClient: options.kernelClient }),
-        entryPath: options?.entryPath,
-        parameters: options?.parameters ?? {},
-        units: { length: 'mm' },
+  const rendering = options?.rendering ?? gltfRendering;
+  const evaluation = {
+    success: true,
+    id: 'evaluation-1',
+    transient: false,
+    issues: [],
+    views: [
+      {
+        id: rendering.view ?? 'model',
+        title: 'Model',
+        mimeType: rendering.success ? rendering.artifact.mimeType : 'model/gltf-binary',
       },
-    }),
+    ],
+    exports: [{ id: 'stl', title: 'STL', mimeType: 'model/stl', extension: 'stl' }],
+  };
+  const snapshot = {
+    value: options?.value ?? 'idle',
+    context: {
+      rendering,
+      lastProjection: rendering,
+      evaluation,
+      document: options?.document === false ? undefined : (options?.document ?? { export: vi.fn() }),
+      latestRenderingOutcome: options?.latestRenderingOutcome ?? 'success',
+      kernelIssues:
+        options?.kernelIssues ?? new Map<string, Array<{ message: string; type: string; severity: string }>>(),
+      ...(options?.kernelClient === undefined ? {} : { kernelClient: options.kernelClient }),
+      entryPath: options?.entryPath,
+      parameters: options?.parameters ?? {},
+      units: { length: 'mm' },
+    },
+    hasTag: () => options?.value === 'error',
+  };
+  return {
+    getSnapshot: vi.fn(() => snapshot),
     send: vi.fn(),
     on: vi.fn().mockReturnValue({ unsubscribe: vi.fn() }),
     subscribe: vi.fn().mockReturnValue({ unsubscribe: vi.fn() }),
@@ -292,6 +361,61 @@ describe('rpc-handlers', () => {
       fileTree = new Map<string, FileEntry>();
       const deps = buildDeps({ fileManager: mockFm, fileTree });
       fileSystem = deps.fileSystem;
+    });
+
+    it('reads owned exact binary bytes without text decoding', async () => {
+      const bytes = new Uint8Array([0, 255, 239, 187, 191]);
+      mockFm.readFile.mockResolvedValue(bytes);
+      const result = await fileSystem.readBinaryFile('part.glb');
+      expect(result).toEqual(bytes);
+      result[0] = 42;
+      expect(bytes[0]).toBe(0);
+    });
+
+    it('rejects foreign paths and oversized binary reads before reading content', async () => {
+      await expect(fileSystem.readBinaryFile('../foreign.glb')).rejects.toThrow();
+      expect(mockFm.stat).not.toHaveBeenCalled();
+      mockFm.stat.mockResolvedValue(textFileStat(256 * 1024 * 1024 + 1));
+      await expect(fileSystem.readBinaryFile('part.glb')).rejects.toMatchObject({ code: 'RESULT_TOO_LARGE' });
+      expect(mockFm.readFile).not.toHaveBeenCalled();
+    });
+
+    it('routes checked mutations through the owning live root', async () => {
+      mockFm.workbenchFiles.writeFileChecked.mockResolvedValue({ status: 'applied', content: new Uint8Array([1]) });
+      mockFm.workbenchFiles.deleteFileChecked.mockResolvedValue({ status: 'applied', content: new Uint8Array() });
+      await fileSystem.writeFileChecked({
+        path: 'views/front.json',
+        data: '{}',
+        preconditions: [{ path: 'views/front.json', expected: null }],
+      });
+      await fileSystem.deleteFileChecked({
+        path: 'views/front.json',
+        preconditions: [{ path: 'views/front.json', expected: '{}' }],
+      });
+      expect(mockFm.workbenchFiles.writeFileChecked).toHaveBeenCalledWith({
+        path: '/projects/proj-test/views/front.json',
+        data: '{}',
+        preconditions: [{ path: '/projects/proj-test/views/front.json', expected: null }],
+      });
+      expect(mockFm.workbenchFiles.deleteFileChecked).toHaveBeenCalledWith({
+        path: '/projects/proj-test/views/front.json',
+        preconditions: [{ path: '/projects/proj-test/views/front.json', expected: '{}' }],
+      });
+      await expect(
+        fileSystem.deleteFileChecked({ path: '../escape', preconditions: [{ path: '../escape', expected: null }] }),
+      ).rejects.toThrow();
+      expect(mockFm.workbenchFiles.deleteFileChecked).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects malformed UTF-8 record bytes with a typed error', async () => {
+      mockFm.readFile.mockResolvedValue(new Uint8Array([0xc3, 0x28]));
+      await expect(fileSystem.readFile('views/bad.json')).rejects.toMatchObject({ code: 'INVALID_TEXT_ENCODING' });
+    });
+
+    it('preserves a UTF-8 BOM in text read for checked record preconditions', async () => {
+      const content = '\uFEFF{"version":1}';
+      mockFm.readFile.mockResolvedValue(new TextEncoder().encode(content));
+      await expect(fileSystem.readFile('.tau/workbench/layout.json')).resolves.toBe(content);
     });
 
     // ----- readFile -----
@@ -408,7 +532,7 @@ describe('rpc-handlers', () => {
     // ----- readdir -----
 
     describe('readdir', () => {
-      it('should surface real size and modifiedAt from the stat-aware tree call', async () => {
+      it('should surface exact size and modifiedAt from the composed listing', async () => {
         const writtenAt = Date.UTC(2026, 0, 15, 12, 30, 0);
         vi.mocked(lastTreeService!.listDirectory).mockResolvedValueOnce([
           textDirectoryEntry('main.ts', 'src/main.ts', { size: 1234, mtimeMs: writtenAt, lineCount: 12 }),
@@ -419,6 +543,7 @@ describe('rpc-handlers', () => {
         const entries = await fileSystem.readdir('src');
 
         expect(lastTreeService!.listDirectory).toHaveBeenCalledWith('src');
+        expect(lastTreeService!.listDirectoryExact).toHaveBeenCalledWith('src');
         expect(entries).toEqual([
           {
             name: 'main.ts',
@@ -450,6 +575,69 @@ describe('rpc-handlers', () => {
         expect(entries).toEqual([{ name: 'orphan.ts', type: 'file', size: 0, contentKind: 'text', lineCount: 1 }]);
       });
 
+      it('should use exact listing counts even when the UI cache appears known', async () => {
+        vi.mocked(lastTreeService!.listDirectory).mockResolvedValueOnce([
+          textDirectoryEntry('main.ts', 'src/main.ts', { size: 5, mtimeMs: 100, lineCount: 1 }),
+        ]);
+        vi.mocked(lastTreeService!.listDirectoryExact).mockResolvedValueOnce([
+          { name: 'main.ts', type: 'file', size: 5, mtimeMs: 100, contentKind: 'text', lineCount: 4 },
+        ]);
+
+        await expect(fileSystem.readdir('src')).resolves.toEqual([
+          {
+            name: 'main.ts',
+            type: 'file',
+            size: 5,
+            modifiedAt: new Date(100).toISOString(),
+            contentKind: 'text',
+            lineCount: 4,
+          },
+        ]);
+        expect(lastTreeService!.listDirectory).not.toHaveBeenCalled();
+      });
+
+      it('should report a cached binary file as text after an external replacement', async () => {
+        vi.mocked(lastTreeService!.listDirectory).mockResolvedValueOnce([
+          { name: 'part.dat', path: 'src/part.dat', isFolder: false, size: 5, mtimeMs: 100, contentKind: 'binary' },
+        ]);
+        vi.mocked(lastTreeService!.listDirectoryExact).mockResolvedValueOnce([
+          { name: 'part.dat', type: 'file', size: 5, mtimeMs: 100, contentKind: 'text', lineCount: 4 },
+        ]);
+
+        await expect(fileSystem.readdir('src')).resolves.toEqual([
+          {
+            name: 'part.dat',
+            type: 'file',
+            size: 5,
+            modifiedAt: new Date(100).toISOString(),
+            contentKind: 'text',
+            lineCount: 4,
+          },
+        ]);
+        expect(lastTreeService!.listDirectory).not.toHaveBeenCalled();
+      });
+
+      it('should use current membership after external addition and deletion', async () => {
+        vi.mocked(lastTreeService!.listDirectory).mockResolvedValueOnce([
+          textDirectoryEntry('deleted.ts', 'src/deleted.ts', { size: 5, mtimeMs: 100, lineCount: 1 }),
+        ]);
+        vi.mocked(lastTreeService!.listDirectoryExact).mockResolvedValueOnce([
+          { name: 'added.ts', type: 'file', size: 5, mtimeMs: 100, contentKind: 'text', lineCount: 4 },
+        ]);
+
+        await expect(fileSystem.readdir('src')).resolves.toEqual([
+          {
+            name: 'added.ts',
+            type: 'file',
+            size: 5,
+            modifiedAt: new Date(100).toISOString(),
+            contentKind: 'text',
+            lineCount: 4,
+          },
+        ]);
+        expect(lastTreeService!.listDirectory).not.toHaveBeenCalled();
+      });
+
       it('should return empty array when no entries exist', async () => {
         vi.mocked(lastTreeService!.listDirectory).mockResolvedValueOnce([]);
 
@@ -466,6 +654,26 @@ describe('rpc-handlers', () => {
         const entries = await fileSystem.readdir('src');
 
         expect(entries).toEqual([expect.objectContaining({ name: 'components', type: 'dir' })]);
+      });
+
+      it('should exclude composed source directories from implicit agent search', async () => {
+        const dependencyProvenance = { source: 'dependencies', versioned: false, agentAccess: 'read-only' } as const;
+        const projectProvenance = { source: 'project', versioned: true, agentAccess: 'read-write' } as const;
+        vi.mocked(lastTreeService!.listDirectoryExact).mockResolvedValueOnce([
+          { name: 'node_modules', type: 'dir', size: 0, mtimeMs: 0, provenance: dependencyProvenance },
+          { name: 'src', type: 'dir', size: 0, mtimeMs: 0, provenance: projectProvenance },
+        ]);
+
+        await expect(fileSystem.readdir('')).resolves.toEqual([
+          {
+            name: 'node_modules',
+            type: 'dir',
+            size: 0,
+            provenance: dependencyProvenance,
+            traverseOnImplicitSearch: false,
+          },
+          { name: 'src', type: 'dir', size: 0, provenance: projectProvenance },
+        ]);
       });
 
       it('should await whenServicesReady before listing directory entries', async () => {
@@ -493,6 +701,7 @@ describe('rpc-handlers', () => {
       });
 
       it('should traverse a root glob using only canonical project-relative paths', async () => {
+        mockFm.stat.mockResolvedValue(textFileStat(120, 0, 4));
         const treeService = createMockTreeService();
         treeService.listDirectory.mockImplementation(async (path) => {
           if (path === '') {
@@ -512,7 +721,7 @@ describe('rpc-handlers', () => {
         const browserFileSystem = buildDeps({ fileManager: mockFm, treeService }).fileSystem;
 
         const result = await actualChatRpc.handleGlobSearch(
-          { pattern: '**/*.geospec.ts', path: '/' },
+          { pattern: '**/*.geospec.ts', path: '' },
           browserFileSystem,
         );
 
@@ -575,6 +784,194 @@ describe('rpc-handlers', () => {
 
         await expect(fileSystem.appendFile('events.jsonl', 'ignored')).rejects.toBe(readError);
         expect(mockFm.writeFile).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('editFile', () => {
+      it.each(['ENOENT', 'EIO'])(
+        'retains reviewed CAS conflict rather than reading a missing/refused path (%s)',
+        async (code) => {
+          const original = new Uint8Array(new TextEncoder().encode('cube();\n'));
+          mockFm.readFile.mockResolvedValue(original);
+          mockFm.stat.mockResolvedValue(textFileStat(original.byteLength));
+          let readsAtConflict = 0;
+          mockFm.workbenchFiles.writeFileChecked.mockImplementation(async () => {
+            readsAtConflict = mockFm.readFile.mock.calls.length;
+            mockFm.readFile.mockRejectedValue(Object.assign(new Error('read refused after conflict'), { code }));
+            return { status: 'conflict', conflicts: [{ path: '/projects/proj-test/main.scad', actual: null }] };
+          });
+          const refusal = await actualChatRpc.handleEditFile(
+            {
+              targetFile: 'main.scad',
+              oldString: 'cube();',
+              newString: 'sphere();',
+              expectedDigest: `sha256:${createHash('sha256').update(original).digest('hex')}`,
+            },
+            fileSystem,
+          );
+          expect(refusal).toMatchObject({ success: false, errorCode: 'EDIT_CONFLICT' });
+          expect(refusal).not.toHaveProperty('retryable');
+          expect(mockFm.workbenchFiles.writeFileChecked).toHaveBeenCalledTimes(1);
+          expect(mockFm.readFile).toHaveBeenCalledTimes(readsAtConflict);
+          expect(mockFm.writeFile).not.toHaveBeenCalled();
+        },
+      );
+      it('uses the rooted owning checked write for reviewed no-op, never the ordinary write fallback', async () => {
+        const original = new Uint8Array(new TextEncoder().encode('cube();\r\n'));
+        mockFm.readFile.mockResolvedValue(original);
+        mockFm.stat.mockResolvedValue(textFileStat(original.byteLength));
+        mockFm.workbenchFiles.writeFileChecked.mockResolvedValue({ status: 'unchanged', content: original });
+        const input = {
+          targetFile: 'main.scad',
+          oldString: 'cube();',
+          newString: 'cube();',
+          expectedDigest: `sha256:${createHash('sha256').update(original).digest('hex')}`,
+        };
+        await expect(actualChatRpc.handleEditFile(input, fileSystem)).resolves.toMatchObject({
+          success: true,
+          revision: { digest: input.expectedDigest },
+        });
+        expect(mockFm.workbenchFiles.writeFileChecked).toHaveBeenCalledExactlyOnceWith({
+          path: '/projects/proj-test/main.scad',
+          data: original,
+          preconditions: [{ path: '/projects/proj-test/main.scad', expected: original }],
+        });
+        expect(mockFm.writeFile).not.toHaveBeenCalled();
+        mockFm.workbenchFiles.writeFileChecked.mockRejectedValue(
+          Object.assign(new Error('unsupported'), { code: 'CHECKED_WRITE_UNSUPPORTED' }),
+        );
+        const unsupported = await actualChatRpc.handleEditFile(input, fileSystem);
+        expect(unsupported).toMatchObject({
+          success: false,
+          errorCode: 'IO_ERROR',
+        });
+        expect(unsupported).not.toHaveProperty('retryable');
+        expect(mockFm.writeFile).not.toHaveBeenCalled();
+      });
+
+      it('refuses reviewed drift and false committed bytes without rebase or ordinary writes', async () => {
+        const original = new Uint8Array(new TextEncoder().encode('cube();\n'));
+        const changed = new Uint8Array(new TextEncoder().encode('// person\ncube();\n'));
+        const input = {
+          targetFile: 'main.scad',
+          oldString: 'cube();',
+          newString: 'sphere();',
+          expectedDigest: `sha256:${createHash('sha256').update(original).digest('hex')}`,
+        };
+        mockFm.stat.mockResolvedValue(textFileStat(original.byteLength));
+        mockFm.readFile.mockResolvedValue(changed);
+        const drift = await actualChatRpc.handleEditFile(input, fileSystem);
+        expect(drift).toMatchObject({
+          success: false,
+          errorCode: 'EDIT_CONFLICT',
+        });
+        expect(drift).not.toHaveProperty('retryable');
+        expect(mockFm.workbenchFiles.writeFileChecked).not.toHaveBeenCalled();
+        mockFm.readFile.mockResolvedValue(original);
+        mockFm.workbenchFiles.writeFileChecked.mockResolvedValue({
+          status: 'conflict',
+          conflicts: [{ path: '/projects/proj-test/main.scad', actual: changed }],
+        });
+        const conflict = await actualChatRpc.handleEditFile(input, fileSystem);
+        expect(conflict).toMatchObject({
+          success: false,
+          errorCode: 'EDIT_CONFLICT',
+        });
+        expect(conflict).not.toHaveProperty('retryable');
+        expect(mockFm.workbenchFiles.writeFileChecked).toHaveBeenCalledTimes(1);
+        mockFm.workbenchFiles.writeFileChecked.mockResolvedValue({ status: 'applied', content: changed });
+        const unproved = await actualChatRpc.handleEditFile(input, fileSystem);
+        expect(unproved).toMatchObject({
+          success: false,
+          errorCode: 'WRITE_VERIFICATION_FAILED',
+        });
+        expect(unproved).not.toHaveProperty('retryable');
+        expect(mockFm.workbenchFiles.writeFileChecked).toHaveBeenCalledTimes(2);
+        expect(mockFm.writeFile).not.toHaveBeenCalled();
+      });
+      it('writes no bytes and returns AMBIGUOUS_MATCH when oldString occurs twice', async () => {
+        mockFm.readFile.mockResolvedValue(new TextEncoder().encode('cube();\ncube();\n'));
+
+        const result = await actualChatRpc.handleEditFile(
+          { targetFile: 'main.scad', oldString: 'cube();', newString: 'sphere();' },
+          fileSystem,
+        );
+
+        expect(result).toMatchObject({ success: false, errorCode: 'AMBIGUOUS_MATCH' });
+        expect(mockFm.writeFile).not.toHaveBeenCalled();
+      });
+
+      it('compares exact bytes, replans one stale edit, and verifies the committed bytes', async () => {
+        let current = new Uint8Array(new TextEncoder().encode('cube();\n'));
+        let reads = 0;
+        mockFm.readFile.mockImplementation(async () => {
+          reads += 1;
+          if (reads === 2) {
+            current = new Uint8Array(new TextEncoder().encode('// external\ncube();\n'));
+          }
+          return new Uint8Array(current);
+        });
+        mockFm.writeFile.mockImplementation(async (_path, data) => {
+          current = new Uint8Array(data);
+        });
+        mockFm.stat.mockImplementation(async () => textFileStat(current.byteLength));
+
+        const result = await actualChatRpc.handleEditFile(
+          { targetFile: 'main.scad', oldString: 'cube();', newString: 'sphere();' },
+          fileSystem,
+        );
+
+        expect(result).toMatchObject({
+          success: true,
+          occurrences: 1,
+          staleRecovered: true,
+        });
+        expect(new TextDecoder().decode(current)).toBe('// external\nsphere();\n');
+        expect(mockFm.writeFile).toHaveBeenCalledOnce();
+        expect(reads).toBe(4);
+      });
+
+      it('preserves both concurrent edits across adapters sharing one filesystem authority', async () => {
+        let current = new Uint8Array(new TextEncoder().encode('alpha = 1;\nbeta = 1;\n'));
+        let initialReads = 0;
+        const bothInitialReads = Promise.withResolvers<void>();
+        mockFm.readFile.mockImplementation(async () => {
+          if (initialReads < 2) {
+            initialReads += 1;
+            if (initialReads === 2) {
+              bothInitialReads.resolve();
+            }
+            await bothInitialReads.promise;
+          }
+          return new Uint8Array(current);
+        });
+        mockFm.writeFile.mockImplementation(async (_path, data) => {
+          const replacement = new Uint8Array(data);
+          await Promise.resolve();
+          current = replacement;
+        });
+        mockFm.stat.mockImplementation(async () => textFileStat(current.byteLength));
+
+        const treeService = createMockTreeService();
+        mockFm.whenServicesReady.mockResolvedValue({ treeService });
+        createRpcHandlers({
+          chatId: 'chat_concurrent_edit_a',
+          fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        });
+        const firstAdapter = capturedDeps!.fileSystem;
+        createRpcHandlers({
+          chatId: 'chat_concurrent_edit_b',
+          fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        });
+        const secondAdapter = capturedDeps!.fileSystem;
+
+        const [first, second] = await Promise.all([
+          firstAdapter.editFile({ targetFile: 'main.ts', oldString: 'alpha = 1;', newString: 'alpha = 2;' }),
+          secondAdapter.editFile({ targetFile: 'main.ts', oldString: 'beta = 1;', newString: 'beta = 2;' }),
+        ]);
+
+        expect([first.staleRecovered, second.staleRecovered].filter(Boolean)).toHaveLength(1);
+        expect(new TextDecoder().decode(current)).toBe('alpha = 2;\nbeta = 2;\n');
       });
     });
   });
@@ -701,161 +1098,191 @@ describe('rpc-handlers', () => {
   // ===============================================================
 
   describe('createBrowserGraphicsClient', () => {
-    describe('exportGeometry', () => {
-      const glbContent = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
-
-      const cadSnapshotForExport = (kernelClient: unknown) => ({
+    describe('exportModel', () => {
+      const readyEvaluation = {
+        success: true,
+        id: 'evaluation-1',
+        transient: false,
+        issues: [],
+        views: [{ id: 'model', title: 'Model', mimeType: 'model/gltf-binary' }],
+        exports: [{ id: 'step', title: 'STEP', mimeType: 'application/step', extension: 'step' }],
+      };
+      const settled = (
+        document: { export: ReturnType<typeof vi.fn> } | undefined,
+        evaluation: unknown = readyEvaluation,
+      ) => ({
         value: 'idle',
         context: {
-          geometry: { format: 'gltf', content: glbContent, hash: 'h1' },
-          latestGeometryOutcome: 'success',
-          kernelIssues: new Map<string, Array<{ message: string; type: string; severity: string }>>(),
-          kernelClient,
+          entryPath: 'main.scad',
+          document,
+          evaluation,
+          latestRenderingOutcome: 'success',
+          kernelIssues: new Map<string, unknown[]>(),
         },
+        hasTag: () => false,
       });
 
-      it('should return STEP bytes after kernel export resolves', async () => {
+      it('returns the ordered document export with identity and source provenance', async () => {
         const stepBytes = new Uint8Array([0x53, 0x54, 0x45, 0x50]);
-        const route = {
-          kernelId: 'replicad',
-          sourceFormat: 'glb',
-          targetFormat: 'step',
-          fidelity: 'brep',
-          exportOptions: { schema: {}, defaults: {} },
-        };
-        const kernelClient = {
-          capabilities: { routes: [route] },
-          bestRouteFor: vi.fn(() => route),
-          export: vi.fn<(format: FileExtension | string) => Promise<unknown>>().mockResolvedValue({
+        const sourceRevision = { entry: 'main.scad', files: { 'main.scad': `sha256:${'a'.repeat(64)}` } };
+        const document = {
+          export: vi.fn().mockResolvedValue({
             success: true,
-            data: [{ bytes: stepBytes, name: 'mesh.step', mimeType: 'application/step' }],
+            exportId: 'step',
+            files: [
+              { bytes: stepBytes, name: 'mesh.step', mimeType: 'application/step' },
+              { bytes: new Uint8Array([1]), name: 'mesh.step.meta', mimeType: 'text/plain' },
+            ],
+            sourceRevision,
             issues: [],
           }),
         };
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue(settled(document));
 
-        const cadUnit = createMockCadUnit({
-          geometry: { format: 'gltf', content: glbContent, hash: 'h1' },
-          kernelClient,
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({
+          targetFile: 'main.scad',
+          to: 'step',
+          options: { tolerance: 0.1 },
         });
-        const geometryUnits = new Map<string, unknown>([['main.scad', cadUnit]]);
-        const projectRef = createMockProjectRef({ geometryUnits });
-        mockWaitFor.mockResolvedValue(cadSnapshotForExport(kernelClient));
 
-        const deps = buildDeps({ projectRef });
-        const graphics = deps.graphics!;
-
-        const result = await graphics.exportGeometry({ targetFile: 'main.scad', format: 'step' });
-
-        expect(kernelClient.export).toHaveBeenCalledWith('step');
+        expect(document.export).toHaveBeenCalledExactlyOnceWith('step', {
+          options: { tolerance: 0.1 },
+          signal: undefined,
+        });
         expect(result).toEqual({
           success: true,
-          files: [{ bytes: stepBytes, name: 'mesh.step', mimeType: 'application/step' }],
+          exportId: 'step',
+          files: [
+            { bytes: stepBytes, name: 'mesh.step', mimeType: 'application/step' },
+            { bytes: new Uint8Array([1]), name: 'mesh.step.meta', mimeType: 'text/plain' },
+          ],
+          sourceRevision,
+          issues: [],
         });
       });
 
-      it('should return UNKNOWN when runtime client is not connected yet', async () => {
-        const cadUnit = createMockCadUnit({
-          geometry: { format: 'gltf', content: glbContent, hash: 'h1' },
+      it('returns UNKNOWN before a document is connected', async () => {
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue(settled(undefined));
+
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({ targetFile: 'main.scad', to: 'stl' });
+
+        expect(result).toEqual({
+          success: false,
+          errorCode: 'UNKNOWN',
+          message: 'Runtime client not connected for main.scad',
         });
-        const geometryUnits = new Map<string, unknown>([['main.scad', cadUnit]]);
-        const projectRef = createMockProjectRef({ geometryUnits });
-
-        mockWaitFor.mockResolvedValue({
-          value: 'idle',
-          context: {
-            geometry: { format: 'gltf', content: glbContent, hash: 'h1' },
-            latestGeometryOutcome: 'success',
-            kernelIssues: new Map<string, Array<{ message: string; type: string; severity: string }>>(),
-          },
-        });
-
-        const deps = buildDeps({ projectRef });
-        const graphics = deps.graphics!;
-
-        const result = await graphics.exportGeometry({ targetFile: 'main.scad', format: 'stl' });
-
-        expect(result.success).toBe(false);
-        if (!result.success) {
-          expect(result.errorCode).toBe('UNKNOWN');
-          expect(result.message).toContain('Runtime client not connected');
-        }
       });
 
-      it('should map unsuccessful export pipeline issues into UNKNOWN RPC errors', async () => {
-        const route = {
-          kernelId: 'replicad',
-          sourceFormat: 'glb',
-          targetFormat: 'stl',
-          fidelity: 'mesh',
-          exportOptions: { schema: {}, defaults: {} },
-        };
-        const kernelClient = {
-          capabilities: { routes: [route] },
-          bestRouteFor: vi.fn(() => route),
-          export: vi.fn<(format: FileExtension | string) => Promise<unknown>>().mockResolvedValue({
+      it('maps failed document export issues into an RPC failure', async () => {
+        const document = {
+          export: vi.fn().mockResolvedValue({
             success: false,
             issues: [{ severity: 'error', message: 'No exporters match', code: 'KERNEL_CAPABILITY_MISSING' }],
           }),
         };
-        const cadUnit = createMockCadUnit({
-          geometry: { format: 'gltf', content: glbContent, hash: 'h1' },
-          kernelClient,
-        });
-        const geometryUnits = new Map<string, unknown>([['main.scad', cadUnit]]);
-        const projectRef = createMockProjectRef({ geometryUnits });
-        mockWaitFor.mockResolvedValue(cadSnapshotForExport(kernelClient));
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue(settled(document));
 
-        const deps = buildDeps({ projectRef });
-        const graphics = deps.graphics!;
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({ targetFile: 'main.scad', to: 'stl' });
 
-        const result = await graphics.exportGeometry({ targetFile: 'main.scad', format: 'stl' });
-
-        expect(result.success).toBe(false);
-        if (!result.success) {
-          expect(result.message).toContain('No exporters match');
-        }
+        expect(result).toEqual({ success: false, errorCode: 'UNKNOWN', message: 'No exporters match' });
       });
 
-      it('should not export retained geometry after the latest selected render failed', async () => {
-        const route = {
-          kernelId: 'replicad',
-          sourceFormat: 'glb',
-          targetFormat: 'stl',
-          fidelity: 'mesh',
-          exportOptions: { schema: {}, defaults: {} },
+      it('does not export a retained prior rendering after the current evaluation fails', async () => {
+        const document = { export: vi.fn() };
+        const issues = [{ message: 'radius must be positive', code: 'RUNTIME', type: 'runtime', severity: 'error' }];
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue(
+          settled(document, {
+            success: false,
+            id: 'evaluation-2',
+            transient: false,
+            issues,
+          }),
+        );
+
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({ targetFile: 'main.scad', to: 'stl' });
+
+        expect(result).toEqual({ success: false, errorCode: 'UNKNOWN', message: 'radius must be positive' });
+        expect(document.export).not.toHaveBeenCalled();
+      });
+
+      it('exports from a successful evaluation even if its default view failed', async () => {
+        const document = {
+          export: vi.fn().mockResolvedValue({
+            success: true,
+            exportId: 'step',
+            files: [{ bytes: new Uint8Array([1]), name: 'mesh.step', mimeType: 'application/step' }],
+            issues: [],
+          }),
         };
-        const kernelClient = {
-          capabilities: { routes: [route] },
-          bestRouteFor: vi.fn(() => route),
-          export: vi.fn(),
-        };
-        const issues = new Map([
-          ['main.ts', [{ message: 'radius must be positive', code: 'RUNTIME', type: 'runtime', severity: 'error' }]],
-        ]);
-        const cadUnit = createMockCadUnit({
-          geometry: { format: 'gltf', content: glbContent, hash: 'last-success' },
-          kernelIssues: issues,
-          kernelClient,
-          latestGeometryOutcome: 'failure',
-        });
-        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.ts', cadUnit]]) });
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
         mockWaitFor.mockResolvedValue({
-          value: 'idle',
+          ...settled(document),
+          context: { ...settled(document).context, latestRenderingOutcome: 'failure' },
+        });
+
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({ targetFile: 'main.scad', to: 'step' });
+
+        expect(result).toMatchObject({ success: true, exportId: 'step' });
+        expect(document.export).toHaveBeenCalledOnce();
+      });
+
+      it('uses connection-issue precedence when the evaluation is unavailable', async () => {
+        const document = { export: vi.fn() };
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue({
+          ...settled(document, undefined),
           context: {
-            geometry: { format: 'gltf', content: glbContent, hash: 'last-success' },
-            latestGeometryOutcome: 'failure',
-            kernelIssues: issues,
-            kernelClient,
+            ...settled(document).context,
+            evaluation: undefined,
+            latestRenderingOutcome: 'failure',
+            kernelIssues: new Map([
+              [
+                '__connection__',
+                [
+                  { message: 'native host unavailable', code: 'RUNTIME', type: 'runtime', severity: 'error' },
+                  { message: 'retry placement', code: 'RUNTIME', type: 'runtime', severity: 'error' },
+                ],
+              ],
+            ]),
           },
         });
 
-        const result = await buildDeps({ projectRef }).graphics!.exportGeometry({
-          targetFile: 'main.ts',
-          format: 'stl',
-        });
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({ targetFile: 'main.scad', to: 'stl' });
 
-        expect(result).toEqual({ success: false, errorCode: 'UNKNOWN', message: 'radius must be positive' });
-        expect(kernelClient.export).not.toHaveBeenCalled();
+        expect(result).toEqual({
+          success: false,
+          errorCode: 'UNKNOWN',
+          message: 'native host unavailable; retry placement',
+        });
+        expect(document.export).not.toHaveBeenCalled();
+      });
+
+      it('uses a deterministic failure when the evaluation has no issues', async () => {
+        const document = { export: vi.fn() };
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue(
+          settled(document, { success: false, id: 'evaluation-2', transient: false, issues: [] }),
+        );
+
+        const result = await buildDeps({ projectRef }).graphics!.exportModel({ targetFile: 'main.scad', to: 'stl' });
+
+        expect(result).toEqual({
+          success: false,
+          errorCode: 'UNKNOWN',
+          message: 'Model evaluation failed for main.scad',
+        });
+        expect(document.export).not.toHaveBeenCalled();
       });
     });
 
@@ -867,7 +1294,7 @@ describe('rpc-handlers', () => {
 
       it('should preserve the nested non-main unit source for a deterministic isometric image', async () => {
         const entryPath = 'src/pen.ts';
-        const cadUnit = createMockCadUnit({ entryPath, parameters: { width: 42 }, geometry: gltfGeometry });
+        const cadUnit = createMockCadUnit({ entryPath, parameters: { width: 42 }, rendering: gltfRendering });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['src/pen.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
         const exportImage = vi
@@ -882,15 +1309,18 @@ describe('rpc-handlers', () => {
           success: true,
           images: [{ view: 'isometric', dataUrl: captureDataUrl() }],
         });
-        expect(exportImage).toHaveBeenCalledWith({
+        expect(exportImage).toHaveBeenCalledOnce();
+        const job = exportImage.mock.calls[0]![0];
+        if (job.sourceFormat !== 'glb' || job.kind !== 'capture') {
+          throw new Error('Expected a GLB capture job');
+        }
+        expect(job).toMatchObject({
           kind: 'capture',
           identity: 'capture:src/pen.ts:geometry-hash:agent:isometric',
-          sourceFormat: 'gltf',
-          fileSystem: fileManager.runtimeFileSystem,
+          sourceFormat: 'glb',
           format: 'webp',
-          source: { path: entryPath },
-          parameters: { width: 42 },
-          includeEdges: true,
+          sourcePath: entryPath,
+          content: gltfRendering.artifact.content,
           exportOptions: {
             mode: 'single',
             width: 1600,
@@ -898,8 +1328,8 @@ describe('rpc-handlers', () => {
             lineWidth: 3,
             background: '#242424',
             camera: {
-              framing: 'fit',
-              direction: [0.612_372_435_7, -0.612_372_435_7, 0.5],
+              framing: 'bounds',
+              direction: [0.6123724357, -0.6123724357, 0.5],
               up: [0, 0, 1],
               margin: 0.1,
               projection: { kind: 'perspective', verticalFieldOfView: 45 },
@@ -910,17 +1340,12 @@ describe('rpc-handlers', () => {
             quality: 1,
           },
         });
-        const job = exportImage.mock.calls[0]![0];
-        if (job.sourceFormat !== 'gltf') {
-          throw new Error('Expected a GLTF image job');
-        }
-        expect(job.source.path).toBe(entryPath);
-        expect(job.exportOptions).toHaveProperty('quality', 1);
       });
 
-      it('should reuse matching viewer presentation state for agent capture', async () => {
+      /** Capture `src/pen.ts` for the agent from a viewer that shows it with Section on and `cuts` committed. */
+      const captureWithCuts = async (cuts: readonly SectionCut[]) => {
         const entryPath = 'src/pen.ts';
-        const cadUnit = createMockCadUnit({ entryPath, geometry: presentationGltfGeometry });
+        const cadUnit = createMockCadUnit({ entryPath, rendering: presentationGltfRendering });
         const modelRef = {
           getSnapshot: () => ({
             context: {
@@ -939,15 +1364,10 @@ describe('rpc-handlers', () => {
               enableSurfaces: false,
               enableLines: true,
               isSectionViewActive: true,
-              availableSectionViews: [{ id: 'yz', normal: [1, 0, 0] }],
-              selectedSectionViewId: 'yz',
-              sectionViewPivot: [1000, 0, 0],
-              sectionViewRotation: [0, 0, 0],
-              sectionViewDirection: -1,
-              enableClippingMesh: true,
-              enableClippingLines: false,
+              committedSectionCuts: cuts,
               modelInteractionUnitId: 'file:src/pen.ts',
               modelInteractionRef: modelRef,
+              kinematicsRef: { getSnapshot: () => ({ context: { unitsById: {} } }) },
             },
           }),
         };
@@ -960,26 +1380,46 @@ describe('rpc-handlers', () => {
           .fn<NonNullable<RpcHandlerDependencies['headlessImageService']>['export']>()
           .mockResolvedValue([{ name: 'render.webp', mimeType: 'image/webp', bytes: captureWebp() }]);
         const deps = buildDeps({ projectRef, headlessImageService: { export: exportImage } });
+        const result = await deps.images!.captureImages({ mode: 'single', targetFile: entryPath });
+        return { result, job: exportImage.mock.calls[0]![0] };
+      };
 
-        await expect(deps.images!.captureImages({ mode: 'single', targetFile: entryPath })).resolves.toMatchObject({
-          success: true,
-        });
-        expect(exportImage.mock.calls[0]![0]).toMatchObject({
+      it('should reuse matching viewer presentation state for agent capture', async () => {
+        const { result, job } = await captureWithCuts([
+          { id: 'yz', kind: 'plane', plane: 'yz', offset: 1, isFlipped: true },
+        ]);
+
+        expect(result).toMatchObject({ success: true });
+        // The images show every cut, so the agent is told nothing more.
+        expect(result).not.toHaveProperty('message');
+        expect(job).toMatchObject({
           exportOptions: {
             surfaces: false,
             visiblePrimitives: [{ nodeIndex: 1, meshIndex: 1, primitiveIndex: 0 }],
             sections: {
               planes: [{ point: [1, 0, 0], normal: [1, 0, 0] }],
               clipSurfaces: true,
-              clipLines: false,
+              clipLines: true,
             },
           },
         });
       });
 
+      it('should tell the agent in one line when the images leave a section cut out', async () => {
+        const { result } = await captureWithCuts([
+          { id: 'cutaway', kind: 'revolution', axis: 'z', origin: [0, 0, 0], start: 0, sweep: 90 },
+        ]);
+
+        expect(result).toEqual({
+          success: true,
+          images: [{ view: 'isometric', dataUrl: captureDataUrl() }],
+          message: omittedSectionCutsNotice,
+        });
+      });
+
       it('should forward the exact settled source to all six orthographic views', async () => {
         const entryPath = 'pen.ts';
-        const cadUnit = createMockCadUnit({ entryPath, geometry: gltfGeometry });
+        const cadUnit = createMockCadUnit({ entryPath, rendering: gltfRendering });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['pen.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
         const exportImage = vi
@@ -1015,12 +1455,11 @@ describe('rpc-handlers', () => {
         expect(exportImage).toHaveBeenCalledWith({
           kind: 'capture',
           identity: 'capture:pen.ts:geometry-hash:agent:orthographic',
-          sourceFormat: 'gltf',
-          fileSystem: fileManager.runtimeFileSystem,
+          sourceFormat: 'glb',
+          geometryHash: 'geometry-hash',
+          sourcePath: entryPath,
+          content: gltfRendering.artifact.content,
           format: 'webp',
-          source: { path: entryPath },
-          parameters: {},
-          includeEdges: false,
           exportOptions: {
             mode: 'batch',
             width: 1600,
@@ -1029,12 +1468,14 @@ describe('rpc-handlers', () => {
             background: '#242424',
             axes: true,
             scaleBar: true,
+            lines: false,
+            world: { up: '+z', forward: '-y', unit: 'meter' },
             views: [
               {
                 id: 'front',
                 label: 'Front — View From −Y',
                 camera: {
-                  framing: 'fit',
+                  framing: 'bounds',
                   direction: [0, -1, 0],
                   up: [0, 0, 1],
                   margin: 0.1,
@@ -1045,7 +1486,7 @@ describe('rpc-handlers', () => {
                 id: 'back',
                 label: 'Back — View From +Y',
                 camera: {
-                  framing: 'fit',
+                  framing: 'bounds',
                   direction: [0, 1, 0],
                   up: [0, 0, 1],
                   margin: 0.1,
@@ -1056,7 +1497,7 @@ describe('rpc-handlers', () => {
                 id: 'right',
                 label: 'Right — View From +X',
                 camera: {
-                  framing: 'fit',
+                  framing: 'bounds',
                   direction: [1, 0, 0],
                   up: [0, 0, 1],
                   margin: 0.1,
@@ -1067,7 +1508,7 @@ describe('rpc-handlers', () => {
                 id: 'left',
                 label: 'Left — View From −X',
                 camera: {
-                  framing: 'fit',
+                  framing: 'bounds',
                   direction: [-1, 0, 0],
                   up: [0, 0, 1],
                   margin: 0.1,
@@ -1078,7 +1519,7 @@ describe('rpc-handlers', () => {
                 id: 'top',
                 label: 'Top — View From +Z',
                 camera: {
-                  framing: 'fit',
+                  framing: 'bounds',
                   direction: [0, 0, 1],
                   up: [0, 1, 0],
                   margin: 0.1,
@@ -1089,7 +1530,7 @@ describe('rpc-handlers', () => {
                 id: 'bottom',
                 label: 'Bottom — View From −Z',
                 camera: {
-                  framing: 'fit',
+                  framing: 'bounds',
                   direction: [0, 0, -1],
                   up: [0, 1, 0],
                   margin: 0.1,
@@ -1111,7 +1552,7 @@ describe('rpc-handlers', () => {
 
       it('should reject an incomplete batch atomically instead of returning partial images', async () => {
         const entryPath = 'pen.ts';
-        const cadUnit = createMockCadUnit({ entryPath, geometry: gltfGeometry });
+        const cadUnit = createMockCadUnit({ entryPath, rendering: gltfRendering });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['pen.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
         const exportImage = vi
@@ -1130,7 +1571,7 @@ describe('rpc-handlers', () => {
       });
 
       it('should reject artifacts that are not non-empty WebP regardless of their filenames', async () => {
-        const cadUnit = createMockCadUnit({ entryPath: 'pen.ts', geometry: gltfGeometry });
+        const cadUnit = createMockCadUnit({ entryPath: 'pen.ts', rendering: gltfRendering });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['pen.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
         const exportImage = vi
@@ -1141,24 +1582,28 @@ describe('rpc-handlers', () => {
         expect(await deps.images!.captureImages({ mode: 'single', targetFile: 'pen.ts' })).toEqual({
           success: false,
           errorCode: 'IO_ERROR',
-          message: 'Image capture expected non-empty image/webp 1600×1600 artifacts',
+          message: 'Image capture expected non-empty image/webp artifacts',
         });
 
         exportImage.mockResolvedValue([{ name: 'render.webp', mimeType: 'image/png', bytes: new Uint8Array([1]) }]);
         expect(await deps.images!.captureImages({ mode: 'single', targetFile: 'pen.ts' })).toEqual({
           success: false,
           errorCode: 'IO_ERROR',
-          message: 'Image capture expected non-empty image/webp 1600×1600 artifacts',
+          message: 'Image capture expected non-empty image/webp artifacts',
         });
       });
 
-      it('should return a truthful drawing PNG for settled SVG and reject multi-angle before export', async () => {
-        const geometry = {
-          format: 'svg',
-          content: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>',
+      it('returns one truthful drawing PNG for either SVG capture mode', async () => {
+        const rendering = {
+          ...gltfRendering,
+          view: 'drawing',
+          artifact: {
+            mimeType: 'image/svg+xml',
+            content: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>',
+          },
           hash: 'svg-hash',
-        };
-        const cadUnit = createMockCadUnit({ entryPath: 'drawing.ts', geometry });
+        } satisfies Rendering;
+        const cadUnit = createMockCadUnit({ entryPath: 'drawing.ts', rendering });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['drawing.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
         const exportImage = vi
@@ -1173,22 +1618,27 @@ describe('rpc-handlers', () => {
           ],
         });
         expect(exportImage).toHaveBeenCalledWith(
-          expect.objectContaining({ sourceFormat: 'svg', content: geometry.content, format: 'png' }),
+          expect.objectContaining({ sourceFormat: 'svg', content: rendering.artifact.content, format: 'png' }),
         );
 
         exportImage.mockClear();
         await expect(deps.images!.captureImages({ mode: 'multi_angle', targetFile: 'drawing.ts' })).resolves.toEqual({
-          success: false,
-          errorCode: 'IO_ERROR',
-          message: 'Planar SVG drawings have one canonical view; use a single drawing capture',
+          success: true,
+          images: [
+            { view: 'drawing', dataUrl: `data:image/png;base64,${Buffer.from(capturePng()).toString('base64')}` },
+          ],
         });
-        expect(exportImage).not.toHaveBeenCalled();
+        expect(exportImage).toHaveBeenCalledOnce();
       });
 
-      it('should reject live WebRTC geometry through the RPC adapter before image export', async () => {
+      it('rejects an unknown live artifact through the RPC adapter before image export', async () => {
         const cadUnit = createMockCadUnit({
           entryPath: 'live.ts',
-          geometry: { format: 'webrtc', content: new Uint8Array(), hash: 'live-hash' },
+          rendering: {
+            ...gltfRendering,
+            artifact: { mimeType: 'application/x-webrtc', content: new Uint8Array([1]) },
+            hash: 'live-hash',
+          },
         });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['live.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
@@ -1198,13 +1648,13 @@ describe('rpc-handlers', () => {
         await expect(deps.images!.captureImages({ mode: 'single', targetFile: 'live.ts' })).resolves.toEqual({
           success: false,
           errorCode: 'IO_ERROR',
-          message: 'Live WebRTC geometry cannot be captured headlessly',
+          message: 'Unsupported CAD artifact: application/x-webrtc',
         });
         expect(exportImage).not.toHaveBeenCalled();
       });
 
       it('should return UNKNOWN without invoking the service when the settled unit has no entry path', async () => {
-        const cadUnit = createMockCadUnit({ parameters: { width: 42 }, geometry: gltfGeometry });
+        const cadUnit = createMockCadUnit({ parameters: { width: 42 }, rendering: gltfRendering });
         const projectRef = createMockProjectRef({ geometryUnits: new Map([['pen.ts', cadUnit]]) });
         mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
         const exportImage = vi.fn<NonNullable<RpcHandlerDependencies['headlessImageService']>['export']>();
@@ -1227,23 +1677,201 @@ describe('rpc-handlers', () => {
   // ===============================================================
 
   describe('createBrowserRuntimeClient', () => {
-    describe('getKernelResult', () => {
+    describe('evaluateModel', () => {
+      it('keeps a claim while a parked unit wakes and releases it after the fresh render', async () => {
+        const cadUnit = createMockCadUnit({ value: 'idle' });
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['parked.scad', cadUnit]]) });
+        const fresh = Promise.withResolvers<ReturnType<typeof cadUnit.getSnapshot>>();
+        mockWaitFor.mockReturnValue(fresh.promise);
+
+        const pending = buildDeps({ projectRef }).kernelClient.evaluateModel({ targetFile: 'parked.scad' });
+        await vi.waitFor(() => {
+          expect(projectRef.send).toHaveBeenCalled();
+        });
+        const claim = projectRef.send.mock.calls[0]?.[0] as unknown as {
+          type: string;
+          claimId: string;
+          entryPath: string;
+          operationTimeout?: number;
+        };
+        expect(claim).toEqual({
+          type: 'claimGeometryUnit',
+          claimId: claim.claimId,
+          entryPath: 'parked.scad',
+          operationTimeout: undefined,
+        });
+        expect(typeof claim.claimId).toBe('string');
+        expect(projectRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'releaseGeometryUnit' }));
+
+        fresh.resolve(cadUnit.getSnapshot());
+        await expect(pending).resolves.toMatchObject({ success: true, status: 'ready' });
+        expect(projectRef.send).toHaveBeenLastCalledWith({
+          type: 'releaseGeometryUnit',
+          claimId: claim.claimId,
+        });
+      });
+
       it('should return ready status when cad unit is idle with no errors', async () => {
         const cadUnit = createMockCadUnit({ value: 'idle' });
         const geometryUnits = new Map<string, unknown>([['main.scad', cadUnit]]);
         const projectRef = createMockProjectRef({ geometryUnits });
-        mockWaitFor.mockResolvedValue({
-          value: 'idle',
-          context: { kernelIssues: new Map<string, unknown[]>() },
-        });
+        mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('main.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'main.scad' });
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
           success: true,
           status: 'ready',
           kernelIssues: [],
+          views: ['model'],
+          exports: { stl: 'stl' },
+        });
+      });
+
+      it('reports current offers, revision, and requested option metadata', async () => {
+        const cadUnit = createMockCadUnit({ entryPath: 'main.scad' });
+        const sourceRevision = { entry: 'main.scad', files: { 'main.scad': `sha256:${'a'.repeat(64)}` } };
+        const projectRef = createMockProjectRef({ geometryUnits: new Map([['main.scad', cadUnit]]) });
+        mockWaitFor.mockResolvedValue({
+          ...cadUnit.getSnapshot(),
+          context: {
+            ...cadUnit.getSnapshot().context,
+            activeKernelId: 'replicad',
+            kernelClient: { capabilities: { routes: [{ kernelId: 'replicad', targetFormat: 'step' }] } },
+            lastProjection: { ...gltfRendering, sourceRevision },
+            evaluation: {
+              success: true,
+              id: 'evaluation-1',
+              transient: false,
+              issues: [],
+              views: [
+                {
+                  id: 'model',
+                  title: 'Model',
+                  mimeType: 'model/gltf-binary',
+                  options: {
+                    schema: { type: 'object', properties: { detail: { type: 'number' } } },
+                    defaults: { detail: 2 },
+                  },
+                },
+              ],
+              exports: [{ id: 'native', title: 'Native', mimeType: 'application/step', extension: 'step' }],
+            },
+          },
+        });
+
+        const result = await buildDeps({ projectRef }).kernelClient.evaluateModel({
+          targetFile: 'main.scad',
+          includeCapabilities: true,
+        });
+
+        expect(result).toMatchObject({
+          success: true,
+          status: 'ready',
+          sourceRevision,
+          views: ['model'],
+          exports: { native: 'step' },
+          capabilities: {
+            views: { model: { defaults: { detail: 2 } } },
+            targets: ['native', 'step'],
+          },
+        });
+      });
+
+      /* E1: a unit this adapter spawns for an agent turn is seeded from the entry's durable record,
+       * the same as one a viewer pane spawns. Nothing pushes the value in afterwards. */
+      it('should seed a unit it spawns with the durable render timeout', async () => {
+        const cadUnit = createMockCadUnit({ value: 'idle' });
+        const geometryUnits = new Map<string, unknown>();
+        const projectRef = createMockProjectRef({ geometryUnits });
+        projectRef.send.mockImplementation(() => {
+          geometryUnits.set('main.scad', cadUnit);
+        });
+        const fileManager = createMockFileManager();
+        fileManager.readFile.mockImplementation(async (path) => {
+          expect(path).toBe(workbenchPaths.entries);
+          return new TextEncoder().encode(
+            workbenchRecords.entries.serialize({ version: 1, entries: { 'main.scad': { renderTimeout: 30_000 } } }),
+          );
+        });
+        mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
+
+        const deps = buildDeps({ projectRef, fileManager });
+        await deps.kernelClient.evaluateModel({ targetFile: 'main.scad' });
+
+        const claim = projectRef.send.mock.calls[0]?.[0] as unknown as {
+          type: string;
+          claimId: string;
+          entryPath: string;
+          operationTimeout?: number;
+        };
+        expect(claim).toEqual({
+          type: 'claimGeometryUnit',
+          claimId: claim.claimId,
+          entryPath: 'main.scad',
+          operationTimeout: 30_000,
+        });
+        expect(typeof claim.claimId).toBe('string');
+        expect(projectRef.send).toHaveBeenCalledWith({
+          type: 'releaseGeometryUnit',
+          claimId: claim.claimId,
+        });
+      });
+
+      describe('render timeout lookup', () => {
+        const evaluateWithEntries = async (entriesText: string, targetFile = 'main.scad') => {
+          const geometryUnits = new Map<string, unknown>();
+          const projectRef = createMockProjectRef({ geometryUnits });
+          const fileManager = createMockFileManager();
+          fileManager.readFile.mockResolvedValue(new TextEncoder().encode(entriesText));
+          const result = await buildDeps({ projectRef, fileManager }).kernelClient.evaluateModel({ targetFile });
+          return { result, projectRef };
+        };
+
+        /* A short-lived Tau wrote `operationTimeout`; the strict codec refuses it, and rendering
+         * must not silently fall back to the default timeout. */
+        it.each(['main.scad', 'sibling.scad'])(
+          'should refuse to render %s with the path, reason and recovery when entries are invalid',
+          async (targetFile) => {
+            const stale = '{"version":1,"entries":{"main.scad":{"operationTimeout":5000}}}';
+            const { result, projectRef } = await evaluateWithEntries(stale, targetFile);
+
+            expect(result).toEqual({
+              success: false,
+              errorCode: 'UNKNOWN',
+              message:
+                '`.tau/workbench/entries.json` is not valid, so rendering stopped rather than assume a default render timeout. The person can review it from the project\'s Settings not applied action; do not rewrite it to work around this. The entries record is invalid: entries.main.scad: Unrecognized key: "operationTimeout"',
+            });
+            expect(projectRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'claimGeometryUnit' }));
+          },
+        );
+
+        it('should refuse to render with a distinct newer-format message when entries are newer', async () => {
+          const { result, projectRef } = await evaluateWithEntries('{"version":2}');
+
+          expect(result).toEqual({
+            success: false,
+            errorCode: 'UNKNOWN',
+            message:
+              '`.tau/workbench/entries.json` was written by a newer Tau, so rendering stopped rather than assume a default render timeout. Update Tau to use it; do not rewrite it to work around this.',
+          });
+          expect(projectRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'claimGeometryUnit' }));
+        });
+
+        it('should propagate an entries read failure other than a missing file', async () => {
+          const projectRef = createMockProjectRef({ geometryUnits: new Map<string, unknown>() });
+          const fileManager = createMockFileManager();
+          fileManager.readFile.mockRejectedValue(
+            Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
+          );
+
+          const result = await buildDeps({ projectRef, fileManager }).kernelClient.evaluateModel({
+            targetFile: 'main.scad',
+          });
+
+          expect(result).toEqual({ success: false, errorCode: 'UNKNOWN', message: 'EACCES: permission denied' });
+          expect(projectRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'claimGeometryUnit' }));
         });
       });
 
@@ -1254,14 +1882,18 @@ describe('rpc-handlers', () => {
         const geometryUnits = new Map<string, unknown>([['main.scad', cadUnit]]);
         const projectRef = createMockProjectRef({ geometryUnits });
         mockWaitFor.mockResolvedValue({
-          value: 'idle',
-          context: { kernelIssues },
+          ...cadUnit.getSnapshot(),
+          context: {
+            ...cadUnit.getSnapshot().context,
+            latestRenderingOutcome: 'failure',
+            evaluation: { success: false, id: 'evaluation-2', transient: false, issues },
+          },
         });
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('main.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'main.scad' });
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
           success: true,
           status: 'error',
           kernelIssues: issues,
@@ -1278,7 +1910,7 @@ describe('rpc-handlers', () => {
         });
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('main.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'main.scad' });
 
         expect(result).toEqual({
           success: true,
@@ -1293,41 +1925,48 @@ describe('rpc-handlers', () => {
         const cadUnit = createMockCadUnit({ value: 'idle', kernelIssues });
         const geometryUnits = new Map<string, unknown>([['main.scad', cadUnit]]);
         const projectRef = createMockProjectRef({ geometryUnits });
-        mockWaitFor.mockResolvedValue({
-          value: 'idle',
-          context: { kernelIssues },
-        });
+        mockWaitFor.mockResolvedValue(cadUnit.getSnapshot());
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('main.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'main.scad' });
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
           success: true,
           status: 'ready',
           kernelIssues: issues,
         });
       });
 
-      it('should send createGeometryUnit when unit does not exist', async () => {
+      it('should claim a geometry unit when it does not exist', async () => {
         const cadUnit = createMockCadUnit({ value: 'idle' });
         const emptyUnits = new Map<string, unknown>();
-        const populatedUnits = new Map<string, unknown>([['new-file.scad', cadUnit]]);
         const projectRef = createMockProjectRef({ geometryUnits: emptyUnits });
-        projectRef.getSnapshot
-          .mockReturnValueOnce({ context: { geometryUnits: emptyUnits, mainEntryPath: 'main.scad' } })
-          .mockReturnValue({ context: { geometryUnits: populatedUnits, mainEntryPath: 'main.scad' } });
+        projectRef.send.mockImplementation((event: { type: string }) => {
+          if (event.type === 'claimGeometryUnit') {
+            emptyUnits.set('new-file.scad', cadUnit);
+          }
+        });
         mockWaitFor.mockResolvedValue({
           value: 'idle',
           context: { kernelIssues: new Map<string, unknown[]>() },
         });
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('new-file.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'new-file.scad' });
 
-        expect(projectRef.send).toHaveBeenCalledWith({
-          type: 'createGeometryUnit',
+        const claim = projectRef.send.mock.calls[0]?.[0] as unknown as {
+          type: string;
+          claimId: string;
+          entryPath: string;
+          operationTimeout?: number;
+        };
+        expect(claim).toEqual({
+          type: 'claimGeometryUnit',
+          claimId: claim.claimId,
           entryPath: 'new-file.scad',
+          operationTimeout: undefined,
         });
+        expect(typeof claim.claimId).toBe('string');
         expect(result.success).toBe(true);
       });
 
@@ -1335,7 +1974,7 @@ describe('rpc-handlers', () => {
         const projectRef = createMockProjectRef({ geometryUnits: new Map<string, unknown>() });
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('impossible.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'impossible.scad' });
 
         expect(result).toEqual({
           success: false,
@@ -1351,7 +1990,7 @@ describe('rpc-handlers', () => {
         mockWaitFor.mockRejectedValue(new Error('Actor stopped'));
 
         const deps = buildDeps({ projectRef });
-        const result = await deps.kernelClient.getKernelResult('main.scad');
+        const result = await deps.kernelClient.evaluateModel({ targetFile: 'main.scad' });
 
         expect(result).toEqual({
           success: false,
@@ -1392,7 +2031,7 @@ describe('rpc-handlers', () => {
 
       await handlers.executeRpcCall({
         rpcName: rpcName.createFile,
-        args: { targetFile: '/a.scad', content: '// x' },
+        args: { targetFile: 'a.scad', content: '// x' },
         toolCallId: 'tool_call_cf_1',
       } as RpcCallInput);
 
@@ -1419,7 +2058,7 @@ describe('rpc-handlers', () => {
       await expect(
         handlers.executeRpcCall({
           rpcName: rpcName.editFile,
-          args: { targetFile: '/a.scad', oldString: 'a', newString: 'b' },
+          args: { targetFile: 'a.scad', oldString: 'a', newString: 'b' },
           toolCallId: 'tool_call_ef_1',
         } as RpcCallInput),
       ).rejects.toThrow('boom');
@@ -1450,7 +2089,7 @@ describe('rpc-handlers', () => {
       await expect(
         handlers.executeRpcCall({
           rpcName: rpcName.createFile,
-          args: { targetFile: '/x.scad', content: '//' },
+          args: { targetFile: 'x.scad', content: '//' },
           toolCallId: 'tool_call_num_1',
         } as RpcCallInput),
       ).rejects.toThrow('numeric');
@@ -1479,7 +2118,7 @@ describe('rpc-handlers', () => {
       await expect(
         handlers.executeRpcCall({
           rpcName: rpcName.deleteFile,
-          args: { targetFile: '/y.scad' },
+          args: { targetFile: 'y.scad' },
           toolCallId: 'tool_call_plain_1',
         } as RpcCallInput),
       ).rejects.toThrow('plain');
@@ -1510,7 +2149,7 @@ describe('rpc-handlers', () => {
       await expect(
         handlers.executeRpcCall({
           rpcName: rpcName.appendFile,
-          args: { targetFile: '/y.scad', content: '//' },
+          args: { targetFile: 'y.scad', content: '//' },
           toolCallId: 'tool_call_estr_1',
         } as RpcCallInput),
       ).rejects.toThrow('unknown-str');
@@ -1540,7 +2179,7 @@ describe('rpc-handlers', () => {
 
       await handlers.executeRpcCall({
         rpcName: rpcName.readFile,
-        args: { targetFile: '/a.scad' },
+        args: { targetFile: 'a.scad' },
         toolCallId: 'tool_call_rf_1',
       } as RpcCallInput);
 

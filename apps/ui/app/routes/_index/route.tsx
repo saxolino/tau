@@ -7,11 +7,6 @@ import { useResolvedAuth } from '#hooks/use-resolved-auth.js';
 import { useFeature } from '#flags/use-feature.js';
 import type { Handle } from '#types/matches.types.js';
 import { metaConfig } from '#constants/meta.constants.js';
-import { cacheTag, cdnBackedSsrRouteHeaders } from '#lib/react-router.lib.js';
-
-export function headers(): Record<string, string> {
-  return cdnBackedSsrRouteHeaders(cacheTag.homepage, 'short');
-}
 
 const landingTitle = 'Tau — AI CAD you can trust';
 const landingDescription =
@@ -69,7 +64,7 @@ export const handle: Handle = {
  * SSR output stays session-neutral so `/` remains CDN-cacheable. An unresolved
  * session changes presentation only; protected operations still use real auth.
  */
-export default function Home(): React.JSX.Element {
+export default function WebHome(): React.JSX.Element {
   const marketingLanding = useFeature('marketingLanding');
   const resolvedAuth = useResolvedAuth();
 
@@ -84,7 +79,7 @@ export default function Home(): React.JSX.Element {
   return (
     <>
       <HomepageChatHero />
-      <ProjectLibrary />
+      <ProjectLibrary headingLevel={2} />
     </>
   );
 }

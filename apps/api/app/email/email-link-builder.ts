@@ -3,13 +3,18 @@ import type { EmailTemplate } from '#email/email.types.js';
 const authEmailPaths = {
   'magic-link': '/auth/magic-link/verify',
   'reset-password': '/auth/reset-password',
+  'password-changed': '/auth/forgot-password',
   'verify-email': '/auth/verify-email',
-} as const satisfies Record<Extract<EmailTemplate['kind'], 'magic-link' | 'reset-password' | 'verify-email'>, string>;
+} as const satisfies Record<
+  Extract<EmailTemplate['kind'], 'magic-link' | 'reset-password' | 'password-changed' | 'verify-email'>,
+  string
+>;
 
 export const sanitizeFrontendRedirectPath = ({
   callbackURL,
   frontendURL,
 }: {
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- URLSearchParams.get returns null for a missing key
   readonly callbackURL?: string | null;
   readonly frontendURL: string;
 }): string => {
@@ -69,6 +74,10 @@ export const buildFrontendResetPasswordUrl = ({
   return resetUrl.toString();
 };
 
+/** Where a recipient who did not change their password goes to take the account back. */
+export const buildFrontendForgotPasswordUrl = ({ frontendURL }: { readonly frontendURL: string }): string =>
+  new URL(authEmailPaths['password-changed'], frontendURL).toString();
+
 export const buildFrontendMagicLinkVerifyUrl = ({
   frontendURL,
   generatedUrl,
@@ -97,7 +106,7 @@ export const buildPublicationViewUrl = ({
 }: {
   readonly frontendURL: string;
   readonly publicationId: string;
-}): string => new URL(`/v/${publicationId}`, frontendURL).toString();
+}): string => new URL(`/s/tau~${publicationId}`, frontendURL).toString();
 
 export const assertEmailTemplateUrlAllowed = ({
   template,
@@ -106,9 +115,10 @@ export const assertEmailTemplateUrlAllowed = ({
   readonly template: EmailTemplate;
   readonly frontendURL: string;
 }): void => {
+  const rawUrl = 'billingUrl' in template ? template.billingUrl : template.url;
   let url: URL;
   try {
-    url = new URL(template.url);
+    url = new URL(rawUrl);
   } catch {
     throw new Error(`Invalid ${template.kind} email URL`);
   }
@@ -119,8 +129,16 @@ export const assertEmailTemplateUrlAllowed = ({
   }
 
   if (template.kind === 'publication-invite') {
-    if (!url.pathname.startsWith('/v/') || url.pathname.length <= '/v/'.length) {
+    if (!url.pathname.startsWith('/s/') || url.pathname.length <= '/s/'.length) {
       throw new Error('Invalid publication-invite email URL path');
+    }
+
+    return;
+  }
+
+  if ('billingUrl' in template) {
+    if (url.pathname !== '/' || url.searchParams.get('settings') !== 'billing') {
+      throw new Error(`Invalid ${template.kind} email URL path`);
     }
 
     return;

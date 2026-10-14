@@ -1,13 +1,30 @@
 import { z } from 'zod';
+import { reasoningLevels } from '@taucad/chat/constants';
 import { modelFamilySchema, providerIdSchema } from '#api/providers/provider.schema.js';
 
 export const modelSupportSchema = z.object({
+  /*
+   * A capability, not a request option: `configuration` is spread into the
+   * LangChain constructor on the name/commit path, `support` is not. The
+   * default level stays in `configuration`, where each provider's shape lives.
+   */
+  reasoning: z
+    .object({
+      levels: z
+        .array(z.enum(reasoningLevels))
+        .min(1)
+        .describe(
+          'Reasoning levels this model accepts and Tau forwards, ascending; absent means no user-selectable reasoning',
+        ),
+    })
+    .describe('User-selectable reasoning support')
+    .optional(),
   tools: z.boolean().describe('Whether the model supports tools').optional(),
   toolChoice: z.boolean().describe('Whether the model supports tool choice').optional(),
   modalities: z
     .object({
       input: z
-        .array(z.enum(['text', 'image']))
+        .array(z.enum(['text', 'image', 'pdf']))
         .min(1)
         .describe('Input modalities the model can receive'),
       output: z
@@ -85,8 +102,11 @@ const modelProviderSchema = z.object({
   name: z.string().describe('The name of the provider'),
 });
 
+export const modelProviderKindSchema = z.enum(['tau-hosted', 'local', 'in-browser']);
+
 export const modelSchema = z.object({
   id: z.string().describe('The unique identifier of the model'),
+  providerKind: modelProviderKindSchema.describe('Where the model provider runs and whether Tau meters it'),
   name: z.string().describe('The human readable name of the model'),
   slug: z.string().describe('The slug of the model'),
   description: z.string().describe('A human-readable description of the model').optional(),
@@ -105,7 +125,9 @@ export const modelSchema = z.object({
 });
 
 export type Model = z.infer<typeof modelSchema>;
+export type ModelProviderKind = z.infer<typeof modelProviderKindSchema>;
 export type ModelDetails = z.infer<typeof modelDetailsSchema>;
 export type ModelSupport = z.infer<typeof modelSupportSchema>;
 export type ModelModalities = NonNullable<ModelSupport['modalities']>;
+export type ModelReasoningSupport = NonNullable<ModelSupport['reasoning']>;
 export type ModelInputModality = NonNullable<ModelSupport['modalities']>['input'][number];

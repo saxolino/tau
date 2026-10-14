@@ -1,17 +1,18 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import type { ExportFile } from '@taucad/types';
 import { Download } from 'lucide-react';
-import { Button } from '#components/ui/button.js';
+import { Button } from '@taucad/ui/components/button';
+import { Loader } from '@taucad/ui/components/loader';
 import { toast } from '#components/ui/sonner.js';
-import { Checkbox } from '#components/ui/checkbox.js';
-import { Label } from '#components/ui/label.js';
+import { Checkbox } from '@taucad/ui/components/checkbox';
+import { Label } from '@taucad/ui/components/label';
 import { downloadBlob } from '@taucad/utils/file';
 import { FormatSelector } from '#components/geometry/converter/format-selector.js';
 import { ConverterFileTree } from '#components/geometry/converter/converter-file-tree.js';
 import { formatDisplayName } from '#components/geometry/converter/converter-utils.js';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { createExportArtifactZip } from '#utils/export-artifact-set.utils.js';
-import type { ConverterExportFormat, ConverterImportFormat } from '#routes/convert/converter-runtime.definition.js';
+import type { ConverterExportFormat, ConverterImportFormat } from '@taucad/converter/runtime';
 
 type UploadedFileInfo = {
   readonly name: string;
@@ -26,6 +27,7 @@ export type ExportedFile = {
 };
 
 type ConverterProperties = {
+  readonly availableFormats: readonly ConverterExportFormat[];
   readonly exportFormat: (format: ConverterExportFormat) => Promise<ExportFile[]>;
   readonly selectedFormats: ConverterExportFormat[];
   readonly shouldUseZipForMultiple: boolean;
@@ -42,6 +44,7 @@ type ConverterProperties = {
 };
 
 export function Converter({
+  availableFormats,
   exportFormat,
   selectedFormats,
   shouldUseZipForMultiple,
@@ -53,6 +56,9 @@ export function Converter({
   formatSelectorProperties,
   className,
 }: ConverterProperties): React.JSX.Element {
+  const zipId = useId();
+  const locationId = useId();
+  const projectId = useId();
   const [isExporting, setIsExporting] = useState(false);
   const [shouldChooseLocation, setShouldChooseLocation] = useState(false);
   const [shouldSaveToProject, setShouldSaveToProject] = useState(false);
@@ -94,7 +100,10 @@ export function Converter({
     try {
       const operation = (async () => {
         const results = await Promise.all(
-          selectedFormats.map(async (format) => ({ format, files: await exportFormat(format) })),
+          selectedFormats.map(async (format) => ({
+            format,
+            files: await exportFormat(format),
+          })),
         );
         for (const { format, files } of results) {
           if (files.length === 0) {
@@ -113,7 +122,8 @@ export function Converter({
           onExport(exportedFiles);
         }
 
-        const requiresZip = shouldUseZipForMultiple || results.some(({ files }) => files.length > 1);
+        const requiresZip =
+          (shouldUseZipForMultiple && results.length > 1) || results.some(({ files }) => files.length > 1);
         if (requiresZip) {
           const blob = await createExportArtifactZip(
             results.map(({ format, files }) => ({
@@ -152,6 +162,8 @@ export function Converter({
         },
       });
       await operation;
+    } catch {
+      // The toast owns export errors, including a cancelled native save dialog.
     } finally {
       setIsExporting(false);
     }
@@ -167,101 +179,111 @@ export function Converter({
   ]);
 
   return (
-    <div data-slot='converter' className={cn('@container/converter flex flex-col gap-6', className)}>
+    <div data-slot='converter' className={cn('@container/converter flex flex-col gap-5', className)}>
       <FormatSelector
+        formats={availableFormats}
         selectedFormats={selectedFormats}
         onFormatToggle={onFormatToggle}
         onClearSelection={onClearSelection}
         {...formatSelectorProperties}
       />
 
-      <div className='flex flex-col gap-2'>
+      <div className='flex flex-col gap-3'>
         <Button
+          aria-busy={isExporting}
           disabled={selectedFormats.length === 0 || isExporting}
           className='h-auto w-full whitespace-normal'
           onClick={handleDownload}
         >
-          <Download className='size-4 shrink-0' />
+          {isExporting ? <Loader /> : <Download className='size-4 shrink-0' />}
           <span className='min-w-0 wrap-break-word'>
             {selectedFormats.length === 0
               ? 'Select formats to download'
               : selectedFormats.length === 1
-                ? 'Download'
+                ? `Download ${selectedFormats[0]?.toUpperCase()}`
                 : shouldUseZipForMultiple
                   ? `Download ${selectedFormats.length} formats as ZIP`
                   : `Download ${selectedFormats.length} formats`}
           </span>
         </Button>
 
-        {/* Save to project toggle */}
-        {onExport ? (
-          <div className='flex items-center space-x-2'>
-            <Checkbox
-              id='save-to-project'
-              checked={shouldSaveToProject}
-              onCheckedChange={(checked) => {
-                setShouldSaveToProject(checked === true);
-              }}
-            />
-            <Label
-              htmlFor='save-to-project'
-              className='cursor-pointer text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
-            >
-              Save exported files to project
-            </Label>
-          </div>
-        ) : undefined}
-
         {selectedFormats.length > 1 ? (
           <div className='flex items-center space-x-2'>
             <Checkbox
-              id='use-zip'
+              id={zipId}
               checked={shouldUseZipForMultiple}
               onCheckedChange={(checked) => {
                 onZipToggle(checked === true);
               }}
             />
             <Label
-              htmlFor='use-zip'
-              className='cursor-pointer text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
+              htmlFor={zipId}
+              className='cursor-action rounded-sm text-sm leading-none font-normal transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-70 hover:bg-accent'
             >
               Download as ZIP file
             </Label>
           </div>
         ) : undefined}
 
-        {/* Custom download location toggle */}
-        {isFileSystemAccessSupported ? (
-          <div className='flex flex-col gap-2'>
-            <div className='flex items-center space-x-2'>
-              <Checkbox
-                id='choose-location'
-                checked={shouldChooseLocation}
-                onCheckedChange={(checked) => {
-                  setShouldChooseLocation(checked === true);
-                }}
-              />
-              <Label
-                htmlFor='choose-location'
-                className='cursor-pointer text-sm leading-none font-normal peer-disabled:cursor-not-allowed peer-disabled:opacity-70'
-              >
-                Choose download location
-              </Label>
-            </div>
-            <p className='pl-6 text-xs text-muted-foreground'>
-              {shouldChooseLocation
-                ? 'You will be prompted to choose where to save each file'
-                : 'Downloads to your default downloads folder'}
-            </p>
-          </div>
-        ) : undefined}
+        <details className='text-xs text-muted-foreground'>
+          <summary className='w-fit rounded-xs select-none focus-visible:focus-outline-outside'>
+            Download options
+          </summary>
+          <div className='mt-3 space-y-3'>
+            <p>Formats with supporting files download together as ZIP.</p>
+            {/* Save to project toggle */}
+            {onExport ? (
+              <div className='flex items-center space-x-2'>
+                <Checkbox
+                  id={projectId}
+                  checked={shouldSaveToProject}
+                  onCheckedChange={(checked) => {
+                    setShouldSaveToProject(checked === true);
+                  }}
+                />
+                <Label
+                  htmlFor={projectId}
+                  className='cursor-action rounded-sm text-sm leading-none font-normal transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-70 hover:bg-accent'
+                >
+                  Save exported files to project
+                </Label>
+              </div>
+            ) : undefined}
 
-        {/* File tree preview */}
-        <ConverterFileTree
-          selectedFormats={selectedFormats}
-          fileName={uploadedFile?.name}
-          asZip={shouldUseZipForMultiple}
-        />
+            {/* Custom download location toggle */}
+            {isFileSystemAccessSupported ? (
+              <div className='flex flex-col gap-2'>
+                <div className='flex items-center space-x-2'>
+                  <Checkbox
+                    id={locationId}
+                    checked={shouldChooseLocation}
+                    onCheckedChange={(checked) => {
+                      setShouldChooseLocation(checked === true);
+                    }}
+                  />
+                  <Label
+                    htmlFor={locationId}
+                    className='cursor-action rounded-sm text-sm leading-none font-normal transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-70 hover:bg-accent'
+                  >
+                    Choose download location
+                  </Label>
+                </div>
+                <p className='pl-6 text-xs text-muted-foreground'>
+                  {shouldChooseLocation
+                    ? 'You will be prompted to choose where to save each file'
+                    : 'Downloads to your default downloads folder'}
+                </p>
+              </div>
+            ) : undefined}
+
+            {/* File tree preview */}
+            <ConverterFileTree
+              selectedFormats={selectedFormats}
+              fileName={uploadedFile?.name}
+              asZip={shouldUseZipForMultiple}
+            />
+          </div>
+        </details>
       </div>
     </div>
   );

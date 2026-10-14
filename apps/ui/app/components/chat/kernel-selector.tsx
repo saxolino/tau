@@ -1,11 +1,11 @@
 import type { KernelProvider } from '@taucad/runtime';
-import { kernelConfigurations } from '@taucad/types/constants';
-import { Button } from '#components/ui/button.js';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '#components/ui/hover-card.js';
-import { Badge } from '#components/ui/badge.js';
+import { availableKernelConfigurations } from '#constants/available-kernel-configurations.js';
+import { Button } from '@taucad/ui/components/button';
+import { HoverCard, HoverCardContent, HoverCardTrigger } from '@taucad/ui/components/hover-card';
+import { Badge } from '@taucad/ui/components/badge';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { cn } from '#utils/ui.utils.js';
-import { KernelTierBadge } from '#components/tier-badge.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { KernelCommercialBadge } from '#cloud/kernel-commerce.js';
 
 export type KernelSelectorProperties = {
   readonly selectedKernel: KernelProvider;
@@ -20,7 +20,7 @@ export function KernelSelector({
 }: KernelSelectorProperties): React.JSX.Element {
   return (
     <div className="flex flex-wrap gap-3 max-md:-mx-4 max-md:snap-x max-md:snap-mandatory max-md:scroll-px-4 max-md:[scrollbar-width:none] max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-2 max-md:pl-4 max-md:[-webkit-overflow-scrolling:touch] max-md:after:block max-md:after:w-1 max-md:after:shrink-0 max-md:after:content-[''] max-md:[&::-webkit-scrollbar]:hidden">
-      {kernelConfigurations.map((option) => (
+      {availableKernelConfigurations().map((option) => (
         <HoverCard key={option.id}>
           <HoverCardTrigger asChild>
             <Button
@@ -41,7 +41,7 @@ export function KernelSelector({
                 <SvgIcon id={option.id} className='size-4 sm:size-5' />
                 <span className='flex items-center gap-1.5 text-xs font-medium sm:text-sm'>
                   {option.name}
-                  <KernelTierBadge kernelId={option.id} />
+                  <KernelCommercialBadge kernelId={option.id} />
                 </span>
               </div>
             </Button>
@@ -53,7 +53,7 @@ export function KernelSelector({
                 <div>
                   <h3 className='flex items-center gap-1.5 text-lg font-semibold'>
                     {option.name}
-                    <KernelTierBadge kernelId={option.id} />
+                    <KernelCommercialBadge kernelId={option.id} />
                   </h3>
                   <p className='text-sm text-wrap text-muted-foreground italic'>{option.description}</p>
                 </div>

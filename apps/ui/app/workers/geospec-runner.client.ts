@@ -5,6 +5,7 @@ import type { RpcGeoSpecClient } from '@taucad/chat/rpc';
 import type { FileSystemBridgeConnection } from '@taucad/fs-bridge';
 import { randomUuid } from '@taucad/utils/id';
 import type { UiRuntimeConfigInput } from '#runtime/ui-runtime.config.js';
+import { createBrowserGeoSpecWorker } from '#services/browser-geospec-worker.js';
 import type { GeoSpecRunnerWorkerRequest, GeoSpecRunnerWorkerResponse } from '#workers/geospec-runner.types.js';
 
 type CreateGeoSpecWorker = () => Worker;
@@ -12,6 +13,11 @@ type CreateGeoSpecWorker = () => Worker;
 export type GeoSpecWorkerRpcClientOptions = {
   openFileSystemBridge: () => FileSystemBridgeConnection;
   runtimeConfig: UiRuntimeConfigInput;
+  /** Private optional Git candidate route; errors never change authored GeoSpec results. */
+  candidateSync?: Readonly<{
+    fetch: () => Promise<ReadonlyArray<Uint8Array<ArrayBuffer>>>;
+    publish: (candidate: Uint8Array<ArrayBuffer>) => Promise<unknown>;
+  }>;
   createWorker?: CreateGeoSpecWorker;
   /** Milliseconds. */
   runnerTimeout?: number;
@@ -28,6 +34,8 @@ export type GeoSpecWorkerRpcClient = RpcGeoSpecClient & {
 type PendingRun = {
   timeoutId: ReturnType<typeof globalThis.setTimeout>;
   abortTimeoutId?: ReturnType<typeof globalThis.setTimeout>;
+  signal?: AbortSignal;
+  abortListener?: () => void;
   resolve(result: RunGeoSpecTestsRpcResult): void;
 };
 
@@ -56,12 +64,6 @@ const defaultTimeout = rpcExecutionTimeout - defaultInitTimeout - defaultAbortGr
  */
 export const geoSpecClientWorstCaseTimeout = defaultInitTimeout + defaultTimeout + defaultAbortGrace;
 
-const createDefaultGeoSpecWorker = (): Worker =>
-  new Worker(new URL('geospec-runner.worker.ts', import.meta.url), {
-    type: 'module',
-    name: 'tau-geospec-runner-worker',
-  });
-
 const createRequestId = (): string => randomUuid();
 
 const errorResult = (message: string): RunGeoSpecTestsRpcResult => ({
@@ -83,6 +85,10 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
   let resolveClose: (() => void) | undefined;
   let initTimeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
   let closed = false;
+  // ponytail: quarantine an oversized remote for this client session; reopening the project retries.
+  let candidateFetchLimitReached = false;
+  let candidateFetchInFlight: Promise<void> | undefined;
+  let availableCandidates: ReadonlyArray<Uint8Array<ArrayBuffer>> = [];
   const pendingRuns = new Map<string, PendingRun>();
 
   const runnerTimeout = options.runnerTimeout ?? defaultTimeout;
@@ -105,6 +111,9 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     if (pending.abortTimeoutId) {
       globalThis.clearTimeout(pending.abortTimeoutId);
     }
+    if (pending.abortListener) {
+      pending.signal?.removeEventListener('abort', pending.abortListener);
+    }
     pendingRuns.delete(requestId);
   };
 
@@ -113,18 +122,23 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     if (!pending) {
       return;
     }
+    const settledResult = pending.signal?.aborted ? errorResult('GeoSpec request cancelled.') : result;
     clearPendingRun(requestId);
-    pending.resolve(result);
+    pending.resolve(settledResult);
+  };
+
+  const publishCandidate = async (candidate: Uint8Array<ArrayBuffer>): Promise<void> => {
+    try {
+      await options.candidateSync?.publish(candidate);
+    } catch {
+      // Optional publication cannot change an authored result.
+    }
   };
 
   const failAllPendingRuns = (message: string): void => {
     for (const [requestId, pending] of pendingRuns) {
-      globalThis.clearTimeout(pending.timeoutId);
-      if (pending.abortTimeoutId) {
-        globalThis.clearTimeout(pending.abortTimeoutId);
-      }
+      clearPendingRun(requestId);
       pending.resolve(errorResult(message));
-      pendingRuns.delete(requestId);
     }
   };
 
@@ -185,7 +199,19 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     }
 
     if (message.type === 'result') {
+      const pending = pendingRuns.get(message.requestId);
+      const mayPublish =
+        pending !== undefined &&
+        !closed &&
+        pending.abortTimeoutId === undefined &&
+        !pending.signal?.aborted &&
+        sessionId !== undefined;
       resolveRun(message.requestId, message.result);
+      if (mayPublish && message.result.success) {
+        for (const candidate of message.candidates ?? []) {
+          void publishCandidate(candidate);
+        }
+      }
       return;
     }
 
@@ -216,7 +242,7 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
       return requireSessionId();
     }
 
-    worker = (options.createWorker ?? createDefaultGeoSpecWorker)();
+    worker = (options.createWorker ?? createBrowserGeoSpecWorker)();
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
 
@@ -258,7 +284,32 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     terminateWorker(message);
   };
 
-  const runTests = async (args: Parameters<RpcGeoSpecClient['runTests']>[0]): Promise<RunGeoSpecTestsRpcResult> => {
+  const runTests: RpcGeoSpecClient['runTests'] = async (args, context) => {
+    if (context?.signal?.aborted) {
+      return errorResult('GeoSpec request cancelled.');
+    }
+    let candidateSharingEnabled = false;
+    if (
+      !closed &&
+      !candidateFetchLimitReached &&
+      candidateFetchInFlight === undefined &&
+      options.candidateSync !== undefined
+    ) {
+      const sync = options.candidateSync;
+      const fetchCandidates = async (): Promise<void> => {
+        try {
+          availableCandidates = await sync.fetch();
+          candidateSharingEnabled = true;
+        } catch (error) {
+          if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'FETCH_LIMIT_EXCEEDED') {
+            candidateFetchLimitReached = true;
+          }
+        } finally {
+          candidateFetchInFlight = undefined;
+        }
+      };
+      candidateFetchInFlight = fetchCandidates();
+    }
     let activeSessionId: string;
     try {
       activeSessionId = await ensureInitialized();
@@ -269,21 +320,24 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     if (!worker) {
       return errorResult('GeoSpec worker is not available.');
     }
+    if (context?.signal?.aborted) {
+      return errorResult('GeoSpec request cancelled.');
+    }
 
     const activeWorker = worker;
     const requestId = createRequestId();
     return new Promise<RunGeoSpecTestsRpcResult>((resolve) => {
-      const timeoutId = globalThis.setTimeout(() => {
+      const abortRun = (reason: string): void => {
         const pending = pendingRuns.get(requestId);
-        if (!pending || !worker || !sessionId) {
+        if (!pending || pending.abortTimeoutId !== undefined) {
           return;
         }
-        const reason = createTimeoutMessage(runnerTimeout);
+        globalThis.clearTimeout(pending.timeoutId);
         try {
-          worker.postMessage({
+          activeWorker.postMessage({
             type: 'abort',
             requestId: createRequestId(),
-            sessionId,
+            sessionId: activeSessionId,
             targetRequestId: requestId,
             reason,
           } satisfies GeoSpecRunnerWorkerRequest);
@@ -294,19 +348,37 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
         pending.abortTimeoutId = globalThis.setTimeout(() => {
           hardResetRun(requestId, reason);
         }, abortGrace);
+      };
+      const abortListener = (): void => {
+        abortRun('GeoSpec request cancelled.');
+      };
+      const timeoutId = globalThis.setTimeout(() => {
+        abortRun(createTimeoutMessage(runnerTimeout));
       }, runnerTimeout);
 
-      pendingRuns.set(requestId, { resolve, timeoutId });
+      pendingRuns.set(requestId, {
+        resolve,
+        timeoutId,
+        abortListener,
+        ...(context?.signal ? { signal: context.signal } : {}),
+      });
       try {
         activeWorker.postMessage({
           type: 'run',
           requestId,
           sessionId: activeSessionId,
           args,
+          candidates: candidateSharingEnabled && !closed ? availableCandidates : [],
+          candidateSharingEnabled: candidateSharingEnabled && !closed,
         } satisfies GeoSpecRunnerWorkerRequest);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'GeoSpec worker failed to start a test run.';
         hardResetRun(requestId, message);
+        return;
+      }
+      context?.signal?.addEventListener('abort', abortListener, { once: true });
+      if (context?.signal?.aborted) {
+        abortListener();
       }
     });
   };

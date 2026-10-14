@@ -3,7 +3,7 @@ title: 'Filesystem Policy'
 description: 'Standards for filesystem access, data transfer, caching, concurrency, and watcher architecture in the Tau application. Covers read/write semantics, bridge RPC, and kernel/UI watch planes.'
 status: active
 created: '2026-03-05'
-updated: '2026-07-22'
+updated: '2026-10-03'
 related:
   - docs/policy/compatibility-policy.md
   - docs/policy/filesystem-authority-policy.md
@@ -19,6 +19,7 @@ related:
   - docs/research/revision-restore-runtime-watcher-gap.md
   - docs/research/pending-project-import-recovery-bootstrap-isolation.md
   - docs/research/filesystem-post-implementation-congruency-audit.md
+  - docs/research/rooted-filesystem-root-relative-path-unification.md
 ---
 
 # Filesystem Policy
@@ -42,7 +43,7 @@ A single-writer topology with zero-copy binary transfer and bounded caches preve
 9. **Bridge skip-originator is internal** — when a filesystem bridge port initiates a mutation, the resulting `ChangeEvent` may carry an originating port id for intra-process routing only (`tagEventOrigin` / `getEventOrigin` on `@taucad/filesystem`). The filesystem bridge adapter (`@taucad/fs-bridge` `exposeFileSystem`) skips delivering `fileChanged` back to that port. This metadata is **not** part of the wire shape of `ChangeEvent`, is **not** passed as a second argument to `ChangeEventBus.emit`, and **must not** surface in consumer-facing UI APIs.
 10. **Filesystem transport reports facts, not project recency** — filesystem APIs emit typed content-change facts; project-domain participants and machines decide whether those facts are activity.
 11. **Virtual routes are projections, not physical identity** — `/projects/<id>` resolves through a persisted locator; provider paths come from `{ storageRootKey, providerBasePath }`, never from manifest fields.
-12. **Runtime reachability is filesystem-owned** — issue one fully writable rooted view per selected project; runtime receives only that filesystem and local paths.
+12. **Runtime reachability is filesystem-owned** — issue one rooted view with full authored-data writes per selected project; runtime receives only that filesystem and local paths. Host-record protection is the narrow exception owned by filesystem authority Rule 15.
 
 ## Bridge self-write suppression (skip-originator)
 
@@ -51,37 +52,38 @@ Self-write suppression (so an editor port does not receive its own `fileChanged`
 - **Author boundary:** `WorkspaceFileService` mutating methods accept optional `context?: { originClientId?: string }`. Context is bound at port-connect time via `bindMutationContextForPort` (in `filesystem-bridge.ts`), which wraps each connection's handler with a per-port closure that injects `{ originClientId: portId }` as the trailing argument on every mutating call. Before `ChangeEventBus.emit(event)`, the worker calls `tagEventOrigin(event, id)` when context is present. The bridge primitive (`createBridgeServer`) is unaware of context — it dispatches user args verbatim.
 - **Merge rule:** `EventCoalescer` / `coalesceChangeEvents` reads origins via `getEventOrigin` so mixed-origin batches clear the tag (every port receives the merged event), matching the blueprint Finding 14 rule.
 - **Forwarders:** `ChangeEventBus` and `WatchRegistry` do not take a parallel `originClientId` parameter; the event object is the sole carrier.
-- **Registry:** `libs/filesystem/src/event-origin-registry.ts` stores origin metadata in a `WeakMap`; coalescing creates an untagged survivor when the merged path history has mixed origins.
+- **Registry:** `packages/filesystem/src/event-origin-registry.ts` stores origin metadata in a `WeakMap`; coalescing creates an untagged survivor when the merged path history has mixed origins.
 
 For rationale and alternatives considered, see [`docs/research/origin-client-id-propagation-audit.md`](../research/origin-client-id-propagation-audit.md).
 
+```text
+File manager worker: WorkspaceFileService + MountTable + providers
+  │
+  ├─ workspaceBridgeService(service) ── UNROOTED protocol v2
+  │    topology and lifecycle (9 methods)
+  │    scope-required reads: readScopedFile, readScopedShallowDirectory,
+  │                          getScopedZippedDirectory
+  │
+  └─ handlerForRoot(root, consumer) ─── ROOTED protocol v2
+       user          → composeView(..., { consumer: 'user' })
+       agent         → composeView(..., { consumer: 'agent' })
+       working-copy  → captured raw rooted filesystem (trusted composition only)
+       per-path content, mutations, search, statTree and watch
 ```
-Main Thread                       File Manager Worker              Kernel Worker
-     │                                   │                               │
-     │◄── createBridgeProxy             │              createBridgeProxy ──►│
-     │    <FileManagerProtocol>         │              <RuntimeFileSystemBase>│
-     │    (MessagePort)                  │              (MessagePort)        │
-     │   readFile, writeFile, stat       │   readFile, readFiles, stat   │
-     │   readShallowDirectory            │   exists, readdir             │
-     │   configureProjectRoots           │   full read/write/watch       │
-     │                                   │                               │
-     │                                   │   MountTable + providers      │
-     │                                   │   (DirectIdb / WebAccess /   │
-     │                                   │   OPFS / Memory)             │
-```
 
-All browser filesystem I/O runs on the file manager worker. The main thread and kernel workers access it via the **same bridge mechanism** (`createFileSystemBridge` → `MessageChannel` → `createBridgeProxy`), but not through the same namespace:
+All browser filesystem I/O runs on the file manager worker. `workspaceBridgeService(service)` alone decides the unrooted authority wire: nine topology, project-lifecycle, polling and teardown methods plus the three scope-required reads named above. It exposes no per-path content call. Serve every per-path content call from a rooted connection.
 
-- **Main thread**: `createBridgeProxy<FileManagerProtocol>` — full API including root configuration (`configureProjectRoots`), discovery (`listProjectManifests`), canonical-root disposal (`disposeStorageRoot`), workspace-scoped operations via the `{ scope }` options bag, diagnostics, and higher-level copy/move operations
-- **Kernel worker**: `createBridgeProxy<RuntimeFileSystemBase>` over a `WorkspaceFileService.createRootedFileSystem('/projects/<id>')` handler — full primitive read/write/watch access, with `/` rebased to that project and no global file-pool shortcut
+Every rooted bridge open names its `root` and `consumer` (`'user'`, `'agent'` or `'working-copy'`). Protocol version 2 requires the consumer and fails closed before `handlerForRoot` when the field is absent, unknown or paired with the wrong protocol version. The UI filesystem client owns and reuses connections by `(root, consumer)` so a raw working-copy connection cannot stand in for a masked connection.
 
-This is both interface segregation and reachability confinement: kernels receive the narrow API surface they need, and every path they can express resolves only inside the captured project mount. Both proxies talk to the same worker and provider authority, but scoped connections dispatch to a rooted handler instead of the global `fileManager`. No thread may instantiate providers or touch backing stores outside the worker (`docs/policy/filesystem-authority-policy.md` Rules 1 and 15).
+A host states one `PathPolicy`, beside `handlerForRoot` on `exposeFileSystem` and beside `allowRoot` on `serveNodeFsProvider`; both are required. The bridge rebases it on the connection's root and hands it to `handlerForRoot`, so the view a masked consumer reads and the change stream it hears are masked by the same object. Hosts do not compute a second `policyAtRoot` of their own.
+
+Open the `'agent'` view for agent tools and every executor of agent-authored project code: the kernel runtime, GeoSpec runner, Quick Look runtime, host-daemon runtime child and desktop `runtimeFileSystem` route. This view is defence in depth, not a sandbox: Node and desktop execute a real Node module that can import `node:fs`, and a browser worker can reach browser storage APIs directly. Use an OS or container sandbox when project code is adversarial.
 
 ## Rooted runtime filesystem rules
 
 ### Rule 0a: Canonicalize before routing or provider I/O
 
-Use `resolveVirtualPath` as the single virtual-path boundary. Require an absolute POSIX path; reject URLs, backslashes, drive-like paths, control characters, and traversal above `/`. Apply the same contract in `MountTable`, WFS, fs-bridge root selection, browser adapters, Node adapters, and fs-client path resolution.
+Use the path grammar owned by the boundary. Authority routing uses `resolveAuthorityPath` and canonical absolute POSIX paths such as `/projects/<id>/main.ts`. An already-rooted filesystem capability uses `assertRootedPath` for canonical inputs and `resolveRootedPath` when normalization is explicitly part of the API; its root is `''`, and descendants such as `main.ts` never have a leading slash. Both grammars reject URLs, backslashes, drive-like paths, control characters, and traversal above their root. Host adapters translate rooted paths to native paths privately after validation.
 
 ### Rule 0b: Capture one exact mount for each rooted view
 
@@ -89,11 +91,15 @@ Use `resolveVirtualPath` as the single virtual-path boundary. Require an absolut
 
 ### Rule 0c: Preserve full write and watch semantics inside the view
 
-A rooted view supports the same writes, queues, cache invalidation, persistence, and events as global WFS operations. Do not add cache-only writes, read-only source trees, or path allowlists. Rebase watch requests and emitted events to local `/`, and never deliver sibling-project events. Scoped runtime bridges use transfer/copy delivery and must not receive the authority-global shared file pool, because a pool hit would bypass rooted RPC dispatch.
+A rooted view supports the same authored-data writes, queues, cache invalidation, persistence, and events as global WFS operations. Do not add cache-only writes, read-only source trees, or generic path allowlists. Apply only the canonical host-record protection in [filesystem authority Rule 15](filesystem-authority-policy.md#15-rooted-views-are-the-runtime-reachability-boundary), covering all mutation routes without duplicating its ownership rules here. Rebase watch requests and emitted events to the capability-local namespace (`''`, `main.ts`, `lib/part.ts`), and never deliver sibling-project events. Scoped runtime bridges use transfer/copy delivery and must not receive the authority-global shared file pool, because a pool hit would bypass rooted RPC dispatch.
 
 A rooted view preserves the exact canonical virtual paths carried by concrete create, change, delete, and rename events regardless of backing-filesystem naming semantics. It must not lowercase, normalize Unicode, infer aliases, or widen a concrete event to `reset`. Only explicit information-loss signals—such as overflow, observer `unknown`/`errored`, stale-root detection, backend replacement, or an irreducibly summarized change—use reset recovery. Preserve the hidden mutation origin through rooted writes and suppress only the originating scoped port's echo.
 
 Every admitted operation retains the exact captured mount entry through provider I/O and every resulting cache, tree, event, and watch side effect. After suspension, do not attribute old-provider work to a replacement or nested route. Cross-tab facts carry the existing physical identity `{ storageRootKey, providerBasePath }` and refresh only a matching projection before delivery.
+
+Mask watches per consumer. Before a recursive `rmdir`, `move`, `rename` or `bulkMove`, walk the affected subtree and refuse hidden paths at the view root for every consumer. Below the root, refuse hidden descendants for an `'agent'` view; a `'user'` view may remove or move a vendored directory that contains its own nested control store.
+
+The Node provider must refuse with `ELOOP` when a visible name resolves through a symlink onto a hidden real path, and `readdir` must drop that entry. Archive one file at a time and refuse with `ARCHIVE_TOO_LARGE` when the default 256 MiB byte ceiling would be crossed.
 
 ## Read Rules
 
@@ -101,7 +107,7 @@ Every admitted operation retains the exact captured mount entry through provider
 
 Always read a single directory level unless the consumer provably needs deep recursion.
 
-Deep reads are permitted only for: `getDirectoryContents` (ZIP/copy), startup-only `getDirectoryStat` hydration, and `readFiles` (kernel dependency batch). Deep reads are forbidden in mutation-triggered refresh paths.
+Deep reads are permitted only for: the rooted `contents` and `archive` content operations (ZIP/copy), startup-only `statTree` hydration, and `readFiles` (kernel dependency batch). Deep reads are forbidden in mutation-triggered refresh paths.
 
 ### Rule 2: Parallel stat, sequential traversal
 
@@ -109,7 +115,7 @@ When listing a single directory, `readdir` + parallel `Promise.all(stat(...))` i
 
 **Backend performance context:** IndexedDB transaction creation has fixed overhead (~0.1–0.3ms each) regardless of payload size. Parallelizing stat calls within a directory lets the browser pipeline IDB transactions instead of sequentially awaiting each one.
 
-**For metadata-only queries (tree display, file counts):** Prefer the in-memory tree in `WorkspaceFileService` over provider stat calls. See Rule 33.
+**For metadata-only queries (tree display, file counts):** Prefer the root's `TreeIndex` over provider stat calls. See Rule 33.
 
 ### Rule 3: Read caching expectations
 
@@ -128,6 +134,14 @@ Source files are typically <100 KB. Binary CAD files (STL, STEP, glTF) can be 10
 - Kernel file reads transfer via `ArrayBuffer` transfer lists (zero-copy)
 - Main thread reads should avoid storing large binaries in `openFiles`
 - Future: streaming reads for files > 1 MB
+
+### Rule 4a: Content resolution and metadata stay truthful
+
+Content-facing UI facades resolve files to an explicit discriminated state such as loading, text, binary, too-large, orphaned, or error. Detect binary content from a bounded byte prefix with BOM and NUL handling rather than from a filename extension. Byte-only consumers use the typed byte-resolution path and receive typed failures instead of an unresolved loading state.
+
+A bounded content cache reports whether `set` admitted the value, keys entries by canonical path, and exposes entries for targeted prefix eviction. It must not silently discard an oversized value. File-tree rows carry provider-derived size and time metadata; consumers must not invent zero sizes or current timestamps.
+
+Normalize `''` and `/` to the same selected workspace root at the RPC tool-input boundary. Never delete an entire browser database as error recovery when it may contain user work; repair or remove the affected authority record under the provider's transaction rules.
 
 ## Write Rules
 
@@ -163,6 +177,8 @@ Every provider must independently enforce one entry kind per canonical path. A f
 
 All fallible validation and serialization for a destructive multi-path ingress completes before the first provider mutation. Use an inline `Set` parent walk for small payload preflights; do not add a trie or second metadata authority.
 
+Provider-native transactional artifacts are not virtual filesystem entries. Filter browser artifacts such as Chromium `.crswap` files inside `FileSystemAccessProvider` before directory snapshots, indexes, watches, RPC, or UI consumers observe them. Do not duplicate this filtering in generic consumers.
+
 ### Rule 6: Transfer only bytes owned by the sending boundary
 
 Use `extractTransferables` when the sending boundary owns a disposable byte buffer. If a provider, cache, or caller retains the bytes, clone once at the boundary and transfer that owned clone. The transferred buffer is detached; no retained state may reference it.
@@ -179,7 +195,7 @@ Filesystem packages and UI file facades must not accept options that decide whet
 
 ### Rule 7b: System-artifact visibility is a UI projection
 
-`tau.json`, `thumbnail.webp`, and `.tau/**` are real filesystem entries and remain readable through ordinary APIs. File-tree presentation may hide or decorate them as system artifacts, but must do so in its projection layer. Providers, discovery, copy/export, and publication code must not pretend these files do not exist; callers that omit them do so through explicit artifact filters.
+`tau.json`, `thumbnail.webp`, and `.tau/**` are real filesystem entries and remain readable through ordinary APIs. File-tree presentation may hide or decorate them as system artifacts, but must do so in its projection layer. Providers, discovery, copy/export, and publication code must not pretend these files do not exist; callers that omit them do so through explicit artifact filters. Control-plane exclusion (`.git/**`, `.tau/revisions/**`, the rest of the registry's `hidden` class) is structural — every composed view refuses it (authority policy Rule 16) — while records and cache exclusion, such as a whole-project export carrying only `versioned` bytes, is an explicit caller filter.
 
 ## Tree Refresh Rules
 
@@ -356,13 +372,13 @@ Apply remote facts in arrival order. Resolve only an already registry-owned prov
 
 Runtime dependency watchers must exclude only the runtime cache namespace:
 
-- `/.tau/cache/**`
+- `.tau/cache/**`
 
-The exclusion applies to concrete cache-path events, including peer writes. It must not suppress genuine reset or overflow signals because those signals no longer contain a complete path set. Do not treat `/src/.tau/cache/**` as cache. Do not exclude `/node_modules/**`; installed or vendored package files may be live bundle inputs.
+The exclusion applies to concrete cache-path events, including peer writes. It must not suppress genuine reset or overflow signals because those signals no longer contain a complete path set. Do not treat `src/.tau/cache/**` as cache. Do not exclude `node_modules/**`; installed or vendored package files may be live bundle inputs.
 
 ### Rule 27: Concrete paths remain exact
 
-All watch matching must use normalized paths in the namespace owned by the watched filesystem. Runtime watches therefore use runtime paths beginning with `/`; authority-global watches use explicitly qualified authority-global paths:
+All watch matching must use canonical paths in the namespace owned by the watched filesystem. Runtime watches use root-relative runtime paths; authority-global watches use absolute authority-global paths:
 
 - normalize separators and duplicate slashes
 - preserve the exact spelling carried by every concrete provider event
@@ -388,7 +404,7 @@ On backend mount change:
 
 ### Rule 29: Tree refresh remains incremental after startup
 
-`getDirectoryStat` may be used for initial hydration only. Post-startup updates must use:
+The rooted `statTree` may be used for initial hydration only. Post-startup updates must use:
 
 - parent-directory re-read on file create/delete/write
 - subtree invalidation on directory rename/remove
@@ -430,13 +446,19 @@ When a bridge proxy is disposed, the main-thread port (`port2`) is closed. The w
 
 A bridge client may report that a mutation timed out only when the server-side operation is causally cancelled before that result is returned. Never reject a mutation locally while allowing the authority to continue writing in the background.
 
-Keep the 30-second default for ordinary bridge calls. A journal-backed, idempotent authority command may explicitly opt out of the wall-clock client timer when its durable operation can be replayed and its caller does not place unrelated discovery or navigation behind completion. Configure that exception by method identity; do not add a generic “disable timeouts” option.
+Keep the 30-second default for ordinary bridge calls. Two classes of mutation may explicitly opt out of the wall-clock client timer, each by method identity:
+
+- A journal-backed, idempotent authority command whose durable operation can be replayed and whose caller does not place unrelated discovery or navigation behind completion.
+- A precondition-checked (compare-and-swap) mutation such as `writeFileChecked` or `deleteFileChecked`, whose caller serialises only that one resource's writes behind completion. A late original and a replacement can never both apply, so the call waits for the authority's terminal result instead of guessing. Connection loss or disposal still settles it as potentially applied.
+
+The cost of an opt-out is that a hung authority holds that resource's writes until it answers or the connection closes. Callers must surface the unconfirmed state while they wait, and bound their own close-time waits without reporting a mutation timeout. Do not add a generic “disable timeouts” option.
 
 CORRECT:
 
 ```typescript
 createBridgeProxy(port, {
-  resolveCallTimeout: (method) => (method === 'commitPendingProjectDirectory' ? 'none' : undefined),
+  resolveCallTimeout: (method) =>
+    method === 'writeFileChecked' || method === 'deleteFileChecked' ? 'none' : undefined,
 });
 ```
 
@@ -453,14 +475,14 @@ await Promise.race([authorityMutation(), rejectAfter(30_000)]);
 
 ### Rule 33: In-memory file tree for metadata queries
 
-`WorkspaceFileService.getDirectoryStat` and related metadata queries must use its in-memory file tree, not per-path provider stat/readdir calls. Backend metadata calls pay per-operation IndexedDB transaction overhead (~0.1–0.3ms each); for 6265 files this accumulates to seconds.
+The rooted `statTree` and `search` and related metadata queries must be served from a `TreeIndex`, not per-path provider stat/readdir calls. Backend metadata calls pay per-operation IndexedDB transaction overhead (~0.1–0.3ms each); for 6265 files this accumulates to seconds.
 
-The in-memory tree seeds from the provider's hydrated path index (`DirectIdbProvider._paths`) and is maintained incrementally on writes (not rebuilt).
+`TreeIndexes` holds one `TreeIndex` per root, seeded from the provider's hydrated path index (`DirectIdbProvider._paths`) and maintained incrementally on writes (not rebuilt). An index answers only within its own mount; a topology change clears all of them.
 
 ```typescript
-// CORRECT: Metadata from in-memory tree (O(1))
-const stat = inMemoryTree.stat(path);
-const entries = inMemoryTree.readdir(path);
+// CORRECT: Metadata from the root's in-memory index (O(1))
+const stat = treeIndex.stat(path);
+const entries = treeIndex.readdir(path);
 
 // INCORRECT: Metadata via provider (1 IDB transaction per call)
 const stat = await provider.stat(path);
@@ -469,7 +491,7 @@ const entries = await provider.readdir(path);
 
 ### Rule 34: Bulk writes use provider-native batching
 
-For bulk writes (GitHub import, ZIP upload), the canonical `writeFiles` path may let the IndexedDB provider drain admitted writes in as few native transactions as possible — per-transaction overhead dominates at thousands of files. Do not expose a second provider `bulkImport` mutation path. After commit, update the provider path index and `WorkspaceFileService` tree before the next read; after uncertain failure, refresh before serving metadata.
+For bulk writes (GitHub import, ZIP upload), the canonical `writeFiles` path may let the IndexedDB provider drain admitted writes in as few native transactions as possible — per-transaction overhead dominates at thousands of files. Do not expose a second provider `bulkImport` mutation path. After commit, update the provider path index and the affected `TreeIndex` before the next read; after uncertain failure, refresh before serving metadata.
 
 ### Rule 35: Provider hydration awareness
 
@@ -481,15 +503,21 @@ The main thread owns persisted `ProjectFileSystemConfig` and storage-root handle
 
 ## Performance Budget
 
-| Operation                           | Target              | Current                           |
-| ----------------------------------- | ------------------- | --------------------------------- |
-| Shallow directory read (20 entries) | < 50ms              | ~30ms (IndexedDB)                 |
-| Single file read (source, <100KB)   | < 20ms              | ~10ms (IndexedDB)                 |
-| File tree initial load (root only)  | < 100ms             | ~2s (full recursive)              |
-| Background refresh after mutation   | < 200ms (debounced) | ~500ms-5s (immediate, full)       |
-| Folder expand (lazy load)           | < 100ms perceived   | N/A (not implemented)             |
-| Watch event -> kernel invalidate    | < 25ms p95          | N/A (not implemented)             |
-| Watch event -> UI tree patch        | < 75ms p95          | N/A (not implemented)             |
-| Sustained edit burst (100 events)   | 0 silent drops      | N/A (not implemented)             |
-| Bulk import (6265 files)            | < 5s                | ~143s (sequential, pre-DirectIdb) |
-| `getDirectoryStat` (6265 files)     | < 10ms (in-memory)  | ~2s (sequential IDB tx)           |
+Count-based tests are hard gates. The two in-memory tree-index timings take the best of five runs so scheduler stalls cannot weaken what the data-structure operation proves. Browser timings retain an explicit regression ceiling even when the stated product budget is not yet met.
+
+| Operation                                                           | Target                                      | Measured state                                                                                     | Enforcement                                                                                                                                                                                                 |
+| ------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full-tree walks per turn settlement                                 | ≤ 2                                         | 2 for settlement; 3 for the whole turn, 4 including cut                                            | `packages/revisions/src/apply-tree.test.ts` — `should walk the tree twice to settle a turn, and stage its writes as one batch`                                                                              |
+| File reads for a cut over an unchanged tree                         | 0                                           | 0, from 4                                                                                          | `packages/revisions/src/apply-tree.test.ts` — `should read no file bytes for a cut over a tree nothing has touched`                                                                                         |
+| `stat`-class calls per directory during index build                 | ≤ 1 per directory                           | 11 calls for 11 directories across every provider                                                  | `packages/filesystem/src/backend/provider-tree-conformance.test.ts` — `should build an index with one stat-class call per directory`                                                                        |
+| Index rebuilds caused by an unrelated mount                         | 0                                           | 0                                                                                                  | `packages/filesystem/src/tree-index.test.ts` — `should leave a warm sibling index warm when an unrelated prefix is mounted`                                                                                 |
+| `classify` calls for a 10,000-row composed listing                  | ≤ 1 per row plus the root                   | 10,001                                                                                             | `packages/filesystem/src/composed-view.test.ts` — `should classify each row of a wide listing once`                                                                                                         |
+| DirectIDB transactions per 1,000-file `writeFiles` batch            | 1                                           | 1, from 1,000                                                                                      | `packages/filesystem/src/mutation-pipeline.test.ts` — `should commit a thousand-file batch in one IndexedDB transaction`                                                                                    |
+| Live bridge ports per project session                               | ≤ 5                                         | approximately 7–9 by static opener count                                                           | **Not enforced:** no runtime port-count measurement exists; transferred worker ports cannot share a main-thread proxy                                                                                       |
+| Native Git processes per 50-row history page / 4,000-file tree read | ≤ 5 / ≤ 3, with tree-read concurrency ≤ 16  | ≤ 5 / ≤ 3                                                                                          | `packages/revisions/src/native-git-latency.test.ts` — `B5: a 50-row history page over 200 revisions costs a handful of processes`; `B6: reading a 4,000-file tree costs three processes and never fans out` |
+| Warm save, 100 files plus 5 MiB                                     | ≤ 100 ms                                    | 339–350 ms quiet baseline; not remeasured after capture memoization                                | **Budget not enforced:** `apps/ui-e2e/src/revision-latency.spec.ts` — `records how long *Saved* takes after Mod+S in a project with bulk in it (B1)` enforces only a 3,000 ms regression ceiling            |
+| History open at depth                                               | ≤ 50 ms                                     | 138 ms quiet baseline                                                                              | **Budget not enforced:** `apps/ui-e2e/src/revision-latency.spec.ts` — `records how long the History region takes to open at depth (B4)` enforces only an 800 ms regression ceiling                          |
+| Bare `getDirectoryStat` over 6,265 files                            | < 20 ms                                     | < 20 ms, best of five                                                                              | `packages/filesystem/src/tree-index.test.ts` — `should handle getDirectoryStat for 6000+ entries under 20ms`                                                                                                |
+| Warm `statTree` over 6,265 files through rooted authority           | < 10 ms                                     | < 10 ms, best of five                                                                              | `packages/filesystem/src/tree-index.test.ts` — `should answer a warm statTree over 6,265 files inside its 10 ms budget`                                                                                     |
+| Bulk import of 6,265 files                                          | < 5 s in browser                            | 1.1–1.9 s under `fake-indexeddb`, from 27.9 s per-file                                             | **Not enforced:** the transaction-count gate above enforces batching, but no browser timing gate exists                                                                                                     |
+| Archive resident input bytes                                        | one file at a time; default ceiling 256 MiB | one file at a time; an oversized file is refused from its declared size, before its bytes are read | `packages/filesystem/src/content-ops/index.test.ts` — `should refuse an oversized file before reading its bytes`                                                                                            |

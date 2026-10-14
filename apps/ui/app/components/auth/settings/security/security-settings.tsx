@@ -1,10 +1,13 @@
 'use client';
 
+import { SettingsItem } from '#components/settings/settings-item.js';
+
 import { useAuth } from '@better-auth-ui/react';
-import { cn } from '#utils/ui.utils.js';
+import { cn } from '@taucad/ui/utils/cn';
 import { ActiveSessions } from '#components/auth/settings/security/active-sessions.js';
 import { ChangePassword } from '#components/auth/settings/security/change-password.js';
 import { LinkedAccounts } from '#components/auth/settings/security/linked-accounts.js';
+import { GithubPermissions } from '#components/auth/settings/security/github-permissions.js';
 
 export type SecuritySettingsProps = {
   className?: string;
@@ -19,14 +22,25 @@ export type SecuritySettingsProps = {
  * @param className - Optional additional CSS class names for the outer container.
  * @returns The security settings container as a JSX element.
  */
-export function SecuritySettings({ className }: SecuritySettingsProps) {
+export function SecuritySettings({ className }: SecuritySettingsProps): React.JSX.Element {
   const { emailAndPassword, plugins, socialProviders } = useAuth();
 
   return (
     <div className={cn('flex w-full flex-col gap-4 md:gap-6', className)}>
-      {emailAndPassword?.enabled && <ChangePassword />}
-      {(socialProviders?.length ?? 0) > 0 ? <LinkedAccounts /> : null}
-      <ActiveSessions />
+      {emailAndPassword.enabled && (
+        <SettingsItem settingId='password'>
+          <ChangePassword />
+        </SettingsItem>
+      )}
+      {(socialProviders?.length ?? 0) > 0 ? (
+        <SettingsItem settingId='linked-accounts'>
+          <LinkedAccounts />
+        </SettingsItem>
+      ) : null}
+      <GithubPermissions />
+      <SettingsItem settingId='active-sessions'>
+        <ActiveSessions />
+      </SettingsItem>
       {plugins.flatMap(
         (plugin) => plugin.securityCards?.map((Card, index) => <Card key={`${plugin.id}-${index.toString()}`} />) ?? [],
       )}

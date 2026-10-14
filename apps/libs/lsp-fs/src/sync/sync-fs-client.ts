@@ -81,11 +81,10 @@ export type CreateSyncFsClientOptions = Readonly<{
   onProbe?: (probe: SyncFsProbe) => void;
 }>;
 
-type ResolvedTarget = Readonly<{
-  relativePath: string | undefined;
-  absolutePath: string | undefined;
-  translationError: string | undefined;
-}>;
+type ResolvedTarget = Readonly<
+  | { relativePath: string; absolutePath: string; translationError: undefined }
+  | { relativePath: undefined; absolutePath: undefined; translationError: string }
+>;
 
 /**
  * Worker-side sync client: Tier 0 `SharedPool.resolveCopy` then Tier 2 slot round-trip.
@@ -118,9 +117,9 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
     }
   };
 
-  const perform = (op: SyncFsOp, absolutePath: string): void => {
+  const perform = (op: SyncFsOp, rootedPath: string): void => {
     syncClient.perform((requestId) => {
-      const message: TauSyncFsWireMessage = { tau: 'sync-fs', op, requestId, path: absolutePath };
+      const message: TauSyncFsWireMessage = { tau: 'sync-fs', op, requestId, path: rootedPath };
       return message;
     });
   };
@@ -156,7 +155,7 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
     readFileText(fileName: string): string | undefined {
       const target = resolveTarget(fileName);
       if (target.absolutePath === undefined) {
-        emitTranslationFailure('readFile', fileName, target.translationError ?? 'translation failed');
+        emitTranslationFailure('readFile', fileName, target.translationError);
         return undefined;
       }
 
@@ -176,7 +175,7 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
       }
 
       try {
-        perform('readFile', target.absolutePath);
+        perform('readFile', target.relativePath);
         const errorCode = Atomics.load(int32, slotIndex.errorCode);
         const payloadByteLength = Atomics.load(int32, slotIndex.payloadLength);
         const outcome = slotOutcomeFor(errorCode, payloadByteLength);
@@ -215,7 +214,7 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
     fileExists(fileName: string): boolean {
       const target = resolveTarget(fileName);
       if (target.absolutePath === undefined) {
-        emitTranslationFailure('fileExists', fileName, target.translationError ?? 'translation failed');
+        emitTranslationFailure('fileExists', fileName, target.translationError);
         return false;
       }
 
@@ -232,7 +231,7 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
       }
 
       try {
-        perform('fileExists', target.absolutePath);
+        perform('fileExists', target.relativePath);
         const errorCode = Atomics.load(int32, slotIndex.errorCode);
         const payloadByteLength = Atomics.load(int32, slotIndex.payloadLength);
         const exists = errorCode === syncError.ok && payloadByteLength > 0;
@@ -272,12 +271,12 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
     directoryExists(fileName: string): boolean {
       const target = resolveTarget(fileName);
       if (target.absolutePath === undefined) {
-        emitTranslationFailure('directoryExists', fileName, target.translationError ?? 'translation failed');
+        emitTranslationFailure('directoryExists', fileName, target.translationError);
         return false;
       }
 
       try {
-        perform('directoryExists', target.absolutePath);
+        perform('directoryExists', target.relativePath);
         const errorCode = Atomics.load(int32, slotIndex.errorCode);
         const payloadByteLength = Atomics.load(int32, slotIndex.payloadLength);
         const exists = errorCode === syncError.ok && payloadByteLength > 0;
@@ -317,12 +316,12 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
     getDirectories(directoryName: string): string[] {
       const target = resolveTarget(directoryName);
       if (target.absolutePath === undefined) {
-        emitTranslationFailure('listDirectories', directoryName, target.translationError ?? 'translation failed');
+        emitTranslationFailure('listDirectories', directoryName, target.translationError);
         return [];
       }
 
       try {
-        perform('listDirectories', target.absolutePath);
+        perform('listDirectories', target.relativePath);
         const errorCode = Atomics.load(int32, slotIndex.errorCode);
         const payloadByteLength = Atomics.load(int32, slotIndex.payloadLength);
         if (errorCode !== syncError.ok) {
@@ -397,12 +396,12 @@ export function createSyncFsClient(options: CreateSyncFsClientOptions): SyncFsCl
     getScriptVersionForPath(fileName: string): string | undefined {
       const target = resolveTarget(fileName);
       if (target.absolutePath === undefined) {
-        emitTranslationFailure('statMtimeVersion', fileName, target.translationError ?? 'translation failed');
+        emitTranslationFailure('statMtimeVersion', fileName, target.translationError);
         return undefined;
       }
 
       try {
-        perform('statMtimeVersion', target.absolutePath);
+        perform('statMtimeVersion', target.relativePath);
         const errorCode = Atomics.load(int32, slotIndex.errorCode);
         const payloadByteLength = Atomics.load(int32, slotIndex.payloadLength);
         if (errorCode !== syncError.ok) {

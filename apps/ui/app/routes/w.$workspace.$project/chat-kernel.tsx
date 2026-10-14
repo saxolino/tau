@@ -2,7 +2,7 @@ import { XIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ActorRefFrom } from 'xstate';
 import type { PaneviewApi, PaneviewPanelApi } from 'dockview-react';
-import { PaneviewReact } from 'dockview-react';
+import { Paneview } from '#components/panes/paneview.js';
 import {
   FloatingPanel,
   FloatingPanelClose,
@@ -12,11 +12,12 @@ import {
   FloatingPanelContentHeaderActions,
   FloatingPanelContentTitle,
 } from '#components/ui/floating-panel.js';
-import { cn } from '#utils/ui.utils.js';
-import { SearchInput } from '#components/search-input.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { SearchInput } from '@taucad/ui/components/search-input';
 import {
   PaneviewHeader,
   PaneviewHeaderControls,
+  paneviewAttachedBodyClassName,
   paneviewAttachedSurfaceStyleOverrides,
   paneviewHeaderSize,
 } from '#components/panes/paneview-header.js';
@@ -24,6 +25,7 @@ import { useProject } from '#hooks/use-project.js';
 import type { cadMachine } from '#machines/cad.machine.js';
 import { sortGeometryUnitEntries } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
 import { GeometryUnitTiming, GeometryUnitSummary } from '#routes/w.$workspace.$project/chat-kernel-timing.js';
+import { actorSessionIdOf } from '#lib/xstate.lib.js';
 import {
   usePaneviewPersistence,
   getInitialPanelOptions,
@@ -41,11 +43,8 @@ type KernelPanelParams = {
 
 function KernelPanelBody({ params }: { readonly params: KernelPanelParams }): React.JSX.Element {
   return (
-    <div
-      data-slot='telemetry-unit-surface'
-      className='h-full overflow-hidden rounded-b-xl border border-border bg-card'
-    >
-      <GeometryUnitTiming cadRef={params.cadRef} query={params.query} />
+    <div data-slot='telemetry-unit-surface' className={cn('h-full', paneviewAttachedBodyClassName)}>
+      <GeometryUnitTiming key={actorSessionIdOf(params.cadRef)} cadRef={params.cadRef} query={params.query} />
     </div>
   );
 }
@@ -132,7 +131,7 @@ function KernelPaneview({
   }, [query, sortedEntries]);
 
   return (
-    <PaneviewReact
+    <Paneview
       key={paneviewKey}
       className={paneviewAttachedSurfaceStyleOverrides}
       components={paneviewComponents}
@@ -165,7 +164,7 @@ export function TelemetryPanelContent(): React.JSX.Element {
       <div data-slot='telemetry-filter' className='shrink-0 bg-sidebar px-2 pt-2'>
         <SearchInput
           aria-label='Filter telemetry'
-          placeholder='Filter telemetry...'
+          placeholder='Filter telemetry…'
           value={query}
           className='h-7 min-w-0 bg-background'
           onChange={(event) => {

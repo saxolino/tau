@@ -87,7 +87,7 @@ const subresourceHeaders: Readonly<Record<string, string>> = Object.freeze({
 
 const browserNodeBuiltinsModule = '@taucad/runtime/nextjs/browser-node-builtins';
 const nodeBuiltinSpecifier = /^node:(?:crypto|fs(?:\/promises)?|path|url)$/;
-const packageAssetsLoader = fileURLToPath(new URL('package-assets-loader.mjs', import.meta.url));
+const resolvePackageAssetsLoader = (): string => fileURLToPath(new URL('package-assets-loader.mjs', import.meta.url));
 
 const isWebpackHook = (value: unknown): value is NarrowNextRuntimeWebpackHook => typeof value === 'function';
 
@@ -112,7 +112,7 @@ const configureWebpack = (
         {
           enforce: 'pre',
           test: /\.[cm]?[jt]sx?$/,
-          use: [packageAssetsLoader],
+          use: [resolvePackageAssetsLoader()],
         },
       ],
     },
@@ -181,6 +181,10 @@ export const withTauRuntime = (config: NextConfig = {}, options: NextRuntimeHead
     ...config,
     turbopack: {
       ...config.turbopack,
+      rules: {
+        ...config.turbopack?.rules,
+        '**/packages/**/*.{js,jsx,ts,tsx,mjs,cjs}': { loaders: [resolvePackageAssetsLoader()] },
+      },
       resolveAlias: {
         ...config.turbopack?.resolveAlias,
         fs: browserNodeBuiltinsModule,

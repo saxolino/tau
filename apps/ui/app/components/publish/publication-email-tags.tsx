@@ -1,6 +1,6 @@
 import { Tags, TagsTrigger } from '#components/ui/input-tags.js';
-import { Label } from '#components/ui/label.js';
-import { cn } from '#utils/ui.utils.js';
+import { Label } from '@taucad/ui/components/label';
+import { cn } from '@taucad/ui/utils/cn';
 
 export const maxPublicationAccessRecipients = 50;
 
@@ -32,6 +32,7 @@ export type PublicationEmailTagsFieldProps = {
   readonly label: string;
   readonly emails: string[];
   readonly onEmailsChange: (emails: string[]) => void;
+  // oxlint-disable-next-line react-js/boolean-prop-naming -- mirrors native input prop.
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly className?: string;
@@ -59,7 +60,7 @@ export function PublicationEmailTagsField({
       >
         <TagsTrigger id={id} inputAriaLabel={label} placeholder={placeholder} disabled={disabled} />
       </Tags>
-      {error ? <p className='text-xs text-destructive'>{error}</p> : null}
+      {error ? <p className='text-xs text-feature'>{error}</p> : null}
     </div>
   );
 }

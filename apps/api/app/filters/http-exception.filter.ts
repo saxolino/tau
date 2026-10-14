@@ -1,12 +1,47 @@
 import process from 'node:process';
-import { Catch, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Catch, ConflictException, HttpException, HttpStatus, Logger } from '@nestjs/common';
 import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ZodSerializationException, ZodValidationException } from 'nestjs-zod';
 import { ZodError } from 'zod';
 import { trace, SpanStatusCode, context as otelContext } from '@opentelemetry/api';
 import type { HttpErrorResponse } from '@taucad/types';
+import { wirePaymentActionSchema } from '@taucad/billing';
+import type { WirePaymentAction } from '@taucad/billing';
 import { httpHeader } from '#constants/http-header.constant.js';
+import { resolveRequestId } from '#middlewares/request-id.middleware.js';
+import { LlmGatewayError } from '#api/llm/llm-gateway.error.js';
+import { reportServerError } from '#telemetry/sentry.js';
+
+/**
+ * Bounded retry estimates for the funded-admission refusals (B9 `:292`).
+ *
+ * Neither denial carries a per-request estimate, so each value is the blueprint's
+ * own bound for the condition: 30 seconds is B9's due-to-terminal p99 target
+ * (`llm-admission-failsafe-and-recovery-blueprint.md:251`), after which a saturating
+ * funded operation has reached terminal; 60 seconds is the recovery claim lease
+ * (`credit-ledger.service.ts:1069`), after which another claimant's lease expires.
+ */
+export const fundedRetryAfterSeconds: ReadonlyMap<string, number> = new Map<string, number>([
+  ['FUNDED_OPERATION_LIMIT', 30],
+  ['FUNDED_HELPER_LIMIT', 30],
+  ['BILLING_RECOVERY_UNAVAILABLE', 60],
+]);
+
+/**
+ * The retry estimate a gateway refusal answers with: the upstream's own seconds when
+ * the relay carried one, otherwise this file's bound for that refusal type.
+ *
+ * @param error - The typed envelope's `error` member.
+ * @returns Seconds for the `retry-after` header, or undefined when there is no estimate.
+ */
+const gatewayRetryAfterSeconds = (error: { type?: unknown; details?: unknown } | undefined): number | undefined => {
+  const supplied = (error?.details as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;
+  if (typeof supplied === 'number' && Number.isInteger(supplied) && supplied >= 0) {
+    return supplied;
+  }
+  return typeof error?.type === 'string' ? fundedRetryAfterSeconds.get(error.type) : undefined;
+};
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -17,12 +52,42 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = context.getResponse<FastifyReply>();
     const request = context.getRequest<FastifyRequest>();
 
-    // Extract request ID: prefer header if present, otherwise use Fastify's generated ID
-    const headerRequestId = request.headers[httpHeader.requestId] as string | undefined;
-    const requestId = headerRequestId ?? (request.id as string | undefined);
+    // Extract request ID: prefer a well-formed header, otherwise use Fastify's generated ID
+    const requestId = resolveRequestId(request.headers[httpHeader.requestId], request.id as string | undefined);
+
+    // A streamed route (the model gateway) can fail after its response has left:
+    // a second reply only produces `FST_ERR_REP_ALREADY_SENT` and hides the cause.
+    if (response.sent) {
+      this.logger.error({ err: exception, requestId }, 'Request failed after its response was already sent');
+      reportServerError(exception, requestId);
+      return;
+    }
 
     let statusCode: number;
     let errorResponse: HttpErrorResponse;
+
+    // The model gateway already speaks a typed envelope its clients parse
+    // (`{ type: 'error', error: { type, message } }`). Flattening it here into the
+    // shared shape deleted the refusal reason — the browser agent host could only
+    // report the HTTP status back to the user.
+    if (exception instanceof LlmGatewayError) {
+      const gatewayStatus = exception.getStatus();
+      const gatewayResponse = exception.getResponse();
+      /* Structured, not interpolated: pino-pretty reads every `{…}` in a message as a
+       * format token, so an interpolated envelope logged as `{"type":"error","error":}`. */
+      this.logger.warn({ gatewayResponse, requestId }, 'Model gateway refusal');
+      if (requestId) {
+        void response.header(httpHeader.requestId, requestId);
+      }
+      const retryAfter = gatewayRetryAfterSeconds(
+        (gatewayResponse as { error?: { type?: unknown; details?: unknown } }).error,
+      );
+      if (retryAfter !== undefined) {
+        void response.header('retry-after', String(retryAfter));
+      }
+      void response.status(gatewayStatus).send(gatewayResponse);
+      return;
+    }
 
     if (exception instanceof ZodValidationException || exception instanceof ZodSerializationException) {
       const zodError = exception.getZodError();
@@ -51,39 +116,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
-      const exceptionResponse = exception.getResponse();
-
-      if (typeof exceptionResponse === 'string') {
-        errorResponse = {
-          error: exceptionResponse,
-          statusCode,
-          code: this.getErrorCode(exception),
-          path: request.url,
-          requestId,
-        };
-      } else if (typeof exceptionResponse === 'object') {
-        // Handle structured error responses (e.g., { code: 'UNAUTHORIZED', message: '...' })
-        const { message, code } = exceptionResponse as Record<string, unknown>;
-        const baseResponse: HttpErrorResponse = {
-          error: typeof message === 'string' ? message : exception.message || 'An error occurred',
-          code: typeof code === 'string' ? code : this.getErrorCode(exception),
-          statusCode,
-          path: request.url,
-          requestId,
-        };
-        if (Array.isArray(message)) {
-          baseResponse.message = message;
-        }
-
-        errorResponse = baseResponse;
-      } else {
-        errorResponse = {
-          error: exception.message || 'An error occurred',
-          statusCode,
-          code: this.getErrorCode(exception),
-          path: request.url,
-          requestId,
-        };
+      errorResponse = this.fromHttpException(exception, request.url, requestId);
+      /* A structured refusal may carry its own retry estimate (`GITHUB_RATE_LIMITED`);
+       * it travels as the standard header, not as an extra body member. */
+      const body = exception.getResponse();
+      const retryAfterSeconds =
+        typeof body === 'object' ? (body as { retryAfterSeconds?: unknown }).retryAfterSeconds : undefined;
+      if (typeof retryAfterSeconds === 'number' && Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds >= 0) {
+        void response.header('retry-after', String(retryAfterSeconds));
       }
     } else if (exception instanceof Error) {
       // Handle unknown errors
@@ -110,10 +150,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // Log error details
     if (statusCode >= 500) {
       this.logger.error(exception, `Unhandled exception: ${errorResponse.error}`);
+      reportServerError(exception, requestId);
 
       const span = trace.getSpan(otelContext.active());
       if (span) {
-        span.setStatus({ code: SpanStatusCode.ERROR, message: errorResponse.error });
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: errorResponse.error,
+        });
         if (exception instanceof Error) {
           span.recordException(exception);
         }
@@ -128,6 +172,53 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     void response.status(statusCode).send(errorResponse);
+  }
+
+  private fromHttpException(
+    exception: HttpException,
+    path: string,
+    requestId: string | undefined,
+  ): HttpErrorResponse & { action?: WirePaymentAction } {
+    const statusCode = exception.getStatus();
+    const exceptionResponse = exception.getResponse();
+
+    if (typeof exceptionResponse === 'string') {
+      return {
+        error: exceptionResponse,
+        statusCode,
+        code: this.getErrorCode(exception),
+        path,
+        requestId,
+      };
+    }
+    if (typeof exceptionResponse !== 'object') {
+      return {
+        error: exception.message || 'An error occurred',
+        statusCode,
+        code: this.getErrorCode(exception),
+        path,
+        requestId,
+      };
+    }
+    // Handle structured error responses (e.g., { code: 'UNAUTHORIZED', message: '...' })
+    const { message, code, action } = exceptionResponse as Record<string, unknown>;
+    const baseResponse: HttpErrorResponse & { action?: WirePaymentAction } = {
+      error: typeof message === 'string' ? message : exception.message || 'An error occurred',
+      code: typeof code === 'string' ? code : this.getErrorCode(exception),
+      statusCode,
+      path,
+      requestId,
+    };
+    if (exception instanceof ConflictException) {
+      const paymentAction = wirePaymentActionSchema.safeParse(action);
+      if (paymentAction.success) {
+        baseResponse.action = paymentAction.data;
+      }
+    }
+    if (Array.isArray(message)) {
+      baseResponse.message = message;
+    }
+    return baseResponse;
   }
 
   private getErrorCode(exception: HttpException): string {

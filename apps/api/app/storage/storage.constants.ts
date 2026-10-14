@@ -8,19 +8,26 @@
  * authenticated publication file proxy.
  *
  * MUST stay in sync with:
- * - `repos/cloud-infra/modules/cloudflare-r2/main.tf` (buckets + zone cache rules)
+ * - `repos/tau-cloud/modules/cloudflare-r2/main.tf` (buckets + zone cache rules)
  * - `scripts/seed-r2-defaults.sh` (default seed object keys)
  * - `infra/docker-compose.yml` MinIO bootstrap (local parity, incl. private bucket)
  * - `apps/ui/netlify.toml` CSP `connect-src` (origin only; prefix not referenced)
  */
-export const STORAGE_NAMESPACE_PREFIXES = {
+export const storageNamespacePrefixes = {
+  /**
+   * Authoritative per-tenant state: `tenants/<ownerId>/repos/<projectId>/…`
+   * and `tenants/<ownerId>/lfs/<projectId>/…` (charter D24). Private tier
+   * only — it has no CDN custom domain and therefore needs no zone cache rule,
+   * and no listing under it ever crosses a tenant.
+   */
+  tenants: 'tenants/',
   blobs: 'blobs/',
   derivatives: 'derivatives/',
   'og-images': 'og-images/',
   defaults: 'defaults/',
 } as const;
 
-export type StorageNamespace = keyof typeof STORAGE_NAMESPACE_PREFIXES;
+export type StorageNamespace = keyof typeof storageNamespacePrefixes;
 
 /**
  * Bucket-root-relative key for the readiness probe object. NOT prefixed
@@ -28,4 +35,4 @@ export type StorageNamespace = keyof typeof STORAGE_NAMESPACE_PREFIXES;
  * so the zone cache rule `/__health/*` (cache: false) matches without
  * interfering with namespace paths.
  */
-export const STORAGE_HEALTH_PROBE_KEY = '__health/probe.txt';
+export const storageHealthProbeKey = '__health/probe.txt';

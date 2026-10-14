@@ -15,7 +15,7 @@ describe('ChatErrorTool', () => {
     vi.clearAllMocks();
   });
 
-  it('should continue the interrupted chat when Try again is clicked', async () => {
+  it('should replay the interrupted chat when Try again is clicked', async () => {
     const user = userEvent.setup();
 
     render(
@@ -25,7 +25,7 @@ describe('ChatErrorTool', () => {
       />,
     );
 
-    expect(screen.getByText('Processing Error')).toBeInTheDocument();
+    expect(screen.getByText('Processing error')).toBeInTheDocument();
     expect(screen.getByText('Tool call failed after a partial response.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /learn more/i })).toHaveAttribute('href', 'https://docs.example.test/tool');
     expect(screen.queryByRole('button', { name: /^retry$/i })).not.toBeInTheDocument();
@@ -33,7 +33,7 @@ describe('ChatErrorTool', () => {
 
     await user.click(screen.getByRole('button', { name: /try again/i }));
 
-    expect(continueChat).toHaveBeenCalledTimes(1);
-    expect(regenerate).not.toHaveBeenCalled();
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    expect(continueChat).not.toHaveBeenCalled();
   });
 });

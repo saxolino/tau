@@ -51,6 +51,34 @@ export const idPrefix = {
    */
   run: 'run',
   /**
+   * A durable job ID. One logical job may have multiple execution attempts.
+   */
+  job: 'job',
+  /**
+   * One at-least-once execution attempt for a durable job.
+   */
+  attempt: 'att',
+  /**
+   * An immutable job or revision artifact.
+   */
+  artifact: 'art',
+  /**
+   * An immutable project revision.
+   */
+  revision: 'rev',
+  /**
+   * An ordered durable stream event.
+   */
+  event: 'evt',
+  /**
+   * A durable ordered event stream.
+   */
+  stream: 'str',
+  /**
+   * A capability-advertising job execution host.
+   */
+  runner: 'rnr',
+  /**
    * A request ID.
    */
   request: 'req',
@@ -121,6 +149,10 @@ export const idPrefix = {
    */
   measurement: 'meas',
   /**
+   * A section view cut ID. Cuts get new IDs on every load, so it never persists.
+   */
+  sectionCut: 'cut',
+  /**
    * An observation ID.
    */
   observation: 'obs',
@@ -135,7 +167,7 @@ export const idPrefix = {
   /**
    * A browser tab ID.
    *
-   * Used by `libs/filesystem/src/cross-tab-coordinator.ts` for
+   * Used by `packages/filesystem/src/cross-tab-coordinator.ts` for
    * cross-tab write coordination via `navigator.locks` + `BroadcastChannel`.
    * Distinct from {@link pane} — see that entry.
    */
@@ -155,11 +187,6 @@ export const idPrefix = {
    * underlying folder; immutable for the lifetime of a project bound to it.
    */
   workspace: 'wsp',
-  /**
-   * A subscription record ID (`subscription.id`, mirrored from Stripe by
-   * the `@better-auth/stripe` plugin).
-   */
-  subscription: 'sub',
   /**
    * A credit-ledger transaction ID (`credit_transaction.id`, append-only journal).
    */

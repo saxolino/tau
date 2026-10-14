@@ -3,7 +3,50 @@ import {
   createCorsOriginValidator,
   separateOriginsAndPatterns,
   createCorsOriginValidatorFromList,
+  createTauCorsOriginValidator,
+  desktopAppOrigin,
 } from '#utils/cors.utils.js';
+import { corsBaseConfiguration } from '#constants/cors.constant.js';
+import { httpHeader } from '#constants/http-header.constant.js';
+
+it('should expose the durable chat run identity and bearer session token to cross-origin clients', () => {
+  expect(corsBaseConfiguration.exposedHeaders).toEqual([
+    'x-tau-chat-run-id',
+    'x-tau-operation-id',
+    'set-auth-token',
+    'retry-after',
+  ]);
+  expect(corsBaseConfiguration.allowedHeaders).toContain('x-tau-attempt-id');
+});
+
+/**
+ * The same preflight trap as `git-protocol` below, for the gateway's optional
+ * attribution headers: a browser that sends `x-tau-project-id` against an
+ * allow-list missing it gets a `204` and a dropped request, with no API log line.
+ * The names are derived from `httpHeader`, so this asserts the derivation and not
+ * just the literals.
+ */
+it('should allow the gateway attribution headers a browser host sends', () => {
+  expect(corsBaseConfiguration.allowedHeaders).toEqual(
+    expect.arrayContaining([httpHeader.xTauProjectId, httpHeader.xTauChatId, httpHeader.xTauActivity]),
+  );
+  expect(corsBaseConfiguration.allowedHeaders).toEqual(
+    expect.arrayContaining(['x-tau-project-id', 'x-tau-chat-id', 'x-tau-activity']),
+  );
+});
+
+/**
+ * W18 DEF-5. `isomorphic-git` asks for protocol v2 with a `git-protocol` header
+ * on every smart-HTTP request, and posts its packs as `application/x-git-*`,
+ * which is not one of CORS's three safelisted `content-type` values. A missing
+ * name here is invisible: the preflight answers `204` and the browser then
+ * drops the request without an error the page can see.
+ */
+it('should allow every header a browser git client sends', () => {
+  expect(corsBaseConfiguration.allowedHeaders).toEqual(
+    expect.arrayContaining(['git-protocol', 'content-type', 'authorization', 'x-tau-proxy-authorization']),
+  );
+});
 
 describe('separateOriginsAndPatterns', () => {
   it('should separate exact origins from glob patterns', () => {
@@ -283,5 +326,97 @@ describe('createCorsOriginValidatorFromList', () => {
     const glob2 = vi.fn();
     validator('https://app1.example.com', glob2);
     expect(glob2).toHaveBeenCalledWith(null, true);
+  });
+});
+
+/**
+ * Regression cover for defect B7 (desktop shell lane, 2026-09-02): the Electron
+ * renderer sends `Origin: app://tau`, which no configured origin matched, so
+ * every API response came back without `access-control-allow-origin` and the
+ * browser discarded it.
+ *
+ * `app://tau` is a fixed product constant (rulings D4/C5), not a deployment
+ * value — it cannot be derived from `TAU_FRONTEND_URL`, because the desktop app
+ * serves its own SPA. It is admitted for **CORS only**; better-auth's
+ * `trustedOrigins` is a separate list that ruling D7 keeps untouched.
+ */
+describe('createTauCorsOriginValidator', () => {
+  const allow = (origin: string | undefined, nodeEnvironment = 'production'): boolean => {
+    const validator = createTauCorsOriginValidator('https://tau.new', ['https://*.taucad.dev'], nodeEnvironment);
+    let allowed = false;
+    validator(origin, (error, result) => {
+      allowed = error === null && result;
+    });
+    return allowed;
+  };
+
+  it('admits the desktop document origin (B7)', () => {
+    expect(allow(desktopAppOrigin)).toBe(true);
+    expect(desktopAppOrigin).toBe('app://tau');
+  });
+
+  it('still admits the configured frontend and additional origins', () => {
+    expect(allow('https://tau.new')).toBe(true);
+    expect(allow('https://preview.taucad.dev')).toBe(true);
+  });
+
+  it('keeps every other origin rejected, custom schemes included', () => {
+    expect(allow('https://attacker.example')).toBe(false);
+    expect(allow('app://evil')).toBe(false);
+    expect(allow('app://tau.evil.com')).toBe(false);
+    expect(allow('app://tau.evil')).toBe(false);
+    expect(allow('tau://tau')).toBe(false);
+  });
+
+  it('matches the desktop origin exactly rather than as a pattern', () => {
+    // `new URL()` accepts any custom scheme, so a glob here would admit
+    // `app://<anything>`. Exactness is the whole security property.
+    expect(separateOriginsAndPatterns([desktopAppOrigin])).toEqual({
+      exactOrigins: [desktopAppOrigin],
+      globPatterns: [],
+    });
+  });
+
+  it('keeps allowing origin-less requests, as the loopback token exchange needs', () => {
+    expect(allow(undefined)).toBe(true);
+  });
+});
+
+/**
+ * Regression cover for review finding MAJOR 8: `nx dev:desktop ui` serves the
+ * renderer from `http://localhost:3001` (`apps/ui/desktop/vite.config.ts:61`),
+ * which no configured origin matched — so the charter's own dev command could
+ * not reach the API at all.
+ *
+ * Admitted only outside production: it is a loopback origin, and a deployed API
+ * must never answer one.
+ */
+describe('createTauCorsOriginValidator development origins', () => {
+  const allow = (origin: string, nodeEnvironment: string): boolean => {
+    const validator = createTauCorsOriginValidator('https://tau.new', [], nodeEnvironment);
+    let allowed = false;
+    validator(origin, (error, result) => {
+      allowed = error === null && result;
+    });
+    return allowed;
+  };
+
+  it.each(['development', 'test'])('admits the ui:dev:desktop renderer in %s', (nodeEnvironment) => {
+    expect(allow('http://localhost:3001', nodeEnvironment)).toBe(true);
+  });
+
+  it('never admits it in production', () => {
+    expect(allow('http://localhost:3001', 'production')).toBe(false);
+  });
+
+  it('admits the desktop document origin in every environment', () => {
+    expect(allow(desktopAppOrigin, 'production')).toBe(true);
+    expect(allow(desktopAppOrigin, 'development')).toBe(true);
+  });
+
+  it('does not open loopback generally, even in development', () => {
+    expect(allow('http://localhost:3002', 'development')).toBe(false);
+    expect(allow('http://127.0.0.1:3001', 'development')).toBe(false);
+    expect(allow('https://localhost:3001', 'development')).toBe(false);
   });
 });

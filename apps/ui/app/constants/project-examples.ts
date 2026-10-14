@@ -1,69 +1,101 @@
-import { jscadExamples, mockProjects, openscadExamples, thumbnailAssets } from '@taucad/tau-examples';
-import type { ThumbnailAssetKey } from '@taucad/tau-examples';
-import type { KernelProvider } from '@taucad/runtime';
-import { encodeTextFile } from '#utils/filesystem.utils.js';
+import { builtinExamples } from '@taucad/tau-examples/builtin';
+import type { BuiltinExample } from '@taucad/tau-examples/builtin';
+import type { ProjectManifest } from '@taucad/types';
+import { isKernelId } from '@taucad/types/constants';
+import type { KernelId } from '@taucad/types/constants';
 
-type Files = Record<string, { content: Uint8Array<ArrayBuffer> }>;
+export type ProjectFiles = Record<string, { readonly content: Uint8Array<ArrayBuffer> }>;
 
-type ExampleModel = {
-  id: string;
-  name: string;
-  code: string;
-  thumbnailKey: ThumbnailAssetKey;
-};
-
-/** Purpose-specific metadata for built-in community examples. */
-export type ProjectsWithFiles = {
+/** Gallery-facing metadata for a manifest-backed builtin project. */
+export type BuiltinProjectCardModel = {
+  readonly locator: string;
+  readonly kernel: KernelId;
   readonly id: string;
   readonly name: string;
   readonly description: string;
-  readonly author: { readonly name: string; readonly avatar: string };
-  readonly tags: string[];
-  readonly createdAt: number;
-  readonly assets: { readonly main: { readonly entryPath: string } };
-  readonly files: Files;
-  readonly thumbnail: string;
+  readonly tags: readonly string[];
+  readonly assets: ProjectManifest['assets'];
+  readonly thumbnail?: string;
+  /** Drawn for the featured card's doubled size with proportionally thinner edges. */
+  readonly featuredThumbnail?: string;
+  readonly fileAssets: BuiltinExample['assets'];
 };
 
-const createProject = (model: ExampleModel, mainFile: string, kernel: KernelProvider): ProjectsWithFiles => {
-  return {
-    id: model.id,
-    assets: {
-      main: {
-        entryPath: mainFile,
-      },
-    },
-    name: model.name,
-    description: `A 3D ${model.name} model built with ${kernel}`,
-    author: {
-      name: 'Tau Team',
-      avatar: '/avatar-sample.png',
-    },
-    createdAt: 1_740_702_000_000,
-    tags: ['3d-printing', 'parametric', kernel],
-    thumbnail: thumbnailAssets[model.thumbnailKey],
-    files: { [mainFile]: { content: encodeTextFile(model.code) } },
-  };
-};
+/** Load one builtin's bytes only when a preview or Remix action needs them. */
+export const loadBuiltinProjectFiles = async ({
+  project,
+  signal,
+}: {
+  readonly project: BuiltinProjectCardModel;
+  readonly signal?: AbortSignal;
+}): Promise<ProjectFiles> =>
+  Object.fromEntries(
+    await Promise.all(
+      project.fileAssets.map(async ({ path, load }) => {
+        signal?.throwIfAborted();
+        const content = await load();
+        signal?.throwIfAborted();
+        return [path, { content }] as const;
+      }),
+    ),
+  );
 
-export const replicadProjects: ProjectsWithFiles[] = mockProjects.map((model) => {
-  const mainFile = 'main.ts';
-  const language = 'replicad';
-  return createProject(model, mainFile, language);
+const builtinCatalog: readonly BuiltinExample[] = builtinExamples;
+
+export const sampleProjects: readonly BuiltinProjectCardModel[] = builtinCatalog.flatMap((example) => {
+  const { thumbnailUrl, featuredThumbnailUrl, kernel } = example;
+  return thumbnailUrl && isKernelId(kernel)
+    ? [
+        {
+          locator: example.locator,
+          kernel,
+          id: example.manifest.id,
+          name: example.manifest.name,
+          description: example.manifest.description,
+          tags: example.manifest.tags,
+          assets: example.manifest.assets,
+          thumbnail: thumbnailUrl,
+          ...(featuredThumbnailUrl && { featuredThumbnail: featuredThumbnailUrl }),
+          fileAssets: example.assets,
+        },
+      ]
+    : [];
 });
 
-export const openscadProjects: ProjectsWithFiles[] = openscadExamples.map((model) => {
-  const mainFile = 'main.scad';
-  const kernel: KernelProvider = 'openscad';
-  return createProject(model, mainFile, kernel);
+/**
+ * The Community showcase, in display order: the strongest builtins only. Starter and
+ * toy models stay in `@taucad/tau-examples` and remain reachable by their `/s/builtin~` link.
+ */
+export const communityLocators = [
+  'replicad.kestrel-240-quadcopter',
+  'replicad.v8-engine',
+  'replicad.bench-vise',
+  'replicad.turbofan',
+  'openscad.arq5-racing-quadcopter',
+  'replicad.six-axis-arm',
+  'replicad.heat-exchanger',
+  'replicad.worm-gear-system',
+  'replicad.standing-fan',
+  'replicad.spur-gearbox',
+  'replicad.planetary-gear-system',
+  'replicad.wheelbarrow',
+  'replicad.copper-lampshade',
+  'openscad.cyber-chess-set',
+  'jscad.planetary-gear-system',
+  'openscad.dollhouse',
+  'replicad.gridfinity-box',
+  'openscad.fluted-vase',
+  'replicad.cycloidal-gear',
+  'replicad.wavy-vase',
+] as const;
+
+/** The Community example that leads the unfiltered first page, spanning two columns and rows. */
+export const featuredCommunityLocator: (typeof communityLocators)[number] = 'replicad.kestrel-240-quadcopter';
+
+const sampleProjectsByLocator = new Map(sampleProjects.map((project) => [project.locator, project]));
+
+// ponytail: a locator without a builtin is dropped here; project-examples.test.ts fails on it.
+export const galleryProjects: readonly BuiltinProjectCardModel[] = communityLocators.flatMap((locator) => {
+  const project = sampleProjectsByLocator.get(locator);
+  return project ? [project] : [];
 });
-
-const jscadProjects: ProjectsWithFiles[] = jscadExamples.map((model) => {
-  const mainFile = 'main.ts';
-  const language: KernelProvider = 'jscad';
-  return createProject(model, mainFile, language);
-});
-
-export const sampleProjects: ProjectsWithFiles[] = [...replicadProjects, ...openscadProjects, ...jscadProjects];
-
-export const galleryProjects: ProjectsWithFiles[] = sampleProjects;

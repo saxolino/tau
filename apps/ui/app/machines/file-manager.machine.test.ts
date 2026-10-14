@@ -1,9 +1,30 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createActor } from 'xstate';
 import type * as FsBridge from '@taucad/fs-bridge';
+import type * as EnvironmentConfig from '#environment.config.js';
 import type { ProjectRootConfiguration } from '@taucad/filesystem';
+import { FileContentService } from '@taucad/fs-client/file-content-service';
 import { FileTreeService } from '@taucad/fs-client/file-tree-service';
+import { WorkerChangeChannel } from '@taucad/fs-client/worker-change-channel';
 import { fileManagerMachine } from '#machines/file-manager.machine.js';
+
+const diagnosticEnvironment = vi.hoisted(() => ({ enabled: false }));
+vi.mock('#environment.config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof EnvironmentConfig>();
+  return {
+    ...actual,
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Preserve the environment module export name.
+    ENV: {
+      ...actual.ENV,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Preserve the environment configuration key.
+      get TAU_DEBUG() {
+        return diagnosticEnvironment.enabled;
+      },
+    },
+  };
+});
+type AuthorityWatch = ReturnType<FsBridge.FileSystemBridgeRootedProxy['watchReady']>;
+let mockAuthorityWatch: FsBridge.FileSystemBridgeRootedProxy['watchReady'] | undefined;
 
 const workerTestState = vi.hoisted(() => {
   // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- recursive type cannot be expressed inline
@@ -15,7 +36,10 @@ const workerTestState = vi.hoisted(() => {
     dispatchEvent: (event: Event) => void;
     options: { name?: string } | undefined;
   }> = [];
-  return { instances };
+  const rootedProxyDisposals: Array<ReturnType<typeof vi.fn>> = [];
+  /** One per constructed proxy, in construction order; index 0 is the machine's. */
+  const proxyDeaths: Array<() => void> = [];
+  return { instances, rootedProxyDisposals, proxyDeaths };
 });
 
 vi.mock('#machines/file-manager.worker.js?worker', () => ({
@@ -30,8 +54,8 @@ vi.mock('#machines/file-manager.worker.js?worker', () => ({
     public removeEventListener = vi.fn((type: string, handler: (event: Event) => void) => {
       this.listeners.get(type)?.delete(handler);
     });
-    private readonly listeners = new Map<string, Set<(event: Event) => void>>();
     public readonly options: { name?: string } | undefined;
+    private readonly listeners = new Map<string, Set<(event: Event) => void>>();
     public constructor(options?: { name?: string }) {
       this.options = options;
       workerTestState.instances.push(this);
@@ -62,20 +86,51 @@ const mockOpenFileSystemBridge = vi.fn((_worker: Worker, _options?: { root?: str
   dispose: vi.fn(),
 }));
 
+/**
+ * The raw workspace surface and the composed view are both bridge proxies, so
+ * one set of doubles serves both: what a listing sees depends on which member
+ * answered it (`readDirectory` is the authority's, `readdirWithStats` the
+ * view's), which is exactly the routing CI3 is about.
+ */
+const mockWorkspaceReadDirectory = vi.fn<(path: string) => Promise<unknown[]>>();
+const mockWorkspaceStat = vi.fn<(path: string) => Promise<unknown>>();
+const mockViewReaddirWithStats = vi.fn<(path: string) => Promise<unknown[]>>();
+/* What a rooted view's hello reports; `unavailable` is a root registered after worker boot. */
+let mockViewHelloState: 'ready' | 'unavailable' = 'ready';
+
 vi.mock('@taucad/fs-bridge', () => ({
   createFileSystemBridge: () => mockCreateFileSystemBridge(),
   openFileSystemBridge: (worker: Worker, options?: { root?: string }) => mockOpenFileSystemBridge(worker, options),
   waitForWorkerReady: async () => mockWaitForWorkerReady(),
-  createFileSystemBridgeProxy: vi.fn(() => ({
-    configureProjectRoots: mockConfigureProjectRoots,
-    mount: mockMount,
-    unmount: mockUnmount,
-    getDirectoryStat: vi.fn(async () => []),
-    readShallowDirectory: vi.fn(async () => []),
-    readDirectory: vi.fn(async () => []),
-    dispose: vi.fn(),
-    listen: vi.fn(() => vi.fn()),
-  })),
+  createFileSystemBridgeProxy: vi.fn(() => {
+    const dispose = vi.fn();
+    workerTestState.rootedProxyDisposals.push(dispose);
+    /* Pending unless a test kills the port: a live worker never settles it. */
+    let die!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      die = resolve;
+    });
+    workerTestState.proxyDeaths.push(die);
+    return {
+      closed,
+      get watchReady() {
+        return mockAuthorityWatch;
+      },
+      ready: Promise.resolve(),
+      hello: { payload: { state: mockViewHelloState } },
+      pollExternalChanges: vi.fn(async () => undefined),
+      configureProjectRoots: mockConfigureProjectRoots,
+      mount: mockMount,
+      unmount: mockUnmount,
+      getDirectoryStat: vi.fn(async () => []),
+      readShallowDirectory: vi.fn(async () => []),
+      readDirectory: async (path: string) => mockWorkspaceReadDirectory(path),
+      readdirWithStats: async (path: string) => mockViewReaddirWithStats(path),
+      stat: async (path: string) => mockWorkspaceStat(path),
+      dispose,
+      listen: vi.fn(() => vi.fn()),
+    };
+  }),
 }));
 
 const mockGetProjectFileSystemConfig =
@@ -93,16 +148,32 @@ const mockGetWorkspace =
       workspaceId: string,
     ) => Promise<{ workspace: { workspaceId: string; name: string }; handle: FileSystemDirectoryHandle } | undefined>
   >();
+const mockGetWorkspaceMetadata =
+  vi.fn<
+    (
+      workspaceId: string,
+    ) => Promise<{ workspaceId: string; name: string; lastConnectedAt: number; slug: string } | undefined>
+  >();
 const mockCheckHandlePermission = vi.fn<() => Promise<string>>();
 const mockSetProjectFileSystemConfig =
   vi.fn<(config: { projectId: string; backend: 'webaccess'; workspaceId: string }) => Promise<void>>();
 const mockGetProjectRootConfigs = vi.fn<() => Promise<ProjectRootConfiguration>>();
-const mockGetHomeStorageBackend = vi.fn<() => Promise<'indexeddb' | 'opfs'>>();
+const mockGetHomeStorageBackend = vi.fn<() => Promise<'indexeddb' | 'opfs' | 'node'>>();
+
+const mockNodeFsConnect = vi.fn(async () => new MessageChannel().port1);
+let mockDesktopBridge: unknown;
+vi.mock('#filesystem/desktop-bridge.js', () => ({
+  isDesktopTarget: true,
+  desktopBridge: () => mockDesktopBridge,
+  hostPathName: (path: string) => path,
+  nodeHomeRoot: () => '/userData/home',
+}));
 
 vi.mock('#filesystem/handle-store.js', () => ({
   getProjectRootConfigs: async () => mockGetProjectRootConfigs(),
   getHomeStorageBackend: async () => mockGetHomeStorageBackend(),
   getWorkspace: async (...args: unknown[]) => mockGetWorkspace(...(args as [string])),
+  getWorkspaceMetadata: async (...args: unknown[]) => mockGetWorkspaceMetadata(...(args as [string])),
   getProjectFileSystemConfig: async () => mockGetProjectFileSystemConfig(),
   checkHandlePermission: async () => mockCheckHandlePermission(),
   createWorkspace: vi.fn(),
@@ -114,15 +185,79 @@ vi.mock('#filesystem/handle-store.js', () => ({
 describe('fileManagerMachine', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuthorityWatch = undefined;
+    diagnosticEnvironment.enabled = false;
     workerTestState.instances.length = 0;
+    workerTestState.rootedProxyDisposals.length = 0;
+    workerTestState.proxyDeaths.length = 0;
     mockGetProjectFileSystemConfig.mockResolvedValue(undefined);
     mockWaitForWorkerReady.mockResolvedValue(undefined);
     mockGetWorkspace.mockResolvedValue(undefined);
+    mockGetWorkspaceMetadata.mockResolvedValue(undefined);
     mockCheckHandlePermission.mockResolvedValue('granted');
     mockSetProjectFileSystemConfig.mockResolvedValue(undefined);
     mockGetProjectRootConfigs.mockResolvedValue({ projects: [], roots: [] });
     mockGetHomeStorageBackend.mockResolvedValue('indexeddb');
     mockConfigureProjectRoots.mockResolvedValue(undefined);
+    mockWorkspaceReadDirectory.mockResolvedValue([]);
+    mockViewReaddirWithStats.mockResolvedValue([]);
+    mockViewHelloState = 'ready';
+    /* No dependency mount in this harness: the OPFS mount is the worker's. */
+    mockWorkspaceStat.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    mockDesktopBridge = undefined;
+    mockNodeFsConnect.mockClear();
+  });
+
+  // MAJOR 4 — the services utility can die. Main forks a fresh one on the next
+  // `connect()`, but only if somebody asks: without this the worker's one-shot
+  // handshake leaves the filesystem wedged for the rest of the session.
+  it('brokers a replacement node filesystem port when the worker asks for one', async () => {
+    mockGetHomeStorageBackend.mockResolvedValue('node');
+    mockDesktopBridge = { nodeFs: { homeRoot: '/userData/home', connect: mockNodeFsConnect }, dialog: {} };
+    const actor = createActor(fileManagerMachine, {
+      input: { rootDirectory: '/', shouldInitializeOnStart: true },
+    });
+    actor.start();
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().value).toBe('ready');
+    });
+    const worker = workerTestState.instances[0]!;
+    const portPosts = () => worker.postMessage.mock.calls.filter(([message]) => message?.type === 'nodeFsPort');
+    expect(portPosts()).toHaveLength(1);
+    expect(mockNodeFsConnect).toHaveBeenCalledTimes(1);
+
+    worker.dispatchEvent(Object.assign(new Event('message'), { data: { type: 'nodeFsPortRequest' } }));
+
+    await vi.waitFor(() => {
+      expect(mockNodeFsConnect).toHaveBeenCalledTimes(2);
+      expect(portPosts()).toHaveLength(2);
+    });
+    actor.stop();
+  });
+
+  it('settles a refused replacement port and permits the worker to request another', async () => {
+    mockGetHomeStorageBackend.mockResolvedValue('node');
+    mockDesktopBridge = { nodeFs: { homeRoot: '/userData/home', connect: mockNodeFsConnect }, dialog: {} };
+    const actor = createActor(fileManagerMachine, { input: { rootDirectory: '/', shouldInitializeOnStart: true } });
+    actor.start();
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().value).toBe('ready');
+    });
+    const worker = workerTestState.instances[0]!;
+    mockNodeFsConnect.mockRejectedValueOnce(new Error('Services broker is quiescing'));
+    worker.dispatchEvent(Object.assign(new Event('message'), { data: { type: 'nodeFsPortRequest' } }));
+    await vi.waitFor(() => {
+      expect(worker.postMessage).toHaveBeenCalledWith({
+        type: 'nodeFsPortError',
+        message: 'Services broker is quiescing',
+      });
+    });
+    worker.dispatchEvent(Object.assign(new Event('message'), { data: { type: 'nodeFsPortRequest' } }));
+    await vi.waitFor(() => {
+      expect(mockNodeFsConnect).toHaveBeenCalledTimes(3);
+      expect(worker.postMessage.mock.calls.filter(([message]) => message?.type === 'nodeFsPort')).toHaveLength(2);
+    });
+    actor.stop();
   });
 
   // R3 — the worker installs its `/` composition mount during module
@@ -297,6 +432,88 @@ describe('fileManagerMachine', () => {
     actor.stop();
   });
 
+  it('should reach ready without listing a root registered after worker boot', async () => {
+    mockViewHelloState = 'unavailable';
+    mockViewReaddirWithStats.mockRejectedValue(new Error('The requested filesystem root is unavailable.'));
+    const actor = createActor(fileManagerMachine, {
+      input: { rootDirectory: '/test', shouldInitializeOnStart: true },
+    });
+    actor.start();
+
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().value).toBe('ready');
+    });
+    expect(mockViewReaddirWithStats).not.toHaveBeenCalledWith('');
+
+    // Once the root is registered, the reload the provider dispatches lists it.
+    mockViewHelloState = 'ready';
+    mockViewReaddirWithStats.mockResolvedValue([]);
+    actor.send({ type: 'reloadWorkspace' });
+    await vi.waitFor(() => {
+      expect(mockViewReaddirWithStats).toHaveBeenCalledWith('');
+    });
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().value).toBe('ready');
+    });
+
+    actor.stop();
+  });
+
+  /*
+   * CI3: the first listing of a root is the one the tree keeps until something
+   * re-lists it, so reading it off the raw workspace surface showed the control
+   * plane and the records with no provenance — while every later listing of the
+   * same directory came through the composed view (blueprint Finding 3).
+   */
+  it('should seed the tree from the composed view, without the rows the view masks', async () => {
+    mockWorkspaceReadDirectory.mockImplementation(async (path: string) =>
+      path === '/test'
+        ? [
+            { id: '.git', name: '.git', size: 0, mtimeMs: 1, children: [] },
+            { id: '.tau', name: '.tau', size: 0, mtimeMs: 1, children: [] },
+            { id: 'main.scad', name: 'main.scad', size: 4, mtimeMs: 1, contentKind: 'text', lineCount: 1 },
+          ]
+        : [],
+    );
+    mockViewReaddirWithStats.mockImplementation(async (path: string) =>
+      path === ''
+        ? [
+            {
+              name: '.tau',
+              type: 'dir',
+              size: 0,
+              mtimeMs: 1,
+              provenance: { source: 'project', versioned: false, agentAccess: 'read-only' },
+            },
+            {
+              name: 'main.scad',
+              type: 'file',
+              size: 4,
+              mtimeMs: 1,
+              contentKind: 'text',
+              lineCount: 1,
+              provenance: { source: 'project', versioned: true, agentAccess: 'read-write' },
+            },
+          ]
+        : [],
+    );
+    const actor = createActor(fileManagerMachine, {
+      input: { rootDirectory: '/test', shouldInitializeOnStart: true },
+    });
+    actor.start();
+
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().value).toBe('ready');
+    });
+
+    const tree = actor.getSnapshot().context.treeService!.getTreeSnapshot();
+    expect(tree.has('.git')).toBe(false);
+    expect(tree.get('main.scad')?.provenance).toMatchObject({ source: 'project', versioned: true });
+    expect(tree.get('.tau')?.provenance).toMatchObject({ source: 'project', versioned: false });
+
+    actor.stop();
+  });
+
   it('should poll granted webaccess roots from an indexeddb root file manager', async () => {
     const startPolling = vi.spyOn(FileTreeService.prototype, 'startPolling').mockImplementation(() => undefined);
     const directoryHandle = { kind: 'directory', name: 'External' } as unknown as FileSystemDirectoryHandle;
@@ -358,6 +575,7 @@ describe('fileManagerMachine', () => {
     const actor = createActor(fileManagerMachine, {
       input: {
         rootDirectory: '/projects/project-a',
+        projectId: 'project-a',
         shouldInitializeOnStart: true,
       },
     });
@@ -399,6 +617,7 @@ describe('fileManagerMachine', () => {
     const actor = createActor(fileManagerMachine, {
       input: {
         rootDirectory: '/projects/project-a',
+        projectId: 'project-a',
         shouldInitializeOnStart: true,
       },
     });
@@ -408,9 +627,20 @@ describe('fileManagerMachine', () => {
       expect(actor.getSnapshot().value).toBe('ready');
     });
 
-    actor.getSnapshot().context.openFileSystemBridge?.('/projects/project-a');
+    actor.getSnapshot().context.openFileSystemBridge?.('/projects/project-a', 'working-copy');
+    expect(() => actor.getSnapshot().context.openComputeStorePort?.('workspace-candidate')).toThrow(/authority/);
+    actor.getSnapshot().context.openComputeStorePort?.('project-a');
 
-    expect(mockOpenFileSystemBridge).toHaveBeenCalledWith(expect.anything(), { root: '/projects/project-a' });
+    /* The envelope always carries the consumer the caller named (W2, CI2). */
+    expect(mockOpenFileSystemBridge).toHaveBeenCalledWith(expect.anything(), {
+      root: '/projects/project-a',
+      consumer: 'working-copy',
+    });
+    expect(workerTestState.instances[0]?.postMessage).toHaveBeenCalledWith(
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- Vitest's asymmetric matcher is intentionally untyped.
+      expect.objectContaining({ type: 'computeStoreConnect', projectId: 'project-a' }),
+      [expect.any(MessagePort)],
+    );
     actor.stop();
   });
 
@@ -523,6 +753,35 @@ describe('fileManagerMachine', () => {
       actor.stop();
     });
 
+    it('should not reconfigure the project roots the root mount already installed', async () => {
+      const sharedWorker = {
+        terminate: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        postMessage: vi.fn(),
+      } as unknown as Worker;
+
+      const actor = createActor(fileManagerMachine, {
+        input: {
+          rootDirectory: '/projects/shared-proj',
+          shouldInitializeOnStart: true,
+          projectId: 'shared-proj',
+          sharedWorker,
+        },
+      });
+      actor.start();
+
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+
+      // The roots are worker-global and every mutation re-syncs them, so a nested mount
+      // re-running the whole configuration is pure startup cost.
+      expect(mockConfigureProjectRoots).not.toHaveBeenCalled();
+      expect(mockGetProjectRootConfigs).not.toHaveBeenCalled();
+      actor.stop();
+    });
+
     it('should still call waitForWorkerReady when no sharedWorker (fresh worker)', async () => {
       mockWaitForWorkerReady.mockResolvedValue(undefined);
 
@@ -553,7 +812,7 @@ describe('fileManagerMachine', () => {
           {
             projectId: 'test-id',
             backend: 'indexeddb',
-            providerBasePath: '/test-id',
+            providerBasePath: 'test-id',
           },
         ],
         roots: [{ backend: 'indexeddb' }],
@@ -803,6 +1062,41 @@ describe('fileManagerMachine', () => {
       const snapshot = actor.getSnapshot();
       expect(snapshot.context.unavailableReason).toBe('missing');
       expect(snapshot.context.activeWorkspaceId).toBe('wsp_gone');
+      expect(mockMount).not.toHaveBeenCalled();
+      actor.stop();
+    });
+
+    it('retains known workspace identity when its handle is disconnected', async () => {
+      mockGetProjectFileSystemConfig.mockResolvedValue({
+        projectId: 'proj-disconnected',
+        backend: 'webaccess',
+        workspaceId: 'wsp_disconnected',
+      });
+      mockGetWorkspace.mockResolvedValue(undefined);
+      mockGetWorkspaceMetadata.mockResolvedValue({
+        workspaceId: 'wsp_disconnected',
+        name: 'Disconnected Workspace',
+        lastConnectedAt: 1,
+        slug: 'disconnected-workspace',
+      });
+
+      const actor = createActor(fileManagerMachine, {
+        input: {
+          rootDirectory: '/projects/proj-disconnected',
+          shouldInitializeOnStart: true,
+          projectId: 'proj-disconnected',
+        },
+      });
+      actor.start();
+
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('webAccessUnavailable');
+      });
+
+      const snapshot = actor.getSnapshot();
+      expect(snapshot.context.unavailableReason).toBe('disconnected');
+      expect(snapshot.context.activeWorkspaceId).toBe('wsp_disconnected');
+      expect(snapshot.context.activeWorkspaceName).toBe('Disconnected Workspace');
       expect(mockMount).not.toHaveBeenCalled();
       actor.stop();
     });
@@ -1146,6 +1440,69 @@ describe('fileManagerMachine', () => {
 
       actor.stop();
     });
+
+    it('should dispose opened bridges when the root listing is cancelled', async () => {
+      let releaseListing = (): void => undefined;
+      let markListingStarted = (): void => undefined;
+      const listingGate = new Promise<void>((resolve) => {
+        releaseListing = resolve;
+      });
+      const listingStarted = new Promise<void>((resolve) => {
+        markListingStarted = resolve;
+      });
+      mockViewReaddirWithStats.mockImplementationOnce(async () => {
+        markListingStarted();
+        await listingGate;
+        return [];
+      });
+      const disposeContent = vi.spyOn(FileContentService.prototype, 'dispose');
+      const disposeTree = vi.spyOn(FileTreeService.prototype, 'dispose');
+      const disposeChannel = vi.spyOn(WorkerChangeChannel.prototype, 'dispose');
+      const actor = createActor(fileManagerMachine, {
+        input: {
+          rootDirectory: '/projects/proj-a',
+          shouldInitializeOnStart: true,
+          projectId: 'proj-a',
+        },
+      });
+
+      try {
+        actor.start();
+        await listingStarted;
+        expect(mockOpenFileSystemBridge).toHaveBeenCalledTimes(2);
+
+        actor.stop();
+        releaseListing();
+
+        await vi.waitFor(() => {
+          expect(disposeChannel).toHaveBeenCalledOnce();
+          expect(workerTestState.rootedProxyDisposals.slice(-2).map((dispose) => dispose.mock.calls.length)).toEqual([
+            1, 1,
+          ]);
+        });
+        expect(disposeContent).toHaveBeenCalledOnce();
+        expect(disposeTree).toHaveBeenCalledOnce();
+      } finally {
+        releaseListing();
+        actor.stop();
+        disposeContent.mockRestore();
+        disposeTree.mockRestore();
+        disposeChannel.mockRestore();
+      }
+    });
+
+    it('should reach ready without expanding bundled type directories', async () => {
+      const actor = createActor(fileManagerMachine, {
+        input: { rootDirectory: '/projects/proj-a', shouldInitializeOnStart: true, projectId: 'proj-a' },
+      });
+      actor.start();
+
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+      expect(mockViewReaddirWithStats).not.toHaveBeenCalledWith(expect.stringContaining('node_modules'));
+      actor.stop();
+    });
   });
 
   // ── persistent project-route lifetime ──────────────────────────────────
@@ -1480,6 +1837,94 @@ describe('fileManagerMachine', () => {
     });
   });
 
+  /*
+   * G2c-2: a worker that dies after `ready` used to leave the machine sitting
+   * in `ready` with dead proxies, because a Worker `error` event is not a death
+   * and the one signal that is — the bridge port closing — never reached the
+   * machine.
+   */
+  describe('worker death after ready', () => {
+    /* RV1-F1 (W6): the page restarts a dead file-manager worker once without a click. */
+    it('should restart a dead file-manager worker once without a click', async () => {
+      const actor = createActor(fileManagerMachine, {
+        input: { rootDirectory: '/', shouldInitializeOnStart: true },
+      });
+      actor.start();
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+
+      workerTestState.proxyDeaths[0]!();
+
+      await vi.waitFor(() => {
+        expect(workerTestState.instances).toHaveLength(2);
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+      expect(workerTestState.instances[0]?.terminate).toHaveBeenCalled();
+      expect(actor.getSnapshot().context.error).toBeUndefined();
+
+      actor.stop();
+    });
+
+    it('should leave ready for error when the bridge port closes twice within the liveness bound', async () => {
+      const actor = createActor(fileManagerMachine, {
+        input: { rootDirectory: '/', shouldInitializeOnStart: true },
+      });
+      actor.start();
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+      /* The next proxy made is the restarted worker's own, as the first one was the first worker's. */
+      const restartedProxy = workerTestState.proxyDeaths.length;
+      workerTestState.proxyDeaths[0]!();
+      await vi.waitFor(() => {
+        expect(workerTestState.instances).toHaveLength(2);
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+
+      workerTestState.proxyDeaths[restartedProxy]!();
+
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('error');
+      });
+      expect(actor.getSnapshot().context.error).toBeInstanceOf(Error);
+      expect(workerTestState.instances[1]?.terminate).toHaveBeenCalled();
+      expect(workerTestState.instances).toHaveLength(2);
+
+      actor.stop();
+    });
+
+    it('should not terminate a worker it does not own', async () => {
+      const sharedWorker = {
+        terminate: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        postMessage: vi.fn(),
+      } as unknown as Worker;
+      const actor = createActor(fileManagerMachine, {
+        input: {
+          rootDirectory: '/projects/shared-proj',
+          shouldInitializeOnStart: true,
+          projectId: 'shared-proj',
+          sharedWorker,
+        },
+      });
+      actor.start();
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+
+      workerTestState.proxyDeaths[0]!();
+
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('error');
+      });
+      expect(sharedWorker.terminate).not.toHaveBeenCalled();
+
+      actor.stop();
+    });
+  });
+
   /* oxlint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- Vitest importActual resolves to loosely typed loader output */
   describe('createFileSystemBridge + createFileSystemBridgeProxy (actual fs-bridge)', () => {
     it('initializes bridge proxy synchronously without `Port.onMessage` TypeError', async () => {
@@ -1501,4 +1946,143 @@ describe('fileManagerMachine', () => {
     });
   });
   /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+  describe('opt-in acquired view watch diagnostics', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    const open = async () => {
+      const actor = createActor(fileManagerMachine, {
+        input: { rootDirectory: '/projects/proj-a', projectId: 'proj-a', shouldInitializeOnStart: true },
+      });
+      actor.start();
+      await vi.waitFor(() => {
+        expect(actor.getSnapshot().value).toBe('ready');
+      });
+      const channel = actor.getSnapshot().context.workerChangeChannel;
+      if (channel === undefined) {
+        actor.stop();
+        throw new Error('Missing initialized watch channel');
+      }
+      return { actor, channel };
+    };
+    const authority = () => {
+      const ready = Promise.withResolvers<void>();
+      const closed = Promise.withResolvers<void>();
+      const unsubscribe = vi.fn(() => {
+        closed.resolve();
+      });
+      const watch: AuthorityWatch = { ready: ready.promise, closed: closed.promise, unsubscribe };
+      const acquire = vi.fn<FsBridge.FileSystemBridgeRootedProxy['watchReady']>((request) =>
+        request.paths.includes('main.ts')
+          ? watch
+          : {
+              ready: Promise.resolve(),
+              closed: Promise.withResolvers<void>().promise,
+              unsubscribe: vi.fn(),
+            },
+      );
+      mockAuthorityWatch = acquire;
+      return { ready, closed, unsubscribe, watch, acquire };
+    };
+
+    it.each([false, true])('preserves real watch identity without an enabled opt-in (debug %s)', async (debug) => {
+      diagnosticEnvironment.enabled = debug;
+      const source = authority();
+      const wrapViewWatch = vi.fn((_root: string, _request: unknown, watch: AuthorityWatch) => watch);
+      if (!debug) {
+        vi.stubGlobal('__tauE2eObservationWatch', { wrapViewWatch });
+      }
+      const { actor, channel } = await open();
+      try {
+        const request = { paths: ['main.ts'] };
+        const handler = vi.fn();
+        const watch = channel.watchReady(request, handler);
+        expect(source.acquire).toHaveBeenLastCalledWith(request, handler);
+        expect(watch.ready).toBe(source.watch.ready);
+        expect(watch.closed).toBe(source.watch.closed);
+        expect(wrapViewWatch).not.toHaveBeenCalled();
+        watch.dispose();
+        expect(source.unsubscribe).toHaveBeenCalledOnce();
+      } finally {
+        actor.stop();
+      }
+    });
+
+    it('wraps an actual registration and holds only its acknowledgement while forwarding closure', async () => {
+      diagnosticEnvironment.enabled = true;
+      const source = authority();
+      const held = Promise.withResolvers<void>();
+      const wrapViewWatch = vi.fn((root: string, request: { paths: readonly string[] }, watch: AuthorityWatch) => {
+        if (!request.paths.includes('main.ts')) {
+          return watch;
+        }
+        expect(root).toBe('/projects/proj-a');
+        expect(source.acquire).toHaveBeenCalled();
+        expect(watch).toBe(source.watch);
+        const awaitAcknowledgment = async (): Promise<void> => {
+          await watch.ready;
+          await held.promise;
+        };
+        return { ...watch, ready: awaitAcknowledgment() };
+      });
+      vi.stubGlobal('__tauE2eObservationWatch', { wrapViewWatch });
+      const { actor, channel } = await open();
+      try {
+        const watch = channel.watchReady({ paths: ['main.ts'] }, vi.fn());
+        let ready = false;
+        const observeReadiness = async (): Promise<void> => {
+          await watch.ready;
+          ready = true;
+        };
+        const observedReadiness = observeReadiness();
+        source.ready.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(ready).toBe(false);
+        expect(wrapViewWatch).toHaveBeenCalledWith('/projects/proj-a', { paths: ['main.ts'] }, source.watch);
+        source.closed.resolve();
+        await expect(watch.closed).resolves.toBeUndefined();
+        held.resolve();
+        await observedReadiness;
+        watch.dispose();
+        expect(source.unsubscribe).toHaveBeenCalledOnce();
+      } finally {
+        held.resolve();
+        actor.stop();
+      }
+    });
+
+    it('disposes the acquired watch if the diagnostic wrapper throws and permits a fresh retry', async () => {
+      diagnosticEnvironment.enabled = true;
+      const source = authority();
+      const failure = new Error('diagnostic watch refusal');
+      let reject = true;
+      vi.stubGlobal('__tauE2eObservationWatch', {
+        wrapViewWatch: (_root: string, request: { paths: readonly string[] }, watch: AuthorityWatch) => {
+          if (request.paths.includes('main.ts') && reject) {
+            throw failure;
+          }
+          return watch;
+        },
+      });
+      const { actor, channel } = await open();
+      try {
+        expect(() => channel.watchReady({ paths: ['main.ts'] }, vi.fn())).toThrow(failure);
+        expect(source.unsubscribe).toHaveBeenCalledOnce();
+        reject = false;
+        const replacement = authority();
+        // The proxy's method is captured by the channel; route its next registration to the new actual lease.
+        source.acquire.mockImplementation(() => replacement.watch);
+        const watch = channel.watchReady({ paths: ['main.ts'] }, vi.fn());
+        replacement.ready.resolve();
+        await watch.ready;
+        expect(watch.closed).toBe(replacement.closed.promise);
+        watch.dispose();
+        expect(replacement.unsubscribe).toHaveBeenCalledOnce();
+      } finally {
+        actor.stop();
+      }
+    });
+  });
 });

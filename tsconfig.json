@@ -11,9 +11,6 @@
       "path": "./apps/api"
     },
     {
-      "path": "./libs/tau-examples"
-    },
-    {
       "path": "./apps/api-e2e"
     },
     {
@@ -32,7 +29,7 @@
       "path": "./packages/runtime"
     },
     {
-      "path": "./libs/units"
+      "path": "./packages/units"
     },
     {
       "path": "./apps/libs/billing"
@@ -50,10 +47,7 @@
       "path": "./tools/workspace-plugin"
     },
     {
-      "path": "./examples/react-router"
-    },
-    {
-      "path": "./libs/filesystem"
+      "path": "./packages/filesystem"
     },
     {
       "path": "./apps/libs/fs-client"
@@ -74,9 +68,6 @@
       "path": "./libs/events"
     },
     {
-      "path": "./examples/nextjs"
-    },
-    {
       "path": "./libs/memory"
     },
     {
@@ -86,16 +77,13 @@
       "path": "./packages/cli"
     },
     {
-      "path": "./libs/rpc"
+      "path": "./packages/rpc"
     },
     {
       "path": "./libs/fs-bridge"
     },
     {
       "path": "./apps/libs/lsp-fs"
-    },
-    {
-      "path": "./libs/oxlint"
     },
     {
       "path": "./apps/libs/lsp"

@@ -1,7 +1,6 @@
 import { resolve } from 'node:path';
 
 import { playwright } from '@vitest/browser-playwright';
-import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -13,7 +12,6 @@ export default defineConfig({
       ),
     ),
   },
-  plugins: [nxViteTsPaths()],
   optimizeDeps: {
     include: [
       '@gltf-transform/core',
@@ -44,8 +42,9 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
+      // Artifact requirement: the benchmark writes its structured report through Vitest Browser Mode.
       api: { allowWrite: true },
-      provider: playwright({ actionTimeout: 120_000, launchOptions: { channel: 'chrome' } }),
+      provider: playwright({ actionTimeout: 120_000, launchOptions: { channel: 'chromium' } }),
       instances: [{ browser: 'chromium', name: 'rolldown-benchmark-isolated' }],
     },
   },

@@ -1,13 +1,13 @@
-import type { TelemetryEntry } from '@taucad/runtime';
+import type { TelemetrySpanRecord } from '@taucad/runtime';
 
 export type SpanNode = {
-  entry: TelemetryEntry;
+  entry: TelemetrySpanRecord;
   children: SpanNode[];
   depth: number;
   selfTime: number;
 };
 
-export type TelemetryTraceKind = 'bootstrap' | 'render' | 'export' | 'unattributed';
+export type TelemetryTraceKind = 'bootstrap' | 'render' | 'export' | 'transcode' | 'unattributed';
 
 export type TelemetryTrace = {
   id: string;

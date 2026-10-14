@@ -1,7 +1,7 @@
 [
   {
-    "name": "total (ESM JS) — measured 5479 B on 2026-08-23",
+    "name": "total (ESM JS) — parameter-unit inference and shared content codecs",
     "path": "dist/**/*.mjs",
-    "limit": "6 kB"
+    "limit": "7.5 kB"
   }
 ]

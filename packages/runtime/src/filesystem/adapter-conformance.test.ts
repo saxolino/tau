@@ -1,7 +1,7 @@
 /**
  * X9 — one conformance table every first-party `RuntimeFileSystemBase`
  * adapter runs through, mirroring the shape of
- * `libs/filesystem/src/backend/provider-tree-conformance.test.ts`
+ * `packages/filesystem/src/backend/provider-tree-conformance.test.ts`
  * (`describe.each` over `'$name …'` rows plus an `expectCode` helper). That
  * suite cannot be extended to these adapters: it would have to import
  * `packages/runtime`, and the dependency runs the other way. `packages/runtime`
@@ -30,9 +30,10 @@ import fs from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { MemoryProvider } from '@taucad/filesystem/backend';
+import { tauPathPolicy } from '@taucad/filesystem/path-registry';
 import { exposeFileSystem, openFileSystemBridge } from '@taucad/fs-bridge';
 
 import * as filesystemBarrel from '#filesystem/index.js';
@@ -44,6 +45,7 @@ import { _fromMemoryFsHandle } from '#transport/_internal/from-memory-fs-handle.
 import { _fromNodeFsHandle } from '#transport/_internal/from-node-fs-handle.js';
 import { resolveRuntimeFileSystem } from '#transport/_internal/runtime-filesystem-handle.js';
 import { createWorkerFileSystemProxy } from '#transport/_internal/worker-filesystem-proxy.js';
+import type { WorkerFileSystemProxy } from '#transport/_internal/worker-filesystem-proxy.js';
 import type { RuntimeFileSystemBase, RuntimeWatchEvent } from '#types/runtime-kernel.types.js';
 
 // ---------------------------------------------------------------------------
@@ -63,7 +65,7 @@ type ContractId =
 
 // ---------------------------------------------------------------------------
 // Minimal in-memory File System Access root for the `browser` row.
-// `libs/filesystem`'s richer `createMockRootHandle` is unreachable from here —
+// `packages/filesystem`'s richer `createMockRootHandle` is unreachable from here —
 // it sits behind that package's private `#testing/` import and the package
 // exposes no `./testing` subpath, which this batch's scope forbids adding.
 // ---------------------------------------------------------------------------
@@ -295,6 +297,7 @@ const rows: readonly AdapterRow[] = [
       // guard accepts genuine `MessagePort`s only, deliberately (X7's cut).
       const boundary = new MessageChannel();
       const exposed = exposeFileSystem(inlineBase(_fromMemoryFsHandle()), {
+        policy: tauPathPolicy,
         messageSource: boundary.port2,
       });
       const connection = openFileSystemBridge(boundary.port1);
@@ -317,7 +320,7 @@ const rows: readonly AdapterRow[] = [
     create: async () => new MemoryProvider() as unknown as RuntimeFileSystemBase,
     diverges: {
       containment:
-        'The `libs/filesystem` oracle is not a runtime adapter: it has no virtual-root confinement of its own, so `/../x` normalises to `/x` instead of raising PATH_OUTSIDE_ROOT. Runtime adapters add that through `resolveVirtualPath`.',
+        'The `packages/filesystem` oracle is not a runtime adapter: it has no rooted-path validation of its own. Runtime adapters add that through `assertRootedPath`.',
       symlinks: 'An in-memory provider has no links.',
       watch: 'Not a `RuntimeFileSystemBase` factory; watch is the runtime adapters’ concern.',
     },
@@ -355,13 +358,13 @@ describe.each(rows)('$name adapter conformance', (row) => {
     const fileSystem = await row.create();
     try {
       const bytes = new Uint8Array([0, 1, 127, 128, 254, 255]);
-      await fileSystem.writeFile('/binary.bin', bytes);
-      await fileSystem.writeFile('/text.txt', 'héllo\nworld');
+      await fileSystem.writeFile('binary.bin', bytes);
+      await fileSystem.writeFile('text.txt', 'héllo\nworld');
 
-      await expect(fileSystem.readFile('/binary.bin')).resolves.toEqual(bytes);
-      await expect(fileSystem.readFile('/text.txt', 'utf8')).resolves.toBe('héllo\nworld');
+      await expect(fileSystem.readFile('binary.bin')).resolves.toEqual(bytes);
+      await expect(fileSystem.readFile('text.txt', 'utf8')).resolves.toBe('héllo\nworld');
       // A second read must not observe a detached or mutated buffer.
-      await expect(fileSystem.readFile('/binary.bin')).resolves.toEqual(bytes);
+      await expect(fileSystem.readFile('binary.bin')).resolves.toEqual(bytes);
     } finally {
       fileSystem.dispose();
     }
@@ -370,13 +373,13 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it('creates nested directories with recursive mkdir and tolerates an existing path', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.mkdir('/one/two/three', { recursive: true });
+      await fileSystem.mkdir('one/two/three', { recursive: true });
 
-      await expect(fileSystem.stat('/one/two/three')).resolves.toMatchObject({
+      await expect(fileSystem.stat('one/two/three')).resolves.toMatchObject({
         type: 'dir',
       });
-      await expect(fileSystem.mkdir('/one/two/three', { recursive: true })).resolves.toBeUndefined();
-      await expect(fileSystem.exists('/one/two')).resolves.toBe(true);
+      await expect(fileSystem.mkdir('one/two/three', { recursive: true })).resolves.toBeUndefined();
+      await expect(fileSystem.exists('one/two')).resolves.toBe(true);
     } finally {
       fileSystem.dispose();
     }
@@ -385,11 +388,11 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it.runIf(runs(row, 'mkdir-reports-existing'))('rejects non-recursive mkdir on an existing path', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.mkdir('/existing', { recursive: true });
+      await fileSystem.mkdir('existing', { recursive: true });
 
-      await expectCode(fileSystem.mkdir('/existing'), 'EEXIST');
-      await expectCode(fileSystem.mkdir('/existing', { recursive: false }), 'EEXIST');
-      await expect(fileSystem.stat('/existing')).resolves.toMatchObject({
+      await expectCode(fileSystem.mkdir('existing'), 'EEXIST');
+      await expectCode(fileSystem.mkdir('existing', { recursive: false }), 'EEXIST');
+      await expect(fileSystem.stat('existing')).resolves.toMatchObject({
         type: 'dir',
       });
     } finally {
@@ -400,9 +403,9 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it.runIf(runs(row, 'mkdir-requires-parent'))('rejects non-recursive mkdir under a missing parent', async () => {
     const fileSystem = await row.create();
     try {
-      await expectCode(fileSystem.mkdir('/absent/child'), 'ENOENT');
+      await expectCode(fileSystem.mkdir('absent/child'), 'ENOENT');
 
-      await expect(fileSystem.exists('/absent')).resolves.toBe(false);
+      await expect(fileSystem.exists('absent')).resolves.toBe(false);
     } finally {
       fileSystem.dispose();
     }
@@ -416,12 +419,12 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it('lists exactly the directory members, in no promised order', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.mkdir('/listing', { recursive: true });
-      await fileSystem.writeFile('/listing/zeta.txt', 'z');
-      await fileSystem.writeFile('/listing/alpha.txt', 'a');
-      await fileSystem.mkdir('/listing/sub', { recursive: true });
+      await fileSystem.mkdir('listing', { recursive: true });
+      await fileSystem.writeFile('listing/zeta.txt', 'z');
+      await fileSystem.writeFile('listing/alpha.txt', 'a');
+      await fileSystem.mkdir('listing/sub', { recursive: true });
 
-      const entries = await fileSystem.readdir('/listing');
+      const entries = await fileSystem.readdir('listing');
 
       expect([...entries].sort()).toEqual(['alpha.txt', 'sub', 'zeta.txt']);
     } finally {
@@ -432,23 +435,23 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it('reports the shared stat and lstat shape and raises ENOENT for missing paths', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.mkdir('/shape', { recursive: true });
-      await fileSystem.writeFile('/shape/file.txt', 'hello');
+      await fileSystem.mkdir('shape', { recursive: true });
+      await fileSystem.writeFile('shape/file.txt', 'hello');
 
-      const fileStat = await fileSystem.stat('/shape/file.txt');
-      const fileLstat = await fileSystem.lstat('/shape/file.txt');
+      const fileStat = await fileSystem.stat('shape/file.txt');
+      const fileLstat = await fileSystem.lstat('shape/file.txt');
       // `contentKind` is deliberately outside the shared contract: content-backed
       // adapters classify the bytes ('text' plus `lineCount`), native-stat
       // adapters report 'binary' without reading them.
       expect(fileStat).toMatchObject({ type: 'file', size: 5 });
       expect(fileLstat).toMatchObject({ type: 'file', size: 5 });
       expect(typeof fileStat.mtimeMs).toBe('number');
-      await expect(fileSystem.stat('/shape')).resolves.toMatchObject({
+      await expect(fileSystem.stat('shape')).resolves.toMatchObject({
         type: 'dir',
       });
 
-      await expectCode(fileSystem.stat('/shape/missing.txt'), 'ENOENT');
-      await expectCode(fileSystem.lstat('/shape/missing.txt'), 'ENOENT');
+      await expectCode(fileSystem.stat('shape/missing.txt'), 'ENOENT');
+      await expectCode(fileSystem.lstat('shape/missing.txt'), 'ENOENT');
     } finally {
       fileSystem.dispose();
     }
@@ -464,16 +467,16 @@ describe.each(rows)('$name adapter conformance', (row) => {
     await fs.symlink(path.join(directory, 'target.txt'), path.join(directory, 'link.txt'));
     const fileSystem = inlineBase(_fromNodeFsHandle(directory));
     try {
-      await expect(fileSystem.stat('/link.txt')).resolves.toMatchObject({
+      await expect(fileSystem.stat('link.txt')).resolves.toMatchObject({
         type: 'file',
         size: 6,
       });
-      await expect(fileSystem.lstat('/link.txt')).resolves.toMatchObject({
+      await expect(fileSystem.lstat('link.txt')).resolves.toMatchObject({
         type: 'file',
       });
       // `stat` follows the link, `lstat` describes the link entry itself.
-      const linkStat = await fileSystem.lstat('/link.txt');
-      const targetStat = await fileSystem.stat('/link.txt');
+      const linkStat = await fileSystem.lstat('link.txt');
+      const targetStat = await fileSystem.stat('link.txt');
       expect(linkStat.size).not.toBe(targetStat.size);
     } finally {
       fileSystem.dispose();
@@ -483,13 +486,13 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it('renames a file', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.writeFile('/before.txt', 'moved');
+      await fileSystem.writeFile('before.txt', 'moved');
 
-      await fileSystem.rename('/before.txt', '/after.txt');
+      await fileSystem.rename('before.txt', 'after.txt');
 
-      await expect(fileSystem.readFile('/after.txt', 'utf8')).resolves.toBe('moved');
-      await expect(fileSystem.exists('/before.txt')).resolves.toBe(false);
-      await expectRejection(fileSystem.rename('/never-existed.txt', '/wherever.txt'));
+      await expect(fileSystem.readFile('after.txt', 'utf8')).resolves.toBe('moved');
+      await expect(fileSystem.exists('before.txt')).resolves.toBe(false);
+      await expectRejection(fileSystem.rename('never-existed.txt', 'wherever.txt'));
     } finally {
       fileSystem.dispose();
     }
@@ -498,13 +501,13 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it.runIf(runs(row, 'rename-directories'))('renames a directory with its contents', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.mkdir('/tree/nested', { recursive: true });
-      await fileSystem.writeFile('/tree/nested/leaf.txt', 'leaf');
+      await fileSystem.mkdir('tree/nested', { recursive: true });
+      await fileSystem.writeFile('tree/nested/leaf.txt', 'leaf');
 
-      await fileSystem.rename('/tree', '/moved');
+      await fileSystem.rename('tree', 'moved');
 
-      await expect(fileSystem.readFile('/moved/nested/leaf.txt', 'utf8')).resolves.toBe('leaf');
-      await expect(fileSystem.exists('/tree')).resolves.toBe(false);
+      await expect(fileSystem.readFile('moved/nested/leaf.txt', 'utf8')).resolves.toBe('leaf');
+      await expect(fileSystem.exists('tree')).resolves.toBe(false);
     } finally {
       fileSystem.dispose();
     }
@@ -513,12 +516,12 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it('reports exists false for a missing path and for one under a file parent', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.writeFile('/leaf.txt', 'leaf');
+      await fileSystem.writeFile('leaf.txt', 'leaf');
 
-      await expect(fileSystem.exists('/nowhere.txt')).resolves.toBe(false);
-      await expect(fileSystem.exists('/nowhere/deeper.txt')).resolves.toBe(false);
-      await expect(fileSystem.exists('/leaf.txt/child')).resolves.toBe(false);
-      await expect(fileSystem.exists('/leaf.txt')).resolves.toBe(true);
+      await expect(fileSystem.exists('nowhere.txt')).resolves.toBe(false);
+      await expect(fileSystem.exists('nowhere/deeper.txt')).resolves.toBe(false);
+      await expect(fileSystem.exists('leaf.txt/child')).resolves.toBe(false);
+      await expect(fileSystem.exists('leaf.txt')).resolves.toBe(true);
     } finally {
       fileSystem.dispose();
     }
@@ -529,19 +532,19 @@ describe.each(rows)('$name adapter conformance', (row) => {
     async () => {
       const fileSystem = await row.create();
       try {
-        await fileSystem.mkdir('/full/inner', { recursive: true });
-        await fileSystem.writeFile('/plain.txt', 'plain');
+        await fileSystem.mkdir('full/inner', { recursive: true });
+        await fileSystem.writeFile('plain.txt', 'plain');
 
-        await expectCode(fileSystem.rmdir('/plain.txt'), 'ENOTDIR');
-        await expectCode(fileSystem.rmdir('/full'), 'ENOTEMPTY');
-        await expectCode(fileSystem.rmdir('/absent'), 'ENOENT');
+        await expectCode(fileSystem.rmdir('plain.txt'), 'ENOTDIR');
+        await expectCode(fileSystem.rmdir('full'), 'ENOTEMPTY');
+        await expectCode(fileSystem.rmdir('absent'), 'ENOENT');
 
-        await expect(fileSystem.readFile('/plain.txt', 'utf8')).resolves.toBe('plain');
-        await expect(fileSystem.exists('/full/inner')).resolves.toBe(true);
+        await expect(fileSystem.readFile('plain.txt', 'utf8')).resolves.toBe('plain');
+        await expect(fileSystem.exists('full/inner')).resolves.toBe(true);
 
-        await fileSystem.rmdir('/full/inner');
-        await fileSystem.rmdir('/full');
-        await expect(fileSystem.exists('/full')).resolves.toBe(false);
+        await fileSystem.rmdir('full/inner');
+        await fileSystem.rmdir('full');
+        await expect(fileSystem.exists('full')).resolves.toBe(false);
       } finally {
         fileSystem.dispose();
       }
@@ -553,11 +556,11 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it.runIf(runs(row, 'unlink-rejects-directories'))('refuses to unlink a directory', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.mkdir('/keep', { recursive: true });
+      await fileSystem.mkdir('keep', { recursive: true });
 
-      await expectRejection(fileSystem.unlink('/keep'));
+      await expectRejection(fileSystem.unlink('keep'));
 
-      await expect(fileSystem.exists('/keep')).resolves.toBe(true);
+      await expect(fileSystem.exists('keep')).resolves.toBe(true);
     } finally {
       fileSystem.dispose();
     }
@@ -566,10 +569,10 @@ describe.each(rows)('$name adapter conformance', (row) => {
   it.runIf(runs(row, 'writeFile-creates-parents'))('creates missing parents when writing a nested file', async () => {
     const fileSystem = await row.create();
     try {
-      await fileSystem.writeFile('/implicit/parents/file.txt', 'data');
+      await fileSystem.writeFile('implicit/parents/file.txt', 'data');
 
-      await expect(fileSystem.readFile('/implicit/parents/file.txt', 'utf8')).resolves.toBe('data');
-      await expect(fileSystem.stat('/implicit/parents')).resolves.toMatchObject({ type: 'dir' });
+      await expect(fileSystem.readFile('implicit/parents/file.txt', 'utf8')).resolves.toBe('data');
+      await expect(fileSystem.stat('implicit/parents')).resolves.toMatchObject({ type: 'dir' });
     } finally {
       fileSystem.dispose();
     }
@@ -580,17 +583,17 @@ describe.each(rows)('$name adapter conformance', (row) => {
     async () => {
       const fileSystem = await row.create();
       const operations: ReadonlyArray<readonly [string, () => Promise<unknown>]> = [
-        ['readFile', async () => fileSystem.readFile('/../outside.txt')],
-        ['writeFile', async () => fileSystem.writeFile('/../outside.txt', 'no')],
-        ['mkdir', async () => fileSystem.mkdir('/../outside')],
-        ['readdir', async () => fileSystem.readdir('/../outside')],
-        ['unlink', async () => fileSystem.unlink('/../outside.txt')],
-        ['stat', async () => fileSystem.stat('/../outside.txt')],
-        ['rmdir', async () => fileSystem.rmdir('/../outside')],
-        ['rename source', async () => fileSystem.rename('/../outside.txt', '/safe.txt')],
-        ['rename destination', async () => fileSystem.rename('/safe.txt', '/../outside.txt')],
-        ['lstat', async () => fileSystem.lstat('/../outside.txt')],
-        ['exists', async () => fileSystem.exists('/../outside.txt')],
+        ['readFile', async () => fileSystem.readFile('../outside.txt')],
+        ['writeFile', async () => fileSystem.writeFile('../outside.txt', 'no')],
+        ['mkdir', async () => fileSystem.mkdir('../outside')],
+        ['readdir', async () => fileSystem.readdir('../outside')],
+        ['unlink', async () => fileSystem.unlink('../outside.txt')],
+        ['stat', async () => fileSystem.stat('../outside.txt')],
+        ['rmdir', async () => fileSystem.rmdir('../outside')],
+        ['rename source', async () => fileSystem.rename('../outside.txt', 'safe.txt')],
+        ['rename destination', async () => fileSystem.rename('safe.txt', '../outside.txt')],
+        ['lstat', async () => fileSystem.lstat('../outside.txt')],
+        ['exists', async () => fileSystem.exists('../outside.txt')],
       ];
 
       try {
@@ -608,7 +611,7 @@ describe.each(rows)('$name adapter conformance', (row) => {
 
   it('disposes idempotently', async () => {
     const fileSystem = await row.create();
-    await fileSystem.writeFile('/disposed.txt', 'x');
+    await fileSystem.writeFile('disposed.txt', 'x');
 
     expect(() => {
       fileSystem.dispose();
@@ -651,26 +654,37 @@ describe.each(rows.filter((row) => runs(row, 'watch')))('$name adapter watch con
         recursive: true,
       });
 
-      const unsubscribe = fileSystem.watch!(
+      const registration = (fileSystem as RuntimeFileSystemBase & WorkerFileSystemProxy).watchReady!(
         {
-          paths: ['/watched.txt', '/.tau/cache/artifact.bin'],
-          excludes: ['/.tau/cache/**'],
+          paths: ['watched.txt', '.tau/cache/artifact.bin'],
+          excludes: ['.tau/cache/**'],
         },
         (event) => events.push(event),
       );
+      await registration.ready;
+      const { unsubscribe } = registration;
 
       await fs.writeFile(path.join(directory, 'watched.txt'), 'two');
-      await settle();
-      expect(events.some((event) => event.type === 'change' && event.path === '/watched.txt')).toBe(true);
+      await vi.waitFor(
+        () => {
+          expect(events.some((event) => event.type === 'change' && event.path === 'watched.txt')).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
 
       events.length = 0;
       await fs.writeFile(path.join(directory, '.tau', 'cache', 'artifact.bin'), 'cached');
       await settle();
-      expect(events).toEqual([]);
+      // A delayed duplicate for watched.txt is allowed; an excluded path or reset is not.
+      expect(events.every((event) => event.type === 'change' && event.path === 'watched.txt')).toBe(true);
 
       await fs.rm(path.join(directory, 'watched.txt'));
-      await settle();
-      expect(events.some((event) => event.type === 'delete' && event.path === '/watched.txt')).toBe(true);
+      await vi.waitFor(
+        () => {
+          expect(events.some((event) => event.type === 'delete' && event.path === 'watched.txt')).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
 
       expect(() => {
         unsubscribe();
@@ -689,7 +703,7 @@ describe.each(rows.filter((row) => runs(row, 'watch')))('$name adapter watch con
   it('rejects a watch path that escapes the root', async () => {
     const fileSystem = await row.create();
     try {
-      expect(() => fileSystem.watch!({ paths: ['/../outside.txt'] }, () => undefined)).toThrow(
+      expect(() => fileSystem.watch!({ paths: ['../outside.txt'] }, () => undefined)).toThrow(
         expect.objectContaining({ code: 'PATH_OUTSIDE_ROOT' }),
       );
     } finally {
