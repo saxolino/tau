@@ -92,11 +92,22 @@ function CopyButton({ getValue, isDisabled }: { getValue: () => string | undefin
 
 /** Bridge controlled custom renderers to the sign-up form's FormData submission. */
 function CustomAdditionalField({ name, field, isPending }: AdditionalFieldProps) {
-  const [value, setValue] = useState(() => getAdditionalFieldDefaultValue(field));
-  const [error, setError] = useState<string>();
-
+  const [state, setState] = useState<{
+    value: ReturnType<typeof getAdditionalFieldDefaultValue>;
+    error: string | undefined;
+    validation: symbol | undefined;
+  }>(() => ({
+    value: getAdditionalFieldDefaultValue(field),
+    error: undefined,
+    validation: undefined,
+  }));
+  const { value, error } = state;
   const handleBlur = async () => {
-    setError(await validateAdditionalFieldValue(field, value));
+    // A new blur or value change invalidates every earlier asynchronous result.
+    const validation = Symbol('blur validation');
+    setState((current) => ({ ...current, validation }));
+    const validationError = await validateAdditionalFieldValue(field, value);
+    setState((current) => (current.validation === validation ? { ...current, error: validationError } : current));
   };
 
   return (
@@ -119,7 +130,9 @@ function CustomAdditionalField({ name, field, isPending }: AdditionalFieldProps)
         name,
         field,
         value,
-        onChange: setValue,
+        onChange(nextValue) {
+          setState({ value: nextValue, error: undefined, validation: undefined });
+        },
         onBlur() {
           void handleBlur();
         },
