@@ -630,7 +630,7 @@ impl AuthenticatedOverlapCache {
                 .bytes
                 .saturating_add(content_bytes)
                 .saturating_add(action_bytes);
-            projected <= self.limits.bytes && inventory.entries + 1 <= self.limits.actions
+            projected <= self.limits.bytes && inventory.entries < self.limits.actions
         };
         if fits(&inventory) {
             return Ok(());
@@ -971,7 +971,7 @@ fn domain_id(domain: &[u8], secret: &[u8]) -> String {
 }
 
 fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
-    getrandom::getrandom(bytes)
+    getrandom::fill(bytes)
         .map_err(|error| io::Error::other(format!("operating-system randomness failed: {error}")))
 }
 
