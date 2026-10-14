@@ -63,6 +63,7 @@ vi.mock('#graphics/three/renderer.js', () => ({
     }
     let pixelRatio = 1;
     return {
+      dispose: vi.fn(),
       coordinateSystem: WebGLCoordinateSystem,
       getPixelRatio: () => pixelRatio,
       setPixelRatio(value: number) {
