@@ -403,7 +403,7 @@ export const createProjectTaskBackend = (
         code: 'TASK_BUSY',
       });
     }
-    await waitForTaskLeaseRetirement(options.placement, task.chatId, runId);
+    await waitForTaskLeaseRetirement(options.placement, task.chatId, { runId });
     options.released(attempt.runId ?? attempt.id, allocation.checkoutId);
   },
   reconcile: async ({ task, attempt }) => {
@@ -426,7 +426,7 @@ export const createProjectTaskBackend = (
         );
       };
       if (ended(await options.launcher().host.ledger(task.chatId))) {
-        await waitForTaskLeaseRetirement(options.placement, task.chatId, runId);
+        await waitForTaskLeaseRetirement(options.placement, task.chatId, { runId });
         return undefined;
       }
       for await (const { ledger } of followChat(options.launcher().read, task.chatId, {
@@ -434,7 +434,7 @@ export const createProjectTaskBackend = (
         until: ended,
       })) {
         if (ended(ledger)) {
-          await waitForTaskLeaseRetirement(options.placement, task.chatId, runId);
+          await waitForTaskLeaseRetirement(options.placement, task.chatId, { runId });
           return undefined;
         }
       }
@@ -448,27 +448,31 @@ export const createProjectTaskBackend = (
  * Observe retirement through the existing placement owner: the settlement row precedes its acknowledgement.
  * @param placement - The same port that admitted and settles the run.
  * @param chatId - The authenticated task chat.
- * @param runId - The admitted run whose reservation is retained until acknowledgement.
+ * @param run - The admitted run and optional follower signal; the reservation is retained until acknowledgement.
  * @returns Once the existing owner confirms that it holds no lease for the run.
  * @internal
  */
 export const waitForTaskLeaseRetirement = async (
   placement: TurnPlacementPort,
   chatId: string,
-  runId: string,
+  run: { runId: string; signal?: AbortSignal },
 ): Promise<void> => {
-  const deadline = Date.now() + 1000;
+  const { runId, signal } = run;
+  const deadline = signal === undefined ? Date.now() + 1000 : undefined;
   for (;;) {
+    signal?.throwIfAborted();
     // oxlint-disable-next-line no-await-in-loop -- each owner observation must follow the prior acknowledgement opportunity.
     const answer = await placement.reconcile({ requestId: `task-release-${runId}`, chatId });
+    signal?.throwIfAborted();
     if (answer.status === 'applied' && !answer.held.some((entry) => entry.key.runId === runId)) {
       return;
     }
-    if (answer.status !== 'applied' || Date.now() >= deadline) {
+    if (answer.status !== 'applied' || (deadline !== undefined && Date.now() >= deadline)) {
       throw Object.assign(
         new Error('The task placement has not acknowledged retirement; its reservation remains held.'),
         {
           code: 'TASK_BUSY',
+          ...(answer.status === 'applied' ? {} : { cause: answer }),
         },
       );
     }

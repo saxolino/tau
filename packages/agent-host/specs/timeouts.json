@@ -903,7 +903,7 @@
     },
     {
       "id": "PT10",
-      "bound": "Exact existing placement lease acknowledgement retry spacing: answered applied/held queries retried serially every 25 ms for at most 1 s; refusal or still-held lease answers TASK_BUSY and retains uncertainty",
+      "bound": "Placement lease acknowledgement retry spacing: answered applied/held queries retry serially every 25 ms. Refusal answers TASK_BUSY and retains uncertainty; synchronous backend operations also retain the 1 s bound. The autonomous root follower waits under its existing 24 h lifetime and host-close signal, retaining the reservation until acknowledgement",
       "site": "packages/host/src/project-task-integration.ts",
       "token": "setTimeout(resolve, 25)",
       "class": "Backoff",

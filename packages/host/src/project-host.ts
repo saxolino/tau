@@ -210,6 +210,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     return tasks;
   };
   const taskFollowers = new Map<string, Promise<void>>();
+  const stopTaskFollowers = new AbortController();
   const ownerClosed = Promise.withResolvers<void>();
   const trackTask = (coordinator: ProjectTaskCoordinator, task: ProjectTask, runId: string): void => {
     const attemptId = task.attempts.at(-1)!.id;
@@ -217,6 +218,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
       return;
     }
     const follow = async (): Promise<void> => {
+      const signal = AbortSignal.any([stopTaskFollowers.signal, AbortSignal.timeout(24 * 60 * 60_000)]);
       try {
         const rootSettled = (ledger: ChatLedger): boolean => {
           const run = ledger.runs[runId];
@@ -227,25 +229,30 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
           );
         };
         for await (const { ledger } of followChat(launcher.read, task.chatId, {
-          signal: AbortSignal.timeout(24 * 60 * 60_000),
+          signal,
           until: rootSettled,
         })) {
           const run = ledger.runs[runId];
           if (run !== undefined && rootSettled(ledger)) {
-            await waitForTaskLeaseRetirement(turnPlacement, task.chatId, runId);
+            await waitForTaskLeaseRetirement(turnPlacement, task.chatId, { runId, signal });
+            signal.throwIfAborted();
             await coordinator.finishRoot({
               taskId: task.id,
               attemptId,
               status:
                 run.lifecycle === 'completed' ? 'completed' : run.lifecycle === 'cancelled' ? 'cancelled' : 'failed',
             });
-            break;
+            return;
           }
         }
+        signal.throwIfAborted();
       } catch (error) {
         /* Shutdown has already settled the coordinator before closing its journal; a delayed follower cannot
          * finish that same record again. Other settlement failures, including a held lease, remain visible. */
-        if (!(closing !== undefined && error instanceof Error && 'code' in error && error.code === 'TASK_CLOSED')) {
+        if (
+          !stopTaskFollowers.signal.aborted &&
+          !(closing !== undefined && error instanceof Error && 'code' in error && error.code === 'TASK_CLOSED')
+        ) {
           console.error('[project tasks] root settlement tracking failed', error);
         }
       } finally {
@@ -565,6 +572,8 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
          * opening one, in which case that owner still needs the close below. */
       }
     }
+    stopTaskFollowers.abort();
+    await Promise.allSettled(taskFollowers.values());
     if (taskOwner !== undefined) {
       try {
         await taskOwner.close();

@@ -64,7 +64,7 @@ describe('task placement retirement proof', () => {
       held: [{ key: { chatId: 'chat', runId: 'run', turnId: 'turn', attempt: 1 }, checkoutId: 'candidate' }],
     });
     placement.reconcile.mockResolvedValue({ requestId: 'task-release-run', status: 'applied', held: [] });
-    await waitForTaskLeaseRetirement(placement, 'chat', 'run');
+    await waitForTaskLeaseRetirement(placement, 'chat', { runId: 'run' });
     expect(placement.reconcile).toHaveBeenCalledTimes(2);
   });
 
@@ -77,11 +77,54 @@ describe('task placement retirement proof', () => {
         status: 'applied',
         held: [{ key: { chatId: 'chat', runId: 'run', turnId: 'turn', attempt: 1 }, checkoutId: 'candidate' }],
       });
-      const waiting = expect(waitForTaskLeaseRetirement(placement, 'chat', 'run')).rejects.toMatchObject({
+      const waiting = expect(waitForTaskLeaseRetirement(placement, 'chat', { runId: 'run' })).rejects.toMatchObject({
         code: 'TASK_BUSY',
       });
       await vi.advanceTimersByTimeAsync(1000);
       await waiting;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('keeps a root follower waiting past the synchronous bound and exits on its lifetime signal', async () => {
+    vi.useFakeTimers();
+    try {
+      const placement = mock<TurnPlacementPort>();
+      let held = true;
+      placement.reconcile.mockImplementation(async ({ requestId }) => ({
+        requestId,
+        status: 'applied',
+        held: held ? [{ key: { chatId: 'chat', runId: 'run', turnId: 'turn', attempt: 1 }, checkoutId: 'live' }] : [],
+      }));
+      const controller = new AbortController();
+      const waiting = expect(
+        waitForTaskLeaseRetirement(placement, 'chat', { runId: 'run', signal: controller.signal }),
+      ).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1500);
+      held = false;
+      await vi.advanceTimersByTimeAsync(25);
+      await waiting;
+
+      held = true;
+      const aborted = expect(
+        waitForTaskLeaseRetirement(placement, 'chat', { runId: 'run', signal: controller.signal }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      controller.abort();
+      await aborted;
+
+      const refused = mock<TurnPlacementPort>();
+      refused.reconcile.mockResolvedValue({
+        requestId: 'task-release-run',
+        status: 'refused',
+        code: 'SESSION_FENCED',
+        message: 'Unavailable.',
+      });
+      await expect(
+        waitForTaskLeaseRetirement(refused, 'chat', { runId: 'run', signal: new AbortController().signal }),
+      ).rejects.toMatchObject({
+        code: 'TASK_BUSY',
+        cause: { status: 'refused', code: 'SESSION_FENCED' },
+      });
     } finally {
       vi.useRealTimers();
     }
