@@ -45,6 +45,6 @@ for(const route of ['/projects/new','/legal','/legal/terms','/workflows','/githu
 await page.setViewportSize({width:2560,height:1440});
 for(const route of ['/community','/projects/new']){await open(route);await capture(route,'wide-dark');}
 await browser.close();
-const failures=metrics.filter(m=>m.main!==1||m.headings.length!==1||m.documentWidth>m.viewport||m.headings[0].font!=='36px'||m.headings[0].weight!=='500'||m.title==='Tau');
+const failures=metrics.filter(m=>m.main!==1||m.headings.length!==1||m.documentWidth>m.viewport||m.scrollers.some(s=>s.overflow>0)||m.headings[0].font!=='36px'||m.headings[0].weight!=='500'||m.title==='Tau');
 console.log('Failures:',JSON.stringify(failures));
 if(failures.length)process.exitCode=1;

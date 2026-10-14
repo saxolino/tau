@@ -29,7 +29,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Verify UI source matches PR 600
-        run: git diff --exit-code e13a98f2b186da045f6e08365de55ff7aba957a0 -- apps/ui apps/ui-e2e
+        run: git diff --exit-code b1c66e15a -- apps/ui apps/ui-e2e
       - name: Setup Nx
         uses: ./.github/actions/setup-nx
         with:
