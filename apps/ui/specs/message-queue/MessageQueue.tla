@@ -119,6 +119,10 @@ Deliver(t) == LET m == s.prepared
 \* Local actor-live, abort and in-lock session guards further restrict runtime
 \* sends; deletion and optional filesystem watch availability are outside this
 \* retained-session safety model. See README for the runtime conformance slice.
+\* Acknowledge is the atomic durable queue/barrier write. The runtime holds its
+\* local session while that write is pending, even if the host log reports a
+\* paused run and the last view closes. That local lifetime is outside s; the
+\* runtime regression exercises the await between acceptance and this action.
 Acknowledge(t) == /\ t = s.owner /\ s.prepared # None /\ s.prepared \in Accepted
                   /\ s' = [s EXCEPT !.queue = Remove(@, s.prepared),
                      !.saved = IF Durable THEN Remove(@, s.prepared) ELSE @,
