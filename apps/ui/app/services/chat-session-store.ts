@@ -2964,6 +2964,7 @@ export class ChatSessionStore {
       !opensRun(phase) &&
       (phase !== 'paused' || !session.commandInFlight)
     ) {
+      // The SDK stream closes on pause; ACP can continue the same attempt after approval.
       session.watch?.stop();
       session.watch = undefined;
       session.watchedRunId = undefined;

@@ -185,6 +185,8 @@ vi.mock('electron', () => ({
     }),
   },
   MessageChannelMain: vi.fn(() => ({ port1: {}, port2: {} })),
+  Menu: { getApplicationMenu: vi.fn(() => undefined) },
+  MenuItem: vi.fn(),
   net: { fetch: vi.fn() },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
   safeStorage: { isEncryptionAvailable: vi.fn(() => false), encryptString: vi.fn(), decryptString: vi.fn() },
@@ -1300,6 +1302,36 @@ describe('packaged staging profile initialization', () => {
       expect(app.requestSingleInstanceLock).toHaveBeenCalledOnce();
       expect(app.setName).toHaveBeenCalledWith('Tau Staging');
       expect(app.setName).not.toHaveBeenCalledWith('Tau');
+      const { net } = await import('electron');
+      await vi.waitFor(() => {
+        expect(net.fetch).toHaveBeenCalledWith(
+          `https://downloads.taucad.dev/latest/desktop-update-${process.platform}-${process.arch}.json`,
+        );
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('should keep automatic updates disabled for an ad-hoc staging preview', async () => {
+    vi.stubGlobal('tauCloudBuildEnabled', false);
+    const root = await mkdtemp(join(tmpdir(), 'tau-staging-preview-'));
+    state.userData = root;
+    app.isPackaged = true;
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ tauDesktop: { channel: 'staging', environmentOverrides: true } }),
+    );
+    Object.defineProperty(process, 'resourcesPath', { configurable: true, value: root });
+    try {
+      await import('#main/main.js');
+      await vi.waitFor(() => {
+        expect(state.log).toHaveBeenCalledWith('info', 'updater.disabled', { packaged: true, channel: 'staging' });
+      });
+      const { net } = await import('electron');
+      expect(net.fetch).not.toHaveBeenCalledWith(
+        `https://downloads.taucad.dev/latest/desktop-update-${process.platform}-${process.arch}.json`,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
