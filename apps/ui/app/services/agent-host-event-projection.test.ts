@@ -736,6 +736,7 @@ describe('projectAgentHostEvent', () => {
           interruptId: 'approval-1',
           kind: 'approval',
           prompt: 'write hello.txt',
+          request: { title: 'write hello.txt', input: undefined },
           options: [
             { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
             { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
@@ -744,6 +745,30 @@ describe('projectAgentHostEvent', () => {
       },
       { type: 'tool-approval-request', approvalId: 'approval-1', toolCallId: 'approval-1' },
     ]);
+  });
+
+  it('retains full input and readable elicitation content instead of only an opaque ID', () => {
+    const input = { serverName: 'cua_repl', schema: { type: 'object', properties: {} } };
+    const [part] = projectAgentHostEvent({
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'app-permission',
+      phase: 'requested',
+      reason: 'Allow elicitation:opaque?',
+      payload: {
+        prompt: 'Allow elicitation:opaque?',
+        context: {
+          toolCall: {
+            rawInput: input,
+            content: [{ type: 'content', content: { type: 'text', text: 'Allow Computer Use to use Tau?' } }],
+          },
+        },
+      },
+    });
+    expect(part).toMatchObject({
+      type: 'tool-input-available',
+      input: { request: { title: 'Allow Computer Use to use Tau?', input } },
+    });
   });
 
   it('carries the ledger correlation a print request attaches, and nothing else from its context', () => {
