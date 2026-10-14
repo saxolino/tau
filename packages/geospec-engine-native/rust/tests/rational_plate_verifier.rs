@@ -52,6 +52,11 @@ fn dependency_successor_binds_source_and_complete_lock_without_rewriting_v6() {
         .filter(|r| !r["path"].as_str().unwrap().starts_with("crates/"))
         .collect();
     assert_eq!(sources.len(), 9);
+    assert_eq!(
+        old_sources.len(),
+        sources.len(),
+        "complete historical source inventory"
+    );
     for (row, old) in sources.iter().zip(old_sources) {
         assert_eq!(row["path"], old["path"], "same owning source inventory");
         let path = row["path"].as_str().unwrap();
