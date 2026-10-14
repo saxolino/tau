@@ -106,8 +106,10 @@ function InvitationNotice({
 const withDesktopOffer = (body: React.ReactNode): React.JSX.Element => (
   <PageContent className='space-y-6'>
     <PageHeader title='Project invitation' />
-    {body}
-    <OpenInDesktop continueLabel='Accept in the browser' />
+    <div className='flex flex-col items-center gap-6'>
+      {body}
+      <OpenInDesktop continueLabel='Accept in the browser' />
+    </div>
   </PageContent>
 );
 
