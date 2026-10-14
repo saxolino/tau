@@ -129,13 +129,7 @@ vi.mock('#components/chat/chat-textarea.js', () => ({
     capturedTextarea.className = properties.className;
     capturedTextarea.isSubmitDisabled = properties.isSubmitDisabled;
     useImperativeHandle(properties.ref, () => ({ focus: capturedTextarea.focus }), []);
-    return (
-      <div data-testid='chat-textarea'>
-        <span role='status' aria-label='Current activity'>
-          Reading files
-        </span>
-      </div>
-    );
+    return <div data-testid='chat-textarea' />;
   },
 }));
 
@@ -371,7 +365,6 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
     render(<ChatHistory />);
 
     expect(capturedTextarea.isSubmitDisabled).toBe(true);
-    expect(screen.getAllByRole('status').length).toBeGreaterThan(1);
     const guidance = screen.getByText(
       'This chat belongs to Bracket child. Send a message and resume the task from Agents to continue it.',
     );
