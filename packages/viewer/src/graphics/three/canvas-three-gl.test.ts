@@ -177,7 +177,7 @@ describe('createTauR3fGlProp', () => {
     expect(setPixelRatio.mock.calls).toEqual([[2], [1]]);
   });
 
-  it('should report renderer creation failure and never settle so R3F leaves no unhandled rejection', async () => {
+  it('should report renderer creation failure and reject so R3F can finish teardown', async () => {
     const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
     const failure = new Error('Error creating WebGL context.');
     hoisted.createRenderer.mockRejectedValue(failure);
@@ -191,22 +191,7 @@ describe('createTauR3fGlProp', () => {
     const first = glFactory({ canvas });
     const second = glFactory({ canvas });
     const third = glFactory({ canvas });
-    const settlement = async (): Promise<'settled'> => {
-      try {
-        await Promise.all([first, second, third]);
-      } catch {
-        return 'settled';
-      }
-      return 'settled';
-    };
-    const stillPending = async (): Promise<'pending'> => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 20);
-      });
-      return 'pending';
-    };
-
-    expect(await Promise.race([settlement(), stillPending()])).toBe('pending');
+    await expect(Promise.all([first, second, third])).rejects.toBe(failure);
     expect(onCreateError).toHaveBeenCalledWith(failure);
     expect(onCreateError).toHaveBeenCalledOnce();
     expect(hoisted.createRenderer).toHaveBeenCalledOnce();
@@ -236,12 +221,7 @@ describe('createTauR3fGlProp', () => {
     const canvas = document.createElement('canvas');
     document.body.append(canvas);
     factory.bindCanvas(canvas);
-    let settled = false;
-    const trackSettlement = async (): Promise<void> => {
-      await factory({ canvas });
-      settled = true;
-    };
-    const pendingSettlement = trackSettlement();
+    const pendingSettlement = expect(factory({ canvas })).rejects.toThrow('retired initialization failed');
     canvas.remove();
     factory.bindCanvas(undefined);
     rejectCreation!(new Error('retired initialization failed'));
@@ -249,9 +229,8 @@ describe('createTauR3fGlProp', () => {
     await Promise.resolve();
     expect(factory.isRetired()).toBe(true);
     expect(onCreateError).not.toHaveBeenCalled();
-    expect(settled).toBe(false);
-    expect(pendingSettlement).toBeInstanceOf(Promise);
-    void factory({ canvas });
+    await pendingSettlement;
+    await expect(factory({ canvas })).rejects.toThrow('retired initialization failed');
     expect(hoisted.createRenderer).toHaveBeenCalledOnce();
     const replacement = { setPixelRatio: vi.fn(), getPixelRatio: () => 1 };
     hoisted.createRenderer.mockResolvedValueOnce(replacement);

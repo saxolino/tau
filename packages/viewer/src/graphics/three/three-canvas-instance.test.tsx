@@ -291,9 +291,10 @@ describe('ThreeCanvasInstance', () => {
     }
 
     await act(async () => {
-      // Never settles by design: R3F keeps waiting while the owner swaps in its fallback.
-      void glFactory({ canvas: document.createElement('canvas') });
-      await Promise.resolve();
+      // The real Canvas catches configure rejection while the owner renders its fallback.
+      await expect(glFactory({ canvas: document.createElement('canvas') })).rejects.toThrow(
+        'Error creating WebGL context.',
+      );
     });
 
     expect(await screen.findByText('3D rendering failed')).toBeInTheDocument();
