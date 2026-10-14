@@ -988,6 +988,8 @@ export type AgentHostApproval = {
    * write nothing.
    */
   readonly context?: AgentHostApprovalContext | undefined;
+  /** Structured request facts retained for compact presentation and Debug inspection. */
+  readonly request?: { readonly title?: string | undefined; readonly input?: unknown } | undefined;
 };
 
 /** Ledger correlation a tool attaches to the interrupt it raises. @public */
@@ -1035,8 +1037,9 @@ const interruptRequestSchema = z.looseObject({
   agentId: z.string().optional(),
   context: z
     .looseObject({
-      toolCall: z.looseObject({ title: z.string().optional() }).optional(),
+      toolCall: z.looseObject({ title: z.string().optional(), rawInput: z.json().optional() }).optional(),
       options: z.array(approvalOptionSchema).optional(),
+      input: z.json().optional(),
       requestId: z.string().min(1).optional(),
       machineId: z.string().min(1).optional(),
       fileName: z.string().min(1).optional(),
@@ -1139,6 +1142,7 @@ const agentHostApprovalSchema = z.object({
   agentId: z.string().optional(),
   login: agentHostLoginSchema.optional(),
   context: agentHostApprovalContextSchema.optional(),
+  request: z.object({ title: z.string().optional(), input: z.json().optional() }).optional(),
 });
 
 /**
@@ -1165,6 +1169,16 @@ const approvalChunks = (
   const request = interruptRequestSchema.safeParse(event.payload).data;
   const login = loginOf(event.payload);
   const context = approvalContextOf(request?.context);
+  const content = request?.context?.toolCall?.['content'];
+  const description = Array.isArray(content)
+    ? content
+        .flatMap((block: unknown) =>
+          isRecord(block) && isRecord(block['content']) && typeof block['content']['text'] === 'string'
+            ? [block['content']['text']]
+            : [],
+        )
+        .join('\n')
+    : undefined;
   const input: AgentHostApproval = {
     interruptId: event.interruptId,
     kind: request?.kind ?? 'approval',
@@ -1177,6 +1191,14 @@ const approvalChunks = (
     ...(request?.agentId === undefined ? {} : { agentId: request.agentId }),
     ...(login === undefined ? {} : { login }),
     ...(context === undefined ? {} : { context }),
+    ...(request?.context?.toolCall === undefined && request?.context?.input === undefined
+      ? {}
+      : {
+          request: {
+            title: request.context.toolCall?.title ?? (description === '' ? undefined : description),
+            input: request.context.input ?? request.context.toolCall?.rawInput,
+          },
+        }),
   };
   return [
     {
