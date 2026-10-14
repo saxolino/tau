@@ -1,0 +1,19 @@
+[
+  "Desktop 1280×720: editable name, selectable kernel and reachable enabled Create action",
+  "Mobile 390×844: kernel accordion and bottom actions remain reachable",
+  "Cookie preferences hash still opens its dialog",
+  {
+    "wideDesktopHeaderParity": [
+      {
+        "x": 640,
+        "y": 56,
+        "font": "36px"
+      },
+      {
+        "x": 640,
+        "y": 56,
+        "font": "36px"
+      }
+    ]
+  }
+]
