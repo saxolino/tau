@@ -99,7 +99,7 @@ runs:
     # so pull requests restore the shared entry instead of each storing gigabytes.
     - name: Restore retained OCCT and toolchain preparation
       id: preparation
-      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: geospec-preparation-v1-${{ steps.generation.outputs.generation }}
         path: node_modules/.cache/geospec-engine-native/delivery-wasm-eh/generations
@@ -107,7 +107,7 @@ runs:
     # Source-kit assembly reads the locked crates' licence material offline from this registry.
     - name: Restore the Cargo registry for the locked crate graphs
       id: cargo
-      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: geospec-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/geospec-engine-native/rust/Cargo.lock', 'packages/geospec-engine-native/bindings/*/Cargo.lock', 'packages/geospec-engine-native/native/**/Cargo.lock') }}
         path: |

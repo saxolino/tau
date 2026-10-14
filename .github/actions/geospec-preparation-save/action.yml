@@ -41,14 +41,14 @@ runs:
 
     - name: Save the OCCT and toolchain preparation
       if: inputs.preparation-hit != 'true'
-      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: geospec-preparation-v1-${{ inputs.generation }}
         path: node_modules/.cache/geospec-engine-native/delivery-wasm-eh/generations
 
     - name: Save the Cargo registry
       if: inputs.cargo-hit != 'true'
-      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: geospec-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/geospec-engine-native/rust/Cargo.lock', 'packages/geospec-engine-native/bindings/*/Cargo.lock', 'packages/geospec-engine-native/native/**/Cargo.lock') }}
         path: |
