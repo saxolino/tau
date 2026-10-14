@@ -2676,13 +2676,15 @@ export class ChatSessionStore {
       session.watchedRunId !== undefined &&
       session.watchedRunId === run?.runId &&
       !opensRun(phase) &&
-      phase !== 'paused'
+      (phase !== 'paused' || !session.commandInFlight)
     ) {
       session.watch?.stop();
       session.watch = undefined;
       session.watchedRunId = undefined;
       this.#materializeProjectedTranscript(session, projection);
-      this.#scheduleRunReleaseIfTerminal(session);
+      if (phase !== 'paused') {
+        this.#scheduleRunReleaseIfTerminal(session);
+      }
     }
     if (session.status === 'error') {
       this.#recoverPresentation(session);

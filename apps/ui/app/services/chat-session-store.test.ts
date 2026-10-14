@@ -1520,6 +1520,79 @@ describe('ChatSessionStore — host command/watch cutover (PV-S10/S11)', () => {
     unpublish();
   });
 
+  it('should retire a watch that starts after a pause folded before the Start acknowledgement', async () => {
+    const store = createStore();
+    const chatId = 'chat_pause_before_ack';
+    const projectId = 'project_pause_before_ack';
+    const runId = 'run_pause_before_ack';
+    const message: MyUIMessage = {
+      id: 'user_pause_before_ack',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Start' }],
+    };
+    const command: HostCommand = {
+      type: 'start',
+      commandId: 'req_pause_before_ack',
+      payload: {
+        chatId,
+        runId,
+        message: { id: message.id, role: 'user', content: 'Start' },
+        trigger: 'submit',
+      },
+    };
+    const reply = Promise.withResolvers<CommandAnswer>();
+    const hostCommand = vi.fn(async () => reply.promise);
+    const unpublish = store.publishProjectHostConnector(projectId, async () =>
+      mock<AgentHostClient>({
+        catchUp: writerOwnedCatchUp,
+        hostCommand,
+        close: async () => undefined,
+        subscribe: () => () => undefined,
+        subscribeLive: () => () => undefined,
+      }),
+    );
+    startTurnOwner(store, projectId);
+    store.acquire(chatId, projectId);
+    const unpublishAdmission = publishChatTurnAdmission(chatId, async () => ({
+      runId,
+      leaseTurnId: undefined,
+      request: { kind: 'send', message, command },
+    }));
+    const requested = store.requestTurn(chatId, { kind: 'send', message });
+    try {
+      await vi.waitFor(() => {
+        expect(hostCommand).toHaveBeenCalledExactlyOnceWith(command);
+      });
+      publishLogRows(store, chatId, [
+        {
+          ...lifecycleRow(0, 'admitted', runId),
+          admission: { kind: 'tau', turnId: message.id, message: command.payload.message },
+        },
+        lifecycleRow(1, 'running', runId),
+        lifecycleRow(2, 'paused', runId),
+      ]);
+      expect(store.getProjection(chatId)?.ledger.runs[runId]?.lifecycle).toBe('paused');
+      reply.resolve({ commandId: command.commandId, generation: 1, status: 'applied', effect: 'durable', cursor: 3 });
+      await requested;
+      const chat = harness.created.find((entry) => entry.id === chatId)!;
+      await vi.waitFor(() => {
+        expect(chat.sendMessage).toHaveBeenCalledOnce();
+      });
+      finishRun(chat);
+      publishLogRows(store, chatId, [logRow(3, { runId, type: 'run.lifecycle', state: 'running', attempt: 2 })], 3);
+      await vi.waitFor(() => {
+        expect(chat.resumeStream).toHaveBeenCalledOnce();
+      });
+      expect(hostCommand).toHaveBeenCalledOnce();
+    } finally {
+      reply.resolve({ commandId: command.commandId, generation: 1, status: 'applied', effect: 'durable', cursor: 3 });
+      publishLogRows(store, chatId, [lifecycleRow(4, 'completed', runId)], 4);
+      unpublishAdmission();
+      unpublish();
+      store.release(chatId);
+    }
+  });
+
   for (const runningBeforeAck of [false, true]) {
     it(`should watch a resumed attempt only after its running row ${runningBeforeAck ? 'already folded' : 'arrives later'}`, async () => {
       const store = createStore();
