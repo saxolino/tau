@@ -582,7 +582,7 @@ describe('nested Tau CAD execution through actual ACP and runtime', () => {
       toolInputs: string[];
       protocol: Array<{ direction: string; method?: string; update?: string }>;
       cadResult: unknown;
-      tasks: Array<{ provider: string; depth: number; status: string }>;
+      tasks: Array<{ id: string; provider: string; depth: number; status: string }>;
       messages: Array<{ text: string }>;
     };
     expect(proof.model).toBe('scripted');
@@ -590,8 +590,8 @@ describe('nested Tau CAD execution through actual ACP and runtime', () => {
     expect(proof.part).toBe('cube(12);\n');
     expect(proof.livePartAbsent).toBe(true);
     expect(proof.taskContext).toMatchObject({ projectId: 'project-task-integration' });
-    expect(proof.taskContext.taskId).toMatch(/^task-/u);
-    expect(proof.taskContext.parentTaskId).toMatch(/^task-/u);
+    expect(proof.taskContext.taskId).toBe(proof.tasks.find((task) => task.depth === 1)?.id);
+    expect(proof.taskContext.parentTaskId).toBe(proof.tasks.find((task) => task.depth === 0)?.id);
     expect(proof.taskContext.attemptNumber).toBe(1);
     expect(proof.taskContext.candidateCheckoutId).toBeTruthy();
     expect(proof.taskContext.sourceRevisionId).toBeTruthy();
