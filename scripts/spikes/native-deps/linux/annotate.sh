@@ -14,38 +14,42 @@ fi
 node --input-type=module - "$1" "$2" <<'NODE'
 import { readFileSync } from 'node:fs';
 
-const [title, file] = process.argv.slice(2);
-const escapeData = (text) => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
-const property = escapeData(title).replaceAll(':', '%3A').replaceAll(',', '%2C');
-let text;
-try {
-  text = readFileSync(file, 'utf8');
-} catch (error) {
-  if (error.code !== 'ENOENT') throw error;
-  console.log(`::warning title=${property}::no summary file ${escapeData(file)}`);
-  process.exit(0);
-}
-// Bound notices by UTF-8 bytes without splitting a code point. Keep the nine-notice cap.
-let body = '';
-let bytes = 0;
-let index = 0;
-const emit = () => {
-  index += 1;
-  console.log(`::notice title=${property} (${index})::${escapeData(body)}`);
-  body = '';
-  bytes = 0;
-};
-for (const character of text) {
-  const size = Buffer.byteLength(character);
-  if (bytes + size > 3800) {
-    emit();
-    if (index === 9) {
-      console.log(`::warning title=${property}::summary truncated after 9 notices`);
-      process.exit(0);
-    }
+// Return normally so Node drains stdout when annotations are piped to a slower reader.
+const annotate = () => {
+  const [title, file] = process.argv.slice(2);
+  const escapeData = (text) => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+  const property = escapeData(title).replaceAll(':', '%3A').replaceAll(',', '%2C');
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    console.log(`::warning title=${property}::no summary file ${escapeData(file)}`);
+    return;
   }
-  body += character;
-  bytes += size;
-}
-if (body) emit();
+  // Bound notices by UTF-8 bytes without splitting a code point. Keep the nine-notice cap.
+  let body = '';
+  let bytes = 0;
+  let index = 0;
+  const emit = () => {
+    index += 1;
+    console.log(`::notice title=${property} (${index})::${escapeData(body)}`);
+    body = '';
+    bytes = 0;
+  };
+  for (const character of text) {
+    const size = Buffer.byteLength(character);
+    if (bytes + size > 3800) {
+      emit();
+      if (index === 9) {
+        console.log(`::warning title=${property}::summary truncated after 9 notices`);
+        return;
+      }
+    }
+    body += character;
+    bytes += size;
+  }
+  if (body) emit();
+};
+annotate();
 NODE
