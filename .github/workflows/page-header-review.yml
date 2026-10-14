@@ -55,6 +55,7 @@ jobs:
           TAU_DEBUG: 'true'
           PORT: '3027'
         run: |
+          set -o pipefail
           mkdir -p out/research/page-headers
           pnpm nx serve ui --excludeTaskDependencies > out/research/page-headers/serve.log 2>&1 &
           server_pid=$!

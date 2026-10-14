@@ -3,10 +3,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:{width:1280,height:720}});
+// Signed-out API fixture; render the real invitation notice without a live API.
+await context.route('**/v1/auth/get-session**', route => route.fulfill({status:200,contentType:'application/json',body:'null'}));
 const page=await context.newPage();
 const results=[];
 await page.goto('http://localhost:3027/projects/new',{timeout:600000});
-const closeToast=page.getByRole('button',{name:'Close toast',exact:true});
+await page.waitForTimeout(1200);
+ const decline=page.getByRole('button',{name:'Decline',exact:true});
+ if(await decline.isVisible())await decline.click();
+ const closeToast=page.getByRole('button',{name:'Close toast',exact:true});
 if(await closeToast.first().isVisible())await closeToast.first().click();
 await page.getByLabel('Project Name *',{exact:true}).fill('Header review');
 const create=page.getByRole('button',{name:/Create Project/});
@@ -15,8 +20,8 @@ await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(b=>
 assert.equal(await create.isEnabled(),true);
 const buttonBox=await create.boundingBox();
 assert.ok(buttonBox.y+buttonBox.height <=720,'Desktop Create action remains in viewport');
-await page.getByRole('radio',{name:/Replicad/}).click();
-assert.equal(await page.getByRole('radio',{name:/Replicad/}).getAttribute('aria-checked'),'true');
+await page.locator('button[role=radio][id=replicad]').click();
+assert.equal(await page.locator('button[role=radio][id=replicad]').getAttribute('aria-checked'),'true');
 results.push('Desktop 1280×720: editable name, selectable kernel and reachable enabled Create action');
 await page.screenshot({path:'out/research/page-headers/screenshots/projects-new-short-desktop.png'});
 await page.setViewportSize({width:390,height:844});

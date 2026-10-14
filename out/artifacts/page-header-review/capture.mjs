@@ -2,6 +2,8 @@ import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:{width:1440,height:1000},colorScheme:'light',extraHTTPHeaders:{'Sec-GPC':'1'}});
+// Signed-out API fixture; render the real invitation notice without a live API.
+await context.route('**/v1/auth/get-session**', route => route.fulfill({status:200,contentType:'application/json',body:'null'}));
 const page=await context.newPage();
 page.setDefaultTimeout(120000);
 const routes=['/community','/projects/new','/workflows','/legal','/legal/terms','/legal/privacy','/legal/cookies','/legal/acceptable-use','/legal/subprocessors','/legal/open-source','/github/complete','/invitations/header-review','/loader','/loader/glass','/debug/geospec'];
@@ -13,6 +15,9 @@ async function open(route){
  await page.goto('http://localhost:3027'+route,{timeout:180000,waitUntil:'domcontentloaded'});
  await page.getByRole('heading',{level:1}).first().waitFor();
  await page.evaluate(()=>document.fonts.ready);
+ await page.waitForTimeout(1200);
+ const decline=page.getByRole('button',{name:'Decline',exact:true});
+ if(await decline.isVisible())await decline.click();
  const closeToast=page.getByRole('button',{name:'Close toast',exact:true});
  if(await closeToast.first().isVisible())await closeToast.first().click();
 }
