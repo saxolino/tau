@@ -1126,6 +1126,7 @@ export const createTurnProjection = (options: {
   type AssistantBlock = {
     readonly sourceId: string;
     readonly kind: 'text' | 'thinking';
+    phase?: string;
     readonly durableId: string;
     readonly startedAtMs: number;
     text: string;
@@ -1221,6 +1222,7 @@ export const createTurnProjection = (options: {
   ): ProviderMessageMetadata => {
     const { usage, model, cost, context } = reported;
     return {
+      ...(block?.phase === undefined ? {} : { phase: block.phase }),
       /* `model` *and* `responseModel`: the first is what ran, the second is what
        * every existing usage reader already looks for, and for an external turn
        * they are the same fact — Tau never substitutes a model here. */
@@ -1265,6 +1267,7 @@ export const createTurnProjection = (options: {
         contentIndex: 0,
         content: block.text,
         ...(block.kind === 'thinking' ? { timestamp: block.endedAt } : {}),
+        ...(block.phase === undefined ? {} : { phase: block.phase }),
       });
     }
     const message: ProviderMessage = {
@@ -1536,7 +1539,7 @@ export const createTurnProjection = (options: {
           await flushBoundary();
         }
         const priorBlock = update.messageId === undefined ? pending : assistantBlocks.get(key);
-        const block = (priorBlock?.endedAt === undefined ? priorBlock : undefined) ?? {
+        const block: AssistantBlock = (priorBlock?.endedAt === undefined ? priorBlock : undefined) ?? {
           sourceId,
           kind,
           durableId: options.createId(),
@@ -1544,6 +1547,15 @@ export const createTurnProjection = (options: {
           text: '',
           committed: false,
         };
+        // Only Codex's pinned adapter owns this extension. Unknown phase values
+        // survive transport but never become inferred progress in the UI.
+        const phase =
+          options.agentId === 'codex' && kind === 'text'
+            ? asRecord(asRecord(update._meta)?.['codex'])?.['phase']
+            : undefined;
+        if (typeof phase === 'string') {
+          block.phase = phase;
+        }
         if (update.messageId !== undefined) {
           assistantBlocks.set(key, block);
         }
@@ -1555,6 +1567,7 @@ export const createTurnProjection = (options: {
             messageId: block.durableId,
             contentIndex: 0,
             ...(kind === 'thinking' ? { timestamp: block.startedAtMs } : {}),
+            ...(block.phase === undefined ? {} : { phase: block.phase }),
           });
         }
         block.text += delta;
@@ -1566,6 +1579,7 @@ export const createTurnProjection = (options: {
           contentIndex: 0,
           delta,
           offset: block.text.length - delta.length,
+          ...(block.phase === undefined ? {} : { phase: block.phase }),
         });
         if (idleFlush) {
           clearTimeout(idleFlush);
