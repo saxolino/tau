@@ -64,7 +64,13 @@ export function useProjectTasks(projectId: string, isEnabled = true): ProjectTas
         controller.signal.throwIfAborted();
         if (answer.kind === 'refused') {
           if (answer.code === 'TASK_UNAVAILABLE') {
-            setView({ owner, isLoading: false, unavailable: answer.message });
+            setView((previous) => ({
+              owner,
+              snapshot:
+                previous.owner.projectId === projectId && previous.owner.isEnabled ? previous.snapshot : undefined,
+              isLoading: false,
+              unavailable: answer.message,
+            }));
             return;
           }
           throw new Error(answer.message);
@@ -91,7 +97,8 @@ export function useProjectTasks(projectId: string, isEnabled = true): ProjectTas
         if (!controller.signal.aborted) {
           setView((previous) => ({
             owner,
-            snapshot: previous.owner === owner ? previous.snapshot : undefined,
+            snapshot:
+              previous.owner.projectId === projectId && previous.owner.isEnabled ? previous.snapshot : undefined,
             isLoading: false,
             error: error instanceof Error ? error.message : 'Could not read project tasks. Reconnect and try again.',
           }));
@@ -151,5 +158,13 @@ export function useProjectTasks(projectId: string, isEnabled = true): ProjectTas
   if (!isDesktopTarget) {
     return { isLoading: false, unavailable: browserReason, retry, actions };
   }
-  return { ...(view.owner === owner ? view : { isLoading: true }), retry, actions };
+  if (view.owner === owner) {
+    return { ...view, retry, actions };
+  }
+  return {
+    snapshot: view.owner.projectId === projectId && view.owner.isEnabled ? view.snapshot : undefined,
+    isLoading: true,
+    retry,
+    actions,
+  };
 }

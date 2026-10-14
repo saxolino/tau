@@ -19,7 +19,6 @@ import {
 } from '#routes/w.$workspace.$project/chat-message-data-usage.js';
 import type { AgentProjection, AgentProjectionMetadata, AgentProjectionState } from '#hooks/use-agent-projections.js';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { Badge } from '@taucad/ui/components/badge';
 import { Button } from '@taucad/ui/components/button';
 import { tauCloudEnabled } from '#cloud/cloud-enabled.js';
 import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
@@ -49,39 +48,24 @@ const statePresentation: Readonly<
     {
       readonly label: string;
       readonly icon: typeof Circle;
-      readonly rail: string;
-      readonly tone: string;
-      readonly iconClassName: string;
     }
   >
 > = {
   waiting: {
     label: 'Waiting',
     icon: Clock3,
-    rail: 'before:bg-warning',
-    tone: 'border-warning/30 bg-warning/10 text-warning',
-    iconClassName: 'text-warning',
   },
   running: {
     label: 'Running',
     icon: Radio,
-    rail: 'before:bg-information',
-    tone: 'border-information/30 bg-information/10 text-information',
-    iconClassName: 'text-information animate-pulse motion-reduce:animate-none',
   },
   error: {
     label: 'Error',
     icon: CircleAlert,
-    rail: 'before:bg-feature',
-    tone: 'border-feature/30 bg-feature/10 text-feature',
-    iconClassName: 'text-feature',
   },
   idle: {
     label: 'Idle',
     icon: Circle,
-    rail: 'before:bg-muted-foreground/35',
-    tone: 'border-border bg-muted/50 text-muted-foreground',
-    iconClassName: 'text-muted-foreground/60',
   },
 };
 
@@ -129,18 +113,48 @@ export const AgentsPanelBody = ({
   }, [workspace]);
   const taskChatIds = useMemo(() => new Set(tasks.snapshot?.tasks.map((task) => task.chatId)), [tasks.snapshot?.tasks]);
   const standaloneAgents = useMemo(
-    () => agents.filter((agent) => !taskChatIds.has(agent.chatId)),
-    [agents, taskChatIds],
+    () =>
+      (tasks.snapshot !== undefined && !tasks.snapshot.hasMore) ||
+      tasks.unavailable !== undefined ||
+      (tasks.error !== undefined && tasks.snapshot === undefined)
+        ? agents.filter((agent) => !taskChatIds.has(agent.chatId))
+        : [],
+    [agents, taskChatIds, tasks.snapshot, tasks.unavailable, tasks.error],
   );
+  const durableTasks = tasks.snapshot?.tasks ?? [];
+  const activeTaskCount = durableTasks.filter((task) => {
+    const status = task.attempts.at(-1)?.status;
+    return status === 'allocating' || status === 'running' || status === 'cancelling';
+  }).length;
+  const attentionTaskCount = durableTasks.filter((task) => {
+    const status = task.attempts.at(-1)?.status;
+    const agent = agents.find((candidate) => candidate.chatId === task.chatId);
+    return (
+      status === 'failed' ||
+      status === 'interrupted' ||
+      agent?.state === 'waiting' ||
+      agent?.state === 'error' ||
+      agent?.unread === true ||
+      (agent?.pendingApprovalCount ?? 0) > 0
+    );
+  }).length;
 
   return (
     <div data-slot='agents-panel-body' className='flex size-full min-h-0 flex-col overflow-hidden bg-sidebar'>
-      <AgentsOverview agents={agents} />
-      <div className='min-h-0 flex-1 scroll-shadows-y overflow-y-auto p-2 [--scroll-fade-end:transparent] [--scroll-fade-size:28px]'>
+      <AgentsOverview
+        agents={standaloneAgents}
+        taskCount={durableTasks.length}
+        activeTaskCount={activeTaskCount}
+        attentionTaskCount={attentionTaskCount}
+        isLoading={tasks.isLoading || isLoading}
+        loadingLabel={tasks.isLoading ? 'Loading tasks…' : 'Loading chats…'}
+        isUnavailable={(tasks.error !== undefined || tasks.unavailable !== undefined) && !tasks.snapshot}
+      />
+      <div className='min-h-0 flex-1 scroll-shadows-y space-y-2 overflow-y-auto p-2 [--scroll-fade-end:transparent] [--scroll-fade-size:28px]'>
         {tasks.unavailable ? <p className='px-2 py-2 text-xs text-muted-foreground'>{tasks.unavailable}</p> : null}
         {tasks.isLoading ? (
-          <p role='status' aria-busy className='px-2 py-2 text-xs'>
-            Loading project tasks…
+          <p role='status' aria-label='Loading project tasks' aria-busy className='px-2 py-2 text-xs'>
+            {tasks.snapshot ? 'Updating project tasks…' : 'Loading project tasks…'}
           </p>
         ) : null}
         {tasks.error ? (
@@ -151,6 +165,11 @@ export const AgentsPanelBody = ({
             </Button>
           </div>
         ) : null}
+        {tasks.snapshot && (tasks.error !== undefined || tasks.unavailable !== undefined) ? (
+          <p role='status' className='px-2 py-1 text-xs text-muted-foreground'>
+            Last known tasks. Reconnect to act.
+          </p>
+        ) : null}
         {tasks.snapshot && tasks.snapshot.tasks.length > 0 ? (
           <ProjectTaskTree
             tasks={tasks.snapshot.tasks}
@@ -159,9 +178,10 @@ export const AgentsPanelBody = ({
             projectSlugs={projectSlugs}
             actions={tasks.actions}
             onReviewChanges={workspace ? reviewChanges : undefined}
+            isReadOnly={tasks.isLoading || tasks.error !== undefined || tasks.unavailable !== undefined}
           />
         ) : null}
-        {isLoading && agents.length === 0 ? <AgentsLoading /> : null}
+        {isLoading && agents.length === 0 && !tasks.snapshot ? <AgentsLoading /> : null}
         {error && agents.length === 0 ? (
           <PanelEmptyState
             icon={CircleAlert}
@@ -192,7 +212,7 @@ export const AgentsPanelBody = ({
         (tasks.snapshot?.tasks.length ?? 0) === 0 ? (
           <PanelEmptyState
             icon={Bot}
-            title='No agents yet'
+            title={tasks.snapshot ? 'No agents yet' : 'No project chats yet'}
             description='Project chats will appear here.'
             className='m-0 min-h-full rounded-xl border bg-card'
           />
@@ -203,27 +223,66 @@ export const AgentsPanelBody = ({
   );
 };
 
-const AgentsOverview = ({ agents }: { readonly agents: readonly AgentProjection[] }): React.JSX.Element => {
-  const activeCount = agents.filter((agent) => agent.state === 'running' || agent.state === 'waiting').length;
-  const attentionCount = agents.filter(
-    (agent) => agent.state === 'waiting' || agent.state === 'error' || agent.unread,
-  ).length;
+const AgentsOverview = ({
+  agents,
+  taskCount,
+  activeTaskCount,
+  attentionTaskCount,
+  isLoading,
+  loadingLabel,
+  isUnavailable,
+}: {
+  readonly agents: readonly AgentProjection[];
+  readonly taskCount: number;
+  readonly activeTaskCount: number;
+  readonly attentionTaskCount: number;
+  readonly isLoading: boolean;
+  readonly loadingLabel: string;
+  readonly isUnavailable: boolean;
+}): React.JSX.Element => {
+  const activeCount =
+    activeTaskCount + agents.filter((agent) => agent.state === 'running' || agent.state === 'waiting').length;
+  const attentionCount =
+    attentionTaskCount +
+    agents.filter((agent) => agent.state === 'waiting' || agent.state === 'error' || agent.unread).length;
   return (
     <div
       aria-label='Agent overview'
       aria-live='polite'
+      aria-busy={isLoading}
       className='flex min-h-10 shrink-0 items-center gap-3 border-b border-border/70 px-3 text-xs text-muted-foreground'
     >
       <span className='flex min-w-0 items-center gap-1.5'>
         <Bot aria-hidden='true' className='size-3.5' />
-        <strong className='font-medium text-foreground'>{agents.length}</strong>
-        <span className='truncate'>{agents.length === 1 ? 'agent' : 'agents'}</span>
+        {isUnavailable ? (
+          <span>Tasks unavailable</span>
+        ) : isLoading ? (
+          <span>{loadingLabel}</span>
+        ) : (
+          <>
+            {taskCount > 0 || agents.length === 0 ? (
+              <>
+                <strong className='font-medium text-foreground'>{taskCount}</strong>
+                <span className='truncate'>{taskCount === 1 ? 'task' : 'tasks'}</span>
+              </>
+            ) : null}
+            {agents.length > 0 ? (
+              <>
+                {taskCount > 0 ? <span aria-hidden='true'>·</span> : null}
+                <strong className='font-medium text-foreground'>{agents.length}</strong>
+                <span className='truncate'>{agents.length === 1 ? 'chat' : 'chats'}</span>
+              </>
+            ) : null}
+          </>
+        )}
       </span>
-      <span className='flex items-center gap-1.5'>
-        <Radio aria-hidden='true' className={cn('size-3.5', activeCount > 0 && 'text-information')} />
-        {activeCount} active
-      </span>
-      {attentionCount > 0 ? (
+      {!isLoading && !isUnavailable ? (
+        <span className='flex items-center gap-1.5'>
+          <Radio aria-hidden='true' className={cn('size-3.5', activeCount > 0 && 'text-information')} />
+          {activeCount} active
+        </span>
+      ) : null}
+      {!isLoading && !isUnavailable && attentionCount > 0 ? (
         <span className='ml-auto flex items-center gap-1.5 text-warning'>
           <ShieldAlert aria-hidden='true' className='size-3.5' />
           {attentionCount}
@@ -235,13 +294,18 @@ const AgentsOverview = ({ agents }: { readonly agents: readonly AgentProjection[
 };
 
 export const AgentList = ({ agents, projectSlugs }: AgentListProps): React.JSX.Element => (
-  <ol aria-label='Agents' className='flex list-none flex-col gap-2'>
-    {agents.map((agent) => (
-      <li key={agent.chatId}>
-        <AgentRow agent={agent} projectSlugs={projectSlugs} />
-      </li>
-    ))}
-  </ol>
+  <section aria-label='Chats' className='rounded-xl border bg-card'>
+    <div className='flex min-h-8 items-center border-b px-3 py-1'>
+      <h2 className='text-sm font-medium'>Chats</h2>
+    </div>
+    <ol aria-label='Agents' className='flex list-none flex-col gap-0.5 p-1.5'>
+      {agents.map((agent) => (
+        <li key={agent.chatId}>
+          <AgentRow agent={agent} projectSlugs={projectSlugs} />
+        </li>
+      ))}
+    </ol>
+  </section>
 );
 
 const AgentRow = ({
@@ -260,7 +324,7 @@ const AgentRow = ({
       to={projectChatUrl(projectSlugs, agent.chatId)}
       aria-current={agent.focused ? 'page' : undefined}
       aria-label={`${agent.name}, ${agent.state}`}
-      className='block rounded-xl outline-hidden focus-visible:focus-outline'
+      className='block rounded-md outline-hidden hover:bg-accent/50 focus-visible:focus-outline'
     >
       {content}
     </Link>
@@ -286,39 +350,25 @@ const AgentRowContent = ({ agent }: { readonly agent: AgentProjection }): React.
       data-agent-id={agent.chatId}
       data-state={agent.state}
       data-focused={agent.focused}
-      className={cn(
-        'relative overflow-hidden rounded-xl border border-border/70 bg-card px-3 py-2.5 transition-colors',
-        'before:absolute before:inset-y-0 before:left-0 before:w-0.5',
-        'hover:border-border hover:bg-accent/35',
-        'data-[focused=true]:border-primary/35 data-[focused=true]:bg-primary/5',
-        state.rail,
-      )}
+      className='min-w-0 rounded-md px-2 py-1.5'
     >
-      <div className='flex min-w-0 items-start gap-2.5'>
-        <div className='relative mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg border bg-background'>
-          <Bot aria-hidden='true' className='size-4 text-muted-foreground' strokeWidth={1.6} />
+      <div className='flex min-w-0 items-start gap-2'>
+        <div className='relative mt-0.5 shrink-0'>
+          <StateIcon aria-hidden='true' className='size-4 text-muted-foreground' />
           {agent.unread ? (
-            <span
-              aria-label='Unread activity'
-              className='absolute -top-1 -right-1 size-2.5 rounded-full border-2 border-card bg-primary'
-            />
+            <span aria-label='Unread activity' className='absolute -top-1 -right-1 size-2 rounded-full bg-primary' />
           ) : null}
         </div>
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 items-center gap-1.5'>
             <h3 className='min-w-0 flex-1 truncate text-sm font-medium text-foreground'>{agent.name}</h3>
-            {agent.focused ? (
-              <Badge variant='outline' className='h-5 border-primary/30 bg-primary/5 px-1.5 text-[10px] text-primary'>
-                Focused
-              </Badge>
-            ) : null}
-            <Badge role='status' variant='outline' className={cn('h-5 gap-1 px-1.5 text-[10px]', state.tone)}>
-              <StateIcon aria-hidden='true' className={cn('size-2.5', state.iconClassName)} />
+            <span role='status' className='shrink-0 text-xs text-muted-foreground'>
               {state.label}
-            </Badge>
+            </span>
           </div>
+          {agent.focused ? <span className='text-xs text-muted-foreground'>Current chat</span> : null}
           {agent.detail ? <p className='mt-0.5 truncate text-xs text-muted-foreground'>{agent.detail}</p> : null}
-          <div className='mt-2 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground'>
+          <div className='mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground'>
             <span className='flex min-w-0 items-center gap-1' title={`${agent.model.name} · ${agent.model.provider}`}>
               <SvgIcon aria-hidden='true' id={agent.model.family} className='size-3 shrink-0 grayscale' />
               <span className='max-w-28 truncate'>{agent.model.name}</span>
@@ -336,7 +386,7 @@ const AgentRowContent = ({ agent }: { readonly agent: AgentProjection }): React.
               {formatRelativeTime(agent.lastActivityAt, { short: true })}
             </time>
           </div>
-          <div className='mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground'>
+          <div className='mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground'>
             <span className='flex min-w-0 items-center gap-1' title={`Workspace: ${agent.workspace}`}>
               <FolderGit2 aria-hidden='true' className='size-3 shrink-0' />
               <span className='max-w-28 truncate'>{agent.workspace}</span>

@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentProjection } from '#hooks/use-agent-projections.js';
+import type { ProjectTask, ProjectTaskMessage } from '@taucad/agent-host/wire';
 import type * as AgentProjectionsModule from '#hooks/use-agent-projections.js';
 import { useAgentProjections } from '#hooks/use-agent-projections.js';
 import { AgentList, AgentsPanelBody } from '#routes/w.$workspace.$project/chat-agents.js';
@@ -14,13 +15,30 @@ vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'proje
 vi.mock('#hooks/use-project-slug-route.js', () => ({
   useProjectSlugs: () => ({ status: 'resolved', value: { workspaceSlug: 'tau', projectSlug: 'engine' } }),
 }));
-vi.mock('#hooks/use-project-tasks.js', () => ({
-  useProjectTasks: () => ({
+const taskView = vi.hoisted(() => {
+  const current: {
+    isLoading: boolean;
+    unavailable?: string;
+    error?: string;
+    snapshot?: {
+      tasks: ProjectTask[];
+      messages: ProjectTaskMessage[];
+      cursor: number;
+      nextCursor: number;
+      hasMore: boolean;
+    };
+    retry: ReturnType<typeof vi.fn>;
+    actions: { send: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn>; resume: ReturnType<typeof vi.fn> };
+  } = {
     isLoading: false,
     unavailable: 'Child tasks require the desktop project host.',
     retry: vi.fn(),
     actions: { send: vi.fn(), cancel: vi.fn(), resume: vi.fn() },
-  }),
+  };
+  return { current };
+});
+vi.mock('#hooks/use-project-tasks.js', () => ({
+  useProjectTasks: () => taskView.current,
 }));
 vi.mock('#hooks/use-agent-projections.js', async (importOriginal) => {
   const original = await importOriginal<typeof AgentProjectionsModule>();
@@ -49,6 +67,10 @@ const projection = (over: Partial<AgentProjection> = {}): AgentProjection => ({
 });
 
 beforeEach(() => {
+  taskView.current.isLoading = false;
+  taskView.current.unavailable = 'Child tasks require the desktop project host.';
+  taskView.current.snapshot = undefined;
+  taskView.current.error = undefined;
   vi.mocked(useAgentProjections).mockReturnValue({
     agents: [],
     isLoading: false,
@@ -120,7 +142,7 @@ describe('AgentList', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('Focused')).not.toBeNull();
+    expect(screen.getByText('Current chat')).not.toBeNull();
     expect(screen.getAllByText('Running')).toHaveLength(1);
     expect(screen.getAllByText('Waiting')).toHaveLength(1);
     expect(screen.getAllByText('Error')).toHaveLength(1);
@@ -129,6 +151,81 @@ describe('AgentList', () => {
 });
 
 describe('AgentsPanelBody', () => {
+  it('should keep one durable row through loading without flashing a standalone chat', () => {
+    vi.mocked(useAgentProjections).mockReturnValue({
+      agents: [projection({ unread: true })],
+      isLoading: false,
+      error: undefined,
+      retry: vi.fn(),
+    });
+    taskView.current.isLoading = true;
+    taskView.current.unavailable = undefined;
+    const pane = render(
+      <MemoryRouter>
+        <AgentsPanelBody />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole('link', { name: 'Bracket exploration, running' })).toBeNull();
+    expect(screen.getByRole('status', { name: 'Loading project tasks' })).toBeDefined();
+    taskView.current.isLoading = false;
+    taskView.current.snapshot = {
+      tasks: [
+        {
+          id: 'task-1',
+          projectId: 'project-1',
+          chatId: 'chat-1',
+          depth: 0,
+          title: 'Explore a long bracket prompt',
+          prompt: 'Explore a long bracket prompt',
+          provider: { id: 'codex' },
+          createdAt: 1,
+          closed: false,
+          attempts: [
+            {
+              id: 'attempt-1',
+              number: 1,
+              status: 'running',
+              source: { revisionId: 'base', checkoutId: 'checkout' },
+              toolGrant: { toolChoice: 'none', allowedTools: [] },
+              createdAt: 1,
+            },
+          ],
+        },
+      ],
+      messages: [],
+      cursor: 1,
+      nextCursor: 1,
+      hasMore: false,
+    };
+    pane.rerender(
+      <MemoryRouter>
+        <AgentsPanelBody />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByRole('button', { name: 'Task details for Explore a long bracket prompt' })).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: 'Bracket exploration, running' })).toBeNull();
+    expect(screen.getByLabelText('Agent overview').textContent).toContain('1task');
+    expect(screen.getByLabelText('Agent overview').textContent).toContain('1need attention');
+    taskView.current.isLoading = true;
+    pane.rerender(
+      <MemoryRouter>
+        <AgentsPanelBody />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByRole('button', { name: 'Task details for Explore a long bracket prompt' })).toHaveLength(1);
+    expect(screen.getByLabelText('Agent overview')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByLabelText('Agent overview').textContent).not.toContain('active');
+    taskView.current.isLoading = false;
+    taskView.current.error = 'Task host disconnected';
+    pane.rerender(
+      <MemoryRouter>
+        <AgentsPanelBody />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Last known tasks. Reconnect to act.')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Task details for Explore a long bracket prompt' }));
+    expect(screen.getByRole('textbox', { name: 'Message Explore a long bracket prompt' })).toBeDisabled();
+  });
   it('delays the full transcript query for a hidden Agents panel', () => {
     render(
       <MemoryRouter>
@@ -139,6 +236,8 @@ describe('AgentsPanelBody', () => {
   });
 
   it('summarises concurrent and attention-needing agents from the projection hook', () => {
+    taskView.current.unavailable = undefined;
+    taskView.current.snapshot = { tasks: [], messages: [], cursor: 0, nextCursor: 0, hasMore: false };
     vi.mocked(useAgentProjections).mockReturnValue({
       agents: [
         projection(),
@@ -157,7 +256,7 @@ describe('AgentsPanelBody', () => {
     );
 
     const overview = screen.getByLabelText('Agent overview');
-    expect(overview.textContent).toContain('3agents');
+    expect(overview.textContent).toContain('3chats');
     expect(overview.textContent).toContain('2 active');
     expect(overview.textContent).toContain('2need attention');
   });

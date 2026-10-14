@@ -74,6 +74,39 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Project task observation', () => {
+  it('keeps the same project snapshot during reconnect and clears it when the project changes', async () => {
+    const first = mock<AgentChannelClient>();
+    const second = mock<AgentChannelClient>();
+    const third = mock<AgentChannelClient>();
+    placement.open.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValueOnce(third);
+    first.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot() });
+    first.projectTasks.mockImplementation(pending);
+    second.projectTasks.mockImplementation(pending);
+    third.projectTasks.mockImplementation(pending);
+    const view = renderHook(({ projectId }) => useProjectTasks(projectId), {
+      initialProps: { projectId: 'project-a' },
+    });
+    await waitFor(() => {
+      expect(view.result.current.snapshot?.tasks).toEqual([root]);
+    });
+    act(() => {
+      view.result.current.retry();
+    });
+    expect(view.result.current.isLoading).toBe(true);
+    expect(view.result.current.snapshot?.tasks).toEqual([root]);
+    await waitFor(() => {
+      expect(placement.open).toHaveBeenCalledTimes(2);
+    });
+    act(() => {
+      view.rerender({ projectId: 'project-b' });
+    });
+    expect(view.result.current.snapshot).toBeUndefined();
+    await waitFor(() => {
+      expect(placement.open).toHaveBeenCalledTimes(3);
+    });
+    view.unmount();
+  });
+
   it('consumes mailbox pages before waiting and closes its channel when detached', async () => {
     const client = mock<AgentChannelClient>();
     placement.open.mockResolvedValue(client);

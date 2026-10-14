@@ -4,12 +4,40 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
-import type { ProjectTask } from '@taucad/agent-host/wire';
+import type { ProjectTask, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
+import type { AgentProjection } from '#hooks/use-agent-projections.js';
 import { ProjectTaskTree } from '#components/project-tasks/project-task-tree.js';
 import { ProjectInstructions } from '#components/project-tasks/project-instructions.js';
+import { AgentsPanelBody } from '#routes/w.$workspace.$project/chat-agents.js';
 
 const instructionFiles = vi.hoisted(() => ({ text: '' }));
+const panelView = vi.hoisted(() => ({
+  snapshot: undefined as ProjectTaskSnapshot | undefined,
+  agents: [] as AgentProjection[],
+}));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project' }) }));
+vi.mock('#hooks/use-project-slug-route.js', () => ({
+  useProjectSlugs: () => ({ status: 'resolved', value: { workspaceSlug: 'home', projectSlug: 'bracket' } }),
+}));
+vi.mock('#hooks/use-project-tasks.js', () => ({
+  useProjectTasks: () => ({
+    snapshot: panelView.snapshot,
+    isLoading: false,
+    actions: { send: vi.fn(), cancel: vi.fn(), resume: vi.fn() },
+    retry: vi.fn(),
+  }),
+}));
+vi.mock('#hooks/use-agent-projections.js', () => ({
+  useAgentProjections: () => ({ agents: panelView.agents, isLoading: false, retry: vi.fn() }),
+}));
+vi.mock('#routes/w.$workspace.$project/chat-message-data-usage.js', () => ({
+  useReceiptCredits: () => new Map(),
+  sumReceiptCredits: () => undefined,
+  formatReceiptTotal: () => '—',
+}));
+vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', () => ({
+  useProjectWorkspace: () => ({ openPanel: vi.fn() }),
+}));
 vi.mock('#hooks/use-file-manager.js', () => {
   const manager = {
     recordFiles: {
@@ -100,6 +128,181 @@ const tasks: ProjectTask[] = [
     ],
   },
 ];
+
+const denseTasks = (): ProjectTask[] => [
+  {
+    ...tasks[0]!,
+    title: 'Design a manufacturable mounting bracket with several mounting patterns and verify its clearances',
+    attempts: [{ ...tasks[0]!.attempts[0]!, status: 'completed', placementId: 'placement-root' }],
+  },
+  { ...tasks[1]!, attempts: [{ ...tasks[1]!.attempts[0]!, status: 'running' }] },
+  {
+    ...tasks[2]!,
+    title: 'Check the final dimensions and mounting clearances against every drawing',
+    attempts: [
+      {
+        ...tasks[2]!.attempts[0]!,
+        status: 'failed',
+        detail: 'Dimension check could not read the supplied drawing. Open the transcript, then retry.',
+      },
+    ],
+  },
+];
+
+it('shows the complete Agents pane with overview, task hierarchy and expanded details', async () => {
+  await page.viewport(800, 720);
+  panelView.snapshot = { tasks: denseTasks(), messages: [], cursor: 3, nextCursor: 3, hasMore: false };
+  panelView.agents = [
+    {
+      chatId: 'chat-root',
+      name: 'Bracket design',
+      state: 'running',
+      focused: true,
+      lastActivityAt: 1,
+      model: { id: 'codex', name: 'Codex', family: 'unknown', provider: 'OpenAI' },
+      workspace: 'project',
+      branch: undefined,
+      pendingApprovalCount: 0,
+      operationIds: [],
+      unread: false,
+    },
+    {
+      chatId: 'chat-child',
+      name: 'Mounting hole check',
+      state: 'waiting',
+      focused: false,
+      lastActivityAt: 2,
+      model: { id: 'codex', name: 'Codex', family: 'unknown', provider: 'OpenAI' },
+      workspace: 'project',
+      branch: undefined,
+      pendingApprovalCount: 1,
+      operationIds: [],
+      unread: true,
+    },
+    {
+      chatId: 'chat-other',
+      name: 'Material options',
+      state: 'idle',
+      focused: false,
+      lastActivityAt: 3,
+      model: { id: 'codex', name: 'Codex', family: 'unknown', provider: 'OpenAI' },
+      workspace: 'project',
+      branch: undefined,
+      pendingApprovalCount: 0,
+      operationIds: [],
+      unread: false,
+    },
+  ];
+  render(
+    <MemoryRouter>
+      <main aria-label='Complete Agents pane fixture' className='h-screen w-full bg-sidebar'>
+        <AgentsPanelBody />
+      </main>
+    </MemoryRouter>,
+  );
+  const pane = screen.getByRole('main', { name: 'Complete Agents pane fixture' });
+  expect(pane.getBoundingClientRect().width).toBe(800);
+  expect(screen.getByLabelText('Agent overview').textContent).toContain('3tasks·1chat');
+  expect(
+    Number.parseFloat(
+      getComputedStyle(screen.getByRole('button', { name: 'Task details for Check mounting holes' })).fontSize,
+    ),
+  ).toBeGreaterThanOrEqual(14);
+  await page.screenshot({ element: pane, path: '../../../../../out/research/acp-projects/agents-ux/pane-desktop.png' });
+  screen.getByRole('button', { name: 'Task details for Check mounting holes' }).click();
+  await page.screenshot({
+    element: pane,
+    path: '../../../../../out/research/acp-projects/agents-ux/pane-desktop-expanded.png',
+  });
+  await page.viewport(320, 720);
+  expect(pane.getBoundingClientRect().width).toBe(320);
+  await page.screenshot({
+    element: pane,
+    path: '../../../../../out/research/acp-projects/agents-ux/pane-narrow-expanded.png',
+  });
+  screen.getByRole('region', { name: 'Chats' }).scrollIntoView();
+  await page.screenshot({
+    element: pane,
+    path: '../../../../../out/research/acp-projects/agents-ux/pane-narrow-chats.png',
+  });
+  screen.getByRole('region', { name: 'Project tasks' }).scrollIntoView();
+  document.documentElement.classList.add('dark');
+  try {
+    await page.screenshot({
+      element: pane,
+      path: '../../../../../out/research/acp-projects/agents-ux/pane-dark-expanded.png',
+    });
+  } finally {
+    document.documentElement.classList.remove('dark');
+    await page.viewport(800, 720);
+  }
+});
+
+it('keeps a dense task lineage readable in narrow light and dark panes', async () => {
+  await page.viewport(800, 720);
+  const fixture = denseTasks();
+  const approval: AgentProjection = {
+    chatId: 'chat-child',
+    name: 'Mounting hole check',
+    state: 'waiting',
+    focused: false,
+    lastActivityAt: 2,
+    model: { id: 'codex', name: 'Codex', family: 'unknown', provider: 'OpenAI' },
+    workspace: 'project',
+    branch: undefined,
+    pendingApprovalCount: 1,
+    operationIds: [],
+    unread: true,
+  };
+  render(
+    <MemoryRouter>
+      <main aria-label='Agents pane fixture' className='w-full bg-sidebar p-2'>
+        <ProjectTaskTree
+          tasks={fixture}
+          messages={[]}
+          agents={[approval]}
+          projectSlugs={{ workspaceSlug: 'home', projectSlug: 'bracket' }}
+          actions={{
+            send: vi.fn(async () => undefined),
+            cancel: vi.fn(async () => undefined),
+            resume: vi.fn(async () => undefined),
+          }}
+        />
+      </main>
+    </MemoryRouter>,
+  );
+  const pane = screen.getByRole('main', { name: 'Agents pane fixture' });
+  await page.screenshot({
+    element: pane,
+    path: '../../../../../out/research/acp-projects/agents-ux/tasks-light-desktop.png',
+  });
+  await page.viewport(320, 720);
+  const bounds = pane.getBoundingClientRect();
+  expect(bounds.width).toBe(320);
+  for (const link of screen.getAllByRole('link')) {
+    expect(link.getBoundingClientRect().right).toBeLessThanOrEqual(bounds.right);
+  }
+  await page.screenshot({
+    element: pane,
+    path: '../../../../../out/research/acp-projects/agents-ux/tasks-light-narrow.png',
+  });
+  screen.getByRole('button', { name: 'Task details for Check mounting holes' }).click();
+  await expect.element(page.getByRole('textbox', { name: 'Message Check mounting holes' })).toBeVisible();
+  await page.screenshot({
+    element: pane,
+    path: '../../../../../out/research/acp-projects/agents-ux/tasks-light-expanded.png',
+  });
+  document.documentElement.classList.add('dark');
+  try {
+    await page.screenshot({
+      element: pane,
+      path: '../../../../../out/research/acp-projects/agents-ux/tasks-dark-expanded.png',
+    });
+  } finally {
+    document.documentElement.classList.remove('dark');
+    await page.viewport(800, 720);
+  }
+});
 
 it('opens child details, sends a message, and confirms named subtree cancellation with the keyboard', async () => {
   const send = vi.fn(async () => undefined);

@@ -5,7 +5,7 @@ import { projectTaskMailboxLimits } from '@taucad/agent-host/wire';
 import { Button } from '@taucad/ui/components/button';
 import { Textarea } from '@taucad/ui/components/textarea';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Circle, CircleAlert, CircleCheck, LoaderCircle, PauseCircle, Square } from 'lucide-react';
 import { projectChatUrl } from '#utils/project-url.utils.js';
 import type { ProjectSlugs } from '#utils/project-url.utils.js';
 import type { AgentProjection } from '#hooks/use-agent-projections.js';
@@ -18,6 +18,26 @@ const statusLabels: Readonly<Record<ProjectTaskStatus, string>> = {
   failed: 'Failed',
   cancelled: 'Cancelled',
   interrupted: 'Interrupted',
+};
+
+const statusIcons: Readonly<Record<ProjectTaskStatus, typeof Circle>> = {
+  allocating: LoaderCircle,
+  running: LoaderCircle,
+  cancelling: LoaderCircle,
+  completed: CircleCheck,
+  failed: CircleAlert,
+  cancelled: Square,
+  interrupted: PauseCircle,
+};
+
+const providerName = (id: string): string => {
+  if (id === 'codex') {
+    return 'Codex';
+  }
+  if (id === 'tau') {
+    return 'Tau';
+  }
+  return 'Agent';
 };
 
 export type ProjectTaskActions = Readonly<{
@@ -33,6 +53,7 @@ type TaskTreeProps = Readonly<{
   projectSlugs?: ProjectSlugs;
   actions: ProjectTaskActions;
   onReviewChanges?: () => void;
+  isReadOnly?: boolean;
 }>;
 
 /** The durable host lineage remains visible independently of the selected chat. */
@@ -43,6 +64,7 @@ export function ProjectTaskTree({
   projectSlugs,
   actions,
   onReviewChanges,
+  isReadOnly = false,
 }: TaskTreeProps): React.JSX.Element {
   const taskIds = useMemo(() => new Set(tasks.map((task) => task.id)), [tasks]);
   const roots = useMemo(
@@ -62,20 +84,27 @@ export function ProjectTaskTree({
   }, [tasks]);
   const agentsByChat = useMemo(() => new Map(agents.map((agent) => [agent.chatId, agent])), [agents]);
   return (
-    <ol aria-label='Project tasks' className='flex flex-col gap-2'>
-      {roots.map((task) => (
-        <TaskBranch
-          key={task.id}
-          task={task}
-          childrenByParent={children}
-          agentsByChat={agentsByChat}
-          messages={messages}
-          projectSlugs={projectSlugs}
-          actions={actions}
-          onReviewChanges={onReviewChanges}
-        />
-      ))}
-    </ol>
+    <section aria-label='Project tasks' className='rounded-xl border bg-card'>
+      <div className='flex min-h-8 items-center border-b px-3 py-1'>
+        <h2 className='text-sm font-medium'>Tasks</h2>
+      </div>
+      <ol aria-label='Project tasks' className='flex flex-col gap-0.5 p-1.5'>
+        {roots.map((task) => (
+          <TaskBranch
+            key={task.id}
+            task={task}
+            childrenByParent={children}
+            agentsByChat={agentsByChat}
+            messages={messages}
+            projectSlugs={projectSlugs}
+            actions={actions}
+            onReviewChanges={onReviewChanges}
+            isReadOnly={isReadOnly}
+            depth={0}
+          />
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -87,6 +116,8 @@ const TaskBranch = memo(function TaskBranch({
   projectSlugs,
   actions,
   onReviewChanges,
+  isReadOnly,
+  depth,
 }: Readonly<{
   task: ProjectTask;
   childrenByParent: ReadonlyMap<string, readonly ProjectTask[]>;
@@ -95,71 +126,149 @@ const TaskBranch = memo(function TaskBranch({
   projectSlugs?: ProjectSlugs;
   actions: ProjectTaskActions;
   onReviewChanges?: () => void;
+  isReadOnly: boolean;
+  depth: number;
 }>): React.JSX.Element {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [hasOpened, setHasOpened] = useState(false);
+  const [rowError, setRowError] = useState<string>();
+  const [isRetrying, setIsRetrying] = useState(false);
   const attempt = task.attempts.at(-1);
   const agent = agentsByChat.get(task.chatId);
   const children = childrenByParent.get(task.id) ?? [];
+  const isRoot = task.parentTaskId === undefined;
+  const title = isRoot && agent?.name ? agent.name : task.title;
+  const StatusIcon = attempt ? statusIcons[attempt.status] : Circle;
+  const canRetry =
+    !task.closed &&
+    (attempt?.status === 'failed' || attempt?.status === 'interrupted' || attempt?.status === 'cancelled');
+  const onExpandedChange = useCallback((open: boolean): void => {
+    setIsExpanded(open);
+    if (open) {
+      setHasOpened(true);
+    }
+  }, []);
   return (
-    <li>
-      <Collapsible open={isExpanded} onOpenChange={setIsExpanded} className='border-b border-border pb-2'>
-        <div className='flex items-center gap-2'>
+    <li className='min-w-0'>
+      <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
+        <div className='flex min-w-0 flex-wrap items-center gap-x-2 rounded-md px-1 py-1 hover:bg-accent/50'>
           <CollapsibleTrigger asChild>
             <Button
               variant='ghost'
-              size='sm'
+              size='default'
               aria-label={`Task details for ${task.title}`}
-              className='min-w-0 flex-1 justify-start'
+              className='min-w-0 flex-1 justify-start gap-2 text-left'
             >
-              <ChevronDown aria-hidden className='size-3.5 shrink-0' />
-              <span className='truncate'>{task.title}</span>
+              <ChevronDown aria-hidden className={isExpanded ? 'size-3.5 shrink-0 rotate-180' : 'size-3.5 shrink-0'} />
+              <StatusIcon aria-hidden className='size-3.5 shrink-0 text-muted-foreground' />
+              <span className='min-w-0 truncate'>{title}</span>
             </Button>
           </CollapsibleTrigger>
-          <span className='shrink-0 text-xs'>{attempt ? statusLabels[attempt.status] : 'Unknown'}</span>
+          <span className='shrink-0 text-xs text-muted-foreground'>
+            {attempt ? statusLabels[attempt.status] : 'Unknown'}
+          </span>
         </div>
-        <div className='flex flex-wrap items-center gap-2 px-2 text-xs text-muted-foreground'>
-          <span>
-            {task.provider.id}
+        {isRoot ||
+        agent?.focused === true ||
+        agent?.unread === true ||
+        agent?.state === 'waiting' ||
+        agent?.state === 'error' ||
+        (agent?.pendingApprovalCount ?? 0) > 0 ? (
+          <div className='flex min-w-0 flex-wrap items-center gap-x-2 px-7 text-xs text-muted-foreground'>
+            {isRoot ? (
+              <span className='min-w-0 truncate' title={task.title}>
+                {task.title}
+              </span>
+            ) : null}
+            {agent?.focused ? <span>Current chat</span> : null}
+            {agent?.unread ? <span>Unread</span> : null}
+            {agent?.state === 'waiting' ? <span>Waiting for input</span> : null}
+            {agent?.state === 'error' ? <span>Chat error</span> : null}
+          </div>
+        ) : null}
+        <div className='flex min-w-0 flex-wrap items-center gap-x-2 px-7 text-xs text-muted-foreground'>
+          <span className='min-w-0 truncate'>
+            {providerName(task.provider.id)}
             {task.provider.model ? ` · ${task.provider.model}` : ''}
           </span>
-          {agent?.focused ? <span>Current chat</span> : null}
+        </div>
+        <div className='flex flex-wrap items-center gap-1 px-7 text-xs'>
           {projectSlugs ? (
-            <Link
-              className='text-foreground underline underline-offset-4 focus-visible:focus-outline'
-              to={projectChatUrl(projectSlugs, task.chatId)}
-              state={{ openChat: true }}
-            >
-              Open transcript for {task.title}
-            </Link>
+            <Button asChild variant='ghost' size='xs'>
+              <Link
+                to={projectChatUrl(projectSlugs, task.chatId)}
+                state={{ openChat: true }}
+                aria-label={`Open transcript for ${task.title}`}
+              >
+                Transcript
+              </Link>
+            </Button>
           ) : null}
           {projectSlugs && onReviewChanges && attempt?.placementId ? (
-            <Link
-              className='text-foreground underline underline-offset-4 focus-visible:focus-outline'
-              to={projectChatUrl(projectSlugs, task.chatId)}
-              state={{ openChat: true }}
-              onClick={onReviewChanges}
-            >
-              Review changes for {task.title}
-            </Link>
+            <Button asChild variant='ghost' size='xs'>
+              <Link
+                to={projectChatUrl(projectSlugs, task.chatId)}
+                state={{ openChat: true }}
+                onClick={onReviewChanges}
+                aria-label={`Review changes for ${task.title}`}
+              >
+                Changes
+              </Link>
+            </Button>
           ) : null}
           {projectSlugs && (agent?.pendingApprovalCount ?? 0) > 0 ? (
-            <Link
-              className='text-foreground underline underline-offset-4 focus-visible:focus-outline'
-              to={projectChatUrl(projectSlugs, task.chatId)}
-              state={{ openChat: true }}
+            <Button asChild variant='ghost' size='xs'>
+              <Link
+                to={projectChatUrl(projectSlugs, task.chatId)}
+                state={{ openChat: true }}
+                aria-label={`Review permissions for ${task.title} (${agent?.pendingApprovalCount})`}
+              >
+                Permissions ({agent?.pendingApprovalCount})
+              </Link>
+            </Button>
+          ) : null}
+          {canRetry ? (
+            <Button
+              size='xs'
+              variant='outline'
+              disabled={isRetrying || isReadOnly}
+              aria-busy={isRetrying}
+              onClick={async () => {
+                setIsRetrying(true);
+                setRowError(undefined);
+                try {
+                  await actions.resume(task.id);
+                } catch (error) {
+                  setRowError(error instanceof Error ? error.message : 'Could not retry this task. Try again.');
+                } finally {
+                  setIsRetrying(false);
+                }
+              }}
             >
-              Review permissions for {task.title} ({agent?.pendingApprovalCount})
-            </Link>
+              Retry
+            </Button>
           ) : null}
         </div>
-        <CollapsibleContent>
-          <TaskDetails task={task} messages={messages} actions={actions} />
+        {attempt?.detail && (attempt.status === 'failed' || attempt.status === 'interrupted') ? (
+          <p className='px-7 py-1 text-xs break-words'>{attempt.detail}</p>
+        ) : null}
+        {rowError ? (
+          <p role='alert' className='px-7 text-xs break-words'>
+            {rowError}
+          </p>
+        ) : null}
+        <CollapsibleContent forceMount hidden={!isExpanded}>
+          {hasOpened ? <TaskDetails task={task} messages={messages} actions={actions} isReadOnly={isReadOnly} /> : null}
         </CollapsibleContent>
       </Collapsible>
       {children.length > 0 ? (
         <ol
           aria-label={`Child tasks of ${task.title}`}
-          className='ml-3 flex flex-col gap-2 border-l border-border py-2 pl-2'
+          className={
+            depth < 3
+              ? 'ml-3 flex min-w-0 flex-col gap-0.5 border-l border-border pl-2'
+              : 'flex min-w-0 flex-col gap-0.5 border-l border-border pl-2'
+          }
         >
           {children.map((child) => (
             <TaskBranch
@@ -171,6 +280,8 @@ const TaskBranch = memo(function TaskBranch({
               projectSlugs={projectSlugs}
               actions={actions}
               onReviewChanges={onReviewChanges}
+              isReadOnly={isReadOnly}
+              depth={depth + 1}
             />
           ))}
         </ol>
@@ -183,10 +294,12 @@ const TaskDetails = memo(function TaskDetails({
   task,
   messages,
   actions,
+  isReadOnly,
 }: Readonly<{
   task: ProjectTask;
   messages: readonly ProjectTaskMessage[];
   actions: ProjectTaskActions;
+  isReadOnly: boolean;
 }>): React.JSX.Element {
   const [text, setText] = useState('');
   const [isBusy, setIsBusy] = useState(false);
@@ -195,12 +308,8 @@ const TaskDetails = memo(function TaskDetails({
   const [notice, setNotice] = useState<string>();
   const attempt = task.attempts.at(-1);
   const status = attempt?.status;
-  const canCancel = status === 'allocating' || status === 'running';
-  const canResume =
-    status === 'failed' ||
-    status === 'cancelled' ||
-    status === 'interrupted' ||
-    (status === 'completed' && task.parentTaskId !== undefined);
+  const canCancel = !task.closed && (status === 'allocating' || status === 'running');
+  const canResume = !task.closed && status === 'completed' && task.parentTaskId !== undefined;
   const mailbox = useMemo(
     () => messages.filter((message) => message.recipientTaskId === task.id || message.senderTaskId === task.id),
     [messages, task.id],
@@ -234,37 +343,10 @@ const TaskDetails = memo(function TaskDetails({
     [actions, perform, task.id],
   );
   return (
-    <section aria-label={`Details for ${task.title}`} className='flex flex-col gap-3 px-2 pt-3 text-sm'>
-      <p className='break-words whitespace-pre-wrap'>{task.prompt}</p>
-      <ol aria-label={`Attempts for ${task.title}`} className='flex flex-col gap-2'>
-        {task.attempts.map((item) => (
-          <li key={item.id} className='text-xs'>
-            <p>
-              Attempt {item.number} · {statusLabels[item.status]}
-            </p>
-            {item.detail ? <p className='break-words whitespace-pre-wrap'>{item.detail}</p> : null}
-            <p className='break-all text-muted-foreground'>Source revision: {item.source.revisionId}</p>
-            <p className='break-words text-muted-foreground'>
-              Tool selection:{' '}
-              {typeof item.toolGrant.toolChoice === 'string'
-                ? item.toolGrant.toolChoice
-                : item.toolGrant.toolChoice.join(', ') || 'None'}
-            </p>
-            <p className='break-words text-muted-foreground'>
-              Allowed tools:{' '}
-              {item.toolGrant.allowedTools === undefined
-                ? 'Not listed'
-                : item.toolGrant.allowedTools.join(', ') || 'None'}
-            </p>
-            {item.placementId ? <p className='break-all text-muted-foreground'>Placement: {item.placementId}</p> : null}
-          </li>
-        ))}
-      </ol>
-      <p className='text-xs text-muted-foreground'>
-        Inspect this task’s transcript and its revision result before applying changes through History.
-      </p>
+    <section aria-label={`Details for ${task.title}`} className='flex min-w-0 flex-col gap-3 px-2 pt-2 pb-3 text-sm'>
+      <h3 className='text-sm font-medium break-words'>{task.title}</h3>
       {mailbox.length > 0 ? (
-        <ol aria-label={`Messages for ${task.title}`} className='flex flex-col gap-2'>
+        <ol aria-label={`Messages for ${task.title}`} className='flex flex-col gap-2 border-t pt-2'>
           {mailbox.map((message) => (
             <li key={message.id} className='border-l border-border pl-2 text-xs'>
               <span className='text-muted-foreground'>
@@ -294,7 +376,7 @@ const TaskDetails = memo(function TaskDetails({
           id={`task-message-${task.id}`}
           value={text}
           maxLength={projectTaskMailboxLimits.maxTextBytes}
-          disabled={isBusy || task.closed}
+          disabled={isBusy || task.closed || isReadOnly}
           onChange={(event) => {
             setText(event.target.value);
           }}
@@ -304,7 +386,7 @@ const TaskDetails = memo(function TaskDetails({
             type='submit'
             variant='outline'
             size='sm'
-            disabled={isBusy || task.closed || text.trim().length === 0}
+            disabled={isBusy || task.closed || isReadOnly || text.trim().length === 0}
             aria-busy={isBusy}
           >
             Send message
@@ -314,7 +396,7 @@ const TaskDetails = memo(function TaskDetails({
               type='button'
               variant='outline'
               size='sm'
-              disabled={isBusy}
+              disabled={isBusy || isReadOnly}
               onClick={() => {
                 setIsConfirmingCancel(true);
               }}
@@ -327,12 +409,12 @@ const TaskDetails = memo(function TaskDetails({
               type='button'
               variant='outline'
               size='sm'
-              disabled={isBusy}
+              disabled={isBusy || isReadOnly}
               onClick={() => {
                 void resume();
               }}
             >
-              {status === 'completed' ? 'Resume task' : 'Retry task'}
+              Resume task
             </Button>
           ) : null}
         </div>
@@ -343,7 +425,7 @@ const TaskDetails = memo(function TaskDetails({
           <div className='flex gap-2'>
             <Button
               size='sm'
-              disabled={isBusy}
+              disabled={isBusy || isReadOnly}
               onClick={() => {
                 void cancel();
               }}
@@ -365,6 +447,47 @@ const TaskDetails = memo(function TaskDetails({
       ) : null}
       {error ? <p role='alert'>{error}</p> : null}
       {notice ? <p role='status'>{notice}</p> : null}
+      <details className='border-t pt-2 text-xs'>
+        <summary className='cursor-action rounded-md py-1 text-foreground focus-visible:focus-outline'>
+          Task details
+        </summary>
+        <div className='flex min-w-0 flex-col gap-2 pt-2'>
+          <p className='break-words whitespace-pre-wrap'>{task.prompt}</p>
+          <p className='break-all text-muted-foreground'>Task ID: {task.id}</p>
+          <p className='text-muted-foreground'>
+            {task.provider.id}
+            {task.provider.model ? ` · ${task.provider.model}` : ''}
+          </p>
+          <ol aria-label={`Attempts for ${task.title}`} className='flex flex-col gap-2'>
+            {task.attempts.map((item) => (
+              <li key={item.id} className='min-w-0 border-l pl-2'>
+                <p>
+                  Attempt {item.number} · {statusLabels[item.status]}
+                </p>
+                {item.detail ? <p className='break-words whitespace-pre-wrap'>{item.detail}</p> : null}
+                <p className='break-all text-muted-foreground'>Attempt ID: {item.id}</p>
+                <p className='break-all text-muted-foreground'>Source revision: {item.source.revisionId}</p>
+                <p className='break-words text-muted-foreground'>
+                  Tool selection:{' '}
+                  {typeof item.toolGrant.toolChoice === 'string'
+                    ? item.toolGrant.toolChoice
+                    : item.toolGrant.toolChoice.join(', ') || 'None'}
+                </p>
+                <p className='break-words text-muted-foreground'>
+                  Allowed tools:{' '}
+                  {item.toolGrant.allowedTools === undefined
+                    ? 'Not listed'
+                    : item.toolGrant.allowedTools.join(', ') || 'None'}
+                </p>
+                {item.placementId ? (
+                  <p className='break-all text-muted-foreground'>Placement: {item.placementId}</p>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+          <p className='text-muted-foreground'>Inspect the transcript and History before applying a task’s changes.</p>
+        </div>
+      </details>
     </section>
   );
 });

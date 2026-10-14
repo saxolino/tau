@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, within, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectTask } from '@taucad/agent-host/wire';
@@ -51,6 +51,31 @@ const childProjection: AgentProjection = {
 const slugs = { workspaceSlug: 'home', projectSlug: 'project-a' };
 
 describe('Project task tree', () => {
+  it('should preserve an unsent message when task details are collapsed and reopened', () => {
+    render(
+      <MemoryRouter>
+        <ProjectTaskTree tasks={[task('child')]} messages={[]} agents={[]} actions={actions()} />
+      </MemoryRouter>,
+    );
+    const disclosure = screen.getByRole('button', { name: 'Task details for child' });
+    fireEvent.click(disclosure);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message child' }), { target: { value: 'Draft question' } });
+    fireEvent.click(disclosure);
+    fireEvent.click(disclosure);
+    expect(screen.getByRole('textbox', { name: 'Message child' })).toHaveProperty('value', 'Draft question');
+  });
+
+  it('should allow inspection but disable commands while showing a last-known snapshot', () => {
+    render(
+      <MemoryRouter>
+        <ProjectTaskTree tasks={[task('child')]} messages={[]} agents={[]} actions={actions()} isReadOnly />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Task details for child' }));
+    expect(screen.getByRole('textbox', { name: 'Message child' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel task' })).toBeDisabled();
+  });
+
   it('opens the exact child transcript and existing revision review without adopting changes', () => {
     const child = task('child');
     child.attempts[0] = { ...child.attempts[0]!, placementId: 'placement-child' };
@@ -164,11 +189,13 @@ describe('Project task tree', () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Task details for child' }));
-    expect(screen.getByText('Partial bracket saved')).toBeDefined();
+    expect(screen.getAllByText('Partial bracket saved')).toHaveLength(2);
     expect(screen.getByText('Durable reply')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry task' }));
-    await screen.findByRole('status');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(commands.resume).toHaveBeenCalledWith('child');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Retry' })).toHaveAttribute('aria-busy', 'false');
+    });
   });
 
   it('offers resume for a completed child through its original task identity', async () => {
@@ -184,6 +211,6 @@ describe('Project task tree', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Resume task' }));
     await screen.findByRole('status');
     expect(commands.resume).toHaveBeenCalledWith('child');
-    expect(screen.queryByRole('button', { name: 'Retry task' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });
