@@ -295,8 +295,8 @@ catalogs:
       specifier: ^0.0.4
       version: 0.0.4
     eslint-plugin-n:
-      specifier: ^17.24.0
-      version: 17.24.0
+      specifier: ^18.4.1
+      version: 18.4.1
     eslint-plugin-no-use-extend-native:
       specifier: ^0.7.3
       version: 0.7.3
@@ -469,8 +469,8 @@ catalogs:
       specifier: ^4.1.1
       version: 4.1.1
     vitest-mock-extended:
-      specifier: ^4.0.0
-      version: 4.0.0
+      specifier: ^5.1.1
+      version: 5.1.1
     web-vitals:
       specifier: ^5.3.0
       version: 5.3.0
@@ -1221,10 +1221,10 @@ importers:
         version: 62.9.0(eslint@9.32.0(jiti@2.7.0))
       eslint-plugin-n:
         specifier: 'catalog:'
-        version: 17.24.0(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3)
+        version: 18.4.1(eslint@9.32.0(jiti@2.7.0))(ts-declaration-location@1.0.7(typescript@5.9.3))(typescript@5.9.3)
       eslint-plugin-no-barrel-files:
-        specifier: ^1.3.1
-        version: 1.3.1(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3)
+        specifier: ^2.2.0
+        version: 2.2.0(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3)
       eslint-plugin-no-use-extend-native:
         specifier: 'catalog:'
         version: 0.7.3(eslint@9.32.0(jiti@2.7.0))
@@ -1332,7 +1332,7 @@ importers:
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.0.15)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(happy-dom@21.0.1)(jsdom@26.0.0(canvas@3.2.3))(vite@8.0.16(@types/node@24.0.15)(esbuild@0.28.2)(jiti@2.7.0)(less@4.5.1)(sass-embedded@1.105.1)(sass@1.105.1)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
       vitest-mock-extended:
         specifier: 'catalog:'
-        version: 4.0.0(typescript@5.9.3)(vitest@4.1.11)
+        version: 5.1.1(typescript@5.9.3)(vitest@4.1.11)
       web-vitals:
         specifier: 'catalog:'
         version: 5.3.0
@@ -3799,7 +3799,7 @@ importers:
         version: 8.0.16(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(less@4.5.1)(sass-embedded@1.105.1)(sass@1.105.1)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)
       vitest-mock-extended:
         specifier: 'catalog:'
-        version: 4.0.0(typescript@5.9.3)(vitest@4.1.11)
+        version: 5.1.1(typescript@5.9.3)(vitest@4.1.11)
       zod:
         specifier: 'catalog:'
         version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
@@ -4180,7 +4180,7 @@ importers:
         version: link:../../runtime
       vitest-mock-extended:
         specifier: 'catalog:'
-        version: 4.0.0(typescript@5.9.3)(vitest@4.1.11)
+        version: 5.1.1(typescript@5.9.3)(vitest@4.1.11)
       zod:
         specifier: 'catalog:'
         version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
@@ -4595,7 +4595,7 @@ importers:
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(happy-dom@21.0.1)(jsdom@26.0.0(canvas@3.2.3))(vite@8.0.16(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(less@4.5.1)(sass-embedded@1.105.1)(sass@1.105.1)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
       vitest-mock-extended:
         specifier: 'catalog:'
-        version: 4.0.0(typescript@5.9.3)(vitest@4.1.11)
+        version: 5.1.1(typescript@5.9.3)(vitest@4.1.11)
 
   packages/skills:
     dependencies:
@@ -4890,7 +4890,7 @@ importers:
         version: 4.41.0
       vitest-mock-extended:
         specifier: 'catalog:'
-        version: 4.0.0(typescript@5.9.3)(vitest@4.1.11)
+        version: 5.1.1(typescript@5.9.3)(vitest@4.1.11)
       xstate:
         specifier: 'catalog:'
         version: 6.0.0-alpha.59
@@ -16756,16 +16756,30 @@ packages:
     resolution: {integrity: sha512-YNy2hKV+0Q3T4Ys4evByDvyruqzthK/PmduVkyE7x7B31oBSOfgEyhYoSt0iWZp7MN9gnpiBPJ5c0jXSEdIBVA==}
     engines: {node: '>=0.10.0'}
 
-  eslint-plugin-n@17.24.0:
-    resolution: {integrity: sha512-/gC7/KAYmfNnPNOb3eu8vw+TdVnV0zhdQwexsw6FLXbhzroVj20vRn2qL8lDWDGnAQ2J8DhdfvXxX9EoxvERvw==}
-    engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+  eslint-plugin-n@18.4.1:
+    resolution:
+      integrity: sha512-2sBReWOvCbzgkPri9M5SFmD5EbIwZLa1xz6B5RZsrI19WSFKpyx1sOMr+pdk8puCiXuEgCbErEHy1PuaUrc/4w==
+    engines:
+      node: ^20.19.0 || ^22.13.0 || >=24
     peerDependencies:
-      eslint: '>=8.23.0'
+      eslint: '>=8.57.1'
+      ts-declaration-location: ^1.0.6
+      typescript: '>=5.0.0'
+    peerDependenciesMeta:
+      ts-declaration-location:
+        optional: true
+      typescript:
+        optional: true
 
-  eslint-plugin-no-barrel-files@1.3.1:
-    resolution: {integrity: sha512-y7OX5kyH7PMNRFhLF6SmM4JapxvaxExrgWPndPNTzilpO5uBqybuN480g3E8TTxT3OLOOhQDynmcJ0dnipIyNA==}
+  eslint-plugin-no-barrel-files@2.2.0:
+    resolution:
+      integrity: sha512-bksrf75UqNXwKnTdK6lCAZI+Ci0b2Mvt9VOY2wBq8Tqu4yxH36bPePaT6Cn4jOdBiY2eWzM6rxXVjOscwiUE4g==
     peerDependencies:
       eslint: ^8.0.0 || ^9.0.0 || ^10.0.0
+      typescript: ^5.6.3 || ^6.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   eslint-plugin-no-use-extend-native@0.7.3:
     resolution: {integrity: sha512-kYJhgZkiZIavu/wIwrO+n4GemQcMX53kWCNZNr7nGMkRD1aBFLkDpBivEYP7nIJINCo9fzPbFjrpeX5kr2Qbww==}
@@ -18696,6 +18710,11 @@ packages:
 
   js-yaml@4.3.2:
     resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
+    hasBin: true
+
+  js-yaml@5.4.3:
+    resolution:
+      integrity: sha512-yzzNtgczwgoVHNigCyKTXcQJU4Y8t/ikU4UxXW0BvrLfHTGWZhsNcOT2s/a7vn81/4KqVnNmHjaUEPlvWnNwVw==
     hasBin: true
 
   jscad-electronics@0.0.159:
@@ -24205,10 +24224,11 @@ packages:
       yaml:
         optional: true
 
-  vitest-mock-extended@4.0.0:
-    resolution: {integrity: sha512-m2FmH8JYfxzZoLsHuhXRY+Pv++a3zd91HYpSz81tpRLEHbtFkEL2QcWvJowucWuNTirzQURKfWbJJSXbYqkTsA==}
+  vitest-mock-extended@5.1.1:
+    resolution:
+      integrity: sha512-k5Ji2+t4+nsdepXeakCkilyKydtgaULtP0HsjwQGIZsYr5hDTqrwCtC0+Sh0YBKUS7cY/Wxplf7SVjcZstTIMQ==
     peerDependencies:
-      typescript: 3.x || 4.x || 5.x || 6.x
+      typescript: 3.x || 4.x || 5.x || 6.x || 7.x
       vitest: 4.1.11
 
   vitest@4.1.11:
@@ -37521,7 +37541,7 @@ snapshots:
 
   eslint-plugin-max-params-no-constructor@0.0.4: {}
 
-  eslint-plugin-n@17.24.0(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3):
+  eslint-plugin-n@18.4.1(eslint@9.32.0(jiti@2.7.0))(ts-declaration-location@1.0.7(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       '@eslint-community/eslint-utils': 4.10.1(eslint@9.32.0(jiti@2.7.0))
       enhanced-resolve: 5.26.0
@@ -37531,18 +37551,22 @@ snapshots:
       globals: 15.15.0
       globrex: 0.1.2
       ignore: 5.3.2
+      js-yaml: 5.4.3
       semver: 7.8.5
+    optionalDependencies:
       ts-declaration-location: 1.0.7(typescript@5.9.3)
-    transitivePeerDependencies:
-      - typescript
+      typescript: 5.9.3
 
-  eslint-plugin-no-barrel-files@1.3.1(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3):
+  eslint-plugin-no-barrel-files@2.2.0(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3):
     dependencies:
+      '@typescript-eslint/parser': 8.71.2(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3)
       '@typescript-eslint/utils': 8.71.2(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.3)
       eslint: 9.32.0(jiti@2.7.0)
+      minimatch: 10.2.6
+    optionalDependencies:
+      typescript: 5.9.3
     transitivePeerDependencies:
-      - supports-color
-      - typescript
+    - supports-color
 
   eslint-plugin-no-use-extend-native@0.7.3(eslint@9.32.0(jiti@2.7.0)):
     dependencies:
@@ -40124,6 +40148,10 @@ snapshots:
       esprima: 4.0.1
 
   js-yaml@4.3.2:
+    dependencies:
+      argparse: 2.0.1
+
+  js-yaml@5.4.3:
     dependencies:
       argparse: 2.0.1
 
@@ -46712,7 +46740,7 @@ snapshots:
       tsx: 4.23.15
       yaml: 2.9.1
 
-  vitest-mock-extended@4.0.0(typescript@5.9.3)(vitest@4.1.11):
+  vitest-mock-extended@5.1.1(typescript@5.9.3)(vitest@4.1.11):
     dependencies:
       ts-essentials: 10.2.1(typescript@5.9.3)
       typescript: 5.9.3
