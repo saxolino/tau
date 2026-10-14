@@ -1,0 +1,44 @@
+# Throwaway diagnosis for the macOS release gate (lane GATE). Never merged; the branch is deleted after.
+name: Diagnose release gate on Darwin
+
+on:
+  push:
+    branches: [diag/release-gate-darwin]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose (${{ matrix.target }})
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [desktop:prepare-build123d-python, runtime:test, opencascade:test]
+    env:
+      NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-nx
+        with:
+          node-version: '24.10.0'
+          save-pnpm-store: 'false'
+      - name: Tools on PATH
+        run: |
+          command -v uv || echo 'uv: not on PATH'
+          command -v python3 && python3 --version
+          sysctl -n hw.ncpu
+      - name: Run ${{ matrix.target }}
+        run: |
+          set -o pipefail
+          status=0
+          pnpm nx run "${{ matrix.target }}" --skip-nx-cache > "$RUNNER_TEMP/task.log" 2>&1 || status=$?
+          echo "exit $status"
+          sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/task.log" > "$RUNNER_TEMP/plain.log"
+          echo '--- failure context ---'
+          grep -nE -B3 -A40 'FAIL |Error:|ERR|Hook timed out|AssertionError|ENOENT|spawn|Failed tasks' "$RUNNER_TEMP/plain.log" | cut -c1-400 | head -1500 || true
+          echo '--- tail ---'
+          tail -150 "$RUNNER_TEMP/plain.log" | cut -c1-400
+          exit "$status"
