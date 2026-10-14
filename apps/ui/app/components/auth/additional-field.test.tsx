@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AdditionalField as AdditionalFieldConfig } from '@better-auth-ui/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AdditionalField } from '#components/auth/additional-field.js';
@@ -52,6 +52,70 @@ describe('custom additional field form binding', () => {
     });
     expect(validate).toHaveBeenCalledWith('invalid');
   });
+
+  it.each(['stale rejection', 'stale success', 'edited without another blur'] as const)(
+    'should ignore %s after the custom field changes',
+    async (scenario) => {
+      const pending = Promise.withResolvers<void>();
+      const validate = vi.fn(async (value: unknown) => {
+        if (value === 'old') {
+          await pending.promise;
+        } else if (scenario === 'stale success') {
+          throw new Error('Current value is invalid');
+        }
+      });
+      const field: AdditionalFieldConfig = {
+        name: 'nickname',
+        label: 'Nickname',
+        type: 'string',
+        defaultValue: 'old',
+        validate,
+        render: ({ value, onChange, onBlur, errors, isInvalid }) => (
+          <>
+            <input
+              aria-label='Nickname'
+              aria-invalid={isInvalid}
+              value={String(value)}
+              onChange={(event) => {
+                onChange(event.target.value);
+              }}
+              onBlur={onBlur}
+            />
+            <span role='status'>{errors?.join(', ')}</span>
+          </>
+        ),
+      };
+      render(<AdditionalField name='nickname' field={field} />);
+      const input = screen.getByLabelText('Nickname');
+      fireEvent.blur(input);
+      fireEvent.change(input, { target: { value: 'new' } });
+      if (scenario !== 'edited without another blur') {
+        fireEvent.blur(input);
+        await waitFor(() => {
+          expect(validate).toHaveBeenCalledWith('new');
+        });
+      }
+      if (scenario === 'stale success') {
+        await screen.findByText('Current value is invalid');
+      }
+      await act(async () => {
+        if (scenario === 'stale success') {
+          pending.resolve();
+        } else {
+          pending.reject(new Error('Old value is invalid'));
+        }
+        await pending.promise.catch(() => undefined);
+      });
+      expect(input).toHaveValue('new');
+      if (scenario === 'stale success') {
+        expect(screen.getByRole('status')).toHaveTextContent('Current value is invalid');
+      } else {
+        expect(screen.getByRole('status')).toBeEmptyDOMElement();
+      }
+      expect(input).toHaveAttribute('aria-invalid', scenario === 'stale success' ? 'true' : 'false');
+      expect(screen.queryByText('Old value is invalid')).not.toBeInTheDocument();
+    },
+  );
 
   it.each([
     ['boolean', false, 'false'],
