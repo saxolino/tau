@@ -257,6 +257,9 @@ const installSessionStore = (partial: Partial<ChatSessionStore>): void => {
   vi.mocked(useChatSessionStore).mockReturnValue({
     requestTurn: vi.fn(),
     startPendingSeed: vi.fn(),
+    refreshMessageQueue: vi.fn(),
+    captureMessageQueueIntent: vi.fn(() => ({})),
+    subscribeProjection: vi.fn(() => vi.fn()),
     getProjection: () => undefined,
     respondToProjectedApproval,
     ...partial,

@@ -63,8 +63,18 @@ export function ChatTurnHost(): ReactNode {
 
   const admit = useCallback(
     async (gesture: ChatTurnGesture): Promise<ChatTurn> => {
+      if (gesture.kind === 'send' && gesture.command !== undefined) {
+        return {
+          runId: gesture.command.payload.runId,
+          leaseTurnId: gesture.message.id,
+          request: { kind: 'send', message: gesture.message, command: gesture.command, queueId: gesture.queueId },
+        };
+      }
       const liveAgent = agentRef.current;
-      const execution = gesture.kind === 'regenerate' && gesture.execution ? gesture.execution : liveAgent.execution;
+      const execution =
+        (gesture.kind === 'regenerate' || gesture.kind === 'send') && gesture.execution
+          ? gesture.execution
+          : liveAgent.execution;
       const turnAgent = execution === liveAgent.execution ? liveAgent : { ...liveAgent, execution };
       const projection = store.getProjection(activeChatId);
       const projectedRun =
@@ -115,7 +125,7 @@ export function ChatTurnHost(): ReactNode {
           });
         }
         const runId =
-          gesture.kind === 'regenerate' && gesture.requestId !== undefined
+          (gesture.kind === 'regenerate' || gesture.kind === 'send') && gesture.requestId !== undefined
             ? gesture.requestId
             : generatePrefixedId(idPrefix.request);
         const transcript =
@@ -178,7 +188,7 @@ export function ChatTurnHost(): ReactNode {
         );
         const request: ChatRequest =
           gesture.kind === 'send'
-            ? { kind: 'send', message: gesture.message, command }
+            ? { kind: 'send', message: gesture.message, command, queueId: gesture.queueId }
             : gesture.kind === 'edit'
               ? {
                   kind: 'edit',
@@ -203,6 +213,7 @@ export function ChatTurnHost(): ReactNode {
   useEffect(() => {
     const unpublish = publishChatTurnAdmission(activeChatId, admit);
     store.startPendingSeed(activeChatId);
+    store.refreshMessageQueue(activeChatId);
     return unpublish;
   }, [activeChatId, admit, store]);
 
