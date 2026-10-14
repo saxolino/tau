@@ -100,6 +100,7 @@ export function ProjectTaskTree({
             actions={actions}
             onReviewChanges={onReviewChanges}
             isReadOnly={isReadOnly}
+            hasClosedAncestor={false}
             depth={0}
           />
         ))}
@@ -117,6 +118,7 @@ const TaskBranch = memo(function TaskBranch({
   actions,
   onReviewChanges,
   isReadOnly,
+  hasClosedAncestor,
   depth,
 }: Readonly<{
   task: ProjectTask;
@@ -127,6 +129,7 @@ const TaskBranch = memo(function TaskBranch({
   actions: ProjectTaskActions;
   onReviewChanges?: () => void;
   isReadOnly: boolean;
+  hasClosedAncestor: boolean;
   depth: number;
 }>): React.JSX.Element {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -140,7 +143,7 @@ const TaskBranch = memo(function TaskBranch({
   const title = isRoot && agent?.name ? agent.name : task.title;
   const StatusIcon = attempt ? statusIcons[attempt.status] : Circle;
   const canRetry =
-    !task.closed &&
+    !hasClosedAncestor &&
     (attempt?.status === 'failed' || attempt?.status === 'interrupted' || attempt?.status === 'cancelled');
   const onExpandedChange = useCallback((open: boolean): void => {
     setIsExpanded(open);
@@ -281,6 +284,7 @@ const TaskBranch = memo(function TaskBranch({
               actions={actions}
               onReviewChanges={onReviewChanges}
               isReadOnly={isReadOnly}
+              hasClosedAncestor={hasClosedAncestor || task.closed}
               depth={depth + 1}
             />
           ))}

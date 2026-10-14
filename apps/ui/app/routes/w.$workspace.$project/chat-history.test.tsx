@@ -174,7 +174,9 @@ vi.mock('#routes/w.$workspace.$project/fork-divider.js', () => ({
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-error.js', () => ({
-  ChatError: () => <div data-testid='chat-error-adornment' />,
+  ChatError: ({ isClosedDelegatedTask }: { readonly isClosedDelegatedTask?: boolean }) => (
+    <div data-testid='chat-error-adornment' data-closed-delegated-task={String(isClosedDelegatedTask)} />
+  ),
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-title-bar.js', () => ({
@@ -384,6 +386,41 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
     expect(guidance.closest('[role="status"]')).toHaveAttribute('role', 'status');
     await submitDraft('Follow up on the bracket');
     expect(submitMock).not.toHaveBeenCalled();
+    screen.getByRole('button', { name: 'Open Agents' }).click();
+    expect(openPanel).toHaveBeenCalledWith('agents');
+  });
+
+  it('routes a closed child transcript to Agents without suggesting a message', () => {
+    const child: ProjectTask = {
+      id: 'child',
+      projectId: 'project_test',
+      chatId: 'chat_test',
+      parentTaskId: 'parent',
+      depth: 1,
+      title: 'Bracket child',
+      prompt: 'Build a bracket',
+      provider: { id: 'codex' },
+      createdAt: 1,
+      closed: true,
+      attempts: [
+        {
+          id: 'attempt-child',
+          number: 1,
+          status: 'cancelled',
+          toolGrant: { toolChoice: 'auto' },
+          source: { revisionId: 'base', checkoutId: 'candidate' },
+          createdAt: 1,
+        },
+      ],
+    };
+    taskSnapshot = { tasks: [child], messages: [], cursor: 1, nextCursor: 1, hasMore: false };
+    render(<ChatHistory />);
+
+    expect(
+      screen.getByText('This chat belongs to Bracket child. Open Agents to review the task and available actions.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('chat-error-adornment')).toHaveAttribute('data-closed-delegated-task', 'true');
+    expect(capturedTextarea.isSubmitDisabled).toBe(true);
     screen.getByRole('button', { name: 'Open Agents' }).click();
     expect(openPanel).toHaveBeenCalledWith('agents');
   });

@@ -349,6 +349,39 @@ it('opens child details, sends a message, and confirms named subtree cancellatio
   await expect.element(page.getByRole('status')).toHaveTextContent('Task cancellation requested');
 });
 
+it('retries a cancelled closed child while withholding Retry from its closed descendant', async () => {
+  const resume = vi.fn(async () => undefined);
+  const child: ProjectTask = {
+    ...tasks[1]!,
+    closed: true,
+    attempts: [{ ...tasks[1]!.attempts[0]!, status: 'cancelled' }],
+  };
+  const grandchild: ProjectTask = {
+    ...tasks[2]!,
+    closed: true,
+    attempts: [{ ...tasks[2]!.attempts[0]!, status: 'cancelled' }],
+  };
+  render(
+    <MemoryRouter>
+      <ProjectTaskTree
+        tasks={[tasks[0]!, child, grandchild]}
+        messages={[]}
+        agents={[]}
+        actions={{ send: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined), resume }}
+      />
+    </MemoryRouter>,
+  );
+
+  await expect.element(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+  await expect
+    .element(
+      page.getByRole('list', { name: 'Child tasks of Check mounting holes' }).getByRole('button', { name: 'Retry' }),
+    )
+    .not.toBeInTheDocument();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  expect(resume).toHaveBeenCalledWith('child');
+});
+
 it('opens project instructions, saves them, and restores trigger focus when closed with Escape', async () => {
   instructionFiles.text = '';
   render(

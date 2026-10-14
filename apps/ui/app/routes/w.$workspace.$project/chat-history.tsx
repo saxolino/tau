@@ -56,9 +56,13 @@ const instantScrollBehavior = 'instant' as 'auto';
 const TurnGroup = memo(function ({
   messageIds,
   isLast,
+  isClosedDelegatedTask,
+  onOpenAgents,
 }: {
   readonly messageIds: readonly string[];
   readonly isLast: boolean;
+  readonly isClosedDelegatedTask: boolean;
+  readonly onOpenAgents: () => void;
 }) {
   return (
     <div className='mx-auto flex w-[calc(100%_-_1rem)] max-w-xl flex-col gap-1 py-1'>
@@ -71,7 +75,9 @@ const TurnGroup = memo(function ({
           footer={index === 0 ? <ChatRevisionMarker userMessageId={id} isLatestTurn={isLast} /> : undefined}
         />
       ))}
-      {isLast ? <ChatError className='mx-4' /> : null}
+      {isLast ? (
+        <ChatError className='mx-4' isClosedDelegatedTask={isClosedDelegatedTask} onOpenAgents={onOpenAgents} />
+      ) : null}
     </div>
   );
 });
@@ -232,9 +238,16 @@ const ExpandedChatHistory = memo(function ({
   const renderItem = useCallback(
     (index: number, group: TurnGroupData) => {
       const isLast = index === groups.length - 1;
-      return <TurnGroup messageIds={group.messageIds} isLast={isLast} />;
+      return (
+        <TurnGroup
+          messageIds={group.messageIds}
+          isLast={isLast}
+          isClosedDelegatedTask={delegatedTask?.closed === true}
+          onOpenAgents={openAgents}
+        />
+      );
     },
-    [groups.length],
+    [delegatedTask?.closed, groups.length, openAgents],
   );
   const computeItemKey = useCallback((_index: number, group: TurnGroupData) => group.messageIds[0]!, []);
 
@@ -316,7 +329,13 @@ const ExpandedChatHistory = memo(function ({
           all: their text still in the composer, no row, no banner. One banner
           at a time: while there are turns, the group above owns it.
         */}
-            {groups.length === 0 ? <ChatError className='mx-4 mb-1 shrink-0' /> : null}
+            {groups.length === 0 ? (
+              <ChatError
+                className='mx-4 mb-1 shrink-0'
+                isClosedDelegatedTask={delegatedTask?.closed === true}
+                onOpenAgents={openAgents}
+              />
+            ) : null}
             {/* Chat input area. The agent's task list and its questions share one
               tray directly above the composer; the task list is keyed by chat so
               its fold never carries across chats (D8, agent questions D8). */}
@@ -342,8 +361,10 @@ const ExpandedChatHistory = memo(function ({
                   className='mx-2 flex items-center justify-between gap-2 rounded-lg border bg-muted p-2 text-sm'
                 >
                   <span>
-                    This chat belongs to {delegatedTask.title}. Send a message and resume the task from Agents to
-                    continue it.
+                    This chat belongs to {delegatedTask.title}.{' '}
+                    {delegatedTask.closed
+                      ? 'Open Agents to review the task and available actions.'
+                      : 'Send a message and resume the task from Agents to continue it.'}
                   </span>
                   <Button type='button' size='sm' variant='outline' onClick={openAgents}>
                     Open Agents

@@ -198,6 +198,44 @@ describe('Project task tree', () => {
     });
   });
 
+  it('retries a cancelled task even when cancellation closed its own record', async () => {
+    const cancelled = task('child', 'root');
+    cancelled.closed = true;
+    cancelled.attempts[0] = { ...cancelled.attempts[0]!, status: 'cancelled' };
+    const commands = actions();
+    render(
+      <MemoryRouter>
+        <ProjectTaskTree tasks={[task('root'), cancelled]} messages={[]} agents={[]} actions={commands} />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(commands.resume).toHaveBeenCalledWith('child');
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Retry' })).toHaveAttribute('aria-busy', 'false');
+    });
+  });
+
+  it('withholds Retry when a cancelled ancestor is closed or the attempt is still stopping', () => {
+    const root = task('root');
+    root.closed = true;
+    root.attempts[0] = { ...root.attempts[0]!, status: 'cancelled' };
+    const child = task('child', 'root');
+    child.closed = true;
+    child.attempts[0] = { ...child.attempts[0]!, status: 'cancelled' };
+    const stopping = task('stopping');
+    stopping.attempts[0] = { ...stopping.attempts[0]!, status: 'cancelling' };
+    render(
+      <MemoryRouter>
+        <ProjectTaskTree tasks={[root, child, stopping]} messages={[]} agents={[]} actions={actions()} />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
+    expect(
+      within(screen.getByRole('list', { name: 'Child tasks of root' })).queryByRole('button', { name: 'Retry' }),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+  });
+
   it('offers resume for a completed child through its original task identity', async () => {
     const child = task('child', 'root');
     child.attempts[0] = { ...child.attempts[0]!, status: 'completed' };
