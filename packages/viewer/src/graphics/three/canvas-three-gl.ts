@@ -1,3 +1,5 @@
+import { invalidate } from '@react-three/fiber';
+import { claimCanvasRenderer } from '#graphics/three/canvas-renderer-ownership.js';
 import type { CanvasProps, Renderer as FiberCompatibleGl } from '@react-three/fiber';
 import type { ThreeCamera } from '@taucad/three/camera';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
@@ -67,6 +69,7 @@ export function createTauR3fGlProp(
     }
   };
   const initialize = async (canvas: HTMLCanvasElement): Promise<FiberCompatibleGl> => {
+    const attachOwnership = claimCanvasRenderer(canvas, invalidate);
     let renderer: RendererInstance;
     try {
       renderer = await createRenderer(
@@ -75,6 +78,7 @@ export function createTauR3fGlProp(
         preserveDrawingBuffer ? { canvas, preserveDrawingBuffer } : canvas,
       );
     } catch (error) {
+      attachOwnership.cancel();
       const failure = error instanceof Error ? error : new Error(String(error));
       if (!isRetired()) {
         console.warn('[createTauR3fGlProp] Renderer creation failed:', failure);
@@ -82,6 +86,7 @@ export function createTauR3fGlProp(
       }
       throw failure;
     }
+    attachOwnership(renderer);
     if (isRetired()) {
       return renderer as FiberCompatibleGl;
     }
