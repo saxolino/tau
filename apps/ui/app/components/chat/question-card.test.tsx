@@ -387,3 +387,39 @@ describe('question dictation', () => {
     expect(onAnswer).not.toHaveBeenCalled();
   });
 });
+
+it('collects multiple selections and submits only on Send answer', async () => {
+  const user = userEvent.setup();
+  const onAnswer = vi.fn();
+  const onHold = vi.fn();
+  render(
+    <QuestionCard
+      ask={{
+        ...formAsk,
+        deadline: null,
+        questions: [
+          {
+            ...formAsk.questions[0]!,
+            isList: true,
+            allowsText: false,
+            recommended: undefined,
+          },
+        ],
+      }}
+      answers={undefined}
+      now={askedAt}
+      onAnswer={onAnswer}
+      onHold={onHold}
+      onDecline={() => undefined}
+    />,
+  );
+  const send = screen.getByRole('button', { name: 'Send answer' });
+  expect(send).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: /^A,/u }));
+  await user.click(screen.getByRole('button', { name: /^B,/u }));
+  expect(screen.getByRole('button', { name: /^A,/u })).toHaveAttribute('aria-pressed', 'true');
+  expect(onAnswer).not.toHaveBeenCalled();
+  expect(onHold).toHaveBeenCalled();
+  await user.click(send);
+  expect(onAnswer).toHaveBeenCalledWith('form', { choices: ['Twisted ribbon', 'Faceted gem'] });
+});

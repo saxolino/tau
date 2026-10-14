@@ -245,6 +245,19 @@ export const elicitationResponseOf = (
     if (field === undefined || question === undefined) {
       continue;
     }
+    if (answer.choices !== undefined) {
+      if (field.kind !== 'list') {
+        return { action: 'decline' };
+      }
+      const values = answer.choices.map(
+        (label) => field.values[question.options.findIndex((option) => option.label === label)],
+      );
+      if (values.some((value) => value === undefined)) {
+        return { action: 'decline' };
+      }
+      content[field.key] = [...new Set(values.map(String))];
+      continue;
+    }
     const index = question.options.findIndex((option) => option.label === answer.answer);
     const value = answer.text === true ? undefined : field.values[index];
     if (value !== undefined) {

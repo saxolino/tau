@@ -198,3 +198,44 @@ describe('elicitationResponseOf', () => {
     });
   });
 });
+
+it('returns each selected list wire value, accepts old single answers and rejects unknown choices', () => {
+  const elicitation = askOfElicitation(
+    {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Which exports?',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          formats: {
+            type: 'array',
+            items: { type: 'string', enum: ['step', 'stl'], enumNames: ['STEP, solids', 'STL'] },
+          },
+        },
+      },
+    },
+    context,
+  )!;
+  expect(
+    elicitationResponseOf(elicitation, {
+      questions: {
+        formats: { choices: ['STEP, solids', 'STL'], at },
+      },
+    }),
+  ).toEqual({ action: 'accept', content: { formats: ['step', 'stl'] } });
+  expect(
+    elicitationResponseOf(elicitation, {
+      questions: {
+        formats: { choice: 'STL', at },
+      },
+    }),
+  ).toEqual({ action: 'accept', content: { formats: ['stl'] } });
+  expect(
+    elicitationResponseOf(elicitation, {
+      questions: {
+        formats: { choices: ['unoffered'], at },
+      },
+    }),
+  ).toEqual({ action: 'decline' });
+});

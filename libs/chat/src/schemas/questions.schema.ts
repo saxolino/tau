@@ -31,7 +31,7 @@ export const askedQuestionSchema = z.object({
   recommended: z.number().int().nonnegative().optional(),
   /** Whether the person may answer in their own words. */
   allowsText: z.boolean(),
-  /** The asking agent expects a list (an ACP multi-select field); Tau answers it with one item. */
+  /** The asking agent expects a list (an ACP multi-select field). */
   isList: z.literal(true).optional(),
 });
 
@@ -70,6 +70,7 @@ export const questionsFileSchema = z.object({
 /** A person's answer to one question: a choice or their own words. @public */
 export const questionAnswerSchema = z.union([
   z.object({ choice: z.string().min(1).max(120), at: isoTimestampSchema }),
+  z.object({ choices: z.array(z.string().min(1).max(120)).min(1).max(12), at: isoTimestampSchema }),
   z.object({ text: z.string().min(1).max(4000), at: isoTimestampSchema }),
 ]);
 
@@ -206,6 +207,8 @@ export type ResolvedAnswer = {
   /** The chosen label or the person's text. */
   readonly answer: string;
   readonly source: 'person' | 'recommended';
+  /** Individually selected labels for a list question; `answer` is their readable summary. */
+  readonly choices?: readonly string[];
   /** The person typed this answer rather than choosing an option. */
   readonly text?: true;
 };
@@ -222,6 +225,9 @@ export const resolveAnswers = (ask: Ask, answers: AskAnswers | undefined): Resol
   ask.questions.flatMap((question): ResolvedAnswer[] => {
     const given = answers?.questions[question.id];
     if (given !== undefined) {
+      if ('choices' in given) {
+        return [{ id: question.id, answer: given.choices.join(', '), choices: given.choices, source: 'person' }];
+      }
       return 'choice' in given
         ? [{ id: question.id, answer: given.choice, source: 'person' }]
         : [{ id: question.id, answer: given.text, source: 'person', text: true }];

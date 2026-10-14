@@ -43,7 +43,7 @@ const textOf = (content: ReturnType<typeof useFileContent>): string | undefined 
  */
 const lateAnswerMessage = (ask: Ask, questionId: string, reply: QuestionReply): string => {
   const question = ask.questions.find((candidate) => candidate.id === questionId);
-  const answer = 'choice' in reply ? reply.choice : reply.text;
+  const answer = 'choices' in reply ? reply.choices.join(', ') : 'choice' in reply ? reply.choice : reply.text;
   const assumed = question?.recommended === undefined ? undefined : question.options[question.recommended]?.label;
   return [
     `Answer to your earlier question "${question?.question ?? questionId}": ${answer}.`,

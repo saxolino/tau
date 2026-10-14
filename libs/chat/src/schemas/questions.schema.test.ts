@@ -65,3 +65,16 @@ describe('questions record', () => {
     expect(resolveAnswers(noDefault, undefined)).toEqual([]);
   });
 });
+
+it('round-trips several selected labels without conflating labels containing commas', () => {
+  const choices = ['STEP, exact solids', 'STL'];
+  const answers: AnswersFile = {
+    version: 1,
+    answers: { [ask.id]: { questions: { seeds: { choices, at } } } },
+  };
+  const restored = parseAnswersFile(serializeAnswersFile(answers));
+  expect(restored).toEqual(answers);
+  expect(resolveAnswers(ask, restored.answers[ask.id])).toEqual([
+    { id: 'seeds', answer: 'STEP, exact solids, STL', choices, source: 'person' },
+  ]);
+});
