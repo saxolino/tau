@@ -3,26 +3,49 @@
 #   through the check-runs REST API where artifact and log downloads are unavailable.
 # Environment: a GitHub Actions step (workflow commands on stdout). At most 9 notices per call.
 # Usage: scripts/spikes/native-deps/linux/annotate.sh <title> <file>
-# Exit codes: 0 always once the arguments are valid, 2 usage.
+# Exit codes: 0 summary emitted (or missing/empty), 1 read failure, 2 usage.
+# Node is supplied by setup-nx on both Linux and macOS; no GNU-only text tools are needed.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
   echo "Usage: $0 <title> <file>" >&2
   exit 2
 fi
-title="$1"
-file="$2"
-[[ -f "$file" ]] || { echo "::warning title=${title}::no summary file ${file}"; exit 0; }
-work="$(mktemp -d)"
-split -C 3800 -a 1 "$file" "$work/part-"
-index=0
-for part in "$work"/part-*; do
-  index=$((index + 1))
-  if [[ "$index" -gt 9 ]]; then
-    echo "::warning title=${title}::summary truncated after 9 notices"
-    break
-  fi
-  body="$(sed -e 's/%/%25/g' -e 's/\r/%0D/g' "$part" | awk 'BEGIN { ORS = "%0A" } { print }')"
-  echo "::notice title=${title} (${index})::${body}"
-done
-rm -rf "$work"
+node --input-type=module - "$1" "$2" <<'NODE'
+import { readFileSync } from 'node:fs';
+
+const [title, file] = process.argv.slice(2);
+const escapeData = (text) => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+const property = escapeData(title).replaceAll(':', '%3A').replaceAll(',', '%2C');
+let text;
+try {
+  text = readFileSync(file, 'utf8');
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+  console.log(`::warning title=${property}::no summary file ${escapeData(file)}`);
+  process.exit(0);
+}
+// Bound notices by UTF-8 bytes without splitting a code point. Keep the nine-notice cap.
+let body = '';
+let bytes = 0;
+let index = 0;
+const emit = () => {
+  index += 1;
+  console.log(`::notice title=${property} (${index})::${escapeData(body)}`);
+  body = '';
+  bytes = 0;
+};
+for (const character of text) {
+  const size = Buffer.byteLength(character);
+  if (bytes + size > 3800) {
+    emit();
+    if (index === 9) {
+      console.log(`::warning title=${property}::summary truncated after 9 notices`);
+      process.exit(0);
+    }
+  }
+  body += character;
+  bytes += size;
+}
+if (body) emit();
+NODE

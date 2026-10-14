@@ -29,6 +29,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/spike-w1-mac.yml'
+      - 'scripts/spikes/native-deps/linux/annotate.sh'
 
 permissions:
   actions: read # nrwl/nx-set-shas inside setup-nx, and the Tau.app artifact of another run
