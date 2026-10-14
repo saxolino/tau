@@ -23,6 +23,68 @@ function disposeRenderer(renderer: WebGPURenderer): unknown {
 }
 
 describe('canvas renderer ownership', () => {
+  it('does not reset an obsolete predecessor when the newest renderer attaches', () => {
+    const canvas = document.createElement('canvas');
+    const previous = makeRenderer(canvas);
+    claimCanvasRenderer(canvas, vi.fn())(previous.renderer);
+    const current = makeRenderer(canvas);
+    claimCanvasRenderer(canvas, vi.fn())(current.renderer);
+    expect(previous.reset).not.toHaveBeenCalled();
+    expect(current.reset).not.toHaveBeenCalled();
+    previous.renderer.dispose();
+    expect(previous.nativeExtension.loseContext).not.toHaveBeenCalled();
+    expect(current.reset).toHaveBeenCalledOnce();
+    current.renderer.dispose();
+    expect(current.nativeExtension.loseContext).toHaveBeenCalledOnce();
+  });
+
+  it('resets the live renderer behind a still-pending successor when an older factory settles', () => {
+    const canvas = document.createElement('canvas');
+    const oldest = makeRenderer(canvas);
+    const attachOldest = claimCanvasRenderer(canvas, vi.fn());
+    const live = makeRenderer(canvas);
+    const invalidate = vi.fn();
+    claimCanvasRenderer(canvas, invalidate)(live.renderer);
+    const pendingB = claimCanvasRenderer(canvas, vi.fn());
+    const pendingC = claimCanvasRenderer(canvas, vi.fn());
+    pendingB.cancel();
+    live.reset.mockClear();
+    invalidate.mockClear();
+    attachOldest(oldest.renderer);
+    oldest.renderer.dispose();
+    expect(oldest.cleanup).toHaveBeenCalledOnce();
+    expect(oldest.nativeExtension.loseContext).not.toHaveBeenCalled();
+    expect(live.reset).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+    pendingC.cancel();
+    live.renderer.dispose();
+    expect(live.nativeExtension.loseContext).toHaveBeenCalledOnce();
+  });
+
+  it('restores a live owner across two cancelled successors before an older factory settles', () => {
+    const canvas = document.createElement('canvas');
+    const oldest = makeRenderer(canvas);
+    const attachOldest = claimCanvasRenderer(canvas, vi.fn());
+    const live = makeRenderer(canvas);
+    const invalidate = vi.fn();
+    claimCanvasRenderer(canvas, invalidate)(live.renderer);
+    const pendingB = claimCanvasRenderer(canvas, vi.fn());
+    const pendingC = claimCanvasRenderer(canvas, vi.fn());
+    pendingB.cancel();
+    pendingC.cancel();
+    live.reset.mockClear();
+    invalidate.mockClear();
+    attachOldest(oldest.renderer);
+    oldest.renderer.dispose();
+    expect(oldest.cleanup).toHaveBeenCalledOnce();
+    expect(oldest.nativeExtension.loseContext).not.toHaveBeenCalled();
+    expect(live.reset).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+    live.renderer.dispose();
+    expect(live.cleanup).toHaveBeenCalledOnce();
+    expect(live.nativeExtension.loseContext).toHaveBeenCalledOnce();
+  });
+
   it('releases the final owner and retains the original extension lookup', () => {
     const canvas = document.createElement('canvas');
     const current = makeRenderer(canvas);

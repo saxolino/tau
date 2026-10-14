@@ -1,18 +1,99 @@
 import type { RendererInstance } from '#graphics/three/renderer.js';
 
-type CanvasOwner = { renderer: RendererInstance | undefined; invalidate: () => void; disposed: boolean };
+type CanvasOwner = {
+  renderer: RendererInstance | undefined;
+  invalidate: () => void;
+  disposed: boolean;
+  previous: CanvasOwner | undefined;
+};
 type RendererLease = ((renderer: RendererInstance) => void) & { cancel: () => void };
 type ExtensionLookup = { get: (name: string) => unknown };
 const owners = new WeakMap<HTMLCanvasElement, CanvasOwner>();
+
+type FallbackState = {
+  currentBlendingEnabled: boolean;
+  currentClippingPlanes: number;
+  currentDepthReversed: boolean;
+  currentDrawbuffers: WeakMap<WebGLFramebuffer, unknown>;
+  resetVertexState: () => void;
+  setReversedDepth: (reversed: boolean) => void;
+};
+
+function isFallbackState(value: unknown): value is FallbackState {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'currentBlendingEnabled' in value &&
+    typeof value.currentBlendingEnabled === 'boolean' &&
+    'currentClippingPlanes' in value &&
+    typeof value.currentClippingPlanes === 'number' &&
+    'currentDepthReversed' in value &&
+    typeof value.currentDepthReversed === 'boolean' &&
+    'currentDrawbuffers' in value &&
+    value.currentDrawbuffers instanceof WeakMap &&
+    'resetVertexState' in value &&
+    typeof value.resetVertexState === 'function' &&
+    'setReversedDepth' in value &&
+    typeof value.setReversedDepth === 'function'
+  );
+}
+
+function resetFallbackState(renderer: RendererInstance, canvas: HTMLCanvasElement): void {
+  if (!('backend' in renderer)) {
+    return;
+  }
+  const { backend } = renderer;
+  if (!('isWebGLBackend' in backend) || !backend.isWebGLBackend) {
+    return;
+  }
+  if (!('state' in backend) || !isFallbackState(backend.state)) {
+    throw new Error('Expected initialized Three WebGL fallback state.');
+  }
+  const previousState = backend.state;
+  // Three r184 has no public fallback reset. Recreate only its state cache with
+  // the installed backend's own constructor; GPU resources and utilities stay
+  // owned by that backend. Utilities read backend.state on each operation.
+  const state: unknown = Reflect.construct(previousState.constructor, [backend]);
+  if (!isFallbackState(state)) {
+    throw new Error('Unexpected Three WebGL fallback state contract.');
+  }
+  const context = canvas.getContext('webgl2');
+  if (!context) {
+    throw new Error('Expected a WebGL fallback context.');
+  }
+  // These caches have non-null initial values. Match the driver before letting
+  // subsequent draws repopulate the remaining program/binding/material caches.
+  context.disable(context.BLEND);
+  state.currentBlendingEnabled = false;
+  state.currentClippingPlanes = -1;
+  // Draw-buffer selections belong to each framebuffer, not the shared context.
+  // Three sets these before rebinding an existing target, so retain that table.
+  state.currentDrawbuffers = previousState.currentDrawbuffers;
+  state.resetVertexState();
+  if (context.getExtension('EXT_clip_control')) {
+    state.currentDepthReversed = !previousState.currentDepthReversed;
+    state.setReversedDepth(previousState.currentDepthReversed);
+  }
+  backend.state = state;
+}
 
 function isExtensionLookup(value: unknown): value is ExtensionLookup {
   return typeof value === 'object' && value !== null && 'get' in value && typeof value.get === 'function';
 }
 
 function resetSurvivor(canvas: HTMLCanvasElement, retired: CanvasOwner): void {
-  const survivor = owners.get(canvas);
-  if (survivor && survivor !== retired && survivor.renderer && 'resetState' in survivor.renderer) {
-    survivor.renderer.resetState();
+  let survivor = owners.get(canvas);
+  // Pending leases retain context-loss authority, but the preceding ready
+  // renderer can still draw until their replacement is initialized.
+  while (survivor && (survivor.disposed || !survivor.renderer)) {
+    survivor = survivor.previous;
+  }
+  if (survivor?.renderer && survivor !== retired) {
+    if ('resetState' in survivor.renderer) {
+      survivor.renderer.resetState();
+    } else {
+      resetFallbackState(survivor.renderer, canvas);
+    }
     survivor.invalidate();
   }
 }
@@ -26,7 +107,7 @@ function resetSurvivor(canvas: HTMLCanvasElement, retired: CanvasOwner): void {
  */
 export function claimCanvasRenderer(canvas: HTMLCanvasElement, invalidate: () => void): RendererLease {
   const previous = owners.get(canvas);
-  const owner: CanvasOwner = { renderer: undefined, invalidate, disposed: false };
+  const owner: CanvasOwner = { renderer: undefined, invalidate, disposed: false, previous };
   owners.set(canvas, owner);
   const attach = (renderer: RendererInstance): void => {
     owner.renderer = renderer;
@@ -82,6 +163,7 @@ export function claimCanvasRenderer(canvas: HTMLCanvasElement, invalidate: () =>
         };
       }
       const finish = (): void => {
+        owner.renderer = undefined;
         if (lookup && originalGet) {
           if (getDescriptor) {
             Object.defineProperty(lookup, 'get', getDescriptor);
@@ -109,8 +191,13 @@ export function claimCanvasRenderer(canvas: HTMLCanvasElement, invalidate: () =>
     cancel: () => {
       owner.disposed = true;
       if (owners.get(canvas) === owner) {
-        if (previous && !previous.disposed) {
-          owners.set(canvas, previous);
+        let survivor = owner.previous;
+        while (survivor?.disposed) {
+          survivor = survivor.previous;
+        }
+        owner.previous = survivor;
+        if (survivor) {
+          owners.set(canvas, survivor);
         } else {
           owners.delete(canvas);
         }
