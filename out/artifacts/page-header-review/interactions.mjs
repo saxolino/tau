@@ -6,13 +6,14 @@ const context=await browser.newContext({viewport:{width:1280,height:720}});
 // Signed-out API fixture; render the real invitation notice without a live API.
 await context.route('**/v1/auth/get-session**', route => route.fulfill({status:200,contentType:'application/json',body:'null'}));
 const page=await context.newPage();
+try {
 const results=[];
 await page.goto('http://localhost:3027/projects/new',{timeout:600000});
 await page.waitForTimeout(1200);
- const decline=page.getByRole('button',{name:'Decline',exact:true});
- if(await decline.isVisible())await decline.click();
  const closeToast=page.getByRole('button',{name:'Close toast',exact:true});
 if(await closeToast.first().isVisible())await closeToast.first().click();
+ const decline=page.getByRole('button',{name:'Decline',exact:true});
+ if(await decline.isVisible())await decline.click();
 await page.getByLabel('Project Name *',{exact:true}).fill('Header review');
 const create=page.getByRole('button',{name:/Create Project/});
 await create.waitFor();
@@ -48,5 +49,11 @@ for(const route of ['/community','/projects/new']){
 assert.deepEqual(frames[0],frames[1],'Community and New Project header alignment/typography agree at 2560px');
 results.push({wideDesktopHeaderParity:frames});
 await fs.writeFile('out/research/page-headers/interactions.json',JSON.stringify(results,null,2));
-await browser.close();
+
 console.log(results);
+
+} catch(error) {
+ await page.screenshot({path:'out/research/page-headers/interaction-failure.png'});
+ await fs.writeFile('out/research/page-headers/interaction-failure.txt',await page.locator('body').ariaSnapshot());
+ throw error;
+} finally { await browser.close(); }

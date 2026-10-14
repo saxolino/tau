@@ -16,10 +16,10 @@ async function open(route){
  await page.getByRole('heading',{level:1}).first().waitFor();
  await page.evaluate(()=>document.fonts.ready);
  await page.waitForTimeout(1200);
- const decline=page.getByRole('button',{name:'Decline',exact:true});
- if(await decline.isVisible())await decline.click();
  const closeToast=page.getByRole('button',{name:'Close toast',exact:true});
  if(await closeToast.first().isVisible())await closeToast.first().click();
+ const decline=page.getByRole('button',{name:'Decline',exact:true});
+ if(await decline.isVisible())await decline.click();
 }
 async function capture(route,label){
  const result=await page.evaluate(()=>({
