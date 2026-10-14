@@ -552,7 +552,10 @@ describe('tau mcp over stdio', () => {
 
   it('should exit within five seconds of the client closing, removing its screenshots', async ({ annotate }) => {
     await client.close();
-    const { code, elapsed } = await exitWithin(served, 5000);
+    const { code: diagCode, elapsed } = await exitWithin(served, 30_000);
+    console.error(`DIAG exit code ${String(diagCode)} after ${String(Math.round(elapsed))} ms; load ${String(loadavg()[0])}`);
+    console.error(served.stderr().split('\n').filter((line) => line.includes('DIAG') || line.includes('tau mcp')).join('\n'));
+    const code = elapsed <= 5000 ? diagCode : 'running';
     await annotate(`exited ${String(Math.round(elapsed))} ms after the client closed`);
 
     expect(code).toBe(0);
@@ -570,7 +573,7 @@ describe('tau mcp over stdio', () => {
     }
     expect(served.stdout()).not.toContain(noiseMarker);
     expect(served.stderr()).toContain(noiseMarker);
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('tau mcp on SIGTERM', () => {

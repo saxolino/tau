@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [desktop:prepare-build123d-python, runtime:test, opencascade:test]
+        target: [desktop:prepare-build123d-python, runtime:test, opencascade:test, 'cli:test -- src/commands/mcp.integration.test.ts']
     env:
       NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
     steps:
@@ -30,11 +30,11 @@ jobs:
           command -v uv || echo 'uv: not on PATH'
           command -v python3 && python3 --version
           sysctl -n hw.ncpu
-      - name: Run ${{ matrix.target }}
+      - name: Run the target
         run: |
           set -o pipefail
           status=0
-          pnpm nx run "${{ matrix.target }}" --skip-nx-cache > "$RUNNER_TEMP/task.log" 2>&1 || status=$?
+          NX_SKIP_NX_CACHE=true pnpm nx run ${{ matrix.target }} > "$RUNNER_TEMP/task.log" 2>&1 || status=$?
           echo "exit $status"
           sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/task.log" > "$RUNNER_TEMP/plain.log"
           echo '--- failure context ---'

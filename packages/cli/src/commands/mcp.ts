@@ -323,10 +323,14 @@ export const mcpCommand = defineCommand({
     local.server.server.onclose = stop;
 
     await stopped.promise;
+    const t0 = performance.now();
+    const mark = (label: string): void => {
+      process.stderr.write(`DIAG-CLOSE ${label} at ${String(Math.round(performance.now() - t0))} ms\n`);
+    };
     const close = async (): Promise<void> => {
-      /* The server and its evidence folder go first, so a kernel that ignores
-       * shutdown cannot keep the folder past the grace. */
+      mark('begin');
       await local.close();
+      mark('local.close');
       for (const timer of idleTimers.values()) {
         clearTimeout(timer);
       }
@@ -335,12 +339,16 @@ export const mcpCommand = defineCommand({
       } catch (error) {
         process.stderr.write(`tau mcp: a parameter write did not close: ${String(error)}\n`);
       }
+      mark('parameters.close');
       await machines?.close().catch((error: unknown) => {
         process.stderr.write(`tau mcp: the printer store did not close: ${String(error)}\n`);
       });
+      mark('machines.close');
       await clients.closeAll();
+      mark('clients.closeAll');
     };
     await Promise.race([close().catch(() => undefined), sleep(shutdownGrace)]);
+    mark('race settled');
     // oxlint-disable-next-line unicorn/no-process-exit -- a kernel thread that ignores termination would keep the event loop alive; the protocol is already closed, so no reader is truncated.
     process.exit(0);
   },
