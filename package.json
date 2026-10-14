@@ -322,8 +322,7 @@
     "vite-plugin-static-copy": "catalog:",
     "vitest": "catalog:",
     "vitest-mock-extended": "catalog:",
-    "web-vitals": "catalog:",
-    "webpack-cli": "^7.0.0"
+    "web-vitals": "catalog:"
   },
   "author": "Richard Fontein",
   "engines": {
