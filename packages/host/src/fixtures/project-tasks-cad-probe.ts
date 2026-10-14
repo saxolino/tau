@@ -127,8 +127,20 @@ if (process.argv[2] === '--seed-native-resume') {
 
 const frames: AcpWireFrame[] = [];
 let step = 0;
-let parentTaskId: string | undefined;
 let cadResult: unknown;
+let modelRequest: string | undefined;
+let taskContext:
+  | {
+      projectId: string;
+      taskId: string;
+      parentTaskId: string;
+      attemptId: string;
+      attemptNumber: number;
+      candidateCheckoutId: string;
+      sourceRevisionId: string;
+      sourceCheckoutId: string;
+    }
+  | undefined;
 const projectedToolResult = (value: unknown): unknown => {
   if (!Array.isArray(value)) {
     return value;
@@ -152,16 +164,30 @@ const modelTransport: ModelTransport = {
     }
     switch (step) {
       case 1: {
-        yield { type: 'tool-input', toolCallId: 'cad-task-read', toolName: 'task_read', input: {} };
+        modelRequest = request.messages
+          .map((message) => (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)))
+          .join('\n');
+        const envelope = /Task execution context: (\{[^\n]+\})/u.exec(modelRequest)?.[1];
+        if (!envelope) {
+          throw new Error('Actual Pi model request omitted task execution context.');
+        }
+        taskContext = JSON.parse(envelope) as typeof taskContext;
+        if (!taskContext?.taskId || !taskContext.parentTaskId) {
+          throw new Error('Actual Pi model request omitted task or parent identity.');
+        }
+        yield {
+          type: 'tool-input',
+          toolCallId: 'cad-task-read',
+          toolName: 'task_read',
+          input: { taskId: taskContext.taskId },
+        };
 
         break;
       }
       case 2: {
         const snapshot = projectTaskSnapshotSchema.parse(lastTool?.content);
-        const task = snapshot.tasks.find((entry) => entry.title === 'Tau CAD child');
-        parentTaskId = task?.parentTaskId;
-        if (!parentTaskId) {
-          throw new Error('Tau CAD task parent identity missing.');
+        if (!snapshot.tasks.some((entry) => entry.id === taskContext?.taskId)) {
+          throw new Error('Host-supplied Tau CAD identity did not permit a self read.');
         }
         yield {
           type: 'tool-input',
@@ -187,14 +213,14 @@ const modelTransport: ModelTransport = {
         if (!JSON.stringify(cadResult).includes('"status":"ready"')) {
           throw new Error(`Actual CAD evaluation was not ready: ${JSON.stringify(cadResult)}`);
         }
-        if (!parentTaskId) {
+        if (!taskContext?.parentTaskId) {
           throw new Error('Tau parent identity missing.');
         }
         yield {
           type: 'tool-input',
           toolCallId: 'cad-send-result',
           toolName: 'task_send',
-          input: { requestId: 'cad-ready', taskId: parentTaskId, text: 'CAD_READY_NONCE' },
+          input: { requestId: 'cad-ready', taskId: taskContext.parentTaskId, text: 'CAD_READY_NONCE' },
         };
 
         break;
@@ -288,6 +314,24 @@ try {
   if (!cadTask) {
     throw new Error('Actual Tau child missing.');
   }
+  const attempt = cadTask.attempts[0];
+  if (
+    !attempt ||
+    !taskContext ||
+    !modelRequest ||
+    taskContext.projectId !== cadTask.projectId ||
+    taskContext.taskId !== cadTask.id ||
+    taskContext.parentTaskId !== cadTask.parentTaskId ||
+    taskContext.attemptId !== attempt.id ||
+    taskContext.attemptNumber !== attempt.number ||
+    taskContext.candidateCheckoutId !== attempt.candidateCheckoutId ||
+    taskContext.sourceRevisionId !== attempt.source.revisionId ||
+    taskContext.sourceCheckoutId !== attempt.source.checkoutId ||
+    !modelRequest.includes('File tools and CAD execution are rooted in the assigned candidate checkout.') ||
+    !modelRequest.includes('Revision history and describe report the project live history')
+  ) {
+    throw new Error('Actual Pi model request did not contain the authoritative task and placement context.');
+  }
   const candidate = harness.host.revisions
     .status()
     .branches.find((branch) => branch.name.startsWith(`task-${cadTask.id}-`))?.checkoutRoot;
@@ -312,7 +356,7 @@ try {
     return { direction, method: parsed.method, update: parsed.params?.update?.sessionUpdate };
   });
   process.stdout.write(
-    `TASK_CAD_PROOF ${JSON.stringify({ model: 'scripted', runtime: 'actual CLI CAD runtime', part, livePartAbsent, toolInputs, protocol, cadResult, messages: snapshot.messages.map((message) => ({ from: message.senderTaskId, to: message.recipientTaskId, text: message.text })), tasks: snapshot.tasks.map((task) => ({ id: task.id, provider: task.provider.id, depth: task.depth, status: task.attempts.at(-1)?.status })) })}\n`,
+    `TASK_CAD_PROOF ${JSON.stringify({ model: 'scripted', runtime: 'actual CLI CAD runtime', part, livePartAbsent, taskContext, toolInputs, protocol, cadResult, messages: snapshot.messages.map((message) => ({ from: message.senderTaskId, to: message.recipientTaskId, text: message.text })), tasks: snapshot.tasks.map((task) => ({ id: task.id, provider: task.provider.id, depth: task.depth, status: task.attempts.at(-1)?.status })) })}\n`,
   );
 } finally {
   await harness.close();

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { projectTaskSchema } from '@taucad/agent-host/wire';
+import { projectTaskSchema, projectTaskSnapshotSchema } from '@taucad/agent-host/wire';
 import type { ModelStreamEvent, ProviderMessage } from '@taucad/agent-host';
 import type { ProjectTask } from '@taucad/agent-host/wire';
 import { reduceEventLog } from '@taucad/agent-host';
@@ -569,6 +569,16 @@ describe('nested Tau CAD execution through actual ACP and runtime', () => {
       runtime: string;
       part: string;
       livePartAbsent: boolean;
+      taskContext: {
+        projectId: string;
+        taskId: string;
+        parentTaskId: string;
+        attemptId: string;
+        attemptNumber: number;
+        candidateCheckoutId: string;
+        sourceRevisionId: string;
+        sourceCheckoutId: string;
+      };
       toolInputs: string[];
       protocol: Array<{ direction: string; method?: string; update?: string }>;
       cadResult: unknown;
@@ -579,6 +589,13 @@ describe('nested Tau CAD execution through actual ACP and runtime', () => {
     expect(proof.runtime).toBe('actual CLI CAD runtime');
     expect(proof.part).toBe('cube(12);\n');
     expect(proof.livePartAbsent).toBe(true);
+    expect(proof.taskContext).toMatchObject({ projectId: 'project-task-integration' });
+    expect(proof.taskContext.taskId).toMatch(/^task-/u);
+    expect(proof.taskContext.parentTaskId).toMatch(/^task-/u);
+    expect(proof.taskContext.attemptNumber).toBe(1);
+    expect(proof.taskContext.candidateCheckoutId).toBeTruthy();
+    expect(proof.taskContext.sourceRevisionId).toBeTruthy();
+    expect(proof.taskContext.sourceCheckoutId).toBeTruthy();
     expect(proof.toolInputs).toEqual(['task_read', 'create_file', 'evaluate_model', 'task_send']);
     expect(proof.tasks.map((task) => ({ provider: task.provider, depth: task.depth, status: task.status }))).toEqual([
       { provider: 'codex', depth: 0, status: 'completed' },
@@ -602,6 +619,134 @@ describe('nested Tau CAD execution through actual ACP and runtime', () => {
 });
 
 describe('current project instructions and immutable task source', () => {
+  it('should give the Tau model its admitted identity and candidate before it reads itself and messages its parent', async () => {
+    let step = 0;
+    let context:
+      | {
+          projectId: string;
+          taskId: string;
+          parentTaskId: string;
+          attemptId: string;
+          attemptNumber: number;
+          candidateCheckoutId: string;
+          sourceRevisionId: string;
+          sourceCheckoutId: string;
+        }
+      | undefined;
+    const harness = await createProjectTasksHarness({
+      agents: [fixtureAgent],
+      model: { id: 'scripted-context', contextWindow: 200_000 },
+      modelTransport: {
+        funding: { type: 'unfunded' },
+        async *stream(request): AsyncGenerator<ModelStreamEvent> {
+          step += 1;
+          const lastTool = request.messages.findLast((message) => message.role === 'tool-output');
+          if (lastTool?.role === 'tool-output' && lastTool.isError) {
+            throw new Error(`Task tool failed: ${JSON.stringify(lastTool.content)}`);
+          }
+          switch (step) {
+            case 1: {
+              const prompt = request.messages
+                .map((message) =>
+                  typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+                )
+                .join('\n');
+              const envelope = /Task execution context: (\{[^\n]+\})/u.exec(prompt)?.[1];
+              if (!envelope || !prompt.includes('File tools and CAD execution are rooted in the assigned candidate')) {
+                throw new Error('Actual Tau model request omitted its task context.');
+              }
+              context = JSON.parse(envelope) as typeof context;
+              if (!context?.taskId || !context.parentTaskId) {
+                throw new Error('Actual Tau model request omitted task lineage.');
+              }
+              yield {
+                type: 'tool-input',
+                toolCallId: 'identity-self-read',
+                toolName: 'task_read',
+                input: { taskId: context.taskId },
+              };
+              break;
+            }
+            case 2: {
+              const snapshot = projectTaskSnapshotSchema.parse(lastTool?.content);
+              if (!snapshot.tasks.some((task) => task.id === context?.taskId)) {
+                throw new Error('Host-supplied task ID did not permit a self read.');
+              }
+              yield {
+                type: 'tool-input',
+                toolCallId: 'identity-candidate-write',
+                toolName: 'create_file',
+                input: { targetFile: 'identity.txt', content: 'candidate-only\n' },
+              };
+              break;
+            }
+            case 3: {
+              if (!context?.parentTaskId) {
+                throw new Error('Host-supplied parent identity missing.');
+              }
+              yield {
+                type: 'tool-input',
+                toolCallId: 'identity-parent-send',
+                toolName: 'task_send',
+                input: {
+                  requestId: 'identity-parent-send',
+                  taskId: context.parentTaskId,
+                  text: 'IDENTITY_READY_NONCE',
+                },
+              };
+              break;
+            }
+            default: {
+              yield { type: 'text-delta', text: 'Identity and candidate verified.' };
+              yield { type: 'completed', stopReason: 'stop' };
+              return;
+            }
+          }
+          yield { type: 'completed', stopReason: 'toolUse' };
+        },
+      },
+    });
+    harnesses.push(harness);
+    const parent = await startRoot({ harness, suffix: 'tau-identity' });
+    const result = await harness.invokeTaskTool({
+      chatId: parent.chatId,
+      runId: parent.attempts[0]?.runId ?? '',
+      tool: 'task_spawn',
+      arguments: {
+        requestId: 'tau-identity-child',
+        title: 'Tau identity child',
+        prompt: 'Read your own task, write identity.txt, and message your parent.',
+        provider: { id: 'tau' },
+      },
+    });
+    expect(result.isError, JSON.stringify(resultValue(result))).not.toBe(true);
+    const child = projectTaskSchema.parse(resultValue(result));
+    await waitStatus(harness, child.id, 'completed');
+    const snapshot = await harness.tasks.read();
+    const settled = snapshot.tasks.find((task) => task.id === child.id);
+    const attempt = settled?.attempts[0];
+    expect(context).toEqual({
+      projectId: child.projectId,
+      taskId: child.id,
+      parentTaskId: parent.id,
+      attemptId: attempt?.id,
+      attemptNumber: attempt?.number,
+      candidateCheckoutId: attempt?.candidateCheckoutId,
+      sourceRevisionId: attempt?.source.revisionId,
+      sourceCheckoutId: attempt?.source.checkoutId,
+    });
+    const candidate = harness.host.revisions
+      .status()
+      .branches.find((branch) => branch.checkoutId === attempt?.candidateCheckoutId)?.checkoutRoot;
+    if (!candidate) {
+      throw new Error('Tau candidate root missing.');
+    }
+    expect(await readFile(join(candidate, 'identity.txt'), 'utf8')).toBe('candidate-only\n');
+    await expect(readFile(join(harness.workspaceRoot, 'identity.txt'), 'utf8')).rejects.toThrow('ENOENT');
+    expect(snapshot.messages.map((message) => message.text)).toContain('IDENTITY_READY_NONCE');
+    await cancelRoot(harness, parent);
+  }, 45_000);
+
   it('should give a new child current canonical instructions while preserving the parent admitted code revision', async () => {
     const harness = await createProjectTasksHarness({ agents: [fixtureAgent] });
     harnesses.push(harness);

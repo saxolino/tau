@@ -35,7 +35,8 @@ export const projectTaskTools = [
   {
     name: toolName.taskRead,
     schema: projectTaskReadSchema,
-    description: 'Read related tasks and durable messages after a project cursor.',
+    description:
+      'Read related tasks and durable messages after a project cursor. Omit taskId to discover permitted tasks; there is no self alias.',
   },
   {
     name: toolName.taskSend,
@@ -293,7 +294,7 @@ export const createProjectTaskBackend = (
     const { task, attempt, signal } = launch;
     const runId = attempt.id;
     options.bind(runId, task.chatId);
-    const prompt = taskPrompt(launch);
+    const prompt = taskPrompt(launch, allocation.checkoutId);
     const contextPayload = await options.context(allocation.checkoutId, signal);
     const grant = attempt.toolGrant;
     options.rememberGrant(runId, grant);
@@ -479,12 +480,28 @@ export const waitForTaskLeaseRetirement = async (
 };
 
 /**
- * Keep mailbox content distinguishable from the task's instruction.
- * @param launch - The admitted task and bounded mailbox batch.
- * @returns The task instruction followed by durable message envelopes.
+ * Keep host-owned execution identity and mailbox content distinguishable from the task's instruction.
  * @internal
+ * @param launch - The admitted task and bounded mailbox batch.
+ * @param candidateCheckoutId - The checkout allocated for this execution.
+ * @returns Host context, task instruction and durable message envelopes.
  */
-const taskPrompt = (launch: ProjectTaskLaunch): string => {
-  const { task, messages } = launch;
-  return [task.prompt, ...messages.map((message) => `\n${formatProjectTaskMailboxMessage(message)}`)].join('\n');
+const taskPrompt = (launch: ProjectTaskLaunch, candidateCheckoutId: string): string => {
+  const { task, attempt, messages } = launch;
+  const context = {
+    projectId: task.projectId,
+    taskId: task.id,
+    ...(task.parentTaskId === undefined ? {} : { parentTaskId: task.parentTaskId }),
+    attemptId: attempt.id,
+    attemptNumber: attempt.number,
+    candidateCheckoutId,
+    sourceRevisionId: attempt.source.revisionId,
+    sourceCheckoutId: attempt.source.checkoutId,
+  };
+  return [
+    `Task execution context: ${JSON.stringify(context)}`,
+    'File tools and CAD execution are rooted in the assigned candidate checkout. Revision history and describe report the project live history, not this executing checkout.',
+    task.prompt,
+    ...messages.map((message) => `\n${formatProjectTaskMailboxMessage(message)}`),
+  ].join('\n');
 };
