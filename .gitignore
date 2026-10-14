@@ -106,3 +106,5 @@ fixtures/mocker/*/.cache/
 # Local temporary artifacts
 /tmp/
 /temp/
+
+.nx/migrate-runs
