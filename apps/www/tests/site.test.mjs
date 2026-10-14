@@ -6,7 +6,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { ctaPlacements, sanitizeEvent } from '#www/analytics.js';
-import { environmentHref, stagingDesktop } from '#www/environment.js';
+import { environmentHref, stagingDesktopNote } from '#www/environment.js';
 import { pages, renderPage } from '#www/templates.js';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const eventId = '83efb3b9-a92c-444f-99ef-c67f8c9573d7';
@@ -219,6 +219,27 @@ await test('should open Pro in the billing settings and keep it and the legal li
   }
 });
 await test('only staging offers the staging desktop builds', () => {
-  assert.match(stagingDesktop('taucad.dev')?.href ?? '', /releases\?q=desktop-staging/u);
-  assert.equal(stagingDesktop('tau.new'), undefined);
+  assert.match(stagingDesktopNote('taucad.dev') ?? '', /signed without notarization/u);
+  assert.equal(
+    environmentHref('https://downloads.tau.new/latest/Tau-macos-arm64.zip', 'taucad.dev'),
+    'https://downloads.taucad.dev/latest/Tau-macos-arm64.zip',
+  );
+  assert.equal(stagingDesktopNote('tau.new'), undefined);
+});
+
+await test('the primary CTA opens downloads and Mac downloads use the current R2 alias', () => {
+  const home = pages.find((page) => page.path === '/');
+  const downloads = pages.find((page) => page.path === '/download/');
+  assert.ok(home && downloads);
+  const html = renderPage({
+    page: home,
+    origin: 'https://tau.new',
+    launch: true,
+    asset: { css: '/a.css', js: '/a.js' },
+    analyticsEndpoint: '',
+  });
+  assert.match(html, /href="\/download\/" data-event="cta" data-placement="header">Download for Mac/u);
+  assert.match(home.body(), /href="\/download\/" data-event="cta" data-placement="hero">Download for Mac/u);
+  assert.match(downloads.body(), /https:\/\/downloads.tau.new\/latest\/Tau-macos-arm64.zip/u);
+  assert.doesNotMatch(downloads.body(), /No installer is published/u);
 });

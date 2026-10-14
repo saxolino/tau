@@ -1,18 +1,15 @@
 import { readStoryProgress } from '#www/story-progress.js';
 import { randomUuid } from '@taucad/utils/id';
 import { sanitizeEvent, campaignCodes } from '#www/analytics.js';
-import { environmentHref, stagingDesktop } from '#www/environment.js';
+import { environmentHref, stagingDesktopNote } from '#www/environment.js';
 
 for (const link of document.querySelectorAll('a[href^="https://"]')) {
   link.setAttribute('href', environmentHref(link.getAttribute('href') ?? '', location.hostname));
 }
-const desktop = stagingDesktop(location.hostname);
-const desktopLink = document.querySelector('[data-desktop-link]');
-const desktopNote = document.querySelector('[data-platform-card="desktop"] [data-platform-note]');
-if (desktop && desktopLink instanceof HTMLAnchorElement && desktopNote instanceof HTMLElement) {
-  desktopLink.href = desktop.href;
-  desktopLink.firstChild?.replaceWith(`${desktop.label} `);
-  desktopNote.textContent = desktop.note;
+const desktopNote = document.querySelector('[data-platform-note]');
+const stagingNote = stagingDesktopNote(location.hostname);
+if (stagingNote && desktopNote instanceof HTMLElement) {
+  desktopNote.textContent = stagingNote;
 }
 
 const mobileMenu = document.querySelector('.mobile-menu');
