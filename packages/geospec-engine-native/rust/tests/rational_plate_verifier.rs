@@ -39,6 +39,15 @@ fn dependency_successor_binds_source_and_complete_lock_without_rewriting_v6() {
         sha256_hex(geospec_engine_native_core::canonicalize(historical.as_bytes()).unwrap()),
         include_str!("fixtures/current-profile-v6/verifier-source-hash.txt").trim_ascii_end()
     );
+    assert_eq!(
+        sha256_hex(
+            geospec_engine_native_core::canonicalize(
+                include_str!("fixtures/current-profile-v5/f1-definition-records.json").as_bytes()
+            )
+            .unwrap()
+        ),
+        include_str!("fixtures/current-profile-v5/verifier-source-hash.txt").trim_ascii_end()
+    );
     assert_ne!(current, historical);
     let current: Vec<Value> = serde_json::from_str(current).unwrap();
     let historical: Vec<Value> = serde_json::from_str(historical).unwrap();
@@ -167,15 +176,16 @@ fn current_registry_f1_plan_reaches_independent_verifier_after_fresh_admission()
             plan_hash: sha256_hex(&bytes),
             verifier_source_hash: definition.clone(),
         };
-        let historical_binding = VerificationBinding {
-            verifier_source_hash: include_str!(
-                "fixtures/current-profile-v5/verifier-source-hash.txt"
-            )
-            .into(),
-            ..binding.clone()
-        };
-        assert_ne!(historical_binding.verifier_source_hash, definition);
-        assert!(matches!(
+        for historical_hash in [
+            include_str!("fixtures/current-profile-v5/verifier-source-hash.txt"),
+            include_str!("fixtures/current-profile-v6/verifier-source-hash.txt"),
+        ] {
+            let historical_binding = VerificationBinding {
+                verifier_source_hash: historical_hash.trim_ascii_end().into(),
+                ..binding.clone()
+            };
+            assert_ne!(historical_binding.verifier_source_hash, definition);
+            assert!(matches!(
             verify(
                 VerificationRequest {
                     source: &source,
@@ -189,6 +199,7 @@ fn current_registry_f1_plan_reaches_independent_verifier_after_fresh_admission()
             ),
             Err(PlateError { kind: geospec_engine_native_core::certificates::plate_contract::PlateErrorKind::Unverified, .. })
         ));
+        }
         let result = verify(
             VerificationRequest {
                 source: &source,
