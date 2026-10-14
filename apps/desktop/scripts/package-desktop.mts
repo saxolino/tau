@@ -38,6 +38,7 @@ import { copyTree } from './runtime-closure.mjs';
 import {
   desktopManifestFields,
   desktopPackageChannel,
+  desktopPackageVersion,
   excludesBuildDiagnostics,
   resolveRuntimePackages,
   stageRuntimePackages,
@@ -109,8 +110,8 @@ const packagePaths = await packager({
   platform: plan.platform,
   arch: plan.arch,
   name: 'Tau',
-  appVersion: metadata.version,
-  buildVersion: metadata.version,
+  appVersion: desktopPackageVersion(metadata.version),
+  buildVersion: desktopPackageVersion(metadata.version),
   electronVersion: electron.version,
   ...(plan.icon === undefined ? {} : { icon: resolve(desktopRoot, 'resources', plan.icon) }),
   // eslint-disable-next-line @typescript-eslint/naming-convention -- Windows version-resource field names.
