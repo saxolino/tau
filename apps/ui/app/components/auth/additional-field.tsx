@@ -1,4 +1,4 @@
-import { resolveInputType } from '@better-auth-ui/core';
+import { getAdditionalFieldDefaultValue, resolveInputType, validateAdditionalFieldValue } from '@better-auth-ui/core';
 import type { AdditionalField as AdditionalFieldConfig, AdditionalFieldOption } from '@better-auth-ui/core';
 import { useAuth } from '@better-auth-ui/react';
 import { format } from 'date-fns';
@@ -90,6 +90,47 @@ function CopyButton({ getValue, isDisabled }: { getValue: () => string | undefin
   );
 }
 
+/** Bridge controlled custom renderers to the sign-up form's FormData submission. */
+function CustomAdditionalField({ name, field, isPending }: AdditionalFieldProps) {
+  const [value, setValue] = useState(() => getAdditionalFieldDefaultValue(field));
+  const [error, setError] = useState<string>();
+
+  const handleBlur = async () => {
+    setError(await validateAdditionalFieldValue(field, value));
+  };
+
+  return (
+    <>
+      <input
+        type='hidden'
+        name={name}
+        disabled={field.readOnly}
+        value={
+          value === null
+            ? ''
+            : value instanceof Date
+              ? Number.isNaN(value.getTime())
+                ? ''
+                : value.toISOString()
+              : String(value)
+        }
+      />
+      {field.render?.({
+        name,
+        field,
+        value,
+        onChange: setValue,
+        onBlur() {
+          void handleBlur();
+        },
+        isInvalid: Boolean(error),
+        errors: error ? [error] : [],
+        isPending,
+      })}
+    </>
+  );
+}
+
 /** Renders a single additional user field via shadcn primitives. */
 export function AdditionalField({ name, field, isPending }: AdditionalFieldProps): React.JSX.Element {
   const inputType = resolveInputType(field);
@@ -98,7 +139,7 @@ export function AdditionalField({ name, field, isPending }: AdditionalFieldProps
   const inputRef = useRef<HTMLInputElement>(null);
 
   if (field.render) {
-    return <>{field.render({ name, field, isPending })}</>;
+    return <CustomAdditionalField name={name} field={field} isPending={isPending} />;
   }
 
   if (inputType === 'hidden') {
