@@ -52,6 +52,46 @@ const corePackage = { name: '@tscircuit/core', version: '0.0.1844' } as const;
 const propsPackage = { name: '@tscircuit/props', version: '0.0.646' } as const;
 const reactPackage = { name: 'react', version: '19.2.7' } as const;
 
+/**
+ * The rest of the closure the engine runs (`version` per name), so a project pins it and runs outside Tau with npm:
+ * the `@tscircuit/core` peers (left to npm, a `*` peer resolves to its latest release, which can need a `github:`
+ * dependency), then the packages the published `@tscircuit/core` and its solvers import without declaring them.
+ * `tscircuit-package-identity.test.ts` checks every version against the installed one.
+ */
+const engineClosureVersions = {
+  '@tscircuit/capacity-autorouter': '0.0.879',
+  '@tscircuit/checks': '0.0.183',
+  '@tscircuit/circuit-json-util': '0.0.111',
+  '@tscircuit/create-fdm-enclosure': '0.0.7',
+  '@tscircuit/footprinter': '0.0.426',
+  '@tscircuit/infgrid-ijump-astar': '0.0.35',
+  '@tscircuit/matchpack': '0.0.91',
+  '@tscircuit/math-utils': '0.0.38',
+  '@tscircuit/schematic-match-adapt': '0.0.22',
+  'bpc-graph': '0.0.67',
+  'circuit-json': '0.0.485',
+  'circuit-json-to-bpc': '0.0.14',
+  'circuit-json-to-connectivity-map': '0.0.30',
+  'circuit-json-to-spice': '0.0.46',
+  'schematic-symbols': '0.0.244',
+  spicets: '0.0.5',
+  // Undeclared runtime imports.
+  '@tscircuit/copper-pour-solver': '0.0.52',
+  '@tscircuit/infer-cable-insertion-point': '0.0.4',
+  '@tscircuit/miniflex': '0.0.4',
+  '@tscircuit/schematic-trace-solver': '0.0.184',
+  '@tscircuit/soup-util': '0.0.41',
+  'calculate-elbow': '0.0.13',
+  'connectivity-map': '1.0.0',
+  debug: '4.4.3',
+  flatbush: '4.6.2',
+  minicssgrid: '0.0.9',
+  spicey: '0.0.14',
+} as const;
+const engineClosurePackages = Object.fromEntries(
+  Object.entries(engineClosureVersions).map(([name, version]) => [name, { name, version }]),
+);
+
 /** `circuit-json-to-gltf` writes Y-up millimetres; Tau's GLB space is Y-up metres. */
 const millimetersToMeters = 0.001;
 
@@ -424,6 +464,7 @@ export const tscircuitKernel = defineKernel({
     '@tscircuit/core': corePackage,
     '@tscircuit/props': propsPackage,
     react: reactPackage,
+    ...engineClosurePackages,
   },
   name: 'TscircuitKernel',
   version: '1.1.0',
