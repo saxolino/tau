@@ -69,6 +69,10 @@ jobs:
           for receipt in out/cache/picogk/native-deps-*/receipt.json; do
             jq '{dependencySha256, files}' "$receipt" > "$RUNNER_TEMP/report/dependency-cache-receipt.json"
           done
+          echo "::notice title=Toolchain::image=${ImageOS:-}/${ImageVersion:-} $(jq -c '.toolchain | {compiler, compilerSha256, sdk, sdkPath, sdkZlibSha256, cmakePath, cmake, cmakeSha256, ninjaPath, ninja, ninjaSha256}' "$tree/tau-picogk-native-build.json" | sed 's/%/%25/g')"
+          echo "::notice title=Native receipt::sourceSha256=$(jq -r .sourceSha256 "$tree/tau-picogk-native-build.json") engineSha256=$(jq -r .engineSha256 "$tree/tau-picogk-native-build.json") dependencySha256=$(jq -r .dependencySha256 "$tree/tau-picogk-native-build.json") preparerSha256=$(jq -r .preparerSha256 "$tree/tau-picogk-native-build.json")"
+          echo "::notice title=Layer members::$(awk '{printf "%s=%s ", $2, substr($1,1,16)}' "$RUNNER_TEMP/report/members.sha256")"
+          echo "::notice title=Static archives::$(jq -c '[.files[] | {(.name): .sha256[0:16]}] | add' "$RUNNER_TEMP/report/dependency-cache-receipt.json")"
           echo "::notice title=Tau PicoGK layer sha256::$sha commit=$(git rev-parse HEAD) bytes=$(jq -r .byteLength "$dir/tau-layer.json") nativeSourceSha256=$(jq -r .nativeSourceSha256 "$dir/tau-layer.json")"
           {
             echo "### Tau PicoGK layer"
