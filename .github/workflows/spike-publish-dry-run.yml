@@ -35,7 +35,7 @@ on:
         type: boolean
         default: false
       s24:
-        description: 'Also run S24: pack the CLI closure and run the installed tau on ubuntu-latest and macos-15'
+        description: 'Also run S24: pack the CLI closure and run the installed tau on ubuntu-latest and macos-26'
         type: boolean
         default: true
 
@@ -164,7 +164,7 @@ jobs:
       matrix:
         os: >-
           ${{ github.event_name == 'pull_request' && github.triggering_actor == 'dependabot[bot]'
-          && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-15"]') }}
+          && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-26"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
