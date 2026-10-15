@@ -92,10 +92,35 @@ case "$phase" in
   image)
     [[ "$baked" == /config ]] || { echo "image needs the store baked at /config" >&2; exit 2; }
     # No W19 seed stage exists yet: the smallest throwaway image that has the shape (pruned CLI + baked store).
-    (cd "$REPO_ROOT" && pnpm nx build cli --outputStyle=static) >"$evidence/image-build-cli.log" 2>&1
+    # build_step <log> <command...>: run one image-build step, and print its log's tail when it fails.
+    build_step() {
+      local log="$1"
+      shift
+      "$@" >"$log" 2>&1 || { echo "step failed: $*" >&2; tail -40 "$log" >&2; return 1; }
+    }
+    build_step "$evidence/image-build-cli.log" bash -c "cd '$REPO_ROOT' && pnpm nx run cli:build-deps --outputStyle=static && pnpm nx build cli --outputStyle=static"
     rm -rf "$work/image"
     mkdir -p "$work/image"
-    (cd "$REPO_ROOT" && pnpm --filter=@taucad/cli --prod deploy "$work/image/app" --legacy) >"$evidence/image-deploy.log" 2>&1
+    # The host's optional peer `geospec@^0.1.0-beta.0` is not on npm (only 0.0.0), so a legacy deploy that auto-installs
+    # peers resolves it from the registry and fails; the image does not need the optional peer.
+    build_step "$evidence/image-deploy.log" bash -c "cd '$REPO_ROOT' && pnpm --filter=@taucad/cli --prod deploy '$work/image/app' --legacy --config.auto-install-peers=false"
+    # A legacy deploy copies workspace packages with their development `exports` (./src/*.ts); apply each one's
+    # publishConfig as `pnpm publish` would, so the image resolves the built dist like an installed CLI.
+    find "$work/image/app" -name package.json -type f -exec grep -l '"publishConfig"' {} + |
+      node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+const fields = ['exports', 'imports', 'main', 'module', 'types', 'typings', 'bin'];
+let applied = 0;
+for (const manifest of readFileSync(0, 'utf8').split('\\n').filter(Boolean)) {
+  const json = JSON.parse(readFileSync(manifest, 'utf8'));
+  const config = json.publishConfig ?? {};
+  if (!fields.some((field) => field in config)) continue;
+  for (const field of fields) if (field in config) json[field] = config[field];
+  writeFileSync(manifest, JSON.stringify(json, undefined, 2));
+  applied += 1;
+}
+console.log('publishConfig applied to ' + applied + ' manifests');
+" | tee "$evidence/image-publishconfig.txt"
     cp -a "$baked" "$work/image/config"
     cat >"$work/image/Dockerfile" <<'DOCKER'
 FROM node:24-slim
@@ -106,10 +131,10 @@ COPY config /config
 ENV TAU_CONFIG_DIR=/config TAU_ACQUISITION=locked NODE_ENV=production
 ENTRYPOINT ["node", "/app/dist/bin/tau.mjs"]
 DOCKER
-    docker build -t tau-s29-seed "$work/image" >"$evidence/image-docker-build.log" 2>&1
+    build_step "$evidence/image-docker-build.log" docker build -t tau-s29-seed "$work/image"
     docker image inspect tau-s29-seed --format '{{.Size}} {{.Id}}' | tee "$evidence/image-size.txt"
-    docker image inspect node:24-slim --format '{{index .RepoDigests 0}}' | tee "$evidence/image-base.txt"
-    du -sb "$work/image/app" "$work/image/config" | tee "$evidence/image-layers.txt"
+    { docker image inspect node:24-slim --format '{{json .RepoDigests}} {{.Id}}' || true; } | tee "$evidence/image-base.txt"
+    { du -sb "$work/image/app" "$work/image/config" "$work/image/config/payloads" || true; } | tee "$evidence/image-layers.txt"
     for step in "image-inspect prepare --inspect --json" "image-prepare prepare build123d --json" "image-verify prepare build123d --verify --offline --json"; do
       read -r label args <<<"$step"
       code=0
