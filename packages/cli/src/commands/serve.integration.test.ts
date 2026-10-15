@@ -290,7 +290,21 @@ const configDirectoryWithCredential = async (root: string): Promise<string> => {
 };
 
 const projectFiles = {
-  'main.py': 'from build123d import Box\n\n\ndef main():\n    return Box(10, 20, 30)\n',
+  'main.py': [
+    'from dataclasses import dataclass',
+    '',
+    'from build123d import Box',
+    '',
+    '',
+    '@dataclass(frozen=True)',
+    'class Params:',
+    '    width: float = 10.0',
+    '',
+    '',
+    'def main(params: Params):',
+    '    return Box(params.width, 20, 30)',
+    '',
+  ].join('\n'),
   'main.cs': 'using PicoGK;\n\npublic static class Model {}\n',
   'tau.json': `${JSON.stringify({ id: 'proj_servenative0001', name: 'serve native' })}\n`,
 };
