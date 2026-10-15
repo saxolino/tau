@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { projectTaskDeliverySchema } from '#wire/project-task-journal.js';
 import {
   projectTaskActionSchema,
   projectTaskMessageSchema,
@@ -21,6 +22,7 @@ export const projectTaskChannelRequestSchema = z.discriminatedUnion('operation',
 export const projectTaskSnapshotSchema = z.strictObject({
   tasks: z.array(projectTaskSchema).readonly(),
   messages: z.array(projectTaskMessageSchema).readonly(),
+  deliveries: z.array(projectTaskDeliverySchema).readonly().optional(),
   cursor: z.number().int().nonnegative(),
   nextCursor: z.number().int().nonnegative(),
   hasMore: z.boolean(),

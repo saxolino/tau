@@ -8,7 +8,8 @@ export type ProjectTaskProjection = Readonly<{
   tasks: Readonly<Record<string, ProjectTask>>;
   messages: readonly ProjectTaskMessage[];
   requests: Readonly<Record<string, NonNullable<ProjectTaskRecord['request']>>>;
-  deliveries: Readonly<Record<string, number>>;
+  deliveries: Readonly<Record<string, NonNullable<ProjectTaskRecord['delivery']>>>;
+  attemptDeliveries: Readonly<Record<string, NonNullable<ProjectTaskRecord['delivery']>>>;
   records: readonly ProjectTaskRecord[];
 }>;
 
@@ -19,7 +20,7 @@ export type ProjectTaskProjectionEvent =
 
 /** Pure total fold; the storage writer validates and durably acknowledges before publishing an append. @internal */
 export const projectTaskProjectionLogic = createLogic<ProjectTaskProjection, unknown, ProjectTaskProjectionEvent>({
-  context: { tasks: {}, messages: [], requests: {}, deliveries: {}, records: [] },
+  context: { tasks: {}, messages: [], requests: {}, deliveries: {}, attemptDeliveries: {}, records: [] },
   run: ({ context, event }) => {
     if (event.type !== 'append') {
       return undefined;
@@ -31,8 +32,11 @@ export const projectTaskProjectionLogic = createLogic<ProjectTaskProjection, unk
         messages: record.message ? [...context.messages, record.message] : context.messages,
         requests: record.request ? { ...context.requests, [record.request.key]: record.request } : context.requests,
         deliveries: record.delivery
-          ? { ...context.deliveries, [record.delivery.taskId]: record.delivery.through }
+          ? { ...context.deliveries, [record.delivery.taskId]: record.delivery }
           : context.deliveries,
+        attemptDeliveries: record.delivery
+          ? { ...context.attemptDeliveries, [record.delivery.attemptId]: record.delivery }
+          : context.attemptDeliveries,
         records: [...context.records, record],
       },
     };

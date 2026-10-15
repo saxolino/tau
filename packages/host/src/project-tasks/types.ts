@@ -17,6 +17,7 @@ import type {
 export type ProjectTaskSnapshot = Readonly<{
   tasks: readonly ProjectTask[];
   messages: readonly ProjectTaskMessage[];
+  deliveries: ReadonlyArray<Readonly<{ taskId: string; attemptId: string; through: number }>>;
   cursor: number;
   nextCursor: number;
   hasMore: boolean;
@@ -47,6 +48,8 @@ export type ProjectTaskCoordinator = Readonly<{
   ) => Promise<readonly ProjectTaskMessage[]>;
   /** Record delivery only after the existing turn owner accepts the prompt. */
   acknowledgeDelivery: (input: Readonly<{ taskId: string; attemptId: string; through: number }>) => Promise<void>;
+  /** Repair child chat metadata from durable journal state before recovery or dispatch. */
+  repairLineage: () => Promise<void>;
   /** Recovery awaits existing chat/lease owners before marking old attempts interrupted. */
   recover: () => Promise<void>;
   close: () => Promise<void>;

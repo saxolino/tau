@@ -15,6 +15,7 @@ import type {
   ProjectTaskMessage,
   ProjectTaskAction,
   ProjectTaskStatus,
+  ProjectTaskChatLineage,
 } from '@taucad/agent-host/wire';
 import type {
   ProjectTaskAllocation,
@@ -74,6 +75,8 @@ export type ProjectTaskCoordinatorOptions = Readonly<{
   cancellationTimeout?: number;
   /** Deterministic timer port; return the cancellation of the scheduled callback. */
   schedule?: (callback: () => void, waitDelay: number) => () => void;
+  /** Checked child-chat metadata projection, completed before any child launch. */
+  materializeLineage?: (entry: ProjectTaskChatLineage, task: ProjectTask) => Promise<void>;
 }>;
 
 /**
@@ -236,6 +239,9 @@ export const createProjectTaskCoordinator = async (
 
   const dispatch = (task: ProjectTask): void => {
     const attempt = latest(task);
+    if (jobs.has(attempt.id)) {
+      return;
+    }
     const controller = new AbortController();
     controllers.set(attempt.id, controller);
     const execute = async (): Promise<void> => {
@@ -357,6 +363,56 @@ export const createProjectTaskCoordinator = async (
     void observeCompletion();
   };
 
+  const ensureChildLineage = async (task: ProjectTask): Promise<void> => {
+    if (!task.parentTaskId || !options.materializeLineage) {
+      return;
+    }
+    const entry = await store.transaction(async (view): Promise<ProjectTaskChatLineage> => {
+      const parent = view.tasks.get(task.parentTaskId!);
+      if (!parent) {
+        throw new ProjectTaskError('TASK_STORAGE_INVALID', 'Child task has no durable parent.');
+      }
+      const seen = new Set([task.id]);
+      let root = parent;
+      while (root.parentTaskId) {
+        if (seen.has(root.id)) {
+          throw new ProjectTaskError('TASK_STORAGE_INVALID', 'Task ancestry contains a cycle.');
+        }
+        seen.add(root.id);
+        const ancestor = view.tasks.get(root.parentTaskId);
+        if (!ancestor) {
+          throw new ProjectTaskError('TASK_STORAGE_INVALID', 'Task ancestry has a missing ancestor.');
+        }
+        root = ancestor;
+      }
+      if (seen.has(root.id)) {
+        throw new ProjectTaskError('TASK_STORAGE_INVALID', 'Task ancestry contains a cycle.');
+      }
+      return {
+        chatId: task.chatId,
+        taskLineage: {
+          taskId: task.id,
+          parentTaskId: parent.id,
+          parentChatId: parent.chatId,
+          rootChatId: root.chatId,
+        },
+      };
+    });
+    await options.materializeLineage(entry, task);
+  };
+  const launchAfterLineage = async (task: ProjectTask): Promise<void> => {
+    await ensureChildLineage(task);
+    const current = await store.transaction(async (view) => view.tasks.get(task.id));
+    if (
+      current &&
+      !current.closed &&
+      latest(current).id === latest(task).id &&
+      latest(current).status === 'allocating'
+    ) {
+      dispatch(structuredClone(current));
+    }
+  };
+
   const admit = async (
     caller: ProjectTaskCaller,
     raw: unknown,
@@ -371,6 +427,7 @@ export const createProjectTaskCoordinator = async (
       return priorTask(view, key, value);
     });
     if (old) {
+      await launchAfterLineage(old);
       return old;
     }
     await backend.validate(input.provider);
@@ -426,11 +483,9 @@ export const createProjectTaskCoordinator = async (
         ],
       });
       await commit(view, { tasks: [next], request: { key, fingerprint: value, result: { kind: 'task', task: next } } });
-      if (!root) {
-        dispatch(structuredClone(next));
-      }
       return { task: structuredClone(next), created: true };
     });
+    await launchAfterLineage(task);
     return task;
   };
 
@@ -642,6 +697,7 @@ export const createProjectTaskCoordinator = async (
         return structuredClone({
           tasks: [...view.tasks.values()].filter((task) => permitted(task.id)),
           messages: page,
+          deliveries: [...view.attemptDeliveries.values()].filter((receipt) => permitted(receipt.taskId)),
           cursor: view.sequence,
           nextCursor,
           hasMore,
@@ -740,9 +796,9 @@ export const createProjectTaskCoordinator = async (
           tasks: [next],
           request: { key, fingerprint: value, result: { kind: 'task', task: next } },
         });
-        dispatch(structuredClone(next));
         return { task: structuredClone(next), created: true };
       });
+      await launchAfterLineage(task);
       return task;
     },
     inbox: async (input) =>
@@ -750,7 +806,7 @@ export const createProjectTaskCoordinator = async (
         if (!view.tasks.has(input.taskId)) {
           throw new ProjectTaskError('TASK_NOT_FOUND', 'Task does not exist.');
         }
-        const after = Math.max(input.after ?? 0, view.deliveries.get(input.taskId) ?? 0);
+        const after = Math.max(input.after ?? 0, view.deliveries.get(input.taskId)?.through ?? 0);
         const pending = view.messages.filter(
           (message) => message.recipientTaskId === input.taskId && message.sequence > after,
         );
@@ -777,7 +833,7 @@ export const createProjectTaskCoordinator = async (
         if (!task || latest(task).id !== input.attemptId || !activeStatuses.has(latest(task).status)) {
           throw new ProjectTaskError('TASK_FORBIDDEN', 'Only the active attempt can acknowledge model delivery.');
         }
-        const previous = view.deliveries.get(input.taskId) ?? 0;
+        const previous = view.deliveries.get(input.taskId)?.through ?? 0;
         if (!Number.isSafeInteger(input.through) || input.through > view.sequence || input.through < previous) {
           throw new ProjectTaskError('TASK_CURSOR_AHEAD', 'Invalid model-delivery cursor.');
         }
@@ -785,7 +841,17 @@ export const createProjectTaskCoordinator = async (
           await commit(view, { tasks: [], delivery: input });
         }
       }),
+    repairLineage: async () => {
+      const children = await store.transaction(async (view) =>
+        [...view.tasks.values()].filter((task) => task.parentTaskId).sort((a, b) => a.depth - b.depth),
+      );
+      for (const child of children) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Parent-first durable metadata repair precedes task recovery.
+        await ensureChildLineage(child);
+      }
+    },
     recover: async () => {
+      await coordinator.repairLineage();
       const pending = await store.transaction(async (view) =>
         [...view.tasks.values()].filter((task) => activeStatuses.has(latest(task).status)),
       );

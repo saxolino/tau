@@ -46,6 +46,7 @@ import { hostRevisionActor } from '#revision-actor.js';
 import { createProjectRevisions } from '#revisions.js';
 import type { HostRevisionEvent, ProjectRevisions, ProjectRevisionsOptions, TurnCheckout } from '#revisions.js';
 import { createProjectTaskCoordinator } from '#project-tasks/coordinator.js';
+import { materializeProjectTaskLineage } from '#project-tasks/chat-lineage.js';
 import { createNodeProjectTaskStore } from '#project-tasks/node-store.js';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
 import {
@@ -502,6 +503,8 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
       const coordinator = await createProjectTaskCoordinator({
         projectId,
         store,
+        materializeLineage: async (entry, task) =>
+          materializeProjectTaskLineage(fileSystem.open(workspaceRoot), entry, task),
         backend: createProjectTaskBackend({
           revisions,
           launcher: () => launcher,

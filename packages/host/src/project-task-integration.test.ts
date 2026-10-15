@@ -230,7 +230,14 @@ describe('authenticated project task tool binding', () => {
     base.list.mockReturnValue([]);
     const caller = { kind: 'task', projectId: 'project', taskId: 'parent', attemptId: 'attempt' } as const;
     coordinator.callerFor.mockReturnValue(caller);
-    coordinator.wait.mockResolvedValue({ tasks: [], messages: [], cursor: 1, nextCursor: 1, hasMore: false });
+    coordinator.wait.mockResolvedValue({
+      tasks: [],
+      messages: [],
+      deliveries: [],
+      cursor: 1,
+      nextCursor: 1,
+      hasMore: false,
+    });
     const controller = new AbortController();
     const registry = withProjectTaskTools(
       base,

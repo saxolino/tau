@@ -29,6 +29,7 @@ const fixture = async (
     release?: ProjectTaskBackend['release'];
     cancellationTimeout?: number;
     schedule?: ProjectTaskCoordinatorOptions['schedule'];
+    materializeLineage?: ProjectTaskCoordinatorOptions['materializeLineage'];
   }> = {},
 ) => {
   const root = await mkdtemp(join(tmpdir(), 'tau-tasks-'));
@@ -101,6 +102,75 @@ const settle = async (coordinator: ProjectTaskCoordinator, taskId: string, statu
 };
 
 describe('durable project task authority', () => {
+  it('projects child ancestry before backend allocation, repairs failed writes on duplicate replay and restart', async () => {
+    let failProjection = true;
+    const projected = new Set<string>();
+    const materializeLineage = vi.fn(async (entry: { chatId: string; taskLineage: { rootChatId: string } }) => {
+      if (failProjection) {
+        throw new Error('Injected metadata write failure');
+      }
+      expect(entry.taskLineage.rootChatId).toBe('root-chat');
+      projected.add(entry.chatId);
+    });
+    const allocate = vi.fn(async (launch: ProjectTaskLaunch) => {
+      expect(projected.has(launch.task.chatId)).toBe(true);
+      return { placementId: `placement-${launch.attempt.id}`, checkoutId: 'candidate' };
+    });
+    const { root, coordinator, caller, backend } = await fixture({ materializeLineage, allocate });
+    await expect(coordinator.spawn(caller, spawnInput('lineage'))).rejects.toThrow('Injected metadata write failure');
+    expect(allocate).not.toHaveBeenCalled();
+    const admittedSnapshot = await coordinator.read(host);
+    const admitted = admittedSnapshot.tasks.find((task) => task.parentTaskId);
+    expect(admitted?.attempts.at(-1)?.status).toBe('allocating');
+    failProjection = false;
+    const replay = await coordinator.spawn(caller, spawnInput('lineage'));
+    expect(replay.id).toBe(admitted?.id);
+    await settle(coordinator, replay.id, 'running');
+    expect(allocate).toHaveBeenCalledTimes(1);
+    await coordinator.close();
+    coordinators.splice(coordinators.indexOf(coordinator), 1);
+    projected.clear();
+    const reopened = await createNodeProjectTaskStore({ workspaceRoot: root, projectId: 'project' });
+    const recovered = await createProjectTaskCoordinator({
+      projectId: 'project',
+      store: reopened,
+      backend,
+      materializeLineage,
+    });
+    coordinators.push(recovered);
+    await recovered.recover();
+    expect(projected.has(replay.chatId)).toBe(true);
+    expect(allocate).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes only durable active-attempt delivery receipts and retains attempt identity on retry', async () => {
+    const { coordinator, caller, parent, outcomes } = await fixture();
+    const child = await coordinator.spawn(caller, spawnInput('receipt'));
+    await settle(coordinator, child.id, 'running');
+    const message = await coordinator.send(caller, { taskId: child.id, requestId: 'receipt-message', text: 'hello' });
+    const beforeDelivery = await coordinator.read(host, { taskId: child.id });
+    expect(beforeDelivery.deliveries).toEqual([]);
+    await coordinator.acknowledgeDelivery({ taskId: child.id, attemptId: attemptId(child), through: message.sequence });
+    const receipt = { taskId: child.id, attemptId: attemptId(child), through: message.sequence };
+    const childSnapshot = await coordinator.read(host, { taskId: child.id });
+    const parentSnapshot = await coordinator.read(host, { taskId: parent.id });
+    expect(childSnapshot.deliveries).toEqual([receipt]);
+    expect(parentSnapshot.deliveries).toEqual([]);
+    await expect(coordinator.acknowledgeDelivery({ ...receipt, attemptId: 'stale' })).rejects.toMatchObject({
+      code: 'TASK_FORBIDDEN',
+    });
+    outcomes.get(attemptId(child))?.resolve({ status: 'completed' });
+    await settle(coordinator, child.id, 'completed');
+    const retried = await coordinator.resume(host, { taskId: child.id, requestId: 'receipt-retry' });
+    await settle(coordinator, child.id, 'running');
+    const next = await coordinator.send(caller, { taskId: child.id, requestId: 'receipt-next', text: 'next' });
+    await coordinator.acknowledgeDelivery({ taskId: child.id, attemptId: attemptId(retried), through: next.sequence });
+    const afterRetry = await coordinator.read(host, { taskId: child.id });
+    expect(afterRetry.deliveries).toEqual([
+      receipt,
+      { taskId: child.id, attemptId: attemptId(retried), through: next.sequence },
+    ]);
+  });
   it('races duplicate spawn and message append without duplicate reservation or launch', async () => {
     const { coordinator, caller, backend } = await fixture();
     const children = await Promise.all(

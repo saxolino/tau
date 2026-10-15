@@ -1,7 +1,7 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 import { createActor } from 'xstate';
 import { projectTaskProjectionLogic } from '#project-tasks/projection.js';
-import { projectTaskSchema, projectTaskMessageSchema } from '@taucad/agent-host/wire';
+import { projectTaskRecordSchema } from '@taucad/agent-host/wire';
 import type { ProjectTask, ProjectTaskMessage, ProjectTaskRefusalCode } from '@taucad/agent-host/wire';
 
 /** Typed task refusal preserves stable codes across tool/UI boundaries. @internal */
@@ -15,28 +15,6 @@ export class ProjectTaskError extends Error {
     this.code = code;
   }
 }
-
-const requestSchema = z.strictObject({
-  key: z.string().min(1),
-  fingerprint: z.string().min(1),
-  result: z.discriminatedUnion('kind', [
-    z.strictObject({ kind: z.literal('task'), task: projectTaskSchema }),
-    z.strictObject({ kind: z.literal('message'), message: projectTaskMessageSchema }),
-  ]),
-});
-
-/** Journal row is deliberately separate from canonical chat events. @internal */
-export const projectTaskRecordSchema = z.strictObject({
-  version: z.literal(1),
-  projectId: z.string().min(1),
-  sequence: z.number().int().positive(),
-  tasks: z.array(projectTaskSchema),
-  message: projectTaskMessageSchema.optional(),
-  request: requestSchema.optional(),
-  delivery: z
-    .strictObject({ taskId: z.string().min(1), attemptId: z.string().min(1), through: z.number().int().nonnegative() })
-    .optional(),
-});
 
 /** A project ordering authority's append. @internal */
 export type ProjectTaskRecord = z.infer<typeof projectTaskRecordSchema>;
@@ -61,8 +39,9 @@ export type ProjectTaskStore = Readonly<{
 export type ProjectTaskStoreView = Readonly<{
   tasks: ReadonlyMap<string, ProjectTask>;
   messages: readonly ProjectTaskMessage[];
-  requests: ReadonlyMap<string, z.infer<typeof requestSchema>>;
-  deliveries: ReadonlyMap<string, number>;
+  requests: ReadonlyMap<string, NonNullable<ProjectTaskRecord['request']>>;
+  deliveries: ReadonlyMap<string, NonNullable<ProjectTaskRecord['delivery']>>;
+  attemptDeliveries: ReadonlyMap<string, NonNullable<ProjectTaskRecord['delivery']>>;
   records: readonly ProjectTaskRecord[];
   sequence: number;
   append: (change: ProjectTaskChange) => Promise<ProjectTaskRecord>;
@@ -188,6 +167,9 @@ const openProjectTaskStore = async (
         },
         get deliveries() {
           return new Map(Object.entries(selectProjection().deliveries));
+        },
+        get attemptDeliveries() {
+          return new Map(Object.entries(selectProjection().attemptDeliveries));
         },
         get records() {
           return selectProjection().records;

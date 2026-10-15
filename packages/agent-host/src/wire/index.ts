@@ -114,3 +114,9 @@ export type {
   ProjectTaskChannelPort,
   ProjectTaskSnapshot,
 } from '#wire/project-task-channel.schema.js';
+export {
+  projectTaskDeliverySchema,
+  projectTaskRecordSchema,
+  projectTaskLineageFromJournal,
+} from '#wire/project-task-journal.js';
+export type { ProjectTaskChatLineage } from '#wire/project-task-journal.js';
