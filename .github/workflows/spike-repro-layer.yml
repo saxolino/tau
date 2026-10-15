@@ -1,0 +1,98 @@
+# Native dependency resolution charter, ruling X26 (lane REPRO): proof that the Tau PicoGK layer is reproducible.
+#
+# Builds the layer exactly as release-build.yml's macOS arm64 job does (`pnpm nx run picogk:prepare-layer` on
+# macos-26, from an empty cache) and reports its sha256 as a check annotation and in the step summary. Two runs from
+# two different commits whose layer inputs are equal must report one digest. Nothing is published: no release, no R2,
+# no environment. Throwaway: it runs on spike/repro-layer-* branches only and never lands on main.
+name: Spike REPRO (PicoGK layer reproducibility)
+
+on:
+  push:
+    branches: ['spike/repro-layer-*']
+  workflow_dispatch:
+
+permissions:
+  actions: read # nrwl/nx-set-shas inside setup-nx
+  contents: read
+
+concurrency:
+  group: spike-repro-layer-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  layer:
+    name: Build the Tau PicoGK layer (macos-26)
+    runs-on: macos-26
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Nx Environment
+        uses: ./.github/actions/setup-nx
+        with:
+          node-version: '24.10.0'
+          save-pnpm-store: 'false'
+
+      - name: Record the toolchain
+        run: |
+          {
+            echo "### Toolchain ($(git rev-parse HEAD))"
+            echo '```'
+            sw_vers
+            xcrun clang++ --version | head -1
+            xcrun --show-sdk-version
+            cmake --version | head -1
+            echo "ninja $(ninja --version)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the Tau PicoGK layer
+        run: pnpm nx run picogk:prepare-layer
+
+      - name: Report the layer digest
+        run: |
+          set -euo pipefail
+          dir=out/picogk-layer/darwin-arm64
+          sha=$(shasum -a 256 "$dir/tau-picogk-layer-darwin-arm64.tar.gz" | cut -d' ' -f1)
+          test "$sha" = "$(jq -r .sha256 "$dir/tau-layer.json")"
+          tree="$RUNNER_TEMP/layer-tree"
+          mkdir -p "$tree" "$RUNNER_TEMP/report"
+          tar -xzf "$dir/tau-picogk-layer-darwin-arm64.tar.gz" -C "$tree"
+          (cd "$tree" && find . -type f | LC_ALL=C sort | xargs shasum -a 256) > "$RUNNER_TEMP/report/members.sha256"
+          cp "$dir/tau-layer.json" "$tree/tau-picogk-native-build.json" "$RUNNER_TEMP/report/"
+          for receipt in out/cache/picogk/native-deps-*/receipt.json; do
+            jq '{dependencySha256, files}' "$receipt" > "$RUNNER_TEMP/report/dependency-cache-receipt.json"
+          done
+          echo "::notice title=Tau PicoGK layer sha256::$sha commit=$(git rev-parse HEAD) bytes=$(jq -r .byteLength "$dir/tau-layer.json") nativeSourceSha256=$(jq -r .nativeSourceSha256 "$dir/tau-layer.json")"
+          {
+            echo "### Tau PicoGK layer"
+            echo "- commit: \`$(git rev-parse HEAD)\`"
+            echo "- sha256: \`$sha\`"
+            echo '```json'
+            cat "$dir/tau-layer.json"
+            echo '```'
+            echo '#### Members'
+            echo '```'
+            cat "$RUNNER_TEMP/report/members.sha256"
+            echo '```'
+            echo '#### Dependency cache (static archives)'
+            echo '```json'
+            cat "$RUNNER_TEMP/report/dependency-cache-receipt.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the layer and its receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repro-layer-${{ github.sha }}
+          path: |
+            out/picogk-layer/darwin-arm64/tau-picogk-layer-darwin-arm64.tar.gz
+            ${{ runner.temp }}/report
+          if-no-files-found: error
+          retention-days: 7
