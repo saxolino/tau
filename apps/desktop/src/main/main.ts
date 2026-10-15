@@ -110,6 +110,7 @@ import {
   computeControlChannels,
   servicesPortRelayTag,
   slicersChannels,
+  windowFullscreenChannel,
 } from '#shared/desktop-bootstrap.js';
 import type { AppIconTheme } from '#shared/desktop-bootstrap.js';
 import {
@@ -1102,10 +1103,6 @@ const bootstrapElectronApp = async (): Promise<void> => {
       refuse('services.unknown-concern');
       return;
     }
-    if (concern === 'geospecPerformance' && !/^(1|true)$/iu.test(environment['TAU_DEBUG'] ?? '')) {
-      refuse('GeoSpec performance tools require TAU_DEBUG.');
-      return;
-    }
     try {
       const resolved = sanitizeServicesContext(context);
       /* Launcher 2 is scoped to one workspace root, and the renderer names it —
@@ -1132,9 +1129,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
       const port =
         concern === 'exactMeasurement'
           ? geometry.connectMeasurement()
-          : concern === 'geospecPerformance'
-            ? geometry.connectPerformance()
-            : services.connect(concern as ServicesConcern, resolved);
+          : services.connect(concern as ServicesConcern, resolved);
       event.senderFrame?.postMessage(servicesPortRelayTag, { requestId }, [port]);
     } catch (error) {
       /* Quit and reload refuse new concerns by design: an expected answer the
@@ -1204,6 +1199,12 @@ const bootstrapElectronApp = async (): Promise<void> => {
         }),
       );
     }
+    const publishFullscreen = (): void => {
+      window.webContents.send(windowFullscreenChannel, window.isFullScreen());
+    };
+    window.on('enter-full-screen', publishFullscreen);
+    window.on('leave-full-screen', publishFullscreen);
+    window.webContents.on('did-finish-load', publishFullscreen);
     window.once('close', () => {
       try {
         writeWindowState(windowStatePath, {
