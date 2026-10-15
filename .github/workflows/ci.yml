@@ -485,14 +485,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends openscad=2021.01-6build4
           openscad --version
 
-      - name: Find the Zoo CLI release
+      # Zoo's CLI, pinned by release and by the sha256 GitHub records for the asset.
+      - name: Install the Zoo CLI
         if: matrix.ecosystem == 'kcl'
         env:
-          GH_TOKEN: ${{ github.token }}
+          ZOO_CLI_URL: https://github.com/KittyCAD/cli/releases/download/v0.2.203/zoo-x86_64-unknown-linux-musl
+          ZOO_CLI_SHA256: 86a72e94136cf0fc0acaaef309bab79f9c940d89c278689b69dfcc44231df43c
         run: |
-          gh api repos/KittyCAD/cli/releases --jq '.[0:3][] | .tag_name as $tag | .published_at as $at | .assets[] | select(.name | test("linux")) | "\($tag) \($at) \(.name) \(.digest)"' > "$RUNNER_TEMP/zoo.txt"
-          cat "$RUNNER_TEMP/zoo.txt"
-          echo "::notice title=Zoo CLI releases::$(sed -e 's/%/%25/g' "$RUNNER_TEMP/zoo.txt" | awk '{printf "%s%%0A", $0}')"
+          mkdir -p "$RUNNER_TEMP/zoo"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zoo/zoo" "$ZOO_CLI_URL"
+          echo "$ZOO_CLI_SHA256  $RUNNER_TEMP/zoo/zoo" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/zoo/zoo"
+          echo "$RUNNER_TEMP/zoo" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/zoo/zoo" --version
+          echo "::notice title=Zoo CLI::$("$RUNNER_TEMP/zoo/zoo" --version) / $("$RUNNER_TEMP/zoo/zoo" kcl export --help 2>&1 | tr '\n' ' ' | cut -c1-900)"
+
+      # `tau prepare build123d` seals the closure inside the native sandbox, as on a user's machine.
+      - name: Setup Linux sandbox prerequisites
+        if: matrix.ecosystem == 'pypi'
+        uses: ./.github/actions/setup-linux-sandbox
 
       - name: Check every template outside Tau
         env:
