@@ -542,8 +542,9 @@ registerHooks({
       expect(state).toBe('completed');
       expect(issueCodes(answers.get('call-1'))[0]).toBe('KERNEL_NOT_PREPARED');
       expect(answers.get('call-2')).toMatch(/"status":"ready"/u);
-      expect(answers.get('call-3')).toMatch(/"success":true/u);
-      expect(issueCodes(answers.get('call-3'))).not.toContain('KERNEL_NOT_PREPARED');
+      // The kernel evaluated the model through a brokered worker: a ready render with no kernel issue at all.
+      expect(answers.get('call-3')).toMatch(/"status":"ready"/u);
+      expect(issueCodes(answers.get('call-3'))).toEqual([]);
       expect(answers.get('call-3')).not.toMatch(permissionRefusal);
     },
     runLimit,
