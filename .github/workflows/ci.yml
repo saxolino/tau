@@ -489,7 +489,10 @@ jobs:
         if: matrix.ecosystem == 'kcl'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api repos/KittyCAD/cli/releases --jq '.[0:3][] | .tag_name as $tag | .assets[] | "\($tag) \(.name) \(.digest) \(.browser_download_url)"'
+        run: |
+          gh api repos/KittyCAD/cli/releases --jq '.[0:3][] | .tag_name as $tag | .published_at as $at | .assets[] | select(.name | test("linux")) | "\($tag) \($at) \(.name) \(.digest)"' > "$RUNNER_TEMP/zoo.txt"
+          cat "$RUNNER_TEMP/zoo.txt"
+          echo "::notice title=Zoo CLI releases::$(sed -e 's/%/%25/g' "$RUNNER_TEMP/zoo.txt" | awk '{printf "%s%%0A", $0}')"
 
       - name: Check every template outside Tau
         env:

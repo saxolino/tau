@@ -380,6 +380,12 @@ const main = (): number => {
     const verdict = checkRow(kernel, join(work, kernel));
     verdicts.push(verdict);
     console.log(`${verdict.pass ? '✓' : '✗'} ${kernel} (${verdict.step}): ${verdict.detail}`);
+    if (process.env['GITHUB_ACTIONS'] === 'true') {
+      // One annotation per row, so the verdict and its evidence show on the run without opening the log.
+      const message = verdict.comparison === undefined ? verdict.detail : JSON.stringify(verdict.comparison);
+      const escaped = message.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+      console.log(`::${verdict.pass ? 'notice' : 'error'} title=${kernel} (${verdict.step})::${escaped}`);
+    }
     if (verdict.comparison !== undefined && !verdict.pass) {
       console.log(JSON.stringify(verdict.comparison, undefined, 2));
     }
