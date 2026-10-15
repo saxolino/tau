@@ -9,6 +9,8 @@ on:
       - '.github/workflows/spike-s12.yml'
       - 'scripts/spikes/native-deps/linux/s12/**'
       - 'apps/ui-e2e/src/support/serve-ui-build.test.ts'
+      - 'packages/host/src/runtime-child-supervisor.ts'
+      - 'packages/host/src/runtime-child-supervisor.test.ts'
       - 'apps/ui/project.json'
       - 'apps/ui/serve/**'
       - 'apps/ui/vite.config.ts'

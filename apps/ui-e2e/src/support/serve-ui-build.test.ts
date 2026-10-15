@@ -172,6 +172,7 @@ const startServe = async (options: {
       child.kill('SIGKILL');
       await exited;
     }
+    expect(output.join('')).not.toMatch(/ERR_MODULE_NOT_FOUND|Tau Host runtime child (?:failed|exited before ready)/u);
   });
   const deadline = new Promise<never>((_resolve, reject) => {
     const timer = setTimeout(() => {
