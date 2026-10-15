@@ -13,7 +13,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { packServeUiLayer, requireServeUiLayerBudget, serveUiLayerLimitBytes } from '#pack-serve-ui-layer.js';
+import {
+  packServeUiLayer,
+  requireServeUiLayerBudget,
+  serveUiLayerLimitBytes,
+  verifyServeUiLayer,
+} from '#pack-serve-ui-layer.js';
 
 const directories: string[] = [];
 afterEach(() => {
@@ -40,6 +45,24 @@ const extract = (archive: string, destination: string): void => {
 };
 
 describe('S12 runtime layer', () => {
+  it('should verify extracted bytes and reject changed, missing or extra runtime files', () => {
+    const { build, output, restored } = fixture();
+    packServeUiLayer(build, output);
+    extract(join(output, 'serve-ui-client.tar.gz'), restored);
+    expect(() => verifyServeUiLayer(restored, output)).not.toThrow();
+    const index = join(restored, 'client/index.html');
+    writeFileSync(index, 'altered');
+    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    rmSync(index);
+    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    extract(join(output, 'serve-ui-client.tar.gz'), restored);
+    writeFileSync(join(restored, 'client/extra.js'), 'unexpected');
+    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    rmSync(join(restored, 'client/extra.js'));
+    writeFileSync(join(output, 'serve-ui-client.tar.gz'), 'changed archive');
+    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+  });
+
   it('should enforce the decimal charter budget and reject the observed oversized layer', () => {
     expect(serveUiLayerLimitBytes).toBe(150_000_000);
     expect(() => {

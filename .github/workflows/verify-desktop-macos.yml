@@ -3,7 +3,7 @@
 # `release-build.yml` uploads `desktop-darwin-arm64` (Tau-macos-arm64.zip)
 # before it verifies the package, so the archive survives a failed verify for
 # 7 days. Dispatch this with that run's ID to rerun `verify-macos-package.mts
-# --release` on a fresh macos-15 runner in minutes instead of a ~2 h signed
+# --release` on a fresh macos-26 runner in minutes instead of a ~2 h signed
 # build. Dispatch it from a branch to try verifier changes against the same
 # signed app.
 #
@@ -40,7 +40,7 @@ on:
         description: 'macOS runner image'
         required: false
         type: string
-        default: macos-15
+        default: macos-26
       extension-entitlements:
         description: 'Quick Look experiment: entitlements file to ad-hoc re-sign the extensions with (default: run the full verifier)'
         required: false
@@ -73,7 +73,7 @@ jobs:
         if: inputs.extension-entitlements == ''
         uses: ./.github/actions/setup-nx
         with:
-          native-node-version: '24.10.0'
+          node-version: '24.20.0'
 
       - name: Download the signed archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
