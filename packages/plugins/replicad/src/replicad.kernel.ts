@@ -77,6 +77,8 @@ import type { GeometryReplicad } from '#replicad.types.js';
 import { replicadDetectPattern } from '#replicad.constants.js';
 import { loadReplicadSingleWasm } from '#replicad-wasm-single-loader.js';
 import { loadReplicadMultiWasm } from '#replicad-wasm-multi-loader.js';
+// The OpenCascade build replicad runs on: a project declares it beside `replicad` so it can `setOC` outside Tau.
+import replicadOpencascadePackage from 'replicad-opencascadejs/package.json' with { type: 'json' };
 import {
   createEmptyGlb,
   createEmptyGltf,
@@ -485,7 +487,7 @@ export const replicadKernel = defineKernel({
   extensions: ['ts', 'js'],
   detectImport: replicadDetectPattern,
   builtinModuleNames: ['replicad', '@taucad/replicad/annotations'],
-  builtinPackages: { replicad: replicadPackage },
+  builtinPackages: { replicad: replicadPackage, 'replicad-opencascadejs': replicadOpencascadePackage },
   name: 'ReplicadKernel',
   version: '1.4.0',
   optionsSchema: replicadOptionsSchema,
@@ -632,7 +634,7 @@ export const replicadKernel = defineKernel({
       }
       const computeProducer = {
         id: '@taucad/replicad',
-        version: `replicad@${replicadPackage.version}|replicad-opencascadejs@0.23.0-beta.0|adapter@1`,
+        version: `replicad@${replicadPackage.version}|replicad-opencascadejs@${replicadOpencascadePackage.version}|adapter@1`,
         implementationAssets,
       };
       const computeEnvironment = {
