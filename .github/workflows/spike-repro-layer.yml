@@ -3,7 +3,7 @@
 # Builds the layer exactly as release-build.yml's macOS arm64 job does (`pnpm nx run picogk:prepare-layer` on
 # macos-26, from an empty cache) and reports its sha256 as a check annotation and in the step summary. Two runs from
 # two different commits whose layer inputs are equal must report one digest. Nothing is published: no release, no R2,
-# no environment. Throwaway: it runs on spike/repro-layer-* branches only and never lands on main.
+# no environment. Throwaway: it runs on spike/repro-layer-* branches only and never lands on main. Run B: a second commit with the same layer inputs.
 name: Spike REPRO (PicoGK layer reproducibility)
 
 on:
