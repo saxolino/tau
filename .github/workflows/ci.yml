@@ -505,6 +505,9 @@ jobs:
     name: Standalone projects (kcl)
     uses: ./.github/workflows/standalone-kcl.yml
     secrets: inherit
+    permissions: # The called workflow's nrwl/nx-set-shas reads workflow runs
+      actions: read
+      contents: read
 
   standalone-darwin:
     name: Standalone projects (nuget, macos-26)
