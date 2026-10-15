@@ -1,6 +1,10 @@
+import { fileContentBytes } from '@taucad/fs-client/file-content-service';
+import { z } from 'zod';
+import { ObservationService } from '@taucad/fs-client/observation-service';
+import { useObservation } from '@taucad/fs-client/react/use-observation';
 import type { MetaFunction } from 'react-router';
 import { PageContent } from '#components/layout/page-content.js';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   Blocks,
   Check,
@@ -25,7 +29,7 @@ import type { Handle } from '#types/matches.types.js';
 import { PageHeader } from '#components/layout/page-header.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { useSkillsCatalog } from '#hooks/use-skills-catalog.js';
+import { useSkillsCatalogState } from '#hooks/use-skills-catalog.js';
 import { systemSkillsCatalog } from '#lib/system-skills-catalog.js';
 import { tauStoreSkills } from '#lib/tau-plugin-store-catalog.js';
 import type { SystemSkill } from '#lib/system-skills-catalog.js';
@@ -111,12 +115,24 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const manifestPath = '.agents/plugins/installed.json';
 
+const installedPluginManifestSchema = z.object({
+  skills: z
+    .record(
+      z.string(),
+      z.object({
+        status: z.enum(['installed', 'shadowed']),
+        source: z.literal('tau-store'),
+        installedPath: z.string(),
+        shadowPath: z.string().optional(),
+        version: z.string(),
+        updatedAt: z.string(),
+      }),
+    )
+    .optional(),
+});
+
 function parseManifest(bytes: Uint8Array<ArrayBuffer>): InstalledPluginManifest {
-  try {
-    return JSON.parse(textDecoder.decode(bytes)) as InstalledPluginManifest;
-  } catch {
-    return {};
-  }
+  return installedPluginManifestSchema.parse(JSON.parse(textDecoder.decode(bytes)));
 }
 
 function skillToStoreItem(skill: TauStoreSkill, index: number): StoreItem {
@@ -214,33 +230,27 @@ function StoreSection({
 }
 
 export default function PluginsRoute(): React.JSX.Element {
-  const { readFile, writeFiles, exists } = useFileManager();
-  const skillsCatalog = useSkillsCatalog();
-  const [manifest, setManifest] = useState<InstalledPluginManifest>({});
+  const { writeFiles, exists, contentService } = useFileManager();
+  const catalog = useSkillsCatalogState();
+  const skillsCatalog = catalog.commands;
+  const manifestService = useMemo(() => {
+    if (!contentService) {
+      return undefined;
+    }
+    return new ObservationService<InstalledPluginManifest>({
+      resource: manifestPath,
+      read: async (read) => {
+        const result = await read.observe(contentService.observeContent(manifestPath));
+        return result.kind === 'orphaned' ? {} : parseManifest(fileContentBytes({ path: manifestPath, result }));
+      },
+      equal: (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+    });
+  }, [contentService]);
+  const manifestSnapshot = useObservation(manifestService);
+  const manifest = manifestSnapshot.value ?? {};
 
   const systemSkills = useMemo(() => systemSkillsCatalog.map((skill) => systemSkillToStoreItem(skill)), []);
   const storeSkills = useMemo(() => tauStoreSkills.map((skill, index) => skillToStoreItem(skill, index)), []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadManifest(): Promise<void> {
-      try {
-        const bytes = await readFile(manifestPath);
-        if (!cancelled) {
-          setManifest(parseManifest(bytes));
-        }
-      } catch {
-        if (!cancelled) {
-          setManifest({});
-        }
-      }
-    }
-
-    void loadManifest();
-    return () => {
-      cancelled = true;
-    };
-  }, [readFile]);
 
   const getSkillInstallStatus = useCallback(
     (item: StoreItem): 'available' | 'installed' | 'shadowed' => {
@@ -261,6 +271,12 @@ export default function PluginsRoute(): React.JSX.Element {
 
   const installSkill = useCallback(
     async (slug: string): Promise<void> => {
+      if (catalog.status !== 'ready') {
+        return;
+      }
+      if (manifestSnapshot.status !== 'ready') {
+        return;
+      }
       const skill = tauStoreSkills.find((entry) => entry.slug === slug);
       if (!skill) {
         return;
@@ -289,9 +305,9 @@ export default function PluginsRoute(): React.JSX.Element {
         [targetPath]: { content: textEncoder.encode(skill.skillMarkdown) },
         [manifestPath]: { content: textEncoder.encode(JSON.stringify(nextManifest, null, 2) + '\n') },
       });
-      setManifest(nextManifest);
+      manifestService?.refresh();
     },
-    [exists, manifest, writeFiles],
+    [exists, manifest, manifestService, manifestSnapshot.status, writeFiles, catalog.status],
   );
 
   return (
@@ -322,6 +338,45 @@ export default function PluginsRoute(): React.JSX.Element {
         }
       />
 
+      {manifestSnapshot.error && (
+        <p role='alert' className='text-sm text-destructive'>
+          {manifestSnapshot.error}
+        </p>
+      )}
+      {manifestService &&
+      (manifestSnapshot.status === 'closed' ||
+        manifestSnapshot.status === 'error' ||
+        (manifestSnapshot.value !== undefined && manifestSnapshot.status !== 'ready')) ? (
+        <div role='status' className='flex items-center justify-between gap-2 text-sm'>
+          <span>
+            {manifestSnapshot.status === 'registering' || manifestSnapshot.status === 'pending'
+              ? 'Plugin updates pending'
+              : 'Plugin updates unavailable'}
+          </span>
+          <Button
+            variant='ghost'
+            size='sm'
+            aria-label='Retry plugin updates'
+            onClick={() => {
+              manifestService.refresh();
+            }}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : undefined}
+      {catalog.status === 'ready' ? undefined : (
+        <div role='status' className='flex items-center justify-between gap-2 text-sm'>
+          <span>
+            {catalog.status === 'registering' || catalog.status === 'pending'
+              ? 'Skill updates pending'
+              : 'Skill updates unavailable'}
+          </span>
+          <Button variant='ghost' size='sm' aria-label='Retry skill updates' onClick={catalog.retry}>
+            Retry
+          </Button>
+        </div>
+      )}
       <StoreSection title='Featured' items={featuredPlugins} />
       <StoreSection title='System' items={systemSkills} />
       <StoreSection title='Skills' items={storeSkills} getStatus={getSkillInstallStatus} onInstall={installSkill} />

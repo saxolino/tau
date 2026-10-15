@@ -9,6 +9,7 @@ import {
   toProviderToolJsonSchema,
 } from '#schemas/provider-tool-schemas.js';
 import { getPrintProfilesInputSchema, requestPrintInputSchema } from '#schemas/tools/print.tool.schema.js';
+import { installPackagesInputSchema } from '#schemas/tools/install-packages.tool.schema.js';
 
 /**
  * Keywords no provider accepts today: Vertex rejects `const`/`propertyNames`/`prefixItems`, and
@@ -104,8 +105,8 @@ describe('provider-facing tool schema compatibility', () => {
 
     expect(entries.map((entry) => entry.toolName)).toEqual([
       toolName.testModel,
-      toolName.getKernelResult,
-      toolName.exportGeometry,
+      toolName.evaluateModel,
+      toolName.exportModel,
       toolName.getParameters,
       toolName.applyParameterOperation,
       toolName.screenshot,
@@ -122,6 +123,8 @@ describe('provider-facing tool schema compatibility', () => {
       toolName.webBrowser,
       toolName.revisions,
       toolName.updateTodos,
+      toolName.askQuestions,
+      toolName.installPackages,
       toolName.getMachine,
       toolName.getPrintProfiles,
       toolName.requestPrint,
@@ -150,6 +153,23 @@ describe('provider-facing tool schema compatibility', () => {
     expect(Buffer.byteLength(JSON.stringify(schema), 'utf8')).toBeLessThanOrEqual(14_336);
   });
 
+  it('keeps install_packages provider-safe with a typeless add record', () => {
+    const schema = providerSchemaFor(toolName.installPackages);
+    expect(Object.keys(schema.properties ?? {})).toEqual(['add', 'remove', 'upgrade']);
+    expect(schema.required ?? []).toEqual([]);
+    expect(collectKeywordPaths(schema)).toEqual(emptyKeywordPaths());
+    expect(toolDescriptions[toolName.installPackages]).toContain('package-not-locked');
+    expect(toolDescriptions[toolName.installPackages]).toContain(
+      'when a JavaScript or TypeScript model imports an npm package that package.json does not list',
+    );
+    expect(installPackagesInputSchema.parse({})).toEqual({});
+    expect(installPackagesInputSchema.parse({ add: { 'simplex-noise': '^4.0.3' } })).toEqual({
+      add: { 'simplex-noise': '^4.0.3' },
+    });
+    expect(installPackagesInputSchema.safeParse({ add: ['simplex-noise@^4.0.3'] }).success).toBe(false);
+    expect(installPackagesInputSchema.safeParse({ add: { 'simplex-noise': '' } }).success).toBe(false);
+  });
+
   it('should omit test_model when testing is disabled', () => {
     const entries = serializeProviderFacingSchemas(false);
 
@@ -171,8 +191,8 @@ describe('provider-facing tool schema compatibility', () => {
 
     expect(names).not.toContain(toolName.screenshot);
     expect(names).toContain(toolName.testModel);
-    expect(names).toContain(toolName.getKernelResult);
-    expect(names).toContain(toolName.exportGeometry);
+    expect(names).toContain(toolName.evaluateModel);
+    expect(names).toContain(toolName.exportModel);
     expect(names).toContain(toolName.editFile);
   });
 
@@ -264,6 +284,7 @@ describe('provider-facing tool schema compatibility', () => {
       'options',
       'plate',
       'preset',
+      'profileId',
       'profiles',
       'settings',
       'targetFile',
@@ -290,7 +311,7 @@ describe('provider-facing tool schema compatibility', () => {
   it('should offer get_print_profiles a machine, profiles and a bounded key filter', () => {
     const schema = providerSchemaFor(toolName.getPrintProfiles);
 
-    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(['keys', 'machineId', 'profiles']);
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(['keys', 'machineId', 'profileId', 'profiles']);
     expect(schema.required ?? []).toEqual([]);
     expect(getPrintProfilesInputSchema.safeParse({ keys: Array.from({ length: 65 }, (_, i) => `k${i}`) }).success).toBe(
       false,
@@ -298,7 +319,13 @@ describe('provider-facing tool schema compatibility', () => {
   });
 
   it('should keep screenshot and use_skill provider inputs pruned to implemented fields', () => {
-    expect(Object.keys(providerSchemaFor(toolName.screenshot).properties ?? {}).sort()).toEqual(['mode', 'targetFile']);
+    expect(Object.keys(providerSchemaFor(toolName.screenshot).properties ?? {}).sort()).toEqual([
+      'instance',
+      'mode',
+      'options',
+      'targetFile',
+      'view',
+    ]);
     expect(Object.keys(providerSchemaFor(toolName.useSkill).properties ?? {}).sort()).toEqual(['reason', 'skillName']);
   });
 

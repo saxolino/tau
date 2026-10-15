@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApiEntryDraft } from '#model/api-corpus.js';
 import { createApiCorpus, flattenEntries } from '#model/api-corpus.js';
 import { renderIndex, renderReferenceMap, renderShard } from '#render/render-reference.js';
-import { renderSkill } from '#render/render-skill.js';
+import { maxSkillBodyLines, maxSkillBodyTokens, renderSkill } from '#render/render-skill.js';
 import { planShards, shardIndexById } from '#render/shard-plan.js';
 
 const drafts: readonly ApiEntryDraft[] = [
@@ -83,15 +83,54 @@ describe('renderIndex', () => {
   const shards = planShards(corpus, { groupBy });
   const index = renderIndex(corpus, shards, { title: 'Replicad API index' });
 
-  it('lists every addressable symbol exactly once', () => {
-    for (const entry of flattenEntries(corpus)) {
-      const occurrences = index.split('\n').filter((line) => line.trim().startsWith(`${entry.name} (`)).length;
-      const nested = index.split('\n').filter((line) => line.trim().endsWith(`${entry.name} (${entry.kind})`)).length;
-      expect(occurrences + nested).toBeGreaterThanOrEqual(1);
-    }
+  it('keeps the authored import path with its category annotation', () => {
+    const qualified = createApiCorpus(corpus.metadata, [
+      { name: 'loadModel', path: 'geospec/model', kind: 'function', category: 'authoring' },
+    ]);
+    const rendered = renderIndex(qualified, planShards(qualified, { groupBy }), { title: 'GeoSpec API index' });
+    expect(rendered).toContain('geospec/model.loadModel (function) [category: authoring]');
+    expect(rendered).not.toContain('[id:');
+  });
 
-    const symbolLines = index.split('\n').filter((line) => /\(\w+\)/u.test(line));
-    expect(symbolLines).toHaveLength([...flattenEntries(corpus)].length);
+  it('should list every addressable entry exactly once, without redundant ids', () => {
+    const rows = index.split('\n').filter((line) => / \([A-Za-z]+\)/u.test(line));
+    expect(rows).toHaveLength([...flattenEntries(corpus)].length);
+    expect(index).not.toContain('[id:');
+  });
+
+  it('should retain nested grandchildren and disambiguate equal display names', () => {
+    const nested = createApiCorpus(corpus.metadata, [
+      {
+        name: 'Outer',
+        kind: 'class',
+        members: [
+          {
+            name: 'Inner',
+            kind: 'class',
+            members: [
+              {
+                name: 'Deeper',
+                kind: 'enum',
+                members: [{ name: 'Value', kind: 'enumMember' }],
+              },
+              { name: 'this[]', kind: 'property' },
+              { name: 'this[]', kind: 'property' },
+            ],
+          },
+        ],
+      },
+    ]);
+    const shards = planShards(nested, { groupBy });
+    const rendered = renderIndex(nested, shards, { title: 'Nested API' });
+    expect(rendered).toContain('Outer.Inner.Deeper.Value (enumMember)');
+    const identities = [...rendered.matchAll(/\[id: (.+)\]$/gmu)].map((match) => match[1]);
+    const duplicates = [...flattenEntries(nested)].filter((entry) => entry.name === 'this[]').map((entry) => entry.id);
+    expect(identities).toStrictEqual(duplicates);
+    expect(new Set(identities).size).toBe(2);
+    expect(rendered.split('\n').filter((line) => / \([A-Za-z]+\)/u.test(line))).toHaveLength(
+      [...flattenEntries(nested)].length,
+    );
+    expect(shardIndexById(shards).size).toBe([...flattenEntries(nested)].length);
   });
 
   it('names the shard that holds each group, so a pointer always resolves', () => {
@@ -103,7 +142,9 @@ describe('renderIndex', () => {
   it('caps an index summary at ten words', () => {
     const line = index.split('\n').find((entry) => entry.startsWith('drawCircle ('));
 
-    expect(line).toBe('drawCircle (function) — Draw a circle of the given radius on the current…');
+    expect(line).toBe(
+      'drawCircle (function) [category: sketching] — Draw a circle of the given radius on the current…',
+    );
   });
 
   it('is deterministic', () => {
@@ -113,6 +154,24 @@ describe('renderIndex', () => {
 
 describe('renderShard', () => {
   const shards = planShards(corpus, { groupBy });
+
+  it('should name anonymous generic callables without rewriting their signatures', () => {
+    const signature = '<T>(value: T): T;';
+    const callable = createApiCorpus(corpus.metadata, [
+      {
+        name: 'identity',
+        kind: 'function',
+        signatures: [{ parameters: [{ name: 'value', optional: false }], text: signature }],
+      },
+    ]);
+    const [shard] = planShards(callable, { groupBy: () => 'Functions' });
+    if (shard === undefined) {
+      throw new Error('Expected one shard');
+    }
+    const rendered = renderShard(shard, callable);
+    expect(rendered).toContain('identity');
+    expect(rendered).toContain(signature);
+  });
 
   it('emits every overload as its own signature line', () => {
     const sketching = shards.find((shard) => shard.title === 'sketching');
@@ -128,6 +187,7 @@ describe('renderShard', () => {
         name: 'make',
         kind: 'function',
         signatures: [{ parameters: [], text: 'make(\r\n  size: number, \r\n): Shape; ' }],
+        docs: { remarks: 'First line. \r\n  Second line. ', throws: ['Invalid \r\n  size. '] },
       },
     ]);
     const [shard] = planShards(multiline, { groupBy: () => 'Functions' });
@@ -137,6 +197,7 @@ describe('renderShard', () => {
 
     const rendered = renderShard(shard, multiline);
     expect(rendered).toContain('make(\n  size: number,\n): Shape;');
+    expect(rendered).toContain('// Remarks: First line. Second line.\n// Throws: Invalid size.');
     expect(rendered).not.toMatch(/\r| +$/mu);
   });
 
@@ -146,6 +207,25 @@ describe('renderShard', () => {
 
     expect(markdown).toContain('fillet(radius: number): Solid');
     expect(markdown).toContain('shell(thickness: number): Solid');
+  });
+
+  it('renders upstream examples as comments under their declaration', () => {
+    const documented = createApiCorpus(corpus.metadata, [
+      {
+        name: 'circle',
+        kind: 'function',
+        signatures: [{ parameters: [], text: 'circle(radius: number): Sketch' }],
+        docs: { examples: [{ caption: 'unit circle', code: 'circle(1)\r\n  .extrude(2)' }] },
+      },
+    ]);
+    const [shard] = planShards(documented, { groupBy: () => 'Functions' });
+    if (shard === undefined) {
+      throw new Error('Expected one shard');
+    }
+
+    expect(renderShard(shard, documented)).toContain(
+      'circle(radius: number): Sketch\n// Example (unit circle):\n//   circle(1)\n//     .extrude(2)',
+    );
   });
 
   it('surfaces deprecation, which the previous model had nowhere to put', () => {
@@ -181,8 +261,8 @@ describe('renderSkill', () => {
 
     expect(markdown.startsWith('---\nname: cad-replicad\n')).toBe(true);
     expect(markdown).toContain('1. Author `main.ts` with ES module imports.');
-    expect(markdown).toContain('Grep it for a name');
-    expect(bodyTokens).toBeLessThanOrEqual(800);
+    expect(markdown).toContain('grep the skill directory for the name followed by `(`');
+    expect(bodyTokens).toBeLessThanOrEqual(maxSkillBodyTokens);
   });
 
   it('refuses an over-budget body instead of silently reintroducing the mega-prompt', () => {
@@ -191,9 +271,34 @@ describe('renderSkill', () => {
         slug: 'cad-huge',
         title: 'Huge',
         description: 'Too much.',
-        doctrine: 'x'.repeat(800 * 4 + 1),
+        doctrine: 'x'.repeat(maxSkillBodyTokens * 4 + 1),
       }),
-    ).toThrow(/over the 800 ceiling/u);
+    ).toThrow(/over the 6000 ceiling/u);
+  });
+
+  it('refuses a body over the policy line ceiling', () => {
+    expect(() =>
+      renderSkill({
+        slug: 'cad-long',
+        title: 'Long',
+        description: 'Too long.',
+        doctrine: 'x\n'.repeat(maxSkillBodyLines),
+      }),
+    ).toThrow(/over the 500-line ceiling/u);
+  });
+
+  it('places the Core API section between doctrine and the reference map', () => {
+    const { markdown } = renderSkill({
+      slug: 'cad-replicad',
+      title: 'Replicad authoring',
+      description: 'Guides precise Replicad BRep authoring in main.ts.',
+      doctrine: '## Workflow',
+      coreApi: '## Core API',
+      referenceMap: '## API reference',
+    });
+
+    expect(markdown.indexOf('## Workflow')).toBeLessThan(markdown.indexOf('## Core API'));
+    expect(markdown.indexOf('## Core API')).toBeLessThan(markdown.indexOf('## API reference'));
   });
 
   it('refuses an over-budget description', () => {

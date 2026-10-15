@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import type { ProjectManifest } from '@taucad/types';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { composerRecordPaths, createComposerRecordStore } from '#db/composer-record-store.js';
 import { getEnvironment } from '#environment.config.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
@@ -70,7 +70,7 @@ const ChatAttachmentsDebugRoute = (): React.JSX.Element => {
       try {
         const project = await createProject({
           activeKernel: 'replicad',
-          activeExecution: { kind: 'tau', model: 'anthropic-claude-haiku-4.5' },
+          activeExecution: { kind: 'tau', model: 'anthropic-claude-haiku-5.5' },
           location: homeProjectCreationLocation,
           editorState: { panelState: { desktopLayout: { chatOpen: true, workbenchOpen: true } } },
           project: manifest,
@@ -86,7 +86,7 @@ const ChatAttachmentsDebugRoute = (): React.JSX.Element => {
           const second = await createChat(project.id, {
             name: 'Second chat',
             messages: [],
-            activeExecution: { kind: 'tau', model: 'anthropic-claude-haiku-4.5' },
+            activeExecution: { kind: 'tau', model: 'anthropic-claude-haiku-5.5' },
           });
           chatIds.push(second.id);
         }

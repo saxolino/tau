@@ -4,46 +4,11 @@
  * @module
  */
 
-import { createCollector, getCollector, getLegacyCollector, getNativeCollector } from '#runner/collector.js';
-import type { AnalyzeMeshOptions, AnalyzeMeshResult, LoadMeshOptions, LoadMeshResult } from '#mesh/load-mesh.js';
-import type { GeoSpecNativeSubject } from '#assertion-client/index.js';
-import type { GeoSpecMatcher, GeoSpecNativeRunnerMatcher } from '#runner/types.js';
-
-/** Native subject identity accepted by the authored native assertion helper. @public */
-export type GeoSpecNativeAuthoringSubject = GeoSpecNativeSubject &
-  ({ readonly contentHash: string } | { readonly subjectHash: string });
-
-/**
- * Stateful GeoSpec API created by {@link createGeoSpec}.
- *
- * @public
- */
-export type GeoSpec = {
-  loadMesh(options: LoadMeshOptions): Promise<LoadMeshResult>;
-  analyzeMesh(options: AnalyzeMeshOptions): Promise<AnalyzeMeshResult>;
-};
-
-/**
- * Create a GeoSpec instance.
- *
- * The root factory stays lazy: mesh parsing code is loaded only when a mesh
- * method is called.
- *
- * @returns A GeoSpec API instance.
- * @public
- */
-export function createGeoSpec(): GeoSpec {
-  return {
-    async loadMesh(options) {
-      const mesh = await import('#mesh/index.js');
-      return mesh.loadMesh(options);
-    },
-    async analyzeMesh(options) {
-      const mesh = await import('#mesh/index.js');
-      return mesh.analyzeMesh(options);
-    },
-  };
-}
+import { getCollector } from '#runner/collector.js';
+import type { GeoSpecMatcher } from '#runner/types.js';
+import { expectGeoSubject } from '#model/subject-assertions.js';
+import type { GeoSpecSubject } from '#model/subject.js';
+import { geoSpecMatcherDescriptors } from '#engine/matchers.js';
 
 type GeoSpecTestCallback = () => unknown | PromiseLike<unknown>;
 
@@ -103,20 +68,8 @@ export const test = it;
  * @returns GeoSpec geometry matchers.
  * @public
  */
-export function expectGeo(subject: unknown): GeoSpecMatcher {
-  return getLegacyCollector().expectGeo(subject);
-}
-
-/**
- * Start a native geometry assertion chain through an explicitly native collector.
- *
- * @param subject - Content-addressed native subject under test.
- * @returns Awaitable native GeoSpec matchers.
- * @throws When the active collector was not configured for native assertions.
- * @public
- */
-export function expectNativeGeo(subject: GeoSpecNativeAuthoringSubject): GeoSpecNativeRunnerMatcher {
-  return getNativeCollector().expectGeo(subject);
+export function expectGeo(subject: GeoSpecSubject): GeoSpecMatcher {
+  return expectGeoSubject(subject);
 }
 
 /**
@@ -127,6 +80,4 @@ export function expectNativeGeo(subject: GeoSpecNativeAuthoringSubject): GeoSpec
  *
  * @public
  */
-export const geoSpecMatcherNames: readonly string[] = Object.freeze(
-  Object.keys(createCollector().expectGeo(undefined)),
-);
+export const geoSpecMatcherNames: readonly string[] = Object.freeze(Object.keys(geoSpecMatcherDescriptors));

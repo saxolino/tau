@@ -1,3 +1,4 @@
+import type { CadReference } from '@taucad/chat/references';
 import { useCallback, useEffect, useRef } from 'react';
 import type { ChatStatus } from 'ai';
 import type { CadAgentConfigInput, MyUIMessage } from '@taucad/chat';
@@ -24,6 +25,8 @@ export type CadChatSubmitInput = {
   readonly text: string;
   /** The draft's attachments, stored beside its record; the client promotes them before sending (D18). */
   readonly attachments?: readonly StoredAttachmentRef[];
+  /** The composer chips' structured geometry references (blueprint D6). */
+  readonly references?: readonly CadReference[];
 };
 
 /**
@@ -52,8 +55,6 @@ export type CadChatClient = {
    * historical user-message metadata (which is retained for display).
    */
   edit: (messageId: string, input: CadChatSubmitInput) => void;
-  /** Abort the in-flight request, if any. */
-  stop: () => void;
   /**
    * Approve or deny a durable external-tool interrupt and resume it with the current agent config.
    *
@@ -66,6 +67,12 @@ export type CadChatClient = {
     approved: boolean,
     decision?: { readonly reason?: string | undefined; readonly optionId?: string | undefined },
   ) => Promise<void>;
+  /**
+   * Hand the running Tau turn a message it reads before its next step; otherwise send it as a new message.
+   *
+   * A send during an external agent's live turn queues behind that turn.
+   */
+  steerOrSubmit: (text: string) => Promise<void>;
   /** Live message list from the bound `Chat` instance. */
   messages: readonly MyUIMessage[];
   /** Live status from the bound `Chat` instance. */
@@ -92,7 +99,7 @@ const promotionToastId = 'chat-attachment-promotion';
  *   client's `messages`/`status`/`error` reads.
  * - {@link useChatActions} — the gesture entry point into the session store.
  *
- * Exposes profile-aware verbs (`submit`, `edit`, `stop`). Verb identities are
+ * Exposes profile-aware verbs (`submit`, `edit`). Verb identities are
  * stable across renders as long as the underlying actions and agent identity
  * don't change.
  *
@@ -154,38 +161,44 @@ export const useCadChatClient = (): CadChatClient => {
           return;
         }
       }
-      await send();
+      try {
+        await send();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Your message could not be saved. Please try again.', {
+          id: promotionToastId,
+        });
+      }
     },
     [activeChatId, agent.execution, store, surfaceDispatchFailure],
   );
 
   const submit = useCallback(
     async (input: CadChatSubmitInput): Promise<void> => {
+      const queueIntent = store.captureMessageQueueIntent(activeChatId);
       const userMessage = buildUserMessage(input);
       await withAttachments(input.attachments ?? [], async () =>
-        actions.sendMessage(userMessage, input.attachments === undefined ? {} : { attachments: input.attachments }),
+        actions.sendMessage(userMessage, {
+          execution: agent.execution,
+          queueIntent,
+          ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+        }),
       );
     },
-    [actions, withAttachments],
+    [actions, activeChatId, agent.execution, store, withAttachments],
   );
 
   const edit = useCallback(
     (messageId: string, input: CadChatSubmitInput) => {
       // async-iife: bootstrap — the edit composer closes at once; failures surface on the banner or a toast.
       void withAttachments(input.attachments ?? [], () => {
-        actions.editMessage(
-          messageId,
-          input.text,
-          input.attachments === undefined ? {} : { attachments: input.attachments },
-        );
+        actions.editMessage(messageId, input.text, {
+          ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+          ...(input.references === undefined ? {} : { references: input.references }),
+        });
       });
     },
     [actions, withAttachments],
   );
-
-  const stop = useCallback(() => {
-    actions.stop();
-  }, [actions]);
 
   const respondToToolApproval = useCallback(
     async (
@@ -199,11 +212,20 @@ export const useCadChatClient = (): CadChatClient => {
     [activeChatId, store],
   );
 
+  const steerOrSubmit = useCallback(
+    async (text: string): Promise<void> => {
+      if (!(await store.steerProjectedRun(activeChatId, text))) {
+        await submit({ text });
+      }
+    },
+    [activeChatId, store, submit],
+  );
+
   return {
     submit,
     edit,
-    stop,
     respondToToolApproval,
+    steerOrSubmit,
     messages,
     status,
     error: chat.error,

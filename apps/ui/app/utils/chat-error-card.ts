@@ -23,7 +23,8 @@ export type CodeCardCategory =
   | 'historyInvalid'
   | 'externalRestart'
   | 'fundedLimit'
-  | 'billingRecovery';
+  | 'billingRecovery'
+  | 'accountRestricted';
 
 type CodeCard = Readonly<{
   category: CodeCardCategory;
@@ -38,6 +39,8 @@ const codeCards = {
   NETWORK_ERROR: { category: 'pausedTurn' },
   PROVIDER_UNAVAILABLE: { category: 'pausedTurn', normalized: errorCategory.overloaded },
   MALFORMED_RESPONSE: { category: 'pausedTurn' },
+  MODEL_OUTPUT_LIMIT: { category: 'pausedTurn' },
+  TOOL_RESULT_PERSISTENCE_FAILED: { category: 'pausedTurn' },
   UPSTREAM_REJECTED: { category: 'pausedTurn', normalized: errorCategory.server },
   SESSION_LOG_INTEGRITY: { category: 'historyTidy' },
   SUMMARY_REQUIRED: { category: 'historyTidy' },
@@ -48,6 +51,9 @@ const codeCards = {
   PEER_UNRESPONSIVE: { category: 'peerUnresponsive' },
   WIRE_VERSION_UNSUPPORTED: { category: 'updateHost' },
   INVALID_REQUEST: { category: 'switchModel' },
+  EXTERNAL_AGENT_MODEL_UNAVAILABLE: { category: 'switchModel' },
+  MODEL_ROUTE_PAUSED: { category: 'switchModel' },
+  BILLING_ACCOUNT_RESTRICTED: { category: 'accountRestricted' },
   RESUME_UNAVAILABLE: { category: 'nothingToResume' },
   LEADERSHIP_LOST: { category: 'otherTab' },
   LEADER_VERSION_MISMATCH: { category: 'otherBuild' },

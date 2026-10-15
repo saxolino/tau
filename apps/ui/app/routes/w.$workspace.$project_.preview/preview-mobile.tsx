@@ -1,7 +1,7 @@
 import { memo, useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import { FileCode } from 'lucide-react';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { Button } from '@taucad/ui/components/button';
 import { Tabs, TabsContent } from '@taucad/ui/components/tabs';
 import { Drawer, DrawerContent, DrawerTitle, DrawerDescription } from '@taucad/ui/components/drawer';
@@ -20,7 +20,7 @@ import { useProjectUrl } from '#hooks/use-project-slug-route.js';
 export const PreviewMobile = memo(function (): React.JSX.Element {
   const navigate = useNavigate();
   const { project } = usePreviewProject();
-  const { geometry, cadRef } = useCadPreview();
+  const { artifact, cadRef } = useCadPreview();
   const files = usePreviewFileList();
 
   const { activeTab, drawerOpen, activeSnapPoint, snapPoints, handleTabChange, handleDrawerChange, handleSnapChange } =
@@ -119,7 +119,7 @@ export const PreviewMobile = memo(function (): React.JSX.Element {
             </TabsContent>
             <TabsContent enableAnimation={false} value='model' className='flex h-full flex-col' />
             <TabsContent enableAnimation={false} value='details' className='flex h-full flex-col overflow-y-auto'>
-              <PreviewDetails project={project} hasGeometry={Boolean(geometry)} cadRef={cadRef} />
+              <PreviewDetails project={project} hasGeometry={Boolean(artifact)} cadRef={cadRef} />
             </TabsContent>
           </Tabs>
         </DrawerContent>

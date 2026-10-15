@@ -17,9 +17,12 @@ import { picovoxel } from '@taucad/picovoxel';
 import { replicad } from '@taucad/replicad';
 import { rhino } from '@taucad/rhino';
 import { slicer } from '@taucad/slicer';
+import { tscircuit } from '@taucad/tscircuit';
+import { zoo } from '@taucad/zoo';
 
 import { build123dKernelOptions } from '#tau/build123d-resources.js';
 import { picogkKernelOptions } from '#tau/picogk-resources.js';
+import { desktopZooCloseErrors } from '#tau/zoo-close-errors.js';
 import { createDiagnosticsLog } from '#main/diagnostics.js';
 import { kernelEngineEvent, kernelEngineRecord } from '#tau/kernel-diagnostics.js';
 
@@ -67,7 +70,7 @@ export const desktopAssimpBackend = process.arch === 'arm64' ? 'native' : 'wasm'
 const createDesktopRuntimeImplementation = (options: DesktopRuntimeOptions = {}) =>
   defineRuntime({
     configSchema: desktopRuntimeConfigSchema,
-    createRuntime: () => ({
+    createRuntime: (config) => ({
       plugins: [
         esbuild(),
         opencascade(),
@@ -97,6 +100,18 @@ const createDesktopRuntimeImplementation = (options: DesktopRuntimeOptions = {})
             },
           },
         }),
+        /* Tau's proxy authenticates the upgrade; the kernel utility puts its
+         * Zoo-scoped token there (`#tau/zoo-proxy-credential.ts`), never in these
+         * options, which feed cache keys and every middleware's dependencies. */
+        zoo({
+          kernels: {
+            default: {
+              baseUrl: `${config.tauWebSocketUrl}/v1/kernels/zoo`,
+              closeErrors: { ...desktopZooCloseErrors },
+            },
+          },
+        }),
+        tscircuit(),
       ],
       kernels: [desktopOpenrscadKernel],
       middleware: [parameterFileResolver(), parameterUnits(), geometryCache(), gltfEdgeDetection()],

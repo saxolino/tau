@@ -42,6 +42,14 @@ describe('owned Stripe closure and auth deletion', () => {
       .insert(schema.billingOwnerBinding)
       .values({ id: `owner-${id}`, accountId, environment: 'development', authUserId });
     const purchase = await seedPaidPurchase({ database, accountId, environment: 'development', atoms: 100n });
+    // Closure waits for captured cash to be granted; this fixture only borrows the purchase's Customer.
+    await fulfillPaidFixture({
+      database,
+      ledger: lateLedger,
+      accountId,
+      causeId: purchase.purchaseId,
+      source: 'purchased',
+    });
     const [paid] = await database
       .select()
       .from(schema.billingPurchase)
@@ -557,8 +565,6 @@ describe('retained obligations after closure and auth deletion', () => {
     const authUserId = `closure-usage-${id}`;
     const sku = `closure-sku-${id}`;
     const meterContractId = `closure-meter-${id}`;
-    const spendBudgetId = `closure-spend-${id}`;
-    const riskBudgetId = `closure-risk-${id}`;
     qualifiedMeterContracts.set(meterContractId, new Set(['uncached_input:']));
     const validated = validateCommercialPolicy({
       schemaVersion: 1,
@@ -585,8 +591,6 @@ describe('retained obligations after closure and auth deletion', () => {
           meterContractId,
           rateIds: [`closure-rate-${id}`],
           enabled: true,
-          spendBudgetId,
-          riskBudgetId,
         },
       ],
       offers: [
@@ -609,46 +613,6 @@ describe('retained obligations after closure and auth deletion', () => {
       ],
       promotionalIssuance: { enabled: false, budgetCreditAtoms: '0', offer: null },
     });
-    await database.insert(schema.billingBudgetFunding).values([
-      {
-        id: `closure-spend-funding-${id}`,
-        environment: 'development',
-        kind: 'spend',
-        scope: id,
-        fundedLifetime: 1_000_000n,
-      },
-      {
-        id: `closure-risk-funding-${id}`,
-        environment: 'development',
-        kind: 'risk',
-        scope: id,
-        fundedLifetime: 1_000_000n,
-      },
-    ]);
-    await database.insert(schema.billingBudget).values([
-      {
-        id: spendBudgetId,
-        environment: 'development',
-        fundingId: `closure-spend-funding-${id}`,
-        kind: 'spend',
-        scope: id,
-        periodStart: new Date('2020-01-01T00:00:00.000Z'),
-        periodEnd: new Date('2030-01-01T00:00:00.000Z'),
-        quantum: 'pico_usd',
-        approvedCap: 1_000_000n,
-      },
-      {
-        id: riskBudgetId,
-        environment: 'development',
-        fundingId: `closure-risk-funding-${id}`,
-        kind: 'risk',
-        scope: id,
-        periodStart: new Date('2020-01-01T00:00:00.000Z'),
-        periodEnd: new Date('2030-01-01T00:00:00.000Z'),
-        quantum: 'pico_usd',
-        approvedCap: 1_000_000n,
-      },
-    ]);
     await seedBillingFixturePolicy({
       database,
       policy: validated.canonicalContent,
@@ -674,7 +638,6 @@ describe('retained obligations after closure and auth deletion', () => {
       activity: 'test',
       sku,
       maximumQuantities: [{ dimension: 'uncached_input', tier: null, quantity: 100_000n }],
-      supplierMaximumPicoUsd: 100_000n,
       replica: { schemaVersion: 1, meterContractIds: [meterContractId] },
       executionDeadline: new Date(Date.now() + 300_000),
     } as const;

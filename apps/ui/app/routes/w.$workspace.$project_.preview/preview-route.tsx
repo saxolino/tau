@@ -6,7 +6,7 @@ import { Link } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import type { ProjectManifest } from '@taucad/types';
 import { Button } from '@taucad/ui/components/button';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { HomeFileManagerProvider, SharedWorkerGate } from '#hooks/use-file-manager.js';
 import { CadPreviewProvider } from '#hooks/use-cad-preview.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
@@ -112,7 +112,7 @@ export function DynamicPreviewProvider({
     return (
       <PreviewProjectContext.Provider value={metadataValue}>
         <div role='alert' aria-label='Preview error' className='flex h-full items-center justify-center'>
-          <div className='flex flex-col items-center gap-3 text-destructive'>
+          <div className='flex flex-col items-center gap-3 text-feature'>
             <AlertTriangle className='size-10 opacity-60' strokeWidth={1.5} />
             <span className='max-w-sm text-center text-sm'>
               Project <span className='font-mono'>{projectId}</span> was not found.

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, ChevronDown, FolderOpen, House, Plus, Settings, ShieldAlert, Unplug } from 'lucide-react';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { Button } from '@taucad/ui/components/button';
 import { menuItemVariants } from '@taucad/ui/components/menu.variants';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
@@ -14,6 +14,7 @@ import {
   projectCreationLocationsEqual,
 } from '#utils/project-creation-location.utils.js';
 import { cn } from '@taucad/ui/utils/cn';
+import { isDesktopTarget } from '#lib/build-target.js';
 
 type WorkspaceSelectorProperties = Omit<React.HTMLAttributes<HTMLDivElement>, 'onSelect'> & {
   readonly state: ProjectCreationLocationState;
@@ -86,7 +87,9 @@ export function WorkspaceSelector({
 
   const tooltipCopy =
     state.value.kind === 'home'
-      ? 'Home uses browser storage, which can be cleared. Select to change location.'
+      ? isDesktopTarget()
+        ? 'Home keeps projects in a folder on your computer. Select to change location.'
+        : 'Home uses browser storage, which can be cleared. Select to change location.'
       : 'Projects are saved directly to this folder on your disk. Select to change location.';
   const recovery = state.selectedWorkspaceRecovery;
   const recoveryLabel = recovery?.kind === 'grant' ? 'Grant access' : 'Reconnect folder';

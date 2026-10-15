@@ -14,20 +14,13 @@ import type * as ReplicadModule from 'replicad';
 import { contentDigest, digestContent } from '@taucad/cache-core';
 import type { CacheValue, ComputeAction, ContentDigest } from '@taucad/cache-core';
 import { createExportFile } from '@taucad/runtime/types';
-import type {
-  GeometryGltf,
-  GeometrySvg,
-  RuntimeSpanTracer,
-  KernelIssue,
-  KernelStackFrame,
-} from '@taucad/runtime/types';
+import type { GeometrySvg, RuntimeSpanTracer, KernelIssue, KernelStackFrame } from '@taucad/runtime/types';
 import { SourceMapConsumer } from 'source-map-js';
 import type { RawSourceMap } from 'source-map-js';
 import {
   asBuffer,
   jsonSchemaFromJson,
   defineKernel,
-  getModuleRegistry,
   isRecordObject,
   extractDefaultParameters,
   registerKernelModule,
@@ -39,20 +32,20 @@ import {
   createKernelError,
   createKernelSuccess,
   createKernelParameterDeclaration,
-  RenderArtifactFinalizationError,
-  finalizeMeshOutput,
-  finalizeRenderOutput,
+  nonemptyExportFiles,
   applyLibrarySourceMaps,
+  createRealmGroup,
   preserveExportNames,
   demangleStackFrames,
   classifyLibraryFrames,
   named,
 } from '@taucad/runtime/kernel';
 import type {
-  KernelRuntime,
+  KernelServices,
   RuntimeLogger,
   KernelLibraryTraceHandle,
   KernelLibraryTraceMode,
+  RealmHold,
 } from '@taucad/runtime/kernel';
 
 import { replicadOptionsSchema, replicadRenderSchema, replicadExportSchemas } from '#replicad.schemas.js';
@@ -69,7 +62,7 @@ import {
 } from '@taucad/occt-core';
 import type { OcctModuleFactory, OcErrorContext, OcTracingSummary } from '@taucad/occt-core';
 
-import { normalizeRenderShapes, render } from '#utils/render-output.js';
+import { isDrawingShape, normalizeRenderShapes, render } from '#utils/render-output.js';
 import * as tauReplicadAnnotations from '#annotations/index.js';
 import { exportSTEP } from '#export/interface-export.js';
 import { resolveEntryInterfaces, rotateNativeEntryToYup } from '#interface-resolution.js';
@@ -77,7 +70,7 @@ import type { NativeHandleEntry } from '#interface-resolution.js';
 import type { GlbResources } from '@taucad/geometry-core';
 
 import { convertReplicadGeometriesToGltf } from '#utils/replicad-to-gltf.js';
-import { createReplicadComputeReuse, replicadComputeNamespace } from '#replicad-compute-reuse.js';
+import { createReplicadComputeReuse, replicadComputeNamespace, replicadModuleFacade } from '#replicad-compute-reuse.js';
 import type { ReplicadComputeReuseAdapter } from '#replicad-compute-reuse.js';
 
 import type { GeometryReplicad } from '#replicad.types.js';
@@ -87,7 +80,6 @@ import { loadReplicadMultiWasm } from '#replicad-wasm-multi-loader.js';
 import {
   createEmptyGlb,
   createEmptyGltf,
-  createEmptyGltfGeometry,
   resolveShapeName,
   validateGlbResources,
   readMechanismExport,
@@ -98,6 +90,35 @@ import {
  * `mechanism` export, normalised to plain JSON. All are export-facing evidence, so all survive a snapshot.
  */
 type NativeHandle = GlbResources & { shapes: NativeHandleEntry[]; mechanism?: unknown };
+
+/**
+ * Advertise the views and exports supported by one retained model.
+ * @param handle - Evaluated Replicad shapes.
+ * @returns Ordered view and export offers with stable authored drawing instances.
+ * @internal
+ */
+export const offersFor = (
+  handle: NativeHandle,
+): {
+  views: ReadonlyArray<'model' | 'drawing'>;
+  exports: ReadonlyArray<'glb' | 'gltf'> | undefined;
+  instances?: { drawing: ReadonlyArray<{ id: string; title: string }> };
+} => {
+  const drawings = handle.shapes.filter(({ shape }) => isDrawingShape(shape));
+  const hasModel = handle.shapes.some(({ shape }) => !isDrawingShape(shape));
+  const names = new Map<string, number>();
+  for (const { name } of drawings) {
+    if (name) {
+      names.set(name, (names.get(name) ?? 0) + 1);
+    }
+  }
+  const instances = drawings.flatMap(({ name }) => (name && names.get(name) === 1 ? [{ id: name, title: name }] : []));
+  return {
+    views: hasModel || drawings.length === 0 ? (drawings.length > 0 ? ['model', 'drawing'] : ['model']) : ['drawing'],
+    exports: hasModel ? undefined : drawings.length === 0 ? ['glb', 'gltf'] : [],
+    ...(drawings.length > 0 ? { instances: { drawing: instances } } : {}),
+  };
+};
 
 const tracedStep = <T>(tracer: RuntimeSpanTracer, label: string, operation: () => T): T => {
   const span = tracer.startSpan(label);
@@ -120,6 +141,9 @@ const tracedPhase = async <T>(
     span.end();
   }
 };
+
+/** `replicad` binds OpenCASCADE at module scope, so every kernel in a realm shares one instance (I2). */
+const replicadOcct = createRealmGroup<OpenCascadeInstance>('replicad-occt');
 
 const geistRegularUrl = new URL('fonts/Geist-Regular.ttf', import.meta.url).href;
 const replicadSourceMapUrl = new URL('sourcemaps/replicad.js.map', import.meta.url).href;
@@ -253,6 +277,8 @@ async function identifyImplementationAssets(
 
 type ReplicadContext = {
   openCascade: OpenCascadeInstance;
+  /** This kernel's share of the realm's one OpenCASCADE instance. */
+  occt: RealmHold<OpenCascadeInstance>;
   replicadLibrary: ReplicadLibrary;
   tessellationInstancing: boolean;
   replicadInitialised: boolean;
@@ -267,6 +293,14 @@ type ReplicadContext = {
 };
 
 type ReplicadLibrary = typeof ReplicadModule;
+
+/**
+ * The installed `replicad` dependency's own `name` and `version`: Tau runs the `@taulabs/replicad`
+ * fork under the `replicad` import name. The fork exports no `./package.json`, and a built kernel
+ * cannot read an unexported manifest, so this pins it; `replicad-package-identity.test.ts` fails
+ * when it differs from the installed package.
+ */
+const replicadPackage = { name: '@taulabs/replicad', version: '1.1.0-taulabs.0' } as const;
 
 // Match both the public package name (`replicad/`) and the aliased pnpm path
 // (`@taulabs/replicad/`) — the package.json aliases `replicad` to the Tau fork,
@@ -362,17 +396,18 @@ async function loadTextFile(url: string): Promise<string | undefined> {
 // Module registration helpers
 // =============================================================================
 
-function registerReplicadModule(runtime: KernelRuntime, replicadLibrary: ReplicadLibrary): void {
+function registerReplicadModule(runtime: KernelServices, replicadLibrary: ReplicadLibrary): void {
   registerKernelModule(runtime, {
     name: 'replicad',
     exports: replicadLibrary,
-    version: '0.19.1',
+    package: replicadPackage,
     globalName: 'replicad',
   });
   registerKernelModule(runtime, {
     name: '@taucad/replicad/annotations',
     exports: { ...tauReplicadAnnotations },
-    version: '0.19.1',
+    // Tau-owned: no npm identity (npm's `@taucad/replicad` is an older replicad fork, not this plugin).
+    version: replicadPackage.version,
     globalName: 'tauReplicadAnnotations',
   });
 }
@@ -387,11 +422,6 @@ function extractDefaultName(module: unknown): string | undefined {
   }
 
   return typeof module['defaultName'] === 'string' ? module['defaultName'] : undefined;
-}
-
-function getReplicadFirstArgument(): unknown {
-  const registry = getModuleRegistry();
-  return registry.get('replicad');
 }
 
 // =============================================================================
@@ -455,30 +485,43 @@ export const replicadKernel = defineKernel({
   extensions: ['ts', 'js'],
   detectImport: replicadDetectPattern,
   builtinModuleNames: ['replicad', '@taucad/replicad/annotations'],
+  builtinPackages: { replicad: replicadPackage },
   name: 'ReplicadKernel',
   version: '1.4.0',
   optionsSchema: replicadOptionsSchema,
-  render: {
-    optionsSchema: replicadRenderSchema,
-    content: ['includeEdges', 'includeTopology'],
+  views: {
+    model: {
+      title: 'Model',
+      mimeType: 'model/gltf-binary',
+      optionsSchema: replicadRenderSchema,
+      content: ['includeEdges', 'includeTopology'],
+    },
+    drawing: { title: 'Drawing', mimeType: 'image/svg+xml', instances: true },
   },
   // D2: in-worker OpenCascade yields cooperatively, so a superseded drag render is abandoned, not killed.
   cancellation: 'cooperative',
-  exportFormats: {
-    stl: { optionsSchema: replicadExportSchemas.stl },
-    step: { optionsSchema: replicadExportSchemas.step },
+  exports: {
+    stl: { title: 'STL', mimeType: 'model/stl', extension: 'stl', optionsSchema: replicadExportSchemas.stl },
+    step: { title: 'STEP', mimeType: 'application/step', extension: 'step', optionsSchema: replicadExportSchemas.step },
     glb: {
+      title: 'glTF binary',
+      mimeType: 'model/gltf-binary',
+      extension: 'glb',
       optionsSchema: replicadExportSchemas.glb,
       content: ['includeEdges', 'includeTopology'],
     },
     gltf: {
+      title: 'glTF JSON',
+      mimeType: 'model/gltf+json',
+      extension: 'gltf',
       optionsSchema: replicadExportSchemas.gltf,
       content: ['includeEdges', 'includeTopology'],
     },
   },
   async initialize(options, runtime): Promise<ReplicadContext> {
-    const replicadLibrary = await import('replicad');
-    const { mangledToOriginal: exportNameMap, exportNames: libraryExportNames } = preserveExportNames(replicadLibrary);
+    const replicadModule = await import('replicad');
+    const replicadLibrary = replicadModuleFacade(replicadModule);
+    const { mangledToOriginal: exportNameMap, exportNames: libraryExportNames } = preserveExportNames(replicadModule);
 
     const { logger, tracer } = runtime;
     const {
@@ -498,146 +541,165 @@ export const replicadKernel = defineKernel({
     const wasmSpan = tracer.startSpan('replicad.wasm-init');
     const resolved = await resolveWasm(wasm, logger, tracer);
     const compiledModule = resolved.wasmUrl ? runtime.getCompiledWasmModule(resolved.wasmUrl) : undefined;
-    let openCascade = await initOcct(resolved.wasmUrl, resolved.bindingsFactory, {
-      tracer,
-      ...(compiledModule ? { compiledModule } : {}),
-      print: (text) => {
-        logger.trace('OCJS stdout', { data: { text } });
-      },
-      printErr: (text) => {
-        logger.warn('OCJS stderr', { data: { text } });
+    // This kernel's wrapper over the realm's instance: per-kernel tracing, or exceptions only (I4).
+    let kernelOpenCascade: { instance: OpenCascadeInstance; summary?: OcTracingSummary } | undefined;
+    const wrapForKernel = (raw: OpenCascadeInstance) => {
+      if (kernelOpenCascade === undefined && (ocTracing === 'summary' || ocTracing === 'per-call')) {
+        const traced = wrapOcWithTracing(raw, tracer, { mode: ocTracing });
+        kernelOpenCascade = { instance: traced.tracedInstance, summary: traced.summary };
+      }
+      kernelOpenCascade ??= { instance: wrapOcForExceptions(raw) };
+      return kernelOpenCascade;
+    };
+
+    const occt = await runtime.realm.hold({
+      group: replicadOcct,
+      key: `${resolved.variant}:${resolved.wasmUrl ?? ''}`,
+      async create() {
+        // ponytail: OCCT print/printErr reach the creating kernel's logger only; exact with one realm per client.
+        const raw = await initOcct(resolved.wasmUrl, resolved.bindingsFactory, {
+          tracer,
+          ...(compiledModule ? { compiledModule } : {}),
+          print: (text) => {
+            logger.trace('OCJS stdout', { data: { text } });
+          },
+          printErr: (text) => {
+            logger.warn('OCJS stderr', { data: { text } });
+          },
+        });
+
+        if (resolved.variant === 'multi') {
+          /* oxlint-disable new-cap -- OCCT exposes callable C++ PascalCase methods. */
+          const pool = raw.OSD_ThreadPool.DefaultPool(-1);
+          try {
+            if (pool.IsInUse()) {
+              throw new Error('Cannot configure Replicad OCCT thread pool while it is in use');
+            }
+            // ponytail: cap OCCT threads to reduce parallel working sets; revisit after native batch memory is reduced.
+            pool.Init(Math.min(pool.NbThreads(), 4));
+          } finally {
+            pool.delete();
+          }
+          /* oxlint-enable new-cap */
+          activateOccParallelism(raw, logger);
+        } else {
+          logger.log(`Replicad OCCT initialised: variant=${resolved.variant} (single-threaded)`);
+        }
+
+        // The creating kernel binds the library once (Q5): library-internal OC calls trace to it, which is
+        // exact with one realm per client; every other kernel's wrapper sees only its kernel-direct calls.
+        // ponytail: no unbind on last release — `replicad` keeps the stale instance until the next create rebinds it.
+        replicadLibrary.setOC(wrapForKernel(raw).instance);
+        return raw;
       },
     });
 
-    if (resolved.variant === 'multi') {
-      /* oxlint-disable new-cap -- OCCT exposes callable C++ PascalCase methods. */
-      const pool = openCascade.OSD_ThreadPool.DefaultPool(-1);
-      try {
-        if (pool.IsInUse()) {
-          throw new Error('Cannot configure Replicad OCCT thread pool while it is in use');
-        }
-        // ponytail: cap OCCT threads to reduce parallel working sets; revisit after native batch memory is reduced.
-        pool.Init(Math.min(pool.NbThreads(), 4));
-      } finally {
-        pool.delete();
-      }
-      /* oxlint-enable new-cap */
-      activateOccParallelism(openCascade, logger);
-    } else {
-      logger.log(`Replicad OCCT initialised: variant=${resolved.variant} (single-threaded)`);
-    }
-
-    let tracingSummary: OcTracingSummary | undefined;
-
-    if (ocTracing === 'summary' || ocTracing === 'per-call') {
-      const traced = wrapOcWithTracing(openCascade, tracer, {
-        mode: ocTracing,
-      });
-      openCascade = traced.tracedInstance;
-      tracingSummary = traced.summary;
-    } else {
-      openCascade = wrapOcForExceptions(openCascade);
-    }
-
-    replicadLibrary.setOC(openCascade);
-    wasmSpan.end();
-
+    // `onDispose` never runs for a kernel whose initialisation failed, so release the hold here (I5).
     try {
-      const fontSpan = tracer.startSpan('replicad.font-load');
-      // The dependency declaration says this is always present, but its registry lookup returns undefined before load.
-      if (Object.is(replicadLibrary.getFont('default'), undefined)) {
-        logger.debug('Loading default font for text rendering');
-        const fontData = await loadBinaryFile(geistRegularUrl);
-        if (!fontData) {
-          throw new Error('Default font file not found');
-        }
-        await replicadLibrary.loadFont(fontData, 'default');
-      }
-      fontSpan.end();
-    } catch (error) {
-      logger.warn('Failed to load default font', { data: error });
-    }
+      const { instance: openCascade, summary: tracingSummary } = wrapForKernel(occt.value);
+      wasmSpan.end();
 
-    // Off constructs nothing: no asset read, no digest, no adapter (D14, I13, A5).
-    const identifiedAssets =
-      computeReuseOption === false
-        ? undefined
-        : await identifyImplementationAssets(
-            resolved.variant,
-            typeof wasm === 'string' ? [] : [wasm.wasmUrl, wasm.wasmBindingsUrl],
-          );
-    const assetsIdentified = identifiedAssets !== undefined;
-    // Explicit off wins; omission keeps the historical asset-derived default (C2).
-    const computeReuseEnabled = computeReuseOption ?? assetsIdentified;
-    const implementationAssets = identifiedAssets ?? [];
-    if (!assetsIdentified && computeReuseOption !== false) {
-      logger.warn('Replicad semantic compute reuse disabled because implementation assets could not be identified.');
-    }
-    const computeProducer = {
-      id: '@taucad/replicad',
-      version: 'replicad@0.23.4-beta.2|replicad-opencascadejs@0.23.0-beta.0|adapter@1',
-      implementationAssets,
-    };
-    const computeEnvironment = {
-      wasmVariant: resolved.variant,
-      lengthUnit: 'millimeter',
-    };
-    const computeReuse = computeReuseEnabled
-      ? createReplicadComputeReuse({
-          library: replicadLibrary,
-          enabled: true,
-          producer: computeProducer,
-          environment: computeEnvironment,
-        })
-      : undefined;
-    const libraryTrace = createKernelLibraryTracer({
-      library: computeReuse?.library ?? replicadLibrary,
-      tracer,
-      mode: libraryTracing,
-      policy: replicadLibraryTracePolicy,
-      defaultScope: 'kernel-setup',
-    });
-    registerReplicadModule(runtime, libraryTrace.tracedLibrary);
-
-    const librarySourceMapCache = new Map<string, SourceMapConsumer | undefined>();
-    if (withSourceMapping) {
       try {
-        const sourceMapSpan = tracer.startSpan('replicad.source-map-load');
-        const consumer = await loadReplicadSourceMap();
-        if (consumer) {
-          librarySourceMapCache.set('replicad', consumer);
-          logger.debug('Loaded replicad library source map for error diagnostics');
+        const fontSpan = tracer.startSpan('replicad.font-load');
+        // The dependency declaration says this is always present, but its registry lookup returns undefined before load.
+        if (Object.is(replicadLibrary.getFont('default'), undefined)) {
+          logger.debug('Loading default font for text rendering');
+          const fontData = await loadBinaryFile(geistRegularUrl);
+          if (!fontData) {
+            throw new Error('Default font file not found');
+          }
+          await replicadLibrary.loadFont(fontData, 'default');
         }
-
-        sourceMapSpan.end();
-      } catch {
-        // Source map loading is best-effort — errors are still enriched without it
+        fontSpan.end();
+      } catch (error) {
+        logger.warn('Failed to load default font', { data: error });
       }
+
+      // Off constructs nothing: no asset read, no digest, no adapter (D14, I13, A5).
+      const identifiedAssets =
+        computeReuseOption === false
+          ? undefined
+          : await identifyImplementationAssets(
+              resolved.variant,
+              typeof wasm === 'string' ? [] : [wasm.wasmUrl, wasm.wasmBindingsUrl],
+            );
+      const assetsIdentified = identifiedAssets !== undefined;
+      // Explicit off wins; omission keeps the historical asset-derived default (C2).
+      const computeReuseEnabled = computeReuseOption ?? assetsIdentified;
+      const implementationAssets = identifiedAssets ?? [];
+      if (!assetsIdentified && computeReuseOption !== false) {
+        logger.warn('Replicad semantic compute reuse disabled because implementation assets could not be identified.');
+      }
+      const computeProducer = {
+        id: '@taucad/replicad',
+        version: `replicad@${replicadPackage.version}|replicad-opencascadejs@0.23.0-beta.0|adapter@1`,
+        implementationAssets,
+      };
+      const computeEnvironment = {
+        wasmVariant: resolved.variant,
+        lengthUnit: 'millimeter',
+      };
+      const computeReuse = computeReuseEnabled
+        ? createReplicadComputeReuse({
+            library: replicadLibrary,
+            enabled: true,
+            producer: computeProducer,
+            environment: computeEnvironment,
+          })
+        : undefined;
+      const libraryTrace = createKernelLibraryTracer({
+        library: computeReuse?.library ?? replicadLibrary,
+        tracer,
+        mode: libraryTracing,
+        policy: replicadLibraryTracePolicy,
+        defaultScope: 'kernel-setup',
+      });
+      registerReplicadModule(runtime, libraryTrace.tracedLibrary);
+
+      const librarySourceMapCache = new Map<string, SourceMapConsumer | undefined>();
+      if (withSourceMapping) {
+        try {
+          const sourceMapSpan = tracer.startSpan('replicad.source-map-load');
+          const consumer = await loadReplicadSourceMap();
+          if (consumer) {
+            librarySourceMapCache.set('replicad', consumer);
+            logger.debug('Loaded replicad library source map for error diagnostics');
+          }
+
+          sourceMapSpan.end();
+        } catch {
+          // Source map loading is best-effort — errors are still enriched without it
+        }
+      }
+
+      logger.debug('Replicad kernel initialized');
+
+      return {
+        openCascade,
+        occt,
+        replicadLibrary,
+        tessellationInstancing,
+        replicadInitialised: true,
+        librarySourceMapCache,
+        exportNameMap,
+        libraryExportNames,
+        tracingSummary,
+        libraryTrace,
+        computeReuse,
+        computeProducer,
+        computeEnvironment,
+      };
+    } catch (error) {
+      occt.release();
+      throw error;
     }
-
-    logger.debug('Replicad kernel initialized');
-
-    return {
-      openCascade,
-      replicadLibrary,
-      tessellationInstancing,
-      replicadInitialised: true,
-      librarySourceMapCache,
-      exportNameMap,
-      libraryExportNames,
-      tracingSummary,
-      libraryTrace,
-      computeReuse,
-      computeProducer,
-      computeEnvironment,
-    };
   },
 
-  async getDependencies({ entryPath }, runtime) {
+  async resolve({ entryPath }, runtime) {
     return runtime.bundler.resolveDependencies(entryPath);
   },
 
-  async getParameters({ entryPath }, runtime, context) {
+  async describe({ entryPath }, runtime, context) {
     const relativeFilePath = toVmEntryPath(entryPath);
     let bundleSourceMap: string | undefined;
     let entryUrl: string | undefined;
@@ -657,12 +719,12 @@ export const replicadKernel = defineKernel({
       const defaultParameters = extractDefaultParameters(executeResult.value);
       const jsonSchema = await jsonSchemaFromJson(defaultParameters);
 
-      return createKernelSuccess(
-        createKernelParameterDeclaration(defaultParameters, jsonSchema, {
+      return createKernelSuccess({
+        parameters: createKernelParameterDeclaration(defaultParameters, jsonSchema, {
           id: 'urn:taucad:replicad:parameters',
           name: 'ReplicadParameters',
         }),
-      );
+      });
     } catch (error) {
       const issue = formatOcRuntimeError(
         error,
@@ -673,7 +735,7 @@ export const replicadKernel = defineKernel({
     }
   },
 
-  async createGeometry({ entryPath, parameters }, runtime, context: ReplicadContext) {
+  async evaluate({ entryPath, parameters }, runtime, context: ReplicadContext) {
     const { tracer } = runtime;
     const relativeFilePath = toVmEntryPath(entryPath);
     let bundleSourceMap: string | undefined;
@@ -710,7 +772,7 @@ export const replicadKernel = defineKernel({
                     bundleSourceMap,
                     entryUrl,
                   }),
-                  firstArg: getReplicadFirstArgument(),
+                  firstArg: context.libraryTrace.tracedLibrary,
                 }),
             });
           } finally {
@@ -731,10 +793,8 @@ export const replicadKernel = defineKernel({
           runtime.logger.warn('createGeometry returning empty: main-returned-undefined', {
             data: { filePath: relativeFilePath },
           });
-          return finalizeRenderOutput<NativeHandle>({
-            artifacts: [createEmptyGltfGeometry()],
-            nativeHandle: { shapes: [] },
-          });
+          const handle: NativeHandle = { shapes: [] };
+          return { handle, ...offersFor(handle) };
         }
 
         const model = isRecordObject(shapes) && 'shapes' in shapes ? shapes : undefined;
@@ -773,12 +833,12 @@ export const replicadKernel = defineKernel({
         });
 
         runtime.signal.throwIfAborted();
-        const nativeHandle: NativeHandle = {
+        const handle: NativeHandle = {
           shapes: entries,
           mechanism,
           ...(model ? { images: model.images, textures: model.textures, samplers: model.samplers } : {}),
         };
-        return { nativeHandle, issues };
+        return { handle, issues, ...offersFor(handle) };
       });
 
       if (runtime.compute.status !== 'on' || !context.computeReuse) {
@@ -802,7 +862,7 @@ export const replicadKernel = defineKernel({
         computeScope.close({ outcome });
       }
     } catch (error) {
-      if (error instanceof ReplicadBuildError || error instanceof RenderArtifactFinalizationError) {
+      if (error instanceof ReplicadBuildError) {
         throw error;
       }
 
@@ -815,10 +875,31 @@ export const replicadKernel = defineKernel({
     }
   },
 
-  async meshGeometry({ nativeHandle, options, content }, runtime, context) {
+  async render(input, runtime, context) {
+    const { handle } = input;
+    if (input.view === 'drawing') {
+      const drawings = handle.shapes.filter(({ shape }) => isDrawingShape(shape));
+      const selected = input.instance === undefined ? drawings : drawings.filter(({ name }) => name === input.instance);
+      if (selected.length === 0) {
+        throw new Error(`Drawing instance '${String(input.instance)}' is unavailable.`);
+      }
+      const rendered = render(
+        selected.map((entry, index) => ({
+          ...entry,
+          name: resolveShapeName({ index, name: entry.name, source: 'authored' }),
+        })),
+      );
+      const drawing = rendered.find((artifact): artifact is GeometrySvg => artifact.format === 'svg');
+      if (drawing === undefined) {
+        throw new Error('Drawing render produced no SVG artifact.');
+      }
+      return { content: drawing.content, units: drawing.units };
+    }
+    const { options, content } = input;
     const { tracer } = runtime;
-    if (nativeHandle.shapes.length === 0) {
-      return { geometry: createEmptyGltfGeometry() };
+    const modelShapes = handle.shapes.filter(({ shape }) => !isDrawingShape(shape));
+    if (modelShapes.length === 0) {
+      return { content: asBuffer(createEmptyGlb()) };
     }
 
     try {
@@ -826,7 +907,7 @@ export const replicadKernel = defineKernel({
       const includeEdges = content?.includeEdges === true;
       const includeTopology = content?.includeTopology === true;
       let mechanismIssues: KernelIssue[] = [];
-      const namedShapes = nativeHandle.shapes.map((entry, index) => ({
+      const namedShapes = modelShapes.map((entry, index) => ({
         ...entry,
         name: resolveShapeName({ index, name: entry.name, source: 'authored' }),
       }));
@@ -858,89 +939,74 @@ export const replicadKernel = defineKernel({
       });
 
       const shapes3d = renderedShapes.filter((shape): shape is GeometryReplicad => shape.format === 'replicad');
-      const shapes2d = renderedShapes.filter((shape): shape is GeometrySvg => shape.format === 'svg');
-
-      if (shapes3d.length === 0 && shapes2d.length === 0) {
+      if (shapes3d.length === 0) {
         runtime.logger.warn('meshGeometry returning empty: render-output-filtered-empty', {
           data: {
-            rawShapeCount: nativeHandle.shapes.length,
+            rawShapeCount: modelShapes.length,
             renderedShapeCount: renderedShapes.length,
           },
         });
-        return { geometry: createEmptyGltfGeometry() };
+        return { content: asBuffer(createEmptyGlb()) };
       }
 
-      const artifacts: Array<GeometryGltf | GeometrySvg> = [];
-      if (shapes3d.length > 0) {
-        const gltfBlob = await tracedPhase(tracer, 'mesh.packGltf', () => {
-          const gltfSpan = tracer.startSpan('replicad.mesh-to-gltf', {
-            shapeCount: shapes3d.length,
-            phase: 'computingGeometry',
-            stage: 'gltf-pack',
-          });
-          try {
-            return convertReplicadGeometriesToGltf({
-              images: nativeHandle.images,
-              textures: nativeHandle.textures,
-              samplers: nativeHandle.samplers,
-              geometries: includeEdges
-                ? shapes3d
-                : shapes3d.map((geometry) => ({
-                    ...geometry,
-                    edges: { ...geometry.edges, lines: [] },
-                  })),
-              format: 'glb',
-              includeTauTopology: includeTopology,
-              logger: runtime.logger,
-              mechanism: nativeHandle.mechanism,
-              onMechanismIssues(issues) {
-                mechanismIssues = issues;
-              },
-            });
-          } finally {
-            gltfSpan.end();
-          }
+      const gltfBlob = await tracedPhase(tracer, 'mesh.packGltf', () => {
+        const gltfSpan = tracer.startSpan('replicad.mesh-to-gltf', {
+          shapeCount: shapes3d.length,
+          phase: 'computingGeometry',
+          stage: 'gltf-pack',
         });
-        artifacts.push({ format: 'gltf', content: gltfBlob });
-      }
-      artifacts.push(...shapes2d);
-
-      return finalizeMeshOutput({ artifacts, issues: mechanismIssues });
+        try {
+          return convertReplicadGeometriesToGltf({
+            images: handle.images,
+            textures: handle.textures,
+            samplers: handle.samplers,
+            geometries: includeEdges
+              ? shapes3d
+              : shapes3d.map((geometry) => ({
+                  ...geometry,
+                  edges: { ...geometry.edges, lines: [] },
+                })),
+            format: 'glb',
+            includeTauTopology: includeTopology,
+            logger: runtime.logger,
+            mechanism: handle.mechanism,
+            onMechanismIssues(issues) {
+              mechanismIssues = issues;
+            },
+          });
+        } finally {
+          gltfSpan.end();
+        }
+      });
+      return { content: gltfBlob, issues: mechanismIssues };
     } catch (error) {
-      if (error instanceof RenderArtifactFinalizationError) {
-        throw error;
-      }
-
       const issue = formatOcRuntimeError(error, context.openCascade, buildErrorContext(context, {}));
       throw new ReplicadBuildError([issue]);
     }
   },
 
-  async exportGeometry(input, runtime, context) {
+  async export(input, runtime, context) {
     return context.libraryTrace.runInScope({
       scope: 'export',
       operation: async () => {
-        const { format, nativeHandle } = input;
-        const { shapes: entries, mechanism } = nativeHandle;
-        const emptyGltfExport = () =>
-          createKernelSuccess([
+        const { exportId, handle } = input;
+        const { shapes: entries, mechanism } = handle;
+        const emptyGltfExport = (format: 'glb' | 'gltf') => ({
+          files: [
             createExportFile(
               format,
               format === 'glb' ? 'model.glb' : 'model.gltf',
               asBuffer(format === 'glb' ? createEmptyGlb() : createEmptyGltf()),
             ),
+          ] as const,
+        });
+        const noGeometryExportError = (): never => {
+          throw new ReplicadBuildError([
+            { message: 'No geometry available for export', code: 'RUNTIME', type: 'runtime', severity: 'error' },
           ]);
-        const noGeometryExportError = () =>
-          createKernelError([
-            {
-              message: 'No geometry available for export',
-              code: 'RUNTIME',
-              type: 'runtime',
-              severity: 'error',
-            },
-          ]);
-        const stepExportError = (error: unknown) =>
-          createKernelError([
+        };
+        const stepExportError = (error: unknown): never => {
+          throw new ReplicadBuildError([
             {
               message: error instanceof Error ? error.message : String(error),
               code: 'RUNTIME',
@@ -948,13 +1014,14 @@ export const replicadKernel = defineKernel({
               severity: 'error',
             },
           ]);
+        };
 
-        switch (format) {
+        switch (exportId) {
           case 'glb':
           case 'gltf': {
             const { options, content } = input;
             if (entries.length === 0) {
-              return emptyGltfExport();
+              return emptyGltfExport(exportId);
             }
 
             const { linearTolerance, angularTolerance } = options.tessellation;
@@ -981,15 +1048,15 @@ export const replicadKernel = defineKernel({
             );
 
             if (temporaryShapes.length === 0) {
-              return emptyGltfExport();
+              return emptyGltfExport(exportId);
             }
 
             let mechanismIssues: KernelIssue[] = [];
             const gltfData = await tracedPhase(runtime.tracer, 'export.packGltf', () =>
               convertReplicadGeometriesToGltf({
-                images: nativeHandle.images,
-                textures: nativeHandle.textures,
-                samplers: nativeHandle.samplers,
+                images: handle.images,
+                textures: handle.textures,
+                samplers: handle.samplers,
                 geometries:
                   content?.includeEdges === true
                     ? temporaryShapes
@@ -997,7 +1064,7 @@ export const replicadKernel = defineKernel({
                         ...geometry,
                         edges: { ...geometry.edges, lines: [] },
                       })),
-                format,
+                format: exportId,
                 includeTauTopology: content?.includeTopology === true,
                 logger: runtime.logger,
                 coordinateSystem,
@@ -1008,10 +1075,12 @@ export const replicadKernel = defineKernel({
                 },
               }),
             );
-            return createKernelSuccess(
-              [createExportFile(format, format === 'glb' ? 'model.glb' : 'model.gltf', asBuffer(gltfData))],
-              mechanismIssues,
-            );
+            return {
+              files: [
+                createExportFile(exportId, exportId === 'glb' ? 'model.glb' : 'model.gltf', asBuffer(gltfData)),
+              ] as const,
+              issues: mechanismIssues,
+            };
           }
 
           case 'step': {
@@ -1036,7 +1105,7 @@ export const replicadKernel = defineKernel({
               return stepExportError(error);
             }
             const stepBytes = new Uint8Array(await stepBlob.arrayBuffer());
-            return createKernelSuccess([createExportFile('step', 'assembly', stepBytes)]);
+            return { files: [createExportFile('step', 'assembly', stepBytes)] as const };
           }
 
           case 'stl': {
@@ -1067,12 +1136,12 @@ export const replicadKernel = defineKernel({
                 return createExportFile('stl', resolveShapeName({ index, name, source: 'generated' }), bytes);
               }),
             );
-            return createKernelSuccess(result);
+            return { files: nonemptyExportFiles(result) };
           }
 
           default: {
-            const _exhaustive: never = format;
-            return createKernelError([
+            const _exhaustive: never = exportId;
+            throw new ReplicadBuildError([
               {
                 message: `Unsupported export format: ${String(_exhaustive)}`,
                 code: 'KERNEL_CAPABILITY_MISSING',
@@ -1086,18 +1155,22 @@ export const replicadKernel = defineKernel({
     });
   },
 
-  serializeNativeHandle({ nativeHandle }, runtime) {
-    return tracedStep(runtime.tracer, 'create.serializeNativeHandle', () => serializeReplicadHandle(nativeHandle));
+  serializeHandle({ handle }, runtime) {
+    return tracedStep(runtime.tracer, 'create.serializeNativeHandle', () => serializeReplicadHandle(handle));
   },
 
-  deserializeNativeHandle({ serializedNativeHandle }, _runtime, context): NativeHandle {
+  deserializeHandle({ serialized }, _runtime, context): NativeHandle {
     return {
-      ...serializedNativeHandle,
-      shapes: serializedNativeHandle.shapes.map((entry) => ({
+      ...serialized,
+      shapes: serialized.shapes.map((entry) => ({
         shape: context.replicadLibrary.deserializeShape(entry.brep),
         ...entry.metadata,
       })),
     };
+  },
+
+  async onDispose(context) {
+    context.occt.release();
   },
 });
 

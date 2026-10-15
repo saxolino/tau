@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/naming-convention -- mocked Electron exports and environment keys retain production names */
-import { mkdir, mkdtemp, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Worker as NodeWorker } from 'node:worker_threads';
@@ -11,10 +11,12 @@ import type { TauHeaderInjectionOptions } from '#main/header-injection.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   computeControlChannels,
+  openDirectoryChannel,
   machinesChannels,
   quitChannels,
   servicesPortRelayTag,
   slicersChannels,
+  windowFullscreenChannel,
 } from '#shared/desktop-bootstrap.js';
 
 const originalTitle = process.title;
@@ -51,7 +53,6 @@ const state = vi.hoisted(() => ({
   shutdownOrder: [] as string[],
   servicesConnect: vi.fn(() => ({ id: 'services-port' })),
   geometryMeasurementConnect: vi.fn(() => ({ id: 'geometry-measurement-port' })),
-  geometryPerformanceConnect: vi.fn(() => ({ id: 'geometry-performance-port' })),
   geometryDispose: vi.fn(async () => undefined),
   geometrySampleResidentBytes: undefined as undefined | ((utility: { pid: number | undefined }) => number | undefined),
   servicesCompleteBinding: vi.fn(async (_input: Readonly<Record<string, string>>, _boundMilliseconds: number) => ({
@@ -101,6 +102,8 @@ const app = {
   }),
   getPath: vi.fn((name: string) => (name === 'userData' ? state.userData : join(state.userData, name))),
   getVersion: vi.fn(() => 'test'),
+  /* No `package.json` here, so a packaged case boots locked, like a release. */
+  getAppPath: vi.fn(() => state.userData),
   getAppMetrics: vi.fn((): Array<{ pid: number; memory: { workingSetSize: number } }> => []),
   on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
     const listeners = state.appListeners.get(event) ?? [];
@@ -130,17 +133,18 @@ const fakeWindow = {
       }
     }),
     isDestroyed: vi.fn(() => false),
-    on: vi.fn(),
+    on: vi.fn<(event: string, listener: (...args: unknown[]) => void) => void>(),
     setWindowOpenHandler: vi.fn(),
   },
   isDestroyed: vi.fn(() => false),
   isMinimized: vi.fn(() => false),
+  isFullScreen: vi.fn(() => false),
   restore: vi.fn(),
   loadURL: vi.fn(async () => undefined),
   show: vi.fn(),
   focus: vi.fn(),
   once: vi.fn(),
-  on: vi.fn(),
+  on: vi.fn<(event: string, listener: (...args: unknown[]) => void) => void>(),
 };
 
 /* The quit hold's only visible surface when it cannot settle (C69). */
@@ -153,6 +157,7 @@ const dialog = {
 
 vi.mock('electron', () => ({
   app,
+  autoUpdater: { setFeedURL: vi.fn(), checkForUpdates: vi.fn(), quitAndInstall: vi.fn(), on: vi.fn() },
   BrowserWindow: Object.assign(
     vi.fn(function BrowserWindow() {
       return fakeWindow;
@@ -191,7 +196,7 @@ vi.mock('electron', () => ({
       webRequest: {},
     },
   },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal: vi.fn(), openPath: vi.fn(async () => '') },
   utilityProcess: { fork: vi.fn() },
 }));
 
@@ -202,7 +207,7 @@ vi.mock('@taucad/runtime/electron/main', () => ({
       state.resolveFork = options.resolveFork;
       state.runtimeMaxUtilities = options.maxUtilities;
       state.kernelUtilityEntry = options.utilityEntry;
-      return { connect: vi.fn(), dispose: vi.fn(), prewarm: state.runtimePrewarm };
+      return { connect: vi.fn(), dispose: vi.fn(), post: vi.fn(), prewarm: state.runtimePrewarm };
     },
   ),
 }));
@@ -241,7 +246,9 @@ vi.mock('#main/diagnostics.js', () => ({
   forwardUtilityDiagnostics: vi.fn(),
   kernelUtilityDiagnostics: vi.fn(() => ({})),
 }));
-vi.mock('#main/environment.js', () => ({
+vi.mock('#main/environment.js', async (importOriginal) => ({
+  /* The packaged lock (`packagedOverridesEnabled`, `stripPackagedOverrides`) runs for real. */
+  ...(await importOriginal<Record<string, unknown>>()),
   clientEnvironment: vi.fn(() => ({})),
   desktopAgentGatewayBaseUrl: vi.fn(() => 'http://127.0.0.1:1'),
   desktopAgentSystemPrompt: vi.fn(() => 'test'),
@@ -265,7 +272,7 @@ vi.mock('#main/navigation-policy.js', () => ({
   rendererOrigins: vi.fn(() => []),
 }));
 vi.mock('#main/services-broker.js', () => ({
-  rendererServicesConcerns: ['nodeFs', 'agentHost', 'geospecPerformance', 'exactMeasurement', 'machines'],
+  rendererServicesConcerns: ['nodeFs', 'agentHost', 'exactMeasurement', 'machines'],
   ServicesQuiescingError: class ServicesQuiescingError extends Error {},
   createServicesBroker: vi.fn((options: { utilityEntry: string }) => {
     state.servicesUtilityEntry = options.utilityEntry;
@@ -285,7 +292,6 @@ vi.mock('#main/geometry-broker.js', () => ({
     state.geometrySampleResidentBytes = options.sampleResidentBytes;
     return {
       connectMeasurement: state.geometryMeasurementConnect,
-      connectPerformance: state.geometryPerformanceConnect,
       connectSuite: vi.fn(),
       revokeUnauthorized: vi.fn(),
       dispose: state.geometryDispose,
@@ -304,6 +310,7 @@ vi.mock('#main/utility-environment.js', () => ({
     return {};
   }),
 }));
+vi.mock('#main/browser-host.js', () => ({ installBrowserHost: vi.fn() }));
 vi.mock('#main/quick-look.js', () => ({
   createQuickLookController: vi.fn(() => ({ dispose: vi.fn() })),
   removeStaleQuickLookSessions: vi.fn(),
@@ -349,7 +356,6 @@ afterEach(async () => {
   state.resolveFork = undefined;
   state.servicesConnect.mockClear();
   state.geometryMeasurementConnect.mockClear();
-  state.geometryPerformanceConnect.mockClear();
   state.geometrySampleResidentBytes = undefined;
   app.getAppMetrics.mockReset();
   app.getAppMetrics.mockReturnValue([]);
@@ -375,6 +381,7 @@ afterEach(async () => {
     Reflect.deleteProperty(process, 'resourcesPath');
   }
   vi.clearAllMocks();
+  fakeWindow.isFullScreen.mockReturnValue(false);
 });
 
 describe('desktop main compute owner', () => {
@@ -392,6 +399,47 @@ describe('desktop main compute owner', () => {
     });
     return resolve(join(state.userData, 'home', 'project'));
   };
+
+  it('should open only granted directories and propagate file manager failures', async () => {
+    const directory = await bootstrap();
+    await mkdir(directory, { recursive: true });
+    const { shell } = await import('electron');
+    const open = state.handlers.get(openDirectoryChannel)!;
+    await expect(open({ senderFrame: {} }, directory)).resolves.toBeUndefined();
+    const canonicalDirectory = await realpath(directory);
+    expect(shell.openPath).toHaveBeenCalledWith(canonicalDirectory);
+    vi.mocked(shell.openPath).mockClear();
+    await expect(open({ senderFrame: {} }, tmpdir())).rejects.toThrow('Reopen this folder');
+    await expect(open({ senderFrame: {} }, 42)).rejects.toThrow('refused');
+    await expect(open({ senderFrame: {} }, join(directory, 'missing'))).rejects.toThrow('ENOENT');
+    await symlink(tmpdir(), join(directory, 'escape'));
+    await expect(open({ senderFrame: {} }, join(directory, 'escape'))).rejects.toThrow('Reopen this folder');
+    expect(shell.openPath).not.toHaveBeenCalled();
+    vi.mocked(shell.openPath).mockResolvedValueOnce('No file manager available');
+    await expect(open({ senderFrame: {} }, directory)).rejects.toThrow('No file manager available');
+  }, 120_000);
+
+  it(
+    'should publish current native fullscreen state on enter, leave and renderer reload',
+    async () => {
+      await bootstrap();
+      const enter = fakeWindow.on.mock.calls.find(([name]) => name === 'enter-full-screen')?.[1];
+      const leave = fakeWindow.on.mock.calls.find(([name]) => name === 'leave-full-screen')?.[1];
+      const loaded = fakeWindow.webContents.on.mock.calls.find(([name]) => name === 'did-finish-load')?.[1];
+      expect(enter).toBeTypeOf('function');
+      expect(leave).toBeTypeOf('function');
+      expect(loaded).toBeTypeOf('function');
+      fakeWindow.isFullScreen.mockReturnValue(true);
+      enter?.();
+      expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith(windowFullscreenChannel, true);
+      loaded?.();
+      expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith(windowFullscreenChannel, true);
+      fakeWindow.isFullScreen.mockReturnValue(false);
+      leave?.();
+      expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith(windowFullscreenChannel, false);
+    },
+    bootMilliseconds,
+  );
 
   /* AF-L03-1: the descriptors used to be frozen into the window's
    * `additionalArguments`, so a vendor model probe on a 5 s clock was a
@@ -701,6 +749,41 @@ describe('desktop main admission gates', () => {
   );
 
   it(
+    'ignores e2e switches and renderer overrides and disables DevTools in a locked packaged build',
+    async () => {
+      /* Widened: Electron's typings declare `ELECTRON_RENDERER_URL` read-only. */
+      const environment: Record<string, string | undefined> = process.env;
+      const names = ['TAU_E2E_HIDE_WINDOW', 'ELECTRON_RENDERER_URL'] as const;
+      const previous = Object.fromEntries(names.map((name) => [name, environment[name]]));
+      environment['TAU_E2E_HIDE_WINDOW'] = '1';
+      environment['ELECTRON_RENDERER_URL'] = 'https://attacker.example';
+      app.isPackaged = true;
+      try {
+        await boot();
+        await vi.waitFor(() => {
+          expect(fakeWindow.loadURL).toHaveBeenCalledWith('app://tau/');
+        });
+        const { BrowserWindow } = await import('electron');
+        const options = vi.mocked(BrowserWindow).mock.calls[0]?.[0];
+        expect(options?.webPreferences?.focusOnNavigation).toBe(true);
+        expect(options?.webPreferences?.devTools).toBe(false);
+        expect(fakeWindow.show).toHaveBeenCalled();
+        expect(environment['TAU_E2E_HIDE_WINDOW']).toBeUndefined();
+        expect(environment['ELECTRON_RENDERER_URL']).toBeUndefined();
+      } finally {
+        for (const name of names) {
+          if (previous[name] === undefined) {
+            Reflect.deleteProperty(environment, name);
+          } else {
+            environment[name] = previous[name];
+          }
+        }
+      }
+    },
+    bootMilliseconds,
+  );
+
+  it(
     'restores the credential before the first page can request an authenticated origin',
     async () => {
       const restore = Promise.withResolvers<void>();
@@ -817,6 +900,71 @@ describe('desktop main deep links', () => {
   const listener = (event: string): ((...args: unknown[]) => void) => state.appListeners.get(event)!.at(-1)!;
 
   it(
+    'waits for the packaged Playwright bridge before creating the first window',
+    async () => {
+      const previous = process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'];
+      const previousRelease = Object.getOwnPropertyDescriptor(globalThis, '__playwright_run');
+      process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'] = '1';
+      try {
+        await boot();
+        const release: unknown = Reflect.get(globalThis, '__playwright_run');
+        await app.whenReady();
+        expect(fakeWindow.loadURL).not.toHaveBeenCalled();
+        const isRelease = (value: unknown): value is () => void => typeof value === 'function';
+        if (!isRelease(release)) {
+          throw new TypeError('Packaged Playwright readiness callback was not installed');
+        }
+        release();
+        await vi.waitFor(() => {
+          expect(fakeWindow.loadURL).toHaveBeenCalledWith('app://tau/');
+        });
+      } finally {
+        if (previous === undefined) {
+          delete process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'];
+        } else {
+          process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'] = previous;
+        }
+        if (previousRelease) {
+          Object.defineProperty(globalThis, '__playwright_run', previousRelease);
+        } else {
+          Reflect.deleteProperty(globalThis, '__playwright_run');
+        }
+      }
+    },
+    bootMilliseconds,
+  );
+
+  it(
+    'preserves the development Playwright loader when a packaged wait flag is inherited',
+    async () => {
+      const previous = process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'];
+      const ready = Promise.withResolvers<void>();
+      state.ready = ready.promise;
+      const loaderRelease = vi.fn(() => {
+        ready.resolve();
+      });
+      vi.stubGlobal('__playwright_run', loaderRelease);
+      process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'] = '1';
+      try {
+        await boot();
+        expect(Reflect.get(globalThis, '__playwright_run')).toBe(loaderRelease);
+        expect(fakeWindow.loadURL).not.toHaveBeenCalled();
+        loaderRelease();
+        await vi.waitFor(() => {
+          expect(fakeWindow.loadURL).toHaveBeenCalledWith('app://tau/');
+        });
+      } finally {
+        if (previous === undefined) {
+          delete process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'];
+        } else {
+          process.env['TAU_E2E_WAIT_FOR_PLAYWRIGHT'] = previous;
+        }
+      }
+    },
+    bootMilliseconds,
+  );
+
+  it(
     'registers the app as the tau scheme handler',
     async () => {
       await bootAndWait();
@@ -876,6 +1024,7 @@ describe('desktop main deep links', () => {
         const { BrowserWindow } = await import('electron');
         const options = vi.mocked(BrowserWindow).mock.calls[0]?.[0];
         expect(options?.webPreferences?.focusOnNavigation).toBe(false);
+        expect(options?.webPreferences?.devTools).toBe(true);
         expect(fakeWindow.show).not.toHaveBeenCalled();
         listener('open-url')({ preventDefault: vi.fn() }, 'tau://i/github.com/taucad/tau-examples');
         await vi.waitFor(() => {
@@ -1035,33 +1184,20 @@ describe('desktop main machine store', () => {
   };
 
   it(
-    'routes exact measurement and debug performance to geometry, never the services singleton',
+    'routes exact measurement to geometry, never the services singleton',
     async () => {
-      const { desktopEnvironment } = await import('#main/environment.js');
-      vi.mocked(desktopEnvironment).mockReturnValueOnce({
-        TAU_API_URL: 'http://127.0.0.1:1',
-        TAU_WEBSOCKET_URL: 'ws://127.0.0.1:1',
-        TAU_FRONTEND_URL: 'http://127.0.0.1:1',
-        TAU_DEBUG: 'true',
-      } as ReturnType<typeof desktopEnvironment>);
       await boot();
       const postMessage = vi.fn();
-      for (const [requestId, concern] of [
-        ['measure', 'exactMeasurement'],
-        ['diagnostic', 'geospecPerformance'],
-      ] as const) {
-        for (const listener of state.ipcListeners.get(servicesPortRelayTag) ?? []) {
-          listener({ senderFrame: { url: 'app://tau/index.html', postMessage } }, { requestId, concern });
-        }
+      for (const listener of state.ipcListeners.get(servicesPortRelayTag) ?? []) {
+        listener(
+          { senderFrame: { url: 'app://tau/index.html', postMessage } },
+          { requestId: 'measure', concern: 'exactMeasurement' },
+        );
       }
       expect(state.geometryMeasurementConnect).toHaveBeenCalledOnce();
-      expect(state.geometryPerformanceConnect).toHaveBeenCalledOnce();
       expect(state.servicesConnect).not.toHaveBeenCalled();
       expect(postMessage).toHaveBeenCalledWith(servicesPortRelayTag, { requestId: 'measure' }, [
         { id: 'geometry-measurement-port' },
-      ]);
-      expect(postMessage).toHaveBeenCalledWith(servicesPortRelayTag, { requestId: 'diagnostic' }, [
-        { id: 'geometry-performance-port' },
       ]);
     },
     bootMilliseconds,
@@ -1083,7 +1219,7 @@ describe('desktop main machine store', () => {
   );
 
   it(
-    'refuses the diagnostic geometry port when TAU_DEBUG is absent',
+    'refuses the retired GeoSpec performance concern as unknown',
     async () => {
       await boot();
       const postMessage = vi.fn();
@@ -1095,9 +1231,9 @@ describe('desktop main machine store', () => {
       }
       expect(postMessage).toHaveBeenCalledWith(servicesPortRelayTag, {
         requestId: 'diagnostic',
-        error: 'GeoSpec performance tools require TAU_DEBUG.',
+        error: 'services.unknown-concern',
       });
-      expect(state.geometryPerformanceConnect).not.toHaveBeenCalled();
+      expect(state.geometryMeasurementConnect).not.toHaveBeenCalled();
       expect(state.servicesConnect).not.toHaveBeenCalled();
     },
     bootMilliseconds,

@@ -340,26 +340,38 @@ def v1Read (view : List Row) (requested limit : Nat) : Answer :=
 
 /-! ## chat-ledger.ts -/
 
-/-- `RunLifecycleState`; `failed r`: `r` is `isResumableRunFailure(failure)`. -/
-inductive Life where
-  | admitted | running | paused | completed | failed (resumable : Bool) | cancelled
+/-- A failure's class, as `isResumableRun` reads its code: `fatal` never resumes; `gateway` is a registry-resumable
+model-call failure; `abandoned` is `RUN_ABANDONED`, the host's record that the run's driver is gone; `agentStop` is an
+external agent's own stop whose actions say it can retry (`externalStopIsResumable`). -/
+inductive Fail where
+  | fatal | gateway | abandoned | agentStop
   deriving DecidableEq, Repr, Inhabited
 
-/-- The generator's `lifeStates[arg]` (4: `FATAL_TEST`, 5: `RATE_LIMITED`). -/
+/-- `RunLifecycleState`; `failed c`: `c` classes the row's `detail`; `cancelled u`: `u` is a deliberate Stop, the row's
+`detail.code` is `USER_STOPPED`. -/
+inductive Life where
+  | admitted | running | paused | completed | failed (cls : Fail) | cancelled (userStopped : Bool)
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The generator's `lifeStates[arg]` (4: `FATAL_TEST`, 5: `RATE_LIMITED`, 7: `USER_STOPPED`, 8: `RUN_ABANDONED`,
+9: `EXTERNAL_AGENT_FAILED` with a `retry` action). -/
 def lifeOf : Nat → Life
   | 0 => .admitted
   | 1 => .running
   | 2 => .paused
   | 3 => .completed
-  | 4 => .failed false
-  | 5 => .failed true
-  | _ => .cancelled
+  | 4 => .failed .fatal
+  | 5 => .failed .gateway
+  | 7 => .cancelled true
+  | 8 => .failed .abandoned
+  | 9 => .failed .agentStop
+  | _ => .cancelled false
 
 /-- `endedStates`. -/
 def Life.ended : Life → Bool
   | .completed => true
   | .failed _ => true
-  | .cancelled => true
+  | .cancelled _ => true
   | _ => false
 
 inductive AState where
@@ -372,12 +384,15 @@ structure Settlement where
   body : Nat
   deriving DecidableEq, Repr
 
-/-- `RunEntry` (every run here is `kind: 'tau'`). `pending` maps `i<n>` to its row. -/
+/-- `RunEntry`. `external` is `kind: 'external'` and `prompted` its `externalPrompted`, both from the last external
+turn marker; `pending` maps `i<n>` to its row. -/
 structure Entry where
   attempt : Nat := 1
   life : Option Life := none
   append : AState := .unadmitted
   committed : Bool := false
+  external : Bool := false
+  prompted : Bool := false
   settlements : List Settlement := []
   pending : List (Nat × Key) := []
   resolved : List Nat := []
@@ -400,6 +415,8 @@ inductive AnomalyKind where
 
 /-- `ChatLedger`. `terms` maps a term to `(epoch, lastSequence)`. -/
 structure Ledger where
+  /-- Last nonduplicate semantic term; independent of the physical read boundary. -/
+  semanticTerm : Option Nat := none
   cursor : Nat := 0
   last : Option Key := none
   terms : List (Nat × (Nat × Nat)) := []
@@ -420,17 +437,28 @@ def Ledger.put (L : Ledger) (r : Nat) (en : Entry) : Ledger := { L with runs := 
 def Ledger.note (L : Ledger) (k : AnomalyKind) (key : Key) : Ledger :=
   { L with anomalies := L.anomalies ++ [(k, key)] }
 
-/-- `attemptEnded`: a terminal row, or a native pause. -/
+/-- `attemptEnded`: a terminal row, or a native pause (an external agent's pause keeps its attempt open). -/
 def attemptEnded (en : Entry) : Bool :=
   match en.life with
-  | some .paused => true
+  | some .paused => !en.external
   | some l => l.ended
   | none => false
 
-/-- The lifecycle half of the reopen predicate: a resumable failure, or a pause with no pending request. -/
+/-- Which failures `continue` resumes, by run kind (`isResumableRun`): a Tau run resumes a gateway failure or an
+abandoned driver; an external run resumes an abandoned driver or the agent's own retryable stop — exactly what the ACP
+runner continues (`stopRecorded`), so no surface offers a Resume the runner refuses. -/
+def failRests (external : Bool) : Fail → Bool
+  | .abandoned => true
+  | .gateway => !external
+  | .agentStop => external
+  | .fatal => false
+
+/-- The lifecycle half of the reopen predicate: a resumable failure, a deliberate Stop that kept its committed turn
+(`isUserStoppedRun`: an external one only once its prompt was issued), or a pause with no pending request. -/
 def rests (en : Entry) : Bool :=
   match en.life with
-  | some (.failed true) => true
+  | some (.failed c) => failRests en.external c
+  | some (.cancelled true) => en.committed && (!en.external || en.prompted)
   | some .paused => en.pending.isEmpty
   | _ => false
 
@@ -505,7 +533,10 @@ def Ledger.known (L : Ledger) (e : Row) : Ledger :=
   match e.kind with
   | .L => L.lifecycle e
   | .S => L.settle e
-  | .H => let en := L.entry e.run; L.put e.run { en with committed := true }
+  | .H =>
+    let en := L.entry e.run
+    L.put e.run { en with committed := true, external := en.external || decide (e.arg ≥ 3),
+                          prompted := if e.arg ≥ 3 then decide (e.arg = 4) else en.prompted }
   | .O => let en := L.entry e.run; L.put e.run { en with pending := upsert e.arg e.key en.pending }
   | .R =>
     let en := L.entry e.run
@@ -532,7 +563,7 @@ def Ledger.known (L : Ledger) (e : Row) : Ledger :=
 def Ledger.book (L0 : Ledger) (e : Row) (broken : Bool) (ep : Nat) : Ledger :=
   let L1 := if broken then L0.note .order e.key else L0
   { L1 with terms := upsert e.term (ep, e.seq) L1.terms, maxEpoch := max L1.maxEpoch e.epoch,
-            cursor := L1.cursor + 1, last := some e.key }
+            cursor := L1.cursor + 1, last := some e.key, semanticTerm := some e.term }
 
 /-- An opaque row: its run is unreadable, and an opaque history row breaks the history. -/
 def Ledger.markOpaque (L : Ledger) (e : Row) : Ledger :=
@@ -549,7 +580,7 @@ def Ledger.step (L : Ledger) (e : Row) : Option Ledger :=
   match lookup e.term L.terms with
   | some (ep, ls) =>
     if e.seq ≤ ls then none
-    else some (L.advance e (L.last.map Prod.fst ≠ some e.term ∨ e.seq ≠ ls + 1 ∨ e.epoch ≠ ep) ep)
+    else some (L.advance e (L.semanticTerm ≠ some e.term ∨ e.seq ≠ ls + 1 ∨ e.epoch ≠ ep) ep)
   | none => some (L.advance e (e.seq ≠ 0 ∨ claims L.maxEpoch e.epoch = false) e.epoch)
 
 def Ledger.stepD (L : Ledger) (e : Row) : Ledger := (L.step e).getD L
@@ -635,7 +666,7 @@ def Life.op : Life → LOp
   | .paused => .paused
   | .completed => .completed
   | .failed _ => .failed
-  | .cancelled => .cancelled
+  | .cancelled _ => .cancelled
 
 /-- `run-lifecycle.legality.json`. -/
 def lifecycleTable : Cond → LOp → Code

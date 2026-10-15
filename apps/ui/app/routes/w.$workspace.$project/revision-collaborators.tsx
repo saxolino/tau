@@ -20,7 +20,7 @@ import { Input } from '@taucad/ui/components/input';
 import { Label } from '@taucad/ui/components/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@taucad/ui/components/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { CopyButton } from '#components/copy-button.js';
+import { CopyButton } from '@taucad/ui/components/copy-button';
 import { ENV } from '#environment.config.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { shareOrigin } from '#lib/share-origin.js';
@@ -330,7 +330,7 @@ export function RevisionCollaborators({ projectId }: RevisionCollaboratorsProps)
 
       {alert === undefined ? undefined : (
         <p role='alert' className='flex items-center gap-2 text-sm'>
-          <AlertTriangle aria-hidden className='size-4 shrink-0 text-destructive' />
+          <AlertTriangle aria-hidden className='size-4 shrink-0 text-feature' />
           <span>{alert}</span>
         </p>
       )}

@@ -5,7 +5,7 @@ import type { ActorRefFrom } from 'xstate';
 import type { ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
 import { useChatTextareaLogic } from '#components/chat/chat-textarea-types.js';
 import { ChatTextareaDesktop } from '#components/chat/chat-textarea-desktop.js';
-import { ClientOnly } from '#components/ui/utils/client-only.js';
+import { ClientOnly } from '@taucad/ui/components/client-only';
 import { ChatTextareaSkeleton } from '#components/chat/chat-textarea-skeleton.js';
 import { useProject } from '#hooks/use-project.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
@@ -13,7 +13,7 @@ import { useChatRecords } from '#hooks/use-chat-records.js';
 import { useDraftActions } from '#hooks/use-chat.js';
 import { toast } from '#components/ui/sonner.js';
 import { randomUuid } from '@taucad/utils/id';
-import type { graphicsMachine } from '#machines/graphics.machine.js';
+import type { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import type { ContextSuggestionItem } from '#components/chat/tiptap/suggestion-types.js';
 import { takeScreenshotGroup } from '#components/chat/tiptap/context-suggestion.utils.js';
 import { useChatContextInsertion } from '#components/chat/chat-context-insertion.js';
@@ -96,7 +96,7 @@ export const ChatTextarea = memo(function ({
   } = useChatComposer();
   const acpAgentId = execution.kind === 'acp' ? execution.agentId : undefined;
   const acpSessionData = useChatSessionSnapshot(session?.activeChatId ?? '', (active) =>
-    acpAgentId === undefined ? undefined : latestAcpSessionData(active?.chat.messages ?? [], acpAgentId),
+    acpAgentId === undefined ? undefined : latestAcpSessionData(active?.messages ?? [], acpAgentId),
   );
   const { setDraftText: setMainDraftText, setEditDraftText } = useDraftActions();
 
@@ -132,9 +132,8 @@ export const ChatTextarea = memo(function ({
   const geometryUnits = projectContext?.geometryUnits;
   const mainEntryPath = projectContext?.mainEntryPath;
   const viewRecords = projectContext?.viewRecords;
-  const mainGeometryFormat = useSelector(
-    mainEntryPath ? geometryUnits?.get(mainEntryPath) : undefined,
-    (state) => state?.context.geometry?.format,
+  const mainGeometryFormat = useSelector(mainEntryPath ? geometryUnits?.get(mainEntryPath) : undefined, (state) =>
+    state?.context.rendering?.success ? state.context.rendering.artifact.mimeType : undefined,
   );
   const screenshotActionItems = useMemo((): ContextSuggestionItem[] => {
     if (!geometryUnits || !viewRecords || !logic.imageInputSupported) {
@@ -151,7 +150,7 @@ export const ChatTextarea = memo(function ({
         screenshotAction: { type: 'single' },
       },
     ];
-    if (mainGeometryFormat === 'gltf') {
+    if (mainGeometryFormat === 'model/gltf-binary') {
       items.push({
         id: 'screenshot-orthographic',
         label: 'Orthographic views x 6',

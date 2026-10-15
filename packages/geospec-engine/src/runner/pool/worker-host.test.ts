@@ -1,12 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { geoSpecEngineImplementation } from '#register.js';
+import { mock } from 'vitest-mock-extended';
+import type { GeoSpecNativeModelEngine, ManagedGeoSpecNativeModelLoader } from 'geospec/runner/native';
 import type { GeoSpecPoolHostMessage, GeoSpecPoolWorkerMessage } from 'geospec/runner/worker';
 import { startGeoSpecPoolWorkerHost } from '#runner/pool/worker-host.js';
-import type { GeometrySubject } from '#mesh/types.js';
-import { loadMesh } from '#mesh/load-mesh.js';
-import { exposeEngineSubject } from '#engine/subject-store.js';
 import { failingSpec, memoryFileSystem, passingSpec } from '#runner/testing/memory-filesystem.js';
-import { resetOpenCascadeStepModule } from '#native/opencascade-module.js';
 
 const twoTests = `
   import { describe, it } from 'geospec';
@@ -16,15 +13,11 @@ const twoTests = `
   });
 `;
 
-const loadedSubject = async (): Promise<GeometrySubject> => {
-  const result = await loadMesh({ source: { format: 'mesh-buffer', positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] } });
-  if (!result.success) {
-    throw new Error(result.diagnostics.map(({ message }) => message).join('\n'));
-  }
-  return result.subject;
-};
-
-void geoSpecEngineImplementation;
+/** A native loader that admits nothing and records each release. */
+const nativeLoader = (
+  releaseAll: () => Promise<void> = async () => undefined,
+  load: () => Promise<{ subjectHash: string }> = async () => ({ subjectHash: 'unused' }),
+): ManagedGeoSpecNativeModelLoader => Object.assign(load, { releaseAll });
 
 /** Start a host over an in-memory project and drive it message by message. */
 const startHost = (
@@ -35,6 +28,8 @@ const startHost = (
   let deliver: ((message: GeoSpecPoolHostMessage) => void) | undefined;
   startGeoSpecPoolWorkerHost({
     filesystem: memoryFileSystem(files),
+    nativeAssertions: { engine: mock<GeoSpecNativeModelEngine>() },
+    nativeModelLoader: nativeLoader(),
     postMessage: (message) => posted.push(message),
     onHostMessage: (listener) => {
       deliver = listener;
@@ -77,11 +72,9 @@ describe('startGeoSpecPoolWorkerHost', () => {
 
   it('should still close the native engine after admission release fails and report the release error', async () => {
     const order: string[] = [];
-    const nativeModelLoader = Object.assign(async () => ({ subjectHash: 'unused' }), {
-      releaseAll: async () => {
-        order.push('release');
-        throw new Error('release failed');
-      },
+    const nativeModelLoader = nativeLoader(async () => {
+      order.push('release');
+      throw new Error('release failed');
     });
     const host = startHost(
       {},
@@ -99,10 +92,8 @@ describe('startGeoSpecPoolWorkerHost', () => {
 
   it('should release native admissions before closing the worker-owned engine', async () => {
     const order: string[] = [];
-    const nativeModelLoader = Object.assign(async () => ({ subjectHash: 'unused' }), {
-      releaseAll: async () => {
-        order.push('release');
-      },
+    const nativeModelLoader = nativeLoader(async () => {
+      order.push('release');
     });
     const host = startHost(
       {},
@@ -113,15 +104,14 @@ describe('startGeoSpecPoolWorkerHost', () => {
         },
       },
     );
-    host.deliver({ type: 'shutdown' });
-    await vi.waitFor(() => {
-      expect(order).toStrictEqual(['release', 'close-engine']);
-    });
+    const replies = await host.send({ type: 'shutdown' }, ['initialized', 'initialization-error']);
+    expect(order).toStrictEqual(['release', 'close-engine']);
+    expect(replies).toStrictEqual([{ type: 'initialized' }]);
   });
 
   it('should release native admissions after every shard and collection pass', async () => {
     const releaseAll = vi.fn(async () => undefined);
-    const nativeModelLoader = Object.assign(async () => ({ subjectHash: 'unused' }), { releaseAll });
+    const nativeModelLoader = nativeLoader(releaseAll);
     const host = startHost({ 'a.geospec.ts': passingSpec('a') }, { nativeModelLoader });
 
     await host.send({ type: 'run-shard', shard: { id: 0, file: 'a.geospec.ts' } });
@@ -139,7 +129,7 @@ describe('startGeoSpecPoolWorkerHost', () => {
       .fn(async () => undefined)
       .mockRejectedValueOnce(new Error('shard release failed'))
       .mockRejectedValueOnce(new Error('list release failed'));
-    const nativeModelLoader = Object.assign(async () => ({ subjectHash: 'unused' }), { releaseAll });
+    const nativeModelLoader = nativeLoader(releaseAll);
     const host = startHost({ 'a.geospec.ts': passingSpec('a') }, { nativeModelLoader });
 
     const shard = await host.send({ type: 'run-shard', shard: { id: 0, file: 'a.geospec.ts' } });
@@ -162,17 +152,12 @@ describe('startGeoSpecPoolWorkerHost', () => {
     expect(host.posted).toStrictEqual([{ type: 'ready' }]);
   });
 
-  it('should acknowledge a structured-cloned compiled module before running shards', async () => {
+  it('should acknowledge initialization before running shards', async () => {
     const host = startHost({});
-    const compiledWasmModule = await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 
-    const replies = await host.send({ type: 'initialize', compiledWasmModule }, [
-      'initialized',
-      'initialization-error',
-    ]);
+    const replies = await host.send({ type: 'initialize' }, ['initialized', 'initialization-error']);
 
     expect(replies).toStrictEqual([{ type: 'initialized' }]);
-    resetOpenCascadeStepModule();
   });
 
   it('should run a shard and report its result, duration and load key', async () => {
@@ -261,7 +246,7 @@ describe('startGeoSpecPoolWorkerHost', () => {
     expect(replies[0]).toMatchObject({ type: 'tests-listed', names: [] });
   });
 
-  it('should dispose the run-wide scope exactly once, on shutdown', async () => {
+  it('should run the shutdown callback exactly once, on shutdown', async () => {
     const onShutdown = vi.fn(async () => undefined);
     const host = startHost({ 'a.geospec.ts': passingSpec('a') }, { onShutdown });
 
@@ -285,6 +270,8 @@ describe('startGeoSpecPoolWorkerHost', () => {
     let deliver: ((message: GeoSpecPoolHostMessage) => void) | undefined;
     startGeoSpecPoolWorkerHost({
       filesystem: memoryFileSystem({ 'a.geospec.ts': passingSpec('a') }),
+      nativeAssertions: { engine: mock<GeoSpecNativeModelEngine>() },
+      nativeModelLoader: nativeLoader(),
       postMessage: (message) => {
         if (message.type === 'shard-complete') {
           throw new Error('could not be cloned');
@@ -317,6 +304,8 @@ describe('startGeoSpecPoolWorkerHost', () => {
     let deliver: ((message: GeoSpecPoolHostMessage) => void) | undefined;
     startGeoSpecPoolWorkerHost({
       filesystem: memoryFileSystem({ 'a.geospec.ts': passingSpec('a') }),
+      nativeAssertions: { engine: mock<GeoSpecNativeModelEngine>() },
+      nativeModelLoader: nativeLoader(),
       postMessage: (message) => {
         if (message.type === 'tests-listed') {
           // A non-Error throw: the host must still name it.
@@ -341,8 +330,8 @@ describe('startGeoSpecPoolWorkerHost', () => {
     expect(posted.at(-1)).toMatchObject({ type: 'list-error', shardId: 2, message: 'not an Error' });
   });
 
-  it('should carry the worker-lifetime loaders and report the affinity key', async () => {
-    const subject = await loadedSubject();
+  it('should pass native loads and builtin modules through to the VM without reporting memory unasked', async () => {
+    const load = vi.fn(async () => ({ subjectHash: 'a'.repeat(64) }));
     const host = startHost(
       {
         'a.geospec.ts': `
@@ -355,8 +344,7 @@ describe('startGeoSpecPoolWorkerHost', () => {
         `,
       },
       {
-        modelLoader: async () => exposeEngineSubject(subject),
-        stepLoader: async () => exposeEngineSubject(subject),
+        nativeModelLoader: nativeLoader(undefined, load),
         builtinModules: { 'project/extra': { version: '1', code: "export const tag = 'ok';" } },
       },
     );
@@ -364,12 +352,13 @@ describe('startGeoSpecPoolWorkerHost', () => {
     const replies = await host.send({ type: 'run-shard', shard: { id: 0, file: 'a.geospec.ts' } });
     const done = replies.find((message) => message.type === 'shard-complete');
 
-    expect(done?.type === 'shard-complete' && done.result.success && done.result.passed).toBe(true);
-    expect(done?.type === 'shard-complete' && typeof done.primaryLoadKey).toBe('string');
+    expect(done?.type === 'shard-complete' && done.result.success).toBe(true);
+    expect(load).toHaveBeenCalledOnce();
+    expect(done).not.toHaveProperty('primaryLoadKey');
     expect(done?.type === 'shard-complete' && done.workerMemoryBytes).toBeUndefined();
   });
 
-  it('should load identical model options once across shards on one worker', async () => {
+  it('should load identical model options afresh across shards on one worker', async () => {
     const source = `
       import { describe, it } from 'geospec';
       import { loadModel } from 'geospec/model';
@@ -377,51 +366,110 @@ describe('startGeoSpecPoolWorkerHost', () => {
         it('loads', async () => { await loadModel({ file: 'assembly.ts', format: 'step', mesh: false }); });
       });
     `;
-    const subject = await loadedSubject();
-    const modelLoader = vi.fn(async () => exposeEngineSubject(subject));
-    const host = startHost({ 'a.geospec.ts': source, 'b.geospec.ts': source }, { modelLoader });
+    const load = vi.fn(async () => ({ subjectHash: 'a'.repeat(64) }));
+    const host = startHost(
+      { 'a.geospec.ts': source, 'b.geospec.ts': source },
+      { nativeModelLoader: nativeLoader(undefined, load) },
+    );
 
     await host.send({ type: 'run-shard', shard: { id: 0, file: 'a.geospec.ts' } });
     await host.send({ type: 'run-shard', shard: { id: 1, file: 'b.geospec.ts' } });
 
-    expect(modelLoader).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
-  it('should forward observed matcher spans with the shard identity', async () => {
-    const model = await loadedSubject();
-    const host = startHost(
-      {
-        'forensic.geospec.ts': `
-          import { describe, expectGeo, it } from 'geospec';
-          import { loadModel } from 'geospec/model';
-          describe('forensic', () => {
-            it('measures', async () => {
-              const model = await loadModel({ file: 'main.ts' });
-              expectGeo(model).toHaveVolume({ value: 0 });
-            });
-          });
-        `,
-      },
-      { modelLoader: async () => exposeEngineSubject(model) },
-    );
+  it('should post file and shard timings with the shard identity when forensic', async () => {
+    const host = startHost({ 'a.geospec.ts': passingSpec('a') });
 
     const replies = await host.send({
       type: 'run-shard',
-      shard: { id: 9, file: 'forensic.geospec.ts' },
+      shard: { id: 9, file: 'a.geospec.ts' },
       testTimeout: 5000,
       matcherWallBackstop: 1000,
       forensic: true,
     });
 
-    expect(
-      replies.some(
-        (reply) =>
-          reply.type === 'forensic' &&
-          reply.shardId === 9 &&
-          reply.name === 'engine.claims' &&
-          typeof reply.value === 'number' &&
-          reply.unit === 'milliseconds',
-      ),
-    ).toBe(true);
+    const forensic = replies.flatMap((reply) =>
+      reply.type === 'forensic' ? [[reply.shardId, reply.name, reply.unit]] : [],
+    );
+    expect(forensic).toStrictEqual([
+      [9, 'runner.file', 'milliseconds'],
+      [9, 'runner.shard', 'milliseconds'],
+    ]);
+  });
+
+  it('should keep a pass error over a later release failure', async () => {
+    const releaseAll = vi.fn(async () => undefined).mockRejectedValueOnce(new Error('release failed'));
+    const posted: GeoSpecPoolWorkerMessage[] = [];
+    let deliver: ((message: GeoSpecPoolHostMessage) => void) | undefined;
+    startGeoSpecPoolWorkerHost({
+      filesystem: memoryFileSystem({ 'a.geospec.ts': passingSpec('a') }),
+      nativeAssertions: { engine: mock<GeoSpecNativeModelEngine>() },
+      nativeModelLoader: nativeLoader(releaseAll),
+      postMessage: (message) => {
+        if (message.type === 'forensic') {
+          throw new Error('forensic port closed');
+        }
+        posted.push(message);
+      },
+      onHostMessage: (listener) => {
+        deliver = listener;
+      },
+    });
+
+    deliver?.({ type: 'run-shard', shard: { id: 3, file: 'a.geospec.ts' }, forensic: true });
+    await vi.waitFor(() => {
+      expect(posted.some((message) => message.type === 'shard-error')).toBe(true);
+    });
+
+    expect(releaseAll).toHaveBeenCalledOnce();
+    expect(posted.at(-1)).toStrictEqual({
+      type: 'shard-error',
+      shardId: 3,
+      file: 'a.geospec.ts',
+      message: 'forensic port closed',
+    });
+  });
+
+  it('should report an initialization reply that could not be posted', async () => {
+    const posted: GeoSpecPoolWorkerMessage[] = [];
+    let deliver: ((message: GeoSpecPoolHostMessage) => void) | undefined;
+    startGeoSpecPoolWorkerHost({
+      filesystem: memoryFileSystem({}),
+      nativeAssertions: { engine: mock<GeoSpecNativeModelEngine>() },
+      nativeModelLoader: nativeLoader(),
+      postMessage: (message) => {
+        if (message.type === 'initialized') {
+          throw new Error('port detached');
+        }
+        posted.push(message);
+      },
+      onHostMessage: (listener) => {
+        deliver = listener;
+      },
+    });
+
+    deliver?.({ type: 'initialize' });
+    await vi.waitFor(() => {
+      expect(posted).toStrictEqual([{ type: 'ready' }, { type: 'initialization-error', message: 'port detached' }]);
+    });
+  });
+
+  it('should report the release failure when the shutdown callback also fails', async () => {
+    const host = startHost(
+      {},
+      {
+        nativeModelLoader: nativeLoader(async () => {
+          throw new Error('release failed');
+        }),
+        onShutdown: () => {
+          throw new Error('engine close failed');
+        },
+      },
+    );
+
+    const replies = await host.send({ type: 'shutdown' }, ['initialization-error']);
+
+    expect(replies).toStrictEqual([{ type: 'initialization-error', message: 'release failed' }]);
   });
 });

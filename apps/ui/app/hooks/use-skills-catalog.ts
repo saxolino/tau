@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useCallback } from 'react';
+import { ObservationService } from '@taucad/fs-client/observation-service';
+import { fileContentBytes } from '@taucad/fs-client/file-content-service';
+import type { ObservationSnapshot } from '@taucad/fs-client/observation-service';
+import { useObservation, useObservationValue } from '@taucad/fs-client/react/use-observation';
 import type { SkillMetadata } from '@taucad/chat';
 import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
 import { useFileManager } from '#hooks/use-file-manager.js';
@@ -27,126 +31,146 @@ export function skillMetadataToSlashCommand(skill: SkillMetadata): {
   };
 }
 
-/**
- * Call `onChange` when the tree changes under `.agents/`, the only place skills and installed
- * plugins live. Every other file write (a parameter commit, an agent edit) leaves the catalog as it was.
- */
-function subscribeAgentsTree(treeService: FileTreeService, onChange: () => void): () => void {
-  const signature = (): string => {
-    let value = '';
-    for (const entry of treeService.getTreeSnapshot().values()) {
-      if (entry.path === '.agents' || entry.path.startsWith('.agents/')) {
-        value += `${entry.path}:${entry.type}:${String(entry.size)}:${String(entry.mtimeMs)}\n`;
-      }
-    }
-    return value;
-  };
-  let last = signature();
-  return treeService.subscribeTree(() => {
-    const next = signature();
-    if (next !== last) {
-      last = next;
-      onChange();
-    }
-  });
+type Catalog = { readonly commands: SkillMetadata[]; readonly prompt: SkillMetadata[] };
+type Reader = ReturnType<typeof useFileManager>['readFile'];
+type Content = NonNullable<ReturnType<typeof useFileManager>['contentService']>;
+const catalogs = new WeakMap<Content, WeakMap<FileTreeService, WeakMap<Reader, ObservationService<Catalog>>>>();
+const emptySkills: SkillMetadata[] = [];
+
+function catalogFor(tree: FileTreeService, readFile: Reader, content: Content): ObservationService<Catalog> {
+  let trees = catalogs.get(content);
+  if (!trees) {
+    trees = new WeakMap();
+    catalogs.set(content, trees);
+  }
+  let readers = trees.get(tree);
+  if (!readers) {
+    readers = new WeakMap();
+    trees.set(tree, readers);
+  }
+  let service = readers.get(readFile);
+  if (!service) {
+    const settled = new Map<string, () => void>();
+    let invalidateSettled: (() => void) | undefined;
+    service = new ObservationService({
+      resource: '.agents/catalog',
+      watch: (invalidate, reset) => {
+        invalidateSettled = invalidate;
+        const watch = content.watchReady({ paths: ['.agents'], recursive: true }, (event) => {
+          if (invalidateSettled !== invalidate) {
+            return;
+          }
+          if (event.type === 'reset') {
+            reset();
+          } else {
+            invalidate();
+          }
+        });
+        return {
+          ready: watch.ready,
+          closed: watch.closed,
+          dispose: () => {
+            invalidateSettled = undefined;
+            for (const off of settled.values()) {
+              off();
+            }
+            settled.clear();
+            watch.dispose();
+          },
+        };
+      },
+      read: async (read) => {
+        const { isCurrent } = read;
+        const seen = new Set<string>();
+        // Both resolver selections acquire each file and directory once per refresh.
+        const files = new Map<string, Promise<Uint8Array<ArrayBuffer>>>();
+        const directories = new Map<string, ReturnType<FileTreeService['listDirectory']>>();
+        const resolver = createSkillResolver({
+          readFile: async (path) => {
+            let bytes = files.get(path);
+            if (!bytes) {
+              bytes = (async () =>
+                fileContentBytes({ path, result: await read.observe(content.observeContent(path)) }))();
+              files.set(path, bytes);
+            }
+            return bytes;
+          },
+          listDirectory: async (path) => {
+            let entries = directories.get(path);
+            if (!entries) {
+              entries = tree.listDirectory(path);
+              directories.set(path, entries);
+            }
+            const value = await entries;
+            seen.add(path);
+            if (isCurrent() && invalidateSettled && !settled.has(path)) {
+              const owner = invalidateSettled;
+              settled.set(
+                path,
+                tree.subscribePath(path, () => {
+                  if (invalidateSettled === owner) {
+                    owner();
+                  }
+                }),
+              );
+            }
+            return value;
+          },
+        });
+        const [commands, prompt] = await Promise.all([resolver.listSkills(), resolver.getPromptSkillListing()]);
+        if (isCurrent()) {
+          for (const [path, off] of settled) {
+            if (!seen.has(path)) {
+              off();
+              settled.delete(path);
+            }
+          }
+        }
+        return { commands, prompt };
+      },
+      equal: (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+    });
+    readers.set(readFile, service);
+  }
+  return service;
 }
 
-/**
- * Builds the merged, user-priority skills catalog from the workspace.
- *
- * `.agents/skills/<name>/SKILL.md` is the only filesystem skills root; the
- * legacy `.tau/skills` fallback was deleted (blueprint L7).
- */
+function useCatalogService(): ObservationService<Catalog> | undefined {
+  const { readFile, treeService, contentService } = useFileManager();
+  const service = useMemo(
+    () => (treeService && contentService ? catalogFor(treeService, readFile, contentService) : undefined),
+    [readFile, treeService, contentService],
+  );
+  return service;
+}
+
+/** Merged user-priority slash command catalog, shared with the prompt selector. */
 export function useSkillsCatalog(): SkillMetadata[] {
-  const { readFile, treeService } = useFileManager();
-  const [skills, setSkills] = useState<SkillMetadata[]>([]);
-
-  const resolver = useMemo(() => {
-    if (!treeService) {
-      return undefined;
-    }
-
-    return createSkillResolver({
-      readFile,
-      listDirectory: async (path) => treeService.listDirectory(path),
-    });
-  }, [readFile, treeService]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let loadSequence = 0;
-
-    async function loadSkills(): Promise<void> {
-      const sequence = ++loadSequence;
-      if (!resolver) {
-        setSkills([]);
-        return;
-      }
-
-      const results = await resolver.listSkills();
-
-      if (!cancelled && sequence === loadSequence) {
-        setSkills(results);
-      }
-    }
-
-    void loadSkills();
-    const unsubscribe =
-      treeService &&
-      subscribeAgentsTree(treeService, () => {
-        void loadSkills();
-      });
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, [resolver, treeService]);
-
-  return useMemo(() => skills, [skills]);
+  return useObservationValue(useCatalogService())?.commands ?? emptySkills;
 }
 
+/** Bounded prompt listing over the same acquisition as the command catalog. */
 export function usePromptSkillsCatalog(): SkillMetadata[] {
-  const { readFile, treeService } = useFileManager();
-  const [skills, setSkills] = useState<SkillMetadata[]>([]);
-  const resolver = useMemo(() => {
-    if (!treeService) {
-      return undefined;
-    }
+  return useObservationValue(useCatalogService())?.prompt ?? emptySkills;
+}
 
-    return createSkillResolver({
-      readFile,
-      listDirectory: async (path) => treeService.listDirectory(path),
-    });
-  }, [readFile, treeService]);
+export type SkillsCatalogState = Catalog & Pick<ObservationSnapshot<Catalog>, 'status' | 'error'> & { retry(): void };
 
-  useEffect(() => {
-    let cancelled = false;
-    let loadSequence = 0;
-
-    async function loadSkills(): Promise<void> {
-      const sequence = ++loadSequence;
-      if (!resolver) {
-        setSkills([]);
-        return;
-      }
-
-      const listing = await resolver.getPromptSkillListing();
-      if (!cancelled && sequence === loadSequence) {
-        setSkills(listing);
-      }
-    }
-
-    void loadSkills();
-    const unsubscribe =
-      treeService &&
-      subscribeAgentsTree(treeService, () => {
-        void loadSkills();
-      });
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, [resolver, treeService]);
-
-  return useMemo(() => skills, [skills]);
+/** Functional catalog selection with truthful authority health and same-owner retry. */
+export function useSkillsCatalogState(): SkillsCatalogState {
+  const service = useCatalogService();
+  const snapshot = useObservation(service);
+  const retry = useCallback(() => {
+    service?.refresh();
+  }, [service]);
+  return useMemo(
+    () => ({
+      commands: snapshot.value?.commands ?? emptySkills,
+      prompt: snapshot.value?.prompt ?? emptySkills,
+      status: snapshot.status,
+      error: snapshot.error,
+      retry,
+    }),
+    [snapshot, retry],
+  );
 }

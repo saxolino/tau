@@ -3,7 +3,7 @@ title: 'Runtime API Policy'
 description: 'Naming and ownership rules for runtime consumer, plugin-author, transport, filesystem, and artifact APIs.'
 status: active
 created: '2026-07-20'
-updated: '2026-09-06'
+updated: '2026-10-13'
 related:
   - docs/policy/library-api-policy.md
   - docs/policy/runtime-architecture-policy.md
@@ -138,9 +138,9 @@ Name the normalized runtime path of the model entry `entryPath` in every kernel,
 
 This applies to:
 
-- `GetParametersInput`;
-- `CreateGeometryInput`;
-- `GetDependenciesInput`;
+- `DescribeInput`;
+- `EvaluateInput`;
+- `ResolveInput`;
 - `BundleInput`;
 - `KernelBundler.bundle(entryPath)`;
 - `KernelBundler.resolveDependencies(entryPath)`; and
@@ -153,14 +153,33 @@ The value is a canonical root-relative path within the supplied runtime filesyst
 CORRECT:
 
 ```typescript
-export default defineKernel({
-  async getDependencies({ entryPath }, runtime) {
-    return runtime.bundler.resolveDependencies(entryPath);
-  },
+import { createKernelParameterDeclaration, createKernelSuccess, defineKernel } from '@taucad/runtime/kernel';
 
-  async createGeometry({ entryPath }, runtime) {
-    const source = await runtime.filesystem.readFile(entryPath, 'utf8');
-    return evaluate(source);
+const emptyParameters = createKernelParameterDeclaration(
+  {},
+  { type: 'object', properties: {}, additionalProperties: false },
+  { id: 'urn:taucad:example:parameters', name: 'ExampleParameters' },
+);
+
+const kernel = defineKernel({
+  id: 'example',
+  name: 'Example',
+  version: '1.0.0',
+  extensions: ['example'],
+  views: {},
+  exports: {},
+  async initialize() {
+    return {};
+  },
+  async resolve({ entryPath }, services) {
+    return services.bundler.resolveDependencies(entryPath);
+  },
+  async describe() {
+    return createKernelSuccess({ parameters: emptyParameters });
+  },
+  async evaluate({ entryPath }, services) {
+    const source = await services.filesystem.readFile(entryPath, 'utf8');
+    return { handle: source };
   },
 });
 ```
@@ -306,7 +325,7 @@ CORRECT:
 
 ```typescript
 const kernel = defineKernel({
-  async createGeometry({ entryPath }) {
+  async evaluate({ entryPath }) {
     expectTypeOf(entryPath).toEqualTypeOf<string>();
     return createResult();
   },
@@ -378,6 +397,38 @@ export default defineTauPlugin({
   meta: { name: '@taucad/image' },
   contributions: [imageTranscoder],
 });
+```
+
+### 11. Hold Realm-Shared Backends Through `services.realm`
+
+A kernel whose library binds its backend at module scope holds that backend through `services.realm` instead of creating one per `initialize`. Declare the backend once at module scope with `createRealmGroup<Value>(name)`, naming it after the backend (prefix a third-party name with its package name), and pass that token as `group`; the token fixes the held value's type. Name the `key` after the build, keep the hold in the kernel context, and release it in `onDispose`. Keep the token module-local until a second package must hold the same backend. Keep per-client state (tracers, compute-reuse scopes) in a per-kernel wrapper over the shared value.
+
+CORRECT:
+
+```typescript
+const replicadOcct = createRealmGroup<OpenCascadeInstance>('replicad-occt');
+
+async initialize(options, services) {
+  const occt = await services.realm.hold({
+    group: replicadOcct,
+    key: `${variant}:${wasmUrl ?? ''}`,
+    create: async () => initOcct(wasmUrl, bindingsFactory),
+  });
+  return { occt, openCascade: wrapOcForExceptions(occt.value) };
+},
+async onDispose(context) {
+  context.occt.release();
+},
+```
+
+INCORRECT:
+
+```typescript
+async initialize() {
+  const oc = await initOcct(wasmUrl, bindingsFactory);
+  setOC(oc); // rebinds the library for every client in this realm
+  return { oc };
+},
 ```
 
 ## Anti-Patterns

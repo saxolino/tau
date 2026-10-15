@@ -23,6 +23,8 @@ const builtInKernelIds = [
   'gltf',
   'brep',
   'rhino',
+  'tscircuit',
+  'zoo',
   'assimp',
 ];
 
@@ -83,6 +85,9 @@ describe('createCliRuntime', () => {
           '@taucad/agent-host',
           // Machine providers, loaded by `tau serve --machines`, not runtime plugins.
           '@taucad/bambu',
+          // Package install support used by `tau install`, not runtime plugins.
+          '@taucad/bundler-core',
+          '@taucad/filesystem',
           '@taucad/host',
           '@taucad/jobs-solvers',
           '@taucad/parameters',
@@ -93,6 +98,26 @@ describe('createCliRuntime', () => {
     const actual = taucadImports(source).filter((name) => name !== '@taucad/runtime');
 
     expect(actual.toSorted()).toEqual(expected.toSorted());
+  });
+
+  it('routes KCL to Zoo through the named Tau proxy, never with a credential in its options', async () => {
+    const runtime = await composeCli({ zooProxyUrl: 'ws://localhost:4001/v1/kernels/zoo' });
+    const zooKernel = runtime.kernels.find(({ id }) => id === 'zoo');
+
+    expect(zooKernel?.extensions).toEqual(['kcl']);
+    expect(zooKernel?.options).toMatchObject({
+      baseUrl: 'ws://localhost:4001/v1/kernels/zoo',
+      closeErrors: { 4401: expect.stringContaining('TAU_API_TOKEN') as unknown },
+    });
+    expect(zooKernel?.options).not.toHaveProperty('token');
+  });
+
+  it('defaults Zoo to the Tau Cloud proxy', async () => {
+    const runtime = await composeCli();
+
+    expect(runtime.kernels.find(({ id }) => id === 'zoo')?.options).toMatchObject({
+      baseUrl: 'wss://api.tau.new/v1/kernels/zoo',
+    });
   });
 
   it('keeps the built-in PicoVoxel kernel on its default wasm selection', async () => {

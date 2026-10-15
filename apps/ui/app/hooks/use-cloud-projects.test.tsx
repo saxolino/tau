@@ -1,6 +1,8 @@
+import { setRevisionSessionUser } from '#lib/revision-actor.js';
+import { mock } from 'vitest-mock-extended';
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
-import { act, render, renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteFacet, RevisionStatusProjection } from '@taucad/revisions';
 
@@ -33,7 +35,25 @@ const { mockToast } = vi.hoisted(() => ({
 }));
 vi.mock('#components/ui/sonner.js', () => ({ toast: mockToast }));
 
+const storageValues = new Map<string, string>();
+vi.stubGlobal(
+  'localStorage',
+  mock<Storage>({
+    getItem: (key) => storageValues.get(key) ?? null,
+    setItem: (key, value) => {
+      storageValues.set(key, value);
+    },
+    removeItem: (key) => {
+      storageValues.delete(key);
+    },
+    clear: () => {
+      storageValues.clear();
+    },
+  }),
+);
+
 const {
+  canOpenCloudProject,
   backupByDefaultNotice,
   fetchCloudProjects,
   materializeOnSignIn,
@@ -41,7 +61,7 @@ const {
   nextTauCloudStep,
   tauCloudIntent,
   turnOffBackupConsequence,
-  useBackupAnnouncing,
+  turnOffBackupByDefault,
   useTauCloudIntent,
   useTauCloudIntentConnection,
 } = await import('#hooks/use-cloud-projects.js');
@@ -68,9 +88,19 @@ const status = (
   kind: RemoteFacet['kind'] = 'none',
   phase: RemoteFacet['phase'] = 'none',
 ): RevisionStatusProjection => {
-  const read: Pick<RevisionStatusProjection, 'headRevisionId' | 'remote'> = {
+  const read: Pick<RevisionStatusProjection, 'headRevisionId' | 'remote' | 'sync'> = {
     headRevisionId,
     remote: remote(kind, phase),
+    sync: {
+      state: 'checking',
+      pendingCount: 0,
+      online: true,
+      conflictRef: undefined,
+      error: undefined,
+      reason: undefined,
+      arrived: undefined,
+      hasAppliedRemote: false,
+    },
   };
   return read as RevisionStatusProjection;
 };
@@ -132,10 +162,14 @@ describe('nextTauCloudStep', () => {
     expect(nextTauCloudStep('open', { ...entitled, auth: 'indeterminate' }, status(undefined))).toBe('wait');
   });
 
-  it('should keep a materialized project owed until Tau Cloud is connected', () => {
+  it('should keep a materialized project owed until its authored manifest is reconciled', () => {
     expect(nextTauCloudStep('open', entitled, status(undefined, 'tau', 'connecting'))).toBe('wait');
     expect(nextTauCloudStep('open', entitled, status(undefined, 'tau', 'failed'))).toBe('wait');
-    expect(nextTauCloudStep('open', entitled, status(undefined, 'tau', 'connected'))).toBe('forget');
+    expect(nextTauCloudStep('open', entitled, status(undefined, 'tau', 'connected'))).toBe('wait');
+    const applied = status(undefined, 'tau', 'connected');
+    expect(nextTauCloudStep('open', entitled, { ...applied, sync: { ...applied.sync, hasAppliedRemote: true } })).toBe(
+      'wait',
+    );
   });
 });
 
@@ -160,6 +194,35 @@ describe('backupByDefaultNotice', () => {
 });
 
 describe('tauCloudIntent', () => {
+  it('keeps pending opens owned by the signed-in account, including unavailable storage', () => {
+    setRevisionSessionUser({ id: 'account-a', name: 'A' });
+    tauCloudIntent.set('owned-project', 'open');
+    expect(canOpenCloudProject('owned-project')).toBe(true);
+    setRevisionSessionUser({ id: 'account-b', name: 'B' });
+    expect(canOpenCloudProject('owned-project')).toBe(false);
+    const failingStorage = vi.spyOn(globalThis.localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('quota');
+    });
+    tauCloudIntent.set('memory-project', 'open');
+    failingStorage.mockRestore();
+    setRevisionSessionUser({ id: 'account-c', name: 'C' });
+    expect(canOpenCloudProject('memory-project')).toBe(false);
+    tauCloudIntent.set('owned-project', undefined);
+    tauCloudIntent.set('memory-project', undefined);
+    setRevisionSessionUser(undefined);
+  });
+
+  it('does not revive a settled open when storage removal fails', () => {
+    tauCloudIntent.set('settled-project', 'open');
+    const failingRemove = vi.spyOn(globalThis.localStorage, 'removeItem').mockImplementation(() => {
+      throw new Error('storage unavailable');
+    });
+    tauCloudIntent.set('settled-project', undefined);
+    expect(tauCloudIntent.get('settled-project')).toBeUndefined();
+    failingRemove.mockRestore();
+    tauCloudIntent.set('settled-project', undefined);
+  });
+
   beforeEach(() => {
     localStorage.clear();
   });
@@ -257,14 +320,9 @@ describe('useTauCloudIntentConnection', () => {
   const disconnectRemote = vi.fn();
   const cancelRemote = vi.fn();
   const commands = { connectRemote, disconnectRemote, cancelRemote };
-  const readRemote = (): RemoteFacet => remote('none');
 
   beforeEach(() => {
     localStorage.clear();
-    /* The toasts an earlier row raised close, as a person's would. */
-    for (const [, options] of mockToast.mock.calls) {
-      options.onAutoClose?.();
-    }
     vi.clearAllMocks();
     Object.assign(account, { auth: 'authed', isResolved: true, canSyncFiles: true });
   });
@@ -276,7 +334,7 @@ describe('useTauCloudIntentConnection', () => {
     readonly intent: TauCloudIntent;
     readonly head: string | undefined;
   }): ReactNode {
-    useTauCloudIntentConnection({ projectId, intent, status: status(head), readRemote, commands });
+    useTauCloudIntentConnection({ projectId, intent, status: status(head), commands });
     return null;
   }
 
@@ -296,37 +354,13 @@ describe('useTauCloudIntentConnection', () => {
   };
 
   // ── DESIGN: the opt-out is offered before commitment ─────────────────────
-  it('should announce backup with a Turn off backup action when the project is first seen', async () => {
+  it('should expose the inline offer without a creation toast or an early connection', () => {
     tauCloudIntent.set(projectId, 'default');
-
     renderConnection(undefined);
-
-    await waitFor(() => {
-      expect(mockToast).toHaveBeenCalledOnce();
-    });
-    const [message, options] = mockToast.mock.calls[0] ?? [];
-    expect(message).toBe('Backs up to Tau Cloud automatically after your first save.');
-    /* Nothing is on Tau Cloud yet, so the toast names no copy there. */
-    expect(options?.description).toBe('Turning it off keeps this project on this device.');
-    expect(options?.action.label).toBe('Turn off backup');
     expect(tauCloudIntent.get(projectId)).toBe('noticed');
-  });
-
-  /* DESIGN: one backup offer at a time. The pane's line waits while the toast shows it. */
-  it('should hold the pane offer back only while the creation toast is on screen', async () => {
-    tauCloudIntent.set(projectId, 'default');
-    const announcing = renderHook(() => useBackupAnnouncing(projectId));
-    expect(announcing.result.current).toBe(false);
-
-    renderConnection(undefined);
-    await waitFor(() => {
-      expect(announcing.result.current).toBe(true);
-    });
-
-    act(() => {
-      mockToast.mock.calls[0]?.[1].onAutoClose?.();
-    });
-    expect(announcing.result.current).toBe(false);
+    expect(backupByDefaultNotice('noticed', entitled, remote('none'))).toBe('pending');
+    expect(mockToast).not.toHaveBeenCalled();
+    expect(connectRemote).not.toHaveBeenCalled();
   });
 
   it('should name the copy on Tau Cloud only once there is one', () => {
@@ -343,20 +377,19 @@ describe('useTauCloudIntentConnection', () => {
     tauCloudIntent.set(projectId, 'default');
 
     renderHook(() => {
-      useTauCloudIntentConnection({ projectId, intent: 'default', status: status('rev-1'), readRemote, commands });
+      useTauCloudIntentConnection({ projectId, intent: 'default', status: status('rev-1'), commands });
     });
 
     expect(connectRemote).not.toHaveBeenCalled();
     expect(tauCloudIntent.get(projectId)).toBe('noticed');
   });
 
-  it('should connect nothing after Turn off backup is chosen from the toast', async () => {
+  it('should connect nothing after the inline Turn off backup action', () => {
     tauCloudIntent.set(projectId, 'default');
     const { rerender } = renderConnection(undefined);
-    await waitFor(() => {
-      expect(mockToast).toHaveBeenCalledOnce();
+    act(() => {
+      turnOffBackupByDefault(projectId, remote('none'), commands);
     });
-    mockToast.mock.calls[0]?.[1].action.onClick();
     rerender({ head: 'rev-1' });
 
     expect(tauCloudIntent.get(projectId)).toBeUndefined();
@@ -382,7 +415,7 @@ describe('useTauCloudIntentConnection', () => {
     tauCloudIntent.set(projectId, 'connected');
 
     renderHook(() => {
-      useTauCloudIntentConnection({ projectId, intent: 'noticed', status: status('rev-1'), readRemote, commands });
+      useTauCloudIntentConnection({ projectId, intent: 'noticed', status: status('rev-1'), commands });
     });
 
     expect(connectRemote).not.toHaveBeenCalled();

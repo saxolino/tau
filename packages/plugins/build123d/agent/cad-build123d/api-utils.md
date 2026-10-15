@@ -1,23 +1,21 @@
 # build123d — utils
 
-6 top-level symbols. Signatures are verbatim python.
+3 top-level symbols. Signatures are verbatim python.
 
-// Compare the OCCT objects of each list and return the differences
+# Category: utils
+# Compare the OCCT objects of each list and return the differences
+# build123d.topology.utils.delta (function)
 delta(shapes_one: Iterable[Shape], shapes_two: Iterable[Shape]) -> list[Shape]
 
-// Return the maximum dimension of one or more shapes
-find_max_dimension(shapes: Shape | Iterable[Shape]) -> float
-
-// Determine whether two floating point numbers are close in value
-isclose_b(x: float, y: float, rel_tol = 1e-09, abs_tol = 1e-14) -> bool
-
-// new_edges
+# Category: utils
+# new_edges
+# Remarks: Given a sequence of shapes and the combination of those shapes, find the newly added edges Returns: ShapeList[Edge]: new edges
+# build123d.topology.utils.new_edges (function)
 new_edges(*objects: Shape, combined: Shape) -> ShapeList[Edge]
-//   objects: sequence of shapes
-//   combined: result of the combination of objects
+#   objects: sequence of shapes
+#   combined: result of the combination of objects
 
-// Convert polar coordinates into cartesian coordinates
+# Category: utils
+# Convert polar coordinates into cartesian coordinates
+# build123d.topology.utils.polar (function)
 polar(length: float, angle: float) -> tuple[float, float]
-
-// Create a size tuple
-tuplify(obj: Any, dim: int) -> tuple | None

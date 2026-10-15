@@ -1,7 +1,7 @@
 import { tauCadTopologyExtension } from '@taucad/types/constants';
 import { canonicalJson } from '@taucad/utils/hash';
 import { Matrix4, Quaternion, Vector3 } from 'three';
-import { parseGltfBytes } from '#components/geometry/graphics/metadata/gltf-component-manifest.js';
+import { parseGltfBytes } from '@taucad/viewer/graphics/metadata/gltf-component-manifest';
 import type { PartPrimitiveReference } from '#services/part-thumbnail.service.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -66,7 +66,7 @@ function admitPreviewGeometry(json: ReturnType<typeof parseGltfBytes>['json']): 
     }
   };
   for (const rawMesh of meshes) {
-    const primitives = object(rawMesh)['primitives'];
+    const { primitives } = object(rawMesh);
     if (!Array.isArray(primitives)) {
       continue;
     }

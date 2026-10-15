@@ -33,6 +33,7 @@ const footerColumns: FooterColumn[] = [
       { label: 'Terms', to: '/legal/terms' },
       { label: 'Privacy', to: '/legal/privacy' },
       { label: 'Acceptable use', to: '/legal/acceptable-use' },
+      { label: 'Open source', to: '/legal/open-source' },
     ],
   },
 ];
@@ -43,6 +44,7 @@ const footerColumns: FooterColumn[] = [
  * product/legal columns, socials, and the app version.
  */
 export function PageFooter({ variant = 'compact' }: { readonly variant?: 'compact' | 'full' }): React.JSX.Element {
+  const [copyrightYear] = useState(() => new Date().getFullYear());
   const [isCookieDialogOpen, setIsCookieDialogOpen] = useState(false);
 
   if (variant === 'full') {
@@ -123,7 +125,7 @@ export function PageFooter({ variant = 'compact' }: { readonly variant?: 'compac
         <div className='border-t'>
           <div className='container mx-auto flex max-w-6xl items-center justify-between px-4 py-4 text-xs text-muted-foreground'>
             <span>
-              © {new Date().getFullYear()} {metaConfig.name}
+              © {copyrightYear} {metaConfig.name}
             </span>
             <span className='font-mono'>v{metaConfig.version}</span>
           </div>

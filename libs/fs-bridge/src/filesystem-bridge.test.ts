@@ -52,7 +52,7 @@ it('rejects shallow metadata from an exact bridge listing', async () => {
   const channel = new MessageChannel();
   const row = { name: 'large.txt', type: 'file', size: 2048, mtimeMs: 1, contentKind: 'text' };
   const server = createBridgeServer(
-    { readdirWithStats: async () => [row] },
+    { readdirWithStats: async () => [row], stat: async () => row },
     fsBridgePort(channel.port1, 'listing-server'),
     {
       hello: createFileSystemBridgeHello({
@@ -72,6 +72,8 @@ it('rejects shallow metadata from an exact bridge listing', async () => {
   try {
     await expect(proxy.readdirWithStats('')).rejects.toThrow('missing required metadata');
     await expect(proxy.readdirWithStats('', { content: 'head' })).resolves.toEqual([row]);
+    await expect(proxy.stat('large.txt')).rejects.toThrow('missing required metadata');
+    await expect(proxy.stat('large.txt', { content: 'head' })).resolves.toEqual(row);
   } finally {
     proxy.dispose();
     server.dispose();
@@ -477,6 +479,23 @@ describe('createFileSystemBridgeProxy', () => {
     await expect(proxy.ready).rejects.toMatchObject({ code: 'FILESYSTEM_BRIDGE_PROTOCOL_VERSION_MISMATCH' });
 
     proxy.dispose();
+    channel.port1.close();
+  });
+
+  /* React's development render log diffs old props by reading `$$typeof`; a
+   * client disposed on a re-root is still the old prop, and a throw there aborts
+   * the commit that brings the new client in. */
+  it('should answer a disposed proxy probed for `$$typeof` with undefined', () => {
+    const channel = new MessageChannel();
+    const proxy = createFileSystemBridgeProxy({
+      port: fsBridgePort(channel.port2, 'fs-bridge-disposed-probe-client'),
+      dispose: () => {
+        channel.port2.close();
+      },
+    });
+    proxy.dispose();
+
+    expect(Reflect.get(proxy, '$$typeof')).toBeUndefined();
     channel.port1.close();
   });
 
@@ -1114,7 +1133,9 @@ describe('exposeFileSystem skip-originator dispatch', () => {
       await clientA.writeFiles({ [path]: { content: 'cube([10, 10, 10]);' } });
       await clientA.appendFile(path, '\nsphere(5);');
       await vi.waitFor(() => {
-        expect(peerWatchEvents).toEqual([{ type: 'change', path }]);
+        /* Two writes coalesce into one watch change only when they land inside one batch; under load they arrive as two. */
+        expect(peerWatchEvents.length).toBeGreaterThan(0);
+        expect(peerWatchEvents.every((event) => event.type === 'change' && event.path === path)).toBe(true);
         expect(peerEvents).toEqual([
           { type: 'fileWritten', path, backend: 'memory' },
           { type: 'fileWritten', path, backend: 'memory' },

@@ -28,6 +28,7 @@ import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { storageLimitBytesByTier } from '@taucad/billing';
 import { DatabaseService } from '#database/database.service.js';
 import { ShutdownService } from '#lifecycle/shutdown.service.js';
+import { MetricsService } from '#telemetry/metrics.js';
 import { project, projectGit, projectGitLfsObject, publication } from '#database/schema.js';
 import { ProjectAccessService } from '#api/collaboration/project-access.service.js';
 import type { ProjectRole } from '#api/collaboration/project-access.service.js';
@@ -298,6 +299,9 @@ export class GitRepositoryService {
    */
   #inFlightLeases = 0;
 
+  /** The boot sweep, which admission waits on so it never builds a lease the sweep is removing. */
+  readonly #bootSweep: Promise<void>;
+
   /**
    * The same leases, per owner, so admission can be fair (D22, L6-F3): an
    * owner who already holds a lease never takes this worker's last free slot,
@@ -328,11 +332,13 @@ export class GitRepositoryService {
     private readonly rateLimiter: PublicationRateLimiterService,
     private readonly durableEvents: DurableEventsService,
     @Optional() private readonly shutdown: ShutdownService = new ShutdownService(),
+    @Optional() private readonly metrics: MetricsService = new MetricsService(),
   ) {
     /* A crash restarts a Machine in place on the same rootfs, so boot is the
        first chance to give the dead worker's disk back (W10 defect 2). Tracked
        rather than awaited: nothing may wait on a sweep to serve a request. */
-    this.track(this.sweepAbandonedLeases());
+    this.#bootSweep = this.sweepAbandonedLeases({ atBoot: true });
+    this.track(this.#bootSweep);
   }
 
   /**
@@ -648,11 +654,7 @@ export class GitRepositoryService {
     const release = await this.admitLease(access);
     let lease: RepositoryLease | undefined;
     try {
-      lease = await hydrateLease({
-        store: this.store,
-        locator: repositoryLocator({ ownerId: access.ownerId, projectId: access.projectId }),
-        parentDirectory: this.#leaseParent,
-      });
+      lease = await this.hydrate(access);
       return await work(lease);
     } catch (error) {
       throw this.refusalFor(error);
@@ -703,11 +705,7 @@ export class GitRepositoryService {
     const release = await this.admitLease(args.access);
     let lease: RepositoryLease | undefined;
     try {
-      lease = await hydrateLease({
-        store: this.store,
-        locator: repositoryLocator({ ownerId: args.access.ownerId, projectId: args.access.projectId }),
-        parentDirectory: this.#leaseParent,
-      });
+      lease = await this.hydrate(args.access);
       await this.repairDerivedState(args.access, lease);
       const held = lease;
       const child = this.spawnService({
@@ -798,7 +796,8 @@ export class GitRepositoryService {
          upload, and the client re-pushes against a Machine that is staying.
          One that has started finishes, because the drain waits for it. */
       this.refuseWhenStopping('This server is restarting; retry the push.');
-      const result = await commitLease({
+      this.metrics.syncPackBytes.record(request.counter.bytes, { 'tau.sync.operation': 'push' });
+      const result = await this.commit({
         store: this.store,
         lease,
         committedBy: args.committedBy,
@@ -912,7 +911,7 @@ export class GitRepositoryService {
             .where(eq(publication.id, affected.id));
         }
         await this.runGit(['update-ref', '-d', ref, held], lease.directory);
-        const result = await commitLease({
+        const result = await this.commit({
           store: this.store,
           lease,
           committedBy: args.committedBy,
@@ -977,6 +976,7 @@ export class GitRepositoryService {
     this.#sweeping.add(projectId);
     this.track(
       (async (): Promise<void> => {
+        let outcome: 'ok' | 'error' = 'error';
         try {
           const swept = await result.sweep();
           /* D18: the retired bytes the store still keeps, as this listing saw
@@ -988,7 +988,9 @@ export class GitRepositoryService {
               .set({ retainedBytes: swept.retainedBytes })
               .where(eq(projectGit.projectId, projectId));
           }
+          outcome = 'ok';
         } finally {
+          this.metrics.syncSweeps.add(1, { outcome });
           this.#sweeping.delete(projectId);
         }
       })(),
@@ -1032,10 +1034,15 @@ export class GitRepositoryService {
    * worker is the only process that will ever boot again after a crash in
    * place, and admission is the moment the leaked bytes matter.
    *
+   * At boot it also removes this process's own directory. A Machine restarted
+   * in place usually starts the API under the same pid, so the dead run's
+   * directory looks alive to the sibling check forever; and at boot this
+   * process holds no lease yet, so whatever is there is the dead run's.
+   *
    * ponytail: unthrottled — a `readdir` of a handful of names plus a signal-0
    * per name. Add a throttle if a machine ever hosts thousands of siblings.
    */
-  private async sweepAbandonedLeases(): Promise<void> {
+  private async sweepAbandonedLeases({ atBoot = false }: { readonly atBoot?: boolean } = {}): Promise<void> {
     const root = path.dirname(this.#leaseParent);
     let siblings: readonly string[];
     try {
@@ -1044,7 +1051,9 @@ export class GitRepositoryService {
       /* Nothing has run on this machine yet. */
       return;
     }
-    const abandoned = siblings.filter((name) => /^\d+$/u.test(name) && !processAlive(Number(name)));
+    const abandoned = siblings.filter(
+      (name) => /^\d+$/u.test(name) && ((atBoot && Number(name) === process.pid) || !processAlive(Number(name))),
+    );
     if (abandoned.length === 0) {
       return;
     }
@@ -1093,6 +1102,7 @@ export class GitRepositoryService {
    */
   private async admitLease(access: Pick<GitAccess, 'ownerId' | 'callerId' | 'viaDevice'>): Promise<() => void> {
     const { ownerId } = access;
+    await this.#bootSweep;
     await this.sweepAbandonedLeases();
     await mkdir(this.#leaseParent, { recursive: true });
     const { bavail, bsize } = await statfs(this.#leaseParent);
@@ -1179,6 +1189,39 @@ export class GitRepositoryService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
+    }
+  }
+
+  /** Hydrates a lease for `access`, timed as the `hydrate` lease phase. */
+  private async hydrate(access: Pick<GitAccess, 'ownerId' | 'projectId'>): Promise<RepositoryLease> {
+    const startedAt = performance.now();
+    try {
+      return await hydrateLease({
+        store: this.store,
+        locator: repositoryLocator({ ownerId: access.ownerId, projectId: access.projectId }),
+        parentDirectory: this.#leaseParent,
+      });
+    } finally {
+      this.metrics.syncLeaseDuration.record((performance.now() - startedAt) / 1000, {
+        'tau.sync.lease.phase': 'hydrate',
+      });
+    }
+  }
+
+  /** `commitLease`, timed as the `commit` lease phase, counting a lost conditional manifest write. */
+  private async commit(args: Parameters<typeof commitLease>[0]): ReturnType<typeof commitLease> {
+    const startedAt = performance.now();
+    try {
+      return await commitLease(args);
+    } catch (error) {
+      if (error instanceof RepositoryStoreError && error.code === 'lost') {
+        this.metrics.syncManifestConflicts.add(1);
+      }
+      throw error;
+    } finally {
+      this.metrics.syncLeaseDuration.record((performance.now() - startedAt) / 1000, {
+        'tau.sync.lease.phase': 'commit',
+      });
     }
   }
 

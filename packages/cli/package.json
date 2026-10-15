@@ -68,11 +68,14 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "catalog:",
     "@agentclientprotocol/codex-acp": "catalog:",
+    "@parcel/watcher": "catalog:",
     "@taucad/agent-host": "workspace:*",
     "@taucad/assimp": "workspace:*",
     "@taucad/bambu": "workspace:*",
     "@taucad/brep": "workspace:*",
+    "@taucad/bundler-core": "workspace:*",
     "@taucad/esbuild": "workspace:*",
+    "@taucad/filesystem": "workspace:*",
     "@taucad/gltf": "workspace:*",
     "@taucad/host": "workspace:*",
     "@taucad/image": "workspace:*",
@@ -89,6 +92,8 @@
     "@taucad/runtime": "workspace:*",
     "@taucad/skills": "workspace:*",
     "@taucad/slicer": "workspace:*",
+    "@taucad/tscircuit": "workspace:*",
+    "@taucad/zoo": "workspace:*",
     "citty": "catalog:",
     "consola": "catalog:",
     "ink": "catalog:",
@@ -99,6 +104,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "catalog:",
     "@taucad/utils": "workspace:*",
     "@types/react": "catalog:",
     "@types/semver": "catalog:",

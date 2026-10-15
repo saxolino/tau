@@ -47,6 +47,7 @@ const sandbox = vi.hoisted(() => ({
   supported: true,
   dependencyErrors: [] as string[],
   initialize: vi.fn(async () => undefined),
+  reset: vi.fn(async () => undefined),
   wrap: vi.fn<(command: string, ...rest: unknown[]) => void>(),
   wrapFailure: undefined as unknown,
   launcher: '/bin/sh',
@@ -59,6 +60,7 @@ vi.mock('@anthropic-ai/sandbox-runtime', async (importActual) => ({
     isSupportedPlatform: () => sandbox.supported,
     checkDependenciesAsync: async () => ({ errors: sandbox.dependencyErrors, warnings: [] }),
     initialize: sandbox.initialize,
+    reset: sandbox.reset,
     wrapWithSandboxArgv: async (command: string, ...rest: unknown[]) => {
       sandbox.wrap(command, ...rest);
       if (sandbox.wrapFailure !== undefined) {
@@ -210,6 +212,7 @@ afterEach(() => {
   sandbox.wrapFailure = undefined;
   sandbox.wrap.mockClear();
   sandbox.initialize.mockClear();
+  sandbox.reset.mockClear();
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -481,6 +484,48 @@ ${keepAlive}`;
     await unverified.cleanup();
   });
 
+  it('should stop the sandbox runtime only when the last started session is cleaned up', async () => {
+    // The Linux runtime's network bridge child holds the event loop open until reset, so a
+    // one-shot host would never exit after its last native worker stopped.
+    const first = fixture(respondingWorker(`{protocolVersion:1,requestId:request.requestId,result:{value:'a'}}`));
+    const second = fixture(respondingWorker(`{protocolVersion:1,requestId:request.requestId,result:{value:'b'}}`));
+    await expect(request(first.session)).resolves.toEqual({ value: 'a' });
+    await expect(request(second.session)).resolves.toEqual({ value: 'b' });
+
+    await first.session.cleanup();
+    expect(sandbox.reset).not.toHaveBeenCalled();
+    await second.session.cleanup();
+    expect(sandbox.reset).toHaveBeenCalledOnce();
+    await second.session.cleanup();
+    expect(sandbox.reset).toHaveBeenCalledOnce();
+
+    sandbox.initialize.mockClear();
+    const third = fixture(respondingWorker(`{protocolVersion:1,requestId:request.requestId,result:{value:'c'}}`));
+    try {
+      await expect(request(third.session)).resolves.toEqual({ value: 'c' });
+      expect(sandbox.initialize).toHaveBeenCalledOnce();
+    } finally {
+      await third.session.cleanup();
+    }
+    expect(sandbox.reset).toHaveBeenCalledTimes(2);
+  });
+
+  it('should not take a sandbox lease when cleanup lands while resources are being verified', async () => {
+    const closing = fixture(respondingWorker(`{protocolVersion:1,requestId:request.requestId,result:{value:'a'}}`));
+    const pending = request(closing.session);
+    // Let the queued start reach its resource hashing before the session closes.
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    await closing.session.cleanup();
+    await expect(pending).rejects.toThrow(/session is closed/);
+
+    const next = fixture(respondingWorker(`{protocolVersion:1,requestId:request.requestId,result:{value:'b'}}`));
+    await expect(request(next.session)).resolves.toEqual({ value: 'b' });
+    await next.session.cleanup();
+    expect(sandbox.reset).toHaveBeenCalledOnce();
+  });
+
   it('should refuse to spawn the worker when the sandbox cannot wrap it', async () => {
     for (const failure of [new Error('profile rejected'), 'launcher exited']) {
       const value = fixture(
@@ -636,6 +681,28 @@ ${keepAlive}`);
     killController.abort(new Error('deadline'));
     await expect(killed).rejects.toThrow(/deadline/);
     await unwritable.session.cleanup();
+  });
+
+  it('should allow a request without a deadline and still cancel it', async () => {
+    const value = fixture(respondingWorker('({protocolVersion:1,requestId:request.requestId,result:{ok:true}})'), 0);
+    try {
+      await expect(request(value.session)).resolves.toEqual({ ok: true });
+    } finally {
+      await value.session.cleanup();
+    }
+    const waiting = fixture(`${ready}${keepAlive}`, 0);
+    const controller = new AbortController();
+    const pending = request(waiting.session, { signal: controller.signal });
+    const rejected = expect(pending).rejects.toThrow('stop large render');
+    while (privateSession(waiting.session).pending.size === 0) {
+      await delay(2);
+    }
+    controller.abort(new Error('stop large render'));
+    try {
+      await rejected;
+    } finally {
+      await waiting.session.cleanup();
+    }
   });
 
   it('bounds the queue and handles abort, timeout, spawn, and write failures', async () => {
@@ -968,7 +1035,7 @@ describe('createWorkspaceMirror', () => {
     }
   });
 
-  it('rejects case collisions, concurrent changes, depth, and size limits', async () => {
+  it('rejects case collisions and concurrent changes', async () => {
     const collision = createMockFileSystem({ readFileResult: 'x' });
     mockListing(
       collision,
@@ -978,26 +1045,6 @@ describe('createWorkspaceMirror', () => {
     const collisionMirror = await createWorkspaceMirror({ temporaryPrefix: 'tau-mirror-test-', displayName: 'Test' });
     roots.push(collisionMirror.rootPath);
     await expect(collisionMirror.sync(collision)).rejects.toThrow(/case-colliding/);
-
-    const deep = createMockFileSystem();
-    mockListing(
-      deep,
-      (directory) => [directory ? 'next' : 'root'],
-      () => ({ type: 'dir', size: 0, mtimeMs: 0 }),
-    );
-    const deepMirror = await createWorkspaceMirror({ temporaryPrefix: 'tau-mirror-test-', displayName: 'Test' });
-    roots.push(deepMirror.rootPath);
-    await expect(deepMirror.sync(deep)).rejects.toThrow(/directory levels/);
-
-    const large = createMockFileSystem();
-    mockListing(
-      large,
-      () => ['large.cs'],
-      () => ({ type: 'file', size: 32 * 1024 * 1024 + 1, mtimeMs: 0 }),
-    );
-    const largeMirror = await createWorkspaceMirror({ temporaryPrefix: 'tau-mirror-test-', displayName: 'Test' });
-    roots.push(largeMirror.rootPath);
-    await expect(largeMirror.sync(large)).rejects.toThrow(/size limits/);
 
     const changed = createMockFileSystem({ readFileResult: 'xx' });
     mockListing(

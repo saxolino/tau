@@ -1,11 +1,22 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Test fixtures use React component names and literal workspace file paths. */
 import { render, renderHook, act, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ReactNode } from 'react';
 import { createElement, useEffect, useState } from 'react';
+import type { ChatRecord } from '@taucad/chat/schemas';
 import type { Chat, MyUIMessage } from '@taucad/chat';
-import type { ProjectDiscoveryEntry, ProjectDiscoveryResult, ProjectLocator } from '@taucad/filesystem';
+import type {
+  FileTreeNode,
+  ProjectDiscoveryEntry,
+  ProjectDiscoveryResult,
+  ProjectLocator,
+  WatchEvent,
+  WatchRequest,
+} from '@taucad/filesystem';
+import { ChangeEventBus, MountTable, ProviderRegistry, ResourceQueue, WorkspaceFileService } from '@taucad/filesystem';
+import { rootedPathOf } from '@taucad/fs-client/rooted-content-client';
+import type { useFileManager } from '#hooks/use-file-manager.js';
 import { consumableBytes } from '@taucad/fs-bridge';
 import { projectToManifest, serializeProjectManifest } from '@taucad/types';
 import type { ProjectManifest } from '@taucad/types';
@@ -136,7 +147,20 @@ const subscribeWorkerChannel = (channel: string) =>
     workerChangeSubscriptions.set(channel, subscription);
     return () => workerChangeSubscriptions.delete(channel);
   });
+const nativeWatches = new Set<(event: WatchEvent) => void>();
 const mockWorkerChangeChannel = {
+  watchReady: (_request: WatchRequest, listener: (event: WatchEvent) => void) => {
+    nativeWatches.add(listener);
+    return {
+      ready: Promise.resolve(),
+      closed: new Promise<void>(() => {
+        /* This watch stays open until fixture disposal. */
+      }),
+      dispose: () => {
+        nativeWatches.delete(listener);
+      },
+    };
+  },
   onFileWritten: subscribeWorkerChannel('fileWritten'),
   onFileDeleted: subscribeWorkerChannel('fileDeleted'),
   onFileRenamed: subscribeWorkerChannel('fileRenamed'),
@@ -146,6 +170,9 @@ const mockWorkerChangeChannel = {
   onDirectoryChanged: subscribeWorkerChannel('directoryChanged'),
 };
 const emitWorkerChange = (channel: string, path: string): void => {
+  for (const listener of nativeWatches) {
+    listener({ type: channel.includes('Deleted') ? 'delete' : 'change', path });
+  }
   const subscription = workerChangeSubscriptions.get(channel);
   if (subscription?.interestedIn(path)) {
     subscription.handler({ path });
@@ -172,30 +199,44 @@ const mockRmdir = vi.fn(async (path: string, options?: { recursive?: boolean }) 
   }
 });
 
-vi.mock('#hooks/use-file-manager.js', () => ({
-  useFileManager: () => ({
-    workerChangeChannel: mockWorkerChangeChannel,
-    /* Content reaches the root that owns the path (W12); the authority-global
-     * surface below it is topology only (charter D5). */
-    recordFiles: {
-      writeFiles: mockWriteFiles,
-      writeFile: async (path: string, bytes: Uint8Array<ArrayBuffer>) =>
-        isAttachmentPath(path) ? mockWriteAttachment(path, bytes) : mockWriteFile(path, bytes),
-      readFile: async (path: string, encoding?: 'utf8') =>
-        isAttachmentPath(path) ? readAttachment(path) : mockReadFile(path, encoding),
-      stat: mockStat,
-      exists: vi.fn(async (path: string) => attachmentFiles.has(path)),
-      rmdir: mockRmdir,
-    },
-    client: {
-      listProjectManifests: mockListProjectManifests,
-      adoptProjectDirectory: mockAdoptProjectDirectory,
-      permanentlyDeleteProjectDirectory: mockPermanentlyDeleteProjectDirectory,
-      commitPendingProjectDirectory: mockCommitPendingProjectDirectory,
-    },
-    workspace: { syncProjectRoots: mockSyncProjectRoots },
-  }),
-}));
+const recordWatch: ReturnType<typeof useFileManager>['watchRecordFile'] = (absolute, listener) => {
+  const { root } = rootedPathOf(absolute);
+  return mockWorkerChangeChannel.watchReady({ paths: [absolute], recursive: true }, (event) => {
+    if (event.type === 'reset') {
+      listener(event);
+    } else if (event.type !== 'rename' && event.path.startsWith(`${root}/`)) {
+      listener({ ...event, path: event.path.slice(root.length + 1) });
+    }
+  });
+};
+const mockWatchRecordFile = vi.fn(recordWatch);
+/* The authority's physical-scope listing, one level per call (R14 orphan check). */
+const mockReadScopedShallowDirectory = vi.fn<(path: string) => Promise<FileTreeNode[]>>();
+const mockFileManager = {
+  workerChangeChannel: mockWorkerChangeChannel,
+  watchRecordFile: mockWatchRecordFile,
+  /* Content reaches the root that owns the path (W12); the authority-global
+   * surface below it is topology only (charter D5). */
+  recordFiles: {
+    writeFiles: mockWriteFiles,
+    writeFile: async (path: string, bytes: Uint8Array<ArrayBuffer>) =>
+      isAttachmentPath(path) ? mockWriteAttachment(path, bytes) : mockWriteFile(path, bytes),
+    readFile: async (path: string, encoding?: 'utf8') =>
+      isAttachmentPath(path) ? readAttachment(path) : mockReadFile(path, encoding),
+    stat: mockStat,
+    exists: vi.fn(async (path: string) => attachmentFiles.has(path)),
+    rmdir: mockRmdir,
+  },
+  client: {
+    listProjectManifests: mockListProjectManifests,
+    adoptProjectDirectory: mockAdoptProjectDirectory,
+    permanentlyDeleteProjectDirectory: mockPermanentlyDeleteProjectDirectory,
+    commitPendingProjectDirectory: mockCommitPendingProjectDirectory,
+  },
+  workspace: { syncProjectRoots: mockSyncProjectRoots },
+  scopedStorage: { readShallowDirectory: mockReadScopedShallowDirectory },
+};
+vi.mock('#hooks/use-file-manager.js', () => ({ useFileManager: () => mockFileManager }));
 
 const recordConfigWrite = async (_config: ProjectFileSystemConfig): Promise<void> => {
   phaseOrder.push('locator');
@@ -257,7 +298,9 @@ const mockRepairWorkspaceBindings = vi.fn(async () => ({
   skipped: [],
 }));
 
+const mockRequestHomeStoragePersistence = vi.fn(async () => undefined);
 vi.mock('#filesystem/handle-store.js', () => ({
+  requestHomeStoragePersistence: mockRequestHomeStoragePersistence,
   createWorkspace: mockCreateWorkspaceConnection,
   createNodeWorkspace: mockCreateNodeWorkspace,
   getWorkspaceMetadata: mockGetWorkspaceMetadata,
@@ -434,8 +477,9 @@ const mockTouchProjectActivity = vi.fn(async (projectId: string, activityAt?: nu
 /* A chat is files, not an object-store row (W17): the chat half of the manager
  * talks to `createChatFileStore`, so the doubles that used to sit on the worker
  * sit on the store. */
-const mockPutChatRecord = vi.fn(async () => undefined);
+const mockPutChatRecord = vi.fn<(chat: Chat) => Promise<void>>(async () => undefined);
 const mockInvalidateChatLog = vi.fn();
+const mockReadChatRecords = vi.fn<(resourceId: string) => Promise<ChatRecord[]>>(async () => []);
 vi.mock('#db/chat-file-storage.js', () => ({
   createChatFileStore: () => ({
     invalidateLog: mockInvalidateChatLog,
@@ -444,7 +488,7 @@ vi.mock('#db/chat-file-storage.js', () => ({
     putChatRecord: mockPutChatRecord,
     getChatsForResource: vi.fn(async () => []),
     getAllChats: vi.fn(async () => []),
-    getChatRecordsForResource: vi.fn(async () => []),
+    getChatRecordsForResource: mockReadChatRecords,
     getAllChatRecords: vi.fn(async () => []),
     getChat: vi.fn(async () => undefined),
     createChat: vi.fn(async () => activityChat),
@@ -509,6 +553,7 @@ vi.mock('#hooks/use-cookie.js', () => ({
 }));
 
 const { ProjectManagerProvider, useProjectManager } = await import('#hooks/use-project-manager.js');
+const { useChatRecords } = await import('#hooks/use-chat-records.js');
 const { tauCloudIntent } = await import('#hooks/use-cloud-projects.js');
 
 const createWrapper = () => {
@@ -615,6 +660,8 @@ describe('useProjectManager.createProject', () => {
       mock.mockReset();
     }
     mockListProjectManifests.mockResolvedValue({ roots: [], entries: [] });
+    mockReadScopedShallowDirectory.mockReset();
+    mockReadScopedShallowDirectory.mockRejectedValue(new Error('ENOENT: unreadable'));
     mockReadFile.mockImplementation(async (path: string) => {
       if (path.endsWith('/.tau/library.json')) {
         if (libraryFileContent === undefined) {
@@ -652,6 +699,69 @@ describe('useProjectManager.createProject', () => {
     projectRootConfigurationListener = undefined;
     workerChangeSubscriptions.clear();
   });
+
+  it.each(['acknowledged', 'rejected'] as const)(
+    'should expose discovery and metadata watch failures through a %s retry registration',
+    async (outcome) => {
+      const first = Promise.withResolvers<void>();
+      const second = Promise.withResolvers<void>();
+      const retryReady = Promise.withResolvers<void>();
+      const watch = vi.spyOn(mockWorkerChangeChannel, 'watchReady');
+      watch
+        .mockReturnValueOnce({ ready: Promise.resolve(), closed: first.promise, dispose: vi.fn() })
+        .mockReturnValueOnce({ ready: Promise.resolve(), closed: second.promise, dispose: vi.fn() })
+        .mockReturnValueOnce({
+          ready: retryReady.promise,
+          closed: new Promise<void>(() => {
+            /* Keep the acknowledged watch open until disposal. */
+          }),
+          dispose: vi.fn(),
+        })
+        .mockReturnValueOnce({
+          ready: retryReady.promise,
+          closed: new Promise<void>(() => {
+            /* Keep the acknowledged watch open until disposal. */
+          }),
+          dispose: vi.fn(),
+        });
+      const view = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+      await act(async () => {
+        first.reject(new Error('Discovery disconnected'));
+        second.reject(new Error('Metadata disconnected'));
+      });
+      await waitFor(() => {
+        expect(view.result.current.discoveryObservationError).toBe('Observation connection closed.');
+        expect(view.result.current.metadataObservationError).toBe('Observation connection closed.');
+      });
+      const registrations = watch.mock.calls.length;
+      act(() => {
+        view.result.current.refreshFilesystemObservations();
+      });
+      await waitFor(() => {
+        expect(watch.mock.calls.length).toBe(registrations + 2);
+      });
+      expect(view.result.current.discoveryObservationError).toBe('Observation connection closed.');
+      expect(view.result.current.metadataObservationError).toBe('Observation connection closed.');
+      await act(async () => {
+        if (outcome === 'acknowledged') {
+          retryReady.resolve();
+        } else {
+          retryReady.reject(new Error('Retry acknowledgement refused'));
+        }
+      });
+      await waitFor(() => {
+        if (outcome === 'acknowledged') {
+          expect(view.result.current.discoveryObservationError).toBeUndefined();
+          expect(view.result.current.metadataObservationError).toBeUndefined();
+        } else {
+          expect(view.result.current.discoveryObservationError).toBe('Error: Retry acknowledgement refused');
+          expect(view.result.current.metadataObservationError).toBe('Error: Retry acknowledgement refused');
+        }
+      });
+      view.unmount();
+      watch.mockRestore();
+    },
+  );
 
   it('publishes connected-workspace projects into the one listing key before resolving', async () => {
     mockIsFileSystemAccessSupported = true;
@@ -1261,62 +1371,692 @@ describe('useProjectManager.createProject', () => {
     expect(mockDeleteProjectResources).toHaveBeenCalledWith(fakeProject.id);
   });
 
-  it('coalesces a burst of worker filesystem events into one library invalidation', async () => {
-    const { wrapper, projectsInvalidations } = createCountingWrapper();
-    renderHook(() => useProjectManager(), { wrapper });
-    vi.useFakeTimers();
+  it('bounds actual metadata I/O across Query cancellation and drains one latest trailing read', async () => {
+    const { wrapper, queryClient } = createInspectableWrapper();
+    const { result } = renderHook(() => useProjectManager(), { wrapper });
+    const replies: Array<ReturnType<typeof Promise.withResolvers<ChatRecord[]>>> = [];
+    let active = 0;
+    let maxActive = 0;
+    mockReadChatRecords.mockImplementation(async () => {
+      const reply = Promise.withResolvers<ChatRecord[]>();
+      replies.push(reply);
+      active++;
+      maxActive = Math.max(maxActive, active);
+      try {
+        return await reply.promise;
+      } finally {
+        active--;
+      }
+    });
+    const key = ['chats', 'p', 'records', 'held-owner'];
+    const query = new QueryObserver(queryClient, {
+      queryKey: key,
+      queryFn: async ({ signal }) => {
+        const records = await result.current.getChatRecordsForResource('p');
+        signal.throwIfAborted();
+        return records;
+      },
+    });
+    const values: Array<ChatRecord[] | undefined> = [];
+    const unsubscribe = query.subscribe((snapshot) => {
+      values.push(snapshot.data);
+    });
+    const record = (name: string): ChatRecord => ({ id: 'c', resourceId: 'p', name, createdAt: 1, updatedAt: 2 });
     try {
+      await waitFor(() => {
+        expect(replies).toHaveLength(1);
+      });
+      await act(async () => {
+        replies[0]!.resolve([record('Seed')]);
+      });
+      await waitFor(() => {
+        expect(queryClient.getQueryData<ChatRecord[]>(key)?.[0]?.name).toBe('Seed');
+      });
       act(() => {
-        for (let index = 0; index < 12; index++) {
-          emitWorkerChange('fileWritten', `/project-${index}/tau.json`);
+        emitWorkerChange('fileWritten', '/projects/p/.tau/chats/c/chat.json');
+      });
+      await waitFor(() => {
+        expect(replies).toHaveLength(2);
+      });
+      for (let tick = 0; tick < 5; tick++) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Separate event turns reproduce cancellation before non-abortable metadata bytes settle.
+        await act(async () => {
+          emitWorkerChange('fileWritten', '/projects/p/.tau/chats/c/chat.json');
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 0);
+          });
+        });
+      }
+      expect(replies).toHaveLength(2);
+      expect(active).toBe(1);
+      expect(maxActive).toBe(1);
+      expect(queryClient.getQueryData<ChatRecord[]>(key)?.[0]?.name).toBe('Seed');
+      await act(async () => {
+        replies[1]!.resolve([record('Canceled stale bytes')]);
+      });
+      await waitFor(() => {
+        expect(replies).toHaveLength(3);
+      });
+      expect(values.some((records) => records?.[0]?.name === 'Canceled stale bytes')).toBe(false);
+      await act(async () => {
+        replies[2]!.resolve([record('Latest')]);
+      });
+      await waitFor(() => {
+        expect(queryClient.getQueryData<ChatRecord[]>(key)?.[0]?.name).toBe('Latest');
+      });
+      expect(maxActive).toBe(1);
+      expect(mockReadChatRecords).toHaveBeenCalledTimes(3);
+    } finally {
+      for (const reply of replies) {
+        reply.resolve([]);
+      }
+      unsubscribe();
+      queryClient.clear();
+      mockReadChatRecords.mockImplementation(async () => []);
+    }
+  });
+
+  it('awaits held discovery refetch work and drains one trailing burst', async () => {
+    const { wrapper, queryClient } = createInspectableWrapper();
+    const held = Promise.withResolvers<void>();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries').mockImplementation(async (filter) => {
+      if (filter?.queryKey?.[0] === 'projects') {
+        await held.promise;
+      }
+    });
+    renderHook(() => useProjectManager(), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      emitWorkerChange('fileWritten', '/first/tau.json');
+    });
+    await waitFor(() => {
+      expect(invalidate.mock.calls.filter(([filter]) => filter?.queryKey?.[0] === 'projects')).toHaveLength(1);
+    });
+    for (let index = 0; index < 8; index++) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Distinct event turns must occur while the real refetch remains held.
+      await act(async () => {
+        emitWorkerChange('fileWritten', `/later-${index}/tau.json`);
+        await Promise.resolve();
+      });
+    }
+    expect(invalidate.mock.calls.filter(([filter]) => filter?.queryKey?.[0] === 'projects')).toHaveLength(1);
+    await act(async () => {
+      held.resolve();
+    });
+    await waitFor(() => {
+      expect(invalidate.mock.calls.filter(([filter]) => filter?.queryKey?.[0] === 'projects')).toHaveLength(2);
+    });
+  });
+
+  it('invalidates chat metadata precisely while keeping local and foreign logs separate', async () => {
+    const { wrapper, queryClient } = createInspectableWrapper();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useProjectManager(), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      emitWorkerChange('fileWritten', '/projects/p/.tau/chats/c/chat.json');
+    });
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chat', 'c'] }, { cancelRefetch: false });
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chats', 'p'] }, { cancelRefetch: false });
+    invalidate.mockClear();
+    await act(async () => {
+      emitWorkerChange('fileWritten', '/projects/p/.tau/chats/c/events/local.jsonl');
+      emitWorkerChange('fileWritten', '/projects/p/.tau/chats/c/events/foreign.jsonl');
+      await Promise.resolve();
+    });
+    expect(invalidate).not.toHaveBeenCalled();
+    act(() => {
+      for (const listener of nativeWatches) {
+        listener({ type: 'reset' });
+      }
+    });
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chats'] }, { cancelRefetch: false });
+    });
+  });
+
+  it('should observe project chat metadata through its actual captured mount while Home remains isolated', async () => {
+    const registry = new ProviderRegistry();
+    const scope = { backend: 'memory', storageRootKey: 'memory:project-metadata-observation' } as const;
+    const provider = await registry.getProvider(scope);
+    const mounts = new MountTable();
+    mounts.mount('/', provider, { class: 'authored', ...scope });
+    const service = new WorkspaceFileService({
+      providerRegistry: registry,
+      resourceQueue: new ResourceQueue(),
+      eventBus: new ChangeEventBus(),
+      mountTable: mounts,
+    });
+    await service.configureProjectRoots({
+      projects: [{ projectId: fakeProject.id, ...scope, providerBasePath: 'physical-metadata-project' }],
+      roots: [],
+    });
+    const home = service.createRootedFileSystem('/');
+    const project = service.createRootedFileSystem(`/projects/${fakeProject.id}`);
+    const homeEvents: WatchEvent[] = [];
+    const projectEvents: WatchEvent[] = [];
+    const stopHome = home.watch({ paths: [''], recursive: true }, (event) => homeEvents.push(event));
+    const stopProject = project.watch({ paths: [''], recursive: true }, (event) => projectEvents.push(event));
+    const closed = new Promise<void>(() => {
+      /* The fixture keeps the acknowledged watch open. */
+    });
+    const rootWatch = vi.spyOn(mockWorkerChangeChannel, 'watchReady').mockImplementation((request, listener) => ({
+      ready: Promise.resolve(),
+      closed,
+      dispose: home.watch(request, listener),
+    }));
+    mockWatchRecordFile.mockImplementation((absolute, listener, options) => {
+      const { root, path } = rootedPathOf(absolute);
+      return {
+        ready: Promise.resolve(),
+        closed,
+        dispose: service.createRootedFileSystem(root).watch({ paths: [path], ...options }, listener),
+      };
+    });
+    const { wrapper, queryClient } = createInspectableWrapper();
+    queryClient.setQueryData<ProjectListing>(['projects'], {
+      projects: [
+        { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+      ],
+      conflicts: [],
+      recoveries: [],
+      workspaceBindingRepairs: [],
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const view = renderHook(() => useProjectManager(), { wrapper });
+    try {
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await project.writeFile('.tau/chats/c/chat.json', '{"name":"Current metadata"}');
+      });
+      await waitFor(() => {
+        expect(projectEvents).toContainEqual({ type: 'change', path: '.tau/chats/c/chat.json' });
+      });
+      expect(homeEvents).toEqual([]);
+      expect(
+        new TextDecoder().decode(await provider.readFile('physical-metadata-project/.tau/chats/c/chat.json')),
+      ).toBe('{"name":"Current metadata"}');
+      await waitFor(() => {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chat', 'c'] }, { cancelRefetch: false });
+      });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chats', fakeProject.id] }, { cancelRefetch: false });
+    } finally {
+      view.unmount();
+      stopHome();
+      stopProject();
+      rootWatch.mockRestore();
+      mockWatchRecordFile.mockImplementation(recordWatch);
+      queryClient.clear();
+      service.dispose();
+    }
+  });
+
+  it.each(['initial', 'added'] as const)(
+    'should hold metadata reads until the %s project watch acknowledges registration',
+    async (membership) => {
+      const ready = Promise.withResolvers<void>();
+      mockWatchRecordFile.mockReturnValue({
+        ready: ready.promise,
+        closed: new Promise<void>(() => {
+          /* The fixture keeps the acknowledged watch open. */
+        }),
+        dispose: vi.fn(),
+      });
+      const { wrapper, queryClient } = createInspectableWrapper();
+      const listing: ProjectListing = {
+        projects: [
+          { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+        ],
+        conflicts: [],
+        recoveries: [],
+        workspaceBindingRepairs: [],
+      };
+      queryClient.setQueryData<ProjectListing>(
+        ['projects'],
+        membership === 'initial' ? listing : { ...listing, projects: [] },
+      );
+      const view = renderHook(() => useProjectManager(), { wrapper });
+      let pending: Promise<ChatRecord[]> | undefined;
+      try {
+        if (membership === 'added') {
+          await act(async () => {
+            await Promise.resolve();
+          });
+          expect(mockWatchRecordFile).not.toHaveBeenCalled();
+          act(() => {
+            queryClient.setQueryData<ProjectListing>(['projects'], listing);
+          });
         }
-        emitWorkerChange('directoryCreated', '/test-project');
-      });
-      expect(projectsInvalidations()).toBe(0);
+        await waitFor(() => {
+          expect(mockWatchRecordFile).toHaveBeenCalled();
+        });
+        act(() => {
+          pending = view.result.current.getChatRecordsForResource(fakeProject.id);
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockReadChatRecords).not.toHaveBeenCalled();
+        await act(async () => {
+          ready.resolve();
+          await pending;
+        });
+        expect(mockReadChatRecords).toHaveBeenCalledOnce();
+      } finally {
+        ready.resolve();
+        await pending;
+        view.unmount();
+        queryClient.clear();
+        mockWatchRecordFile.mockImplementation(recordWatch);
+      }
+    },
+  );
 
-      act(() => {
-        vi.advanceTimersByTime(300);
+  it.each(['held', 'failed'] as const)(
+    'should keep healthy project metadata independent of a %s sibling watch',
+    async (failure) => {
+      const siblingReady = Promise.withResolvers<void>();
+      let healthyListener: ((event: WatchEvent) => void) | undefined;
+      mockWatchRecordFile.mockImplementation((path, listener) => {
+        if (path.includes(fakeProject.id)) {
+          healthyListener = listener;
+        }
+        return {
+          ready: path.includes(unrelatedProject.id) ? siblingReady.promise : Promise.resolve(),
+          closed: new Promise<void>(() => {
+            /* The fixture keeps the acknowledged watch open. */
+          }),
+          dispose: vi.fn(),
+        };
       });
-      expect(projectsInvalidations()).toBe(1);
+      const { wrapper, queryClient } = createInspectableWrapper();
+      queryClient.setQueryData<ProjectListing>(['projects'], {
+        projects: [
+          { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+          {
+            manifest: unrelatedProject,
+            library: { projectId: unrelatedProject.id, lastActivityAt: 1 },
+            locator: unrelatedLocator,
+          },
+        ],
+        conflicts: [],
+        recoveries: [],
+        workspaceBindingRepairs: [],
+      });
+      const view = renderHook(() => useProjectManager(), { wrapper });
+      let pending: Promise<ChatRecord[]> | undefined;
+      try {
+        await waitFor(() => {
+          expect(mockWatchRecordFile).toHaveBeenCalledTimes(2);
+        });
+        if (failure === 'failed') {
+          await act(async () => {
+            siblingReady.reject(new Error('Sibling watch refused'));
+          });
+        }
+        act(() => {
+          pending = view.result.current.getChatRecordsForResource(fakeProject.id);
+        });
+        const settled = Promise.allSettled(pending ? [pending] : []);
+        await waitFor(() => {
+          expect(mockReadChatRecords).toHaveBeenCalledOnce();
+        });
+        await expect(pending).resolves.toEqual([]);
+        await settled;
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+        act(() => {
+          healthyListener?.({ type: 'change', path: '.tau/chats/c/chat.json' });
+        });
+        await waitFor(() => {
+          expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chats', fakeProject.id] }, { cancelRefetch: false });
+        });
+      } finally {
+        siblingReady.resolve();
+        view.unmount();
+        await Promise.allSettled(pending ? [pending] : []);
+        queryClient.clear();
+        mockWatchRecordFile.mockImplementation(recordWatch);
+      }
+    },
+  );
 
-      // A later burst is a separate write, not the tail of the first one.
-      act(() => {
-        emitWorkerChange('fileDeleted', '/test-project/tau.json');
-        vi.advanceTimersByTime(300);
+  it('should retry failed project metadata without refetching or reacquiring a healthy sibling', async () => {
+    const failedClosed = Promise.withResolvers<void>();
+    const retryReady = Promise.withResolvers<void>();
+    const open = new Promise<void>(() => {
+      /* Watches remain open until disposal. */
+    });
+    const healthyDispose = vi.fn();
+    let failedRegistrations = 0;
+    mockWatchRecordFile.mockImplementation((path) => {
+      if (path.includes(fakeProject.id)) {
+        return { ready: Promise.resolve(), closed: open, dispose: healthyDispose };
+      }
+      failedRegistrations++;
+      return {
+        ready: failedRegistrations === 1 ? Promise.resolve() : retryReady.promise,
+        closed: failedRegistrations === 1 ? failedClosed.promise : open,
+        dispose: vi.fn(),
+      };
+    });
+    const { wrapper, queryClient } = createInspectableWrapper();
+    queryClient.setQueryData<ProjectListing>(['projects'], {
+      projects: [
+        { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+        {
+          manifest: unrelatedProject,
+          library: { projectId: unrelatedProject.id, lastActivityAt: 1 },
+          locator: unrelatedLocator,
+        },
+      ],
+      conflicts: [],
+      recoveries: [],
+      workspaceBindingRepairs: [],
+    });
+    const view = renderHook(
+      () => ({
+        manager: useProjectManager(),
+        healthy: useChatRecords(fakeProject.id),
+        failed: useChatRecords(unrelatedProject.id),
+      }),
+      { wrapper },
+    );
+    let pendingRetry: Promise<unknown> | undefined;
+    try {
+      await waitFor(() => {
+        expect(view.result.current.healthy.isLoading).toBe(false);
+        expect(view.result.current.failed.isLoading).toBe(false);
+        expect(mockWatchRecordFile).toHaveBeenCalledTimes(2);
       });
-      expect(projectsInvalidations()).toBe(2);
+      await act(async () => {
+        failedClosed.resolve();
+      });
+      await waitFor(() => {
+        expect(view.result.current.failed.error).toBe('Observation connection closed.');
+      });
+      expect(view.result.current.healthy.error).toBeUndefined();
+      const healthyReads = mockReadChatRecords.mock.calls.filter(([id]) => id === fakeProject.id).length;
+      expect(healthyReads).toBeGreaterThan(0);
+      const cancelQueries = vi.spyOn(queryClient, 'cancelQueries');
+      const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+      act(() => {
+        pendingRetry = view.result.current.failed.retry();
+      });
+      await waitFor(() => {
+        expect(failedRegistrations).toBe(2);
+      });
+      expect(healthyDispose).not.toHaveBeenCalled();
+      expect(mockWatchRecordFile.mock.calls.filter(([path]) => path.includes(fakeProject.id))).toHaveLength(1);
+      expect(view.result.current.healthy.error).toBeUndefined();
+      expect(view.result.current.failed.error).toBe('Observation connection closed.');
+      expect(cancelQueries).not.toHaveBeenCalledWith({ queryKey: ['chats', fakeProject.id] });
+      expect(mockReadChatRecords.mock.calls.filter(([id]) => id === fakeProject.id)).toHaveLength(healthyReads);
+      await act(async () => {
+        retryReady.resolve();
+        await pendingRetry;
+      });
+      await waitFor(() => {
+        expect(view.result.current.failed.error).toBeUndefined();
+        expect(view.result.current.manager.metadataObservationError).toBeUndefined();
+      });
+      expect(healthyDispose).not.toHaveBeenCalled();
+      expect(mockWatchRecordFile.mock.calls.filter(([path]) => path.includes(fakeProject.id))).toHaveLength(1);
+      expect(invalidateQueries).not.toHaveBeenCalledWith(
+        { queryKey: ['chats', fakeProject.id] },
+        { cancelRefetch: false },
+      );
+      expect(mockReadChatRecords.mock.calls.filter(([id]) => id === fakeProject.id)).toHaveLength(healthyReads);
     } finally {
-      vi.useRealTimers();
+      retryReady.resolve();
+      view.unmount();
+      await Promise.allSettled(pendingRetry ? [pendingRetry] : []);
+      queryClient.clear();
+      mockWatchRecordFile.mockImplementation(recordWatch);
     }
   });
 
-  it('ignores workspace and project app-state writes so `.tau/**` cannot storm discovery', async () => {
-    const { wrapper, projectsInvalidations } = createCountingWrapper();
-    renderHook(() => useProjectManager(), { wrapper });
-    vi.useFakeTimers();
+  it('keeps scoped chat health independent and retains its own fault through acknowledged retry', async () => {
+    const siblingReady = Promise.withResolvers<void>();
+    const healthyClosed = Promise.withResolvers<void>();
+    const retryReady = Promise.withResolvers<void>();
+    const open = new Promise<void>(() => {
+      /* The remaining watches stay open until disposal. */
+    });
+    let healthyRegistrations = 0;
+    mockWatchRecordFile.mockImplementation((path) => {
+      if (path.includes(unrelatedProject.id)) {
+        return { ready: siblingReady.promise, closed: open, dispose: vi.fn() };
+      }
+      healthyRegistrations++;
+      return {
+        ready: healthyRegistrations === 1 ? Promise.resolve() : retryReady.promise,
+        closed: healthyRegistrations === 1 ? healthyClosed.promise : open,
+        dispose: vi.fn(),
+      };
+    });
+    const record: ChatRecord = {
+      id: 'c',
+      resourceId: fakeProject.id,
+      name: 'Retained metadata',
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    mockReadChatRecords.mockResolvedValue([record]);
+    const { wrapper, queryClient } = createInspectableWrapper();
+    queryClient.setQueryData<ProjectListing>(['projects'], {
+      projects: [
+        { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+        {
+          manifest: unrelatedProject,
+          library: { projectId: unrelatedProject.id, lastActivityAt: 1 },
+          locator: unrelatedLocator,
+        },
+      ],
+      conflicts: [],
+      recoveries: [],
+      workspaceBindingRepairs: [],
+    });
+    const view = renderHook(
+      () => ({
+        manager: useProjectManager(),
+        records: useChatRecords(fakeProject.id),
+      }),
+      { wrapper },
+    );
+    let pendingRetry: Promise<unknown> | undefined;
+    try {
+      await waitFor(() => {
+        expect(view.result.current.records.chats).toEqual([record]);
+      });
+      await act(async () => {
+        siblingReady.reject(new Error('Sibling watch refused'));
+      });
+      await waitFor(() => {
+        expect(view.result.current.manager.metadataObservationError).toContain('Sibling watch refused');
+      });
+      expect(view.result.current.records.error).toBeUndefined();
+      await act(async () => {
+        healthyClosed.resolve();
+      });
+      await waitFor(() => {
+        expect(view.result.current.records.error).toBe('Observation connection closed.');
+      });
+      expect(view.result.current.records.chats).toEqual([record]);
+      act(() => {
+        pendingRetry = view.result.current.records.retry();
+      });
+      await waitFor(() => {
+        expect(healthyRegistrations).toBe(2);
+      });
+      expect(view.result.current.records.error).toBe('Observation connection closed.');
+      await act(async () => {
+        retryReady.resolve();
+        await pendingRetry;
+      });
+      await waitFor(() => {
+        expect(view.result.current.records.error).toBeUndefined();
+      });
+      expect(view.result.current.records.chats).toEqual([record]);
+      expect(view.result.current.manager.metadataObservationError).toContain('Sibling watch refused');
+    } finally {
+      siblingReady.resolve();
+      retryReady.resolve();
+      view.unmount();
+      await Promise.allSettled(pendingRetry ? [pendingRetry] : []);
+      queryClient.clear();
+      mockWatchRecordFile.mockImplementation(recordWatch);
+      mockReadChatRecords.mockImplementation(async () => []);
+    }
+  });
+
+  it('should observe an explicit project before the project inventory is populated', async () => {
+    const ready = Promise.withResolvers<void>();
+    mockWatchRecordFile.mockReturnValue({
+      ready: ready.promise,
+      closed: new Promise<void>(() => {
+        /* The fixture keeps the acknowledged watch open. */
+      }),
+      dispose: vi.fn(),
+    });
+    const { wrapper, queryClient } = createInspectableWrapper();
+    const view = renderHook(() => useProjectManager(), { wrapper });
+    let pending: Promise<ChatRecord[]> | undefined;
     try {
       act(() => {
-        emitWorkerChange('fileWritten', '/.tau/workspace.json');
-        emitWorkerChange('fileWritten', '/.tau/cache/blobs/abc');
-        emitWorkerChange('fileWritten', '/test-project/.tau/library.json');
-        emitWorkerChange('fileWritten', `/projects/${fakeProject.id}/.tau/transcripts/1.json`);
-        emitWorkerChange('fileWritten', '/test-project/main.ts');
-        vi.advanceTimersByTime(300);
+        pending = view.result.current.getChatRecordsForResource(fakeProject.id);
       });
-      expect(projectsInvalidations()).toBe(0);
-
-      // …but a project directory appearing at the workspace root does.
-      act(() => {
-        emitWorkerChange('directoryCreated', '/externally-added-project');
-        vi.advanceTimersByTime(300);
+      await waitFor(() => {
+        expect(mockWatchRecordFile).toHaveBeenCalledWith(
+          `/projects/${fakeProject.id}/.tau/chats`,
+          expect.any(Function),
+          { recursive: true },
+        );
       });
-      expect(projectsInvalidations()).toBe(1);
+      expect(mockReadChatRecords).not.toHaveBeenCalled();
+      await act(async () => {
+        ready.resolve();
+        await pending;
+      });
+      expect(mockReadChatRecords).toHaveBeenCalledOnce();
     } finally {
-      vi.useRealTimers();
+      ready.resolve();
+      view.unmount();
+      await Promise.allSettled(pending ? [pending] : []);
+      queryClient.clear();
+      mockWatchRecordFile.mockImplementation(recordWatch);
     }
   });
 
-  it("invalidates one chat when another device's projected log segment changes", async () => {
+  it('should reject a held metadata read when its provider unmounts', async () => {
+    const ready = Promise.withResolvers<void>();
+    mockWatchRecordFile.mockReturnValue({
+      ready: ready.promise,
+      closed: new Promise<void>(() => {
+        /* The fixture keeps the acknowledged watch open. */
+      }),
+      dispose: vi.fn(),
+    });
+    const { wrapper, queryClient } = createInspectableWrapper();
+    queryClient.setQueryData<ProjectListing>(['projects'], {
+      projects: [
+        { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+      ],
+      conflicts: [],
+      recoveries: [],
+      workspaceBindingRepairs: [],
+    });
+    const view = renderHook(() => useProjectManager(), { wrapper });
+    try {
+      await waitFor(() => {
+        expect(mockWatchRecordFile).toHaveBeenCalled();
+      });
+      const pending = view.result.current.getChatRecordsForResource(fakeProject.id);
+      const refused = expect(pending).rejects.toThrow('Chat observation was disposed.');
+      view.unmount();
+      await refused;
+      expect(mockReadChatRecords).not.toHaveBeenCalled();
+    } finally {
+      ready.resolve();
+      view.unmount();
+      queryClient.clear();
+      mockWatchRecordFile.mockImplementation(recordWatch);
+    }
+  });
+
+  it('should forget a removed project whose old watch rejects after membership changes', async () => {
+    const ready = Promise.withResolvers<void>();
+    const dispose = vi.fn();
+    mockWatchRecordFile.mockReturnValue({
+      ready: ready.promise,
+      closed: new Promise<void>(() => {
+        /* The fixture keeps the acknowledged watch open. */
+      }),
+      dispose,
+    });
+    const { wrapper, queryClient } = createInspectableWrapper();
+    queryClient.setQueryData<ProjectListing>(['projects'], {
+      projects: [
+        { manifest: fakeProject, library: { projectId: fakeProject.id, lastActivityAt: 1 }, locator: fakeLocator },
+      ],
+      conflicts: [],
+      recoveries: [],
+      workspaceBindingRepairs: [],
+    });
+    const view = renderHook(() => useProjectManager(), { wrapper });
+    try {
+      await waitFor(() => {
+        expect(mockWatchRecordFile).toHaveBeenCalled();
+      });
+      await act(async () => {
+        queryClient.setQueryData<ProjectListing>(['projects'], {
+          projects: [],
+          conflicts: [],
+          recoveries: [],
+          workspaceBindingRepairs: [],
+        });
+        ready.reject(new Error('Removed project registration refused'));
+      });
+      await waitFor(() => {
+        expect(dispose).toHaveBeenCalledOnce();
+      });
+      expect(view.result.current.metadataObservationError).toBeUndefined();
+    } finally {
+      ready.resolve();
+      view.unmount();
+      queryClient.clear();
+      mockWatchRecordFile.mockImplementation(recordWatch);
+    }
+  });
+
+  it('ignores unrelated app-state writes and refreshes a project manifest change', async () => {
+    const { wrapper, projectsInvalidations } = createCountingWrapper();
+    renderHook(() => useProjectManager(), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      emitWorkerChange('fileWritten', '/.tau/workspace.json');
+      emitWorkerChange('fileWritten', '/test-project/.tau/library.json');
+      emitWorkerChange('fileWritten', '/test-project/main.ts');
+    });
+    expect(projectsInvalidations()).toBe(0);
+    act(() => {
+      emitWorkerChange('fileWritten', '/test-project/tau.json');
+    });
+    await waitFor(() => {
+      expect(projectsInvalidations()).toBeGreaterThan(0);
+    });
+  });
+
+  it('leaves foreign log observation to the retained chat store', async () => {
     const { wrapper, queryClient } = createInspectableWrapper();
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
     renderHook(() => useProjectManager(), { wrapper });
@@ -1325,9 +2065,8 @@ describe('useProjectManager.createProject', () => {
       emitWorkerChange('fileWritten', `/projects/${fakeProject.id}/.tau/chats/chat_remote/events/device-b.jsonl`);
     });
 
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['chats', fakeProject.id] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['chat', 'chat_remote'] });
-    expect(mockInvalidateChatLog).toHaveBeenCalledWith('chat_remote');
+    expect(invalidateQueries).not.toHaveBeenCalled();
+    expect(mockInvalidateChatLog).not.toHaveBeenCalled();
   });
 
   it('cancels a pending library invalidation when the provider unmounts', async () => {
@@ -1348,7 +2087,7 @@ describe('useProjectManager.createProject', () => {
     }
   });
 
-  it('applies cross-tab route changes immediately and debounces only the refetch', async () => {
+  it('applies cross-tab route changes and coalesces their refetch', async () => {
     const { wrapper, projectsInvalidations } = createCountingWrapper();
     renderHook(() => useProjectManager(), { wrapper });
 
@@ -1357,7 +2096,6 @@ describe('useProjectManager.createProject', () => {
       await Promise.resolve();
     });
     expect(mockSyncProjectRoots).toHaveBeenCalledOnce();
-    expect(projectsInvalidations()).toBe(0);
 
     await act(async () => {
       await vi.waitFor(() => {
@@ -1764,6 +2502,7 @@ describe('useProjectManager.createProject', () => {
       });
     });
     expect(mockCompletePending).not.toHaveBeenCalled();
+    expect(mockRequestHomeStoragePersistence).not.toHaveBeenCalled();
   });
 
   /*
@@ -1833,6 +2572,13 @@ describe('useProjectManager.createProject', () => {
   });
 
   it('uses the filesystem authority commit before restoring local resources and clearing the journal', async () => {
+    // An open browser prompt must not delay project creation.
+    mockRequestHomeStoragePersistence.mockImplementationOnce(
+      async () =>
+        new Promise<undefined>(() => {
+          // Intentionally leave the browser permission request open.
+        }),
+    );
     const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
     await act(async () =>
       result.current.createProject({
@@ -1865,6 +2611,10 @@ describe('useProjectManager.createProject', () => {
       providerBasePath: pendingCreate.providerBasePath,
     });
     expect(phaseOrder).toEqual(['pending', 'commit', 'locator', 'roots', 'resources', 'complete', 'preference']);
+    expect(mockRequestHomeStoragePersistence).toHaveBeenCalledOnce();
+    expect(mockRequestHomeStoragePersistence.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockCompletePending.mock.invocationCallOrder[0]!,
+    );
     expect(mockGetProjectCreationLocation).not.toHaveBeenCalled();
     expect(mockSetProjectCreationLocation).toHaveBeenCalledWith({ kind: 'home' });
   });
@@ -2089,6 +2839,110 @@ describe('useProjectManager.createProject', () => {
       mockResumeResources.mockResolvedValueOnce([operation.chat]);
       return operation;
     };
+
+    it.each(['commit', 'attachment', 'chat'] as const)(
+      'should hold project creation until durable startup input settles at %s',
+      async (phase) => {
+        const bytes = new Uint8Array([1, 2, 3]);
+        const image = await seedHomeAttachment(bytes, 'image/png');
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const hold = async (): Promise<void> => {
+          entered.resolve();
+          await release.promise;
+        };
+        mockPrepareProjectCreation.mockImplementationOnce(prepareWithChat);
+        if (phase === 'commit') {
+          mockCommitPendingProjectDirectory.mockImplementationOnce(async () => {
+            await hold();
+            return { status: 'committed' };
+          });
+        } else if (phase === 'attachment') {
+          mockWriteAttachment.mockImplementationOnce(async (path, content) => {
+            await hold();
+            attachmentFiles.set(path, content);
+          });
+        } else {
+          mockPutChatRecord.mockImplementationOnce(hold);
+        }
+        const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+        let completed = false;
+        let creation: Promise<unknown> = Promise.resolve();
+        await act(async () => {
+          creation = result.current.createProject({
+            kernel: 'openscad',
+            initialMessage: { content: 'Build it', attachments: [image] },
+            location: { kind: 'home' },
+          });
+          await entered.promise;
+        });
+        const completion = async (): Promise<void> => {
+          await creation;
+          completed = true;
+        };
+        const finished = completion();
+        expect(completed).toBe(false);
+        expect(mockCompletePending).not.toHaveBeenCalled();
+        const startup = mockPrepareProjectCreation.mock.calls.at(-1)?.[0].chat.startupRequest;
+        if (startup?.message === undefined) {
+          throw new Error('Expected the prepared startup request to retain its durable message.');
+        }
+        expect(startup.messageId).toBe(startup.message.id);
+        expect(startup.message.parts).toContainEqual({
+          type: 'file',
+          url: `attachments/${image.hash}.png`,
+          mediaType: 'image/png',
+        });
+        if (phase === 'commit') {
+          expect(mockResumeResources).not.toHaveBeenCalled();
+        }
+        if (phase !== 'chat') {
+          expect(mockPutChatRecord).not.toHaveBeenCalled();
+        }
+        await act(async () => {
+          release.resolve();
+          await finished;
+        });
+        expect(completed).toBe(true);
+        expect(mockCompletePending).toHaveBeenCalledWith(operationId);
+        expect(attachmentFiles.get(`${chatAttachments}/${image.hash}.png`)).toEqual(bytes);
+        expect(mockPutChatRecord.mock.calls.at(-1)?.[0]).toMatchObject({ startupRequest: startup });
+      },
+    );
+
+    it('should recover a failed startup chat write without minting a second startup request', async () => {
+      const image = await seedHomeAttachment(new Uint8Array([4, 5, 6]), 'image/png');
+      let persisted = pendingCreate;
+      mockPrepareProjectCreation.mockImplementationOnce(async (input) => {
+        persisted = await prepareWithChat(input);
+        return persisted;
+      });
+      mockPutChatRecord.mockRejectedValueOnce(new Error('chat storage unavailable'));
+      const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+      await expect(
+        act(async () =>
+          result.current.createProject({
+            kernel: 'openscad',
+            initialMessage: { content: 'Build it', attachments: [image] },
+            location: { kind: 'home' },
+          }),
+        ),
+      ).rejects.toMatchObject({ name: 'PendingProjectRecoveryError', reason: 'local-state-error' });
+      const startup = persisted.chat?.startupRequest;
+      expect(startup).toBeDefined();
+      expect(mockCompletePending).not.toHaveBeenCalled();
+      mockGetPendingProjectOperations.mockResolvedValue([persisted]);
+      mockResumeResources.mockResolvedValueOnce([persisted.chat!]);
+      await act(async () => {
+        await result.current.getProjectListing();
+      });
+      await vi.waitFor(() => {
+        expect(mockCompletePending).toHaveBeenCalledWith(operationId);
+      });
+      expect(mockPrepareProjectCreation).toHaveBeenCalledOnce();
+      expect(mockPutChatRecord).toHaveBeenCalledTimes(2);
+      expect(mockPutChatRecord.mock.calls.map(([chat]) => chat.startupRequest?.id)).toEqual([startup?.id, startup?.id]);
+    });
 
     it('copies every draft attachment into the new chat before its startup record is written', async () => {
       const image = await seedHomeAttachment(new Uint8Array([1, 2, 3]), 'image/png');
@@ -2343,6 +3197,98 @@ describe('useProjectManager.createProject', () => {
       }),
     ).rejects.toThrow(/already on this device/iu);
     expect(mockPrepareProjectCreation).not.toHaveBeenCalled();
+  });
+
+  /* R14: a browser that clears its storage drops every file of a Home project
+     but keeps the rows keyed by its id. The library reads `tau.json`, so the
+     project is gone from it, while the surviving route config refused the
+     re-import as "already on this device" with nothing to open. */
+  describe('an id whose Home folder lost every file', () => {
+    const orphanedId = 'proj_ccccccccccccccccccccc';
+    const directory = (id: string): FileTreeNode => ({
+      id,
+      name: id.split('/').pop()!,
+      size: 0,
+      mtimeMs: 0,
+      children: [],
+    });
+    const listings = (tree: Record<string, FileTreeNode[]>) => async (path: string) => {
+      const nodes = tree[path];
+      if (nodes === undefined) {
+        throw new Error(`ENOENT: ${path}`);
+      }
+      return nodes;
+    };
+    const reimport = async (result: { readonly current: ReturnType<typeof useProjectManager> }) =>
+      result.current.createProject({
+        id: orphanedId,
+        project: fakeProject,
+        files: {},
+        chat: false,
+        location: { kind: 'home' },
+      });
+
+    beforeEach(() => {
+      /* The route config survives until something deletes it. */
+      mockGetProjectFileSystemConfig.mockImplementation(async (projectId: string) =>
+        projectId === orphanedId && !mockDeleteProjectFileSystemConfig.mock.calls.some(([id]) => id === orphanedId)
+          ? { projectId, backend: 'opfs', providerBasePath: 'audit-sandbox' }
+          : undefined,
+      );
+    });
+
+    it('should release its rows and import it again (R14)', async () => {
+      mockReadScopedShallowDirectory.mockImplementation(
+        listings({
+          '/': [directory('/audit-sandbox')],
+          '/audit-sandbox': [directory('/audit-sandbox/.git'), directory('/audit-sandbox/.tau')],
+          '/audit-sandbox/.git': [],
+          '/audit-sandbox/.tau': [],
+        }),
+      );
+      const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+
+      await act(async () => reimport(result));
+
+      expect(mockDeleteProjectResources).toHaveBeenCalledWith(orphanedId);
+      expect(mockDeleteProjectFileSystemConfig).toHaveBeenCalledWith(orphanedId);
+      expect(mockDeleteProjectResources).toHaveBeenCalledTimes(1);
+      expect(mockPrepareProjectCreation.mock.calls.map(([input]) => input.manifest.id)).toEqual([orphanedId]);
+    });
+
+    it('should keep refusing while any file of the project is left', async () => {
+      mockReadScopedShallowDirectory.mockImplementation(
+        listings({
+          '/': [directory('/audit-sandbox')],
+          '/audit-sandbox': [directory('/audit-sandbox/.git')],
+          '/audit-sandbox/.git': [
+            { id: '/audit-sandbox/.git/HEAD', name: 'HEAD', size: 23, mtimeMs: 0, contentKind: 'text' },
+          ],
+        }),
+      );
+      const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+
+      await act(async () => {
+        await expect(reimport(result)).rejects.toThrow(`That project is already on this device: ${orphanedId}`);
+      });
+      expect(mockDeleteProjectResources).not.toHaveBeenCalled();
+      expect(mockDeleteProjectFileSystemConfig).not.toHaveBeenCalled();
+      expect(mockPrepareProjectCreation).not.toHaveBeenCalled();
+    });
+
+    it('should keep refusing when the project is discovered somewhere else', async () => {
+      mockReadScopedShallowDirectory.mockImplementation(listings({ '/': [] }));
+      mockListProjectManifests.mockResolvedValue({
+        roots: [{ status: 'complete', root: liveWorkspaceRoot }],
+        entries: [{ status: 'valid', manifest: { ...fakeProject, id: orphanedId }, locator: liveWorkspaceLocator }],
+      });
+      const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+
+      await act(async () => {
+        await expect(reimport(result)).rejects.toThrow(`That project is already on this device: ${orphanedId}`);
+      });
+      expect(mockDeleteProjectResources).not.toHaveBeenCalled();
+    });
   });
 
   /* RV-W11 3: an *Open* racing materialize on sign-in (or a second tab) checks

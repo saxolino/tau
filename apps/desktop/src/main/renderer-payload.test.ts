@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promis
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createPackage } from '@electron/asar';
 import { build } from 'vite';
@@ -136,6 +137,30 @@ describe('Desktop renderer ownership', () => {
     );
   });
 
+  it('should admit public operation errors while rejecting adjacent runtime execution modules', async () => {
+    const paths = await fixture();
+    const rejected = [
+      'packages/runtime/src/framework/cooperative-abort.ts',
+      'packages/runtime/src/framework/kernel-runtime-worker.ts',
+      'packages/plugins/openrscad/src/openrscad.kernel.ts',
+    ];
+    await writeFile(
+      join(paths.renderer, 'tau-module-graph-123.json'),
+      JSON.stringify({
+        chunks: [
+          {
+            fileName: 'renamed.js',
+            moduleIds: ['packages/runtime/src/framework/runtime-operation-errors.ts', ...rejected],
+          },
+        ],
+      }),
+    );
+    const report = await inspectDesktopPayload(paths);
+    expect(report.violations).toEqual(
+      rejected.map((moduleId) => `Renderer execution module in renamed.js: ${moduleId}`).sort(),
+    );
+  });
+
   it('should recognize fingerprinted React Router JSON without exempting appended execution', async () => {
     const paths = await fixture();
     const data = { entry: { module: '/renamed.js' }, routes: {} };
@@ -182,6 +207,24 @@ describe('Desktop renderer ownership', () => {
     ]);
     const report = await inspectDesktopPayload(paths);
     expect(report.violations).toEqual(['Unclassified binary in renderer: hidden.png']);
+  });
+
+  it('should admit gzipped geometry data but reject gzipped WASM and native code', async () => {
+    const paths = await fixture();
+    const wasm = Uint8Array.from(await readFile(clipperSource));
+    await mkdir(join(paths.renderer, 'assets'));
+    await Promise.all([
+      writeFile(join(paths.renderer, 'assets/planetary.bin-123.gz'), gzipSync(new Float32Array([0, 1.5, -2]))),
+      writeFile(join(paths.renderer, 'assets/kernel.bin.gz'), gzipSync(gzipSync(wasm))),
+      writeFile(join(paths.renderer, 'assets/engine.bin.gz'), gzipSync(Buffer.from('7f454c4602010100', 'hex'))),
+      writeFile(join(paths.renderer, 'assets/truncated.bin.gz'), Buffer.from('1f8b0800', 'hex')),
+    ]);
+    const report = await inspectDesktopPayload(paths);
+    expect(report.violations).toEqual([
+      'Compressed executable or archive in renderer: assets/engine.bin.gz',
+      'Compressed executable or archive in renderer: assets/kernel.bin.gz',
+      'Unreadable compressed payload in renderer: assets/truncated.bin.gz',
+    ]);
   });
 
   it('should reject empty, stale, duplicate, and incomplete graph coverage', async () => {
@@ -261,6 +304,10 @@ describe('Desktop renderer ownership', () => {
               'packages/runtime/src/framework/runtime-framework.constants.ts',
               'packages/runtime/src/plugins/plugin-types.ts',
               'packages/plugins/future-kernel/src/index.ts',
+              'packages/plugins/bambu/src/bambu.settings.ts',
+              'packages/plugins/slicer/src/preferences.ts',
+              'packages/plugins/bambu/src/bambu.machine.ts',
+              'packages/plugins/slicer/src/slicer.transcoder.ts',
               'libs/chat/src/schemas/rpc.schema.ts',
               'node_modules/nanoraster/dist/options.mjs',
               'node_modules/nanoraster/dist/render-error.mjs',
@@ -276,6 +323,8 @@ describe('Desktop renderer ownership', () => {
         'Renderer execution module in renamed.js: node_modules/nanoraster/dist/render.mjs',
         'Renderer execution module in renamed.js: packages/runtime/src/framework/kernel-worker.ts',
         'Renderer execution module in renamed.js: packages/plugins/future-kernel/src/index.ts',
+        'Renderer execution module in renamed.js: packages/plugins/bambu/src/bambu.machine.ts',
+        'Renderer execution module in renamed.js: packages/plugins/slicer/src/slicer.transcoder.ts',
       ].sort(),
     );
   });
@@ -348,6 +397,25 @@ describe('Desktop renderer ownership', () => {
     const report = await inspectDesktopPayload(paths);
 
     expect(report.violations).toContain('Web-only metadata in desktop HTML: manifest.webmanifest');
+  });
+
+  it('should admit the KCL WASM in both the editor and the Zoo kernel host', async () => {
+    const paths = await fixture();
+    const kclSource = require.resolve('@taucad/kcl-wasm-lib/kcl.wasm').replaceAll('\\', '/');
+    const kcl = Uint8Array.from(await readFile(kclSource));
+    await writeFile(join(paths.renderer, 'kcl_wasm_lib_bg-123.wasm'), kcl);
+    await writeFile(join(paths.host, 'kcl_wasm_lib_bg-456.wasm'), kcl);
+    await writeFile(
+      join(paths.renderer, 'tau-module-graph-123.json'),
+      JSON.stringify({
+        chunks: [{ fileName: 'renamed.js', moduleIds: ['apps/ui/app/root-layout.tsx'] }],
+        assets: [{ ...asset('kcl_wasm_lib_bg-123.wasm', kcl), sourcePath: kclSource }],
+      }),
+    );
+
+    const report = await inspectDesktopPayload(paths);
+
+    expect(report.violations).toEqual([]);
   });
 
   it('should detect disguised retained WASM and FAT64 binaries', async () => {

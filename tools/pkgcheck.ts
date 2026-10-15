@@ -22,7 +22,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -37,16 +37,21 @@ import {
   emittedSpecifiers,
   hostTargetIssues,
   internalImportsIssues,
+  isJsonTypesDeclaration,
+  knownDeclarationDefects,
   libDependencyIssues,
   packageMetadataIssues,
+  partitionConsumerDiagnostics,
   peerRules,
   peerDependencyIssues,
   pluginRuntimePeerDependencyIssues,
   probedSpecifiers,
+  publishedRawWasmAssets,
   publishableManifestIssues,
   strictConsumerCompilerOptions,
   vendoredAssetIssues,
   vendoredNodeModulesIssues,
+  workerUrlIssues,
   workspaceRangeIssues,
 } from './pkgcheck-metadata.js';
 import type { AssetFile, CopyEntry, UpstreamExport } from './pkgcheck-metadata.js';
@@ -241,7 +246,7 @@ function validateEsmOnlyPackageMetadata(): CheckResult {
   const publishPackage = applyPublishConfig(packageJson);
   const issues: string[] = [];
 
-  function visit(value: unknown, path: string): void {
+  function visit(value: unknown, path: string, jsonTypes = false): void {
     if (Array.isArray(value)) {
       for (const [index, item] of value.entries()) {
         visit(item, `${path}[${String(index)}]`);
@@ -258,7 +263,7 @@ function validateEsmOnlyPackageMetadata(): CheckResult {
         if (path === '$' && key === 'module') {
           issues.push(`${nextPath}: legacy package.json module field is not allowed`);
         }
-        visit(child, nextPath);
+        visit(child, nextPath, key === 'types' && path.startsWith('$.exports.') && isJsonTypesDeclaration(value));
       }
       return;
     }
@@ -273,7 +278,7 @@ function validateEsmOnlyPackageMetadata(): CheckResult {
     if (value.includes('.cjs')) {
       issues.push(`${path}: .cjs output is not allowed (${value})`);
     }
-    if (value.includes('.d.cts')) {
+    if (value.includes('.d.cts') && !jsonTypes) {
       issues.push(`${path}: .d.cts declarations are not allowed (${value})`);
     }
   }
@@ -477,23 +482,6 @@ const internalImportsExceptions: Readonly<Record<string, Readonly<Record<string,
     '#bambu-studio/engine.js':
       'node/default platform swap for the Bambu Studio engine, pinned by src/slicer.plugin.test.ts',
   },
-  '@taucad/geospec-engine': {
-    '#cache/node-evidence-store.js':
-      'browser/default platform swap for the evidence store, pinned by src/browser-import-graph.test.ts',
-    // The canonical map reaches `src/` only, and `.oxlintrc.json` ("no-restricted-imports",
-    // regex `^\.`) bans the relative import that would replace these workspace-wide — so a
-    // directory outside `src/` can only be reached through a key of its own.
-    '#e2e/*.js': 'browser-engine harness outside src/; relative imports are banned workspace-wide',
-    '#experiments/*.js': 'load-path experiments outside src/; relative imports are banned workspace-wide',
-  },
-  '@taucad/geospec-engine-native': {
-    '#native-binding':
-      'workspace NAPI-RS generated types/Node loader and published copied dist loader select a private platform addon outside src',
-    '#mixed-wasm-binding':
-      'workspace generated Emscripten glue and published copied dist glue retain an adjacent external Wasm asset outside src',
-    '#bench/*':
-      'NodeNext benchmark harness lives outside src and workspace lint bans the relative imports that would replace this private development-only alias',
-  },
   '@taucad/openrscad': {
     '#e2e/*.js': 'browser USDZ harness outside src/; relative imports are banned workspace-wide',
   },
@@ -505,6 +493,19 @@ const internalImportsExceptions: Readonly<Record<string, Readonly<Record<string,
   '@taucad/ui': {
     '#components/*.variants.js': 'variant modules are .ts and share components/ with the .tsx components',
     '#components/*.js': 'components are .tsx, which the canonical #*.js -> ./src/*.ts target cannot reach',
+  },
+  // React components and hooks sit beside .ts modules in every viewer directory, so a per-directory key
+  // like the design system's cannot reach them; `.jsx` names the .tsx module as `.js` names the .ts one.
+  '@taucad/viewer': {
+    '#*.jsx': '.tsx components and hooks share every directory with .ts modules; the canonical #*.js reaches only .ts',
+  },
+  // The viewer page builds from app/ into one HTML file (not the plugin's src/ launcher), and its
+  // basic-host harness sits in e2e/; relative imports are banned workspace-wide.
+  '@taucad/agent-plugin': {
+    '#app/*.jsx': 'viewer page .tsx components outside src/, built into dist-app/app.html',
+    '#app/*.js': 'viewer page .ts modules outside src/, built into dist-app/app.html',
+    '#app/*': 'viewer page stylesheet outside src/, imported by its entry',
+    '#e2e/*.js': 'MCP Apps basic-host harness outside src/; relative imports are banned workspace-wide',
   },
 };
 
@@ -673,7 +674,7 @@ function validateVendoredAssets(): CheckResult {
     input: `${destinations.join('\n')}\n`,
     maxBuffer: 64 * 1024 * 1024,
   });
-  if (ignored.error || (ignored.status !== 0 && ignored.status !== 1)) {
+  if (ignored.error ?? (ignored.status !== 0 && ignored.status !== 1)) {
     throw ignored.error ?? new Error(`git check-ignore failed: ${ignored.stderr}`);
   }
   const ignoredPaths = ignored.stdout.split('\n').filter((path) => path.length > 0);
@@ -795,6 +796,17 @@ async function validateDistributionAssets(): Promise<CheckResult> {
       };
 }
 
+/** Every `new Worker(new URL(…, import.meta.url))` in `dist` names a file the build emitted beside its module. */
+function validateWorkerUrls(): CheckResult {
+  const distributionRoot = join(absoluteRoot, 'dist');
+  const emitted = walkDirectory(distributionRoot).map((path) => relative(distributionRoot, path).split(sep).join('/'));
+  const modules = emitted
+    .filter((path) => path.endsWith('.mjs') || path.endsWith('.js'))
+    .map((path) => ({ path, source: readFileSync(join(distributionRoot, path), 'utf8') }));
+  const issues = workerUrlIssues(modules, new Set(emitted));
+  return checkResult('tau-worker-urls', issues, 'every emitted worker URL names an emitted file');
+}
+
 /** `react` -> `@types/react`, `@scope/name` -> `@types/scope__name`. */
 function typesPackageName(dependency: string): string {
   return `@types/${dependency.startsWith('@') ? dependency.slice(1).replace('/', '__') : dependency}`;
@@ -815,6 +827,46 @@ function linkInstalledPackage(from: string, nodeModules: string, dependency: str
   mkdirSync(dirname(destination), { recursive: true });
   symlinkSync(resolved, destination, 'junction');
   return true;
+}
+
+/** Stage the files npm would publish, without running package lifecycle scripts. */
+function copyPackedFiles(source: string, destination: string): void {
+  const output = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    cwd: source,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const packs: unknown = JSON.parse(output);
+  if (!Array.isArray(packs) || packs.length !== 1 || !isRecord(packs[0]) || !Array.isArray(packs[0].files)) {
+    throw new Error(`npm pack returned an invalid file list for ${source}`);
+  }
+
+  const sourceRoot = realpathSync(source);
+  for (const file of packs[0].files) {
+    if (!isRecord(file) || typeof file.path !== 'string') {
+      throw new Error(`npm pack returned an invalid file path for ${source}`);
+    }
+    const { path } = file;
+    if (path === 'package.json') {
+      // The staged manifest must retain publishConfig overrides and omit scripts.
+      continue;
+    }
+    if (
+      path.startsWith('/') ||
+      path.includes('\\') ||
+      path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+    ) {
+      throw new Error(`npm pack returned an unsafe file path: ${path}`);
+    }
+    const fileSource = realpathSync(join(source, path));
+    const relativeSource = relative(sourceRoot, fileSource);
+    if (isAbsolute(relativeSource) || relativeSource.split(sep)[0] === '..') {
+      throw new Error(`npm pack returned a file outside the package: ${path}`);
+    }
+    const fileDestination = join(destination, path);
+    mkdirSync(dirname(fileDestination), { recursive: true });
+    cpSync(fileSource, fileDestination);
+  }
 }
 
 /**
@@ -844,7 +896,7 @@ function stagePublishedPackage(projectDirectory: string, nodeModules: string, st
     // hide exactly the defect `tau-no-vendored-node-modules` exists to catch.
     failures.push(`${name}: dist/node_modules exists; declare the vendored dependencies instead of shipping a copy`);
   } else if (existsSync(distribution)) {
-    cpSync(distribution, join(destination, 'dist'), { recursive: true });
+    copyPackedFiles(projectDirectory, destination);
   } else {
     failures.push(`${name}: dist/ is missing; build it before running pkgcheck`);
   }
@@ -920,7 +972,13 @@ void [
  * check every shipped `.d.mts` under both resolution modes.
  */
 function consumerProbeSource(specifiers: readonly string[]): string {
-  const imports = specifiers.map((specifier, index) => `import * as probe${String(index)} from '${specifier}';`);
+  const { exports } = applyPublishConfig(packageJson);
+  const imports = specifiers.map((specifier, index) => {
+    const subpath = `.${specifier.slice(packageName.length)}`;
+    const target = isRecord(exports) ? exports[subpath] : undefined;
+    const attribute = typeof target === 'string' && target.endsWith('.json') ? ' with { type: "json" }' : '';
+    return `import * as probe${String(index)} from '${specifier}'${attribute};`;
+  });
   const bindings = specifiers.map((_, index) => `probe${String(index)}`);
   const prologue = packageName === '@taucad/runtime' ? runtimeConsumerProbe : '';
   return `${prologue}${imports.join('\n')}\nvoid [${bindings.join(', ')}];\n`;
@@ -965,7 +1023,16 @@ function validateStrictConsumerTypes(): CheckResult {
         });
       } catch (error) {
         const execError = error as { stdout?: string; stderr?: string };
-        failures.push(`${resolution}:\n${`${execError.stdout ?? ''}${execError.stderr ?? ''}`.trim()}`);
+        const { remaining, explained } = partitionConsumerDiagnostics(
+          `${execError.stdout ?? ''}${execError.stderr ?? ''}`,
+          knownDeclarationDefects,
+        );
+        if (explained.length > 0) {
+          notes.push(`${resolution}: ${String(explained.length)} line(s) from a known third-party declaration defect`);
+        }
+        if (remaining.length > 0 || explained.length === 0) {
+          failures.push(`${resolution}:\n${remaining.join('\n')}`);
+        }
       }
     }
   } finally {
@@ -1011,24 +1078,27 @@ async function runAttw(): Promise<CheckResult> {
     delete publishPackage.scripts;
     writeFileSync(join(stagingDirectory, 'package.json'), JSON.stringify(publishPackage, undefined, 2));
 
-    const distributionSource = join(absoluteRoot, 'dist');
-    if (existsSync(distributionSource)) {
-      cpSync(distributionSource, join(stagingDirectory, 'dist'), { recursive: true });
-    }
-
-    const readmeSource = join(absoluteRoot, 'README.md');
-    if (existsSync(readmeSource)) {
-      cpSync(readmeSource, join(stagingDirectory, 'README.md'));
-    }
+    copyPackedFiles(absoluteRoot, stagingDirectory);
 
     const attwConfigSource = join(absoluteRoot, '.attw.json');
     if (existsSync(attwConfigSource)) {
       cpSync(attwConfigSource, join(stagingDirectory, '.attw.json'));
     }
 
+    const rawWasmEntrypoints = publishedRawWasmAssets(publishPackage.exports).map(({ subpath }) =>
+      subpath === '.' ? '.' : subpath.slice(2),
+    );
     const output = execFileSync(
       resolve('node_modules/.bin/attw'),
-      ['--pack', '.', '--format', 'table', '--profile', 'esm-only'],
+      [
+        '--pack',
+        '.',
+        '--format',
+        'table',
+        '--profile',
+        'esm-only',
+        ...(rawWasmEntrypoints.length === 0 ? [] : ['--exclude-entrypoints', ...rawWasmEntrypoints]),
+      ],
       {
         cwd: stagingDirectory,
         encoding: 'utf8',
@@ -1072,6 +1142,7 @@ async function runMadge(): Promise<CheckResult> {
     const result = await madge(join(absoluteRoot, 'src'), {
       fileExtensions: ['ts', 'tsx', 'js', 'jsx'],
       tsConfig: tsconfigPath,
+      detectiveOptions: { ts: { skipTypeImports: true } },
       excludeRegExp: [/\.test\./, /\.spec\./, /\/testing\//],
     });
 
@@ -1101,7 +1172,7 @@ async function runMadge(): Promise<CheckResult> {
 }
 
 async function runSizeLimit(): Promise<CheckResult> {
-  const hasSizeLimitConfig = packageJson['size-limit'] || existsSync(join(absoluteRoot, '.size-limit.json'));
+  const hasSizeLimitConfig = Boolean(packageJson['size-limit']) || existsSync(join(absoluteRoot, '.size-limit.json'));
   if (!hasSizeLimitConfig) {
     // A publishable without a budget is an unbudgeted tarball, not an exemption
     // (npm-policy Rule 7 lists size-limit at error severity).
@@ -1235,7 +1306,7 @@ type ExportRow = {
 
 function buildExportRows(): ExportRow[] {
   const publishPackage = applyPublishConfig(packageJson);
-  const exports = publishPackage['exports'] as ExportsMap | undefined;
+  const exports = publishPackage.exports as ExportsMap | undefined;
   if (!exports) {
     return [];
   }
@@ -1565,6 +1636,9 @@ async function main(): Promise<void> {
   printResult(results.at(-1)!);
 
   results.push(await validateDistributionAssets());
+  printResult(results.at(-1)!);
+
+  results.push(validateWorkerUrls());
   printResult(results.at(-1)!);
 
   results.push(validateBundledArtifact());

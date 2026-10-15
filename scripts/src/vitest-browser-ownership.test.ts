@@ -102,6 +102,11 @@ describe('Vitest Browser test-runner ownership', () => {
   it('confines the direct browser driver and install command to privileged boundaries', () => {
     const allowedDriverFiles = new Set([
       '.agents/skills/audit-ui/scripts/axe-audit.mjs',
+      // The SSR browser gate resolves the installed Chromium executable for Lighthouse.
+      '.github/workflows/ci.yml',
+      // The staging billing harness pays a hosted Stripe Checkout in headless Chromium, which Browser Mode cannot
+      // host; its specs reach the driver only through this module.
+      'apps/billing-e2e/src/support/checkout.ts',
       'apps/desktop-e2e/src/desktop-assimp.spec.ts',
       'apps/desktop-e2e/src/desktop-build123d.spec.ts',
       'apps/desktop-e2e/src/desktop-chat-acp.spec.ts',
@@ -110,10 +115,17 @@ describe('Vitest Browser test-runner ownership', () => {
       'apps/desktop-e2e/src/desktop-converter.spec.ts',
       'apps/desktop-e2e/src/desktop-ephemeral-isolation.spec.ts',
       'apps/desktop-e2e/src/desktop-kernel-utility-cap.spec.ts',
+      'apps/desktop-e2e/src/desktop-machine-profiles.spec.ts',
       'apps/desktop-e2e/src/desktop-main-editor-kernels.spec.ts',
       'apps/desktop-e2e/src/desktop-native-payload.spec.ts',
       'apps/desktop-e2e/src/desktop-print-dry-run.spec.ts',
+      'apps/desktop-e2e/src/desktop-voice.spec.ts',
+      // Native projection scenarios and the launch-helper test stay inside the Electron driver boundary.
+      'apps/desktop-e2e/src/filesystem-projection-observation.spec.ts',
+      'apps/desktop-e2e/src/support/desktop-app.test.ts',
       'apps/desktop-e2e/src/support/desktop-app.ts',
+      'apps/desktop-e2e/src/support/filesystem-projection-delivery.ts',
+      'apps/desktop-e2e/src/support/filesystem-projection-fixture.test.ts',
       'apps/desktop-e2e/src/support/gateway-fixture.ts',
       'apps/desktop-e2e/src/support/revisions-pane.ts',
       'apps/desktop-e2e/src/support/scenario.ts',
@@ -121,13 +133,22 @@ describe('Vitest Browser test-runner ownership', () => {
       'apps/desktop-e2e/src/support/two-client/git-faults.test.ts',
       'apps/desktop-e2e/src/support/two-client/git-faults.ts',
       'apps/desktop-e2e/src/two-client.spec.ts',
+      'apps/docs/scripts/verify-browser.mts',
       'apps/react-e2e/browser-command.ts',
       'apps/react-e2e/scripts/benchmark-bundler-products.mts',
       'apps/ui-e2e/src/support/open-to-frame.ts',
-      'packages/geospec-engine-native/bindings/browser-conformance/qualify-mt-product.mjs',
-      'packages/geospec-engine-native/bindings/browser-conformance/run-browser-conformance.ts',
+      'apps/ui/app/components/panes/pane-resize.vitest.browser.config.ts',
+      // Production SSR audits own isolated no-JavaScript contexts and graphics failure injection.
+      // The story harness imports only the Page type; tooling owns the runtime driver import.
+      'apps/www/scripts/check-story.ts',
+      'apps/www/scripts/tooling.ts',
+      // The agent plugin's host suite serves the viewer page in a sandboxed host frame and drives `tau mcp` over
+      // stdio beside it, which Browser Mode cannot host.
+      'packages/agent-plugin/e2e/viewer-page.hosts.test.ts',
       'scripts/src/canvas-vite.config.test.ts',
       'scripts/src/check-pack-install.ts',
+      // The README hero capture drives the Electron desktop app, which Browser Mode cannot host.
+      'scripts/src/readme-hero-capture.ts',
       'scripts/src/reference-html.test.ts',
       'scripts/src/reference-html.ts',
     ]);
@@ -141,8 +162,21 @@ describe('Vitest Browser test-runner ownership', () => {
 
     expect(driverFiles).toEqual([...allowedDriverFiles].sort());
     // The create-repo template is CI for generated repositories, not a Tau browser-driver site.
+    // The docs deployment gate installs Chromium on the Netlify builder unless one is supplied.
+    // The SSR browser gate and its README install the pinned Chromium used by production audits and Lighthouse.
+    // The staging billing harness workflow installs Chromium for the hosted Checkout its rows pay.
+    // The pkg.pr.new consumer leg and the publish dry-run spike install Chromium for check-pack-install's browser checks.
     expect(installFiles.sort()).toEqual(
-      ['.agents/skills/create-repo/templates/ci.yml', '.github/workflows/ci.yml'].sort(),
+      [
+        '.agents/skills/create-repo/templates/ci.yml',
+        '.github/workflows/billing-staging-e2e.yml',
+        '.github/workflows/ci.yml',
+        '.github/workflows/e2e-nightly.yml',
+        '.github/workflows/preview-packages.yml',
+        '.github/workflows/spike-publish-dry-run.yml',
+        'apps/docs/project.json',
+        'apps/www/README.md',
+      ].sort(),
     );
   });
 
@@ -192,15 +226,28 @@ describe('Vitest Browser test-runner ownership', () => {
         'apps/react-e2e/vitest.bundlers.config.ts',
         'apps/react-e2e/vitest.config.ts',
         'apps/ui-e2e/vitest.config.ts',
+        'apps/ui/app/components/chat/chat-message-queue.vitest.browser.config.ts',
+        'apps/ui/app/components/chat/chat-textarea.vitest.browser.config.ts',
+        'apps/ui/app/components/code/code-editor.vitest.browser.config.ts',
+        'apps/ui/app/components/geometry/viewer-resize.vitest.browser.config.ts',
+        'apps/ui/app/components/panes/editor-layout.vitest.browser.config.ts',
+        'apps/ui/app/components/panes/pane-resize.vitest.browser.config.ts',
         'apps/ui/app/components/printer/printer.vitest.browser.config.ts',
+        'apps/ui/app/routes/w.$workspace.$project/chat-history.vitest.browser.config.ts',
         'apps/ui/app/routes/w.$workspace.$project/chat-print.vitest.browser.config.ts',
+        'apps/ui/app/routes/w.$workspace.$project/chat-viewer.vitest.browser.config.ts',
         'apps/ui/app/workers/agent-host.vitest.browser.config.ts',
+        'apps/ui/chat-revision-marker.vitest.browser.config.ts',
         'packages/agent-host/vitest.browser.config.ts',
-        'packages/geospec-engine/e2e/vitest.config.ts',
+        'packages/core/bundler/vitest.browser.config.ts',
         'packages/plugins/openrscad/e2e/vitest.config.ts',
         'packages/plugins/rolldown/vitest.browser.benchmark.config.ts',
         'packages/plugins/rolldown/vitest.browser.config.ts',
         'packages/plugins/rolldown/vitest.browser.nonisolated.config.ts',
+        'packages/ui/vitest.browser.config.ts',
+        'packages/viewer/src/graphics/svg/svg-viewer.vitest.browser.config.ts',
+        'packages/viewer/src/graphics/three/utils/gltf-batches.vitest.browser.config.ts',
+        'packages/viewer/src/graphics/three/viewer-resize.vitest.browser.config.ts',
       ].sort(),
     );
 

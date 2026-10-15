@@ -28,13 +28,27 @@ const saveRequest = vi.fn(async () => undefined);
 const toastFailures: unknown[] = [];
 
 const cadActor = {
-  getSnapshot: () => ({ context: { geometry: geometryFormat ? { format: geometryFormat } : undefined } }),
+  getSnapshot: () => ({
+    context: {
+      rendering: geometryFormat
+        ? {
+            success: true,
+            artifact: {
+              mimeType: geometryFormat === 'svg' ? 'image/svg+xml' : 'model/gltf-binary',
+              content: geometryFormat === 'svg' ? '<svg xmlns="http://www.w3.org/2000/svg" />' : new Uint8Array([1]),
+            },
+          }
+        : undefined,
+    },
+  }),
   on: () => ({ unsubscribe: vi.fn() }),
 };
 const graphicsActor = {
   getSnapshot: () => ({ context: { cameraState } }),
 };
 
+vi.mock('#hooks/use-project-availability.js', () => ({ useProjectAvailability: () => 'ready' }));
+vi.mock('#hooks/use-publish-cloud-project-preview.js', () => ({ usePublishCloudProjectPreview: () => vi.fn() }));
 vi.mock('@xstate/react', () => ({
   useSelector: (actor: { getSnapshot: () => unknown } | undefined, selector: (state: unknown) => unknown) =>
     selector(actor?.getSnapshot()),
@@ -69,13 +83,13 @@ vi.mock('#hooks/use-project.js', () => ({
 
 vi.mock('#services/headless-capture.js', () => ({ captureCadImages, omittedSectionCutsNotice }));
 
-vi.mock('#hooks/use-graphics.js', () => ({
+vi.mock('@taucad/viewer/hooks/use-graphics', () => ({
   useGraphicsCameraRigQuery: () => {
     const _version = cameraRegistryVersion;
     return () => Boolean(cameraState) && _version >= 0;
   },
 }));
-vi.mock('#services/graphics-camera-registry.js', () => ({
+vi.mock('@taucad/viewer/services/graphics-camera-registry', () => ({
   hasGraphicsCameraRig: () => Boolean(cameraState),
   getGraphicsCameraState: () => cameraState,
 }));

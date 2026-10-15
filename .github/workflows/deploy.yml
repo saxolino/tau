@@ -17,8 +17,8 @@
 #   3. Push the resulting image to `registry.fly.io/<app>:<sha>` and deploy
 #      it via `flyctl deploy --image ...` so Fly.io skips its own builder.
 #
-# UI is on Netlify: staging builds from `main`, production from git branch
-# `production`. See docs/architecture/ui-deployment-topology.md.
+# The UI is built in Actions and published to Netlify by `deploy-ui.yml`.
+# See docs/architecture/ui-deployment-topology.md.
 
 name: Deploy to Fly.io
 
@@ -58,6 +58,22 @@ jobs:
     concurrency: deploy-${{ inputs.app }}-${{ inputs.environment }}
 
     steps:
+      # Production deploys run at a release tag: called by release-build.yml in
+      # the release's own run, or dispatched by deploy-production.yml for a
+      # rollback or redeploy. A person dispatching this workflow directly is
+      # refused. (In a called workflow, `github.workflow_ref` names the caller.)
+      - name: Require a production deploy from a release
+        if: inputs.environment == 'production' && contains(github.workflow_ref, '/.github/workflows/deploy.yml@')
+        env:
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$TRIGGERING_ACTOR" != 'github-actions[bot]' ] || ! [[ "$REF" =~ ^refs/tags/api@[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Production deploys come from a release: merge its release pull request, or roll back with Deploy release to production (deploy-production.yml)."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -93,10 +109,10 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Authenticate to registry.fly.io
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: registry.fly.io
           username: x
@@ -116,7 +132,18 @@ jobs:
           secrets: |
             nx_cloud_token=${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
 
+      # Each push to `main` runs on its own, so an older run can reach this queue
+      # after a newer one has deployed; it must not put its commit back.
+      - name: Skip a staging deploy a newer commit has superseded
+        id: superseded
+        if: inputs.environment == 'staging'
+        uses: ./.github/actions/staging-deploy-superseded
+        with:
+          job-name: Deploy ${{ inputs.app }} to ${{ inputs.environment }}
+          github-token: ${{ github.token }}
+
       - name: Deploy prebuilt image to Fly.io
+        if: steps.superseded.outputs.superseded != 'true'
         run: |
           echo "Deploying ${{ steps.targets.outputs.image }} to ${{ inputs.environment }}"
           flyctl deploy \
@@ -126,11 +153,20 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+      # The plan of the next push to `main` diffs the app against this commit.
+      - name: Record this staging deploy
+        if: inputs.environment == 'staging' && steps.superseded.outputs.superseded != 'true'
+        uses: ./.github/actions/staging-deploy-history
+        with:
+          mode: record
+          app: ${{ inputs.app }}
+
       # Post-deploy CORS smoke test (R13). Catches regressions like the
       # 4-month-undetected api.taucad.dev cert/app misalignment described in
       # `docs/research/staging-cors-coep-safari-rendering-audit.md` Finding
       # 11. Per user instruction this is post-deploy only — no daily cron.
       - name: Verify CORS reachability
+        if: steps.superseded.outputs.superseded != 'true'
         run: bash scripts/src/smoke-cors.sh
         env:
           API_URL: ${{ steps.targets.outputs.api_url }}

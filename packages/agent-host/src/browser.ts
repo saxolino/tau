@@ -1,3 +1,4 @@
+import type { FileStatOptions } from '@taucad/filesystem';
 import { EventLogError } from '#log/event-log-error.js';
 import { createEventLogAppender } from '#log/event-log-appender.js';
 import type { EventLogAppender, EventLogStorage } from '#log/event-log-appender.js';
@@ -50,6 +51,8 @@ export type ProviderEventLogOptions = {
     writeFile(path: string, data: Uint8Array<ArrayBuffer> | string): Promise<void>;
     appendFile?(path: string, data: Uint8Array<ArrayBuffer> | string): Promise<void>;
     unlink(path: string): Promise<void>;
+    /** Current durable byte size; omission retains the full-read compatibility fallback. */
+    stat?(path: string, options: FileStatOptions): Promise<{ readonly size: number }>;
   };
 };
 
@@ -236,8 +239,23 @@ export async function createProviderEventLog(
       const bytes = await fileSystem.readFile(filePath);
       await fileSystem.writeFile(filePath, bytes.slice(0, size));
     },
-    // ponytail: size by reading the file; a provider `stat` would save the read when logs grow large.
     size: async () => {
+      if (fileSystem.stat) {
+        try {
+          const stat = await fileSystem.stat(filePath, { content: 'head' });
+          return stat.size;
+        } catch (error) {
+          if (
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+          ) {
+            return 0;
+          }
+          throw error;
+        }
+      }
       const bytes = await readBytes();
       return bytes.byteLength;
     },
@@ -292,6 +310,20 @@ export type BrowserChatStoreOptions = Readonly<{
         /** The provider's durability class, stamped on each admission; `stream-append` when absent. */
         durability?: StorageDurabilityClass | undefined;
       }>;
+  /**
+   * Rooted observation of a project-relative log path. Resolve only once delivery is acknowledged; report lost
+   * delivery through onError, and release registration on abort. Notifications never substitute for fresh bytes.
+   */
+  observeLog?:
+    | ((
+        input: Readonly<{
+          path: string;
+          signal: AbortSignal;
+          onChange: () => void;
+          onError: (error: unknown) => void;
+        }>,
+      ) => Promise<() => void>)
+    | undefined;
   /**
    * The page's visibility, relayed to the worker: a hidden page never queues for a chat's lock (RH-R16), and a page
    * shown again re-arms the heartbeat bounds it may have been frozen through.
@@ -378,6 +410,10 @@ export const createBrowserChatStore = (options: BrowserChatStoreOptions): ChatSt
     };
     return createChatStore({
       platform: 'browser',
+      observeBytes:
+        options.observeLog === undefined
+          ? undefined
+          : async (chatId, input) => options.observeLog!({ ...input, path: logPath(chatId) }),
       durability: 'exclusive-append',
       attachments: { read: async (chatId, path) => bytesOf(chatAttachmentPath(chatId, path)) },
       readBytes: async (chatId) => (await bytesOf(logPath(chatId))) ?? new Uint8Array(),
@@ -391,6 +427,10 @@ export const createBrowserChatStore = (options: BrowserChatStoreOptions): ChatSt
   const { fileSystem } = log;
   return createChatStore({
     platform: 'browser',
+    observeBytes:
+      options.observeLog === undefined
+        ? undefined
+        : async (chatId, input) => options.observeLog!({ ...input, path: logPath(chatId) }),
     durability: log.durability ?? 'stream-append',
     attachments: createProviderAttachmentReader(fileSystem),
     readBytes: async (chatId) => {

@@ -25,6 +25,7 @@ const cappedModelIds = [
   'openai-gpt-5.6-terra',
   'openai-gpt-5.6-luna',
   'openai-gpt-5.5',
+  'google-gemini-4-argon',
   'google-gemini-3.1-pro',
   'google-gemini-3.8-flash',
   'google-gemini-3.5-flash-lite',
@@ -51,7 +52,7 @@ const pdfInputModelIds = [
   'anthropic-claude-sonnet-5.5',
   'anthropic-claude-sonnet-5',
   'anthropic-claude-sonnet-4.6',
-  'anthropic-claude-haiku-4.5',
+  'anthropic-claude-haiku-5.5',
   'openai-gpt-6-astra',
   'openai-gpt-6-sol',
   'openai-gpt-6-luna',
@@ -320,6 +321,22 @@ describe('ModelService', () => {
     expect(modelList.openai['gpt-6-astra']?.recommended).toBe(true);
   });
 
+  it('should list Gemini 4 Argon with image input and selectable reasoning', async () => {
+    const listedModels = await createModelService().getModels();
+    const argon = listedModels.find((model) => model.id === 'google-gemini-4-argon');
+
+    expect(argon).toMatchObject({
+      model: 'gemini-4-argon',
+      provider: { id: 'vertexai', name: 'Google' },
+      support: {
+        tools: true,
+        toolChoice: false,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        reasoning: { levels: ['low', 'medium', 'high'] },
+      },
+    });
+  });
+
   it('recommends Gemini 3.8 Flash instead of the Gemini 3.5 models', async () => {
     const service = createModelService();
     const listedModels = await service.getModels();
@@ -447,8 +464,8 @@ describe('ModelService', () => {
     expect(
       service.filterProviderToolNamesForModel({
         modelId: 'together-glm-5.2',
-        toolNames: [toolName.screenshot, toolName.testModel, toolName.getKernelResult, toolName.exportGeometry],
+        toolNames: [toolName.screenshot, toolName.testModel, toolName.evaluateModel, toolName.exportModel],
       }),
-    ).toEqual([toolName.testModel, toolName.getKernelResult, toolName.exportGeometry]);
+    ).toEqual([toolName.testModel, toolName.evaluateModel, toolName.exportModel]);
   });
 });

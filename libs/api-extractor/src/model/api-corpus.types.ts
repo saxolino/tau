@@ -131,7 +131,7 @@ export type ApiEntry = {
   readonly path?: string;
   /** Curated grouping. Becomes one T3 shard. */
   readonly category?: string;
-  /** Callables only. Length greater than one means overloads. */
+  /** Source declarations, including non-callable construction/accessor details. Multiple signatures describe overloads. */
   readonly signatures?: readonly ApiSignature[];
   /** Non-callables: the declared type. */
   readonly type?: ApiTypeRef;
@@ -140,6 +140,10 @@ export type ApiEntry = {
   readonly deprecated?: string | true;
   readonly visibility?: 'public' | 'protected';
   readonly static?: boolean;
+  /** A property that may be absent (`name?: T`). */
+  readonly optional?: boolean;
+  /** A property that cannot be assigned (`readonly name: T`, or a getter without a setter). */
+  readonly readonly?: boolean;
   readonly source?: ApiSource;
   /** Class and namespace members. Members are addressable through their own ids. */
   readonly members?: readonly ApiEntry[];

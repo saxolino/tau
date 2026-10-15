@@ -225,9 +225,20 @@ export const createCanvasConfig = (
       {
         name: 'tau-canvas-styles',
         enforce: 'pre',
-        resolveId: (source, importer) => {
+        async resolveId(source, importer) {
           if (source === 'package.json' && importer?.startsWith(`${appRoot}${sep}`)) {
             return resolve(appRoot, '../package.json');
+          }
+          // Brain canvases share the app's dependency graph, including provider singletons,
+          // whether Brain lives inside this checkout or outside a linked worktree.
+          if (
+            importer?.startsWith(`${realpathSync(allowedRoot)}${sep}`) &&
+            !source.startsWith('.') &&
+            !source.startsWith('/') &&
+            !source.startsWith('#') &&
+            !source.startsWith('\0')
+          ) {
+            return this.resolve(source, resolve(appRoot, 'root.tsx'), { skipSelf: true });
           }
           if (!source.startsWith('#') || !importer) {
             return undefined;

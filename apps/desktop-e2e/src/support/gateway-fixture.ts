@@ -34,11 +34,11 @@ import { desktopE2EProviderStubUrl } from '#support/config.js';
  */
 
 /** The catalog row the deterministic specs drive, and the wire it speaks. */
-export const gatewayFixtureModelName = 'Haiku 4.5';
+export const gatewayFixtureModelName = 'Haiku 5.5';
 /** The same row's catalog id — what a client sends, and all the gateway accepts. */
-export const gatewayFixtureModelId = 'anthropic-claude-haiku-4.5';
+export const gatewayFixtureModelId = 'anthropic-claude-haiku-5.5';
 /** The supplier id the gateway rewrites that row to; what this stub must receive. */
-export const gatewayFixtureSupplierModelId = 'claude-haiku-4-5-20251001';
+export const gatewayFixtureSupplierModelId = 'claude-haiku-5-5';
 
 /** The assistant's opening line, before the tool call. */
 export const gatewayFixtureOpeningText = 'Browser host started the workspace change.';
@@ -73,6 +73,12 @@ export type GatewayFixtureToolCall = {
 
 /** Optional multi-round tool script; the existing single-file input remains the default. */
 export type GatewayFixtureScript = {
+  /** Distinct provider text deltas, optionally selected by stable upstream request ordinal. */
+  readonly textChunks?: readonly string[] | ((request: number) => readonly string[]);
+  /** Await independently controlled output gates before each delta with its stable request ordinal. */
+  readonly beforeTextChunk?: (index: number, request: number) => Promise<void>;
+  /** Hold provider settlement after the last visible delta. */
+  readonly beforeFinish?: (request: number) => Promise<void>;
   /**
    * The tool calls one turn emits, in order.
    *
@@ -80,7 +86,7 @@ export type GatewayFixtureScript = {
    * chat can write *different* bytes. Replaying the same arguments is not
    * neutral: a byte-identical rewrite settles as `turn.finalized` with no
    * changed paths (nothing to save, so no revision marker), and two turns of
-   * identical `create_file`/`get_kernel_result` pairs are exactly the four-event
+   * identical `create_file`/`evaluate_model` pairs are exactly the four-event
    * alternation the host's `ping_pong` safeguard nudges on
    * (`packages/agent-host/src/harness/safeguards.ts:397-416`).
    */
@@ -198,6 +204,7 @@ export const startGatewayFixture = async (
 ): Promise<GatewayFixture> => {
   const script: GatewayFixtureScript['toolCalls'] =
     'toolCalls' in input ? input.toolCalls : [{ name: 'create_file', input }];
+  const output = 'toolCalls' in input ? input : undefined;
   const gatewayRequests: unknown[] = [];
   const supplierModels: string[] = [];
   const supplierBetas: Array<string | undefined> = [];
@@ -293,11 +300,20 @@ export const startGatewayFixture = async (
           index: 0,
           content_block: { type: 'text', text: '' },
         });
-        writeEvent('content_block_delta', {
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'text_delta', text: closing ? gatewayFixtureFinalText : gatewayFixtureOpeningText },
-        });
+        const scriptedChunks = output?.textChunks;
+        const textChunks = (typeof scriptedChunks === 'function' ? scriptedChunks(index) : scriptedChunks) ?? [
+          closing ? gatewayFixtureFinalText : gatewayFixtureOpeningText,
+        ];
+        for (const [chunkIndex, text] of textChunks.entries()) {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Each independent gate preserves provider delta order.
+          await output?.beforeTextChunk?.(chunkIndex, index);
+          writeEvent('content_block_delta', {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text },
+          });
+        }
+        await output?.beforeFinish?.(index);
         writeEvent('content_block_stop', { type: 'content_block_stop', index: 0 });
         if (closing) {
           writeEvent('message_delta', {
@@ -419,7 +435,7 @@ type WireToolResult = {
  * Every failed `tool_result` in the given forwarded requests, bounded so the
  * failure message stays readable.
  *
- * The agent's runtime tools (`get_kernel_result`, `screenshot`, `test_model`)
+ * The agent's runtime tools (`evaluate_model`, `screenshot`, `test_model`)
  * run in the services utility, and a request main refuses answers the agent
  * with an *error result* rather than a failed run — so every other assertion in
  * a row still passes while the tool never touched the kernel. This is the seam
@@ -475,7 +491,7 @@ const toolResultText = (content: unknown): string => {
 
 /** One `tool_result`, paired with the call it answered. */
 export type GatewayToolResult = {
-  /** The tool the agent called, e.g. `get_kernel_result`. */
+  /** The tool the agent called, e.g. `evaluate_model`. */
   readonly name: string;
   /** The provider's `is_error` flag. */
   readonly isError: boolean;

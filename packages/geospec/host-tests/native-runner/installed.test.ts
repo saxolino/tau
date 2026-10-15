@@ -12,6 +12,8 @@ import type {
   GeoSpecCanonicalClaimReport,
   GeoSpecNativeEngine,
 } from 'geospec/assertion-client';
+// oxlint-disable-next-line no-restricted-imports -- The installed harness reads its local frozen fixture closure without workspace aliases.
+import { readFixture as readFrozenFixture } from '../fixtures/read-fixture.mjs';
 
 type NativeModule = {
   Engine: new () => GeoSpecNativeEngine & {
@@ -30,7 +32,6 @@ type InstalledClientModule = {
 type CurrentMesh = { id: string; effectiveRequestUtf8: string; expectedUtf8: string; meshContentHash: string };
 type OriginalMesh = { id: string; meshHex: string };
 
-const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const fixtureRoot = fileURLToPath(new URL('.', import.meta.url));
 const entryPath = 'ordinary.geospec.ts';
 const installedRoot = process.env['GEOSPEC_INSTALLED_CONSUMER_ROOT'];
@@ -90,19 +91,17 @@ for (const route of routes) {
   describe(route.name, () => {
     it('ordinary VM assertions equal the installed standalone client', async () => {
       const packageRoot = resolve(installedRoot, 'node_modules');
-      const modulePath = resolve(packageRoot, '@taucad/geospec-engine-native/dist', `${route.entry}.mjs`);
+      const modulePath = resolve(packageRoot, 'geospec-engine/dist', `${route.entry}.mjs`);
       const native = (await import(/* @vite-ignore */ pathToFileURL(modulePath).href)) as NativeModule;
       await native.initialize?.();
       const standalonePath = resolve(packageRoot, 'geospec/dist/assertion-client/index.mjs');
       const standalone = (await import(/* @vite-ignore */ pathToFileURL(standalonePath).href)) as InstalledClientModule;
-      const currentBytes = await readFile(
-        resolve(root, 'packages/geospec-engine-native/rust/tests/fixtures/current-profile-01/plan-corpus.json'),
+      const currentBytes = readFrozenFixture(
+        'packages/geospec-engine-native/rust/tests/fixtures/current-profile-01/plan-corpus.json',
       );
       expect(sha256(currentBytes)).toBe('eb8b42f1591fd2bd695228cdaa3abc4108b411717c468a9e97b724654616221d');
       const current = JSON.parse(currentBytes.toString()) as { meshes: CurrentMesh[] };
-      const originalBytes = await readFile(
-        resolve(root, 'packages/geospec-engine-native/conformance/early-corpus.json'),
-      );
+      const originalBytes = readFrozenFixture('packages/geospec-engine-native/conformance/early-corpus.json');
       expect(sha256(originalBytes)).toBe('3d43750d055dceec2b7d57c92d4a953c4f7dcd40c2abb1452a82de83ea729476');
       const original = JSON.parse(originalBytes.toString()) as { meshes: OriginalMesh[] };
       const mesh = current.meshes.find((candidate) => candidate.id === 'asymmetric')!;
@@ -116,10 +115,28 @@ for (const route of routes) {
           mesh.expectedUtf8,
         );
         const subject = { contentHash: mesh.meshContentHash };
+        const loadedSubject = {
+          ...subject,
+          load: {
+            loadId: 'fixture-load',
+            status: 'complete',
+            format: 'mesh-buffer-v1',
+            parameters: {},
+            ingestOptions: {},
+            artifacts: [
+              { name: 'frozen-asymmetric.gsm1', sha256: sha256(meshBytes), byteLength: meshBytes.byteLength },
+              {
+                name: 'frozen-asymmetric-ingest.json',
+                sha256: sha256(encoder.encode(mesh.effectiveRequestUtf8)),
+                byteLength: encoder.encode(mesh.effectiveRequestUtf8).byteLength,
+              },
+            ],
+          },
+        } as const;
         const builtinModules = {
           'native-subject': {
             version: '1',
-            code: `export const subject = ${JSON.stringify(subject)}; export const bounds = ${JSON.stringify(bounds)}; export const wrongBounds = ${JSON.stringify(wrongBounds)};`,
+            code: `export const bounds = ${JSON.stringify(bounds)}; export const wrongBounds = ${JSON.stringify(wrongBounds)};`,
           },
         };
         const options = { engine, workUnitLimit: 15 };
@@ -131,6 +148,12 @@ for (const route of routes) {
           entryPath,
           builtinModules,
           nativeAssertions: options,
+          nativeModelLoader: async (loadOptions) => {
+            if (!('source' in loadOptions) || loadOptions.source !== 'frozen-asymmetric.gsm1') {
+              throw new Error(`Unexpected frozen mesh source: ${JSON.stringify(loadOptions)}`);
+            }
+            return loadedSubject;
+          },
           testNamePattern:
             '^native ordinary > (awaited pass|positive failure|negative pass|negative failure|unawaited pass)$',
         });
@@ -150,16 +173,22 @@ for (const route of routes) {
           entryPath,
           builtinModules,
           nativeAssertions: { ...options, workUnitLimit: 14 },
+          nativeModelLoader: async (loadOptions) => {
+            if (!('source' in loadOptions) || loadOptions.source !== 'frozen-asymmetric.gsm1') {
+              throw new Error(`Unexpected frozen mesh source: ${JSON.stringify(loadOptions)}`);
+            }
+            return loadedSubject;
+          },
           testNamePattern: '^native ordinary > ordinary budget refusal$',
         });
         if (!refused.success) {
           throw new Error(JSON.stringify(refused.issues));
         }
         expect(refused.passed).toBe(false);
-        expect(refused.tests[0]?.status).toBe('failed');
-        expect(refused.tests[0]?.assertions[0]?.nativeReport?.status).toBe('refused');
+        expect(refused.tests[0]?.status).toBe('inconclusive');
+        expect(refused.tests[0]?.assertions[0]?.report?.status).toBe('refused');
         const assertions: GeoSpecAssertion[] = [...run.tests, ...refused.tests].flatMap((test) => test.assertions);
-        expect(assertions.map((assertion) => assertion.nativeReport?.status)).toEqual([
+        expect(assertions.map((assertion) => assertion.report?.status)).toEqual([
           'passed',
           'failed',
           'passed',
@@ -169,7 +198,7 @@ for (const route of routes) {
           'refused',
         ]);
         for (const assertion of assertions) {
-          const report = assertion.nativeReport!;
+          const report = assertion.report!;
           const client = standalone.createGeoSpecAssertionClient({
             ...options,
             claimId: () => report.claimId,
@@ -178,8 +207,7 @@ for (const route of routes) {
           const chain = report.polarity === 'negative' ? client.expectGeo(subject).not : client.expectGeo(subject);
           let reference: GeoSpecCanonicalClaimReport;
           try {
-            // oxlint-disable-next-line no-await-in-loop -- Compare each recorded claim with its standalone counterpart in deterministic order.
-            reference = await chain.toHaveBoundingBox(assertion.expected as typeof bounds);
+            reference = chain.toHaveBoundingBox(assertion.expected as typeof bounds);
           } catch (error) {
             reference = (error as { report: GeoSpecCanonicalClaimReport }).report;
           }
@@ -205,7 +233,7 @@ for (const route of routes) {
                   status: test.status,
                   diagnostics: test.diagnostics,
                 })),
-                reports: assertions.map((assertion) => reportBytes(assertion.nativeReport!)),
+                reports: assertions.map((assertion) => reportBytes(assertion.report!)),
               },
               null,
               2,

@@ -23,7 +23,7 @@ import { createActor } from 'xstate';
 
 import { NodeFsProvider } from '@taucad/filesystem/backend/node';
 import { walk } from '@taucad/filesystem/content-ops';
-import type { FileMode, FileStatEntry, RootedFileSystem } from '@taucad/filesystem';
+import type { FileMode, FileStatEntry } from '@taucad/filesystem';
 
 import { captureRevisionTree, ImmutableRevisionTree, revisionId } from '#algorithms/index.js';
 import { createApplyTreeEffects } from '#apply-tree.js';
@@ -32,7 +32,7 @@ import { createIsomorphicGitRevisionPort } from '#isomorphic-git-adapter.js';
 import type { Checkout, RevisionPort } from '#revision-port.js';
 import { RevisionPortError } from '#revision-port.js';
 import { createRevisionActors } from '#revision-effects.js';
-import type { RevisionActors } from '#revision-effects.js';
+import type { RevisionActors, RevisionFileSystem } from '#revision-effects.js';
 import { tauRevisionPolicy } from '#workspace-config.js';
 import { StepClock } from '@taucad/xstate-testing/clock';
 
@@ -116,7 +116,7 @@ type CountingOptions = Readonly<{
 const countingCheckout = (
   real: NodeFsProvider,
   options: CountingOptions,
-): Readonly<{ checkout: RootedFileSystem; counts: Counts; reset: () => void }> => {
+): Readonly<{ checkout: RevisionFileSystem; counts: Counts; reset: () => void }> => {
   const counts: Counts = { reads: 0, rootListings: 0, writeFile: 0, writeFiles: 0, mutations: 0, calls: [] };
   const mutate = async <Result>(call: string, operation: () => Promise<Result>): Promise<Result> => {
     counts.mutations += 1;
@@ -148,7 +148,7 @@ const countingCheckout = (
     readFile: (async (path: string, encoding?: 'utf8') => {
       counts.reads += 1;
       return encoding === undefined ? real.readFile(pathOf(path)) : real.readFile(pathOf(path), encoding);
-    }) as RootedFileSystem['readFile'],
+    }) as RevisionFileSystem['readFile'],
     readFileStream: (path: string, streamOptions?: Parameters<NodeFsProvider['readFileStream']>[1]) => {
       counts.reads += 1;
       return real.readFileStream(pathOf(path), streamOptions);
@@ -184,7 +184,7 @@ const countingCheckout = (
       : {}),
   };
   return {
-    checkout: Object.assign(Object.create(real) as RootedFileSystem, counted),
+    checkout: Object.assign(Object.create(real) as RevisionFileSystem, counted),
     counts,
     reset: () => {
       counts.reads = 0;
@@ -214,7 +214,7 @@ const project = async (
 ): Promise<
   Readonly<{
     tree: NodeFsProvider;
-    checkout: RootedFileSystem;
+    checkout: RevisionFileSystem;
     counts: Counts;
     port: RevisionPort;
     reset: () => void;
@@ -259,7 +259,7 @@ const liveCheckout: Checkout = {
 };
 
 /** The extracted apply primitive over the counting checkout used by the crash rows. */
-const materializer = (checkout: RootedFileSystem) => {
+const materializer = (checkout: RevisionFileSystem) => {
   let temporary = 0;
   return createApplyTreeEffects({
     useFileSystem: async (_place, operation) => operation(checkout),
@@ -313,7 +313,7 @@ const save = async (actors: RevisionActors): Promise<Readonly<{ revisionId: stri
 };
 
 /** Every file in the tree except the store's own, so litter shows up as a path nobody wrote. */
-const filesOf = async (tree: RootedFileSystem): Promise<string[]> => {
+const filesOf = async (tree: RevisionFileSystem): Promise<string[]> => {
   const found: string[] = [];
   for await (const entry of walk(tree, '', { admits: (path) => path !== '.git' })) {
     if (entry.kind === 'file') {
@@ -647,4 +647,47 @@ describe('a checkout stopped inside an apply', () => {
       ).toContain(reopenedTreeId);
     }
   }, 300_000);
+});
+
+describe('a path that changes kind', () => {
+  /** Apply `files` over the checkout, starting from what it holds now. */
+  const applyFiles = async (checkout: RevisionFileSystem, files: Readonly<Record<string, string>>) =>
+    materializer(checkout)(liveCheckout, new ImmutableRevisionTree(Object.entries(files)), {
+      before: await captureRevisionTree(checkout, {
+        exclude: (path) => !tauRevisionPolicy.policy.classify(path).versioned,
+      }),
+    });
+
+  it('should replace a directory the tree no longer holds with a file of the same name', async () => {
+    const context = await project({ 'foo/bar': 'nested\n' });
+
+    const result = await applyFiles(context.checkout, { foo: 'flat\n' });
+
+    expect(result.paths).toEqual(['foo', 'foo/bar']);
+    expect(await filesOf(context.tree)).toEqual(['foo']);
+    expect(await context.tree.readFile('foo', 'utf8')).toBe('flat\n');
+  });
+
+  it('should replace a file the tree no longer holds with a directory of the same name', async () => {
+    const context = await project({ foo: 'flat\n' });
+
+    await applyFiles(context.checkout, { 'foo/bar': 'nested\n' });
+
+    expect(await filesOf(context.tree)).toEqual(['foo/bar']);
+    expect(await context.tree.readFile('foo/bar', 'utf8')).toBe('nested\n');
+  });
+
+  it('should remove the directories its removals emptied and keep one that still holds an unversioned file', async () => {
+    const context = await project({
+      'gone/deep/a.ts': 'a\n',
+      'kept/b.ts': 'b\n',
+      'kept/node_modules/pkg.js': 'cache\n',
+      'main.ts': 'main\n',
+    });
+
+    await applyFiles(context.checkout, { 'main.ts': 'main\n' });
+
+    expect(await context.tree.exists('gone')).toBe(false);
+    expect(await filesOf(context.tree)).toEqual(['kept/node_modules/pkg.js', 'main.ts']);
+  });
 });

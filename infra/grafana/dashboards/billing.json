@@ -4,10 +4,7 @@
   "tags": ["tau", "billing"],
   "timezone": "browser",
   "refresh": "1m",
-  "time": {
-    "from": "now-24h",
-    "to": "now"
-  },
+  "time": { "from": "now-24h", "to": "now" },
   "editable": true,
   "schemaVersion": 39,
   "panels": [
@@ -17,7 +14,7 @@
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "max(tau_billing_ledger_drift{service_name=\"tau-api\"})",
+          "expr": "max(tau_billing_ledger_drift{app=~\"$app\",service_name=\"tau-api\"})",
           "legendFormat": "max drift µ$"
         }
       ],
@@ -31,7 +28,8 @@
             ]
           }
         }
-      }
+      },
+      "id": 1
     },
     {
       "title": "Drifted Accounts",
@@ -39,87 +37,111 @@
       "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
       "targets": [
         {
-          "expr": "max(tau_billing_drifted_accounts{service_name=\"tau-api\"})",
+          "expr": "max(tau_billing_drifted_accounts{app=~\"$app\",service_name=\"tau-api\"})",
           "legendFormat": "accounts"
         }
-      ]
+      ],
+      "id": 2
     },
     {
-      "title": "Negative-Balance Accounts (Q37 debt)",
+      "title": "Open Financial Cases",
       "type": "stat",
       "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
       "targets": [
         {
-          "expr": "max(tau_billing_negative_balance_accounts{service_name=\"tau-api\"})",
-          "legendFormat": "accounts"
+          "expr": "sum(max by (kind) (tau_billing_open_financial_cases{app=~\"$app\",service_name=\"tau-api\"}))"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "value": 0, "color": "green" },
+              { "value": 1, "color": "red" }
+            ]
+          }
+        }
+      },
+      "id": 3
     },
     {
-      "title": "Accounts Flagged by Refund Clawback (1h)",
+      "title": "Voided Admissions (1h)",
       "type": "stat",
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
       "targets": [
         {
-          "expr": "sum(increase(tau_billing_accounts_flagged_total{service_name=\"tau-api\"}[1h]))",
-          "legendFormat": "flagged"
+          "expr": "sum(increase(tau_billing_voided_admissions_total{app=~\"$app\",service_name=\"tau-api\"}[1h])) or vector(0)"
         }
-      ]
+      ],
+      "id": 4
     },
     {
-      "title": "Committed Spend by Category (µ$/s → user-charged)",
+      "title": "User-Charged LLM Spend by Model (USD/h)",
+      "description": "User-charged: what Tau bills the user for the call (priced from the model catalog), not the supplier invoice.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "targets": [
         {
-          "expr": "sum by (tau_billing_category) (rate(tau_billing_credit_committed_microusd_total{service_name=\"tau-api\"}[10m]))",
-          "legendFormat": "{{tau_billing_category}}"
+          "expr": "sum by (gen_ai_request_model) (increase(gen_ai_client_cost_total{app=~\"$app\",service_name=\"tau-api\"}[1h]))",
+          "legendFormat": "{{gen_ai_request_model}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" }
+      },
+      "id": 5
     },
     {
-      "title": "Reservation Failures (insufficient balance)",
+      "title": "Open Financial Cases by Kind",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "targets": [
         {
-          "expr": "sum(rate(tau_billing_credit_reservation_failures_total{service_name=\"tau-api\"}[10m]))",
-          "legendFormat": "failures/s"
+          "expr": "max by (kind) (tau_billing_open_financial_cases{app=~\"$app\",service_name=\"tau-api\"})",
+          "legendFormat": "{{kind}}"
         }
-      ]
+      ],
+      "id": 6
     },
     {
-      "title": "Post-Response Commit/Release Failures",
+      "title": "Attempt Resolutions (1h)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "targets": [
         {
-          "expr": "sum by (tau_billing_category) (rate(tau_billing_credit_commit_failures_total{service_name=\"tau-api\"}[10m]))",
-          "legendFormat": "{{tau_billing_category}}"
+          "expr": "sum by (tau_billing_attempt_resolution_outcome) (increase(tau_billing_attempt_resolutions_total{app=~\"$app\",service_name=\"tau-api\"}[1h]))",
+          "legendFormat": "{{tau_billing_attempt_resolution_outcome}}"
         }
-      ]
+      ],
+      "id": 7
     },
     {
-      "title": "Reservation Sweeps (expired holds settled at floor)",
+      "title": "Provider Account Refusals (1h)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "targets": [
         {
-          "expr": "sum(increase(tau_billing_reservation_sweeps_total{service_name=\"tau-api\"}[1h]))",
-          "legendFormat": "swept/h"
+          "expr": "sum by (providerId) (increase(tau_billing_provider_account_refusals_total{app=~\"$app\",service_name=\"tau-api\"}[1h])) or vector(0)",
+          "legendFormat": "{{providerId}}"
         }
-      ]
+      ],
+      "id": 8
     },
     {
-      "title": "Daily User-Charged Spend by Category (USD)",
+      "title": "Daily User-Charged LLM Spend by Activity (USD)",
+      "description": "User-charged: what Tau bills the user for the call (priced from the model catalog), not the supplier invoice.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
       "targets": [
         {
-          "expr": "sum by (tau_billing_category) (increase(tau_billing_credit_committed_microusd_total{service_name=\"tau-api\"}[24h])) / 1e6",
-          "legendFormat": "{{tau_billing_category}} USD/24h"
+          "expr": "sum by (tau_activity) (increase(gen_ai_client_cost_total{app=~\"$app\",service_name=\"tau-api\"}[24h]))",
+          "legendFormat": "{{tau_activity}}"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" }
+      },
+      "id": 9
     },
     {
       "title": "Funded LLM Recovery Outcomes (1h)",
@@ -127,10 +149,11 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 30 },
       "targets": [
         {
-          "expr": "sum by (deployment_environment, tau_billing_capacity_pool, tau_billing_recovery_outcome) (increase(tau_billing_funded_operation_recoveries_total{service_name=\"tau-api\"}[1h]))",
+          "expr": "sum by (deployment_environment, tau_billing_capacity_pool, tau_billing_recovery_outcome) (increase(tau_billing_funded_operation_recoveries_total{app=~\"$app\",service_name=\"tau-api\"}[1h]))",
           "legendFormat": "{{deployment_environment}} {{tau_billing_capacity_pool}} {{tau_billing_recovery_outcome}}"
         }
-      ]
+      ],
+      "id": 10
     },
     {
       "title": "Funded LLM Admission Denials (1h)",
@@ -138,10 +161,11 @@
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 30 },
       "targets": [
         {
-          "expr": "sum by (deployment_environment, tau_billing_capacity_pool, tau_billing_denial_reason) (increase(tau_billing_funded_operation_denials_total{service_name=\"tau-api\"}[1h]))",
+          "expr": "sum by (deployment_environment, tau_billing_capacity_pool, tau_billing_denial_reason) (increase(tau_billing_funded_operation_denials_total{app=~\"$app\",service_name=\"tau-api\"}[1h]))",
           "legendFormat": "{{deployment_environment}} {{tau_billing_capacity_pool}} {{tau_billing_denial_reason}}"
         }
-      ]
+      ],
+      "id": 11
     },
     {
       "title": "Funded LLM Terminal Evidence (1h)",
@@ -149,10 +173,11 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 30 },
       "targets": [
         {
-          "expr": "sum by (deployment_environment, tau_billing_capacity_pool, tau_billing_terminal_kind, tau_billing_terminal_incomplete_reason) (increase(tau_billing_funded_operation_terminals_total{service_name=\"tau-api\"}[1h]))",
+          "expr": "sum by (deployment_environment, tau_billing_capacity_pool, tau_billing_terminal_kind, tau_billing_terminal_incomplete_reason) (increase(tau_billing_funded_operation_terminals_total{app=~\"$app\",service_name=\"tau-api\"}[1h]))",
           "legendFormat": "{{deployment_environment}} {{tau_billing_capacity_pool}} {{tau_billing_terminal_kind}} {{tau_billing_terminal_incomplete_reason}}"
         }
-      ]
+      ],
+      "id": 12
     },
     {
       "title": "Funded LLM Pending / Due",
@@ -160,10 +185,11 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 38 },
       "targets": [
         {
-          "expr": "max by (deployment_environment, tau_billing_capacity_pool, tau_billing_pending_state) (tau_billing_funded_operation_current{service_name=\"tau-api\"})",
+          "expr": "max by (deployment_environment, tau_billing_capacity_pool, tau_billing_pending_state) (tau_billing_funded_operation_current{app=~\"$app\",service_name=\"tau-api\"})",
           "legendFormat": "{{deployment_environment}} {{tau_billing_capacity_pool}} {{tau_billing_pending_state}}"
         }
-      ]
+      ],
+      "id": 13
     },
     {
       "title": "Funded LLM Oldest Due Age",
@@ -171,10 +197,11 @@
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 38 },
       "targets": [
         {
-          "expr": "max by (deployment_environment, tau_billing_capacity_pool) (tau_billing_funded_operation_oldest_due_age{service_name=\"tau-api\"})",
+          "expr": "max by (deployment_environment, tau_billing_capacity_pool) (tau_billing_funded_operation_oldest_due_age{app=~\"$app\",service_name=\"tau-api\"})",
           "legendFormat": "{{deployment_environment}} {{tau_billing_capacity_pool}} ms"
         }
-      ]
+      ],
+      "id": 14
     },
     {
       "title": "Funded LLM Recovery Batch p99",
@@ -182,10 +209,11 @@
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 38 },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, deployment_environment, tau_billing_capacity_pool, tau_billing_recovery_batch_outcome) (rate(tau_billing_funded_operation_recovery_batch_duration_bucket{service_name=\"tau-api\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, deployment_environment, tau_billing_capacity_pool, tau_billing_recovery_batch_outcome) (rate(tau_billing_funded_operation_recovery_batch_duration_bucket{app=~\"$app\",service_name=\"tau-api\"}[5m])))",
           "legendFormat": "{{deployment_environment}} {{tau_billing_capacity_pool}} {{tau_billing_recovery_batch_outcome}} s"
         }
-      ]
+      ],
+      "id": 15
     },
     {
       "title": "Provider Executions During Recovery",
@@ -193,7 +221,7 @@
       "gridPos": { "h": 6, "w": 24, "x": 0, "y": 46 },
       "targets": [
         {
-          "expr": "max(tau_billing_funded_operation_recovery_provider_executions{service_name=\"tau-api\"})",
+          "expr": "max(tau_billing_funded_operation_recovery_provider_executions{app=~\"$app\",service_name=\"tau-api\"})",
           "legendFormat": "must remain zero"
         }
       ],
@@ -207,7 +235,21 @@
             ]
           }
         }
-      }
+      },
+      "id": 16
     }
-  ]
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "Application",
+        "type": "constant",
+        "query": ".*",
+        "description": "Local default matches unlabeled series. Hosted provisioning binds this to exactly one application.",
+        "current": { "text": ".*", "value": ".*" },
+        "hide": 2
+      }
+    ]
+  }
 }

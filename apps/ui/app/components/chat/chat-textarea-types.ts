@@ -1,3 +1,4 @@
+import type { CadReference } from '@taucad/chat/references';
 import { useState, useRef, useEffect, useCallback, useImperativeHandle, useMemo } from 'react';
 import type { AttachmentDirectories } from '#hooks/use-attachment-source.js';
 import { modelSupportsInput } from '@taucad/chat';
@@ -16,9 +17,9 @@ import {
 import type { StoredAttachmentRef } from '#utils/attachment.utils.js';
 import { homeComposerAttachmentDirectory, useChatAttachmentDirectories } from '#components/chat/attachment-preview.js';
 import type { ResolvedModel } from '#hooks/use-models.js';
-import type { KeyCombination } from '#utils/keys.utils.js';
+import type { KeyCombination } from '@taucad/ui/utils/keys';
 import { toast } from '#components/ui/sonner.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import {
   getClipboardImageFiles,
   handleClipboardImagePaste,
@@ -43,6 +44,8 @@ export type ChatTextareaSubmitPayload = {
   readonly content: string;
   /** The draft's stored attachments; the chat client promotes them before sending. */
   readonly attachments: readonly StoredAttachmentRef[];
+  /** The structured geometry references of the draft's chips (blueprint D6); present only when there are some. */
+  readonly references?: readonly CadReference[];
 };
 
 /** A dropped or picked file as the draft takes it: an image as a data URL, a document as its bytes (S7). */
@@ -238,7 +241,7 @@ export function useChatTextareaLogic({
   containerReference: React.RefObject<HTMLDivElement | null>;
 
   // Handlers
-  handleSubmit: () => Promise<void>;
+  handleSubmit: (finalizedText?: string, references?: readonly CadReference[]) => Promise<void>;
   handleCancelClick: () => void;
   handleTextareaKeyDown: (event: React.KeyboardEvent) => void;
   handleDragOver: (event: React.DragEvent) => void;
@@ -449,37 +452,42 @@ export function useChatTextareaLogic({
     sendBlockReason,
   ]);
 
-  const handleSubmit = useCallback(async (): Promise<void> => {
-    if (
-      isSubmittingRef.current ||
-      submitInFlightRef.current ||
-      isSubmitDisabledRef.current ||
-      sendBlockReasonRef.current !== undefined ||
-      isAttachingRef.current
-    ) {
-      return;
-    }
+  const handleSubmit = useCallback(
+    async (finalizedText?: string, references?: readonly CadReference[]): Promise<void> => {
+      if (
+        isSubmittingRef.current ||
+        submitInFlightRef.current ||
+        isSubmitDisabledRef.current ||
+        sendBlockReasonRef.current !== undefined ||
+        isAttachingRef.current
+      ) {
+        return;
+      }
 
-    if (inputTextRef.current.trim().length === 0 && attachmentsRef.current.length === 0) {
-      resumeRef.current?.();
-      return;
-    }
+      const content = finalizedText ?? inputTextRef.current;
+      if (content.trim().length === 0 && attachmentsRef.current.length === 0) {
+        resumeRef.current?.();
+        return;
+      }
 
-    submitInFlightRef.current = true;
-    setIsSubmitting(true);
-    try {
-      await onSubmitRef.current({
-        content: inputTextRef.current,
-        attachments: attachmentsRef.current,
-      });
-    } finally {
-      submitInFlightRef.current = false;
-      setIsSubmitting(false);
-    }
-  }, []);
+      submitInFlightRef.current = true;
+      setIsSubmitting(true);
+      try {
+        await onSubmitRef.current({
+          content,
+          attachments: attachmentsRef.current,
+          ...(references === undefined || references.length === 0 ? {} : { references }),
+        });
+      } finally {
+        submitInFlightRef.current = false;
+        setIsSubmitting(false);
+      }
+    },
+    [],
+  );
 
   const handleCancelClick = useCallback((): void => {
-    stop();
+    stop('stop-button');
   }, [stop]);
 
   // Register keyboard shortcut for cancellation
@@ -488,7 +496,7 @@ export function useChatTextareaLogic({
     () => {
       /* F7: the same condition that shows Stop. */
       if (status === 'streaming' || status === 'submitted') {
-        stop();
+        stop('stop-shortcut');
       }
     },
   );

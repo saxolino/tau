@@ -1,5 +1,5 @@
 import { createGeoSpecAssertionClient, GeoSpecAssertionError } from '@taucad/geospec/assertion-client';
-import { Engine, canonicalize } from '@taucad/geospec-engine-native/node';
+import { Engine, canonicalize } from 'geospec-engine/node';
 
 /* oxlint-disable no-restricted-imports -- Installed external-consumer acceptance imports its copied sibling harness directly. */
 import {
@@ -35,8 +35,7 @@ for (const row of authority.rows) {
   let report = null;
   let failure = null;
   try {
-    // oxlint-disable-next-line no-await-in-loop -- Each row owns a complete engine and assertion lifecycle before the next row starts.
-    report = reportRecord(await chain.toSatisfyRationalPlate(), canonicalize);
+    report = reportRecord(chain.toSatisfyRationalPlate(), canonicalize);
   } catch (error) {
     failure = errorRecord(error, error instanceof GeoSpecAssertionError);
     if (error instanceof GeoSpecAssertionError) {

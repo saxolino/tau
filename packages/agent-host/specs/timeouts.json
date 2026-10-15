@@ -133,6 +133,15 @@
       "fixedBy": "W6"
     },
     {
+      "id": "B14G",
+      "bound": "Geometry-runner port request to main (10 s)",
+      "site": "apps/desktop/src/tau/services-host.ts",
+      "token": "geometryPortTimeout",
+      "class": "Peer",
+      "owner": "desktop geometry broker",
+      "fixedBy": "outside this charter: desktop geometry broker owner"
+    },
+    {
       "id": "B15",
       "bound": "Agent-host configuration from main",
       "site": "apps/desktop/src/tau/services-host.impl.ts",
@@ -140,6 +149,15 @@
       "class": "Peer",
       "owner": "W6",
       "fixedBy": "W6"
+    },
+    {
+      "id": "B18",
+      "bound": "Geometry-runner port request to main (10 s)",
+      "site": "apps/desktop/src/tau/services-host.ts",
+      "token": "geometryPortTimeout",
+      "class": "Peer",
+      "owner": "GM",
+      "fixedBy": "outside this charter: desktop geometry-runner port ceremony"
     },
     {
       "id": "C1",
@@ -561,8 +579,8 @@
     },
     {
       "id": "D16",
-      "bound": "A parameter actor's last write when its desktop or daemon project host closes (10 s)",
-      "site": "packages/host/src/project-host.ts",
+      "bound": "A parameter actor's last write when its desktop, daemon or tau mcp host closes (10 s)",
+      "site": "packages/host/src/parameter-actors.ts",
       "token": "parameterCloseBound",
       "class": "External edge",
       "owner": "W6"
@@ -571,17 +589,9 @@
       "id": "D17",
       "bound": "Observed chat attachment retry after loss (250 ms doubling to a 30 s delay ceiling)",
       "site": "apps/ui/app/services/chat-session-store.ts",
-      "token": "observed.retry = setTimeout",
+      "token": "const retry = setTimeout",
       "class": "Backoff",
       "owner": "W9"
-    },
-    {
-      "id": "D18",
-      "bound": "GeoSpec performance lab cell infrastructure timeout (300 s)",
-      "site": "apps/ui/app/services/geospec-performance.ts",
-      "token": "const cellTimeoutHandle = setTimeout",
-      "class": "External edge",
-      "owner": "GM"
     },
     {
       "id": "D19",
@@ -598,6 +608,38 @@
       "token": "const timer = globalThis.setTimeout",
       "class": "External edge",
       "owner": "W9"
+    },
+    {
+      "id": "D21",
+      "bound": "GeoSpec candidate fetch remote transport abort after 15 s; local consent and filesystem work is not globally timed",
+      "site": "apps/ui/app/machines/file-manager.worker.revisions.ts",
+      "token": "candidateFetchTimeout = setTimeout",
+      "class": "External edge",
+      "owner": "GM"
+    },
+    {
+      "id": "D22",
+      "bound": "GeoSpec candidate publish remote transport abort after 15 s; local consent and filesystem work is not globally timed",
+      "site": "apps/ui/app/machines/file-manager.worker.revisions.ts",
+      "token": "candidatePublishTimeout = setTimeout",
+      "class": "External edge",
+      "owner": "GM"
+    },
+    {
+      "id": "D23",
+      "bound": "TUI start admission: 20 s ceiling on retries of answered, not-applied settling refusals; unanswered execute remains channel-owned",
+      "site": "packages/cli/src/tui/app.ts",
+      "token": "// Start settling retry ceiling",
+      "class": "Backoff",
+      "owner": "W4"
+    },
+    {
+      "id": "D24",
+      "bound": "TUI approval admission: 20 s ceiling on retries of answered, not-applied settling refusals; unanswered execute remains channel-owned",
+      "site": "packages/cli/src/tui/app.ts",
+      "token": "// Approval settling retry ceiling",
+      "class": "Backoff",
+      "owner": "W4"
     },
     {
       "id": "A14",
@@ -720,6 +762,62 @@
       "token": "server.dispose(reason.message)",
       "class": "Debounce",
       "owner": "machines"
+    },
+    {
+      "id": "N3",
+      "bound": "Not a timer: the RevisionClock host-clock interface declares setTimeout without scheduling it",
+      "site": "packages/revisions/src/revision-effects.types.ts",
+      "token": "setTimeout(callback:",
+      "class": "None",
+      "owner": "revisions host clock"
+    },
+    {
+      "id": "E21",
+      "bound": "Agent usage telemetry: drop a turn that never settles after 6 h, unreported",
+      "site": "apps/ui/app/chat-clients/_internal/agent-usage-telemetry.ts",
+      "token": "abandonAfter",
+      "class": "External edge (backstop)",
+      "owner": "W36"
+    },
+    {
+      "id": "E32",
+      "bound": "tau mcp idle release: a project's worker thread closes after --idle-release seconds (default 900) with no tool call in flight",
+      "site": "packages/cli/src/commands/mcp.ts",
+      "token": "idleRelease",
+      "class": "Debounce",
+      "owner": "tau mcp"
+    },
+    {
+      "id": "D25",
+      "bound": "Charter D17: read-only oversized replay retirement after 2 s idle; cancelled by active reads/acquisition, never source freshness authority",
+      "site": "packages/agent-host/src/launchers/agent-launcher.ts",
+      "token": "retirements.get(chatId)",
+      "class": "Debounce",
+      "owner": "filesystem-projection-performance-charter / N2 N3"
+    },
+    {
+      "id": "D26",
+      "bound": "Viewer page long poll: a held app_sync answers unchanged after 20 s",
+      "site": "packages/host/src/mcp-viewer-sessions.ts",
+      "token": "setTimeout(finish, hold)",
+      "class": "Liveness",
+      "owner": "agent-plugin-ui-blueprint W6"
+    },
+    {
+      "id": "D27",
+      "bound": "view_state live capture: the page's answer, 20 s",
+      "site": "packages/host/src/mcp-viewer-sessions.ts",
+      "token": "captureTimeout",
+      "class": "External edge",
+      "owner": "agent-plugin-ui-blueprint W6"
+    },
+    {
+      "id": "D28",
+      "bound": "Viewer page view kept in .tau/workbench 1.5 s after the person's last change",
+      "site": "packages/host/src/mcp-viewer-workbench.ts",
+      "token": "void flush();",
+      "class": "Debounce",
+      "owner": "agent-plugin-ui-blueprint W10"
     }
   ]
 }

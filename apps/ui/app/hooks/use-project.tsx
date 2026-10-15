@@ -1,5 +1,8 @@
 /* oxlint-disable typescript/no-restricted-types -- Workbench record entry paths are nullable by schema. */
 /* oxlint-disable eslint/no-await-in-loop -- Producer flushes must finish in owner order before project close. */
+import { canOpenCloudProject, isCloudProjectPending, tauCloudIntent } from '#hooks/use-cloud-projects.js';
+import { peekRevisionClient } from '#hooks/use-revision-status.js';
+import { ObservationService } from '@taucad/fs-client/observation-service';
 import { findEntryGraphics } from '#routes/w.$workspace.$project/geometry-unit.utils.js';
 import type { ReactNode } from 'react';
 import {
@@ -30,6 +33,7 @@ import type { ParameterManifest, ParameterSetOutcome } from '@taucad/parameters'
 import type { WorkbenchEntries, WorkbenchView } from '@taucad/workbench';
 import type { FileContentService } from '@taucad/fs-client/file-content-service';
 import { FileNotFoundError } from '@taucad/fs-client/file-content-errors';
+import { fileContentBytes } from '@taucad/fs-client/file-content-service';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
 import type { MachineActors } from '#lib/xstate.lib.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
@@ -39,9 +43,9 @@ import type { ProjectLoadInput, ProjectRetrievedEvent } from '#machines/project.
 import { editorMachine } from '#machines/editor.machine.js';
 import { disposeCadRuntime } from '#machines/cad.machine.js';
 import type { cadMachine } from '#machines/cad.machine.js';
-import type { graphicsMachine } from '#machines/graphics.machine.js';
+import type { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import type { logMachine } from '#machines/logs.machine.js';
-import type { modelInteractionMachine } from '#machines/model-interaction.machine.js';
+import type { modelInteractionMachine } from '@taucad/viewer/machines/model-interaction.machine';
 import { inspect } from '#machines/inspector.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import type { LazyKernelOptionsFactory } from '#types/runtime-client.alias.js';
@@ -57,6 +61,8 @@ import { toast } from 'sonner';
 import type { EntryPathChange } from '#workbench-records/entries-store.js';
 
 type ProjectContextType = {
+  manifestObservationError: string | undefined;
+  retryManifestObservation: () => void;
   readonly profile: 'editor' | 'shared';
   projectId: string;
   projectRef: ActorRefFrom<typeof projectMachine>;
@@ -142,13 +148,18 @@ export async function ensureFocusedChatForProject({
   persistedChatId,
   worker,
   onCreatedChat,
+  canCreateChat = () => true,
 }: {
   readonly projectId: string;
   readonly requestedChatId: string | undefined;
   readonly persistedChatId: string | undefined;
   readonly worker: FocusedChatWorker;
   readonly onCreatedChat?: () => void;
-}): Promise<{ type: 'focusedChatEnsured'; focusedChatId: string }> {
+  readonly canCreateChat?: () => boolean;
+}): Promise<
+  { type: 'focusedChatEnsured'; focusedChatId: string } | { type: 'focusedChatDeferred'; focusedChatId?: undefined }
+> {
+  const couldCreateBeforeRead = canCreateChat();
   const chats = await worker.getChatRecordsForResource(projectId);
 
   for (const candidateChatId of [requestedChatId, persistedChatId]) {
@@ -168,6 +179,9 @@ export async function ensureFocusedChatForProject({
     return { type: 'focusedChatEnsured', focusedChatId: mostRecent.id };
   }
 
+  if (!couldCreateBeforeRead || !canCreateChat()) {
+    return { type: 'focusedChatDeferred' };
+  }
   const created = await worker.createNavigationRepairChat(projectId);
   onCreatedChat?.();
   return { type: 'focusedChatEnsured', focusedChatId: created.id };
@@ -226,41 +240,52 @@ const idMismatchIssue = (expected: string, found: string): ProjectManifestParseI
 /**
  * Follow `tau.json` while its project is open, never silently (blueprint R5).
  *
- * Bytes that still identify this project (strict or degraded) reload when they
- * differ from what the workspace holds, so a degraded write shows its issue at
- * once. Bytes that no longer identify it — missing, unreadable, oversize, a
+ * Valid JSON that still identifies this project (strict or degraded) reloads
+ * when it differs from what the workspace holds, so a degraded declaration
+ * shows its issue at once. Syntax-invalid JSON retains the mounted manifest
+ * and reports its issue. Bytes that no longer identify it — missing, unreadable, oversize, a
  * foreign `$schema` or another project's id — are reported instead: the
  * workspace keeps its last good manifest open so the person can fix the file.
  */
 export const createProjectManifestChangeObserver = ({
   projectId,
-  readManifest,
   getCurrent,
   reload,
   report,
+  onSettled,
 }: {
   readonly projectId: string;
-  readonly readManifest: () => Promise<Uint8Array<ArrayBuffer>>;
   readonly getCurrent: () => ObservedManifestState;
   readonly reload: () => void;
   readonly report: (issue: ProjectManifestParseIssue) => void;
-}): { readonly check: () => Promise<void>; readonly dispose: () => void } => {
+  readonly onSettled?: () => void;
+}): {
+  readonly check: (input: { readonly readManifest: () => Promise<Uint8Array<ArrayBuffer>> }) => Promise<void>;
+  readonly invalidate: () => void;
+  readonly dispose: () => void;
+} => {
   let disposed = false;
+  let generation = 0;
   let lastObserved: string | undefined;
 
   const reportIssue = (issue: ProjectManifestParseIssue): void => {
     // A later return to the same bytes must reload to clear the report.
     lastObserved = undefined;
     report(issue);
+    onSettled?.();
   };
 
   return {
-    check: async () => {
+    invalidate: () => {
+      generation++;
+    },
+    check: async ({ readManifest }) => {
+      const attempt = ++generation;
       let bytes: Uint8Array<ArrayBuffer>;
       try {
         bytes = await readManifest();
       } catch (error) {
-        if (!disposed) {
+        if (!disposed && attempt === generation) {
           reportIssue(
             error instanceof FileNotFoundError || isNotFound(error)
               ? { code: 'manifest-missing' }
@@ -269,7 +294,7 @@ export const createProjectManifestChangeObserver = ({
         }
         return;
       }
-      if (disposed) {
+      if (disposed || attempt !== generation) {
         return;
       }
       const read = readProjectManifestBytes(bytes, { id: projectId });
@@ -281,12 +306,20 @@ export const createProjectManifestChangeObserver = ({
         reportIssue(idMismatchIssue(projectId, read.data.id));
         return;
       }
+      const current = getCurrent();
+      if (current.project !== undefined && read.issue?.code === 'manifest-invalid-json') {
+        reportIssue(read.issue);
+        return;
+      }
       const observed = manifestStateKey({ project: read.data, issue: read.issue });
+      if (current.project !== undefined && manifestStateKey(current) === observed) {
+        onSettled?.();
+        return;
+      }
       if (observed === lastObserved) {
         return;
       }
       lastObserved = observed;
-      const current = getCurrent();
       if (current.project === undefined || manifestStateKey(current) !== observed) {
         reload();
       }
@@ -363,7 +396,20 @@ export function ProjectProvider({
       createParameterSetService({
         rootDirectory: fileSystemRoot,
         client: fileManager.parameterFiles,
-        subscribe: (path, listener) => fileManager.contentService?.subscribe(path, listener) ?? (() => undefined),
+        watchReady: (request, onEvent) => {
+          const content = fileManager.contentService;
+          if (!content) {
+            throw new Error('The parameter filesystem is not ready.');
+          }
+          const watch = content.watchReady(request, onEvent);
+          return {
+            ready: watch.ready,
+            closed: (async () => {
+              await watch.closed;
+            })(),
+            unsubscribe: watch.dispose,
+          };
+        },
         onError: (error) => {
           toast.error(errorMessage(error));
         },
@@ -514,6 +560,13 @@ export function ProjectProvider({
             /* Chats are files now (W17): the project manager owns the store,
              * and the object-store worker knows nothing about them. */
             worker: projectManager,
+            canCreateChat: () => {
+              const status = peekRevisionClient(input.projectId)?.status();
+              if (isCloudProjectPending(input.projectId) && status?.sync.hasAppliedRemote !== true) {
+                return false;
+              }
+              return status?.remote.kind !== 'tau' || status.sync.chats === 'ready';
+            },
             onCreatedChat: () => {
               // Surface the new chat through TanStack Query so `useChats`
               // refetches and the history selector picks it up immediately.
@@ -732,6 +785,11 @@ export function ProjectProvider({
   }, [actorRef, profile, projectId, projectManager, queryClient]);
 
   const projectIsReady = useSelector(actorRef, (state) => state.matches('ready'));
+  const manifestObservationRef = useRef<ObservationService<void> | undefined>(undefined);
+  const [manifestObservationError, setManifestObservationError] = useState<string>();
+  const retryManifestObservation = useCallback(() => {
+    manifestObservationRef.current?.refresh();
+  }, []);
   useEffect(() => {
     if (!projectIsReady) {
       return;
@@ -743,7 +801,15 @@ export function ProjectProvider({
 
     const observer = createProjectManifestChangeObserver({
       projectId,
-      readManifest: async () => fileManager.readFile('tau.json'),
+      onSettled: () => {
+        if (
+          isCloudProjectPending(projectId) &&
+          canOpenCloudProject(projectId) &&
+          peekRevisionClient(projectId)?.status()?.sync.hasAppliedRemote === true
+        ) {
+          tauCloudIntent.set(projectId, undefined);
+        }
+      },
       getCurrent: () => {
         const { project, manifestIssue } = actorRef.getSnapshot().context;
         return { project, issue: manifestIssue };
@@ -755,14 +821,37 @@ export function ProjectProvider({
         actorRef.send({ type: 'manifestIssueObserved', issue });
       },
     });
-    const unsubscribe = contentService.subscribe('tau.json', () => {
-      void observer.check();
+    const observation = new ObservationService({
+      resource: 'tau.json',
+      invalidate: observer.invalidate,
+      read: async (read) =>
+        observer.check({
+          readManifest: async () => {
+            return fileContentBytes({
+              path: 'tau.json',
+              result: await read.observe(contentService.observeContent('tau.json')),
+            });
+          },
+        }),
     });
-    // Close the gap between loading the project and attaching this listener.
-    void observer.check();
+    manifestObservationRef.current = observation;
+    const updateHealth = (): void => {
+      const snapshot = observation.getSnapshot();
+      if (snapshot.status === 'ready') {
+        setManifestObservationError(undefined);
+      } else if (snapshot.status === 'closed' || snapshot.status === 'error') {
+        setManifestObservationError(snapshot.error);
+      }
+    };
+    const unsubscribe = observation.subscribe(updateHealth);
+    const lease = observation.acquire();
     return () => {
-      observer.dispose();
       unsubscribe();
+      if (manifestObservationRef.current === observation) {
+        manifestObservationRef.current = undefined;
+      }
+      observer.dispose();
+      lease.release();
     };
   }, [actorRef, fileManager, projectId, projectIsReady]);
 
@@ -898,6 +987,8 @@ export function ProjectProvider({
     return {
       projectId,
       profile,
+      manifestObservationError,
+      retryManifestObservation,
       projectRef: actorRef,
       editorRef,
       viewGraphics,
@@ -935,6 +1026,8 @@ export function ProjectProvider({
   }, [
     projectId,
     profile,
+    manifestObservationError,
+    retryManifestObservation,
     actorRef,
     editorRef,
     viewGraphics,

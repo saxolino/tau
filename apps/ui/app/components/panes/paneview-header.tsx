@@ -2,7 +2,7 @@ import { ChevronDown } from 'lucide-react';
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { PaneviewPanelApi } from 'dockview-react';
 import { cn } from '@taucad/ui/utils/cn';
-import { paneSpacingClassName } from '#components/panes/pane-spacing.styles.js';
+import { paneSpacingClassName } from '@taucad/ui/components/pane-spacing.variants';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { nestedActionVariants } from '@taucad/ui/components/nested-action.variants';
 
@@ -13,18 +13,15 @@ export const paneviewHeaderSize = 40;
 /**
  * Shared CSS variable overrides for PaneviewReact containers.
  *
- * Removes Paneview's full-width header separator and configures sash (resize
- * handle) appearance to match the Allotment sash pattern used in the main
- * editor layout.
+ * Removes Paneview's header separator; the shared resize owner paints centered
+ * neutral pills independently of the engine's pointer target.
  */
 export const paneviewStyleOverrides = cn(
   'h-full',
   '[--dv-paneview-header-border-color:transparent]',
   '[--dv-paneview-active-outline-color:transparent]',
   '[--dv-sash-color:transparent]',
-  '[--dv-active-sash-color:var(--primary)]',
-  '[--dv-active-sash-transition-duration:0.1s]',
-  '[--dv-active-sash-transition-delay:0.5s]',
+  '[--dv-active-sash-color:transparent]',
   '[&_.dv-split-view-container.dv-vertical_>_.dv-sash-container_>_.dv-sash.dv-enabled]:!cursor-row-resize',
   '[&_.dv-split-view-container.dv-vertical_>_.dv-sash-container_>_.dv-sash.dv-maximum]:!cursor-row-resize',
   '[&_.dv-split-view-container.dv-vertical_>_.dv-sash-container_>_.dv-sash.dv-minimum]:!cursor-row-resize',

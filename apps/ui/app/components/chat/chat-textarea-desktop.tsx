@@ -1,6 +1,10 @@
+import { chatComposerPaddingClassName } from '#components/chat/chat-input-styles.js';
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
+import type { Editor } from '@tiptap/core';
 import type { AttachmentDirectories } from '#hooks/use-attachment-source.js';
 import { AtSign, Paperclip, Plus } from 'lucide-react';
+import { useDictation } from '#components/dictation/use-dictation.js';
+import { DictationButton, DictationRecording, DictationFeedback } from '#components/dictation/dictation-controls.js';
 import type { AcpSessionData } from '@taucad/chat';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import type { FileEntry } from '@taucad/types';
@@ -29,12 +33,18 @@ import type { DraftAttachment } from '#hooks/draft.machine.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
 import { useAgentHostPlacements } from '#hooks/use-cad-agent-config.js';
 import { ChatEditor } from '#components/chat/tiptap/chat-editor.js';
-import { buildEditorContentJson, extractContent, useChatEditor } from '#components/chat/tiptap/use-chat-editor.js';
+import type { CadReference } from '@taucad/chat/references';
+import {
+  buildEditorContentJson,
+  cadReferencesOfChips,
+  extractContent,
+  useChatEditor,
+} from '#components/chat/tiptap/use-chat-editor.js';
 import type { ContextSuggestionItem, SlashCommandItem } from '#components/chat/tiptap/suggestion-types.js';
 import type { ClipboardPasteEvent } from '#components/chat/chat-paste-handler.js';
 import { createScreenshotContextHandler } from '#components/chat/screenshot-actions.utils.js';
 import { buildPastedContent, commandInvocation } from '#utils/at-reference.utils.js';
-import { skillMetadataToSlashCommand, useSkillsCatalog } from '#hooks/use-skills-catalog.js';
+import { skillMetadataToSlashCommand, useSkillsCatalogState } from '#hooks/use-skills-catalog.js';
 import type { ChatContextReference } from '#components/chat/chat-context-insertion.js';
 
 const dragOverlayCopy: Record<ChatTextareaDragKind, string> = {
@@ -87,7 +97,7 @@ type ChatTextareaDesktopProperties = {
   readonly addContextReferencesRef: React.RefObject<((references: ChatContextReference[]) => void) | undefined>;
 
   // Handlers (all must be stable references to prevent tooltip re-render loops)
-  readonly handleSubmit: () => Promise<void>;
+  readonly handleSubmit: (finalizedText?: string, references?: readonly CadReference[]) => Promise<void>;
   readonly handleCancelClick: () => void;
   readonly handleDragOver: (event: React.DragEvent) => void;
   readonly handleDragLeave: () => void;
@@ -212,7 +222,8 @@ export const ChatTextareaDesktop = memo(function ({
   handleTextareaBlur,
   removeAttachment,
 }: ChatTextareaDesktopProperties): React.JSX.Element {
-  const skillsCatalog = useSkillsCatalog();
+  const catalog = useSkillsCatalogState();
+  const skillsCatalog = catalog.status === 'closed' || catalog.status === 'error' ? [] : catalog.commands;
 
   const commands = acpSessionData?.commands;
   const slashCommandItems = useMemo(
@@ -237,9 +248,64 @@ export const ChatTextareaDesktop = memo(function ({
     [setDraftText],
   );
 
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- Tiptap initializes after the composer hooks.
+  const editorRef = useRef<Editor | null>(null);
+  const insertTranscript = useCallback((text: string): void => {
+    const currentEditor = editorRef.current;
+    if (!currentEditor || currentEditor.isDestroyed) {
+      return;
+    }
+    const precedingText = extractContent(currentEditor).text;
+    const separator = precedingText === '' || /\s$/u.test(precedingText) ? '' : ' ';
+    currentEditor
+      .chain()
+      .focus('end')
+      .insertContent({ type: 'text', text: separator + text })
+      .run();
+  }, []);
+  const { draftActorRef } = useChatComposer();
+  const latestDraftOwner = useRef(draftActorRef);
+  useLayoutEffect(() => {
+    latestDraftOwner.current = draftActorRef;
+  }, [draftActorRef]);
+  const dictation = useDictation(insertTranscript, draftActorRef);
+  /* The chips' structured references travel beside the text only when the draft has some. */
+  const submitWithReferences = useCallback(
+    async (text: string | undefined, references: readonly CadReference[]): Promise<void> =>
+      references.length === 0 ? handleSubmit(text) : handleSubmit(text, references),
+    [handleSubmit],
+  );
+  const submitWithDictation = useCallback(async (): Promise<void> => {
+    if (dictation.phase !== 'idle') {
+      if (dictation.phase !== 'recording' || !(await dictation.stop())) {
+        return;
+      }
+      const currentEditor = editorRef.current;
+      if (currentEditor && !currentEditor.isDestroyed && latestDraftOwner.current === draftActorRef) {
+        const content = extractContent(currentEditor);
+        await submitWithReferences(content.text, cadReferencesOfChips(content.contextChips));
+      }
+      return;
+    }
+    const currentEditor = editorRef.current;
+    await submitWithReferences(
+      undefined,
+      currentEditor && !currentEditor.isDestroyed
+        ? cadReferencesOfChips(extractContent(currentEditor).contextChips)
+        : [],
+    );
+  }, [dictation.phase, dictation.stop, draftActorRef, submitWithReferences]);
+  const escapeWithDictation = useCallback((): void => {
+    if (dictation.phase === 'idle') {
+      onEscapePressed?.();
+    } else {
+      dictation.cancel();
+    }
+  }, [dictation.cancel, dictation.phase, onEscapePressed]);
+
   const chatEditor = useChatEditor({
-    onSubmit: handleSubmit,
-    onEscape: onEscapePressed,
+    onSubmit: submitWithDictation,
+    onEscape: escapeWithDictation,
     onUpdate: handleEditorUpdate,
     treeService,
     chats,
@@ -258,7 +324,6 @@ export const ChatTextareaDesktop = memo(function ({
   // Store editor in a ref so callbacks below remain stable (empty dep arrays).
   // This breaks the re-render cascade: editor changes (null→Editor) won't
   // recreate focusEditor/handleAtButtonClick, so Tooltip children stay memo'd.
-  const editorRef = useRef(editor);
   useEffect(() => {
     editorRef.current = editor;
   }, [editor]);
@@ -351,10 +416,20 @@ export const ChatTextareaDesktop = memo(function ({
   }, [addContextChipsRef, addContextReferencesRef, insertContextReferences]);
 
   useEffect(() => {
-    if (enableAutoFocus && editor) {
-      editor.commands.focus('end');
+    if (!enableAutoFocus || !editor) {
+      return undefined;
     }
-  }, [enableAutoFocus, editor]);
+    // Rehydration installs the draft in a microtask. Focus after it so opening
+    // a history message keeps its first line visible instead of scrolling to the end.
+    const frame = requestAnimationFrame(() => {
+      if (!editor.isDestroyed) {
+        editor.commands.focus(mode === 'edit' ? 'start' : 'end');
+      }
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  }, [enableAutoFocus, editor, mode]);
 
   // Lock Tiptap while `await onSubmit(...)` is in-flight inside the textarea
   // hook (homepage create-project + `await navigate`, vs fire-and-forget
@@ -389,13 +464,31 @@ export const ChatTextareaDesktop = memo(function ({
     }
   }, []);
 
-  const sendRefusal = sendRefusalOf({
-    sendBlockReason,
-    isSubmitting,
-    isAttaching,
-    isSubmitDisabled,
-    isEmpty: !canResume && inputText.trim().length === 0 && attachments.length === 0,
-  });
+  const dictationActive = dictation.phase !== 'idle';
+  const dictationPending = dictationActive && dictation.phase !== 'recording';
+  const sendRefusal = dictationPending
+    ? 'Wait for dictation to finish'
+    : sendRefusalOf({
+        sendBlockReason,
+        isSubmitting,
+        isAttaching,
+        isSubmitDisabled,
+        isEmpty: !dictationActive && !canResume && inputText.trim().length === 0 && attachments.length === 0,
+      });
+  const dictationButton = useMemo(
+    () =>
+      dictation.available === true ? (
+        <DictationButton phase={dictation.phase} onStart={dictation.start} onStop={dictation.stop} />
+      ) : undefined,
+    [dictation.available, dictation.phase, dictation.start, dictation.stop],
+  );
+  const dictationRecording = useMemo(
+    () =>
+      dictationActive ? (
+        <DictationRecording phase={dictation.phase} levels={dictation.levels} onCancel={dictation.cancel} />
+      ) : undefined,
+    [dictation.cancel, dictation.levels, dictation.phase, dictationActive],
+  );
   const blockReasonId = useId();
   /* F19: the beam follows the box's corners. */
   const radius = mode === 'edit' ? 'rounded-lg' : 'rounded-2xl';
@@ -412,10 +505,11 @@ export const ChatTextareaDesktop = memo(function ({
         ref={containerReference}
         className={cn(
           'group/chat-textarea @container',
-          'relative flex w-full flex-col border bg-background pt-3 pb-2',
+          'relative flex w-full flex-col border border-border/60 bg-background',
+          chatComposerPaddingClassName,
           radius,
           'cursor-text overflow-hidden',
-          'shadow-md',
+          'shadow-sm',
           'has-[.tiptap:focus-visible]:focus-outline',
           className,
         )}
@@ -424,6 +518,14 @@ export const ChatTextareaDesktop = memo(function ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        {acpAgentId === undefined && (catalog.status === 'closed' || catalog.status === 'error') ? (
+          <div role='status' className='flex items-center justify-between gap-2 px-3 pb-2 text-xs'>
+            <span>Skill updates unavailable</span>
+            <Button variant='ghost' size='sm' aria-label='Retry skill updates' onClick={catalog.retry}>
+              Retry
+            </Button>
+          </div>
+        ) : undefined}
         {/* Attachments */}
         <ChatTextareaAttachmentRail
           attachments={attachments}
@@ -461,7 +563,10 @@ export const ChatTextareaDesktop = memo(function ({
           </div>
         ) : null}
 
+        <DictationFeedback transcript={dictation.transcript} error={dictation.error} />
         <ChatTextareaBar
+          dictationButton={dictationButton}
+          dictationRecording={dictationRecording}
           composerMode={mode}
           containerReference={containerReference}
           enableContextActions={enableContextActions}
@@ -481,7 +586,7 @@ export const ChatTextareaDesktop = memo(function ({
           sendRefusal={sendRefusal}
           describedBy={sendBlockReason === undefined ? undefined : blockReasonId}
           formattedCancelKeyCombination={formattedCancelKeyCombination}
-          handleSubmit={handleSubmit}
+          handleSubmit={submitWithDictation}
           handleCancelClick={handleCancelClick}
         />
       </div>
@@ -506,7 +611,11 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
     if (!bar) {
       return undefined;
     }
+    let disposed = false;
     const fit = (): void => {
+      if (disposed) {
+        return;
+      }
       const name = bar.querySelector<HTMLElement>('[data-slot=trigger-model]');
       for (let hidden = 0; hidden <= collapseSteps.length; hidden += 1) {
         for (const [index, flag] of collapseSteps.entries()) {
@@ -529,8 +638,11 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
       await document.fonts.ready;
       fit();
     };
-    void refitWhenFontsLoad();
+    if (document.fonts.status === 'loading') {
+      void refitWhenFontsLoad();
+    }
     return () => {
+      disposed = true;
       resize.disconnect();
       mutation.disconnect();
     };
@@ -549,6 +661,8 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
  * @internal
  */
 export const ChatTextareaBar = memo(function ({
+  dictationButton,
+  dictationRecording,
   composerMode,
   containerReference,
   enableContextActions,
@@ -571,6 +685,8 @@ export const ChatTextareaBar = memo(function ({
   handleSubmit,
   handleCancelClick,
 }: {
+  readonly dictationButton?: React.ReactNode;
+  readonly dictationRecording?: React.ReactNode;
   readonly composerMode: 'main' | 'edit';
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
   readonly containerReference: React.RefObject<HTMLDivElement | null>;
@@ -623,34 +739,45 @@ export const ChatTextareaBar = memo(function ({
 
   return (
     <div ref={barRef} data-slot='composer-bar' className='group/bar flex items-center justify-between gap-2 px-2'>
-      <div data-slot='composer-left' className='flex shrink-0 flex-row items-center gap-0.5'>
-        <ChatAddMenu
-          enableContextActions={enableContextActions}
-          isAttachmentSupported={attachmentInputSupported}
-          handleAtButtonClick={handleAtButtonClick}
-          handleFileSelect={handleFileSelect}
-          focusEditor={focusEditor}
-        />
-        <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
-        {creationLocationControl}
-        {enableKernelSelector ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
-        <input
-          ref={fileInputReference}
-          multiple
-          type='file'
-          accept={attachmentAccept}
-          className='hidden'
-          onChange={handleFileChange}
-        />
-      </div>
+      {dictationRecording === undefined ? (
+        <div data-slot='composer-left' className='flex shrink-0 flex-row items-center gap-0.5'>
+          <ChatAddMenu
+            enableContextActions={enableContextActions}
+            isAttachmentSupported={attachmentInputSupported}
+            handleAtButtonClick={handleAtButtonClick}
+            handleFileSelect={handleFileSelect}
+            focusEditor={focusEditor}
+          />
+          <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
+          {creationLocationControl}
+          {enableKernelSelector ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
+          <input
+            ref={fileInputReference}
+            multiple
+            type='file'
+            accept={attachmentAccept}
+            className='hidden'
+            onChange={handleFileChange}
+          />
+        </div>
+      ) : (
+        <div data-slot='composer-left' className='flex min-w-0 flex-1 flex-row items-center gap-2'>
+          {dictationRecording}
+        </div>
+      )}
       <div data-slot='composer-right' className='flex min-w-0 flex-row items-center gap-1'>
-        <ChatContextIndicator />
-        <ChatAgentSheet
-          agentConfig={agentConfig}
-          placements={placements}
-          focusEditor={focusEditor}
-          enableShortcut={ownsShortcuts}
-        />
+        {dictationRecording === undefined ? (
+          <>
+            <ChatContextIndicator />
+            <ChatAgentSheet
+              agentConfig={agentConfig}
+              placements={placements}
+              focusEditor={focusEditor}
+              enableShortcut={ownsShortcuts}
+            />
+          </>
+        ) : null}
+        {dictationButton}
         <ChatTextareaSubmitButton
           status={status}
           isSubmitting={isSubmitting}

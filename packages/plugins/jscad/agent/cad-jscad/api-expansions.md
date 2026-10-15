@@ -4,6 +4,7 @@
 
 expansions
 
+  // expansions.expand (function)
   declare function expand(options: ExpandOptions, geometry: Path2 | Geom2): Geom2
   declare function expand(options: ExpandOptions, geometry: Geom3): Geom3
   declare function expand<T extends Geom>(options?: ExpandOptions, ...geometries: RecursiveArray<T>): Array<T>
@@ -11,19 +12,20 @@ expansions
 
   ExpandOptions: export interface ExpandOptions
 
-    delta: number
+    delta?: number
 
-    corners: Corners
+    corners?: Corners
 
-    segments: number
+    segments?: number
 
+  // expansions.offset (function)
   declare function offset<T extends Geometry>(options: OffsetOptions, geometry: T): T
   declare function offset(options?: OffsetOptions, ...geometries: RecursiveArray<Geometry>): Geometry
 
   OffsetOptions: export interface OffsetOptions
 
-    delta: number
+    delta?: number
 
-    corners: 'edge' | 'chamfer' | 'round'
+    corners?: 'edge' | 'chamfer' | 'round'
 
-    segments: number
+    segments?: number

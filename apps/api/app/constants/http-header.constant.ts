@@ -16,6 +16,8 @@ export const httpHeader = {
   authorization: 'authorization',
   userAgent: 'user-agent',
   contentType: 'content-type',
+  /** Atomic create-only saved-preview backfill from browser clients. */
+  ifNoneMatch: 'if-none-match',
   // Gateway pass-through headers for the Anthropic-compatible LLM surface
   // (allowlisted and validated in apps/api/app/api/llm/llm-gateway.headers.ts).
   anthropicVersion: 'anthropic-version',
@@ -61,6 +63,12 @@ export const httpHeader = {
    * `clientAssertableActivity` in `llm-gateway.headers.ts`.
    */
   xTauActivity: 'x-tau-activity',
+  /**
+   * The Zoo-scoped token a desktop kernel utility or `tau serve` child presents
+   * on the `/v1/kernels/zoo` upgrade instead of the session
+   * (`#api/kernels/zoo-token.service.ts`). A live credential: logs redact it.
+   */
+  tauZooToken: 'tau-zoo-token',
 } as const;
 
 /**

@@ -4,8 +4,8 @@
  * @module
  */
 
-export { createGeoSpec, describe, expectGeo, expectNativeGeo, geoSpecMatcherNames, it, test } from '#create-geospec.js';
-export type { GeoSpec, GeoSpecNativeAuthoringSubject } from '#create-geospec.js';
+export { describe, expectGeo, geoSpecMatcherNames, it, test } from '#create-geospec.js';
+export type { GeoSpecSubject } from '#model/subject.js';
 export type { GeoSpecUnit } from '#geometry-unit.js';
 
 export type {
@@ -24,7 +24,6 @@ export type {
   GeoSpecConnectedComponentsExpectation,
   GeoSpecGeometrySelector,
   GeoSpecMatcher,
-  GeoSpecNativeRunnerMatcher,
   GeoSpecMassExpectation,
   GeoSpecMeshIntegrityExpectation,
   GeoSpecNoDiagnosticsExpectation,
@@ -62,5 +61,4 @@ export type {
   Vec3,
 } from '#mesh/types.js';
 
-export type { AnalyzeMeshOptions, AnalyzeMeshResult, LoadMeshOptions, LoadMeshResult } from '#mesh/load-mesh.js';
 export type { Vec3 as GeoSpecVec3 } from '#mesh/types.js';

@@ -28,6 +28,10 @@ export type ProviderMessageMetadata = {
   readonly model?: string | undefined;
   readonly responseModel?: string | undefined;
   readonly responseId?: string | undefined;
+  /** Provider-declared message phase. Missing or unrecognized values are not progress. */
+  readonly phase?: string | undefined;
+  /** Latest provider-declared reasoning summary, preserved separately from the full thought. */
+  readonly reasoningSummary?: string | undefined;
   readonly diagnostics?: readonly JsonValue[] | undefined;
   readonly usage?: Usage | undefined;
   readonly stopReason?: StopReason | undefined;
@@ -314,6 +318,15 @@ export type TurnFinalizedLogEvent = LogEventBase & {
   readonly runIds: readonly string[];
 };
 
+/** Host-confirmed first versioned file change through an admitted attempt's tools. @public */
+export type TurnChangedLogEvent = LogEventBase & {
+  readonly type: 'turn.changed';
+  readonly turnId: string;
+  readonly chatId: string;
+  readonly attempt: number;
+  readonly checkoutId: string;
+};
+
 /** A turn whose writes could not be merged into the checkout it ran on. @public */
 export type TurnConflictedLogEvent = LogEventBase & {
   readonly type: 'turn.conflicted';
@@ -495,6 +508,7 @@ export type AgentLogEvent =
   | SnapshotContextRefreshedEvent
   | SafeguardRecordedEvent
   | InterruptRecordedEvent
+  | TurnChangedLogEvent
   | TurnFinalizedLogEvent
   | TurnConflictedLogEvent
   | TurnFailedLogEvent

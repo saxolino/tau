@@ -1,3 +1,5 @@
+import { cadReferencesSchema } from '@taucad/chat/references';
+import type { CadReference } from '@taucad/chat/references';
 import type { UIMessage } from 'ai';
 import type { MyUIMessage } from '@taucad/chat';
 import type { AgentLogEvent, UserProviderMessage } from '@taucad/agent-host';
@@ -165,7 +167,7 @@ type JsonValue = Extract<AgentLogEvent, { readonly type: 'message.appended' }>['
 export const userProviderMessageOf = <Message extends UIMessage>(messages: readonly Message[]): UserProviderMessage => {
   const message = messages.findLast((candidate) => candidate.role === 'user');
   if (!message) {
-    throw new TypeError('Browser agent host admission requires a user message.');
+    throw new TypeError('Agent host admission requires a user message.');
   }
   const content: JsonValue[] = [];
   for (const part of message.parts) {
@@ -187,19 +189,41 @@ export const userProviderMessageOf = <Message extends UIMessage>(messages: reado
       }
       const match = /^data:(image\/[^;,]+);base64,(.*)$/u.exec(part.url);
       if (!match) {
-        throw new TypeError(`Browser agent host cannot record file part URL "${part.url}".`);
+        throw new TypeError(`The agent host cannot record file part URL "${part.url}".`);
       }
       content.push({ type: 'image', mimeType: match[1]!, data: match[2]! });
     }
   }
   const first = content[0];
   const textOnly = content.length === 1 && isRecord(first) && first['type'] === 'text';
+  const references = referencesOf(message.metadata);
   return {
     id: message.id,
     role: 'user',
     content: textOnly && typeof first['text'] === 'string' ? first['text'] : content,
+    ...(references === undefined ? {} : { metadata: { references } }),
   };
 };
+
+/** The geometry references a composed message carries (blueprint D6), as the host log records them. */
+const referencesOf = (metadata: unknown): CadReference[] | undefined => {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+  const parsed = cadReferencesSchema.safeParse(metadata['references']);
+  return parsed.success && parsed.data.length > 0 ? parsed.data : undefined;
+};
+
+/**
+ * The geometry references of the turn's own user message (the last in the transcript), which the turn's context
+ * renders for the model.
+ *
+ * @param messages - The turn's transcript.
+ * @returns Its valid references, or `undefined` when it carries none.
+ * @public
+ */
+export const turnReferencesOf = (messages: readonly UIMessage[]): CadReference[] | undefined =>
+  referencesOf(messages.findLast((message) => message.role === 'user')?.metadata);
 
 /** The sender's command key and the page's current admission/selection. @public */
 export type CommandContext = Readonly<{

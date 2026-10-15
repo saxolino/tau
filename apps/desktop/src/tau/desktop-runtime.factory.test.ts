@@ -27,10 +27,12 @@ describe('desktop runtime kernels', () => {
     const { kernels } = await resolveDesktopRuntime();
     const picovoxelKernel = kernels.find((kernel) => kernel.id === 'picovoxel')!;
     const { detectImport } = picovoxelKernel;
+    expect(detectImport).toBeDefined();
+    const importMatcher = new RegExp(detectImport!.source, detectImport!.flags);
 
     expect(picovoxelKernel.extensions).toEqual(['ts', 'js']);
-    expect(detectImport?.test("import type { Pico } from 'picovoxel';")).toBe(true);
-    expect(detectImport?.test("import { makeBox } from 'replicad';")).toBe(false);
+    expect(importMatcher.test("import type { Pico } from 'picovoxel';")).toBe(true);
+    expect(importMatcher.test("import { makeBox } from 'replicad';")).toBe(false);
     // Native PicoGK is composed on Apple Silicon only and claims C# alone.
     const picogkKernel = kernels.find((kernel) => kernel.id === 'picogk');
     if (process.platform === 'darwin' && process.arch === 'arm64') {
@@ -38,5 +40,18 @@ describe('desktop runtime kernels', () => {
     } else {
       expect(picogkKernel).toBeUndefined();
     }
+  });
+
+  it('should route KCL to Zoo through the configured Tau proxy with the sign-in copy', async () => {
+    const { kernels } = await resolveDesktopRuntime();
+    const zooKernel = kernels.find((kernel) => kernel.id === 'zoo');
+
+    expect(zooKernel?.extensions).toEqual(['kcl']);
+    expect(zooKernel?.options).toMatchObject({
+      baseUrl: 'ws://localhost:4001/v1/kernels/zoo',
+      closeErrors: { 4401: 'Sign in to Tau to use the Zoo kernel.' },
+    });
+    // The credential rides the WebSocket upgrade, never kernel options (they feed cache keys and middleware).
+    expect(zooKernel?.options).not.toHaveProperty('token');
   });
 });

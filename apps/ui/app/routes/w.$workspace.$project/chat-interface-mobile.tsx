@@ -15,7 +15,7 @@ import { Tabs, TabsContent } from '@taucad/ui/components/tabs';
 import { useChatInterfaceState } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { ViewerDockview } from '#routes/w.$workspace.$project/chat-viewer-dockview.js';
 import { Drawer, DrawerContent, DrawerTitle, DrawerDescription } from '@taucad/ui/components/drawer';
-import { ChatInterfaceSessionGate } from '#routes/w.$workspace.$project/focused-chat-gate.js';
+import { ChatHistoryGate, ChatInterfaceSessionGate } from '#routes/w.$workspace.$project/focused-chat-gate.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
 
 export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
@@ -53,6 +53,7 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
 
         <Drawer
           handleOnly
+          modal={false}
           open={drawerOpen}
           snapPoints={snapPoints}
           activeSnapPoint={activeSnapPoint}
@@ -66,7 +67,7 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
             Chat Interface - use navigation tabs to switch between panels
           </DrawerDescription>
 
-          {/* Unmount on close so Radix releases the viewer from its modal aria-hidden tree immediately. */}
+          {/* This docked panel shares interaction with the viewer and persistent navigation. */}
           {drawerOpen ? (
             <DrawerContent
               aria-labelledby='drawer-title'
@@ -93,7 +94,9 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
                 onValueChange={handleTabChange}
               >
                 <TabsContent enableAnimation={false} value='chat' className='flex h-full flex-col'>
-                  <ChatHistory />
+                  <ChatHistoryGate>
+                    <ChatHistory />
+                  </ChatHistoryGate>
                 </TabsContent>
                 <TabsContent enableAnimation={false} value='files' className='flex h-full flex-col'>
                   <ChatFileTree />

@@ -20,7 +20,13 @@ const relayTag = 'tau:services-port';
  * @param options - `foreign` posts the relay from another frame instead.
  * @returns The stub's captured calls and the port it relays.
  */
-const installShellGlobal = (options: { foreign?: boolean; slicers?: unknown } = {}) => {
+const installShellGlobal = (
+  options: {
+    foreign?: boolean;
+    slicers?: unknown;
+    directories?: DesktopBridgeModule.DesktopBridge['directories'];
+  } = {},
+) => {
   const port = new MessageChannel().port1;
   const requestServicesPort = vi.fn((requestId: string, _concern: string, _context?: Record<string, string>) => {
     globalThis.dispatchEvent(
@@ -61,6 +67,7 @@ const installShellGlobal = (options: { foreign?: boolean; slicers?: unknown } = 
     appIcon: { setTheme: setAppIconTheme },
     quit: { isReady: isQuitReady, onAsk: onQuitAsk, reportQuiesced: vi.fn() },
     dialog: { selectDirectory },
+    ...(options.directories === undefined ? {} : { directories: options.directories }),
     ...(options.slicers === undefined ? {} : { slicers: options.slicers }),
   });
   return {
@@ -93,6 +100,20 @@ describe('desktopBridge', () => {
     const { desktopBridge, isDesktopTarget } = await loadBridge();
     expect(isDesktopTarget).toBe(false);
     expect(desktopBridge()).toBeUndefined();
+  });
+
+  it('should expose native directory access only when the shell advertises it', async () => {
+    installShellGlobal();
+    const legacy = await loadBridge();
+    expect(legacy.desktopBridge()?.directories).toBeUndefined();
+    const open = vi.fn(async (_path: string) => undefined);
+    installShellGlobal({ directories: { openLabel: 'Open in Finder', openIcon: 'finder', open } });
+    const current = await loadBridge();
+    const directories = current.desktopBridge()?.directories;
+    expect(directories?.openLabel).toBe('Open in Finder');
+    expect(directories?.openIcon).toBe('finder');
+    await directories?.open('/picked/project');
+    expect(open).toHaveBeenCalledWith('/picked/project');
   });
 
   it('builds the contract from the preload-exposed object and memoises it', async () => {
@@ -142,13 +163,6 @@ describe('desktopBridge', () => {
     expect(requestId).toEqual(expect.any(String));
   });
 
-  it('should connect native GeoSpec comparisons through their dedicated concern', async () => {
-    const { port, requestServicesPort } = installShellGlobal();
-    const { desktopBridge } = await loadBridge();
-    await expect(desktopBridge()?.geoSpecPerformance.connect()).resolves.toBe(port);
-    expect(requestServicesPort).toHaveBeenCalledExactlyOnceWith(expect.any(String), 'geospecPerformance', undefined);
-  });
-
   it('connects the agent host by naming the workspace root main must vouch for', async () => {
     const { port, requestServicesPort } = installShellGlobal();
     const { desktopBridge } = await loadBridge();
@@ -170,7 +184,7 @@ describe('desktopBridge', () => {
     });
   });
 
-  it.each(['legacy', 'native'] as const)('should forward the explicit GeoSpec engine %s', async (geoSpecEngine) => {
+  it('should connect the default compiled host without an engine choice', async () => {
     const { port, requestServicesPort } = installShellGlobal();
     const { desktopBridge } = await loadBridge();
 
@@ -179,14 +193,12 @@ describe('desktopBridge', () => {
         workspaceRoot: '/Users/tester/Projects/widget',
         projectId: 'proj_widget',
         computeMode: 'durable',
-        geoSpecEngine,
       }),
     ).resolves.toBe(port);
     expect(requestServicesPort).toHaveBeenCalledExactlyOnceWith(expect.any(String), 'agentHost', {
       workspaceRoot: '/Users/tester/Projects/widget',
       projectId: 'proj_widget',
       computeMode: 'durable',
-      geoSpecEngine,
     });
   });
 

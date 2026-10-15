@@ -6,14 +6,14 @@ import { authClient } from '#lib/auth-client.js';
 import { ENV, getEnvironment } from '#environment.config.js';
 import { cacheTag, cdnBackedSsrRouteHeaders } from '#lib/react-router.lib.js';
 import { SharedWorkerGate } from '#hooks/use-file-manager.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { ErrorPage } from '#components/error-page.js';
 import { PublicationLockScreen, parsePublicationLockPayload } from '#components/share/publication-lock-screen.js';
 import type { PublicationLockReason, PublicationLockScreenVariant } from '#components/share/publication-lock-screen.js';
 import { parsePublicationRecord, publicationFileFetchInit } from '#components/share/parsed-publication.js';
 import type { ParsedPublication } from '#components/share/parsed-publication.js';
 import { useViewPing } from '#components/share/use-view-ping.js';
-import { ClientOnly } from '#components/ui/utils/client-only.js';
+import { ClientOnly } from '@taucad/ui/components/client-only';
 
 const SharedProjectWorkbench = lazy(async () => {
   const module = await import('#components/share/shared-project-workbench.js');
@@ -41,6 +41,9 @@ export type PublicationRouteLoaderData = {
   };
   files: Record<string, string>;
 };
+
+// Better Auth's session cookie (`cookiePrefix: 'tau'`), with the `__Secure-` prefix it carries over HTTPS.
+const sessionCookiePattern = /(?:^|;\s*)(?:__Secure-)?tau\.session_token=/u;
 
 function throwPublicationLock(reason: PublicationLockReason, httpStatus: number): never {
   // oxlint-disable-next-line typescript-eslint/only-throw-error -- React Router uses Response throws as control-flow
@@ -100,10 +103,14 @@ export const loadPublication = async ({ request, params }: LoaderFunctionArgs): 
   })) as PublicationRouteLoaderData;
 
   const publication = parsePublicationRecord(body.publication, body.viewerRole);
-  const responseHeaders =
-    publication?.visibility === 'private'
-      ? new Headers({ 'Cache-Control': 'private, no-store' })
-      : new Headers(cdnBackedSsrRouteHeaders(cacheTag.publicationViewer, 'long'));
+  // Only an anonymous view of a public publication is the same for everyone; anything else embeds the viewer.
+  const isAnonymousPublicView =
+    publication?.visibility === 'public' &&
+    publication.viewerRole === 'public' &&
+    !sessionCookiePattern.test(request.headers.get('Cookie') ?? '');
+  const responseHeaders = isAnonymousPublicView
+    ? new Headers(cdnBackedSsrRouteHeaders(cacheTag.publicationViewer, 'long'))
+    : new Headers({ 'Cache-Control': 'private, no-store' });
   return data(body, { headers: responseHeaders });
 };
 

@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { TauSkillsManifest } from '#bundle/bundle.types.js';
 import { skillsManifestFile } from '#bundle/bundle.types.js';
-import { bundleOwners, generateBundles } from '#bundle/generate.js';
+import { bundleOwners, generateBundles, usageRanking } from '#bundle/generate.js';
 import {
   maxSkillBodyTokens,
   maxSkillDescriptionChars,
@@ -59,15 +60,47 @@ const digest = (bytes: Uint8Array<ArrayBuffer>): string => createHash('sha256').
 const referencedFiles = (body: string): readonly string[] =>
   [...body.matchAll(/`([\w.-]+\.md)`/gu)].map(([, file]) => file ?? '');
 
+describe('GeoSpec reference roles', () => {
+  it('should retain canonical authoring and complete public host reference separately', () => {
+    const owner = bundleOwners.find((entry) => entry.slug === 'geospec-authoring');
+    const primary = owner?.corpus?.();
+    const supplemental = owner?.supplementalApi?.corpus();
+    expect(primary?.entries.some((entry) => entry.name === 'expectGeo')).toBe(true);
+    expect(primary?.entries.some((entry) => entry.name === 'loadModel')).toBe(true);
+    expect(primary?.entries.some((entry) => entry.name === 'GeoSpecAssertionClient')).toBe(false);
+    expect(supplemental?.entries.some((entry) => entry.name === 'GeoSpecAssertionClient')).toBe(true);
+    expect(supplemental?.entries.some((entry) => entry.name === 'expectGeo')).toBe(true);
+    expect(owner?.supplementalApi?.prefix).toBe('public');
+    expect(owner?.description).toContain('TypeScript or JavaScript');
+    const [classEntry] = primary?.entries.filter((entry) => entry.kind === 'class') ?? [];
+    if (classEntry === undefined || owner?.groupBy === undefined) {
+      throw new Error('Expected a public class');
+    }
+    expect(owner.groupBy(classEntry)).toBe('Classes');
+  }, 120_000);
+});
+
 describe('generateBundles', () => {
   beforeAll(async () => {
     await generateBundles({ outputRoot: scratch });
   }, 300_000);
 
-  it('ships the approved workbench text with only its DRAFT banner removed', () => {
+  it.each(bundleOwners.map((owner) => [owner.slug, owner.packageDirectory] as const))(
+    '%s publishes a standalone declaration for its JSON manifest',
+    (_slug, packageDirectory) => {
+      const declaration = readFileSync(join(scratch, packageDirectory, 'agent/skills.d.cts'), 'utf8');
+      expect(declaration).toContain('readonly bundles: ReadonlyArray<{');
+      expect(declaration).toContain('readonly body: string;');
+      expect(declaration).toContain('export = manifest;');
+      expect(declaration).not.toMatch(/\b(?:import|from)\b/u);
+    },
+  );
+
+  it('ships the approved workbench content with the document API names and canonical record field', () => {
     const shipped = readFileSync(join(workspaceRoot, 'packages/workbench/agent/workbench/SKILL.md'), 'utf8');
-    // SHA-256 of the approved 92-line draft after its DRAFT heading is removed.
-    expect(digest(Buffer.from(shipped))).toBe('ad215da4bd2b02f736ee80ed5861860bad1f1f1c73e86815ce1259c18630cb9c');
+    // The document API migration retains evaluate_model while durable records retain renderTimeout;
+    // INVALID_RECORD guidance points at the project's Settings not applied action.
+    expect(digest(Buffer.from(shipped))).toBe('a6bf45e64c0b5e96e44523ed13c57affec8d8a7379fe23b4e6be7b99c89e812b');
   });
 
   it('should expose all PicoVoxel Tau authoring types through the shipped reference index', () => {
@@ -147,6 +180,16 @@ describe('every committed bundle', () => {
   );
 
   it.each(declarations.map((entry) => [entry.owner.slug, entry] as const))(
+    '%s contains no text that electron-vite reads as a static import',
+    (_slug, entry) => {
+      // Electron-vite 6 `vite:esm-shim` (ESMStaticImportRe) splices a shim after the last match, strings included.
+      const esmStaticImport =
+        /(?<=\s|^|;)import\s*([\s"']*(?<imports>[\p{L}\p{M}\w\t\n\r $*,/{}@.]+)from\s*)?["']\s*(?<specifier>(?<="\s*)[^"]*[^\s"](?=\s*")|(?<='\s*)[^']*[^\s'](?=\s*'))\s*["'][\s;]*/mu;
+      expect(readFileSync(join(entry.agentDirectory, 'resources.js'), 'utf8')).not.toMatch(esmStaticImport);
+    },
+  );
+
+  it.each(declarations.map((entry) => [entry.owner.slug, entry] as const))(
     '%s describes every declared file with exact immutable resource metadata',
     async (_slug, entry) => {
       const module = (await import(pathToFileURL(join(entry.agentDirectory, 'resources.js')).href)) as ResourceModule;
@@ -205,14 +248,14 @@ describe('every committed bundle', () => {
     },
   );
 
+  // Doctrine-only owners (no `corpus`) have no extracted symbols to cover.
   it.each(
     declarations
-      .filter((entry) => entry.owner.slug !== 'workbench')
+      .filter(({ owner }) => owner.corpus !== undefined)
       .map((entry) => [entry.owner.slug, entry.owner] as const),
   )(
     '%s covers every extracted symbol exactly once',
     (_slug, owner) => {
-      expect(owner.corpus).toBeDefined();
       expect(owner.groupBy).toBeDefined();
       if (owner.corpus === undefined || owner.groupBy === undefined) {
         return;
@@ -257,13 +300,71 @@ describe('every committed bundle', () => {
   it('keeps OpenCascade complete without redistributing upstream prose', () => {
     const corpus = bundleOwners.find(({ slug }) => slug === 'cad-opencascadejs')?.corpus?.();
     expect(corpus?.entries).toHaveLength(5712);
-    expect(corpus?.metadata.totalEntries).toBe(65_053);
+    const entryPoint = join(
+      workspaceRoot,
+      'libs/api-extractor/src/generated/opencascade/modules/libcascade/index.d.ts',
+    );
+    const program = ts.createProgram([entryPoint], {
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      skipLibCheck: true,
+    });
+    const checker = program.getTypeChecker();
+    const source = program.getSourceFile(entryPoint);
+    const moduleSymbol = source === undefined ? undefined : checker.getSymbolAtLocation(source);
+    if (moduleSymbol === undefined) {
+      throw new Error('Expected the shipped OpenCascade declaration module');
+    }
+    const exports = checker.getExportsOfModule(moduleSymbol);
+    // Previously omitted object-alias/value members: both instance addresses
+    // plus the two declared option records, not new roots or overload entries.
+    const memberCounts = [
+      ['OpenCascadeInstance', 5118],
+      ['default', 5118],
+      ['CreateInstanceOptions', 7],
+      ['InitOpenCascadeOptions', 5],
+    ] as const;
+    for (const [name, count] of memberCounts) {
+      const symbol = exports.find((candidate) => candidate.name === name);
+      const exportedDeclaration = symbol?.getDeclarations()?.[0];
+      const declaration =
+        symbol !== undefined &&
+        exportedDeclaration !== undefined &&
+        (ts.isExportSpecifier(exportedDeclaration) || ts.isExportAssignment(exportedDeclaration))
+          ? checker.getAliasedSymbol(symbol).getDeclarations()?.[0]
+          : exportedDeclaration;
+      if (declaration === undefined) {
+        throw new Error(`Expected declaration for ${name}`);
+      }
+      const properties = checker.getTypeAtLocation(declaration).getProperties();
+      const members = corpus?.entries.find((entry) => entry.name === name)?.members;
+      expect(properties).toHaveLength(count);
+      expect(members?.map(({ name }) => name).sort()).toEqual(properties.map(({ name }) => name).sort());
+    }
+    // 2574: the values of `type E = typeof E[keyof typeof E]` enums, read from their `const E` twins.
+    expect(corpus?.metadata.totalEntries).toBe(65_053 + 5118 + 5118 + 7 + 5 + 2574);
 
     const serialized = JSON.stringify(corpus);
     expect(serialized).not.toContain('"docs"');
     expect(serialized).not.toContain('"description":');
     expect(serialized).not.toMatch(/"deprecated":"/u);
-  });
+  }, 120_000);
+});
+
+describe('committed usage rankings', () => {
+  // A re-extraction that renames ids would otherwise drop their scores without a signal.
+  it.each(bundleOwners.filter((owner) => owner.core !== undefined).map((owner) => [owner.slug, owner] as const))(
+    '%s names only symbols its corpora still declare',
+    (slug, owner) => {
+      const corpora = [owner.corpus?.(), owner.supplementalApi?.corpus()].filter((corpus) => corpus !== undefined);
+      const declared = new Set(corpora.flatMap((corpus) => addressableEntries(corpus).map(({ id }) => id)));
+      const missing = usageRanking(slug)
+        .symbols.map(({ id }) => id)
+        .filter((id) => !declared.has(id));
+      expect(missing).toEqual([]);
+    },
+    120_000,
+  );
 });
 
 describe('skill declarations', () => {

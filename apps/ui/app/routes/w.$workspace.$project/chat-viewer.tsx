@@ -1,25 +1,33 @@
+/* oxlint-disable jsx-a11y/no-noninteractive-tabindex -- The CAD canvas needs focus for scoped viewer shortcuts; a button role would misrepresent a drawing surface. */
+import { useProjectAvailability } from '#hooks/use-project-availability.js';
+import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
+import { interactiveViewContent } from '#lib/interactive-view-content.js';
+import type { AppCapabilitiesManifest } from '#types/runtime-client.alias.js';
 import { memo, useEffect, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { SnapshotFrom } from 'xstate';
 import type { FileEntry } from '@taucad/types';
+import { asKnownArtifact } from '@taucad/runtime';
+import type { Evaluation, Rendering, RuntimeDocument, ViewSubscription } from '@taucad/runtime';
+import { canonicalJson } from '@taucad/utils/hash';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import { FileX, FolderOpen, PlayCircle } from 'lucide-react';
-import { CadViewer } from '#components/geometry/cad/cad-viewer.js';
-import { RuntimeErrorOverlay } from '#components/model-viewer.js';
+import { CadViewer } from '@taucad/viewer/cad/cad-viewer';
+import { RuntimeErrorOverlay } from '@taucad/viewer/model-viewer';
 import type { ModelComponentActionMenuData } from '#components/geometry/cad/model-component-action-menu.js';
 import { ViewerModelComponentActionMenu } from '#components/geometry/cad/viewer-model-component-action-menu.js';
 import { useOptionalPartThumbnailService } from '#providers/part-thumbnail-provider.js';
 import { canonicalPartPreviews, sourceGlbDigest } from '#services/part-thumbnail-visual.js';
-import type { PartThumbnailState } from '#services/part-thumbnail.service.js';
-import type { ModelComponentSecondaryPointerTarget } from '#components/geometry/graphics/three/react/gltf-mesh.js';
+import type { PartThumbnailRequest } from '#services/part-thumbnail.service.js';
+import type { PartThumbnailState } from '@taucad/viewer/cad/part-thumbnail-state';
+import type { ModelComponentSecondaryPointerTarget } from '@taucad/viewer/graphics/three/react/gltf-mesh';
 import { FileSelector } from '#components/files/file-selector.js';
 import { Button } from '@taucad/ui/components/button';
 import { popoverSurfaceVariants } from '@taucad/ui/components/popover.variants';
 import { useProject } from '#hooks/use-project.js';
 import { useFileTreeSelector } from '#hooks/use-file-tree.js';
 import { useFileContent } from '#hooks/use-file-content.js';
-import { useRevisionStatus } from '#hooks/use-revision-status.js';
-import { Loader } from '#components/ui/loader.js';
 import { useWorkbenchViewCommands } from '#workbench-records/view-actions.js';
+import { useLiveViewOptions } from '#workbench-records/live-view-options.js';
+import { setLocalInstanceChoice, useLocalInstanceChoice } from '#workbench-records/local-instance.js';
 import { newViewRecord, viewTabTitle } from '#workbench-records/projection.js';
 import { CadProvider, useCad, useCadSelector } from '#hooks/use-cad.js';
 import {
@@ -28,22 +36,30 @@ import {
   useGraphicsSelector,
   useKinematicsSelector,
   useModelInteractionSelector,
-} from '#hooks/use-graphics.js';
-import type { ViewCameraSeed } from '#services/graphics-camera-registry.js';
-import { ChatStackTrace } from '#routes/w.$workspace.$project/chat-stack-trace.js';
+} from '@taucad/viewer/hooks/use-graphics';
+import type { ViewCameraSeed } from '@taucad/viewer/services/graphics-camera-registry';
+import { ViewerIssues } from '#routes/w.$workspace.$project/chat-stack-trace.js';
 import { ChatViewerStatus } from '#routes/w.$workspace.$project/chat-viewer-status.js';
 import { ChatViewerControls } from '#routes/w.$workspace.$project/chat-viewer-controls.js';
+import { ViewerKernelSettings } from '#routes/w.$workspace.$project/chat-viewer-kernel-settings.js';
+import { ViewerProjectionPicker } from '#routes/w.$workspace.$project/chat-viewer-projection-picker.js';
 import { cn } from '@taucad/ui/utils/cn';
+import { isEmptyGlb } from '@taucad/viewer/utils/inspect-glb';
 import { ArButton } from '#components/cad/ar-button.js';
-import { deriveModelInteractionUnitId, getModelInteractionUnitState } from '#machines/model-interaction.machine.js';
-import { describeKinematicsHover, getKinematicsUnitState } from '#machines/kinematics.machine.js';
 import {
-  selectCadGeometry,
-  selectCadKernelClient,
+  deriveModelInteractionUnitId,
+  getModelInteractionUnitState,
+} from '@taucad/viewer/machines/model-interaction.machine';
+import { describeKinematicsHover, getKinematicsUnitState } from '@taucad/viewer/machines/kinematics.machine';
+import {
+  selectCadEvaluation,
+  selectCadCapabilities,
+  selectCadActiveKernelId,
+  selectCadRendering,
+  selectCadDocument,
   selectCadFailureIssues,
   selectIsCadLoading,
 } from '#machines/cad.machine.js';
-import type { cadMachine } from '#machines/cad.machine.js';
 import {
   attachViewerSecondaryGestureTarget,
   beginViewerSecondaryGesture,
@@ -57,12 +73,189 @@ import type {
   ViewerSecondaryGesturePoint,
   ViewerSecondaryGestureState,
 } from '#routes/w.$workspace.$project/chat-viewer-secondary-gesture.js';
+import { ExactMeasurementProvider } from '@taucad/viewer/graphics/three/react/exact-measurement';
+import type { ExactOccurrenceDistanceRequest } from '@taucad/viewer/graphics/three/react/exact-measurement';
+import { measureExactOccurrenceDistance } from '#workers/measurement-exact.client.js';
 
 const emptyViewerPreviewSnapshot: ReadonlyMap<string, PartThumbnailState> = new Map();
 
 const componentNameBadgeRightEdgeThresholdPx = 220;
 /** Within this distance of the bottom controls' top edge the badge flips above the pointer. */
 const componentNameBadgeBottomThresholdPx = 56;
+
+/** One visible Dockview pane owns one runtime view; the CAD unit separately keeps its default view. */
+function usePaneRuntimeView({
+  document,
+  evaluation,
+  capabilities,
+  kernelId,
+  selectedId,
+  options,
+  instance,
+  blocked,
+}: Readonly<{
+  document: RuntimeDocument | undefined;
+  evaluation: Evaluation | undefined;
+  capabilities: AppCapabilitiesManifest | undefined;
+  kernelId: string | undefined;
+  selectedId: string | undefined;
+  options: Record<string, unknown> | undefined;
+  instance: string | undefined;
+  blocked?: string;
+}>): Readonly<{
+  rendering: Rendering | undefined;
+  unavailable: string | undefined;
+  captureRendering: () => Promise<Rendering>;
+}> {
+  const [lastSuccess, setLastSuccess] = useState<{ key: string; rendering: Rendering } | undefined>();
+  const [viewError, setViewError] = useState<{ key: string; message: string } | undefined>();
+  const offered = evaluation?.success
+    ? selectedId
+      ? evaluation.views.find((view) => view.id === selectedId)
+      : evaluation.views[0]
+    : undefined;
+  const requestedId = selectedId ?? offered?.id;
+  const content = interactiveViewContent(offered?.mimeType, kernelId, capabilities);
+  const includeEdges = content?.includeEdges === true;
+  const activeView = useRef<{ key: string; view: ViewSubscription; closed: boolean } | undefined>(undefined);
+  const unavailable =
+    blocked ??
+    (selectedId && evaluation?.success && !offered
+      ? `Saved view “${selectedId}” is unavailable in this build.`
+      : selectedId &&
+          instance &&
+          offered?.instances &&
+          !offered.instances.some((offeredInstance) => offeredInstance.id === instance)
+        ? `Saved instance “${instance}” is unavailable in view “${selectedId}”.`
+        : undefined);
+  const optionsKey = canonicalJson(options ?? {});
+  const isEmpty = evaluation?.success === true && evaluation.views.length === 0;
+  // The presented picture belongs to this document until a replacement succeeds,
+  // including while the person switches views or a new view fails.
+  const pictureKey = document?.id ?? '';
+  const subscriptionKey = `${document?.id ?? ''}:${requestedId ?? ''}:${optionsKey}:${instance ?? ''}:${includeEdges}`;
+
+  useEffect(() => {
+    if (!document || Boolean(unavailable) || isEmpty) {
+      return;
+    }
+    let closed = false;
+    let view: ReturnType<typeof document.view>;
+    try {
+      const request = {
+        options: JSON.parse(optionsKey) as Record<string, unknown>,
+        ...(instance ? { instance } : {}),
+        ...(includeEdges ? { content: { includeEdges: true } } : {}),
+      };
+      view = requestedId ? document.view(requestedId, request) : document.view();
+    } catch (error) {
+      queueMicrotask(() => {
+        if (!closed) {
+          setViewError({
+            key: subscriptionKey,
+            message: error instanceof Error ? error.message : 'The selected view failed',
+          });
+        }
+      });
+      return () => {
+        closed = true;
+      };
+    }
+    const active = { key: subscriptionKey, view, closed: false };
+    activeView.current = active;
+    const onRendering = (next: Rendering): void => {
+      if (closed) {
+        return;
+      }
+      if (next.success) {
+        setLastSuccess({ key: pictureKey, rendering: next });
+      }
+      setViewError(
+        next.success
+          ? undefined
+          : {
+              key: subscriptionKey,
+              message: next.issues.map((issue) => issue.message).join('; ') || 'View failed',
+            },
+      );
+    };
+    const unrendered = view.on('rendered', onRendering);
+    const unstatus = view.on('status', (status) => {
+      if (!closed && status === 'error') {
+        setViewError((current) =>
+          current?.key === subscriptionKey
+            ? current
+            : { key: subscriptionKey, message: 'The selected view is unavailable.' },
+        );
+      }
+    });
+    const readInitial = async (): Promise<void> => {
+      try {
+        const outcome = await view.rendering();
+        if (!outcome.superseded) {
+          onRendering(outcome.rendering);
+        }
+      } catch (error) {
+        if (!closed) {
+          setViewError({
+            key: subscriptionKey,
+            message: error instanceof Error ? error.message : 'The selected view failed',
+          });
+        }
+      }
+    };
+    // async-iife: bootstrap — the subscription is the owner of its initial rendering settlement.
+    void readInitial();
+    return () => {
+      closed = true;
+      active.closed = true;
+      if (activeView.current === active) {
+        activeView.current = undefined;
+      }
+      unrendered();
+      unstatus();
+      view.close();
+    };
+  }, [document, isEmpty, requestedId, includeEdges, optionsKey, instance, unavailable, pictureKey, subscriptionKey]);
+
+  const captureRendering = useCallback(async (): Promise<Rendering> => {
+    const active = activeView.current;
+    if (!active || active.key !== subscriptionKey || Boolean(unavailable) || isEmpty) {
+      throw new Error('The selected view is unavailable for capture.');
+    }
+    const assertActive = (): void => {
+      if (active.closed || activeView.current !== active) {
+        throw new Error('The selected view changed during capture.');
+      }
+    };
+    for (;;) {
+      assertActive();
+      // oxlint-disable-next-line no-await-in-loop -- Superseded evaluations must settle on the same pane subscription.
+      const outcome = await active.view.rendering();
+      assertActive();
+      if (outcome.superseded) {
+        continue;
+      }
+      if (!outcome.rendering.success || outcome.rendering.transient) {
+        throw new Error('The selected view has no committed successful rendering for capture.');
+      }
+      return outcome.rendering;
+    }
+  }, [subscriptionKey, unavailable, isEmpty]);
+
+  return {
+    captureRendering,
+    rendering:
+      evaluation?.success && evaluation.views.length === 0
+        ? undefined
+        : lastSuccess?.key === pictureKey
+          ? lastSuccess.rendering
+          : undefined,
+    // A failed evaluation fails every open view with the build's issues; the Issues card owns those.
+    unavailable:
+      unavailable ?? (evaluation?.success && viewError?.key === subscriptionKey ? viewError.message : undefined),
+  };
+}
 
 const getViewerSecondaryGesturePoint = (event: React.PointerEvent<HTMLDivElement>): ViewerSecondaryGesturePoint => ({
   clientX: event.clientX,
@@ -116,16 +309,11 @@ function MissingViewerFile({
   readonly entryPath: string;
   readonly onSelect: (path: string) => void;
 }): React.JSX.Element {
-  const checkingRemote = useRevisionStatus()?.sync.state === 'checking';
   return (
     <div className='flex h-full flex-col items-center justify-center gap-4 text-muted-foreground'>
-      {checkingRemote ? (
-        <Loader className='size-12 motion-reduce:animate-none' />
-      ) : (
-        <FileX className='size-12 stroke-1' />
-      )}
-      <div className='flex flex-col items-center gap-1' role={checkingRemote ? 'status' : undefined}>
-        <p className='text-sm font-medium'>{checkingRemote ? 'Checking synced files…' : 'File not found'}</p>
+      <FileX className='size-12 stroke-1' />
+      <div className='flex flex-col items-center gap-1'>
+        <p className='text-sm font-medium'>File not found</p>
         <p className='max-w-60 truncate text-xs'>{entryPath}</p>
       </div>
       <FileSelector
@@ -142,7 +330,7 @@ function MissingViewerFile({
   );
 }
 
-export const ChatViewer = memo(function ({
+const ChatViewerContent = memo(function ({
   viewId,
   entryPath,
   panelApi,
@@ -156,6 +344,14 @@ export const ChatViewer = memo(function ({
 
   // Get the geometry unit for this view's entry path
   const cadActor = entryPath ? geometryUnits.get(entryPath) : undefined;
+  const measureExact = useMemo(
+    () =>
+      cadActor
+        ? async (request: ExactOccurrenceDistanceRequest) =>
+            measureExactOccurrenceDistance({ ...request, cadRef: cadActor })
+        : undefined,
+    [cadActor],
+  );
 
   // Detect if the entry path is a directory: a listed directory entry, or a
   // prefix of a listed path when its directory has not been listed itself.
@@ -191,15 +387,29 @@ export const ChatViewer = memo(function ({
   const fileContent = useFileContent(entryPath);
   const isMissing = fileContent.kind === 'orphaned' && !isDirectory;
 
+  useEffect(() => {
+    if (!graphicsActor || (entryPath && !isDirectory && !isMissing)) {
+      return;
+    }
+    const unitId = graphicsActor.getSnapshot().context.modelInteractionUnitId;
+    graphicsActor.send({ type: 'clearArtifact' });
+    if (unitId) {
+      projectRef.send({ type: 'reconcileViewManifest', unitId });
+    }
+  }, [entryPath, graphicsActor, isDirectory, isMissing, projectRef]);
+
   // The project view record is the camera seed for this pane.
   const viewRecord = viewRecords.get(viewId);
+  const savedCamera = viewRecord?.selectedKernelView
+    ? viewRecord.kernelViews?.find((view) => view.id === viewRecord.selectedKernelView)?.camera
+    : viewRecord?.camera;
   /* Create-only seed for this view's camera session, built when the viewer mounts its canvas. The
    * canvas-less branches mount no provider, so a directory or a missing file builds no camera (R8). */
   const cameraSeed: ViewCameraSeed = {
     identity: entryPath,
     camera: {
       cameraFovAngle: viewRecord?.fieldOfView,
-      cameraView: viewRecord?.camera.kind === 'pose' ? viewRecord.camera : undefined,
+      cameraView: savedCamera?.kind === 'pose' ? savedCamera : undefined,
     },
   };
 
@@ -211,7 +421,7 @@ export const ChatViewer = memo(function ({
         projectRef.send({
           type: 'createGeometryUnit',
           entryPath: path,
-          renderTimeout: entriesRecord?.entries[path]?.renderTimeout,
+          operationTimeout: entriesRecord?.entries[path]?.renderTimeout,
         });
       }
 
@@ -326,22 +536,24 @@ export const ChatViewer = memo(function ({
 
   return (
     <CadProvider cadRef={cadActor}>
-      <GraphicsProvider graphicsRef={graphicsActor} seed={cameraSeed}>
-        <ViewerContent viewId={viewId} entryPath={entryPath} profile={profile} />
-      </GraphicsProvider>
+      <ExactMeasurementProvider measure={measureExact}>
+        <GraphicsProvider graphicsRef={graphicsActor} seed={cameraSeed}>
+          <ViewerContent viewId={viewId} entryPath={entryPath} profile={profile} />
+        </GraphicsProvider>
+      </ExactMeasurementProvider>
     </CadProvider>
   );
 });
 
-/** Stands in for geometry that has not arrived; subscribes to loading so the viewer does not. */
-function GeometryPlaceholder(): React.JSX.Element {
+/** Announces absent geometry without hiding the interactive empty scene. */
+function GeometryStatus({ isEmpty = false }: { readonly isEmpty?: boolean }): React.JSX.Element {
   const isCadLoading = useCadSelector(selectIsCadLoading, false);
   return (
     <div
       role='status'
-      aria-label={isCadLoading ? 'Loading geometry' : 'Waiting for geometry'}
+      aria-label={isEmpty ? 'Empty model' : isCadLoading ? 'Loading geometry' : 'Waiting for geometry'}
       aria-busy={isCadLoading || undefined}
-      className='size-full bg-background'
+      className='sr-only'
     />
   );
 }
@@ -361,14 +573,69 @@ const ViewerContent = memo(function ({
   readonly entryPath: string;
   readonly profile: 'editor' | 'shared';
 }): React.JSX.Element {
-  const { projectRef, entriesRecord } = useProject();
+  const { projectRef, entriesRecord, viewRecords } = useProject();
+  const viewCommands = useWorkbenchViewCommands();
   const cadRef = useCad();
-  const geometry = useCadSelector(selectCadGeometry, undefined);
+  const evaluation = useCadSelector(selectCadEvaluation, undefined);
+  const defaultRendering = useCadSelector(selectCadRendering, undefined);
+  const runtimeDocument = useCadSelector(selectCadDocument, undefined);
+  const capabilities = useCadSelector(selectCadCapabilities, undefined);
+  const kernelId = useCadSelector(selectCadActiveKernelId, undefined);
+  const savedView = viewRecords.get(viewId);
+  const selectedKernelView = savedView?.selectedKernelView;
+  const offeredViewId = selectedKernelView ?? (evaluation?.success ? evaluation.views[0]?.id : undefined);
+  const selectedState = savedView?.kernelViews?.find((state) => state.id === offeredViewId);
+  // The options panel's live draft leads the saved record, so edits re-render as they happen.
+  const liveOptions = useLiveViewOptions(viewId);
+  const viewOptions =
+    liveOptions && liveOptions.viewId === offeredViewId ? liveOptions.options : selectedState?.options;
+  const localInstance = useLocalInstanceChoice(viewId);
+  const localForView = localInstance?.viewId === offeredViewId ? localInstance : undefined;
+  const localExpired =
+    localForView && localForView.evaluationId !== evaluation?.id
+      ? `Instance “${localForView.instanceId}” belonged to a previous evaluation. Choose a current instance.`
+      : undefined;
+  const {
+    rendering: paneRendering,
+    unavailable,
+    captureRendering,
+  } = usePaneRuntimeView({
+    document: runtimeDocument,
+    evaluation,
+    capabilities,
+    kernelId,
+    selectedId:
+      selectedKernelView ??
+      (Boolean(localForView) || Boolean(selectedState?.authoredInstance) || Boolean(viewOptions)
+        ? offeredViewId
+        : undefined),
+    options: viewOptions,
+    instance: localForView && !localExpired ? localForView.instanceId : selectedState?.authoredInstance,
+    blocked: localExpired,
+  });
+  const rendering =
+    evaluation?.success && evaluation.views.length === 0
+      ? undefined
+      : (paneRendering ?? (selectedKernelView ? undefined : defaultRendering));
+  const knownArtifact = rendering?.success ? asKnownArtifact(rendering.artifact) : undefined;
+  const emptyModel = useMemo(
+    () =>
+      (evaluation?.success === true && evaluation.views.length === 0) ||
+      (knownArtifact?.mimeType === 'model/gltf-binary' && isEmptyGlb(knownArtifact.content)),
+    [evaluation, knownArtifact],
+  );
+  const artifact = rendering?.success && !emptyModel ? rendering.artifact : undefined;
   const failureIssues = useCadSelector(selectCadFailureIssues, undefined);
-  const kernelClient = useCadSelector(selectCadKernelClient, undefined);
   const failureMessage =
     failureIssues?.find((issue) => issue.severity === 'error')?.message ?? failureIssues?.[0]?.message;
   const overlayFailureMessage = profile === 'shared' ? failureMessage : undefined;
+  const restoreDefaultView = (): void => {
+    void viewCommands.edit(viewId, (current) => ({
+      ...(current ?? newViewRecord(entryPath)),
+      selectedKernelView: undefined,
+    }));
+    setLocalInstanceChoice(viewId, undefined);
+  };
 
   // The geometry unit can be closed via the parameters panel context menu.
   // When that happens cadRef goes undefined, geometry clears, but the panel
@@ -379,36 +646,45 @@ const ViewerContent = memo(function ({
     projectRef.send({
       type: 'createGeometryUnit',
       entryPath,
-      renderTimeout: entriesRecord?.entries[entryPath]?.renderTimeout,
+      operationTimeout: entriesRecord?.entries[entryPath]?.renderTimeout,
     });
   }, [entriesRecord, projectRef, entryPath]);
 
-  // Bridge geometry from the headless CadMachine to the per-view GraphicsMachine in
-  // the same tick the cad machine publishes it. The canvas then renders a new
-  // geometry together with the presentation revision the graphics machine
-  // assigns it; bridged after the commit instead, the mesh would render (and
-  // start preparing) the new geometry under the previous revision first, then
-  // again under its own.
+  // Bridge this pane's projection to its graphics owner. Other panes may show
+  // different views of the same evaluated document without changing this one.
   const graphicsActor = useGraphics();
+  const presentedUnitId = useGraphicsSelector((state) => state.context.modelInteractionUnitId);
+  const presentedMediaType = useGraphicsSelector((state) => state.context.artifact?.mimeType);
+  const previousPresentation = useRef({ unitId: presentedUnitId, mimeType: presentedMediaType });
   useEffect(() => {
-    if (!cadRef) {
-      return undefined;
+    const previous = previousPresentation.current;
+    previousPresentation.current = { unitId: presentedUnitId, mimeType: presentedMediaType };
+    if (
+      previous.unitId &&
+      (previous.unitId !== presentedUnitId ||
+        (previous.mimeType === 'model/gltf-binary' && presentedMediaType !== 'model/gltf-binary'))
+    ) {
+      projectRef.send({ type: 'reconcileViewManifest', unitId: previous.unitId });
     }
-
-    let forwarded: Pick<SnapshotFrom<typeof cadMachine>['context'], 'geometry' | 'units'> | undefined;
-    const forward = ({ context: { geometry, units } }: SnapshotFrom<typeof cadMachine>): void => {
-      if (!geometry || (geometry === forwarded?.geometry && units === forwarded.units)) {
-        return;
-      }
-      forwarded = { geometry, units };
-      graphicsActor.send({ type: 'updateGeometry', geometry, units, sourceFile: entryPath });
-    };
-    forward(cadRef.getSnapshot());
-    const subscription = cadRef.subscribe(forward);
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [cadRef, entryPath, graphicsActor]);
+  }, [presentedUnitId, presentedMediaType, projectRef]);
+  useEffect(() => {
+    if (emptyModel) {
+      graphicsActor.send({ type: 'clearArtifact' });
+      return;
+    }
+    if (!rendering?.success) {
+      return;
+    }
+    const known = asKnownArtifact(rendering.artifact);
+    if (known) {
+      graphicsActor.send({
+        type: 'updateArtifact',
+        artifact: known,
+        hash: rendering.hash,
+        sourceFile: rendering.sourceRevision?.entry ?? entryPath,
+      });
+    }
+  }, [rendering, emptyModel, entryPath, graphicsActor]);
 
   // Select individual primitive values so that useSelector's reference equality
   // check works correctly. An object-returning selector creates a new reference
@@ -430,20 +706,22 @@ const ViewerContent = memo(function ({
   const modelInteractionUnitId = useMemo(() => deriveModelInteractionUnitId({ sourceFile: entryPath }), [entryPath]);
   const thumbnails = useOptionalPartThumbnailService(modelInteractionUnitId);
   const previewSourceDigests = useRef(new WeakMap<Uint8Array<ArrayBuffer>, Promise<string>>());
-  const [previewRetryRevision, setPreviewRetryRevision] = useState(0);
-  const manualPreviewRetry = useRef<string | undefined>(undefined);
-  const retryPreview = useCallback(() => {
-    manualPreviewRetry.current = viewerActionMenu?.target.componentId;
-    setPreviewRetryRevision((value) => value + 1);
-  }, [viewerActionMenu]);
+  const [previewRetry, setPreviewRetry] = useState<{
+    part: PartThumbnailRequest;
+    requestId: number;
+    sourceKey: string;
+  }>();
+  const submittedRetryId = useRef(0);
   const subscribePreviews = useCallback(
     (listener: () => void) => thumbnails?.subscribe(listener) ?? (() => undefined),
     [thumbnails],
   );
   const getPreviewSnapshot = useCallback(() => thumbnails?.snapshot() ?? emptyViewerPreviewSnapshot, [thumbnails]);
   const previews = useSyncExternalStore(subscribePreviews, getPreviewSnapshot, getPreviewSnapshot);
-  const presentedGeometry = useGraphicsSelector((state) => state.context.geometry);
-  const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation?.presentedKey);
+  const presentedArtifact = useGraphicsSelector((state) => state.context.artifact);
+  const presentedArtifactKey = useGraphicsSelector((state) => state.context.artifactKey);
+  const presentedSourceFile = useGraphicsSelector((state) => state.context.artifactSourceFile);
+  const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation.presentedKey);
   const componentNameForPointer = useModelInteractionSelector((state) => {
     const unit = getModelInteractionUnitState(state.context, modelInteractionUnitId);
     const { hoveredComponentId } = unit;
@@ -490,23 +768,38 @@ const ViewerContent = memo(function ({
     viewerActionMenuData?.node.kind === 'part' && viewerActionMenuData.node.primitiveRefs?.length
       ? viewerActionMenuData.node
       : undefined;
+  const retryPreview = useCallback(() => {
+    if (!viewerPart || !presentedKey) {
+      return;
+    }
+    const part = { id: viewerPart.id, primitives: viewerPart.primitiveRefs! };
+    setPreviewRetry((current) => ({ part, requestId: (current?.requestId ?? 0) + 1, sourceKey: presentedKey }));
+  }, [presentedKey, viewerPart]);
   useEffect(() => {
+    if (previewRetry && previewRetry.sourceKey !== presentedKey) {
+      // Retire an unsubmitted retry when its presented-source lifetime ends.
+      submittedRetryId.current = previewRetry.requestId;
+    }
     if (!thumbnails) {
       return;
     }
     thumbnails.announcePresentedSource(presentedKey);
+    const pendingRetry =
+      previewRetry && previewRetry.sourceKey === presentedKey && previewRetry.requestId !== submittedRetryId.current
+        ? previewRetry
+        : undefined;
+    const requestedPart =
+      pendingRetry?.part ?? (viewerPart ? { id: viewerPart.id, primitives: viewerPart.primitiveRefs! } : undefined);
     if (
-      !viewerActionMenu ||
-      !viewerPart ||
-      presentedGeometry?.format !== 'gltf' ||
-      presentedGeometry.hash !== presentedKey
+      !requestedPart ||
+      presentedArtifact?.mimeType !== 'model/gltf-binary' ||
+      presentedArtifactKey !== presentedKey
     ) {
       thumbnails.releaseOwner('viewer');
       return;
     }
     let active = true;
-    const content = presentedGeometry.content;
-    const requestedPart = { id: viewerPart.id, primitives: viewerPart.primitiveRefs! };
+    const { content } = presentedArtifact;
     if (content.buffer.byteLength > 64 * 1024 * 1024) {
       thumbnails.failPreparationForOwner(
         'viewer',
@@ -515,8 +808,6 @@ const ViewerContent = memo(function ({
       );
       return;
     }
-    const manualPartId = manualPreviewRetry.current;
-    manualPreviewRetry.current = undefined;
     let sourceDigest = previewSourceDigests.current.get(content);
     if (!sourceDigest) {
       sourceDigest = sourceGlbDigest(content);
@@ -538,8 +829,11 @@ const ViewerContent = memo(function ({
               renderContent: prepared.renderContent,
             },
             [{ ...requestedPart, visualKey: prepared.previews[0]?.key ?? prepared.visualKey }],
-            manualPartId ? { manualPartId } : undefined,
+            pendingRetry ? { manualPartId: pendingRetry.part.id } : undefined,
           );
+          if (pendingRetry) {
+            submittedRetryId.current = pendingRetry.requestId;
+          }
         }
       } catch (error) {
         if (active) {
@@ -554,7 +848,7 @@ const ViewerContent = memo(function ({
     return () => {
       active = false;
     };
-  }, [entryPath, presentedGeometry, presentedKey, previewRetryRevision, thumbnails, viewerActionMenu, viewerPart]);
+  }, [entryPath, presentedArtifact, presentedArtifactKey, presentedKey, previewRetry, thumbnails, viewerPart]);
   useEffect(() => () => thumbnails?.releaseOwner('viewer'), [thumbnails]);
   const viewerMenuWithPreview = viewerActionMenuData
     ? {
@@ -580,31 +874,36 @@ const ViewerContent = memo(function ({
   // The hover badge is placed from custom properties written straight to the
   // layout element so a move never re-renders this subtree; only pointer
   // entry/exit is React state.
-  const updateViewerPointerPosition = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
-    const layout = viewerLayoutRef.current;
-    const viewerBounds = layout?.getBoundingClientRect();
-    if (!layout || !viewerBounds) {
-      setIsPointerOverViewer(false);
-      return;
-    }
+  const updateViewerPointerPosition = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>): void => {
+      const layout = viewerLayoutRef.current;
+      const viewerBounds = layout?.getBoundingClientRect();
+      if (!layout || !viewerBounds) {
+        setIsPointerOverViewer(false);
+        return;
+      }
 
-    const x = Math.max(0, Math.min(event.clientX - viewerBounds.left, viewerBounds.width));
-    const y = Math.max(0, Math.min(event.clientY - viewerBounds.top, viewerBounds.height));
-    // Read at each move rather than kept: the bar grows and shrinks as tools start and stop.
-    const controlsTop =
-      (bottomControlsRef.current?.getBoundingClientRect().top ?? viewerBounds.bottom) - viewerBounds.top;
-    layout.style.setProperty('--viewer-hover-label-x', `${x}px`);
-    layout.style.setProperty('--viewer-hover-label-y', `${y}px`);
-    layout.style.setProperty(
-      '--viewer-hover-label-translate-x',
-      x > viewerBounds.width - componentNameBadgeRightEdgeThresholdPx ? 'calc(-100% - 8px)' : '8px',
-    );
-    layout.style.setProperty(
-      '--viewer-hover-label-translate-y',
-      y > controlsTop - componentNameBadgeBottomThresholdPx ? 'calc(-100% - 10px)' : '10px',
-    );
-    setIsPointerOverViewer(true);
-  }, []);
+      const x = Math.max(0, Math.min(event.clientX - viewerBounds.left, viewerBounds.width));
+      const y = Math.max(0, Math.min(event.clientY - viewerBounds.top, viewerBounds.height));
+      // Read at each move rather than kept: the bar grows and shrinks as tools start and stop.
+      const controlsTop =
+        (bottomControlsRef.current?.getBoundingClientRect().top ?? viewerBounds.bottom) - viewerBounds.top;
+      layout.style.setProperty('--viewer-hover-label-x', `${x}px`);
+      layout.style.setProperty('--viewer-hover-label-y', `${y}px`);
+      layout.style.setProperty(
+        '--viewer-hover-label-translate-x',
+        x > viewerBounds.width - componentNameBadgeRightEdgeThresholdPx ? 'calc(-100% - 8px)' : '8px',
+      );
+      layout.style.setProperty(
+        '--viewer-hover-label-translate-y',
+        y > controlsTop - componentNameBadgeBottomThresholdPx ? 'calc(-100% - 10px)' : '10px',
+      );
+      if (!isPointerOverViewer) {
+        setIsPointerOverViewer(true);
+      }
+    },
+    [isPointerOverViewer],
+  );
 
   const clearViewerPointerPosition = useCallback((): void => {
     setIsPointerOverViewer(false);
@@ -700,10 +999,58 @@ const ViewerContent = memo(function ({
       data-testid='chat-viewer-layout'
       data-viewer-frame
       className='group/viewer fullscreen:bg-background @container/viewer relative flex h-full flex-col'
+      onKeyDown={(event) => {
+        if (
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.nativeEvent.isComposing ||
+          evaluation?.success !== true ||
+          evaluation.views.length < 2
+        ) {
+          return;
+        }
+        const { target } = event;
+        if (
+          !(target instanceof HTMLElement) ||
+          target.isContentEditable ||
+          target.closest('input, textarea, select, [contenteditable], [role="textbox"], .monaco-editor')
+        ) {
+          return;
+        }
+        const index = Number(event.key) - 1;
+        const next = Number.isInteger(index) && index >= 0 && index < 3 ? evaluation.views[index] : undefined;
+        if (!next) {
+          return;
+        }
+        event.preventDefault();
+        setLocalInstanceChoice(viewId, undefined);
+        void viewCommands.edit(viewId, (current) => ({
+          ...(current ?? newViewRecord(entryPath)),
+          selectedKernelView: next.id,
+        }));
+      }}
     >
-      {/* Status overlays */}
-      <div className='absolute top-[10%] right-2 left-2 z-10 mx-auto flex w-fit max-w-full flex-col gap-2'>
+      {/* Status overlays: the running build phase in the bar's skin, outside the bar so the bar never moves for it.
+          Before geometry arrives the pill sits where the model will appear;
+          over a model it sits in the upper sixth, below the 96 px gizmo band and the pane's tab strip and above the
+          model's middle. In the editor the view menus, the failure and a view notice live in the bottom bar. */}
+      <div
+        data-slot='viewer-status'
+        className={cn(
+          'absolute right-2 left-2 z-10 mx-auto flex w-fit max-w-full flex-col gap-2',
+          artifact && presentedArtifact ? 'top-[clamp(5rem,16%,8rem)]' : 'top-1/2 -translate-y-1/2',
+        )}
+      >
         <ChatViewerStatus />
+        {unavailable && profile !== 'editor' ? (
+          <div role='alert' className='rounded-md border border-border bg-background/95 p-3 text-sm shadow-sm'>
+            <p>{unavailable}</p>
+            <Button size='sm' variant='outline' className='mt-2' onClick={restoreDefaultView}>
+              Use default view
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {/* Geometry canvas */}
@@ -711,6 +1058,9 @@ const ViewerContent = memo(function ({
         id={`viewport-gizmo-container-${viewId}`}
         ref={canvasRegionRef}
         data-testid='cad-viewer-canvas-region'
+        role='application'
+        aria-label='CAD canvas'
+        tabIndex={0}
         className='relative min-h-0 flex-1 overflow-hidden'
         onPointerDownCapture={handleCanvasRegionPointerDownCapture}
         onPointerMoveCapture={handleCanvasRegionPointerMoveCapture}
@@ -721,7 +1071,7 @@ const ViewerContent = memo(function ({
         onPointerMove={updateViewerPointerPosition}
         onPointerLeave={clearViewerPointerPosition}
       >
-        {geometry ? (
+        {isGeometryUnitClosed ? null : (
           <CadViewer
             enableZoom
             enablePan
@@ -733,26 +1083,21 @@ const ViewerContent = memo(function ({
             enableLines={enableLines}
             enableMatcap={enableMatcap}
             upDirection={upDirection}
-            geometry={geometry}
-            sourceFile={entryPath}
+            artifact={artifact ? presentedArtifact : undefined}
+            artifactHash={presentedArtifactKey}
+            sourceFile={presentedSourceFile}
             // Keep R3F on default offsetX/Y compute; eventPrefix='client'
             // is window-relative and mis-rays docked panels.
             eventSource={canvasEventSource}
             gizmoContainer={`#viewport-gizmo-container-${viewId}`}
             onModelComponentSecondaryPointerCandidate={handleModelComponentSecondaryPointerCandidate}
           />
-        ) : overlayFailureMessage ? (
-          <RuntimeErrorOverlay
-            message={overlayFailureMessage}
-            className='size-full flex-col justify-center gap-3 bg-background text-center [&>svg]:size-10'
-          />
-        ) : (
-          <GeometryPlaceholder />
         )}
-        {geometry && overlayFailureMessage ? (
+        {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
+        {overlayFailureMessage ? (
           <RuntimeErrorOverlay
             message={overlayFailureMessage}
-            className='absolute top-4 right-4 left-4 z-10 mx-auto w-fit max-w-[calc(100%-2rem)] rounded-md border border-destructive/40 bg-background/90 p-2 shadow-sm backdrop-blur-sm'
+            className='absolute top-4 right-4 left-4 z-10 mx-auto w-fit max-w-[calc(100%-2rem)] rounded-md border border-feature/40 bg-background/90 p-2 shadow-sm backdrop-blur-sm'
           />
         ) : null}
       </div>
@@ -783,18 +1128,45 @@ const ViewerContent = memo(function ({
         </div>
       )}
 
-      {/* Bottom controls: the bar is centred on the last line and grows upward as tools start. The issues card and
-          the AR button (mobile iOS only) share the line above it, so the bar never covers them. In a pane narrower
-          than the bar, the bar starts at the left edge, keeping the grid readout and Section in view. */}
+      {/* Bottom controls: the bar is centred on the last line and grows upward as tools start. In the editor it starts
+          with the view menus and the build status, and the issues list unfolds above its controls. The AR button
+          (mobile iOS only) has the line above it, so the bar never covers it. In a pane narrower than the bar, the
+          bar starts at the left edge, keeping the grid readout and Section in view. */}
       <div
         ref={bottomControlsRef}
         className='pointer-events-none absolute inset-x-2 bottom-2 z-10 flex flex-col items-center-safe gap-2'
       >
         <div className='flex w-full items-end gap-2 [&>*]:pointer-events-auto'>
-          {profile === 'editor' ? <ChatStackTrace entryPath={entryPath} side='bottom' /> : null}
-          <ArButton geometry={geometry} kernelClient={kernelClient} className='ml-auto shrink-0' />
+          <ArButton artifact={artifact} runtimeDocument={runtimeDocument} className='ml-auto shrink-0' />
         </div>
-        <ChatViewerControls shouldEnableCapture={profile === 'editor'} />
+        {profile === 'editor' ? (
+          <ViewerIssues
+            entryPath={entryPath}
+            notice={
+              unavailable
+                ? { message: unavailable, actionLabel: 'Use default view', onAct: restoreDefaultView }
+                : undefined
+            }
+          >
+            {({ segment, list }) => (
+              <ChatViewerControls
+                captureRendering={captureRendering}
+                kernelSettings={
+                  cadRef ? <ViewerKernelSettings viewId={viewId} entryPath={entryPath} cadActor={cadRef} /> : undefined
+                }
+                leading={
+                  <>
+                    {cadRef ? <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} /> : null}
+                    {segment}
+                  </>
+                }
+                aboveControls={list}
+              />
+            )}
+          </ViewerIssues>
+        ) : (
+          <ChatViewerControls shouldEnableCapture={false} captureRendering={captureRendering} />
+        )}
       </div>
     </div>
   );
@@ -827,3 +1199,13 @@ function ModelComponentNameBadge({
     </div>
   );
 }
+
+/** Keep file absence and rendering errors hidden until the authored checkout is acknowledged. */
+export const ChatViewer = memo(function (props: ChatViewerProps): React.JSX.Element {
+  const availability = useProjectAvailability();
+  return props.profile !== 'shared' && availability !== 'ready' ? (
+    <ProjectSyncPlaceholder state={availability} />
+  ) : (
+    <ChatViewerContent {...props} />
+  );
+});

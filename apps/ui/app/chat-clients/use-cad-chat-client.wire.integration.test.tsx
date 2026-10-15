@@ -29,6 +29,7 @@ vi.mock('#hooks/use-chat-snapshot.js', () => ({ useChatSnapshot: vi.fn() }));
 vi.mock('#hooks/use-context-payload.js', () => ({ useContextPayload: vi.fn() }));
 vi.mock('#hooks/use-models.js', () => ({
   useModels: () => ({
+    ensureModelCatalog: async () => ({ status: 'loaded', models: [] }),
     resolveModel: () => ({
       id: 'openai-gpt-5.5',
       isResolved: true,
@@ -60,6 +61,9 @@ vi.mock('#hooks/chat-session-store-provider.js', () => ({
     getProjection: () => undefined,
     requestTurn: vi.fn(),
     startPendingSeed: vi.fn(),
+    refreshMessageQueue: vi.fn(),
+    captureMessageQueueIntent: vi.fn(() => ({})),
+    subscribeProjection: vi.fn(() => vi.fn()),
     setTurnPlacement: vi.fn(),
   }),
 }));
@@ -69,6 +73,8 @@ vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'proj_
 vi.mock('#hooks/use-credit-preflight.js', () => ({ useCreditPreflight: () => () => undefined }));
 /* ChatTurnHost composes a registration only once the project's revision root is connected (W8 TS-S5). */
 vi.mock('#hooks/use-revision-status.js', () => ({ useRevisionClient: () => ({}) }));
+/* ChatTurnHost reads the usage-metrics preference through react-query; this scope has no query client. */
+vi.mock('#hooks/use-privacy-preferences.js', () => ({ usePrivacyPreferences: () => ({ preferences: undefined }) }));
 
 const noop = (): void => undefined;
 const contextPayloadMock = useContextPayload as unknown as ReturnType<typeof vi.fn>;

@@ -60,8 +60,8 @@ describe('PicoGK prepared resources', () => {
         label: 'PicoGK',
       },
     ]);
-    expect(options.requestTimeout).toBe(120_000);
-    expect(options.maxArtifactBytes).toBe(512 * 1024 * 1024);
+    expect(options.requestTimeout).toBe(0);
+    expect(options.maxArtifactBytes).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it('accepts an explicit target and rejects a manifest for another target', () => {
@@ -82,7 +82,10 @@ describe('PicoGK prepared resources', () => {
     const { resourceRoot } = fixture();
     writeFileSync(
       join(resourceRoot, hostTarget, 'tau-runtime-manifest.json'),
-      JSON.stringify({ ...manifest(), protocolVersion: picogkProtocolVersion - 1 }),
+      JSON.stringify({
+        ...manifest(),
+        protocolVersion: picogkProtocolVersion - 1,
+      }),
     );
 
     expect(() => loadPicogkKernelOptions({ resourceRoot })).toThrow(
@@ -95,10 +98,28 @@ describe('PicoGK prepared resources', () => {
   it('pins protocol versions, digests, and confined relative resource paths', () => {
     expect(picogkRuntimeManifestSchema.safeParse({ ...manifest(), schemaVersion: 1 }).success).toBe(false);
     expect(
-      picogkRuntimeManifestSchema.safeParse({ ...manifest(), protocolVersion: picogkProtocolVersion - 1 }).success,
+      picogkRuntimeManifestSchema.safeParse({
+        ...manifest(),
+        protocolVersion: picogkProtocolVersion - 1,
+      }).success,
     ).toBe(false);
-    expect(picogkRuntimeManifestSchema.safeParse({ ...manifest(), workerSha256: 'invalid' }).success).toBe(false);
-    expect(picogkRuntimeManifestSchema.safeParse({ ...manifest(), workerPath: '/worker' }).success).toBe(false);
-    expect(picogkRuntimeManifestSchema.safeParse({ ...manifest(), workerPath: '../worker' }).success).toBe(false);
+    expect(
+      picogkRuntimeManifestSchema.safeParse({
+        ...manifest(),
+        workerSha256: 'invalid',
+      }).success,
+    ).toBe(false);
+    expect(
+      picogkRuntimeManifestSchema.safeParse({
+        ...manifest(),
+        workerPath: '/worker',
+      }).success,
+    ).toBe(false);
+    expect(
+      picogkRuntimeManifestSchema.safeParse({
+        ...manifest(),
+        workerPath: '../worker',
+      }).success,
+    ).toBe(false);
   });
 });

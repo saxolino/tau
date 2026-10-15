@@ -1,0 +1,10 @@
+# Panels api:grafana:check may find empty locally, one `Dashboard › Panel` per line.
+# Fly panels live in Tau Cloud. These event panels stay empty while nothing goes wrong: a
+# funded call refused at admission, and an agent, ACP, LLM or gateway warning or error in the API's
+# logs. The harness's funded Haiku calls fill the gen_ai_* panels, given a supplier key in apps/api/.env
+# (without one those calls answer 503 and the check fails on them). Agent panels fill from its synthetic
+# agent ingest, which validates the ingest path, not agent execution. Delete a line when it fills; the
+# checker reports lines that have data again.
+
+Agents & Codex Usage › Agent & LLM Warnings and Errors
+Billing & Credit Ledger › Funded LLM Admission Denials (1h)

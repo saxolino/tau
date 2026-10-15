@@ -1,3 +1,6 @@
+import { ObservationService } from '#observation-service.js';
+import type { WatchRequest, WatchEvent } from '@taucad/filesystem';
+import type { ObservationWatch } from '#observation-service.js';
 import { BoundedFileCache, WorkspaceMutationError } from '@taucad/filesystem';
 import type { ContentExportFilter } from '@taucad/filesystem/content-ops';
 import { sha256Bytes } from '@taucad/utils/hash';
@@ -75,6 +78,50 @@ export type RawReadOptions = {
   readonly sizeLimit?: number;
 };
 
+/** Existing classified content and its error-reporting path. @public */
+export type FileContentBytesInput = {
+  readonly path: string;
+  readonly result: FileContentResult;
+};
+
+/**
+ * Interpret classified text content without acquiring I/O or changing ownership.
+ * @param input - The existing content outcome and its workspace-relative path.
+ * @returns The same owned text byte array held by the outcome.
+ * @throws {BinaryFileError} When the content is binary.
+ * @throws {FileTooLargeError} When it exceeds the existing open-time limit.
+ * @throws {FileNotFoundError} When it is orphaned.
+ * @public
+ */
+export function fileContentBytes({ path, result }: FileContentBytesInput): Uint8Array<ArrayBuffer> {
+  switch (result.kind) {
+    case 'text': {
+      return result.content;
+    }
+    case 'binary': {
+      throw new BinaryFileError(`File '${path}' is binary and cannot be read as text`, {
+        path,
+        size: result.size,
+      });
+    }
+    case 'too-large': {
+      throw new FileTooLargeError(
+        `File '${path}' (${result.size} bytes) exceeds open-time size limit (${result.limit} bytes)`,
+        { path, size: result.size, limit: result.limit },
+      );
+    }
+    case 'orphaned': {
+      throw new FileNotFoundError(`File '${path}' was not found`, { path });
+    }
+    case 'error': {
+      throw result.cause instanceof Error ? result.cause : new Error(String(result.cause));
+    }
+    case 'loading': {
+      throw new Error(`Unexpected 'loading' outcome for '${path}'`);
+    }
+  }
+}
+
 /**
  * Outcome publication event for `useSyncExternalStore` consumers.
  *
@@ -105,7 +152,6 @@ type FileContentServiceInit = {
 
 const defaultMaxEntries = 500;
 const defaultMaxTotalBytes = 128 * 1024 * 1024;
-const defaultMaxSingleFileBytes = 1024 * 1024;
 const defaultOpenSizeBytes = 50 * 1024 * 1024;
 /* The mutation pipeline refuses a checked write whose bytes and expected bytes pass 8 MiB (RV-W5b2 N3). */
 const checkedEditorSaveBytes = 8 * 1024 * 1024;
@@ -208,11 +254,25 @@ type EditorMutationBarrier = {
  */
 export class FileContentService {
   private readonly cache: BoundedFileCache;
+  private readonly channel: WorkerChangeChannel;
   private readonly proxy: ComposedViewClient;
   private readonly filePool: SharedPool | undefined;
+  private readonly retainedOutcomeEntries: number;
+  private readonly retainedOutcomeBytes: number;
   private readonly openSizeBytes: number;
   private readonly paths: WorkspacePathResolver;
   private readonly refreshGuard: RefreshGenerationGuard;
+  private readonly observationErrors = new Map<string, FileContentResult>();
+  // Selection can precede acquisition. Leases and active work retain the owner; the registry retains identity weakly.
+  private readonly observations = new Map<string, WeakRef<ObservationService<FileContentResult>>>();
+  private readonly retiredObservations = new FinalizationRegistry<{
+    path: string;
+    reference: WeakRef<ObservationService<FileContentResult>>;
+  }>(({ path, reference }) => {
+    if (this.observations.get(path) === reference) {
+      this.observations.delete(path);
+    }
+  });
   private readonly pendingResolves = new Map<string, Promise<FileContentResult>>();
   private readonly outcomes = new Map<string, FileContentResult>();
   private readonly binaryDigests = new WeakMap<FileContentResult, string>();
@@ -227,15 +287,18 @@ export class FileContentService {
   readonly #outcomeTopic = new Topic<OutcomeChangeEvent>({ name: 'FileContentService.outcome' });
 
   public constructor(init: FileContentServiceInit) {
+    this.channel = init.channel;
     this.proxy = init.proxy;
     this.paths = init.paths;
     this.refreshGuard = init.refreshGuard;
     this.filePool = init.filePool;
+    this.retainedOutcomeEntries = init.cacheOptions?.maxEntries ?? defaultMaxEntries;
+    this.retainedOutcomeBytes = init.cacheOptions?.maxTotalBytes ?? defaultMaxTotalBytes;
     this.openSizeBytes = init.openSizeBytes ?? defaultOpenSizeBytes;
     this.cache = new BoundedFileCache({
       maxEntries: init.cacheOptions?.maxEntries ?? defaultMaxEntries,
       maxTotalBytes: init.cacheOptions?.maxTotalBytes ?? defaultMaxTotalBytes,
-      maxSingleFileBytes: init.cacheOptions?.maxSingleFileBytes ?? defaultMaxSingleFileBytes,
+      maxSingleFileBytes: init.cacheOptions?.maxSingleFileBytes ?? this.openSizeBytes,
     });
     this.unsubscribeChannel = [
       init.channel.onFileWritten({
@@ -306,9 +369,19 @@ export class FileContentService {
   }
 
   /**
+   * Subscribe to a rooted path capability with actual registration readiness.
+   * @param request - Workspace-relative resource paths.
+   * @param handler - Watch changes and reset signals.
+   * @returns Captured watch lifetime.
+   */
+  public watchReady(request: WatchRequest, handler: (event: WatchEvent) => void): ObservationWatch {
+    return this.channel.watchReady(request, handler);
+  }
+
+  /**
    * Resolve file content, returning a discriminated outcome that captures
    * the binary/too-large/orphaned/error decision inside the read pipeline.
-   * Cache hit short-circuits the read and re-uses the cached `text` outcome.
+   * Cache hit short-circuits the read and reuses its existing classification.
    * @param path - Workspace-relative path.
    * @param options - Optional resolve overrides (`forceText`, `sizeLimit`).
    * @returns Latest discriminated {@link FileContentResult} for the path.
@@ -317,7 +390,7 @@ export class FileContentService {
     const cached = this.cache.get(path);
     if (cached !== undefined && !this.shouldRecompute(options)) {
       const existing = this.outcomes.get(path);
-      if (existing?.kind === 'text') {
+      if (existing?.kind === 'text' || existing?.kind === 'binary') {
         return existing;
       }
       const refreshed: FileContentResult = { kind: 'text', content: cached };
@@ -331,13 +404,18 @@ export class FileContentService {
     }
 
     const generation = this.refreshGuard.begin(path);
-    const promise = this.computeOutcome(path, generation, options);
+    const promise = this.shouldRecompute(options)
+      ? this.computeOutcome(path, generation, options)
+      : this.observeOutcome(path);
     this.pendingResolves.set(path, promise);
 
     try {
       return await promise;
     } finally {
-      this.pendingResolves.delete(path);
+      if (this.pendingResolves.get(path) === promise) {
+        this.pendingResolves.delete(path);
+      }
+      this.pruneRetainedOutcomes();
     }
   }
 
@@ -351,32 +429,7 @@ export class FileContentService {
    */
   public async resolveBytes(path: string, options?: ResolveOptions): Promise<Uint8Array<ArrayBuffer>> {
     const result = await this.resolve(path, options);
-    switch (result.kind) {
-      case 'text': {
-        return result.content;
-      }
-      case 'binary': {
-        throw new BinaryFileError(`File '${path}' is binary and cannot be read as text`, {
-          path,
-          size: result.size,
-        });
-      }
-      case 'too-large': {
-        throw new FileTooLargeError(
-          `File '${path}' (${result.size} bytes) exceeds open-time size limit (${result.limit} bytes)`,
-          { path, size: result.size, limit: result.limit },
-        );
-      }
-      case 'orphaned': {
-        throw new FileNotFoundError(`File '${path}' was not found`, { path });
-      }
-      case 'error': {
-        throw result.cause instanceof Error ? result.cause : new Error(String(result.cause));
-      }
-      case 'loading': {
-        throw new Error(`Unexpected 'loading' outcome for '${path}'`);
-      }
-    }
+    return fileContentBytes({ path, result });
   }
 
   /**
@@ -400,7 +453,8 @@ export class FileContentService {
         );
       }
 
-      const data = await this.proxy.readFile(absolutePath);
+      const cached = this.cache.get(key);
+      const data = cached ?? (await this.proxy.readFile(absolutePath));
       if (data.byteLength > limit) {
         throw new FileTooLargeError(
           `File '${key}' (${data.byteLength} bytes) exceeds open-time size limit (${limit} bytes)`,
@@ -420,14 +474,100 @@ export class FileContentService {
   }
 
   /**
+   * Select the existing content owner, including observation health and safe last value.
+   * @param path - Workspace-relative resource.
+   * @returns Shared lifecycle owner; acquire a lease to start observation.
+   */
+  public observeContent(path: string): ObservationService<FileContentResult> {
+    const existing = this.observations.get(path)?.deref();
+    if (existing) {
+      return existing;
+    }
+    let authoritative = false;
+    const service = new ObservationService<FileContentResult>({
+      resource: path,
+      watch: (invalidate, reset) =>
+        this.channel.watchReady({ paths: [path] }, (event) => {
+          if (event.type === 'reset') {
+            reset();
+          } else {
+            invalidate();
+          }
+        }),
+      invalidate: () => {
+        authoritative = true;
+        this.refreshGuard.begin(path);
+      },
+      read: async ({ signal, isCurrent }) => {
+        const generation = this.refreshGuard.begin(path);
+        const result = await this.computeOutcome(path, generation, { authoritative });
+        signal.throwIfAborted();
+        if (result.kind === 'error') {
+          throw result.cause instanceof Error ? result.cause : new Error(String(result.cause));
+        }
+        return isCurrent()
+          ? this.refreshGuard.isCurrent(path, generation)
+            ? result
+            : this.peekOutcome(path)
+          : loadingOutcome;
+      },
+      equal: (previous, next) => outcomesEqual(previous, next, this.binaryDigests),
+    });
+    service.subscribe(() => {
+      if (this.observations.get(path)?.deref() !== service) {
+        return;
+      }
+      const snapshot = service.getSnapshot();
+      const previous = this.observationErrors.get(path);
+      if ((snapshot.status === 'closed' || snapshot.status === 'error') && service.activeLeaseCount > 0) {
+        if (previous === undefined) {
+          this.observationErrors.set(path, {
+            kind: 'error',
+            cause: new Error(snapshot.error ?? 'Content observation closed.'),
+          });
+        }
+      } else if (snapshot.status === 'ready' || service.activeLeaseCount === 0) {
+        this.observationErrors.delete(path);
+      }
+      if (previous !== this.observationErrors.get(path)) {
+        if (
+          this.outcomes.get(path)?.kind !== 'error' &&
+          (service.activeLeaseCount > 0 || snapshot.status === 'ready')
+        ) {
+          this.#outcomeTopic.emit({ path, result: this.peekOutcome(path) });
+        }
+        this.pathNotifyRegistry.notifyPath(path, undefined);
+      }
+    });
+    const reference = new WeakRef(service);
+    this.observations.set(path, reference);
+    this.retiredObservations.register(service, { path, reference }, reference);
+    return service;
+  }
+
+  /**
    * Sync snapshot of the most recent outcome for a path.
    * Returns `{ kind: 'loading' }` when no outcome has been computed yet.
    * Compatible with `useSyncExternalStore`.
    * @param path - Workspace-relative path.
+   * @param options - Retain safe display bytes when observation health is selected separately.
    * @returns Referentially stable {@link FileContentResult} snapshot (may be the shared loading sentinel).
    */
-  public peekOutcome(path: string): FileContentResult {
-    return this.outcomes.get(path) ?? loadingOutcome;
+  public peekOutcome(path: string, options?: { retainValue?: boolean }): FileContentResult {
+    const outcome = this.outcomes.get(path) ?? loadingOutcome;
+    if (options?.retainValue) {
+      if (outcome.kind === 'text' || outcome.kind === 'binary') {
+        return outcome;
+      }
+      const value = this.observations.get(path)?.deref()?.getSnapshot().value;
+      if (
+        (outcome.kind === 'error' || outcome.kind === 'loading') &&
+        (value?.kind === 'text' || value?.kind === 'binary')
+      ) {
+        return value;
+      }
+    }
+    return this.observationErrors.get(path) ?? outcome;
   }
 
   /**
@@ -472,7 +612,7 @@ export class FileContentService {
    * @returns Promise settled after the latest accepted value is durable;
    *   rejected with {@link EditorSaveConflictError} when the file had moved on.
    */
-  // oxlint-disable-next-line @typescript-eslint/promise-function-async -- Concurrent callers must receive the shared queue promise by identity.
+  // oxlint-disable-next-line typescript/promise-function-async -- Concurrent callers must receive the shared queue promise by identity.
   public saveEditor(path: string, data: Uint8Array<ArrayBuffer>, base?: Uint8Array<ArrayBuffer>): Promise<void> {
     const key = this.paths.toWorkspaceRelativeKey('saveEditor', path);
     const copy = new Uint8Array(data);
@@ -497,6 +637,29 @@ export class FileContentService {
     this.editorSaves.set(key, state);
     state.completion = this._drainEditorSave(key, state);
     return state.completion;
+  }
+
+  /**
+   * Settle every editor value handed to {@link saveEditor} so far.
+   *
+   * A revision cut reads the filesystem, so *Save revision* waits here first:
+   * keystrokes after the first one only replace a queued value, and a cut taken
+   * mid-queue records the first keystroke alone (D80). An edit made during a
+   * move, rename or delete waits on that mutation's barrier instead.
+   *
+   * @returns Promise settled once no editor write is outstanding.
+   * @throws The first write's failure once every write has settled, a refused
+   *   write included: that edit is not on disk, so a cut now would not hold it.
+   */
+  public async settleEditorSaves(): Promise<void> {
+    const outcomes = await Promise.allSettled([
+      ...[...this.editorSaves.values()].map(async (state) => state.completion),
+      ...this.editorMutationBarriers.map(async (barrier) => barrier.settled.promise),
+    ]);
+    const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+    if (failed !== undefined) {
+      throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
+    }
   }
 
   /**
@@ -963,9 +1126,13 @@ export class FileContentService {
         callback();
       });
     }
-    return this.pathNotifyRegistry.subscribePath(path, () => {
-      callback();
-    });
+    const unsubscribe = this.pathNotifyRegistry.subscribePath(path, callback);
+    const lease = this.observeContent(path).acquire();
+    return () => {
+      unsubscribe();
+      lease.release();
+      this.pruneRetainedOutcomes();
+    };
   }
 
   /**
@@ -984,6 +1151,7 @@ export class FileContentService {
    */
   public reset(rootDirectory: string): void {
     this._cancelEditorPendingWork();
+    this.clearObservations();
     this.paths.reset(rootDirectory);
     this.cache.clear();
     this.pendingResolves.clear();
@@ -997,6 +1165,7 @@ export class FileContentService {
    */
   public dispose(): void {
     this._cancelEditorPendingWork();
+    this.clearObservations();
     for (const unsubscribe of this.unsubscribeChannel) {
       unsubscribe();
     }
@@ -1054,7 +1223,7 @@ export class FileContentService {
         }
       }
       if (finalError !== undefined) {
-        // oxlint-disable-next-line @typescript-eslint/only-throw-error -- Preserve the exact rejection from the filesystem client.
+        // oxlint-disable-next-line typescript/only-throw-error -- Preserve the exact rejection from the filesystem client.
         throw finalError;
       }
     } finally {
@@ -1174,7 +1343,7 @@ export class FileContentService {
         : prepared.kind === 'binary'
           ? this.createBinaryOutcome(data, generation, prepared.digest)
           : { kind: 'text', content: data };
-    if (outcome.kind === 'text') {
+    if (outcome.kind === 'text' || outcome.kind === 'binary') {
       this.cache.set(key, data);
     } else {
       this.cache.delete(key);
@@ -1302,7 +1471,16 @@ export class FileContentService {
     return Boolean(options?.forceText) || options?.sizeLimit !== undefined;
   }
 
+  private hasAuthorityObservation(path: string): boolean {
+    return this.channel.hasAuthorityWatch && (this.observations.get(path)?.deref()?.diagnostics.activeWatches ?? 0) > 0;
+  }
+
   private onWorkerFileWritten(relativePath: string): void {
+    // Exact authority watches already fenced and refreshed active projections.
+    // The later coalesced tree notification must not launch a second content read.
+    if (this.hasAuthorityObservation(relativePath)) {
+      return;
+    }
     this.refreshGuard.begin(relativePath);
     this.setOrphaned(relativePath, false);
     if (this.shouldRefreshWorkerPath(relativePath)) {
@@ -1315,6 +1493,9 @@ export class FileContentService {
   }
 
   private onWorkerFileDeleted(relativePath: string): void {
+    if (this.hasAuthorityObservation(relativePath)) {
+      return;
+    }
     this.refreshGuard.begin(relativePath);
     this.cache.delete(relativePath);
     this.setOrphaned(relativePath, true);
@@ -1323,7 +1504,7 @@ export class FileContentService {
 
   private onWorkerFileRenamed(event: WorkerRelativeRenameEvent): void {
     const { oldPath, newPath } = event;
-    if (oldPath !== undefined) {
+    if (oldPath !== undefined && !this.hasAuthorityObservation(oldPath)) {
       /* An applied revision renames an open file aside and a staged copy onto
        * it, and the pair arrives in one batch: re-read, so the open file never
        * flashes orphaned (RV-W5b2 R2-2). The read publishes `orphaned` on ENOENT. */
@@ -1339,7 +1520,7 @@ export class FileContentService {
         this.publishOutcome(oldPath, { kind: 'orphaned' });
       }
     }
-    if (newPath !== undefined) {
+    if (newPath !== undefined && !this.hasAuthorityObservation(newPath)) {
       this.refreshGuard.begin(newPath);
       this.cache.delete(newPath);
       this.setOrphaned(newPath, false);
@@ -1369,6 +1550,9 @@ export class FileContentService {
       }
     }
     for (const path of affected) {
+      if (this.hasAuthorityObservation(path)) {
+        continue;
+      }
       this.cache.delete(path);
       this.refreshGuard.begin(path);
       this.setOrphaned(path, true);
@@ -1394,10 +1578,12 @@ export class FileContentService {
       }
     }
     for (const path of affected) {
-      this.cache.delete(path);
-      this.refreshGuard.begin(path);
-      this.setOrphaned(path, true);
-      this.publishOutcome(path, { kind: 'orphaned' });
+      if (!this.hasAuthorityObservation(path)) {
+        this.cache.delete(path);
+        this.refreshGuard.begin(path);
+        this.setOrphaned(path, true);
+        this.publishOutcome(path, { kind: 'orphaned' });
+      }
       const remapped =
         newPrefix === undefined
           ? undefined
@@ -1405,7 +1591,9 @@ export class FileContentService {
             ? newDirectory
             : `${newPrefix}${path.slice(oldPrefix.length)}`;
       if (remapped !== undefined) {
-        this.refreshGuard.begin(remapped);
+        if (!this.hasAuthorityObservation(remapped)) {
+          this.refreshGuard.begin(remapped);
+        }
         this.notifyGlobalSubscribers({ type: 'renamed', oldPath: path, newPath: remapped });
         if (this.shouldRefreshWorkerPath(remapped)) {
           // async-iife: bootstrap
@@ -1421,9 +1609,12 @@ export class FileContentService {
     for (const [path] of this.cache.entries()) {
       pathsToRefresh.add(path);
     }
-    this.cache.clear();
-    this.orphanedPaths.clear();
     for (const path of pathsToRefresh) {
+      if (this.hasAuthorityObservation(path)) {
+        continue;
+      }
+      this.cache.delete(path);
+      this.setOrphaned(path, false);
       // async-iife: bootstrap
       // oxlint-disable-next-line promise/prefer-await-to-then -- fire-and-forget refresh
       void this.refreshOutcomeInPlace(path).catch(() => undefined);
@@ -1473,48 +1664,62 @@ export class FileContentService {
    * @param path - Workspace-relative file path.
    */
   private async refreshOutcomeInPlace(path: string): Promise<void> {
-    const generation = this.refreshGuard.begin(path);
-    const data = await this.readBytes(path, generation, true);
-    if (!this.refreshGuard.isCurrent(path, generation)) {
+    if (this.hasAuthorityObservation(path)) {
       return;
     }
-    if (data === undefined) {
-      return;
-    }
-
-    const limit = this.openSizeBytes;
-
-    if (data.byteLength > limit) {
-      const outcome: FileContentResult = { kind: 'too-large', size: data.byteLength, limit };
-      if (!this.refreshGuard.isCurrent(path, generation)) {
-        return;
-      }
-      this.cache.delete(path);
-      this.publishOutcome(path, outcome);
-      return;
-    }
-
-    if (seemsBinary(data)) {
-      const outcome = await this.binaryOutcome(data, generation);
-      if (!this.refreshGuard.isCurrent(path, generation)) {
-        return;
-      }
-      this.cache.delete(path);
-      this.publishOutcome(path, outcome);
-      return;
-    }
-
-    if (!this.refreshGuard.isCurrent(path, generation)) {
-      return;
-    }
-    this.cache.set(path, data);
-    const outcome: FileContentResult = { kind: 'text', content: data };
-    this.publishOutcome(path, outcome);
-    this.notifyGlobalSubscribers({ type: 'read', path, data });
+    await this.observeOutcome(path, true);
   }
 
-  private async computeOutcome(path: string, generation: number, options?: ResolveOptions): Promise<FileContentResult> {
-    const data = await this.readBytes(path, generation);
+  private async observeOutcome(path: string, refresh = false): Promise<FileContentResult> {
+    const service = this.observeContent(path);
+    const lease = service.acquire();
+    try {
+      if (refresh) {
+        lease.refresh();
+      }
+      return await new Promise<FileContentResult>((resolve) => {
+        const check = (): void => {
+          const snapshot = lease.getSnapshot();
+          if (snapshot.status === 'ready' && snapshot.value) {
+            unsubscribe();
+            resolve(snapshot.value);
+          } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+            unsubscribe();
+            const outcome = this.outcomes.get(path);
+            resolve(
+              outcome?.kind === 'error'
+                ? outcome
+                : { kind: 'error', cause: new Error(snapshot.error ?? 'Content observation closed.') },
+            );
+          }
+        };
+        const unsubscribe = lease.subscribe(check);
+        check();
+      });
+    } finally {
+      lease.release();
+      this.pruneRetainedOutcomes();
+    }
+  }
+
+  private clearObservations(): void {
+    const services = [...this.observations.values()];
+    for (const reference of services) {
+      this.retiredObservations.unregister(reference);
+    }
+    this.observations.clear();
+    this.observationErrors.clear();
+    for (const reference of services) {
+      reference.deref()?.dispose();
+    }
+  }
+
+  private async computeOutcome(
+    path: string,
+    generation: number,
+    options?: ResolveOptions & { authoritative?: boolean },
+  ): Promise<FileContentResult> {
+    const data = await this.readBytes(path, generation, options?.authoritative);
     if (data === undefined) {
       return this.outcomes.get(path) ?? loadingOutcome;
     }
@@ -1533,6 +1738,7 @@ export class FileContentService {
     if (!forceText && seemsBinary(data)) {
       const outcome = await this.binaryOutcome(data, generation);
       if (this.refreshGuard.isCurrent(path, generation)) {
+        this.cache.set(path, data);
         return this.publishOutcome(path, outcome);
       }
       return outcome;
@@ -1605,10 +1811,37 @@ export class FileContentService {
     if (previous && outcomesEqual(previous, result, this.binaryDigests)) {
       return previous;
     }
+    this.outcomes.delete(path);
     this.outcomes.set(path, result);
+    this.pruneRetainedOutcomes();
     this.#outcomeTopic.emit({ path, result });
     this.notifyPathSubscribers(path);
     return result;
+  }
+
+  private pruneRetainedOutcomes(): void {
+    const bytesOf = (result: FileContentResult): number =>
+      result.kind === 'text' ? result.content.byteLength : result.kind === 'binary' ? result.head.byteLength : 0;
+    let bytes = 0;
+    for (const result of this.outcomes.values()) {
+      bytes += bytesOf(result);
+    }
+    for (const [path, result] of this.outcomes) {
+      if (this.outcomes.size <= this.retainedOutcomeEntries && bytes <= this.retainedOutcomeBytes) {
+        break;
+      }
+      if (
+        this.pathNotifyRegistry.hasPathSubscribers(path) ||
+        (this.observations.get(path)?.deref()?.activeLeaseCount ?? 0) > 0 ||
+        this.editorSaves.has(path) ||
+        this.pendingResolves.has(path)
+      ) {
+        continue;
+      }
+      this.outcomes.delete(path);
+      this.orphanedPaths.delete(path);
+      bytes -= bytesOf(result);
+    }
   }
 
   private setOrphaned(path: string, orphaned: boolean): void {

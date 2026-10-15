@@ -1,12 +1,14 @@
+import type { WatchEvent } from '@taucad/filesystem';
 // @vitest-environment jsdom
 import { StrictMode, useSyncExternalStore } from 'react';
 import { act, render, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createActor, createAsyncLogic } from 'xstate';
 import type { Actor } from 'xstate';
-import { graphicsMachine } from '#machines/graphics.machine.js';
+import { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import { ViewSettingsSyncHost } from '#routes/w.$workspace.$project/view-settings-sync-host.js';
 import { workbenchRecords } from '@taucad/workbench';
+import { readRecordIssues } from '#workbench-records/record-issues.js';
 
 type GraphicsRef = Actor<typeof graphicsMachine>;
 const sync = vi.hoisted(() => vi.fn());
@@ -90,6 +92,8 @@ function realViewFiles(branchScenario = false) {
   let bytes = new TextEncoder().encode(
     workbenchRecords.view.serialize(workbenchRecords.view.schema.parse({ version: 1, entryPath: 'a.ts' })),
   );
+  const watchClosures: Array<ReturnType<typeof Promise.withResolvers<void>>> = [];
+  let nextWatchReady: Promise<void> | undefined;
   let selectedRoot = branchScenario ? '/projects/p' : '/project';
   let liveWatch: (() => void) | undefined;
   const files = {
@@ -109,15 +113,25 @@ function realViewFiles(branchScenario = false) {
     getSnapshot: () => ({ context: { rootDirectory: selectedRoot } }),
     subscribe: () => ({ unsubscribe: () => undefined }),
   };
-  const setService = (contentService: unknown): void => {
+  const setService = (contentService: unknown, parameterFiles: typeof files = files): void => {
     fileManagerStore.set({
       fileManagerRef,
-      parameterFiles: files,
+      parameterFiles,
       contentService,
-      subscribeWorkbenchRecord: (_path: string, listener: () => void) => {
-        liveWatch = listener;
-        return () => {
-          liveWatch = undefined;
+      watchRecordFile: (path: string, listener: (event: WatchEvent) => void) => {
+        const closed = Promise.withResolvers<void>();
+        watchClosures.push(closed);
+        const ready = nextWatchReady ?? Promise.resolve();
+        nextWatchReady = undefined;
+        liveWatch = () => {
+          listener({ type: 'change', path });
+        };
+        return {
+          ready,
+          closed: closed.promise,
+          dispose: () => {
+            liveWatch = undefined;
+          },
         };
       },
     });
@@ -125,6 +139,12 @@ function realViewFiles(branchScenario = false) {
   setService(undefined);
   return {
     files,
+    watchClosures,
+    holdNextWatch: () => {
+      const ready = Promise.withResolvers<void>();
+      nextWatchReady = ready.promise;
+      return ready;
+    },
     setService,
     get: () => bytes,
     selectCheckout: () => {
@@ -139,6 +159,107 @@ function realViewFiles(branchScenario = false) {
 }
 
 describe('ViewSettingsSyncHost', () => {
+  it('reads and persists through an ordinary store replacement held at actual watch acknowledgement', async () => {
+    const memory = realViewFiles();
+    const actor = graphics();
+    const viewId = 'v-c1e20003';
+    setViews({ [viewId]: actor });
+    const view = render(<ViewSettingsSyncHost />);
+    try {
+      await waitFor(() => {
+        expect(sync).toHaveBeenCalledWith(expect.objectContaining({ viewId, recordReady: true }));
+      });
+      const ready = memory.holdNextWatch();
+      const readFile = vi.fn(memory.files.readFile);
+      sync.mockClear();
+      await act(async () => {
+        memory.setService(undefined, { ...memory.files, readFile });
+        await Promise.resolve();
+      });
+      expect(readFile).not.toHaveBeenCalled();
+      expect(sync).toHaveBeenLastCalledWith(expect.objectContaining({ viewId, recordReady: false }));
+      await act(async () => {
+        ready.resolve();
+      });
+      await waitFor(() => {
+        expect(sync).toHaveBeenLastCalledWith(expect.objectContaining({ viewId, recordReady: true }));
+      });
+      const latest = sync.mock.calls.at(-1)?.[0] as { writeRecord: (record: unknown) => Promise<boolean> };
+      const edited = workbenchRecords.view.schema.parse({
+        version: 1,
+        entryPath: 'a.ts',
+        name: 'Replacement after acknowledgement',
+      });
+      await act(async () => {
+        expect(await latest.writeRecord(edited)).toBe(true);
+      });
+      expect(workbenchRecords.view.read(memory.get())).toMatchObject({
+        status: 'current',
+        record: { name: edited.name },
+      });
+      expect(memory.files.writeFileChecked).toHaveBeenCalledOnce();
+    } finally {
+      view.unmount();
+      actor.stop();
+    }
+  });
+
+  it('re-registers a closed view watch on retry and applies later external edits', async () => {
+    const memory = realViewFiles();
+    const actor = graphics();
+    setViews({ 'v-abcd1234': actor });
+    const setViewRecord = vi.fn();
+    projectStore.set({ ...(projectStore.getSnapshot() as Record<string, unknown>), setViewRecord });
+    const view = render(<ViewSettingsSyncHost />);
+    const bytes = (name: string) =>
+      new TextEncoder().encode(
+        workbenchRecords.view.serialize(workbenchRecords.view.schema.parse({ version: 1, entryPath: 'a.ts', name })),
+      );
+    try {
+      await waitFor(() => {
+        expect(setViewRecord).toHaveBeenCalled();
+      });
+      await act(async () => {
+        memory.watchClosures[0]!.resolve();
+      });
+      await waitFor(() => {
+        expect(readRecordIssues('p')[0]?.state).toBe('unavailable');
+      });
+      const ready = memory.holdNextWatch();
+      memory.writeLive(bytes('After reconnect'));
+      setViewRecord.mockClear();
+      await act(async () => {
+        await readRecordIssues('p')[0]!.retryRead();
+      });
+      expect(memory.watchClosures).toHaveLength(2);
+      expect(setViewRecord).not.toHaveBeenCalled();
+      // Re-registering is not a problem: the issue clears instead of flashing a reading state.
+      expect(readRecordIssues('p')).toEqual([]);
+      await act(async () => {
+        ready.resolve();
+      });
+      await waitFor(() => {
+        expect(setViewRecord).toHaveBeenCalledWith('v-abcd1234', expect.objectContaining({ name: 'After reconnect' }));
+      });
+      await waitFor(() => {
+        expect(readRecordIssues('p')).toEqual([]);
+      });
+      await act(async () => {
+        memory.writeLive(bytes('Later external edit'));
+      });
+      await waitFor(() => {
+        expect(setViewRecord).toHaveBeenLastCalledWith(
+          'v-abcd1234',
+          expect.objectContaining({ name: 'Later external edit' }),
+        );
+      });
+      expect(memory.files.writeFileChecked).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      actor.stop();
+    }
+  });
+
   it('reads a named view whose graphics actor appears after the record bytes already exist', async () => {
     realViewFiles();
     setViews({});

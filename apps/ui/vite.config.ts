@@ -76,6 +76,20 @@ export const uiSsrOptions = {
   external: ['@taucad/runtime', '@taucad/openrscad', '@taulabs/openrscad-engine'],
 } as const satisfies UserConfig['ssr'];
 
+/**
+ * Module aliases shared with `desktop/vite.config.ts`.
+ *
+ * `@resvg/resvg-js`: `@taucad/tscircuit` (composed into the runtime worker)
+ * depends on `circuit-json-to-gltf`, whose `svg-to-png` chunk statically imports
+ * this native `.node` binding; the kernel never reaches it
+ * (`boardTextureResolution: 0`) but the dependency optimizer and the production
+ * bundle fail on the binary. See `app/lib/browser-stubs/resvg-js.ts` and the
+ * tscircuit EDA kernel charter (T8).
+ */
+export const uiResolveAlias = [
+  { find: '@resvg/resvg-js', replacement: path.resolve(__dirname, 'app/lib/browser-stubs/resvg-js.ts') },
+] as const satisfies NonNullable<UserConfig['resolve']>['alias'];
+
 type UiSourceAliasPluginOptions = {
   readonly emitModuleGraph?: boolean;
   readonly tauCloudEnabled?: boolean;
@@ -364,9 +378,23 @@ export const createUiReactCompilerPlugin = (): Plugin => {
   if (compilerPlugins.length !== 1 || compilerPlugin === undefined) {
     throw new Error(`Expected one ${uiReactCompilerPluginName} plugin, received ${compilerPlugins.length}.`);
   }
+  const compilerTransform = compilerPlugin.transform;
+  if (compilerTransform === undefined || typeof compilerTransform === 'function') {
+    throw new Error(`Expected a filtered ${uiReactCompilerPluginName} transform.`);
+  }
 
   return {
     ...compilerPlugin,
+    transform: {
+      ...compilerTransform,
+      filter: {
+        ...compilerTransform.filter,
+        // Oxc 0.148's React compiler emits undefined for BigInt literals, breaking
+        // credit arithmetic. Leave these modules to Vite's ordinary TSX transform.
+        // A match inside a comment/string only forgoes optional memoization.
+        code: { exclude: /\b(?:0[xX][\dA-Fa-f_]+|0[oO][0-7_]+|0[bB][01_]+|[\d_]+)n\b/u },
+      },
+    },
     applyToEnvironment: (environment) => environment.config.consumer === 'client',
   };
 };
@@ -374,7 +402,9 @@ export const createUiReactCompilerPlugin = (): Plugin => {
 export default defineConfig(({ mode }) => {
   const mtAssets = createGeoSpecMtAssets(process.env['GEOSPEC_MT_STAGED_PACKAGE_ROOT']);
   const isTest = mode === 'test';
-  const isNetlify = process.env['NETLIFY'] === 'true';
+  // Netlify's own CI sets NETLIFY=true; `netlify deploy` from GitHub Actions
+  // (deploy-ui.yml) builds with NETLIFY_LOCAL=true instead. Both need the SSR function.
+  const isNetlify = process.env['NETLIFY'] === 'true' || process.env['NETLIFY_LOCAL'] === 'true';
   const buildFrontendUrl = resolveBuildFrontendUrl(process.env);
   const tauCloudEnabled = isTest ? true : resolveTauCloudBuildEnabled(process.env['TAU_CLOUD_ENABLED']);
 
@@ -450,14 +480,10 @@ export default defineConfig(({ mode }) => {
       plugins: () => [createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled })],
     },
     resolve: {
-      alias: isTest
-        ? [
-            {
-              find: testScriptsAlias,
-              replacement: path.resolve(__dirname, 'scripts'),
-            },
-          ]
-        : [],
+      alias: [
+        ...uiResolveAlias,
+        ...(isTest ? [{ find: testScriptsAlias, replacement: path.resolve(__dirname, 'scripts') }] : []),
+      ],
     },
     ssr: uiSsrOptions,
 
@@ -504,6 +530,8 @@ export default defineConfig(({ mode }) => {
     test: {
       globals: true, // Required by @testing-library/jest-dom, which uses `expect` implicitly
       environment: 'jsdom',
+      // Keep mock library matchers on this runner's Vitest instance; externalizing it can load a second peer instance.
+      server: { deps: { inline: ['vitest-mock-extended'] } },
       // *.browser.test.ts(x) files need a real browser (OPFS, Web Locks, WebGL) and run
       // under their own vitest browser configs, not the jsdom sweep.
       exclude: ['**/node_modules/**', '**/dist/**', '**/*.browser.test.ts', '**/*.browser.test.tsx'],

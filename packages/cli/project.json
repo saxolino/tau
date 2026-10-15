@@ -9,7 +9,7 @@
       "executor": "nx:run-commands",
       "dependsOn": ["^build"],
       "options": {
-        "command": "tsdown --config-loader=tsx",
+        "command": "tsdown",
         "cwd": "{projectRoot}"
       }
     },
@@ -31,6 +31,9 @@
         "command": "node --import @oxc-node/core/register packages/cli/dist/bin/tau.mjs",
         "forwardAllArgs": true
       }
+    },
+    "test": {
+      "dependsOn": ["^copy-assets"]
     },
     "test:ds3": {
       "executor": "nx:run-commands",

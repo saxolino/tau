@@ -27,6 +27,7 @@
 import { discoverGeoSpecFiles } from 'geospec/runner';
 import type { GeoSpecForensicEvent, GeoSpecRunner, GeoSpecRunnerResult } from 'geospec/runner/worker';
 import type { GeoSpecRunResult, GeoSpecTestCase } from '#runner/types.js';
+import { protocolWireValue } from '#cli/wire-value.js';
 
 /** Parsed CLI invocation, or the reason it could not be parsed. */
 export type GeoSpecCliCommand =
@@ -47,8 +48,6 @@ export type GeoSpecCliRunOptions = {
   /** Run in a worker pool. `0` means "auto-size". */
   workers?: number;
   shardTimeout?: number;
-  cache?: boolean;
-  cacheDirectory?: string;
   matcherWallBackstop?: number;
   forensic: boolean;
 };
@@ -68,8 +67,6 @@ Options:
   --workers [n]              Run in a worker pool; omit n to auto-size
   --shard-timeout <ms>       Non-verdict per-shard watchdog
   --matcher-wall-backstop <ms>  Non-verdict matcher watchdog
-  --cache-directory <path>   Authenticated evidence cache outside the project
-  --no-cache                 Disable persistent evidence caching
   --forensic                 Include structured timing measurements
   --bail                     Stop after the first failing file
   --json                     Print one JSON result document and nothing else
@@ -187,18 +184,6 @@ export const parseGeoSpecCliArguments = (argv: readonly string[]): GeoSpecCliCom
         options.json = true;
         continue;
       }
-      case '--cache-directory': {
-        if (next === undefined) {
-          return { kind: 'error', message: '--cache-directory needs a path.' };
-        }
-        options.cacheDirectory = next;
-        index += 1;
-        continue;
-      }
-      case '--no-cache': {
-        options.cache = false;
-        continue;
-      }
       case '--forensic': {
         options.forensic = true;
         continue;
@@ -214,10 +199,6 @@ export const parseGeoSpecCliArguments = (argv: readonly string[]): GeoSpecCliCom
         sawProjectPath = true;
       }
     }
-  }
-
-  if (options.cache === false && options.cacheDirectory !== undefined) {
-    return { kind: 'error', message: '--no-cache cannot be combined with --cache-directory.' };
   }
 
   return { kind: 'run', options };
@@ -300,11 +281,7 @@ export type GeoSpecCliHost = {
     projectPath: string;
     workers: number | undefined;
     shardTimeout: number | undefined;
-    cache?: boolean;
-    cacheDirectory?: string;
   }): GeoSpecRunner;
-  /** Drain the evidence write-behind overlay before exiting. */
-  flush(): Promise<void>;
 };
 
 /**
@@ -326,23 +303,55 @@ export const runReportJson = (result: GeoSpecRunnerResult): Record<string, unkno
   passed: result.passed,
   failed: result.failed,
   selectedTests: result.selectedTests,
+  ...(result.accounting === undefined ? {} : { accounting: result.accounting }),
+  ...(result.lineageStatus === undefined ? {} : { lineageStatus: result.lineageStatus }),
   ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),
   ...(result.issues === undefined ? {} : { issues: result.issues }),
   files: result.files.map((file) => ({
     file: file.file,
     success: file.result.success && file.result.passed,
+    ...(file.result.accounting === undefined ? {} : { accounting: file.result.accounting }),
+    ...(file.result.lineage === undefined ? {} : { lineage: protocolWireValue(file.result.lineage) }),
     ...(file.durationMs === undefined ? {} : { durationMs: file.durationMs }),
-    ...(file.result.success
-      ? {
+    ...(file.result.tests === undefined
+      ? {}
+      : {
           tests: file.result.tests.map((test) => ({
             suite: test.suite,
             name: test.name,
+            ...(test.ordinal === undefined ? {} : { ordinal: test.ordinal }),
             status: test.status,
             ...(test.durationMs === undefined ? {} : { durationMs: test.durationMs }),
             diagnostics: [...test.diagnostics, ...test.assertions.flatMap((assertion) => assertion.diagnostics ?? [])],
+            ...(test.assertions.some((assertion) => assertion.report !== undefined)
+              ? {
+                  reports: test.assertions.flatMap((assertion) => {
+                    const { report } = assertion;
+                    return report === undefined
+                      ? []
+                      : [
+                          {
+                            claimId: report.claimId,
+                            status: report.status,
+                            polarity: report.polarity,
+                            claim: structuredClone(report.claim),
+                            result: structuredClone(report.result),
+                            diagnostics: structuredClone(report.diagnostics),
+                            ...(report.evidence === undefined ? {} : { evidence: structuredClone(report.evidence) }),
+                            ...(assertion.loadId === undefined ? {} : { loadId: assertion.loadId }),
+                            canonical: {
+                              claim: [...report.canonicalClaim],
+                              plan: [...report.canonicalPlan],
+                              result: [...report.canonicalResult],
+                            },
+                          },
+                        ];
+                  }),
+                }
+              : {}),
           })),
-        }
-      : { issues: file.result.issues }),
+        }),
+    ...(file.result.success ? {} : { issues: file.result.issues }),
   })),
 });
 
@@ -461,8 +470,6 @@ export const runGeoSpecCli = async (argv: readonly string[], host: GeoSpecCliHos
     projectPath,
     workers: options.workers,
     shardTimeout: options.shardTimeout,
-    cache: options.cache,
-    cacheDirectory: options.cacheDirectory,
   });
   const forensicEvents: GeoSpecForensicEvent[] = [];
   const unsubscribe = options.forensic
@@ -483,7 +490,6 @@ export const runGeoSpecCli = async (argv: readonly string[], host: GeoSpecCliHos
   } finally {
     unsubscribe?.();
     await runner.close();
-    await host.flush();
   }
 
   if (options.json) {

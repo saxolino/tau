@@ -1,4 +1,5 @@
 import type { CadAgentConfigInput, TauAgentHostId } from '@taucad/chat';
+import type { CadReference } from '@taucad/chat/references';
 import { getCadSystemPrompt } from '@taucad/chat/prompts';
 import { getProviderFacingToolInputSchemas } from '@taucad/chat/schemas';
 import type { ChatExecutionTarget } from '@taucad/chat/schemas';
@@ -9,7 +10,6 @@ import { createCachedSystemPromptBlocks } from '@taucad/agent-host';
 import type { AgentChannelClient } from '@taucad/agent-host';
 import type { AgentHostClientOptions } from '#services/agent-host-client.js';
 import { desktopWorkspaceRoot, openAgentHostChannel } from '#lib/agent-host-placement.js';
-import { isFeatureEnabled } from '#flags/feature-flags.js';
 import type { ResolvedModel } from '#hooks/use-models.js';
 import { admittedReasoning } from '#utils/model-reasoning.js';
 import type {
@@ -90,7 +90,7 @@ type TauAgentConfigInput = CadAgentConfigInput & {
 
 const requireTauExecution: (agent: CadAgentConfigInput) => asserts agent is TauAgentConfigInput = (agent) => {
   if (agent.execution.kind !== 'tau') {
-    throw new TypeError('Browser agent host requires Tau execution.');
+    throw new TypeError('The Tau agent host requires Tau execution.');
   }
 };
 
@@ -176,7 +176,7 @@ export const agentHostClientConfig = (input: {
 /**
  * The browser host's admission for one Tau turn.
  *
- * @param input - The turn's agent config, chat, run id and resolved model row.
+ * @param input - The turn's agent config, chat, run id, resolved model row and its message's geometry references.
  * @returns The prompt blocks, model wire, tool grant and context the host runs with.
  */
 export const agentHostConfig = (input: {
@@ -184,15 +184,16 @@ export const agentHostConfig = (input: {
   readonly chatId: string;
   readonly runId: string;
   readonly resolvedModel: ResolvedModel;
+  readonly references?: readonly CadReference[] | undefined;
 }): BrowserHostAdmissionConfig => {
   const { agent, resolvedModel } = input;
   requireTauExecution(agent);
   const { model } = resolvedModel;
   const hostedModel = hostModel(agent, model);
   if (hostedModel === undefined) {
-    throw new Error('Browser agent host requires resolved model provider metadata.');
+    throw new Error('The Tau agent host requires resolved model provider metadata.');
   }
-  const snapshotContext = agent.snapshot ? buildBrowserAgentHostSnapshotContext(agent.snapshot) : undefined;
+  const snapshotContext = buildBrowserAgentHostSnapshotContext(agent.snapshot, input.references);
   return {
     ...hostPrompt(agent, input.chatId, model),
     model: hostedModel,
@@ -252,6 +253,8 @@ export const hostAdmission = (input: {
   readonly chatId: string;
   readonly resolveModel: (modelId: string) => ResolvedModel;
   readonly trigger: TurnTrigger;
+  /** The geometry references the turn's user message carries (blueprint D6). */
+  readonly references?: readonly CadReference[] | undefined;
 }): ((runId: string) => BrowserHostAdmission) | undefined => {
   if (input.agent.execution.kind === 'acp') {
     const { agentId, model, config } = input.agent.execution;
@@ -275,7 +278,13 @@ export const hostAdmission = (input: {
   const resolvedModel = input.resolveModel(input.agent.execution.model);
   return (runId) => ({
     ...input.trigger,
-    config: agentHostConfig({ agent: input.agent, chatId: input.chatId, runId, resolvedModel }),
+    config: agentHostConfig({
+      agent: input.agent,
+      chatId: input.chatId,
+      runId,
+      resolvedModel,
+      references: input.references,
+    }),
   });
 };
 
@@ -296,6 +305,5 @@ export const dialAgentHost = async (hostId: TauAgentHostId, projectId: string): 
     ? openAgentHostChannel(hostId, {
         projectId,
         workspaceRoot: await desktopWorkspaceRoot(projectId),
-        geoSpecEngine: isFeatureEnabled('nativeGeoSpec') ? 'native' : 'legacy',
       })
     : openAgentHostChannel(hostId);

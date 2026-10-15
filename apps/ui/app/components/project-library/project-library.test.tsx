@@ -158,25 +158,49 @@ vi.mock('#components/project-library/project-action-dropdown.js', () => ({
   ),
 }));
 
-vi.mock('#hooks/use-file-manager.js', () => ({
-  useFileManager: () => ({
-    client: { readFile: vi.fn().mockRejectedValue(new Error('not found')) },
+vi.mock('#hooks/use-file-manager.js', () => {
+  // Stable like the provider's memoized value: thumbnails are observed per record client and watch.
+  const missing = Object.assign(new Error('not found'), { code: 'ENOENT' });
+  const fileManager = {
+    client: { readFile: vi.fn().mockRejectedValue(missing) },
+    recordFiles: { readFile: vi.fn().mockRejectedValue(missing) },
+    watchRecordFile: () => ({
+      ready: Promise.resolve(),
+      closed: new Promise<never>(() => {
+        // Never closes.
+      }),
+      dispose: () => undefined,
+    }),
     contentService: undefined,
-  }),
-  SharedWorkerGate: ({ children }: { readonly children: React.ReactNode }): React.ReactNode => children,
-  HomeFileManagerProvider: ({ children }: { readonly children: React.ReactNode }): React.ReactNode => children,
-}));
+  };
+  return {
+    useFileManager: () => fileManager,
+    SharedWorkerGate: ({ children }: { readonly children: React.ReactNode }): React.ReactNode => children,
+    HomeFileManagerProvider: ({ children }: { readonly children: React.ReactNode }): React.ReactNode => children,
+  };
+});
 
 /* D20: the Tau Cloud listing, scripted rather than fetched. */
 const { cloudListing, mockOpenCloudProject } = vi.hoisted(() => ({
   cloudListing: {
+    isFailed: false,
+    isFetching: false,
     current: [] as Array<{ id: string; name: string; role: 'owner' | 'write' | 'read'; updatedAt?: number }>,
   },
   mockOpenCloudProject: vi.fn(async () => undefined),
 }));
+vi.mock('#hooks/use-cloud-project-preview.js', () => ({
+  useCloudProjectPreview: () => ({ url: undefined, isLoading: false, isFailed: false, retry: vi.fn() }),
+}));
 vi.mock('#hooks/use-cloud-projects.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  useCloudProjects: () => ({ projects: cloudListing.current, isSettled: true, isFailed: false, isFetching: false }),
+  useCloudProjects: () => ({
+    projects: cloudListing.current,
+    isSettled: !cloudListing.isFetching && !cloudListing.isFailed,
+    isFailed: cloudListing.isFailed,
+    isFetching: cloudListing.isFetching,
+    retry: vi.fn(),
+  }),
 }));
 vi.mock('#hooks/use-open-cloud-project.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -197,10 +221,23 @@ vi.mock('#components/cad-preview.js', () => ({
 describe('ProjectLibrary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        public observe() {
+          /* No viewport in jsdom; thumbnail query is independently mocked. */
+        }
+        public disconnect() {
+          /* No observer registration to release in this fixture. */
+        }
+      },
+    );
     mockCookieValues = {};
     mockUseProjectsResult = createUseProjectsResult();
     mockTrashedProjects = [];
     cloudListing.current = [];
+    cloudListing.isFailed = false;
+    cloudListing.isFetching = false;
   });
 
   // ── D20: one list, local and Tau Cloud ──────────────────────────────────────
@@ -215,6 +252,39 @@ describe('ProjectLibrary', () => {
       );
     };
 
+    it('should preserve local projects while reporting a failed cloud catalog', () => {
+      cloudListing.isFailed = true;
+      renderLibrary();
+      expect(screen.getByRole('alert')).toHaveTextContent('Tau Cloud projects could not be loaded');
+      expect(screen.getByRole('button', { name: 'Retry Tau Cloud' })).toBeEnabled();
+      expect(screen.getByRole('link', { name: 'Open Gearbox Alpha' })).toBeInTheDocument();
+    });
+
+    it('should not claim an empty library while cloud discovery is pending or failed', () => {
+      mockUseProjectsResult.projects = [];
+      cloudListing.isFetching = true;
+      const view = render(
+        <MemoryRouter>
+          <TooltipProvider>
+            <ProjectLibrary />
+          </TooltipProvider>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+      expect(screen.getByText('Loading Tau Cloud projects…')).toBeInTheDocument();
+      cloudListing.isFetching = false;
+      cloudListing.isFailed = true;
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <ProjectLibrary />
+          </TooltipProvider>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+
     it('should list local-only, both and Tau-Cloud-only projects in the same grid, with no second section', () => {
       cloudListing.current = [
         { id: 'proj_aaaaaaaaaaaaaaaaaaaaa', name: 'Gearbox Alpha', role: 'owner' },
@@ -227,7 +297,7 @@ describe('ProjectLibrary', () => {
       expect(screen.getByRole('button', { name: 'Open Hinge Delta' })).toBeInTheDocument();
       /* Both: the Tau Cloud glyph, once. */
       expect(screen.getAllByText('Also on Tau Cloud')).toHaveLength(1);
-      expect(screen.getByText('Backed up on Tau Cloud. This device does not have it yet.')).toBeInTheDocument();
+      expect(screen.queryByText('Backed up on Tau Cloud. This device does not have it yet.')).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'From Tau Cloud' })).toBeNull();
     });
 
@@ -242,7 +312,8 @@ describe('ProjectLibrary', () => {
       expect(screen.getByRole('row', { name: /Gearbox Alpha/u })).toHaveTextContent('Also on Tau Cloud');
       expect(screen.getByRole('row', { name: /Bracket Beta/u })).not.toHaveTextContent('Also on Tau Cloud');
       const cloudOnly = screen.getByRole('row', { name: /Hinge Delta/u });
-      expect(cloudOnly).toHaveTextContent('Backed up on Tau Cloud. This device does not have it yet.');
+      expect(cloudOnly).toHaveTextContent('Tau Cloud');
+      expect(cloudOnly).not.toHaveTextContent('Backed up on');
       expect(within(cloudOnly).getByRole('button', { name: 'Open Hinge Delta' })).toBeInTheDocument();
     });
 
@@ -302,7 +373,7 @@ describe('ProjectLibrary', () => {
 
       const card = screen.getByRole('row', { name: /Reference Jig/u });
       expect(card).toHaveTextContent('Can view');
-      expect(card).toHaveTextContent('Shared with you. You can open it but not change it.');
+      expect(card).not.toHaveTextContent('This device does not have it yet.');
     });
 
     it('should show a Tau-Cloud-only project instead of the empty state when this device has none', () => {
@@ -850,10 +921,9 @@ describe('ProjectLibrary', () => {
       screen.getByRole('button', { name: `Delete permanently ${mockProjects[0]!.name}` }).click();
       await waitFor(() => {
         expect(verifyProjectQuiescent).toHaveBeenCalledWith(mockProjects[0]!.id);
-        expect(mockToastError).toHaveBeenCalledWith(
-          `Could not delete ${mockProjects[0]!.name} permanently`,
-          expect.objectContaining({ description: expect.stringMatching(/Restore and open/u) }),
-        );
+        expect(mockToastError).toHaveBeenCalledWith(`Could not delete ${mockProjects[0]!.name} permanently`, {
+          description: 'Restore and open this project to verify its chats before deleting it.',
+        });
       });
       expect(screen.queryByRole('heading', { name: 'Delete this project permanently?' })).not.toBeInTheDocument();
       expect(mockUseProjectsResult.permanentlyDeleteProject).not.toHaveBeenCalled();

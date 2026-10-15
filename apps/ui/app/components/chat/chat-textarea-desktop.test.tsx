@@ -1,13 +1,30 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { captureDictation } from '#components/dictation/dictation-capture.js';
+import type { transcribeDictation } from '#components/dictation/dictation-client.js';
 import type { AcpSessionData } from '@taucad/chat';
 import { kernelConfigurations } from '@taucad/types/constants';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { ChatComposerContextValue } from '#hooks/active-chat-provider.js';
 import type { AgentHostPlacementTarget } from '#lib/agent-host-placement.js';
 import type { AgentConfig } from '#components/chat/use-agent-config.js';
+
+const dictationDependencies = vi.hoisted(() => ({
+  available: false,
+  capture: vi.fn<typeof captureDictation>(),
+  transcribe: vi.fn<typeof transcribeDictation>(),
+}));
+vi.mock('#components/dictation/dictation-capture.js', () => ({ captureDictation: dictationDependencies.capture }));
+vi.mock('#components/dictation/dictation-client.js', () => ({
+  fetchDictationStatus: async () => ({ available: dictationDependencies.available }),
+  transcribeDictation: dictationDependencies.transcribe,
+}));
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const manifoldKernel = kernelConfigurations.find((k) => k.id === 'manifold')!;
 const execution: { current: ChatComposerContextValue['execution']['execution'] } = {
@@ -25,7 +42,7 @@ vi.mock('#hooks/active-chat-provider.js', () => ({
 }));
 
 const keybindings = vi.hoisted(() => new Map<string, { callback: () => void; enabled: () => boolean }>());
-vi.mock('#hooks/use-keyboard.js', () => ({
+vi.mock('@taucad/ui/components/keyboard', () => ({
   useKeybinding: (
     combination: { key: string },
     callback: () => void,
@@ -49,7 +66,7 @@ vi.mock('#components/chat/chat-agent-sheet.js', async (importOriginal) => ({
       data-slot='agent-trigger'
       data-reasoning={agentConfig.options.find((option) => option.category === 'thought_level')?.currentValue}
     >
-      Agent and model
+      <span data-slot='trigger-model'>Agent and model</span>
     </button>
   ),
 }));
@@ -66,9 +83,11 @@ vi.mock('#components/icons/svg-icon.js', () => ({
   SvgIcon: ({ id }: { readonly id?: string }) => <span data-testid='svg-icon' data-icon={id} />,
 }));
 
+const catalogHealth = vi.hoisted(() => ({ status: 'ready' as 'ready' | 'closed', retry: vi.fn() }));
 vi.mock('#hooks/use-skills-catalog.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useSkillsCatalog: () => [],
+  useSkillsCatalogState: () => ({ commands: [], prompt: [], status: catalogHealth.status, retry: catalogHealth.retry }),
 }));
 
 vi.mock('#hooks/use-cad-agent-config.js', () => ({
@@ -290,13 +309,33 @@ describe('ACP slash commands', () => {
 });
 
 describe('ChatTextareaDesktop draft rehydration', () => {
-  const renderComposer = (inputText: string, acpSessionData: AcpSessionData, canResume = false) => {
+  beforeEach(() => {
+    dictationDependencies.available = false;
+    catalogHealth.status = 'ready';
+    catalogHealth.retry.mockClear();
+  });
+  const renderComposer = (
+    inputText: string,
+    acpSessionData: AcpSessionData,
+    options: {
+      canResume?: boolean;
+      handleSubmit?: (text?: string) => Promise<void>;
+      useTauSkills?: boolean;
+      status?: 'ready' | 'submitted' | 'streaming';
+      isSubmitting?: boolean;
+      handleCancelClick?: () => void;
+      mode?: 'main' | 'edit';
+      enableAutoFocus?: boolean;
+    } = {},
+  ) => {
+    const { canResume = false, handleSubmit = asyncNoop } = options;
     const element = (session: AcpSessionData): React.JSX.Element => (
       <TooltipProvider>
         <ChatTextareaDesktop
-          enableAutoFocus={false}
+          enableAutoFocus={options.enableAutoFocus ?? false}
+          mode={options.mode}
           dragKind={undefined}
-          isSubmitting={false}
+          isSubmitting={options.isSubmitting ?? false}
           isAttaching={false}
           canResume={canResume}
           inputText={inputText}
@@ -305,20 +344,20 @@ describe('ChatTextareaDesktop draft rehydration', () => {
           sendBlockReason={undefined}
           attachmentAccept='image/png'
           attachmentInputSupported
-          status='ready'
+          status={options.status ?? 'ready'}
           formattedCancelKeyCombination='⇧⌘⌫'
           treeService={undefined}
           chats={[]}
           setDraftText={noop}
-          acpAgentId='codex'
+          acpAgentId={options.useTauSkills ? undefined : 'codex'}
           acpSessionData={session}
           fileInputReference={{ current: null }}
           containerReference={{ current: null }}
           focusEditorRef={{ current: undefined }}
           addContextChipsRef={{ current: undefined }}
           addContextReferencesRef={{ current: undefined }}
-          handleSubmit={asyncNoop}
-          handleCancelClick={noop}
+          handleSubmit={handleSubmit}
+          handleCancelClick={options.handleCancelClick ?? noop}
           handleDragOver={noop}
           handleDragLeave={noop}
           handleDrop={asyncNoop}
@@ -341,8 +380,40 @@ describe('ChatTextareaDesktop draft rehydration', () => {
     };
   };
 
+  it.each(['main', 'edit'] as const)(
+    'should focus the %s draft after rehydration without moving an edit to its end',
+    async (mode) => {
+      // The jsdom environment supplies selection, but not the layout methods ProseMirror uses to scroll it.
+      const createRange = document.createRange.bind(document);
+      vi.spyOn(document, 'createRange').mockImplementation(() =>
+        Object.assign(createRange(), {
+          getClientRects: () => [],
+          getBoundingClientRect: () => new DOMRect(),
+        }),
+      );
+      const text = 'A restored message with several words';
+      renderComposer(text, codexSession, { mode, enableAutoFocus: true });
+
+      await waitFor(() => {
+        const selection = globalThis.getSelection();
+        expect(screen.getByRole('textbox')).toHaveFocus();
+        expect(selection?.anchorNode?.textContent).toBe(text);
+        expect(selection?.anchorOffset).toBe(mode === 'edit' ? 0 : text.length);
+      });
+    },
+  );
+
+  it('should show skill recovery in the functional composer after catalog closure', async () => {
+    catalogHealth.status = 'closed';
+    renderComposer('Keep this draft', codexSession, { useTauSkills: true });
+    expect(screen.getByText('Skill updates unavailable')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry skill updates' }));
+    expect(catalogHealth.retry).toHaveBeenCalledOnce();
+    expect(screen.getByRole('textbox')).toHaveTextContent('Keep this draft');
+  });
+
   it('should offer Resume through the full composer without the empty-message refusal', () => {
-    renderComposer('', codexSession, true);
+    renderComposer('', codexSession, { canResume: true });
 
     const resume = screen.getByRole('button', { name: 'Resume' });
     expect(resume).toHaveTextContent('Resume');
@@ -377,5 +448,259 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       expect(view.container.querySelector('.ProseMirror svg')).not.toBeNull();
     });
     expect(view.container.querySelector('.ProseMirror')).toHaveTextContent('Make a render of this using $imagegen');
+  });
+  it.each(['submitted', 'streaming'] as const)(
+    'should dictate into the draft while a chat is %s without sending or stopping it',
+    async (status) => {
+      const createRange = document.createRange.bind(document);
+      vi.spyOn(document, 'createRange').mockImplementation(() =>
+        Object.assign(createRange(), {
+          getClientRects: () => [],
+          getBoundingClientRect: () => new DOMRect(),
+        }),
+      );
+      dictationDependencies.available = true;
+      dictationDependencies.capture.mockResolvedValue({
+        finish: async () => new Blob([], { type: 'audio/wav' }),
+        cancel: noop,
+      });
+      dictationDependencies.transcribe.mockResolvedValue('Make the corners round.');
+      const submit = vi.fn().mockResolvedValue(undefined);
+      const cancelChat = vi.fn();
+      renderComposer('Existing draft.', codexSession, {
+        status,
+        isSubmitting: status === 'submitted',
+        handleSubmit: submit,
+        handleCancelClick: cancelChat,
+      });
+      const dictate = await screen.findByRole('button', { name: 'Dictate' });
+      expect(dictate).toHaveAttribute('aria-disabled', 'false');
+      await userEvent.click(dictate);
+      await userEvent.click(await screen.findByRole('button', { name: 'Stop dictation' }));
+      await waitFor(() => {
+        expect(screen.getByRole('textbox')).toHaveTextContent('Existing draft. Make the corners round.');
+      });
+      expect(submit).not.toHaveBeenCalled();
+      expect(cancelChat).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+      expect(cancelChat).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('should place the microphone beside Send and send the final transcript exactly once after recording', async () => {
+    const createRange = document.createRange.bind(document);
+    vi.spyOn(document, 'createRange').mockImplementation(() =>
+      Object.assign(createRange(), {
+        getClientRects: () => [],
+        getBoundingClientRect: () => new DOMRect(),
+      }),
+    );
+    const microphone = Promise.withResolvers<{ finish: () => Promise<Blob>; cancel: () => void }>();
+    const transcription = Promise.withResolvers<string>();
+    let preview: ((text: string) => void) | undefined;
+    dictationDependencies.available = true;
+    dictationDependencies.capture.mockReturnValue(microphone.promise);
+    dictationDependencies.transcribe.mockImplementation(async (_wav, options) => {
+      preview = options.onPreview;
+      return transcription.promise;
+    });
+    const submit = vi.fn().mockResolvedValue(undefined);
+    const view = renderComposer('Existing draft.', codexSession, { handleSubmit: submit });
+    const dictate = await screen.findByRole('button', { name: 'Dictate' });
+    expect(
+      [...view.container.querySelectorAll('[data-slot=composer-right] button')]
+        .slice(-2)
+        .map((button) => button.ariaLabel),
+    ).toEqual(['Dictate', 'Send']);
+    await userEvent.click(dictate);
+    await screen.findByRole('button', { name: 'Requesting microphone…' });
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    act(() => {
+      screen.getByRole('textbox').focus();
+    });
+    await userEvent.keyboard('{Enter}');
+    expect(submit).not.toHaveBeenCalled();
+    await act(async () => {
+      microphone.resolve({ finish: async () => new Blob([], { type: 'audio/wav' }), cancel: noop });
+      await microphone.promise;
+    });
+    await screen.findByRole('button', { name: 'Stop dictation' });
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(preview).toBeDefined();
+    });
+    act(() => {
+      preview?.('Build a');
+    });
+    expect(view.container.querySelector('[data-slot=dictation-transcript]')).toHaveTextContent('Build a');
+    expect(submit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => {
+      transcription.resolve('Build a bracket.');
+    });
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalledExactlyOnceWith('Existing draft. Build a bracket.');
+    });
+  });
+});
+
+describe('composer bar measurement lifecycle', () => {
+  const observers = new Map<Element, { callback: ResizeObserverCallback; observer: ResizeObserver }>();
+  let width = 200;
+  let height = 40;
+  let requiredWidth = 260;
+  let reads: string[] = [];
+  let fonts: ReturnType<typeof Promise.withResolvers<FontFaceSet>>;
+  let originalFonts: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    width = 200;
+    height = 40;
+    requiredWidth = 260;
+    reads = [];
+    observers.clear();
+    originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
+    fonts = Promise.withResolvers<FontFaceSet>();
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { status: 'loading', ready: fonts.promise },
+    });
+    vi.stubGlobal(
+      'ResizeObserver',
+      class implements ResizeObserver {
+        readonly #callback: ResizeObserverCallback;
+        public constructor(callback: ResizeObserverCallback) {
+          this.#callback = callback;
+        }
+        public observe(target: Element): void {
+          observers.set(target, { callback: this.#callback, observer: this });
+        }
+        public unobserve(target: Element): void {
+          observers.delete(target);
+        }
+        public disconnect(): void {
+          for (const [target, entry] of observers) {
+            if (entry.observer === this) {
+              observers.delete(target);
+            }
+          }
+        }
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset['slot'] !== 'trigger-model') {
+        return 0;
+      }
+      const bar = this.closest('[data-slot=composer-bar]')!;
+      reads.push(['kernel', 'mode', 'level'].filter((label) => bar.hasAttribute(`data-hide-${label}`)).join(','));
+      return requiredWidth;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset['slot'] !== 'trigger-model') {
+        return 0;
+      }
+      const bar = this.closest('[data-slot=composer-bar]')!;
+      return width + ['kernel', 'mode', 'level'].filter((label) => bar.hasAttribute(`data-hide-${label}`)).length * 30;
+    });
+  });
+
+  afterEach(() => {
+    if (originalFonts) {
+      Object.defineProperty(document, 'fonts', originalFonts);
+    }
+    vi.unstubAllGlobals();
+  });
+
+  const notify = (bar: Element): void => {
+    const current = observers.get(bar);
+    if (!current) {
+      throw new Error('The actual composer observer is missing.');
+    }
+    current.callback(
+      [
+        {
+          target: bar,
+          contentRect: new DOMRectReadOnly(0, 0, width, height),
+          borderBoxSize: [],
+          contentBoxSize: [],
+          devicePixelContentBoxSize: [],
+        },
+      ],
+      current.observer,
+    );
+  };
+
+  it('should fit labels in order and restore them when widened', () => {
+    const { container } = renderBar();
+    const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
+    expect(reads.slice(0, 3)).toEqual(['', 'kernel', 'kernel,mode']);
+    act(() => {
+      notify(bar);
+    });
+    width = 400;
+    act(() => {
+      notify(bar);
+    });
+    expect(Object.hasOwn(bar.dataset, 'hideKernel')).toBe(false);
+    expect(Object.hasOwn(bar.dataset, 'hideMode')).toBe(false);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(false);
+  });
+
+  it('should refit genuine height and live font changes even when width is unchanged', async () => {
+    const { container } = renderBar();
+    const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
+    act(() => {
+      notify(bar);
+    });
+    reads = [];
+    height = 60;
+    act(() => {
+      notify(bar);
+    });
+    expect(reads.length).toBeGreaterThan(0);
+    reads = [];
+    requiredWidth = 290;
+    await act(async () => {
+      fonts.resolve(document.fonts);
+      await fonts.promise;
+    });
+    expect(reads).toEqual(['', 'kernel', 'kernel,mode', 'kernel,mode,level']);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
+  });
+
+  it.each(['model', 'kernel', 'mode'])('should refit a changed %s label without a resize', async (label) => {
+    execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
+    const { container } = renderBar({ acpSessionData: codexSession });
+    const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
+    act(() => {
+      notify(bar);
+    });
+    reads = [];
+    requiredWidth = 290;
+    const target =
+      label === 'model'
+        ? bar.querySelector('[data-slot=trigger-model]')
+        : label === 'kernel'
+          ? screen.getByRole('button', { name: 'Select kernel (Manifold)' })
+          : screen.getByRole('button', { name: 'Mode: Ask for approval' });
+    if (!target) {
+      throw new Error('The actual composer label is missing.');
+    }
+    await act(async () => {
+      target.append(document.createTextNode(' changed label'));
+    });
+    expect(reads.length).toBeGreaterThan(0);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
+  });
+
+  it('should ignore late font completion after the actual bar unmounts', async () => {
+    const { unmount } = renderBar();
+    unmount();
+    reads = [];
+    await act(async () => {
+      fonts.resolve(document.fonts);
+      await fonts.promise;
+    });
+    expect(reads).toHaveLength(0);
   });
 });

@@ -2,6 +2,7 @@ import process from 'node:process';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MyUIMessage } from '@taucad/chat';
 import {
+  buildEditedUserMessage,
   buildUserMessage,
   finalizeInterruptedToolParts,
   serializeMessage,
@@ -422,6 +423,56 @@ describe('serializeMessage', () => {
         '<tool_call name="arrange_workbench">\narrange_workbench(open, lanes)\n</tool_call>\n<tool_result>\n-> .tau/workbench/layout.json\n</tool_result>',
       );
     });
+    it('serializes the requested package edits and what was locked or refused', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-install_packages',
+          toolCallId: 'install-1',
+          state: 'output-available',
+          input: { add: { alea: '^1.0.1', 'simplex-noise': '^9.0.0' }, remove: ['lodash'] },
+          output: {
+            manifestChanged: false,
+            lockChanged: false,
+            packages: [{ name: 'alea', version: '1.0.1', path: 'node_modules/alea' }],
+            issues: [{ code: 'no-matching-version', name: 'simplex-noise', message: 'No published version matches.' }],
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="install_packages">\nadd: alea@^1.0.1\nadd: simplex-noise@^9.0.0\nremove: lodash\n</tool_call>\n<tool_result>\nalea@1.0.1\nno-matching-version: No published version matches.\n</tool_result>',
+      );
+    });
+    it('serializes the questions with lettered options and the answers with their source', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-ask_questions',
+          toolCallId: 'ask-1',
+          state: 'output-available',
+          input: {
+            chatId: 'chat_a',
+            questions: [
+              {
+                id: 'form',
+                header: 'Form',
+                question: 'Which form?',
+                options: [
+                  { label: 'Ribbon', description: 'Prints without supports.' },
+                  { label: 'Gem', description: 'Crisp facets.' },
+                ],
+              },
+            ],
+          },
+          output: {
+            status: 'defaulted',
+            path: '.tau/chats/chat_a/questions.yaml',
+            answers: [{ id: 'form', answer: 'Ribbon', source: 'recommended' }],
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="ask_questions">\nWhich form?\n  A. Ribbon\n  B. Gem\n</tool_call>\n<tool_result>\nform: Ribbon (recommended, no reply)\n</tool_result>',
+      );
+    });
     it('serializes tool-web_search output-available', () => {
       const message = baseMessage([
         {
@@ -581,6 +632,26 @@ describe('serializeMessage', () => {
       );
     });
 
+    it('serializes tool-grep context lines with ripgrep-style separators', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-grep',
+          toolCallId: 'c1',
+          state: 'output-available',
+          input: { pattern: 'fn', context: 1 },
+          output: {
+            matches: [{ file: 'a.kcl', line: 2, content: 'fn box(', before: ['// Box.'], after: ['  w: number,'] }],
+            totalMatches: 1,
+            appliedHeadLimit: 50,
+            appliedOffset: 0,
+          },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="grep">\npattern: fn\ncontext: 1\n</tool_call>\n<tool_result>\nTotal: 1\na.kcl-1- // Box.\na.kcl:2: fn box(\na.kcl-3-   w: number,\n</tool_result>',
+      );
+    });
+
     it('serializes tool-test_model output-available with [targetFile] prefix on each failure', () => {
       const message = baseMessage([
         {
@@ -616,10 +687,10 @@ describe('serializeMessage', () => {
       );
     });
 
-    it('serializes tool-get_kernel_result output-available', () => {
+    it('serializes tool-evaluate_model output-available', () => {
       const message = baseMessage([
         {
-          type: 'tool-get_kernel_result',
+          type: 'tool-evaluate_model',
           toolCallId: 'c1',
           state: 'output-available',
           input: { targetFile: 'main.kcl' },
@@ -630,7 +701,7 @@ describe('serializeMessage', () => {
         },
       ]);
       expect(serializeMessage(message)).toBe(
-        '<tool_call name="get_kernel_result">\ntargetFile: main.kcl\n</tool_call>\n<tool_result>\nStatus: error\nIssues:\n  - Syntax error\n</tool_result>',
+        '<tool_call name="evaluate_model">\ntargetFile: main.kcl\n</tool_call>\n<tool_result>\nStatus: error\nIssues:\n  - Syntax error\n</tool_result>',
       );
     });
 
@@ -989,6 +1060,72 @@ describe('buildUserMessage', () => {
 
     expect(first.parts).toEqual([]);
     expect(first.id).not.toBe(second.id);
+  });
+
+  describe('geometry references', () => {
+    const picked = {
+      resource: { kind: 'workspace-file', path: 'gears/main.ts', revision: 'hash-1' },
+      target: {
+        kind: 'component',
+        componentId: 'component:sun_gear',
+        selector: 'node/3',
+        label: 'Sun gear',
+        componentKind: 'part',
+      },
+    } as const;
+
+    it('should carry the chip reference for each token in the text, and a bare one for a typed token', () => {
+      const message = buildUserMessage({
+        text: 'Widen @cad[gears/main.ts#component:sun_gear] and @cad[b.ts#x], again @cad[gears/main.ts#component:sun_gear]',
+        references: [picked],
+      });
+      expect(message.metadata?.references).toEqual([
+        picked,
+        {
+          resource: { kind: 'workspace-file', path: 'b.ts' },
+          target: { kind: 'component', componentId: 'x', label: 'x', componentKind: 'unknown' },
+        },
+      ]);
+    });
+
+    it('should drop a chip reference whose token left the text, and stamp nothing without tokens', () => {
+      expect(buildUserMessage({ text: 'Plain text', references: [picked] }).metadata).not.toHaveProperty('references');
+    });
+
+    describe('when a message is edited', () => {
+      const original = {
+        ...buildUserMessage({ text: 'Widen @cad[gears/main.ts#component:sun_gear]', references: [picked] }),
+        id: 'msg_original',
+      };
+
+      it("should drop the original's references when the edit removes their tokens", () => {
+        const edited = buildEditedUserMessage(original, { text: 'Widen the plate instead' });
+        expect(edited.id).toBe('msg_original');
+        expect(edited.metadata).not.toHaveProperty('references');
+      });
+
+      it("should keep the original's reference for a token the edit kept, and add a token the edit typed", () => {
+        const edited = buildEditedUserMessage(original, {
+          text: 'Widen @cad[gears/main.ts#component:sun_gear] and @cad[b.ts#x]',
+        });
+        expect(edited.metadata?.references).toEqual([
+          picked,
+          {
+            resource: { kind: 'workspace-file', path: 'b.ts' },
+            target: { kind: 'component', componentId: 'x', label: 'x', componentKind: 'unknown' },
+          },
+        ]);
+      });
+
+      it("should prefer the edit composer's chip over the original's reference for the same token", () => {
+        const repicked = { ...picked, resource: { ...picked.resource, revision: 'hash-2' } };
+        const edited = buildEditedUserMessage(original, {
+          text: 'Widen @cad[gears/main.ts#component:sun_gear]',
+          references: [repicked],
+        });
+        expect(edited.metadata?.references).toEqual([repicked]);
+      });
+    });
   });
 });
 

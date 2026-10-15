@@ -28,7 +28,10 @@ import type { HtmlCaptureOmissions, HtmlCaptureReport, ReferencePaths } from '#r
 const temporaryDirectories: string[] = [];
 const servers: Array<ReturnType<typeof createServer>> = [];
 const expectedMarkdown = readFileSync(join(import.meta.dirname, 'fixtures/reference-html/expected.md'), 'utf8');
-const fixtureFont = readFileSync(join(import.meta.dirname, '../../apps/ui/public/fonts/Geist-Variable.woff2'));
+// Read the installed workspace font, not the UI's untracked `copy-assets` output.
+const fixtureFont = readFileSync(
+  join(import.meta.dirname, '../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2'),
+);
 const gfm = unified().use(remarkParse).use(remarkGfm).use(remarkStringify, {
   bullet: '-',
   fences: true,
@@ -182,7 +185,7 @@ const successfulPage = `<!doctype html>
       <div class="spacer"></div>
       <p id="lazy"></p>
     </main>
-    <header style="position: fixed; font-size: 1px; line-height: 1px">Persistent header</header>
+    <header style="position: fixed; font-size: 12px; line-height: 16px">Persistent header</header>
     <footer>Footer noise</footer>
     <script>
       const canvas = document.querySelector('#canvas');
