@@ -32,6 +32,7 @@ import type { HostDaemonEvent } from '#host-daemon.js';
 import { writeHostCredential } from '#credential-store.js';
 import * as revisions from '#revisions.js';
 import * as agentTools from '#agent-tools.js';
+import type { HostPrepareKernel } from '#agent-tools.js';
 import * as agentServer from '#agent-server.js';
 import * as machineHost from '#machine-host.js';
 import * as projectHosts from '#project-host.js';
@@ -2410,7 +2411,7 @@ describe('startHostDaemon runtime child per root and session', () => {
       credential: 'secret-credential-value-that-never-enters-a-url',
     });
     const compose = vi.fn(async () => ({ unavailable: [] }));
-    const outcomes = [
+    const outcomes: Array<Awaited<ReturnType<HostPrepareKernel>>> = [
       { status: 'blocked', kernel: 'picogk', reason: 'offline-miss', message: 'offline' },
       { status: 'ready', kernel: 'picogk' },
     ];
