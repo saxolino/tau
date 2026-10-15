@@ -51,6 +51,7 @@ import type { ShapeEntry } from '#opencascade.types.js';
 import { opencascadeDetectPattern } from '#opencascade.constants.js';
 
 import type { OpenCascadeInstance, TopoDS_Shape } from 'libcascade/init';
+import libcascadePackage from 'libcascade/package.json' with { type: 'json' };
 
 /** One libcascade instance per realm, shared by every kernel in it (memory parity with replicad, Q6). */
 const libcascadeOcct = createRealmGroup<OpenCascadeInstance>('libcascade-occt');
@@ -585,6 +586,7 @@ export const opencascadeKernel = defineKernel({
   extensions: ['ts', 'js'],
   detectImport: opencascadeDetectPattern,
   builtinModuleNames: ['libcascade'],
+  builtinPackages: { libcascade: libcascadePackage },
   name: 'OpenCascadeKernel',
   version: '1.1.0',
   optionsSchema: opencascadeOptionsSchema,
