@@ -138,7 +138,7 @@ export const mcpCommand = defineCommand({
     machines: {
       type: 'boolean',
       description:
-        "Offer the print tools over this computer's Tau printers; a print starts only after the person approves it in the agent app (TAU_HOST_MACHINES=true)",
+        "Offer the machine tools over this computer's Tau machines; a job starts only after the person approves it in Tau's Print pane (TAU_HOST_MACHINES=true)",
       default: process.env['TAU_HOST_MACHINES'] === 'true',
     },
     'viewer-page': {
