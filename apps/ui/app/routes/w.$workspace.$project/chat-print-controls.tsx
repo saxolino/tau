@@ -1846,7 +1846,7 @@ export function FailureEvidence({
 }): React.JSX.Element | undefined {
   const codes = [
     ...new Set(
-      (entry.snapshot.alerts ?? [])
+      entry.snapshot.alerts
         .filter((alert) => alert.severity === undefined || alert.severity === 'serious' || alert.severity === 'fatal')
         .map((alert) => alert.code),
     ),

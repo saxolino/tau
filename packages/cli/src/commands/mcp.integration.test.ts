@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { availableParallelism, loadavg, tmpdir } from 'node:os';
 import { dirname, join, resolve as resolvePath } from 'node:path';
@@ -819,10 +819,11 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
     async () => {
       const { configDirectory, environment } = await isolatedStore('config-codex');
       /* The simulator, bound in the store before the server starts, as the person binds a printer in Tau. */
+      const providers = await defaultMachineProviders();
       const vault = process.env['TAU_SECRET_VAULT'];
       process.env['TAU_SECRET_VAULT'] = 'memory';
       const store = await openSharedMachineHost({
-        providers: (await defaultMachineProviders()).filter(({ id }) => id === 'bambu-simulator'),
+        providers: providers.filter(({ id }) => id === 'bambu-simulator'),
         readArtifact: async () => {
           throw new Error('MACHINE_ARTIFACT_NOT_FOUND');
         },
@@ -897,7 +898,7 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
         );
       type Answer = {
         approval?: string;
-        job?: { state: string; artifact: { path: string } };
+        job?: { state: string; program: { name: string } };
       };
 
       const unnamedFolder = await requestIn(join(scratch, 'codex-unnamed'));
@@ -913,7 +914,8 @@ describe("tau mcp with this computer's printers (blueprint W11)", () => {
       expect(answer).not.toHaveProperty('approval');
       expect(asked).toEqual([]);
       /* The slice lands in the folder the call named, where the machine host reads it by that folder's project. */
-      await expect(access(join(project, answer.job?.artifact.path ?? 'missing'))).resolves.toBeUndefined();
+      const artifacts = await readdir(join(project, '.tau', 'artifacts'), { recursive: true });
+      expect(artifacts).toContainEqual(expect.stringContaining(answer.job?.program.name ?? 'missing'));
       await client.close();
     },
     kernelCallLimit,

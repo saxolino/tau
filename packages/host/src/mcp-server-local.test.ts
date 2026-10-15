@@ -110,7 +110,7 @@ describe('serveLocalHostMcp', () => {
     }
   });
 
-  it("should leave a job for the person in Tau even when the client can draw a form", async () => {
+  it('should leave a job for the person in Tau even when the client can draw a form', async () => {
     const { dispatch, invocations, local } = await serve(ready);
     try {
       const asked: string[] = [];

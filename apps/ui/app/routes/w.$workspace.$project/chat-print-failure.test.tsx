@@ -122,10 +122,7 @@ describe('failure camera evidence', () => {
   it('should keep the first failure still when a printing run becomes terminal', async () => {
     const machine = failed();
     const view = render(
-      <FailureEvidence
-        client={client}
-        entry={{ ...machine, snapshot: { ...machine.snapshot, run: printingRun } }}
-      />,
+      <FailureEvidence client={client} entry={{ ...machine, snapshot: { ...machine.snapshot, run: printingRun } }} />,
     );
     await screen.findByRole('img');
     view.rerender(
