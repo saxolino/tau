@@ -1,3 +1,4 @@
+import { machinesDisabledMessage } from '@taucad/types/constants';
 import { useRef, useState } from 'react';
 import { Check, ChevronDown, CircleX, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import { isRecord } from '@taucad/utils/schema';
@@ -45,7 +46,9 @@ export function permissionContent(approval: AgentHostApproval): {
         ? isOpaque
           ? 'Ask the agent to describe this action before allowing it.'
           : undefined
-        : 'This starts a physical print.',
+        : approval.context.jobId === undefined
+          ? 'This changes the machine. Review the action before allowing it.'
+          : 'Review the job and confirm the work area is clear in the Print pane.',
   };
 }
 
@@ -55,13 +58,17 @@ export function ChatPermissionRequest({
   name,
   outcome,
   onRespond,
+  onReview,
 }: {
   readonly approval: AgentHostApproval;
   readonly name: string;
   readonly outcome?: string | undefined;
+  readonly onReview?: (() => void) | undefined;
   readonly onRespond?: ((approved: boolean, optionId?: string) => Promise<void>) | undefined;
 }): React.JSX.Element {
   const isDebug = useFeature('tauDebug');
+  const machinesEnabled = useFeature('machines');
+  const machineDisabled = !machinesEnabled && approval.context?.machineId !== undefined;
   const [isSending, setIsSending] = useState(false);
   const [failure, setFailure] = useState<string>();
   const sending = useRef(false);
@@ -109,10 +116,10 @@ export function ChatPermissionRequest({
         </p>
       ) : null}
       <p className='text-sm/5 font-medium [overflow-wrap:anywhere] wrap-break-word'>{content.title}</p>
-      {!isSettled && content.consequence ? (
+      {!isSettled && (machineDisabled || content.consequence) ? (
         <p className='flex items-start gap-2 text-xs/5'>
           <TriangleAlert aria-hidden className='size-4 shrink-0 text-warning' />
-          {content.consequence}
+          {machineDisabled ? machinesDisabledMessage : content.consequence}
         </p>
       ) : null}
       {!isSettled && content.facts.length > 0 ? (
@@ -161,7 +168,34 @@ export function ChatPermissionRequest({
       ) : null}
       {!isSettled && onRespond ? (
         <div className='flex flex-wrap gap-2'>
-          {approval.options.length > 0 ? (
+          {machineDisabled ? (
+            <Button
+              size='xs'
+              variant='outline'
+              disabled={isSending}
+              onClick={() => {
+                void respond(false);
+              }}
+            >
+              Deny
+            </Button>
+          ) : onReview ? (
+            <>
+              <Button size='xs' onClick={onReview}>
+                Review in the Print pane
+              </Button>
+              <Button
+                size='xs'
+                variant='outline'
+                disabled={isSending}
+                onClick={() => {
+                  void respond(false);
+                }}
+              >
+                Deny
+              </Button>
+            </>
+          ) : approval.options.length > 0 ? (
             approval.options.map((option) => (
               <Button
                 key={option.optionId}

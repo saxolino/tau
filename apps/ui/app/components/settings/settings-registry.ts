@@ -183,13 +183,23 @@ const settingsCatalog = [
       {
         id: 'machines',
         label: 'Machines',
-        description: 'Add a simulated X1C or bind a Bambu Lab X1C on your network',
+        description: 'Bind a printer, router or CNC mill, or add a simulated one to try',
         keywords: [
           'printer',
+          'router',
+          'cnc',
+          'mill',
           'bambu',
           'x1c',
+          'a1 mini',
+          'grbl',
+          'longmill',
+          'carvera',
+          'makera',
           'simulator',
           '3d print',
+          'spindle',
+          'probe',
           'bind',
           'access code',
           'keychain',
@@ -341,10 +351,12 @@ const platformSections: readonly SettingsSectionDefinition[] = isDesktopTarget()
     )
   : cloudSections.filter((section) => section.id !== 'machines' && section.id !== 'browser');
 
-export const settingsSections: readonly SettingsSectionDefinition[] = platformSections.map((section) => ({
-  ...section,
-  entries: section.entries.filter((entry) => entry.id !== 'automatic-reload' || featureFlagDefaults.automaticReload),
-}));
+export const settingsSections: readonly SettingsSectionDefinition[] = platformSections
+  .filter((section) => section.id !== 'machines' || featureFlagDefaults.machines)
+  .map((section) => ({
+    ...section,
+    entries: section.entries.filter((entry) => entry.id !== 'automatic-reload' || featureFlagDefaults.automaticReload),
+  }));
 
 function normalizeSearch(value: string): string {
   return value

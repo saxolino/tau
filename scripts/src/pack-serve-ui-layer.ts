@@ -133,13 +133,48 @@ export const packServeUiLayer = (buildDirectory: string, outputDirectory: string
   requireServeUiLayerBudget(runtimeBytes);
 };
 
+/** Verify the extracted ordinary-file tree and the archive against the recorded complete inventory. */
+export const verifyServeUiLayer = (extractedDirectory: string, outputDirectory: string): void => {
+  const manifest: unknown = JSON.parse(readFileSync(join(outputDirectory, 'serve-ui-layer-manifest.json'), 'utf8'));
+  if (
+    typeof manifest !== 'object' ||
+    manifest === null ||
+    !('runtime' in manifest) ||
+    !('runtimeBytes' in manifest) ||
+    !('runtimeSha256' in manifest)
+  ) {
+    throw new Error('Invalid serve UI layer manifest');
+  }
+  if (!lstatSync(join(extractedDirectory, 'client')).isDirectory()) {
+    throw new Error('Extracted client must be an ordinary directory');
+  }
+  const actual = entries(extractedDirectory)
+    .filter((name) => statSync(join(extractedDirectory, name)).isFile())
+    .map((name) => {
+      const bytes = readFileSync(join(extractedDirectory, name));
+      return { path: name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    });
+  const archiveBytes = readFileSync(join(outputDirectory, 'serve-ui-client.tar.gz'));
+  if (
+    JSON.stringify(actual) !== JSON.stringify(manifest.runtime) ||
+    archiveBytes.length !== manifest.runtimeBytes ||
+    createHash('sha256').update(archiveBytes).digest('hex') !== manifest.runtimeSha256
+  ) {
+    throw new Error('Serve UI archive or extracted files differ from the manifest');
+  }
+};
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [build, output] = process.argv.slice(2);
-  if (!build || !output || process.argv.length !== 4) {
-    throw new Error('Usage: pack-serve-ui-layer.ts <build-directory> <output-directory>');
+  const [build, output, mode] = process.argv.slice(2);
+  if (!build || !output || (process.argv.length !== 4 && !(process.argv.length === 5 && mode === '--verify'))) {
+    throw new Error('Usage: pack-serve-ui-layer.ts <build-directory> <output-directory> [--verify]');
   }
   try {
-    packServeUiLayer(build, output);
+    if (mode === '--verify') {
+      verifyServeUiLayer(build, output);
+    } else {
+      packServeUiLayer(build, output);
+    }
   } catch (error) {
     console.error(error);
     process.exitCode = error instanceof ServeUiLayerBudgetError ? 2 : 1;

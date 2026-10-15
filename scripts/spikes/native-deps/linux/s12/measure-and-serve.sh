@@ -61,6 +61,7 @@ sed -n '1,12p' "$out/by-extension.txt" | tee -a "$out/measure.txt"
 target="$store/closures/sha256/$digest"
 mkdir -p "$target"
 tar -xzf "$layer" -C "$target"
+node scripts/src/pack-serve-ui-layer.ts "$target" "$out" --verify
 echo "store_ui_root=$target/client" | tee -a "$out/measure.txt"
 
 # 3. The serve-build gate, unchanged, against the in-tree build.
