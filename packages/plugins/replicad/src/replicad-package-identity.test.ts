@@ -9,16 +9,24 @@ import { replicadOptionsSchema } from '#replicad.schemas.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 
-/** Manifest of the package this plugin resolves for `import 'replicad'`. */
-const readInstalledReplicad = async (): Promise<{ name: string; version: string }> =>
-  JSON.parse(await readFile(new URL('../node_modules/replicad/package.json', import.meta.url), 'utf8')) as {
+/**
+ * Manifest of an installed dependency of this plugin.
+ * @param name - The dependency name.
+ * @returns Its `name` and `version`.
+ */
+const readInstalledManifest = async (name: string): Promise<{ name: string; version: string }> =>
+  JSON.parse(await readFile(new URL(`../node_modules/${name}/package.json`, import.meta.url), 'utf8')) as {
     name: string;
     version: string;
   };
 
+/** Manifest of the package this plugin resolves for `import 'replicad'`. */
+const readInstalledReplicad = async (): Promise<{ name: string; version: string }> => readInstalledManifest('replicad');
+
 describe('replicad package identity', () => {
-  it('declares the installed fork under the replicad import name', async () => {
+  it('declares the installed fork under the replicad import name, beside the OpenCascade build it runs on', async () => {
     const installed = await readInstalledReplicad();
+    const installedOpencascade = await readInstalledManifest('replicad-opencascadejs');
     const spec = `npm:${installed.name}@${installed.version}`;
     const definition = await resolveRuntimePluginDefinition('kernel', replicadKernel());
     const runtime = createMockKernelRuntime();
@@ -27,7 +35,10 @@ describe('replicad package identity', () => {
     await definition.initialize(replicadOptionsSchema.parse({}), runtime);
 
     expect(installed.name).toBe('@taulabs/replicad');
-    expect(replicadKernel().builtinDependencies).toEqual({ replicad: spec });
+    expect(replicadKernel().builtinDependencies).toEqual({
+      replicad: spec,
+      'replicad-opencascadejs': `npm:${installedOpencascade.name}@${installedOpencascade.version}`,
+    });
     const [, replicadModule] = registerModule.mock.calls.find(([name]) => name === 'replicad')!;
     expect(replicadModule.package).toEqual({ name: 'replicad', spec });
     expect(replicadModule.version).toBe(installed.version);
