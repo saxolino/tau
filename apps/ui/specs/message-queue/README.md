@@ -4,6 +4,8 @@
 
 The model is untimed. It does not assert eventual progress: a tab may remain offline, a provider may remain paused and an observation may remain delayed indefinitely. `CHECK_DEADLOCK FALSE` permits a stopped or paused run to retain queued work until an explicit action.
 
+The shared `ChatTextarea` now also serves a descendant task mailbox. In that mode its text-only `onSubmit` goes to the project-task host, while execution and attachment controls and root-run approvals are hidden. It never enters `ChatSessionStore.requestTurn` or the root `ChatMessageQueue`, so it adds no `Submit`, `Persist` or `Prepare` transition to this model. The root composer still follows the modeled queue path.
+
 ## Correspondence to implementation
 
 | Model                                        | Runtime seam                                                                                                                        |

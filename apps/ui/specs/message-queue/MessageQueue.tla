@@ -1,5 +1,9 @@
 -------------------------- MODULE MessageQueue --------------------------
 \* Presentation changes preserve admission, cancellation and command identity.
+\* The shared textarea's taskMailbox mode sends through the project-task host's
+\* text mailbox callback. It hides root-run approvals and execution/attachment
+\* controls; it never enqueues a ChatMessageQueue item or prepares a root turn.
+\* The root composer still uses this module's Submit/Persist/Prepare path.
 \* Composer Stop and its shortcut retain Stop; removing the duplicate message
 \* button and its diagnostic origin does not change cancellation or queue delivery.
 \* Explicit reorder changes only the saved queue sequence under delivery exclusion.
