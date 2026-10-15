@@ -54,4 +54,4 @@ jobs:
       # This verifies store receipts; it does not package, sign or launch the product.
       - name: Verify native store clone permissions
         if: runner.os != 'Windows'
-        run: pnpm nx run desktop:test src/tau/native-store.test.ts --watch=false --maxWorkers=1
+        run: pnpm nx run-many -t test-native-store --parallel=1
