@@ -7,7 +7,7 @@ import { tauRuntime } from '@taucad/runtime/vite';
 
 const chromiumPath = process.env['TAU_TEST_CHROMIUM_PATH'];
 
-/** Keyboard acceptance for the shipped task hierarchy and instruction editor. */
+/** Keyboard acceptance for the shared project instruction editor. */
 export default defineConfig({
   root: fileURLToPath(new URL('../../..', import.meta.url)),
   define: { tauCloudBuildEnabled: 'false' },

@@ -92,7 +92,7 @@ describe('task tool transcript cards', () => {
       />,
     );
     await expand(/Recorded task message/u);
-    expect(screen.getByText('Message recorded for child.')).toBeVisible();
+    expect(screen.getByText('Returned from parent to child.')).toBeVisible();
     expect(screen.getByText(/does not confirm delivery/u)).toBeVisible();
   });
   it.each(['task_read', 'task_wait'] as const)(
@@ -110,7 +110,7 @@ describe('task tool transcript cards', () => {
       );
       await expand(/tasks and messages|task updates/u);
       expect(screen.getByText('Inspect bracket · running')).toBeVisible();
-      expect(screen.getByText('Message to child: Measure the clearance')).toBeVisible();
+      expect(screen.getByText('Returned from parent to child: Measure the clearance')).toBeVisible();
       expect(screen.getByText(/More messages available/u)).toBeVisible();
     },
   );
@@ -233,7 +233,7 @@ describe('task tool transcript cards', () => {
       render(renderProjectTaskDynamic({ part }));
       await userEvent.click(screen.getByRole('button'));
       if (name === 'task_send') {
-        expect(screen.getByText('Message recorded for child.')).toBeVisible();
+        expect(screen.getByText('Returned from parent to child.')).toBeVisible();
       } else if (name === 'task_read' || name === 'task_wait') {
         expect(screen.getByText('Inspect bracket · running')).toBeVisible();
       } else {

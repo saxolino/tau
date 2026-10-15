@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { AgentChannelClient } from '@taucad/agent-host';
 import type { ProjectTaskChannelRequest, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
 import { projectTaskSendSchema } from '@taucad/agent-host/wire';
@@ -6,9 +7,9 @@ import { generatePrefixedId } from '@taucad/utils/id';
 import { idPrefix } from '@taucad/types/constants';
 import { isDesktopTarget } from '#filesystem/desktop-bridge.js';
 import { desktopWorkspaceRoot, openAgentHostChannel } from '#lib/agent-host-placement.js';
-import type { ProjectTaskActions } from '#components/project-tasks/project-task-tree.js';
+import type { ProjectTaskActions } from '#components/project-tasks/project-task-actions.js';
 
-type ProjectTasksView = Readonly<{
+export type ProjectTasksView = Readonly<{
   snapshot?: ProjectTaskSnapshot;
   isLoading: boolean;
   unavailable?: string;
@@ -20,8 +21,31 @@ type ProjectTasksView = Readonly<{
 const browserReason =
   'Child tasks require the desktop project host. Open this project in Tau desktop to use child tasks.';
 
-/** Observe the host journal; React never owns admission, task execution or a second transcript. */
+const projectTasksContext = createContext<Readonly<{ projectId: string; view: ProjectTasksView }> | undefined>(
+  undefined,
+);
+
+/** One project-level task observer shared by Threads panes and controls. */
+function projectTasksProvider({
+  projectId,
+  enabled = true,
+  children,
+}: Readonly<{ projectId: string; enabled?: boolean; children: ReactNode }>): ReactNode {
+  const view = useProjectTasksOwner(projectId, enabled);
+  const context = useMemo(() => ({ projectId, view }), [projectId, view]);
+  return createElement(projectTasksContext.Provider, { value: context }, children);
+}
+export { projectTasksProvider as ProjectTasksProvider };
+
+/** Consume the project observer when present; standalone surfaces retain their own observer. */
 export function useProjectTasks(projectId: string, isEnabled = true): ProjectTasksView {
+  const shared = useContext(projectTasksContext);
+  const own = useProjectTasksOwner(projectId, isEnabled && shared?.projectId !== projectId);
+  return shared?.projectId === projectId && isEnabled ? shared.view : own;
+}
+
+/** Observe the host journal; React never owns admission, task execution or a second transcript. */
+function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasksView {
   const [generation, setGeneration] = useState(0);
   const owner = useMemo(() => ({ projectId, generation, isEnabled }), [projectId, generation, isEnabled]);
   const connection = useRef<

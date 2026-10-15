@@ -708,6 +708,8 @@ function AssistantParts({
 
 type ChatMessageProperties = {
   readonly messageId: string;
+  /** Preserve the shipped message display while withholding generic chat edit on task-owned logs. */
+  readonly readOnly?: boolean;
   /** Rendered after this message's content, before its action row (e.g. the turn's revision marker). */
   readonly footer?: React.ReactNode;
 };
@@ -747,7 +749,11 @@ function ChatMessageTimestamp({
 }
 
 // oxlint-disable-next-line complexity -- split render paths for user collapse/edit vs assistant tools would churn without UX benefit
-export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProperties): React.JSX.Element {
+export const ChatMessage = memo(function ({
+  messageId,
+  footer,
+  readOnly = false,
+}: ChatMessageProperties): React.JSX.Element {
   const userMessageCollapseRowThreshold = 8;
   const userMessageCollapseCharacterThreshold = 900;
   const userMessagePreviewCharacterLimit = 220 * (userMessageCollapseRowThreshold + 1);
@@ -849,7 +855,7 @@ export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProp
   }
 
   const toggleEdit = (): void => {
-    if (!isUser) {
+    if (!isUser || readOnly) {
       return;
     }
 
@@ -947,15 +953,17 @@ export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProp
               className={cn(
                 'flex flex-col gap-0 min-w-0',
                 isUser &&
+                  !readOnly &&
                   'relative z-10 cursor-action rounded-lg border bg-background px-3 outline-none hover:border-foreground/20 focus-visible:focus-outline',
+                isUser && readOnly && 'relative z-10 rounded-lg border bg-background px-3',
                 isUser && chatUserMessagePaddingClassName,
                 shouldRenderCollapsedUserRows && 'max-h-60.5 overflow-hidden',
                 fileParts.length > 0 && 'pt-3',
               )}
-              role={isUser ? 'button' : undefined}
-              tabIndex={isUser ? 0 : undefined}
-              onClick={isUser ? handleEditClick : undefined}
-              onKeyDown={isUser ? handleEditKeyDown : undefined}
+              role={isUser && !readOnly ? 'button' : undefined}
+              tabIndex={isUser && !readOnly ? 0 : undefined}
+              onClick={isUser && !readOnly ? handleEditClick : undefined}
+              onKeyDown={isUser && !readOnly ? handleEditKeyDown : undefined}
             >
               {fileParts.length > 0 ? (
                 <ChatMessageFileAttachments parts={fileParts} directory={attachmentDirectories?.transcript} />

@@ -22,6 +22,8 @@ import { ChatToolDescription } from '#components/chat/chat-tool-text.js';
 import { ChatToolLabel } from '#components/chat/chat-tool-label.js';
 import { ChatToolError } from '#components/chat/chat-tool-error.js';
 import { sanitizeAgentText } from '#routes/w.$workspace.$project/chat-message-tool-external.js';
+import { Button } from '@taucad/ui/components/button';
+import { useThreadNavigation } from '#routes/w.$workspace.$project/thread-navigation-context.js';
 
 const presentations = {
   [toolName.taskSpawn]: { pending: 'Starting', done: 'Created', noun: 'child task', input: projectTaskSpawnSchema },
@@ -80,6 +82,7 @@ export function ChatMessageToolProjectTask({
   readonly part: Pick<DynamicToolUIPart, 'state' | 'input' | 'output' | 'errorText'>;
   readonly name: ProjectTaskToolName;
 }): React.JSX.Element {
+  const threadNavigation = useThreadNavigation({ enableNoContext: true });
   const presentation = presentations[name];
   if (part.state === 'output-error') {
     return (
@@ -111,87 +114,113 @@ export function ChatMessageToolProjectTask({
       ? sanitizeAgentText(input.data.title)
       : presentation.noun;
   return (
-    <ChatToolCard
-      variant='minimal'
-      status={ready ? (validOutput ? 'ready' : 'warning') : 'loading'}
-      isDefaultOpen={false}
-    >
-      <ChatToolCardHeader>
-        <ChatToolCardIcon icon={GitFork} />
-        <ChatToolCardTitle>
-          <ChatToolLabel verb={ready ? (validOutput ? presentation.done : 'Could not verify') : presentation.pending}>
-            <ChatToolDescription>{title}</ChatToolDescription>
-          </ChatToolLabel>
-        </ChatToolCardTitle>
-      </ChatToolCardHeader>
-      <ChatToolCardContent>
-        <div className='space-y-2 px-2 py-2 text-xs'>
-          {input.success && 'prompt' in input.data ? (
-            <p className='max-h-40 overflow-auto whitespace-pre-wrap'>{input.data.prompt}</p>
-          ) : undefined}
-          {input.success && 'provider' in input.data ? (
-            <p>
-              Agent: {sanitizeAgentText(input.data.provider.id)}
-              {input.data.provider.model ? ` · ${sanitizeAgentText(input.data.provider.model)}` : ''}
-            </p>
-          ) : undefined}
-          {input.success && 'taskId' in input.data && input.data.taskId ? <p>Task: {input.data.taskId}</p> : undefined}
-          {input.success && 'text' in input.data && typeof input.data.text === 'string' ? (
-            <p className='max-h-40 overflow-auto whitespace-pre-wrap'>{input.data.text}</p>
-          ) : undefined}
-          {task?.success ? (
-            <>
+    <div className='min-w-0'>
+      <ChatToolCard
+        variant='minimal'
+        status={ready ? (validOutput ? 'ready' : 'warning') : 'loading'}
+        isDefaultOpen={false}
+      >
+        <ChatToolCardHeader>
+          <ChatToolCardIcon icon={GitFork} />
+          <ChatToolCardTitle>
+            <ChatToolLabel verb={ready ? (validOutput ? presentation.done : 'Could not verify') : presentation.pending}>
+              <ChatToolDescription>{title}</ChatToolDescription>
+            </ChatToolLabel>
+          </ChatToolCardTitle>
+        </ChatToolCardHeader>
+        <ChatToolCardContent>
+          <div className='space-y-2 px-2 py-2 text-xs'>
+            {input.success && 'prompt' in input.data ? (
+              <p className='max-h-40 overflow-auto whitespace-pre-wrap'>{input.data.prompt}</p>
+            ) : undefined}
+            {input.success && 'provider' in input.data ? (
               <p>
-                Task: {task.data.id} · {task.data.provider.id}
+                Agent: {sanitizeAgentText(input.data.provider.id)}
+                {input.data.provider.model ? ` · ${sanitizeAgentText(input.data.provider.model)}` : ''}
               </p>
+            ) : undefined}
+            {input.success && 'taskId' in input.data && input.data.taskId ? (
+              <p>Task: {input.data.taskId}</p>
+            ) : undefined}
+            {input.success && 'text' in input.data && typeof input.data.text === 'string' ? (
+              <p className='max-h-40 overflow-auto whitespace-pre-wrap'>{input.data.text}</p>
+            ) : undefined}
+            {task?.success ? (
+              <>
+                <p>
+                  Task: {task.data.id} · {task.data.provider.id}
+                </p>
+                <p>
+                  Attempt {task.data.attempts.at(-1)?.number}: {task.data.attempts.at(-1)?.status}
+                </p>
+                {task.data.attempts.at(-1)?.detail ? (
+                  <p className='whitespace-pre-wrap'>{task.data.attempts.at(-1)?.detail}</p>
+                ) : undefined}
+              </>
+            ) : undefined}
+            {message?.success ? (
+              <>
+                <p>
+                  {message.data.senderTaskId
+                    ? `Returned from ${message.data.senderTaskId} to ${message.data.recipientTaskId}.`
+                    : `Message recorded for ${message.data.recipientTaskId}.`}
+                </p>
+                <p className='max-h-40 overflow-auto whitespace-pre-wrap'>{message.data.text}</p>
+                <p className='text-muted-foreground'>
+                  Recording a message does not confirm delivery or task completion.
+                </p>
+              </>
+            ) : undefined}
+            {snapshot?.success ? (
+              <>
+                <p>
+                  {snapshot.data.tasks.length} tasks · {snapshot.data.messages.length} messages
+                  {snapshot.data.hasMore ? ' · More messages available' : ''}
+                </p>
+                <ul className='max-h-48 space-y-1 overflow-auto'>
+                  {snapshot.data.tasks.map((item) => (
+                    <li key={item.id}>
+                      {sanitizeAgentText(item.title)} · {item.attempts.at(-1)?.status}
+                    </li>
+                  ))}
+                  {snapshot.data.messages.map((item) => (
+                    <li key={item.id} className='whitespace-pre-wrap'>
+                      {item.senderTaskId
+                        ? `Returned from ${item.senderTaskId} to ${item.recipientTaskId}`
+                        : `Message to ${item.recipientTaskId}`}
+                      : {item.text}
+                    </li>
+                  ))}
+                </ul>
+                {snapshot.data.tasks.length === 0 && snapshot.data.messages.length === 0 ? (
+                  <p>No task or message updates in this response.</p>
+                ) : undefined}
+              </>
+            ) : undefined}
+            {ready && !validOutput ? (
               <p>
-                Attempt {task.data.attempts.at(-1)?.number}: {task.data.attempts.at(-1)?.status}
+                The recorded response does not match the task result format. Check the task in Threads before retrying.
               </p>
-              {task.data.attempts.at(-1)?.detail ? (
-                <p className='whitespace-pre-wrap'>{task.data.attempts.at(-1)?.detail}</p>
-              ) : undefined}
-            </>
-          ) : undefined}
-          {message?.success ? (
-            <>
-              <p>Message recorded for {message.data.recipientTaskId}.</p>
-              <p className='max-h-40 overflow-auto whitespace-pre-wrap'>{message.data.text}</p>
-              <p className='text-muted-foreground'>Recording a message does not confirm delivery or task completion.</p>
-            </>
-          ) : undefined}
-          {snapshot?.success ? (
-            <>
-              <p>
-                {snapshot.data.tasks.length} tasks · {snapshot.data.messages.length} messages
-                {snapshot.data.hasMore ? ' · More messages available' : ''}
-              </p>
-              <ul className='max-h-48 space-y-1 overflow-auto'>
-                {snapshot.data.tasks.map((item) => (
-                  <li key={item.id}>
-                    {sanitizeAgentText(item.title)} · {item.attempts.at(-1)?.status}
-                  </li>
-                ))}
-                {snapshot.data.messages.map((item) => (
-                  <li key={item.id} className='whitespace-pre-wrap'>
-                    Message to {item.recipientTaskId}: {item.text}
-                  </li>
-                ))}
-              </ul>
-              {snapshot.data.tasks.length === 0 && snapshot.data.messages.length === 0 ? (
-                <p>No task or message updates in this response.</p>
-              ) : undefined}
-            </>
-          ) : undefined}
-          {ready && !validOutput ? (
-            <p>
-              The recorded response does not match the task result format. Check the task in Agents before retrying.
-            </p>
-          ) : undefined}
-          {!ready && (part.state === 'approval-requested' || part.state === 'approval-responded') ? (
-            <p>Awaiting the existing permission decision.</p>
-          ) : undefined}
-        </div>
-      </ChatToolCardContent>
-    </ChatToolCard>
+            ) : undefined}
+            {!ready && (part.state === 'approval-requested' || part.state === 'approval-responded') ? (
+              <p>Awaiting the existing permission decision.</p>
+            ) : undefined}
+          </div>
+        </ChatToolCardContent>
+      </ChatToolCard>
+      {task?.success && name === toolName.taskSpawn && threadNavigation ? (
+        <Button
+          size='sm'
+          variant='ghost'
+          className='mt-1 ml-5'
+          onClick={() => {
+            threadNavigation.openThreads(task.data.id);
+          }}
+        >
+          <GitFork aria-hidden className='size-3.5' />
+          {sanitizeAgentText(task.data.title)}
+        </Button>
+      ) : null}
+    </div>
   );
 }

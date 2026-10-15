@@ -363,9 +363,9 @@ describe('ChatError', () => {
     const onOpenAgents = vi.fn();
     render(<ChatErrorBanner isClosedDelegatedTask onOpenAgents={onOpenAgents} />);
 
-    expect(screen.getByText('Open Agents to review the task and available actions.')).toBeInTheDocument();
+    expect(screen.getByText('Open Threads to review the task and available actions.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Open Agents' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open Threads' }));
     expect(onOpenAgents).toHaveBeenCalledOnce();
     expect(continueChat).not.toHaveBeenCalled();
   });

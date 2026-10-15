@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { StrictMode } from 'react';
+import type { ReactNode } from 'react';
 import { act, renderHook, waitFor, cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -10,7 +11,7 @@ import type {
   ProjectTaskChannelRequest,
   ProjectTaskSnapshot,
 } from '@taucad/agent-host/wire';
-import { useProjectTasks } from '#hooks/use-project-tasks.js';
+import { ProjectTasksProvider, useProjectTasks } from '#hooks/use-project-tasks.js';
 
 const placement = vi.hoisted(() => ({ isDesktopTarget: true, workspaceRoot: vi.fn(), open: vi.fn() }));
 vi.mock('#filesystem/desktop-bridge.js', () => ({
@@ -74,6 +75,37 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Project task observation', () => {
+  it('shares one project channel across consumers and aborts it when the provider detaches', async () => {
+    const client = mock<AgentChannelClient>();
+    const next = mock<AgentChannelClient>();
+    placement.open.mockResolvedValueOnce(client).mockResolvedValueOnce(next);
+    client.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot() });
+    client.projectTasks.mockImplementation(pending);
+    next.projectTasks.mockImplementation(pending);
+    let providerProjectId = 'project-a';
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <ProjectTasksProvider projectId={providerProjectId}>{children}</ProjectTasksProvider>
+    );
+    const view = renderHook(
+      ({ projectId }) => ({ first: useProjectTasks(projectId), second: useProjectTasks(projectId) }),
+      { wrapper, initialProps: { projectId: 'project-a' } },
+    );
+    await waitFor(() => {
+      expect(view.result.current.first.snapshot?.tasks).toEqual([root]);
+      expect(view.result.current.second.snapshot).toBe(view.result.current.first.snapshot);
+    });
+    expect(placement.open).toHaveBeenCalledTimes(1);
+    expect(client.projectTasks.mock.calls.filter(([request]) => request.operation === 'read')).toHaveLength(1);
+    providerProjectId = 'project-b';
+    view.rerender({ projectId: 'project-b' });
+    expect(view.result.current.first.snapshot).toBeUndefined();
+    await waitFor(() => {
+      expect(placement.open).toHaveBeenCalledTimes(2);
+    });
+    expect(client.close).toHaveBeenCalledWith('project-task-view-closed');
+    view.unmount();
+    expect(next.close).toHaveBeenCalledWith('project-task-view-closed');
+  });
   it('keeps the same project snapshot during reconnect and clears it when the project changes', async () => {
     const first = mock<AgentChannelClient>();
     const second = mock<AgentChannelClient>();

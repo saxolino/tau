@@ -36,6 +36,14 @@ const { featureState, mobileState, mockOpenPanel, mockProjectSend, mockToastErro
     mockExportBody: vi.fn(),
   }));
 
+vi.mock('#hooks/use-project-tasks.js', () => ({
+  ProjectTasksProvider: ({ children }: { readonly children: React.JSX.Element }) => children,
+}));
+vi.mock('#routes/w.$workspace.$project/thread-navigation-context.js', () => ({
+  ThreadNavigationProvider: ({ children }: { readonly children: React.JSX.Element }) => children,
+  useThreadNavigation: () => ({}),
+}));
+
 vi.mock('#hooks/use-project-availability.js', () => ({ useProjectAvailability: () => 'ready' }));
 
 vi.mock('#routes/w.$workspace.$project/chat-print.js', () => ({
@@ -1472,7 +1480,7 @@ describe('Workbench file reconciliation', () => {
       within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Revisions/ }),
     ).toBeVisible();
     expect(
-      within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Agents/ }),
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Threads/ }),
     ).toBeVisible();
     expect(within(screen.getByRole('group', { name: 'Activity' })).getByRole('button', { name: /Jobs/ })).toBeVisible();
     expect(
@@ -1622,7 +1630,7 @@ describe('Workbench file reconciliation', () => {
       within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Revisions/ }),
     ).toBeVisible();
     expect(
-      within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Agents/ }),
+      within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Threads/ }),
     ).toBeVisible();
     expect(
       within(screen.getByRole('group', { name: 'Activity' })).getByRole('menuitem', { name: /Jobs/ }),

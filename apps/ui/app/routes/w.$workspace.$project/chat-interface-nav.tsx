@@ -1,4 +1,15 @@
-import { Box, Code2, Info, MessageCircleIcon, SlidersHorizontal, Download, Files, History, Share2 } from 'lucide-react';
+import {
+  MessagesSquare,
+  Box,
+  Code2,
+  Info,
+  MessageCircleIcon,
+  SlidersHorizontal,
+  Download,
+  Files,
+  History,
+  Share2,
+} from 'lucide-react';
 import { TabsList, TabsTrigger } from '@taucad/ui/components/tabs';
 import { cn } from '@taucad/ui/utils/cn';
 import type { MobilePanelId } from '#constants/editor.constants.js';
@@ -9,6 +20,7 @@ export const chatTabs = [
     label: 'Chat',
     icon: <MessageCircleIcon />,
   },
+  { id: 'agents', label: 'Threads', icon: <MessagesSquare /> },
   {
     id: 'files',
     label: 'Files',

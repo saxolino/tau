@@ -7,7 +7,7 @@ import type { Chat } from '@taucad/chat';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import { parseChatRecord, serializeChatRecord } from '@taucad/chat/schemas';
 import { chatLogFileName, chatRecordFileName, chatRecordsPath } from '@taucad/revisions';
-import { chatIdSchema } from '@taucad/agent-host/wire';
+import { chatIdSchema, projectTaskLineageFromJournal } from '@taucad/agent-host/wire';
 import { errorCategory, idPrefix } from '@taucad/types/constants';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { isRecord } from '@taucad/utils/schema';
@@ -67,6 +67,7 @@ const recordPath = (projectId: string, chatId: string): string =>
   `${chatDirectory(projectId, chatId)}/${chatRecordFileName}`;
 
 const chatsDirectory = (projectId: string): string => `/projects/${projectId}/.tau/chats`;
+const taskJournalPath = (projectId: string): string => `${chatsDirectory(projectId)}/.project-tasks/records.jsonl`;
 
 /** What a chat directory holding only a log reads as, until its record lands. */
 const placeholderRecord = (projectId: string, chatId: string): Chat => ({
@@ -256,7 +257,27 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
         .filter((chatId) => chatIdSchema.safeParse(chatId).success)
         .map(async (chatId) => readChatRecord(projectId, chatId)),
     );
-    return records.filter((record): record is ChatRecord => record !== undefined && record.purgedAt === undefined);
+    const live = records.filter(
+      (record): record is ChatRecord => record !== undefined && record.purgedAt === undefined,
+    );
+    if (live.every((record) => record.taskLineage !== undefined)) {
+      return live;
+    }
+    const path = taskJournalPath(projectId);
+    if (!(await options.client.exists(path))) {
+      return live;
+    }
+    // Listing is read-only. The portable reader validates complete journal rows
+    // and its established torn-tail rule; corrupt evidence must reach the caller.
+    const lineage = projectTaskLineageFromJournal(await options.client.readFile(path), projectId);
+    const byChatId = new Map(lineage.map((entry) => [entry.chatId, entry.taskLineage]));
+    return live.map((record) => {
+      const projected = byChatId.get(record.id);
+      if (projected === undefined || record.taskLineage !== undefined) {
+        return record;
+      }
+      return { ...record, taskLineage: projected };
+    });
   };
 
   /**
@@ -305,6 +326,12 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
          * returned chat, so a clear that changed nothing must not repaint. */
         return undefined;
       }
+      if (existing.taskLineage === undefined && updated.taskLineage !== undefined) {
+        throw new Error('Task lineage can only be projected from the task journal.');
+      }
+      if (existing.taskLineage !== undefined && !valuesEqual(existing.taskLineage, updated.taskLineage)) {
+        throw new Error('Task lineage is immutable.');
+      }
       await writeRecord(projectId, updated);
       return hydrate(updated);
     });
@@ -336,10 +363,16 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
       updatedAt: timestamp,
       recencyAt: timestamp,
     };
+    if (created.taskLineage !== undefined) {
+      throw new Error('Task lineage can only be projected from the task journal.');
+    }
     await mutex.run(id, async () => {
       const existing = await readRecord(resourceId, id);
       if (existing?.purgedAt !== undefined) {
         throw new Error('A permanently deleted chat cannot be recreated.');
+      }
+      if (existing?.taskLineage !== undefined) {
+        throw new Error('Task lineage is immutable.');
       }
       await writeRecord(resourceId, created);
     });
@@ -398,6 +431,12 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
           ...(isFullChat ? (update as Chat) : (deepmerge(chat, update) as Chat)),
           messages: chat.messages,
         };
+        if (chat.taskLineage !== undefined) {
+          if (update.taskLineage !== undefined && !valuesEqual(chat.taskLineage, update.taskLineage)) {
+            throw new Error('Task lineage is immutable.');
+          }
+          candidate.taskLineage = chat.taskLineage;
+        }
         if (isFullChat && chat.error === undefined && valuesEqual(candidate.error, invalidStartupError)) {
           delete candidate.error;
         }
@@ -423,6 +462,9 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
       patch(chatId, (chat) => {
         if (key === 'messages') {
           throw new Error('Chat transcript messages are host-log-owned and cannot be patched in chat.json.');
+        }
+        if (key === 'taskLineage' && chat.taskLineage !== undefined && !valuesEqual(chat.taskLineage, value)) {
+          throw new Error('Task lineage is immutable.');
         }
         if (valuesEqual(chat[key], value)) {
           return false;
@@ -513,7 +555,17 @@ export function createChatFileStore(options: ChatFileStoreOptions): ChatStorage 
       await mutex.run(chat.id, async () => {
         const existing = await readRecord(chat.resourceId, chat.id);
         if (existing?.purgedAt === undefined) {
-          await writeRecord(chat.resourceId, chat);
+          if (
+            existing?.taskLineage !== undefined &&
+            chat.taskLineage !== undefined &&
+            !valuesEqual(existing.taskLineage, chat.taskLineage)
+          ) {
+            throw new Error('Task lineage is immutable.');
+          }
+          await writeRecord(chat.resourceId, {
+            ...chat,
+            taskLineage: existing?.taskLineage ?? chat.taskLineage,
+          });
         }
       });
     },

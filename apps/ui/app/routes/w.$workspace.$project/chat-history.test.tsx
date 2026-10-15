@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useImperativeHandle } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { MyUIMessage } from '@taucad/chat';
 import type { ProjectTask, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
 import { chatTurnRequestSchema } from '@taucad/chat/schemas';
@@ -80,6 +80,14 @@ vi.mock('#hooks/use-chat.js', () => ({
     });
   },
   useChatContext: () => ({ activeChatId: 'chat_test', persistenceActorRef: fakePersistenceActorRef }),
+  useDraftSelector: (selector: (state: { draftText: string; draftAttachments: readonly unknown[] }) => unknown) =>
+    selector({ draftText: selectedDraftText, draftAttachments: [] }),
+}));
+let selectedDraftText = '';
+const consumeSelectedDraft = vi.fn(async () => undefined);
+vi.mock('#hooks/active-chat-provider.js', () => ({
+  ActiveChatProvider: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
+  useChatComposer: () => ({ consumeDraft: consumeSelectedDraft }),
 }));
 
 // Capture the body the chat client receives on submit so the wire-format
@@ -144,8 +152,17 @@ vi.mock('#routes/w.$workspace.$project/chat-message-planning.js', () => ({
 }));
 
 vi.mock('#routes/w.$workspace.$project/chat-message.js', () => ({
-  ChatMessage: ({ messageId, footer }: { readonly messageId: string; readonly footer?: React.ReactNode }) => (
-    <div data-testid='chat-message' data-message-id={messageId}>
+  ChatMessage: ({
+    messageId,
+    footer,
+    readOnly,
+  }: {
+    readonly messageId: string;
+    readonly footer?: React.ReactNode;
+    // oxlint-disable-next-line react-js/boolean-prop-naming -- mirrors ChatMessage's standard readOnly prop
+    readonly readOnly?: boolean;
+  }) => (
+    <div data-testid='chat-message' data-message-id={messageId} data-read-only={String(readOnly)}>
       {footer}
     </div>
   ),
@@ -278,7 +295,8 @@ vi.mock('react-virtuoso', () => ({
   },
 }));
 
-const { ChatHistory } = await import('#routes/w.$workspace.$project/chat-history.js');
+const { ChatHistory, SelectedTaskHistory, MetadataTaskHistory } =
+  await import('#routes/w.$workspace.$project/chat-history.js');
 
 const draftAttachment = storedRef({ hash: 'f'.repeat(64), mediaType: 'application/pdf', filename: 'spec.pdf' });
 
@@ -290,6 +308,237 @@ const message = (id: string, role: MyUIMessage['role']): MyUIMessage => ({
   id,
   role,
   parts: [{ type: 'text', text: id }],
+});
+
+describe('SelectedTaskHistory — host-owned child history and actions', () => {
+  const attempt = (status: ProjectTask['attempts'][number]['status']): ProjectTask['attempts'][number] => ({
+    id: 'attempt-child',
+    number: 1,
+    status,
+    toolGrant: { toolChoice: 'none' },
+    source: { revisionId: 'base', checkoutId: 'source' },
+    createdAt: 1,
+  });
+  const child = (status: ProjectTask['attempts'][number]['status']): ProjectTask => ({
+    id: 'child',
+    projectId: 'project_test',
+    chatId: 'chat-child',
+    parentTaskId: 'root',
+    depth: 1,
+    title: 'Check fit',
+    prompt: 'Check the mounting fit',
+    provider: { id: 'codex' },
+    createdAt: 1,
+    closed: false,
+    attempts: [attempt(status)],
+  });
+  const snapshotFor = (task: ProjectTask): ProjectTaskSnapshot => ({
+    tasks: [task],
+    messages: [],
+    cursor: 0,
+    nextCursor: 0,
+    hasMore: false,
+  });
+  const defaultActions = {
+    send: vi.fn(async () => undefined),
+    cancel: vi.fn(async () => undefined),
+    resume: vi.fn(async () => undefined),
+  };
+  const propsFor = (task: ProjectTask, snapshot: ProjectTaskSnapshot, actions = defaultActions) => ({
+    task,
+    snapshot,
+    actions,
+    isReadOnly: false,
+    hasClosedAncestor: false,
+    onBack: vi.fn(),
+    onOpenParent: vi.fn(),
+    onSelectTask: vi.fn(),
+    onReviewCandidate: vi.fn(),
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setMockMessages([]);
+    selectedDraftText = '';
+  });
+
+  it('hides the exact synthetic task start and orders timestamped mailbox receipts between log events', () => {
+    const task = child('running');
+    setMockMessages([
+      { ...message('task-message-attempt-child', 'user'), metadata: { createdAt: 1 } },
+      { ...message('assistant-before', 'assistant'), metadata: { createdAt: 3 } },
+      { ...message('user-real', 'user'), metadata: { createdAt: 5 } },
+    ]);
+    const snapshot: ProjectTaskSnapshot = {
+      ...snapshotFor(task),
+      messages: [
+        {
+          id: 'mail-1',
+          sequence: 4,
+          projectId: 'project_test',
+          recipientTaskId: 'child',
+          requestId: 'request-1',
+          text: 'Please check one more dimension',
+          createdAt: 4,
+        },
+      ],
+      deliveries: [{ taskId: 'child', attemptId: 'attempt-child', through: 4 }],
+    };
+    const { container } = render(<SelectedTaskHistory {...propsFor(task, snapshot)} />);
+    expect(container.querySelector('[data-message-id="task-message-attempt-child"]')).toBeNull();
+    expect(screen.getByRole('article', { name: 'Parent instruction' })).toHaveTextContent('Check the mounting fit');
+    const ordered = [
+      ...container.querySelectorAll<HTMLElement>('[data-message-id], article[aria-label^="Message from"]'),
+    ].map((node) => node.dataset['messageId'] ?? node.getAttribute('aria-label'));
+    expect(ordered).toEqual(['assistant-before', 'Message from You', 'user-real']);
+    expect(screen.getByText('Delivered to attempt 1')).toBeInTheDocument();
+    expect(container.querySelector('[data-message-id="user-real"]')).toHaveAttribute('data-read-only', 'true');
+  });
+
+  it('admits a completed follow-up once, consumes its draft, then resumes the task attempt', async () => {
+    const task = child('completed');
+    const actions = {
+      send: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      resume: vi.fn(async () => undefined),
+    };
+    selectedDraftText = 'Check the second pattern';
+    render(<SelectedTaskHistory {...propsFor(task, snapshotFor(task), actions)} />);
+    expect(screen.queryByRole('button', { name: 'Resume thread' })).toBeNull();
+    await act(async () => {
+      await submitDraft(selectedDraftText);
+    });
+    expect(actions.send).toHaveBeenCalledExactlyOnceWith('child', 'Check the second pattern');
+    expect(consumeSelectedDraft).toHaveBeenCalledTimes(1);
+    expect(actions.resume).toHaveBeenCalledExactlyOnceWith('child');
+    expect(actions.send.mock.invocationCallOrder[0]).toBeLessThan(actions.resume.mock.invocationCallOrder[0]!);
+  });
+
+  it('names only active descendants in stop confirmation and restores focus on Keep running', () => {
+    const task = child('running');
+    const active: ProjectTask = {
+      ...child('running'),
+      id: 'grandchild',
+      parentTaskId: task.id,
+      chatId: 'chat-grandchild',
+    };
+    const done: ProjectTask = { ...child('completed'), id: 'finished', parentTaskId: task.id, chatId: 'chat-finished' };
+    const snapshot = { ...snapshotFor(task), tasks: [task, active, done] };
+    render(<SelectedTaskHistory {...propsFor(task, snapshot)} />);
+    const stop = screen.getByRole('button', { name: 'Stop thread' });
+    stop.focus();
+    fireEvent.click(stop);
+    expect(screen.getByRole('group', { name: 'Stop Check fit' })).toHaveTextContent('and 1 active child thread');
+    fireEvent.click(screen.getByRole('button', { name: 'Keep running' }));
+    expect(document.activeElement).toBe(stop);
+  });
+
+  it('keeps durable child history and draft visible but actions disabled without a task snapshot', () => {
+    setMockMessages([
+      message('task-message-attempt-old', 'user'),
+      message('user-real', 'user'),
+      message('answer', 'assistant'),
+    ]);
+    render(
+      <MetadataTaskHistory
+        chat={{
+          id: 'chat-child',
+          resourceId: 'project_test',
+          name: 'Check fit',
+          createdAt: 1,
+          updatedAt: 1,
+          taskLineage: { taskId: 'child', parentTaskId: 'root', parentChatId: 'chat-root', rootChatId: 'chat-root' },
+        }}
+        onBack={vi.fn()}
+        onOpenParent={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Check fit' })).toBeInTheDocument();
+    expect(
+      screen.queryAllByTestId('chat-message').some((node) => node.dataset['messageId'] === 'task-message-attempt-old'),
+    ).toBe(false);
+    expect(
+      screen.getByText('Thread actions will be available when the project task host reconnects.'),
+    ).toBeInTheDocument();
+    expect(capturedTextarea.isSubmitDisabled).toBe(true);
+    expect(screen.getAllByTestId('chat-message').map((node) => node.dataset['messageId'])).toEqual([
+      'user-real',
+      'answer',
+    ]);
+    expect(screen.getAllByTestId('chat-message')[0]).toHaveAttribute('data-read-only', 'true');
+  });
+
+  it('keeps receipt attribution per attempt and names a returned child mailbox message', () => {
+    const task: ProjectTask = {
+      ...child('running'),
+      attempts: [attempt('completed'), { ...attempt('running'), id: 'attempt-two', number: 2 }],
+    };
+    const descendant: ProjectTask = {
+      ...child('completed'),
+      id: 'grandchild',
+      chatId: 'chat-grandchild',
+      parentTaskId: task.id,
+      title: 'Verify note',
+    };
+    const parent: ProjectTask = {
+      ...child('running'),
+      id: 'root',
+      chatId: 'chat-root',
+      parentTaskId: undefined,
+      depth: 0,
+      title: 'Root design',
+    };
+    const snapshot: ProjectTaskSnapshot = {
+      ...snapshotFor(task),
+      tasks: [parent, task, descendant],
+      deliveries: [{ taskId: task.id, attemptId: 'attempt-child', through: 4 }],
+      messages: [
+        {
+          id: 'old',
+          sequence: 4,
+          projectId: 'project_test',
+          recipientTaskId: task.id,
+          requestId: 'r1',
+          text: 'Old note',
+          createdAt: 2,
+        },
+        {
+          id: 'new',
+          sequence: 6,
+          projectId: 'project_test',
+          recipientTaskId: task.id,
+          requestId: 'r2',
+          text: 'New note',
+          createdAt: 3,
+        },
+        {
+          id: 'reply',
+          sequence: 7,
+          projectId: 'project_test',
+          senderTaskId: descendant.id,
+          recipientTaskId: task.id,
+          requestId: 'r3',
+          text: 'Dimension verified',
+          createdAt: 4,
+        },
+        {
+          id: 'outgoing',
+          sequence: 8,
+          projectId: 'project_test',
+          senderTaskId: task.id,
+          recipientTaskId: parent.id,
+          requestId: 'r4',
+          text: 'Child report',
+          createdAt: 5,
+        },
+      ],
+    };
+    render(<SelectedTaskHistory {...propsFor(task, snapshot)} />);
+    expect(screen.getByText('Delivered to attempt 1')).toBeInTheDocument();
+    expect(screen.getAllByText('Queued for this thread')).toHaveLength(2);
+    expect(screen.getByRole('article', { name: 'Message from Verify note' })).toHaveTextContent('Dimension verified');
+    expect(screen.getByRole('article', { name: 'Message from Check fit' })).toHaveTextContent('Queued for Root design');
+    expect(screen.queryByText(/Read by/u)).toBeNull();
+  });
 });
 
 describe('ChatHistory — submit routes through useCadChatClient', () => {
@@ -381,16 +630,16 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
 
     expect(capturedTextarea.isSubmitDisabled).toBe(true);
     const guidance = screen.getByText(
-      'This chat belongs to Bracket child. Send a message and resume the task from Agents to continue it.',
+      'This chat belongs to Bracket child. Send a message and resume the task from Threads to continue it.',
     );
     expect(guidance.closest('[role="status"]')).toHaveAttribute('role', 'status');
     await submitDraft('Follow up on the bracket');
     expect(submitMock).not.toHaveBeenCalled();
-    screen.getByRole('button', { name: 'Open Agents' }).click();
+    screen.getByRole('button', { name: 'Open Threads' }).click();
     expect(openPanel).toHaveBeenCalledWith('agents');
   });
 
-  it('routes a closed child transcript to Agents without suggesting a message', () => {
+  it('routes a closed child transcript to Threads without suggesting a message', () => {
     const child: ProjectTask = {
       id: 'child',
       projectId: 'project_test',
@@ -417,11 +666,11 @@ describe('ChatHistory — submit routes through useCadChatClient', () => {
     render(<ChatHistory />);
 
     expect(
-      screen.getByText('This chat belongs to Bracket child. Open Agents to review the task and available actions.'),
+      screen.getByText('This chat belongs to Bracket child. Open Threads to review the task and available actions.'),
     ).toBeInTheDocument();
     expect(screen.getByTestId('chat-error-adornment')).toHaveAttribute('data-closed-delegated-task', 'true');
     expect(capturedTextarea.isSubmitDisabled).toBe(true);
-    screen.getByRole('button', { name: 'Open Agents' }).click();
+    screen.getByRole('button', { name: 'Open Threads' }).click();
     expect(openPanel).toHaveBeenCalledWith('agents');
   });
 

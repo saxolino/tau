@@ -449,10 +449,10 @@ export const ChatError = memo(function ({
         tone='warning'
         icon={CircleAlert}
         title='This task stopped'
-        description='Open Agents to review the task and available actions.'
+        description='Open Threads to review the task and available actions.'
         actions={
           <Button variant='outline' size='xs' onClick={onOpenAgents}>
-            Open Agents
+            Open Threads
           </Button>
         }
       >
