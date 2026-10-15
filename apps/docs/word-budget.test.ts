@@ -18,11 +18,13 @@ const pageCeilings: Readonly<Record<string, number>> = {
   'runtime/api/client.mdx': 2000,
   'runtime/api/filesystem.mdx': 650,
   'runtime/api/frameworks.mdx': 700,
-  'runtime/api/kernels.mdx': 400,
+  // Raised 400 -> 450 on 2026-09-06 for the tscircuit kernel row (charter D11).
+  'runtime/api/kernels.mdx': 450,
   'runtime/api/middleware.mdx': 500,
   'runtime/api/testing.mdx': 500,
   'runtime/api/transport.mdx': 1450,
-  'runtime/api/types.mdx': 550,
+  // Raised 550 -> 560 on 2026-10-13 for the RealmGroup and RealmHoldInput tables (typed realm groups).
+  'runtime/api/types.mdx': 560,
   'runtime/concepts/architecture.mdx': 1650,
   'runtime/concepts/interactive-architecture.mdx': 1100,
   'runtime/concepts/kernel-selection.mdx': 850,
@@ -31,13 +33,15 @@ const pageCeilings: Readonly<Record<string, number>> = {
   'runtime/concepts/plugin-system.mdx': 600,
   'runtime/concepts/render-lifecycle.mdx': 1400,
   'runtime/concepts/worker-model.mdx': 2000,
-  'runtime/getting-started/installation.mdx': 450,
+  // Raised 450 -> 500 on 2026-09-27 for the tscircuit kernel (charter D11).
+  'runtime/getting-started/installation.mdx': 500,
   'runtime/getting-started/llms-txt.mdx': 250,
   'runtime/getting-started/quick-start.mdx': 450,
   'runtime/getting-started/your-first-kernel.mdx': 900,
   'runtime/guides/bundler-configuration.mdx': 700,
   'runtime/guides/bundling.mdx': 800,
-  'runtime/guides/choosing-a-kernel.mdx': 400,
+  // Raised 400 -> 500 on 2026-09-27 for the tscircuit kernel (charter D11).
+  'runtime/guides/choosing-a-kernel.mdx': 500,
   'runtime/guides/cooperate-with-cancellation.mdx': 650,
   'runtime/guides/cross-origin-isolation.mdx': 750,
   'runtime/guides/custom-kernel.mdx': 800,
@@ -50,7 +54,8 @@ const pageCeilings: Readonly<Record<string, number>> = {
   'runtime/guides/render-timeouts.mdx': 800,
   'runtime/guides/testing-kernels.mdx': 700,
   'runtime/guides/using-middleware.mdx': 500,
-  'runtime/index.mdx': 550,
+  // Raised 550 -> 600 on 2026-09-06 for the tscircuit kernel row (charter D11).
+  'runtime/index.mdx': 600,
   'runtime/reference/replicad.mdx': 100,
 };
 // Agent Workbench Control T20 adds two reviewed editor pages, each with a 500-word budget.

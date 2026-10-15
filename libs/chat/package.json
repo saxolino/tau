@@ -21,6 +21,11 @@
       "import": "./src/utils/index.ts",
       "default": "./src/utils/index.ts"
     },
+    "./references": {
+      "types": "./src/references/index.ts",
+      "import": "./src/references/index.ts",
+      "default": "./src/references/index.ts"
+    },
     "./prompts": {
       "types": "./src/prompts/index.ts",
       "import": "./src/prompts/index.ts",
@@ -41,20 +46,20 @@
       "import": "./src/schemas/tools/test-model.tool.schema.ts",
       "default": "./src/schemas/tools/test-model.tool.schema.ts"
     },
-    "./schemas/tools/get-kernel-result": {
-      "types": "./src/schemas/tools/get-kernel-result.tool.schema.ts",
-      "import": "./src/schemas/tools/get-kernel-result.tool.schema.ts",
-      "default": "./src/schemas/tools/get-kernel-result.tool.schema.ts"
+    "./schemas/tools/evaluate-model": {
+      "types": "./src/schemas/tools/evaluate-model.tool.schema.ts",
+      "import": "./src/schemas/tools/evaluate-model.tool.schema.ts",
+      "default": "./src/schemas/tools/evaluate-model.tool.schema.ts"
     },
     "./schemas/tools/screenshot": {
       "types": "./src/schemas/tools/screenshot.tool.schema.ts",
       "import": "./src/schemas/tools/screenshot.tool.schema.ts",
       "default": "./src/schemas/tools/screenshot.tool.schema.ts"
     },
-    "./schemas/tools/export-geometry": {
-      "types": "./src/schemas/tools/export-geometry.tool.schema.ts",
-      "import": "./src/schemas/tools/export-geometry.tool.schema.ts",
-      "default": "./src/schemas/tools/export-geometry.tool.schema.ts"
+    "./schemas/tools/export-model": {
+      "types": "./src/schemas/tools/export-model.tool.schema.ts",
+      "import": "./src/schemas/tools/export-model.tool.schema.ts",
+      "default": "./src/schemas/tools/export-model.tool.schema.ts"
     },
     "./schemas/rpc": {
       "types": "./src/schemas/rpc.schema.ts",
@@ -73,6 +78,7 @@
     }
   },
   "dependencies": {
+    "@taucad/bundler-core": "workspace:*",
     "@taucad/types": "workspace:*",
     "@taucad/utils": "workspace:*",
     "@taucad/workbench": "workspace:*",

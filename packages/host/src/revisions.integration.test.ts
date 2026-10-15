@@ -10,7 +10,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chmod, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -107,14 +107,19 @@ type Harness = {
   readonly checkouts: Map<string, TurnCheckout>;
   /** Every host revision event, in order. */
   readonly events: HostRevisionEvent[];
-  readonly settlementFor: (runId: string) => Promise<TurnFinalizedEvent>;
+  /** One attempt's settlement, once the launcher has heard it acknowledged and its chat rests. */
+  readonly settlementFor: (runId: string, attempt?: number) => Promise<TurnFinalizedEvent>;
   readonly leaseIds: () => Promise<readonly string[]>;
   readonly refs: () => Promise<readonly string[]>;
   readonly port: RevisionPort;
   readonly revisions: ProjectRevisions;
   /** Every attempt the placement session was asked to admit, in order. */
   readonly admitted: TurnAttemptKey[];
+  /** Every acknowledge answer the launcher heard, in order; only an applied one lets its chat rest and admit the next command. */
+  readonly acknowledged: Array<Readonly<{ key: TurnAttemptKey; answer: AcknowledgeAnswer }>>;
 };
+
+type AcknowledgeAnswer = Awaited<ReturnType<TurnPlacementPort['acknowledge']>>;
 
 /**
  * One launcher over a temp workspace whose only tool writes `main.ts`.
@@ -169,15 +174,26 @@ const harness = async (
   };
   const responses = new Map<string, number>();
   const events: HostRevisionEvent[] = [];
+  /* Keyed `<runId>:<attempt>`: the root's `turn.finalized` carries no attempt, so its nth event for a run is attempt n. */
   const settlements = new Map<string, PromiseWithResolvers<TurnFinalizedEvent>>();
-  /* The root's settlement, once M1 has appended its row and acknowledged it: the lease is gone, so the chat is free. */
-  const settlementFor = async (runId: string): Promise<TurnFinalizedEvent> => {
-    const pending = settlements.get(runId) ?? Promise.withResolvers<TurnFinalizedEvent>();
-    settlements.set(runId, pending);
+  const finalized = new Map<string, number>();
+  const acknowledged: Array<Readonly<{ key: TurnAttemptKey; answer: AcknowledgeAnswer }>> = [];
+  /*
+   * The root's settlement, once M1 has appended its row and heard its acknowledge answered: the chat is free.
+   * The lease is retired inside the acknowledge, before that answer reaches M1, and M1 answers a command sent in
+   * between `CHAT_RUN_LIVE{settling}` — so the lease file going is too early a signal to send the next command on.
+   */
+  const settlementFor = async (runId: string, attempt = 1): Promise<TurnFinalizedEvent> => {
+    const id = `${runId}:${String(attempt)}`;
+    const pending = settlements.get(id) ?? Promise.withResolvers<TurnFinalizedEvent>();
+    settlements.set(id, pending);
     const settlement = await pending.promise;
     await expect
-      .poll(() => existsSync(join(workspaceRoot, '.tau', 'runs', `${runId}.json`)), { timeout: 10_000 })
-      .toBe(false);
+      .poll(() => acknowledged.find(({ key }) => key.runId === runId && key.attempt === attempt)?.answer, {
+        timeout: 10_000,
+      })
+      .toMatchObject({ status: 'applied' });
+    expect(existsSync(join(workspaceRoot, '.tau', 'runs', `${runId}.json`))).toBe(false);
     return settlement;
   };
   const created = createPort(workspaceRoot, checkoutsDirectory);
@@ -193,13 +209,23 @@ const harness = async (
       if (event.type !== 'turn.finalized') {
         return;
       }
-      const pending = settlements.get(event.runId) ?? Promise.withResolvers<TurnFinalizedEvent>();
-      settlements.set(event.runId, pending);
+      const attempt = (finalized.get(event.runId) ?? 0) + 1;
+      finalized.set(event.runId, attempt);
+      const id = `${event.runId}:${String(attempt)}`;
+      const pending = settlements.get(id) ?? Promise.withResolvers<TurnFinalizedEvent>();
+      settlements.set(id, pending);
       pending.resolve(event);
     },
   });
   const placement = revisions.placement(() => toolRegistry);
   const admitted: TurnAttemptKey[] = [];
+  const wrapped = (options.wrapPlacement ?? ((port: TurnPlacementPort) => port))({
+    ...placement,
+    admit: async (input) => {
+      admitted.push(input.key);
+      return placement.admit(input);
+    },
+  });
   const launcher = createNodeLauncher({
     workspaceRoot,
     gatewayBaseUrl: 'https://gateway.example',
@@ -207,13 +233,15 @@ const harness = async (
     systemPrompt: 'You are Tau.',
     toolRegistry,
     /* The grant's tools are this registry: the probe writes the live tree whatever the checkout (W8 TS-S4). */
-    turnPlacement: (options.wrapPlacement ?? ((port: TurnPlacementPort) => port))({
-      ...placement,
-      admit: async (input) => {
-        admitted.push(input.key);
-        return placement.admit(input);
+    turnPlacement: {
+      ...wrapped,
+      /* Outermost, so it records the answer exactly when M1 hears it; a refusal is kept so a wait on it names the code. */
+      acknowledge: async (input) => {
+        const answer = await wrapped.acknowledge(input);
+        acknowledged.push({ key: input.key, answer });
+        return answer;
       },
-    }),
+    },
     auth: () => 'daemon-bearer',
     fetch: (async (_url: string, init: { body?: string }) => {
       const body = String(init.body ?? '');
@@ -251,6 +279,7 @@ const harness = async (
     port,
     revisions,
     admitted,
+    acknowledged,
     leaseIds: async () => {
       try {
         const runs = await readdir(join(workspaceRoot, '.tau', 'runs'));
@@ -479,6 +508,147 @@ for (const row of ports) {
 
       expect(replay.status).toBe('replayed');
       await expect.poll(async () => held.leaseIds(), { timeout: 5000 }).toEqual([]);
+    }, 30_000);
+
+    it('should compare exact raw bytes over the host channel without hiding read failures', async () => {
+      let unavailableHead: string | undefined;
+      const held = await harness(row.create, {
+        wrapPort: (port) => ({
+          ...port,
+          readTree: async (id) => (id === unavailableHead ? undefined : port.readTree(id)),
+        }),
+      });
+      await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-1' });
+      const settlement = await held.settlementFor('run-1');
+      if (settlement.revisionId === undefined) {
+        throw new Error('The fixture turn did not record a revision.');
+      }
+      const original = new TextEncoder().encode('export const size = 2;\n');
+      const parentComparison = await held.revisions.channel.request({
+        command: 'compare',
+        revisionId: settlement.revisionId,
+        path: 'main.ts',
+      });
+      expect(parentComparison.result).toMatchObject({
+        original: 'export const size = 1;\n',
+        modified: 'export const size = 2;\n',
+        change: 'modified',
+        kind: 'text',
+      });
+      await expect(
+        held.revisions.channel.request({ command: 'diff', revisionId: settlement.revisionId, against: 'saved' }),
+      ).rejects.toMatchObject({ code: 'INVALID_REVISION_REQUEST' });
+      await expect(
+        held.revisions.channel.request({
+          command: 'compare',
+          revisionId: settlement.revisionId,
+          path: 'main.ts',
+          against: 12,
+        }),
+      ).rejects.toMatchObject({ code: 'INVALID_REVISION_REQUEST' });
+      const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...original]);
+      await writeFile(join(held.workspaceRoot, 'main.ts'), bom);
+      const request = { command: 'compare', revisionId: settlement.revisionId, path: 'main.ts', against: 'checkout' };
+      const comparison = await held.revisions.channel.request(request);
+      expect(comparison.result).toEqual({
+        original: 'export const size = 2;\n',
+        modified: 'export const size = 2;\n',
+        kind: 'text',
+        change: 'modified',
+        notices: ['encoding'],
+      });
+      const staged = '.main.ts.tau-staged.00000000-0000-0000-0000-000000000001.tmp';
+      const backup = '.main.ts.tau-backup.00000000-0000-0000-0000-000000000001.tmp';
+      await writeFile(join(held.workspaceRoot, staged), 'staging');
+      await writeFile(join(held.workspaceRoot, backup), 'backup');
+      await writeFile(join(held.workspaceRoot, 'new.ts'), 'export {};');
+      const live = await held.revisions.channel.request({
+        command: 'diff',
+        revisionId: settlement.revisionId,
+        against: 'checkout',
+      });
+      expect(live.result).not.toEqual(expect.arrayContaining([{ path: staged, kind: 'added' }]));
+      expect(live.result).not.toEqual(expect.arrayContaining([{ path: backup, kind: 'added' }]));
+      expect(live.result).toEqual(
+        expect.arrayContaining([
+          { path: 'new.ts', kind: 'added' },
+          { path: 'main.ts', kind: 'modified' },
+        ]),
+      );
+      await writeFile(join(held.workspaceRoot, 'main.ts'), original);
+      const reverted = await held.revisions.channel.request({
+        command: 'diff',
+        revisionId: settlement.revisionId,
+        against: 'checkout',
+      });
+      expect(reverted.result).not.toEqual(expect.arrayContaining([{ path: 'main.ts', kind: 'modified' }]));
+      await unlink(join(held.workspaceRoot, 'main.ts'));
+      const compared1 = await held.revisions.channel.request(request);
+      expect(compared1.result).toMatchObject({ change: 'deleted', modified: '' });
+      await mkdir(join(held.workspaceRoot, 'main.ts'));
+      await writeFile(join(held.workspaceRoot, 'main.ts', 'child.ts'), 'export {};');
+      const directoryPaths = await held.revisions.channel.request({
+        command: 'diff',
+        revisionId: settlement.revisionId,
+        against: 'checkout',
+      });
+      expect(directoryPaths.result).toEqual(
+        expect.arrayContaining([
+          { path: 'main.ts', kind: 'deleted' },
+          { path: 'main.ts/child.ts', kind: 'added' },
+        ]),
+      );
+      const directoryComparison = await held.revisions.channel.request(request);
+      expect(directoryComparison.result).toMatchObject({
+        change: 'deleted',
+        original: 'export const size = 2;\n',
+        modified: '',
+      });
+      await rm(join(held.workspaceRoot, 'main.ts'), { recursive: true });
+      await writeFile(join(held.workspaceRoot, 'main.ts'), new Uint8Array());
+      const compared2 = await held.revisions.channel.request(request);
+      expect(compared2.result).toMatchObject({
+        change: 'modified',
+        modified: '',
+      });
+      await writeFile(join(held.workspaceRoot, 'empty.ts'), new Uint8Array());
+      const compared3 = await held.revisions.channel.request({ ...request, path: 'empty.ts' });
+      expect(compared3.result).toMatchObject({
+        change: 'added',
+        notices: ['empty-added'],
+      });
+      await writeFile(join(held.workspaceRoot, 'main.ts'), original);
+      await chmod(join(held.workspaceRoot, 'main.ts'), 0o755);
+      const compared4 = await held.revisions.channel.request(request);
+      expect(compared4.result).toMatchObject({ notices: ['executable-added'] });
+      await writeFile(join(held.workspaceRoot, 'main.ts'), new Uint8Array([0x80]));
+      const compared5 = await held.revisions.channel.request(request);
+      expect(compared5.result).toMatchObject({ kind: 'unsupported' });
+      const [, older] = await held.revisions.history.log();
+      unavailableHead = settlement.revisionId;
+      await expect(held.revisions.channel.request({ ...request, revisionId: older!.revisionId })).rejects.toThrow(
+        'checkout head',
+      );
+      await expect(
+        held.revisions.channel.request({ command: 'diff', revisionId: older!.revisionId, against: 'checkout' }),
+      ).rejects.toThrow('checkout head');
+      unavailableHead = undefined;
+      await expect(held.revisions.channel.request({ ...request, revisionId: 'unknown-revision' })).rejects.toThrow();
+      await expect(
+        held.revisions.channel.request({ command: 'compare', revisionId: 'unknown-revision', path: 'main.ts' }),
+      ).rejects.toThrow();
+      const failure = new Error('Device read failed');
+      const providerRead = NodeFsProvider.prototype.readFile;
+      const read = vi
+        .spyOn(NodeFsProvider.prototype, 'readFile')
+        .mockImplementation(async function (this: NodeFsProvider, path, options) {
+          if (path === 'main.ts') {
+            throw failure;
+          }
+          return providerRead.call(this, path, options);
+        });
+      await expect(held.revisions.channel.request(request)).rejects.toBe(failure);
+      read.mockRestore();
     }, 30_000);
 
     it('serves the same revision graph and branch verbs over the host channel', async () => {
@@ -820,7 +990,8 @@ for (const row of ports) {
 
       await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-1' });
       const first = await held.settlementFor('run-1');
-      await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-2' });
+      /* Asserted: refused here, the wait below would only time out, naming no cause. */
+      expect(await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-2' })).toMatchObject({ status: 'applied' });
       const second = await held.settlementFor('run-2');
 
       /* The claim the deleted `turn-revision` suite held as "descends the next
@@ -1093,9 +1264,10 @@ for (const row of ports) {
 
       await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-1' });
       await held.settlementFor('run-1');
-      await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-2' });
+      /* Asserted, as in the descends case: a refusal fails here with its code, not as a timeout. */
+      expect(await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-2' })).toMatchObject({ status: 'applied' });
       await held.settlementFor('run-2');
-      await startTurn(held.launcher, { chatId: 'chat-2', runId: 'run-3' });
+      expect(await startTurn(held.launcher, { chatId: 'chat-2', runId: 'run-3' })).toMatchObject({ status: 'applied' });
       await held.settlementFor('run-3');
 
       await expect.poll(async () => held.leaseIds(), { timeout: 10_000 }).toEqual([]);
@@ -1119,14 +1291,11 @@ for (const row of ports) {
       });
 
       await startTurn(held.launcher, { chatId: 'chat-1', runId: 'run-1' });
-      await expect
-        .poll(async () => settlementsOf(held.launcher).then((settlements) => settlements?.length), {
-          timeout: 10_000,
-        })
-        .toBe(1);
-      await expect.poll(async () => held.leaseIds(), { timeout: 10_000 }).toEqual([]);
+      /* Acknowledged, not merely settled: a resume sent while M1 is still settling is `CHAT_RUN_LIVE{settling}`. */
+      await held.settlementFor('run-1');
       const rested = await held.launcher.host.ledger('chat-1');
       expect(rested.runs['run-1']).toMatchObject({ lifecycle: 'failed', attempt: 1 });
+      expect(rested.runs['run-1']?.settlements).toHaveLength(1);
 
       const resumed = await held.launcher.execute({
         type: 'resume',
@@ -1135,12 +1304,7 @@ for (const row of ports) {
       });
 
       expect(resumed.status).toBe('applied');
-      await expect
-        .poll(async () => settlementsOf(held.launcher).then((settlements) => settlements?.length), {
-          timeout: 10_000,
-        })
-        .toBe(2);
-      await expect.poll(async () => held.leaseIds(), { timeout: 10_000 }).toEqual([]);
+      await held.settlementFor('run-1', 2);
       const settled = await held.launcher.host.ledger('chat-1');
       expect(settled.runs['run-1']?.settlements.map(({ attempt, event }) => [attempt, event.type])).toEqual([
         [1, 'turn.finalized'],

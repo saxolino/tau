@@ -10,7 +10,6 @@ export type GeometryHostEvent = Readonly<{
   pid: number;
   at: number;
   root?: string;
-  engine?: 'native' | 'legacy';
   eventType?: string;
   capability?: string;
   held?: boolean;
@@ -26,7 +25,7 @@ Module._load = function(request, parent, isMain) {
   const binding = load.apply(this, arguments);
   let resolved;
   try { resolved = Module._resolveFilename(request, parent, isMain); } catch { return binding; }
-  if (typeof resolved !== 'string' || !/geospec-engine-native.*\.node$/u.test(resolved) ||
+  if (typeof resolved !== 'string' || !/geospec-engine.*\.node$/u.test(resolved) ||
       typeof binding?.Engine?.prototype?.evaluateClaim !== 'function') return binding;
   const original = binding.Engine.prototype.evaluateClaim;
   if (original.__tauE2eNativeEntryWrapped) return binding;
@@ -91,9 +90,7 @@ export const observeGeometryHost = async (
   options?: { readonly holdSecondMinimumDistance?: boolean },
 ): Promise<void> => {
   const holdSecondMinimumDistance = options?.holdSecondMinimumDistance ?? false;
-  if (holdSecondMinimumDistance) {
-    preloadPath = await writeNativeEntryPreload();
-  }
+  preloadPath = await writeNativeEntryPreload();
   await session.application.evaluate(
     ({ utilityProcess }, { entryPreload, holdSecondMinimumDistance }) => {
       const state = globalThis as typeof globalThis & {
@@ -102,7 +99,6 @@ export const observeGeometryHost = async (
           pid: number;
           at: number;
           root?: string;
-          engine?: 'native' | 'legacy';
           eventType?: string;
           capability?: string;
           held?: boolean;
@@ -119,10 +115,10 @@ export const observeGeometryHost = async (
       utilityProcess.fork = ((...args: Parameters<typeof originalFork>) => {
         const options = args[2];
         const geometry = options?.serviceName === 'tau-geometry-host';
-        if (geometry && holdSecondMinimumDistance && entryPreload) {
+        if (geometry && entryPreload) {
           const environment: Record<string, string | undefined> = { ...options.env };
           environment['TAU_E2E_GEOMETRY_ENTRY'] = args[0];
-          environment['TAU_E2E_HOLD_SECOND_MINIMUM_DISTANCE'] = '1';
+          environment['TAU_E2E_HOLD_SECOND_MINIMUM_DISTANCE'] = holdSecondMinimumDistance ? '1' : '0';
           args[0] = entryPreload;
           args[2] = {
             ...options,
@@ -150,9 +146,9 @@ export const observeGeometryHost = async (
           }
           const originalPost = child.postMessage.bind(child);
           child.postMessage = ((message: unknown, transfer?: Parameters<typeof originalPost>[1]) => {
-            const frame = message as { type?: string; root?: string; engine?: 'native' | 'legacy' } | undefined;
+            const frame = message as { type?: string; root?: string } | undefined;
             if (frame?.type === 'geometry-run') {
-              record('run', { root: frame.root, engine: frame.engine });
+              record('run', { root: frame.root });
             }
             if (frame?.type === 'geometry-cancel') {
               record('cancel');

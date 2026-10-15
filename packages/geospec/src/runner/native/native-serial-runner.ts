@@ -17,10 +17,7 @@ export type GeoSpecNativeRunnerAssertions = Omit<GeoSpecAssertionClientOptions, 
 };
 
 /** Options for the native serial runner. @public */
-export type GeoSpecNativeRunnerOptions = Omit<
-  GeoSpecRunnerOptions,
-  'modelLoader' | 'nativeAssertions' | 'nativeModelLoader' | 'stepLoader'
-> & {
+export type GeoSpecNativeRunnerOptions = Omit<GeoSpecRunnerOptions, 'nativeAssertions' | 'nativeModelLoader'> & {
   /** Actual protocol-3 engine used by authored assertions. */
   readonly nativeAssertions: GeoSpecNativeRunnerAssertions;
   /** Optional managed loader; the runner releases its subjects after every run. */
@@ -41,7 +38,13 @@ const assertAdmittedSubjects = (request: Uint8Array<ArrayBuffer>, admitted: Read
     throw new TypeError('Native GeoSpec assertion requires a plan with admitted subjects.');
   }
   const { plan } = envelope;
-  if (typeof plan !== 'object' || plan === null || !('subjects' in plan) || !Array.isArray(plan.subjects) || plan.subjects.length === 0) {
+  if (
+    typeof plan !== 'object' ||
+    plan === null ||
+    !('subjects' in plan) ||
+    !Array.isArray(plan.subjects) ||
+    plan.subjects.length === 0
+  ) {
     throw new TypeError('Native GeoSpec assertion requires admitted subjects.');
   }
   for (const subject of plan.subjects as unknown[]) {
@@ -53,7 +56,11 @@ const assertAdmittedSubjects = (request: Uint8Array<ArrayBuffer>, admitted: Read
     if (hasSubjectHash === hasContentHash) {
       throw new TypeError('Native GeoSpec assertion requires one admitted subject identity.');
     }
-    const hash: unknown = hasSubjectHash ? subject.subjectHash : 'contentHash' in subject ? subject.contentHash : undefined;
+    const hash: unknown = hasSubjectHash
+      ? subject.subjectHash
+      : 'contentHash' in subject
+        ? subject.contentHash
+        : undefined;
     if (typeof hash !== 'string' || !admitted.has(hash)) {
       throw new TypeError('Native GeoSpec subject was not admitted by this run.');
     }
@@ -61,7 +68,7 @@ const assertAdmittedSubjects = (request: Uint8Array<ArrayBuffer>, admitted: Read
 };
 
 /**
- * Create an opt-in native runner using the SDK's existing serial lifecycle.
+ * Compose compiled assertion and model bindings with the SDK's serial lifecycle.
  *
  * @param options - VM filesystem, native engine/client options and model defaults.
  * @returns The ordinary GeoSpec runner lifecycle and event contract.
@@ -99,7 +106,12 @@ export const createNativeGeoSpecRunner = (options: GeoSpecNativeRunnerOptions): 
     },
     processRequest(request) {
       const envelope: unknown = JSON.parse(decoder.decode(request));
-      if (typeof envelope === 'object' && envelope !== null && 'method' in envelope && envelope.method === 'submitClaims') {
+      if (
+        typeof envelope === 'object' &&
+        envelope !== null &&
+        'method' in envelope &&
+        envelope.method === 'submitClaims'
+      ) {
         assertAdmittedSubjects(request, admitted);
       }
       return sourceEngine.processRequest(request);
@@ -113,7 +125,6 @@ export const createNativeGeoSpecRunner = (options: GeoSpecNativeRunnerOptions): 
     nativeAssertions: { ...options.nativeAssertions, engine: assertionEngine },
     nativeModelLoader: scopedLoader,
     ...(options.builtinModules === undefined ? {} : { builtinModules: options.builtinModules }),
-    ...(options.internalProfile === undefined ? {} : { internalProfile: options.internalProfile }),
   });
   return {
     ...runner,

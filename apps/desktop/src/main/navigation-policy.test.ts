@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { appOrigin } from '#main/app-protocol.js';
 import {
   contentSecurityPolicy,
+  isMicrophonePermissionGranted,
   isPermissionGranted,
   isRendererUrl,
   isTrustedSender,
@@ -84,8 +85,17 @@ describe('contentSecurityPolicy', () => {
     expect(policy.startsWith("default-src 'none'; ")).toBe(true);
   });
 
-  it('reaches the API and WebSocket origins and nothing else', () => {
-    expect(directive('connect-src')).toBe("connect-src 'self' data: blob: http://localhost:4000 ws://localhost:4001");
+  it('reaches the npm registry, the API and WebSocket origins, plus GitHub public reads for Import, and nothing else', () => {
+    /* The Import page reads repository metadata and trees from api.github.com without credentials, as the
+     * web app's policy (apps/ui/netlify.toml) already allows; archives still come through the API. */
+    expect(directive('connect-src')).toBe(
+      "connect-src 'self' data: blob: https://api.github.com https://registry.npmjs.org http://localhost:4000 ws://localhost:4001",
+    );
+  });
+
+  it('loads images from the app and GitHub avatars only', () => {
+    /* Import and GitHub connections show the repository owner's picture from GitHub's avatar host. */
+    expect(directive('img-src')).toBe("img-src 'self' data: blob: https://avatars.githubusercontent.com");
   });
 
   it('admits no remote script origin, while allowing what the SPA measurably needs', () => {
@@ -141,6 +151,35 @@ describe('isPermissionGranted', () => {
       'keyboardLock',
     ]) {
       expect([permission, isPermissionGranted(permission)]).toEqual([permission, false]);
+    }
+  });
+});
+
+describe('isMicrophonePermissionGranted', () => {
+  const dictation = {
+    permission: 'media',
+    frame: { url: 'app://tau/index.html' },
+    requester: 'app://tau/index.html',
+    mainFrame: true,
+    mediaTypes: ['audio'],
+    origins: production,
+  };
+
+  it('should grant audio-only capture to the trusted top-level renderer for dictation', () => {
+    expect(isMicrophonePermissionGranted(dictation)).toBe(true);
+  });
+
+  it('should refuse foreign, framed, camera, mixed and unattributed media requests', () => {
+    for (const request of [
+      { ...dictation, requester: 'https://foreign.example' },
+      { ...dictation, mainFrame: false },
+      { ...dictation, frame: { url: 'https://foreign.example' } },
+      { ...dictation, mediaTypes: ['video'] },
+      { ...dictation, mediaTypes: ['audio', 'video'] },
+      { ...dictation, requester: undefined },
+      { ...dictation, permission: 'geolocation' },
+    ]) {
+      expect(isMicrophonePermissionGranted(request)).toBe(false);
     }
   });
 });

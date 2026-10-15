@@ -12,6 +12,7 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -21,6 +22,25 @@ const pathSentinel = '__TAU_PATH__';
 
 /** Per-shell bookkeeping that describes the probe, not the user's environment. */
 const shellBookkeepingNames = new Set(['SHLVL', 'PWD', 'OLDPWD', '_', 'TERM', 'PATH']);
+
+/**
+ * Prefixes never imported from rc files: Tau's own endpoint, path and test
+ * switches, Electron's runtime switches (`ELECTRON_RUN_AS_NODE`,
+ * `ELECTRON_RENDERER_URL`) and Node's (`NODE_OPTIONS`). A line planted in
+ * `.zshrc` must not redirect the signed app or change what it runs.
+ */
+const shellDeniedPrefixes = ['TAU_', 'ELECTRON_', 'NODE_'] as const;
+
+/**
+ * Where Homebrew and the vendor installers put CLIs, merged when the login
+ * shell cannot answer: a probe that times out under load otherwise leaves
+ * launchd's PATH, and every ACP adapter is refused `CLI_NOT_FOUND`.
+ */
+const fallbackPathEntries = (): readonly string[] => [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  join(homedir(), '.local/bin'),
+];
 
 /**
  * The environment a GUI launch never gets.
@@ -34,24 +54,47 @@ const shellBookkeepingNames = new Set(['SHLVL', 'PWD', 'OLDPWD', '_', 'TERM', 'P
  * `XDG_*`, which live in the same rc files (10-review D). So ask the login
  * shell once and import all of it, as VS Code and Zed do (operator decision
  * Q13): PATH merges ahead of the launcher's, every other variable applies only
- * where the launcher set none, and shell bookkeeping is dropped.
+ * where the launcher set none, and shell bookkeeping and `TAU_`/`ELECTRON_`/`NODE_`
+ * names are dropped.
+ *
+ * When the shell fails or outlives `shellTimeout`, the existing well-known CLI
+ * directories merge ahead of the launcher's PATH instead, and `fallback` says so.
  *
  * Values from rc files can be secrets; log the names and counts, never a value.
  *
- * @param options - `target` to mutate (defaults to `process.env`), the shell to ask (defaults to `$SHELL`) and `shellTimeout` in milliseconds.
- * @returns Milliseconds the shell took, new PATH entries `added`, and variables `applied`.
+ * @param options - `target` to mutate (defaults to `process.env`), the shell to ask (defaults to `$SHELL`), `shellTimeout` in milliseconds and the `fallbackEntries` merged when it cannot answer.
+ * @returns Milliseconds the shell took, new PATH entries `added`, variables `applied`, and whether the `fallback` entries were used.
  */
 export const loginShellEnvironment = async (
   options: {
     readonly target?: NodeJS.ProcessEnv | undefined;
     readonly shell?: string | undefined;
     readonly shellTimeout?: number | undefined;
+    readonly fallbackEntries?: readonly string[] | undefined;
   } = {},
-): Promise<{ readonly added: number; readonly applied: number; readonly elapsed: number }> => {
+): Promise<{
+  readonly added: number;
+  readonly applied: number;
+  readonly elapsed: number;
+  readonly fallback: boolean;
+}> => {
   const started = Date.now();
   const target = options.target ?? process.env;
   const current = target['PATH'] ?? '';
-  const nothing = { added: 0, applied: 0, elapsed: 0 };
+  const nothing = { added: 0, applied: 0, elapsed: 0, fallback: false };
+  /* Login entries first, then the launcher's, each once. */
+  const mergePath = (login: readonly string[]): number => {
+    const known = new Set(current.split(':'));
+    const merged = [...new Set([...login, ...current.split(':')].filter((entry) => entry !== ''))];
+    target['PATH'] = merged.join(':');
+    return merged.filter((entry) => !known.has(entry)).length;
+  };
+  const fallBack = () => ({
+    added: mergePath((options.fallbackEntries ?? fallbackPathEntries()).filter((entry) => existsSync(entry))),
+    applied: 0,
+    elapsed: Date.now() - started,
+    fallback: true,
+  });
   /* The e2e specs that pin the launcher environment to prove the packaged
    * payload needs nothing from the machine opt out of the whole import. */
   if (process.platform === 'win32' || target['TAU_E2E_KEEP_PATH'] === '1') {
@@ -74,22 +117,23 @@ export const loginShellEnvironment = async (
      * (space-joined `$PATH`) and nushell (no `$` interpolation) answer the same
      * NUL-separated block as bash and zsh. An interactive shell ignores SIGTERM,
      * so the timeout must kill — otherwise an rc file that prompts would hold
-     * the boot forever (10-review A). */
+     * the boot forever (10-review A). Healthy launches measured 0.96-3.17 s, so
+     * the budget leaves headroom for a loaded machine. */
     const { stdout } = await execFileAsync(
       shell,
       ['-ilc', `/bin/sh -c 'printf "\\n${pathSentinel}"; env -0; printf "${pathSentinel}"'`],
-      { timeout: options.shellTimeout ?? 3000, killSignal: 'SIGKILL', env: shellEnvironment },
+      { timeout: options.shellTimeout ?? 5000, killSignal: 'SIGKILL', env: shellEnvironment },
     );
     printed = String(stdout);
   } catch {
-    return { ...nothing, elapsed: Date.now() - started };
+    return fallBack();
   }
   /* Rc files may print before the sentinel, and a value may contain newlines;
    * only the block between the first and last sentinel counts. */
   const opened = printed.indexOf(pathSentinel);
   const closed = printed.lastIndexOf(pathSentinel);
   if (opened === -1 || closed === opened) {
-    return { ...nothing, elapsed: Date.now() - started };
+    return fallBack();
   }
   let applied = 0;
   let login = '';
@@ -101,17 +145,17 @@ export const loginShellEnvironment = async (
     const name = entry.slice(0, equals);
     if (name === 'PATH') {
       login = entry.slice(equals + 1);
-    } else if (!shellBookkeepingNames.has(name) && target[name] === undefined) {
+    } else if (
+      !shellBookkeepingNames.has(name) &&
+      !shellDeniedPrefixes.some((prefix) => name.startsWith(prefix)) &&
+      target[name] === undefined
+    ) {
       /* Launcher-set precedence: what started the app already decided. */
       target[name] = entry.slice(equals + 1);
       applied += 1;
     }
   }
-  const known = new Set(current.split(':'));
-  const entries = [...login.split(':'), ...current.split(':')].filter((entry) => entry !== '');
-  const merged = [...new Set(entries)];
-  target['PATH'] = merged.join(':');
-  return { added: merged.filter((entry) => !known.has(entry)).length, applied, elapsed: Date.now() - started };
+  return { added: mergePath(login.split(':')), applied, elapsed: Date.now() - started, fallback: false };
 };
 
 /**
@@ -192,6 +236,13 @@ export const compileCacheEnvironment = (userDataPath: string): Readonly<{ TAU_CO
   TAU_COMPILE_CACHE_DIR: join(userDataPath, 'compile-cache'),
 });
 
+/** The esbuild platform executable each packaged target stages outside the ASAR (`runtime-stage.mts`). */
+const stagedEsbuildExecutables: Readonly<Record<string, string>> = {
+  'darwin-arm64': '@esbuild/darwin-arm64/bin/esbuild',
+  'linux-x64': '@esbuild/linux-x64/bin/esbuild',
+  'win32-x64': '@esbuild/win32-x64/esbuild.exe',
+};
+
 /**
  * Locate esbuild's staged executable for packaged utility processes.
  *
@@ -211,13 +262,9 @@ export const packagedEsbuildEnvironment = (
   target?: Readonly<{ architecture: string; platform: NodeJS.Platform }>,
 ): Readonly<Record<string, string>> => {
   const packagedTarget = target ?? { architecture: process.arch, platform: process.platform };
-  return packaged && packagedTarget.platform === 'darwin' && packagedTarget.architecture === 'arm64'
-    ? {
-        [esbuildBinaryPathVariable]: join(
-          resourcesPath,
-          'app.asar.unpacked/node_modules/@esbuild/darwin-arm64/bin/esbuild',
-        ),
-      }
+  const staged = stagedEsbuildExecutables[`${packagedTarget.platform}-${packagedTarget.architecture}`];
+  return packaged && staged !== undefined
+    ? { [esbuildBinaryPathVariable]: join(resourcesPath, 'app.asar.unpacked/node_modules', staged) }
     : {};
 };
 

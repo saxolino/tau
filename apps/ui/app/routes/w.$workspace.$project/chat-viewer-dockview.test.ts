@@ -18,7 +18,7 @@ import {
   adoptViewerRecordNode,
   ViewerEmptyFilePicker,
 } from '#routes/w.$workspace.$project/chat-viewer-dockview.js';
-import { defaultGraphicsSettings } from '#constants/editor.constants.js';
+import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settings';
 import { createWorkbenchViewStore } from '#workbench-records/view-store.js';
 import { deleteViewFile } from '#workbench-records/view-actions.js';
 
@@ -52,7 +52,9 @@ describe('record-driven viewer adoption', () => {
     bytes = null; // Tool deletes the view file before publishing its layout change.
     await owner.read();
     expect(files.writeFileChecked).not.toHaveBeenCalled();
-    const persisting = owner.edit({ ...owner.snapshot().record!, name: 'Interim person edit' });
+    // Deletion clears the durable baseline; the person's live view is what an edit writes.
+    expect(owner.snapshot().record).toBeUndefined();
+    const persisting = owner.edit({ ...record, name: 'Interim person edit' });
     await vi.waitFor(() => {
       expect(files.writeFileChecked).toHaveBeenCalledOnce();
     });

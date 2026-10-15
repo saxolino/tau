@@ -15,7 +15,7 @@
 import { CircleAlert } from 'lucide-react';
 import { cn } from '@taucad/ui/utils/cn';
 import type { SidebarFacts } from '#hooks/use-sidebar-status.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 
 const Dot = ({ tone }: { readonly tone: string }): React.JSX.Element => (
   <span aria-hidden className={cn('size-2 shrink-0 rounded-full', tone)} />
@@ -61,7 +61,7 @@ const markTone: Record<SidebarFacts['mark'], string> = {
   running: '',
   attention: 'text-warning/80',
   unread: '',
-  failed: 'text-destructive/80',
+  failed: 'text-feature/80',
 };
 
 /**

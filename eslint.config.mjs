@@ -257,6 +257,10 @@ const memberOrdering = [
  * own dynamic-dependency exceptions without restating the tag constraints.
  */
 const moduleBoundaryOptions = {
+  // Bambu's unpublished hardware qualifier uses host camera capture; its shipped
+  // plugin and browser-safe settings subpath do not import the host.
+  // ponytail: exclude this development-only edge; split the qualifier project if it gains runtime consumers.
+  ignoredCircularDependencies: [['bambu', 'host']],
   allowCircularSelfDependency: true,
   /*
    * The Quick Look extensions are a nested app project (`desktop-quick-look`,
@@ -270,11 +274,18 @@ const moduleBoundaryOptions = {
    * filesystem bridge out of its initial bundle, and the CLI client
    * loads the agent host on demand, while the Node daemon, its render
    * probe and the integration tests import the same packages directly.
+   * PicoGK package verification also loads lazily after CLI parsing, while
+   * desktop runtime composition imports its kernel and asset schema directly.
    * Entries are matched as regular expressions against the import
    * specifier, so `(/|$)` keeps `@taucad/runtime` from also exempting
    * `@taucad/runtime-testing`.
    */
-  checkDynamicDependenciesExceptions: ['@taucad/runtime(/|$)', '@taucad/agent-host(/|$)', '@taucad/fs-bridge(/|$)'],
+  checkDynamicDependenciesExceptions: [
+    '@taucad/runtime(/|$)',
+    '@taucad/agent-host(/|$)',
+    '@taucad/fs-bridge(/|$)',
+    '@taucad/picogk(/|$)',
+  ],
   depConstraints: [
     {
       sourceTag: 'scope:api',
@@ -379,16 +390,13 @@ const config = [
       // `@taucad/api-extractor` output, one per kernel package.
       '**/agent/resources.js',
       '**/agent/resources.d.ts',
+      '**/agent/skills.d.cts',
       '**/assets',
       '**/.netlify',
       '**/*.prompt.example.*',
       '**/*.prompt.example-multifile/**',
       '**/*.cjs',
       '**/*.jscad.js',
-      // Same class: the design-story splash imports these JSCAD model sources with `?raw`
-      // and checks them against a baked evidence digest, so any byte change makes the splash
-      // throw. They are model data outside every tsconfig, so the project service cannot parse them.
-      'apps/ui/app/components/geometry/splash/planetary/**',
       // Same class: byte-pinned PicoVoxel upstream ports (`provenance.json` hashes); only Tau's
       // `main.ts` adapters and GeoSpec suites are linted.
       'libs/tau-examples/src/kernels/picovoxel/*/*.ts',
@@ -414,8 +422,6 @@ const config = [
       // inputs run through the runtime VM (see fixtures/README.md), not
       // library sources — same class as prompt examples and experiments.
       'packages/geospec-engine/fixtures/scripts/**',
-      // Pinned external CAD model sources are fixture bytes, not GeoSpec library code.
-      'packages/geospec-engine-native/bench/fixtures/performance-lab/workspace/**',
       // Registry-gate fixtures are inert artifact inputs the gate parses as
       // text: their imports deliberately name packages that do not resolve,
       // and they live in no tsconfig project.
@@ -423,22 +429,10 @@ const config = [
       // Same class: a bundler fixture whose asset queries, JSX and untyped modules
       // the bundler suites check; it is outside the tau-examples tsconfig.
       'libs/tau-examples/src/kernels/replicad/bundler-feature-matrix/**',
-      // Opt-in benchmark experiments: engine-internal, unpublished, and outside
-      // the package tsconfig until PE2 rebuilds what they measure.
-      'packages/geospec-engine/experiments/**',
-      // Same class: the native OpenCascade benchmark/parity harnesses are
-      // opt-in CLIs run by hand against a locally built addon and the OCCT
-      // wasm bindings. They are unpublished (`files` excludes `bench/`) and
-      // outside the package tsconfig.
-      'packages/plugins/opencascade-native/bench/**',
       // Same class: the compute-reuse baseline harness (charter W0) is an
       // opt-in benchmark reaching runtime-internal seams through a loader
       // hook; `.mts` files outside the project tsconfig.
       'apps/runtime-e2e/src/compute-baseline/harness/**',
-      // Same class: a frozen matcher-performance POC whose `#mesh/*` modules moved
-      // out in the engine extraction, so it no longer resolves; kept as the artifact
-      // docs/research/geospec-matcher-performance-poc.md cites.
-      'packages/geospec-engine/experiments/matcher-performance/**',
     ],
   },
 
@@ -467,6 +461,21 @@ const config = [
     plugins: { '@nx': nxEslintPlugin },
     rules: {
       '@nx/enforce-module-boundaries': ['error', moduleBoundaryOptions],
+    },
+  },
+
+  {
+    /* The unpublished X1C qualifier imports the host for hardware-only capture. Nx checks the closing
+     * path (host → agent-tools → bambu), not that import edge, so scope the documented exception here. */
+    files: ['packages/plugins/bambu/scripts/qualify-x1c.mts'],
+    rules: {
+      '@nx/enforce-module-boundaries': [
+        'error',
+        {
+          ...moduleBoundaryOptions,
+          ignoredCircularDependencies: [...moduleBoundaryOptions.ignoredCircularDependencies, ['host', 'agent-tools']],
+        },
+      ],
     },
   },
 

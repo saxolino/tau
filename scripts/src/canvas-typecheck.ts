@@ -1,5 +1,5 @@
 /**
- * Typecheck one canvas's sources with the same module map the canvas Vite runner uses.
+ * Typecheck one canvas's entry graph with the same module map the canvas Vite runner uses.
  *
  * Usage: TAU_CANVAS_PATH=docs/research/artifacts/<subject>/canvas node scripts/src/canvas-typecheck.ts
  * Writes a generated tsconfig under out/research/canvas-typecheck/ and runs tsgo --noEmit.
@@ -8,7 +8,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, relative, resolve } from 'node:path';
+import { basename, dirname, parse, relative, resolve } from 'node:path';
 import process from 'node:process';
 
 import { resolveCanvasRoot } from '#canvas-vite.config.js';
@@ -19,6 +19,12 @@ const subject = basename(dirname(canvasRoot));
 
 // Mirrors the aliases in canvas-vite.config.ts; `paths` in an extending tsconfig replaces the base map, so the app's entries are restated.
 const paths: Record<string, string[]> = {
+  '@taucad/billing': [resolve(repoRoot, 'apps/libs/billing/src/index.ts')],
+  '@taucad/billing/hooks/*': [
+    resolve(repoRoot, 'apps/libs/billing/src/hooks/*.ts'),
+    resolve(repoRoot, 'apps/libs/billing/src/hooks/*.tsx'),
+  ],
+  '@tanstack/*': [resolve(repoRoot, 'apps/ui/node_modules/@tanstack/*')],
   '@taucad/ui/*': [resolve(repoRoot, 'packages/ui/src/*')],
   '@taucad/grammars': [resolve(repoRoot, 'libs/grammars/src/index.ts')],
   '@tau/api-guide': [resolve(repoRoot, 'scripts/canvas/api-guide.tsx')],
@@ -41,8 +47,17 @@ writeFileSync(
   JSON.stringify(
     {
       extends: resolve(repoRoot, 'apps/ui/tsconfig.app.json'),
-      compilerOptions: { noEmit: true, composite: false, incremental: false, rootDirs: [], paths },
-      include: [`${canvasRoot}/**/*.ts`, `${canvasRoot}/**/*.tsx`],
+      compilerOptions: {
+        noEmit: true,
+        composite: false,
+        incremental: false,
+        rootDir: parse(repoRoot).root,
+        rootDirs: [],
+        allowImportingTsExtensions: true,
+        paths,
+      },
+      files: [resolve(canvasRoot, 'main.tsx')],
+      include: [],
       exclude: [`${canvasRoot}/node_modules`],
     },
     undefined,

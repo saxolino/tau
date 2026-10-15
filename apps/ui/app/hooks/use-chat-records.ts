@@ -1,3 +1,4 @@
+import { filesystemSourceIdentity } from '#services/filesystem-source-identity.js';
 import { useQuery } from '@tanstack/react-query';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import { useProjectManager } from '#hooks/use-project-manager.js';
@@ -12,7 +13,12 @@ export function useChatRecords(
   readonly error: string | undefined;
   readonly retry: () => Promise<unknown>;
 } {
-  const { getChatRecordsForResource, isLoading: isWorkerLoading } = useProjectManager();
+  const {
+    getChatRecordsForResource,
+    isLoading: isWorkerLoading,
+    getMetadataObservationError,
+    refreshFilesystemObservations,
+  } = useProjectManager();
   const includeDeleted = options?.includeDeleted ?? false;
   const {
     data: chats = [],
@@ -20,15 +26,22 @@ export function useChatRecords(
     error,
     refetch,
   } = useQuery({
-    queryKey: ['chats', resourceId, 'records', { includeDeleted }],
-    queryFn: async () => getChatRecordsForResource(resourceId, { includeDeleted }),
+    queryKey: ['chats', resourceId, 'records', filesystemSourceIdentity(getChatRecordsForResource), { includeDeleted }],
+    queryFn: async ({ signal }) => {
+      const records = await getChatRecordsForResource(resourceId, { includeDeleted });
+      signal.throwIfAborted();
+      return records;
+    },
     enabled: options?.enabled !== false && !isWorkerLoading && Boolean(resourceId),
   });
 
   return {
     chats,
     isLoading: isWorkerLoading || isLoading,
-    error: error instanceof Error ? error.message : undefined,
-    retry: refetch,
+    error: getMetadataObservationError(resourceId) ?? (error instanceof Error ? error.message : undefined),
+    retry: async () => {
+      refreshFilesystemObservations(resourceId);
+      return refetch();
+    },
   };
 }

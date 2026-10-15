@@ -476,6 +476,19 @@ describe('Bambu read-only controller', () => {
       await expect(
         session.reconcile({ operationId: 'start-2', command: 'project_file', signal: new AbortController().signal }),
       ).resolves.toMatchObject({ status: 'accepted', providerRunId: lastStart()?.['subtask_id'] });
+      // How each start settled reaches the host log by id alone, so a slow printer can be diagnosed from it.
+      const logged = vi.mocked(runtime.log).mock.calls.map(([entry]) => entry.message);
+      expect(logged).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /^Start \d+ proven by reply accepted in the start window, \d+ ms and \d+ status reports after publishing;/u,
+          ),
+          expect.stringMatching(
+            /^Start \d+ proven by status in the start window, .*; printer \w+, run id matches, run name \w+\.$/u,
+          ),
+        ]),
+      );
+      expect(logged.join('\n')).not.toMatch(/00M00A391800004|192\.0\.2\.10/u);
       startReply.mode = 'status-name';
       await expect(start('start-3')).resolves.toMatchObject({ status: 'accepted', providerRunId: '0' });
       await expect(session.getSnapshot({ signal: new AbortController().signal })).resolves.toMatchObject({
@@ -610,6 +623,97 @@ describe('Bambu read-only controller', () => {
       /* eslint-enable @typescript-eslint/naming-convention -- Bambu wire field section ends. */
     } finally {
       statusReply.externalSpool = false;
+      await session.close();
+    }
+  });
+
+  it('should reject an upload the printer refuses to store and keep a lost transfer unknown', async () => {
+    const artifact = artifactOf(studioArchive);
+    const configuration = {
+      amsMapping: [0],
+      bedLeveling: true,
+      expectedBedType: 'textured-pei',
+      expectedFilamentDiameter: 1.75,
+      expectedMaterials: [{ slot: 0, materialId: 'PLA' }],
+      expectedModel: 'X1C',
+      expectedNozzleDiameter: 0.4,
+      operatorConfirmedBedType: 'textured-pei',
+      flowCalibration: true,
+      timelapse: false,
+    } as const;
+    // The host names a refused store and keeps the printer's reply; a mini with a failing microSD answers a bare 550.
+    const refused = new Error('MACHINE_UPLOAD_REFUSED', { cause: Object.assign(new Error('550 '), { code: 550 }) });
+    const uploadFile = vi
+      .fn<NonNullable<MachineConnectionRuntime['uploadFile']>>()
+      .mockRejectedValueOnce(refused)
+      .mockRejectedValueOnce(new Error('read ECONNRESET'));
+    const log = vi.fn(async () => undefined);
+    const runtime: MachineConnectionRuntime = {
+      clock: { now: () => '2026-09-14T00:00:01.000Z' },
+      log,
+      connectStream: vi.fn(async () => ({
+        readable: (async function* () {
+          yield* [];
+        })(),
+        write: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      })),
+      async *readArtifact() {
+        yield studioArchive;
+      },
+      resolveSecret: vi.fn(async () => 'access-code'),
+      uploadFile,
+    };
+    const session = await connectBambuMachine(
+      {
+        candidate,
+        configuration: { logicalId: 'workshop' },
+        connection: { secretRef: 'vault:bambu-x1c', serviceTrust: { mqtt: { type: 'pinned', digest: pinnedDigest } } },
+        signal: new AbortController().signal,
+      },
+      runtime,
+    );
+    const { signal } = new AbortController();
+    try {
+      const prepared = await session.preparePrint({
+        operationId: 'prepared-refused',
+        expectedMachineId: '00M00A391800004',
+        artifact,
+        configuration,
+        signal,
+      });
+      if (prepared.status !== 'ready') {
+        throw new Error('Expected ready preparation');
+      }
+      const upload = async () =>
+        session.uploadPrint({
+          operationId: 'upload-refused',
+          expectedMachineId: '00M00A391800004',
+          artifact,
+          remoteName: prepared.remoteName,
+          providerData: prepared.providerData,
+          configuration,
+          signal,
+        });
+      await expect(upload()).resolves.toEqual({
+        status: 'rejected',
+        code: 'TRANSFER_REFUSED',
+        message:
+          'The printer refused to store the file (FTP 550), so nothing was started. Its microSD card may be full, ' +
+          'damaged or locked: free space on it or format it on the printer, then send again.',
+        observedAt: '2026-09-14T00:00:01.000Z',
+      });
+      expect(log).toHaveBeenCalledWith({
+        level: 'warning',
+        message: `FTPS upload of ${prepared.remoteName} failed: MACHINE_UPLOAD_REFUSED (550 )`,
+      });
+      // A transfer that broke off may have reached the printer, so its result stays unknown.
+      await expect(upload()).resolves.toEqual({
+        status: 'unknown',
+        reason: 'transfer-result-unavailable',
+        observedAt: '2026-09-14T00:00:01.000Z',
+      });
+    } finally {
       await session.close();
     }
   });

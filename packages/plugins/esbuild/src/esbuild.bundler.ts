@@ -63,6 +63,7 @@ const toKernelIssue = (issue: VmIssue): KernelIssue => ({
     : undefined,
   type: toKernelIssueType(issue.type),
   severity: issue.severity,
+  ...(issue.details === undefined ? {} : { details: issue.details }),
 });
 
 const toBundleResult = (result: VmBundleResult): BundleResult => ({
@@ -110,19 +111,15 @@ export const esbuildBundler = defineBundler({
     return toExecuteResult(await context.vm.execute(code, signal));
   },
 
-  registerModule({ name, module: builtinModule }, context) {
-    context.vm.registerModule(name, {
-      code: builtinModule.code,
-      version: builtinModule.version,
-      globalName: builtinModule.globalName,
-    });
+  registerModule({ name, module }, context) {
+    context.vm.registerModule(name, module);
   },
 
   clearExecutionCache(code, context) {
     context.vm.clearExecutionCache(code);
   },
 
-  async cleanup(context) {
+  async onDispose(context) {
     context.vm.dispose();
   },
 });

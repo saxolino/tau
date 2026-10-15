@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { ChevronRight, Circle, CircleCheck, CircleDot, ListChecks } from 'lucide-react';
+import { ChevronRight, Circle, CircleCheck, LoaderCircle, ListChecks } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { parseTodoList, todoListPath } from '@taucad/chat';
 import type { TodoItem, TodoItemStatus } from '@taucad/chat';
@@ -31,7 +31,7 @@ const writeCollapsed = (chatId: string, collapsed: boolean): void => {
 export const todoStatusIcons: Record<TodoItemStatus, LucideIcon> = {
   pending: Circle,
   // eslint-disable-next-line @typescript-eslint/naming-convention -- keys are the status wire values
-  in_progress: CircleDot,
+  in_progress: LoaderCircle,
   done: CircleCheck,
 };
 
@@ -59,7 +59,7 @@ function TodoRow({ item }: { readonly item: TodoItem }): React.JSX.Element {
         className={cn(
           'mt-0.5 size-3 shrink-0',
           item.status === 'done' && 'text-success',
-          item.status === 'in_progress' && 'text-primary',
+          item.status === 'in_progress' && 'animate-spin animation-duration-[2s] motion-reduce:animate-none',
         )}
       />
       <span className='min-w-0 flex-1 wrap-break-word'>
@@ -108,16 +108,12 @@ export function ChatTodoList(): React.JSX.Element | undefined {
   const summary = `${String(done)} of ${String(items.length)} done${current ? ` · ${current.title}` : ''}`;
 
   return (
-    <Collapsible
-      open={isOpen}
-      className='mx-2 -mb-3 rounded-t-lg border border-b-0 bg-muted/40 pb-3'
-      onOpenChange={handleOpenChange}
-    >
+    <Collapsible open={isOpen} className='group/tray-section not-first:border-t' onOpenChange={handleOpenChange}>
       <CollapsibleTrigger asChild>
         <Button
           variant='ghost'
           size='xs'
-          className='relative flex h-auto min-h-8 w-full min-w-0 items-center justify-start gap-1.5 rounded-t-lg px-2 py-1.5 text-left font-normal text-muted-foreground hover:bg-accent/50 hover:text-foreground focus-visible:z-10'
+          className='relative flex h-auto min-h-8 w-full min-w-0 items-center justify-start gap-1.5 rounded-none px-2 py-1.5 text-left font-normal text-muted-foreground group-first/tray-section:rounded-t-lg hover:bg-accent/50 hover:text-foreground focus-visible:z-10'
         >
           <ListChecks aria-hidden='true' className='size-3.5 shrink-0' />
           <span className='sr-only'>Tasks: </span>

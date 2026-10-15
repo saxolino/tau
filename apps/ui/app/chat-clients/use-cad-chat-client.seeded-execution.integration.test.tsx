@@ -65,8 +65,12 @@ const harness = vi.hoisted(() => {
       resolveModel,
       setSelectedModelId: noop,
       defaultExecution: { kind: 'tau', model: 'openai-gpt-5.6-luna' },
-      rememberExecution: noop,
+      lastTauExecution: { kind: 'tau', model: 'openai-gpt-5.6-luna' },
+      rememberExecution: vi.fn(),
+      catalog: { status: 'loaded', models: [] },
+      ensureModelCatalog: async () => ({ status: 'loaded', models: [] }),
     },
+    patchChat: vi.fn(async () => undefined),
     actions: { sendMessage: vi.fn(), regenerate: vi.fn(), stop: vi.fn() },
     /** An empty worker filesystem: every composer record reads as absent. */
     client: {
@@ -135,6 +139,8 @@ vi.mock('#hooks/use-file-manager.js', () => ({
  * `use-cad-chat-client.test.tsx`; this scope funds every turn. */
 vi.mock('#hooks/use-credit-preflight.js', () => ({ useCreditPreflight: () => () => undefined }));
 vi.mock('#hooks/use-draft-image-error-toast.js', () => ({ useDraftImageErrorToast: () => undefined }));
+/* ChatTurnHost reads the usage-metrics preference through react-query; this scope has no query client. */
+vi.mock('#hooks/use-privacy-preferences.js', () => ({ usePrivacyPreferences: () => ({ preferences: undefined }) }));
 vi.mock('#providers/chat-workspace-authority-provider.js', () => ({
   readRootedBridgeCapabilities: async () => ({ writable: true, durability: 'exclusive-append' }),
   waitForRootedBridgeOpener: async () => undefined,
@@ -164,12 +170,12 @@ const pendingUserMessage: MyUIMessage = {
   metadata: { status: 'pending', createdAt: 1_700_000_000_000 },
 };
 
-const buildSeededRow = (activeExecution: CadAgentExecution): ChatEntity => ({
+const buildSeededRow = (activeExecution: CadAgentExecution | undefined): ChatEntity => ({
   id: chatId,
   resourceId: 'proj_seeded',
   name: 'Seeded chat',
   messages: [pendingUserMessage],
-  activeExecution,
+  ...(activeExecution === undefined ? {} : { activeExecution }),
   startupRequest: {
     id: 'req_seeded',
     kind: 'regenerate-tail',
@@ -183,13 +189,13 @@ const buildSeededRow = (activeExecution: CadAgentExecution): ChatEntity => ({
 });
 
 /** Mount the real provider + client over a row seeded with `activeExecution`. */
-const dispatchSeededTurn = async (activeExecution: CadAgentExecution): Promise<HostCommand> => {
+const dispatchSeededTurn = async (activeExecution: CadAgentExecution | undefined): Promise<HostCommand> => {
   const row = buildSeededRow(activeExecution);
   const store = new ChatSessionStore();
   harness.store = store;
   store.setDependencies({
     getChat: async () => row,
-    patchChat: async () => undefined,
+    patchChat: harness.patchChat,
     touchChatRecency: async () => undefined,
     consumeChatStartupRequest: async () => ({ ...row, startupRequest: undefined }),
     commitCancelledDraftRestore: async () => undefined,
@@ -202,6 +208,21 @@ const dispatchSeededTurn = async (activeExecution: CadAgentExecution): Promise<H
         hostCommand: async (command: HostCommand) => {
           harness.commands.push(command);
           return { commandId: command.commandId, generation: 1, status: 'applied', effect: 'durable', cursor: 1 };
+        },
+        // A seed waits for a fresh, caught-up read of its own empty host log.
+        subscribe: (...args: Parameters<AgentHostClient['subscribe']>) => {
+          queueMicrotask(() =>
+            args[3]?.({
+              status: 'batch',
+              sourceHealth: { historyIntact: true, newerHistory: false, quarantined: false },
+              chatId,
+              cursor: 0,
+              nextCursor: 0,
+              endCursor: 0,
+              events: [],
+            }),
+          );
+          return () => undefined;
         },
         close: async () => undefined,
       }) as unknown as AgentHostClient,
@@ -271,6 +292,23 @@ describe('seeded first turn execution', () => {
       payload: { runId: 'req_seeded', trigger: 'submit', config: { model: { id: 'openai-gpt-5.5' } } },
     });
     expect(JSON.stringify(command)).not.toContain(cookieModelId);
+  });
+
+  it('remembers the external agent a turn ran on as the next new chat’s default', async () => {
+    const codex: CadAgentExecution = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-astra' };
+    await dispatchSeededTurn(codex);
+
+    await waitFor(() => {
+      expect(harness.models.rememberExecution).toHaveBeenCalledWith(codex);
+    });
+  });
+
+  it('commits the default a chat with no execution of its own ran on, so later defaults cannot move it', async () => {
+    await dispatchSeededTurn(undefined);
+
+    await waitFor(() => {
+      expect(harness.patchChat).toHaveBeenCalledWith(chatId, 'activeExecution', { kind: 'tau', model: cookieModelId });
+    });
   });
 
   /**

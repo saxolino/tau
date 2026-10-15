@@ -87,8 +87,8 @@ export const SlashCommand = Extension.create<SlashCommandOptions>({
           if (!item) {
             return null;
           }
-          /* `range.to` is the caret: the typed space is not in the document yet. */
-          const from = range.to - token.length;
+          /* Input rules include the typed space; preserve any leading whitespace before the token. */
+          const from = range.from + match[0].indexOf(token);
           chain()
             .deleteRange({ from, to: range.to })
             .insertContentAt(from, [invocationChip(item), { type: 'text', text: ' ' }])
@@ -127,8 +127,11 @@ export const SlashCommand = Extension.create<SlashCommandOptions>({
         allow: ({ state, range }) =>
           shouldAllowSlashCommandTrigger({ state, range }) && (char === '/' || hasDollarItems()),
         command: ({ editor, range, props }) => {
-          const item = props as SlashCommandItem;
-          if (!isEnabledSlashCommandItem(item)) {
+          const selected = props as SlashCommandItem;
+          const item = itemsFunction('').find(
+            (candidate) => candidate.id === selected.id && candidate.label === selected.label,
+          );
+          if (item === undefined || !isEnabledSlashCommandItem(item)) {
             return;
           }
 

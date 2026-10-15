@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
+import process from 'node:process';
 import type { ConfigService } from '@nestjs/config';
 import type { Params } from 'nestjs-pino';
 import type { Options } from 'pino-http';
@@ -272,7 +274,8 @@ export function consoleLoggingConfig(): Options {
   return {
     messageKey: 'msg',
     transport: {
-      target: 'pino-pretty',
+      // Pino resolves a bare target from its callers (fastify, OpenTelemetry), which cannot see this app's dependencies.
+      target: createRequire(import.meta.url).resolve('pino-pretty'),
       options: {
         singleLine: false,
         colorize: true,
@@ -364,7 +367,11 @@ export async function useLoggerFactory(configService: ConfigService<Environment,
     ...serviceOptions,
   };
 
+  // Request logs (pino-http) and every Nest `Logger` call outside a request (nestjs-pino's own logger) share one
+  // destination. `process.stdout` writes synchronously on Linux, to a pipe, file or terminal, so what the API logs
+  // while it stops is written before the re-raised signal ends it; pino's default stdout stream writes
+  // asynchronously and lost those lines (the 2026-10-11 staging deploy drill). A transport owns its destination.
   return {
-    pinoHttp: pinoHttpOptions,
+    pinoHttp: pinoHttpOptions.transport ? pinoHttpOptions : [pinoHttpOptions, process.stdout],
   };
 }

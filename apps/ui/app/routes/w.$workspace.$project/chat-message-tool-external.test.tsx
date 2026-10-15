@@ -14,6 +14,7 @@ import {
   externalToolPresentation,
   sanitizeAgentText,
 } from '#routes/w.$workspace.$project/chat-message-tool-external.js';
+import type { AgentHostLiveBlocks } from '#services/agent-host-event-projection.js';
 import { projectAgentHostEvent } from '#services/agent-host-event-projection.js';
 import { ChatAttachmentDirectoriesContext } from '#components/chat/attachment-preview.js';
 import { classifyActivityPart } from '#utils/assistant-message-activity.js';
@@ -29,8 +30,9 @@ vi.mock('#components/code/diff-viewer.js', () => ({
 }));
 const imageHash = 'c'.repeat(64);
 const attachmentDirectory = '/projects/p1/.tau/chats/c1/attachments';
-vi.mock('#hooks/use-file-manager.js', () => ({
-  useOptionalFileManager: () => ({
+vi.mock('#hooks/use-file-manager.js', () => {
+  // The provider memoizes its record client; attachment sources are keyed by that identity.
+  const fileManager = {
     recordFiles: {
       readFile: async (path: string) => {
         if (path === `${attachmentDirectory}/${imageHash}.png`) {
@@ -39,8 +41,9 @@ vi.mock('#hooks/use-file-manager.js', () => ({
         throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       },
     },
-  }),
-}));
+  };
+  return { useOptionalFileManager: () => fileManager };
+});
 vi.mock('#components/code/code-viewer.js', () => ({
   CodeViewer: ({ text }: { readonly text: string }) => <pre>{text}</pre>,
 }));
@@ -63,7 +66,10 @@ const externalMetadata = { tauInternal: { kind: 'external-tool', origin: 'extern
 const partFromLog = async (
   rows: ReadonlyArray<Extract<AgentLogEvent, { type: 'message.appended' }>['message']>,
 ): Promise<DynamicToolUIPart> => {
-  const chunks = rows.flatMap((message) => [...projectAgentHostEvent({ ...base, type: 'message.appended', message })]);
+  const blocks: AgentHostLiveBlocks = new Map();
+  const chunks = rows.flatMap((message) => [
+    ...projectAgentHostEvent({ ...base, type: 'message.appended', message }, blocks),
+  ]);
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
       for (const chunk of chunks) {
@@ -82,9 +88,10 @@ const partFromLog = async (
 };
 
 const partFromEvents = async (events: readonly AgentLogEvent[]): Promise<DynamicToolUIPart> => {
+  const blocks: AgentHostLiveBlocks = new Map();
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
-      for (const chunk of events.flatMap((event) => [...projectAgentHostEvent(event)])) {
+      for (const chunk of events.flatMap((event) => [...projectAgentHostEvent(event, blocks)])) {
         controller.enqueue(chunk);
       }
       controller.close();
@@ -338,19 +345,20 @@ describe('the external tool-call renderer', () => {
     for (const name of tauToolKinds.keys()) {
       expect(toolNames, `kind for unknown tool ${name}`).toContain(name);
     }
-    // The external card, not the red unknown-part fallback, owns every other call.
-    expect(chatMessageSource).toContain('<ChatMessageToolExternal key={part.toolCallId} part={part} />');
+    // The external card (or its question card, for an agent's own question tool), not the red
+    // unknown-part fallback, owns every other call.
+    expect(chatMessageSource).toContain('<ChatMessageToolExternalOrQuestion key={part.toolCallId} part={part} />');
   });
 
   it('renders the Codex "List files" pair as a titled card holding the files it found', async () => {
     const user = userEvent.setup();
     const part = await partFromLog(listFilesRows);
     expect(part.title).toBe('List files');
-    /* No `status`: the part's own state is the lifecycle, and the SDK carries a
-     * part's metadata from the call chunk, where the emitter's status is stale. */
+    // Terminal output facts replace transient input facts without losing identity.
     expect(part.toolMetadata).toEqual({
       tau: {
         toolCallId: 'list-1',
+        status: 'completed',
         kind: 'read',
         title: 'List files',
         nativeName: 'listFiles',

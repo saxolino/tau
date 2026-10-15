@@ -1,14 +1,13 @@
 # replicad API index
 
-replicad 0.23.4-beta.2 · 742 symbols · extracted by TypeScript 5.9.3.
+replicad 1.1.0-taulabs.0 · 804 symbols · extracted by TypeScript 5.9.3.
 
-Every symbol appears here exactly once. The heading above each block names the file with its signature.
+Every symbol appears here exactly once. The heading above each block names the file with its signature; grep the skill directory for `name(` to land on the declaration directly.
 
 ## Functions — `api-functions.md`
 
 asDir (function)
 asPnt (function)
-cast (function)
 complexExtrude (function)
 createAssembly (function)
 deserializeDrawing (function) — Deserializes a drawing from a string
@@ -35,9 +34,10 @@ isPoint (function)
 isProjectionPlane (function)
 isShape3D (function)
 isWire (function)
+iterTopo (function)
 loadFont (function) — Import a font in the text system
 lookFromPlane (function)
-makeDirection (function)
+makeDirVector (function)
 makePlane (function)
 makePln (function)
 makeProjectedEdges (function)
@@ -50,6 +50,7 @@ measureShapeSurfaceProperties (function)
 measureShapeVolumeProperties (function)
 measureVolume (function) — Measure the volume of a shape
 mirror (function)
+resolveDirection (function)
 rotate (function)
 scale (function)
 sketchText (function) — Creates the `Sketches` of a text, in a defined font…
@@ -59,8 +60,12 @@ twistExtrude (function)
 weldShellsAndFaces (function) — Welds faces and shells into a single shell
 addHolesInFace (function)
 assembleWire (function)
+atShapeExtremum (function) — Creates a predicate for a finder's `when` method that selects…
 axis2d (function)
+backMost (function) — Creates a predicate selecting elements touching the shape's minimum Y…
 basicFaceExtrusion (function)
+bottomMost (function) — Creates a predicate selecting elements touching the shape's minimum Z…
+cast (function)
 combineFinderFilters (function) — Combine a set of finder filters (defined with radius) to…
 compoundShapes (function)
 createNamedPlane (function)
@@ -69,6 +74,7 @@ cutBlueprints (function)
 drawParametricFunction (function) — Creates the `Drawing` of parametric function
 drawPointsInterpolation (function) — Creates the `Drawing` by interpolating points as a curve
 drawRectangle (function)
+frontMost (function) — Creates a predicate selecting elements touching the shape's maximum Y…
 fuse2D (function)
 fuseBlueprints (function)
 GCWithObject (function)
@@ -77,22 +83,23 @@ getFont (function)
 getManifold (function)
 getOC (function)
 intersectBlueprints (function)
-iterTopo (function)
+leftMost (function) — Creates a predicate selecting elements touching the shape's minimum X…
 localGC (function)
 loft (function)
 makeAx1 (function)
 makeAx2 (function)
 makeAx3 (function)
-makeBaseBox (function)
+makeBaseBox (function) — Builds a rectangular box of the given lengths
 makeBezierCurve (function)
 makeBox (function) — Creates a box with the given corner points
 makeBSplineApproximation (function)
 makeCircle (function)
 makeCompound (function)
 makeCylinder (function) — Creates a cylinder with the given radius and height
+makeDirection (function)
 makeEllipse (function)
 makeEllipseArc (function)
-makeEllipsoid (function) — Creates an ellipsoid with the given lengths of the axes
+makeEllipsoid (function) — Creates an ellipsoid with the given lengths of the axes,…
 makeFace (function)
 makeHelix (function)
 makeLine (function)
@@ -101,7 +108,7 @@ makeNonPlanarFace (function)
 makeOffset (function)
 makePlaneFromFace (function)
 makePolygon (function)
-makeSphere (function) — Creates a sphere with the given radius
+makeSphere (function) — Creates a sphere with the given radius, centred on the…
 makeTangentArc (function)
 makeThreePointArc (function)
 makeVertex (function)
@@ -109,6 +116,7 @@ organiseBlueprints (function) — Groups an array of blueprints such that bluepr
 polysideInnerRadius (function) — Helper function to compute the inner radius of a polyside…
 polysidesBlueprint (function)
 revolution (function)
+rightMost (function) — Creates a predicate selecting elements touching the shape's maximum X…
 roundedRectangleBlueprint (function)
 setManifold (function)
 setOC (function)
@@ -122,8 +130,9 @@ sketchPolysides (function) — Creates the `Sketch` of an polygon in a defined p
 sketchRectangle (function) — Creates the `Sketch` of a rectangle in a defined plane
 sketchRoundedRectangle (function) — Creates the `Sketch` of a rounded rectangle in a defined…
 supportExtrude (function)
+topMost (function) — Creates a predicate selecting elements touching the shape's maximum Z…
 
-## Classs — `api-classs.md`
+## Classes — `api-classes.md`
 
 _1DShape (class) [13 members]
   _1DShape.repr (property)
@@ -139,13 +148,14 @@ _1DShape (class) [13 members]
   _1DShape.length (property)
   _1DShape.orientation (property)
   _1DShape.flipOrientation (method)
-_3DShape (class) [11 members]
+_3DShape (class) [12 members]
   _3DShape.fuse (method) — Builds a new shape out of the two, fused, shapes
   _3DShape.fuseAll (method) — Builds a new shape by fusing this shape with all…
   _3DShape.cut (method) — Builds a new shape by removing the tool tape from…
   _3DShape.cutAll (method) — Builds a new shape by removing all provided tool shapes…
   _3DShape.intersect (method) — Builds a new shape by intersecting this shape and another
   _3DShape.intersectAll (method) — Builds a new shape by intersecting this shape with all…
+  _3DShape.cutPlane (method) — Cuts this shape with a plane and retains one of…
   _3DShape.meshShape (method)
   _3DShape.shell (method) — Hollows out the current shape, removing the faces found by…
   _3DShape.fillet (method) — Creates a new shapes with some edges filletted, as specified…
@@ -411,6 +421,9 @@ FaceSketcher (class) [7 members] — The FaceSketcher allows you to sketch on a 
   FaceSketcher.closeWithCustomCorner (method) — Stop drawing, make sure the sketch is closed (by adding…
 LinearPhysicalProperties (class) [1 members]
   LinearPhysicalProperties.length (property)
+
+## Classes (2) — `api-classes-2.md`
+
 MeshShape (class) [27 members]
   MeshShape.constructor (constructor)
   MeshShape.clone (method)
@@ -469,10 +482,7 @@ ProjectionCamera (class) [10 members]
   ProjectionCamera.setXAxis (method)
   ProjectionCamera.setYAxis (method)
   ProjectionCamera.lookAt (method)
-
-## Classs (2) — `api-classs-2.md`
-
-Shape (class) [24 members]
+Shape (class) [26 members]
   Shape.constructor (constructor)
   Shape.clone (method)
   Shape.serialize (method)
@@ -480,6 +490,7 @@ Shape (class) [24 members]
   Shape.isNull (property)
   Shape.isSame (method)
   Shape.isEqual (method)
+  Shape.split (method) — Splits the solid parts of this shape with an oriented…
   Shape.asShape3D (method) — Asserts that this shape is a 3D shape (Shell, Solid,…
   Shape.simplify (method) — Simplifies the shape by removing unnecessary edges and faces
   Shape.translate (method) — Translates the shape of an arbitrary vector
@@ -491,6 +502,7 @@ Shape (class) [24 members]
   Shape.scale (method) — Returns a scaled version of the shape
   Shape.edges (property)
   Shape.faces (property)
+  Shape.solids (property)
   Shape.wires (property)
   Shape.boundingBox (property)
   Shape.mesh (method) — Exports the current shape as a set of triangle
@@ -616,17 +628,28 @@ WrappingObj (class) [4 members]
 ## Types — `api-types.md`
 
 AnyShape (type)
+AxisName (type)
 ChamferRadius (type) — We can defined a chamfer with only a number -…
-Corner (type)
+Corner (type) [3 members]
+  Corner.firstCurve (property)
+  Corner.secondCurve (property)
+  Corner.point (property)
 CubeFace (type)
 CurveType (type)
+Direction (type) — A vector-like point or a named principal axis
 FilletRadius (type)
-FilterFcn (type)
-ManifoldBox (type)
+FilterFcn (type) [2 members]
+  FilterFcn.element (property)
+  FilterFcn.normal (property)
+FinderFunction (type)
+ManifoldBox (type) [2 members]
+  ManifoldBox.min (property)
+  ManifoldBox.max (property)
 ManifoldInstance (type)
 ManifoldMesh (type)
 ManifoldVec3 (type)
 PlaneName (type)
+PlaneSide (type)
 Point (type)
 Point2D (type)
 ProjectionPlane (type)
@@ -634,12 +657,27 @@ RadiusConfig (type) — A generic way to define radii for fillet or chamfer…
 ScaleMode (type)
 Shape2D (type)
 Shape3D (type)
-ShapeConfig (type)
+ShapeConfig (type) [7 members]
+  ShapeConfig.shape (property)
+  ShapeConfig.color (property)
+  ShapeConfig.alpha (property)
+  ShapeConfig.name (property)
+  ShapeConfig.metalness (property) — PBR metalness factor (0 = dielectric, 1 = metal)
+  ShapeConfig.roughness (property) — PBR roughness factor — threaded to GLTF only (not STEP
+  ShapeConfig.density (property) — Material density in g/cm3, written as the shape's STEP material
 SimplePoint (type)
 SingleFace (type)
 SplineConfig (type)
 SupportedUnit (type)
 SurfaceType (type)
+TopoEntity (type)
+
+## Constants — `api-constants.md`
+
+AXIS_NAMES (constant)
+DEG2RAD (constant)
+HASH_CODE_MAX (constant)
+RAD2DEG (constant)
 
 ## Interfaces — `api-interfaces.md`
 
@@ -681,6 +719,11 @@ FaceTriangulation (interface) [3 members]
   FaceTriangulation.vertices (property)
   FaceTriangulation.trianglesIndexes (property)
   FaceTriangulation.verticesNormals (property)
+FaceUVBounds (interface) [4 members]
+  FaceUVBounds.uMin (property)
+  FaceUVBounds.uMax (property)
+  FaceUVBounds.vMin (property)
+  FaceUVBounds.vMax (property)
 GenericSketcher (interface) [34 members] — Sketchers allow the user to draw a two dimentional shape…
   GenericSketcher.movePointerTo (method) — Changes the point to start your drawing from
   GenericSketcher.lineTo (method) — Draws a line from the current point to the point…
@@ -728,12 +771,22 @@ LoftConfig (interface) [3 members]
   LoftConfig.ruled (property)
   LoftConfig.startPoint (property)
   LoftConfig.endPoint (property)
+MeshOptions (interface) [2 members]
+  MeshOptions.tolerance (property)
+  MeshOptions.angularTolerance (property)
 MeshShapeMesh (interface) [5 members]
   MeshShapeMesh.vertices (property)
   MeshShapeMesh.triangles (property)
   MeshShapeMesh.normals (property)
   MeshShapeMesh.vertProperties (property)
   MeshShapeMesh.numProp (property)
+PlaneFace (interface) [2 members]
+  PlaneFace.pointOnSurface (method)
+  PlaneFace.normalAt (method)
+PlaneSplitResult (interface) [3 members] — Pieces grouped by their position relative to an oriented plane
+  PlaneSplitResult.positive (property)
+  PlaneSplitResult.negative (property)
+  PlaneSplitResult.on (property)
 Shape3DLike (interface) [12 members]
   Shape3DLike.fuse (method)
   Shape3DLike.cut (method)
@@ -747,6 +800,9 @@ Shape3DLike (interface) [12 members]
   Shape3DLike.mirror (method)
   Shape3DLike.mesh (method)
   Shape3DLike.boundingBox (property)
+ShapeEdgeMesh (interface) [2 members]
+  ShapeEdgeMesh.lines (property)
+  ShapeEdgeMesh.edgeGroups (property)
 ShapeMesh (interface) [4 members]
   ShapeMesh.triangles (property)
   ShapeMesh.vertices (property)
@@ -757,9 +813,15 @@ SketchInterface (interface) [4 members]
   SketchInterface.revolve (method) — Revolves the drawing on an axis (defined by its direction…
   SketchInterface.extrude (method) — Extrudes the sketch to a certain distance.(along the default direction…
   SketchInterface.loftWith (method) — Loft between this sketch and another sketch (or an array…
-
-## Constants — `api-constants.md`
-
-DEG2RAD (constant)
-HASH_CODE_MAX (constant)
-RAD2DEG (constant)
+STLExportOptions (interface) [1 members]
+  STLExportOptions.binary (property)
+TopologyMap (interface) [9 members]
+  TopologyMap.vertex (property)
+  TopologyMap.edge (property)
+  TopologyMap.wire (property)
+  TopologyMap.face (property)
+  TopologyMap.shell (property)
+  TopologyMap.solid (property)
+  TopologyMap.solidCompound (property)
+  TopologyMap.compound (property)
+  TopologyMap.shape (property)

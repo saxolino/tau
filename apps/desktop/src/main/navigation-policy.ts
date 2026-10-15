@@ -129,11 +129,13 @@ export const isTrustedSender = (frame: SenderFrame | undefined, origins: readonl
  *
  * `'wasm-unsafe-eval'` is required by every WebAssembly kernel; `blob:` in
  * `worker-src`/`connect-src` by the runtime's worker delivery and Monaco.
+ * `https://registry.npmjs.org` is where the Packages panel's Install reads
+ * packuments and tarballs (every tarball is checked against the lock's integrity).
  * `default-src 'none'` makes every directive below an explicit grant, and
  * `base-uri`/`form-action`/`frame-ancestors 'none'` close the three
  * redirect-style escapes a CSP is usually forgotten on.
  *
- * @param connectOrigins - API and WebSocket origins the renderer must reach.
+ * @param connectOrigins - API and WebSocket origins the renderer must reach, beside GitHub's public API.
  * @returns The header value.
  */
 export const contentSecurityPolicy = (connectOrigins: readonly string[]): string =>
@@ -141,10 +143,13 @@ export const contentSecurityPolicy = (connectOrigins: readonly string[]): string
     "default-src 'none'",
     "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    /* GitHub's avatar host: the repository owner's picture on Import and GitHub connections. */
+    "img-src 'self' data: blob: https://avatars.githubusercontent.com",
     "font-src 'self' data:",
     "media-src 'self' blob:",
-    `connect-src 'self' data: blob:${connectOrigins.map((origin) => ` ${origin}`).join('')}`,
+    /* GitHub's public API: the Import page's unauthenticated public reads (repository metadata and tree), as on the web.
+     * The npm registry: packuments and tarballs for project package installs. */
+    `connect-src 'self' data: blob: https://api.github.com https://registry.npmjs.org${connectOrigins.map((origin) => ` ${origin}`).join('')}`,
     "worker-src 'self' blob:",
     "child-src 'self' blob:",
     "object-src 'none'",
@@ -185,8 +190,11 @@ export const contentSecurityPolicy = (connectOrigins: readonly string[]): string
  * still requires a user gesture and owns Escape to exit. This does not grant
  * `automatic-fullscreen`, pointer lock or keyboard lock.
  *
- * Everything else (camera, microphone, geolocation, notifications, clipboard
- * read, background sync, …) is refused: nothing in the app asks for one, so a
+ * Microphone access is narrower and lives in
+ * {@link isMicrophonePermissionGranted}: composer dictation asks for audio only.
+ *
+ * Everything else (camera, geolocation, notifications, clipboard read,
+ * background sync, …) is refused: nothing in the app asks for one, so a
  * request is either a dependency doing something unexpected or a document that
  * should not have loaded.
  */
@@ -203,3 +211,26 @@ export const grantedPermissions: ReadonlySet<string> = new Set([
  * @returns True only for {@link grantedPermissions}.
  */
 export const isPermissionGranted = (permission: string): boolean => grantedPermissions.has(permission);
+
+/**
+ * Whether a `media` request is composer dictation: audio only, from the trusted
+ * top-level renderer. Camera and screen capture stay refused.
+ *
+ * @param request - Electron's permission details, normalized across the request and check handlers.
+ * @returns True only for an audio-only request from a renderer origin.
+ */
+export const isMicrophonePermissionGranted = (request: {
+  readonly permission: string;
+  readonly frame?: SenderFrame | undefined;
+  readonly requester?: string | undefined;
+  readonly mainFrame: boolean;
+  readonly mediaTypes: readonly string[];
+  readonly origins: readonly string[];
+}): boolean =>
+  request.permission === 'media' &&
+  request.mainFrame &&
+  request.mediaTypes.length === 1 &&
+  request.mediaTypes[0] === 'audio' &&
+  request.requester !== undefined &&
+  isRendererUrl(request.requester, request.origins) &&
+  isTrustedSender(request.frame, request.origins);

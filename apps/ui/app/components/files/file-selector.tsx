@@ -14,7 +14,7 @@ import { Button } from '@taucad/ui/components/button';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { menuItemLayoutClass } from '@taucad/ui/components/menu.variants';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { OmniScroller } from '#components/ui/omni-scroller.js';
 
 export type FileSelectorEntry = {
@@ -509,7 +509,7 @@ function FileSelectorBrowseErrorRow({
 }): React.JSX.Element {
   return (
     <div className='flex flex-col items-center gap-2 p-4 text-center text-sm'>
-      <p className='text-destructive'>{message}</p>
+      <p className='text-feature'>{message}</p>
       <Button type='button' variant='outline' size='sm' onClick={onRetry}>
         Retry
       </Button>

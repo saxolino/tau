@@ -3,6 +3,18 @@
     "kind": "reference",
     "geometry": "3d",
     "kernel": "build123d",
+    "name": "planetary-gear-system",
+    "mainFile": "main.py",
+    "files": [
+      "README.md",
+      "main.py",
+      "tau.json"
+    ]
+  },
+  {
+    "kind": "reference",
+    "geometry": "3d",
+    "kernel": "build123d",
     "name": "v8-engine-brep",
     "mainFile": "main.py",
     "files": [
@@ -1167,21 +1179,14 @@
     "kind": "model",
     "geometry": "2d",
     "kernel": "replicad",
-    "name": "libassimp-format-prism",
+    "name": "libassimp-logo",
     "mainFile": "main.ts",
     "files": [
       "README.md",
       "banner.svg",
       "generate-logo.ts",
-      "generate-variants.ts",
       "libassimp.svg",
       "main.ts",
-      "variants.ts",
-      "variants/01-full-bleed-stack.svg",
-      "variants/02-ember-spine.svg",
-      "variants/03-signal-ribbon.svg",
-      "variants/04-foundry-frame.svg",
-      "variants/review-board.svg",
       "wordmark.ts"
     ]
   },
@@ -1551,6 +1556,17 @@
       "main.ts",
       "tau.json",
       "tooth-profile.ts"
+    ]
+  },
+  {
+    "kind": "model",
+    "geometry": "3d",
+    "kernel": "tscircuit",
+    "name": "led-board",
+    "mainFile": "main.tsx",
+    "files": [
+      "main.tsx",
+      "tau.json"
     ]
   }
 ]

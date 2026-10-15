@@ -5,7 +5,7 @@ import { esbuildBundler } from '@taucad/esbuild';
 import { manifoldKernel } from '@taucad/manifold';
 import { assertSuccess, createTestRuntimeClient, glbToDocument, validateGlbData } from '@taucad/runtime-testing';
 import type { ExportFile } from '@taucad/runtime/types';
-import type { TranscoderRuntime } from '@taucad/runtime/transcoder';
+import type { TranscoderServices } from '@taucad/runtime/transcoder';
 import { resolveRuntimePluginDefinition } from '@taucad/runtime/plugin';
 import { defineRuntime } from '@taucad/runtime/worker';
 import { createAssimp } from 'libassimp';
@@ -13,7 +13,7 @@ import type { Assimp, AssimpFile } from 'libassimp';
 
 import { assimpTranscoder } from '#assimp.transcoder.js';
 
-const runtime: TranscoderRuntime = {
+const runtime: TranscoderServices = {
   logger: {
     log: () => undefined,
     debug: () => undefined,
@@ -79,10 +79,13 @@ const sourceManifoldTopology = async (
   ) {
     throw new Error('GLB has no EXT_mesh_manifold topology');
   }
+  // Normals split render vertices along creases; the welded topology references only one of each.
+  const referenced = [...new Set(indexArray)].toSorted((a, b) => a - b);
+  const compact = new Map(referenced.map((vertex, index) => [vertex, index]));
   const matrix = node.getWorldMatrix();
   const positions: number[] = [];
-  for (let index = 0; index < position.getCount(); index += 1) {
-    const [x, y, z] = position.getElement(index, [0, 0, 0]);
+  for (const vertex of referenced) {
+    const [x, y, z] = position.getElement(vertex, [0, 0, 0]);
     positions.push(
       matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
       matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
@@ -91,7 +94,7 @@ const sourceManifoldTopology = async (
   }
   return {
     positions: roundNumbers(positions),
-    indices: [...indexArray],
+    indices: [...indexArray].map((vertex) => compact.get(vertex)!),
     runs: [...manifold.getRunIndex()],
   };
 };
@@ -160,7 +163,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await definition.cleanup?.(context);
+  await definition.onDispose?.(context);
   fullAssimp.dispose();
 });
 
@@ -183,18 +186,21 @@ describe('assimp transcoder integration', () => {
         `,
       },
     });
+    const document = client.open({ source: { path: 'two-material-box.ts' }, watch: false });
     const exported = await (async () => {
       try {
-        return await client.export('glb', {
-          source: { path: 'two-material-box.ts' },
-          exportOptions: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
+        return await document.export('glb', {
+          options: { coordinateSystem: 'y-up', unit: { length: 'meter' } },
         });
       } finally {
+        document.close();
         await client.shutdown();
       }
     })();
-    assertSuccess(exported, 'Manifold two-material box');
-    const sourceFile = exported.data.find(({ name }) => name.endsWith('.glb'));
+    if (!exported.success) {
+      throw new Error(`Manifold two-material box: ${exported.issues.map(({ message }) => message).join('; ')}`);
+    }
+    const sourceFile = exported.files.find(({ name }) => name.endsWith('.glb'));
     if (sourceFile === undefined) {
       throw new Error('Manifold returned no GLB file');
     }

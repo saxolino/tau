@@ -15,7 +15,7 @@ import {
   logRow,
   publishLogRows,
   publishLogPage,
-  runningRows,
+  writerOwnedCatchUp,
 } from '#machines/chat-projection.fixture.js';
 import { chatSessionMachine } from '#machines/chat-session.machine.js';
 import { projectSessionMachine } from '#machines/project-session.machine.js';
@@ -50,10 +50,14 @@ vi.mock('#chat-clients/_internal/shared-chat-transport.js', async (importOrigina
 });
 
 /** The real SDK rejects this causally invalid presentation, while its request promise resolves. */
-const poisonedStream = (): ReadableStream<UIMessageChunk> =>
+const poisonedStream = (status: 'submitted' | 'streaming' = 'submitted'): ReadableStream<UIMessageChunk> =>
   new ReadableStream({
     start(controller) {
       controller.enqueue({ type: 'start', messageId: 'poisoned' });
+      if (status === 'streaming') {
+        controller.enqueue({ type: 'text-start', id: 'partial' });
+        controller.enqueue({ type: 'text-delta', id: 'partial', delta: 'Partial response' });
+      }
       controller.enqueue({ type: 'tool-output-available', toolCallId: 'missing-input', output: 'private payload' });
       controller.close();
     },
@@ -86,6 +90,18 @@ const acquire = (): Readonly<{ store: ChatSessionStore; chat: Chat<MyUIMessage>;
   return { store, chat: store.acquire('chat_1', 'project_1').chat, deps };
 };
 
+/** An admission with its visible input: an SDK watch opens only once the run's user turn is projected. */
+const admittedRow = (sequence: number, runId = 'run_1'): Record<string, unknown> => {
+  const message = { id: `user_${runId}`, role: 'user', content: 'Continue this turn' };
+  return { ...lifecycleRow(sequence, 'admitted', runId), admission: { kind: 'tau', turnId: message.id, message } };
+};
+
+/** A running run with its visible input, as its first two rows. */
+const runningRows = (runId = 'run_1'): Array<Record<string, unknown>> => [
+  admittedRow(0, runId),
+  lifecycleRow(1, 'running', runId),
+];
+
 /** One authoritative assistant row arriving after the presentation failed. */
 const replyRow = (sequence: number, text: string): Record<string, unknown> =>
   logRow(sequence, {
@@ -106,84 +122,87 @@ afterEach(async () => {
 });
 
 describe('ChatSessionStore real SDK presentation recovery', () => {
-  it('should recover an active failed request through a read-only watch and converge at terminal', async () => {
-    const hostCommand = vi.spyOn(HostCommands, 'sendHostCommand');
-    const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const reconnect = vi
-      .spyOn(BrowserPlacementChatTransport.prototype, 'reconnectToStream')
-      .mockImplementationOnce(async () => poisonedStream());
-    const { store, chat, deps } = acquire();
-    stores.push(store);
-    const resolved: ChatStatus[] = [];
-    const resume = chat.resumeStream;
-    vi.spyOn(chat, 'resumeStream').mockImplementation(async () => {
-      await resume();
-      resolved.push(chat.status);
-    });
-    publishLogRows(store, 'chat_1', runningRows());
-    await vi.waitFor(() => {
-      expect(reconnect).toHaveBeenCalledTimes(2);
-    });
-    expect(harness.errorStatuses).toEqual(['streaming']);
-    expect(resolved).toContain('ready');
-    publishLogRows(store, 'chat_1', [replyRow(2, 'Recovered edit')], 2);
-    await vi.waitFor(() => {
-      expect(chat.messages.at(-1)?.parts).toContainEqual({ type: 'text', text: 'Recovered edit', state: 'done' });
-    });
-    publishLogRows(
-      store,
-      'chat_1',
-      [
-        logRow(3, {
-          type: 'message.appended',
-          message: {
-            id: 'edit-input',
-            role: 'tool-input',
-            toolCallId: 'edit-1',
-            toolName: 'edit_file',
-            content: { targetFile: 'main.cs', codeEdit: 'after' },
-          },
-        }),
-        logRow(4, {
-          type: 'message.appended',
-          message: {
-            id: 'edit-output',
-            role: 'tool-output',
-            toolCallId: 'edit-1',
-            toolName: 'edit_file',
-            content: {
-              diffStats: { linesAdded: 1, linesRemoved: 1, originalContent: 'before', modifiedContent: 'after' },
+  it.each(['submitted', 'streaming'] as const)(
+    'should recover a failed %s request through a read-only watch and converge at terminal',
+    async (status) => {
+      const hostCommand = vi.spyOn(HostCommands, 'sendHostCommand');
+      const diagnostic = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const reconnect = vi
+        .spyOn(BrowserPlacementChatTransport.prototype, 'reconnectToStream')
+        .mockImplementationOnce(async () => poisonedStream(status));
+      const { store, chat, deps } = acquire();
+      stores.push(store);
+      const resolved: ChatStatus[] = [];
+      const resume = chat.resumeStream;
+      vi.spyOn(chat, 'resumeStream').mockImplementation(async () => {
+        await resume();
+        resolved.push(chat.status);
+      });
+      publishLogRows(store, 'chat_1', runningRows());
+      await vi.waitFor(() => {
+        expect(reconnect).toHaveBeenCalledTimes(2);
+      });
+      expect(harness.errorStatuses).toEqual([status]);
+      expect(resolved).toContain('ready');
+      publishLogRows(store, 'chat_1', [replyRow(2, 'Recovered edit')], 2);
+      await vi.waitFor(() => {
+        expect(chat.messages.at(-1)?.parts).toContainEqual({ type: 'text', text: 'Recovered edit', state: 'done' });
+      });
+      publishLogRows(
+        store,
+        'chat_1',
+        [
+          logRow(3, {
+            type: 'message.appended',
+            message: {
+              id: 'edit-input',
+              role: 'tool-input',
+              toolCallId: 'edit-1',
+              toolName: 'edit_file',
+              content: { targetFile: 'main.cs', codeEdit: 'after' },
             },
-            isError: false,
-          },
-        }),
-        lifecycleRow(5, 'completed'),
-      ],
-      3,
-    );
-    await vi.waitFor(() => {
-      expect(chat.status).toBe('ready');
-    });
-    expect(chat.error).toBeUndefined();
-    const exported = serializeTranscript(chat.messages, 'Recovered fixture');
-    expect(exported).toContain('targetFile: main.cs');
-    expect(exported).toContain('+1/-1 lines');
-    expect(exported).toContain('after');
-    expect(deps.patchChat).not.toHaveBeenCalled();
-    expect(hostCommand).not.toHaveBeenCalled();
-    expect(diagnostic).toHaveBeenCalledWith('[ChatSessionStore] presentation recovery', {
-      chatId: 'chat_1',
-      runId: 'run_1',
-      status: 'error',
-      errorName: 'AI_UIMessageStreamError',
-      chunkId: 'missing-input',
-      chunkType: 'tool-invocation',
-      cursor: 2,
-      mode: 'retry-watch',
-      phase: 'running',
-    });
-    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private payload');
-  });
+          }),
+          logRow(4, {
+            type: 'message.appended',
+            message: {
+              id: 'edit-output',
+              role: 'tool-output',
+              toolCallId: 'edit-1',
+              toolName: 'edit_file',
+              content: {
+                diffStats: { linesAdded: 1, linesRemoved: 1, originalContent: 'before', modifiedContent: 'after' },
+              },
+              isError: false,
+            },
+          }),
+          lifecycleRow(5, 'completed'),
+        ],
+        3,
+      );
+      await vi.waitFor(() => {
+        expect(chat.status).toBe('ready');
+      });
+      expect(chat.error).toBeUndefined();
+      const exported = serializeTranscript(chat.messages, 'Recovered fixture');
+      expect(exported).toContain('targetFile: main.cs');
+      expect(exported).toContain('+1/-1 lines');
+      expect(exported).toContain('after');
+      expect(deps.patchChat).not.toHaveBeenCalled();
+      expect(hostCommand).not.toHaveBeenCalled();
+      expect(diagnostic).toHaveBeenCalledWith('[ChatSessionStore] presentation recovery', {
+        chatId: 'chat_1',
+        runId: 'run_1',
+        status: 'error',
+        errorName: 'AI_UIMessageStreamError',
+        chunkId: 'missing-input',
+        chunkType: 'tool-invocation',
+        cursor: 2,
+        mode: 'retry-watch',
+        phase: 'running',
+      });
+      expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private payload');
+    },
+  );
 
   it('should bound repeated failures while continuing to materialize active durable history', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -308,7 +327,7 @@ describe('ChatSessionStore real SDK presentation recovery', () => {
         publishLogRows(
           store,
           'chat_1',
-          [lifecycleRow(2, 'completed'), lifecycleRow(3, 'admitted', 'run_new'), lifecycleRow(4, 'running', 'run_new')],
+          [lifecycleRow(2, 'completed'), admittedRow(3, 'run_new'), lifecycleRow(4, 'running', 'run_new')],
           2,
         );
       }
@@ -474,6 +493,100 @@ describe('ChatSessionStore real SDK presentation recovery', () => {
     stores.splice(stores.indexOf(store), 1);
   });
 
+  it.each(['source-replacement', 'rewind-retirement'] as const)(
+    'should fence held Resume materialization after %s',
+    async (invalidation) => {
+      const { store } = acquire();
+      stores.push(store);
+      publishLogRows(store, 'chat_1', [
+        ...runningRows(),
+        replyRow(2, 'Retired paragraph'),
+        lifecycleRow(3, 'cancelled'),
+      ]);
+      const text = (): string =>
+        store
+          .get('chat_1')!
+          .messages.flatMap((message) => message.parts.flatMap((part) => (part.type === 'text' ? [part.text] : [])))
+          .join('|');
+      await vi.waitFor(() => {
+        expect(text()).toContain('Retired paragraph');
+      });
+      const materialize = Projection.materializeTranscript;
+      const pending = Promise.withResolvers<MyUIMessage[]>();
+      let held = false;
+      vi.spyOn(Projection, 'materializeTranscript').mockImplementation(async (...parameters) => {
+        if (!held && parameters[1] === 'run_1') {
+          held = true;
+          return pending.promise;
+        }
+        return materialize(...parameters);
+      });
+      publishLogRows(store, 'chat_1', [logRow(4, { type: 'run.lifecycle', state: 'running', attempt: 2 })], 4);
+      await vi.waitFor(() => {
+        expect(held).toBe(true);
+      });
+      expect(text()).toContain('Retired paragraph');
+      if (invalidation === 'source-replacement') {
+        store.receiveHostReadAnswer('chat_1', {
+          status: 'refused',
+          reason: 'identity-mismatch',
+        });
+        publishLogRows(store, 'chat_1', [
+          ...runningRows('replacement'),
+          logRow(2, {
+            runId: 'replacement',
+            type: 'message.appended',
+            message: {
+              id: 'replacement-answer',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Authoritative replacement' }],
+            },
+          }),
+          lifecycleRow(3, 'completed', 'replacement'),
+        ]);
+      } else {
+        publishLogRows(
+          store,
+          'chat_1',
+          [
+            {
+              ...admittedRow(5, 'replacement'),
+              admission: {
+                kind: 'tau',
+                turnId: 'user_replacement',
+                message: { id: 'user_replacement', role: 'user', content: 'Replacement prompt' },
+                rewind: { trigger: 'edit', retainedMessageIds: [] },
+              },
+            },
+            logRow(6, { runId: 'replacement', type: 'history.rewound', trigger: 'edit', retainedMessageIds: [] }),
+            lifecycleRow(7, 'running', 'replacement'),
+            logRow(8, {
+              runId: 'replacement',
+              type: 'message.appended',
+              message: {
+                id: 'replacement-answer',
+                role: 'assistant',
+                content: [{ type: 'text', text: 'Authoritative replacement' }],
+              },
+            }),
+            lifecycleRow(9, 'completed', 'replacement'),
+          ],
+          5,
+        );
+      }
+      await vi.waitFor(() => {
+        expect(text()).toContain('Authoritative replacement');
+      });
+      expect(text()).not.toContain('Retired paragraph');
+      pending.resolve([]);
+      await vi.waitFor(() => {
+        expect(store.get('chat_1')!.chat.status).toBe('ready');
+      });
+      expect(text()).toContain('Authoritative replacement');
+      expect(text()).not.toContain('Retired paragraph');
+    },
+  );
+
   it('should reset the bounded watch budget for a deliberately admitted Resume of the same run', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const reconnect = vi
@@ -505,7 +618,7 @@ describe('ChatSessionStore real SDK presentation recovery', () => {
       cursor: 3,
     }));
     const unpublish = store.publishProjectHostConnector('project_1', async () =>
-      mock<AgentHostClient>({ hostCommand, close: vi.fn(async () => undefined) }),
+      mock<AgentHostClient>({ catchUp: writerOwnedCatchUp, hostCommand, close: vi.fn(async () => undefined) }),
     );
     const unadmit = publishChatTurnAdmission('chat_1', async () => ({
       runId: 'run_1',

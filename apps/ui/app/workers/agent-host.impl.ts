@@ -1,3 +1,4 @@
+import { recordChannelDiagnostic } from '#db/channel-diagnostics.js';
 /**
  * The resident worker's project host (W6 RH-S8): one per project the tab has open, built from the ports the page
  * provides. Every stream of the project is served by one launcher (`createAgentLauncher`), whose chats are led among
@@ -19,6 +20,7 @@ import { tauPathPolicy } from '@taucad/filesystem/path-registry';
 import { createRuntimeAgentClients, createRuntimeParameterAgentClient } from '@taucad/agent-tools/runtime';
 import type { RuntimeAgentClient } from '@taucad/agent-tools/runtime';
 import { createRuntimeClient } from '@taucad/runtime/client';
+import type { AnyRuntimeDefinition } from '@taucad/runtime/worker';
 import { createParameterSetActor } from '@taucad/parameters/set-machine';
 import type { ParameterSetActor } from '@taucad/parameters/set-machine';
 import { Actor, waitFor } from 'xstate';
@@ -41,17 +43,19 @@ import { createDefaultKernelOptions } from '#constants/kernel-worker.constants.j
 import { createSkillResolver } from '#lib/skill-resolver.js';
 import type { SkillResolver } from '#lib/skill-resolver.js';
 import { uiRuntimeConfigSchema } from '#runtime/ui-runtime.schema.js';
-import type { HeadlessImageService } from '#services/headless-image.service.js';
+import type { HeadlessImageJob, HeadlessImageService } from '#services/headless-image.service.js';
 import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
 import { agentHostWorkerBuild } from '#workers/agent-host.contract.js';
 import type { AgentHostProjectProvide, AgentHostProjectRebridge } from '#workers/agent-host.contract.js';
 import { closeProvidedPorts, createDisposers } from '#workers/agent-host-projects.js';
+import { createResidentPlacement } from '#workers/agent-host-placement.js';
 import { createPortRevisionsClient } from '#workers/agent-host-revisions.js';
 import { createGeoSpecWorkerRpcClient } from '#workers/geospec-runner.client.js';
 import { systemSkillsOverlay } from '#workers/system-skills-overlay.js';
 
 type ProjectFileSystemBridge = Pick<
   FileSystemBridgeProxy,
+  | 'readMachineSettings'
   | 'readFile'
   | 'writeFile'
   | 'writeFileChecked'
@@ -74,6 +78,7 @@ type ProjectFileSystemBridge = Pick<
 export type ResidentWorkerContext = Readonly<{
   /** This tab's id among the origin's tabs (RH-R5). */
   tabId: string;
+  requestRebridge?: (projectId: string, hostId: string) => void;
   visibility: NonNullable<BrowserChatStoreOptions['visibility']>;
   /** M1's timers; the worker leaves the defaults, and the browser tier shortens idle eviction (RH-A15). */
   delays?: AgentLauncherOptions['delays'];
@@ -82,6 +87,7 @@ export type ResidentWorkerContext = Readonly<{
 /** One project host incarnation (RH-R4): its launcher serves every stream of the project. */
 export type BrowserProjectHost = Readonly<{
   hostId: string;
+  needsRebridge: () => boolean;
   /** Read this host's current leadership actor without taking a lock. */
   stoppability: (chatId: string) => ReturnType<AgentLauncher['stoppability']>;
   /** Serve one stream; closing it only detaches (D17). */
@@ -358,7 +364,42 @@ const createRuntimeRpcClients = (options: {
   const runtime: RuntimeAgentClient = runtimeClient;
   return createRuntimeAgentClients({
     runtime,
-    exportImage: async (job) => options.imageService.export(job),
+    exportImage: async (job) => {
+      if (job.sourceFormat === 'svg') {
+        return options.imageService.export(job);
+      }
+      if (job.exportOptions.mode === 'single') {
+        const { camera } = job.exportOptions;
+        const exportOptions: Extract<HeadlessImageJob, { sourceFormat: 'glb'; format: 'webp' }>['exportOptions'] = {
+          ...job.exportOptions,
+          mode: 'single',
+          camera: {
+            framing: 'bounds',
+            direction: [camera.direction[0], camera.direction[1], camera.direction[2]],
+            up: [camera.up[0], camera.up[1], camera.up[2]],
+            margin: camera.margin,
+            projection: { kind: 'perspective', verticalFieldOfView: camera.projection.verticalFieldOfView },
+          },
+        };
+        return options.imageService.export({ ...job, exportOptions });
+      }
+      const exportOptions: Extract<HeadlessImageJob, { sourceFormat: 'glb'; format: 'webp' }>['exportOptions'] = {
+        ...job.exportOptions,
+        mode: 'batch',
+        views: job.exportOptions.views.map((view) => ({
+          id: view.id,
+          label: view.label,
+          camera: {
+            framing: 'bounds',
+            direction: [view.camera.direction[0], view.camera.direction[1], view.camera.direction[2]],
+            up: [view.camera.up[0], view.camera.up[1], view.camera.up[2]],
+            margin: view.camera.margin,
+            projection: { kind: 'orthographic' },
+          },
+        })),
+      };
+      return options.imageService.export({ ...job, exportOptions });
+    },
     mapRuntimeError: (error) => toRpcError(error),
   });
 };
@@ -456,11 +497,10 @@ const composeProjectHost = async (
       code: 'COMPUTE_AUTHORITY_INVALID',
     });
   }
-  let computeConnection = provide.computeStorePort ? connectComputeStoreChannel(provide.computeStorePort) : undefined;
+  const computeConnection = provide.computeStorePort ? connectComputeStoreChannel(provide.computeStorePort) : undefined;
   opened(() => computeConnection?.dispose());
-  const computeStore = computeConnection ? swappable(computeConnection.store) : undefined;
-  const compute = computeStore
-    ? ({ mode: 'durable', store: computeStore.view } as const)
+  const compute = computeConnection
+    ? ({ mode: 'durable', store: computeConnection.store } as const)
     : provide.computeMode === 'off'
       ? ({ mode: 'off' } as const)
       : ({ mode: 'memory' } as const);
@@ -509,7 +549,8 @@ const composeProjectHost = async (
     { consumer: 'agent', policy: tauPathPolicy, overlays: [systemSkillsOverlay()] },
   );
   /* One runtime client per project host, shared by every turn and chat of the project (RH-A6). */
-  const runtimeClient: AppRuntimeClient = createRuntimeClient(
+  // Agent tools select offered IDs at runtime; this host deliberately constructs the public dynamic client.
+  const runtimeClient: AppRuntimeClient = createRuntimeClient<AnyRuntimeDefinition>(
     createDefaultKernelOptions({
       fileSystem: fromFsLike(createRuntimeFsLike(agentView)),
       runtimeConfig,
@@ -527,14 +568,14 @@ const composeProjectHost = async (
     imageService.dispose();
   });
   const { createFileSystemBridgePort } = await import('@taucad/fs-bridge');
-  const geoSpecEngine = provide.geoSpecEngine ?? 'legacy';
-  const revisions = provide.revisionsPort === undefined ? undefined : createPortRevisionsClient(provide.revisionsPort);
+  const revisionsSlot =
+    provide.revisionsPort === undefined ? undefined : swappable(createPortRevisionsClient(provide.revisionsPort));
+  const revisions = revisionsSlot?.view;
   opened(() => revisions?.close());
   const geoSpecClient = createGeoSpecWorkerRpcClient({
     openFileSystemBridge: () => createFileSystemBridgePort(agentView),
     runtimeConfig,
-    geoSpecEngine,
-    ...(geoSpecEngine !== 'native' || revisions === undefined
+    ...(revisions === undefined
       ? {}
       : {
           candidateSync: {
@@ -560,7 +601,7 @@ const composeProjectHost = async (
       },
       files: projectRoot,
       resolve: async ({ entry }, signal, resolution) => {
-        const result = await runtimeClient.resolveParameters({
+        const result = await runtimeClient.describe({
           source: { path: entry },
           ...(resolution === undefined ? {} : { resolution }),
           signal,
@@ -571,7 +612,7 @@ const composeProjectHost = async (
             { code: result.issues[0]?.code ?? 'PARAMETER_RESOLUTION_FAILED' },
           );
         }
-        return result.data;
+        return result.parameters;
       },
     });
     parameterActors.set(targetFile, actor);
@@ -582,7 +623,10 @@ const composeProjectHost = async (
     parameterActorFor,
   });
   /* The registry over one filesystem: the project's own, or an attempt's checkout its placement granted (W8 G09). */
-  const toolRegistryOver = (provider: FileSystemProvider): ToolRegistry => {
+  const toolRegistryOver = (
+    provider: FileSystemProvider,
+    preferences: Pick<ProjectFileSystemBridge, 'readMachineSettings'>,
+  ): ToolRegistry => {
     const view = composeView(
       { filesystem: provider },
       { consumer: 'agent', policy: tauPathPolicy, overlays: [systemSkillsOverlay()] },
@@ -600,8 +644,8 @@ const composeProjectHost = async (
       ...runtimeRpc,
       parameters,
       geospec: geoSpecClient,
-      geospecAuthoringMode: geoSpecEngine,
       machines: runtimeClient.machines,
+      machineSettings: preferences,
       print: {
         /* The `tau.json` id every print request from this project's agent names (blueprint D5). An attempt reads
          * its artifact from the checkout its placement granted. */
@@ -617,7 +661,7 @@ const composeProjectHost = async (
       testingEnabled: provide.testingEnabled ?? false,
     });
   };
-  const toolRegistry = toolRegistryOver(workspaceProvider);
+  const toolRegistry = toolRegistryOver(workspaceProvider, fileSystem);
   /* ponytail: an attempt's file tools read its checkout; the kernel, GeoSpec and parameter clients stay on the project
    * root until W8's candidate checkouts need them re-rooted. */
   const placedTools = (tools: TurnPlacementToolPort): ToolRegistry => {
@@ -626,7 +670,7 @@ const composeProjectHost = async (
     const opened = (async (): Promise<Readonly<{ registry: ToolRegistry } | { failure: unknown }>> => {
       try {
         const proxy = await createProjectFileSystemProxy(tools.port);
-        return { registry: toolRegistryOver(createRelayedFileSystemProvider(proxy)) };
+        return { registry: toolRegistryOver(createRelayedFileSystemProvider(proxy), proxy) };
       } catch (error) {
         return { failure: error };
       }
@@ -643,13 +687,40 @@ const composeProjectHost = async (
     };
   };
   /* W8 TS-S5: the placement session the page brokered into the file-manager worker for this project. */
-  const turnPlacement: TurnPlacementChannel = connectTurnPlacementChannel({
-    port: provide.placementPort,
-    projectId: provide.authority.projectId,
-    toolsFor: placedTools,
-  });
+  const placementConnection = (port: MessagePort): TurnPlacementChannel =>
+    connectTurnPlacementChannel({
+      port,
+      projectId: provide.authority.projectId,
+      toolsFor: placedTools,
+    });
+  const diagnose = (event: Parameters<typeof recordChannelDiagnostic>[0]['event']): void => {
+    recordChannelDiagnostic({
+      event,
+      tabId: worker.tabId,
+      hostId: provide.hostId,
+      projectId: provide.projectId,
+      visible: worker.visibility.visible(),
+    });
+  };
+  diagnose('host.opened');
+  const placement = createResidentPlacement(
+    placementConnection(provide.placementPort),
+    () => {
+      worker.requestRebridge?.(provide.projectId, provide.hostId);
+    },
+    (event) => {
+      recordChannelDiagnostic({
+        ...event,
+        tabId: worker.tabId,
+        hostId: provide.hostId,
+        projectId: provide.projectId,
+        visible: worker.visibility.visible(),
+      });
+    },
+  );
+  const turnPlacement = placement.port;
   opened(() => {
-    turnPlacement.close('project host failed to open');
+    placement.close();
   });
   let cachedSkillFingerprint = '';
   let cachedSkills: Awaited<ReturnType<SkillResolver['getPromptSkillListing']>> = [];
@@ -678,8 +749,56 @@ const composeProjectHost = async (
       build: agentHostWorkerBuild,
       log:
         opfs === undefined
-          ? { kind: 'provider', fileSystem: projectRoot, durability }
+          ? {
+              kind: 'provider',
+              fileSystem: {
+                exists: async (path) => projectRoot.exists(path),
+                readFile: async (path) => projectRoot.readFile(path),
+                writeFile: async (path, bytes) => projectRoot.writeFile(path, bytes),
+                appendFile: async (path, bytes) => projectRoot.appendFile(path, bytes),
+                unlink: async (path) => projectRoot.unlink(path),
+                // The durable rooted bridge owns canonical metadata; log allocation only needs size.
+                stat: async (path, options) => projectRoot.stat(path, options),
+              },
+              durability,
+            }
           : { kind: 'opfs', directory: opfs },
+      observeLog: async ({ path, signal, onChange, onError }) => {
+        let released = false;
+        const subscription = projectRoot.watchReady({ paths: [path] }, onChange);
+        const release = (): void => {
+          if (!released) {
+            released = true;
+            signal.removeEventListener('abort', release);
+            subscription.unsubscribe();
+          }
+        };
+        signal.addEventListener('abort', release, { once: true });
+        // async-iife: bootstrap
+        // The observation owns its closure monitor until release; stale callbacks are fenced.
+        void (async () => {
+          try {
+            await subscription.closed;
+            // oxlint-disable-next-line typescript/no-unnecessary-condition -- Release may run while the observation closure is awaited.
+            if (!released && !signal.aborted) {
+              onError(new Error(`Chat log observation closed for ${path}.`));
+            }
+          } catch (error) {
+            // oxlint-disable-next-line typescript/no-unnecessary-condition -- Release may run while the observation closure is awaited.
+            if (!released && !signal.aborted) {
+              onError(error);
+            }
+          }
+        })();
+        try {
+          await subscription.ready;
+          signal.throwIfAborted();
+          return release;
+        } catch (error) {
+          release();
+          throw error;
+        }
+      },
       visibility: worker.visibility,
     }),
     modelTransport: createConfiguredGatewayModelTransport(gatewayOptions),
@@ -713,6 +832,7 @@ const composeProjectHost = async (
 
   return {
     hostId: provide.hostId,
+    needsRebridge: placement.needsRecovery,
     stoppability: (chatId) => launcher.stoppability(chatId),
     connect: (port) => {
       const channel = serveAgentChannel(port, launcher, {
@@ -728,18 +848,32 @@ const composeProjectHost = async (
     rebridge: async (ports) => {
       let next: Awaited<ReturnType<typeof openProjectBridges>>;
       try {
+        if (revisionsSlot !== undefined && ports.revisionsPort === undefined) {
+          throw Object.assign(new Error('The replacement revision reader is not available.'), {
+            code: 'REVISIONS_UNAVAILABLE',
+          });
+        }
         next = await openProjectBridges(ports);
       } catch (error) {
         /* A failed rebridge keeps the bridges the host has, and closes every port it was sent (W6.r1 round 4). */
         closeProvidedPorts(ports);
+        // Opening the new placement may already have fenced the prior session at the root.
+        if (ports.placementPort !== undefined) {
+          placement.invalidate();
+        }
         throw error;
       }
       const replaced = [fileSystemSlot.swap(next.fileSystem), projectRootSlot.swap(next.projectRoot)];
-      if (ports.computeStorePort !== undefined && computeStore !== undefined) {
-        const nextCompute = connectComputeStoreChannel(ports.computeStorePort);
-        computeStore.swap(nextCompute.store);
-        computeConnection?.dispose();
-        computeConnection = nextCompute;
+      if (ports.revisionsPort !== undefined && revisionsSlot !== undefined) {
+        revisionsSlot.swap(createPortRevisionsClient(ports.revisionsPort)).close();
+      } else {
+        ports.revisionsPort?.close();
+      }
+      if (ports.placementPort !== undefined) {
+        placement.replace(placementConnection(ports.placementPort));
+      }
+      if (ports.computeStorePort !== undefined && computeConnection !== undefined) {
+        computeConnection.rebind(ports.computeStorePort);
       } else {
         ports.computeStorePort?.close();
       }
@@ -755,6 +889,7 @@ const composeProjectHost = async (
     drain: async (signal) => {
       /* Nothing new is admitted here: no stream is served, the registry routes no connect to a released host, and the
        * launcher refuses a new start, from any tab. */
+      diagnose('host.released');
       draining = true;
       for (const channel of channels) {
         channel.dispose('project host released');
@@ -795,6 +930,7 @@ const composeProjectHost = async (
       }
     },
     close: async () => {
+      diagnose('host.closed');
       for (const channel of channels) {
         channel.dispose('project host closed');
       }
@@ -809,7 +945,7 @@ const composeProjectHost = async (
       });
       imageService.dispose();
       revisions?.close();
-      turnPlacement.close('project host closed');
+      placement.close();
       runtimeClient.terminate();
       computeConnection?.dispose();
       fileSystem.dispose();

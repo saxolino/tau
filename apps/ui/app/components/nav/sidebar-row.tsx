@@ -7,7 +7,7 @@
  * - The actions sit absolutely over the dissolved tail, so revealing them never
  *   moves the name; fine pointers see them on hover or focus, coarse pointers
  *   always (I3).
- * - The row's sentence is its link's tooltip and `aria-describedby` text.
+ * - The row's sentence is its link's `aria-describedby` text, with an optional tooltip.
  * - A row being renamed carries the focus outline; the field inside draws none.
  */
 
@@ -177,13 +177,13 @@ export function SidebarRowMenuButton({
 }
 
 /**
- * The row's name link, with its sentence one hover or focus away (D1).
+ * The row's name link, with an accessible sentence and optional tooltip.
  *
  * A pending route only sets `aria-busy` here; its spinner belongs to the row's
  * status slot (`StatusMark`), so loading never moves the name.
  *
  * @param props - The link's target and state, the name, and the sentence.
- * @returns The link, its tooltip and its description.
+ * @returns The link, its description and optional tooltip.
  * @public
  */
 export function SidebarRowLink({
@@ -193,6 +193,7 @@ export function SidebarRowLink({
   descriptionId,
   isActive,
   isPending,
+  hasTooltip = true,
   onClick,
   state,
 }: {
@@ -202,6 +203,7 @@ export function SidebarRowLink({
   readonly descriptionId: string;
   readonly isActive: boolean;
   readonly isPending: boolean;
+  readonly hasTooltip?: boolean;
   readonly onClick?: () => void;
   readonly state?: { readonly openChat: true };
 }): React.JSX.Element {
@@ -227,10 +229,14 @@ export function SidebarRowLink({
   }
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>{link}</TooltipTrigger>
-        <TooltipContent side='right'>{sentence}</TooltipContent>
-      </Tooltip>
+      {hasTooltip ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{link}</TooltipTrigger>
+          <TooltipContent side='right'>{sentence}</TooltipContent>
+        </Tooltip>
+      ) : (
+        link
+      )}
       <span id={descriptionId} className='sr-only'>
         {sentence}
       </span>
@@ -239,17 +245,23 @@ export function SidebarRowLink({
 }
 
 /**
- * A list that failed to load with nothing to show (D6, D18).
+ * A list load failure, including a failure while previous rows remain visible (D6, D18).
  *
- * No control: the query has already retried, and tries again when the window
- * regains focus or the files it reads change. A failed *run* is retried from
- * the chat, where `continueChat` owns it.
+ * Metadata owners can supply an explicit Retry action. Other lists retain their
+ * query's automatic recovery when the window regains focus or source files change.
+ * Failed runs are retried from the chat, where `continueChat` owns recovery.
  *
- * @param props - What failed to load.
+ * @param props - What failed to load and its optional metadata recovery action.
  * @returns The row's content.
  * @public
  */
-export function SidebarFailureRow({ what }: { readonly what: string }): React.JSX.Element {
+export function SidebarFailureRow({
+  what,
+  onRetry,
+}: {
+  readonly what: string;
+  readonly onRetry?: () => void;
+}): React.JSX.Element {
   return (
     <div
       data-slot='failure-row'
@@ -259,7 +271,13 @@ export function SidebarFailureRow({ what }: { readonly what: string }): React.JS
         <CircleAlert aria-hidden className='size-3.5 shrink-0 text-feature' />
       </span>
       <span className='fade-label flex-1'>{`Couldn't load ${what}`}</span>
-      <span className='sr-only'>Tau tries again when you return to this window.</span>
+      {onRetry ? (
+        <Button type='button' variant='ghost' size='xs' aria-label={`Retry loading ${what}`} onClick={onRetry}>
+          Retry
+        </Button>
+      ) : (
+        <span className='sr-only'>Tau tries again when you return to this window.</span>
+      )}
     </div>
   );
 }

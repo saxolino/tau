@@ -82,7 +82,7 @@ import thumbnail75 from './kernels/replicad/ibeam/thumbnail.webp?url';
 import thumbnail76 from './kernels/replicad/jscad-logo/thumbnail.webp?url';
 import thumbnail77 from './kernels/replicad/kestrel-240-quadcopter/thumbnail.webp?url';
 import thumbnail78 from './kernels/replicad/lego/thumbnail.webp?url';
-import thumbnail79 from './kernels/replicad/libassimp-format-prism/thumbnail.webp?url';
+import thumbnail79 from './kernels/replicad/libassimp-logo/thumbnail.webp?url';
 import thumbnail80 from './kernels/replicad/logo/thumbnail.webp?url';
 import thumbnail81 from './kernels/replicad/logo-keychain/thumbnail.webp?url';
 import thumbnail82 from './kernels/replicad/nanoraster-logo/thumbnail.webp?url';
@@ -109,6 +109,7 @@ import thumbnail102 from './kernels/replicad/wavy-vase/thumbnail.webp?url';
 import thumbnail103 from './kernels/replicad/wedge-door-stopper/thumbnail.webp?url';
 import thumbnail104 from './kernels/replicad/wheelbarrow/thumbnail.webp?url';
 import thumbnail105 from './kernels/replicad/worm-gear-system/thumbnail.webp?url';
+import thumbnail106 from './kernels/tscircuit/led-board/thumbnail.webp?url';
 
 /** Static thumbnail URLs keyed by `<kernel>/<example>`. @public */
 export const thumbnailAssets = {
@@ -191,7 +192,7 @@ export const thumbnailAssets = {
   'replicad/jscad-logo': thumbnail76,
   'replicad/kestrel-240-quadcopter': thumbnail77,
   'replicad/lego': thumbnail78,
-  'replicad/libassimp-format-prism': thumbnail79,
+  'replicad/libassimp-logo': thumbnail79,
   'replicad/logo': thumbnail80,
   'replicad/logo-keychain': thumbnail81,
   'replicad/nanoraster-logo': thumbnail82,
@@ -218,6 +219,7 @@ export const thumbnailAssets = {
   'replicad/wedge-door-stopper': thumbnail103,
   'replicad/wheelbarrow': thumbnail104,
   'replicad/worm-gear-system': thumbnail105,
+  'tscircuit/led-board': thumbnail106,
 } as const;
 
 /** Key of a generated example thumbnail asset. @public */

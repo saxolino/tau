@@ -1,3 +1,9 @@
+import { useProjectAvailability } from '#hooks/use-project-availability.js';
+import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
+import { BrowserPane } from '#components/browser/browser-pane.js';
+import { getBrowserBridge } from '#components/browser/browser-bridge.js';
+import { connectBrowserWorkbench } from '#components/browser/browser-workbench.js';
+import type { BrowserPanelParameters } from '#components/browser/browser-workbench.js';
 import {
   createContext,
   Fragment,
@@ -14,6 +20,7 @@ import type { ComponentProps, ReactNode } from 'react';
 import { useSelector } from '@xstate/react';
 import {
   Activity,
+  Globe,
   Bot,
   Box,
   BriefcaseBusiness,
@@ -64,7 +71,7 @@ import type { DockviewTabIconRenderer } from '#components/panes/dockview-tab.js'
 import { DockviewPaneAction } from '#components/panes/dockview-pane-action.js';
 import { DockviewSplitAction } from '#components/panes/dockview-split-action.js';
 import { DockviewEmptyAction, DockviewEmptyCloseAction } from '#components/panes/dockview-empty-action.js';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { isPrinterFileName } from '#components/printer/printer-file.js';
 import { WorkbenchTabContextMenu } from '#components/panes/editor-tab-context-menu.js';
 import { withTabContextMenu } from '#components/panes/with-tab-context-menu.js';
@@ -113,7 +120,7 @@ import { Button } from '@taucad/ui/components/button';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import type { OpenFile } from '#types/editor.types.js';
 import { PaneButton } from '#components/ui/pane-button.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -123,7 +130,8 @@ import {
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
 import { Separator } from '@taucad/ui/components/separator';
-import { formatKeyCombination } from '#utils/keys.utils.js';
+import { formatKeyCombination } from '@taucad/ui/utils/keys';
+import { capturePointer, releasePointer } from '@taucad/ui/utils/pointer-capture';
 import type {
   FileViewerPaneContent,
   FileViewerPresentation,
@@ -265,6 +273,10 @@ function EditorPanel(properties: IDockviewPanelProps<EditorPanelParameters>): Re
   );
 }
 
+function BrowserWorkbenchPanel({ params }: IDockviewPanelProps<BrowserPanelParameters>): React.JSX.Element {
+  return <BrowserPane tabId={params.browserTabId} />;
+}
+
 function ParametersWorkbenchPanel(): React.JSX.Element {
   return <ParametersPanelBody />;
 }
@@ -399,6 +411,12 @@ const workbenchSurfaceGroups: readonly WorkbenchSurfaceGroup[] = [
     label: 'Activity',
     surfaces: [
       {
+        id: 'browser',
+        label: paneTitle('browser'),
+        icon: Globe,
+        panel: { id: 'workbench:browser', component: 'browser', title: paneTitle('browser') },
+      },
+      {
         id: 'revisions',
         label: paneTitle('revisions'),
         icon: History,
@@ -530,7 +548,7 @@ export function replaceWorkbenchPlaceholderWithUtility({
   readonly panelId: WorkbenchUtilityPanelId;
 }): void {
   const definition = workbenchPanels[panelId];
-  const existing = api.panels.find((panel) => panel.id === definition.id);
+  const existing = panelId === 'browser' ? undefined : api.panels.find((panel) => panel.id === definition.id);
   if (existing) {
     existing.api.setActive();
     placeholder.api.close();
@@ -541,6 +559,7 @@ export function replaceWorkbenchPlaceholderWithUtility({
   const index = group.panels.findIndex((panel) => panel.id === placeholder.id);
   api.addPanel({
     ...definition,
+    ...(panelId === 'browser' ? { id: `browser:${generatePrefixedId(idPrefix.pane)}` } : {}),
     position: { direction: 'within', referenceGroup: group, ...(index === -1 ? {} : { index }) },
   });
   placeholder.api.close();
@@ -790,6 +809,7 @@ export function WorkbenchLeftActions(properties: IDockviewHeaderActionsProps): R
 }
 
 const components = {
+  browser: BrowserWorkbenchPanel,
   editor: EditorPanel,
   newTab: WorkbenchPlaceholderPanel,
   parameters: ParametersWorkbenchPanel,
@@ -809,6 +829,7 @@ const components = {
 };
 
 export const workbenchPanels = {
+  browser: getWorkbenchSurface('browser').panel!,
   parameters: getWorkbenchSurface('parameters').panel!,
   model: getWorkbenchSurface('model').panel!,
   kinematics: getWorkbenchSurface('kinematics').panel!,
@@ -832,7 +853,9 @@ export const workbenchPanels = {
  */
 export const getWorkbenchTabIcon: DockviewTabIconRenderer = (properties) => {
   const mode = getPlaceholderParameters(properties)?.mode;
-  const surface = workbenchSurfaces.find((candidate) => candidate.panel?.id === properties.api.id);
+  const surface = workbenchSurfaces.find((candidate) =>
+    properties.api.component === 'browser' ? candidate.id === 'browser' : candidate.panel?.id === properties.api.id,
+  );
   const filePath = getFileParameters(properties)?.filePath;
   const Icon =
     mode === 'open-file'
@@ -860,7 +883,7 @@ export function openWorkbenchUtility(
   group?: DockviewGroupPanel,
 ): void {
   const definition = workbenchPanels[panelId];
-  const existing = api.panels.find((panel) => panel.id === definition.id);
+  const existing = panelId === 'browser' ? undefined : api.panels.find((panel) => panel.id === definition.id);
   if (existing) {
     existing.api.setActive();
     return;
@@ -869,6 +892,7 @@ export function openWorkbenchUtility(
   const referenceGroup = group ?? api.activeGroup ?? api.groups[0];
   api.addPanel({
     ...definition,
+    ...(panelId === 'browser' ? { id: `browser:${generatePrefixedId(idPrefix.pane)}` } : {}),
     ...(referenceGroup ? { position: { direction: 'within', referenceGroup } } : {}),
   });
 }
@@ -1118,16 +1142,9 @@ function FileWorkbenchPane({
     requestsFiles: shouldRenderFiles,
     presentation,
   });
-  const [filesWidth, setFilesWidth] = useState(paneState.filesWidth);
   const [fileActionsContainer, setFileActionsContainer] = useState<HTMLDivElement>();
   const alternateView = presentation?.views.find((view) => view.id !== paneState.viewId);
   const filesAction = paneState.filesOpen ? `Hide files for ${title}` : `Show files for ${title}`;
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      setFilesWidth(paneState.filesWidth);
-    });
-  }, [paneState.filesWidth]);
 
   const actions = (
     <div className='ml-2 flex shrink-0 items-center gap-1' role='group' aria-label={`File actions for ${title}`}>
@@ -1179,31 +1196,24 @@ function FileWorkbenchPane({
       <div className='flex min-h-0 flex-1'>
         <div className='min-h-0 min-w-0 flex-1'>{children}</div>
         {paneState.filesOpen ? (
-          <div
-            id={regionId}
-            role='region'
-            aria-label={`Files for ${title}`}
-            className='h-full shrink-0'
-            style={{ width: filesWidth }}
-          >
-            <FilePaneFilesSidecar
-              actionsContainer={fileActionsContainer}
-              width={filesWidth}
-              onWidthChange={setFilesWidth}
-              onWidthCommit={(width) => {
-                panelApi.updateParameters({ filesWidth: width });
-                if (filePath && profile !== 'shared') {
-                  editorRef.send({ type: 'setFileSidebarWidth', path: filePath, width });
-                }
-              }}
-              onOpenChange={(open) => {
-                panelApi.updateParameters({ filesOpen: open });
-              }}
-              onOpenFile={onOpenFile}
-              shouldHandleReveal={shouldHandleReveal}
-              isReadOnly={profile === 'shared'}
-            />
-          </div>
+          <FilePaneFilesSidecar
+            regionId={regionId}
+            title={title}
+            actionsContainer={fileActionsContainer}
+            width={paneState.filesWidth}
+            onWidthCommit={(width) => {
+              panelApi.updateParameters({ filesWidth: width });
+              if (filePath && profile !== 'shared') {
+                editorRef.send({ type: 'setFileSidebarWidth', path: filePath, width });
+              }
+            }}
+            onOpenChange={(open) => {
+              panelApi.updateParameters({ filesOpen: open });
+            }}
+            onOpenFile={onOpenFile}
+            shouldHandleReveal={shouldHandleReveal}
+            isReadOnly={profile === 'shared'}
+          />
         ) : null}
       </div>
     </div>
@@ -1282,11 +1292,8 @@ export const FileEditor = memo(function ({
   const handleFileSelectorSelect = useCallback(
     (path: string) => {
       editorRef.send({ type: 'openFile', path, source: 'user' });
-      panelApi.updateParameters({ filePath: path });
-      const fileName = path.split('/').pop() ?? path;
-      panelApi.setTitle(fileName);
     },
-    [editorRef, panelApi],
+    [editorRef],
   );
 
   const handleForceOpenBinary = useCallback(() => {
@@ -1306,15 +1313,17 @@ export const FileEditor = memo(function ({
     void contentService.resolve(filePath, { sizeLimit: Number.MAX_SAFE_INTEGER });
   }, [contentService, filePath]);
 
+  const textContent = result.kind === 'text' ? result.content : undefined;
+  const binarySize = result.kind === 'binary' ? result.size : undefined;
   const handleReadAll = useCallback(async (): Promise<Uint8Array<ArrayBuffer>> => {
-    if (result.kind === 'text') {
-      return new Uint8Array(result.content);
+    if (textContent !== undefined) {
+      return new Uint8Array(textContent);
     }
-    if (result.kind === 'binary' && contentService) {
-      return contentService.readRawBytes(filePath, { sizeLimit: result.size });
+    if (binarySize !== undefined && contentService) {
+      return contentService.readRawBytes(filePath, { sizeLimit: binarySize });
     }
     throw new Error(`File '${filePath}' is not available to a viewer`);
-  }, [contentService, filePath, result]);
+  }, [contentService, filePath, textContent, binarySize]);
 
   const handleCodeChange = useCallback(
     (value: ComponentProps<typeof CodeEditor>['value']) => {
@@ -1387,6 +1396,7 @@ export const FileEditor = memo(function ({
   let body: ReactNode;
   let resolvedViewer: ResolvedFileViewer | undefined;
   let viewerRequest: Omit<FileViewerRenderRequest, 'renderPane'> | undefined;
+  const availability = useProjectAvailability();
   switch (result.kind) {
     case 'loading': {
       body = <EditorPanePlaceholder label={`Loading ${filePath.split('/').pop() ?? filePath}`} />;
@@ -1401,6 +1411,10 @@ export const FileEditor = memo(function ({
       break;
     }
     case 'orphaned': {
+      if (availability !== 'ready') {
+        body = <ProjectSyncPlaceholder state={availability} />;
+        break;
+      }
       body = (
         <div className='flex h-full flex-col items-center justify-center gap-4 text-muted-foreground'>
           <FileX className='size-12 stroke-1' />
@@ -1508,9 +1522,23 @@ export const FileEditor = memo(function ({
         editorRef.send({ type: 'openFile', path, source: 'user', readOnly: fileReadOnly });
       }}
     >
-      {paneBody}
+      <div className='flex h-full min-h-0 flex-1 flex-col'>
+        {result.observation.status === 'closed' || result.observation.status === 'error' ? (
+          <div role='status' className='flex shrink-0 items-center justify-between gap-2 border-b px-3 py-1 text-xs'>
+            <span>File updates unavailable</span>
+            <Button variant='ghost' size='sm' aria-label='Retry file updates' onClick={result.retry}>
+              Retry
+            </Button>
+          </div>
+        ) : undefined}
+        <div className='min-h-0 flex-1'>{paneBody}</div>
+      </div>
     </FileWorkbenchPane>
   );
+
+  if (availability !== 'ready') {
+    return <ProjectSyncPlaceholder state={availability} />;
+  }
 
   if (result.kind === 'binary' || result.kind === 'text') {
     return <RoutedFileViewer viewer={resolvedViewer!} request={viewerRequest!} renderPane={renderPane} />;
@@ -1534,18 +1562,20 @@ function RoutedFileViewer({
 const clampFilesWidth = (width: number): number => Math.min(maximumFilesWidth, Math.max(minimumFilesWidth, width));
 
 function FilePaneFilesSidecar({
+  regionId,
+  title,
   actionsContainer,
-  width,
-  onWidthChange,
+  width: savedWidth,
   onWidthCommit,
   onOpenChange,
   onOpenFile,
   shouldHandleReveal,
   isReadOnly = false,
 }: {
+  readonly regionId: string;
+  readonly title: string;
   readonly actionsContainer: Element | DocumentFragment | undefined;
   readonly width: number;
-  readonly onWidthChange: (width: number) => void;
   readonly onWidthCommit: (width: number) => void;
   readonly onOpenChange: (open: boolean) => void;
   readonly onOpenFile: (path: string, readOnly?: boolean) => void;
@@ -1553,15 +1583,37 @@ function FilePaneFilesSidecar({
   readonly isReadOnly?: boolean;
 }): React.JSX.Element {
   const drag = useRef<{ readonly x: number; readonly width: number; currentWidth: number } | undefined>(undefined);
+  const [draftWidth, setDraftWidth] = useState<number>();
+  const width = draftWidth ?? savedWidth;
+  const cancelDrag = useCallback(() => {
+    drag.current = undefined;
+    setDraftWidth(undefined);
+  }, []);
+  const requestOpen = useCallback(() => {
+    onOpenChange(true);
+  }, [onOpenChange]);
+
+  useEffect(() => {
+    window.addEventListener('blur', cancelDrag);
+    return () => {
+      window.removeEventListener('blur', cancelDrag);
+    };
+  }, [cancelDrag]);
 
   const commitWidth = (nextWidth: number): void => {
     const clamped = clampFilesWidth(nextWidth);
-    onWidthChange(clamped);
     onWidthCommit(clamped);
+    setDraftWidth(undefined);
   };
 
   return (
-    <div className='relative size-full border-l border-border'>
+    <div
+      id={regionId}
+      role='region'
+      aria-label={`Files for ${title}`}
+      className='relative h-full shrink-0 border-l border-border'
+      style={{ width }}
+    >
       <div
         role='separator'
         aria-label='Resize Files pane'
@@ -1572,8 +1624,11 @@ function FilePaneFilesSidecar({
         tabIndex={0}
         className='absolute top-0 -left-1 z-10 h-full w-2 cursor-col-resize outline-none focus-visible:focus-outline'
         onPointerDown={(event) => {
+          if (event.button !== 0) {
+            return;
+          }
           drag.current = { x: event.clientX, width, currentWidth: width };
-          event.currentTarget.setPointerCapture(event.pointerId);
+          capturePointer(event.currentTarget, event.pointerId);
         }}
         onPointerMove={(event) => {
           if (!drag.current) {
@@ -1581,7 +1636,7 @@ function FilePaneFilesSidecar({
           }
           const nextWidth = clampFilesWidth(drag.current.width + drag.current.x - event.clientX);
           drag.current.currentWidth = nextWidth;
-          onWidthChange(nextWidth);
+          setDraftWidth(nextWidth);
         }}
         onPointerUp={(event) => {
           if (!drag.current) {
@@ -1589,9 +1644,12 @@ function FilePaneFilesSidecar({
           }
           const { currentWidth } = drag.current;
           drag.current = undefined;
-          event.currentTarget.releasePointerCapture(event.pointerId);
+          releasePointer(event.currentTarget, event.pointerId);
           onWidthCommit(currentWidth);
+          setDraftWidth(undefined);
         }}
+        onPointerCancel={cancelDrag}
+        onLostPointerCapture={cancelDrag}
         onKeyDown={(event) => {
           if (event.key === 'ArrowLeft') {
             event.preventDefault();
@@ -1611,9 +1669,7 @@ function FilePaneFilesSidecar({
         onOpenFile={onOpenFile}
         shouldHandleReveal={shouldHandleReveal}
         readOnly={isReadOnly}
-        onRequestOpen={() => {
-          onOpenChange(true);
-        }}
+        onRequestOpen={requestOpen}
       />
     </div>
   );
@@ -1650,8 +1706,11 @@ export function WorkbenchRightHeaderActions(properties: IDockviewHeaderActionsPr
  */
 export const WorkbenchDockview = memo(function ({
   profile = 'editor',
+  onApiChange,
 }: {
   readonly profile?: WorkbenchProfile;
+  /** Reports the Dockview once ready, and `undefined` on unmount, for the workspace's Workbench toggle. */
+  readonly onApiChange?: (api: DockviewApi | undefined) => void;
 } = {}): React.JSX.Element {
   const { editorRef } = useProject();
   const { connectWorkbench, setWorkbenchOpen, layoutController } = useProjectWorkspace();
@@ -1660,6 +1719,28 @@ export const WorkbenchDockview = memo(function ({
   const monaco = useConfiguredMonaco();
   const [api, setApi] = useState<DockviewApi>();
   const isRestoringLayout = useRef(false);
+
+  useEffect(() => {
+    const bridge = getBrowserBridge();
+    if (!api || !bridge || profile === 'shared') {
+      return;
+    }
+    return connectBrowserWorkbench({
+      api,
+      bridge,
+      isRestoring: () => isRestoringLayout.current,
+      onError: (message) => {
+        toast.error(message);
+      },
+    });
+  }, [api, profile]);
+
+  useEffect(() => {
+    onApiChange?.(api);
+    return () => {
+      onApiChange?.(undefined);
+    };
+  }, [api, onApiChange]);
   const adoptedProjectionRef = useRef<string | undefined>(undefined);
   const pendingUserFilePathRef = useRef<string | undefined>(undefined);
   const pendingFilePlacementRef = useRef(new Map<string, PendingFilePlacement>());

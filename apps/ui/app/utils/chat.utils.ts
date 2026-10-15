@@ -10,6 +10,13 @@ import type {
 } from '@taucad/chat';
 import { getToolPartName, isAnyToolPart, isToolPart, modelSupportsInput } from '@taucad/chat';
 import { toolName } from '@taucad/chat/constants';
+import {
+  cadReferenceFromToken,
+  cadReferenceToken,
+  maxCadReferences,
+  parseCadReferenceTokens,
+} from '@taucad/chat/references';
+import type { CadReference } from '@taucad/chat/references';
 import { idPrefix } from '@taucad/types/constants';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { metaConfig } from '#constants/meta.constants.js';
@@ -204,11 +211,22 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
         `pattern: ${input.pattern}`,
         input.path ? `path: ${input.path}` : undefined,
         input.caseSensitive ? 'caseSensitive: true' : undefined,
+        input.context ? `context: ${input.context}` : undefined,
       ),
+    // Context lines use ripgrep's `file-line-` separator so they stay distinct from `file:line:` matches.
     output: (output) =>
       joinLines(
         `Total: ${output.totalMatches}`,
-        output.matches.map((match) => `${match.file}:${match.line}: ${match.content}`).join('\n'),
+        output.matches
+          .flatMap((match) => {
+            const firstLine = match.line - (match.before?.length ?? 0);
+            return [
+              ...(match.before ?? []).map((content, index) => `${match.file}-${firstLine + index}- ${content}`),
+              `${match.file}:${match.line}: ${match.content}`,
+              ...(match.after ?? []).map((content, index) => `${match.file}-${match.line + 1 + index}- ${content}`),
+            ];
+          })
+          .join('\n'),
       ),
   },
   [toolName.globSearch]: {
@@ -225,7 +243,7 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
           .join('\n'),
       ),
   },
-  [toolName.getKernelResult]: {
+  [toolName.evaluateModel]: {
     input: (input) => `targetFile: ${input.targetFile}`,
     output(output) {
       const lines = [`Status: ${output.status}`];
@@ -237,11 +255,12 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
       return joinLines(...lines);
     },
   },
-  [toolName.exportGeometry]: {
-    input: (input) => joinLines(`targetFile: ${input.targetFile}`, `format: ${input.format}`),
+  [toolName.exportModel]: {
+    input: (input) => joinLines(`targetFile: ${input.targetFile}`, `to: ${input.to}`),
     output: (output) =>
       joinLines(
-        `format: ${output.format}`,
+        `to: ${output.to}`,
+        `exportId: ${output.exportId}`,
         ...output.files.map(
           (file) => `${file.name}: ${file.artifactPath} (${file.mimeType}, ${file.byteLength} bytes)`,
         ),
@@ -256,9 +275,38 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
     output: (output) =>
       `${output.path}: ${String(output.counts.done)} done, ${String(output.counts.in_progress)} in progress, ${String(output.counts.pending)} pending`,
   },
+  [toolName.askQuestions]: {
+    input: (input) =>
+      (input.questions ?? [])
+        .map(
+          (question) =>
+            `${question?.question ?? ''}\n${(question?.options ?? []).map((option, index) => `  ${String.fromCodePoint(65 + index)}. ${option?.label ?? ''}`).join('\n')}`,
+        )
+        .join('\n'),
+    output: (output) =>
+      output.answers
+        .map(
+          (answer) =>
+            `${answer.id}: ${answer.answer}${answer.source === 'recommended' ? ' (recommended, no reply)' : ''}`,
+        )
+        .join('\n'),
+  },
   [toolName.arrangeWorkbench]: {
     input: (input) => `arrange_workbench(${Object.keys(input).join(', ')})`,
     output: (output) => `-> ${output.revisions.map((revision) => revision.path).join(', ')}`,
+  },
+  [toolName.installPackages]: {
+    input: (input) =>
+      joinLines(
+        ...Object.entries(input.add ?? {}).map(([name, range]) => `add: ${name}@${String(range)}`),
+        ...(input.remove ?? []).map((name) => `remove: ${String(name)}`),
+        ...(input.upgrade ?? []).map((name) => `upgrade: ${String(name)}`),
+      ),
+    output: (output) =>
+      joinLines(
+        ...output.packages.map((item) => `${item.name}@${item.version}`),
+        ...output.issues.map((issue) => `${issue.code}: ${issue.message}`),
+      ),
   },
   [toolName.getMachine]: {
     input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
@@ -303,6 +351,7 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
         output.revisions === undefined ? undefined : `${String(output.revisions.length)} revision(s)`,
         output.changes === undefined ? undefined : `${String(output.changes.length)} changed file(s)`,
         output.branches === undefined ? undefined : `${String(output.branches.length)} branch(es)`,
+        output.conflict === undefined ? undefined : `${String(output.conflict.files.length)} conflicted file(s)`,
       ]
         .filter((field) => field !== undefined)
         .join(' · '),
@@ -492,7 +541,7 @@ export function serializeMessage(message: MyUIMessage): string {
  * @param title - Title for the transcript (e.g. the chat name)
  * @returns Markdown transcript string
  */
-export function serializeTranscript(messages: MyUIMessage[], title: string): string {
+export function serializeTranscript(messages: readonly MyUIMessage[], title: string): string {
   const exportDate = formatExportDate(new Date());
   const header = `# ${title}\n\n_Exported on ${exportDate} from ${metaConfig.userAgent}_`;
 
@@ -671,15 +720,19 @@ export function stampMessageCreatedAt(messages: MyUIMessage[]): MyUIMessage[] {
  * relative to the chat's own directory (providers read attachments best ahead
  * of the text about them), then the text, trimmed and omitted when empty. A part carries `providerMetadata.common.byteLength` only when the
  * reference knows its size (P29); nothing is invented for one that does not.
+ * The metadata carries the message's geometry references when its text holds `@cad[...]` tokens.
  *
- * @param input - The composed text and the chat's attachment references.
+ * @param input - The composed text, the chat's attachment references and the chips' structured references.
  * @returns A pending user message with a fresh id.
  */
 export function buildUserMessage(input: {
   readonly text: string;
   readonly attachments?: readonly StoredAttachmentRef[];
+  /** Structured references the composer's chips held; matched to the text's `@cad[...]` tokens. */
+  readonly references?: readonly CadReference[];
 }): MyUIMessage {
   const text = input.text.trim();
+  const references = messageReferences(text, input.references ?? []);
   return {
     id: generatePrefixedId(idPrefix.message),
     role: 'user',
@@ -698,8 +751,51 @@ export function buildUserMessage(input: {
       ),
       ...(text.length > 0 ? [{ type: 'text', text } as const] : []),
     ],
-    metadata: { createdAt: Date.now(), status: 'pending' },
+    metadata: { createdAt: Date.now(), status: 'pending', ...(references.length === 0 ? {} : { references }) },
   };
+}
+
+/**
+ * The user message an edit produces: the original's id and metadata around the edited text, attachments and
+ * references. References are re-derived from the edited text, so a token the edit removed drops its reference; the
+ * edit composer's chips, then the original's references, supply the detail for each token that remains.
+ *
+ * @param original - The message being edited.
+ * @param input - The edited text, attachments and the edit composer's structured references.
+ * @returns The edited message under the original's id.
+ */
+export function buildEditedUserMessage(
+  original: MyUIMessage,
+  input: {
+    readonly text: string;
+    readonly attachments?: readonly StoredAttachmentRef[];
+    readonly references?: readonly CadReference[];
+  },
+): MyUIMessage {
+  const { references: previous = [], ...metadata } = original.metadata ?? {};
+  const built = buildUserMessage({
+    text: input.text,
+    ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
+    // A later reference wins its token, so the edit composer's chips go last.
+    references: [...previous, ...(input.references ?? [])],
+  });
+  return { ...built, id: original.id, metadata: { ...metadata, ...built.metadata } };
+}
+
+/**
+ * The references a message carries (blueprint D6): one per distinct `@cad[...]` token in its text, the composer's
+ * structured reference when one matches the token, else what the token itself names. A reference whose token the
+ * text no longer holds (the chip was deleted) is dropped.
+ */
+function messageReferences(text: string, supplied: readonly CadReference[]): CadReference[] {
+  const byToken = new Map(supplied.map((reference) => [cadReferenceToken(reference), reference]));
+  const references = new Map<string, CadReference>();
+  for (const segment of parseCadReferenceTokens(text)) {
+    if (segment.type === 'cadReference' && !references.has(segment.token) && references.size < maxCadReferences) {
+      references.set(segment.token, byToken.get(segment.token) ?? cadReferenceFromToken(segment.target));
+    }
+  }
+  return [...references.values()];
 }
 
 // ACP transports both media kinds; the local agent's prompt capabilities decide what it can read.

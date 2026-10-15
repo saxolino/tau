@@ -537,6 +537,8 @@ export const connectBambuMachine = async (
     let firmware: string | undefined;
     let status: ReturnType<typeof parseBambuStatusPayload> | undefined;
     let statusObservedAt: string | undefined;
+    /** Status reports merged in this session; start diagnostics count the reports a window saw. */
+    let statusReports = 0;
     let versionSerial: string | undefined;
     let versionModel: string | undefined;
     const snapshot = (): MachineSnapshot => {
@@ -622,6 +624,7 @@ export const connectBambuMachine = async (
       try {
         status = mergeBambuStatus(status, parseBambuStatusPayload(Uint8Array.from(message)));
         statusObservedAt = runtime.clock.now();
+        statusReports += 1;
         updates.dispatchEvent(new Event('facts'));
         updates.dispatchEvent(new CustomEvent('snapshot', { detail: snapshot() }));
       } catch {
@@ -765,6 +768,33 @@ export const connectBambuMachine = async (
         observedAt: stored.observedAt,
       });
     };
+    /** When each start of this session was published, and how many status reports had arrived by then. */
+    const startWindows = new Map<string, Readonly<{ publishedAt: number; reportsBefore: number }>>();
+    /**
+     * Record how a start settled, or what the printer last showed when it did not, so a start the printer has not proven
+     * can be diagnosed from the host log (blueprint x1c-start-confirmation R7). Ids only: no payload bytes, serials or
+     * addresses.
+     *
+     * @param operationId - The start's operation.
+     * @param phase - The provider's own start window, or a later reconciliation.
+     * @returns Once the log entry is written or dropped.
+     */
+    const logStart = async (operationId: string, phase: 'window' | 'reconciliation'): Promise<void> => {
+      const wireId = bambuWireId(operationId);
+      const stored = commandResults.get(operationId);
+      const proof = stored ? `reply ${stored.result.status}` : startedRunId(operationId) ? 'status' : undefined;
+      const window = startWindows.get(operationId);
+      const since = window
+        ? `${String(Date.parse(runtime.clock.now()) - window.publishedAt)} ms and ${String(statusReports - window.reportsBefore)} status reports after publishing`
+        : 'after a reconnect';
+      const facts = `printer ${status?.runState ?? 'unreported'}, run id ${status?.providerRunId === wireId ? 'matches' : 'differs'}, run name ${status?.runName !== undefined && status.runName === startRunNames.get(operationId) ? 'matches' : 'differs'}`;
+      await runtime
+        .log({
+          level: 'info',
+          message: `Start ${wireId} ${proof ? `proven by ${proof}` : 'not yet proven'} ${phase === 'window' ? 'in the start window' : 'on reconciliation'}, ${since}; ${facts}.`,
+        })
+        .catch(() => undefined);
+    };
     const sendCommand = async (
       commandInput: Readonly<{
         operationId: string;
@@ -794,6 +824,12 @@ export const connectBambuMachine = async (
       }
       commandInput.signal.throwIfAborted();
       commandContexts.set(commandInput.operationId, commandInput.command);
+      if (commandInput.command === 'project_file') {
+        startWindows.set(commandInput.operationId, {
+          publishedAt: Date.parse(runtime.clock.now()),
+          reportsBefore: statusReports,
+        });
+      }
       try {
         await client.publishAsync(bambuTopic(serial, 'request'), JSON.stringify(commandInput.payload), { qos: 0 });
       } catch {
@@ -822,6 +858,9 @@ export const connectBambuMachine = async (
           updates.addEventListener('facts', observed);
           commandInput.signal.addEventListener('abort', finish, { once: true });
         });
+      }
+      if (commandInput.command === 'project_file') {
+        await logStart(commandInput.operationId, 'window');
       }
       return commandReceipt(commandInput.operationId, commandInput.command);
     };
@@ -1029,11 +1068,25 @@ export const connectBambuMachine = async (
             signal: uploadInput.signal,
           }));
         } catch (error) {
-          // The host's transport errors name the failure, never the access code.
+          // The host's transport errors name the failure, never the access code; a refusal keeps the printer's reply.
+          const cause = error instanceof Error && error.cause instanceof Error ? error.cause : undefined;
           await runtime.log({
             level: 'warning',
-            message: `FTPS upload of ${uploadInput.remoteName} failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 200)}`,
+            message: `FTPS upload of ${uploadInput.remoteName} failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 200)}${cause ? ` (${cause.message.slice(0, 200)})` : ''}`,
           });
+          if (error instanceof Error && error.message === 'MACHINE_UPLOAD_REFUSED') {
+            // The printer stores uploads on its microSD card; a refused store is the card, not the network.
+            const reply = isRecord(cause) && typeof cause['code'] === 'number' ? `FTP ${cause['code']}` : 'FTP refusal';
+            return {
+              status: 'rejected',
+              code: 'TRANSFER_REFUSED',
+              message:
+                `The printer refused to store the file (${reply}), so nothing was started. Its microSD card may be ` +
+                'full, damaged or locked: free space on it or format it on the printer, then send again.',
+              observedAt: runtime.clock.now(),
+            };
+          }
+          // A transfer that broke off may have reached the printer, so its result is unknown.
           return {
             status: 'unknown',
             reason: 'transfer-result-unavailable',
@@ -1154,11 +1207,16 @@ export const connectBambuMachine = async (
             observedAt: runtime.clock.now(),
           });
         }
-        return commandReceipt(
+        const receipt = commandReceipt(
           operationId,
           command === 'project_file' ? 'project_file' : commandContexts.get(operationId)!,
           transferId,
         );
+        // The host re-runs this on every report while a start is unproven; only its settling is worth a log line.
+        if (command === 'project_file' && receipt.status !== 'unknown') {
+          await logStart(operationId, 'reconciliation');
+        }
+        return receipt;
       },
       close,
       dispose: close,

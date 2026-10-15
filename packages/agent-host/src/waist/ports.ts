@@ -85,23 +85,32 @@ type AgentLiveEventBase = {
 
 /** Non-durable model output projected only while its run is live. @public */
 export type AgentLiveEvent =
-  | (AgentLiveEventBase & { readonly type: 'text-start' })
+  | (AgentLiveEventBase & { readonly type: 'text-start'; readonly phase?: string | undefined })
   | (AgentLiveEventBase & {
       readonly type: 'text-delta';
+      /** Explicit provider message phase; absent means unknown. */
+      readonly phase?: string | undefined;
       readonly delta: string;
       /** UTF-16 offset in this block, for reconciliation with durable checkpoints. */
       readonly offset?: number | undefined;
     })
-  | (AgentLiveEventBase & { readonly type: 'text-end'; readonly content: string })
-  | (AgentLiveEventBase & { readonly type: 'thinking-start'; readonly timestamp?: number | undefined })
+  | (AgentLiveEventBase & { readonly type: 'text-end'; readonly content: string; readonly phase?: string | undefined })
+  | (AgentLiveEventBase & {
+      readonly type: 'thinking-start';
+      readonly timestamp?: number | undefined;
+      readonly reasoningSummary?: string | undefined;
+    })
   | (AgentLiveEventBase & {
       readonly type: 'thinking-delta';
+      /** Latest provider-declared reasoning summary, never inferred from thought formatting. */
+      readonly reasoningSummary?: string | undefined;
       readonly delta: string;
       /** UTF-16 offset in this block, for reconciliation with durable checkpoints. */
       readonly offset?: number | undefined;
     })
   | (AgentLiveEventBase & {
       readonly type: 'thinking-end';
+      readonly reasoningSummary?: string | undefined;
       readonly content: string;
       readonly timestamp?: number | undefined;
     })
@@ -296,6 +305,10 @@ export type HostToolInvocation = {
  * answered by one of them, and re-deriving the choice from `approved` would
  * substitute the host's guess for the human's decision.
  *
+ * A host that asks through another app (an MCP client's form) rejects with code
+ * `APPROVAL_UNAVAILABLE` when that app could not ask: no person answered, so the
+ * tool hands its record back `awaiting-approval`, as under a host without one.
+ *
  * @public
  */
 export type HostToolApproval = ((request: {
@@ -489,6 +502,8 @@ export type TurnPlacementAnswer<Result extends Record<string, unknown>, Code ext
 
 /** What the root publishes. Delivery is at least once; M1's append is idempotent per key (TS-R18). @public */
 export type TurnPlacementFact =
+  /** The admitted tools changed a versioned file in this attempt. */
+  | Readonly<{ kind: 'changed'; key: TurnAttemptKey; checkoutId: string }>
   | Readonly<{ kind: 'settled'; key: TurnAttemptKey; row: TurnSettlementRow }>
   /** A lease this session did not admit refused one of its operations (TS-R16, TS-R17). */
   | Readonly<{ kind: 'leaseHeld'; key: TurnAttemptKey; checkoutId: string }>;
@@ -535,3 +550,6 @@ export type TurnPlacementPort = Readonly<{
     input: TurnAttemptInput,
   ) => Promise<TurnPlacementAnswer<NoResult, 'LEASE_HELD_ELSEWHERE' | 'REVISIONS_BUSY' | 'SESSION_FENCED'>>;
 }>;
+
+/** A launcher live delta qualified by its emitting writer incarnation. @public */
+export type SourceLiveEvent = AgentLiveEvent & { readonly sourceGeneration: string };

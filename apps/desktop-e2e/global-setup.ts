@@ -147,7 +147,16 @@ export const setup = async (): Promise<() => void> => {
    * model would be stubbed and is not a supported live selection. The default
    * completed-artifact tier remains self-host; an explicit isolated-cloud
    * gateway run uses its verified disposable development billing database. */
-  if (!desktopE2ECompletedArtifact || process.env['TAU_E2E_COMPLETED_CLOUD_GATEWAY'] === 'true') {
+  /* `TAU_E2E_API_SELF_HOST` keeps the API in self-host mode for external-agent
+   * runs that never touch the gateway but need self-host-only capability — the
+   * Zoo proxy refuses Tau-funded dispatch in cloud mode (`kernels.service.ts`). */
+  const selfHostApi = process.env['TAU_E2E_API_SELF_HOST'] === 'true';
+  if (selfHostApi) {
+    /* Pinned, not omitted: `--env-file-if-exists=.env` would otherwise let a
+     * developer's `TAU_CLOUD_ENABLED=true` put the gateway back in cloud mode. */
+    environment['TAU_CLOUD_ENABLED'] = 'false';
+  }
+  if (!selfHostApi && (!desktopE2ECompletedArtifact || process.env['TAU_E2E_COMPLETED_CLOUD_GATEWAY'] === 'true')) {
     environment['TAU_CLOUD_ENABLED'] = 'true';
     environment['BILLING_ENVIRONMENT'] = 'development';
     environment['BILLING_USAGE_CURSOR_SECRET'] = 'desktop-e2e-usage-cursor-secret-min-32-chars';
@@ -161,6 +170,12 @@ export const setup = async (): Promise<() => void> => {
     environment['STRIPE_PRODUCT_ID_CREDIT_PACK'] = 'prod_desktop_e2e';
     environment['TAU_LLM_PROVIDER_UPSTREAM_URL'] = desktopE2EProviderStubUrl;
     environment['ANTHROPIC_API_KEY'] = desktopE2EProviderStubKey;
+  }
+
+  /* Dictation reaches the voice spec's local stub through the API's development-only
+   * transcription seam; the live voice tier keeps the real OpenAI provider. */
+  if (process.env['TAU_E2E_LIVE_VOICE'] !== 'true') {
+    environment['TAU_TRANSCRIPTION_UPSTREAM_URL'] = desktopE2EProviderStubUrl;
   }
 
   /* Kept, unlike `ui-e2e`'s `stdio: 'ignore'`: a chat run that fails

@@ -1,3 +1,4 @@
+import { filesystemSourceIdentity } from '#services/filesystem-source-identity.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import type { PartialDeep } from 'type-fest';
@@ -158,6 +159,8 @@ export function useChats(resourceId: string, options?: { includeDeleted?: boolea
   const includeDeleted = options?.includeDeleted ?? false;
   const {
     getChatsForResource,
+    getMetadataObservationError,
+    refreshFilesystemObservations,
     getChat,
     createChat: createChatInManager,
     updateChat: updateChatInManager,
@@ -176,9 +179,11 @@ export function useChats(resourceId: string, options?: { includeDeleted?: boolea
     error,
     refetch,
   } = useQuery({
-    queryKey: ['chats', resourceId, { includeDeleted }],
-    async queryFn() {
-      return getChatsForResource(resourceId, { includeDeleted });
+    queryKey: ['chats', resourceId, filesystemSourceIdentity(getChatsForResource), { includeDeleted }],
+    async queryFn({ signal }) {
+      const records = await getChatsForResource(resourceId, { includeDeleted });
+      signal.throwIfAborted();
+      return records;
     },
     enabled: options?.enabled !== false && !isWorkerLoading && Boolean(resourceId),
   });
@@ -288,8 +293,11 @@ export function useChats(resourceId: string, options?: { includeDeleted?: boolea
   return {
     chats,
     isLoading,
-    error: error instanceof Error ? error.message : undefined,
-    retry: refetch,
+    error: getMetadataObservationError(resourceId) ?? (error instanceof Error ? error.message : undefined),
+    retry: async (): ReturnType<typeof refetch> => {
+      refreshFilesystemObservations();
+      return refetch();
+    },
     getChat,
     createChat,
     updateChat,

@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type * as ProjectExamplesModule from '#constants/project-examples.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import CadCommunity, { meta } from '#routes/community/route.js';
 
 /* A gallery of 25 so the standard page size (20) leaves a second page: 21 Replicad
@@ -106,7 +106,7 @@ describe('Community route', () => {
       'placeholder',
       'Search examples…',
     );
-    expect(screen.getByRole('link', { name: 'New project' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'New project' })).toHaveAttribute('href', '/projects/new');
     expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
   });
 

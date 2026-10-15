@@ -6,9 +6,14 @@ const cloudValue = process.env['TAU_CLOUD_ENABLED'];
 if (cloudValue !== undefined && cloudValue !== 'true' && cloudValue !== 'false') {
   throw new Error('TAU_CLOUD_ENABLED must be exactly true or false.');
 }
-const define = { tauCloudBuildEnabled: JSON.stringify(cloudValue === 'true') } as const;
+/* Launch gate OBS-7: the release workflow passes the DSN from the `desktop` environment; other builds report nothing. */
+const define = {
+  tauCloudBuildEnabled: JSON.stringify(cloudValue === 'true'),
+  tauSentryDsn: JSON.stringify(process.env['SENTRY_DSN'] ?? ''),
+} as const;
 
 const bundledWorkspaceDependencies = [
+  '@sentry/electron',
   '@taucad/agent-host',
   '@taucad/agent-tools',
   '@taucad/assimp',
@@ -16,6 +21,7 @@ const bundledWorkspaceDependencies = [
   '@taucad/brep',
   '@taucad/build123d',
   '@taucad/esbuild',
+  '@taucad/events',
   '@taucad/filesystem',
   '@taucad/geospec-engine',
   '@taucad/gltf',
@@ -34,6 +40,8 @@ const bundledWorkspaceDependencies = [
   '@taucad/runtime',
   '@taucad/skills',
   '@taucad/slicer',
+  '@taucad/tscircuit',
+  '@taucad/types',
   '@taucad/zoo',
   'pino-pretty',
   'zod',
@@ -64,8 +72,8 @@ export const desktopExternalizedDependencies = [
   /* Resolves its vendored seccomp/srt-win helpers relative to its own module file. */
   '@anthropic-ai/sandbox-runtime',
   '@taulabs/openrscad-engine',
-  '@taucad/geospec-engine-native',
   'esbuild',
+  'geospec-engine',
   'libassimp',
   'nanoraster',
 ] as const;
@@ -98,6 +106,7 @@ export default defineConfig(
       define,
       build: {
         outDir: 'dist/preload',
+        externalizeDeps: { exclude: ['@taucad/types', 'zod'] },
         lib: {
           entry: resolve(import.meta.dirname, 'src/preload/preload.ts'),
           formats: ['es'],

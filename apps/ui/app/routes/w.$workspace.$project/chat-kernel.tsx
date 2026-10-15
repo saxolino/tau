@@ -2,7 +2,7 @@ import { XIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ActorRefFrom } from 'xstate';
 import type { PaneviewApi, PaneviewPanelApi } from 'dockview-react';
-import { PaneviewReact } from 'dockview-react';
+import { Paneview } from '#components/panes/paneview.js';
 import {
   FloatingPanel,
   FloatingPanelClose,
@@ -13,7 +13,7 @@ import {
   FloatingPanelContentTitle,
 } from '#components/ui/floating-panel.js';
 import { cn } from '@taucad/ui/utils/cn';
-import { SearchInput } from '#components/search-input.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
 import {
   PaneviewHeader,
   PaneviewHeaderControls,
@@ -131,7 +131,7 @@ function KernelPaneview({
   }, [query, sortedEntries]);
 
   return (
-    <PaneviewReact
+    <Paneview
       key={paneviewKey}
       className={paneviewAttachedSurfaceStyleOverrides}
       components={paneviewComponents}

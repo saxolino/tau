@@ -1,249 +1,67 @@
 # libcascade — StepBasic (5)
 
-32 top-level symbols. Signatures are verbatim typescript.
-
-StepBasic_SizeMember: declare class StepBasic_SizeMember extends StepData_SelectReal
-
-  constructor
-
-  HasName(): boolean;
-
-  Name(): string;
-
-  SetName(name: string): boolean;
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_SizeSelect: declare class StepBasic_SizeSelect extends StepData_SelectType
-
-  constructor
-
-  CaseNum(ent: Standard_Transient): number;
-
-  NewMember(): StepData_SelectMember;
-
-  CaseMem(ent: StepData_SelectMember): number;
-
-  SetRealValue(aReal: number): void;
-
-  RealValue(): number;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_SolidAngleMeasureWithUnit: declare class StepBasic_SolidAngleMeasureWithUnit extends StepBasic_MeasureWithUnit
-
-  constructor
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_SolidAngleUnit: declare class StepBasic_SolidAngleUnit extends StepBasic_NamedUnit
-
-  constructor
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_Source: typeof StepBasic_Source[keyof typeof StepBasic_Source]
-
-StepBasic_SourceItem: declare class StepBasic_SourceItem extends StepData_SelectType
-
-  constructor
-
-  CaseNum(ent: Standard_Transient): number;
-
-  NewMember(): StepData_SelectMember;
-
-  Identifier(): TCollection_HAsciiString;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_ThermodynamicTemperatureUnit: declare class StepBasic_ThermodynamicTemperatureUnit extends StepBasic_NamedUnit
-
-  constructor
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_TimeMeasureWithUnit: declare class StepBasic_TimeMeasureWithUnit extends StepBasic_MeasureWithUnit
-
-  constructor
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_TimeUnit: declare class StepBasic_TimeUnit extends StepBasic_NamedUnit
-
-  constructor
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_UncertaintyMeasureWithUnit: declare class StepBasic_UncertaintyMeasureWithUnit extends StepBasic_MeasureWithUnit
-
-  constructor
-
-  Init(aValueComponent: StepBasic_MeasureValueMember, aUnitComponent: StepBasic_Unit, aName: TCollection_HAsciiString, aDescription: TCollection_HAsciiString): void;
-  Init(aValueComponent: StepBasic_MeasureValueMember, aUnitComponent: StepBasic_Unit): void;
-  Init(aValueComponent: StepBasic_MeasureValueMember, aUnitComponent: StepBasic_Unit, aName: TCollection_HAsciiString, aDescription: TCollection_HAsciiString): void;
-  Init(aValueComponent: StepBasic_MeasureValueMember, aUnitComponent: StepBasic_Unit): void;
-
-  SetName(aName: TCollection_HAsciiString): void;
-
-  Name(): TCollection_HAsciiString;
-
-  SetDescription(aDescription: TCollection_HAsciiString): void;
-
-  Description(): TCollection_HAsciiString;
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_Unit: declare class StepBasic_Unit extends StepData_SelectType
-
-  constructor
-
-  CaseNum(ent: Standard_Transient): number;
-
-  NamedUnit(): StepBasic_NamedUnit;
-
-  DerivedUnit(): StepBasic_DerivedUnit;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
-
-StepBasic_VersionedActionRequest: declare class StepBasic_VersionedActionRequest extends Standard_Transient
-
-  constructor
-
-  Init(aId: TCollection_HAsciiString, aVersion: TCollection_HAsciiString, aPurpose: TCollection_HAsciiString, hasDescription: boolean, aDescription: TCollection_HAsciiString): void;
-
-  Id(): TCollection_HAsciiString;
-
-  SetId(Id: TCollection_HAsciiString): void;
-
-  Version(): TCollection_HAsciiString;
-
-  SetVersion(Version: TCollection_HAsciiString): void;
-
-  Purpose(): TCollection_HAsciiString;
-
-  SetPurpose(Purpose: TCollection_HAsciiString): void;
-
-  Description(): TCollection_HAsciiString;
-
-  SetDescription(Description: TCollection_HAsciiString): void;
-
-  HasDescription(): boolean;
-
-  static get_type_name(): string;
-
-  static get_type_descriptor(): Standard_Type;
-
-  DynamicType(): Standard_Type;
-
-  delete(): void;
-
-  [Symbol.dispose](): void;
+20 top-level symbols. Signatures are verbatim typescript.
 
 StepBasic_VolumeUnit: declare class StepBasic_VolumeUnit extends StepBasic_NamedUnit
 
-  constructor
+  // StepBasic_VolumeUnit.constructor (constructor)
+  constructor();
 
+  // StepBasic_VolumeUnit.get_type_name (method)
   static get_type_name(): string;
 
+  // StepBasic_VolumeUnit.get_type_descriptor (method)
   static get_type_descriptor(): Standard_Type;
 
+  // StepBasic_VolumeUnit.DynamicType (method)
   DynamicType(): Standard_Type;
 
+  // StepBasic_VolumeUnit.delete (method)
   delete(): void;
 
+  // StepBasic_VolumeUnit.[Symbol.dispose] (method)
   [Symbol.dispose](): void;
 
 StepBasic_WeekOfYearAndDayDate: declare class StepBasic_WeekOfYearAndDayDate extends StepBasic_Date
 
-  constructor
+  // StepBasic_WeekOfYearAndDayDate.constructor (constructor)
+  constructor();
 
+  // StepBasic_WeekOfYearAndDayDate.Init (method)
   Init(aYearComponent: number, aWeekComponent: number, hasAdayComponent: boolean, aDayComponent: number): void;
   Init(aYearComponent: number): void;
-  Init(aYearComponent: number, aWeekComponent: number, hasAdayComponent: boolean, aDayComponent: number): void;
-  Init(aYearComponent: number): void;
 
+  // StepBasic_WeekOfYearAndDayDate.SetWeekComponent (method)
   SetWeekComponent(aWeekComponent: number): void;
 
+  // StepBasic_WeekOfYearAndDayDate.WeekComponent (method)
   WeekComponent(): number;
 
+  // StepBasic_WeekOfYearAndDayDate.SetDayComponent (method)
   SetDayComponent(aDayComponent: number): void;
 
+  // StepBasic_WeekOfYearAndDayDate.UnSetDayComponent (method)
   UnSetDayComponent(): void;
 
+  // StepBasic_WeekOfYearAndDayDate.DayComponent (method)
   DayComponent(): number;
 
+  // StepBasic_WeekOfYearAndDayDate.HasDayComponent (method)
   HasDayComponent(): boolean;
 
+  // StepBasic_WeekOfYearAndDayDate.get_type_name (method)
   static get_type_name(): string;
 
+  // StepBasic_WeekOfYearAndDayDate.get_type_descriptor (method)
   static get_type_descriptor(): Standard_Type;
 
+  // StepBasic_WeekOfYearAndDayDate.DynamicType (method)
   DynamicType(): Standard_Type;
 
+  // StepBasic_WeekOfYearAndDayDate.delete (method)
   delete(): void;
 
+  // StepBasic_WeekOfYearAndDayDate.[Symbol.dispose] (method)
   [Symbol.dispose](): void;
 
 StepBasic_Array1OfApproval: NCollection_Array1_handle_StepBasic_Approval

@@ -187,9 +187,7 @@ const typeDeclaration = (format: Format): Record<string, unknown> => ({
 });
 
 const supportedIdentifiers = (manifest: Manifest): readonly string[] =>
-  manifest.formats
-    .filter((format) => !format.systemPreview)
-    .flatMap((format) => [format.identifier, ...(format.aliases ?? [])]);
+  manifest.formats.flatMap((format) => (format.systemPreview ? [] : [format.identifier, ...(format.aliases ?? [])]));
 
 const extensionInfo = (options: { manifest: Manifest; point: string; principal: string }): string =>
   plist({
@@ -215,6 +213,7 @@ const extensionInfo = (options: { manifest: Manifest; point: string; principal: 
 
 const hostInfo = (manifest: Manifest): string =>
   plist({
+    NSMicrophoneUsageDescription: 'Tau uses your microphone to dictate messages when you start dictation.',
     CFBundleDocumentTypes: manifest.formats.map((format) => ({
       CFBundleTypeName: format.description,
       CFBundleTypeRole: 'Viewer',

@@ -66,7 +66,7 @@ import { ProjectActionDropdown } from '#components/project-library/project-actio
 import { Checkbox } from '@taucad/ui/components/checkbox';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { formatRelativeTime } from '#utils/date.utils.js';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { cookieName } from '#constants/cookie.constants.js';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { flagParameter } from '#utils/search-parameter.codecs.js';
@@ -83,6 +83,7 @@ import { PageContent } from '#components/layout/page-content.js';
 import { PageHeader } from '#components/layout/page-header.js';
 import { projectSlugOf, projectUrlOr } from '#utils/project-url.utils.js';
 import { projectLocationDescriptor, projectLocationFullLabel } from '#utils/project-creation-location.utils.js';
+import { useResolvedAuth } from '#hooks/use-resolved-auth.js';
 import { useCloudProjects } from '#hooks/use-cloud-projects.js';
 import type { CloudProject } from '#hooks/use-cloud-projects.js';
 import { useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
@@ -165,7 +166,7 @@ function ManifestIssueLines({ issue }: { readonly issue: ProjectManifestParseIss
  *
  * @returns The library.
  */
-export function ProjectLibrary(): React.JSX.Element {
+export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1 | 2 }): React.JSX.Element {
   const [viewMode, setViewMode] = useCookie<'grid' | 'table'>(cookieName.projectViewMode, 'grid');
   /*
    * D1: the Trash is a place, not a menu tick. `/projects?trash=1` is what the
@@ -202,7 +203,15 @@ export function ProjectLibrary(): React.JSX.Element {
   );
   const navigate = useNavigate();
   const projectManager = useProjectManager();
-  const { projects: cloudProjects, isSettled: isCloudSettled, isFetching: isCloudFetching } = useCloudProjects();
+  const {
+    projects: cloudProjects,
+    isSettled: isCloudSettled,
+    isFetching: isCloudFetching,
+    isFailed: isCloudFailed,
+    retry: retryCloud,
+  } = useCloudProjects();
+  const auth = useResolvedAuth();
+  const cloudPending = auth === 'authed' && !isCloudSettled && !isCloudFailed;
   const openCloudProject = useOpenCloudProject();
   useMaterializeCloudProjects({
     cloud: cloudProjects,
@@ -240,7 +249,7 @@ export function ProjectLibrary(): React.JSX.Element {
         if (trashed) {
           if (announce) {
             toast.success(`Moved ${project.name} to Trash`, {
-              description: 'Its files remain on disk and can be restored from this browser profile.',
+              description: 'Its files remain on disk and can be restored from Trash.',
             });
           }
           return true;
@@ -442,10 +451,11 @@ export function ProjectLibrary(): React.JSX.Element {
     <PageContent>
       <PageHeader
         title='Projects'
+        headingLevel={headingLevel}
         className='mb-6'
         action={
           <Button asChild>
-            <NavLink to='/'>
+            <NavLink to='/projects/new'>
               {({ isPending }) => (
                 <>
                   New project
@@ -598,7 +608,7 @@ export function ProjectLibrary(): React.JSX.Element {
       )}
 
       {listingError && projects.length > 0 ? (
-        <div className='mb-6 flex items-center justify-between gap-3 rounded-md border border-destructive/40 p-3'>
+        <div className='mb-6 flex items-center justify-between gap-3 rounded-md border border-feature/40 p-3'>
           <span className='text-sm'>Projects could not be refreshed.</span>
           <Button size='sm' variant='outline' onClick={async () => retry()}>
             Retry
@@ -647,6 +657,27 @@ export function ProjectLibrary(): React.JSX.Element {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      {!showDeleted && isCloudFailed && auth === 'authed' ? (
+        <div role='alert' className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-4'>
+          <span className='text-sm'>
+            Tau Cloud projects could not be loaded. Projects on this device are still available.
+          </span>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => {
+              retryCloud();
+            }}
+          >
+            Retry Tau Cloud
+          </Button>
+        </div>
+      ) : !showDeleted && auth === 'authed' && isCloudFetching ? (
+        <div role='status' aria-busy='true' className='flex items-center gap-2 text-sm text-muted-foreground'>
+          <Loader className='size-4' />
+          Loading Tau Cloud projects…
+        </div>
+      ) : null}
       {listingError && projects.length === 0 ? (
         <div className='flex min-h-80 flex-col items-center justify-center gap-3 rounded-md border p-6 text-center'>
           <PackageX className='size-8 text-muted-foreground' />
@@ -672,6 +703,7 @@ export function ProjectLibrary(): React.JSX.Element {
       ) : (
         <UnifiedProjectList
           rows={toLibraryRows({ projects, held: heldProjects, cloud: cloudProjects, includeCloudOnly: !showDeleted })}
+          isCatalogUnavailable={!showDeleted && auth === 'authed' && (cloudPending || isCloudFailed)}
           viewMode={viewMode}
           actions={actions}
           onOpenCloudProject={handleOpenCloudProject}
@@ -734,6 +766,7 @@ export function ProjectLibrary(): React.JSX.Element {
 }
 
 type UnifiedProjectListProps = {
+  readonly isCatalogUnavailable: boolean;
   readonly rows: LibraryRow[];
   readonly viewMode: 'grid' | 'table';
   readonly actions: ProjectActions;
@@ -744,7 +777,13 @@ type UnifiedProjectListProps = {
 const defaultPageSize = 20;
 const pageSizeOptions = [defaultPageSize, 50, 100, 150, 200];
 
-function UnifiedProjectList({ rows, viewMode, actions, onOpenCloudProject }: UnifiedProjectListProps) {
+function UnifiedProjectList({
+  rows,
+  viewMode,
+  actions,
+  onOpenCloudProject,
+  isCatalogUnavailable,
+}: UnifiedProjectListProps) {
   'use no memo';
 
   const [sorting, setSorting] = useState<SortingState>([{ id: 'lastActivityAt', desc: true }]);
@@ -785,6 +824,9 @@ function UnifiedProjectList({ rows, viewMode, actions, onOpenCloudProject }: Uni
   });
 
   // Show empty state if no projects at all
+  if (rows.length === 0 && isCatalogUnavailable) {
+    return null;
+  }
   if (rows.length === 0) {
     return (
       <CollectionEmptyState className='min-h-[60vh]'>
@@ -878,7 +920,8 @@ export function ProjectLibraryCard({
   onSelect,
 }: ProjectLibraryCardProps): React.JSX.Element {
   const [showPreview, setShowPreview] = useState(false);
-  const thumbnailSource = useProjectThumbnail(project.id);
+  const thumbnail = useProjectThumbnail(project.id);
+  const thumbnailSource = thumbnail.url;
 
   const mainFile = project.assets.main.entryPath;
   const location = projectLocationDescriptor(
@@ -906,6 +949,20 @@ export function ProjectLibraryCard({
           onCheckedChange={() => onSelect?.()}
         />
       </div>
+      {thumbnail.status === 'error' || thumbnail.status === 'closed' ? (
+        <Button
+          type='button'
+          size='sm'
+          variant='outline'
+          className='relative z-20'
+          title={thumbnail.error}
+          onClick={() => {
+            thumbnail.refresh();
+          }}
+        >
+          Retry thumbnail
+        </Button>
+      ) : null}
       <ProjectCardMedia
         thumbnailSource={thumbnailSource}
         isPreviewVisible={showPreview}

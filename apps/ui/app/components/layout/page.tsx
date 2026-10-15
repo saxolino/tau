@@ -1,8 +1,9 @@
-import { Link, NavigationType, Outlet, useLocation, useNavigationType } from 'react-router';
+import { NavigationType, Outlet, useLocation, useNavigationType } from 'react-router';
 import { Fragment } from 'react/jsx-runtime';
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, ReactNode, UIEvent } from 'react';
-import { Allotment, LayoutPriority } from 'allotment';
+import { LayoutPriority } from 'allotment';
+import { Allotment } from '#components/panes/allotment.js';
 import type { AllotmentHandle } from 'allotment';
 import { AppSidebar } from '#components/layout/app-sidebar.js';
 import {
@@ -22,18 +23,18 @@ import { RouteFooter } from '#components/layout/route-footer.js';
 import { SettingsDialog } from '#components/settings/settings-dialog.js';
 import { useResolvedAuth } from '#hooks/use-resolved-auth.js';
 import { useFeatureFlags } from '#flags/use-feature.js';
-import { DesktopTitlebarControls } from '#components/layout/desktop-titlebar-controls.js';
+import { DesktopTitlebarControls, TitlebarNavigation } from '#components/layout/desktop-titlebar-controls.js';
 import { isDesktopTarget } from '#lib/build-target.js';
-import { TauWordmark } from '#components/icons/tau-wordmark.js';
+import { useDesktopFullscreen } from '#hooks/use-desktop-fullscreen.js';
 import { sidebarPreferredWidth } from '#constants/sidebar.constants.js';
 
 export const headerHeight = 'calc(var(--spacing) * 12)';
 export const desktopHeaderHeight = 'calc(var(--spacing) * 9)';
 
-/* The width each control row fills, minus 4 px: the chat header's own first control then
- * lands one row-gap after the last of these, so the two read as one row. */
-const desktopTitlebarControlsWidth = 'calc(var(--spacing) * 44)';
-const webTitlebarControlsWidth = 'calc(var(--spacing) * 26)';
+// Closed headers reserve only their visible controls; open headers follow the resizable pane.
+const closedTitlebarControlsWidth = 'calc(var(--spacing) * 26)';
+const browserClosedTitlebarControlsWidth = 'calc(var(--spacing) * 10)';
+const windowedClosedTitlebarControlsWidth = 'calc(var(--spacing) * 44)';
 
 const sidebarMinimumWidth = 192;
 const sidebarMaximumWidth = 480;
@@ -140,14 +141,7 @@ const WebTitlebarControls = ({
     data-slot='web-titlebar-controls'
     className='fixed top-0 left-0 z-50 hidden h-9 w-(--titlebar-controls-width) items-center gap-1 bg-transparent pr-1 pl-2 md:flex'
   >
-    <Link
-      to='/'
-      aria-label='Home'
-      className='flex h-7 items-center rounded-sm px-1 outline-none focus-visible:focus-outline'
-    >
-      <TauWordmark aria-hidden className='h-5 w-auto text-primary' />
-    </Link>
-    <SidebarTrigger aria-label='Toggle Sidebar' onSidebarResize={onSidebarResize} />
+    <TitlebarNavigation onSidebarResize={onSidebarResize} />
   </div>
 );
 
@@ -159,6 +153,7 @@ const ApplicationShell = ({
   readonly isDesktopTarget: boolean;
 }): React.JSX.Element => {
   const { isMobile, open } = useSidebar();
+  const isFullscreen = useDesktopFullscreen();
   const allotmentRef = useRef<AllotmentHandle>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const sidebarWidthRef = useRef(sidebarPreferredWidth);
@@ -193,26 +188,37 @@ const ApplicationShell = ({
       className='group/app-shell relative size-full min-h-0 overflow-hidden'
       style={
         {
-          '--titlebar-controls-width': isDesktopTarget ? desktopTitlebarControlsWidth : webTitlebarControlsWidth,
+          '--sidebar-panel-width': `${sidebarPreferredWidth}px`,
+          '--titlebar-controls-width':
+            open && !isMobile
+              ? 'calc(var(--sidebar-panel-width) - 1px)'
+              : isDesktopTarget
+                ? isFullscreen
+                  ? closedTitlebarControlsWidth
+                  : windowedClosedTitlebarControlsWidth
+                : browserClosedTitlebarControlsWidth,
+          ...(isFullscreen ? { '--desktop-titlebar-inset': 'calc(var(--spacing) * 2)' } : {}),
         } as CSSProperties
       }
     >
       {isDesktopTarget ? (
-        <DesktopTitlebarControls onSidebarResize={resizeSidebar} />
+        <DesktopTitlebarControls isFullscreen={isFullscreen} onSidebarResize={resizeSidebar} />
       ) : (
         <WebTitlebarControls onSidebarResize={resizeSidebar} />
       )}
       <Allotment
+        paneLabels={['Sidebar', 'Content']}
         id='application-allotment'
         ref={allotmentRef}
         proportionalLayout={false}
         separator={false}
         snap={false}
-        className='size-full [--focus-border:var(--primary)] [--sash-hover-transition-duration:0.1s] [--separator-border:var(--sidebar-border)] [&_.sash:before]:[transition-delay:0.5s]'
+        className='size-full [--separator-border:var(--sidebar-border)]'
         onChange={(sizes) => {
           const sidebarWidth = sizes[0];
           if (sidebarWidth !== undefined && sidebarWidth > 0) {
             sidebarWidthRef.current = sidebarWidth;
+            shellRef.current?.style.setProperty('--sidebar-panel-width', `${sidebarWidth}px`);
           }
         }}
       >

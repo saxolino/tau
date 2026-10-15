@@ -70,6 +70,10 @@ export const refusals = {
   MODEL_ATTEMPT_OTHER_ACCOUNT: { owner: 'host', retry: 'reauth' },
   /** The model stream went silent past its stall bound (T9 E9). */
   MODEL_STREAM_STALLED: { owner: 'host', retry: 'resume' },
+  /** Automatic output-limit continuation exhausted its bound; offer Resume with the saved progress. */
+  MODEL_OUTPUT_LIMIT: { owner: 'host', retry: 'resume' },
+  /** A dispatched tool's result could not be saved; resume verifies uncertain effects before retrying. */
+  TOOL_RESULT_PERSISTENCE_FAILED: { owner: 'host', retry: 'resume' },
   /** A prepared model invocation has no recorded resolution; Resume reconciles it first (W3, RV1-F3). */
   INVOCATION_UNRESOLVED: { owner: 'host', retry: 'resume' },
   /** The host is closing (was `LAUNCHER_CLOSED`); re-send to its successor. */
@@ -168,10 +172,11 @@ export const refusals = {
   MODEL_NOT_IN_CATALOG: { owner: 'gateway', retry: 'never' },
   ORIGIN_NOT_ALLOWED: { owner: 'gateway', retry: 'never' },
   /**
-   * The provider account behind the key Tau spent against has no credit or is not billable. Distinct from
-   * `INSUFFICIENT_CREDIT`, which is the customer's own Tau balance. `details` carries `providerId`, the provider's own
-   * `providerCode` when it sent one, and `accountOwner`: `operator` on a self-hosted API, whose message is the
-   * provider's own sentence, or `tau` on Cloud, whose message never names the supplier's state.
+   * The provider account behind the key Tau spent against has no credit, is not billable, or (on Cloud) refused the
+   * credential itself, `providerCode: 'credential_rejected'`. Distinct from `INSUFFICIENT_CREDIT`, which is the
+   * customer's own Tau balance. `details` carries `providerId`, the provider's own `providerCode` when it sent one, and
+   * `accountOwner`: `operator` on a self-hosted API, whose message is the provider's own sentence, or `tau` on Cloud,
+   * whose message never names the supplier's state.
    */
   PROVIDER_ACCOUNT_EXHAUSTED: { owner: 'gateway', retry: 'never' },
   PROVIDER_UNAVAILABLE: { owner: 'gateway', retry: 'resume' },
@@ -196,6 +201,16 @@ export const refusals = {
    * and nothing new can be charged to it. Signing in again does not change it; the card points to account support (W11).
    */
   BILLING_ACCOUNT_CLOSED: { owner: 'gateway', retry: 'never' },
+  /**
+   * Tau's operators paused this model route (HTTP 503, `details.routeId`). Resuming re-sends to the same paused route,
+   * so the card offers another model instead; its copy is the page's, never the gateway's sentence.
+   */
+  MODEL_ROUTE_PAUSED: { owner: 'gateway', retry: 'never' },
+  /**
+   * Admission refused spending on this account (HTTP 403): the account is restricted, or a billing case puts its own
+   * balance in question. Neither another model nor signing in changes it; the card points to support.
+   */
+  BILLING_ACCOUNT_RESTRICTED: { owner: 'gateway', retry: 'never' },
 
   // ── transport: the host's gateway client ────────────────────────────────────────────────────
   MODEL_PROVIDER_UNSUPPORTED: { owner: 'transport', retry: 'never' },
@@ -229,11 +244,16 @@ export const refusals = {
   BRANCH_NEEDS_REVISION: { owner: 'revisions', retry: 'never' },
   /** A branch name under a namespace Tau keeps for itself (`conflicts/`, D14). */
   BRANCH_NAME_RESERVED: { owner: 'revisions', retry: 'never' },
+  /** A rename of a branch something else knows by its name: a linked checkout or a remote (D91). */
+  BRANCH_RENAME_LINKED: { owner: 'revisions', retry: 'never' },
+  BRANCH_RENAME_PUSHED: { owner: 'revisions', retry: 'never' },
   CHECKOUT_CONFLICT: { owner: 'revisions', retry: 'never' },
   ENGINE_FAILED: { owner: 'revisions', retry: 'never' },
   ENGINE_UNAVAILABLE: { owner: 'revisions', retry: 'never' },
   INVALID_REPOSITORY: { owner: 'revisions', retry: 'never' },
   INVALID_TRANSPORT: { owner: 'revisions', retry: 'never' },
+  /** The remote transfer exceeded its byte bound; change the requested scope before retrying. */
+  FETCH_LIMIT_EXCEEDED: { owner: 'revisions', retry: 'never' },
   LFS_REMOTE_UNSUPPORTED: { owner: 'revisions', retry: 'never' },
   MISSING_LARGE_OBJECT: { owner: 'revisions', retry: 'never' },
   /** The remote's copy is damaged: terminal after one attempt (D22). */

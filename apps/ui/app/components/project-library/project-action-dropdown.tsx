@@ -51,7 +51,7 @@ export function ProjectActionDropdown({ project, actions }: ProjectActionDropdow
     }
   };
 
-  const handleRename = async (event: React.FormEvent) => {
+  const handleRename = async (event: React.SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (newName.trim() && newName !== project.name) {
       try {
@@ -166,7 +166,7 @@ export function ProjectActionDropdown({ project, actions }: ProjectActionDropdow
           row={row}
           name={project.name}
           closePlan={closePlan}
-          beforeDelete
+          isBeforeDelete
           isOpen
           onOpenChange={setIsConfirmingClose}
           onConfirm={() => {

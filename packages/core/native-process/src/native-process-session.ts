@@ -8,7 +8,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import type { RuntimeLogger } from '@taucad/runtime/kernel';
 
-import { launchInNativeSandbox } from '#native-sandbox.js';
+import { acquireNativeSandbox, launchInNativeSandbox, releaseNativeSandbox } from '#native-sandbox.js';
 
 const maxProtocolLineBytes = 1_048_576;
 const maxStderrBytes = 65_536;
@@ -79,6 +79,7 @@ export type NativeProcessSessionOptions<Issue> = {
   readonly protocolVersion: number;
   readonly parseReady: (value: unknown) => void;
   readonly parseResponse: (value: unknown) => NativeProtocolResponse<Issue>;
+  /** Milliseconds. Zero lets requests run until completion or cancellation. */
   readonly requestTimeout: number;
   readonly maxArtifactBytes: number;
   /** Maximum UTF-8 bytes per worker response/event line; positive safe integer, default 1 MiB. */
@@ -269,6 +270,7 @@ export class NativeProcessSession<Issue> {
   private requestSequence = 0;
   private termination: Promise<void> | undefined;
   private closed = false;
+  private sandboxLeased = false;
   // oxlint-disable-next-line typescript/parameter-properties -- erasableSyntaxOnly forbids parameter properties.
   private readonly options: NativeProcessSessionOptions<Issue>;
   private readonly maxProtocolLineBytes: number;
@@ -365,6 +367,17 @@ export class NativeProcessSession<Issue> {
       return;
     }
     this.closed = true;
+    try {
+      await this.stop();
+    } finally {
+      if (this.sandboxLeased) {
+        this.sandboxLeased = false;
+        await releaseNativeSandbox();
+      }
+    }
+  }
+
+  private async stop(): Promise<void> {
     await this.termination;
     const { child } = this;
     if (!child) {
@@ -432,6 +445,14 @@ export class NativeProcessSession<Issue> {
       return;
     }
     await this.verifyResources();
+    // A cleanup() during verification already closed the session; a lease taken now would never be released.
+    if (this.closed) {
+      throw new Error(`${this.options.sessionName} session is closed.`);
+    }
+    if (!this.sandboxLeased) {
+      this.sandboxLeased = true;
+      acquireNativeSandbox();
+    }
     // Fail closed: when the sandbox cannot wrap the worker, nothing is spawned.
     const [command, ...commandArguments] = await launchInNativeSandbox({
       executablePath: this.options.executablePath,
@@ -472,7 +493,7 @@ export class NativeProcessSession<Issue> {
     });
     const handshakeTimer = setTimeout(() => {
       this.requestTermination(new Error(`${this.options.sessionName} handshake timed out.`));
-    }, this.options.requestTimeout);
+    }, this.options.requestTimeout || 120_000);
     handshakeTimer.unref();
     try {
       await this.ready;
@@ -488,10 +509,13 @@ export class NativeProcessSession<Issue> {
     }
     const requestId = `${String(this.generation)}:${String(++this.requestSequence)}`;
     return new Promise<Result>((resolve, reject) => {
-      const requestTimer = setTimeout(() => {
-        this.requestTermination(new Error(`${this.options.sessionName} ${request.method} request timed out.`));
-      }, this.options.requestTimeout);
-      requestTimer.unref();
+      const requestTimer =
+        this.options.requestTimeout > 0
+          ? setTimeout(() => {
+              this.requestTermination(new Error(`${this.options.sessionName} ${request.method} request timed out.`));
+            }, this.options.requestTimeout)
+          : undefined;
+      requestTimer?.unref();
       const abort = (): void => {
         if (request.cancelMethod !== undefined && child.stdin.writable) {
           // Cooperative stop: the worker answers this request itself and keeps its resident prefix.

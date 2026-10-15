@@ -1,15 +1,28 @@
 import type { GeoSpecUnit } from '#geometry-unit.js';
-import type { GeometrySubject, MeshFileFormat } from '#mesh/types.js';
-import type { MeshSource } from '#mesh/load-mesh.js';
+import type { MeshFileFormat } from '#mesh/types.js';
+import type { GeoSpecSubject } from '#model/subject.js';
+import type { GeoSpecNativeModelEngine, GeoSpecNativeSourceReader } from '#model/native-model-loader.js';
 import type { StepSource, StepStreamingMode } from '#step/types.js';
-import type {
-  ExportFormatsFor,
-  ExportResult,
-  KernelPlugin,
-  RuntimeSource,
-  RuntimeSourceFiles,
-  TranscoderPlugin,
-} from '@taucad/runtime';
+import type { RuntimeClient } from '@taucad/runtime';
+
+/**
+ * In-memory triangle mesh source.
+ *
+ * @public
+ */
+export type MeshBufferSource = {
+  format: 'mesh-buffer';
+  positions: Float32Array<ArrayBuffer> | number[];
+  indices?: Uint32Array<ArrayBuffer> | Uint16Array<ArrayBuffer> | number[];
+  name?: string;
+};
+
+/**
+ * Mesh source forms accepted by {@link import('./load-model.js').loadModel}.
+ *
+ * @public
+ */
+export type MeshSource = Uint8Array<ArrayBuffer> | ArrayBuffer | Blob | File | URL | string | MeshBufferSource;
 
 /**
  * Geometry formats accepted by {@link import('./load-model.js').loadModel}.
@@ -22,37 +35,31 @@ export type GeoSpecModelFormat = MeshFileFormat | 'step' | 'stp';
  * Runtime client surface consumed by `geospec/model`.
  *
  * GeoSpec accepts concrete Tau runtime clients from multiple call sites but
- * only needs connection lifecycle and request-scoped export. Keep this shape
+ * only needs connection lifecycle and request-scoped documents. Keep this shape
  * small so typed runtime clients do not have to widen their full generic
- * method surface to GeoSpec's testing DSL.
+ * method surface to GeoSpec's testing DSL. A client with `shutdown` is awaited
+ * through it when GeoSpec releases an owned runtime, so its host resources are
+ * closed before the caller (for example a worker thread) exits.
  *
  * @public
  */
-type GeoSpecRuntimeExportFormat = ExportFormatsFor<readonly KernelPlugin[], readonly TranscoderPlugin[]>;
-
-/**
- *
- *
- * @public
- */
-export type GeoSpecRuntimeClient = {
-  connect(): Promise<void>;
-  terminate(): void;
-  on?(
-    event: 'telemetry',
-    handler: (batch: {
-      readonly entries: ReadonlyArray<{ name: string; duration: number; startTime: number; workerTimeOrigin: number }>;
-    }) => void,
-  ): () => void;
-  export<const Format extends GeoSpecRuntimeExportFormat, const Files extends RuntimeSourceFiles = RuntimeSourceFiles>(
-    format: Format,
-    options?: {
-      readonly source?: RuntimeSource<Files>;
-      readonly parameters?: Record<string, unknown>;
-      readonly exportOptions?: Record<string, unknown>;
-    },
-  ): Promise<ExportResult>;
-};
+export type GeoSpecRuntimeClient = Pick<RuntimeClient, 'connect' | 'terminate'> &
+  Partial<Pick<RuntimeClient, 'shutdown'>> & {
+    open: (
+      input: Pick<Parameters<RuntimeClient['open']>[0], 'source' | 'parameters' | 'stage' | 'watch' | 'signal'>,
+    ) => Pick<ReturnType<RuntimeClient['open']>, 'export' | 'close'>;
+    on?(
+      event: 'telemetry',
+      handler: (batch: {
+        readonly entries: ReadonlyArray<{
+          name: string;
+          duration: number;
+          startTime: number;
+          workerTimeOrigin: number;
+        }>;
+      }) => void,
+    ): () => void;
+  };
 
 /**
  * Lazy runtime factory consumed by `geospec/model`.
@@ -81,6 +88,8 @@ export type GeoSpecRuntimeSourceAdapter = {
 export type LoadModelSourceOptions = {
   /** Geometry bytes, path, browser file/blob, or in-memory mesh buffer. */
   source: MeshSource | StepSource;
+  /** Named external resources consumed alongside the direct geometry bytes. */
+  resources?: ReadonlyArray<{ readonly name: string; readonly source: MeshSource | StepSource }>;
   /** Source geometry format. Defaults to `glb`. */
   format?: GeoSpecModelFormat;
   /** Source path recorded in provenance. */
@@ -177,7 +186,7 @@ export type LoadModelOptions<Code extends Record<string, string> = Record<string
  */
 export type GeoSpecModelLoader = <Code extends Record<string, string> = Record<string, string>>(
   options: LoadModelOptions<Code>,
-) => Promise<GeometrySubject>;
+) => Promise<GeoSpecSubject>;
 
 /** A configured loader whose shared runtime can be released with its owner. @public */
 export type ManagedGeoSpecModelLoader = GeoSpecModelLoader & {
@@ -190,6 +199,10 @@ export type ManagedGeoSpecModelLoader = GeoSpecModelLoader & {
  * @public
  */
 export type CreateModelLoaderOptions = {
+  /** Initialized compiled engine supplied by the host, never selected by an authored spec. */
+  engine: GeoSpecNativeModelEngine;
+  /** Rooted host reader for direct filesystem or URL sources. */
+  readSource?: GeoSpecNativeSourceReader;
   /** Geometry format to export when an individual call does not specify one. */
   format?: GeoSpecModelFormat;
   /** Runtime client or lazy runtime factory. */

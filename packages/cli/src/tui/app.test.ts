@@ -24,12 +24,34 @@ import { fileURLToPath } from 'node:url';
 import { createAgentChannelClient } from '@taucad/agent-host/channel-client';
 import type { AgentLogEvent } from '@taucad/agent-host';
 import type { AgentChannelClient } from '@taucad/agent-host/channel-client';
+import type { CommandAnswer, ReadAnswer } from '@taucad/agent-host/wire';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { runTui } from '#tui/app.js';
 import * as agentClient from '#commands/agent/client.js';
+
+/*
+ * Ink reads `is-in-ci` once, when it is first imported, and under `CI` or
+ * `CONTINUOUS_INTEGRATION` writes nothing but the last frame on unmount. Every
+ * assertion here reads frames painted while the app runs, so Ink must load
+ * with both cleared; `vi.hoisted` runs before the imports above, and the
+ * originals come back once Ink has loaded so the daemon children see the
+ * runner's real environment.
+ */
+const ciEnvironment = vi.hoisted(() => {
+  const saved = { ci: process.env['CI'], continuousIntegration: process.env['CONTINUOUS_INTEGRATION'] };
+  delete process.env['CI'];
+  delete process.env['CONTINUOUS_INTEGRATION'];
+  return saved;
+});
+if (ciEnvironment.ci !== undefined) {
+  process.env['CI'] = ciEnvironment.ci;
+}
+if (ciEnvironment.continuousIntegration !== undefined) {
+  process.env['CONTINUOUS_INTEGRATION'] = ciEnvironment.continuousIntegration;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolvePath(here, '../../../..');
@@ -537,6 +559,32 @@ describe('tau tui', () => {
     await expect(finished).resolves.toBeUndefined();
   }, 120_000);
 
+  /*
+   * R18: Ink re-subscribes the keyboard handler only after React's passive effects run, a turn of the event loop
+   * after the frame paints. An enter that arrives in between reaches the handler of the render before, which held an
+   * empty draft. A starved machine does that to the enter `submit` types once the prompt is painted; here the enter
+   * is typed from the paint itself, so the window is open every time.
+   */
+  it('should start a run when the enter arrives as the prompt paints', async () => {
+    const { terminal, finished } = mount('chat-tui-enter');
+    await untilPainted(terminal, /Following /u);
+    const prompt = 'sent as it paints';
+    const enterOnPaint = (chunk: Uint8Array<ArrayBuffer>): void => {
+      if (Buffer.from(chunk).toString('utf8').includes(prompt)) {
+        terminal.stdout.off('data', enterOnPaint);
+        terminal.stdin.write('\r');
+      }
+    };
+    terminal.stdout.on('data', enterOnPaint);
+
+    terminal.stdin.write(prompt);
+    await untilPainted(terminal, /start: applied at \d+/u);
+    expect(await chatLog('chat-tui-enter')).toContain(prompt);
+
+    terminal.stdin.write('q');
+    await expect(finished).resolves.toBeUndefined();
+  }, 120_000);
+
   it('should report the label the daemon returned for a cancel', async () => {
     const { terminal, finished } = mount('chat-tui-cancel');
     await submit(terminal, 'hold this one');
@@ -576,9 +624,8 @@ describe('tau tui', () => {
     await submit(terminal, 'slow noask again');
     /* The transcript row, not the log file: the run is only "live" to this view
      * once the page carrying its admission has been folded. */
-    await until(() =>
-      /user slow noask again/u.test(terminal.output().slice(secondTurnOutputStart)) ? true : undefined,
-    );
+    await untilPainted(terminal, /user slow noask again/u);
+    expect(terminal.output().slice(secondTurnOutputStart)).not.toContain('start failed:');
     await until(() =>
       /enter keeps draft until this external run settles/u.test(terminal.output().slice(secondTurnOutputStart))
         ? true
@@ -598,6 +645,168 @@ describe('tau tui', () => {
     terminal.stdin.write('q');
     await expect(finished).resolves.toBeUndefined();
   }, 120_000);
+
+  it('should stop a settling start on cancel and restore its draft', async () => {
+    const client = mock<AgentChannelClient>();
+    client.execute.mockImplementation(async (command) =>
+      command.type === 'attach'
+        ? {
+            commandId: command.commandId,
+            generation: 1,
+            status: 'applied',
+            effect: 'not-applied',
+            details: { endCursor: 0 },
+          }
+        : {
+            commandId: command.commandId,
+            generation: 1,
+            status: 'refused',
+            effect: 'not-applied',
+            code: 'CHAT_RUN_LIVE',
+            message: 'The previous run is settling.',
+            details: { state: 'settling' },
+          },
+    );
+    const opened = vi.spyOn(agentClient, 'openAgentChannel').mockResolvedValue({
+      client,
+      url: new URL('http://127.0.0.1:1'),
+    });
+    const replay = vi.spyOn(agentClient, 'readNext').mockImplementation(async ({ ledger, signal }) => {
+      await new Promise<void>((resolve) => {
+        signal?.addEventListener(
+          'abort',
+          () => {
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      return { ledger, events: [], endCursor: 0, reset: false, sourceHealth: undefined };
+    });
+    try {
+      const terminal = createTerminal();
+      const finished = runTui({
+        host: 'http://127.0.0.1:1',
+        chatId: 'chat-tui-settling-cancel',
+        from: 0,
+        stdin: terminal.stdin,
+        stdout: terminal.stdout,
+      });
+      mounted.push({ terminal, finished });
+      await submit(terminal, 'make a plate');
+      await until(() => (client.execute.mock.calls.some(([command]) => command.type === 'start') ? true : undefined));
+      const beforeCancel = terminal.output().length;
+      terminal.stdin.write('c');
+      await until(() => (terminal.output().slice(beforeCancel).includes('> make a plate') ? true : undefined));
+      const starts = client.execute.mock.calls.filter(([command]) => command.type === 'start');
+      expect(starts).toHaveLength(1);
+      expect(client.execute.mock.calls.filter(([command]) => command.type === 'cancel')).toHaveLength(0);
+      terminal.stdin.write('\u001B');
+      await settle();
+      terminal.stdin.write('q');
+      await expect(finished).resolves.toBeUndefined();
+    } finally {
+      replay.mockRestore();
+      opened.mockRestore();
+    }
+  });
+
+  it('should cancel the newly admitted run when cancel was pressed before its start answer', async () => {
+    const client = mock<AgentChannelClient>();
+    const startAnswer = Promise.withResolvers<CommandAnswer>();
+    client.execute.mockImplementation(async (command) => {
+      if (command.type === 'attach') {
+        return {
+          commandId: command.commandId,
+          generation: 1,
+          status: 'applied',
+          effect: 'not-applied',
+          details: { endCursor: 0 },
+        };
+      }
+      if (command.type === 'start') {
+        return startAnswer.promise;
+      }
+      return { commandId: command.commandId, generation: 1, status: 'applied', effect: 'durable', cursor: 2 };
+    });
+    const opened = vi.spyOn(agentClient, 'openAgentChannel').mockResolvedValue({
+      client,
+      url: new URL('http://127.0.0.1:1'),
+    });
+    const oldRun: AgentLogEvent = {
+      version: 1,
+      leaderEpoch: 'epoch-1',
+      sequence: 0,
+      recordedAt: new Date(0).toISOString(),
+      runId: 'old-run',
+      type: 'run.lifecycle',
+      state: 'completed',
+    };
+    const replay = vi.spyOn(agentClient, 'readNext').mockImplementation(async ({ ledger, signal }) => {
+      if (ledger.position.cursor === 0) {
+        return {
+          ledger: { ...ledger, position: { cursor: 1 } },
+          events: [oldRun],
+          endCursor: 1,
+          reset: false,
+          sourceHealth: undefined,
+        };
+      }
+      await new Promise<void>((resolve) => {
+        signal?.addEventListener(
+          'abort',
+          () => {
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      return { ledger, events: [], endCursor: 1, reset: false, sourceHealth: undefined };
+    });
+    try {
+      const terminal = createTerminal();
+      const finished = runTui({
+        host: 'http://127.0.0.1:1',
+        chatId: 'chat-tui-cancel-unanswered',
+        from: 0,
+        stdin: terminal.stdin,
+        stdout: terminal.stdout,
+      });
+      mounted.push({ terminal, finished });
+      await untilPainted(terminal, /run completed/u);
+      await submit(terminal, 'make the next plate');
+      const start = await until(() => client.execute.mock.calls.find(([command]) => command.type === 'start')?.[0]);
+      if (start.type !== 'start') {
+        throw new TypeError('Expected a start command.');
+      }
+      terminal.stdin.write('c');
+      await settle();
+      expect(client.execute.mock.calls.filter(([command]) => command.type === 'cancel')).toHaveLength(0);
+
+      startAnswer.resolve({
+        commandId: start.commandId,
+        generation: 1,
+        status: 'applied',
+        effect: 'durable',
+        cursor: 1,
+      });
+      const cancelled = await until(
+        () => client.execute.mock.calls.find(([command]) => command.type === 'cancel')?.[0],
+      );
+      if (cancelled.type !== 'cancel') {
+        throw new TypeError('Expected a cancel command.');
+      }
+      expect(cancelled.payload.runId).toBe(start.payload.runId);
+      expect(cancelled.payload.runId).not.toBe('old-run');
+      expect(client.execute.mock.calls.filter(([command]) => command.type === 'cancel')).toHaveLength(1);
+      await untilPainted(terminal, /cancel: applied at 2/u);
+      terminal.stdin.write('q');
+      await expect(finished).resolves.toBeUndefined();
+    } finally {
+      replay.mockRestore();
+      opened.mockRestore();
+    }
+  });
 
   it('keeps the current external run selected when an older turn settles late', async () => {
     const client = mock<AgentChannelClient>();
@@ -671,6 +880,7 @@ describe('tau tui', () => {
           events,
           endCursor: events.length,
           reset: false,
+          sourceHealth: undefined,
         };
       }
       await new Promise<void>((resolve) => {
@@ -682,7 +892,7 @@ describe('tau tui', () => {
           { once: true },
         );
       });
-      return { ledger, events: [], endCursor: events.length, reset: false };
+      return { ledger, events: [], endCursor: events.length, reset: false, sourceHealth: undefined };
     });
     try {
       const terminal = createTerminal();
@@ -771,6 +981,7 @@ describe('tau tui', () => {
           events,
           endCursor: events.length,
           reset: false,
+          sourceHealth: undefined,
         };
       }
       await new Promise<void>((resolve) => {
@@ -782,7 +993,7 @@ describe('tau tui', () => {
           { once: true },
         );
       });
-      return { ledger, events: [], endCursor: events.length, reset: false };
+      return { ledger, events: [], endCursor: events.length, reset: false, sourceHealth: undefined };
     });
     try {
       const terminal = createTerminal();
@@ -894,4 +1105,96 @@ describe('tau tui', () => {
     expect(stderr.join('')).toContain('needs an interactive terminal');
     expect(stderr.join('')).toContain('tau agent tail <chat> --jsonl');
   }, 120_000);
+});
+
+describe('TUI authoritative read health', () => {
+  it.each(['first-chat', 'another-chat'])(
+    'echoes exact host health, clears it on replacement, and aborts the parked %s read',
+    async (chatId) => {
+      const client = mock<AgentChannelClient>();
+      const healthy = { historyIntact: true, newerHistory: false, quarantined: false };
+      const damaged = { historyIntact: false, newerHistory: false, quarantined: true };
+      const observed = Promise.withResolvers<void>();
+      const cancelled = Promise.withResolvers<void>();
+      const batch = (sourceGeneration: string, sourceHealth: typeof healthy): ReadAnswer => ({
+        status: 'batch',
+        chatId,
+        cursor: 0,
+        nextCursor: 0,
+        endCursor: 0,
+        events: [],
+        sourceGeneration,
+        sourceHealth,
+      });
+      const answers = [
+        batch('owner-a', healthy),
+        batch('owner-a', damaged),
+        batch('owner-b', healthy),
+        batch('owner-b', healthy),
+      ];
+      let index = 0;
+      client.execute.mockImplementation(async (command) => ({
+        commandId: command.commandId,
+        generation: 1,
+        status: 'applied',
+        effect: 'not-applied',
+        details: { endCursor: 0 },
+      }));
+      client.read.mockImplementation(async ({ signal }) => {
+        const answer = answers[index++];
+        if (answer !== undefined) {
+          return answer;
+        }
+        observed.resolve();
+        return new Promise<ReadAnswer>((_resolve, reject) => {
+          const abort = (): void => {
+            cancelled.resolve();
+            reject(new DOMException('Read cancelled', 'AbortError'));
+          };
+          if (signal?.aborted) {
+            abort();
+          } else {
+            signal?.addEventListener('abort', abort, { once: true });
+          }
+        });
+      });
+      const opened = vi
+        .spyOn(agentClient, 'openAgentChannel')
+        .mockResolvedValue({ client, url: new URL('http://127.0.0.1:1') });
+      const terminal = createTerminal();
+      const finished = runTui({
+        host: 'http://127.0.0.1:1',
+        chatId,
+        from: 0,
+        stdin: terminal.stdin,
+        stdout: terminal.stdout,
+      });
+      try {
+        await observed.promise;
+        expect(client.read.mock.calls.map(([input]) => input.sourceHealth)).toEqual([
+          undefined,
+          healthy,
+          damaged,
+          undefined,
+          healthy,
+        ]);
+        expect(client.read.mock.calls.map(([input]) => input.sourceGeneration)).toEqual([
+          undefined,
+          'owner-a',
+          'owner-a',
+          undefined,
+          'owner-b',
+        ]);
+        expect(client.read.mock.calls.every(([input]) => input.chatId === chatId)).toBe(true);
+      } finally {
+        terminal.stdin.write('q');
+        await finished;
+        await cancelled.promise;
+        opened.mockRestore();
+      }
+      expect(client.read).toHaveBeenCalledTimes(5);
+      expect(client.close).toHaveBeenCalledWith('tau tui detached');
+      expect(terminal.output()).not.toContain('The channel stopped');
+    },
+  );
 });

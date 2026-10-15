@@ -7,14 +7,11 @@
  */
 
 import { createExportFile } from '@taucad/runtime/types';
-import type { GeometryResponse, KernelIssue } from '@taucad/runtime/types';
+import type { KernelIssue } from '@taucad/runtime/types';
 import {
   asBuffer,
   jsonSchemaFromJson,
   defineKernel,
-  createKernelModuleShim,
-  createKernelModuleRegistryExpression,
-  getModuleRegistry,
   isRecordObject,
   extractDefaultParameters,
   registerKernelModule,
@@ -27,9 +24,10 @@ import {
   parseStackTrace,
   resolveSourcePath,
   deriveLocationFromFrames,
-  finalizeMeshOutput,
 } from '@taucad/runtime/kernel';
-import type { KernelRuntime } from '@taucad/runtime/kernel';
+import type { KernelServices } from '@taucad/runtime/kernel';
+
+import modelingPackage from '@jscad/modeling/package.json' with { type: 'json' };
 
 import { jscadExportSchemas } from '#jscad.schemas.js';
 
@@ -39,7 +37,7 @@ import type { JscadModeling } from '#jscad-modeling.js';
 import { assignJscadPartName, isRenderableJscadPart, normalizeJscadParts } from '#jscad-parts.js';
 import type { JscadPartDescriptor } from '#jscad-parts.js';
 
-import { createEmptyGlb, createEmptyGltfGeometry, resolveShapeName } from '@taucad/geometry-core';
+import { createEmptyGlb, resolveShapeName } from '@taucad/geometry-core';
 
 import {
   convertParameterDefinitionsToDefaults,
@@ -204,24 +202,21 @@ export const jscadDetectPattern =
 // Module registration helpers
 // =============================================================================
 
-function registerJscadModules(runtime: KernelRuntime, modeling: JscadModeling): void {
+function registerJscadModules(runtime: KernelServices, modeling: JscadModeling): void {
   registerKernelModule(runtime, {
     name: '@jscad/modeling',
     exports: modeling,
-    version: '2.12.6',
+    package: modelingPackage,
     globalName: 'jscadModeling',
   });
 
   for (const subpath of jscadSubmodules) {
-    const submoduleName = `@jscad/modeling/${subpath}`;
-    const submoduleExports: unknown = Reflect.get(modeling, subpath);
-    if (isRecordObject(submoduleExports)) {
-      runtime.bundler.registerModule(submoduleName, {
-        code: createKernelModuleShim({
-          moduleExpression: `${createKernelModuleRegistryExpression('@jscad/modeling')}.${subpath}`,
-          exports: submoduleExports,
-        }),
-        version: '2.12.6',
+    if (isRecordObject(Reflect.get(modeling, subpath))) {
+      registerKernelModule(runtime, {
+        name: `@jscad/modeling/${subpath}`,
+        exports: modeling,
+        exportPath: subpath,
+        package: modelingPackage,
       });
     }
   }
@@ -231,16 +226,18 @@ function registerJscadModules(runtime: KernelRuntime, modeling: JscadModeling): 
 // Module execution helpers
 // =============================================================================
 
-async function runMain(module: Record<string, unknown>, parameters: Record<string, unknown>): Promise<unknown> {
+async function runMain(
+  module: Record<string, unknown>,
+  parameters: Record<string, unknown>,
+  modeling: JscadModeling,
+): Promise<unknown> {
   const mainFunction = module['default'] ?? module['main'];
   if (!isCallable(mainFunction)) {
     return undefined;
   }
 
   if (mainFunction.length >= 2) {
-    const registry = getModuleRegistry();
-    const injectedModule = registry.values().next();
-    return mainFunction(injectedModule.done ? undefined : injectedModule.value, parameters);
+    return mainFunction(modeling, parameters);
   }
 
   return mainFunction(parameters);
@@ -273,13 +270,20 @@ export const jscadKernel = defineKernel({
   extensions: ['ts', 'js'],
   detectImport: jscadDetectPattern,
   builtinModuleNames: ['@jscad/modeling'],
+  builtinPackages: { '@jscad/modeling': modelingPackage },
   name: 'JscadKernel',
   version: '1.0.0',
-  render: { content: ['includeEdges'] },
+  views: { model: { title: 'Model', mimeType: 'model/gltf-binary', content: ['includeEdges'] } },
   // D2: in-worker CSG yields cooperatively, so a superseded drag render is abandoned, not killed.
   cancellation: 'cooperative',
-  exportFormats: {
-    glb: { optionsSchema: jscadExportSchemas.glb, content: ['includeEdges'] },
+  exports: {
+    glb: {
+      title: 'glTF binary',
+      mimeType: 'model/gltf-binary',
+      extension: 'glb',
+      optionsSchema: jscadExportSchemas.glb,
+      content: ['includeEdges'],
+    },
   },
 
   async initialize(_options, runtime) {
@@ -289,11 +293,11 @@ export const jscadKernel = defineKernel({
     return { modulesRegistered: true, modeling };
   },
 
-  async getDependencies({ entryPath }, runtime) {
+  async resolve({ entryPath }, runtime) {
     return runtime.bundler.resolveDependencies(entryPath);
   },
 
-  async getParameters({ entryPath }, runtime) {
+  async describe({ entryPath }, runtime) {
     const relativeFilePath = toVmEntryPath(entryPath);
     try {
       const bundleResult = await runtime.bundler.bundle(entryPath);
@@ -326,12 +330,12 @@ export const jscadKernel = defineKernel({
         jsonSchema = await jsonSchemaFromJson(defaultParameters);
       }
 
-      return createKernelSuccess(
-        createKernelParameterDeclaration(defaultParameters, jsonSchema, {
+      return createKernelSuccess({
+        parameters: createKernelParameterDeclaration(defaultParameters, jsonSchema, {
           id: 'urn:taucad:jscad:parameters',
           name: 'JscadParameters',
         }),
-      );
+      });
     } catch (error) {
       return createKernelError([
         {
@@ -349,7 +353,7 @@ export const jscadKernel = defineKernel({
     }
   },
 
-  async createGeometry({ entryPath, parameters }, runtime, context) {
+  async evaluate({ entryPath, parameters }, runtime, context) {
     const relativeFilePath = toVmEntryPath(entryPath);
 
     const bundleResult = await runtime.bundler.bundle(entryPath);
@@ -366,7 +370,7 @@ export const jscadKernel = defineKernel({
 
     let shapes: unknown;
     try {
-      shapes = await runMain(module, parameters);
+      shapes = await runMain(module, parameters, context.modeling);
     } catch (error) {
       const stackFrames = parseStackTrace(error, {
         classifyFrame: createFrameClassifier(),
@@ -388,33 +392,23 @@ export const jscadKernel = defineKernel({
     }
 
     if (shapes === undefined) {
-      return { nativeHandle: [] };
+      return { handle: [] };
     }
 
-    return { nativeHandle: normalizeJscadParts(shapes, context.modeling) };
+    return { handle: normalizeJscadParts(shapes, context.modeling) };
   },
 
-  async meshGeometry({ nativeHandle, content }, _runtime, context) {
-    const artifacts: GeometryResponse[] = [];
-    const issues: KernelIssue[] = [];
-    if (nativeHandle.some((part) => isRenderableJscadPart(part, context.modeling))) {
-      /* The GLB packer owns the single normalization, so it also owns the topology verdict derived
-       * from it. A throw here is not caught: catching saved nothing — the finalizer refuses a phase
-       * with no artifact anyway — and it replaced the conversion's own message with
-       * `NO_RENDER_GEOMETRY`, leaving the cause in a log line no product surface reads. */
-      const gltf = jscadToGltf(nativeHandle, { includeEdges: content?.includeEdges === true }, context.modeling);
-      artifacts.push({ format: 'gltf', content: gltf.content });
-      issues.push(...gltf.issues);
-    } else {
-      artifacts.push(createEmptyGltfGeometry());
+  async render({ handle, content }, _services, context) {
+    if (!handle.some((part) => isRenderableJscadPart(part, context.modeling))) {
+      return { content: asBuffer(createEmptyGlb()) };
     }
-
-    return finalizeMeshOutput({ artifacts, issues });
+    const gltf = jscadToGltf(handle, { includeEdges: content?.includeEdges === true }, context.modeling);
+    return { content: gltf.content, issues: gltf.issues };
   },
 
-  serializeNativeHandle({ nativeHandle }, _runtime, context) {
+  serializeHandle({ handle }, _runtime, context) {
     const { geom2, geom3, path2 } = context.modeling.geometries;
-    const parts = normalizeJscadParts(nativeHandle, context.modeling);
+    const parts = normalizeJscadParts(handle, context.modeling);
     return parts.map((part): JscadSerializedNativeHandleEntry => {
       const { shape } = part;
       if (geom3.isA(shape)) {
@@ -442,13 +436,13 @@ export const jscadKernel = defineKernel({
     });
   },
 
-  deserializeNativeHandle({ serializedNativeHandle }, _runtime, context) {
+  deserializeHandle({ serialized }, _runtime, context) {
     const { geom2, geom3, path2 } = context.modeling.geometries;
-    if (!Array.isArray(serializedNativeHandle)) {
+    if (!Array.isArray(serialized)) {
       throw new TypeError('Invalid JSCAD serialized handle: expected an array of compact-binary entries.');
     }
 
-    const serializedEntries: unknown[] = serializedNativeHandle;
+    const serializedEntries: unknown[] = serialized;
     return serializedEntries.map((rawEntry, index): JscadPartDescriptor => {
       const entry = parseSerializedNativeHandleEntry(rawEntry, index);
       const compactBinary = normalizeCompactBinaryData({
@@ -487,23 +481,23 @@ export const jscadKernel = defineKernel({
     });
   },
 
-  async exportGeometry(input, _runtime, context) {
-    const { format, nativeHandle, options, content } = input;
+  async export(input, _runtime, context) {
+    const { exportId, handle, options, content } = input;
 
-    switch (format) {
+    switch (exportId) {
       // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exhaustive switch for future format expansion
       case 'glb': {
-        if (nativeHandle.length === 0) {
-          return createKernelSuccess([createExportFile('glb', 'model.glb', asBuffer(createEmptyGlb()))]);
+        if (handle.length === 0) {
+          return { files: [createExportFile('glb', 'model.glb', asBuffer(createEmptyGlb()))] };
         }
 
         const { coordinateSystem, unit } = options;
-        if (!nativeHandle.some((part) => isRenderableJscadPart(part, context.modeling))) {
-          return createKernelSuccess([createExportFile('glb', 'model.glb', asBuffer(createEmptyGlb()))]);
+        if (!handle.some((part) => isRenderableJscadPart(part, context.modeling))) {
+          return { files: [createExportFile('glb', 'model.glb', asBuffer(createEmptyGlb()))] };
         }
 
         const gltf = jscadToGltf(
-          nativeHandle,
+          handle,
           {
             coordinateSystem,
             unit,
@@ -511,19 +505,12 @@ export const jscadKernel = defineKernel({
           },
           context.modeling,
         );
-        return createKernelSuccess([createExportFile('glb', 'model.glb', asBuffer(gltf.content))], gltf.issues);
+        return { files: [createExportFile('glb', 'model.glb', asBuffer(gltf.content))], issues: gltf.issues };
       }
 
       default: {
-        const _exhaustive: never = format;
-        return createKernelError([
-          {
-            message: `Export format '${String(_exhaustive)}' is not supported by JSCAD. Supported formats: glb.`,
-            code: 'KERNEL_CAPABILITY_MISSING',
-            type: 'runtime',
-            severity: 'error',
-          },
-        ]);
+        const _exhaustive: never = exportId;
+        throw new Error(`Export format '${String(_exhaustive)}' is not supported by JSCAD. Supported formats: glb.`);
       }
     }
   },

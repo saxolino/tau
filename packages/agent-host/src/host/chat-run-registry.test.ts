@@ -29,9 +29,11 @@ import type {
   TurnAttemptKey,
   TurnPlacementPort,
 } from '#waist/ports.js';
-import type { ExternalAgentPort, ExternalAgentTurn, TauAgentHost } from '#host/tau-agent-host.js';
+import type { ExternalAgentPort, ExternalAgentTurn } from '#host/external-agent.js';
+import type { TauAgentHost } from '#host/tau-agent-host.js';
 import type { CommandAnswer } from '#wire/commands.schema.js';
 import { emptyChatLedger } from '#log/chat-ledger.js';
+import { isResumableRun } from '#log/resumable.js';
 
 /** A model call that waits until released, as a call binding at the gateway does. */
 const heldTransport = () => {
@@ -942,6 +944,7 @@ describe('placement and settlement per attempt (RA-S13)', () => {
         status: 'refused',
         code: 'BASE_CUT_FAILED',
         message: 'The files already in checkout live could not be saved before the agent started.',
+        details: { phase: 'placement.admit', close: { origin: 'remote', code: 'PEER_GONE', reason: 'port-closed' } },
       }),
     };
     const host = placedHost(file, port, 'place-refused');
@@ -959,7 +962,10 @@ describe('placement and settlement per attempt (RA-S13)', () => {
         type: 'run.lifecycle',
         runId: 'run-1',
         state: 'failed',
-        detail: expect.objectContaining({ code: 'BASE_CUT_FAILED' }) as unknown,
+        detail: expect.objectContaining({
+          code: 'BASE_CUT_FAILED',
+          details: { phase: 'placement.admit', close: { origin: 'remote', code: 'PEER_GONE', reason: 'port-closed' } },
+        }) as unknown,
       }),
     );
     await host.close();
@@ -1332,6 +1338,67 @@ describe('placement and settlement per attempt (RA-S13)', () => {
     expect(appended[0]).toMatchObject({ type: 'run.lifecycle', state: 'failed', detail: { code: 'RUN_ABANDONED' } });
   });
 
+  /*
+   * R18: the holder's release is a `leaseHeld` fact, and its claim can reach an incarnation whose settlement was refused
+   * before that release. That incarnation closes on the stale refusal, so the claim reads again under a new one.
+   */
+  it('should settle a released attempt when its claim joins an incarnation closing on a stale refusal', async () => {
+    const heldKey: TurnAttemptKey = { chatId: 'chat-released', turnId: 'turn-1', runId: 'run-1', attempt: 1 };
+    const file = createMemoryLogFile();
+    await seedLog(file, [
+      { ...completedFirstTurn[0]!, commandId: 'start-1' } satisfies SeededLogEvent,
+      ...completedFirstTurn.slice(1, 3),
+    ]);
+    const fake = fakePort(file, idle);
+    /* The first answer read the holder's mark while it was held, and reaches the host only after the release. */
+    const staleAnswer = Promise.withResolvers<void>();
+    let completes = 0;
+    const host = placedHost(
+      file,
+      {
+        ...fake.port,
+        reconcile: async ({ requestId }) => ({
+          requestId,
+          status: 'applied',
+          held: [{ key: heldKey, checkoutId: 'checkout-live' }],
+        }),
+        complete: async (input) => {
+          completes += 1;
+          if (completes > 1) {
+            return fake.port.complete(input);
+          }
+          await staleAnswer.promise;
+          return {
+            requestId: input.requestId,
+            status: 'refused',
+            code: 'LEASE_HELD_ELSEWHERE',
+            message: 'Another tab holds it.',
+          };
+        },
+      },
+      'released',
+    );
+
+    const opening = host.claim('chat-released');
+    await vi.waitFor(() => {
+      expect(completes).toBe(1);
+    });
+    const released = host.claim('chat-released');
+    staleAnswer.resolve();
+    await Promise.all([opening, released]);
+
+    await vi.waitFor(async () => {
+      expect(await readLog(file)).toContainEqual(
+        expect.objectContaining({ type: 'turn.finalized', runId: 'run-1', attempt: 1 }),
+      );
+    });
+    expect(completes).toBe(2);
+    await vi.waitFor(() => {
+      expect(fake.calls.map((call) => call.verb)).toEqual(['complete', 'acknowledge']);
+    });
+    await host.close();
+  });
+
   // TS-Q5: a lease naming a run this chat's log does not hold (another device's, or a deleted chat's) is left and reported.
   it('should leave and report a held lease whose run the log does not hold', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -1573,7 +1640,7 @@ describe('the external slot through its driver handle (RA-S14, with W10 EA-S8)',
     await host.close();
   });
 
-  it('should resolve an orphaned external approval with a code', async () => {
+  it('should resolve an orphaned external approval and leave its run resumable', async () => {
     const file = createMemoryLogFile();
     await seedLog(file, [
       {
@@ -1601,7 +1668,7 @@ describe('the external slot through its driver handle (RA-S14, with W10 EA-S8)',
 
     await host.command({ type: 'attach', commandId: key(), payload: { chatId: 'chat-orphan-approval' } });
 
-    // L4 D-112: the request no host will answer is resolved, with the code that says why.
+    // L4 D-112: the request no host will answer is resolved; the run is abandoned resumably, so Resume asks again.
     const log = await readLog(file);
     const ending = log.slice(
       log.findIndex(
@@ -1614,11 +1681,17 @@ describe('the external slot through its driver handle (RA-S14, with W10 EA-S8)',
         type: 'interrupt.recorded',
         phase: 'resolved',
         reason: 'cancelled',
-        payload: { outcome: 'cancelled', code: 'EXTERNAL_AGENT_RECOVERY_UNKNOWN' },
+        payload: { outcome: 'cancelled', code: 'RUN_ABANDONED' },
       },
-      { type: 'run.lifecycle', state: 'failed', detail: { code: 'EXTERNAL_AGENT_RECOVERY_UNKNOWN' } },
+      {
+        type: 'run.lifecycle',
+        state: 'failed',
+        detail: { code: 'RUN_ABANDONED', details: { cause: 'awaiting-approval' } },
+      },
     ]);
-    expect(await host.ledger('chat-orphan-approval')).toMatchObject({ runs: { 'run-1': { pendingInterrupts: {} } } });
+    const ledger = await host.ledger('chat-orphan-approval');
+    expect(ledger).toMatchObject({ runs: { 'run-1': { pendingInterrupts: {} } } });
+    expect(isResumableRun(ledger.runs['run-1'])).toBe(true);
     await host.close();
   });
 

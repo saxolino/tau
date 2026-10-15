@@ -141,9 +141,30 @@ const collectDocs = (symbol: ts.Symbol, checker: ts.TypeChecker): ApiDocs | unde
   );
 
   const examples = tags.filter((tag) => tag.name === 'example').map((tag) => parseExample(tagText(tag)));
-  const throws = tags
-    .filter((tag) => tag.name === 'throws')
-    .map((tag) => tagText(tag))
+  const throws = (symbol.getDeclarations() ?? [])
+    .flatMap((declaration) => {
+      const declarationTags = ts.getJSDocTags(declaration);
+      return declarationTags.flatMap((tag, index) => {
+        if (!ts.isJSDocThrowsTag(tag)) {
+          return [];
+        }
+        const source = tag.getSourceFile();
+        let { end } = tag;
+        // TypeScript can parse a link inside throws braces as a separate inline tag.
+        for (const following of declarationTags.slice(index + 1)) {
+          if (source.text[following.pos - 1] !== '{') {
+            break;
+          }
+          end = following.end;
+        }
+        return [
+          source.text
+            .slice(tag.tagName.end, end)
+            .replaceAll(/\r?\n[\t ]*\*[\t ]?/gu, '\n')
+            .trim(),
+        ];
+      });
+    })
     .filter((part) => part !== '');
   const seeAlso = tags
     .filter((tag) => tag.name === 'see')
@@ -205,14 +226,55 @@ const parameterOf = (parameter: ts.ParameterDeclaration, checker: ts.TypeChecker
 };
 
 /**
+ * A declaration's text as the export `name` an author imports.
+ *
+ * An export can reach its signature through a declaration that does not carry
+ * that name: `export declare const makeCylinder: (…) => Solid` holds an
+ * anonymous function type, `makeDirection: typeof resolveDirection` and
+ * `export { task as first }` hold another function's declaration. Named
+ * function declarations are renamed in place; anonymous ones (function types,
+ * call signatures, arrow functions) are restated as a function declaration from
+ * their verbatim parameters and return type, which also drops an arrow's body.
+ */
+const exportedText = (
+  declaration: ts.SignatureDeclaration,
+  name: string | undefined,
+  returnTypeText: string,
+): string => {
+  const file = declaration.getSourceFile();
+  const text = declaration.getText(file).trim();
+  if (name === undefined || name === 'default') {
+    return text;
+  }
+  if (ts.isFunctionDeclaration(declaration) && declaration.name !== undefined) {
+    if (declaration.name.text === name) {
+      return text;
+    }
+    const start = declaration.getStart(file);
+    return `${text.slice(0, declaration.name.getStart(file) - start)}${name}${text.slice(declaration.name.end - start)}`;
+  }
+  const typeParameters =
+    declaration.typeParameters === undefined
+      ? ''
+      : `<${declaration.typeParameters.map((parameter) => parameter.getText(file)).join(', ')}>`;
+  const parameters = declaration.parameters.map((parameter) => parameter.getText(file)).join(', ');
+  return `export declare function ${name}${typeParameters}(${parameters}): ${returnTypeText};`;
+};
+
+/**
  * One {@link ApiSignature} per overload.
  *
  * `text` is `node.getText()` rather than a printer's output: `getText` starts at
  * the node's own first token, so it carries the verbatim declaration — default
  * values included — without the leading JSDoc block that `printNode` would
- * inline into the signature.
+ * inline into the signature. A top-level export passes its `exportedName` so
+ * the text names what an author imports (see {@link exportedText}).
  */
-const signatureOf = (signature: ts.Signature, checker: ts.TypeChecker): ApiSignature | undefined => {
+const signatureOf = (
+  signature: ts.Signature,
+  checker: ts.TypeChecker,
+  exportedName?: string,
+): ApiSignature | undefined => {
   const declaration = signature.getDeclaration();
   // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Synthesized signatures have no declaration.
   if (declaration === undefined) {
@@ -225,7 +287,7 @@ const signatureOf = (signature: ts.Signature, checker: ts.TypeChecker): ApiSigna
 
   return {
     parameters: declaration.parameters.map((parameter) => parameterOf(parameter, checker)),
-    text: declaration.getText(file).trim(),
+    text: exportedText(declaration, exportedName, returnTypeText),
     ...(typeRef(returnTypeText) === undefined ? {} : { returnType: typeRef(returnTypeText) }),
     ...(declaration.typeParameters === undefined || declaration.typeParameters.length === 0
       ? {}
@@ -234,11 +296,14 @@ const signatureOf = (signature: ts.Signature, checker: ts.TypeChecker): ApiSigna
   };
 };
 
-const signaturesOf = (node: ts.Node, checker: ts.TypeChecker): ApiSignature[] => {
-  const type = checker.getTypeAtLocation(node);
-  return type
-    .getCallSignatures()
-    .map((signature) => signatureOf(signature, checker))
+const signaturesOf = (node: ts.Node, checker: ts.TypeChecker, exportedName?: string): ApiSignature[] => {
+  const constructor =
+    ts.isConstructorDeclaration(node) || ts.isConstructSignatureDeclaration(node)
+      ? checker.getSignatureFromDeclaration(node)
+      : undefined;
+  const signatures = constructor === undefined ? checker.getTypeAtLocation(node).getCallSignatures() : [constructor];
+  return signatures
+    .map((signature) => signatureOf(signature, checker, exportedName))
     .filter((signature): signature is ApiSignature => signature !== undefined);
 };
 
@@ -271,15 +336,23 @@ const memberName = (node: ts.ClassElement | ts.TypeElement): string => {
   return node.name === undefined ? '' : node.name.getText(node.getSourceFile());
 };
 
+/** A property's declared type: its annotation, a getter's return type or a setter's parameter type. */
+const propertyType = (node: ts.ClassElement | ts.TypeElement): ts.TypeNode | undefined => {
+  if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node) || ts.isGetAccessorDeclaration(node)) {
+    return node.type;
+  }
+  return ts.isSetAccessorDeclaration(node) ? node.parameters[0]?.type : undefined;
+};
+
 const memberEntries = (
-  container: ts.ClassDeclaration | ts.InterfaceDeclaration,
+  nodes: ReadonlyArray<ts.ClassElement | ts.TypeElement>,
   path: string,
   context: Context,
 ): ApiEntryDraft[] => {
   const { checker, groupBy, rootDirectory } = context;
   const byName = new Map<string, { kind: ApiEntryKind; draft: ApiEntryDraft; signatures: ApiSignature[] }>();
 
-  for (const node of container.members) {
+  for (const node of nodes) {
     const kind = memberKind(node);
     const name = memberName(node);
     if (kind === undefined || name === '' || isHidden(node, name)) {
@@ -296,7 +369,10 @@ const memberEntries = (
       continue;
     }
 
-    const declaredType = ts.isPropertyDeclaration(node) || ts.isPropertySignature(node) ? node.type : undefined;
+    const declaredType = propertyType(node);
+    const getterOnly =
+      ts.isGetAccessorDeclaration(node) &&
+      !nodes.some((other) => ts.isSetAccessorDeclaration(other) && memberName(other) === name);
     const draft: ApiEntryDraft = {
       name,
       kind,
@@ -311,15 +387,20 @@ const memberEntries = (
       ...(declaredType === undefined ? {} : { type: typeRef(declaredType.getText(node.getSourceFile())) }),
       visibility: (flags & ts.ModifierFlags.Protected) === 0 ? 'public' : 'protected',
       ...((flags & ts.ModifierFlags.Static) === 0 ? {} : { static: true }),
+      ...((ts.isPropertyDeclaration(node) || ts.isPropertySignature(node)) && node.questionToken !== undefined
+        ? { optional: true }
+        : {}),
+      ...((flags & ts.ModifierFlags.Readonly) !== 0 || getterOnly ? { readonly: true } : {}),
       source: sourceOf(node, rootDirectory),
       languageSpecific: { language: 'typescript' },
     };
     byName.set(name, { kind, draft, signatures });
   }
 
-  return [...byName.values()].map(({ draft, signatures }) =>
-    signatures.length === 0 ? draft : { ...draft, signatures },
-  );
+  return [...byName.values()].map(({ draft, signatures }) => {
+    const unique = [...new Map(signatures.map((signature) => [signature.text, signature])).values()];
+    return unique.length === 0 ? draft : { ...draft, signatures: unique };
+  });
 };
 
 const enumMembers = (container: ts.EnumDeclaration, path: string, context: Context): ApiEntryDraft[] =>
@@ -373,7 +454,7 @@ const headerText = (declaration: ts.ClassDeclaration | ts.InterfaceDeclaration):
 
 const isModuleSymbol = (symbol: ts.Symbol): boolean =>
   (symbol.flags & (ts.SymbolFlags.Module | ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule)) !== 0 &&
-  (symbol.flags & ts.SymbolFlags.Class) === 0;
+  (symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Function)) === 0;
 
 const resolveAlias = (symbol: ts.Symbol, checker: ts.TypeChecker): ts.Symbol => {
   if ((symbol.flags & ts.SymbolFlags.Alias) === 0) {
@@ -391,6 +472,21 @@ const ownDeclarations = (symbol: ts.Symbol, program: ts.Program): ts.Declaration
     const file = declaration.getSourceFile();
     return !program.isSourceFileDefaultLibrary(file);
   });
+
+/** Whether a type alias is derived from its same-named value, as in `type E = typeof E[keyof typeof E]`. */
+const aliasesOwnValue = (alias: ts.TypeAliasDeclaration): boolean => {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeQueryNode(node) && node.exprName.getText(alias.getSourceFile()) === alias.name.text) {
+      found = true;
+    }
+    if (!found) {
+      ts.forEachChild(node, visit);
+    }
+  };
+  visit(alias.type);
+  return found;
+};
 
 const entryOf = (
   symbol: ts.Symbol,
@@ -410,7 +506,7 @@ const entryOf = (
     return undefined;
   }
 
-  const signatures = kind === 'function' || kind === 'constant' ? signaturesOf(primary, checker) : [];
+  const signatures = kind === 'function' || kind === 'constant' ? signaturesOf(primary, checker, name) : [];
   const resolvedKind: ApiEntryKind = kind === 'constant' && signatures.length > 0 ? 'function' : kind;
   const category = groupBy?.({ name, kind: resolvedKind, path });
   const docs = collectDocs(symbol, checker);
@@ -421,9 +517,33 @@ const entryOf = (
     if (ts.isClassDeclaration(primary) || ts.isInterfaceDeclaration(primary)) {
       return declarations
         .filter((declaration) => ts.isClassDeclaration(declaration) || ts.isInterfaceDeclaration(declaration))
-        .flatMap((declaration) => memberEntries(declaration, memberPath, context));
+        .flatMap((declaration) => memberEntries(declaration.members, memberPath, context));
     }
-    return ts.isEnumDeclaration(primary) ? enumMembers(primary, memberPath, context) : [];
+    if (ts.isEnumDeclaration(primary)) {
+      return enumMembers(primary, memberPath, context);
+    }
+    if (ts.isFunctionDeclaration(primary) && declarations.some((declaration) => ts.isModuleDeclaration(declaration))) {
+      return moduleEntries(symbol, memberPath, context);
+    }
+    if (ts.isTypeAliasDeclaration(primary) || ts.isVariableDeclaration(primary)) {
+      // `type E = typeof E[keyof typeof E]` beside `const E = {…}`: the values live on the const.
+      const valueTwin =
+        ts.isTypeAliasDeclaration(primary) && aliasesOwnValue(primary)
+          ? declarations.find((declaration) => ts.isVariableDeclaration(declaration))
+          : undefined;
+      const nodes = checker
+        .getTypeAtLocation(valueTwin ?? primary)
+        .getProperties()
+        .flatMap((property) =>
+          (property.getDeclarations() ?? []).filter(
+            (declaration): declaration is ts.TypeElement =>
+              !program.isSourceFileDefaultLibrary(declaration.getSourceFile()) &&
+              (ts.isMethodSignature(declaration) || ts.isPropertySignature(declaration)),
+          ),
+        );
+      return memberEntries(nodes, memberPath, context);
+    }
+    return [];
   })();
 
   const declaredType = ((): ApiTypeRef | undefined => {
@@ -473,6 +593,7 @@ const moduleEntries = (moduleSymbol: ts.Symbol, path: string | undefined, contex
   try {
     exportSymbols = checker.getExportsOfModule(moduleSymbol);
   } catch {
+    context.seenModules.delete(moduleSymbol);
     return [];
   }
 
@@ -506,6 +627,8 @@ const moduleEntries = (moduleSymbol: ts.Symbol, path: string | undefined, contex
     }
   }
 
+  // A cycle guard is local to this traversal path; another export alias still owns its members.
+  context.seenModules.delete(moduleSymbol);
   return drafts;
 };
 
@@ -513,23 +636,30 @@ const moduleEntries = (moduleSymbol: ts.Symbol, path: string | undefined, contex
 // Entry point
 // =============================================================================
 
+/** The compiler options every TypeScript extraction uses. @internal */
+export const typescriptCompilerOptions: Readonly<ts.CompilerOptions> = compilerOptions;
+
 /**
- * Extract one package's TypeScript API surface into an {@link ApiCorpus}.
+ * Every export of the entry points as draft entries, first declaration of a name winning.
  *
- * @param config - Package identity, entry points and optional grouping.
- * @returns One corpus, ids and totals assigned by `createApiCorpus`.
+ * @param program - A program whose root names include every entry point.
+ * @param entryPoints - Absolute entry-point paths.
+ * @param groupBy - Optional curated grouping.
+ * @returns Draft entries in export order.
  * @throws When an entry point is not a resolvable module.
  * @internal
  */
-export const extractTypescriptApi = (config: TypescriptExtractionConfig): ApiCorpus => {
-  const entryPoints = [...config.entryPoints];
-  const program = ts.createProgram(entryPoints, compilerOptions);
+export const typescriptEntryDrafts = (
+  program: ts.Program,
+  entryPoints: readonly string[],
+  groupBy?: TypescriptExtractionConfig['groupBy'],
+): ApiEntryDraft[] => {
   const checker = program.getTypeChecker();
   const context: Context = {
     checker,
     program,
     rootDirectory: commonDirectory(entryPoints),
-    groupBy: config.groupBy,
+    groupBy,
     seenModules: new Set<ts.Symbol>(),
   };
 
@@ -551,6 +681,21 @@ export const extractTypescriptApi = (config: TypescriptExtractionConfig): ApiCor
     }
   }
 
+  return [...byName.values()];
+};
+
+/**
+ * Extract one package's TypeScript API surface into an {@link ApiCorpus}.
+ *
+ * @param config - Package identity, entry points and optional grouping.
+ * @returns One corpus, ids and totals assigned by `createApiCorpus`.
+ * @throws When an entry point is not a resolvable module.
+ * @internal
+ */
+export const extractTypescriptApi = (config: TypescriptExtractionConfig): ApiCorpus => {
+  const entryPoints = [...config.entryPoints];
+  const program = ts.createProgram(entryPoints, compilerOptions);
+
   return createApiCorpus(
     {
       language: 'typescript',
@@ -559,6 +704,6 @@ export const extractTypescriptApi = (config: TypescriptExtractionConfig): ApiCor
       extractor: `TypeScript ${ts.version}`,
       extractionDate: new Date().toISOString(),
     },
-    [...byName.values()],
+    typescriptEntryDrafts(program, entryPoints, config.groupBy),
   );
 };

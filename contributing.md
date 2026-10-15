@@ -28,6 +28,8 @@
    # Edit .env.local with your API keys
    ```
 
+   Public GitHub import lists a repository's branches only when the API has `GITHUB_API_TOKEN`, a fine-grained personal access token with read-only access to public repositories (see `apps/api/.env.example`). It is optional locally. Without it, the import page says "This server isn’t set up to list branches, so import will use the `<branch>` branch. Its administrator can enable branch listing with GITHUB_API_TOKEN." The import then uses the branch the link names, or the repository's default branch, and archive downloads use GitHub's lower unauthenticated rate limit.
+
 4. Start the development servers:
 
    ```bash
@@ -104,4 +106,4 @@ Here are some specific rules to be aware of, and why they are important:
 
 ### Production releases
 
-Production UI deploys ship from Netlify on pushes to the **`production`** git branch after maintainers merge the bot-managed trail PR; the Fly **`tau-api`** app deploys via [`.github/workflows/prod-deploy-on-merge.yml`](.github/workflows/prod-deploy-on-merge.yml). Do **not** push directly to **`production`** or manually rewrite **`release/main-to-production`**.
+Each application (UI, API, desktop) has its own bot-managed release pull request on `release/<app>`; merging one creates that application's `<app>@<version>` tag and GitHub Release, whose release build verifies it and deploys it to production. Merging a release pull request is therefore a production release: only the maintainer does it. Rollbacks go through [`.github/workflows/deploy-production.yml`](.github/workflows/deploy-production.yml) with an earlier `ui@` or `api@` tag; each deploys only that application. Do **not** push to the `release/*` branches.

@@ -32,6 +32,7 @@ vi.mock('#routes/w.$workspace.$project/use-chat-interface-state.js', () => ({
   }),
 }));
 vi.mock('#routes/w.$workspace.$project/focused-chat-gate.js', () => ({
+  ChatHistoryGate: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
   ChatInterfaceSessionGate: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
 }));
 vi.mock('#routes/w.$workspace.$project/chat-viewer-dockview.js', () => ({
@@ -55,7 +56,7 @@ vi.mock('#routes/w.$workspace.$project/chat-interface-nav.js', () => ({ ChatInte
 vi.mock('#routes/w.$workspace.$project/workspace-skeleton.js', () => ({ WorkspaceSkeleton: () => null }));
 
 describe('ChatInterfaceMobile', () => {
-  it('should expose viewer controls when the drawer closes and hide them only while it is open', async () => {
+  it('should keep the viewer accessible while the docked panel opens and closes', async () => {
     state.drawerOpen = false;
     render(<ChatInterfaceMobile />);
 
@@ -64,9 +65,10 @@ describe('ChatInterfaceMobile', () => {
     setDrawerOpen(true);
 
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Viewer controls' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Viewer controls' })).toBeInTheDocument();
     });
-    expect(screen.getByText('Viewer controls').closest('[aria-hidden]')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('Viewer controls').closest('[aria-hidden]')).toBeNull();
+    expect(document.querySelector('[data-slot=drawer-overlay]')).toBeNull();
 
     setDrawerOpen(false);
 

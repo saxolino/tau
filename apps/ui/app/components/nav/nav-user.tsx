@@ -1,4 +1,4 @@
-import { BookOpen, Bug, CircleHelp, Files, FileText, Settings, Shield, WifiOff } from 'lucide-react';
+import { BookOpen, Bug, CircleHelp, Files, FileText, Scale, Settings, Shield, WifiOff } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
@@ -8,14 +8,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
-import { ClientOnly } from '#components/ui/utils/client-only.js';
+import { ClientOnly } from '@taucad/ui/components/client-only';
 import { useSettingsDialog } from '#hooks/use-settings-dialog.js';
 import { UserButton } from '#components/auth/user/user-button.js';
 import { useNetworkConnectivity } from '#hooks/use-network-connectivity.js';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { legalUrl, metaConfig } from '#constants/meta.constants.js';
+import { metaConfig } from '#constants/meta.constants.js';
+import { legalUrl } from '#lib/legal-url.js';
 import { SvgIcon } from '#components/icons/svg-icon.js';
-import { NavBillingItem } from '#cloud/nav-billing.js';
+import { isDesktopTarget } from '#lib/build-target.js';
+import { setEntryPreference } from '#lib/entry-preference.js';
+import { NavBillingItem, NavCreditsMeter } from '#cloud/nav-billing.js';
 
 /**
  * Nav user button: delegates avatar, sign-in/up/out chrome to the registry
@@ -29,6 +32,31 @@ export function NavUser(): React.JSX.Element {
   const isOnline = useNetworkConnectivity();
   const { open: openSettings } = useSettingsDialog();
   const helpItems = [
+    ...(isDesktopTarget()
+      ? []
+      : [
+          <DropdownMenuItem key='website' asChild>
+            <a
+              href='/?website=1'
+              onClick={(event) => {
+                if (
+                  event.button === 0 &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  !event.shiftKey &&
+                  !event.altKey &&
+                  setEntryPreference('website')
+                ) {
+                  event.preventDefault();
+                  globalThis.location.assign('/');
+                }
+              }}
+            >
+              <BookOpen />
+              Visit website
+            </a>
+          </DropdownMenuItem>,
+        ]),
     <DropdownMenuItem key='documentation' asChild>
       <a href='https://docs.tau.new' target='_blank' rel='noopener noreferrer'>
         <BookOpen />
@@ -45,6 +73,12 @@ export function NavUser(): React.JSX.Element {
       <a href={legalUrl('terms')} target='_blank' rel='noopener noreferrer'>
         <FileText />
         Terms
+      </a>
+    </DropdownMenuItem>,
+    <DropdownMenuItem key='open-source' asChild>
+      <a href={legalUrl('open-source')} target='_blank' rel='noopener noreferrer'>
+        <Scale />
+        Open-source notices
       </a>
     </DropdownMenuItem>,
     <DropdownMenuItem key='bug' asChild>
@@ -79,6 +113,7 @@ export function NavUser(): React.JSX.Element {
             side='top'
             sideOffset={8}
             shouldHideSettings
+            header={<NavCreditsMeter />}
             links={[
               ...(isOnline
                 ? []
@@ -107,7 +142,7 @@ export function NavUser(): React.JSX.Element {
                 <span
                   role='status'
                   aria-label='Offline'
-                  className='absolute top-1 left-5 size-1.5 rounded-full border border-sidebar bg-destructive'
+                  className='absolute top-1 left-5 size-1.5 rounded-full border border-sidebar bg-feature'
                 />
               </TooltipTrigger>
               <TooltipContent side='top'>Offline — reconnect to access online features</TooltipContent>

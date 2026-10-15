@@ -250,6 +250,19 @@ const bindSimulator = async (simulator: BambuSimulator, storeRoot?: string): Pro
 };
 
 describe('Bambu simulator fault matrix', () => {
+  it('should report the same storage error as the real decoder without a physical write', async () => {
+    const simulator = createBambuSimulator({ faults: ['storage-damaged'] });
+    const snapshot = await simulator.session.getSnapshot({ signal });
+    expect(snapshot.alerts).toEqual([
+      {
+        code: '0500-402F',
+        message:
+          'The microSD card has damaged sector data. Back up readable files, then repair or format the card. Replace it if the printer still cannot read it.',
+      },
+    ]);
+    expect(simulator.writes()).toEqual([]);
+  });
+
   it.each([
     ['certificate-changed', 'BAMBU_CERTIFICATE_CHANGED'],
     ['wrong-credential', 'BAMBU_AUTHENTICATION'],
@@ -614,7 +627,7 @@ describe('Simulated X1C run progression', () => {
   it('should report its loaded spool with a filament profile id', async () => {
     const simulator = createBambuSimulator();
     await expect(simulator.session.getSnapshot({ signal })).resolves.toMatchObject({
-      setup: { materials: [{ slot: 0, state: 'loaded', materialId: 'pla', profileId: 'GFA00' }] },
+      setup: { materials: [{ slot: 0, state: 'loaded', materialId: 'PLA', profileId: 'GFA00' }] },
     });
   });
 

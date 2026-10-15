@@ -1,11 +1,12 @@
 /**
  * The `test_model` adapter: discovery, one run, one projection.
  *
- * The runner is injected rather than chosen here — `createGeoSpecWebRunner` in
- * a browser worker, `createGeoSpecNodeRunner` on a daemon — because that is the
- * only part of a GeoSpec run that is host-specific. Keeping the side-effect
- * `@taucad/geospec-engine/register*` import at the consumer is what lets a
- * browser bundle stay free of the Node graph.
+ * The runner is injected rather than chosen here — `createNativeGeoSpecRunner`
+ * from `geospec/runner/native` over the WASM engine in a browser worker or the
+ * Node add-on on a daemon, or `createGeoSpecNativeNodePoolRunner` for a pool —
+ * because the compiled engine is the only host-specific part of a GeoSpec run.
+ * Constructing it at the consumer is what lets a browser bundle stay free of
+ * the Node graph.
  *
  * @module
  */
@@ -14,7 +15,6 @@ import type { RunGeoSpecTestsRpcInput } from '@taucad/chat';
 import { discoverGeoSpecFiles } from 'geospec/runner';
 import type { GeoSpecDiscoveryFileSystem } from 'geospec/runner';
 import type { GeoSpecRunner, GeoSpecRunnerResult } from 'geospec/runner/worker';
-import type { SourceRevision } from '@taucad/runtime';
 
 import { runnerResultToTestModelOutput } from '#geospec/result.js';
 import type { TestModelOutput } from '#geospec/result.js';
@@ -46,12 +46,6 @@ export type RunGeoSpecTestsOptions = {
   readonly args: RunGeoSpecTestsRpcInput;
   /** Discovery root. `''` for a project-relative host such as a browser bridge. */
   readonly projectPath?: string | undefined;
-  /**
-   * The source revision of every model the run loaded (R4/I5), read after the run —
-   * `sourceRevisions` from {@link createProjectModelLoader}. A verdict that names the sources it
-   * was computed from is one a reader can tell apart from a stale one.
-   */
-  readonly sourceRevisions?: (() => readonly SourceRevision[]) | undefined;
 };
 
 /**
@@ -91,9 +85,7 @@ export const runGeoSpecTests = async (options: RunGeoSpecTestsOptions): Promise<
           ...(args.testNamePattern === undefined ? {} : { testNamePattern: args.testNamePattern }),
           ...(args.testTimeout === undefined ? {} : { testTimeout: args.testTimeout }),
         });
-  const output = runnerResultToTestModelOutput(result, entryPaths, {
+  return runnerResultToTestModelOutput(result, entryPaths, {
     filtersApplied: hasGeoSpecSelectionFilters(args),
   });
-  const sourceRevisions = options.sourceRevisions?.() ?? [];
-  return sourceRevisions.length === 0 ? output : { ...output, sourceRevisions: [...sourceRevisions] };
 };

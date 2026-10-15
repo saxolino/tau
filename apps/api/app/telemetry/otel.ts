@@ -17,6 +17,7 @@
  */
 /* oxlint-disable typescript-eslint/dot-notation, typescript-eslint/no-unnecessary-condition -- process.env index access required by TS4111 (verbatimModuleSyntax) */
 import process from 'node:process';
+import { metrics } from '@opentelemetry/api';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -47,6 +48,9 @@ const resource = resourceFromAttributes({
   'cloud.region': process.env['FLY_REGION'] ?? 'local',
   'host.id': process.env['FLY_MACHINE_ID'] ?? 'local',
   'host.name': process.env['FLY_ALLOC_ID'] ?? 'local',
+  // Fly's scrape labels a series by app and Machine, not by process group; locally the collector adds
+  // `tau_process` itself, so the attribute is set only where Fly names the group.
+  ...(process.env['FLY_PROCESS_GROUP'] ? { 'tau.process': process.env['FLY_PROCESS_GROUP'] } : {}),
 });
 /* eslint-enable @typescript-eslint/naming-convention -- end OTEL attribute names block */
 
@@ -54,14 +58,26 @@ const otlpEndpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'];
 
 const hasOtlpEndpoint = Boolean(otlpEndpoint);
 
+// An omitted exporter is not "off": NodeSDK falls back to OTLP on localhost:4318, so a process without an
+// endpoint failed its shutdown flush (and the billing worker exited 1). Explicit settings still win.
+if (!hasOtlpEndpoint) {
+  process.env['OTEL_TRACES_EXPORTER'] ??= 'none';
+  process.env['OTEL_LOGS_EXPORTER'] ??= 'none';
+}
+
 const sdk = new NodeSDK({
   resource,
 
   traceExporter: hasOtlpEndpoint ? new OTLPTraceExporter() : undefined,
 
-  metricReader: new PrometheusExporter({ port: metricsPort }),
+  // Every series carries `service_name` and, on Fly, `tau_process`: Fly's managed Prometheus adds neither,
+  // and dashboards and alerts select and group by both (OBS-13).
+  metricReader: new PrometheusExporter({
+    port: metricsPort,
+    withResourceConstantLabels: /^(?:service\.name|tau\.process)$/u,
+  }),
 
-  logRecordProcessor: hasOtlpEndpoint ? new BatchLogRecordProcessor(new OTLPLogExporter()) : undefined,
+  logRecordProcessors: hasOtlpEndpoint ? [new BatchLogRecordProcessor({ exporter: new OTLPLogExporter() })] : undefined,
 
   instrumentations: [
     new LangChainInstrumentation(),
@@ -69,7 +85,6 @@ const sdk = new NodeSDK({
       '@opentelemetry/instrumentation-fs': { enabled: false },
       '@opentelemetry/instrumentation-dns': { enabled: false },
       '@opentelemetry/instrumentation-net': { enabled: false },
-      '@opentelemetry/instrumentation-fastify': { enabled: false },
       '@opentelemetry/instrumentation-http': {
         ignoreIncomingRequestHook: (request) => {
           const host = request.headers.host ?? '';
@@ -91,6 +106,27 @@ const sdk = new NodeSDK({
 
 sdk.start();
 
+// Fly reports CPU and memory per Machine; these are the same signals per process, so the API and each
+// billing worker can be told apart and they also exist off Fly. OTel process semantic conventions.
+const processMeter = metrics.getMeter('tau-process');
+processMeter
+  .createObservableCounter('process.cpu.time', { description: 'CPU seconds used by this process', unit: 's' })
+  .addCallback((result) => {
+    const usage = process.cpuUsage();
+    result.observe(usage.user / 1e6, { 'cpu.mode': 'user' });
+    result.observe(usage.system / 1e6, { 'cpu.mode': 'system' });
+  });
+processMeter
+  .createObservableGauge('process.memory.usage', { description: 'Resident set size of this process', unit: 'By' })
+  .addCallback((result) => {
+    result.observe(process.memoryUsage.rss());
+  });
+processMeter
+  .createObservableGauge('process.uptime', { description: 'Seconds since this process started', unit: 's' })
+  .addCallback((result) => {
+    result.observe(process.uptime());
+  });
+
 if (process.env['PYROSCOPE_SERVER_ADDRESS']) {
   try {
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Module default export name
@@ -104,8 +140,9 @@ if (process.env['PYROSCOPE_SERVER_ADDRESS']) {
       },
     });
     Pyroscope.start();
-  } catch {
-    // Pyroscope is optional; silently skip if unavailable
+  } catch (error) {
+    // Profiling is optional, but an address that was set and does nothing is a misconfiguration worth seeing.
+    console.warn('Pyroscope profiling disabled:', error);
   }
 }
 

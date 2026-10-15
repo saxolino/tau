@@ -3,19 +3,23 @@ import { Camera, Check } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { randomUuid } from '@taucad/utils/id';
-import { useGraphics } from '#hooks/use-graphics.js';
+import type { Rendering } from '@taucad/runtime';
+import { useGraphics, useGraphicsSelector } from '@taucad/viewer/hooks/use-graphics';
 import { useCad } from '#hooks/use-cad.js';
 import { useProject } from '#hooks/use-project.js';
 import { useChatActions } from '#hooks/use-chat.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { useTickAnimation } from '#hooks/use-tick-animation.js';
+import { useTickAnimation } from '@taucad/ui/hooks/use-tick-animation';
 import { toast } from '#components/ui/sonner.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
 import { captureCadImages, captureFilesToDataUrls, omittedSectionCutsNotice } from '#services/headless-capture.js';
 import { recordHeadlessImageTiming } from '#services/headless-image-debug.js';
 import { attachmentModelForExecution } from '#utils/chat.utils.js';
 
-const useCaptureCurrentViewToChat = (onSuccess?: () => void): (() => Promise<void>) => {
+const useCaptureCurrentViewToChat = (
+  onSuccess?: () => void,
+  captureRendering?: () => Promise<Rendering>,
+): (() => Promise<void>) => {
   const graphicsRef = useGraphics();
   const cadRef = useCad();
   const { projectRef } = useProject();
@@ -43,6 +47,7 @@ const useCaptureCurrentViewToChat = (onSuccess?: () => void): (() => Promise<voi
         graphicsRef,
         imageService,
         recipe: { purpose: 'chat', mode: 'current' },
+        captureRendering,
       });
       const publishStartedAt = performance.now();
       addDraftAttachment(captureFilesToDataUrls(files)[0]!, {
@@ -62,7 +67,17 @@ const useCaptureCurrentViewToChat = (onSuccess?: () => void): (() => Promise<voi
         projectRef.send({ type: 'releaseGeometryUnit', claimId });
       }
     }
-  }, [addDraftAttachment, cadRef, execution, graphicsRef, imageService, onSuccess, projectRef, selectedModel]);
+  }, [
+    addDraftAttachment,
+    cadRef,
+    captureRendering,
+    execution,
+    graphicsRef,
+    imageService,
+    onSuccess,
+    projectRef,
+    selectedModel,
+  ]);
 };
 
 /**
@@ -75,18 +90,31 @@ const useCaptureCurrentViewToChat = (onSuccess?: () => void): (() => Promise<voi
  * relies on the surrounding `<GraphicsProvider>` (per-view) and
  * `<ActiveChatProvider>` (project route) for context resolution.
  */
-export function CaptureViewControl(): React.JSX.Element {
+export function CaptureViewControl({
+  captureRendering,
+}: {
+  readonly captureRendering?: () => Promise<Rendering>;
+}): React.JSX.Element {
   const { ticked, trigger } = useTickAnimation();
-  const handleCapture = useCaptureCurrentViewToChat(trigger);
+  const handleCapture = useCaptureCurrentViewToChat(trigger, captureRendering);
+  const canCapture = useGraphicsSelector((state) => state.context.artifact !== undefined);
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant='ghost' size='icon-sm' aria-label='Capture view to chat' onClick={handleCapture}>
+        <Button
+          variant='ghost'
+          size='icon-sm'
+          aria-label='Capture view to chat'
+          aria-disabled={!canCapture}
+          onClick={canCapture ? handleCapture : undefined}
+        >
           {ticked ? <Check className='size-4 text-success' /> : <Camera className='size-4' />}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{ticked ? 'Added to chat' : 'Capture view to chat'}</TooltipContent>
+      <TooltipContent>
+        {canCapture ? (ticked ? 'Added to chat' : 'Capture view to chat') : 'Available when a model is displayed'}
+      </TooltipContent>
     </Tooltip>
   );
 }

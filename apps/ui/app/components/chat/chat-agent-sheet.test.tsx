@@ -22,8 +22,8 @@ const fable = {
   support: { reasoning: { levels: ['low', 'medium', 'high', 'xhigh'] } },
 } as unknown as Model;
 const haiku = {
-  id: 'anthropic-claude-haiku-4.5',
-  name: 'Haiku 4.5',
+  id: 'anthropic-claude-haiku-5.5',
+  name: 'Haiku 5.5',
   provider: { id: 'anthropic', name: 'Anthropic' },
   details: { family: 'claude', cost: { ...cost, outputTokens: 5 }, contextWindow: 200_000 },
   // eslint-disable-next-line @typescript-eslint/naming-convention -- Anthropic wire key
@@ -45,7 +45,14 @@ const state: {
   model: Model;
   effort: ChatComposerContextValue['model']['effort'];
   placements: readonly AgentHostPlacementTarget[];
-} = { execution: { kind: 'tau', model: fable.id }, model: fable, effort: 'high', placements: [] };
+  canSelectExecution: boolean;
+} = {
+  execution: { kind: 'tau', model: fable.id },
+  model: fable,
+  effort: 'high',
+  placements: [],
+  canSelectExecution: true,
+};
 const setActiveModel = vi.fn();
 const setActiveEffort = vi.fn();
 const setActiveExecution = vi.fn();
@@ -60,15 +67,24 @@ vi.mock('#hooks/active-chat-provider.js', () => ({
       setActiveEffort,
     },
     execution: { execution: state.execution, setActiveExecution },
-    canSelectExecution: true,
+    canSelectExecution: state.canSelectExecution,
   }),
 }));
 
+const models: {
+  defaultExecution: ChatComposerContextValue['execution']['execution'];
+  catalog: { status: 'loading' } | { status: 'unavailable' } | { status: 'loaded'; models: Model[] };
+} = {
+  defaultExecution: { kind: 'tau', model: fable.id, effort: 'low' },
+  catalog: { status: 'loaded', models: catalog },
+};
 vi.mock('#hooks/use-models.js', () => ({
   useModels: () => ({
     data: catalog,
     availableModels: catalog,
-    defaultExecution: { kind: 'tau', model: fable.id, effort: 'low' },
+    defaultExecution: models.defaultExecution,
+    lastTauExecution: { kind: 'tau', model: fable.id, effort: 'low' },
+    catalog: models.catalog,
   }),
 }));
 
@@ -77,12 +93,30 @@ vi.mock('#hooks/use-cad-agent-config.js', () => ({
 }));
 
 const keybindings = vi.hoisted(() => new Map<string, () => void>());
-vi.mock('#hooks/use-keyboard.js', () => ({
+vi.mock('@taucad/ui/components/keyboard', () => ({
   useKeybinding: (combination: { key: string }, callback: () => void) => {
     keybindings.set(combination.key, callback);
     return { formattedKeyCombination: '⌘/' };
   },
 }));
+
+/* The Settings disclosure is a remembered preference; a remount reads what the last one wrote. */
+const preferences = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('#hooks/use-cookie.js', async () => {
+  const { useState } = await import('react');
+  return {
+    useCookie: <T,>(name: string, fallback: T) => {
+      const [value, setValue] = useState<T>(() => (preferences.has(name) ? (preferences.get(name) as T) : fallback));
+      return [
+        value,
+        (next: T) => {
+          preferences.set(name, next);
+          setValue(next);
+        },
+      ] as const;
+    },
+  };
+});
 
 vi.mock('#hooks/use-settings-dialog.js', () => ({
   useSettingsDialog: () => ({ open: vi.fn() }),
@@ -113,12 +147,49 @@ const codex = (refusal?: ExternalAgentDescriptor['refusal']): AgentHostPlacement
 });
 
 const renderSheet = (focusEditor = vi.fn(), agentConfig: AgentConfig = noConfig) => {
-  render(
-    <TooltipProvider>
-      <ChatAgentSheet agentConfig={agentConfig} placements={state.placements} focusEditor={focusEditor} />
-    </TooltipProvider>,
-  );
-  return { focusEditor };
+  return {
+    focusEditor,
+    ...render(
+      <TooltipProvider>
+        <ChatAgentSheet agentConfig={agentConfig} placements={state.placements} focusEditor={focusEditor} />
+      </TooltipProvider>,
+    ),
+  };
+};
+
+/** Codex's options as it sends them to a client without boolean config options. */
+const codexConfig = (values: { readonly mode: string; readonly fast: string }, select = vi.fn()): AgentConfig => ({
+  options: [
+    {
+      type: 'select',
+      id: 'collaboration_mode',
+      name: 'Collaboration mode',
+      category: 'collaboration_mode',
+      currentValue: values.mode,
+      options: [
+        { value: 'default', name: 'Default' },
+        { value: 'plan', name: 'Plan', description: 'Plan before making changes' },
+      ],
+    },
+    {
+      type: 'select',
+      id: 'fast-mode',
+      name: 'Fast mode',
+      description: '1.5x speed, increased usage',
+      category: 'model_config',
+      currentValue: values.fast,
+      options: [
+        { value: 'off', name: 'Off' },
+        { value: 'on', name: 'On' },
+      ],
+    },
+  ],
+  valueOf: (option) => option.currentValue,
+  select,
+});
+
+const openSheet = async (): Promise<void> => {
+  await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
 };
 
 describe('ChatAgentSheet', () => {
@@ -129,6 +200,10 @@ describe('ChatAgentSheet', () => {
     state.model = fable;
     state.effort = 'high';
     state.placements = [];
+    state.canSelectExecution = true;
+    models.defaultExecution = { kind: 'tau', model: fable.id, effort: 'low' };
+    models.catalog = { status: 'loaded', models: catalog };
+    preferences.clear();
   });
 
   it('names the trigger with the model and its level, and shows the model’s own glyph', () => {
@@ -161,10 +236,10 @@ describe('ChatAgentSheet', () => {
     state.execution = { kind: 'tau', model: haiku.id };
     renderSheet();
 
-    const trigger = screen.getByRole('button', { name: 'Agent and model: Haiku 4.5' });
+    const trigger = screen.getByRole('button', { name: 'Agent and model: Haiku 5.5' });
     await userEvent.click(trigger);
     expect(screen.queryByRole('tablist', { name: /Reasoning/u })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Model: Haiku 4.5. Change' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Model: Haiku 5.5. Change' })).toHaveFocus();
   });
 
   it('drills into the model list and returns to the sheet with the chosen model', async () => {
@@ -174,7 +249,7 @@ describe('ChatAgentSheet', () => {
 
     expect(screen.getByRole('group', { name: 'Frontier' })).toBeInTheDocument();
     /* Level controls are tabs, never options: options are only ever models (Finding 8). */
-    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Haiku 4.5', 'Fable 5.1High']);
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Haiku 5.5', 'Fable 5.1High']);
     await userEvent.click(screen.getByRole('option', { name: /Haiku/u }));
 
     expect(setActiveModel).toHaveBeenCalledWith(haiku.id);
@@ -235,6 +310,51 @@ describe('ChatAgentSheet', () => {
       agentId: 'codex',
       model: 'gpt-5.6-sol',
     });
+  });
+
+  it('returns from an external agent to the last Tau level, even when the new-chat default is that agent', async () => {
+    const acp = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-5.6-sol' } as const;
+    state.execution = acp;
+    models.defaultExecution = acp;
+    state.placements = [codex()];
+    renderSheet();
+    await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
+    await userEvent.click(screen.getByRole('button', { name: /^Agent: Codex/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^Tau/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^Haiku 5\.5/u }));
+
+    expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: haiku.id, effort: 'low' });
+  });
+
+  it('should let a saved Codex chat switch to Tau when its host is absent from discovery', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-sol' };
+    renderSheet();
+    await openSheet();
+
+    expect(setActiveExecution).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: /^Agent: codex/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^Tau/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^Haiku 5\.5/u }));
+
+    expect(setActiveExecution).toHaveBeenCalledExactlyOnceWith({ kind: 'tau', model: haiku.id, effort: 'low' });
+  });
+
+  it('should hide agent switching for a read-only saved Codex chat', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-sol' };
+    state.canSelectExecution = false;
+    renderSheet();
+    await openSheet();
+
+    expect(screen.queryByRole('button', { name: /^Agent:/u })).not.toBeInTheDocument();
+    expect(setActiveExecution).not.toHaveBeenCalled();
+  });
+
+  it('says before send that Tau cannot start while its model list is unreachable', async () => {
+    models.catalog = { status: 'unavailable' };
+    renderSheet();
+    await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
+
+    expect(screen.getByText(/can't reach its model list/u)).toBeInTheDocument();
   });
 
   it('still offers an agent whose model probe came back empty, on its own default model', async () => {
@@ -318,6 +438,55 @@ describe('ChatAgentSheet', () => {
     expect(select).toHaveBeenCalledWith('thought_level', 'high');
   });
 
+  it('orders Grok reasoning from low to extra high while preserving the selected wire value', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'grok' };
+    state.placements = [
+      {
+        ...codex(),
+        externalAgents: [
+          {
+            id: 'grok',
+            displayName: 'Grok Build',
+            defaultModel: 'grok-4.7',
+            models: [{ id: 'grok-4.7', name: 'Grok 4.7' }],
+          },
+        ],
+      },
+    ];
+    const select = vi.fn();
+    renderSheet(vi.fn(), {
+      options: [
+        {
+          type: 'select',
+          id: 'reasoning_effort',
+          name: 'Reasoning effort',
+          category: 'thought_level',
+          currentValue: 'high',
+          options: [
+            { value: 'xhigh', name: 'Extra High' },
+            { value: 'high', name: 'High', description: 'Thorough reasoning and quality. Recommended.' },
+            { value: 'medium', name: 'Medium' },
+            { value: 'low', name: 'Low' },
+          ],
+        },
+      ],
+      valueOf: (option) => option.currentValue,
+      select,
+    });
+    await userEvent.click(screen.getByRole('button', { name: /Grok Build.*reasoning High/u }));
+    const reasoning = within(screen.getByRole('tablist', { name: /Reasoning for Grok Build/u }));
+    expect(reasoning.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Low',
+      'Medium',
+      'High',
+      'Extra High',
+    ]);
+    expect(reasoning.getByRole('tab', { name: 'High' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Thorough reasoning and quality. Recommended.')).toBeInTheDocument();
+    await userEvent.click(reasoning.getByRole('tab', { name: 'Extra High' }));
+    expect(select).toHaveBeenCalledWith('reasoning_effort', 'xhigh');
+  });
+
   it('clears a previous model’s reasoning choice when choosing another ACP model', async () => {
     state.execution = {
       kind: 'acp',
@@ -395,5 +564,110 @@ describe('ChatAgentSheet', () => {
 
     await userEvent.keyboard('{Escape}');
     expect(focusEditor).toHaveBeenCalled();
+  });
+
+  it('keeps the agent’s options behind a closed Settings row that names what is not at its default', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
+    state.placements = [codex()];
+    renderSheet(vi.fn(), codexConfig({ mode: 'plan', fast: 'on' }));
+    await openSheet();
+
+    const settings = screen.getByRole('button', { name: /^Settings/u });
+    expect(settings).toHaveAttribute('aria-expanded', 'false');
+    expect(settings).toHaveTextContent('Plan · Fast mode');
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).toBeNull();
+
+    await userEvent.click(settings);
+    expect(screen.getByRole('switch', { name: 'Fast mode' })).toBeChecked();
+    expect(screen.getByRole('tablist', { name: 'Collaboration mode' })).toBeInTheDocument();
+    expect(screen.getByText('Plan before making changes')).toBeInTheDocument();
+  });
+
+  it('remembers Settings open across a remount, as across a reload', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
+    state.placements = [codex()];
+    const { unmount } = renderSheet(vi.fn(), codexConfig({ mode: 'default', fast: 'off' }));
+    await openSheet();
+    await userEvent.click(screen.getByRole('button', { name: /^Settings/u }));
+    unmount();
+
+    renderSheet(vi.fn(), codexConfig({ mode: 'default', fast: 'off' }));
+    await openSheet();
+    expect(screen.getByRole('button', { name: /^Settings/u })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('draws an Off/On choice as a switch row, writes the agent’s own values and marks the trigger', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
+    state.placements = [codex()];
+    const select = vi.fn();
+    preferences.set('chat-op-agent-settings', true);
+    renderSheet(vi.fn(), codexConfig({ mode: 'default', fast: 'off' }, select));
+    await openSheet();
+
+    const fast = screen.getByRole('switch', { name: 'Fast mode' });
+    expect(fast).toHaveAccessibleDescription('1.5x speed, increased usage');
+    await userEvent.click(screen.getByText('1.5x speed, increased usage'));
+    expect(select).toHaveBeenCalledWith('fast-mode', 'on');
+    expect(screen.queryByRole('tab', { name: 'On' })).toBeNull();
+  });
+
+  it('names Codex Fast mode on the trigger when its Off/On choice is on', () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
+    state.placements = [codex()];
+    renderSheet(vi.fn(), codexConfig({ mode: 'default', fast: 'on' }));
+
+    expect(screen.getByRole('button', { name: 'Agent and model: Codex, GPT-5.6-Sol, Fast mode' })).toBeInTheDocument();
+  });
+
+  it('offers no Settings row to an agent without options, and no credential note', async () => {
+    state.execution = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
+    state.placements = [codex()];
+    renderSheet();
+    await openSheet();
+
+    expect(screen.queryByRole('button', { name: /^Settings/u })).toBeNull();
+    expect(screen.queryByText(/Runs with your local/u)).toBeNull();
+  });
+
+  it('puts Runs on under Settings and keeps an offline host’s notice on the sheet', async () => {
+    state.execution = { kind: 'tau', model: fable.id, hostId: 'workshop' };
+    state.placements = [{ hostId: 'workshop', rung: 2, label: 'Workshop', workspaceRoot: '/srv/tau', online: false }];
+    renderSheet();
+    await openSheet();
+
+    expect(screen.getByText('Workshop is offline')).toBeInTheDocument();
+    expect(screen.queryByRole('tablist', { name: 'Runs on' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^Settings/u }));
+    expect(screen.getByRole('tablist', { name: 'Runs on' })).toBeInTheDocument();
+  });
+
+  it('draws the model as one row, without its provider line', async () => {
+    renderSheet();
+    await openSheet();
+
+    const row = screen.getByRole('button', { name: 'Model: Fable 5.1. Change' });
+    expect(row).toHaveTextContent(/^ModelFable 5\.1$/u);
+  });
+
+  it('sizes the model list to its rows and opens it on the model in use', async () => {
+    renderSheet();
+    await openSheet();
+    await userEvent.click(screen.getByRole('button', { name: 'Model: Fable 5.1. Change' }));
+
+    const list = screen.getByRole('listbox').closest('[data-slot=sheet-models]');
+    expect(list).toHaveClass('max-h-[min(25rem,70vh)]');
+    expect(list).not.toHaveClass('h-[25rem]');
+    expect(screen.getByRole('option', { name: /^Fable 5\.1/u })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('heads an external agent’s single list only with the search field', async () => {
+    state.placements = [codex()];
+    renderSheet();
+    await openSheet();
+    await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+    await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
+
+    expect(screen.getByPlaceholderText('Search Codex models…')).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Codex' })).toBeNull();
   });
 });

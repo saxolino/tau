@@ -2,7 +2,7 @@ import { ChevronsDown, Filter, Settings, Terminal, Trash } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import type { PaneviewApi, PaneviewPanelApi } from 'dockview-react';
-import { PaneviewReact } from 'dockview-react';
+import { Paneview } from '#components/panes/paneview.js';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import { Virtuoso } from 'react-virtuoso';
 import type { LogEntry, LogLevel, LogOrigin } from '@taucad/types';
@@ -16,11 +16,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { PaneButton } from '#components/ui/pane-button.js';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { SearchInput } from '#components/search-input.js';
-import { HighlightText } from '#components/highlight-text.js';
+import { SearchInput } from '@taucad/ui/components/search-input';
+import { HighlightText } from '@taucad/ui/components/highlight-text';
 import {
   PaneviewHeader,
   PaneviewHeaderControls,
@@ -88,7 +88,7 @@ const ComponentBadge = ({ origin, searchTerm }: { readonly origin?: LogOrigin; r
 const getBadgeColor = (level: LogLevel): string => {
   switch (level) {
     case logLevels.error: {
-      return 'bg-destructive';
+      return 'bg-feature';
     }
     case logLevels.warn: {
       return 'bg-warning';
@@ -100,7 +100,7 @@ const getBadgeColor = (level: LogLevel): string => {
       return 'bg-stable';
     }
     case logLevels.trace: {
-      return 'bg-feature';
+      return 'bg-muted-foreground';
     }
   }
 };
@@ -136,12 +136,12 @@ const ConsoleLogRow = ({
   <pre
     data-console-log-row
     className={cn('group/log mx-2 rounded p-1 font-mono text-xs text-wrap', {
-      'bg-destructive/10 text-destructive hover:bg-destructive/20': log.level === logLevels.error,
+      'bg-feature/10 text-feature hover:bg-feature/20': log.level === logLevels.error,
       'bg-warning/10 text-warning hover:bg-warning/20': log.level === logLevels.warn,
       'hover:bg-neutral/20': log.level === logLevels.info,
       'bg-neutral/10': log.level === logLevels.info && log.infoIndex % 2 !== 0,
       'bg-stable/10 text-stable hover:bg-stable/20': log.level === logLevels.debug,
-      'bg-feature/10 text-feature hover:bg-feature/20': log.level === logLevels.trace,
+      'text-muted-foreground hover:bg-neutral/20': log.level === logLevels.trace,
     })}
   >
     <span className='sr-only'>{log.level} log: </span>
@@ -310,7 +310,7 @@ const ConsolePaneview = ({
   }, [entryPaths, getPanelParams]);
 
   return (
-    <PaneviewReact
+    <Paneview
       key={paneviewKey}
       className={paneviewAttachedSurfaceStyleOverrides}
       components={paneviewComponents}

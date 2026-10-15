@@ -17,8 +17,8 @@ import type { LucideIcon } from 'lucide-react';
 import type { FileSystemBackend } from '@taucad/types';
 import { ExternalLink } from '#components/external-link.js';
 import { Button } from '@taucad/ui/components/button';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
-import { Loader } from '#components/ui/loader.js';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
+import { Loader } from '@taucad/ui/components/loader';
 import { Tree, Folder, File } from '#components/magicui/file-tree.js';
 import type { TreeViewElement } from '#components/magicui/file-tree.js';
 import { useFileManager, useHomeStorageBackend } from '#hooks/use-file-manager.js';
@@ -39,6 +39,7 @@ import { getFileTreeDownloadErrorMessage } from '#routes/w.$workspace.$project/f
 import { useWorkspaceTelemetry } from '#utils/workspace-telemetry.utils.js';
 import type { FileTreeNode, WorkspaceScope } from '@taucad/filesystem';
 import type { WorkspaceConnectionState } from '#hooks/workspace-connection.machine.js';
+import { isDesktopTarget } from '#lib/build-target.js';
 
 export const meta: MetaFunction = () => [{ title: 'Files · Tau' }];
 
@@ -54,7 +55,7 @@ type HomeColumnMeta = {
 const homeColumn: HomeColumnMeta = {
   label: 'Home',
   icon: House,
-  description: 'In this browser',
+  description: isDesktopTarget() ? 'On your computer' : 'In this browser',
 };
 
 type ItemAction = {
@@ -372,7 +373,7 @@ function ColumnShell({
 
       {isDisabled ? (
         <div className='flex flex-1 items-center justify-center rounded-md border border-dashed p-6 text-sm text-muted-foreground'>
-          {unsupportedHint ?? 'Not supported in this browser'}
+          {unsupportedHint ?? 'Not supported here'}
         </div>
       ) : (
         <div className='min-h-0 flex-1 overflow-auto rounded-md border'>
@@ -431,7 +432,7 @@ function WorkspaceConnectionStatus({
       aria-live='polite'
       className={cn(
         'flex items-center gap-2 rounded-md border bg-muted/35 px-3 py-2',
-        state.phase === 'failed' && 'border-destructive/30 bg-destructive/5',
+        state.phase === 'failed' && 'border-feature/30 bg-feature/5',
       )}
     >
       {state.phase === 'failed' ? (

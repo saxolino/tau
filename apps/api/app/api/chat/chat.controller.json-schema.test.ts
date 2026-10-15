@@ -231,6 +231,7 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                 "zoo",
                 "jscad",
                 "opencascadejs",
+                "tscircuit",
               ],
               "type": "string",
             },
@@ -428,6 +429,33 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                         ],
                         "type": "object",
                       },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                          },
+                          "path": {
+                            "type": "string",
+                          },
+                          "size": {
+                            "maximum": 9007199254740991,
+                            "minimum": 0,
+                            "type": "integer",
+                          },
+                          "type": {
+                            "const": "file",
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "path",
+                          "name",
+                          "size",
+                          "type",
+                        ],
+                        "type": "object",
+                      },
                     ],
                   },
                   "type": "array",
@@ -514,6 +542,104 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                     ],
                   },
                   "type": "array",
+                },
+                "viewerSelection": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "entryPath": {
+                      "maxLength": 1024,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "selected": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "resource": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "workspace-file",
+                                "type": "string",
+                              },
+                              "path": {
+                                "maxLength": 1024,
+                                "minLength": 1,
+                                "type": "string",
+                              },
+                              "revision": {
+                                "maxLength": 128,
+                                "minLength": 1,
+                                "type": "string",
+                              },
+                            },
+                            "required": [
+                              "kind",
+                              "path",
+                            ],
+                            "type": "object",
+                          },
+                          "target": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "componentId": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "type": "string",
+                              },
+                              "componentKind": {
+                                "enum": [
+                                  "model",
+                                  "assembly",
+                                  "part",
+                                  "body",
+                                  "face",
+                                  "edge",
+                                  "vertex",
+                                  "mesh",
+                                  "line",
+                                  "material",
+                                  "unknown",
+                                ],
+                                "type": "string",
+                              },
+                              "kind": {
+                                "const": "component",
+                                "type": "string",
+                              },
+                              "label": {
+                                "maxLength": 256,
+                                "type": "string",
+                              },
+                              "selector": {
+                                "maxLength": 256,
+                                "type": "string",
+                              },
+                            },
+                            "required": [
+                              "kind",
+                              "componentId",
+                              "label",
+                              "componentKind",
+                            ],
+                            "type": "object",
+                          },
+                        },
+                        "required": [
+                          "resource",
+                          "target",
+                        ],
+                        "type": "object",
+                      },
+                      "maxItems": 32,
+                      "type": "array",
+                    },
+                  },
+                  "required": [
+                    "entryPath",
+                    "selected",
+                  ],
+                  "type": "object",
                 },
                 "workbench": {
                   "additionalProperties": false,
@@ -621,6 +747,7 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                                   },
                                   "pane": {
                                     "enum": [
+                                      "browser",
                                       "parameters",
                                       "model",
                                       "print",
@@ -689,6 +816,7 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                     "unavailable": {
                       "items": {
                         "enum": [
+                          "browser",
                           "parameters",
                           "model",
                           "print",
@@ -802,6 +930,7 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                               },
                               "pane": {
                                 "enum": [
+                                  "browser",
                                   "parameters",
                                   "model",
                                   "print",
@@ -904,13 +1033,15 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
                       "delete_file",
                       "grep",
                       "glob_search",
-                      "get_kernel_result",
-                      "export_geometry",
+                      "evaluate_model",
+                      "export_model",
                       "get_parameters",
                       "apply_parameter_operation",
                       "screenshot",
                       "revisions",
                       "update_todos",
+                      "ask_questions",
+                      "install_packages",
                       "get_machine",
                       "get_print_profiles",
                       "request_print",

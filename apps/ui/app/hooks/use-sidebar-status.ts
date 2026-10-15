@@ -52,6 +52,8 @@ import {
   selectToolsInFlight,
 } from '#machines/chat-projection.logic.js';
 import type { ChatProjection } from '#machines/chat-projection.logic.js';
+import { readRecordIssues, subscribeRecordIssues, summarizeRecordIssues } from '#workbench-records/record-issues.js';
+import type { RecordIssue } from '#workbench-records/record-issues.js';
 
 /**
  * Everything a chat row draws, from that chat's own machine.
@@ -86,11 +88,15 @@ export type ProjectSidebarStatus = Readonly<{
   revisions: RevisionStatusProjection | undefined;
   /** The session's runtime-region failure: why the kernel is not there (R4). */
   runtimeFailure: string | undefined;
+  /** Settings records that need a person, most urgent first. */
+  settings: readonly RecordIssue[];
 }>;
 
 /** What a project row draws, aggregated from its chats and its session. @public */
 export type ProjectSidebarRow = Readonly<{
   projectId: string;
+  /** Transient sync and recovery facts; healthy state draws no sidebar icon. */
+  sync?: RevisionStatusProjection['sync'];
   /**
    * The session's own state. `none` is a closed project (A29); `failed` means
    * the session failed to open and nothing else (v2 D11) — a failed chat is
@@ -103,6 +109,9 @@ export type ProjectSidebarRow = Readonly<{
   attention: number;
   /** A sync conflict: counted in `attention`, named in the sentence (v2 R4). */
   conflicted: boolean;
+  /** Settings records needing a person: counted in `attention`, the most urgent named in the sentence. */
+  settings: number;
+  settingsLabel: string | undefined;
   /** Failed runs nobody has seen yet (P57). */
   failed: number;
   /** Chats with a run in flight. */
@@ -424,13 +433,17 @@ export const selectProjectRow = (status: ProjectSidebarStatus, idleWindowMillise
   /* One conflict, counted once (R2). It is the project's checkout that is
    * conflicted, not each of its chats. */
   const conflicted = revisions?.sync.state === 'conflicted';
+  const settings = summarizeRecordIssues(status.settings);
   const closing = session.live && session.status?.state === 'closing';
   return {
     projectId: session.projectId,
+    ...(revisions ? { sync: revisions.sync } : {}),
     glyph: projectGlyph(session, running),
     closing,
-    attention: attention + (conflicted ? 1 : 0),
+    attention: attention + (conflicted ? 1 : 0) + (settings?.count ?? 0),
     conflicted,
+    settings: settings?.count ?? 0,
+    settingsLabel: settings?.label,
     failed,
     running,
     unread,
@@ -457,7 +470,7 @@ const chatRollup = (row: ProjectSidebarRow): SidebarFacts | undefined => {
       count: row.attention,
       /* R4: "1 needs you" alone sends the person into the chats to look for a
        * conflict that lives in the checkout, so the sentence names it. */
-      sentence: `${needsYou(row.attention)}${row.conflicted ? ' · Needs your decision' : ''}`,
+      sentence: `${needsYou(row.attention)}${row.conflicted ? ' · Needs your decision' : ''}${row.settingsLabel === undefined ? '' : ` · ${row.settingsLabel}`}`,
     };
   }
   if (row.failed > 0) {
@@ -520,9 +533,17 @@ export const selectProjectFacts = (row: ProjectSidebarRow, expanded: boolean): S
       : { ...rollup, sentence: `${liveness} · ${rollup.sentence ?? ''} · ${kernel}` };
   }
   if (rollup === undefined) {
-    /* An expanded conflict still names itself: no chat row can carry it. */
-    return row.conflicted
-      ? { mark: 'attention', sentence: `${liveness} · Needs your decision` }
+    /* An expanded conflict or settings record still names itself: no chat row can carry it. */
+    const clauses = [
+      ...(row.conflicted ? ['Needs your decision'] : []),
+      ...(row.settingsLabel === undefined ? [] : [row.settingsLabel]),
+    ];
+    return clauses.length > 0
+      ? {
+          mark: 'attention',
+          ...(row.settings > 0 ? { count: row.settings + (row.conflicted ? 1 : 0) } : {}),
+          sentence: [liveness, ...clauses].join(' · '),
+        }
       : { mark: 'none', sentence: liveness };
   }
   return { ...rollup, sentence: `${liveness} · ${rollup.sentence ?? ''}` };
@@ -595,6 +616,7 @@ export const readProjectStatus = (
             }),
           ),
     revisions: peekRevisionClient(projectId)?.status(),
+    settings: readRecordIssues(projectId),
   };
 };
 
@@ -620,18 +642,20 @@ const keep = <T>(cache: { current: { key: string; value: T } | undefined }, key:
   return cache.current.value;
 };
 
-const projectRowKey = (row: ProjectSidebarRow): string => Object.values(row).join(keySeparator);
+const projectRowKey = (row: ProjectSidebarRow): string => {
+  const { sync, ...facts } = row;
+  return `${Object.values(facts).join(keySeparator)}${keySeparator}${JSON.stringify(sync)}`;
+};
 
 /*
- * Ponytail: one binder, rebound only when the chat set changes.
+ * One binder, rebound only when its captured owners or chat set change.
  *
  * A sidebar row wakes on its own actors — the registry (a project opened or
  * closed), the project session (its failures), the chat store (a chat joined
  * or left) and the chat machines it draws. Rebinding on every notification
  * would unsubscribe listeners from inside an emit, so the id list is compared
- * first and the churn happens only when a chat actually appears or goes. The
- * chat machines are the store's roots, so a chat's machine never swaps under a
- * row (PV-S5).
+ * first. Captured session, revision-client and chat-root identities also keep
+ * live replacements current when their public ids stay the same.
  */
 const bindProject = ({
   sessions,
@@ -648,9 +672,11 @@ const bindProject = ({
 }): (() => void) => {
   let bound: Array<() => void> = [];
   let boundKey: string | undefined;
-  let sessionScan: { unsubscribe: () => void } | undefined;
+  let boundSession: ProjectSessionActorRef | undefined;
+  let boundClient: ReturnType<typeof peekRevisionClient>;
   const rebind = (): void => {
     const session = projectSessionOf(sessions, projectId);
+    const client = peekRevisionClient(projectId);
     const references = chatReferencesOf(sessions, chats, projectId);
     const ids = chatIds?.() ?? [...new Set([...chats.observedChatIdsOf(projectId), ...references.keys()])];
     /* R3: the revision client is created by the project's route subtree, later
@@ -658,17 +684,19 @@ const bindProject = ({
      * never subscribes to the projection it draws its branch and sync from. */
     const key = [
       session === undefined ? 'closed' : 'live',
-      peekRevisionClient(projectId) === undefined ? 'no-client' : 'client',
+      client === undefined ? 'no-client' : 'client',
       /* R4: a chat released and acquired again gets a fresh root under the same id, so the actor is the identity. */
       ...ids.map((id) => {
         const reference = references.get(id);
         return reference === undefined ? id : actorSessionIdOf(reference);
       }),
     ].join(keySeparator);
-    if (key === boundKey) {
+    if (key === boundKey && session === boundSession && client === boundClient) {
       return;
     }
     boundKey = key;
+    boundSession = session;
+    boundClient = client;
     const previous = bound;
     bound = [];
     if (session !== undefined) {
@@ -687,7 +715,6 @@ const bindProject = ({
         bound.push(chats.subscribeProjection(id, listener));
       }
     }
-    const client = peekRevisionClient(projectId);
     if (client !== undefined) {
       bound.push(client.subscribe(listener));
     }
@@ -695,16 +722,9 @@ const bindProject = ({
       off();
     }
   };
-  /* The session's failures move its own snapshot, not the registry's (R4). */
-  const watchSession = (): void => {
-    sessionScan?.unsubscribe();
-    sessionScan = projectSessionOf(sessions, projectId)?.subscribe(listener);
-  };
   rebind();
-  watchSession();
   const registry = sessions.subscribe(() => {
     rebind();
-    watchSession();
     listener();
   });
   /* Membership is coalesced onto a microtask by the store, so this never rebinds inside an emit. */
@@ -713,9 +733,10 @@ const bindProject = ({
     listener();
   });
   const unsubscribeUnread = chats.subscribeUnread(listener);
+  const unsubscribeSettings = subscribeRecordIssues(projectId, listener);
   return () => {
+    unsubscribeSettings();
     registry.unsubscribe();
-    sessionScan?.unsubscribe();
     unsubscribeMembership();
     unsubscribeUnread();
     for (const off of bound) {
@@ -835,7 +856,7 @@ export const useSidebarCommands = (): SidebarCommands => {
        * records that the person stopped it, so the row reads `Stopped` instead
        * of vanishing. */
       closeChat: (projectId, chatId) => {
-        chatSessions.stopRun(chatId);
+        chatSessions.stopRun(chatId, 'close-chat');
         chatReferencesOf(sessions, chatSessions, projectId).get(chatId)?.send({ type: 'close' });
       },
       closeProject: (projectId) => {

@@ -11,8 +11,9 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { text as readStream } from 'node:stream/consumers';
+import { setTimeout as delay } from 'node:timers/promises';
 
-import type { AgentLogEvent, ChatLedger, ProviderMessage } from '@taucad/agent-host';
+import type { AgentLogEvent, ChatLedger, ProjectionSourceHealth, ProviderMessage } from '@taucad/agent-host';
 import type { AgentChannelClient } from '@taucad/agent-host/channel-client';
 import type { CommandAnswer, ExternalAgentLogin, HostCommand, RetryClass } from '@taucad/agent-host/wire';
 
@@ -24,6 +25,9 @@ const promptByteLimit = 1_048_576;
 
 /** Silence from the daemon after which a connection counts as dead; the daemon keeps alive every 2 s (T9 E4). */
 const livenessTimeout = 10_000;
+
+/** A settling refusal is answered and not memoized; wait briefly before asking with the same key. */
+const settlingRetryDelay = 50;
 
 /** Run states past which nothing more will be appended for that run. */
 const terminalStates = new Set(['completed', 'failed', 'cancelled']);
@@ -182,19 +186,42 @@ const closedError = async (error: unknown, what: string): Promise<unknown> => {
  * @internal
  * @param client - The connected client.
  * @param command - The command, with its key.
+ * @param settlingSignal - Opts a TUI admission into bounded settling retries; abort stops retries after answered refusals.
  * @returns The answer, when the host applied it.
  */
 export const sendCommand = async (
   client: AgentChannelClient,
   command: HostCommand,
+  settlingSignal?: AbortSignal,
 ): Promise<Exclude<CommandAnswer, { status: 'refused' }>> => {
-  let answer: CommandAnswer;
-  try {
-    answer = await client.execute(command);
-  } catch (error) {
-    throw await closedError(error, `${command.type} command`);
-  }
-  if (answer.status === 'refused') {
+  for (;;) {
+    settlingSignal?.throwIfAborted();
+    let answer: CommandAnswer;
+    try {
+      /* `execute` owns unanswered outcomes and redials its outbox. The signal
+       * only stops re-sending an answered, not-applied settling refusal. */
+      // oxlint-disable-next-line eslint/no-await-in-loop -- only an answered, explicitly not-applied settling refusal is resent.
+      answer = await client.execute(command);
+    } catch (error) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- classify this sequential command's failure before returning.
+      throw await closedError(error, `${command.type} command`);
+    }
+    if (answer.status !== 'refused') {
+      return answer;
+    }
+    if (
+      settlingSignal !== undefined &&
+      (command.type === 'start' || command.type === 'resolve-interrupt') &&
+      answer.code === 'CHAT_RUN_LIVE' &&
+      answer.effect === 'not-applied' &&
+      answer.details?.['state'] === 'settling'
+    ) {
+      // The host did not record this key. Its command owner checks the durable key before dispatching a retry.
+      // oxlint-disable-next-line eslint/no-await-in-loop -- one bounded wait follows one answered settling refusal.
+      await delay(settlingRetryDelay, undefined, { signal: settlingSignal });
+      continue;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- load refusal metadata only for the final answer.
     const { refusalOf } = await import('@taucad/agent-host/wire');
     throw cliError(
       answer.code,
@@ -202,7 +229,6 @@ export const sendCommand = async (
       answer.effect === 'unknown' ? exitCodes.unknown : exitCodes.refused,
     );
   }
-  return answer;
 };
 
 /**
@@ -242,12 +268,14 @@ export const readNext = async (input: {
   readonly client: AgentChannelClient;
   readonly chatId: string;
   readonly ledger: ChatLedger;
+  readonly sourceHealth?: ProjectionSourceHealth | undefined;
   readonly signal?: AbortSignal | undefined;
 }): Promise<{
   readonly ledger: ChatLedger;
   readonly events: readonly AgentLogEvent[];
   readonly endCursor: number;
   readonly reset: boolean;
+  readonly sourceHealth: ProjectionSourceHealth | undefined;
 }> => {
   const { readFolded } = await import('@taucad/agent-host');
   const { ledger, chatId } = input;
@@ -257,6 +285,7 @@ export const readNext = async (input: {
       read: async (request) => input.client.read(request),
       chatId,
       ledger,
+      sourceHealth: input.sourceHealth,
       signal: input.signal,
     });
   } catch (error) {
@@ -270,13 +299,20 @@ export const readNext = async (input: {
         events: step.events as readonly AgentLogEvent[],
         endCursor: step.endCursor,
         reset: false,
+        sourceHealth: step.sourceHealth,
       };
     }
     case 'reset':
     case 'stale': {
       /* W3 CL-R13: a reset log is refolded from the start by the helper; SC-R13: a batch at another cursor is
        * discarded, and read again. */
-      return { ledger: step.ledger, events: [], endCursor: step.endCursor, reset: step.kind === 'reset' };
+      return {
+        ledger: step.ledger,
+        events: [],
+        endCursor: step.endCursor,
+        reset: step.kind === 'reset',
+        sourceHealth: step.kind === 'reset' ? undefined : input.sourceHealth,
+      };
     }
     case 'refused': {
       throw cliError(
@@ -348,6 +384,7 @@ export const replayChat = async (input: {
   /* The chat ledger over the rows read (W3 CL-S8): from a later `from` it holds only those rows, which still name
    * the chat's current run and its state. */
   let ledger: ChatLedger = { ...emptyChatLedger, position: { cursor: input.from } };
+  let sourceHealth: ProjectionSourceHealth | undefined;
   let login: ExternalAgentLogin | undefined;
   let refusal: ExternalRefusal | undefined;
   const stateOf = (): string | undefined =>
@@ -363,8 +400,9 @@ export const replayChat = async (input: {
   }
   for (;;) {
     // oxlint-disable-next-line no-await-in-loop -- a cursored replay is sequential by definition.
-    const page = await readNext({ client: input.client, chatId: input.chatId, ledger });
+    const page = await readNext({ client: input.client, chatId: input.chatId, ledger, sourceHealth });
     ledger = page.ledger;
+    sourceHealth = page.sourceHealth;
     for (const event of page.events) {
       login = externalLoginOf(event) ?? login;
       const coded = externalRefusalOf(event);

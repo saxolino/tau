@@ -1,3 +1,4 @@
+import { ObservationService } from '@taucad/fs-client/observation-service';
 import type { ReactNode } from 'react';
 import type { PartialDeep } from 'type-fest';
 import deepmerge from 'deepmerge';
@@ -16,6 +17,7 @@ import type {
   ProjectDiscoveryResult,
   ProjectLocator,
   StorageRootConfig,
+  WatchEvent,
 } from '@taucad/filesystem';
 import { resolveStorageRootKey } from '@taucad/filesystem/storage-root-key';
 import { consumableBytes } from '@taucad/fs-bridge';
@@ -43,6 +45,7 @@ import {
   getAllProjectFileSystemConfigs,
   listWorkspaces,
   pinHomeStorageBackend,
+  requestHomeStoragePersistence,
   setProjectCreationLocation,
   subscribeProjectRootConfigurationChanges,
   applyProjectFileSystemConfigChanges,
@@ -55,6 +58,7 @@ import type {
   WorkspaceBindingRepairResult,
   WorkspaceEntry,
 } from '#filesystem/handle-store.js';
+import { isOrphanedProjectRoute } from '#filesystem/orphaned-project-route.js';
 import { createChatFileStore } from '#db/chat-file-storage.js';
 import { composerRecordPaths, createComposerRecordStore } from '#db/composer-record-store.js';
 import { isBuildSuperseded } from '#filesystem/build-skew.js';
@@ -67,7 +71,7 @@ import { attachmentKind, attachmentReferenceOf } from '#utils/attachment.utils.j
 import { buildUserMessage } from '#utils/chat.utils.js';
 import type { StoredAttachmentRef } from '#utils/attachment.utils.js';
 import { createAttachmentStore, createChatAttachmentStore, isNotFound } from '#db/attachment-store.js';
-import { getMainFile, getEmptyCode } from '#utils/kernel.utils.js';
+import { getMainFile, getEmptyCode, getKernelDependencies, getKernelOption } from '#utils/kernel.utils.js';
 import { encodeTextFile } from '#utils/filesystem.utils.js';
 import { defaultProjectName } from '#constants/project-names.js';
 import type { AppUiPreferences, CommitCancelledDraftRestoreInput } from '#types/storage.types.js';
@@ -206,6 +210,10 @@ export type ConnectedWorkspace = {
 };
 
 type ProjectManagerContextType = {
+  discoveryObservationError: string | undefined;
+  metadataObservationError: string | undefined;
+  getMetadataObservationError: (resourceId: string) => string | undefined;
+  refreshFilesystemObservations: (resourceId?: string) => void;
   isLoading: boolean;
   error: Error | undefined;
   projectManagerRef: ActorRefFrom<typeof projectManagerMachine>;
@@ -329,7 +337,6 @@ if (hotContexts) {
  * and a burst (project creation, import, an agent write pass) fires far faster
  * than a discovery rescan completes: one trailing-edge refetch per burst.
  */
-const discoveryInvalidationDebounce = 300;
 
 /** Concurrent disk-side library-state recoveries after IndexedDB eviction. */
 const libraryRecoveryConcurrency = 16;
@@ -597,6 +604,122 @@ const pendingStorageToScope = async (storage: PendingProjectStorage): Promise<St
   };
 };
 
+/** Retain actual owner I/O, whose lifetime Query cancellation cannot shorten. */
+function createMetadataReadOwner(source: ReturnType<typeof createChatFileStore>) {
+  const pending = new Map<Promise<unknown>, string | undefined>();
+  let registration = Promise.withResolvers<Error | undefined>();
+  let connection = Promise.withResolvers<{
+    readonly signal: AbortSignal;
+    project(id: string): ObservationService<void>;
+  }>();
+  return {
+    connect(project: (id: string) => ObservationService<void>): () => void {
+      const abort = new AbortController();
+      connection.resolve({ project, signal: abort.signal });
+      return () => {
+        abort.abort(new Error('Chat observation was disposed.'));
+        connection = Promise.withResolvers();
+      };
+    },
+    hold(): void {
+      const previous = registration;
+      registration = Promise.withResolvers<Error | undefined>();
+      // A retired admission wakes its readers so they can follow the current registration.
+      previous.resolve(undefined);
+    },
+    ready(): void {
+      registration.resolve(undefined);
+    },
+    fail(error: Error): void {
+      const previous = registration;
+      registration = Promise.withResolvers<Error | undefined>();
+      previous.resolve(undefined);
+      registration.resolve(error);
+    },
+    async read<Value>(
+      operation: (source: ReturnType<typeof createChatFileStore>) => Promise<Value>,
+      projectId?: string,
+    ): Promise<Value> {
+      const owner = await connection.promise;
+      owner.signal.throwIfAborted();
+      const observation = projectId === undefined ? undefined : owner.project(projectId);
+      const lease = observation?.acquire();
+      try {
+        if (lease) {
+          await new Promise<void>((resolve, reject) => {
+            let unsubscribe = (): void => undefined;
+            const cleanup = (): void => {
+              unsubscribe();
+              owner.signal.removeEventListener('abort', aborted);
+            };
+            const aborted = (): void => {
+              cleanup();
+              reject(
+                owner.signal.reason instanceof Error
+                  ? owner.signal.reason
+                  : new Error('Chat observation was disposed.'),
+              );
+            };
+            const check = (): void => {
+              const snapshot = lease.getSnapshot();
+              // Pending starts only after watch.ready; a query refetch must not wait for its own invalidation to finish.
+              if (snapshot.status === 'ready' || snapshot.status === 'pending') {
+                cleanup();
+                resolve();
+              } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+                cleanup();
+                reject(new Error(snapshot.error ?? 'Chat updates unavailable.'));
+              }
+            };
+            unsubscribe = lease.subscribe(check);
+            owner.signal.addEventListener('abort', aborted, { once: true });
+            check();
+          });
+        } else {
+          let admitted: typeof registration;
+          do {
+            admitted = registration;
+            // oxlint-disable-next-line eslint/no-await-in-loop -- Follow the current registration after replacement.
+            const error = await admitted.promise;
+            if (admitted === registration && error) {
+              throw error;
+            }
+          } while (admitted !== registration);
+        }
+        owner.signal.throwIfAborted();
+        const promise = operation(source);
+        pending.set(promise, projectId);
+        try {
+          const value = await promise;
+          owner.signal.throwIfAborted();
+          return value;
+        } finally {
+          pending.delete(promise);
+        }
+      } finally {
+        lease?.release();
+      }
+    },
+    async settle(projectId?: string): Promise<void> {
+      const relevant = (): Array<Promise<unknown>> => {
+        const reads: Array<Promise<unknown>> = [];
+        for (const [promise, id] of pending) {
+          if (projectId === undefined || id === projectId) {
+            reads.push(promise);
+          }
+        }
+        return reads;
+      };
+      let reads = relevant();
+      while (reads.length > 0) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Include reads admitted while a prior non-abortable owner read is settling.
+        await Promise.allSettled(reads);
+        reads = relevant();
+      }
+    },
+  };
+}
+
 export function ProjectManagerProvider({ children }: { readonly children: ReactNode }): React.JSX.Element {
   const actorRef = useActorRef(projectManagerMachine);
   const fileManager = useFileManager();
@@ -622,6 +745,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       }),
     [fileManager.recordFiles, queryClient],
   );
+  const metadataReadOwner = useMemo(() => createMetadataReadOwner(chatStore), [chatStore]);
   const workspaceTelemetry = useWorkspaceTelemetry();
   const projectNameClient = useProjectNameClient();
   const discoveryReadinessRef = useRef<Promise<void> | undefined>(undefined);
@@ -677,31 +801,37 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     [invalidateChatQueries],
   );
 
-  const invalidationTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const discoveryObservationRef = useRef<ObservationService<void> | undefined>(undefined);
+  const metadataObservationRef = useRef<ObservationService<void> | undefined>(undefined);
+  const refreshProjectMetadataRef = useRef<((resourceId: string) => void) | undefined>(undefined);
+  const [discoveryObservationError, setDiscoveryObservationError] = useState<string>();
+  const [metadataObservationError, setMetadataObservationError] = useState<string>();
+  const [metadataObservationErrors, setMetadataObservationErrors] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  const getMetadataObservationError = useCallback(
+    (resourceId: string): string | undefined => metadataObservationErrors.get(resourceId),
+    [metadataObservationErrors],
+  );
+  const refreshFilesystemObservations = useCallback((resourceId?: string) => {
+    if (resourceId !== undefined) {
+      refreshProjectMetadataRef.current?.(resourceId);
+      return;
+    }
+    discoveryObservationRef.current?.refresh();
+    metadataObservationRef.current?.refresh();
+  }, []);
   const scheduleProjectsListInvalidation = useCallback(() => {
     discoveryEpochRef.current++;
     discoverySnapshotRef.current = undefined;
-    clearTimeout(invalidationTimerRef.current);
-    invalidationTimerRef.current = setTimeout(invalidateProjectsList, discoveryInvalidationDebounce);
-  }, [invalidateProjectsList]);
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(invalidationTimerRef.current);
-    };
+    discoveryObservationRef.current?.invalidate();
   }, []);
 
   useEffect(() => {
     const channel = fileManager.workerChangeChannel;
     if (!channel) {
-      return;
+      return undefined;
     }
-    /**
-     * Discovery-relevant change paths under the flat layout: the synthetic
-     * root event, a root-level directory (a project directory appearing or
-     * going away), and any `tau.json`. Dot-prefixed segments are workspace or
-     * project app state (`.tau/**`) and must never trigger a rescan (F1).
-     */
     const isManifestPath = (path: string): boolean => {
       const segments = path.split('/').filter(Boolean);
       if (segments.length === 0) {
@@ -712,46 +842,350 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       }
       return segments.length === 1 || segments.at(-1) === 'tau.json';
     };
-    const projectedChatLog = (path: string): readonly [string, string] | undefined => {
-      const segments = path.split('/').filter(Boolean);
-      const projects = segments.indexOf('projects');
-      return projects !== -1 &&
-        segments[projects + 2] === '.tau' &&
-        segments[projects + 3] === 'chats' &&
-        segments[projects + 5] === 'events' &&
-        segments[projects + 6]?.endsWith('.jsonl') === true
-        ? [segments[projects + 1]!, segments[projects + 4]!]
-        : undefined;
-    };
-    const written = {
-      interestedIn: (path: string) => isManifestPath(path) || projectedChatLog(path) !== undefined,
-      handler: (event: { readonly path: string }) => {
-        const projected = projectedChatLog(event.path);
-        if (projected === undefined) {
-          scheduleProjectsListInvalidation();
+    let discoveryDirty = false;
+    const discovery = new ObservationService<void>({
+      resource: 'workspace/project-discovery',
+      refresh: () => {
+        discoveryDirty = true;
+      },
+      watch: (invalidate, reset) =>
+        channel.watchReady({ paths: [''], recursive: true }, (event) => {
+          if (event.type === 'reset') {
+            reset();
+            return;
+          }
+          const paths = event.type === 'rename' ? [event.oldPath, event.newPath] : [event.path];
+          if (paths.some((path) => isManifestPath(path))) {
+            invalidate();
+          }
+        }),
+      invalidate: () => {
+        discoveryDirty = true;
+        discoveryEpochRef.current++;
+        discoverySnapshotRef.current = undefined;
+        void queryClient.cancelQueries({ queryKey: ['projects'] });
+      },
+      read: async ({ isCurrent }) => {
+        if (!isCurrent() || !discoveryDirty) {
           return;
         }
-        const [, chatId] = projected;
-        // The log projection owns accepted messages. A log write cannot change chat.json metadata.
-        void queryClient.invalidateQueries({ queryKey: ['chat', chatId] });
+        discoveryDirty = false;
+        const heldPass = discoveryPassRef.current;
+        if (heldPass) {
+          await heldPass;
+        }
+        if (isCurrent()) {
+          await queryClient.invalidateQueries({ queryKey: ['projects'] }, { cancelRefetch: false });
+        }
       },
+    });
+    discoveryObservationRef.current = discovery;
+    const resources = new Map<string, Set<string>>();
+    const projectMetadata = new Map<string, ObservationService<void>>();
+    const refreshProjectMetadata = (resourceId: string): void => {
+      projectMetadata.get(resourceId)?.refresh();
     };
-    const subscription = { interestedIn: isManifestPath, handler: scheduleProjectsListInvalidation };
-    const unsubscribers = [
-      channel.onFileWritten(written),
-      channel.onFileDeleted(subscription),
-      channel.onFileRenamed(subscription),
-      channel.onDirectoryCreated(subscription),
-      channel.onDirectoryDeleted(subscription),
-      channel.onDirectoryRenamed(subscription),
-      channel.onDirectoryChanged(subscription),
-    ];
-    return () => {
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe();
+    refreshProjectMetadataRef.current = refreshProjectMetadata;
+    const publishMetadataHealth = (id: string, error: string | undefined): void => {
+      setMetadataObservationErrors((previous) => {
+        if (previous.get(id) === error) {
+          return previous;
+        }
+        const next = new Map(previous);
+        if (error === undefined) {
+          next.delete(id);
+        } else {
+          next.set(id, error);
+        }
+        return next;
+      });
+    };
+    const projectSource = (id: string): ObservationService<void> => {
+      let source = projectMetadata.get(id);
+      if (!source) {
+        let unsubscribeHealth = (): void => undefined;
+        source = new ObservationService<void>({
+          resource: `/projects/${id}/.tau/chats`,
+          watch: (invalidate, reset) => {
+            const watch = fileManager.watchRecordFile(
+              `/projects/${id}/.tau/chats`,
+              (event) => {
+                if (projectMetadata.get(id) !== source || source?.activeLeaseCount === 0) {
+                  return;
+                }
+                if (event.type === 'reset') {
+                  resources.set(id, new Set());
+                  reset();
+                  return;
+                }
+                const paths = event.type === 'rename' ? [event.oldPath, event.newPath] : [event.path];
+                const chats = resources.get(id) ?? new Set<string>();
+                let changed = false;
+                for (const path of paths) {
+                  const segments = path.split('/');
+                  if (
+                    segments[0] === '.tau' &&
+                    segments[1] === 'chats' &&
+                    (segments.length <= 3 || (segments.length === 4 && segments[3] === 'chat.json'))
+                  ) {
+                    if (segments[2]) {
+                      chats.add(segments[2]);
+                    }
+                    changed = true;
+                  }
+                }
+                if (changed) {
+                  resources.set(id, chats);
+                  invalidate();
+                }
+              },
+              { recursive: true },
+            );
+            return {
+              ready: watch.ready,
+              closed: watch.closed,
+              dispose: () => {
+                watch.dispose();
+                if (source?.activeLeaseCount === 0) {
+                  unsubscribeHealth();
+                  if (projectMetadata.get(id) === source) {
+                    projectMetadata.delete(id);
+                    publishMetadataHealth(id, undefined);
+                  }
+                }
+              },
+            };
+          },
+          refresh: () => {
+            if (source?.getSnapshot().status !== 'registering') {
+              resources.set(id, new Set());
+            }
+          },
+          invalidate: () => {
+            if (
+              source?.activeLeaseCount === 0 ||
+              (!resources.has(id) && source?.getSnapshot().status === 'registering')
+            ) {
+              return;
+            }
+            void queryClient.cancelQueries({ queryKey: ['all-chats'] });
+            void queryClient.cancelQueries({ queryKey: ['chats', id] });
+            for (const chatId of resources.get(id) ?? []) {
+              void queryClient.cancelQueries({ queryKey: ['chat', chatId] });
+            }
+          },
+          read: async ({ isCurrent }) => {
+            const chats = resources.get(id);
+            if (!chats) {
+              return;
+            }
+            await metadataReadOwner.settle(id);
+            if (!isCurrent()) {
+              return;
+            }
+            resources.delete(id);
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['chats', id] }, { cancelRefetch: false }),
+              ...[...chats].map(async (chatId) =>
+                queryClient.invalidateQueries({ queryKey: ['chat', chatId] }, { cancelRefetch: false }),
+              ),
+            ]);
+            await metadataReadOwner.settle(id);
+          },
+        });
+        projectMetadata.set(id, source);
+        unsubscribeHealth = source.subscribe(() => {
+          if (!source || projectMetadata.get(id) !== source) {
+            return;
+          }
+          const snapshot = source.getSnapshot();
+          if (snapshot.status === 'ready') {
+            publishMetadataHealth(id, undefined);
+          } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+            publishMetadataHealth(id, snapshot.error ?? 'Chat updates unavailable.');
+          }
+        });
+      }
+      return source;
+    };
+    const disconnect = metadataReadOwner.connect(projectSource);
+    let membership = false;
+    const metadata = new ObservationService<void>({
+      resource: 'workspace/chat-metadata',
+      refresh: () => {
+        membership = true;
+      },
+      watch: (invalidate, reset) => {
+        const onEvent = (event: WatchEvent): void => {
+          if (event.type === 'reset') {
+            membership = true;
+            reset();
+            return;
+          }
+          const paths = event.type === 'rename' ? [event.oldPath, event.newPath] : [event.path];
+          let changed = false;
+          for (const path of paths) {
+            const segments = path.split('/').filter(Boolean);
+            if (segments.length <= 1) {
+              membership = true;
+              changed = true;
+              continue;
+            }
+            if (segments[0] !== 'projects') {
+              continue;
+            }
+            const projectId = segments[1]!;
+            if (segments.length === 2 || (segments[2] === '.tau' && segments.length === 3)) {
+              membership = true;
+              changed = true;
+            } else if (
+              segments[2] === '.tau' &&
+              segments[3] === 'chats' &&
+              (segments.length <= 5 || (segments[5] === 'chat.json' && segments.length === 6))
+            ) {
+              const chats = resources.get(projectId) ?? new Set<string>();
+              if (segments[4]) {
+                chats.add(segments[4]);
+              }
+              resources.set(projectId, chats);
+              changed = true;
+            }
+          }
+          if (changed) {
+            for (const id of resources.keys()) {
+              projectMetadata.get(id)?.invalidate();
+            }
+            invalidate();
+          }
+        };
+        const home = channel.watchReady({ paths: [''], recursive: true }, onEvent);
+        let listing = queryClient.getQueryData<ProjectListing>(['projects']);
+        const synchronize = (): void => {
+          const next = queryClient.getQueryData<ProjectListing>(['projects']);
+          if (next === listing) {
+            return;
+          }
+          listing = next;
+          membership = true;
+          invalidate();
+        };
+        const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+          if (event.query.queryKey.length === 1 && event.query.queryKey[0] === 'projects') {
+            synchronize();
+          }
+        });
+        return {
+          ready: home.ready,
+          closed: home.closed,
+          dispose: () => {
+            unsubscribe();
+            home.dispose();
+          },
+        };
+      },
+      invalidate: () => {
+        metadataReadOwner.hold();
+        void queryClient.cancelQueries({ queryKey: ['all-chats'] });
+        if (membership) {
+          void queryClient.cancelQueries({ queryKey: ['chats'] });
+          void queryClient.cancelQueries({ queryKey: ['chat'] });
+        } else {
+          for (const [resourceId, chatIds] of resources) {
+            void queryClient.cancelQueries({ queryKey: ['chats', resourceId] });
+            for (const chatId of chatIds) {
+              void queryClient.cancelQueries({ queryKey: ['chat', chatId] });
+            }
+          }
+        }
+      },
+      read: async (read) => {
+        const { isCurrent } = read;
+        const listing = queryClient.getQueryData<ProjectListing>(['projects']);
+        const ids = new Set(listing ? listing.projects.map(({ manifest }) => manifest.id) : resources.keys());
+        for (const id of resources.keys()) {
+          if (!ids.has(id)) {
+            resources.delete(id);
+          }
+        }
+        for (const [id, source] of projectMetadata) {
+          if (!ids.has(id) && source.activeLeaseCount === 0) {
+            projectMetadata.delete(id);
+          }
+        }
+        const changed = membership || resources.size > 0;
+        const results = await Promise.allSettled([...ids].map(async (id) => read.observe(projectSource(id))));
+        if (!isCurrent()) {
+          return;
+        }
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure?.status === 'rejected') {
+          metadataReadOwner.fail(new Error(String(failure.reason)));
+        } else {
+          metadataReadOwner.ready();
+        }
+        if (!changed) {
+          return;
+        }
+        await metadataReadOwner.settle();
+        if (!isCurrent()) {
+          return;
+        }
+        const pending: Array<Promise<void>> = [];
+        if (membership) {
+          membership = false;
+          pending.push(queryClient.invalidateQueries({ queryKey: ['chats'] }, { cancelRefetch: false }));
+          pending.push(queryClient.invalidateQueries({ queryKey: ['chat'] }, { cancelRefetch: false }));
+        }
+        pending.push(queryClient.invalidateQueries({ queryKey: ['all-chats'] }, { cancelRefetch: false }));
+        await Promise.all(pending);
+        await metadataReadOwner.settle();
+      },
+    });
+    metadataObservationRef.current = metadata;
+    const updateDiscoveryHealth = (): void => {
+      const snapshot = discovery.getSnapshot();
+      if (snapshot.status === 'ready') {
+        setDiscoveryObservationError(undefined);
+      } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+        setDiscoveryObservationError(snapshot.error);
       }
     };
-  }, [chatStore, fileManager.workerChangeChannel, queryClient, scheduleProjectsListInvalidation]);
+    const updateMetadataHealth = (): void => {
+      const snapshot = metadata.getSnapshot();
+      if (snapshot.status === 'ready') {
+        setMetadataObservationError(undefined);
+      } else if (snapshot.status === 'error' || snapshot.status === 'closed') {
+        metadataReadOwner.fail(new Error(snapshot.error ?? 'Chat updates unavailable.'));
+        setMetadataObservationError(snapshot.error);
+      }
+    };
+    const unsubscribeDiscovery = discovery.subscribe(updateDiscoveryHealth);
+    const unsubscribeMetadata = metadata.subscribe(updateMetadataHealth);
+    metadataReadOwner.hold();
+    const discoveryLease = discovery.acquire();
+    const metadataLease = metadata.acquire();
+    updateDiscoveryHealth();
+    updateMetadataHealth();
+    return () => {
+      unsubscribeDiscovery();
+      unsubscribeMetadata();
+      if (refreshProjectMetadataRef.current === refreshProjectMetadata) {
+        refreshProjectMetadataRef.current = undefined;
+      }
+      if (metadataObservationRef.current === metadata) {
+        metadataObservationRef.current = undefined;
+      }
+      if (discoveryObservationRef.current === discovery) {
+        discoveryObservationRef.current = undefined;
+      }
+      discoveryLease.release();
+      metadataLease.release();
+      disconnect();
+      projectMetadata.clear();
+      setMetadataObservationErrors((previous) => (previous.size === 0 ? previous : new Map()));
+      metadataReadOwner.fail(new Error('Chat observation was disposed.'));
+    };
+  }, [fileManager.workerChangeChannel, fileManager.watchRecordFile, metadataReadOwner, queryClient]);
 
   // Select state from the machine
   const error = useSelector(actorRef, (state) => state.context.error);
@@ -978,6 +1412,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       } catch (error) {
         throw new PendingProjectRecoveryError('local-state-error', { cause: error });
       }
+      if (operation.backend === 'indexeddb' || operation.backend === 'opfs') {
+        void requestHomeStoragePersistence();
+      }
     },
     [
       assertProjectAbsentAfterDelete,
@@ -1072,6 +1509,8 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           projectName: projectName ?? defaultProjectName,
           mainFileName,
           emptyCodeContent: encodeTextFile(emptyCode),
+          language: getKernelOption(options.kernel).language,
+          dependencies: await getKernelDependencies(options.kernel),
         });
         projectData = result.projectData;
         files = result.files;
@@ -1462,6 +1901,36 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     }
   }, [discoverProjects, getReadiedWorker, settleRecovery]);
 
+  /**
+   * Release the rows a cleared browser left behind for a project id (R14).
+   *
+   * The route config, editor layout and library state are keyed by the id and
+   * survive the browser deleting every file, so re-importing the same project
+   * met "already on this device" with nothing in the library to open. Only a
+   * Home route whose folder is proven to hold no file is released; its rows go
+   * the way the discovery sweep removes an orphan's, and the import proceeds.
+   * Folders on disk, unreadable folders and folders with any file left keep
+   * the refusal.
+   */
+  const releaseOrphanedProjectRoute = useCallback(
+    async (projectId: string, worker: Remote<ObjectStoreWorker>): Promise<void> => {
+      const config = await getProjectFileSystemConfig(projectId);
+      if (config === undefined || !(await isOrphanedProjectRoute(config, fileManager.scopedStorage))) {
+        return;
+      }
+      /* A `tau.json` naming the id anywhere else is the project, not an orphan:
+       * releasing its route would let this import create a second copy. */
+      const { entries } = await discoverProjects();
+      if (entries.some((entry) => 'manifest' in entry && 'id' in entry.manifest && entry.manifest.id === projectId)) {
+        return;
+      }
+      await worker.deleteProjectResources(projectId);
+      await deleteProjectFileSystemConfig(projectId);
+      await fileManager.workspace.syncProjectRoots();
+    },
+    [discoverProjects, fileManager.scopedStorage, fileManager.workspace],
+  );
+
   /* A supplied id is checked and then written, so two creations of it — an
      *Open* racing materialize on sign-in, or two tabs — hold one lock per id
      across the check and the write; the second sees the first's project and is
@@ -1490,11 +1959,15 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           if (recoveriesRef.current.has(unfinished.operationId)) {
             throw new Error(`An earlier creation of this project has not finished on this device: ${id}`);
           }
+        } else if (
+          !operations.some((operation) => operation.kind === 'permanent-delete' && operation.projectId === id)
+        ) {
+          await releaseOrphanedProjectRoute(id, worker);
         }
         return createProjectOnce(options);
       });
     },
-    [createProjectOnce, ensureDiscoveryReady, getReadiedWorker, settleRecovery],
+    [createProjectOnce, ensureDiscoveryReady, getReadiedWorker, releaseOrphanedProjectRoute, settleRecovery],
   );
 
   /**
@@ -2418,34 +2891,35 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const getChatsForResource = useCallback(
     async (resourceId: string, options?: { includeDeleted?: boolean }): Promise<Chat[]> => {
-      return chatStore.getChatsForResource(resourceId, options);
+      return metadataReadOwner.read(async (source) => source.getChatsForResource(resourceId, options), resourceId);
     },
-    [chatStore],
+    [metadataReadOwner],
   );
 
   const getAllChats = useCallback(
     async (options?: { includeDeleted?: boolean }): Promise<Chat[]> => {
-      return chatStore.getAllChats(options);
+      return metadataReadOwner.read(async (source) => source.getAllChats(options));
     },
-    [chatStore],
+    [metadataReadOwner],
   );
 
   const getChatRecordsForResource = useCallback(
     async (resourceId: string, options?: { includeDeleted?: boolean }): Promise<ChatRecord[]> =>
-      chatStore.getChatRecordsForResource(resourceId, options),
-    [chatStore],
+      metadataReadOwner.read(async (source) => source.getChatRecordsForResource(resourceId, options), resourceId),
+    [metadataReadOwner],
   );
 
   const getAllChatRecords = useCallback(
-    async (options?: { includeDeleted?: boolean }): Promise<ChatRecord[]> => chatStore.getAllChatRecords(options),
-    [chatStore],
+    async (options?: { includeDeleted?: boolean }): Promise<ChatRecord[]> =>
+      metadataReadOwner.read(async (source) => source.getAllChatRecords(options)),
+    [metadataReadOwner],
   );
 
   const getChat = useCallback(
     async (chatId: string, projectId?: string): Promise<Chat | undefined> => {
-      return chatStore.getChat(chatId, projectId);
+      return metadataReadOwner.read(async (source) => source.getChat(chatId, projectId), projectId);
     },
-    [chatStore],
+    [metadataReadOwner],
   );
 
   const deleteChat = useCallback(
@@ -2476,6 +2950,10 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
     return {
       isLoading,
       error,
+      discoveryObservationError,
+      metadataObservationError,
+      getMetadataObservationError,
+      refreshFilesystemObservations,
       projectManagerRef: actorRef,
       workspaceConnection,
       connectWorkspace,
@@ -2525,6 +3003,10 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
   }, [
     isLoading,
     error,
+    discoveryObservationError,
+    metadataObservationError,
+    getMetadataObservationError,
+    refreshFilesystemObservations,
     actorRef,
     workspaceConnection,
     connectWorkspace,

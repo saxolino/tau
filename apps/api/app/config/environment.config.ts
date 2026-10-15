@@ -73,21 +73,24 @@ const environmentSchemaBase = z.object({
   // and editing never require it (V6).
   MORPH_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  GOOGLE_VERTEX_AI_CREDENTIALS: jsonCodec(
-    z.object({
-      type: z.string(),
-      project_id: z.string(),
-      private_key_id: z.string(),
-      private_key: z.string(),
-      client_email: z.string(),
-      client_id: z.string(),
-      auth_uri: z.string(),
-      token_uri: z.string(),
-      auth_provider_x509_cert_url: z.string(),
-      client_x509_cert_url: z.string(),
-      universe_domain: z.string(),
-    }),
-  ).optional(),
+  // A copied `.env.example` leaves this empty; empty means unset, not malformed JSON.
+  GOOGLE_VERTEX_AI_CREDENTIALS: unsetWhenEmpty(
+    jsonCodec(
+      z.object({
+        type: z.string(),
+        project_id: z.string(),
+        private_key_id: z.string(),
+        private_key: z.string(),
+        client_email: z.string(),
+        client_id: z.string(),
+        auth_uri: z.string(),
+        token_uri: z.string(),
+        auth_provider_x509_cert_url: z.string(),
+        client_x509_cert_url: z.string(),
+        universe_domain: z.string(),
+      }),
+    ).optional(),
+  ),
   TAVILY_API_KEY: z.string().optional(),
   CEREBRAS_API_KEY: z.string().optional(),
   TOGETHER_API_KEY: z.string().optional(),
@@ -163,6 +166,12 @@ const environmentSchemaBase = z.object({
     .describe(
       'Development-only provider upstream origin. Every funded provider call keeps its path and is sent to this origin instead, so an e2e run can drive the real gateway against a local stub. Refused outside BILLING_ENVIRONMENT=development.',
     ),
+  TAU_TRANSCRIPTION_UPSTREAM_URL: z
+    .url()
+    .optional()
+    .describe(
+      'Development-only dictation upstream origin. OpenAI transcription keeps its path and is sent to this origin, and dictation is offered without OPENAI_API_KEY, so an e2e run can drive the real voice route against a local stub. Refused under NODE_ENV=production.',
+    ),
   BILLING_INVOCATION_DEADLINE: z.coerce
     .number()
     .int()
@@ -175,7 +184,9 @@ const environmentSchemaBase = z.object({
     .int()
     .min(1000)
     .max(300_000)
-    .default(30_000)
+    // 5 s, the poll of the retired `billing-recovery` worker: this is now the only deployed clock, and the
+    // recovery SLO (oldest due operation under 30 s) cannot hold if a pass can be 30 s away.
+    .default(5000)
     .describe('Milliseconds between in-process funded-operation recovery passes; every API replica polls'),
   BILLING_EXACT_INPUT_COUNT: z
     .enum(['true', 'false'])
@@ -189,6 +200,12 @@ const environmentSchemaBase = z.object({
     .default('')
     .describe('Restricted Stripe create key (rk_test_... in staging, rk_live_... in prod); empty = billing disabled'),
   STRIPE_READ_SECRET_KEY: z.string().default(''),
+  STRIPE_REFUND_SECRET_KEY: z
+    .string()
+    .default('')
+    .describe(
+      'Operator-held Refunds-Write restricted key (rk_test_... in staging, rk_live_... in prod), read only by `billing-command lifecycle` for execute-refund; unset on deployed apps',
+    ),
   STRIPE_ACCOUNT_ID: z.string().default(''),
   STRIPE_LIVEMODE: z
     .enum(['true', 'false'])
@@ -278,6 +295,14 @@ export const environmentSchema = environmentSchemaBase.superRefine((data, contex
     });
   }
 
+  if (data.TAU_TRANSCRIPTION_UPSTREAM_URL !== undefined && data.NODE_ENV === 'production') {
+    context.addIssue({
+      code: 'custom',
+      message: 'TAU_TRANSCRIPTION_UPSTREAM_URL is refused under NODE_ENV=production',
+      path: ['TAU_TRANSCRIPTION_UPSTREAM_URL'],
+    });
+  }
+
   // The App's client id, secret and slug decide whether it is configured, all or none. A callback URL or
   // connection key on its own leaves it unconfigured; with the App configured they are required too.
   const githubRepositoryAppKeys = [
@@ -327,6 +352,7 @@ export const environmentSchema = environmentSchemaBase.superRefine((data, contex
     const stripeIdentifiers = [
       ['STRIPE_SECRET_KEY', data.STRIPE_SECRET_KEY, [`rk_${stripeMode}_`]],
       ['STRIPE_READ_SECRET_KEY', data.STRIPE_READ_SECRET_KEY, [`rk_${stripeMode}_`]],
+      ['STRIPE_REFUND_SECRET_KEY', data.STRIPE_REFUND_SECRET_KEY, [`rk_${stripeMode}_`]],
       ['STRIPE_ACCOUNT_ID', data.STRIPE_ACCOUNT_ID, 'acct_'],
       ['STRIPE_WEBHOOK_SECRET', data.STRIPE_WEBHOOK_SECRET, 'whsec_'],
       ['STRIPE_PRICE_ID_PRO_MONTHLY', data.STRIPE_PRICE_ID_PRO_MONTHLY, 'price_'],
@@ -360,6 +386,17 @@ export const environmentSchema = environmentSchemaBase.superRefine((data, contex
         code: 'custom',
         message: 'Stripe create and read keys must be separate restricted credentials',
         path: ['STRIPE_READ_SECRET_KEY'],
+      });
+    }
+    if (
+      data.STRIPE_REFUND_SECRET_KEY &&
+      (data.STRIPE_REFUND_SECRET_KEY === data.STRIPE_SECRET_KEY ||
+        data.STRIPE_REFUND_SECRET_KEY === data.STRIPE_READ_SECRET_KEY)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The Stripe refund key must be a restricted credential separate from the create and read keys',
+        path: ['STRIPE_REFUND_SECRET_KEY'],
       });
     }
   }

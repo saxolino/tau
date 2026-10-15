@@ -24,9 +24,11 @@ import { z } from 'zod';
 import { jsonValueSchema } from '@taucad/agent-host';
 import type { JsonValue } from '@taucad/agent-host';
 import type { AgentChannelRevisionEvent } from '@taucad/agent-host/wire';
+import type { FileMode } from '@taucad/filesystem';
 import { NodeFsProvider } from '@taucad/filesystem/backend/node';
 import { classify } from '@taucad/filesystem/path-registry';
-import { revisionId } from '@taucad/revisions/algorithms';
+import { revisionId, compareRevisionFile, captureRevisionTree, diffRevisionTrees } from '@taucad/revisions/algorithms';
+import type { ParameterRecordCodec } from '@taucad/revisions/algorithms';
 import {
   awaitCheckoutCuts,
   awaitSyncSettled,
@@ -40,6 +42,7 @@ import {
 import type {
   CheckoutFileSystems,
   ProjectRevisionsActor,
+  RevisionConflictRead,
   UseCheckoutFileSystem,
   TurnConflictedEvent as SettlementConflicted,
   TurnFailedEvent as SettlementFailed,
@@ -54,12 +57,13 @@ import {
   publishOverHttp,
   readRemoteStorageOverHttp,
   registerProjectOverHttp,
+  RevisionPortError,
   tauRemoteUrl,
   watchRevisionStream,
 } from '@taucad/revisions';
 import { selectBranchNeedsConfirmation } from '@taucad/revisions/branch-machine';
+import type { SyncMachineEmitted } from '@taucad/revisions/sync-machine';
 import { requireParameterRecord, serializeParameterRecord } from '@taucad/parameters';
-import type { ParameterRecordCodec } from '@taucad/revisions/algorithms';
 import type { branchMachine } from '@taucad/revisions/branch-machine';
 import { isAmbientCut } from '@taucad/revisions/checkout-machine';
 import { selectRevisionStatus } from '@taucad/revisions/project-revisions-machine';
@@ -214,6 +218,12 @@ export type ProjectRevisionsOptions = Pick<ActorOptions<AnyActorLogic>, 'clock' 
   readonly apiBaseUrl?: string | undefined;
   /** Read per remote request; never persisted under the project. */
   readonly tauCredential?: (() => TauApiCredential | undefined) | undefined;
+  /**
+   * Where this host runs, for Tau Sync telemetry (W36 D1). Set, each settled
+   * push or pull is reported to the API's telemetry ingest with the session
+   * bearer; absent, nothing is reported.
+   */
+  readonly syncTelemetryPlacement?: 'desktop' | 'daemon' | undefined;
   /** Read per third-party Git request; the renderer may replace it in memory. */
   readonly remoteCredential?: (() => NativeGitRemoteCredential | undefined) | undefined;
   /** Called once per host revision fact. Reporting only; never fails a turn. */
@@ -269,7 +279,7 @@ export type ProjectRevisions = {
   /**
    * This project's history, read-only (S28).
    *
-   * The same three functions `tau revisions` and the Revisions pane read, over
+   * The same functions `tau revisions` and the Revisions pane read, over
    * this project's own port — handed to `createHostToolRegistry` so the agent's
    * `revisions` tool cannot answer from a second reading of the graph. Nothing
    * here writes: an agent has no branch, merge, restore, discard or sync (I10).
@@ -278,6 +288,8 @@ export type ProjectRevisions = {
     log(request?: RevisionLogRequest): Promise<readonly RevisionRow[]>;
     diff(from: string | undefined, to: string): Promise<readonly RevisionDiffEntry[]>;
     describe(): Promise<RevisionPlace>;
+    /** Both sides of a conflicted revision as text; absent `revision` reads the one waiting on this branch. */
+    conflict(revision: string | undefined): Promise<RevisionConflictRead | undefined>;
   }>;
   /**
    * Open this project's turn-placement session over its revision tree (W8 TS-S4, D9). The host process is the session,
@@ -297,6 +309,14 @@ export type ProjectRevisions = {
   status(): RevisionStatusProjection;
   /** Record what is on disk, then stop the tree. The launcher closes first, so its attempts are settled. */
   release(): Promise<void>;
+  /**
+   * Settles once this project's store has opened, or rejects with the refusal that kept it closed.
+   *
+   * A store that refuses at open — a linked worktree, a repository Tau cannot adopt — never records
+   * anything. A host that exists only to serve this project awaits it before it serves, so it fails
+   * at start rather than at its close.
+   */
+  opened(): Promise<void>;
 };
 
 /**
@@ -671,6 +691,44 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
   });
   const { actor, settled, recordEditorConflict } = tree;
 
+  /* W36 D1: one bounded entry per settled push or pull, on the API's existing ingest. */
+  const placement = options.syncTelemetryPlacement;
+  if (placement !== undefined && apiBaseUrl !== undefined) {
+    actor.getSnapshot().children.sync?.on('syncAttempt', (attempt: SyncMachineEmitted & { type: 'syncAttempt' }) => {
+      const credential = options.tauCredential?.();
+      if (credential === undefined) {
+        return;
+      }
+      const { direction, outcome, durationMilliseconds, lagMilliseconds, pending } = attempt;
+      /* async-iife: bootstrap -- telemetry is best effort and never fails a sync. */
+      void (async (): Promise<void> => {
+        try {
+          await fetch(`${apiBaseUrl}/v1/telemetry/ingest`, {
+            method: 'POST',
+            headers: { authorization: credential.authorization, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              entries: [
+                {
+                  name: 'observability.syncAttempt',
+                  duration: durationMilliseconds,
+                  detail: {
+                    direction,
+                    outcome,
+                    placement,
+                    ...(lagMilliseconds === undefined ? {} : { lagMilliseconds }),
+                    ...(pending === undefined ? {} : { pending }),
+                  },
+                },
+              ],
+            }),
+          });
+        } catch {
+          // Telemetry is best effort.
+        }
+      })();
+    });
+  }
+
   /**
    * Report one settled turn, with the two graph facts it does not carry.
    *
@@ -706,7 +764,12 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
       checkoutId: settlement.checkoutId,
     });
   });
+  /* The open's own refusal, with its code, for `opened()`. */
+  let openRefusal: RevisionPortError | undefined;
   actor.on('checkoutFailed', (failure) => {
+    if (failure.operation === 'open') {
+      openRefusal ??= new RevisionPortError(failure.code ?? 'ENGINE_FAILED', failure.reason);
+    }
     options.events?.({
       type: 'revision.failed',
       operation: failure.operation,
@@ -1202,11 +1265,49 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
     }
     return authorization === undefined ? undefined : { repositoryUrl, authorization };
   };
+  const comparisonCheckout = async () => {
+    const snapshot = actor.getSnapshot();
+    const status = selectRevisionStatus(snapshot);
+    const checkout = snapshot.context.checkouts.find((entry) => entry.id === status.checkoutId);
+    if (checkout === undefined) {
+      throw new Error('The selected checkout is unavailable.');
+    }
+    const [filesystem, basis] = await Promise.all([
+      filesystems({
+        id: checkout.id,
+        projectId,
+        root: checkout.root,
+        kind: checkout.kind,
+        branch: status.line.kind === 'branch' ? status.line.name : undefined,
+        baseRevisionId: status.headRevisionId === undefined ? undefined : revisionId(status.headRevisionId),
+      }),
+      status.headRevisionId === undefined ? undefined : port.readTree(revisionId(status.headRevisionId)),
+    ]);
+    if (status.headRevisionId !== undefined && basis === undefined) {
+      throw new Error('The checkout head tree is unavailable.');
+    }
+    const ignored = new Set(await port.ignoredPaths?.(checkout.kind === 'live' ? undefined : checkout.root));
+    return {
+      filesystem,
+      mode: (path: string): FileMode => basis?.mode(path) ?? '100644',
+      /* The capture's own rule: the registry, and in an adopted repository the person's ignore rules. */
+      excluded: (path: string): boolean => !classify(path).versioned || ignored.has(path) || ignored.has(`${path}/`),
+    };
+  };
+
   // oxlint-disable-next-line complexity -- One validated dispatch table mirrors the established worker wire without another protocol layer.
   const sendRevisionRequest = async (value: JsonValue): Promise<JsonValue> => {
     const request = hostRevisionRequestSchema.parse(value) as {
       command: string;
     } & Record<string, JsonValue>;
+    if (request.command === 'diff' || request.command === 'compare') {
+      const against = optionalText(request, 'against');
+      if (against !== undefined && against !== 'checkout') {
+        throw Object.assign(new Error('Revision comparison against must be checkout or omitted.'), {
+          code: 'INVALID_REVISION_REQUEST',
+        });
+      }
+    }
     /* Anything that may record waits for the watcher first (E1); reads do not. */
     if (!unrecordingCommands.has(request.command)) {
       await settleWatch();
@@ -1247,6 +1348,19 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
         return revisionJson(await port.divergence({ head: revisionId(text('head')), base: revisionId(text('base')) }));
       case 'diff': {
         const to = text('revisionId');
+        if (request['against'] === 'checkout') {
+          const original = await port.readTree(revisionId(to));
+          if (original === undefined) {
+            throw new Error('The selected revision is unavailable.');
+          }
+          const checkout = await comparisonCheckout();
+          // ponytail: one bounded capture per live list refresh; reuse the checkout capture memo if large projects make this hot.
+          const modified = await captureRevisionTree(checkout.filesystem, {
+            exclude: checkout.excluded,
+            inheritedMode: checkout.mode,
+          });
+          return revisionJson(diffRevisionTrees({ original, modified }));
+        }
         const record = await port.readRevision(revisionId(to));
         return revisionJson(await readRevisionDiff(port, optionalText(request, 'from') ?? record?.parents[0], to));
       }
@@ -1265,47 +1379,59 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
         const requestedRevision = text('revisionId');
         const path = text('path');
         if (request['against'] === 'checkout') {
-          const snapshot = actor.getSnapshot();
-          const checkout = snapshot.context.checkouts.find(
-            (entry) => entry.id === selectRevisionStatus(snapshot).checkoutId,
-          );
-          const [tree, filesystem] = await Promise.all([
-            port.readTree(revisionId(requestedRevision)),
-            checkout === undefined
-              ? undefined
-              : filesystems({
-                  id: checkout.id,
-                  projectId,
-                  root: checkout.root,
-                  kind: checkout.kind,
-                  branch: checkout.branch,
-                  baseRevisionId:
-                    checkout.headRevisionId === undefined ? undefined : revisionId(checkout.headRevisionId),
-                }),
-          ]);
-          const decoder = new TextDecoder();
-          let working = '';
-          try {
-            working = filesystem === undefined ? '' : decoder.decode(await filesystem.readFile(path));
-          } catch {
-            // Missing on the right means deleted since the selected revision.
+          const tree = await port.readTree(revisionId(requestedRevision));
+          if (tree === undefined) {
+            throw new Error('The selected revision is unavailable.');
           }
-          return revisionJson({
-            original: tree?.get(path) === undefined ? '' : decoder.decode(tree.get(path)),
-            modified: working,
-          });
+          const checkout = await comparisonCheckout();
+          const { filesystem } = checkout;
+          let working: Uint8Array<ArrayBuffer> | undefined;
+          let mode = checkout.mode(path);
+          try {
+            working = await filesystem.readFile(path);
+            mode = (await filesystem.getFileMode?.(path)) ?? mode;
+          } catch (error) {
+            if (
+              !(
+                typeof error === 'object' &&
+                error !== null &&
+                (('code' in error &&
+                  (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'EISDIR')) ||
+                  ('name' in error && error.name === 'NotFoundError'))
+              )
+            ) {
+              throw error;
+            }
+            working = undefined;
+          }
+          const original = tree.get(path);
+          return revisionJson(
+            compareRevisionFile({
+              original: original === undefined ? undefined : { content: original, mode: tree.mode(path) ?? '100644' },
+              modified: working === undefined ? undefined : { content: working, mode },
+            }),
+          );
         }
         const record = await port.readRevision(revisionId(requestedRevision));
-        const base = optionalText(request, 'from') ?? record?.parents[0];
+        if (record === undefined) {
+          throw new Error('The selected revision is unavailable.');
+        }
+        const base = optionalText(request, 'from') ?? record.parents[0];
         const [before, after] = await Promise.all([
           base === undefined ? undefined : port.readTree(revisionId(base)),
           port.readTree(revisionId(requestedRevision)),
         ]);
-        const decoder = new TextDecoder();
-        return revisionJson({
-          original: before?.get(path) === undefined ? '' : decoder.decode(before.get(path)),
-          modified: after?.get(path) === undefined ? '' : decoder.decode(after.get(path)),
-        });
+        if (after === undefined || (base !== undefined && before === undefined)) {
+          throw new Error('The selected revision tree is unavailable.');
+        }
+        const original = before?.get(path);
+        const modified = after.get(path);
+        return revisionJson(
+          compareRevisionFile({
+            original: original === undefined ? undefined : { content: original, mode: before?.mode(path) ?? '100644' },
+            modified: modified === undefined ? undefined : { content: modified, mode: after.mode(path) ?? '100644' },
+          }),
+        );
       }
       case 'restore':
         actor.getSnapshot().children.restore?.send({
@@ -1582,6 +1708,12 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
       log: async (request?: RevisionLogRequest) => readRevisionLog(port, request),
       diff: async (from: string | undefined, to: string) => readRevisionDiff(port, from, to),
       describe: async () => readRevisionPlace(port),
+      conflict: async (revision: string | undefined) => {
+        const { line, conflicts } = selectRevisionStatus(actor.getSnapshot());
+        const id =
+          revision ?? conflicts.find((conflict) => line.kind === 'branch' && conflict.into === line.name)?.revisionId;
+        return id === undefined ? undefined : tree.readConflict(id);
+      },
     }),
     changed: (checkoutId, paths) => {
       /* One increment per content-change event, whatever its path count: the
@@ -1590,8 +1722,14 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
       const generation = (generations.get(checkoutId) ?? 0) + 1;
       generations.set(checkoutId, generation);
       actor.send({ type: 'changed', checkoutId, paths, generation });
+      emitChannel({ kind: 'event', value: revisionJson({ type: 'checkout.changed', checkoutId, paths }) });
     },
     release,
+    opened: async () => {
+      if ((await waitForLiveCheckout()) === undefined) {
+        throw openRefusal ?? new RevisionPortError('ENGINE_FAILED', 'This project has no live checkout.');
+      }
+    },
     status: () => selectRevisionStatus(actor.getSnapshot()),
     channel: {
       request: async (input) => ({

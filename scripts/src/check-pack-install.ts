@@ -8,10 +8,21 @@
  * registry — the registry copies are stale or absent.
  *
  * Usage: node scripts/src/check-pack-install.ts [package-dir…]
+ *        node scripts/src/check-pack-install.ts --from-urls <preview.json>
  *
  * A subset only works when it is closed under workspace dependencies; omitting a sibling makes npm
  * fall back to the registry and 404. Requesting `packages/runtime` also packs the packages its
- * README quick start imports and their publishable closure, computed from the graph.
+ * README quick start imports and their publishable closure, computed from the graph. Requesting
+ * `packages/cli` packs the CLI's publishable closure except the GeoSpec engine packages, which Tau's
+ * train does not publish (charter D36; `@taucad/host` peers them optionally), and then runs the
+ * installed `tau` from a project folder outside the app with an empty config directory: `export` to
+ * a GLB, `check`, `mcp` answering `initialize`, and the typed not-prepared refusal for a `.py` model.
+ *
+ * `--from-urls` is the consumer leg of the pkg.pr.new full run (`preview-packages.yml`): it packs
+ * nothing and installs every package the run published, by the URLs in the `--json` file that
+ * `pkg-pr-new publish` wrote, into the same clean application under the OS temp dir. Every installed
+ * `@taucad/*` and `geospec` sibling must then come from that run, never the registry, and the same
+ * surface checks run, followed by `tau export` to a GLB from the installed CLI.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -31,9 +42,12 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { bundledLibraries, publishable, publishableClosure, publishWaves, workspace } from '@taucad/nx';
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
+import ts from 'typescript';
+import { runCliSurface } from '#check-pack-install-cli.js';
 
 type Dependencies = Record<string, string>;
 
@@ -57,34 +71,75 @@ export type ImportFailure = {
 
 const repositoryRoot = resolve(import.meta.dirname, '../..');
 
+/** One package a pkg.pr.new run published, as its `--json` output lists it. */
+export type PreviewPackage = {
+  readonly name: string;
+  readonly url: string;
+};
+
+const previewUrlPrefix = 'https://pkg.pr.new/';
+
+/** The packages listed in a `pkg-pr-new publish --json` file; anything else in it is ignored. */
+export const previewPackages = (preview: unknown): PreviewPackage[] => {
+  const packages =
+    typeof preview === 'object' && preview !== null && 'packages' in preview ? preview.packages : undefined;
+  if (!Array.isArray(packages) || packages.length === 0) {
+    throw new Error('The preview file lists no packages.');
+  }
+  return packages.map((entry: unknown) => {
+    const { name, url } = (entry ?? {}) as { name?: unknown; url?: unknown };
+    if (typeof name !== 'string' || typeof url !== 'string' || !url.startsWith(previewUrlPrefix)) {
+      throw new Error(`The preview file holds an entry that is not a pkg.pr.new package: ${JSON.stringify(entry)}`);
+    }
+    return { name, url };
+  });
+};
+
+/**
+ * Sibling specifiers a published preview manifest kept from the workspace. `--previewVersion`
+ * rewrites a dependency or optional dependency on another package of the same run to that
+ * package's pkg.pr.new URL, and `--peerDeps` rewrites such a peer to the run's preview version
+ * (the manifest's own `0.0.0-preview-<sha>`); anything else lets npm take the registry copy.
+ */
+export const unrewrittenSiblings = (manifest: Manifest, published: ReadonlySet<string>): string[] => [
+  ...(manifest.version.startsWith('0.0.0-preview-')
+    ? []
+    : [`${manifest.name} carries version ${manifest.version}, not a 0.0.0-preview-<sha> version.`]),
+  ...[manifest.dependencies, manifest.optionalDependencies].flatMap((dependencies) =>
+    Object.entries(dependencies ?? {}).flatMap(([name, specifier]) =>
+      published.has(name) && !specifier.startsWith(previewUrlPrefix)
+        ? [`${manifest.name} declares ${name} as ${specifier}, not a pkg.pr.new URL.`]
+        : [],
+    ),
+  ),
+  ...Object.entries(manifest.peerDependencies ?? {}).flatMap(([name, specifier]) =>
+    published.has(name) && specifier !== manifest.version
+      ? [`${manifest.name} declares peer ${name} as ${specifier}, not the run's ${manifest.version}.`]
+      : [],
+  ),
+];
+
 /**
  * Subpaths that cannot be imported in a bare Node process for a stated reason, keyed by a
  * substring the produced error must contain. A tolerated entry still has to *resolve* — the
  * module body runs, so a missing sibling file surfaces as ERR_MODULE_NOT_FOUND and stays red.
  * Anything not listed here, and any listed entry that fails differently, is red.
  */
-const toleratedImportFailures: Record<string, string> = {};
+const toleratedImportFailures: Record<string, string> = {
+  // @rjsf/core and @rjsf/utils 5.x publish CommonJS `main` plus an ESM `module` field and no `exports`,
+  // so a bundler (the viewer's consumers) takes their ESM build while bare Node ESM cannot read their
+  // named exports. Reported for the viewer's owner; a bundled consumer is unaffected.
+  '@taucad/viewer/parameters/parameters': "The requested module '@rjsf/core' is a CommonJS module",
+  '@taucad/viewer/parameters/rjsf-field-path': "The requested module '@rjsf/core' is a CommonJS module",
+  '@taucad/viewer/parameters/rjsf-theme': "The requested module '@rjsf/core' does not provide an export named",
+  '@taucad/viewer/parameters/rjsf-validator': "The requested module '@rjsf/utils' is a CommonJS module",
+};
 
 /**
  * Payloads that only fail when instantiated, keyed by package name; the source runs inside the
  * installed application.
- *
- * `@taucad/geospec-engine` is loaded through `dist/native/opencascade-module.mjs` rather than the
- * published `./native/opencascade/single` subpath, because the adapter is the module every shipped
- * consumer path reaches — it is what proves the subpath resolves and instantiates from inside the
- * installed tree. It is not itself an export target, so it is imported by file URL from
- * `node_modules`.
  */
-const instantiationProbes: Record<string, string> = {
-  '@taucad/geospec-engine': `
-const moduleUrl = new URL('./node_modules/@taucad/geospec-engine/dist/native/opencascade-module.mjs', import.meta.url);
-const { getOpenCascadeStepModule } = await import(moduleUrl.href);
-const occt = await getOpenCascadeStepModule();
-if (!(occt.HEAPF64?.length > 0)) {
-  throw new Error('OCCT module instantiated without a heap.');
-}
-`,
-};
+const instantiationProbes: Record<string, string> = {};
 
 const invariant: (condition: unknown, message: string) => asserts condition = (condition, message) => {
   if (!condition) {
@@ -240,11 +295,12 @@ const assertSingleZodInstance = (appRoot: string): void => {
   type Node = {
     readonly path?: string;
     readonly dependencies?: Record<string, Node>;
+    readonly problems?: readonly string[];
   };
   // `--long` carries each node's install `path`: `--all` lists the same hoisted
   // copy once per dependent, so paths — not node counts — say how many copies
-  // exist. `npm ls` exits non-zero on any tree advisory, so the JSON is read
-  // regardless of status.
+  // exist. npm may exit non-zero while still returning a useful structured
+  // dependency tree; its reported problems must still fail admission.
   const listing = spawnSync('npm', ['ls', 'zod', '--json', '--all', '--long'], {
     cwd: appRoot,
     encoding: 'utf8',
@@ -261,9 +317,63 @@ const assertSingleZodInstance = (appRoot: string): void => {
       }
     }
   };
-  walk(JSON.parse(listing.stdout || '{}') as Node);
+  invariant(!listing.error, `Cannot inspect installed Zod: ${listing.error?.message}`);
+  let tree: Node;
+  try {
+    tree = JSON.parse(listing.stdout) as Node;
+  } catch {
+    throw new Error(`Cannot parse npm ls Zod tree (status ${String(listing.status)}): ${listing.stderr}`);
+  }
+  invariant(
+    tree.problems?.length === undefined || tree.problems.length === 0,
+    `npm reports invalid Zod dependencies: ${tree.problems?.join('; ')}`,
+  );
+  invariant(listing.status === 0, `npm ls Zod failed (${String(listing.status)}): ${listing.stderr}`);
+  walk(tree);
   invariant(installs.size === 1, `npm resolved ${String(installs.size)} zod copies: ${[...installs].join(', ')}`);
   console.log(`zod: one instance in the installed tree (${[...installs][0]!}).`);
+};
+
+/**
+ * The vendored graph must not reappear as dependencies of the installed `@taucad/tscircuit`. Only its
+ * own subtree is walked: in the full train other packages install replicad and OCCT by design.
+ */
+const assertTscircuitInstallShape = (appRoot: string): void => {
+  const listing = spawnSync('npm', ['ls', '--json', '--all'], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  type Node = { readonly dependencies?: Record<string, Node> };
+  invariant(
+    listing.status === 0,
+    `Cannot verify tscircuit install tree: npm ls failed (${String(listing.status)}). ${listing.error?.message ?? listing.stderr}`,
+  );
+  const tree = JSON.parse(listing.stdout) as Node;
+  const tscircuit = tree.dependencies?.['@taucad/tscircuit'];
+  invariant(tscircuit, 'npm ls omitted installed @taucad/tscircuit.');
+  const forbidden = new Set([
+    '@resvg/resvg-js',
+    'occt-import-js',
+    '@tscircuit/props',
+    'circuit-json',
+    'circuit-json-to-gltf',
+    'graphics-debug',
+    '@taucad/replicad',
+    'replicad',
+    'replicad-opencascadejs',
+  ]);
+  const found = new Set<string>();
+  const walk = (node: Node): void => {
+    for (const [name, child] of Object.entries(node.dependencies ?? {})) {
+      if (forbidden.has(name)) {
+        found.add(name);
+      }
+      walk(child);
+    }
+  };
+  walk(tscircuit);
+  invariant(found.size === 0, `Vendored tscircuit packages leaked into the consumer install: ${[...found].join(', ')}`);
 };
 
 const quickStartSource = (readme: string): string => {
@@ -318,13 +428,13 @@ const bareManifest = await compileParameterManifest({
   middleware: digest,
 });
 const middlewareDefinition = await resolveRuntimePluginDefinition('middleware', parameterUnits());
-const inferred = await middlewareDefinition.wrapGetParameters(
+const inferred = await middlewareDefinition.wrapDescribe(
   { entryPath: 'main.ts', resolution: { mode: 'default', inferenceLanguage: 'en' } },
-  async () => ({ success: true, data: bareManifest, issues: [] }),
+  async () => ({ success: true, data: { parameters: bareManifest }, issues: [] }),
   { options: { angleDefault: 'deg' } },
 );
 if (!inferred.success) throw new Error('Packed parameter middleware failed to resolve a manifest.');
-const manifest = inferred.data;
+const manifest = inferred.data.parameters;
 if (manifest.bindings['/width']?.unit !== 'mm' || manifest.bindings['/rotationAngle']?.unit !== 'deg') {
   throw new Error(\`Packed parameter middleware returned the wrong units: \${JSON.stringify(manifest.bindings)}\`);
 }
@@ -379,7 +489,11 @@ globalThis.__TAU_PARAMETER_PACK_SMOKE__ = 'committed width=25 and settled';
 console.log(globalThis.__TAU_PARAMETER_PACK_SMOKE__);
 `;
 
-const runBrowserModule = async (modulePath: string, assertPage: (page: Page) => Promise<void>): Promise<void> => {
+const runBrowserModule = async (
+  modulePath: string,
+  assertPage: (page: Page) => Promise<void>,
+  assets: Readonly<Record<string, string>> = {},
+): Promise<void> => {
   const scriptPath = `/${basename(modulePath)}`;
   const server = createServer((request, response) => {
     if (request.url === '/') {
@@ -390,6 +504,11 @@ const runBrowserModule = async (modulePath: string, assertPage: (page: Page) => 
     if (request.url === scriptPath) {
       response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
       response.end(readFileSync(modulePath));
+      return;
+    }
+    if (request.url !== undefined && Object.hasOwn(assets, request.url)) {
+      response.writeHead(200, { 'content-type': 'application/wasm' });
+      response.end(readFileSync(assets[request.url]!));
       return;
     }
     response.writeHead(404);
@@ -468,47 +587,47 @@ const kernel = defineKernel({
   extensions: ['mock'],
   name: 'PackedReactKernel',
   version: '1.0.0',
-  exportFormats: {},
+  views: { model: { title: 'Model', mimeType: 'image/svg+xml' } },
+  exports: {},
   async initialize() { return {}; },
-  async getDependencies({ entryPath }) { return { resolved: [entryPath], unresolved: [] }; },
-  async getParameters() {
+  async resolve({ entryPath }) { return { resolved: [entryPath], unresolved: [] }; },
+  async describe() {
     return {
       success: true,
       data: {
-        schema: {
-          $schema: 'https://json-structure.org/meta/extended/v0/#',
-          $id: 'urn:taucad:packed-react:parameters',
-          $uses: ['JSONSchemaUnits'],
-          name: 'PackedReactParameters',
-          type: 'object',
+        parameters: {
+          schema: {
+            $schema: 'https://json-structure.org/meta/extended/v0/#',
+            $id: 'urn:taucad:packed-react:parameters',
+            $uses: ['JSONSchemaUnits'],
+            name: 'PackedReactParameters',
+            type: 'object',
+          },
+          defaults: {},
         },
-        defaults: {},
       },
       issues: [],
     };
   },
-  async createGeometry(input, runtime) {
+  async evaluate(input, runtime) {
     const source = await runtime.filesystem.readFile(input.entryPath, 'utf8');
     if (source === 'bad') throw new Error('packed react failure');
-    return {
-      geometry: { format: 'svg', content: \`<svg data-source="\${source}"></svg>\` },
-      nativeHandle: {},
-    };
+    return { handle: { source }, views: ['model'] };
   },
-  async exportGeometry() { return { success: true, data: [], issues: [] }; },
+  async render({ handle }) { return { content: \`<svg data-source="\${handle.source}"></svg>\` }; },
 });
 const runtime = defineRuntime({ kernels: [kernel()] });
 const clientOptions = { transport: inProcessTransport({ runtime, fileSystem: fromMemoryFs() }) };
 
 const App = () => {
   const [source, setSource] = useState('good-one');
-  const result = useRuntime({ clientOptions, source: { files: { 'main.mock': source } } });
-  const geometry = result.geometry?.format === 'svg' ? result.geometry.content : '';
+  const result = useRuntime({ clientOptions, source: { files: { 'main.mock': source }, entry: 'main.mock' }, view: { id: 'model' } });
+  const geometry = typeof result.artifact?.content === 'string' ? result.artifact.content : '';
   return createElement('main', {},
     createElement('output', {
       id: 'state',
       'data-status': result.status,
-      'data-geometry-status': result.geometryStatus,
+      'data-geometry-status': result.artifactStatus,
       'data-geometry': geometry,
       'data-error': result.error?.message ?? '',
     }),
@@ -565,6 +684,411 @@ const runInstalledReactRuntime = async (appRoot: string): Promise<void> => {
   console.log('Packed React/runtime Chromium lifecycle: current → stale → current.');
 };
 
+/** Compile and query real installed declarations, including a schema-rich public factory. */
+export const installedTypeSource = `
+import { createRuntimeClient, defineKernel, defineRuntime, fromMemoryFs, defineTranscoder } from '@taucad/runtime';
+import { inProcessTransport } from '@taucad/runtime/transport/in-process';
+import { esbuildBundler } from '@taucad/esbuild';
+import { tscircuit } from '@taucad/tscircuit';
+import { useRuntime } from '@taucad/react';
+import type { RuntimeClient } from '@taucad/runtime';
+import { z } from 'zod';
+
+const strictKernel = defineKernel({
+  id: 'type-probe', name: 'Type probe', version: '1', extensions: ['tsx'],
+  evaluateOptionsSchema: z.object({ required: z.number(), defaulted: z.string().default('ready'), transformed: z.string().transform(Number) }),
+  views: {
+    required: { title: 'Required', mimeType: 'image/svg+xml', optionsSchema: z.object({ scale: z.number() }) },
+    defaulted: { title: 'Defaulted', mimeType: 'image/svg+xml', optionsSchema: z.object({ pins: z.boolean().default(false) }) },
+    union: { title: 'Union', mimeType: 'image/svg+xml', optionsSchema: z.union([z.object({ kind: z.literal('single'), camera: z.string() }), z.object({ kind: z.literal('batch'), views: z.array(z.string()).nonempty() })]) },
+    loose: { title: 'Loose', mimeType: 'image/svg+xml', optionsSchema: z.looseObject({ label: z.string() }) },
+    empty: { title: 'Empty', mimeType: 'image/svg+xml' },
+  },
+  exports: {
+    data: { title: 'Data', mimeType: 'application/json', extension: 'json', optionsSchema: z.object({ count: z.number() }) },
+  },
+  async initialize() { return {}; },
+  async resolve() { return { resolved: [], unresolved: [] }; },
+  async describe() { return { success: false, issues: [] }; },
+  async evaluate(input) {
+    const required: number = input.options.required;
+    const defaulted: string = input.options.defaulted;
+    const transformed: number = input.options.transformed;
+    // @ts-expect-error The kernel hook receives parsed transform output.
+    const wrong: string = input.options.transformed;
+    void [required, defaulted, transformed, wrong];
+    return { handle: {} };
+  },
+  async render(input) {
+    if (input.view === 'defaulted') {
+      const pins: boolean = input.options.pins;
+      void pins;
+    }
+    return { content: '<svg/>' };
+  },
+  async export() { return { files: [{ name: 'data.json', mimeType: 'application/json', bytes: new Uint8Array([1]) }] }; },
+});
+const route = defineTranscoder({
+  id: 'type-route', name: 'Type route', version: '1',
+  edges: [{ from: 'json', to: 'txt', fidelity: 'mesh', optionsSchema: z.object({ separator: z.string() }) }] as const,
+  async initialize() { return {}; },
+  async transcode(input) { return { success: true, data: input.files, issues: [] }; },
+});
+const runtime = defineRuntime({ kernels: [strictKernel()], plugins: [tscircuit()], bundlers: [esbuildBundler()], transcoders: [route()] });
+const client = createRuntimeClient({ transport: inProcessTransport({ runtime, fileSystem: fromMemoryFs() }) });
+const strictRuntime = defineRuntime({ kernels: [strictKernel()], transcoders: [route()] });
+const strictTransport = inProcessTransport({ runtime: strictRuntime, fileSystem: fromMemoryFs() });
+const strictClient = createRuntimeClient({ transport: strictTransport });
+const doc = strictClient.open({ source: { files: { 'main.tsx': '', 'other.tsx': '' }, entry: 'main.tsx' }, evaluateOptions: { required: 1, transformed: '2' } });
+const circuitDoc = client.open({ source: { path: 'main.tsx' } });
+circuitDoc.view('board');
+circuitDoc.view('pcb', { options: { pinNumbers: true } });
+doc.view('required', { options: { scale: 2 } });
+doc.view('defaulted');
+doc.view('union', { options: { kind: 'single', camera: 'front' } });
+doc.view('union', { options: { kind: 'batch', views: ['front'] } });
+doc.view('loose', { options: { label: 'open', other: true } });
+doc.view('empty');
+void circuitDoc.export('board');
+void doc.export('data', { options: { count: 1 } });
+void strictClient.transcode({ from: 'json', to: 'txt', files: [], options: { separator: ',' } });
+void doc.update({ evaluateOptions: { required: 2, transformed: '3' } });
+defineRuntime({ kernels: [] });
+defineRuntime({ kernels: [strictKernel()] });
+declare const wideClient: RuntimeClient;
+wideClient.open({ source: { path: 'wide.ts' } }).view('anything');
+const hook = useRuntime({ clientOptions: { transport: strictTransport }, source: { path: 'main.tsx' }, evaluateOptions: { required: 1, transformed: '2' }, view: { id: 'required', options: { scale: 1 } } });
+void hook.exportModel('data', { options: { count: 1 } });
+// @ts-expect-error The packed React hook retains the selected view's required options.
+useRuntime({ clientOptions: { transport: strictTransport }, source: { path: 'main.tsx' }, evaluateOptions: { required: 1, transformed: '2' }, view: { id: 'required' } });
+// @ts-expect-error Required evaluation option cannot be omitted.
+strictClient.open({ source: { path: 'main.tsx' } });
+// @ts-expect-error Entry must be a member of the inline file map.
+strictClient.open({ source: { files: { 'main.tsx': '' }, entry: 'missing.tsx' }, evaluateOptions: { required: 1, transformed: '2' } });
+// @ts-expect-error A required view option cannot be omitted.
+doc.view('required');
+// @ts-expect-error Selected view option types remain narrow.
+circuitDoc.view('pcb', { options: { pinNumbers: 'yes' } });
+// @ts-expect-error Union branches cannot mix single camera and batch views.
+doc.view('union', { options: { kind: 'single', views: ['front'] } });
+// @ts-expect-error Required export options cannot be omitted.
+void doc.export('data');
+// @ts-expect-error Route options remain required.
+void strictClient.transcode({ from: 'json', to: 'txt', files: [], options: {} });
+// @ts-expect-error Unknown export IDs are rejected.
+void doc.export('step');
+`;
+
+export const installedEditorSource = `${installedTypeSource}
+circuitDoc.view('/*view*/');
+void circuitDoc.export('/*export*/');
+circuitDoc.view('pcb', { options: { /*selectedViewOptions*/ } });
+strictClient.open({ source: { files: { 'main.tsx': '', 'other.tsx': '' }, entry: '/*entry*/' }, evaluateOptions: { required: 1, transformed: '2' } });
+strictClient.open({ source: { path: 'main.tsx' }, evaluateOptions: { /*evaluateOptions*/ } });
+void strictClient.transcode({ from: '/*routeFrom*/', to: 'txt', files: [], options: { separator: ',' } });
+void strictClient.transcode({ from: 'json', to: '/*routeTo*/', files: [], options: { separator: ',' } });
+`;
+
+/** The compiler is the workspace tool, but all resolved public declarations come from the installed app. */
+const checkInstalledTypes = (appRoot: string): void => {
+  const consumer = join(appRoot, 'consumer.ts');
+  const editor = join(appRoot, 'editor.ts');
+  writeFileSync(consumer, installedTypeSource);
+  writeFileSync(editor, installedEditorSource);
+  const options: ts.CompilerOptions = {
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    skipLibCheck: false,
+    noEmit: true,
+    types: [],
+    lib: ['lib.esnext.d.ts', 'lib.dom.d.ts'],
+  };
+  for (const moduleResolution of [ts.ModuleResolutionKind.Bundler, ts.ModuleResolutionKind.NodeNext]) {
+    const compilerOptions: ts.CompilerOptions = {
+      ...options,
+      module: moduleResolution === ts.ModuleResolutionKind.NodeNext ? ts.ModuleKind.NodeNext : ts.ModuleKind.ESNext,
+      moduleResolution,
+    };
+    const program = ts.createProgram([consumer], compilerOptions);
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    invariant(
+      diagnostics.length === 0,
+      `Packed TypeScript consumer failed (${ts.ModuleResolutionKind[moduleResolution]}):\n${ts.formatDiagnosticsWithColorAndContext(
+        diagnostics,
+        {
+          getCanonicalFileName: (file) => file,
+          getCurrentDirectory: () => appRoot,
+          getNewLine: () => '\n',
+        },
+      )}`,
+    );
+  }
+  const host: ts.LanguageServiceHost = {
+    getScriptFileNames: () => [editor],
+    getScriptVersion: () => '1',
+    getScriptSnapshot: (file) => {
+      const source = file === editor ? installedEditorSource : ts.sys.readFile(file);
+      return source === undefined ? undefined : ts.ScriptSnapshot.fromString(source);
+    },
+    getCurrentDirectory: () => appRoot,
+    getCompilationSettings: () => options,
+    getDefaultLibFileName: ts.getDefaultLibFilePath,
+    fileExists: (file) => file === editor || ts.sys.fileExists(file),
+    readFile: (file) => (file === editor ? installedEditorSource : ts.sys.readFile(file)),
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+  };
+  const service = ts.createLanguageService(host);
+  try {
+    const expected: Record<string, readonly string[]> = {
+      view: ['board', 'schematic', 'pcb'],
+      export: ['board', 'bom', 'netlist', 'circuit'],
+      selectedViewOptions: ['pinNumbers'],
+      entry: ['main.tsx', 'other.tsx'],
+      evaluateOptions: ['required', 'defaulted', 'transformed'],
+      routeFrom: ['json'],
+      routeTo: ['txt'],
+    };
+    for (const [marker, wanted] of Object.entries(expected)) {
+      const position = installedEditorSource.indexOf(`/*${marker}*/`);
+      invariant(position !== -1, `Missing installed editor marker ${marker}.`);
+      const completion = service.getCompletionsAtPosition(editor, position, { includeCompletionsWithInsertText: true });
+      const names = new Set(completion?.entries.map((entry) => entry.name) ?? []);
+      invariant(
+        wanted.every((name) => names.has(name)),
+        `Packed ${marker} completions omitted ${wanted.filter((name) => !names.has(name)).join(', ')}; got ${[...names].join(', ')}.`,
+      );
+    }
+  } finally {
+    service.dispose();
+  }
+  console.log(`Packed TypeScript ${ts.version}: strict consumer and view/export/option/file-entry completions passed.`);
+};
+
+/** The Zod the consumer app pins: the runtime's declared peer floor, unless an installed package needs more. */
+export const declaredZodFloor = '4.0.0';
+
+/**
+ * The lowest Zod every installed package admits through its own `dependencies` (an application such
+ * as `@taucad/cli` may depend on Zod rather than peer it). A dependency floor above the peer floor
+ * would install a second Zod, so the app pins the highest such floor instead, and says so.
+ */
+export const consumerZodVersion = (manifests: readonly Manifest[]): { version: string; raisedBy: string[] } => {
+  const parts = (version: string): number[] => version.split('.').map(Number);
+  const newer = (left: string, right: string): boolean => {
+    const [a, b] = [parts(left), parts(right)];
+    const index = a.findIndex((value, position) => value !== b[position]);
+    return index !== -1 && a[index]! > b[index]!;
+  };
+  let version = declaredZodFloor;
+  const raisedBy: string[] = [];
+  for (const manifest of manifests) {
+    const range = manifest.dependencies?.['zod'];
+    if (range === undefined) {
+      continue;
+    }
+    const floor = /^\^(?<floor>\d+\.\d+\.\d+)$/u.exec(range)?.groups?.['floor'];
+    invariant(floor !== undefined, `${manifest.name} depends on zod ${range}, which is not a caret range.`);
+    if (newer(floor, declaredZodFloor)) {
+      raisedBy.push(`${manifest.name} (zod ${range})`);
+      if (newer(floor, version)) {
+        version = floor;
+      }
+    }
+  }
+  return { version, raisedBy };
+};
+
+/** The `package.json` inside an npm tarball, read without unpacking it. */
+export const tarballManifest = (tarball: Uint8Array<ArrayBuffer>): Manifest => {
+  const tar = gunzipSync(tarball);
+  for (let offset = 0; offset + 512 <= tar.byteLength; ) {
+    const header = tar.subarray(offset, offset + 512);
+    const field = (start: number, length: number): string =>
+      header
+        .subarray(start, start + length)
+        .toString('latin1')
+        .replace(/\0.*$/su, '');
+    const name = field(0, 100);
+    if (name === '') {
+      break;
+    }
+    const size = Number.parseInt(field(124, 12).trim() || '0', 8);
+    const path = [field(345, 155), name].filter(Boolean).join('/');
+    if (/^[^/]+\/package\.json$/u.test(path)) {
+      return JSON.parse(tar.subarray(offset + 512, offset + 512 + size).toString('utf8')) as Manifest;
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  throw new Error('The tarball holds no top-level package.json.');
+};
+
+/** Exercise the pinned Zod (the declared floor where it can be installed) through public runtime admission. */
+export const installedZodFloorSource = (zodVersion: string): string => `
+import { realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { createRuntimeClient, defineKernel, defineRuntime, fromMemoryFs } from '@taucad/runtime';
+import { inProcessTransport } from '@taucad/runtime/transport/in-process';
+import { quantity } from '@taucad/runtime/configuration/zod';
+import { z } from 'zod';
+const requireFromRuntime = createRequire(import.meta.resolve('@taucad/runtime'));
+const requireFromConsumer = createRequire(import.meta.url);
+if (realpathSync(requireFromRuntime.resolve('zod/package.json')) !== realpathSync(requireFromConsumer.resolve('zod/package.json'))) throw new Error('Runtime and consumer resolved different Zod packages.');
+const version = requireFromRuntime('zod/package.json').version;
+if (version !== '${zodVersion}') throw new Error('Pinned Zod was not installed: ' + version);
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const quantitySchema = quantity({ unit: 'm', space: 'linear' }).positive().max(10).describe('Length').default(0.2);
+assert(quantitySchema.parse(undefined) === 0.2 && !quantitySchema.safeParse(0).success, 'Quantity default or refinement changed.');
+const integerQuantity = quantity({ unit: '1', space: 'linear', symbol: 'px' }).int().min(16).max(4096).default(768);
+assert(integerQuantity.parse(undefined) === 768 && !integerQuantity.safeParse(10).success && !integerQuantity.safeParse(17.5).success, 'Integer quantity default or bounds changed.');
+for (const io of ['input', 'output']) {
+  const schema = z.toJSONSchema(quantitySchema, { target: 'draft-7', io });
+  assert(schema['x-tau-unit'] === 'm' && schema['x-tau-space'] === 'linear' && schema.description === 'Length', 'Quantity annotation lost in ' + io + ' JSON schema.');
+  assert(schema.exclusiveMinimum === 0 && schema.maximum === 10 && schema.default === 0.2, 'Quantity constraints changed in ' + io + ' JSON schema.');
+  const wrapped = z.toJSONSchema(z.object({ length: quantitySchema.optional(), values: quantity({ unit: 'm' }).nullable().array() }), { target: 'draft-7', io });
+  assert(wrapped.properties.length['x-tau-unit'] === 'm', 'Optional quantity annotation lost in ' + io + ' JSON schema.');
+  assert(wrapped.properties.values.items.anyOf.some((item) => item['x-tau-unit'] === 'm'), 'Array quantity annotation lost in ' + io + ' JSON schema.');
+  const integerSchema = z.toJSONSchema(integerQuantity, { target: 'draft-7', io });
+  assert(integerSchema.type === 'integer' && integerSchema.minimum === 16 && integerSchema.maximum === 4096 && integerSchema.default === 768, 'Integer quantity JSON schema bounds changed in ' + io + '.');
+  assert(integerSchema['x-tau-unit'] === '1' && integerSchema['x-tau-space'] === 'linear' && integerSchema['x-tau-symbol'] === 'px', 'Integer quantity annotation lost in ' + io + '.');
+}
+const kernel = defineKernel({
+  id: 'zod-floor', name: 'Zod floor', version: '1', extensions: ['ts'],
+  evaluateOptionsSchema: z.object({ required: z.number(), size: z.string().default('2').transform(Number) }),
+  views: {
+    union: { title: 'Union', mimeType: 'image/svg+xml', optionsSchema: z.union([
+      z.object({ mode: z.literal('single'), camera: z.string() }),
+      z.object({ mode: z.literal('batch'), views: z.array(z.string()).nonempty() }),
+    ]) },
+    discriminated: { title: 'Discriminated', mimeType: 'image/svg+xml', optionsSchema: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('a'), a: z.number() }),
+      z.object({ kind: z.literal('b'), b: z.number() }),
+    ]) },
+    required: { title: 'Required', mimeType: 'image/svg+xml', optionsSchema: z.object({ scale: z.number() }) },
+    defaulted: { title: 'Defaulted', mimeType: 'image/svg+xml', optionsSchema: z.object({ viewSize: z.string().default('3').transform(Number) }) },
+    nested: { title: 'Nested', mimeType: 'image/svg+xml', optionsSchema: z.object({ rows: z.tuple([z.object({ known: z.string() })]) }) },
+    loose: { title: 'Loose', mimeType: 'image/svg+xml', optionsSchema: z.looseObject({ known: z.string() }) },
+    schemaless: { title: 'Schemaless', mimeType: 'image/svg+xml' },
+  },
+  exports: { data: { title: 'Data', mimeType: 'application/json', extension: 'json', optionsSchema: z.object({ count: z.number() }) } },
+  async initialize() { return {}; },
+  async resolve({ entryPath }) { return { resolved: [entryPath], unresolved: [] }; },
+  async describe() { return { success: true, data: { parameters: { schema: { $schema: 'https://json-structure.org/meta/extended/v0/#', $id: 'urn:taucad:zod-floor', $uses: ['JSONSchemaUnits'], name: 'ZodFloorParameters', type: 'object' }, defaults: {} } }, issues: [] }; },
+  async evaluate(input) {
+    assert(input.options.required === 1 && input.options.size === 2, 'Evaluate required/default/transform admission changed.');
+    return { handle: {}, views: ['defaulted', 'union', 'discriminated', 'required', 'nested', 'loose', 'schemaless'], exports: ['data'] };
+  },
+  async render(input) {
+    if (input.view === 'defaulted') assert(input.options.viewSize === 3, 'View default/transform admission changed.');
+    if (input.view === 'loose') assert(input.options.extra === true, 'Loose view option was stripped.');
+    return { content: '<svg/>' };
+  },
+  async export(input) {
+    assert(input.options.count === 4, 'Required export option changed.');
+    return { files: [{ name: 'data.json', mimeType: 'application/json', bytes: new Uint8Array([1]) }] };
+  },
+});
+const runtime = defineRuntime({ kernels: [kernel()] });
+const client = createRuntimeClient({ transport: inProcessTransport({ runtime, fileSystem: fromMemoryFs() }) });
+const doc = client.open({ source: { files: { 'main.ts': '' }, entry: 'main.ts' }, evaluateOptions: { required: 1 } });
+const outcome = await doc.evaluation();
+assert(!outcome.superseded && outcome.evaluation.success, 'Zod floor evaluation failed: ' + JSON.stringify(outcome));
+const view = async (id, options, expected) => {
+  const opened = doc.view(id, options === undefined ? undefined : { options });
+  try {
+    const result = await opened.rendering();
+    assert(!result.superseded && result.rendering.success === expected, id + ' admission mismatch: ' + JSON.stringify(result));
+  } finally { opened.close(); }
+};
+try {
+  await view('union', { mode: 'single', camera: 'front' }, true);
+  await view('union', { mode: 'batch', views: ['front'] }, true);
+  await view('union', { mode: 'single', camera: 'front', views: ['stripped'] }, false);
+  await view('discriminated', { kind: 'a', a: 1 }, true);
+  await view('discriminated', { kind: 'b', b: 2 }, true);
+  await view('discriminated', { kind: 'a', a: 1, b: 2 }, false);
+  await view('required', { scale: 1 }, true);
+  await view('required', {}, false);
+  await view('defaulted', {}, true);
+  await view('nested', { rows: [{ known: 'yes' }] }, true);
+  await view('nested', { rows: [{ known: 'yes', extra: true }] }, false);
+  await view('loose', { known: 'yes', extra: true }, true);
+  await view('schemaless', undefined, true);
+  await view('schemaless', { extra: true }, false);
+  const exported = await doc.export('data', { options: { count: 4 } });
+  assert(exported.success, 'Required export option was rejected: ' + JSON.stringify(exported.issues));
+  const missing = await doc.export('data', { options: {} });
+  assert(!missing.success, 'Missing required export option was admitted.');
+} finally { doc.close(); await client.shutdown(); }
+console.log('Installed Zod ${zodVersion} union/discriminated/default/transform/required/strict/loose/schemaless and identity passed.');
+`;
+
+const installedTscircuitSource = `
+import { createRuntimeClient, defineRuntime, fromMemoryFs } from '@taucad/runtime';
+import { inProcessTransport } from '@taucad/runtime/transport/in-process';
+import { esbuild } from '@taucad/esbuild';
+import { tscircuit } from '@taucad/tscircuit';
+
+const source = \`import React from 'react';
+export default () => { const [width] = React.useState('20mm'); return <board width={width} height="20mm">
+  <resistor name="R1" resistance="1k" footprint="0402" pcbX={-4} pcbY={0} />
+  <led name="LED1" color="red" footprint="0603" pcbX={4} pcbY={0} />
+  <trace from=".R1 > .pin2" to=".LED1 > .anode" />
+</board>; };\`;
+const runtime = defineRuntime({ plugins: [esbuild(), tscircuit()] });
+const client = createRuntimeClient({ transport: inProcessTransport({ runtime, fileSystem: fromMemoryFs({}) }) });
+const document = client.open({ source: { files: { 'main.tsx': source } }, watch: false });
+const board = document.view('board');
+const schematic = document.view('schematic');
+try {
+  const evaluated = await document.evaluation();
+  if (evaluated.superseded || !evaluated.evaluation.success) throw new Error('tscircuit evaluation failed: ' + JSON.stringify(evaluated));
+  const glb = await board.rendering();
+  if (glb.superseded || !glb.rendering.success) throw new Error('tscircuit board failed: ' + JSON.stringify(glb));
+  const bytes = glb.rendering.artifact.content;
+  if (!(bytes instanceof Uint8Array) || new TextDecoder().decode(bytes.subarray(0, 4)) !== 'glTF') throw new Error('tscircuit board omitted GLB');
+  const svg = await schematic.rendering();
+  if (svg.superseded || !svg.rendering.success || !String(svg.rendering.artifact.content).includes('<svg')) throw new Error('tscircuit schematic omitted SVG');
+  console.log('tscircuit GLB ' + bytes.byteLength + ' bytes; schematic SVG passed');
+  if (typeof window !== 'undefined') globalThis.document.querySelector('#root').textContent = 'tscircuit GLB and SVG passed';
+} finally {
+  board.close(); schematic.close(); document.close(); await client.shutdown();
+}
+`;
+
+/** Render the installed tscircuit package in Node and an alias-free browser bundle. */
+const runInstalledTscircuit = async (appRoot: string, zodVersion: string): Promise<void> => {
+  const source = join(appRoot, 'tscircuit-render.mjs');
+  const bundle = join(appRoot, 'tscircuit-render.browser.mjs');
+  checkInstalledTypes(appRoot);
+  writeFileSync(join(appRoot, 'tscircuit-zod-floor.mjs'), installedZodFloorSource(zodVersion));
+  run(process.execPath, ['tscircuit-zod-floor.mjs'], appRoot);
+  writeFileSync(source, installedTscircuitSource);
+  run(process.execPath, [source], appRoot);
+  const esbuildRoot = dirname(createRequire(import.meta.url).resolve('esbuild/package.json'));
+  run(
+    join(esbuildRoot, 'bin/esbuild'),
+    [source, '--bundle', '--platform=browser', '--format=esm', '--external:node:*', `--outfile=${bundle}`],
+    appRoot,
+  );
+  const esbuildPackage = createRequire(pathToFileURL(join(appRoot, 'package.json'))).resolve(
+    '@taucad/esbuild/package.json',
+  );
+  const wasmAsset = join(dirname(esbuildPackage), 'dist/vm/wasm/esbuild.wasm');
+  invariant(existsSync(wasmAsset), `Installed esbuild WASM asset is missing: ${wasmAsset}`);
+  await runBrowserModule(
+    bundle,
+    async (page) => {
+      await page.waitForFunction(() => document.querySelector('#root')?.textContent === 'tscircuit GLB and SVG passed');
+    },
+    { '/wasm/esbuild.wasm': wasmAsset },
+  );
+  console.log('Packed tscircuit Node and Chromium GLB/SVG render passed.');
+};
+
 /** Installed-consumer probe: load modules and JSON; resolve and read exported documentation. */
 export const probeSource = `
 import { readFileSync } from 'node:fs';
@@ -603,7 +1127,57 @@ for (const [name, file] of Object.entries(plan.instantiations)) {
 console.log(JSON.stringify(failures));
 `;
 
-const main = async (): Promise<void> => {
+/** Every node of the installed tree that names a package of the run must have come from its pkg.pr.new URL. */
+const assertSiblingsFromPreview = (appRoot: string, published: ReadonlySet<string>): void => {
+  type Node = { readonly resolved?: string; readonly dependencies?: Record<string, Node> };
+  const listing = spawnSync('npm', ['ls', '--json', '--all', '--long'], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  invariant(!listing.error, `Cannot inspect the installed tree: ${listing.error?.message}`);
+  const tree = JSON.parse(listing.stdout) as Node;
+  const strays = new Set<string>();
+  let checked = 0;
+  const walk = (node: Node): void => {
+    for (const [name, child] of Object.entries(node.dependencies ?? {})) {
+      if (published.has(name)) {
+        checked += 1;
+        if (child.resolved?.startsWith(previewUrlPrefix) !== true) {
+          strays.add(`${name} from ${child.resolved ?? 'nowhere'}`);
+        }
+      }
+      walk(child);
+    }
+  };
+  walk(tree);
+  invariant(strays.size === 0, `Siblings installed from outside the preview run:\n${[...strays].join('\n')}`);
+  console.log(`Installed tree: ${String(checked)} sibling node(s), every one from a pkg.pr.new URL of this run.`);
+};
+
+type InstallPlan = {
+  /** Package names to check after the install. */
+  readonly names: readonly string[];
+  /** Arguments to the one `npm install`. */
+  readonly installArguments: readonly string[];
+  /** The packed or downloaded tarballs, one per package. */
+  readonly tarballs: readonly string[];
+  /** Whether npm's `resolved` for a top-level package is the source this mode installed. */
+  readonly installedFromSource: (name: string, resolved: string | undefined) => boolean;
+  readonly sourceLabel: string;
+  readonly bundledLibraryNames: ReadonlySet<string>;
+  /** Packages of a pkg.pr.new run, whose siblings must all come from that run. */
+  readonly previewNames?: ReadonlySet<string>;
+};
+
+/**
+ * The GeoSpec engine project: outside Tau's train (charter D36), so a consumer of the CLI closure
+ * installs without it. `@taucad/host` declares it, and the published `geospec-engine`, as optional peers.
+ */
+const geospecEngineProjects: ReadonlySet<string> = new Set(['geospec-engine']);
+
+/** Pack the requested (or every) publishable directory into TGZs. */
+const planFromTarballs = async (requested: readonly string[], artifactRoot: string): Promise<InstallPlan> => {
   const resolved = await workspace({ fresh: true });
   const projectByName = new Map(publishable(resolved).map((project) => [project.name, project]));
   // The release train, in dependency order, derived from the graph.
@@ -618,20 +1192,172 @@ const main = async (): Promise<void> => {
     publishable(resolved).flatMap((project) => bundledLibraries(resolved, project.name)),
   );
 
-  const requested = process.argv.slice(2);
   // The runtime README quick start imports these plugins, so a subset that packs the runtime must
   // pack them and everything they publishably depend on, or the install 404s against the registry.
-  const quickStartDirectories = requested.includes('packages/runtime')
-    ? publishableClosure(resolved, ['esbuild', 'replicad']).flatMap((name) => {
+  const quickStartDirectories =
+    requested.includes('packages/runtime') && !requested.includes('packages/plugins/tscircuit')
+      ? publishableClosure(resolved, ['esbuild', 'replicad', 'middleware']).flatMap((name) => {
+          const root = projectByName.get(name)?.root;
+          return root === undefined || requested.includes(root) ? [] : [root];
+        })
+      : [];
+  const tscircuitDirectories = requested.includes('packages/plugins/tscircuit')
+    ? publishableClosure(resolved, ['tscircuit', 'esbuild']).flatMap((name) => {
         const root = projectByName.get(name)?.root;
-        return root === undefined || requested.includes(root) ? [] : [root];
+        return root === undefined ? [] : [root];
       })
     : [];
-  const packageDirectories = requested.length > 0 ? [...requested, ...quickStartDirectories] : releaseTrainDirectories;
+  const cliDirectories = requested.includes('packages/cli')
+    ? publishableClosure(resolved, ['cli']).flatMap((name) => {
+        const root = projectByName.get(name)?.root;
+        return root === undefined || geospecEngineProjects.has(name) ? [] : [root];
+      })
+    : [];
+  const packageDirectories =
+    requested.length > 0
+      ? [...new Set([...requested, ...quickStartDirectories, ...tscircuitDirectories, ...cliDirectories])]
+      : releaseTrainDirectories;
+
+  const tarballs: string[] = [];
+  const names: string[] = [];
+  for (const packageDirectory of packageDirectories) {
+    const packageRoot = resolve(repositoryRoot, packageDirectory);
+    names.push((JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as Manifest).name);
+    const destination = join(artifactRoot, basename(packageDirectory));
+    mkdirSync(destination);
+    // `prepack` hooks write to stdout, so the tarball is identified by the (empty, per-package)
+    // destination directory rather than by parsing `pnpm pack --json`.
+    run('pnpm', ['pack', '--pack-destination', destination], packageRoot);
+    const produced = readdirSync(destination).filter((filename) => filename.endsWith('.tgz'));
+    invariant(produced.length === 1, `pnpm pack must create exactly one TGZ for ${packageDirectory}.`);
+    const tarball = resolve(destination, produced[0]!);
+    const tarballBytes = statSync(tarball).size;
+    invariant(tarballBytes > 0, `${packageDirectory} TGZ is empty.`);
+    console.log(`TGZ ${basename(tarball)}: ${tarballBytes} bytes (${(tarballBytes / 1_048_576).toFixed(3)} MiB)`);
+    tarballs.push(tarball);
+  }
+  return {
+    names,
+    // One install for every tarball: npm resolves the sibling `@taucad/*` and `geospec`
+    // specifiers against the local files instead of their stale registry copies.
+    installArguments: tarballs,
+    tarballs,
+    installedFromSource: (_name, resolvedFrom) => resolvedFrom?.startsWith('file:') === true,
+    sourceLabel: 'TGZ resolved from disk',
+    bundledLibraryNames,
+  };
+};
+
+/** Fetch every package of a pkg.pr.new run once to record its size, and install them by URL. */
+const planFromUrls = async (previewFile: string, artifactRoot: string): Promise<InstallPlan> => {
+  const packages = previewPackages(JSON.parse(readFileSync(resolve(previewFile), 'utf8')));
+  const urlByName = new Map(packages.map(({ name, url }) => [name, url]));
+  invariant(urlByName.size === packages.length, 'The preview file lists a package name twice.');
+  const tarballs = packages.map(({ name }) => join(artifactRoot, `${name.replaceAll(/\W/gu, '-')}.tgz`));
+  const sizes = await Promise.all(
+    packages.map(async ({ url }, index) => {
+      const response = await fetch(url);
+      invariant(response.ok, `GET ${url} answered ${String(response.status)} ${response.statusText}.`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      invariant(bytes.byteLength > 0, `${url} served an empty tarball.`);
+      writeFileSync(tarballs[index]!, bytes);
+      return bytes.byteLength;
+    }),
+  );
+  let totalBytes = 0;
+  for (const [index, { url }] of packages.entries()) {
+    const bytes = sizes[index]!;
+    totalBytes += bytes;
+    console.log(`URL ${url}: ${bytes} bytes (${(bytes / 1_048_576).toFixed(3)} MiB)`);
+  }
+  console.log(
+    `Preview run: ${String(packages.length)} packages, ${String(totalBytes)} bytes (${(totalBytes / 1_048_576).toFixed(3)} MiB) in total.`,
+  );
+  return {
+    names: packages.map(({ name }) => name),
+    installArguments: packages.map(({ url }) => url),
+    tarballs,
+    // The URL npm records is the one it fetched; pkg.pr.new may serve a sibling under its long or compact form.
+    installedFromSource: (_name, resolvedFrom) => resolvedFrom?.startsWith(previewUrlPrefix) === true,
+    sourceLabel: 'pkg.pr.new URL(s) installed, no registry copies',
+    // The run's own manifests carry the publish shape; the bundled-library list needs the workspace graph.
+    bundledLibraryNames: new Set(),
+    previewNames: new Set(urlByName.keys()),
+  };
+};
+
+/** Check each installed package's manifest, files and assets, and plan its import probes. */
+const verifyInstalledPackages = (
+  appRoot: string,
+  plan: InstallPlan,
+): {
+  specifiers: string[];
+  instantiations: Record<string, string>;
+  failureContext: Map<string, readonly string[]>;
+  assetUrls: number;
+} => {
+  const dependencyTree = JSON.parse(run('npm', ['ls', '--json', '--depth=0'], appRoot)) as {
+    dependencies?: Record<string, { version?: string; resolved?: string }>;
+  };
+  const specifiers: string[] = [];
+  const instantiations: Record<string, string> = {};
+  const failureContext = new Map<string, readonly string[]>();
+  let assetUrls = 0;
+  for (const name of plan.names) {
+    const installedRoot = join(appRoot, 'node_modules', name);
+    const installed = JSON.parse(readFileSync(join(installedRoot, 'package.json'), 'utf8')) as Manifest;
+
+    const violations = [
+      ...manifestViolations(installed, plan.bundledLibraryNames),
+      ...(plan.previewNames === undefined ? [] : unrewrittenSiblings(installed, plan.previewNames)),
+    ];
+    invariant(violations.length === 0, violations.join('\n'));
+
+    for (const required of requiredArtifactPaths(installed)) {
+      invariant(
+        existsSync(join(installedRoot, required)),
+        `${installed.name} ships a manifest path that the installed tree lacks: ${required}`,
+      );
+    }
+
+    assetUrls += assertAssetUrlsResolve(installedRoot, installed.name);
+
+    const resolvedFrom = dependencyTree.dependencies?.[installed.name];
+    invariant(
+      resolvedFrom?.version === installed.version && plan.installedFromSource(name, resolvedFrom.resolved),
+      `${installed.name} did not resolve from its ${plan.sourceLabel}: ${JSON.stringify(resolvedFrom)}`,
+    );
+
+    const peerDependencies = Object.keys(installed.peerDependencies ?? {});
+    for (const specifier of importableSpecifiers(installed)) {
+      specifiers.push(specifier);
+      failureContext.set(specifier, peerDependencies);
+    }
+    const probe = instantiationProbes[installed.name];
+    if (probe !== undefined) {
+      const file = `./instantiate-${installed.name.replaceAll(/\W/gu, '-')}.mjs`;
+      writeFileSync(join(appRoot, file), probe);
+      instantiations[installed.name] = file;
+      failureContext.set(`${installed.name} (instantiate)`, peerDependencies);
+    }
+  }
+  return { specifiers, instantiations, failureContext, assetUrls };
+};
+
+const main = async (): Promise<void> => {
+  const arguments_ = process.argv.slice(2);
+  const fromUrlsIndex = arguments_.indexOf('--from-urls');
+  const previewFile = fromUrlsIndex === -1 ? undefined : arguments_[fromUrlsIndex + 1];
+  invariant(
+    fromUrlsIndex === -1 || (previewFile !== undefined && arguments_.length === 2),
+    'Usage: check-pack-install.ts --from-urls <preview.json> (no package directories with it).',
+  );
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'tau-npm-local-'));
   const artifactRoot = join(temporaryRoot, 'artifact');
   const appRoot = join(temporaryRoot, 'app');
   let passed = false;
+  const runStarted = performance.now();
+  const elapsed = (): string => `${(Math.round(performance.now() - runStarted) / 1000).toFixed(1)} s`;
 
   mkdirSync(artifactRoot);
   mkdirSync(appRoot);
@@ -640,90 +1366,55 @@ const main = async (): Promise<void> => {
     console.log(`npm: ${run('npm', ['--version'], appRoot).trim()}`);
     console.log(`Platform: ${process.platform}/${process.arch}`);
 
-    const tarballs: string[] = [];
-    for (const packageDirectory of packageDirectories) {
-      const packageRoot = resolve(repositoryRoot, packageDirectory);
-      const destination = join(artifactRoot, basename(packageDirectory));
-      mkdirSync(destination);
-      // `prepack` hooks write to stdout, so the tarball is identified by the (empty, per-package)
-      // destination directory rather than by parsing `pnpm pack --json`.
-      run('pnpm', ['pack', '--pack-destination', destination], packageRoot);
-      const produced = readdirSync(destination).filter((filename) => filename.endsWith('.tgz'));
-      invariant(produced.length === 1, `pnpm pack must create exactly one TGZ for ${packageDirectory}.`);
-      const tarball = resolve(destination, produced[0]!);
-      const tarballBytes = statSync(tarball).size;
-      invariant(tarballBytes > 0, `${packageDirectory} TGZ is empty.`);
-      console.log(`TGZ ${basename(tarball)}: ${tarballBytes} bytes (${(tarballBytes / 1_048_576).toFixed(3)} MiB)`);
-      tarballs.push(tarball);
-    }
+    const plan =
+      previewFile === undefined
+        ? await planFromTarballs(arguments_, artifactRoot)
+        : await planFromUrls(previewFile, artifactRoot);
+    console.log(`Elapsed after ${previewFile === undefined ? 'packing' : 'downloading'}: ${elapsed()}.`);
 
     // The app declares zod itself, the way a consumer satisfying the plugin peer
     // does; `assertSingleZodInstance` then proves npm did not fork it.
+    const zod = consumerZodVersion(plan.tarballs.map((tarball) => tarballManifest(readFileSync(tarball))));
+    if (zod.raisedBy.length > 0) {
+      console.log(
+        `zod: pinned ${zod.version}, not the declared floor ${declaredZodFloor}, for ${zod.raisedBy.join(', ')}.`,
+      );
+    }
     writeFileSync(
       join(appRoot, 'package.json'),
       JSON.stringify(
         {
           private: true,
           type: 'module',
-          dependencies: { react: '19.2.7', 'react-dom': '19.2.7', zod: '^4.0.0' },
+          dependencies: {
+            react: '19.2.7',
+            'react-dom': '19.2.7',
+            zod: zod.version,
+            ...(plan.names.includes('@taucad/middleware') ? { xstate: '6.0.0-alpha.59' } : {}),
+            // `@taucad/viewer` peers `@xstate/react@^7.0.0-alpha.3`, whose newest alpha (alpha.4) requires
+            // xstate ^6.0.0-alpha.61, so a consumer on the xstate Tau tests pins the release Tau tests.
+            ...(plan.names.includes('@taucad/viewer') ? { '@xstate/react': '7.0.0-alpha.3' } : {}),
+          },
         },
         undefined,
         2,
       ),
     );
-    // One install for every tarball: npm resolves the sibling `@taucad/*` and `geospec`
-    // specifiers against the local files instead of their stale registry copies.
-    run('npm', ['install', '--no-save', '--no-audit', '--no-fund', ...tarballs], appRoot);
-
-    const dependencyTree = JSON.parse(run('npm', ['ls', '--json', '--depth=0'], appRoot)) as {
-      dependencies?: Record<string, { version?: string; resolved?: string }>;
-    };
+    // The install saves what it adds to the temporary app: npm 11 reports unsaved packages as
+    // extraneous, which `npm ls` (and so every tree check below) counts as a problem.
+    run('npm', ['install', '--no-audit', '--no-fund', ...plan.installArguments], appRoot);
+    console.log(`Elapsed after npm install: ${elapsed()}.`);
 
     assertSingleZodInstance(appRoot);
-
-    const specifiers: string[] = [];
-    const instantiations: Record<string, string> = {};
-    const failureContext = new Map<string, readonly string[]>();
-    let assetUrls = 0;
-    for (const packageDirectory of packageDirectories) {
-      const sourceManifest = JSON.parse(
-        readFileSync(resolve(repositoryRoot, packageDirectory, 'package.json'), 'utf8'),
-      ) as Manifest;
-      const installedRoot = join(appRoot, 'node_modules', sourceManifest.name);
-      const installed = JSON.parse(readFileSync(join(installedRoot, 'package.json'), 'utf8')) as Manifest;
-
-      const violations = manifestViolations(installed, bundledLibraryNames);
-      invariant(violations.length === 0, violations.join('\n'));
-
-      for (const required of requiredArtifactPaths(installed)) {
-        invariant(
-          existsSync(join(installedRoot, required)),
-          `${installed.name} ships a manifest path that the installed tree lacks: ${required}`,
-        );
-      }
-
-      assetUrls += assertAssetUrlsResolve(installedRoot, installed.name);
-
-      const resolvedFrom = dependencyTree.dependencies?.[installed.name];
-      invariant(
-        resolvedFrom?.version === installed.version && resolvedFrom.resolved?.startsWith('file:') === true,
-        `${installed.name} did not resolve from its local TGZ: ${JSON.stringify(resolvedFrom)}`,
-      );
-
-      const peerDependencies = Object.keys(installed.peerDependencies ?? {});
-      for (const specifier of importableSpecifiers(installed)) {
-        specifiers.push(specifier);
-        failureContext.set(specifier, peerDependencies);
-      }
-      const probe = instantiationProbes[installed.name];
-      if (probe !== undefined) {
-        const file = `./instantiate-${installed.name.replaceAll(/\W/gu, '-')}.mjs`;
-        writeFileSync(join(appRoot, file), probe);
-        instantiations[installed.name] = file;
-        failureContext.set(`${installed.name} (instantiate)`, peerDependencies);
-      }
+    if (plan.names.includes('@taucad/tscircuit')) {
+      assertTscircuitInstallShape(appRoot);
     }
-    console.log(`npm install: ${packageDirectories.length} TGZ resolved from disk, no registry copies.`);
+    if (plan.previewNames !== undefined) {
+      assertSiblingsFromPreview(appRoot, plan.previewNames);
+    }
+
+    const { specifiers, instantiations, failureContext, assetUrls } = verifyInstalledPackages(appRoot, plan);
+    console.log(`npm install: ${String(plan.names.length)} ${plan.sourceLabel}.`);
     console.log(`Asset URLs: ${String(assetUrls)} relative or exported package reference(s) resolve after install.`);
 
     writeFileSync(join(appRoot, 'probe-plan.json'), JSON.stringify({ specifiers, instantiations }));
@@ -745,15 +1436,29 @@ const main = async (): Promise<void> => {
       `Imported ${String(specifiers.length)} published subpaths and instantiated ${String(Object.keys(instantiations).length)} native payload(s).`,
     );
 
+    // The tscircuit checks compile a consumer that also imports `@taucad/react`, which the CLI closure lacks.
+    if (
+      existsSync(join(appRoot, 'node_modules/@taucad/tscircuit')) &&
+      existsSync(join(appRoot, 'node_modules/@taucad/react'))
+    ) {
+      await runInstalledTscircuit(appRoot, zod.version);
+    }
     const runtimeRoot = join(appRoot, 'node_modules/@taucad/runtime');
     if (existsSync(runtimeRoot)) {
-      runRuntimeQuickStart(appRoot, runtimeRoot);
-      await runRuntimeParameterOperation(appRoot);
+      if (existsSync(join(appRoot, 'node_modules/@taucad/replicad'))) {
+        runRuntimeQuickStart(appRoot, runtimeRoot);
+      }
+      if (existsSync(join(appRoot, 'node_modules/@taucad/middleware'))) {
+        await runRuntimeParameterOperation(appRoot);
+      }
       if (existsSync(join(appRoot, 'node_modules/@taucad/react'))) {
         await runInstalledReactRuntime(appRoot);
       }
     }
-    console.log('npm-local TGZ install and published-surface smoke passed.');
+    if (existsSync(join(appRoot, 'node_modules/@taucad/cli'))) {
+      await runCliSurface(temporaryRoot, appRoot);
+    }
+    console.log(`npm-local install (${plan.sourceLabel}) and published-surface smoke passed in ${elapsed()}.`);
     passed = true;
   } finally {
     if (passed) {

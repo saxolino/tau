@@ -1,12 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import {
-  mobilePanelIds,
-  defaultPanelState,
-  defaultRenderTimeout,
-  defaultGraphicsSettings,
-  omitEmptyComponentDisplayState,
-} from '#constants/editor.constants.js';
-import type { PersistedModelComponentDisplayState } from '#constants/editor.constants.js';
+import { mobilePanelIds, defaultPanelState, defaultOperationTimeout } from '#constants/editor.constants.js';
+import { defaultGraphicsSettings, omitEmptyComponentDisplayState } from '@taucad/viewer/graphics/graphics-settings';
+import type { PersistedModelComponentDisplayState } from '@taucad/viewer/graphics/graphics-settings';
 
 describe('editor device defaults', () => {
   it('keeps desktop lanes separate from mobile navigation and seeds new graphics owners', () => {
@@ -28,7 +23,7 @@ describe('editor device defaults', () => {
       workbenchWidth: 420,
       compactAuxiliary: 'chat',
     });
-    expect(defaultRenderTimeout).toBe(180_000);
+    expect(defaultOperationTimeout).toBe(180_000);
     expect(defaultGraphicsSettings.graphicsBackend).toBe('webgl');
   });
 

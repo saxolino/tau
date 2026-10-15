@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Stripe wire fixtures use provider field names. */
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import StripeClient from 'stripe';
 import type { Stripe } from 'stripe';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   stripeApiVersion,
   cancelStripePaymentIntent,
@@ -19,12 +20,14 @@ import {
   fetchStripeCheckoutSource,
   fetchStripeInvoiceEvidence,
   isLoopbackBillingStripeClient,
+  isStripeSubscriptionEnding,
   parseStripeCreateLeg,
   parseVerifiedStripeEvent,
   recoverStripeLegSource,
   retrieveStripePaymentEvidence,
   retrieveStripeSetupEvidence,
   retrieveStripeSubscriptionSchedule,
+  stripeCustomerContact,
   updateStripeSubscriptionScheduleOnce,
 } from '#api/billing/billing-stripe.js';
 
@@ -78,6 +81,101 @@ async function createFixture(
 }
 
 describe('billing Stripe transport', () => {
+  it('should retain the pinned API version and persisted idempotency key on the wire', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'cus_contract', object: 'customer' }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    try {
+      const stripe = createBillingStripeClient({ secretKey: 'sk_test_fixture' });
+      const customer = await stripe.customers.create(
+        { name: 'Contract fixture' },
+        { idempotencyKey: 'tau:leg_contract' },
+      );
+
+      expect(customer.id).toBe('cus_contract');
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [url, init] = fetchSpy.mock.calls[0] ?? [];
+      expect(url).toBe('https://api.stripe.com/v1/customers');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('stripe-version')).toBe('2026-07-29.dahlia');
+      expect(headers.get('idempotency-key')).toBe('tau:leg_contract');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it.each(['@attacker.invalid/v1/customers', '.attacker.invalid/v1/customers', '//attacker.invalid/v1/customers'])(
+    'should reject unsafe request path %s before sending credentials',
+    async (path) => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected network request'));
+      try {
+        const stripe = createBillingStripeClient({ secretKey: 'sk_test_fixture' });
+        await expect(stripe.rawRequest('GET', path)).rejects.toThrow(
+          new Error(`Request path must be a string beginning with a single "/", got: ${JSON.stringify(path)}`),
+        );
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
+
+  it('should reject a webhook signed with an empty secret', () => {
+    const stripe = createBillingStripeClient({ secretKey: 'sk_test_fixture' });
+    const payload = JSON.stringify({
+      id: 'evt_empty_secret',
+      object: 'event',
+      api_version: stripeApiVersion,
+      created: 1,
+      livemode: false,
+      type: 'payment_intent.succeeded',
+      data: { object: { id: 'pi_empty_secret', object: 'payment_intent' } },
+    });
+    const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: '' });
+    const parse = () =>
+      parseVerifiedStripeEvent(stripe, {
+        rawBody: new TextEncoder().encode(payload),
+        signature,
+        secret: '',
+        livemode: false,
+      });
+
+    expect(parse).toThrow(StripeClient.errors.StripeSignatureVerificationError);
+    expect(parse).toThrow('No webhook secret value was provided');
+  });
+
+  it('should keep caller-supplied file metadata from injecting multipart headers', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'file_fixture', object: 'file' }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    try {
+      const stripe = createBillingStripeClient({ secretKey: 'sk_test_fixture' });
+      const file = await stripe.files.create({
+        purpose: 'dispute_evidence',
+        file: {
+          data: Buffer.from('fixture bytes'),
+          name: 'evidence.txt\r\nX-Injected: filename',
+          type: 'text/plain\r\nX-Injected: content-type',
+        },
+      });
+
+      expect(file.id).toBe('file_fixture');
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [, init] = fetchSpy.mock.calls[0] ?? [];
+      const body = await new Response(init?.body).text();
+      expect(body).toContain('fixture bytes');
+      expect(body).toContain('filename="evidence.txt X-Injected: filename"');
+      expect(body).toContain('Content-Type: text/plain X-Injected: content-type');
+      expect(body).not.toContain('\r\nX-Injected:');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('rejects non-loopback fixture origins', () => {
     expect(() =>
       createBillingStripeClient({ secretKey: 'sk_test_fixture', fixtureUrl: 'https://stripe.example/' }),
@@ -279,6 +377,45 @@ describe('billing Stripe transport', () => {
       ),
     ).rejects.toThrow('metadata');
     expect(fixture.requests).toHaveLength(1);
+  });
+
+  it('dispatches a Customer with its owner contact and refuses any other contact field', async () => {
+    const fixture = await createFixture({
+      '/v1/customers': { id: 'cus_1', object: 'customer', livemode: false, metadata: {} },
+    });
+    const leg = {
+      kind: 'customer',
+      idempotencyKey: 'tau:leg_customer',
+      request: {
+        email: 'owner@example.com',
+        name: 'Ada Owner',
+        metadata: { tau_account_id: 'account_1', tau_customer_binding_id: 'binding_1' },
+      },
+    } as const;
+
+    await expect(dispatchStripeLegOnce(fixture.stripe, parseStripeCreateLeg(leg))).resolves.toMatchObject({
+      kind: 'customer',
+      object: { id: 'cus_1' },
+    });
+
+    expect(() => parseStripeCreateLeg({ ...leg, request: { ...leg.request, phone: '+6421000000' } })).toThrow();
+    // A leg persisted before Customers carried a contact still replays.
+    expect(parseStripeCreateLeg({ ...leg, request: { metadata: leg.request.metadata } })).toMatchObject({
+      kind: 'customer',
+    });
+    expect(fixture.requests).toStrictEqual(['POST /v1/customers']);
+  });
+
+  it('gives a Customer the trimmed owner contact and leaves out what Stripe would refuse', () => {
+    expect(stripeCustomerContact({ email: ' owner@example.com ', name: ' Ada Owner ' })).toStrictEqual({
+      email: 'owner@example.com',
+      name: 'Ada Owner',
+    });
+    expect(stripeCustomerContact({ email: 'owner@example.com', name: '  ' })).toStrictEqual({
+      email: 'owner@example.com',
+    });
+    expect(stripeCustomerContact({ email: `${'a'.repeat(501)}@example.com`, name: 'n'.repeat(257) })).toStrictEqual({});
+    expect(stripeCustomerContact(undefined)).toStrictEqual({});
   });
 
   it('parses persisted create JSON without a type assertion', () => {
@@ -654,5 +791,17 @@ describe('billing Stripe transport', () => {
     };
     expect(parse({ pending_webhooks: 1 })).toBe(parse({ pending_webhooks: 3 }));
     expect(parse({ data: { object: { id: 'pi_1', object: 'payment_intent', amount: 1 } } })).not.toBe(parse({}));
+  });
+});
+
+describe('isStripeSubscriptionEnding', () => {
+  /* The Customer Portal schedules a cancellation on a flexible-mode subscription as `cancel_at` alone, with
+   * `cancel_at_period_end` left false (staging, 2026-10-09, PR-04); classic mode sets both. */
+  it.each([
+    ['a flexible-mode portal cancellation', { cancel_at_period_end: false, cancel_at: 1_794_238_881 }, true],
+    ['a classic period-end cancellation', { cancel_at_period_end: true, cancel_at: 1_794_238_881 }, true],
+    ['a renewing subscription', { cancel_at_period_end: false, cancel_at: null }, false],
+  ])('reads %s', (_name, subscription, ending) => {
+    expect(isStripeSubscriptionEnding(subscription)).toBe(ending);
   });
 });

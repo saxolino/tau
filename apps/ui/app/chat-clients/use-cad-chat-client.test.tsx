@@ -11,6 +11,7 @@ import { useActiveChatSession } from '#hooks/active-chat-provider.js';
 import type { ActiveChatSessionContextValue } from '#hooks/active-chat-provider.js';
 import { useChatSessionStore } from '#hooks/chat-session-store-provider.js';
 import type { ChatSessionStore } from '#services/chat-session-store.js';
+import type { ChatMessageQueueIntent } from '#db/chat-message-queue-store.js';
 import type { AgentHostClientOptions, AgentHostClient } from '#services/agent-host-client.js';
 import type * as AgentHostClientModule from '#services/agent-host-client.js';
 import { useCadChatClient } from '#chat-clients/use-cad-chat-client.js';
@@ -31,6 +32,7 @@ const browserHostHarness = vi.hoisted(() => ({
   resumable: false,
   /** The run the host last named for this chat when no stream of this page publishes one (a daemon-placed chat). */
   hostRunId: undefined as string | undefined,
+  projectedFailure: undefined as { code: string; message: string } | undefined,
   runKind: 'tau' as 'tau' | 'external',
   createClient: vi.fn((_options: AgentHostClientOptions): AgentHostClient => {
     const client = Object.create(null) as AgentHostClient;
@@ -93,6 +95,7 @@ vi.mock('#hooks/use-chat.js', () => ({
 vi.mock('#hooks/active-chat-provider.js', () => ({
   useActiveChatSession: vi.fn(),
   useChatComposer: () => ({
+    execution: { setActiveExecution: () => undefined },
     model: {
       model: {
         id: 'openai-gpt-5.5',
@@ -112,6 +115,7 @@ vi.mock('#hooks/chat-session-store-provider.js', () => ({
 }));
 vi.mock('#hooks/use-models.js', () => ({
   useModels: () => ({
+    ensureModelCatalog: async () => ({ status: 'loaded', models: [] }),
     defaultExecution: { kind: 'tau', model: 'openai-gpt-5.5' },
     resolveModel: (id: string) => {
       /* What the real hook answers while the catalog cannot load: no row, so no provider. */
@@ -218,6 +222,8 @@ vi.mock('#providers/chat-workspace-authority-provider.js', () => ({
 vi.mock('#hooks/use-revision-status.js', () => ({
   useRevisionClient: () => (revisionRoot.connected ? {} : undefined),
 }));
+/* ChatTurnHost reads the usage-metrics preference through react-query; this scope has no query client. */
+vi.mock('#hooks/use-privacy-preferences.js', () => ({ usePrivacyPreferences: () => ({ preferences: undefined }) }));
 
 const toastHarness = vi.hoisted(() => ({ error: vi.fn() }));
 vi.mock('sonner', () => ({ toast: toastHarness }));
@@ -285,8 +291,11 @@ const requestTurn = async (gesture: ChatTurnGesture): Promise<void> => {
 };
 
 const buildActions = (): ActionsMock => ({
-  sendMessage: vi.fn(async (message: MyUIMessage, options?: { attachments?: readonly StoredAttachmentRef[] }) =>
-    requestTurn({ kind: 'send', message, ...options }),
+  sendMessage: vi.fn(
+    async (
+      message: MyUIMessage,
+      options?: { attachments?: readonly StoredAttachmentRef[]; execution?: CadAgentExecution },
+    ) => requestTurn({ kind: 'send', message, ...options }),
   ),
   regenerate: vi.fn(async () => requestTurn({ kind: 'regenerate' })),
   editMessage: vi.fn(
@@ -324,6 +333,8 @@ const installSessionStore = (partial: Partial<ChatSessionStore>): void => {
   vi.mocked(useChatSessionStore).mockReturnValue({
     requestTurn: vi.fn(),
     startPendingSeed: vi.fn(),
+    refreshMessageQueue: vi.fn(),
+    captureMessageQueueIntent: vi.fn(() => ({})),
     setTurnPlacement: vi.fn(),
     respondToProjectedApproval: browserHostHarness.resolveInterrupt,
     getProjection: () => {
@@ -336,7 +347,9 @@ const installSessionStore = (partial: Partial<ChatSessionStore>): void => {
           position: { cursor: 1 },
           currentRunId: runId,
           runs: {
-            [runId]: { lifecycle: browserHostHarness.run?.state ?? 'paused' },
+            [runId]: browserHostHarness.projectedFailure
+              ? { lifecycle: 'failed', failure: browserHostHarness.projectedFailure }
+              : { lifecycle: browserHostHarness.run?.state ?? 'paused' },
           },
         },
         endCursor: 1,
@@ -388,6 +401,7 @@ beforeEach(() => {
   browserHostHarness.placed = false;
   browserHostHarness.resumable = false;
   browserHostHarness.hostRunId = undefined;
+  browserHostHarness.projectedFailure = undefined;
   browserHostHarness.runKind = 'tau';
   availabilityHarness.gate = undefined;
   revisionRoot.connected = true;
@@ -776,6 +790,91 @@ describe('useCadChatClient', () => {
     });
   });
 
+  it.each(['stopped', 'failed'])(
+    'should retain pre-%s queue intent while attachment promotion is pending',
+    async (terminal) => {
+      useActiveChatInstanceMock.mockReturnValue(mock<Chat<MyUIMessage>>());
+      useChatSelectorMock.mockReturnValue('streaming');
+      const actions = buildActions();
+      installActions(actions);
+      let intent: ChatMessageQueueIntent = {};
+      const captureMessageQueueIntent = vi.fn(() => intent);
+      installSessionStore({ captureMessageQueueIntent, promoteDraftAttachments });
+      const saved = Promise.withResolvers<void>();
+      promoteDraftAttachments.mockImplementation(async () => saved.promise);
+      const view = renderClient();
+      let sending: Promise<void> | undefined;
+      act(() => {
+        sending = view.result.current.submit({ text: 'Wait for the current turn', attachments: [imageAttachment] });
+      });
+      expect(actions.sendMessage).not.toHaveBeenCalled();
+      intent = { afterTerminalRunId: `run-${terminal}` };
+      useChatSelectorMock.mockReturnValue('ready');
+      view.rerender();
+      await act(async () => {
+        saved.resolve();
+        await sending;
+      });
+      expect(actions.sendMessage).toHaveBeenCalledOnce();
+      expect(actions.sendMessage.mock.calls[0]?.[1]).toHaveProperty('queueIntent', {});
+      expect(captureMessageQueueIntent).toHaveBeenCalledExactlyOnceWith('chat_test');
+      expect(captureMessageQueueIntent.mock.invocationCallOrder[0]).toBeLessThan(
+        promoteDraftAttachments.mock.invocationCallOrder[0]!,
+      );
+    },
+  );
+
+  it('should retain the exact terminal intent captured before attachment promotion', async () => {
+    useActiveChatInstanceMock.mockReturnValue(mock<Chat<MyUIMessage>>());
+    const actions = buildActions();
+    installActions(actions);
+    let intent: ChatMessageQueueIntent = { afterTerminalRunId: 'run-stopped' };
+    const captureMessageQueueIntent = vi.fn(() => intent);
+    installSessionStore({ captureMessageQueueIntent, promoteDraftAttachments });
+    const saved = Promise.withResolvers<void>();
+    promoteDraftAttachments.mockImplementation(async () => saved.promise);
+    const view = renderClient();
+    let sending: Promise<void> | undefined;
+    act(() => {
+      sending = view.result.current.submit({ text: 'Continue after Stop', attachments: [imageAttachment] });
+    });
+    intent = { afterTerminalRunId: 'another-run' };
+    await act(async () => {
+      saved.resolve();
+      await sending;
+    });
+    expect(actions.sendMessage.mock.calls[0]?.[1]).toMatchObject({
+      queueIntent: { afterTerminalRunId: 'run-stopped' },
+    });
+    expect(captureMessageQueueIntent).toHaveBeenCalledExactlyOnceWith('chat_test');
+    expect(captureMessageQueueIntent.mock.invocationCallOrder[0]).toBeLessThan(
+      promoteDraftAttachments.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('should capture the selected execution before an attachment save yields', async () => {
+    useActiveChatInstanceMock.mockReturnValue(mock<Chat<MyUIMessage>>());
+    const selected = buildAgent();
+    mountAgentMock(selected);
+    const actions = buildActions();
+    installActions(actions);
+    const saved = Promise.withResolvers<void>();
+    promoteDraftAttachments.mockImplementation(async () => saved.promise);
+    const view = renderClient();
+    let sending: Promise<void> | undefined;
+    act(() => {
+      sending = view.result.current.submit({ text: 'Keep this model', attachments: [imageAttachment] });
+    });
+    const changed = { ...selected, execution: { ...selected.execution, model: 'different-model' } };
+    mountAgentMock(changed);
+    view.rerender();
+    await act(async () => {
+      saved.resolve();
+      await sending;
+    });
+    expect(actions.sendMessage.mock.calls[0]?.[1]).toMatchObject({ execution: selected.execution });
+  });
+
   it('should admit one Start command when submit hands over the user message', async () => {
     const chat = mock<Chat<MyUIMessage>>();
     useActiveChatInstanceMock.mockReturnValue(chat);
@@ -882,22 +981,6 @@ describe('useCadChatClient', () => {
    * turn until it settles", "should queue a turn requested while finishing").
    */
 
-  it('should still allow stop while a request is in flight', () => {
-    const chat = mock<Chat<MyUIMessage>>();
-    useActiveChatInstanceMock.mockReturnValue(chat);
-    useChatSelectorMock.mockReturnValue('streaming');
-    const actions = buildActions();
-    installActions(actions);
-
-    const { result } = renderClient();
-
-    act(() => {
-      result.current.stop();
-    });
-
-    expect(actions.stop).toHaveBeenCalledTimes(1);
-  });
-
   it('should call actions.editMessage with the rebuilt content, and admit its own turn, when edit fires', async () => {
     const chat = mock<Chat<MyUIMessage>>();
     /* An edit rewinds to a message the transcript holds: `turnIntentOf` refuses
@@ -930,21 +1013,6 @@ describe('useCadChatClient', () => {
       attachments: [imageAttachment],
       command: { type: 'start', payload: { trigger: 'edit', message: { id: 'msg_99' } } },
     });
-  });
-
-  it('should call actions.stop when stop fires', () => {
-    const chat = mock<Chat<MyUIMessage>>();
-    useActiveChatInstanceMock.mockReturnValue(chat);
-    const actions = buildActions();
-    installActions(actions);
-
-    const { result } = renderClient();
-
-    act(() => {
-      result.current.stop();
-    });
-
-    expect(actions.stop).toHaveBeenCalledTimes(1);
   });
 
   it('should expose messages and error from the bound chat instance, and status from useChatSelector', () => {
@@ -1067,7 +1135,7 @@ describe('useCadChatClient', () => {
   });
 
   /* Resume never changes kind into a replay after its gesture was taken. */
-  it('refuses Resume without a projected paused run and resumes that run once observed', async () => {
+  it('refuses Resume for a projected paused run and resumes its failed run once observed', async () => {
     const chat = mock<Chat<MyUIMessage>>();
     /* One user message, because a continuation leases it: a transcript with
      * none has no turn to continue and `turnIntentOf` refuses it (W10-B). */
@@ -1078,10 +1146,10 @@ describe('useCadChatClient', () => {
 
     browserHostHarness.placed = true;
     browserHostHarness.resumable = false;
+    browserHostHarness.run = { runId: 'run_live', state: 'paused' };
     await expect(composeTurn({ kind: 'continue' })).rejects.toThrow('This turn cannot be resumed.');
 
-    browserHostHarness.resumable = true;
-    browserHostHarness.run = { runId: 'run_live' };
+    browserHostHarness.projectedFailure = { code: 'RUN_ABANDONED', message: 'The host closed.' };
     await expect(composeTurn({ kind: 'continue' })).resolves.toMatchObject({
       runId: 'run_live',
       request: { kind: 'continue' },
@@ -1089,7 +1157,6 @@ describe('useCadChatClient', () => {
 
     // A placement with no browser host answers its own resume over the wire.
     browserHostHarness.placed = false;
-    browserHostHarness.resumable = false;
     await expect(composeTurn({ kind: 'continue' })).resolves.toMatchObject({ request: { kind: 'continue' } });
   });
 
@@ -1111,8 +1178,8 @@ describe('useCadChatClient', () => {
     renderClient();
 
     browserHostHarness.placed = true;
-    browserHostHarness.resumable = true;
     browserHostHarness.run = { runId: 'run_live' };
+    browserHostHarness.projectedFailure = { code: 'RUN_ABANDONED', message: 'The host closed.' };
 
     await expect(composeTurn({ kind: 'continue' })).resolves.toMatchObject({
       runId: 'run_live',

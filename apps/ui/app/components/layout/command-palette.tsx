@@ -6,10 +6,10 @@ import { Fragment } from 'react/jsx-runtime';
 import { useNavigate } from 'react-router';
 import { Button } from '@taucad/ui/components/button';
 import { CommandDialog, CommandInput, CommandList, CommandEmpty, CommandItem } from '@taucad/ui/components/command';
-import { useKeybinding } from '#hooks/use-keyboard.js';
-import { KeyShortcut } from '#components/ui/key-shortcut.js';
-import type { KeyCombination } from '#utils/keys.utils.js';
-import { ComboBoxResponsive } from '#components/ui/combobox-responsive.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
+import type { KeyCombination } from '@taucad/ui/utils/keys';
+import { ComboBoxResponsive } from '@taucad/ui/components/combobox-responsive';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { menuGroupHeadingClass, menuItemLayoutClass } from '@taucad/ui/components/menu.variants';
 import { cn } from '@taucad/ui/utils/cn';
@@ -77,6 +77,24 @@ export type CommandPaletteItem = {
   link?: string;
   visible?: boolean;
 };
+
+/**
+ * The 80 × 60 frame for a project or example image in a search result: the whole 4:3 thumbnail,
+ * or `fallback` while there is none.
+ */
+export function CommandPaletteThumbnail({
+  src,
+  fallback,
+}: {
+  readonly src?: string;
+  readonly fallback?: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <span className='flex h-15 w-20 items-center justify-center overflow-hidden rounded-xs bg-muted ring-1 ring-border'>
+      {src ? <img src={src} alt='' className='size-full object-contain' /> : fallback}
+    </span>
+  );
+}
 
 function CommandPaletteItemLabel({ item }: { readonly item: CommandPaletteItem }): React.JSX.Element {
   return (
@@ -156,7 +174,8 @@ function CommandPaletteResults({ items, onRun }: CommandPaletteResultsProperties
     getScrollElement: () => listRef.current,
     estimateSize: (index) => {
       const row = rows[index];
-      return row?.kind === 'item' ? (row.item.detail ? 46 : 30) : 24;
+      // Detailed rows are projects and examples, which lead with a 60 px tall thumbnail.
+      return row?.kind === 'item' ? (row.item.detail ? 68 : 30) : 24;
     },
     getItemKey: (index) => rows[index]?.key ?? index,
     overscan: 8,

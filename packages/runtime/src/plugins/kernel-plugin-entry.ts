@@ -12,33 +12,45 @@
  * @public
  */
 
-export { defineKernel } from '#types/runtime-kernel.types.js';
+export { defineKernelV2 as defineKernel, nonemptyExportFiles } from '#types/runtime-kernel-v2.types.js';
 export type {
-  AnyKernelDefinition,
-  CreateGeometryInput,
-  CreateGeometryOutput,
-  ExportGeometryInput,
-  GetDependenciesInput,
-  GetParametersInput,
-  InitializeInput,
-  KernelDefinition,
+  Artifact,
+  DescribeInput,
+  DescribeResult,
+  EvaluateInput,
+  EvaluateOutput,
+  EvaluateResult,
+  ExportDeclaration,
+  KernelDefinitionV2 as KernelDefinition,
+  KernelFactoryV2 as KernelPluginFactory,
+  KernelServices,
+  RenderInput,
+  RenderOutput,
+  RenderResult,
+  ResolveInput,
+  ResolveOutput,
+  ViewDeclaration,
+  ViewInstance,
+  ExportInput,
+  ExportOutput,
+  KernelExportResult,
+} from '#types/runtime-kernel-v2.types.js';
+export type {
   KernelFileSystem,
-  KernelPluginFactory,
-  KernelRuntime,
+  RealmGroup,
+  RealmHold,
+  RealmHoldInput,
+  RealmResources,
   RuntimeFileSystemBase,
   RuntimeLogger,
   RuntimeLogOptions,
   RuntimeWatchEvent,
   RuntimeWatchRequest,
 } from '#types/runtime-kernel.types.js';
-export type { GetDependenciesResult } from '#types/runtime-dependency.types.js';
 export type { ParameterDeclaration } from '@taucad/parameters';
 
 export type {
-  CreateGeometryResult,
   ErrorLocation,
-  ExportGeometryResult,
-  GetParametersResult,
   KernelErrorResult,
   KernelIssue,
   KernelIssueType,
@@ -47,29 +59,21 @@ export type {
 } from '#types/runtime.types.js';
 
 export type { KernelPlugin } from '#plugins/plugin-types.js';
-export {
-  finalizeMeshOutput,
-  finalizeRenderOutput,
-  RenderArtifactFinalizationError,
-} from '#framework/render-artifact-finalizer.js';
-export type { MeshArtifactFinalizerInput, RenderArtifactFinalizerInput } from '#framework/render-artifact-finalizer.js';
 export { createKernelError, createKernelSuccess } from '#kernels/kernel-helpers.js';
 export {
   convertRawIssuesToKernelIssues,
   createKernelParameterDeclaration,
-  createKernelModuleRegistryExpression,
   createKernelModuleShim,
   enrichIssueLocation,
   extractDefaultParameters,
-  getModuleRegistry,
   isRecordObject,
-  KERNEL_MODULES_KEY,
   loadBinaryFile,
   registerKernelModule,
   toVmEntryPath,
 } from '#kernels/kernel-module-helpers.js';
 export type { RuntimeModuleExports } from '#kernels/kernel-module-helpers.js';
 export { checkAbort } from '#framework/cooperative-abort.js';
+export { createRealmGroup } from '#framework/realm-resources.js';
 export { named } from '#framework/named.js';
 export { getWebAssemblyExceptionConstructor, isWebAssemblyException } from '#framework/wasm-exception.js';
 export type { WebAssemblyException } from '#framework/wasm-exception.js';

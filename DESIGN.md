@@ -100,29 +100,33 @@ becomes a compact summary with an explicit change action. Current checkout
 identity remains readable even when advanced controls are folded away.
 
 In chat, one compact revision summary belongs directly after its user request,
-before the assistant's reasoning, tools and answer, while changes are pending,
-saved or uncertain. It is a card attached under the request bubble, sharing its
-radius, whose whole header opens the details, so it reads as the request's own
-state rather than as conversation. Update it in place. A reconnect is connection status, not a
-revision state: keep the last known summary while the host log replays, and show
-**Save not confirmed** with a visible Retry only when the host stays unreachable.
-When the host confirms that no files
-changed, remove the summary entirely; the assistant's plain-language result is
-enough and no revision exists to inspect. Start from a confirmed base; do not
-reserve a number or invent a snapshot. Show the confirmed result and expose
-exact changes on request. Authored design files precede a labelled project-setup
-group. The complete history belongs in Revisions, without duplicating its full
-card in chat.
+before the assistant's reasoning, tools and answer, only after the admitted
+attempt confirms a change to a versioned file. A placement, base revision,
+checkout dirty state, tool invocation or save attempt does not establish that
+change. Unknown evidence leaves the summary hidden. It is a card attached under
+the request bubble, sharing its radius, whose whole header opens the details.
+Update it in place. Durable change proof preserves visibility through saving,
+reconnect and remount; a retry needs its own proof. An earlier verified saved
+result remains inspectable without claiming that the new attempt changed files.
+A reconnect is connection status; show **Save not confirmed** with a visible
+Retry only for an attempt with change proof when the host stays unreachable.
+When the host confirms no resulting file changes, remove that attempt's summary;
+the assistant's plain-language result is enough. Use its confirmed base after
+visibility is established; do not reserve a number or invent a snapshot. Show
+the confirmed result and expose exact changes on request. Authored design files
+precede a labelled project-setup group. The complete history belongs in
+Revisions, without duplicating its full card in chat.
 
-While a turn runs, the chat history always ends with one activity indicator
-unless the newest content already moves: streaming text, a loading tool card
-or a pending approval. Text counts as moving only while it arrives; a paragraph
-an external agent has checkpointed is at rest, and the indicator returns under
-it until the next delta. The run state decides whether work is live; part
-states only decide whether something else already shows it. A collapsed
-activity group with a running row, or with a thought still open at its end,
-shows a spinner in place of its icon. The chat header and sidebar add no second
-live cue.
+While a turn runs, one persistent activity row sits at the bottom left of the
+chat pane, above the composer and outside the scrolling history. It stays
+visible during text, reasoning, tools, approvals and reconnection, naming the
+current action from run events. Its elapsed counter measures time since the
+request was sent and never resets between actions. Announce activity changes,
+not clock ticks. Pending decisions retain their actionable controls. Finished,
+failed and stopped runs remove the live row. The transcript fills the available
+space without per-turn viewport spacers or top pinning; follow new content only
+while the reader is at the bottom. A collapsed activity group may retain its
+own progress affordance. The chat header and sidebar add no second live cue.
 
 **Saved**, **checks passed**, **work finished** and **backed up** are independent
 facts. A saved revision can contain interrupted or unverified work. Loading is
@@ -261,7 +265,7 @@ The token architecture is three-tier — primitive → semantic → component �
   sheen, including its high-contrast fallback. Its faint tint belongs to the
   existing action tokens; it does not authorize tinted structural neutrals or
   locally authored gradients.
-- "Soft error" states (recoverable, informational failures) use the muted purple ramp, not destructive red. Destructive red is reserved for actions that lose data and the confirmation surfaces guarding them.
+- Error, failure, invalid and alert states use the purple `feature` ramp, never destructive red. Destructive red is reserved for actions that lose data and the confirmation surfaces guarding them.
 - Never encode meaning in hue alone — pair color with an icon, label, or position (CVD safety; research doc Finding 3).
 
 ## Motion
