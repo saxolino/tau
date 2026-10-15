@@ -271,6 +271,12 @@ export type NativeWorkerLaunch = {
   readonly artifactPath: string;
   /** Attributes sandbox violations to this launch. */
   readonly commandId: string;
+  /**
+   * A directory that holds `workspacePath` and `artifactPath` and that only the process starting the worker can
+   * replace. When set, the sandbox grants this directory instead of those two paths. A requester that can rewrite
+   * its own directory then cannot redirect the worker's grants between the broker's check and the spawn.
+   */
+  readonly sandboxRoot?: string;
 };
 
 /** How a native worker ended: its exit code or signal, or the error that kept it from starting. @public */
@@ -350,9 +356,21 @@ const verifyResources = async (launch: NativeWorkerLaunch): Promise<void> => {
       ].join('\u0000'),
     )
     .digest('hex');
-  const verified = verifiedRuntimePayloads.get(fingerprint) ?? verifyResourceDigests(launch);
-  verifiedRuntimePayloads.set(fingerprint, verified);
-  await verified;
+  let verified = verifiedRuntimePayloads.get(fingerprint);
+  if (verified === undefined) {
+    verified = verifyResourceDigests(launch);
+    verifiedRuntimePayloads.set(fingerprint, verified);
+  }
+  try {
+    await verified;
+  } catch (error) {
+    /* Only a pass describes the payload. A failed read (a closure still being sealed, EMFILE) is forgotten, so the
+     * next launch hashes again instead of failing until the process restarts. */
+    if (verifiedRuntimePayloads.get(fingerprint) === verified) {
+      verifiedRuntimePayloads.delete(fingerprint);
+    }
+    throw error;
+  }
 };
 
 /* Wrap a verified launch in the sandbox and spawn it; nothing is spawned when the sandbox cannot wrap it. */
@@ -360,8 +378,8 @@ const spawnContained = async (launch: NativeWorkerLaunch): Promise<NativeWorkerP
   const [command, ...commandArguments] = await launchInNativeSandbox({
     executablePath: launch.executablePath,
     arguments: launch.arguments,
-    readablePaths: [launch.runtimePath, launch.workspacePath],
-    writablePath: launch.artifactPath,
+    readablePaths: [launch.runtimePath, launch.sandboxRoot ?? launch.workspacePath],
+    writablePath: launch.sandboxRoot ?? launch.artifactPath,
     workingDirectory: launch.workspacePath,
     commandId: launch.commandId,
   });

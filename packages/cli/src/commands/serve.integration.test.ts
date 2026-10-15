@@ -161,6 +161,10 @@ const startServe = async (options: {
   readonly environment: Readonly<Record<string, string>>;
   readonly imports?: readonly string[];
 }): Promise<URL> => {
+  /* The daemon's own temp directory, which each runtime child may write, apart from the config directory where it
+   * keeps the directories its native workers are granted. */
+  const daemonTemporaryDirectory = join(dirname(options.workspace), 'tmp');
+  await mkdir(daemonTemporaryDirectory, { recursive: true });
   const child: ChildProcess = spawn(
     process.execPath,
     [
@@ -185,6 +189,7 @@ const startServe = async (options: {
       env: {
         ...process.env,
         ...options.environment,
+        TMPDIR: daemonTemporaryDirectory,
         TAU_HOST_AGENT_TOKEN: agentToken,
         NX_PREFER_NODE_STRIP_TYPES: 'true',
         /* Vitest's `NODE_ENV=test` drops consola to `warn`, which hides the line naming the port. */

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
@@ -71,12 +71,19 @@ export type RuntimeChildWorker = {
  * The native kernels a daemon serves through its runtime children (D37).
  *
  * The runtime child runs project code under Node's permission model and may not spawn, so the daemon starts each
- * native worker on its behalf (North Star S2): only from a closure sealed in the payload store, only with the
- * child's own private directory as the worker's workspace and writable root, and only through the OS sandbox.
+ * native worker on its behalf (North Star S2): only from a closure sealed in the payload store, only through the OS
+ * sandbox, and with the sandbox granting only a directory the daemon created for that child, which holds the child's
+ * private directory and which neither the child nor its workers can replace.
  *
  * @public
  */
 export type RuntimeChildNativeKernels = {
+  /**
+   * Where the daemon creates each child's directory: outside the daemon's temp directory, which the child may write,
+   * so no one the daemon serves can swap an entry on the way to a worker's sandbox root. Launches are refused when
+   * it is inside.
+   */
+  readonly directory: string;
   /**
    * What a new child composes, handed over in its `start` frame as `native`: read from the store's receipts, never
    * downloading. Read again for every child, so a child started after a preparation composes the prepared kernel.
@@ -84,8 +91,11 @@ export type RuntimeChildNativeKernels = {
   readonly compose: () => Promise<unknown>;
   /** The roots of the closures sealed in the store, read again for every launch; a launch from any other is refused. */
   readonly closureRoots: () => Promise<readonly string[]>;
-  /** Verify, sandbox and spawn one accepted launch in this process (`startNativeWorker`). */
-  readonly start: (launch: RuntimeChildWorkerLaunch) => Promise<RuntimeChildWorker>;
+  /**
+   * Verify, sandbox and spawn one accepted launch in this process (`startNativeWorker`). `sandboxRoot` is the
+   * daemon-created directory the sandbox grants in place of the launch's workspace and artifact paths.
+   */
+  readonly start: (launch: RuntimeChildWorkerLaunch & { readonly sandboxRoot: string }) => Promise<RuntimeChildWorker>;
 };
 
 const workerLaunchMessageSchema = z.object({
@@ -122,6 +132,8 @@ const isWithin = (root: string, candidate: string): boolean => {
 /**
  * Why a child's launch is refused, or nothing: the runtime root must be a sealed closure in the store, everything
  * the worker runs must lie inside it, and the worker's workspace and writable root inside the child's own directory.
+ * The child can still rewrite its directory after this check, so the sandbox never grants these two paths: it grants
+ * the daemon's directory that holds them ({@link startRuntimeChild}).
  *
  * @param launch - The child's request.
  * @param closureRoots - The store's sealed closures, now.
@@ -167,13 +179,15 @@ const launchRefusal = async (
  *
  * @param child - The forked runtime child.
  * @param native - The daemon's native kernels.
- * @param privateDirectory - The child's private temp directory.
+ * @param directories - The child's private temp directory, and either the daemon-created directory that holds it
+ *   (each worker's sandbox root) or why there is none safe to grant.
  */
 const brokerNativeWorkers = (
   child: ChildProcess,
   native: RuntimeChildNativeKernels,
-  privateDirectory: string,
+  directories: { readonly privateDirectory: string; readonly sandboxRoot: string | { readonly refusal: string } },
 ): void => {
+  const { privateDirectory, sandboxRoot } = directories;
   const workers = new Map<string, Promise<RuntimeChildWorker | undefined>>();
   const send = (frame: Readonly<Record<string, unknown>>): void => {
     if (child.connected) {
@@ -183,11 +197,14 @@ const brokerNativeWorkers = (
   const launch = async (id: string, request: RuntimeChildWorkerLaunch): Promise<RuntimeChildWorker | undefined> => {
     let worker: RuntimeChildWorker;
     try {
-      const refusal = await launchRefusal(request, await native.closureRoots(), privateDirectory);
-      if (refusal !== undefined) {
+      const refusal =
+        typeof sandboxRoot === 'string'
+          ? await launchRefusal(request, await native.closureRoots(), privateDirectory)
+          : sandboxRoot.refusal;
+      if (refusal !== undefined || typeof sandboxRoot !== 'string') {
         throw new Error(`Tau Host refused a native worker launch: ${refusal}`);
       }
-      worker = await native.start(request);
+      worker = await native.start({ ...request, sandboxRoot });
     } catch (error) {
       send({ type: 'native-worker:refused', id, message: error instanceof Error ? error.message : String(error) });
       return undefined;
@@ -365,8 +382,28 @@ export const startRuntimeChild = async (options: {
   /* A composition that cannot be read leaves this child without native kernels, never without a runtime. */
   const native = await options.native?.compose().catch(() => undefined);
   /* The real path: importing a module resolves symlinks component by component (macOS's `/var` is a link to
-   * `/private/var`), and the grants cover only this directory, not its symlinked ancestors. */
-  const temporaryDirectory = await realpath(await mkdtemp(join(tmpdir(), 'tau-runtime-child-')));
+   * `/private/var`), and the grants cover only this directory, not its symlinked ancestors. A child with native
+   * kernels gets its directory inside one the daemon creates outside every grant: that outer directory is what a
+   * worker's sandbox grants, and since neither the child nor a worker can replace it, a path the child rewrites
+   * after the broker checked it cannot carry the grant elsewhere. */
+  const parentDirectory = options.native?.directory ?? tmpdir();
+  if (options.native !== undefined) {
+    await mkdir(parentDirectory, { recursive: true, mode: 0o700 });
+  }
+  /* What the child's exit removes: its temp directory, or the daemon's directory that holds it. */
+  const removableDirectory = await realpath(await mkdtemp(join(parentDirectory, 'tau-runtime-child-')));
+  const temporaryDirectory = options.native === undefined ? removableDirectory : join(removableDirectory, 'tmp');
+  /* The child may write the daemon's temp directory, so a sandbox root inside it could be swapped after all. */
+  const childWritableTemporary = await realpath(tmpdir());
+  const sandboxRoot =
+    removableDirectory === childWritableTemporary || isWithin(childWritableTemporary, removableDirectory)
+      ? {
+          refusal: `${parentDirectory} is inside ${childWritableTemporary}, which the runtime child may write; keep the native workers' directory outside TMPDIR.`,
+        }
+      : removableDirectory;
+  if (options.native !== undefined) {
+    await mkdir(temporaryDirectory);
+  }
   const child = fork(options.modulePath, [...(options.args ?? [])], {
     cwd: process.cwd(),
     env: {
@@ -386,7 +423,7 @@ export const startRuntimeChild = async (options: {
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   if (options.native !== undefined) {
-    brokerNativeWorkers(child, options.native, temporaryDirectory);
+    brokerNativeWorkers(child, options.native, { privateDirectory: temporaryDirectory, sandboxRoot });
   }
   const exited = new Promise<{ exitCode?: number; signal?: NodeJS.Signals }>((resolve) => {
     child.once('exit', (exitCode, signal) => {
@@ -400,7 +437,7 @@ export const startRuntimeChild = async (options: {
   const removeTemporaryDirectoryOnExit = async (): Promise<Awaited<typeof exited>> => {
     const exit = await exited;
     try {
-      await rm(temporaryDirectory, { recursive: true, force: true });
+      await rm(removableDirectory, { recursive: true, force: true });
     } catch {
       // The OS reclaims the temp directory.
     }

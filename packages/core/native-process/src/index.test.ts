@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -589,6 +590,47 @@ ${keepAlive}`;
     await vi.waitFor(() => {
       expect(sandbox.reset).toHaveBeenCalledOnce();
     });
+  });
+
+  it('should hash again after a failed verification instead of failing every later launch', async () => {
+    const value = fixture();
+    const launch = { ...value.options, commandId: 'broker#1' } satisfies NativeWorkerLaunch;
+    const [resource] = value.options.resources;
+    const sealing = `${resource!.path}.sealing`;
+    /* The closure is still being sealed: its resource is not in place yet. */
+    renameSync(resource!.path, sealing);
+    await expect(startNativeWorker(launch)).rejects.toThrow(/ENOENT/u);
+    renameSync(sealing, resource!.path);
+
+    const worker = await startNativeWorker(launch);
+    await worker.terminate();
+    await expect(worker.ended).resolves.toEqual({ signal: 'SIGTERM' });
+  });
+
+  it('should grant the sandbox root instead of the requested paths, which a requester may have redirected', async () => {
+    const value = fixture();
+    const sandboxRoot = realpathSync(mkdtempSync(join(tmpdir(), 'tau-native-broker-root-')));
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'tau-native-elsewhere-')));
+    roots.push(sandboxRoot, elsewhere);
+    const workspacePath = join(sandboxRoot, 'workspace');
+    const artifactPath = join(sandboxRoot, 'artifacts');
+    mkdirSync(workspacePath);
+    /* What the broker checked was a directory; by the spawn it points outside. */
+    symlinkSync(elsewhere, artifactPath);
+
+    const worker = await startNativeWorker({
+      ...value.options,
+      workspacePath,
+      artifactPath,
+      sandboxRoot,
+      commandId: 'broker#2',
+    });
+    await worker.terminate();
+
+    const policy = sandbox.wrap.mock.calls[0]![2] as ReturnType<typeof nativeSandboxPolicy>;
+    expect(policy.filesystem.allowWrite).toEqual([sandboxRoot]);
+    expect(policy.filesystem.allowRead).not.toContain(elsewhere);
+    expect(sandbox.wrap.mock.calls[0]![0]).toContain(`TMPDIR='${sandboxRoot}'`);
   });
 
   it('should not take a sandbox lease when cleanup lands while resources are being verified', async () => {

@@ -2422,7 +2422,12 @@ describe('startHostDaemon runtime child per root and session', () => {
       relayUrl: relay.url,
       runtimeHost: {
         modulePath: proofChild,
-        native: { compose, closureRoots: async () => [], start: vi.fn() },
+        native: {
+          directory: join(temporaryDirectory, 'children'),
+          compose,
+          closureRoots: async () => [],
+          start: vi.fn(),
+        },
       },
       agent: { ...(await agentOptionsIn(temporaryDirectory)), prepareKernel },
     });

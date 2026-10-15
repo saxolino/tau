@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
-import { defaultConfigDirectory, defaultMachineProviders, startHostDaemon } from '@taucad/host';
+import { defaultConfigDirectory, defaultMachineProviders, defaultPayloadStore, startHostDaemon } from '@taucad/host';
 import { startNativeWorker } from '@taucad/native-process-core';
 import { connectSqliteComputeStoreWorker } from '@taucad/runtime/node';
 import type { ComputeBinding } from '@taucad/runtime/types';
@@ -293,6 +293,8 @@ export const serveNativeKernels = (): {
   };
   return {
     native: {
+      /* Beside the payload store and outside TMPDIR, which each runtime child may write. */
+      directory: join(dirname(defaultPayloadStore()), 'runtime-children'),
       compose,
       closureRoots: async () => {
         const { closureRoots } = await compose();
