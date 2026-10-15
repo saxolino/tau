@@ -20,11 +20,13 @@ const bundledWorkspaceDependencies = [
   '@taucad/bambu',
   '@taucad/brep',
   '@taucad/build123d',
+  '@taucad/carvera',
   '@taucad/esbuild',
   '@taucad/events',
   '@taucad/filesystem',
   '@taucad/geospec-engine',
   '@taucad/gltf',
+  '@taucad/grbl',
   '@taucad/host',
   '@taucad/image',
   '@taucad/jscad',
@@ -72,8 +74,8 @@ export const desktopExternalizedDependencies = [
   /* Resolves its vendored seccomp/srt-win helpers relative to its own module file. */
   '@anthropic-ai/sandbox-runtime',
   '@taulabs/openrscad-engine',
-  '@taucad/geospec-engine-native',
   'esbuild',
+  'geospec-engine',
   'libassimp',
   'nanoraster',
 ] as const;

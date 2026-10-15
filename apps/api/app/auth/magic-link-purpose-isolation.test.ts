@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { betterAuth } from 'better-auth';
+import type { GithubProfile } from 'better-auth/social-providers';
+import { mock } from 'vitest-mock-extended';
 import { apiKey } from '@better-auth/api-key';
 import { idPrefix } from '@taucad/types/constants';
 import { generatePrefixedId } from '@taucad/utils/id';
@@ -13,13 +15,20 @@ const email = 'purpose-isolation@example.test';
 const createHarness = () => {
   const store = { user: [], session: [], account: [], verification: [], apikey: [] };
   let deliveredToken = '';
+  const getGithubUserInfo = vi.fn(async () => ({
+    user: { name: 'Offline GitHub user', email, emailVerified: true },
+    data: mock<GithubProfile>({ id: 'github-provider-subject', email }),
+  }));
   const auth = betterAuth({
     ...staticAuthConfig,
     baseURL,
     secret: 'offline-purpose-isolation-secret-at-least-32-characters',
     database: memoryAdapter(store),
     account: { ...staticAuthConfig.account, storeStateStrategy: 'database' },
-    socialProviders: { google: { clientId: 'offline-client', clientSecret: 'offline-secret' } },
+    socialProviders: {
+      google: { clientId: 'offline-client', clientSecret: 'offline-secret' },
+      github: { clientId: 'offline-github', clientSecret: 'offline-secret', getUserInfo: getGithubUserInfo },
+    },
     plugins: [
       // Match the runtime API-key name requirement and Tau secret-key format.
       apiKey({ requireName: true, customKeyGenerator: () => generatePrefixedId(idPrefix.secretKey) }),
@@ -41,7 +50,7 @@ const createHarness = () => {
         body: body ? JSON.stringify(body) : undefined,
       }),
     );
-  return { auth, request, store, deliveredToken: () => deliveredToken };
+  return { auth, request, store, getGithubUserInfo, deliveredToken: () => deliveredToken };
 };
 
 describe('Magic Link verification purpose isolation', () => {
@@ -148,6 +157,54 @@ describe('Linked account row ownership', () => {
     expect(unlinked.status).toBe(200);
     expect(await internalAdapter.findAccounts(owner.id)).toHaveLength(1);
     expect(await internalAdapter.findAccounts(other.id)).toHaveLength(1);
+  });
+});
+
+describe('Cached client account selectors against the upgraded server', () => {
+  it('should reject legacy selectors without changing accounts and accept refreshed row-ID requests', async () => {
+    const { auth, getGithubUserInfo } = createHarness();
+    const { internalAdapter } = await auth.$context;
+    const owner = await internalAdapter.createUser({ name: 'Owner', email, emailVerified: true }, { method: 'admin' });
+    const account = await internalAdapter.linkAccount({
+      userId: owner.id,
+      providerId: 'github',
+      accountId: 'github-provider-subject',
+      accessToken: 'offline-gist-token',
+      accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+      scope: 'gist',
+    });
+    await internalAdapter.linkAccount({ userId: owner.id, providerId: 'credential', accountId: owner.id });
+    const session = await internalAdapter.createSession(owner.id);
+    const request = async (path: string, body?: Record<string, unknown>) =>
+      auth.handler(
+        new Request(`${baseURL}/v1/auth/${path}`, {
+          method: body ? 'POST' : 'GET',
+          headers: { authorization: `Bearer ${session.token}`, 'content-type': 'application/json', origin: baseURL },
+          body: body ? JSON.stringify(body) : undefined,
+        }),
+      );
+    const before = await internalAdapter.findAccounts(owner.id);
+    // These are the pre-upgrade UI request shapes, also retained in cached tabs and desktop bundles.
+    const oldInfo = await request(`account-info?accountId=${account.accountId}`);
+    expect(oldInfo.status).toBe(400);
+    expect(await oldInfo.json()).toMatchObject({ code: 'ACCOUNT_NOT_FOUND' });
+    const oldUnlink = await request('unlink-account', { providerId: 'github' });
+    expect(oldUnlink.status).toBe(400);
+    const oldGist = await request('get-access-token', { providerId: 'github', accountId: account.accountId });
+    expect(oldGist.status).toBe(400);
+    expect(await internalAdapter.findAccounts(owner.id)).toEqual(before);
+    expect(getGithubUserInfo).not.toHaveBeenCalled();
+    const currentInfo = await request(`account-info?accountId=${account.id}`);
+    expect(currentInfo.status).toBe(200);
+    expect(await currentInfo.json()).toMatchObject({ account: { id: account.id, providerId: 'github' } });
+    expect(getGithubUserInfo).toHaveBeenCalledOnce();
+    const currentGist = await request('get-access-token', { accountId: account.id });
+    expect(currentGist.status).toBe(200);
+    expect(await currentGist.json()).toMatchObject({ accessToken: 'offline-gist-token' });
+    const currentUnlink = await request('unlink-account', { accountId: account.id });
+    expect(currentUnlink.status).toBe(200);
+    const remainingAccounts = await internalAdapter.findAccounts(owner.id);
+    expect(remainingAccounts.map(({ providerId }) => providerId)).toEqual(['credential']);
   });
 });
 
