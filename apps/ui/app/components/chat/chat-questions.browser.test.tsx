@@ -62,6 +62,15 @@ it.each(['', 'dark', 'dark black', 'dark high-contrast'])(
     await page.screenshot({
       path: `../../../../../out/test-results/message-queue/permission-${theme.replaceAll(' ', '-') || 'light'}.png`,
     });
+    await userEvent.click(screen.getByRole('button', { name: 'Allow for this session' }));
+    expect(screen.getByRole('button', { name: 'Allow for this session', busy: true }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    expect(screen.getAllByRole('button', { busy: true })).toHaveLength(1);
+    expect(region.scrollWidth).toBeLessThanOrEqual(region.clientWidth);
+    await page.screenshot({
+      path: `../../../../../out/test-results/message-queue/permission-busy-${theme.replaceAll(' ', '-') || 'light'}.png`,
+    });
   },
 );
 it('wraps long question choices at enlarged text size and preserves keyboard choice', async () => {

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Check, ChevronDown, CircleX, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import { isRecord } from '@taucad/utils/schema';
 import { Button } from '@taucad/ui/components/button';
+import { Loader } from '@taucad/ui/components/loader';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/components/collapsible';
 import type { AgentHostApproval } from '#services/agent-host-event-projection.js';
 import { useFeature } from '#flags/use-feature.js';
@@ -62,7 +63,8 @@ export function ChatPermissionRequest({
   readonly onRespond?: ((approved: boolean, optionId?: string) => Promise<void>) | undefined;
 }): React.JSX.Element {
   const isDebug = useFeature('tauDebug');
-  const [isSending, setIsSending] = useState(false);
+  const [pendingResponse, setPendingResponse] = useState<string | boolean>();
+  const isSending = pendingResponse !== undefined;
   const [failure, setFailure] = useState<string>();
   const sending = useRef(false);
   const content = permissionContent(approval);
@@ -72,14 +74,14 @@ export function ChatPermissionRequest({
       return;
     }
     sending.current = true;
-    setIsSending(true);
+    setPendingResponse(optionId ?? approved);
     setFailure(undefined);
     try {
       await onRespond(approved, optionId);
       // Keep actions disabled until the durable resolution removes this request.
     } catch (error) {
       sending.current = false;
-      setIsSending(false);
+      setPendingResponse(undefined);
       setFailure(error instanceof Error ? error.message : 'The host did not accept that decision.');
     }
   };
@@ -154,7 +156,7 @@ export function ChatPermissionRequest({
           Your response was not saved. Try again.{isDebug ? ` ${failure}` : ''}
         </p>
       ) : null}
-      {isSending ? (
+      {isSending && !isSettled ? (
         <p role='status' className='text-xs/5 text-muted-foreground'>
           Saving response · waiting for confirmation
         </p>
@@ -170,11 +172,13 @@ export function ChatPermissionRequest({
                 variant={option.optionId === focused?.optionId ? 'default' : 'outline'}
                 autoFocus={option.optionId === focused?.optionId}
                 disabled={isSending}
+                aria-busy={pendingResponse === option.optionId}
                 onClick={() => {
                   void respond(option.kind?.startsWith('allow') ?? true, option.optionId);
                 }}
               >
                 {option.name}
+                {pendingResponse === option.optionId ? <Loader className='motion-reduce:animate-none' /> : null}
               </Button>
             ))
           ) : (
@@ -183,21 +187,25 @@ export function ChatPermissionRequest({
                 size='xs'
                 autoFocus
                 disabled={isSending}
+                aria-busy={pendingResponse === true}
                 onClick={() => {
                   void respond(true);
                 }}
               >
                 Approve
+                {pendingResponse === true ? <Loader className='motion-reduce:animate-none' /> : null}
               </Button>
               <Button
                 size='xs'
                 variant='outline'
                 disabled={isSending}
+                aria-busy={pendingResponse === false}
                 onClick={() => {
                   void respond(false);
                 }}
               >
                 Deny
+                {pendingResponse === false ? <Loader className='motion-reduce:animate-none' /> : null}
               </Button>
             </>
           )}
