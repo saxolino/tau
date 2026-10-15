@@ -419,12 +419,12 @@ export class NodeFsProvider extends AbstractFileSystemProvider {
       }
       handler(event);
     };
-    const classify = (rootedPath: string, absolute: string, missing: 'delete' | 'ignore' = 'delete'): void => {
+    const classify = (rootedPath: string, absolute: string): void => {
       try {
         emit({ type: 'change', path: rootedPath, kind: statSync(absolute).isDirectory() ? 'dir' : 'file' });
       } catch (error) {
         const { code } = error as NodeJS.ErrnoException;
-        if (missing === 'delete' && (code === 'ENOENT' || code === 'ENOTDIR')) {
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
           emit({ type: 'delete', path: rootedPath });
         }
       }
@@ -464,12 +464,6 @@ export class NodeFsProvider extends AbstractFileSystemProvider {
           entry.rearming ??= open(entry)
             .then(
               () => {
-                // A leaf created during native enumeration can enter its snapshot without a create event.
-                // Reconcile the requested file after replacement admission; absence still requires resync,
-                // not an invented delete for a path that may never have existed.
-                if (!entry.targetIsDirectory) {
-                  classify(entry.rootedPath, entry.target, 'ignore');
-                }
                 emit({ type: 'reset' });
               },
               () => {
@@ -518,6 +512,10 @@ export class NodeFsProvider extends AbstractFileSystemProvider {
         // this admitted stream until its replacement is ready, then reconcile.
         await open(entry);
         emit({ type: 'reset' });
+      } else if (previous && !entry.targetIsDirectory) {
+        // The ancestor stream may miss leaf events before this directory is
+        // observed. Reconcile the exact target once its replacement is ready.
+        classify(entry.rootedPath, entry.target);
       }
     };
     const unsubscribe = (): void => {

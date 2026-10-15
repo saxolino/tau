@@ -107,13 +107,19 @@ describe('desktopBridge', () => {
     const legacy = await loadBridge();
     expect(legacy.desktopBridge()?.directories).toBeUndefined();
     const open = vi.fn(async (_path: string) => undefined);
-    installShellGlobal({ directories: { openLabel: 'Open in Finder', openIcon: 'finder', open } });
+    const reveal = vi.fn(async (_path: string) => undefined);
+    installShellGlobal({
+      directories: { openLabel: 'Open in Finder', openIcon: 'finder', revealLabel: 'Reveal in Finder', open, reveal },
+    });
     const current = await loadBridge();
     const directories = current.desktopBridge()?.directories;
     expect(directories?.openLabel).toBe('Open in Finder');
     expect(directories?.openIcon).toBe('finder');
     await directories?.open('/picked/project');
     expect(open).toHaveBeenCalledWith('/picked/project');
+    expect(directories?.revealLabel).toBe('Reveal in Finder');
+    await directories?.reveal('/picked/project/main.ts');
+    expect(reveal).toHaveBeenCalledWith('/picked/project/main.ts');
   });
 
   it('builds the contract from the preload-exposed object and memoises it', async () => {
@@ -228,6 +234,27 @@ describe('desktopBridge', () => {
 
     completeMachineBinding.mockResolvedValueOnce({ status: 'bound' });
     await expect(desktopBridge()?.machines.completeBinding({ ceremonyId: 'ceremony-2' })).rejects.toThrow();
+  });
+
+  it("should reject a failed ceremony with the host's message and typed code", async () => {
+    const { completeMachineBinding } = installShellGlobal();
+    const { desktopBridge } = await loadBridge();
+    const message = 'The machine needs its access code.';
+
+    completeMachineBinding.mockResolvedValueOnce({ status: 'failed', code: 'MACHINE_CREDENTIAL_REQUIRED', message });
+    const coded = await desktopBridge()
+      ?.machines.completeBinding({ ceremonyId: 'ceremony-3' })
+      .catch((error: unknown) => error);
+    expect(coded).toBeInstanceOf(Error);
+    expect(coded).toMatchObject({ message, code: 'MACHINE_CREDENTIAL_REQUIRED' });
+
+    // With no code, the message alone.
+    completeMachineBinding.mockResolvedValueOnce({ status: 'failed', message });
+    const plain = await desktopBridge()
+      ?.machines.completeBinding({ ceremonyId: 'ceremony-4' })
+      .catch((error: unknown) => error);
+    expect(plain).toMatchObject({ message });
+    expect(plain).not.toHaveProperty('code');
   });
 
   it('forwards project-session retain and release to the preload surface', async () => {

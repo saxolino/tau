@@ -62,6 +62,11 @@ const main = async (): Promise<void> => {
   const manifestPath = resolve(root, 'download.json');
   /* oxlint-disable no-await-in-loop -- Hash and upload large release archives serially to bound memory and preserve publication order. */
   if (operation === 'prepare') {
+    // The release commit's date, not the clock: a rerun prepares byte-identical
+    // feeds, which the immutable draft release accepts instead of refusing.
+    const publishedAt = new Date(
+      execFileSync('git', ['show', '--no-patch', '--format=%cI', sourceCommit], { encoding: 'utf8' }).trim(),
+    ).toISOString();
     const assets: z.infer<typeof manifestSchema>['assets'] = {};
     const sums: string[] = [];
     for (const [index, target] of platforms.entries()) {
@@ -86,7 +91,7 @@ const main = async (): Promise<void> => {
                   name: tag,
                   url: assets[target].url,
                   // eslint-disable-next-line @typescript-eslint/naming-convention -- Squirrel JSON feed field.
-                  pub_date: new Date().toISOString(),
+                  pub_date: publishedAt,
                   notes: `Tau ${version} (${channel})`,
                 },
               },
@@ -220,7 +225,8 @@ const main = async (): Promise<void> => {
       '--key',
       `latest/${archive}`,
       '--copy-source',
-      `${bucket}/releases/${encodeURIComponent(tag)}/${archive}`,
+      // The AWS CLI URL-encodes the copy source itself; a pre-encoded `@` becomes `%2540` and misses the key.
+      `${bucket}/releases/${tag}/${archive}`,
       '--metadata-directive',
       'REPLACE',
       '--cache-control',

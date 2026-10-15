@@ -46,8 +46,9 @@ type DesktopShell = {
   /** The quit hold's renderer half (D31, P49). */
   readonly quit?: {
     isReady(): boolean;
-    onAsk(handler: () => void): () => void;
-    reportQuiesced(forced: boolean): void;
+    onAsk(handler: (attemptId: string) => void): () => void;
+    reportQuiesced(attemptId: string, forced: boolean): void;
+    onNavigate(handler: (route: string) => void): () => void;
   };
   readonly directories?: DesktopBridge['directories'];
   readonly dialog: DesktopBridge['dialog'];
@@ -150,10 +151,16 @@ const bambuStudioValue = <Value>(answer: unknown): Value => {
   throw Object.assign(new Error(message), { name: 'BambuStudioError', code: result?.error?.code });
 };
 
-/* Parsed, not trusted: main answers with whatever the utility said. */
-const bindingOutcomeSchema = z.discriminatedUnion('status', [
+/* Parsed, not trusted: main answers with whatever the utility said. A failure resolves as data, since an error
+ * crossing the context bridge keeps only its message. */
+const bindingAnswerSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('bound'), machineId: z.string().min(1).max(256) }),
   z.object({ status: z.literal('operator-action-required'), ceremonyId: z.string().min(1).max(256) }),
+  z.object({
+    status: z.literal('failed'),
+    code: z.string().min(1).max(128).optional(),
+    message: z.string().max(4096),
+  }),
 ]);
 
 /** Keep the native app icon aligned with Tau's resolved local theme. */
@@ -184,17 +191,17 @@ export const onDesktopFullscreenChange = (listener: () => void): (() => void) =>
  * @returns The unsubscribe.
  * @public
  */
-export const onDesktopQuitRequested = (handler: () => void): (() => void) => {
+export const onDesktopQuitRequested = (handler: (attemptId: string) => void): (() => void) => {
   const shell = isDesktopBuildTarget() ? (globalThis as { tau?: DesktopShell }).tau : undefined;
   return shell?.quit?.onAsk(handler) ?? ((): void => undefined);
 };
 
 /** Tell main every session has closed, or that the person cut it short. @public */
-export const reportDesktopQuiesced = (forced: boolean): void => {
+export const reportDesktopQuiesced = (attemptId: string, forced: boolean): void => {
   if (!isDesktopBuildTarget()) {
     return;
   }
-  (globalThis as { tau?: DesktopShell }).tau?.quit?.reportQuiesced(forced);
+  (globalThis as { tau?: DesktopShell }).tau?.quit?.reportQuiesced(attemptId, forced);
 };
 
 /**
@@ -260,8 +267,8 @@ export type DesktopBridge = {
      *
      * A typed access code goes straight to the host, which keeps it in the OS
      * keychain once the printer accepts it, and is never kept in page state;
-     * the outcome is the host's own. A refusal reaches the page as a message
-     * that carries the host's code.
+     * the outcome is the host's own. A refusal rejects with the host's
+     * message and, when it has one, its typed `code` on the error.
      */
     completeBinding(input: DesktopMachineBindingCompletion): Promise<MachineBindingOutcome>;
   };
@@ -277,7 +284,11 @@ export type DesktopBridge = {
   readonly directories?: {
     readonly openLabel: string;
     readonly openIcon: 'finder' | 'file-explorer' | 'folder';
+    /** Label for selecting a file or folder in its parent, e.g. `Reveal in Finder`. */
+    readonly revealLabel: string;
     open(path: string): Promise<void>;
+    /** Select a file or folder inside a granted root in the file manager. */
+    reveal(path: string): Promise<void>;
   };
   readonly dialog: {
     /**
@@ -405,7 +416,11 @@ export const desktopBridge = (): DesktopBridge | undefined => {
         if (!shell.machines) {
           throw new Error('This desktop build has no machine binding ceremony.');
         }
-        return bindingOutcomeSchema.parse(await shell.machines.completeBinding(input));
+        const answer = bindingAnswerSchema.parse(await shell.machines.completeBinding(input));
+        if (answer.status === 'failed') {
+          throw Object.assign(new Error(answer.message), answer.code === undefined ? {} : { code: answer.code });
+        }
+        return answer;
       },
     },
     compute: shell.compute ?? {
@@ -454,4 +469,10 @@ export const nodeHomeRoot = (): string => {
     throw new Error('The node filesystem backend is only available in the desktop app.');
   }
   return bridge.nodeFs.homeRoot;
+};
+
+/** Machine navigation preserves the live document and its project sessions. */
+export const onDesktopMachineNavigation = (handler: (route: string) => void): (() => void) => {
+  const shell = isDesktopBuildTarget() ? (globalThis as { tau?: DesktopShell }).tau : undefined;
+  return shell?.quit?.onNavigate(handler) ?? ((): void => undefined);
 };

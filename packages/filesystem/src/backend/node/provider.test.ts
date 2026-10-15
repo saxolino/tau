@@ -147,52 +147,61 @@ describe('NodeFsProvider atomic writes', () => {
     expect(events).toEqual([]);
   });
 
-  it.each(['created', 'removed', 'unsubscribed'] as const)(
+  it.each(['created', 'removed', 'never present', 'unsubscribed'] as const)(
     'should reconcile a requested leaf after ancestor rearm when it is %s',
     async (outcome) => {
       const root = createRoot();
       const replacement = Promise.withResolvers<{ unsubscribe(): Promise<void> }>();
-      const close = vi.fn(async () => undefined);
+      const firstClose = vi.fn(async () => undefined);
+      const replacementClose = vi.fn(async () => undefined);
       let onAncestorEvents: Parameters<typeof parcelWatcher.subscribe>[1] | undefined;
       const subscribe = vi.spyOn(parcelWatcher, 'subscribe').mockImplementation(async (_directory, callback) => {
         if (!onAncestorEvents) {
           onAncestorEvents = callback;
-          return { unsubscribe: close };
+          return { unsubscribe: firstClose };
         }
         return replacement.promise;
       });
       const provider = new NodeFsProvider(root);
       const events: unknown[] = [];
       const requestedPath = 'absent/nested/deep.ts';
-      const stop = await provider.watch({ paths: [requestedPath], recursive: false }, (event) => events.push(event));
+      const excludedPath = 'absent/nested/ignored.ts';
+      const stop = await provider.watch(
+        { paths: [requestedPath, excludedPath], recursive: false, excludes: [excludedPath] },
+        (event) => events.push(event),
+      );
       try {
         mkdirSync(join(root, 'absent', 'nested'), { recursive: true });
+        writeFileSync(join(root, excludedPath), 'excluded sibling');
         // Native enumeration may absorb the leaf into its initial snapshot, delivering only the ancestor.
         onAncestorEvents?.(null, [{ type: 'create', path: join(root, 'absent') }]);
         await vi.waitFor(() => {
           expect(subscribe).toHaveBeenCalledTimes(2);
         });
-        writeFileSync(join(root, requestedPath), 'created during replacement admission');
+        if (outcome !== 'never present') {
+          writeFileSync(join(root, requestedPath), 'created during replacement admission');
+        }
         if (outcome === 'removed') {
           rmSync(join(root, requestedPath));
         } else if (outcome === 'unsubscribed') {
           stop();
         }
-        replacement.resolve({ unsubscribe: close });
+        replacement.resolve({ unsubscribe: replacementClose });
         await drainNodeFsProviderWatchClosures(provider);
         if (outcome === 'created') {
-          expect(events).toContainEqual({ type: 'change', path: requestedPath, kind: 'file' });
-          expect(events).toContainEqual({ type: 'reset' });
-        } else if (outcome === 'removed') {
-          expect(events).toEqual([{ type: 'reset' }]);
+          expect(events).toEqual([{ type: 'change', path: requestedPath, kind: 'file' }, { type: 'reset' }]);
+        } else if (outcome === 'removed' || outcome === 'never present') {
+          expect(events).toEqual([{ type: 'delete', path: requestedPath }, { type: 'reset' }]);
         } else {
           expect(events).toEqual([]);
         }
       } finally {
-        replacement.resolve({ unsubscribe: close });
+        replacement.resolve({ unsubscribe: replacementClose });
         stop();
         await drainNodeFsProviderWatchClosures(provider);
       }
+      expect(firstClose).toHaveBeenCalledOnce();
+      expect(replacementClose).toHaveBeenCalledOnce();
     },
   );
 
@@ -232,6 +241,59 @@ describe('NodeFsProvider atomic writes', () => {
       await drainNodeFsProviderWatchClosures(provider);
     }
   });
+
+  it.each(['before rearm', 'during rearm', 'deleted during rearm'] as const)(
+    'should reconcile the watched file when it is %s without a native leaf event',
+    async (timing) => {
+      const root = createRoot();
+      const target = join(root, 'absent', 'nested', 'deep.txt');
+      const replacement = Promise.withResolvers<Awaited<ReturnType<typeof parcelWatcher.subscribe>>>();
+      const replacementStarted = Promise.withResolvers<void>();
+      const callbacks: Array<Parameters<typeof parcelWatcher.subscribe>[1]> = [];
+      const firstClose = vi.fn(async () => undefined);
+      const replacementClose = vi.fn(async () => undefined);
+      vi.spyOn(parcelWatcher, 'subscribe').mockImplementation(async (_directory, callback) => {
+        callbacks.push(callback);
+        if (callbacks.length === 1) {
+          return { unsubscribe: firstClose };
+        }
+        replacementStarted.resolve();
+        return replacement.promise;
+      });
+      const provider = new NodeFsProvider(root);
+      const events: unknown[] = [];
+      try {
+        const stop = await provider.watch({ paths: ['absent/nested/deep.txt'] }, (event) => events.push(event));
+        mkdirSync(join(root, 'absent', 'nested'), { recursive: true });
+        if (timing !== 'during rearm') {
+          writeFileSync(target, 'created');
+        }
+        // Native observation can report only the new ancestor before its subtree is observed.
+        callbacks[0]?.(null, [{ type: 'create', path: join(root, 'absent') }]);
+        await replacementStarted.promise;
+        if (timing === 'during rearm') {
+          writeFileSync(target, 'created');
+        } else if (timing === 'deleted during rearm') {
+          rmSync(target);
+        }
+        replacement.resolve({ unsubscribe: replacementClose });
+        await drainNodeFsProviderWatchClosures(provider);
+        expect(events).toContainEqual(
+          timing === 'deleted during rearm'
+            ? { type: 'delete', path: 'absent/nested/deep.txt' }
+            : { type: 'change', path: 'absent/nested/deep.txt', kind: 'file' },
+        );
+        expect(firstClose).toHaveBeenCalledOnce();
+        stop();
+        await drainNodeFsProviderWatchClosures(provider);
+        expect(replacementClose).toHaveBeenCalledOnce();
+      } finally {
+        replacement.resolve({ unsubscribe: replacementClose });
+        provider.dispose();
+        await drainNodeFsProviderWatchClosures(provider);
+      }
+    },
+  );
 
   it.each(['temp-write', 'file-fsync', 'rename', 'directory-fsync', 'read-back'] as const)(
     'should leave old or new bytes and no temporary file after a %s failure',
