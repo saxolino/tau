@@ -3,12 +3,18 @@ import { browserChannels } from '@taucad/types/browser';
 import { mock } from 'vitest-mock-extended';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ipcRenderer } from 'electron';
-import { quitChannels, slicersChannels } from '#shared/desktop-bootstrap.js';
+import {
+  openDirectoryChannel,
+  revealPathChannel,
+  quitChannels,
+  slicersChannels,
+  windowFullscreenChannel,
+} from '#shared/desktop-bootstrap.js';
 import { generatedImageIpcChannel, isQuickLookEnabled } from '#shared/quick-look.js';
 
 const state = vi.hoisted(() => ({
   exposed: new Map<string, unknown>(),
-  listeners: new Map<string, Array<() => void>>(),
+  listeners: new Map<string, Array<(...args: unknown[]) => void>>(),
 }));
 
 vi.mock('electron', () => ({
@@ -20,10 +26,10 @@ vi.mock('electron', () => ({
   ipcRenderer: {
     invoke: vi.fn(),
     send: vi.fn(),
-    on: vi.fn((channel: string, listener: () => void) => {
+    on: vi.fn((channel: string, listener: (...args: unknown[]) => void) => {
       state.listeners.set(channel, [...(state.listeners.get(channel) ?? []), listener]);
     }),
-    off: vi.fn((channel: string, listener: () => void) => {
+    off: vi.fn((channel: string, listener: (...args: unknown[]) => void) => {
       state.listeners.set(
         channel,
         (state.listeners.get(channel) ?? []).filter((candidate) => candidate !== listener),
@@ -39,8 +45,9 @@ vi.mock('@taucad/runtime/electron/preload', () => ({
 
 type QuitApi = Readonly<{
   isReady(): boolean;
-  onAsk(handler: () => void): () => void;
-  reportQuiesced(forced: boolean): void;
+  onNavigate(handler: (route: string) => void): () => void;
+  onAsk(handler: (attemptId: string) => void): () => void;
+  reportQuiesced(attemptId: string, forced: boolean): void;
 }>;
 
 const quitApi = (): QuitApi => {
@@ -50,7 +57,7 @@ const quitApi = (): QuitApi => {
 
 const askBeforeRendererMounts = (): void => {
   for (const listener of state.listeners.get(quitChannels.ask) ?? []) {
-    listener();
+    listener({}, 'attempt-1');
   }
 };
 
@@ -78,7 +85,53 @@ describe('desktop preload quit bridge', () => {
     askBeforeRendererMounts();
     quitApi().onAsk(handler);
 
-    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledExactlyOnceWith('attempt-1');
+  });
+});
+
+describe('desktop machine navigation bridge', () => {
+  it('buffers a machine route until the app subscribes and ignores unrelated routes', () => {
+    for (const listener of state.listeners.get(quitChannels.navigate) ?? []) {
+      listener({}, '/machines/host/machine');
+      listener({}, 'https://example.com');
+    }
+    const handler = vi.fn();
+    const unsubscribe = quitApi().onNavigate(handler);
+    expect(handler).toHaveBeenCalledExactlyOnceWith('/machines/host/machine');
+    unsubscribe();
+  });
+  it('returns the exact attempt and forced decision to main', () => {
+    vi.mocked(ipcRenderer.send).mockClear();
+    quitApi().reportQuiesced('attempt-2', true);
+    expect(ipcRenderer.send).toHaveBeenCalledExactlyOnceWith(quitChannels.quiesced, 'attempt-2', true);
+  });
+});
+
+describe('desktop preload fullscreen snapshot', () => {
+  it('should retain early native state, notify subscribers and stop notifications on unsubscribe', () => {
+    const { window } = state.exposed.get('tau') as {
+      readonly window: { isFullscreen(): boolean; onFullscreenChange(listener: () => void): () => void };
+    };
+    const emit = (value: unknown): void => {
+      for (const listener of state.listeners.get(windowFullscreenChannel) ?? []) {
+        listener({}, value);
+      }
+    };
+    expect(window.isFullscreen()).toBe(false);
+    emit(true);
+    expect(window.isFullscreen()).toBe(true);
+    const observed: boolean[] = [];
+    const unsubscribe = window.onFullscreenChange(() => {
+      observed.push(window.isFullscreen());
+    });
+    emit(false);
+    expect(observed).toEqual([false]);
+    unsubscribe();
+    emit(true);
+    expect(observed).toEqual([false]);
+    expect(window.isFullscreen()).toBe(true);
+    emit('not a boolean');
+    expect(window.isFullscreen()).toBe(true);
   });
 });
 
@@ -131,6 +184,41 @@ describe('desktop preload Quick Look bridge', () => {
     const tau = state.exposed.get('tau') as Readonly<Record<string, unknown>>;
 
     expect('quickLook' in tau).toBe(isQuickLookEnabled());
+  });
+});
+
+describe('native directory access', () => {
+  it('should advertise the native file manager and forward the selected directory', async () => {
+    const tau = state.exposed.get('tau') as {
+      directories: {
+        openLabel: string;
+        openIcon: string;
+        revealLabel: string;
+        open(path: string): Promise<void>;
+        reveal(path: string): Promise<void>;
+      };
+    };
+    expect(tau.directories.openLabel).toBe(
+      process.platform === 'darwin'
+        ? 'Open in Finder'
+        : process.platform === 'win32'
+          ? 'Open in File Explorer'
+          : 'Open in file manager',
+    );
+    expect(tau.directories.openIcon).toBe(
+      process.platform === 'darwin' ? 'finder' : process.platform === 'win32' ? 'file-explorer' : 'folder',
+    );
+    await tau.directories.open('/picked/Project');
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(openDirectoryChannel, '/picked/Project');
+    expect(tau.directories.revealLabel).toBe(
+      process.platform === 'darwin'
+        ? 'Reveal in Finder'
+        : process.platform === 'win32'
+          ? 'Reveal in File Explorer'
+          : 'Reveal in file manager',
+    );
+    await tau.directories.reveal('/picked/Project/main.ts');
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(revealPathChannel, '/picked/Project/main.ts');
   });
 });
 
