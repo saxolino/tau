@@ -108,3 +108,6 @@ fixtures/mocker/*/.cache/
 /temp/
 
 .nx/migrate-runs
+
+# Generated Husky hook wrappers
+tools/git-hooks/_/
