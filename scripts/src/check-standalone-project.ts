@@ -71,7 +71,7 @@ export type StandaloneRow = {
   readonly install: readonly Command[];
   /** The native run, in the bare copy; it writes {@link StandaloneRow.output}. */
   readonly run: Command;
-  /** The file the native run writes, relative to the bare copy. */
+  /** The file the native run writes, relative to the bare copy; a directory (`/`) holds exactly one mesh. */
   readonly output: string;
   /** Environment variables the row cannot run without. */
   readonly credentials?: readonly string[];
@@ -118,7 +118,8 @@ export const standaloneRows: Readonly<Record<string, StandaloneRow>> = {
     tauExtension: 'glb',
     install: [],
     run: ['zoo', 'kcl', 'export', '--output-format=stl', 'main.kcl', 'native'],
-    output: 'native/output.stl',
+    // The Zoo CLI names the file it writes into the output directory.
+    output: 'native/',
     credentials: ['ZOO_TOKEN', 'TAU_API_TOKEN'],
   },
 };
@@ -234,6 +235,19 @@ export const createProject = (kernel: string, directory: string): string => {
   return configuration.mainFile;
 };
 
+/**
+ * The native run's output file: the path itself, or the one STL or GLB inside a directory path.
+ * @param path - The row's output path, absolute.
+ * @returns The file to measure.
+ */
+const resolveOutput = (path: string): string => {
+  if (!path.endsWith('/') || !existsSync(path)) {
+    return path;
+  }
+  const meshes = readdirSync(path).filter((file) => /\.(?:stl|glb)$/u.test(file));
+  return meshes.length === 1 ? join(path, meshes[0] ?? '') : path;
+};
+
 /** Canonical JSON: object keys sorted, so two documents compare by content. */
 const canonical = (value: unknown): string =>
   JSON.stringify(value, (_key, inner: unknown) =>
@@ -288,7 +302,7 @@ const checkRow = (kernel: string, work: string): RowVerdict => {
       run('native install', command, { cwd: standalone, environment });
     }
     run('native run', row.run, { cwd: standalone, environment });
-    const nativeOutput = join(standalone, row.output);
+    const nativeOutput = resolveOutput(join(standalone, row.output));
     if (!existsSync(nativeOutput)) {
       throw new StepFailure('native run', `${row.run.join(' ')} exited 0 but wrote no ${row.output}.`);
     }

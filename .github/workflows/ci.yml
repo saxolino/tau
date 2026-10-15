@@ -514,7 +514,7 @@ jobs:
       # The lock-parity oracle of the JavaScript row (blueprint I5): the lock Tau writes passes `npm ci`
       # unmodified and installs and bundles the same tree.
       - name: Check package-lock.json parity with npm ci
-        if: matrix.ecosystem == 'npm'
+        if: ${{ !cancelled() && matrix.ecosystem == 'npm' }}
         env:
           TAU_NPM_LIVE_TESTS: 'true'
         run: |
