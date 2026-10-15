@@ -39,6 +39,10 @@ type DesktopShell = {
   readonly externalAgents?: () => Promise<unknown>;
   readonly compute?: DesktopBridge['compute'];
   readonly appIcon: { setTheme(theme: 'light' | 'dark'): void };
+  readonly window?: {
+    isFullscreen(): boolean;
+    onFullscreenChange(listener: () => void): () => void;
+  };
   /** The quit hold's renderer half (D31, P49). */
   readonly quit?: {
     isReady(): boolean;
@@ -160,6 +164,16 @@ export const setDesktopAppIconTheme = (theme: 'light' | 'dark'): void => {
   (globalThis as { tau?: DesktopShell }).tau?.appIcon.setTheme(theme);
 };
 
+/** Native window state; viewer-only DOM fullscreen does not change application chrome. */
+export const isDesktopFullscreen = (): boolean =>
+  isDesktopBuildTarget() && ((globalThis as { tau?: DesktopShell }).tau?.window?.isFullscreen() ?? false);
+
+/** Subscribe to the native window's snapshot; browser builds have no native window. */
+export const onDesktopFullscreenChange = (listener: () => void): (() => void) => {
+  const shell = isDesktopBuildTarget() ? (globalThis as { tau?: DesktopShell }).tau : undefined;
+  return shell?.window?.onFullscreenChange(listener) ?? ((): void => undefined);
+};
+
 /**
  * Listen for main's quit ask (D31, P49).
  *
@@ -196,8 +210,6 @@ export type DesktopAgentHostConnectInput = {
 export type DesktopBridge = {
   /** Exact AP242 measurement in the desktop services utility. */
   readonly exactMeasurement: { connect(): Promise<MessagePort> };
-  /** Debug-only native GeoSpec comparisons, with byte-only inputs. */
-  readonly geoSpecPerformance: { connect(): Promise<MessagePort> };
   readonly runtimeKernelIds: readonly string[];
   readonly nodeFs: {
     /**
@@ -362,9 +374,6 @@ export const desktopBridge = (): DesktopBridge | undefined => {
   built ??= {
     exactMeasurement: {
       connect: async () => connectServices('exactMeasurement'),
-    },
-    geoSpecPerformance: {
-      connect: async () => connectServices('geospecPerformance'),
     },
     runtimeKernelIds: shell.runtimeKernelIds ?? [],
     /* Parsed, not trusted: the names and model ids main put here came out of a
