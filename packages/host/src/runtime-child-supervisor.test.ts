@@ -78,14 +78,14 @@ try { console.log(child.runtimeVersion); } finally { await child.close(); await 
     );
     let stdout = '';
     let stderr = '';
-    parent.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
+    parent.stdout.on('data', (chunk: Uint8Array<ArrayBuffer>) => {
+      stdout += Buffer.from(chunk).toString();
     });
-    parent.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
+    parent.stderr.on('data', (chunk: Uint8Array<ArrayBuffer>) => {
+      stderr += Buffer.from(chunk).toString();
     });
-    const [exitCode] = await once(parent, 'close');
-    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: '' });
+    await once(parent, 'close');
+    expect({ exitCode: parent.exitCode, stderr }).toEqual({ exitCode: 0, stderr: '' });
     expect(stdout.trim()).toBe('development-loader-proof');
     await expect(access(join(temporaryDirectory, 'node_modules'))).rejects.toThrow(/ENOENT/u);
   }, 15_000);

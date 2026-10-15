@@ -49,18 +49,28 @@ describe('S12 runtime layer', () => {
     const { build, output, restored } = fixture();
     packServeUiLayer(build, output);
     extract(join(output, 'serve-ui-client.tar.gz'), restored);
-    expect(() => verifyServeUiLayer(restored, output)).not.toThrow();
+    expect(() => {
+      verifyServeUiLayer(restored, output);
+    }).not.toThrow();
     const index = join(restored, 'client/index.html');
     writeFileSync(index, 'altered');
-    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    expect(() => {
+      verifyServeUiLayer(restored, output);
+    }).toThrow('differ from the manifest');
     rmSync(index);
-    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    expect(() => {
+      verifyServeUiLayer(restored, output);
+    }).toThrow('differ from the manifest');
     extract(join(output, 'serve-ui-client.tar.gz'), restored);
     writeFileSync(join(restored, 'client/extra.js'), 'unexpected');
-    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    expect(() => {
+      verifyServeUiLayer(restored, output);
+    }).toThrow('differ from the manifest');
     rmSync(join(restored, 'client/extra.js'));
     writeFileSync(join(output, 'serve-ui-client.tar.gz'), 'changed archive');
-    expect(() => verifyServeUiLayer(restored, output)).toThrow('differ from the manifest');
+    expect(() => {
+      verifyServeUiLayer(restored, output);
+    }).toThrow('differ from the manifest');
   });
 
   it('should enforce the decimal charter budget and reject the observed oversized layer', () => {

@@ -10,7 +10,7 @@ const sourceRoot = resolve(import.meta.dirname, '../..');
 const runFixture = (
   oversized: boolean,
   discardFailure = false,
-): { status: number | null; calls: string[]; stderr: string } => {
+): { status: ReturnType<typeof spawnSync>['status']; calls: string[]; stderr: string } => {
   const root = mkdtempSync(join(tmpdir(), 'tau-s12-shell-'));
   try {
     const script = 'scripts/spikes/native-deps/linux/s12/measure-and-serve.sh';
