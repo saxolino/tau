@@ -449,7 +449,7 @@ jobs:
   # a row that diverges fails its job with both measurements in the step summary. Not required
   # checks. PicoGK's upstream engine ships for osx-arm64 and win-x64 only, so its row runs on macOS
   # when the native projects are affected and on every push to `main`, as the native-darwin row does.
-  # The KCL row lives in `standalone-kcl.yml` (it also runs nightly) and compares with a golden export.
+  # The KCL row lives in `standalone-kcl.yml`, which runs nightly and on demand only: each run spends Zoo credits.
   standalone:
     name: Standalone projects (${{ matrix.ecosystem }})
     strategy:
@@ -500,14 +500,6 @@ jobs:
           set -o pipefail
           pnpm exec vitest run --root apps/runtime-e2e src/package-lock-parity.test.ts | tee "$RUNNER_TEMP/parity.log"
           grep -q '"parity":"npm-ci"' "$RUNNER_TEMP/parity.log"
-
-  standalone-kcl:
-    name: Standalone projects (kcl)
-    uses: ./.github/workflows/standalone-kcl.yml
-    secrets: inherit
-    permissions: # The called workflow's nrwl/nx-set-shas reads workflow runs
-      actions: read
-      contents: read
 
   standalone-darwin:
     name: Standalone projects (nuget, macos-26)
