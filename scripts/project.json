@@ -25,8 +25,16 @@
         "command": "node scripts/src/validate-frontmatter.ts"
       }
     },
+    "validate-brain-evidence": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node scripts/src/validate-brain-evidence.ts"
+      }
+    },
     "validate-workspace-root": {
       "executor": "nx:run-commands",
+      "cache": false,
       "options": {
         "command": "node scripts/src/validate-workspace-root.ts"
       }
@@ -84,7 +92,7 @@
     "validate-dead-code": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "NX_DAEMON=false knip --max-issues 317"
+        "command": "NX_DAEMON=false knip --config tools/quality/knip.config.ts --max-issues 317"
       }
     },
     "test": {
@@ -136,6 +144,7 @@
             "units",
             "parameters",
             "runtime",
+            "archive-core",
             "bundler-core",
             "esbuild",
             "geospec",
@@ -168,7 +177,7 @@
         }
       ],
       "options": {
-        "command": "node scripts/src/prepare-geospec-test-consumer.ts \"${GEOSPEC_NATIVE_ASSEMBLY_ROOT:?Supply the reviewed ASSEMBLY_ROOT}\" out/artifacts/geospec-test-consumer/receipt.json",
+        "command": "node scripts/src/prepare-geospec-test-consumer.ts out/artifacts/geospec-test-consumer/receipt.json",
         "forwardAllArgs": false
       }
     },
@@ -180,12 +189,10 @@
         "forwardAllArgs": false
       }
     },
-    "plan-geospec-ci": {
+    "grafana-bundle": {
       "executor": "nx:run-commands",
       "cache": false,
-      "options": {
-        "command": "node scripts/src/plan-geospec-ci.ts"
-      }
+      "options": { "command": "node scripts/src/validate-grafana.ts --write-bundle" }
     },
     "validate-grafana": {
       "executor": "nx:run-commands",

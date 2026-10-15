@@ -23,7 +23,7 @@ Agents need current owners, applicable invariants and meaningful checks close to
 
 ### 1. Keep one authority per kind of content
 
-System, developer and current user instructions take precedence over repository material. `DESIGN.md` governs user-facing design. Applicable normative policies cannot be weakened by operational AGENTS files or skill procedures. Local AGENTS narrow ancestor operation within their directory, consistently with those policies; skills implement the resulting task contract. Resolve contradictions at the owning source.
+System, developer and current user instructions take precedence over repository material. `docs/policy/design-policy.md` governs user-facing design. Applicable normative policies cannot be weakened by operational AGENTS files or skill procedures. Local AGENTS narrow ancestor operation within their directory, consistently with those policies; skills implement the resulting task contract. Resolve contradictions at the owning source.
 
 - Root `AGENTS.md` owns repository operation, the current architecture map and conditional policy router.
 - Nearest justified nested `AGENTS.md` owns local entrypoints, checks and operational invariants.
@@ -31,7 +31,7 @@ System, developer and current user instructions take precedence over repository 
 - `.agents/skills/<name>/SKILL.md` and linked resources own repeatable procedures.
 - Existing architecture/research owners and package READMEs retain rationale, incidents and superseded architecture.
 - The existing program's coordinator-owned execution record holds selection, checkpoints and acceptance.
-- Thin supported native adapters configure host discovery and permissions.
+- Thin supported native adapters configure host discovery, permissions and environment bootstrap; `scripts/agent-env.sh` owns the bootstrap they call.
 
 Do not maintain another active IDE rule hierarchy or duplicate instruction bodies. Product support for agents, skills or MCP is separate from the development harness.
 

@@ -21,7 +21,7 @@ import {
   workshopEntry,
   x1cProvider,
 } from '#components/settings/machine-details.fixture.js';
-import { KeyboardProvider } from '#hooks/use-keyboard.js';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { createMachinesFacet, printersInUseElsewhere } from '#hooks/use-machines.js';
 import type * as UseMachines from '#hooks/use-machines.js';
 

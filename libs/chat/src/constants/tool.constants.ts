@@ -20,6 +20,7 @@ export const toolName = {
   revisions: 'revisions',
   updateTodos: 'update_todos',
   askQuestions: 'ask_questions',
+  installPackages: 'install_packages',
   listMachines: 'list_machines',
   getMachine: 'get_machine',
   machineAction: 'machine_action',

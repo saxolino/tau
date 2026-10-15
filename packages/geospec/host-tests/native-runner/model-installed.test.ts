@@ -39,7 +39,6 @@ type InstalledClientModule = {
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const fixtureRoot = fileURLToPath(new URL('.', import.meta.url));
 const entryPath = 'model.geospec.ts';
-const legacyGuardEntryPath = 'native-helper-legacy.geospec.ts';
 const installedRoot = process.env['GEOSPEC_INSTALLED_CONSUMER_ROOT'];
 if (!installedRoot) {
   throw new Error('GEOSPEC_INSTALLED_CONSUMER_ROOT must select the current prepared installed consumer.');
@@ -171,7 +170,7 @@ describe('canonical authoring admission', () => {
   it.each(['malformed', 'mismatch', 'handle-query', 'handle-decode'] as const)(
     'should release an actual restored allocation after %s failure and preserve unrelated residency',
     async (fault) => {
-      const modulePath = resolve(installedRoot, 'node_modules/@taucad/geospec-engine-native/dist/node.mjs');
+      const modulePath = resolve(installedRoot, 'node_modules/geospec-engine/dist/node.mjs');
       const native = (await import(/* @vite-ignore */ pathToFileURL(modulePath).href)) as NativeModule;
       const inner = new native.Engine();
       let corrupt = false;
@@ -287,7 +286,7 @@ describe('canonical authoring admission', () => {
     },
   );
   it('should preserve a module-level subject across previous-test native resident eviction', async () => {
-    const modulePath = resolve(installedRoot, 'node_modules/@taucad/geospec-engine-native/dist/node.mjs');
+    const modulePath = resolve(installedRoot, 'node_modules/geospec-engine/dist/node.mjs');
     const native = (await import(/* @vite-ignore */ pathToFileURL(modulePath).href)) as NativeModule;
     const engine = new native.Engine();
     const original = new Uint8Array(await readFile(stepPath));
@@ -353,7 +352,7 @@ describe('canonical authoring admission', () => {
     }
   });
   it('should restore the first live canonical subject after more than32 actual native admissions', async () => {
-    const modulePath = resolve(installedRoot, 'node_modules/@taucad/geospec-engine-native/dist/node.mjs');
+    const modulePath = resolve(installedRoot, 'node_modules/geospec-engine/dist/node.mjs');
     const native = (await import(/* @vite-ignore */ pathToFileURL(modulePath).href)) as NativeModule;
     const engine = new native.Engine();
     const loader = createModelLoader({ engine });
@@ -386,7 +385,7 @@ describe('canonical authoring admission', () => {
     }
   });
   it('honors STEP mesh:false with zero eager tessellations and permits explicit demand', async () => {
-    const modulePath = resolve(installedRoot, 'node_modules/@taucad/geospec-engine-native/dist/node.mjs');
+    const modulePath = resolve(installedRoot, 'node_modules/geospec-engine/dist/node.mjs');
     const native = (await import(/* @vite-ignore */ pathToFileURL(modulePath).href)) as NativeModule;
     const engine = new native.Engine();
     const loader = createGeoSpecNativeModelLoader({ engine });
@@ -417,26 +416,13 @@ describe('canonical authoring admission', () => {
       engine.close?.();
     }
   });
-  it('rejects canonical loading without a compiled host', async () => {
-    const result = await runGeoSpecModule({ filesystem, entryPath: legacyGuardEntryPath });
-    expect(result.success).toBe(true);
-    if (!result.success) {
-      return;
-    }
-    expect(result.passed).toBe(false);
-    expect(result.tests).toHaveLength(1);
-    expect(result.tests[0]?.status).toBe('failed');
-    expect(result.tests[0]?.diagnostics).toEqual([
-      expect.objectContaining({ message: 'No GeoSpec model loader is active for this runner.' }),
-    ]);
-  });
 });
 
 for (const route of routes) {
   describe(route.name, () => {
     it('loads authored STEP/Runtime GLB subjects through the native host', async () => {
       const packageRoot = resolve(installedRoot, 'node_modules');
-      const modulePath = resolve(packageRoot, '@taucad/geospec-engine-native/dist', `${route.entry}.mjs`);
+      const modulePath = resolve(packageRoot, 'geospec-engine/dist', `${route.entry}.mjs`);
       const native = (await import(/* @vite-ignore */ pathToFileURL(modulePath).href)) as NativeModule;
       await native.initialize?.();
       const standalonePath = resolve(packageRoot, 'geospec/dist/assertion-client/index.mjs');

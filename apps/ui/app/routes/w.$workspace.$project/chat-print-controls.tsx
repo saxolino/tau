@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
@@ -37,12 +37,12 @@ import { Input } from '@taucad/ui/components/input';
 import { ToggleGroup, ToggleGroupItem } from '@taucad/ui/components/toggle-group';
 import { cn } from '@taucad/ui/utils/cn';
 import { isRecord } from '@taucad/utils/schema';
-import { Parameters } from '#components/geometry/parameters/parameters.js';
-import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
-import { rjsfDefaultFormStateBehavior } from '#components/geometry/parameters/rjsf-utils.js';
-import { ParametersBoolean } from '#components/geometry/parameters/parameters-boolean.js';
+import { Parameters } from '@taucad/viewer/parameters/parameters';
+import { ParameterSelect } from '@taucad/viewer/parameters/parameter-select';
+import { rjsfDefaultFormStateBehavior } from '@taucad/viewer/parameters/rjsf-utils';
+import { ParametersBoolean } from '@taucad/viewer/parameters/parameters-boolean';
+import { rjsfValidator } from '@taucad/viewer/parameters/rjsf-validator';
 import { describeOutcome, failureCodeOf } from '#components/print/machine-facts.js';
-import { rjsfValidator } from '#lib/rjsf-validator.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
 import type { MachineControl } from '#hooks/use-machine-control.js';
 import {
@@ -1700,15 +1700,21 @@ export const describeStillFailure = (error: unknown): string => {
 function CameraView({
   client,
   entry,
+  failure,
+  shouldCapture = true,
 }: {
   readonly client: MachineClient;
   readonly entry: MachineDirectoryEntry;
+  readonly failure?: string;
+  readonly shouldCapture?: boolean;
 }): React.JSX.Element {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [still, setStill] = useState<Readonly<{ url: string; capturedAt: string; expiresAt: string }>>();
   const captureAbort = useRef<AbortController | undefined>(undefined);
+  const hasAttempted = useRef(false);
   const now = useNow();
+  const isSupported = entry.descriptor.capabilities.components.some((component) => component.kind === 'camera');
 
   useEffect(
     () => () => {
@@ -1724,6 +1730,9 @@ function CameraView({
     const stillExpiry = globalThis.setTimeout(
       () => {
         setStill((current) => (current?.url === still.url ? undefined : current));
+        if (failure !== undefined) {
+          setError('The failure still expired. Capture again to see the printer now.');
+        }
       },
       Math.max(0, remaining),
     );
@@ -1731,9 +1740,12 @@ function CameraView({
       globalThis.clearTimeout(stillExpiry);
       URL.revokeObjectURL(still.url);
     };
-  }, [still]);
+  }, [still, failure]);
 
-  const capture = async (): Promise<void> => {
+  const capture = useCallback(async (): Promise<void> => {
+    if (captureAbort.current) {
+      return;
+    }
     const abort = new AbortController();
     captureAbort.current = abort;
     setIsBusy(true);
@@ -1756,17 +1768,44 @@ function CameraView({
         setIsBusy(false);
       }
     }
-  };
+  }, [client, entry.machineId]);
+
+  useEffect(() => {
+    if (failure === undefined || !isSupported || !shouldCapture || hasAttempted.current) {
+      return;
+    }
+    // Defer admission so React StrictMode's discarded setup cannot consume the host's rate limit.
+    let isCancelled = false;
+    queueMicrotask(() => {
+      if (!isCancelled) {
+        hasAttempted.current = true;
+        void capture();
+      }
+    });
+    return () => {
+      isCancelled = true;
+    };
+  }, [capture, failure, isSupported, shouldCapture]);
   const busyGlyph = <LoaderCircle aria-hidden className='animate-spin motion-reduce:animate-none' />;
 
   return (
     <div className='flex min-w-0 flex-col gap-2'>
+      {failure === undefined ? null : <p className='text-xs'>Camera at failure · {failure}</p>}
+      {isBusy && failure !== undefined ? (
+        <p role='status' aria-busy='true' className='text-xs text-muted-foreground'>
+          Capturing failure still…
+        </p>
+      ) : null}
       <figure
-        aria-label='Camera'
+        aria-label={failure === undefined ? 'Camera' : 'Failure camera evidence'}
         className='flex min-w-0 flex-col overflow-hidden rounded-md border border-border/70 bg-muted/30'
       >
         {still ? (
-          <img src={still.url} alt={`Latest still from ${entry.name}`} className='aspect-video w-full object-contain' />
+          <img
+            src={still.url}
+            alt={`${failure === undefined ? 'Latest' : 'Failure'} still from ${entry.name}`}
+            className='aspect-video w-full object-contain'
+          />
         ) : (
           <div className='flex min-h-24 flex-col items-center justify-center gap-2 p-3 text-center text-xs text-muted-foreground'>
             <Camera aria-hidden className='size-5' />
@@ -1790,5 +1829,41 @@ function CameraView({
       </figure>
       {error ? <PrintNotice tone='error'>{error}</PrintNotice> : null}
     </div>
+  );
+}
+
+/**
+ * Capture once for each distinct observed failure, outside the collapsible controls.
+ * Normal warning and info alerts do not imply a failed print. The keyed camera owns cancellation,
+ * expiry and URL cleanup; a cleared failure rearms it for a later occurrence.
+ */
+export function FailureEvidence({
+  client,
+  entry,
+}: {
+  readonly client: MachineClient;
+  readonly entry: MachineDirectoryEntry;
+}): React.JSX.Element | undefined {
+  const codes = [
+    ...new Set(
+      (entry.snapshot.alerts ?? [])
+        .filter((alert) => alert.severity === undefined || alert.severity === 'serious' || alert.severity === 'fatal')
+        .map((alert) => alert.code),
+    ),
+  ].sort();
+  const failure =
+    codes.length > 0 ? codes.join(', ') : entry.snapshot.run?.state === 'failed' ? 'Print failed' : undefined;
+  /* A machine without a camera has no evidence to capture. */
+  if (failure === undefined || !entry.descriptor.capabilities.components.some(({ kind }) => kind === 'camera')) {
+    return undefined;
+  }
+  return (
+    <CameraView
+      key={`${entry.machineId}:${failure}`}
+      client={client}
+      entry={entry}
+      failure={failure}
+      shouldCapture={entry.freshness === 'current' && entry.snapshot.connection === 'connected'}
+    />
   );
 }

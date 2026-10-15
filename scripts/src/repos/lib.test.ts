@@ -7,6 +7,7 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { run } from './commands.ts';
 import {
+  buildCloneArgs,
   findRoot,
   forkRepo,
   mutateCatalog,
@@ -57,7 +58,8 @@ const makeRoot = (options: { private?: unknown; public?: unknown } = {}): string
   roots.push(root);
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@taucad/tau-source' }), 'utf8');
   writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
-  writeYaml(join(root, 'repos.yaml'), options.public ?? publicCatalog());
+  mkdirSync(join(root, 'tools', 'repositories'), { recursive: true });
+  writeYaml(join(root, 'tools', 'repositories', 'catalog.yaml'), options.public ?? publicCatalog());
   if (options.private !== undefined) {
     mkdirSync(join(root, 'repos', 'tau-brain'), { recursive: true });
     writeYaml(join(root, 'repos', 'tau-brain', 'repos.yaml'), options.private);
@@ -151,6 +153,12 @@ describe('strict validation', () => {
       /unsupported field/,
     ],
     [
+      'empty sparse patterns',
+      { ...publicCatalog(), groups: {}, repos: { bad: { upstream: 'example/bad', sparse: [] } } },
+      undefined,
+      /sparse must be a non-empty array/,
+    ],
+    [
       'path escape',
       { ...publicCatalog(), groups: {}, repos: { bad: { upstream: 'example/bad', path: '../outside' } } },
       undefined,
@@ -213,7 +221,7 @@ describe('strict validation', () => {
 describe('owner-routed atomic mutations', () => {
   it('changes only the selected catalog and validates before writing', () => {
     const root = makeRoot({ private: privateCatalog() });
-    const publicPath = join(root, 'repos.yaml');
+    const publicPath = join(root, 'tools', 'repositories', 'catalog.yaml');
     const privatePath = join(root, 'repos', 'tau-brain', 'repos.yaml');
     const publicBefore = readFileSync(publicPath, 'utf8');
     const privateBefore = readFileSync(privatePath, 'utf8');
@@ -236,7 +244,7 @@ describe('owner-routed atomic mutations', () => {
 
   it('rejects removal while another catalog owns a referencing group', () => {
     const root = makeRoot({ private: privateCatalog() });
-    const publicPath = join(root, 'repos.yaml');
+    const publicPath = join(root, 'tools', 'repositories', 'catalog.yaml');
     const privatePath = join(root, 'repos', 'tau-brain', 'repos.yaml');
     const before = [readFileSync(publicPath, 'utf8'), readFileSync(privatePath, 'utf8')];
     expect(() => removeRepo(readManifest(root), 'shared-source')).toThrow(/private group references remain: research/);
@@ -245,7 +253,7 @@ describe('owner-routed atomic mutations', () => {
 
   it('routes description, fork, unfork, and same-owner removal writes to the definition owner', () => {
     const root = makeRoot({ private: privateCatalog() });
-    const publicPath = join(root, 'repos.yaml');
+    const publicPath = join(root, 'tools', 'repositories', 'catalog.yaml');
     const privatePath = join(root, 'repos', 'tau-brain', 'repos.yaml');
     const publicBefore = readFileSync(publicPath, 'utf8');
 
@@ -272,7 +280,7 @@ describe('catalog-aware commands', () => {
     const root = makeRoot({ private: privateCatalog() });
     process.env['TAU_ROOT'] = root;
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const publicPath = join(root, 'repos.yaml');
+    const publicPath = join(root, 'tools', 'repositories', 'catalog.yaml');
     const privatePath = join(root, 'repos', 'tau-brain', 'repos.yaml');
     const publicBefore = readFileSync(publicPath, 'utf8');
 
@@ -315,7 +323,7 @@ describe('catalog-aware commands', () => {
   it('rejects ambiguous mutation targets and missing private setup without writing public', () => {
     const root = makeRoot();
     process.env['TAU_ROOT'] = root;
-    const before = readFileSync(join(root, 'repos.yaml'), 'utf8');
+    const before = readFileSync(join(root, 'tools', 'repositories', 'catalog.yaml'), 'utf8');
     expect(() => {
       run(['add', 'example/new', '--catalog', 'all', '-d', 'No']);
     }).toThrow(/cannot target all/);
@@ -325,6 +333,36 @@ describe('catalog-aware commands', () => {
     expect(() => {
       run(['add', 'example/new', '-d', 'No']);
     }).toThrow(/Authorized setup/);
-    expect(readFileSync(join(root, 'repos.yaml'), 'utf8')).toBe(before);
+    expect(readFileSync(join(root, 'tools', 'repositories', 'catalog.yaml'), 'utf8')).toBe(before);
+  });
+});
+
+describe('clone arguments', () => {
+  it('clones blobless unless shallow, and defers checkout for sparse patterns', () => {
+    expect(buildCloneArgs({ cloneUrl: 'u', directory: 'd' })).toStrictEqual([
+      'git',
+      'clone',
+      '--filter=blob:none',
+      'u',
+      'd',
+    ]);
+    expect(buildCloneArgs({ cloneUrl: 'u', directory: 'd', shallow: true, branch: 'b' })).toStrictEqual([
+      'git',
+      'clone',
+      '--depth',
+      '1',
+      '--branch',
+      'b',
+      'u',
+      'd',
+    ]);
+    expect(buildCloneArgs({ cloneUrl: 'u', directory: 'd', sparse: true })).toContain('--no-checkout');
+  });
+
+  it('keeps sparse patterns from the catalog', () => {
+    const root = makeRoot({
+      public: { ...publicCatalog(), groups: {}, repos: { big: { upstream: 'example/big', sparse: ['/src/**'] } } },
+    });
+    expect(readManifest(root).manifest.repos['big']?.sparse).toStrictEqual(['/src/**']);
   });
 });

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/naming-convention -- mocked Electron exports and environment keys retain production names */
-import { mkdir, mkdtemp, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Worker as NodeWorker } from 'node:worker_threads';
@@ -12,10 +12,12 @@ import type { TauHeaderInjectionOptions } from '#main/header-injection.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   computeControlChannels,
+  openDirectoryChannel,
   machinesChannels,
   quitChannels,
   servicesPortRelayTag,
   slicersChannels,
+  windowFullscreenChannel,
 } from '#shared/desktop-bootstrap.js';
 
 const originalTitle = process.title;
@@ -52,7 +54,6 @@ const state = vi.hoisted(() => ({
   shutdownOrder: [] as string[],
   servicesConnect: vi.fn(() => ({ id: 'services-port' })),
   geometryMeasurementConnect: vi.fn(() => ({ id: 'geometry-measurement-port' })),
-  geometryPerformanceConnect: vi.fn(() => ({ id: 'geometry-performance-port' })),
   geometryDispose: vi.fn(async () => undefined),
   geometrySampleResidentBytes: undefined as undefined | ((utility: { pid: number | undefined }) => number | undefined),
   servicesCompleteBinding: vi.fn(async (_input: Readonly<Record<string, string>>, _boundMilliseconds: number) => ({
@@ -143,17 +144,18 @@ const fakeWindow = {
       }
     }),
     isDestroyed: vi.fn(() => false),
-    on: vi.fn(),
+    on: vi.fn<(event: string, listener: (...args: unknown[]) => void) => void>(),
     setWindowOpenHandler: vi.fn(),
   },
   isDestroyed: vi.fn(() => false),
   isMinimized: vi.fn(() => false),
+  isFullScreen: vi.fn(() => false),
   restore: vi.fn(),
   loadURL: vi.fn(async () => undefined),
   show: vi.fn(),
   focus: vi.fn(),
   once: vi.fn(),
-  on: vi.fn(),
+  on: vi.fn<(event: string, listener: (...args: unknown[]) => void) => void>(),
 };
 
 /* The quit hold's only visible surface when it cannot settle (C69). */
@@ -206,7 +208,7 @@ vi.mock('electron', () => ({
       webRequest: {},
     },
   },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal: vi.fn(), openPath: vi.fn(async () => '') },
   utilityProcess: { fork: vi.fn() },
 }));
 
@@ -284,7 +286,7 @@ vi.mock('#main/navigation-policy.js', () => ({
   rendererOrigins: vi.fn(() => []),
 }));
 vi.mock('#main/services-broker.js', () => ({
-  rendererServicesConcerns: ['nodeFs', 'agentHost', 'geospecPerformance', 'exactMeasurement', 'machines'],
+  rendererServicesConcerns: ['nodeFs', 'agentHost', 'exactMeasurement', 'machines'],
   ServicesQuiescingError: class ServicesQuiescingError extends Error {},
   createServicesBroker: vi.fn((options: { utilityEntry: string }) => {
     state.servicesUtilityEntry = options.utilityEntry;
@@ -307,7 +309,6 @@ vi.mock('#main/geometry-broker.js', () => ({
     state.geometrySampleResidentBytes = options.sampleResidentBytes;
     return {
       connectMeasurement: state.geometryMeasurementConnect,
-      connectPerformance: state.geometryPerformanceConnect,
       connectSuite: vi.fn(),
       revokeUnauthorized: vi.fn(),
       dispose: state.geometryDispose,
@@ -326,6 +327,7 @@ vi.mock('#main/utility-environment.js', () => ({
     return {};
   }),
 }));
+vi.mock('#main/browser-host.js', () => ({ installBrowserHost: vi.fn() }));
 vi.mock('#main/quick-look.js', () => ({
   createQuickLookController: vi.fn(() => ({ dispose: vi.fn() })),
   removeStaleQuickLookSessions: vi.fn(),
@@ -371,7 +373,6 @@ afterEach(async () => {
   state.resolveFork = undefined;
   state.servicesConnect.mockClear();
   state.geometryMeasurementConnect.mockClear();
-  state.geometryPerformanceConnect.mockClear();
   state.geometrySampleResidentBytes = undefined;
   app.getAppMetrics.mockReset();
   app.getAppMetrics.mockReturnValue([]);
@@ -397,6 +398,7 @@ afterEach(async () => {
     Reflect.deleteProperty(process, 'resourcesPath');
   }
   vi.clearAllMocks();
+  fakeWindow.isFullScreen.mockReturnValue(false);
 });
 
 describe('desktop main compute owner', () => {
@@ -414,6 +416,47 @@ describe('desktop main compute owner', () => {
     });
     return resolve(join(state.userData, 'home', 'project'));
   };
+
+  it('should open only granted directories and propagate file manager failures', async () => {
+    const directory = await bootstrap();
+    await mkdir(directory, { recursive: true });
+    const { shell } = await import('electron');
+    const open = state.handlers.get(openDirectoryChannel)!;
+    await expect(open({ senderFrame: {} }, directory)).resolves.toBeUndefined();
+    const canonicalDirectory = await realpath(directory);
+    expect(shell.openPath).toHaveBeenCalledWith(canonicalDirectory);
+    vi.mocked(shell.openPath).mockClear();
+    await expect(open({ senderFrame: {} }, tmpdir())).rejects.toThrow('Reopen this folder');
+    await expect(open({ senderFrame: {} }, 42)).rejects.toThrow('refused');
+    await expect(open({ senderFrame: {} }, join(directory, 'missing'))).rejects.toThrow('ENOENT');
+    await symlink(tmpdir(), join(directory, 'escape'));
+    await expect(open({ senderFrame: {} }, join(directory, 'escape'))).rejects.toThrow('Reopen this folder');
+    expect(shell.openPath).not.toHaveBeenCalled();
+    vi.mocked(shell.openPath).mockResolvedValueOnce('No file manager available');
+    await expect(open({ senderFrame: {} }, directory)).rejects.toThrow('No file manager available');
+  }, 120_000);
+
+  it(
+    'should publish current native fullscreen state on enter, leave and renderer reload',
+    async () => {
+      await bootstrap();
+      const enter = fakeWindow.on.mock.calls.find(([name]) => name === 'enter-full-screen')?.[1];
+      const leave = fakeWindow.on.mock.calls.find(([name]) => name === 'leave-full-screen')?.[1];
+      const loaded = fakeWindow.webContents.on.mock.calls.find(([name]) => name === 'did-finish-load')?.[1];
+      expect(enter).toBeTypeOf('function');
+      expect(leave).toBeTypeOf('function');
+      expect(loaded).toBeTypeOf('function');
+      fakeWindow.isFullScreen.mockReturnValue(true);
+      enter?.();
+      expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith(windowFullscreenChannel, true);
+      loaded?.();
+      expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith(windowFullscreenChannel, true);
+      fakeWindow.isFullScreen.mockReturnValue(false);
+      leave?.();
+      expect(fakeWindow.webContents.send).toHaveBeenLastCalledWith(windowFullscreenChannel, false);
+    },
+    bootMilliseconds,
+  );
 
   /* AF-L03-1: the descriptors used to be frozen into the window's
    * `additionalArguments`, so a vendor model probe on a 5 s clock was a
@@ -1266,33 +1309,20 @@ describe('desktop main machine store', () => {
   };
 
   it(
-    'routes exact measurement and debug performance to geometry, never the services singleton',
+    'routes exact measurement to geometry, never the services singleton',
     async () => {
-      const { desktopEnvironment } = await import('#main/environment.js');
-      vi.mocked(desktopEnvironment).mockReturnValueOnce({
-        TAU_API_URL: 'http://127.0.0.1:1',
-        TAU_WEBSOCKET_URL: 'ws://127.0.0.1:1',
-        TAU_FRONTEND_URL: 'http://127.0.0.1:1',
-        TAU_DEBUG: 'true',
-      } as ReturnType<typeof desktopEnvironment>);
       await boot();
       const postMessage = vi.fn();
-      for (const [requestId, concern] of [
-        ['measure', 'exactMeasurement'],
-        ['diagnostic', 'geospecPerformance'],
-      ] as const) {
-        for (const listener of state.ipcListeners.get(servicesPortRelayTag) ?? []) {
-          listener({ senderFrame: { url: 'app://tau/index.html', postMessage } }, { requestId, concern });
-        }
+      for (const listener of state.ipcListeners.get(servicesPortRelayTag) ?? []) {
+        listener(
+          { senderFrame: { url: 'app://tau/index.html', postMessage } },
+          { requestId: 'measure', concern: 'exactMeasurement' },
+        );
       }
       expect(state.geometryMeasurementConnect).toHaveBeenCalledOnce();
-      expect(state.geometryPerformanceConnect).toHaveBeenCalledOnce();
       expect(state.servicesConnect).not.toHaveBeenCalled();
       expect(postMessage).toHaveBeenCalledWith(servicesPortRelayTag, { requestId: 'measure' }, [
         { id: 'geometry-measurement-port' },
-      ]);
-      expect(postMessage).toHaveBeenCalledWith(servicesPortRelayTag, { requestId: 'diagnostic' }, [
-        { id: 'geometry-performance-port' },
       ]);
     },
     bootMilliseconds,
@@ -1314,7 +1344,7 @@ describe('desktop main machine store', () => {
   );
 
   it(
-    'refuses the diagnostic geometry port when TAU_DEBUG is absent',
+    'refuses the retired GeoSpec performance concern as unknown',
     async () => {
       await boot();
       const postMessage = vi.fn();
@@ -1326,9 +1356,9 @@ describe('desktop main machine store', () => {
       }
       expect(postMessage).toHaveBeenCalledWith(servicesPortRelayTag, {
         requestId: 'diagnostic',
-        error: 'GeoSpec performance tools require TAU_DEBUG.',
+        error: 'services.unknown-concern',
       });
-      expect(state.geometryPerformanceConnect).not.toHaveBeenCalled();
+      expect(state.geometryMeasurementConnect).not.toHaveBeenCalled();
       expect(state.servicesConnect).not.toHaveBeenCalled();
     },
     bootMilliseconds,

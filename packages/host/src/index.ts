@@ -30,7 +30,7 @@ export type {
   HostJobRunnerRegistration,
 } from '#job-attempt-host.js';
 export type { HostCredential } from '#credential-store.js';
-export { defaultConfigDirectory } from '#credential-store.js';
+export { defaultConfigDirectory, defaultPayloadStore } from '#credential-store.js';
 export { hostDescriptorPath, hostSessionCookieName, startAgentServer } from '#agent-server.js';
 export type { AgentServerHandle, AgentServerOptions } from '#agent-server.js';
 export { startRunReporter } from '#run-reporter.js';
@@ -73,6 +73,8 @@ export type {
   ProjectHostRuntimeClient,
 } from '#project-host.js';
 export { keyedResource } from '#keyed-resource.js';
+export { openLocalParameterActors } from '#local-parameters.js';
+export type { LocalParameterActors } from '#local-parameters.js';
 export type { KeyedIncarnation, KeyedResource } from '#keyed-resource.js';
 export {
   createMachineSecretStore,
@@ -88,6 +90,14 @@ export {
 export type { CreateNodeMachineRuntimeOptions, MachineHostIdentity, MachineSecretStore } from '#machine-host.js';
 export { keepAwakeWhileStreaming, platformKeepAwakeBlocker } from '#keep-awake.js';
 export type { KeepAwakeBlocker, KeepAwakeRelease, KeepAwakeWhileStreamingOptions } from '#keep-awake.js';
+export { agentMachineFacet, openLocalMachines, openSharedMachineHost } from '#local-machines.js';
+export type {
+  LocalMachines,
+  LocalMachinesRefusal,
+  OpenLocalMachinesOptions,
+  OpenSharedMachineHostOptions,
+  SharedMachineHost,
+} from '#local-machines.js';
 export { completeMachineBinding } from '#machine-binding-ceremony.js';
 export type { CompleteMachineBindingInput, MachineBindingCeremonyEvent } from '#machine-binding-ceremony.js';
 export {
@@ -143,5 +153,12 @@ export {
   hostMcpLeaseCeiling,
   HostMcpCapabilityError,
   hostMcpCapabilityPrefix,
+  serveLocalHostMcp,
 } from '#mcp-server.js';
-export type { HostMcpCapabilityClaims, HostMcpEndpoint, HostMcpEndpointOptions } from '#mcp-server.js';
+export type {
+  HostMcpCapabilityClaims,
+  HostMcpEndpoint,
+  HostMcpEndpointOptions,
+  LocalHostMcp,
+  LocalHostMcpOptions,
+} from '#mcp-server.js';

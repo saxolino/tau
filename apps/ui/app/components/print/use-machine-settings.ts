@@ -12,7 +12,7 @@ import type {
   MachineSettingsProfile,
 } from '@taucad/types';
 import { useFileManager } from '#hooks/use-file-manager.js';
-import { isJsonSchemaValid } from '#lib/rjsf-validator.js';
+import { isJsonSchemaValid } from '@taucad/viewer/parameters/rjsf-validator';
 import type { SettingsProjection } from '#components/print/machine-settings-store.js';
 
 /** A provider's own saved preferences, as its `settingsConfiguration` form names them. @public */

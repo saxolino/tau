@@ -41,11 +41,11 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@t
 import { cn } from '@taucad/ui/utils/cn';
 import { sha256StringSync } from '@taucad/utils/hash';
 import { isRecord } from '@taucad/utils/schema';
-import { Parameters } from '#components/geometry/parameters/parameters.js';
-import type { ParameterEdit, Units } from '#components/geometry/parameters/rjsf-context.js';
-import { rjsfDefaultFormStateBehavior } from '#components/geometry/parameters/rjsf-utils.js';
+import { Parameters } from '@taucad/viewer/parameters/parameters';
+import type { ParameterEdit, Units } from '@taucad/viewer/parameters/rjsf-context';
+import { rjsfDefaultFormStateBehavior } from '@taucad/viewer/parameters/rjsf-utils';
+import { rjsfValidator } from '@taucad/viewer/parameters/rjsf-validator';
 import { describeOutcome, formatQuantity } from '#components/print/machine-facts.js';
-import { rjsfValidator } from '#lib/rjsf-validator.js';
 
 type Geometry = MachineFffProcess['geometry'];
 type QualificationStatus = MachineActionDescriptor['qualification']['status'];

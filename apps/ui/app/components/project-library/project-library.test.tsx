@@ -183,13 +183,24 @@ vi.mock('#hooks/use-file-manager.js', () => {
 /* D20: the Tau Cloud listing, scripted rather than fetched. */
 const { cloudListing, mockOpenCloudProject } = vi.hoisted(() => ({
   cloudListing: {
+    isFailed: false,
+    isFetching: false,
     current: [] as Array<{ id: string; name: string; role: 'owner' | 'write' | 'read'; updatedAt?: number }>,
   },
   mockOpenCloudProject: vi.fn(async () => undefined),
 }));
+vi.mock('#hooks/use-cloud-project-preview.js', () => ({
+  useCloudProjectPreview: () => ({ url: undefined, isLoading: false, isFailed: false, retry: vi.fn() }),
+}));
 vi.mock('#hooks/use-cloud-projects.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  useCloudProjects: () => ({ projects: cloudListing.current, isSettled: true, isFailed: false, isFetching: false }),
+  useCloudProjects: () => ({
+    projects: cloudListing.current,
+    isSettled: !cloudListing.isFetching && !cloudListing.isFailed,
+    isFailed: cloudListing.isFailed,
+    isFetching: cloudListing.isFetching,
+    retry: vi.fn(),
+  }),
 }));
 vi.mock('#hooks/use-open-cloud-project.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -210,10 +221,23 @@ vi.mock('#components/cad-preview.js', () => ({
 describe('ProjectLibrary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        public observe() {
+          /* No viewport in jsdom; thumbnail query is independently mocked. */
+        }
+        public disconnect() {
+          /* No observer registration to release in this fixture. */
+        }
+      },
+    );
     mockCookieValues = {};
     mockUseProjectsResult = createUseProjectsResult();
     mockTrashedProjects = [];
     cloudListing.current = [];
+    cloudListing.isFailed = false;
+    cloudListing.isFetching = false;
   });
 
   // ── D20: one list, local and Tau Cloud ──────────────────────────────────────
@@ -228,6 +252,39 @@ describe('ProjectLibrary', () => {
       );
     };
 
+    it('should preserve local projects while reporting a failed cloud catalog', () => {
+      cloudListing.isFailed = true;
+      renderLibrary();
+      expect(screen.getByRole('alert')).toHaveTextContent('Tau Cloud projects could not be loaded');
+      expect(screen.getByRole('button', { name: 'Retry Tau Cloud' })).toBeEnabled();
+      expect(screen.getByRole('link', { name: 'Open Gearbox Alpha' })).toBeInTheDocument();
+    });
+
+    it('should not claim an empty library while cloud discovery is pending or failed', () => {
+      mockUseProjectsResult.projects = [];
+      cloudListing.isFetching = true;
+      const view = render(
+        <MemoryRouter>
+          <TooltipProvider>
+            <ProjectLibrary />
+          </TooltipProvider>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+      expect(screen.getByText('Loading Tau Cloud projects…')).toBeInTheDocument();
+      cloudListing.isFetching = false;
+      cloudListing.isFailed = true;
+      view.rerender(
+        <MemoryRouter>
+          <TooltipProvider>
+            <ProjectLibrary />
+          </TooltipProvider>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+
     it('should list local-only, both and Tau-Cloud-only projects in the same grid, with no second section', () => {
       cloudListing.current = [
         { id: 'proj_aaaaaaaaaaaaaaaaaaaaa', name: 'Gearbox Alpha', role: 'owner' },
@@ -240,7 +297,7 @@ describe('ProjectLibrary', () => {
       expect(screen.getByRole('button', { name: 'Open Hinge Delta' })).toBeInTheDocument();
       /* Both: the Tau Cloud glyph, once. */
       expect(screen.getAllByText('Also on Tau Cloud')).toHaveLength(1);
-      expect(screen.getByText('Backed up on Tau Cloud. This device does not have it yet.')).toBeInTheDocument();
+      expect(screen.queryByText('Backed up on Tau Cloud. This device does not have it yet.')).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'From Tau Cloud' })).toBeNull();
     });
 
@@ -255,7 +312,8 @@ describe('ProjectLibrary', () => {
       expect(screen.getByRole('row', { name: /Gearbox Alpha/u })).toHaveTextContent('Also on Tau Cloud');
       expect(screen.getByRole('row', { name: /Bracket Beta/u })).not.toHaveTextContent('Also on Tau Cloud');
       const cloudOnly = screen.getByRole('row', { name: /Hinge Delta/u });
-      expect(cloudOnly).toHaveTextContent('Backed up on Tau Cloud. This device does not have it yet.');
+      expect(cloudOnly).toHaveTextContent('Tau Cloud');
+      expect(cloudOnly).not.toHaveTextContent('Backed up on');
       expect(within(cloudOnly).getByRole('button', { name: 'Open Hinge Delta' })).toBeInTheDocument();
     });
 
@@ -315,7 +373,7 @@ describe('ProjectLibrary', () => {
 
       const card = screen.getByRole('row', { name: /Reference Jig/u });
       expect(card).toHaveTextContent('Can view');
-      expect(card).toHaveTextContent('Shared with you. You can open it but not change it.');
+      expect(card).not.toHaveTextContent('This device does not have it yet.');
     });
 
     it('should show a Tau-Cloud-only project instead of the empty state when this device has none', () => {
@@ -845,6 +903,64 @@ describe('ProjectLibrary', () => {
       );
       return { search: () => currentSearch };
     };
+
+    it('should remain on the next page after queued table updates settle', async () => {
+      mockUseProjectsResult = {
+        ...createUseProjectsResult(),
+        projects: Array.from({ length: 44 }, (_, index) =>
+          makeProject(`proj_${String(index).padStart(21, '0')}`, `Project ${index}`),
+        ),
+      };
+      renderAt('/projects');
+      fireEvent.click(screen.getByRole('button', { name: 'Go to next page' }));
+      await waitFor(() => {
+        expect(screen.getByText('Page 2 of 3')).toBeInTheDocument();
+      });
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(screen.getByText('Page 2 of 3')).toBeInTheDocument();
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search projects' }), { target: { value: 'Project 43' } });
+      await waitFor(() => {
+        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+      });
+    });
+
+    it('should preserve search, sorting and column choices while switching views', async () => {
+      Element.prototype.hasPointerCapture = vi.fn(() => false);
+      Element.prototype.scrollIntoView = vi.fn();
+      const route = renderAt('/projects?q=Gearbox&sort=name:asc');
+      expect(screen.getByRole('searchbox', { name: 'Search projects' })).toHaveValue('Gearbox');
+      expect(screen.queryByRole('button', { name: 'Toggle columns' })).not.toBeInTheDocument();
+      const controls = screen.getByRole('group', { name: 'Project controls' });
+      expect(within(controls).getByRole('button', { name: 'Sort' })).toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole('button', { name: 'View mode' }), { key: 'Enter' });
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Table' }));
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Toggle columns' }), { key: 'Enter' });
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Description' }));
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      fireEvent.keyDown(screen.getByRole('button', { name: 'View mode' }), { key: 'Enter' });
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Grid' }));
+      expect(screen.getByRole('searchbox', { name: 'Search projects' })).toHaveValue('Gearbox');
+      expect(route.search()).toContain('sort=name:asc');
+      fireEvent.keyDown(screen.getByRole('button', { name: 'View mode' }), { key: 'Enter' });
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Table' }));
+      expect(screen.queryByRole('columnheader', { name: 'Description' })).not.toBeInTheDocument();
+      fireEvent.change(screen.getByRole('searchbox', { name: 'Search projects' }), { target: { value: 'missing' } });
+      expect(screen.getByRole('heading', { name: 'No matching projects' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+      expect(route.search()).not.toContain('q=');
+      expect(screen.getByRole('table')).toBeInTheDocument();
+    });
+
+    it('should use busy table rows for table loading without claiming an empty library', () => {
+      mockUseProjectsResult = { ...createUseProjectsResult(), projects: [], isLoading: true };
+      mockCookieValues[cookieName.projectViewMode] = 'table';
+      renderAt('/projects');
+      expect(screen.getByRole('table')).toHaveAttribute('aria-busy', 'true');
+      expect(screen.getAllByRole('row')).toHaveLength(9);
+      expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+    });
 
     it('lists trashed projects on arrival at /projects?trash=1', () => {
       useProjectsOptions.length = 0;

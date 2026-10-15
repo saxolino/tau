@@ -109,7 +109,7 @@ vi.mock('#routes/w.$workspace.$project/chat-converter.js', async (importOriginal
   const fixtures = await import('#routes/w.$workspace.$project/chat-print.fixture.js');
   return fixtures.converterMock(await importOriginal());
 });
-vi.mock('#components/geometry/parameters/parameters.js', async (importOriginal) => {
+vi.mock('@taucad/viewer/parameters/parameters', async (importOriginal) => {
   const fixtures = await import('#routes/w.$workspace.$project/chat-print.fixture.js');
   return fixtures.parametersMock(await importOriginal());
 });
@@ -809,7 +809,8 @@ describe('Print pane prepare and send', () => {
     await waitFor(() => {
       expect(quality).toHaveTextContent('Fine0.12 mm');
     });
-    // The choice is the project's: saved as the only changed key beside the printer model. The save is async.
+    // The choice is the project's: saved as the only changed key beside the printer model. The combobox shows the
+    // store's draft at once and the file write lands after it, so wait for the file too.
     await waitFor(() => {
       expect(preferencesText()).toBe('{\n  "preset": "fine"\n}\n');
     });

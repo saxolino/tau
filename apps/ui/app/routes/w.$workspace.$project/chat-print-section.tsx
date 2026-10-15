@@ -5,10 +5,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@taucad/ui/
 import type { JSONSchema7 } from '@taucad/json-schema';
 import type { ParameterManifest } from '@taucad/parameters';
 import { cn } from '@taucad/ui/utils/cn';
-import { disclosureMotion } from '#components/revisions/revision-actions.js';
+import { disclosureMotion } from '@taucad/ui/components/actions';
+import { formatFieldLabel } from '@taucad/ui/utils/label';
+import { rjsfValidator } from '@taucad/viewer/parameters/rjsf-validator';
 import { compileExportConfigurationManifest } from '#routes/w.$workspace.$project/chat-converter.js';
-import { rjsfValidator } from '#lib/rjsf-validator.js';
-import { formatFieldLabel } from '#utils/string.utils.js';
 
 /** A draft-7 schema and the defaults its owner declares. @public */
 export type ResolvedSchema = Readonly<{ schema: JSONSchema7; defaults: Record<string, unknown> }>;

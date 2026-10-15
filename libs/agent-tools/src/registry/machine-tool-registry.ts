@@ -573,7 +573,8 @@ const machineAction = async (
     };
   }
   const prompt = `${isSimulatedMachine(entry.descriptor.capabilities) ? 'Simulated: ' : ''}${actionPrompt(entry, descriptor, parameters)}`;
-  const resolution = await invocation.approve({
+  const resolution = await invocation
+    .approve({
     key,
     prompt,
     /* The Print pane shows the parameters and the prompt beside Approve: the person approves exactly this. */
@@ -589,7 +590,20 @@ const machineAction = async (
       // SAFETY: every field of the intent is JSON.
       intent: intent as unknown as JsonObject,
     },
-  });
+  })
+    .catch((error: unknown) => {
+      /* The host could not ask (an MCP client's form failed): no person answered, so the action waits for Tau. */
+      if ((error as { readonly code?: unknown } | undefined)?.code === 'APPROVAL_UNAVAILABLE') {
+        return undefined;
+      }
+      throw error;
+    });
+  if (resolution === undefined) {
+    return {
+      status: 'needs-approval',
+      message: `${descriptor.label} on ${entry.name} needs a person's approval, which this app could not ask for. Ask the person to do it in Tau.`,
+    };
+  }
   if (resolution.outcome !== 'approved') {
     return unapprovedReport(resolution.outcome, `${descriptor.label} on ${entry.name}`);
   }
@@ -968,17 +982,28 @@ const requestJob = async (
     /* Preflight refused, the retry found a job already past its approval, or no person can answer here. */
     return jobReport(job, entry, reported);
   }
-  const resolution = await invocation.approve({
-    key: approvalKey,
-    prompt: approvalPrompt(job, entry, plan.statedPlate),
-    payload: {
-      kind: 'job',
-      jobId,
-      machineId: entry.machineId,
-      fileName: job.program.name,
-      artifactDigest: plan.artifact.digest,
-    },
-  });
+  const resolution = await invocation
+    .approve({
+      key: approvalKey,
+      prompt: approvalPrompt(job, entry, plan.statedPlate),
+      payload: {
+        kind: 'job',
+        jobId,
+        machineId: entry.machineId,
+        fileName: job.program.name,
+        artifactDigest: plan.artifact.digest,
+      },
+    })
+    .catch((error: unknown) => {
+      /* The host could not ask (an MCP client's form failed): no person answered, so the job waits in Tau. */
+      if ((error as { readonly code?: unknown } | undefined)?.code === 'APPROVAL_UNAVAILABLE') {
+        return undefined;
+      }
+      throw error;
+    });
+  if (resolution === undefined) {
+    return jobReport(job, entry, reported);
+  }
   const settled = await settleApproval(client, { jobId, machineId: entry.machineId, resolution, signal });
   return jobReport(settled, entry, { approval: resolution.outcome, ...reported });
 };

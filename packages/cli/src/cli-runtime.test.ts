@@ -83,6 +83,9 @@ describe('createCliRuntime', () => {
         name.startsWith('@taucad/') &&
         ![
           '@taucad/agent-host',
+          // Package install support used by `tau install`, not runtime plugins.
+          '@taucad/bundler-core',
+          '@taucad/filesystem',
           '@taucad/host',
           '@taucad/jobs-solvers',
           '@taucad/parameters',

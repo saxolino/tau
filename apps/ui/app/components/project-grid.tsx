@@ -5,7 +5,7 @@ import { Badge } from '@taucad/ui/components/badge';
 import { Button } from '@taucad/ui/components/button';
 import { cn } from '@taucad/ui/utils/cn';
 import { formatSharePath } from '@taucad/share/locator';
-import { Loader } from '#components/ui/loader.js';
+import { Loader } from '@taucad/ui/components/loader';
 import { SvgIcon } from '#components/icons/svg-icon.js';
 import { CadPreviewProvider } from '#hooks/use-cad-preview.js';
 import type { BuiltinProjectCardModel, ProjectFiles } from '#constants/project-examples.js';
@@ -14,8 +14,7 @@ import { ProjectCard, ProjectCardCadPreview, ProjectCardMedia } from '#component
 import { RemixDialog } from '#components/share/fork-action.js';
 import type { RemixSource } from '#components/share/fork-action.js';
 
-/** The project card grid, shared by the Community, the landing strip and their skeletons. */
-export const projectGridClassName = 'grid grid-cols-2 gap-3 sm:gap-6 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5';
+import { projectGridClassName } from '#components/project-grid-layout.js';
 
 export type CommunityProjectGridProperties = {
   readonly projects: readonly BuiltinProjectCardModel[];

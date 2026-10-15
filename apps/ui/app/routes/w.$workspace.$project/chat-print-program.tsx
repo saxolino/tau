@@ -10,7 +10,7 @@ import type {
 import { fileExtensions, mimeTypes } from '@taucad/types/constants';
 import { Button } from '@taucad/ui/components/button';
 import { sha256Bytes } from '@taucad/utils/hash';
-import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
+import { ParameterSelect } from '@taucad/viewer/parameters/parameter-select';
 import { describePrintError } from '#components/print/machine-facts.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
 import { useFileManager } from '#hooks/use-file-manager.js';

@@ -27,11 +27,11 @@ import type {
 import type { BambuPresetSummary, BambuStudioSelection, BambuStudioSettings } from '@taucad/slicer/bambu-studio';
 import type { RJSFSchema } from '@rjsf/utils';
 import type { ParameterManifest } from '@taucad/parameters';
-import type * as ParametersModule from '#components/geometry/parameters/parameters.js';
+import type * as ParametersModule from '@taucad/viewer/parameters/parameters';
 import type * as ChatConverter from '#routes/w.$workspace.$project/chat-converter.js';
-import { mergeFormDefaults } from '#components/geometry/parameters/rjsf-utils.js';
+import { mergeFormDefaults } from '@taucad/viewer/parameters/rjsf-utils';
 import { projectFiles } from '#components/print/testing/project-files.js';
-import { formatDisplayLabel } from '#utils/string.utils.js';
+import { formatDisplayLabel } from '@taucad/ui/utils/label';
 import type { PendingAgentHostApproval } from '#components/chat/chat-approval-banner.js';
 import type { DesktopBambuStudio } from '#filesystem/desktop-bridge.js';
 import type { PendingMachineAction } from '#components/print/machine-action-approval.js';

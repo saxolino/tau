@@ -1,6 +1,6 @@
 /** Map each model filament to a loaded material slot before slicing or sending. */
 import type { MaterialSlotAddress } from '@taucad/runtime/machine';
-import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
+import { ParameterSelect } from '@taucad/viewer/parameters/parameter-select';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
 import { slotKey } from '#components/print/machine-facts.js';
 import type { ObservedSlot } from '#components/print/machine-facts.js';

@@ -12,6 +12,8 @@ import { agentApprovalToolName } from '#services/agent-host-event-projection.js'
 
 const respondToToolApproval = vi.fn(async () => undefined);
 let messages: readonly MyUIMessage[] = [];
+let isDebug = false;
+vi.mock('#flags/use-feature.js', () => ({ useFeature: () => isDebug }));
 let activeExecution: CombinedChatState['activeExecution'];
 let machines: RuntimeTransportFacet<MachineClient> = { available: false, reason: 'unsupported' };
 
@@ -105,6 +107,7 @@ describe('pendingAgentHostApprovals', () => {
         prompt: 'create_file',
         options: [],
         tauTool: true,
+        request: { input: { targetFile: 'main.scad', content: '' } },
       },
     ]);
   });
@@ -113,6 +116,7 @@ describe('pendingAgentHostApprovals', () => {
 describe('ChatApprovalBanner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    isDebug = false;
     messages = [];
     activeExecution = { kind: 'acp', hostId: 'origin', agentId: 'codex' };
     machines = { available: false, reason: 'unsupported' };
@@ -132,15 +136,15 @@ describe('ChatApprovalBanner', () => {
     expect(screen.getByRole('region', { name: 'Approval required' })).toBeInTheDocument();
     /* The bare registry id: `externalAgentDisplayName` reads the descriptor a
      * paired host published, and this unit has no host. */
-    expect(screen.getByText('codex is waiting for approval')).toBeInTheDocument();
+    expect(screen.getByText('codex · Permission')).toBeInTheDocument();
     expect(screen.getByText('write hello.txt')).toBeInTheDocument();
     expect(screen.getByText(/Allow/u)).toBeInTheDocument();
     expect(screen.getByText(/Reject/u)).toBeInTheDocument();
     // SP-4 Result 3: never a promise of per-action confinement.
-    expect(screen.getByText(/keep working in this chat's tree/u)).toBeInTheDocument();
+    expect(screen.queryByText(/keep working in this chat's tree/u)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Standing-grant persistence is controlled by the connected agent or MCP server/u),
-    ).toBeInTheDocument();
+      screen.queryByText(/Standing-grant persistence is controlled by the connected agent or MCP server/u),
+    ).not.toBeInTheDocument();
   });
 
   it('claims a branch only for the placement that actually materializes one', () => {
@@ -149,9 +153,9 @@ describe('ChatApprovalBanner', () => {
 
     render(<ChatApprovalBanner />);
 
-    expect(screen.getByText('Tau is waiting for approval')).toBeInTheDocument();
+    expect(screen.getByText('Tau · Permission')).toBeInTheDocument();
     expect(screen.queryByText(/chat's tree/u)).not.toBeInTheDocument();
-    expect(screen.getByText(/does not ask again for each action/u)).toBeInTheDocument();
+    expect(screen.queryByText(/does not ask again for each action/u)).not.toBeInTheDocument();
   });
 
   /* V6: the record is the truth. The composer has moved on to another agent
@@ -163,7 +167,7 @@ describe('ChatApprovalBanner', () => {
 
     render(<ChatApprovalBanner />);
 
-    expect(screen.getByText('claude is waiting for approval')).toBeInTheDocument();
+    expect(screen.getByText('claude · Permission')).toBeInTheDocument();
     expect(screen.queryByText(/codex is waiting/u)).not.toBeInTheDocument();
   });
 
@@ -186,7 +190,7 @@ describe('ChatApprovalBanner', () => {
 
     render(<ChatApprovalBanner />);
 
-    expect(screen.getByText('Tau is waiting for approval')).toBeInTheDocument();
+    expect(screen.getByText('Tau · Permission')).toBeInTheDocument();
     expect(screen.queryByText(/codex is waiting/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/chat's tree/u)).not.toBeInTheDocument();
   });

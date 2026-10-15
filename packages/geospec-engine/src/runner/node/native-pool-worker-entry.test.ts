@@ -14,7 +14,7 @@ const owner = vi.hoisted(() => ({
 }));
 
 vi.mock('node:worker_threads', () => ({ parentPort: null, workerData: undefined }));
-vi.mock('@taucad/geospec-engine-native/node', () => ({
+vi.mock('geospec-engine/node', () => ({
   // eslint-disable-next-line @typescript-eslint/naming-convention -- Preserve the native package's public constructor export.
   Engine: class {
     public close = owner.close;
@@ -25,7 +25,6 @@ vi.mock('@taucad/runtime/node', () => ({ createNodeClient: owner.client }));
 vi.mock('@taucad/runtime/worker', () => ({ defineRuntime: owner.definition }));
 vi.mock('@taucad/picogk', () => ({ loadPicogkKernelOptions: owner.resources, picogk: owner.plugin }));
 vi.mock('#model/default-runtime.js', () => ({ defaultRuntime: owner.defaults }));
-vi.mock('#register-node.js', () => ({}));
 vi.mock('#runner/node/node-vm-filesystem.js', () => ({ createNodeVmFileSystem: vi.fn(() => ({})) }));
 vi.mock('#runner/pool/worker-host.js', () => ({ startGeoSpecPoolWorkerHost: vi.fn() }));
 

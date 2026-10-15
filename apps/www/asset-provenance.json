@@ -8,10 +8,10 @@
   "assemblyParts": 34,
   "illustrationOnly": true,
   "freshGeospecRun": true,
-  "renderRecipe": "scripts/capture-stills.mjs",
-  "responsiveAndSocialRecipe": "scripts/optimize-assets.mjs",
+  "renderRecipe": "scripts/capture-stills.ts",
+  "responsiveAndSocialRecipe": "scripts/optimize-assets.ts",
   "firstPartySourceLicense": "Apache-2.0",
-  "notes": "Hero poster and story stills are captured from the shipped scene module (scripts/capture-stills.mjs) so static and live views match. The faceWidth 18 variant stores per-vertex axial offsets exported from the authored model with the same tessellation; XY is unchanged and the committed base mesh is verified identical before export. The GeoSpec evidence is a recorded local run of the example's own spec (3 passed, 0 failed, 7 inconclusive); it is displayed as recorded, not re-run by visitors. Agent lanes and print preparation are illustrations; rigid kinematics are prescribed, not physics. The metal Escher star remains Tau's own metal-morph capture.",
+  "notes": "Hero poster and story stills are captured from the shipped scene module (scripts/capture-stills.ts) so static and live views match. The faceWidth 18 variant stores per-vertex axial offsets exported from the authored model with the same tessellation; XY is unchanged and the committed base mesh is verified identical before export. The GeoSpec evidence is a recorded local run of the example's own spec (3 passed, 0 failed, 7 inconclusive); it is displayed as recorded, not re-run by visitors. Agent lanes and print preparation are illustrations; rigid kinematics are prescribed, not physics. The metal Escher star remains Tau's own metal-morph capture.",
   "refreshedAssets": [
     {
       "path": "apps/www/public/metal-hero.webp",
@@ -35,8 +35,8 @@
     },
     {
       "path": "apps/www/public/social.png",
-      "bytes": 151747,
-      "sha256": "e9ddf0e76126e28581f52121c56309f65e18fe8dd43527e362e0870b0840c930"
+      "bytes": 141634,
+      "sha256": "52df3fbe02d4d57df6978669a8561d8cc4a27fe43084b59750d6126496393180"
     }
   ],
   "metalHero": {
@@ -62,58 +62,58 @@
   "liveViews": [
     {
       "path": "apps/www/public/hero-gearbox.webp",
-      "bytes": 120742,
-      "sha256": "fc2ccc1b2bb7fd4157aface1c49e8a6ad378404c62d74ba8df88de296b30cd65"
+      "bytes": 367110,
+      "sha256": "f55c0686d542faca2f6392f5a8a6162b0d261d261a591089b03849f4f261d10a"
     },
     {
       "path": "apps/www/public/hero-gearbox-720.webp",
-      "bytes": 58372,
-      "sha256": "5aa9e7ea667e4f695eabfa833e81da75fcb967438a3eff20daf3db8c57deb233"
+      "bytes": 161554,
+      "sha256": "f3a20b06633182a9de4625012a8b56714acd1065499d6b6b241a64860dc78a5f"
     },
     {
       "path": "apps/www/public/story-0.webp",
-      "bytes": 1952,
-      "sha256": "ccd1b54012fed2798a0c967a6b9b6787676c2d0d8f2ee83899e3703867d92f5f"
+      "bytes": 82,
+      "sha256": "d1f3d9cb4c1281eadc3ba9fc6c4e3a588b9b1aaeb2785598f55bd6ad5b01ed99"
     },
     {
       "path": "apps/www/public/story-1.webp",
-      "bytes": 1952,
-      "sha256": "ccd1b54012fed2798a0c967a6b9b6787676c2d0d8f2ee83899e3703867d92f5f"
+      "bytes": 82,
+      "sha256": "d1f3d9cb4c1281eadc3ba9fc6c4e3a588b9b1aaeb2785598f55bd6ad5b01ed99"
     },
     {
       "path": "apps/www/public/story-2.webp",
-      "bytes": 37272,
-      "sha256": "43e4dd1fac09145bc5397df55f0af0044dd1a8db313ac86507609322e5fb616d"
+      "bytes": 67368,
+      "sha256": "c5cf3437a5bdb164b7448b677983760a4cb33432e3003ee0b1ec8025f60d0fe6"
     },
     {
       "path": "apps/www/public/story-3.webp",
-      "bytes": 21038,
-      "sha256": "862ce7b195523d7a8be1ec75a68b4e9d84d25a507b551e252799e6f871bc59d3"
+      "bytes": 109666,
+      "sha256": "5b49dd74718ad5ab98ea28252a28a56cc85da858ea3e86534b2d640a16463ae1"
     },
     {
       "path": "apps/www/public/story-4.webp",
-      "bytes": 63962,
-      "sha256": "93e52901f53f4acdb165712872fbbf522456e8aed1bef3dc079fbf902bdb3b1d"
+      "bytes": 209132,
+      "sha256": "c97d629789529fb7018f8bf0ee085ff66c00210f40f6f1b0ef647195df7394a9"
     },
     {
       "path": "apps/www/public/story-5.webp",
-      "bytes": 88964,
-      "sha256": "a226f26de3ff95a5f58e451cbade22b4a4df1810a6f4b3f18134fda7a14a3f3e"
+      "bytes": 283572,
+      "sha256": "1c153bd342f7cc3a00605e19e1091231be45555f66e5fc09af01a402a4ff49f7"
     },
     {
       "path": "apps/www/public/story-6.webp",
-      "bytes": 97904,
-      "sha256": "f44e86c6c6064d7080decbf044322468208c0baacf925d7f64f925170b715da8"
+      "bytes": 302686,
+      "sha256": "88c6d5ee305acf0abd8c60f9430316cebcf77d865b8027565d06daf9f2880765"
     },
     {
       "path": "apps/www/public/story-7.webp",
-      "bytes": 50850,
-      "sha256": "b26e737f7d6b47966ec3a8a0e4d4407a01dc73b4cb60fe30a976212f7a6e2b88"
+      "bytes": 202260,
+      "sha256": "93ea9f5d5a63333cc631b298f4a3327788fc39e015f1a5ae818788ccc45df46d"
     },
     {
       "path": "apps/www/public/story-8.webp",
-      "bytes": 17780,
-      "sha256": "c6d2e02ad4c238eab6d1053d1aedd2b44183a86a9958785a6c654fd91cc25163"
+      "bytes": 91918,
+      "sha256": "dd5c9e2e8b92df94a2debae8cfde18480e3cf95c8b8c1349801c93e132cf33b1"
     }
   ],
   "variantGeometry": [
@@ -127,5 +127,28 @@
       "bytes": 2225,
       "sha256": "52ee23b6d9cf33bad1b2661291732d062f17bce7fddb93e0010f4f18ce92906a"
     }
-  ]
+  ],
+  "fontSubsets": {
+    "recipe": "README.md#develop-and-verify",
+    "sourceLicense": "SIL OFL-1.1",
+    "tool": "fonttools 4.60.1; Brotli 1.2.0",
+    "assets": [
+      {
+        "path": "apps/www/public/geist-latin.woff2",
+        "bytes": 23180,
+        "sha256": "9dda7918ccc49ae7dd6e612b9185f1386fb6c94427642154103d30a8d3c04e62",
+        "source": "apps/www/public/geist.woff2",
+        "sourceSha256": "a369fcf5628ea2aa4e1b9e2ec6a5b3624e365bda588e1f0f2f12b564f728fbb8",
+        "weightRange": "400:600"
+      },
+      {
+        "path": "apps/www/public/geist-mono-latin.woff2",
+        "bytes": 23392,
+        "sha256": "af6693414abbbed870d33ef5c390707b3ae88371b452bb16e142727ebf4f1560",
+        "source": "apps/www/public/geist-mono.woff2",
+        "sourceSha256": "fba8f577f38a2bbcbe818efa6348dd58f36303a10b8737c42fefad275be563ab",
+        "weightRange": "400:500"
+      }
+    ]
+  }
 }

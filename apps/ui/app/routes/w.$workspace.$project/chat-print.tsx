@@ -1,3 +1,6 @@
+import { useSelector } from '@xstate/react';
+import { useProjectAvailability } from '#hooks/use-project-availability.js';
+import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
 import { useMemo } from 'react';
 import { CircleAlert, CircleCheck, Drill, LoaderCircle, OctagonX, PauseCircle, Printer, RefreshCw } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -7,11 +10,11 @@ import type { RuntimeTransportFacet } from '@taucad/runtime/transport';
 import { Badge } from '@taucad/ui/components/badge';
 import { Button } from '@taucad/ui/components/button';
 import { cn } from '@taucad/ui/utils/cn';
-import { ParameterSelect } from '#components/geometry/parameters/parameter-select.js';
+import { ParameterSelect } from '@taucad/viewer/parameters/parameter-select';
 import { describeOutcome } from '#components/print/machine-facts.js';
 import { PrintSetupRow } from '#components/print/print-setup-row.js';
-import { ParametersBoolean } from '#components/geometry/parameters/parameters-boolean.js';
-import { PanelEmptyState } from '#components/ui/panel-empty-state.js';
+import { ParametersBoolean } from '@taucad/viewer/parameters/parameters-boolean';
+import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { useMachineControl, usePresence } from '#hooks/use-machine-control.js';
 import type { MachineControl, Presence } from '#hooks/use-machine-control.js';
 import { useMachineDirectory, useMachinesFacet } from '#hooks/use-machines.js';
@@ -24,6 +27,7 @@ import { useSettingsDialog } from '#hooks/use-settings-dialog.js';
 import {
   Activities,
   ControlStage,
+  FailureEvidence,
   asksPresenceAtPane,
   isRunOwned,
   stopControlId,
@@ -576,6 +580,7 @@ function MachinePanel({
         {/* What needs the person stays outside the stages: a decision is never folded away. */}
         <ObservationNotice entry={entry} />
         <MachineAlerts control={control} />
+        <FailureEvidence client={client} entry={entry} />
         {control.error === undefined ? null : (
           <PrintNotice tone='error' role='alert'>
             {control.error}
@@ -670,8 +675,41 @@ export const PrintPanel = ({
  * @returns The Print pane.
  * @public
  */
-export const PrintPanelBody = ({ isShown = true }: { readonly isShown?: boolean }): React.JSX.Element => {
-  const machines = useMachinesFacet();
+const noChatApprovalBridge: MachineApprovalBridge = {
+  pendingForJob: () => undefined,
+  pendingActions: () => [],
+  respond: async () => {
+    throw new Error('A chat must be loaded before responding to its approval.');
+  },
+};
+
+function ChatPrintPanel({
+  isShown,
+  machines,
+}: {
+  readonly isShown: boolean;
+  readonly machines: RuntimeTransportFacet<MachineClient>;
+}): React.JSX.Element {
   const bridge = useMachineApprovalBridge();
   return <PrintPanel machines={machines} bridge={bridge} isShown={isShown} />;
+}
+
+function AvailablePrintPanel({ isShown }: { readonly isShown: boolean }): React.JSX.Element {
+  const { editorRef } = useProject();
+  const chatId = useSelector(editorRef, (snapshot) => snapshot.context.focusedChatId);
+  const machines = useMachinesFacet();
+  return chatId === undefined ? (
+    <PrintPanel machines={machines} bridge={noChatApprovalBridge} isShown={isShown} />
+  ) : (
+    <ChatPrintPanel isShown={isShown} machines={machines} />
+  );
+}
+
+export const PrintPanelBody = ({ isShown = true }: { readonly isShown?: boolean }): React.JSX.Element => {
+  const availability = useProjectAvailability();
+  return availability === 'ready' ? (
+    <AvailablePrintPanel isShown={isShown} />
+  ) : (
+    <ProjectSyncPlaceholder state={availability} />
+  );
 };

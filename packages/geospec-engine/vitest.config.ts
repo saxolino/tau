@@ -1,4 +1,4 @@
-import { configDefaults, defineConfig } from 'vitest/config';
+import { defineConfig } from 'vitest/config';
 
 /** Broad by construction: new executable source is covered unless it enters one of these audited non-production classes. */
 export const engineCoverageSourcePolicy = {
@@ -17,14 +17,6 @@ export const engineCoverageSourcePolicy = {
 export default defineConfig({
   test: {
     environment: 'node',
-    exclude: [
-      ...configDefaults.exclude,
-      'e2e/**',
-      'experiments/performance-lab/performance-lab.test.ts',
-      'experiments/performance-lab/performance-lab-cli.test.ts',
-      'experiments/performance-lab/performance-lab-focus.test.ts',
-    ],
-    setupFiles: ['./src/testing/vitest-setup.ts'],
     typecheck: {
       enabled: true,
       include: ['**/*.test-d.ts'],

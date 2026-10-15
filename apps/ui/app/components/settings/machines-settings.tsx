@@ -19,7 +19,7 @@
  */
 
 import { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { SubmitEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { ChevronDown, CircleAlert, LoaderCircle, Trash2 } from 'lucide-react';
 import { fffProcessOf, isSimulatedMachine, machineCredentialOf } from '@taucad/runtime/machine';
@@ -44,7 +44,7 @@ import { failureCodeOf } from '#components/print/machine-facts.js';
 import { ConfigurationFields, MachineDetails, fieldNames } from '#components/settings/machine-details.js';
 import { SettingsSectionCard } from '#components/settings/settings-item.js';
 import { desktopBridge } from '#filesystem/desktop-bridge.js';
-import { useKeybinding } from '#hooks/use-keyboard.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { printersInUseElsewhere, useMachineDirectory, useMachinesFacet } from '#hooks/use-machines.js';
 
 type BindInput = {
@@ -695,7 +695,7 @@ function MachinesPanel({ client }: { readonly client: MachineClient }): React.JS
     setFinding(false);
   };
 
-  const onBindSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const onBindSubmit = async (event: SubmitEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (selected === undefined) {
       return;
@@ -837,7 +837,7 @@ function MachinesPanel({ client }: { readonly client: MachineClient }): React.JS
             <Label htmlFor='machines-bind-model'>Model</Label>
             <select
               id='machines-bind-model'
-              className='min-h-8 rounded-md border bg-background px-2 text-sm'
+              className='min-h-8 rounded-md border bg-card px-2 text-sm'
               value={selected.id}
               onChange={(event) => {
                 const next = providers.get(event.target.value);

@@ -628,6 +628,34 @@ describe('machine tool registry', () => {
       expect(result.content).toContain(line);
     });
 
+    it('should leave the job awaiting approval in Tau when the host could not ask the person', async () => {
+      const fixture = fixtureClient();
+      const approve = vi.fn<NonNullable<HostToolInvocation['approve']>>(async () => {
+        throw Object.assign(new Error('The agent app could not ask the person.'), { code: 'APPROVAL_UNAVAILABLE' });
+      });
+      const result = await run(fixture.client, {
+        toolName: 'request_job',
+        input: { targetFile: 'main.ts' },
+        approve,
+      });
+      expect(approve).toHaveBeenCalledOnce();
+      expect(fixture.withdrawJob).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        isError: false,
+        content: { job: { jobId: 'call-1', state: 'awaiting-approval' } },
+      });
+      expect(result.content).not.toHaveProperty('approval');
+      /* Any other rejection, such as a Tau host aborting the paused attempt, is not swallowed. */
+      const aborted = await run(fixtureClient().client, {
+        toolName: 'request_job',
+        input: { targetFile: 'main.ts' },
+        approve: vi.fn<NonNullable<HostToolInvocation['approve']>>(async () => {
+          throw new Error('attempt aborted');
+        }),
+      });
+      expect(aborted).toMatchObject({ isError: true });
+    });
+
     it('names the bound machines when the choice is missing, ambiguous or unknown', async () => {
       const { client } = fixtureClient({
         entries: [fixtureEntry(), fixtureEntry({ machineId: 'machine-2', name: 'Mini' })],

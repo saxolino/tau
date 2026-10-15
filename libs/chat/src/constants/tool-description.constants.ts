@@ -152,6 +152,13 @@ Ask only what the person alone can decide and what changes the work: what to bui
 Ask early, before investing in a direction. Put your recommendation first: it is adopted if nobody answers within waitSeconds. The person can always answer in their own words. Use waitSeconds 0 when you can start on the recommendation now.
 
 Returns each answer and who settled it. Unless status is "answered", proceed with the recommended option and say once which you assumed; a later answer arrives as a message. Never repeat a question or write a multiple-choice question as prose.`,
+  [toolName.installPackages]: `Install the project's npm packages: edit package.json dependencies, write package-lock.json, and unpack each package into node_modules.
+
+Call it when a JavaScript or TypeScript model imports an npm package that package.json does not list (pass it in add), when an import fails with package-not-locked or package-not-installed, or when the person asks to add, remove or upgrade a package. Until it runs, those imports fail or fall back to a CDN bundle; building never installs.
+
+add sets dependencies[name] to a range ("^4.0.3"), as \`npm install name@range\`; remove deletes names, as \`npm uninstall\`; upgrade re-resolves the named packages to the newest version their ranges allow. With none of them it installs what package.json and the lock already say. Only the npm registry is used, and package scripts never run.
+
+Returns whether each file changed, the direct dependencies as locked, and issues whose messages name the fix. When resolution is refused (no-matching-version, peer-conflict, manifest-conflict) nothing is written; a package that fails to download is reported and the rest still install.`,
   [toolName.listMachines]:
     'List every machine bound on this computer, one line each: id, name, model, connection, state and any run. Read-only.',
   [toolName.getMachine]: `Read one bound machine as it last reported: state, run and progress, components, activities and the questions they ask, alerts and checks with remedies, recent jobs and operations, what stop does, and every declared action with its parameters, what it does, who may use it and whether you may use it now. Read-only.
@@ -176,6 +183,7 @@ Actions:
 - describe: which branch the project is on, its current revision number, and every branch it holds
 - log: that branch's revisions, newest first ({ action: 'log', limit: 10 })
 - diff: the files that changed between two revisions ({ action: 'diff', from, to })
+- conflict: both sides of a conflict waiting for a decision ({ action: 'conflict', revision }); your files hold only "ours"
 
 Use this to find out what changed and when — before rewriting a file someone
 else just changed, when a user refers to "the last version", or to check whether

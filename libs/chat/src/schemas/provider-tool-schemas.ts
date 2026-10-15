@@ -38,6 +38,7 @@ export const cadProviderFacingToolNames = [
   toolName.revisions,
   toolName.updateTodos,
   toolName.askQuestions,
+  toolName.installPackages,
   toolName.listMachines,
   toolName.getMachine,
   toolName.machineAction,
