@@ -111,6 +111,11 @@ export { createHostToolRegistry } from '#agent-tools.js';
 export type { HostToolRegistryOptions } from '#agent-tools.js';
 export { prepareKernelToolName } from '#prepare-kernel-tool.js';
 export type { HostPrepareKernel, HostPrepareKernelProgress } from '#agent-tools.js';
+export type {
+  RuntimeChildNativeKernels,
+  RuntimeChildWorker,
+  RuntimeChildWorkerLaunch,
+} from '#runtime-child-supervisor.js';
 export {
   acpAdapterEnvironment,
   acpAdapterOverrideVariable,
