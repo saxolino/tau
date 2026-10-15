@@ -10,7 +10,8 @@
  *    ecosystem needs one).
  * 2. npm projects: `tau install` writes `package-lock.json`, as the app's Install does.
  * 3. Copy the project, without `node_modules`, to a bare directory outside the repository.
- * 4. Tau's export of the original: `tau prepare <kernel>` for a native kernel, then `tau export … --ext=<glb|json>`.
+ * 4. Tau's export of the original: `tau prepare <kernel>` for a native kernel, then `tau export … --ext=<glb|json>`;
+ *    for KCL, the golden export committed under `fixtures/standalone-golden/` (see {@link StandaloneRow.golden}).
  * 5. The bare copy with the native toolchain only: npm (`npm ci --ignore-scripts`, then the runner), build123d
  *    (`uv sync --locked`, `uv run main.py`), PicoGK (`dotnet restore --locked-mode`, `dotnet run`), OpenSCAD
  *    (`openscad -o`) or KCL (`zoo kcl export`).
@@ -21,7 +22,7 @@
  *
  * Usage: node scripts/src/check-standalone-project.ts --ecosystem <npm|pypi|nuget|none|kcl> [--kernel <id>] [--work <dir>]
  * Environment: the ecosystem's tools on PATH (node and npm; uv; the .NET 10 SDK; openscad; zoo). KCL needs
- *   ZOO_TOKEN (the Zoo CLI) and TAU_API_TOKEN (Tau's export through its Zoo proxy).
+ *   ZOO_TOKEN (the Zoo CLI runs the model on Zoo's engine); without it the KCL row fails and says so.
  * Exit codes: 0 when every row matches Tau's export; 1 when a row fails; 2 on a usage error.
  */
 
@@ -73,9 +74,17 @@ export type StandaloneRow = {
   readonly run: Command;
   /** The file the native run writes, relative to the bare copy; a directory (`/`) holds exactly one mesh. */
   readonly output: string;
-  /** Environment variables the row cannot run without. */
+  /** Environment variables the row cannot run without; the row fails, naming them, while one is unset. */
   readonly credentials?: readonly string[];
+  /**
+   * Tau's export, committed under `fixtures/standalone-golden/`, compared in place of a live `tau export` for a row
+   * whose live export needs a Tau session (KCL reaches Zoo only through Tau Cloud's proxy).
+   */
+  readonly golden?: string;
 };
+
+/** The committed golden exports. */
+export const goldenDirectory = join(import.meta.dirname, 'fixtures/standalone-golden');
 
 const npmInstall: readonly Command[] = [['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund']];
 const nodeRunner = (output: string): Command => ['node', 'run.mjs', output];
@@ -120,7 +129,11 @@ export const standaloneRows: Readonly<Record<string, StandaloneRow>> = {
     run: ['zoo', 'kcl', 'export', '--output-format=stl', 'main.kcl', 'native'],
     // The Zoo CLI names the file it writes into the output directory.
     output: 'native/',
-    credentials: ['ZOO_TOKEN', 'TAU_API_TOKEN'],
+    credentials: ['ZOO_TOKEN'],
+    // The fixture's 20 × 10 × 5 mm block as Tau exports it: `tau export main.scad --ext=glb` of the one-line OpenSCAD
+    // project `cube([20, 10, 5]);` (the same solid, which Tau exports without a session), 12 triangles, 1000 mm³.
+    // Regenerate with that command if the fixture changes; a live `tau export main.kcl` needs TAU_API_TOKEN.
+    golden: 'zoo.glb',
   },
 };
 
@@ -276,8 +289,8 @@ const checkRow = (kernel: string, work: string): RowVerdict => {
     return {
       kernel,
       pass: false,
-      step: 'tau export',
-      detail: `${missing.join(' and ')} not set: the KCL row needs a Zoo API token for the Zoo CLI and a Tau session for Tau's export through its Zoo proxy.`,
+      step: 'native run',
+      detail: `needs ${missing.join(' and ')}: the Zoo CLI runs KCL on Zoo's engine with a Zoo API token, and ${missing.join(' and ')} is not set.`,
     };
   }
   const project = join(work, 'project');
@@ -294,8 +307,11 @@ const checkRow = (kernel: string, work: string): RowVerdict => {
     if (row.prepare !== undefined) {
       tau('tau prepare', ['prepare', row.prepare]);
     }
-    const tauOutput = join(work, `tau.${row.tauExtension}`);
-    tau('tau export', ['export', join(project, main), `--ext=${row.tauExtension}`, `--output=${tauOutput}`]);
+    const tauOutput =
+      row.golden === undefined ? join(work, `tau.${row.tauExtension}`) : join(goldenDirectory, row.golden);
+    if (row.golden === undefined) {
+      tau('tau export', ['export', join(project, main), `--ext=${row.tauExtension}`, `--output=${tauOutput}`]);
+    }
 
     const environment = nativeEnvironment();
     for (const command of row.install) {

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @nx/enforce-module-boundaries -- the catalog the oracle covers.
 import { kernelConfigurations } from '../../libs/types/src/constants/kernel.constants.ts';
 /* oxlint-enable no-restricted-imports */
-import { createProject, ecosystemKernels, fixturesDirectory, standaloneRows } from '#check-standalone-project.js';
+import {
+  createProject,
+  ecosystemKernels,
+  fixturesDirectory,
+  goldenDirectory,
+  standaloneRows,
+} from '#check-standalone-project.js';
+import { measureMesh } from '#standalone-geometry.js';
 
 describe('standalone-project oracle', () => {
   it('should have a row and a fixture for every template Tau creates', () => {
@@ -35,6 +42,18 @@ describe('standalone-project oracle', () => {
         id,
       ).toEqual(tools[ecosystem]);
     }
+  });
+
+  it('should commit the golden export of a row that compares against one: the KCL fixture block, 1000 mm³', () => {
+    const goldens = Object.entries(standaloneRows).flatMap(([kernel, { golden }]) =>
+      golden === undefined ? [] : [[kernel, golden] as const],
+    );
+
+    expect(goldens).toEqual([['zoo', 'zoo.glb']]);
+    const measure = measureMesh('zoo.glb', readFileSync(join(goldenDirectory, 'zoo.glb')));
+    expect(measure.triangles).toBe(12);
+    expect(measure.volume).toBeCloseTo(1000, 3);
+    expect(standaloneRows['zoo']?.credentials).toEqual(['ZOO_TOKEN']);
   });
 
   it('should group the catalog by ecosystem', () => {
