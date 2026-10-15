@@ -1,0 +1,56 @@
+name: Standalone projects (kcl)
+
+# The KCL row of the standalone-project oracle (native dependency charter W23, D34, I14; go-live row PRJ-1):
+# the project Tau creates for KCL runs outside Tau with Zoo's own CLI (`zoo kcl export`), and its geometry
+# matches Tau's export of the same block, committed as `scripts/src/fixtures/standalone-golden/zoo.glb`
+# (how it was produced is recorded beside the row in `scripts/src/check-standalone-project.ts`).
+# The Zoo CLI runs KCL on Zoo's engine, so the row needs the optional `ZOO_TOKEN` secret; while it is
+# unset the row fails and says so. CI calls this workflow on every pull request and push to `main`;
+# it also runs nightly and on demand. Not a required check.
+
+on:
+  workflow_call: {}
+  schedule:
+    - cron: '17 4 * * *' # 04:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  actions: read # nrwl/nx-set-shas inside setup-nx
+  contents: read
+
+env:
+  NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
+
+jobs:
+  kcl:
+    name: Standalone projects (kcl)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Nx Environment
+        uses: ./.github/actions/setup-nx
+        with:
+          save-pnpm-store: 'false'
+
+      # Zoo's CLI, pinned by release and by the sha256 GitHub records for the asset.
+      - name: Install the Zoo CLI
+        env:
+          ZOO_CLI_URL: https://github.com/KittyCAD/cli/releases/download/v0.2.203/zoo-x86_64-unknown-linux-musl
+          ZOO_CLI_SHA256: 86a72e94136cf0fc0acaaef309bab79f9c940d89c278689b69dfcc44231df43c
+        run: |
+          mkdir -p "$RUNNER_TEMP/zoo"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zoo/zoo" "$ZOO_CLI_URL"
+          echo "$ZOO_CLI_SHA256  $RUNNER_TEMP/zoo/zoo" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/zoo/zoo"
+          echo "$RUNNER_TEMP/zoo" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/zoo/zoo" --version
+
+      - name: Check the KCL template outside Tau
+        env:
+          ZOO_TOKEN: ${{ secrets.ZOO_TOKEN }}
+        run: node scripts/src/check-standalone-project.ts --ecosystem kcl --work "$RUNNER_TEMP/standalone"
