@@ -145,6 +145,19 @@
         }
       }
     },
+    "test:e2e:packaged-threads": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "metadata": {
+        "description": "Offline packaged Threads acceptance over persisted fixture records. Supply an existing absolute TAU_E2E_DESKTOP_EXECUTABLE; no build, API or model turn is started."
+      },
+      "options": {
+        "cwd": "{workspaceRoot}/apps/desktop-e2e",
+        "command": "../../node_modules/.bin/vitest run --config vitest.threads.config.ts",
+        "env": { "TAU_E2E_COMPLETED_ARTIFACT": "true" }
+      }
+    },
     "test:e2e:packaged-native": {
       "executor": "nx:run-commands",
       "cache": false,
