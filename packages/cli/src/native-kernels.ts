@@ -145,6 +145,8 @@ export type NativeComposition = {
   readonly picogk?: PicogkKernelOptions;
   /** Every declared native kernel that is not composed, with why; the runtime answers its files with the refusal. */
   readonly unavailable: readonly UnavailableNativeKernel[];
+  /** The sealed closure each composed kernel runs from; a daemon starts native workers from these alone (D37). */
+  readonly closureRoots?: readonly string[];
 };
 
 // The bytes preparing a kernel downloads on this host: the payloads of the variant each required dependency selects.
@@ -173,14 +175,16 @@ export const composeNativeKernels = async (): Promise<NativeComposition> => {
   const managed = readManaged();
   const kernels: { build123d?: Build123dClosureOptions; picogk?: PicogkKernelOptions } = {};
   const unavailable: UnavailableNativeKernel[] = [];
+  const closureRoots: string[] = [];
   for (const plugin of await nativePreparationPlugins()) {
     for (const [kernel, { requires, extensions }] of Object.entries(plugin.deployment.kernels)) {
       // oxlint-disable-next-line no-await-in-loop -- two small manifests, read in roster order
       const { state } = await storeReader(plugin).inspect({ package: plugin.package, dependencies: requires });
       const receipt = state.status === 'ready' ? state.receipts[requires[0]] : undefined;
       const options = receipt === undefined ? undefined : adopters[plugin.package]?.options(receipt);
-      if (options !== undefined) {
+      if (receipt !== undefined && options !== undefined) {
         Object.assign(kernels, options);
+        closureRoots.push(receipt.root);
         continue;
       }
       const unsupported = state.status === 'blocked' && state.reason === 'unsupported-target';
@@ -194,7 +198,7 @@ export const composeNativeKernels = async (): Promise<NativeComposition> => {
       });
     }
   }
-  return { ...kernels, unavailable };
+  return { ...kernels, unavailable, closureRoots };
 };
 
 /** What `prepare_kernel` answers (D7). */

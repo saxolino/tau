@@ -16,7 +16,14 @@ import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { createMockLogger } from '@taucad/runtime-testing';
 import { describe, expect, it } from 'vitest';
 
-import { launchInNativeSandbox, NativeProcessSession, nativeSandboxPolicy, runInNativeSandbox } from '#index.js';
+import {
+  installNativeWorkerLauncher,
+  launchInNativeSandbox,
+  NativeProcessSession,
+  nativeSandboxPolicy,
+  runInNativeSandbox,
+  startNativeWorker,
+} from '#index.js';
 
 const writeRuleBlocks = /\((allow|deny) file-write\*\n((?:\s+\((?:subpath|literal) "[^"]*"\)\n)+)/g;
 
@@ -107,76 +114,87 @@ setInterval(() => {}, 1000);
 
 // A runner that claims to be CI must actually have the sandbox; skipping there would hide a broken boundary.
 describe.skipIf(!sandboxAvailable && process.env['CI'] === undefined)('native sandbox seam', () => {
-  it('should contain a worker to its runtime, workspace, and private artifact root', async () => {
-    const id = randomUUID();
-    const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-native-sandbox-')));
-    const workspacePath = join(root, 'workspace');
-    const artifactPath = join(root, 'artifacts');
-    mkdirSync(workspacePath);
-    mkdirSync(artifactPath);
-    const paths = {
-      homeCanary: join(homedir(), `.tau-sandbox-canary-${id}`),
-      tempCanary: join(tmpdir(), `tau-sandbox-canary-${id}`),
-      outsideEscape: `/tmp/tau-sandbox-escape-${id}`,
-      homeEscape: join(homedir(), `tau-sandbox-escape-${id}`),
-      // The sandbox runtime grants these two by default; they must be denied back off. Their parents
-      // are created here so a missing directory cannot pass the probe as ENOENT instead of EPERM.
-      sharedTempEscape: join('/tmp/claude', `tau-sandbox-escape-${id}`),
-      debugLogEscape: join(homedir(), '.claude/debug', `tau-sandbox-escape-${id}`),
-    };
-    mkdirSync(dirname(paths.sharedTempEscape), { recursive: true });
-    mkdirSync(dirname(paths.debugLogEscape), { recursive: true });
-    writeFileSync(paths.homeCanary, 'secret');
-    writeFileSync(paths.tempCanary, 'secret');
-    const workerPath = join(workspacePath, 'worker.cjs');
-    writeFileSync(workerPath, worker(paths));
-    const session = new NativeProcessSession<{ readonly message: string }>({
-      executablePath: process.execPath,
-      executableSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'),
-      arguments: [workerPath],
-      runtimePath: dirname(process.execPath),
-      workspacePath,
-      artifactPath,
-      resources: [],
-      protocolVersion: 1,
-      parseReady: () => undefined,
-      parseResponse: (value) => value as { readonly requestId: string; readonly result: unknown },
-      requestTimeout: 30_000,
-      maxArtifactBytes: 1024,
-      logger: createMockLogger(),
-      sessionName: 'Sandbox probe',
-      executableName: 'node',
-    });
-    try {
-      const outcome = await session.request<Outcomes>({
-        method: 'probe',
-        params: {},
-        parseResult: (value) => value as Outcomes,
-        signal: new AbortController().signal,
+  /* The daemon brokers its runtime children's launches through `startNativeWorker` (D37, North Star S2): a worker it
+   * starts must be contained exactly as one a session spawns itself. */
+  it.each([
+    { path: 'spawned by its own session', launcher: undefined },
+    { path: 'started through an installed launcher (the daemon broker)', launcher: startNativeWorker },
+  ])(
+    'should contain a worker $path to its runtime, workspace, and private artifact root',
+    async ({ launcher }) => {
+      installNativeWorkerLauncher(launcher);
+      const id = randomUUID();
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-native-sandbox-')));
+      const workspacePath = join(root, 'workspace');
+      const artifactPath = join(root, 'artifacts');
+      mkdirSync(workspacePath);
+      mkdirSync(artifactPath);
+      const paths = {
+        homeCanary: join(homedir(), `.tau-sandbox-canary-${id}`),
+        tempCanary: join(tmpdir(), `tau-sandbox-canary-${id}`),
+        outsideEscape: `/tmp/tau-sandbox-escape-${id}`,
+        homeEscape: join(homedir(), `tau-sandbox-escape-${id}`),
+        // The sandbox runtime grants these two by default; they must be denied back off. Their parents
+        // are created here so a missing directory cannot pass the probe as ENOENT instead of EPERM.
+        sharedTempEscape: join('/tmp/claude', `tau-sandbox-escape-${id}`),
+        debugLogEscape: join(homedir(), '.claude/debug', `tau-sandbox-escape-${id}`),
+      };
+      mkdirSync(dirname(paths.sharedTempEscape), { recursive: true });
+      mkdirSync(dirname(paths.debugLogEscape), { recursive: true });
+      writeFileSync(paths.homeCanary, 'secret');
+      writeFileSync(paths.tempCanary, 'secret');
+      const workerPath = join(workspacePath, 'worker.cjs');
+      writeFileSync(workerPath, worker(paths));
+      const session = new NativeProcessSession<{ readonly message: string }>({
+        executablePath: process.execPath,
+        executableSha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'),
+        arguments: [workerPath],
+        runtimePath: dirname(process.execPath),
+        workspacePath,
+        artifactPath,
+        resources: [],
+        protocolVersion: 1,
+        parseReady: () => undefined,
+        parseResponse: (value) => value as { readonly requestId: string; readonly result: unknown },
+        requestTimeout: 30_000,
+        maxArtifactBytes: 1024,
+        logger: createMockLogger(),
+        sessionName: 'Sandbox probe',
+        executableName: 'node',
       });
-      expect(hiddenRead, `home_read ${outcome.home_read}`).toContain(outcome.home_read);
-      expect(hiddenRead, `temp_read ${outcome.temp_read}`).toContain(outcome.temp_read);
-      expect(containedWrite, `outside_write ${outcome.outside_write}`).toContain(outcome.outside_write);
-      expect(containedWrite, `home_write ${outcome.home_write}`).toContain(outcome.home_write);
-      expect(containedWrite, `shared_temp_write ${outcome.shared_temp_write}`).toContain(outcome.shared_temp_write);
-      expect(containedWrite, `debug_log_write ${outcome.debug_log_write}`).toContain(outcome.debug_log_write);
-      expect(outcome.socket).not.toBe('allowed');
-      expect(outcome.child_read).not.toBe('exit:0');
-      expect(outcome.artifact_write).toBe('allowed');
-      expect(outcome.home).toBe(artifactPath);
-      expect(existsSync(join(artifactPath, 'probe.txt'))).toBe(true);
-      expect(existsSync(paths.outsideEscape)).toBe(false);
-      expect(existsSync(paths.homeEscape)).toBe(false);
-      expect(existsSync(paths.sharedTempEscape)).toBe(false);
-      expect(existsSync(paths.debugLogEscape)).toBe(false);
-    } finally {
-      await session.cleanup();
-      rmSync(root, { recursive: true, force: true });
-      for (const path of Object.values(paths)) {
-        rmSync(path, { force: true });
+      try {
+        const outcome = await session.request<Outcomes>({
+          method: 'probe',
+          params: {},
+          parseResult: (value) => value as Outcomes,
+          signal: new AbortController().signal,
+        });
+        expect(hiddenRead, `home_read ${outcome.home_read}`).toContain(outcome.home_read);
+        expect(hiddenRead, `temp_read ${outcome.temp_read}`).toContain(outcome.temp_read);
+        expect(containedWrite, `outside_write ${outcome.outside_write}`).toContain(outcome.outside_write);
+        expect(containedWrite, `home_write ${outcome.home_write}`).toContain(outcome.home_write);
+        expect(containedWrite, `shared_temp_write ${outcome.shared_temp_write}`).toContain(outcome.shared_temp_write);
+        expect(containedWrite, `debug_log_write ${outcome.debug_log_write}`).toContain(outcome.debug_log_write);
+        expect(outcome.socket).not.toBe('allowed');
+        expect(outcome.child_read).not.toBe('exit:0');
+        expect(outcome.artifact_write).toBe('allowed');
+        expect(outcome.home).toBe(artifactPath);
+        expect(existsSync(join(artifactPath, 'probe.txt'))).toBe(true);
+        expect(existsSync(paths.outsideEscape)).toBe(false);
+        expect(existsSync(paths.homeEscape)).toBe(false);
+        expect(existsSync(paths.sharedTempEscape)).toBe(false);
+        expect(existsSync(paths.debugLogEscape)).toBe(false);
+      } finally {
+        installNativeWorkerLauncher(undefined);
+        await session.cleanup();
+        rmSync(root, { recursive: true, force: true });
+        for (const path of Object.values(paths)) {
+          rmSync(path, { force: true });
+        }
       }
-    }
-  }, 60_000);
+    },
+    60_000,
+  );
 
   it('should run one command to completion inside the sandbox and report its exit and output', async () => {
     const id = randomUUID();

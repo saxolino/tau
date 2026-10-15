@@ -1,8 +1,10 @@
 /* oxlint-disable no-barrel-files/no-barrel-files -- public package entry */
 export {
+  installNativeWorkerLauncher,
   NativeProcessSession,
   NativeWorkerReportedError,
   processEnvironment,
+  startNativeWorker,
   terminateProcessTree,
 } from '#native-process-session.js';
 export type {
@@ -12,6 +14,10 @@ export type {
   NativeProcessResource,
   NativeProcessSessionOptions,
   NativeProtocolResponse,
+  NativeWorkerEnd,
+  NativeWorkerLaunch,
+  NativeWorkerLauncher,
+  NativeWorkerProcess,
 } from '#native-process-session.js';
 export { runInNativeSandbox } from '#native-command.js';
 export type { NativeSandboxCommand, NativeSandboxCommandResult } from '#native-command.js';

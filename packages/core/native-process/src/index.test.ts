@@ -28,10 +28,13 @@ import {
   NativeProcessSession,
   NativeRuntimeUnavailableError,
   nativeSandboxPolicy,
+  installNativeWorkerLauncher,
   NativeWorkerReportedError,
   processEnvironment,
+  startNativeWorker,
   terminateProcessTree,
 } from '#index.js';
+import type { NativeWorkerLaunch } from '#index.js';
 
 const fsOverrides = vi.hoisted(() => ({
   readFile: undefined as undefined | (() => Promise<Uint8Array<ArrayBuffer>>),
@@ -508,6 +511,84 @@ ${keepAlive}`;
       await third.session.cleanup();
     }
     expect(sandbox.reset).toHaveBeenCalledTimes(2);
+  });
+
+  it('should hand the whole launch to an installed launcher, and neither verify, lease nor wrap here', async () => {
+    const value = fixture(
+      respondingWorker(`{protocolVersion:1,requestId:request.requestId,result:{value:'brokered'}}`),
+    );
+    const launches: NativeWorkerLaunch[] = [];
+    installNativeWorkerLauncher(async (launch) => {
+      launches.push(launch);
+      return startNativeWorker(launch);
+    });
+    try {
+      await expect(request(value.session)).resolves.toEqual({ value: 'brokered' });
+      expect(launches).toEqual([
+        {
+          executablePath: value.options.executablePath,
+          executableSha256: value.options.executableSha256,
+          executableName: 'test executable',
+          arguments: value.options.arguments,
+          runtimePath: value.root,
+          resources: value.options.resources,
+          workspacePath: value.options.workspacePath,
+          artifactPath: value.artifactPath,
+          commandId: 'Test native#1',
+        },
+      ]);
+    } finally {
+      installNativeWorkerLauncher(undefined);
+      await value.session.cleanup();
+    }
+    /* The worker's own lease ended with it; the session took none, so its cleanup stops nothing twice. */
+    await vi.waitFor(() => {
+      expect(sandbox.reset).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('should fail the request with the refusal of the launcher, starting nothing', async () => {
+    const value = fixture();
+    installNativeWorkerLauncher(async () => {
+      throw new Error('Refused: the runtime root is not a sealed closure.');
+    });
+    try {
+      await expect(request(value.session)).rejects.toThrow('Refused: the runtime root is not a sealed closure.');
+      expect(sandbox.wrap).not.toHaveBeenCalled();
+    } finally {
+      installNativeWorkerLauncher(undefined);
+      await value.session.cleanup();
+    }
+  });
+
+  it('should verify digests before startNativeWorker wraps anything, and hold the sandbox until the worker ends', async () => {
+    const value = fixture();
+    const launch = {
+      ...value.options,
+      commandId: 'broker#1',
+    } satisfies NativeWorkerLaunch;
+
+    await expect(startNativeWorker({ ...launch, executableSha256: hash('tampered') })).rejects.toThrow(
+      'test executable failed its SHA-256 integrity check.',
+    );
+    await expect(
+      startNativeWorker({ ...launch, resources: [{ path: '/etc/hosts', sha256: hash(''), label: 'escaped' }] }),
+    ).rejects.toThrow('escaped is outside the native runtime root.');
+    expect(sandbox.wrap).not.toHaveBeenCalled();
+
+    const worker = await startNativeWorker(launch);
+    const firstLine = await new Promise<string>((resolve) => {
+      worker.stdout.once('data', (chunk: Uint8Array<ArrayBuffer>) => {
+        resolve(Buffer.from(chunk).toString('utf8'));
+      });
+    });
+    expect(firstLine).toBe('{"protocolVersion":1,"type":"ready"}\n');
+    expect(sandbox.reset).not.toHaveBeenCalled();
+    await worker.terminate();
+    await expect(worker.ended).resolves.toEqual({ signal: 'SIGTERM' });
+    await vi.waitFor(() => {
+      expect(sandbox.reset).toHaveBeenCalledOnce();
+    });
   });
 
   it('should not take a sandbox lease when cleanup lands while resources are being verified', async () => {

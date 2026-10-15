@@ -3,7 +3,8 @@ import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import type { Readable, Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { z } from 'zod';
@@ -37,6 +38,223 @@ export type RuntimeChildHandle = {
   post<Frame extends { readonly type: string }>(frame: Frame): void;
   /** Stop the child; settles once `closed` has. */
   close(): Promise<void>;
+};
+
+/**
+ * One native worker launch a runtime child asks its daemon for: what runs, the digests it must match and the paths
+ * it may use. The shape of `NativeWorkerLaunch` in `@taucad/native-process-core`.
+ *
+ * @public
+ */
+export type RuntimeChildWorkerLaunch = {
+  readonly executablePath: string;
+  readonly executableSha256: string;
+  readonly executableName: string;
+  readonly arguments: readonly string[];
+  readonly runtimePath: string;
+  readonly resources: ReadonlyArray<{ readonly path: string; readonly sha256: string; readonly label: string }>;
+  readonly workspacePath: string;
+  readonly artifactPath: string;
+  readonly commandId: string;
+};
+
+/** A native worker the daemon started for a runtime child: the shape of `NativeWorkerProcess`. @public */
+export type RuntimeChildWorker = {
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  readonly ended: Promise<{ readonly exitCode?: number; readonly signal?: NodeJS.Signals } | { readonly error: Error }>;
+  terminate(): Promise<void>;
+};
+
+/**
+ * The native kernels a daemon serves through its runtime children (D37).
+ *
+ * The runtime child runs project code under Node's permission model and may not spawn, so the daemon starts each
+ * native worker on its behalf (North Star S2): only from a closure sealed in the payload store, only with the
+ * child's own private directory as the worker's workspace and writable root, and only through the OS sandbox.
+ *
+ * @public
+ */
+export type RuntimeChildNativeKernels = {
+  /**
+   * What a new child composes, handed over in its `start` frame as `native`: read from the store's receipts, never
+   * downloading. Read again for every child, so a child started after a preparation composes the prepared kernel.
+   */
+  readonly compose: () => Promise<unknown>;
+  /** The roots of the closures sealed in the store, read again for every launch; a launch from any other is refused. */
+  readonly closureRoots: () => Promise<readonly string[]>;
+  /** Verify, sandbox and spawn one accepted launch in this process (`startNativeWorker`). */
+  readonly start: (launch: RuntimeChildWorkerLaunch) => Promise<RuntimeChildWorker>;
+};
+
+const workerLaunchMessageSchema = z.object({
+  type: z.literal('native-worker:launch'),
+  id: z.string().min(1).max(128),
+  launch: z.object({
+    executablePath: z.string().min(1),
+    executableSha256: z.string().regex(/^[\da-f]{64}$/iu),
+    executableName: z.string().min(1).max(256),
+    arguments: z.array(z.string()).max(64),
+    runtimePath: z.string().min(1),
+    resources: z
+      .array(
+        z.object({ path: z.string().min(1), sha256: z.string().regex(/^[\da-f]{64}$/iu), label: z.string().max(256) }),
+      )
+      .max(4096),
+    workspacePath: z.string().min(1),
+    artifactPath: z.string().min(1),
+    commandId: z.string().min(1).max(256),
+  }),
+});
+
+const workerControlMessageSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('native-worker:stdin'), id: z.string(), data: z.base64() }),
+  z.object({ type: z.literal('native-worker:stdin-end'), id: z.string() }),
+  z.object({ type: z.literal('native-worker:terminate'), id: z.string() }),
+]);
+
+const isWithin = (root: string, candidate: string): boolean => {
+  const path = relative(root, candidate);
+  return path.length > 0 && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+};
+
+/**
+ * Why a child's launch is refused, or nothing: the runtime root must be a sealed closure in the store, everything
+ * the worker runs must lie inside it, and the worker's workspace and writable root inside the child's own directory.
+ *
+ * @param launch - The child's request.
+ * @param closureRoots - The store's sealed closures, now.
+ * @param privateDirectory - The child's private temp directory (a real path).
+ * @returns The refusal, or `undefined` to start it.
+ */
+const launchRefusal = async (
+  launch: RuntimeChildWorkerLaunch,
+  closureRoots: readonly string[],
+  privateDirectory: string,
+): Promise<string | undefined> => {
+  const real = async (path: string): Promise<string | undefined> => {
+    try {
+      return await realpath(path);
+    } catch {
+      return undefined;
+    }
+  };
+  const runtimePath = await real(launch.runtimePath);
+  const sealed = await Promise.all(closureRoots.map(async (root) => real(root)));
+  if (runtimePath === undefined || !sealed.includes(runtimePath) || runtimePath !== launch.runtimePath) {
+    return `${launch.runtimePath} is not a closure sealed in the payload store.`;
+  }
+  const escaped = [launch.executablePath, ...launch.resources.map(({ path }) => path)].find(
+    (path) => !isWithin(runtimePath, path),
+  );
+  if (escaped !== undefined) {
+    return `${escaped} is outside the sealed closure.`;
+  }
+  for (const path of [launch.workspacePath, launch.artifactPath]) {
+    // oxlint-disable-next-line no-await-in-loop -- two paths, checked in order.
+    const resolved = await real(path);
+    if (resolved === undefined || resolved !== path || !isWithin(privateDirectory, resolved)) {
+      return `${path} is not inside the runtime child's private directory.`;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Serve one child's native worker launches until it exits: refuse what {@link launchRefusal} refuses, start the
+ * rest, carry each worker's pipes over the IPC channel, and stop every worker the child leaves behind.
+ *
+ * @param child - The forked runtime child.
+ * @param native - The daemon's native kernels.
+ * @param privateDirectory - The child's private temp directory.
+ */
+const brokerNativeWorkers = (
+  child: ChildProcess,
+  native: RuntimeChildNativeKernels,
+  privateDirectory: string,
+): void => {
+  const workers = new Map<string, Promise<RuntimeChildWorker | undefined>>();
+  const send = (frame: Readonly<Record<string, unknown>>): void => {
+    if (child.connected) {
+      child.send(frame);
+    }
+  };
+  const launch = async (id: string, request: RuntimeChildWorkerLaunch): Promise<RuntimeChildWorker | undefined> => {
+    let worker: RuntimeChildWorker;
+    try {
+      const refusal = await launchRefusal(request, await native.closureRoots(), privateDirectory);
+      if (refusal !== undefined) {
+        throw new Error(`Tau Host refused a native worker launch: ${refusal}`);
+      }
+      worker = await native.start(request);
+    } catch (error) {
+      send({ type: 'native-worker:refused', id, message: error instanceof Error ? error.message : String(error) });
+      return undefined;
+    }
+    /* A child that exited while its worker started leaves no one to read it. */
+    if (child.exitCode !== null || child.signalCode !== null) {
+      await worker.terminate();
+      return undefined;
+    }
+    send({ type: 'native-worker:started', id });
+    worker.stdout.on('data', (chunk: Uint8Array<ArrayBuffer>) => {
+      send({ type: 'native-worker:stdout', id, data: Buffer.from(chunk).toString('base64') });
+    });
+    worker.stderr.on('data', (chunk: Uint8Array<ArrayBuffer>) => {
+      send({ type: 'native-worker:stderr', id, data: Buffer.from(chunk).toString('base64') });
+    });
+    /* A worker that exits mid-write fails its pipe; its end is reported below. */
+    worker.stdin.on('error', () => undefined);
+    // async-iife: bootstrap -- the worker's end is reported to the child; nothing awaits it.
+    void (async () => {
+      const end = await worker.ended;
+      workers.delete(id);
+      send(
+        'error' in end
+          ? { type: 'native-worker:exit', id, message: end.error.message }
+          : { type: 'native-worker:exit', id, ...end },
+      );
+    })();
+    return worker;
+  };
+  child.on('message', (message: unknown) => {
+    const requested = workerLaunchMessageSchema.safeParse(message);
+    if (requested.success) {
+      const { id, launch: request } = requested.data;
+      if (!workers.has(id)) {
+        workers.set(id, launch(id, request));
+      }
+      return;
+    }
+    const control = workerControlMessageSchema.safeParse(message);
+    if (!control.success) {
+      return;
+    }
+    // async-iife: bootstrap -- a control frame acts on a worker that may still be starting.
+    void (async () => {
+      const worker = await workers.get(control.data.id);
+      if (worker === undefined) {
+        return;
+      }
+      if (control.data.type === 'native-worker:stdin') {
+        worker.stdin.write(Buffer.from(control.data.data, 'base64'));
+      } else if (control.data.type === 'native-worker:stdin-end') {
+        worker.stdin.end();
+      } else {
+        await worker.terminate();
+      }
+    })();
+  });
+  child.once('exit', () => {
+    for (const starting of workers.values()) {
+      // async-iife: bootstrap -- a worker outlives no child; nothing awaits its stop.
+      void (async () => {
+        const worker = await starting;
+        await worker?.terminate();
+      })();
+    }
+  });
 };
 
 const minimalEnvironment = (): NodeJS.ProcessEnv => {
@@ -140,8 +358,12 @@ const killChild = async (child: ChildProcess): Promise<void> => {
 export const startRuntimeChild = async (options: {
   readonly modulePath: string;
   readonly args?: readonly string[];
+  /** The native kernels this child composes, whose workers the caller starts on its behalf. */
+  readonly native?: RuntimeChildNativeKernels;
 }): Promise<RuntimeChildHandle> => {
   const authorizationToken = randomBytes(32).toString('base64url');
+  /* A composition that cannot be read leaves this child without native kernels, never without a runtime. */
+  const native = await options.native?.compose().catch(() => undefined);
   /* The real path: importing a module resolves symlinks component by component (macOS's `/var` is a link to
    * `/private/var`), and the grants cover only this directory, not its symlinked ancestors. */
   const temporaryDirectory = await realpath(await mkdtemp(join(tmpdir(), 'tau-runtime-child-')));
@@ -163,6 +385,9 @@ export const startRuntimeChild = async (options: {
     ],
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
+  if (options.native !== undefined) {
+    brokerNativeWorkers(child, options.native, temporaryDirectory);
+  }
   const exited = new Promise<{ exitCode?: number; signal?: NodeJS.Signals }>((resolve) => {
     child.once('exit', (exitCode, signal) => {
       resolve({
@@ -208,7 +433,7 @@ export const startRuntimeChild = async (options: {
       new Error(`Tau Host runtime child exited before ready (code ${String(exitCode)}, signal ${String(signal)}).`),
     );
   });
-  child.send({ type: 'start', authorizationToken });
+  child.send({ type: 'start', authorizationToken, ...(native === undefined ? {} : { native }) });
 
   const message = await Promise.race([
     ready.promise,
