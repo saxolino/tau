@@ -24,7 +24,7 @@ describe('ExperimentalSettings', () => {
     render(<ExperimentalSettings />);
 
     expect(screen.getByText('Tau Debug')).toBeInTheDocument();
-    expect(screen.getByText('Marketing Landing')).toBeInTheDocument();
+    expect(screen.queryByText('Marketing Landing')).not.toBeInTheDocument();
     for (const hidden of [
       'Machines',
       'Parts warehouse',
