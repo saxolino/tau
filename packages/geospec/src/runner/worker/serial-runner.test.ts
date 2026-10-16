@@ -3,7 +3,7 @@ import { mock } from 'vitest-mock-extended';
 import { runGeoSpecModule } from '#runner/run-geospec-module.js';
 import { createSerialGeoSpecRunner } from '#runner/worker/serial-runner.js';
 import type { GeoSpecRunnerOptions } from '#runner/worker/index.js';
-import type { GeoSpecRunResult } from '#runner/types.js';
+import type { GeoSpecRunResult, GeoSpecTestCase } from '#runner/types.js';
 
 vi.mock('#runner/run-geospec-module.js', () => ({ runGeoSpecModule: vi.fn() }));
 
@@ -42,4 +42,38 @@ it('qualifies differing actual resource generations across complete modules', as
   const result = await runner.run({ files: ['first.geospec.ts', 'second.geospec.ts'] });
   await runner.close();
   expect(result).toMatchObject({ success: false, failed: 0, lineageStatus: 'mixed' });
+});
+
+it('emits test-start and test-complete events tagged with their file as each test settles', async () => {
+  const test: GeoSpecTestCase = {
+    suite: ['shade'],
+    name: 'is one piece',
+    ordinal: 0,
+    assertions: [],
+    status: 'passed',
+    diagnostics: [],
+  };
+  vi.mocked(runGeoSpecModule).mockImplementationOnce(async (options) => {
+    options.onTestEvent?.({ type: 'test-start', test });
+    options.onTestEvent?.({ type: 'test-complete', test });
+    return {
+      success: true,
+      passed: true,
+      bundle: mock<Extract<GeoSpecRunResult, { success: true }>['bundle']>(),
+      tests: [test],
+    };
+  });
+  const runner = createSerialGeoSpecRunner({
+    filesystem: mock<GeoSpecRunnerOptions['filesystem']>(),
+    nativeAssertions: mock<GeoSpecRunnerOptions['nativeAssertions']>(),
+  });
+  const events: unknown[] = [];
+  runner.on('test-start', (event) => events.push(event));
+  runner.on('test-complete', (event) => events.push(event));
+  await runner.run({ files: ['main.geospec.ts'] });
+  await runner.close();
+  expect(events).toStrictEqual([
+    { type: 'test-start', file: 'main.geospec.ts', test: { suite: ['shade'], name: 'is one piece', ordinal: 0 } },
+    { type: 'test-complete', file: 'main.geospec.ts', test },
+  ]);
 });

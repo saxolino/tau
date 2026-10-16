@@ -735,6 +735,17 @@ export type GeoSpecTestCase = {
 };
 
 /**
+ * A selected test starting or settling inside a module run. Observers see the
+ * live test case; an observer error never changes its verdict.
+ *
+ * @public
+ */
+export type GeoSpecTestEvent = {
+  readonly type: 'test-start' | 'test-complete';
+  readonly test: GeoSpecTestCase;
+};
+
+/**
  * Options for executing a GeoSpec ESM test module.
  *
  * @public
@@ -752,6 +763,8 @@ export type RunGeoSpecModuleOptions = {
   matcherWallBackstop?: number;
   /** Emit structured forensic events for this run. */
   forensic?: boolean;
+  /** Observes each selected test as it starts and settles, for host progress reporting. */
+  onTestEvent?: (event: GeoSpecTestEvent) => void;
   /**
    * Host-provided protocol-3 compiled assertion client. The host owns engine and
    * admitted subject lifetimes and supplies bindings through builtinModules;

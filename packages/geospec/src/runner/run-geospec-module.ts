@@ -214,6 +214,7 @@ export async function runGeoSpecModule(options: RunGeoSpecModuleOptions): Promis
   const collector = createCollector({
     ...(options.matcherWallBackstop === undefined ? {} : { matcherWallBackstop: options.matcherWallBackstop }),
     ...(options.forensic === undefined ? {} : { forensic: options.forensic }),
+    ...(options.onTestEvent === undefined ? {} : { onTestEvent: options.onTestEvent }),
     nativeAssertions: options.nativeAssertions,
   });
   const cached = await resolveCachedBundle(options);

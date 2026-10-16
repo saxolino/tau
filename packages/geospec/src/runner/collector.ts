@@ -23,8 +23,9 @@ import type {
 import type { GeometryDiagnostic } from '#mesh/types.js';
 import { diagnosticForTransport, geometryDiagnosticSchema } from '#model/errors.js';
 import { matchesGeoSpecTestName } from '#runner/filter.js';
+import { geoSpecTimeoutCode } from '#runner/timeout-codes.js';
 import type { GeoSpecTestNamePattern } from '#runner/filter.js';
-import type { GeoSpecAssertion, GeoSpecMatcher, GeoSpecTestCase } from '#runner/types.js';
+import type { GeoSpecAssertion, GeoSpecMatcher, GeoSpecTestCase, GeoSpecTestEvent } from '#runner/types.js';
 import { resolveGeoSpecSubject } from '#model/subject.js';
 
 type GeoSpecTestFunction = () => unknown | PromiseLike<unknown>;
@@ -50,6 +51,8 @@ export type GeoSpecCollectorOptions = {
   matcherWallBackstop?: number;
   forensic?: boolean;
   nativeAssertions: GeoSpecAssertionClientOptions;
+  /** Observes each selected test as it starts and settles, for host progress reporting. */
+  onTestEvent?: (event: GeoSpecTestEvent) => void;
 };
 
 export const collectorGlobalKey = '__GEOSPEC_COLLECTOR__';
@@ -79,9 +82,33 @@ export class GeoSpecAssertionError extends Error {
   }
 }
 
+class GeoSpecTestTimeoutError extends Error {
+  /** Milliseconds. */
+  public readonly testTimeout: number;
+
+  public constructor(testTimeout: number) {
+    super(`GeoSpec test timed out after ${testTimeout}ms.`);
+    this.name = 'GeoSpecTestTimeoutError';
+    this.testTimeout = testTimeout;
+  }
+}
+
 const createErrorDiagnostics = (error: unknown): GeometryDiagnostic[] => {
   if (error instanceof GeoSpecAssertionError) {
     return [...error.diagnostics];
+  }
+
+  if (error instanceof GeoSpecTestTimeoutError) {
+    return [
+      {
+        code: geoSpecTimeoutCode.test,
+        severity: 'error',
+        message: `${error.message} The test still ran to completion before the run moved on; this is a wall-clock timeout, not a geometry verdict.`,
+        suggestion:
+          'Keep the assertion. Raise testTimeout (CLI --test-timeout) if the requirement is legitimately slow, or make the load it waits on cheaper (a coarser mesh export or a smaller subject).',
+        details: { testTimeout: error.testTimeout },
+      },
+    ];
   }
 
   // VM modules and worker transports do not share Error constructors. Validate
@@ -148,8 +175,6 @@ const recordAssertion = (assertion: GeoSpecAssertion, diagnostics: GeometryDiagn
   return assertion;
 };
 
-class GeoSpecTestTimeoutError extends Error {}
-
 const withTimeout = async <Result>(promise: Promise<Result>, testTimeout?: number): Promise<Result> => {
   if (testTimeout === undefined) {
     return promise;
@@ -160,7 +185,7 @@ const withTimeout = async <Result>(promise: Promise<Result>, testTimeout?: numbe
       promise,
       new Promise<never>((_resolve, reject) => {
         timeoutHandle = setTimeout(() => {
-          reject(new GeoSpecTestTimeoutError(`GeoSpec test timed out after ${testTimeout}ms.`));
+          reject(new GeoSpecTestTimeoutError(testTimeout));
         }, testTimeout);
       }),
     ]);
@@ -219,6 +244,13 @@ export function createCollector(options: GeoSpecCollectorOptions): GeoSpecCollec
   const nativeClaimFailures = new WeakSet<GeoSpecAssertionError>();
   let activeTest: GeoSpecTestCase | undefined;
   let executed = false;
+  const notifyTestEvent = (type: GeoSpecTestEvent['type'], test: GeoSpecTestCase): void => {
+    try {
+      options.onTestEvent?.({ type, test });
+    } catch {
+      // Progress observers report; they never decide a verdict.
+    }
+  };
 
   const trackDefinitionPending = (
     operation: PromiseLike<unknown>,
@@ -396,6 +428,7 @@ export function createCollector(options: GeoSpecCollectorOptions): GeoSpecCollec
         const previousTest = activeTest;
         activeTest = scheduledTest.test;
         scheduledTest.test.status = 'passed';
+        notifyTestEvent('test-start', scheduledTest.test);
         const startedAt = performance.now();
         const failures: unknown[] = [];
         const recordFailure = (error: unknown): void => {
@@ -450,6 +483,7 @@ export function createCollector(options: GeoSpecCollectorOptions): GeoSpecCollec
         } finally {
           activeTest = previousTest;
           scheduledTest.test.durationMs = performance.now() - startedAt;
+          notifyTestEvent('test-complete', scheduledTest.test);
         }
       }
     },
