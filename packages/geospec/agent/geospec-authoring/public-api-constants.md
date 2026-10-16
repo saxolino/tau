@@ -1,6 +1,6 @@
 # geospec — Constants
 
-4 top-level symbols. Signatures are verbatim typescript.
+5 top-level symbols. Signatures are verbatim typescript.
 
 // Every matcher name exposed by {@link expectGeo}, derived from the live matcher surface so it can never drift from the real implementation
 geoSpecMatcherNames: readonly string[]
@@ -17,3 +17,6 @@ defaultGeoSpecIgnoredDirectories: readonly [".git", "node_modules", "dist", "cov
 
 // Default file globs used by GeoSpec test discovery
 defaultGeoSpecInclude: readonly ["**/*.geospec.{ts,js}"]
+
+// Largest work-unit budget a spec may author through `loadModel` or `expectGeo` options
+geoSpecMaximumWorkUnitLimit: 512000000

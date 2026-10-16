@@ -1,6 +1,6 @@
 # geospec public API index
 
-geospec 0.1.0-beta.2 · 836 symbols · extracted by TypeScript 5.9.3.
+geospec 0.1.0-beta.2 · 849 symbols · extracted by TypeScript 5.9.3.
 
 Every symbol appears here exactly once. The heading above each block names the file with its signature; grep the skill directory for `name(` to land on the declaration directly.
 
@@ -50,6 +50,7 @@ geoSpecMatcherNames (constant) — Every matcher name exposed by {@link expectGe
 geoSpecMatcherDescriptors (constant) — The 26-entry matcher registry
 defaultGeoSpecIgnoredDirectories (constant) — Directories skipped by recursive GeoSpec discovery unless callers provide their…
 defaultGeoSpecInclude (constant) — Default file globs used by GeoSpec test discovery
+geoSpecMaximumWorkUnitLimit (constant) — Largest work-unit budget a spec may author through `loadModel` or…
 
 ## Types — `public-api-types.md`
 
@@ -83,7 +84,7 @@ GeoSpecBoundingBoxExpectation (type) [5 members] — Bounding-box expectation ac
   GeoSpecBoundingBoxExpectation.center (property)
   GeoSpecBoundingBoxExpectation.tolerance (property)
 GeoSpecCenterOfMassExpectation (type) [2 members] — Center-of-mass expectation accepted by `expectGeo(...).toHaveCenterOfMass(...)`
-  GeoSpecCenterOfMassExpectation.point (property)
+  GeoSpecCenterOfMassExpectation.point (property) — Exact expected point in millimetres
   GeoSpecCenterOfMassExpectation.tolerance (property)
 GeoSpecChamferFeatureExpectation (type) [3 members] — Chamfer-feature expectation accepted by `expectGeo(...).toHaveChamferFeature(...)`
   GeoSpecChamferFeatureExpectation.distance (property)
@@ -99,6 +100,8 @@ GeoSpecCylindricalFaceExpectation (type) [3 members] — Cylindrical-face expect
   GeoSpecCylindricalFaceExpectation.radius (property)
   GeoSpecCylindricalFaceExpectation.axis (property)
   GeoSpecCylindricalFaceExpectation.tolerance (property)
+GeoSpecExpectOptions (type) [1 members] — Per-chain options accepted by `expectGeo(subject, options)`
+  GeoSpecExpectOptions.workUnitLimit (property) — Deterministic work-unit budget for every claim in this chain
 GeoSpecComponentInterferenceAllowance (type) [5 members] — Intentional component interference allowance accepted by `expectGeo(...).toHaveNoComponentInterference(...)`
   GeoSpecComponentInterferenceAllowance.kind (property)
   GeoSpecComponentInterferenceAllowance.left (property)
@@ -443,6 +446,9 @@ CreateModelLoaderOptions (type) [10 members] — Defaults accepted by {@link imp
   CreateModelLoaderOptions.mesh (property) — Whether STEP loading should also produce mesh evidence
   CreateModelLoaderOptions.meshLinearTolerance (property) — Linear tolerance used while meshing exact BRep evidence
   CreateModelLoaderOptions.meshAngularToleranceDegrees (property) — Angular tolerance in degrees used while meshing exact BRep evidence
+GeoSpecLoadRegion (type) [2 members] — Axis-aligned crop box in canonical Z-up millimetres
+  GeoSpecLoadRegion.min (property)
+  GeoSpecLoadRegion.max (property)
 GeoSpecModelFormat (type) — Geometry formats accepted by {@link import ('./load-model.js').loadModel}
 GeoSpecModelLoader (type) — Function shape used by GeoSpec runners to provide model loading…
 ManagedGeoSpecModelLoader (type) [1 members] — A configured loader whose shared runtime can be released with…
@@ -455,7 +461,7 @@ GeoSpecRuntimeSourceAdapter (type) [3 members] — Explicit source adapter for f
   GeoSpecRuntimeSourceAdapter.id (property)
   GeoSpecRuntimeSourceAdapter.extensions (property)
   GeoSpecRuntimeSourceAdapter.createRuntime (method)
-LoadModelCodeOptions (type) [11 members] — Inline code-CAD model load options
+LoadModelCodeOptions (type) [13 members] — Inline code-CAD model load options
   LoadModelCodeOptions.code (property) — Source files keyed by project-relative path
   LoadModelCodeOptions.file (property) — Entry path to render from {@link code }
   LoadModelCodeOptions.format (property) — Geometry format to export
@@ -467,7 +473,12 @@ LoadModelCodeOptions (type) [11 members] — Inline code-CAD model load options
   LoadModelCodeOptions.mesh (property) — Whether STEP loading should also produce mesh evidence
   LoadModelCodeOptions.meshLinearTolerance (property) — Linear tolerance used while meshing exact BRep evidence
   LoadModelCodeOptions.meshAngularToleranceDegrees (property) — Angular tolerance in degrees used while meshing exact BRep evidence
-LoadModelFileOptions (type) [10 members] — Filesystem-backed model load options
+  LoadModelCodeOptions.workUnitLimit (property) — Default work-unit budget for every claim on this subject
+  LoadModelCodeOptions.region (property) — Axis-aligned millimetre box the kernel crops the model to before…
+
+## Types (2) — `public-api-types-2.md`
+
+LoadModelFileOptions (type) [12 members] — Filesystem-backed model load options
   LoadModelFileOptions.file (property) — Project-relative model file to render
   LoadModelFileOptions.projectPath (property) — Project root used by runtime integrations
   LoadModelFileOptions.format (property) — Geometry format to export
@@ -478,17 +489,17 @@ LoadModelFileOptions (type) [10 members] — Filesystem-backed model load option
   LoadModelFileOptions.mesh (property) — Whether STEP loading should also produce mesh evidence
   LoadModelFileOptions.meshLinearTolerance (property) — Linear tolerance used while meshing exact BRep evidence
   LoadModelFileOptions.meshAngularToleranceDegrees (property) — Angular tolerance in degrees used while meshing exact BRep evidence
-LoadModelOptions (type) [6 members] — Options accepted by {@link import ('./load-model.js').loadModel}
+  LoadModelFileOptions.workUnitLimit (property) — Default work-unit budget for every claim on this subject
+  LoadModelFileOptions.region (property) — Axis-aligned millimetre box the kernel crops the model to before…
+LoadModelOptions (type) [7 members] — Options accepted by {@link import ('./load-model.js').loadModel}
   LoadModelOptions.format (property) — Geometry format to export
   LoadModelOptions.parameters (property) — Explicit parameters passed to the runtime
   LoadModelOptions.stepStreaming (property) — STEP reader strategy used for STEP exports
   LoadModelOptions.mesh (property) — Whether STEP loading should also produce mesh evidence
   LoadModelOptions.meshLinearTolerance (property) — Linear tolerance used while meshing exact BRep evidence
   LoadModelOptions.meshAngularToleranceDegrees (property) — Angular tolerance in degrees used while meshing exact BRep evidence
-
-## Types (2) — `public-api-types-2.md`
-
-LoadModelSourceOptions (type) [11 members] — Direct geometry-source model load options
+  LoadModelOptions.workUnitLimit (property) — Default work-unit budget for every claim on this subject
+LoadModelSourceOptions (type) [12 members] — Direct geometry-source model load options
   LoadModelSourceOptions.source (property) — Geometry bytes, path, browser file/blob, or in-memory mesh buffer
   LoadModelSourceOptions.resources (property) — Named external resources consumed alongside the direct geometry bytes
   LoadModelSourceOptions.format (property) — Source geometry format
@@ -500,6 +511,7 @@ LoadModelSourceOptions (type) [11 members] — Direct geometry-source model load
   LoadModelSourceOptions.mesh (property) — Whether STEP loading should also produce mesh evidence
   LoadModelSourceOptions.meshLinearTolerance (property) — Linear tolerance used while meshing exact BRep evidence
   LoadModelSourceOptions.meshAngularToleranceDegrees (property) — Angular tolerance in degrees used while meshing exact BRep evidence
+  LoadModelSourceOptions.workUnitLimit (property) — Default work-unit budget for every claim on this subject
 GeoSpecCollector (type) [7 members] — Collects suites, tests, assertions, and async completion state for one…
   GeoSpecCollector.tests (property)
   GeoSpecCollector.describe (method)
@@ -591,13 +603,14 @@ CreateGeoSpecNativeModelLoaderOptions (type) [7 members] — Defaults and host d
   CreateGeoSpecNativeModelLoaderOptions.runtime (property)
   CreateGeoSpecNativeModelLoaderOptions.sourceAdapters (property)
   CreateGeoSpecNativeModelLoaderOptions.carried (property) — Subject handles carried between the release scopes of loaders that…
-GeoSpecNativeLoadModelOptions (type) [8 members] — Native additions accepted by the injected `geospec/runner/native` loader
+GeoSpecNativeLoadModelOptions (type) [9 members] — Native additions accepted by the injected `geospec/runner/native` loader
   GeoSpecNativeLoadModelOptions.format (property) — Geometry format to export
   GeoSpecNativeLoadModelOptions.parameters (property) — Explicit parameters passed to the runtime
   GeoSpecNativeLoadModelOptions.stepStreaming (property) — STEP reader strategy used for STEP exports
   GeoSpecNativeLoadModelOptions.mesh (property) — Whether STEP loading should also produce mesh evidence
   GeoSpecNativeLoadModelOptions.meshLinearTolerance (property) — Linear tolerance used while meshing exact BRep evidence
   GeoSpecNativeLoadModelOptions.meshAngularToleranceDegrees (property) — Angular tolerance in degrees used while meshing exact BRep evidence
+  GeoSpecNativeLoadModelOptions.workUnitLimit (property) — Default work-unit budget for every claim on this subject
   GeoSpecNativeLoadModelOptions.resources (property) — Ordered external resource payloads declared to the native admission request
   GeoSpecNativeLoadModelOptions.ingestOptions (property) — Format-specific native ingest options
 GeoSpecNativeModelEngine (type) [5 members] — Native engine operations required for model admission and run-level cleanup
@@ -672,7 +685,7 @@ GeoSpecRunnerRunOptions (type) [6 members] — Options accepted by a GeoSpec wor
   GeoSpecRunnerRunOptions.forensic (property) — Emit structured forensic measurements for this run
   GeoSpecRunnerRunOptions.bail (property) — Stop after the first failing file (R1)
 GeoSpecAssertionClient (type) [2 members] — Runner-independent native assertion client
-  GeoSpecAssertionClient.expectGeo (method)
+  GeoSpecAssertionClient.expectGeo (method) — Start a chain
   GeoSpecAssertionClient.query (method)
 GeoSpecAssertionClientOptions (type) [5 members] — Flat construction options for a runner-independent native assertion client
   GeoSpecAssertionClientOptions.claimId (property)
@@ -782,7 +795,7 @@ GeoSpecCanonicalClaimReport (type) [10 members] — Full native assertion result
   GeoSpecCanonicalClaimReport.canonicalResult (property)
   GeoSpecCanonicalClaimReport.claim (property)
   GeoSpecCanonicalClaimReport.claimId (property)
-  GeoSpecCanonicalClaimReport.diagnostics (property)
+  GeoSpecCanonicalClaimReport.diagnostics (property) — Engine diagnostics
   GeoSpecCanonicalClaimReport.evidence (property)
   GeoSpecCanonicalClaimReport.polarity (property)
   GeoSpecCanonicalClaimReport.result (property)

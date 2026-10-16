@@ -126,10 +126,12 @@ GeoSpecBoundingBoxExpectation: {
 
 // Center-of-mass expectation accepted by `expectGeo(...).toHaveCenterOfMass(...)`
 GeoSpecCenterOfMassExpectation: {
+    /** Exact expected point in millimetres; per-axis ranges such as `{ greaterThan }` are not supported. */
     point: GeoSpecPointExpectation;
     tolerance?: number;
 }
 
+  // Exact expected point in millimetres
   point: GeoSpecPointExpectation
 
   tolerance?: number
@@ -178,6 +180,20 @@ GeoSpecCylindricalFaceExpectation: {
   axis: 'x' | 'y' | 'z'
 
   tolerance?: number
+
+// Per-chain options accepted by `expectGeo(subject, options)`
+GeoSpecExpectOptions: {
+    /**
+     * Deterministic work-unit budget for every claim in this chain: a positive integer no
+     * greater than `geoSpecMaximumWorkUnitLimit` (512 000 000). Omitted uses the subject's
+     * `loadModel` budget, then the host's, then the engine default. Raise it to retry a
+     * `MATCHER_TIMEOUT` refusal whose `details.used` exceeded `details.limit`.
+     */
+    readonly workUnitLimit?: number;
+}
+
+  // Deterministic work-unit budget for every claim in this chain
+  readonly workUnitLimit?: number
 
 // Intentional component interference allowance accepted by `expectGeo(...).toHaveNoComponentInterference(...)`
 GeoSpecComponentInterferenceAllowance: {
@@ -1850,6 +1866,16 @@ CreateModelLoaderOptions: {
   // Angular tolerance in degrees used while meshing exact BRep evidence
   meshAngularToleranceDegrees?: number
 
+// Axis-aligned crop box in canonical Z-up millimetres
+GeoSpecLoadRegion: {
+    readonly min: readonly [number, number, number];
+    readonly max: readonly [number, number, number];
+}
+
+  readonly min: readonly [number, number, number]
+
+  readonly max: readonly [number, number, number]
+
 // Geometry formats accepted by {@link import ('./load-model.js').loadModel}
 GeoSpecModelFormat: MeshFileFormat | 'step' | 'stp'
 
@@ -1865,8 +1891,8 @@ ManagedGeoSpecModelLoader: GeoSpecModelLoader & {
   dispose(): Promise<void>;
 
 // Runtime client surface consumed by `geospec/model`
-// Remarks: GeoSpec accepts concrete Tau runtime clients from multiple call sites but only needs connection lifecycle and request-scoped documents. Keep this shape small so typed runtime clients do not have to widen their full generic method surface to GeoSpec's testing DSL. A client with `shutdown` is awaited through it when GeoSpec releases an owned runtime, so its host resources are closed before the caller (for example a worker thread) exits.
-GeoSpecRuntimeClient: Pick<RuntimeClient, 'connect' | 'terminate'> & Partial<Pick<RuntimeClient, 'shutdown'>> & {
+// Remarks: GeoSpec accepts concrete Tau runtime clients from multiple call sites but only needs connection lifecycle and request-scoped documents. Keep this shape small so typed runtime clients do not have to widen their full generic method surface to GeoSpec's testing DSL. A client with `shutdown` is awaited through it when GeoSpec releases an owned runtime, so its host resources are closed before the caller (for example a worker thread) exits. A client with `snapshotSource` lets one run reuse an identical file load after confirming that the source closure it exported is unchanged.
+GeoSpecRuntimeClient: Pick<RuntimeClient, 'connect' | 'terminate'> & Partial<Pick<RuntimeClient, 'shutdown' | 'snapshotSource'>> & {
     open: (input: Pick<Parameters<RuntimeClient['open']>[0], 'source' | 'parameters' | 'stage' | 'watch' | 'signal'>) => Pick<ReturnType<RuntimeClient['open']>, 'export' | 'close'>;
     on?(event: 'telemetry', handler: (batch: {
         readonly entries: ReadonlyArray<{
@@ -1937,6 +1963,21 @@ LoadModelCodeOptions: {
     meshLinearTolerance?: number;
     /** Angular tolerance in degrees used while meshing exact BRep evidence. */
     meshAngularToleranceDegrees?: number;
+    /**
+     * Default work-unit budget for every claim on this subject: a positive integer no greater than
+     * `geoSpecMaximumWorkUnitLimit` (512 000 000). `expectGeo(subject, { workUnitLimit })` overrides
+     * it per chain. Recorded in the load evidence; it never changes the exported or admitted bytes.
+     */
+    workUnitLimit?: number;
+    /**
+     * Axis-aligned millimetre box the kernel crops the model to before export, so a large mesh model
+     * can be checked region by region. Only kernels whose direct GLB export declares a `region` option
+     * honor it; any other kernel, a STEP load or a crop the kernel does not confirm refuses with a typed
+     * diagnostic instead of loading the whole model. The cropped subject is a different subject: its
+     * admission carries the kernel's crop notice and its load evidence records `region`, so a claim on
+     * it never stands for the whole model.
+     */
+    region?: GeoSpecLoadRegion;
 }
 
   // Source files keyed by project-relative path
@@ -1972,77 +2013,8 @@ LoadModelCodeOptions: {
   // Angular tolerance in degrees used while meshing exact BRep evidence
   meshAngularToleranceDegrees?: number
 
-// Filesystem-backed model load options
-LoadModelFileOptions: {
-    /** Project-relative model file to render. */
-    file: string;
-    /** Project root used by runtime integrations. */
-    projectPath?: string;
-    /** Geometry format to export. Defaults to `glb`. */
-    format?: GeoSpecModelFormat;
-    /** Explicit parameters passed to the runtime. */
-    parameters?: Record<string, unknown>;
-    /** Runtime client or lazy runtime factory. */
-    runtime?: GeoSpecRuntimeClient | GeoSpecRuntimeClientFactory;
-    /** Source-specific runtime adapters, e.g. host-provided GPL-isolated kernels. */
-    sourceAdapters?: readonly GeoSpecRuntimeSourceAdapter[];
-    /** STEP reader strategy used for STEP exports. */
-    stepStreaming?: StepStreamingMode;
-    /** Whether STEP loading should also produce mesh evidence. Defaults to true. */
-    mesh?: boolean;
-    /** Linear tolerance used while meshing exact BRep evidence. */
-    meshLinearTolerance?: number;
-    /** Angular tolerance in degrees used while meshing exact BRep evidence. */
-    meshAngularToleranceDegrees?: number;
-}
+  // Default work-unit budget for every claim on this subject
+  workUnitLimit?: number
 
-  // Project-relative model file to render
-  file: string
-
-  // Project root used by runtime integrations
-  projectPath?: string
-
-  // Geometry format to export
-  format?: GeoSpecModelFormat
-
-  // Explicit parameters passed to the runtime
-  parameters?: Record<string, unknown>
-
-  // Runtime client or lazy runtime factory
-  runtime?: GeoSpecRuntimeClient | GeoSpecRuntimeClientFactory
-
-  // Source-specific runtime adapters, e.g
-  sourceAdapters?: readonly GeoSpecRuntimeSourceAdapter[]
-
-  // STEP reader strategy used for STEP exports
-  stepStreaming?: StepStreamingMode
-
-  // Whether STEP loading should also produce mesh evidence
-  mesh?: boolean
-
-  // Linear tolerance used while meshing exact BRep evidence
-  meshLinearTolerance?: number
-
-  // Angular tolerance in degrees used while meshing exact BRep evidence
-  meshAngularToleranceDegrees?: number
-
-// Options accepted by {@link import ('./load-model.js').loadModel}
-LoadModelOptions: LoadModelSourceOptions | LoadModelCodeOptions<Code> | LoadModelFileOptions
-
-  // Geometry format to export
-  format?: GeoSpecModelFormat
-
-  // Explicit parameters passed to the runtime
-  parameters?: Record<string, unknown>
-
-  // STEP reader strategy used for STEP exports
-  stepStreaming?: StepStreamingMode
-
-  // Whether STEP loading should also produce mesh evidence
-  mesh?: boolean
-
-  // Linear tolerance used while meshing exact BRep evidence
-  meshLinearTolerance?: number
-
-  // Angular tolerance in degrees used while meshing exact BRep evidence
-  meshAngularToleranceDegrees?: number
+  // Axis-aligned millimetre box the kernel crops the model to before export, so a large mesh model can be checked region by region
+  region?: GeoSpecLoadRegion

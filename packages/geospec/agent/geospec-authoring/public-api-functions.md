@@ -11,8 +11,9 @@ export declare function describe(name: string, function_: GeoSpecTestCallback): 
 
 // Start a geometry assertion chain
 // expectGeo (function)
-export declare function expectGeo(subject: GeoSpecSubject): GeoSpecMatcher;
+export declare function expectGeo(subject: GeoSpecSubject, options?: GeoSpecExpectOptions): GeoSpecMatcher;
 //   subject: geometry subject under test
+//   options: Optional chain options, such as a larger `workUnitLimit` for a claim that refused with `MATCHER_TIMEOUT`
 
 // GeoSpec test helper used inside VM-executed test modules
 // it (function)
