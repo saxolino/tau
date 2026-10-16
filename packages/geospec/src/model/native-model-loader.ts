@@ -1,11 +1,11 @@
 /** Native protocol-3 model admission over direct bytes and Tau Runtime exports. @module */
 
 import type { GeoSpecNativeEngine, GeoSpecNativeSubject } from '#assertion-client/index.js';
-import { assertGeoSpecAuthoredWorkUnitLimit } from '#engine/client.js';
+import { geoSpecAuthoredWorkUnitLimitProblem } from '#engine/client.js';
 import { GeoSpecModelLoadError } from '#model/errors.js';
 import { resolveRuntimeExportIntent } from '#model/export-intent.js';
 import { bindRawSubjectResidency } from '#model/subject.js';
-import type { RuntimeBackedModelFormat, RuntimeClientWithRoutes } from '#model/export-intent.js';
+import type { GeoSpecExportRoute, RuntimeBackedModelFormat, RuntimeClientWithRoutes } from '#model/export-intent.js';
 import type {
   GeoSpecLoadRegion,
   GeoSpecModelFormat,
@@ -323,6 +323,26 @@ const resolveFormat = (
 };
 
 /**
+ * Every export route the Runtime offers for a format: `routesFor` when it lists them, else its best
+ * route, else none.
+ *
+ * @param runtime - The connected Runtime client.
+ * @param format - The requested export format.
+ * @returns The routes, possibly empty.
+ */
+const runtimeRoutesFor = (runtime: GeoSpecRuntimeClient, format: string): readonly GeoSpecExportRoute[] => {
+  const { routesFor, bestRouteFor } = runtime as Partial<{
+    routesFor: (format: string) => readonly GeoSpecExportRoute[];
+    bestRouteFor: RuntimeClientWithRoutes['bestRouteFor'];
+  }>;
+  if (typeof routesFor === 'function') {
+    return routesFor.call(runtime, format);
+  }
+  const best = typeof bestRouteFor === 'function' ? bestRouteFor.call(runtime, format) : undefined;
+  return best === undefined ? [] : [best];
+};
+
+/**
  * Stable JSON for a coalescing key, or `undefined` for a value whose identity JSON cannot carry.
  * @param value - Plain load input.
  * @returns Key text with sorted object keys.
@@ -341,7 +361,8 @@ const keyJson = (value: unknown): string | undefined => {
   if (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
     const entries = Object.entries(value)
       .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      // Object keys are unique, so no two entries compare equal.
+      .sort(([left], [right]) => (left < right ? -1 : 1))
       .map(([name, item]) => [name, keyJson(item)] as const);
     return entries.some(([, item]) => item === undefined)
       ? undefined
@@ -350,35 +371,48 @@ const keyJson = (value: unknown): string | undefined => {
   return undefined;
 };
 
-const regionOption = (region: unknown): GeoSpecLoadRegion | undefined => {
+const regionCorner = (value: unknown): value is [number, number, number] =>
+  Array.isArray(value) &&
+  value.length === 3 &&
+  value.every((axis) => typeof axis === 'number' && Number.isFinite(axis));
+
+/**
+ * The typed refusal for a malformed `region`, or `undefined` for an omitted or well-formed box.
+ * @param region - The authored region option.
+ * @returns The load error to reject with, when the box is malformed.
+ */
+const regionFailure = (region: unknown): GeoSpecModelLoadError | undefined => {
   if (region === undefined) {
     return undefined;
   }
-  const corner = (value: unknown): value is [number, number, number] =>
-    Array.isArray(value) &&
-    value.length === 3 &&
-    value.every((axis) => typeof axis === 'number' && Number.isFinite(axis));
   const candidate = region !== null && typeof region === 'object' ? (region as Record<string, unknown>) : {};
   const { min, max } = candidate;
-  if (
-    !corner(min) ||
-    !corner(max) ||
-    Object.keys(candidate).some((key) => key !== 'min' && key !== 'max') ||
-    min.some((axis, index) => axis >= max[index]!)
-  ) {
-    throw failure([
-      diagnostic({
-        code: 'GEOSPEC_MODEL_OPTION_INVALID',
-        message:
-          'loadModel region must be { min: [x, y, z], max: [x, y, z] } in millimetres with every min axis below its max axis.',
-        suggestion:
-          'Pass finite millimetre corners of the box to check, for example { min: [0, 0, 0], max: [40, 40, 60] }.',
-        details: { option: 'region', region: structuredClone(region) as unknown },
-      }),
-    ]);
-  }
-  return { min: [min[0], min[1], min[2]], max: [max[0], max[1], max[2]] };
+  return regionCorner(min) &&
+    regionCorner(max) &&
+    Object.keys(candidate).every((key) => key === 'min' || key === 'max') &&
+    min.every((axis, index) => axis < max[index]!)
+    ? undefined
+    : failure([
+        diagnostic({
+          code: 'GEOSPEC_MODEL_OPTION_INVALID',
+          message:
+            'loadModel region must be { min: [x, y, z], max: [x, y, z] } in millimetres with every min axis below its max axis.',
+          suggestion:
+            'Pass finite millimetre corners of the box to check, for example { min: [0, 0, 0], max: [40, 40, 60] }.',
+          details: { option: 'region', region: structuredClone(region) as unknown },
+        }),
+      ]);
 };
+
+/**
+ * Copy a crop box the loader already validated.
+ * @param region - The validated region option.
+ * @returns An owned copy.
+ */
+const copyRegion = ({ min, max }: GeoSpecLoadRegion): GeoSpecLoadRegion => ({
+  min: [min[0], min[1], min[2]],
+  max: [max[0], max[1], max[2]],
+});
 
 /**
  * Whether a Runtime source snapshot still matches a complete exported source revision.
@@ -425,7 +459,7 @@ export const createGeoSpecNativeModelLoader = (
     Map<
       string,
       {
-        readonly pending: Promise<GeoSpecNativeModelSubject>;
+        readonly pending: Promise<GeoSpecNativeModelSubject & { readonly load: GeoSpecModelLoadEvidence }>;
         /** Inline-code loads reserve each later owner before admission; file loads verify first. */
         readonly owners?: Set<ResidencyOwner>;
       }
@@ -848,27 +882,27 @@ export const createGeoSpecNativeModelLoader = (
     if ('success' in requested) {
       throw failure(requested.diagnostics);
     }
-    const region = regionOption(options.region);
+    // Validated by the loader before any Runtime work.
+    const region = options.region === undefined ? undefined : copyRegion(options.region);
     if (region !== undefined) {
-      // A crop the route cannot declare would be dropped by option parsing and load the whole model.
-      const route =
-        typeof (runtime as Partial<RuntimeClientWithRoutes>).bestRouteFor === 'function'
-          ? (runtime as RuntimeClientWithRoutes).bestRouteFor(format)
-          : undefined;
-      const declared: Readonly<Record<string, unknown>> = route?.exportOptions?.schema.properties ?? {};
-      if (route === undefined || route.transcoderId !== undefined || !('region' in declared)) {
+      // The kernel that renders the file is chosen when it opens, so admit the crop when any direct
+      // route declares it; an option no route declares would be dropped by option parsing and export
+      // the whole model. The kernel's crop notice below stays the authority for the chosen route.
+      const routes = runtimeRoutesFor(runtime, format);
+      const cropping = routes.some(
+        (route) => route.transcoderId === undefined && 'region' in (route.exportOptions?.schema.properties ?? {}),
+      );
+      if (!cropping) {
+        const kernelIds = [
+          ...new Set(routes.flatMap((route) => (route.kernelId === undefined ? [] : [route.kernelId]))),
+        ];
         throw failure([
           diagnostic({
             code: 'GEOSPEC_MODEL_REGION_UNSUPPORTED',
-            message: `The ${route?.kernelId ?? 'selected'} kernel's direct ${format.toUpperCase()} export declares no region option, so GeoSpec cannot crop '${options.file}' before admission.`,
+            message: `No direct ${format.toUpperCase()} export of this Runtime${kernelIds.length === 0 ? '' : ` (${kernelIds.join(', ')})`} declares a region option, so GeoSpec cannot crop '${options.file}' before admission.`,
             suggestion:
               'Load the whole model, or coarsen it with the kernel’s own parameters; a region load needs a kernel whose GLB export crops, such as PicoVoxel.',
-            details: {
-              file: options.file,
-              format,
-              region,
-              ...(route?.kernelId === undefined ? {} : { kernelId: route.kernelId }),
-            },
+            details: { file: options.file, format, region, kernelIds },
           }),
         ]);
       }
@@ -999,9 +1033,9 @@ export const createGeoSpecNativeModelLoader = (
    */
   const fileUnchanged = async (
     options: RuntimeOptions & GeoSpecNativeLoadModelOptions,
-    load: GeoSpecModelLoadEvidence | undefined,
+    load: GeoSpecModelLoadEvidence,
   ): Promise<boolean> => {
-    const revision = load?.status === 'complete' ? load.sourceRevision : undefined;
+    const revision = load.status === 'complete' ? load.sourceRevision : undefined;
     if (revision === undefined) {
       return false;
     }
@@ -1024,14 +1058,10 @@ export const createGeoSpecNativeModelLoader = (
   ): Promise<GeoSpecNativeModelSubject> => {
     const configured = options.runtime ?? defaults.runtime;
     const inline = 'code' in options;
-    const codePrototype: unknown = inline ? Object.getPrototypeOf(options.code) : null;
+    // The loader already snapshotted `code` into a plain object; only its values can defeat the key.
     const code =
-      inline &&
-      (codePrototype === Object.prototype || codePrototype === null) &&
-      Object.values(Object.getOwnPropertyDescriptors(options.code)).every(
-        (descriptor) => 'value' in descriptor && typeof descriptor.value === 'string',
-      )
-        ? Object.fromEntries(Object.entries(options.code))
+      inline && Object.values(options.code).every((value: unknown) => typeof value === 'string')
+        ? options.code
         : undefined;
     const key =
       configured === undefined ||
@@ -1040,7 +1070,7 @@ export const createGeoSpecNativeModelLoader = (
         ? undefined
         : keyJson({
             file: options.file,
-            ...(code === undefined ? {} : { code: Object.entries(code) }),
+            code,
             projectPath: options.projectPath ?? defaults.projectPath,
             format: options.format ?? defaults.format ?? 'glb',
             meshLinearTolerance: options.meshLinearTolerance,
@@ -1050,7 +1080,7 @@ export const createGeoSpecNativeModelLoader = (
             region: options.region,
           });
     if (configured === undefined || key === undefined) {
-      return loadRuntime(code === undefined ? options : { ...options, code }, new Set([owner]));
+      return loadRuntime(options, new Set([owner]));
     }
     let loads = runtimeLoads.get(configured);
     if (loads === undefined) {
@@ -1065,9 +1095,6 @@ export const createGeoSpecNativeModelLoader = (
         (existing.owners !== undefined || (await fileUnchanged(options, subject.load))) &&
         adopt(subject.subjectHash, owner);
       if (reusable) {
-        if (subject.load === undefined) {
-          return { subjectHash: subject.subjectHash };
-        }
         const { workUnitLimit: earlierWorkUnitLimit, ...earlier } = subject.load;
         return {
           subjectHash: subject.subjectHash,
@@ -1080,16 +1107,13 @@ export const createGeoSpecNativeModelLoader = (
       }
     }
     const owners = new Set([owner]);
-    const pending = loadRuntime(code === undefined ? options : { ...options, code }, owners);
+    const pending = loadRuntime(options, owners);
     const entry = { pending, ...(code === undefined ? {} : { owners }) };
     loads.set(key, entry);
+    // A failed load is replaced only by a later load of the same key, which reads the map afresh;
+    // the emptied per-runtime map stays until releaseAll clears the scope.
     const forget = (): void => {
-      if (loads.get(key) === entry) {
-        loads.delete(key);
-      }
-      if (loads.size === 0) {
-        runtimeLoads.delete(configured);
-      }
+      loads.delete(key);
     };
     // async-iife: bootstrap -- Drop only a failed entry; a successful admission stays reusable for this scope.
     // oxlint-disable-next-line promise/prefer-await-to-then -- Settlement callback must not replace the caller's promise.
@@ -1137,25 +1161,23 @@ export const createGeoSpecNativeModelLoader = (
         ]),
       );
     }
-    try {
-      assertGeoSpecAuthoredWorkUnitLimit(options.workUnitLimit, 'loadModel workUnitLimit');
-      if (!('source' in options)) {
-        regionOption(options.region);
-      }
-    } catch (error) {
+    const workUnitLimitProblem = geoSpecAuthoredWorkUnitLimitProblem(options.workUnitLimit, 'loadModel workUnitLimit');
+    if (workUnitLimitProblem !== undefined) {
       return Promise.reject(
-        error instanceof GeoSpecModelLoadError
-          ? error
-          : failure([
-              diagnostic({
-                code: 'GEOSPEC_MODEL_OPTION_INVALID',
-                message: error instanceof Error ? error.message : String(error),
-                suggestion:
-                  'Pass a positive integer workUnitLimit within the stated bound, or omit it for the engine default.',
-                details: { option: 'workUnitLimit' },
-              }),
-            ]),
+        failure([
+          diagnostic({
+            code: 'GEOSPEC_MODEL_OPTION_INVALID',
+            message: workUnitLimitProblem,
+            suggestion:
+              'Pass a positive integer workUnitLimit within the stated bound, or omit it for the engine default.',
+            details: { option: 'workUnitLimit' },
+          }),
+        ]),
       );
+    }
+    const invalidRegion = 'source' in options ? undefined : regionFailure(options.region);
+    if (invalidRegion !== undefined) {
+      return Promise.reject(invalidRegion);
     }
     const admission =
       'source' in options

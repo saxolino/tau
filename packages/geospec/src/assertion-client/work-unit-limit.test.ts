@@ -8,6 +8,7 @@ import {
 import type { GeoSpecNativeClaimEvaluation, GeoSpecNativeEngine } from '#assertion-client/index.js';
 import { bindGeoSpecSubject } from '#model/subject.js';
 import type { GeoSpecModelLoadEvidence } from '#model/native-model-loader.js';
+import { expectGeoSubject } from '#model/subject-assertions.js';
 import { createCollector } from '#runner/collector.js';
 
 const encode = (value: JSONValue): Uint8Array<ArrayBuffer> => new TextEncoder().encode(JSON.stringify(value));
@@ -87,7 +88,28 @@ describe('authored work-unit budgets', () => {
         `GeoSpec expectGeo workUnitLimit must be a positive integer no greater than 512000000; received ${workUnitLimit}.`,
       );
     }
+    expect(() => client.expectGeo({ subjectHash: hash }, { workUnitLimit: '10' as unknown as number })).toThrow(
+      'GeoSpec expectGeo workUnitLimit must be a positive integer no greater than 512000000; received string.',
+    );
     expect(engine.budgets).toEqual([]);
+  });
+
+  it('should apply the same precedence to standalone subject assertions', () => {
+    const engine = new BudgetEngine();
+    const client = createGeoSpecAssertionClient({ engine });
+    const bind = (workUnitLimit?: number) =>
+      bindGeoSpecSubject({
+        client,
+        engine,
+        identity: { subjectHash: hash },
+        isLive: () => true,
+        load: loadEvidence(workUnitLimit),
+      });
+    const budgeted = bind(12_000_000);
+    expectGeoSubject(budgeted).toBeWatertight();
+    expectGeoSubject(budgeted, { workUnitLimit: 36_000_000 }).toBeWatertight();
+    expectGeoSubject(bind()).not.toBeWatertight();
+    expect(engine.budgets).toEqual([12_000_000, 36_000_000, 8_000_000]);
   });
 
   it.each([

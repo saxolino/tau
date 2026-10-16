@@ -284,6 +284,81 @@ describe('native model loader run coalescing', () => {
     await loader.releaseAll();
   });
 
+  it('should coalesce only key inputs JSON carries exactly, whatever their key order', async () => {
+    const { engine } = fixtureEngine();
+    const { runtime, document } = fixtureRuntime();
+    const loader = createGeoSpecNativeModelLoader({ engine, runtime });
+    const nullPrototypeCode = (): Record<string, string> =>
+      Object.assign(Object.create(null) as Record<string, string>, { 'main.ts': 'model' });
+    const numericCode: unknown = { 'main.ts': 1 };
+    try {
+      for (const options of [
+        { file: 'main.ts', parameters: { limit: Number.POSITIVE_INFINITY } },
+        { file: 'main.ts', parameters: { limit: Number.POSITIVE_INFINITY } },
+        { file: 'main.ts', parameters: { at: [new Date(0)] } },
+        { file: 'main.ts', parameters: { at: [new Date(0)] } },
+        { file: 'main.ts', code: numericCode as Record<string, string> },
+        { file: 'main.ts', code: numericCode as Record<string, string> },
+      ]) {
+        // oxlint-disable-next-line no-await-in-loop -- Each uncoalescible input must export before the next.
+        await loader(options);
+      }
+      expect(document.export).toHaveBeenCalledTimes(6);
+      const ordered = await loader({ file: 'main.ts', parameters: { c: 3, a: [1, 'x'], b: { z: null, y: true } } });
+      const reordered = await loader({
+        file: 'main.ts',
+        parameters: { b: { y: true, z: null }, a: [1, 'x'], c: 3, skipped: undefined },
+      });
+      expect(document.export).toHaveBeenCalledTimes(7);
+      expect(ordered.load).not.toHaveProperty('reused');
+      expect(reordered.load).toMatchObject({ reused: true });
+      await loader({ file: 'main.ts', code: nullPrototypeCode() });
+      const sharedCode = await loader({ file: 'main.ts', code: nullPrototypeCode() });
+      expect(document.export).toHaveBeenCalledTimes(8);
+      expect(sharedCode.load).toMatchObject({ reused: true });
+      await expect(loader({ file: 'main.ts', unit: 'mm' } as GeoSpecNativeLoadModelOptions)).rejects.toMatchObject({
+        diagnostics: [expect.objectContaining({ code: 'GEOSPEC_NATIVE_RUNTIME_FRAME_OVERRIDE' })],
+      });
+    } finally {
+      await loader.releaseAll();
+    }
+  });
+
+  it('should treat a missing dependency as part of the closure and never reuse an unrevisioned export', async () => {
+    const { engine } = fixtureEngine();
+    const fixture = fixtureRuntime();
+    fixture.files['extra.ts'] = 'missing';
+    const loader = createGeoSpecNativeModelLoader({ engine, runtime: fixture.runtime });
+    try {
+      await loader({ file: 'main.ts' });
+      await loader({ file: 'main.ts' });
+      expect(fixture.document.export).toHaveBeenCalledOnce();
+      fixture.files['extra.ts'] = digest('c');
+      await loader({ file: 'main.ts' });
+      expect(fixture.document.export).toHaveBeenCalledTimes(2);
+    } finally {
+      await loader.releaseAll();
+    }
+    const unrevisioned = fixtureRuntime();
+    unrevisioned.document.export.mockImplementation(async () => ({
+      success: true,
+      exportId: 'glb',
+      evaluationId: 'evaluation-1',
+      issues: [],
+      files: [{ name: 'model.glb', mimeType: 'model/gltf-binary', bytes: Uint8Array.of(9) }],
+    }));
+    const scoped = createGeoSpecNativeModelLoader({ engine, runtime: unrevisioned.runtime });
+    try {
+      const first = await scoped({ file: 'main.ts' });
+      await scoped({ file: 'main.ts' });
+      expect(first.load).toMatchObject({ status: 'unavailable' });
+      expect(unrevisioned.document.export).toHaveBeenCalledTimes(2);
+      expect(unrevisioned.snapshotSource).not.toHaveBeenCalled();
+    } finally {
+      await scoped.releaseAll();
+    }
+  });
+
   it('should load afresh once every owner released the earlier admission', async () => {
     const { engine, released } = fixtureEngine();
     const { runtime, document } = fixtureRuntime();
@@ -382,6 +457,14 @@ describe('native model loader region crop', () => {
     return requested === undefined
       ? []
       : [
+          { code: 'RUNTIME', severity: 'warning', message: 'Unrelated notice.', type: 'runtime' },
+          {
+            code: 'RUNTIME',
+            severity: 'info',
+            message: 'Unrelated region detail.',
+            type: 'runtime',
+            details: { region: 'whole' },
+          },
           {
             code: 'RESOURCE_LIMIT',
             severity: 'info',
@@ -417,6 +500,8 @@ describe('native model loader region crop', () => {
       const admission = decodeRequest(ingestSubject.mock.calls[0]![0]);
       expect(admission).toMatchObject({
         diagnostics: [
+          { code: 'RUNTIME', message: 'Unrelated notice.' },
+          { code: 'RUNTIME', message: 'Unrelated region detail.' },
           {
             code: 'RESOURCE_LIMIT',
             severity: 'info',
@@ -427,6 +512,45 @@ describe('native model loader region crop', () => {
     } finally {
       await loader.releaseAll();
     }
+  });
+
+  it('should admit a crop when any direct route declares it, even when a B-rep route ranks first', async () => {
+    const { engine } = fixtureEngine();
+    const fixture = fixtureRuntime({ issues: confirm });
+    const brepRoute: GeoSpecExportRoute = {
+      kernelId: 'replicad',
+      targetFormat: 'glb',
+      fidelity: 'brep',
+      exportOptions: { schema: { properties: { coordinateSystem: {}, unit: {} } }, defaults: {} },
+    };
+    const routesFor = vi.fn(() => [brepRoute, { ...regionRoute, transcoderId: 'mesh' }, regionRoute]);
+    const loader = createGeoSpecNativeModelLoader({
+      engine,
+      runtime: Object.assign(fixture.runtime, { routesFor, bestRouteFor: () => brepRoute }),
+    });
+    try {
+      const cropped = await loader({ file: 'main.ts', region });
+      expect(cropped.load).toMatchObject({ region });
+      expect(routesFor).toHaveBeenCalledWith('glb');
+    } finally {
+      await loader.releaseAll();
+    }
+    const refusing = createGeoSpecNativeModelLoader({
+      engine,
+      runtime: Object.assign(fixtureRuntime({ issues: confirm }).runtime, {
+        routesFor: () => [brepRoute, { ...brepRoute }, { targetFormat: 'glb' }],
+      }),
+    });
+    await expect(refusing({ file: 'main.ts', region })).rejects.toMatchObject({
+      diagnostics: [
+        expect.objectContaining({
+          code: 'GEOSPEC_MODEL_REGION_UNSUPPORTED',
+          message:
+            "No direct GLB export of this Runtime (replicad) declares a region option, so GeoSpec cannot crop 'main.ts' before admission.",
+          details: { file: 'main.ts', format: 'glb', region, kernelIds: ['replicad'] },
+        }),
+      ],
+    });
   });
 
   it('should refuse a crop no route declares, a route that transcodes, or an export that does not confirm it', async () => {
@@ -440,7 +564,7 @@ describe('native model loader region crop', () => {
       diagnostics: [
         expect.objectContaining({
           code: 'GEOSPEC_MODEL_REGION_UNSUPPORTED',
-          details: { file: 'main.ts', format: 'glb', region },
+          details: { file: 'main.ts', format: 'glb', region, kernelIds: [] },
         }),
       ],
     });
@@ -457,7 +581,7 @@ describe('native model loader region crop', () => {
       const scoped = createGeoSpecNativeModelLoader({ engine, runtime });
       // oxlint-disable-next-line no-await-in-loop -- Each route must refuse before export.
       await expect(scoped({ file: 'main.ts', region })).rejects.toMatchObject({
-        diagnostics: [{ code: 'GEOSPEC_MODEL_REGION_UNSUPPORTED', details: { kernelId: 'picovoxel' } }],
+        diagnostics: [{ code: 'GEOSPEC_MODEL_REGION_UNSUPPORTED', details: { kernelIds: ['picovoxel'] } }],
       });
     }
     const silent = fixtureRuntime();

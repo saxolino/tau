@@ -180,6 +180,23 @@ const assertNativeClaimOptions = (options: NativePayloadOptions): void => {
 };
 
 /**
+ * Describe why an authored work-unit budget is outside {@link geoSpecMaximumWorkUnitLimit}.
+ *
+ * @param workUnitLimit - Candidate budget from authored options.
+ * @param label - The option path named in the message, e.g. `loadModel workUnitLimit`.
+ * @returns The refusal message, or `undefined` for an omitted or in-bound budget.
+ * @internal
+ */
+export const geoSpecAuthoredWorkUnitLimitProblem = (workUnitLimit: unknown, label: string): string | undefined =>
+  workUnitLimit === undefined ||
+  (typeof workUnitLimit === 'number' &&
+    Number.isSafeInteger(workUnitLimit) &&
+    workUnitLimit > 0 &&
+    workUnitLimit <= geoSpecMaximumWorkUnitLimit)
+    ? undefined
+    : `GeoSpec ${label} must be a positive integer no greater than ${geoSpecMaximumWorkUnitLimit}; received ${typeof workUnitLimit === 'number' ? String(workUnitLimit) : typeof workUnitLimit}.`;
+
+/**
  * Validate an authored work-unit budget against {@link geoSpecMaximumWorkUnitLimit}.
  *
  * @param workUnitLimit - Candidate budget from authored options.
@@ -191,16 +208,9 @@ export const assertGeoSpecAuthoredWorkUnitLimit: (
   workUnitLimit: unknown,
   label: string,
 ) => asserts workUnitLimit is number | undefined = (workUnitLimit, label) => {
-  if (
-    workUnitLimit !== undefined &&
-    (typeof workUnitLimit !== 'number' ||
-      !Number.isSafeInteger(workUnitLimit) ||
-      workUnitLimit <= 0 ||
-      workUnitLimit > geoSpecMaximumWorkUnitLimit)
-  ) {
-    throw new TypeError(
-      `GeoSpec ${label} must be a positive integer no greater than ${geoSpecMaximumWorkUnitLimit}; received ${typeof workUnitLimit === 'number' ? String(workUnitLimit) : typeof workUnitLimit}.`,
-    );
+  const problem = geoSpecAuthoredWorkUnitLimitProblem(workUnitLimit, label);
+  if (problem !== undefined) {
+    throw new TypeError(problem);
   }
 };
 

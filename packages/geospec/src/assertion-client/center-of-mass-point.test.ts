@@ -47,6 +47,7 @@ class ClaimEngine implements GeoSpecNativeEngine {
 // Authored JavaScript reaches the matcher untyped; these values model what the type system rejects.
 const rangedPoint = JSON.parse('{ "y": { "greaterThan": 1 } }') as GeoSpecPointExpectation;
 const namedPoint = JSON.parse('"origin"') as GeoSpecPointExpectation;
+const overlongPoint = JSON.parse('[1, 2, 3, "w"]') as GeoSpecPointExpectation;
 const missingPoint = JSON.parse('{}') as GeoSpecCenterOfMassExpectation;
 
 describe('center-of-mass point authoring', () => {
@@ -64,6 +65,9 @@ describe('center-of-mass point authoring', () => {
     );
     expect(() => matchers.not.toHaveCenterOfMass({ point: [0, Number.NaN, 0] })).toThrow(
       'GeoSpec matcher toHaveCenterOfMass point.y must be a finite number in millimetres.',
+    );
+    expect(() => matchers.toHaveCenterOfMass({ point: overlongPoint })).toThrow(
+      'GeoSpec matcher toHaveCenterOfMass point.3 must be a finite number in millimetres.',
     );
     expect(() => matchers.toHaveCenterOfMass({ point: namedPoint })).toThrow(
       'GeoSpec matcher toHaveCenterOfMass needs point as [x, y, z] or { x, y, z } in millimetres, with an optional tolerance.',
