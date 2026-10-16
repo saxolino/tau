@@ -17,6 +17,7 @@ export type {
 } from '#model/export-intent.js';
 export type {
   CreateModelLoaderOptions,
+  GeoSpecLoadRegion,
   GeoSpecModelFormat,
   GeoSpecModelLoader,
   ManagedGeoSpecModelLoader,

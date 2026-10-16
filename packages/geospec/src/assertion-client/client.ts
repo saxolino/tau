@@ -2,6 +2,7 @@
 
 import type { JSONValue } from '@taucad/runtime/types';
 import {
+  assertGeoSpecAuthoredWorkUnitLimit,
   evaluateGeoSpecNativeClaim,
   evaluateGeoSpecNativeQuery,
   resolveGeoSpecNativeWorkUnitLimit,
@@ -17,7 +18,7 @@ import type {
 } from '#engine/client.js';
 import { geoSpecMatcherDescriptors, normalizeGeoSpecExpected } from '#engine/matchers.js';
 import type { GeoSpecMatcherName } from '#engine/matchers.js';
-import type { GeoSpecAssertion, GeoSpecMatcher } from '#runner/types.js';
+import type { GeoSpecAssertion, GeoSpecExpectOptions, GeoSpecMatcher } from '#runner/types.js';
 import { resolveGeoSpecSubject } from '#model/subject.js';
 import type { GeoSpecSubject } from '#model/subject.js';
 
@@ -43,7 +44,11 @@ export type GeoSpecAssertionMatchers = GeoSpecMatcherMethods<GeoSpecCanonicalCla
 
 /** Runner-independent native assertion client. @public */
 export type GeoSpecAssertionClient = {
-  expectGeo(subject: GeoSpecNativeSubject | GeoSpecSubject): GeoSpecAssertionMatchers;
+  /**
+   * Start a chain; `options.workUnitLimit` overrides the client budget for its claims.
+   * Without one, a loaded subject's `loadModel` budget applies, then the client's.
+   */
+  expectGeo(subject: GeoSpecNativeSubject | GeoSpecSubject, options?: GeoSpecExpectOptions): GeoSpecAssertionMatchers;
   query(options: MinimumDistanceQuery): Promise<MinimumDistanceResult>;
   query(options: GeoSpecQueryOptions): Promise<GeoSpecCanonicalClaimReport>;
 };
@@ -321,12 +326,16 @@ export const createGeoSpecAssertionClient = (options: GeoSpecAssertionClientOpti
     workUnitLimit ??= resolveGeoSpecNativeWorkUnitLimit(options.engine, options.workUnitLimit);
     return workUnitLimit;
   };
-  const methods = (subject: GeoSpecNativeSubject, polarity: GeoSpecClaimPolarity, validate: () => void) =>
+  const methods = (
+    subject: GeoSpecNativeSubject,
+    polarity: GeoSpecClaimPolarity,
+    chain: { readonly validate: () => void; readonly workUnitLimit: number | undefined },
+  ) =>
     createGeoSpecMatcherMethods<GeoSpecCanonicalClaimReport>({
       subject,
       polarity,
       invoke: (invocation) => {
-        validate();
+        chain.validate();
         sequence += 1;
         const claimId = options.claimId?.(invocation.matcher, sequence) ?? `geospec-claim-${sequence}`;
         const context = {
@@ -336,7 +345,7 @@ export const createGeoSpecAssertionClient = (options: GeoSpecAssertionClientOpti
           polarity,
           subject,
           subjectSlot,
-          workUnitLimit: resolveWorkUnitLimit(),
+          workUnitLimit: chain.workUnitLimit ?? resolveWorkUnitLimit(),
         };
         const report = evaluateGeoSpecNativeClaim({
           ...context,
@@ -423,16 +432,21 @@ export const createGeoSpecAssertionClient = (options: GeoSpecAssertionClientOpti
 
   return {
     query,
-    expectGeo(subject) {
+    expectGeo(subject, expectOptions) {
+      assertGeoSpecAuthoredWorkUnitLimit(expectOptions?.workUnitLimit, 'expectGeo workUnitLimit');
       const raw = 'subjectHash' in subject || 'contentHash' in subject;
-      const identity = raw ? subject : resolveGeoSpecSubject(subject, options.engine).identity;
-      const validate = (): void => {
-        if (!raw) {
-          resolveGeoSpecSubject(subject, options.engine);
-        }
+      const admission = raw ? undefined : resolveGeoSpecSubject(subject, options.engine);
+      const identity = raw ? subject : admission!.identity;
+      const chain = {
+        validate: (): void => {
+          if (!raw) {
+            resolveGeoSpecSubject(subject, options.engine);
+          }
+        },
+        workUnitLimit: expectOptions?.workUnitLimit ?? admission?.load?.workUnitLimit,
       };
-      const positive = methods(identity, 'positive', validate);
-      return Object.assign(positive, { not: methods(identity, 'negative', validate) });
+      const positive = methods(identity, 'positive', chain);
+      return Object.assign(positive, { not: methods(identity, 'negative', chain) });
     },
   };
 };

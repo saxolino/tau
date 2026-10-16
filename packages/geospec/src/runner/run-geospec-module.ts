@@ -161,7 +161,7 @@ export const it = (name, fn) => getRunBinding().collector.it(name, fn);
 it.skip = (name, fn) => getRunBinding().collector.itSkip(name, fn);
 
 export const test = it;
-export const expectGeo = (subject) => getRunBinding().collector.expectGeo(subject);
+export const expectGeo = (subject, options) => getRunBinding().collector.expectGeo(subject, options);
 `;
 
 const createGeospecModelBuiltinCode = (runToken: string): string => `

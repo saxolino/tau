@@ -20,11 +20,12 @@ import type {
   GeoSpecAssertionClientOptions,
   GeoSpecCanonicalClaimReport,
 } from '#assertion-client/index.js';
+import { assertGeoSpecAuthoredWorkUnitLimit } from '#engine/client.js';
 import type { GeometryDiagnostic } from '#mesh/types.js';
 import { diagnosticForTransport, geometryDiagnosticSchema } from '#model/errors.js';
 import { matchesGeoSpecTestName } from '#runner/filter.js';
 import type { GeoSpecTestNamePattern } from '#runner/filter.js';
-import type { GeoSpecAssertion, GeoSpecMatcher, GeoSpecTestCase } from '#runner/types.js';
+import type { GeoSpecAssertion, GeoSpecExpectOptions, GeoSpecMatcher, GeoSpecTestCase } from '#runner/types.js';
 import { resolveGeoSpecSubject } from '#model/subject.js';
 
 type GeoSpecTestFunction = () => unknown | PromiseLike<unknown>;
@@ -41,7 +42,7 @@ export type GeoSpecCollector = {
   describeSkip(name: string, _function?: GeoSpecTestFunction): void;
   it(name: string, function_: GeoSpecTestFunction): void;
   itSkip(name: string, _function?: GeoSpecTestFunction): void;
-  expectGeo(subject: unknown): GeoSpecMatcher;
+  expectGeo(subject: unknown, options?: GeoSpecExpectOptions): GeoSpecMatcher;
   waitForCompletion(testTimeout?: number, testNamePattern?: GeoSpecTestNamePattern): Promise<void>;
 };
 
@@ -251,7 +252,10 @@ export function createCollector(options: GeoSpecCollectorOptions): GeoSpecCollec
     });
   };
 
-  const recordInvocation = (invocation: GeoSpecAuthoringInvocation): GeoSpecAssertion => {
+  const recordInvocation = (
+    invocation: GeoSpecAuthoringInvocation,
+    expectOptions: GeoSpecExpectOptions | undefined,
+  ): GeoSpecAssertion => {
     if (!isGeoSpecTestCase(activeTest)) {
       throw new Error('expectGeo() must be called inside it().');
     }
@@ -268,7 +272,11 @@ export function createCollector(options: GeoSpecCollectorOptions): GeoSpecCollec
       if (admission.load !== undefined) {
         assertion.loadId = admission.load.loadId;
       }
-      const methods = nativeClient.expectGeo(admission.identity);
+      const workUnitLimit = expectOptions?.workUnitLimit ?? admission.load?.workUnitLimit;
+      const methods = nativeClient.expectGeo(
+        admission.identity,
+        workUnitLimit === undefined ? undefined : { workUnitLimit },
+      );
       const chain = invocation.polarity === 'negative' ? methods.not : methods;
       // The shared authoring registry already supplies each method's argument tuple.
       const method = chain[invocation.matcher] as (...arguments_: readonly unknown[]) => GeoSpecCanonicalClaimReport;
@@ -370,9 +378,13 @@ export function createCollector(options: GeoSpecCollectorOptions): GeoSpecCollec
       recordSkipped(name);
     },
 
-    expectGeo(subject) {
-      return Object.assign(createGeoSpecMatcherMethods({ invoke: recordInvocation, polarity: 'positive', subject }), {
-        not: createGeoSpecMatcherMethods({ invoke: recordInvocation, polarity: 'negative', subject }),
+    expectGeo(subject, expectOptions) {
+      // Validate once at the chain, before any claim, so a bad budget names expectGeo.
+      assertGeoSpecAuthoredWorkUnitLimit(expectOptions?.workUnitLimit, 'expectGeo workUnitLimit');
+      const invoke = (invocation: GeoSpecAuthoringInvocation): GeoSpecAssertion =>
+        recordInvocation(invocation, expectOptions);
+      return Object.assign(createGeoSpecMatcherMethods({ invoke, polarity: 'positive', subject }), {
+        not: createGeoSpecMatcherMethods({ invoke, polarity: 'negative', subject }),
       });
     },
 
