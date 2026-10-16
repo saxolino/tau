@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { geoSpecMaxRunBudget } from '#constants/rpc.constants.js';
+import { geoSpecMaxRunBudget, geoSpecMaxWorkUnitLimit } from '#constants/rpc.constants.js';
 import { toolDescriptions } from '#constants/tool-description.constants.js';
 import {
   geoSpecFailureCategorySchema,
@@ -70,6 +70,19 @@ describe('geoSpecRunFilterInputSchema testTimeout', () => {
     expect(description).toContain('GEOSPEC_TEST_TIMEOUT');
     expect(description).toContain('does not shorten the run');
     expect(description).not.toContain('Equivalent to CLI');
+  });
+});
+
+describe('geoSpecRunFilterInputSchema workUnitLimit', () => {
+  it('should accept a positive integer budget up to the engine bound and refuse anything else', () => {
+    expect(geoSpecRunFilterInputSchema.safeParse({ workUnitLimit: geoSpecMaxWorkUnitLimit }).success).toBe(true);
+    expect(geoSpecRunFilterInputSchema.safeParse({ workUnitLimit: geoSpecMaxWorkUnitLimit + 1 }).success).toBe(false);
+    expect(geoSpecRunFilterInputSchema.safeParse({ workUnitLimit: 0 }).success).toBe(false);
+    expect(geoSpecRunFilterInputSchema.safeParse({ workUnitLimit: 1.5 }).success).toBe(false);
+  });
+
+  it('should point a work-budget refusal at this option', () => {
+    expect(geoSpecRunFilterInputSchema.shape.workUnitLimit.description).toContain('work-budget');
   });
 });
 

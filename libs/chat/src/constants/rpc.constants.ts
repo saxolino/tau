@@ -146,6 +146,15 @@ export const resolveGeoSpecRunBudget = (hostBudget: number, testTimeout?: number
   );
 
 /**
+ * The largest `test_model.workUnitLimit`: GeoSpec's own bound on one claim's
+ * engine work budget (`geoSpecMaximumWorkUnitLimit` in `geospec`), restated
+ * here because chat contracts do not depend on the engine package.
+ *
+ * @public
+ */
+export const geoSpecMaxWorkUnitLimit = 512_000_000;
+
+/**
  * Error codes for RPC infrastructure failures.
  * These represent issues with the RPC transport/execution itself,
  * not business-level errors from the client.
