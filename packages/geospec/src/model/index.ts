@@ -7,7 +7,7 @@
 export { GeoSpecModelLoadError } from '#model/errors.js';
 export { createModelLoader, loadModel } from '#model/load-model.js';
 export type { GeoSpecSubject } from '#model/subject.js';
-export { resolveRuntimeExportIntent } from '#model/export-intent.js';
+export { geoSpecMeshEvidenceMatchers, resolveRuntimeExportIntent } from '#model/export-intent.js';
 export type {
   GeoSpecExportRoute,
   RuntimeBackedModelFormat,
