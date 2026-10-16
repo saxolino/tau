@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { mutatingRpcNames, readOnlyRpcNames, rpcName, rpcNames } from '#constants/rpc.constants.js';
+import {
+  geoSpecDefaultRunBudget,
+  geoSpecMaxRunBudget,
+  geoSpecRunBudgetHeadroom,
+  mutatingRpcNames,
+  readOnlyRpcNames,
+  resolveGeoSpecRunBudget,
+  rpcName,
+  rpcNames,
+} from '#constants/rpc.constants.js';
 
 describe('rpc.constants', () => {
   describe('mutatingRpcNames / readOnlyRpcNames partition invariant', () => {
@@ -42,6 +51,25 @@ describe('rpc.constants', () => {
       expect(mutatingRpcNames.has(rpcName.listDirectory)).toBe(false);
       expect(mutatingRpcNames.has(rpcName.evaluateModel)).toBe(false);
       expect(readOnlyRpcNames.has(rpcName.resolveSkill)).toBe(true);
+    });
+  });
+
+  describe('resolveGeoSpecRunBudget', () => {
+    it('keeps the host budget when the call names no testTimeout', () => {
+      expect(resolveGeoSpecRunBudget(geoSpecDefaultRunBudget)).toBe(geoSpecDefaultRunBudget);
+    });
+
+    it('raises the budget to cover a testTimeout plus its headroom', () => {
+      expect(resolveGeoSpecRunBudget(60_000, 120_000)).toBe(120_000 + geoSpecRunBudgetHeadroom);
+    });
+
+    it('never lowers the host budget for a short testTimeout', () => {
+      expect(resolveGeoSpecRunBudget(geoSpecDefaultRunBudget, 1000)).toBe(geoSpecDefaultRunBudget);
+    });
+
+    it('caps every budget at the schema maximum', () => {
+      expect(resolveGeoSpecRunBudget(geoSpecDefaultRunBudget, geoSpecMaxRunBudget)).toBe(geoSpecMaxRunBudget);
+      expect(resolveGeoSpecRunBudget(10 * geoSpecMaxRunBudget)).toBe(geoSpecMaxRunBudget);
     });
   });
 });

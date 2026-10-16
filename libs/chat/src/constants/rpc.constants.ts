@@ -91,18 +91,59 @@ export const readOnlyRpcNames = new Set<(typeof rpcName)[keyof typeof rpcName]>(
 ]);
 
 /**
- * How long the server waits for a client to answer one RPC, in milliseconds.
+ * How long a server-relayed RPC waits for its client to answer, in milliseconds.
  *
- * This is the outermost budget in the chain, and it is deliberately shared: a
- * client-side timeout that outlives it never reaches the user, because the
- * server has already answered with the generic
- * `RPC execution timed out … the client may be disconnected or unresponsive`.
- * Every client budget — worker startup, a test run, an abort grace period —
- * must therefore be sized to expire inside this one.
+ * It bounds only an RPC the API relays to a browser client over Socket.IO
+ * (see the chat RPC error-handling policy). No host in this tree relays tool
+ * calls that way: the browser-placed agent host's tool registry dispatches
+ * each call in process, and nothing between `packages/agent-host` and the RPC
+ * dispatcher bounds it besides the turn's own abort signal. `test_model` there
+ * is bounded by {@link geoSpecDefaultRunBudget} instead.
  *
  * @public
  */
 export const rpcExecutionTimeout = 60_000;
+
+/**
+ * The browser GeoSpec run budget when the call names no `testTimeout`, in
+ * milliseconds. A run that outlives it is reported as `OPERATION_TIMEOUT`
+ * with the requirements it completed.
+ *
+ * @public
+ */
+export const geoSpecDefaultRunBudget = 180_000;
+
+/**
+ * The longest browser GeoSpec run budget, in milliseconds. Also the largest
+ * `test_model.testTimeout`, so a per-test timeout never needs a longer run.
+ *
+ * @public
+ */
+export const geoSpecMaxRunBudget = 300_000;
+
+/**
+ * Milliseconds added to a `testTimeout` when it sets the browser run budget,
+ * for discovery, bundling and model loads around the slowest test.
+ *
+ * @public
+ */
+export const geoSpecRunBudgetHeadroom = 30_000;
+
+/**
+ * The browser GeoSpec run budget for one call: the host's budget, raised to
+ * cover the call's `testTimeout` plus {@link geoSpecRunBudgetHeadroom}, never
+ * above {@link geoSpecMaxRunBudget}.
+ *
+ * @param hostBudget - The host's run budget. Milliseconds.
+ * @param testTimeout - The call's per-test timeout, when given. Milliseconds.
+ * @returns The run budget. Milliseconds.
+ * @public
+ */
+export const resolveGeoSpecRunBudget = (hostBudget: number, testTimeout?: number): number =>
+  Math.min(
+    geoSpecMaxRunBudget,
+    Math.max(hostBudget, testTimeout === undefined ? 0 : testTimeout + geoSpecRunBudgetHeadroom),
+  );
 
 /**
  * Error codes for RPC infrastructure failures.
