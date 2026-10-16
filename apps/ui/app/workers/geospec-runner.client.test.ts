@@ -578,6 +578,9 @@ describe('createGeoSpecWorkerRpcClient', () => {
       await vi.advanceTimersByTimeAsync(110);
       const [run] = geoSpecPostMessageCall(geoSpecWorker, 1);
       const late = successResult(run.requestId);
+      if (!late.result.success) {
+        throw new Error('Expected a successful worker result.');
+      }
       geoSpecWorker.emitMessage({
         ...late,
         result: {
