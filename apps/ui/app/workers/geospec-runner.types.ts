@@ -1,4 +1,5 @@
 import type { RunGeoSpecTestsRpcInput, RunGeoSpecTestsRpcResult } from '@taucad/chat';
+import type { GeoSpecRunProgressEvent } from '@taucad/agent-tools/geospec';
 import type { UiRuntimeConfigInput } from '#runtime/ui-runtime.config.js';
 
 export type GeoSpecRunnerWorkerInitializeRequest = {
@@ -54,6 +55,13 @@ export type GeoSpecRunnerWorkerResultResponse = {
   candidates?: ReadonlyArray<Uint8Array<ArrayBuffer>>;
 };
 
+/** One lifecycle step of a run, posted between tests so it survives a later blocked or reset worker. */
+export type GeoSpecRunnerWorkerProgressResponse = {
+  type: 'progress';
+  requestId: string;
+  event: GeoSpecRunProgressEvent;
+};
+
 export type GeoSpecRunnerWorkerErrorResponse = {
   type: 'error';
   requestId: string;
@@ -69,5 +77,6 @@ export type GeoSpecRunnerWorkerClosedResponse = {
 export type GeoSpecRunnerWorkerResponse =
   | GeoSpecRunnerWorkerInitializedResponse
   | GeoSpecRunnerWorkerResultResponse
+  | GeoSpecRunnerWorkerProgressResponse
   | GeoSpecRunnerWorkerErrorResponse
   | GeoSpecRunnerWorkerClosedResponse;

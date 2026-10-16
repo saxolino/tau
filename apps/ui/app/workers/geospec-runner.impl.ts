@@ -17,6 +17,7 @@
  */
 
 import { runGeoSpecTests } from '@taucad/agent-tools/geospec';
+import type { GeoSpecKernelEvidence } from '@taucad/agent-tools/geospec';
 import { createRuntimeClient } from '@taucad/runtime/client';
 import type { AnyRuntimeDefinition } from '@taucad/runtime/worker';
 import { fromFsLike } from '@taucad/runtime/filesystem';
@@ -461,6 +462,35 @@ const initializeGeoSpecWorker = async (request: GeoSpecRunnerWorkerInitializeReq
   }
 };
 
+/** The runtime slice kernel facts are read from. */
+export type KernelEvidenceRuntime = Pick<AppRuntimeClient, 'describe' | 'bestRouteFor'>;
+
+/**
+ * The kernel that evaluates a model source and whether it can export STEP
+ * with BRep fidelity without a transcoder. Evidence suggestions use it so a
+ * kernel with no such route, such as a voxel kernel, is never told to load STEP.
+ *
+ * @param runtime - This session's runtime client.
+ * @param sourcePath - The rooted model source a refused claim loaded.
+ * @returns The kernel facts, or `undefined` when the source names no kernel or cannot be described.
+ */
+export const describeKernelEvidence = async (
+  runtime: KernelEvidenceRuntime,
+  sourcePath: string,
+): Promise<GeoSpecKernelEvidence | undefined> => {
+  try {
+    const { kernelId } = await runtime.describe({ source: { path: sourcePath } });
+    if (kernelId === undefined) {
+      return undefined;
+    }
+    const route = runtime.bestRouteFor('step', { kernelId });
+    return { kernelId, directBrepStep: route?.transcoderId === undefined && route?.fidelity === 'brep' };
+  } catch {
+    // Kernel facts only sharpen a suggestion; without them the refusal keeps its generic wording.
+    return undefined;
+  }
+};
+
 const runGeoSpecInWorker = async (request: GeoSpecRunnerWorkerRunRequest): Promise<void> => {
   const activeSession = session;
   if (!activeSession || activeSession.sessionId !== request.sessionId) {
@@ -477,6 +507,10 @@ const runGeoSpecInWorker = async (request: GeoSpecRunnerWorkerRunRequest): Promi
       discovery: createDiscoveryFileSystem(activeSession.fileSystem),
       runner: activeSession.runner,
       args: request.args,
+      onProgress: (event) => {
+        workerScope.postMessage({ type: 'progress', requestId: request.requestId, event });
+      },
+      kernelEvidence: async (sourcePath) => describeKernelEvidence(activeSession.runtimeClient, sourcePath),
     });
     workerScope.postMessage({
       type: 'result',

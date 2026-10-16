@@ -1,6 +1,8 @@
 import type { RunGeoSpecTestsRpcResult } from '@taucad/chat';
 import { rpcClientErrorCode } from '@taucad/chat';
-import { rpcExecutionTimeout } from '@taucad/chat/constants';
+import { geoSpecDefaultRunBudget, geoSpecMaxRunBudget, resolveGeoSpecRunBudget } from '@taucad/chat/constants';
+import { createGeoSpecRunProgress, markGeoSpecRunTimeout } from '@taucad/agent-tools/geospec';
+import type { GeoSpecRunProgress } from '@taucad/agent-tools/geospec';
 import type { RpcGeoSpecClient } from '@taucad/chat/rpc';
 import type { FileSystemBridgeConnection } from '@taucad/fs-bridge';
 import { randomUuid } from '@taucad/utils/id';
@@ -19,7 +21,11 @@ export type GeoSpecWorkerRpcClientOptions = {
     publish: (candidate: Uint8Array<ArrayBuffer>) => Promise<unknown>;
   }>;
   createWorker?: CreateGeoSpecWorker;
-  /** Milliseconds. */
+  /**
+   * The host's run budget in milliseconds, raised per call to cover its
+   * `testTimeout` and capped at {@link geoSpecMaxRunBudget}. A run that
+   * outlives it answers `OPERATION_TIMEOUT` with the requirements it completed.
+   */
   runnerTimeout?: number;
   /** Milliseconds to wait for worker initialization before failing in-flight runs. */
   initTimeout?: number;
@@ -32,18 +38,20 @@ export type GeoSpecWorkerRpcClient = RpcGeoSpecClient & {
 };
 
 type PendingRun = {
-  timeoutId: ReturnType<typeof globalThis.setTimeout>;
+  timeoutId?: ReturnType<typeof globalThis.setTimeout>;
   abortTimeoutId?: ReturnType<typeof globalThis.setTimeout>;
   signal?: AbortSignal;
   abortListener?: () => void;
+  /** This call's run budget. Milliseconds. */
+  runBudget: number;
+  /** When the run was posted, then when the worker started it. `performance.now()` milliseconds. */
+  budgetStartedAt: number;
+  progress: GeoSpecRunProgress;
+  /** The answer frozen when the budget expired; set only on budget expiry, never on cancellation. */
+  expired?: Extract<RunGeoSpecTestsRpcResult, { success: true }>;
   resolve(result: RunGeoSpecTestsRpcResult): void;
 };
 
-/**
- * Milliseconds of slack between the client's worst case and the API's RPC
- * budget, so the client's specific error always wins the race.
- */
-const rpcTimeoutHeadroom = 5000;
 /** Milliseconds to wait after cooperative abort before hard-resetting. */
 const defaultAbortGrace = 5000;
 /**
@@ -52,17 +60,14 @@ const defaultAbortGrace = 5000;
  * and waiting longer only buys a less useful error.
  */
 const defaultInitTimeout = 10_000;
-/** Milliseconds. Whatever is left of the API's budget once startup and the abort grace are paid for. */
-const defaultTimeout = rpcExecutionTimeout - defaultInitTimeout - defaultAbortGrace - rpcTimeoutHeadroom;
-
 /**
- * The longest a `runTests` call can take before resolving: a full startup
- * timeout, then a full run timeout, then the abort grace. Pinned by a test
- * against {@link rpcExecutionTimeout}.
+ * The longest a started `runTests` call can take before resolving: a full
+ * startup timeout, then the longest run budget, then the abort grace. No
+ * outer RPC budget bounds a browser-placed tool call, so this is the bound.
  *
  * @public
  */
-export const geoSpecClientWorstCaseTimeout = defaultInitTimeout + defaultTimeout + defaultAbortGrace;
+export const geoSpecClientWorstCaseTimeout = defaultInitTimeout + geoSpecMaxRunBudget + defaultAbortGrace;
 
 const createRequestId = (): string => randomUuid();
 
@@ -72,7 +77,7 @@ const errorResult = (message: string): RunGeoSpecTestsRpcResult => ({
   message,
 });
 
-const createTimeoutMessage = (runnerTimeout: number): string => `GeoSpec worker timed out after ${runnerTimeout}ms.`;
+const createTimeoutMessage = (runBudget: number): string => `GeoSpec run exceeded its ${runBudget} ms run budget.`;
 
 export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOptions): GeoSpecWorkerRpcClient => {
   let worker: Worker | undefined;
@@ -91,7 +96,7 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
   let availableCandidates: ReadonlyArray<Uint8Array<ArrayBuffer>> = [];
   const pendingRuns = new Map<string, PendingRun>();
 
-  const runnerTimeout = options.runnerTimeout ?? defaultTimeout;
+  const hostRunBudget = Math.min(options.runnerTimeout ?? geoSpecDefaultRunBudget, geoSpecMaxRunBudget);
   const initTimeout = options.initTimeout ?? defaultInitTimeout;
   const abortGrace = options.abortGrace ?? defaultAbortGrace;
 
@@ -127,6 +132,35 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     pending.resolve(settledResult);
   };
 
+  /**
+   * Answer a run whose budget expired. The worker's own late answer stays
+   * authoritative and is only marked; without one, the frozen progress answer
+   * reports what completed.
+   */
+  const resolveExpiredRun = (requestId: string, late?: RunGeoSpecTestsRpcResult): void => {
+    const pending = pendingRuns.get(requestId);
+    if (pending?.expired === undefined) {
+      return;
+    }
+    const { expired } = pending;
+    if (late?.success !== true) {
+      resolveRun(requestId, expired);
+      return;
+    }
+    const { success: _success, ...output } = late;
+    resolveRun(requestId, {
+      success: true,
+      ...markGeoSpecRunTimeout(
+        output,
+        { budget: pending.runBudget, elapsed: expired.timeout?.elapsed ?? pending.runBudget },
+        {
+          ...(expired.timeout?.file === undefined ? {} : { file: expired.timeout.file }),
+          ...(expired.timeout?.requirement === undefined ? {} : { requirement: expired.timeout.requirement }),
+        },
+      ),
+    });
+  };
+
   const publishCandidate = async (candidate: Uint8Array<ArrayBuffer>): Promise<void> => {
     try {
       await options.candidateSync?.publish(candidate);
@@ -137,6 +171,10 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
 
   const failAllPendingRuns = (message: string): void => {
     for (const [requestId, pending] of pendingRuns) {
+      if (pending.expired !== undefined) {
+        resolveExpiredRun(requestId);
+        continue;
+      }
       clearPendingRun(requestId);
       pending.resolve(errorResult(message));
     }
@@ -170,6 +208,38 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     detachWorker();
   };
 
+  function onProgressMessage(message: Extract<GeoSpecRunnerWorkerResponse, { type: 'progress' }>): void {
+    const pending = pendingRuns.get(message.requestId);
+    if (pending === undefined || pending.expired !== undefined) {
+      return;
+    }
+    pending.progress.apply(message.event);
+    if (message.event.type === 'run-start' && pending.abortTimeoutId === undefined) {
+      // Waiting behind an earlier run is not this run's work: its budget starts now.
+      armRunBudget(message.requestId, pending);
+    }
+  }
+
+  function onResultMessage(message: Extract<GeoSpecRunnerWorkerResponse, { type: 'result' }>): void {
+    const pending = pendingRuns.get(message.requestId);
+    if (pending?.expired !== undefined) {
+      resolveExpiredRun(message.requestId, message.result);
+      return;
+    }
+    const mayPublish =
+      pending !== undefined &&
+      !closed &&
+      pending.abortTimeoutId === undefined &&
+      !pending.signal?.aborted &&
+      sessionId !== undefined;
+    resolveRun(message.requestId, message.result);
+    if (mayPublish && message.result.success) {
+      for (const candidate of message.candidates ?? []) {
+        void publishCandidate(candidate);
+      }
+    }
+  }
+
   function onMessage(event: MessageEvent<GeoSpecRunnerWorkerResponse>): void {
     const message = event.data;
 
@@ -198,20 +268,13 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
       return;
     }
 
+    if (message.type === 'progress') {
+      onProgressMessage(message);
+      return;
+    }
+
     if (message.type === 'result') {
-      const pending = pendingRuns.get(message.requestId);
-      const mayPublish =
-        pending !== undefined &&
-        !closed &&
-        pending.abortTimeoutId === undefined &&
-        !pending.signal?.aborted &&
-        sessionId !== undefined;
-      resolveRun(message.requestId, message.result);
-      if (mayPublish && message.result.success) {
-        for (const candidate of message.candidates ?? []) {
-          void publishCandidate(candidate);
-        }
-      }
+      onResultMessage(message);
       return;
     }
 
@@ -222,6 +285,10 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
       return;
     }
 
+    if (pendingRuns.get(message.requestId)?.expired !== undefined) {
+      resolveExpiredRun(message.requestId);
+      return;
+    }
     resolveRun(message.requestId, errorResult(message.message));
   }
 
@@ -280,9 +347,66 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
   };
 
   const hardResetRun = (requestId: string, message: string): void => {
-    resolveRun(requestId, errorResult(message));
-    terminateWorker(message);
+    if (pendingRuns.get(requestId)?.expired === undefined) {
+      resolveRun(requestId, errorResult(message));
+    } else {
+      resolveExpiredRun(requestId);
+    }
+    terminateWorker(
+      `GeoSpec worker was reset after another run in this session stopped (${message}); this run never finished. Re-run it.`,
+    );
   };
+
+  /** Cooperative abort for one run: stop its budget timer, ask the worker, hard-reset after the grace. */
+  const abortRunRequest = ({
+    requestId,
+    activeWorker,
+    activeSessionId,
+    reason,
+  }: Readonly<{ requestId: string; activeWorker: Worker; activeSessionId: string; reason: string }>): void => {
+    const pending = pendingRuns.get(requestId);
+    if (!pending || pending.abortTimeoutId !== undefined) {
+      return;
+    }
+    globalThis.clearTimeout(pending.timeoutId);
+    try {
+      activeWorker.postMessage({
+        type: 'abort',
+        requestId: createRequestId(),
+        sessionId: activeSessionId,
+        targetRequestId: requestId,
+        reason,
+      } satisfies GeoSpecRunnerWorkerRequest);
+    } catch {
+      hardResetRun(requestId, reason);
+      return;
+    }
+    pending.abortTimeoutId = globalThis.setTimeout(() => {
+      hardResetRun(requestId, reason);
+    }, abortGrace);
+  };
+
+  /** (Re)start a run's budget from now; on expiry freeze its progress answer and abort it. */
+  function armRunBudget(requestId: string, pending: PendingRun): void {
+    globalThis.clearTimeout(pending.timeoutId);
+    pending.budgetStartedAt = performance.now();
+    pending.timeoutId = globalThis.setTimeout(() => {
+      const activeWorker = worker;
+      const activeSessionId = sessionId;
+      pending.expired = {
+        success: true,
+        ...pending.progress.timedOut({
+          budget: pending.runBudget,
+          elapsed: performance.now() - pending.budgetStartedAt,
+        }),
+      };
+      if (activeWorker === undefined || activeSessionId === undefined) {
+        resolveExpiredRun(requestId);
+        return;
+      }
+      abortRunRequest({ requestId, activeWorker, activeSessionId, reason: createTimeoutMessage(pending.runBudget) });
+    }, pending.runBudget);
+  }
 
   const runTests: RpcGeoSpecClient['runTests'] = async (args, context) => {
     if (context?.signal?.aborted) {
@@ -327,41 +451,19 @@ export const createGeoSpecWorkerRpcClient = (options: GeoSpecWorkerRpcClientOpti
     const activeWorker = worker;
     const requestId = createRequestId();
     return new Promise<RunGeoSpecTestsRpcResult>((resolve) => {
-      const abortRun = (reason: string): void => {
-        const pending = pendingRuns.get(requestId);
-        if (!pending || pending.abortTimeoutId !== undefined) {
-          return;
-        }
-        globalThis.clearTimeout(pending.timeoutId);
-        try {
-          activeWorker.postMessage({
-            type: 'abort',
-            requestId: createRequestId(),
-            sessionId: activeSessionId,
-            targetRequestId: requestId,
-            reason,
-          } satisfies GeoSpecRunnerWorkerRequest);
-        } catch {
-          hardResetRun(requestId, reason);
-          return;
-        }
-        pending.abortTimeoutId = globalThis.setTimeout(() => {
-          hardResetRun(requestId, reason);
-        }, abortGrace);
-      };
       const abortListener = (): void => {
-        abortRun('GeoSpec request cancelled.');
+        abortRunRequest({ requestId, activeWorker, activeSessionId, reason: 'GeoSpec request cancelled.' });
       };
-      const timeoutId = globalThis.setTimeout(() => {
-        abortRun(createTimeoutMessage(runnerTimeout));
-      }, runnerTimeout);
-
-      pendingRuns.set(requestId, {
+      const pending: PendingRun = {
         resolve,
-        timeoutId,
         abortListener,
+        runBudget: resolveGeoSpecRunBudget(hostRunBudget, args.testTimeout),
+        budgetStartedAt: performance.now(),
+        progress: createGeoSpecRunProgress(),
         ...(context?.signal ? { signal: context.signal } : {}),
-      });
+      };
+      pendingRuns.set(requestId, pending);
+      armRunBudget(requestId, pending);
       try {
         activeWorker.postMessage({
           type: 'run',

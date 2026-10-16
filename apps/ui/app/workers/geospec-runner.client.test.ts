@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { rpcExecutionTimeout } from '@taucad/chat/constants';
+import { geoSpecMaxRunBudget } from '@taucad/chat/constants';
+import { projectGeoSpecTest } from '@taucad/agent-tools/geospec';
 import { createChatToolRegistry } from '@taucad/agent-tools/registry';
 import { mock } from 'vitest-mock-extended';
 import type { RpcFileSystem } from '@taucad/chat/rpc';
@@ -214,13 +215,9 @@ describe('createGeoSpecWorkerRpcClient', () => {
     await client.close();
   });
 
-  it('should finish every client-side budget before the API abandons the RPC', () => {
-    // The API stops waiting at `rpcExecutionTimeout` and answers with a generic
-    // "the client may be disconnected or unresponsive". A client budget that
-    // outlives it can never report what actually went wrong, so the specific
-    // diagnosis loses the race to the useless one — which is how a dead GeoSpec
-    // worker read as a connection problem.
-    expect(geoSpecClientWorstCaseTimeout).toBeLessThan(rpcExecutionTimeout);
+  it('should bound a started call by startup, the longest run budget and the abort grace', () => {
+    // No outer RPC budget bounds a browser-placed test_model call, so the client's own bound is the only one.
+    expect(geoSpecClientWorstCaseTimeout).toBe(10_000 + geoSpecMaxRunBudget + 5000);
   });
 
   it('should reuse one default compiled worker across repeated successful test runs', async () => {
@@ -428,7 +425,7 @@ describe('createGeoSpecWorkerRpcClient', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it('should hard terminate when abort grace expires', async () => {
+  it('should answer OPERATION_TIMEOUT and hard terminate when the abort grace expires', async () => {
     vi.useFakeTimers();
     try {
       const fileManagerWorker = new FakeFileManagerWorker();
@@ -445,12 +442,171 @@ describe('createGeoSpecWorkerRpcClient', () => {
       const resultPromise = client.runTests({ files: ['slow.geospec.ts'] });
       await vi.advanceTimersByTimeAsync(150);
 
-      await expect(resultPromise).resolves.toEqual({
-        success: false,
-        errorCode: 'UNKNOWN',
-        message: 'GeoSpec worker timed out after 100ms.',
+      const result = await resultPromise;
+      expect(result).toMatchObject({
+        success: true,
+        runStatus: 'inconclusive',
+        timeout: { errorCode: 'OPERATION_TIMEOUT', code: 'GEOSPEC_RUN_TIMEOUT', budget: 100, phase: 'queued' },
       });
+      expect(result.success && result.failures[0]?.category).toBe('timeout');
+      expect(geoSpecPostMessageCall(geoSpecWorker, 2)[0]).toMatchObject({ type: 'abort' });
       expect(geoSpecWorker.terminate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should report completed requirements and the one in flight when the run budget expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const fileManagerWorker = new FakeFileManagerWorker();
+      const geoSpecWorker = new FakeGeoSpecWorker();
+      geoSpecWorker.autoResolveRuns = false;
+      const client = createGeoSpecWorkerRpcClient({
+        openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+        runtimeConfig,
+        createWorker: () => geoSpecWorker as unknown as Worker,
+        runnerTimeout: 1000,
+        abortGrace: 50,
+      });
+      const resultPromise = client.runTests({ files: ['lamp.geospec.ts'] });
+      await vi.advanceTimersByTimeAsync(0);
+      const [run] = geoSpecPostMessageCall(geoSpecWorker, 1);
+      const file = 'lamp.geospec.ts';
+      const progress = (event: Extract<GeoSpecRunnerWorkerResponse, { type: 'progress' }>['event']): void => {
+        geoSpecWorker.emitMessage({ type: 'progress', requestId: run.requestId, event });
+      };
+      progress({ type: 'run-start', files: [file] });
+      progress({ type: 'file-start', file });
+      progress({
+        type: 'test-complete',
+        file,
+        projected: projectGeoSpecTest(
+          file,
+          { suite: ['lamp'], name: 'fits the bed', ordinal: 0, status: 'passed', assertions: [], diagnostics: [] },
+          { reports: false },
+        ),
+      });
+      progress({
+        type: 'test-start',
+        file,
+        test: { id: `${file}:1`, requirement: 'lamp > is one piece', targetFile: file, status: 'not-run', ordinal: 1 },
+      });
+      await vi.advanceTimersByTimeAsync(1050);
+
+      const result = await resultPromise;
+      expect(result).toMatchObject({
+        success: true,
+        passed: 1,
+        runStatus: 'inconclusive',
+        timeout: { budget: 1000, phase: 'running', file, requirement: 'lamp > is one piece' },
+        accounting: { completed: 1, notRun: 1, cancelled: true },
+      });
+      expect(result.success && result.passes.map((pass) => pass.requirement)).toStrictEqual(['lamp > fits the bed']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should start the run budget when the worker starts the run, not while it waits in the queue', async () => {
+    vi.useFakeTimers();
+    try {
+      const fileManagerWorker = new FakeFileManagerWorker();
+      const geoSpecWorker = new FakeGeoSpecWorker();
+      geoSpecWorker.autoResolveRuns = false;
+      const client = createGeoSpecWorkerRpcClient({
+        openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+        runtimeConfig,
+        createWorker: () => geoSpecWorker as unknown as Worker,
+        runnerTimeout: 1000,
+      });
+      const resultPromise = client.runTests({ files: ['main.geospec.ts'] });
+      await vi.advanceTimersByTimeAsync(800);
+      const [run] = geoSpecPostMessageCall(geoSpecWorker, 1);
+      geoSpecWorker.emitMessage({
+        type: 'progress',
+        requestId: run.requestId,
+        event: { type: 'run-start', files: ['main.geospec.ts'] },
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      expect(geoSpecWorker.postMessage.mock.calls.some(([message]) => message.type === 'abort')).toBe(false);
+      geoSpecWorker.emitMessage(successResult(run.requestId));
+      await expect(resultPromise).resolves.toMatchObject({ success: true, passed: 1 });
+      await expect(resultPromise).resolves.not.toHaveProperty('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should raise the run budget to cover the requested testTimeout, up to the longest budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const fileManagerWorker = new FakeFileManagerWorker();
+      const geoSpecWorker = new FakeGeoSpecWorker();
+      geoSpecWorker.autoResolveRuns = false;
+      const client = createGeoSpecWorkerRpcClient({
+        openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+        runtimeConfig,
+        createWorker: () => geoSpecWorker as unknown as Worker,
+        runnerTimeout: 1000,
+        abortGrace: 10,
+      });
+      const resultPromise = client.runTests({ files: ['main.geospec.ts'], testTimeout: geoSpecMaxRunBudget });
+      await vi.advanceTimersByTimeAsync(geoSpecMaxRunBudget - 1);
+      expect(geoSpecWorker.postMessage.mock.calls.some(([message]) => message.type === 'abort')).toBe(false);
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(resultPromise).resolves.toMatchObject({ timeout: { budget: geoSpecMaxRunBudget } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should mark the worker answer that arrives inside the abort grace as timed out', async () => {
+    vi.useFakeTimers();
+    try {
+      const fileManagerWorker = new FakeFileManagerWorker();
+      const geoSpecWorker = new FakeGeoSpecWorker();
+      geoSpecWorker.autoResolveRuns = false;
+      const client = createGeoSpecWorkerRpcClient({
+        openFileSystemBridge: createOpenFileSystemBridge(fileManagerWorker),
+        runtimeConfig,
+        createWorker: () => geoSpecWorker as unknown as Worker,
+        runnerTimeout: 100,
+        abortGrace: 50,
+      });
+      const resultPromise = client.runTests({ files: ['a.geospec.ts', 'b.geospec.ts'] });
+      await vi.advanceTimersByTimeAsync(110);
+      const [run] = geoSpecPostMessageCall(geoSpecWorker, 1);
+      const late = successResult(run.requestId);
+      geoSpecWorker.emitMessage({
+        ...late,
+        result: {
+          ...late.result,
+          accounting: {
+            discovered: 1,
+            selected: 1,
+            completed: 1,
+            passed: 1,
+            failed: 0,
+            unsupported: 0,
+            inconclusive: 0,
+            skipped: 0,
+            notRun: 0,
+            requestedFiles: ['a.geospec.ts', 'b.geospec.ts'],
+            completedFiles: ['a.geospec.ts'],
+            notRunFiles: ['b.geospec.ts'],
+            discoveryComplete: false,
+            cancelled: true,
+            bailed: false,
+          },
+        },
+      });
+
+      const result = await resultPromise;
+      expect(result).toMatchObject({ success: true, passed: 1, timeout: { code: 'GEOSPEC_RUN_TIMEOUT', budget: 100 } });
+      expect(result.success && result.runStatus).not.toBe('passed');
+      expect(geoSpecWorker.terminate).not.toHaveBeenCalled();
+      await client.close();
     } finally {
       vi.useRealTimers();
     }
