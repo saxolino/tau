@@ -77,3 +77,25 @@ it('emits test-start and test-complete events tagged with their file as each tes
     { type: 'test-complete', file: 'main.geospec.ts', test },
   ]);
 });
+
+it('replaces the host work-unit budget for one run only when the run names one', async () => {
+  const passing = (): GeoSpecRunResult => ({
+    success: true,
+    passed: true,
+    bundle: mock<Extract<GeoSpecRunResult, { success: true }>['bundle']>(),
+    tests: [],
+  });
+  vi.mocked(runGeoSpecModule).mockClear().mockResolvedValueOnce(passing()).mockResolvedValueOnce(passing());
+  const engine = mock<GeoSpecRunnerOptions['nativeAssertions']['engine']>();
+  const runner = createSerialGeoSpecRunner({
+    filesystem: mock<GeoSpecRunnerOptions['filesystem']>(),
+    nativeAssertions: { engine, workUnitLimit: 16_000_000 },
+  });
+  await runner.run({ files: ['main.geospec.ts'], workUnitLimit: 64_000_000 });
+  await runner.run({ files: ['main.geospec.ts'] });
+  await runner.close();
+  const budgets = vi.mocked(runGeoSpecModule).mock.calls.map(([options]) => options.nativeAssertions);
+  expect(budgets[0]).toMatchObject({ workUnitLimit: 64_000_000 });
+  expect(budgets[0]?.engine).toBe(engine);
+  expect(budgets[1]).toMatchObject({ workUnitLimit: 16_000_000 });
+});

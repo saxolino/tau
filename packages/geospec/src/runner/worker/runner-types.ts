@@ -115,6 +115,12 @@ export type GeoSpecRunnerRunOptions = {
   testTimeout?: number;
   /** Non-verdict matcher wall backstop. Milliseconds. */
   matcherWallBackstop?: number;
+  /**
+   * Engine work-unit budget for this run's claims, replacing the runner's
+   * `nativeAssertions.workUnitLimit`. A `loadModel` or `expectGeo` budget still
+   * wins for its own claims.
+   */
+  workUnitLimit?: number;
   /** Emit structured forensic measurements for this run. */
   forensic?: boolean;
   /**

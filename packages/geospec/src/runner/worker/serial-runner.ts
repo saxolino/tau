@@ -172,7 +172,10 @@ export const createSerialGeoSpecRunner = (options: GeoSpecRunnerOptions): GeoSpe
             );
           },
           bundleCache,
-          nativeAssertions: options.nativeAssertions,
+          nativeAssertions:
+            runOptions.workUnitLimit === undefined
+              ? options.nativeAssertions
+              : { ...options.nativeAssertions, workUnitLimit: runOptions.workUnitLimit },
           ...(options.nativeModelLoader ? { nativeModelLoader: options.nativeModelLoader } : {}),
           ...(options.builtinModules ? { builtinModules: options.builtinModules } : {}),
         }).catch(
