@@ -58,9 +58,10 @@ import {
   multiUnavailableReason,
   picovoxelExportSchemas,
   picovoxelOptionsSchema,
+  picovoxelRegionSchema,
   picovoxelRenderSchema,
 } from '#picovoxel.schemas.js';
-import type { PicovoxelArtifact, PicovoxelLane } from '#picovoxel.schemas.js';
+import type { PicovoxelArtifact, PicovoxelLane, PicovoxelRegion } from '#picovoxel.schemas.js';
 
 // =============================================================================
 // Identity
@@ -82,8 +83,8 @@ const picovoxelBuild = {
   scripts: 'e19aa9a77efb2c44cb0aa359ba7e3b64d2a022dbf98b2a4abf0126122aac9d7c',
 } as const;
 
-/** Kernel version: mechanism/name-evidence handle semantics plus the PicoVoxel build it runs. */
-const kernelVersion = `1.4.0+picovoxel.${picovoxelBuild.version}.serial-${picovoxelBuild.serial.slice(0, 12)}.multi-${picovoxelBuild.multi.slice(0, 12)}.scripts-${picovoxelBuild.scripts.slice(0, 12)}`;
+/** Kernel version: mechanism/name-evidence/region handle semantics plus the PicoVoxel build it runs. */
+const kernelVersion = `1.5.0+picovoxel.${picovoxelBuild.version}.serial-${picovoxelBuild.serial.slice(0, 12)}.multi-${picovoxelBuild.multi.slice(0, 12)}.scripts-${picovoxelBuild.scripts.slice(0, 12)}`;
 
 /**
  * Explicit URLs of the assets each artifact loads (D20): the WebAssembly binary and, for the
@@ -683,11 +684,20 @@ const snapshotMaterial = (value: unknown, label: string, textureCount: number): 
 /**
  * Normalize `main()`'s result. `[]` is an empty scene (the geospec empty-scene convention).
  *
+ * With a `region`, each Voxels part is trimmed to the box before meshing so it stays a closed shell,
+ * and a part the box misses entirely is dropped. A Mesh part cannot be cropped without opening it,
+ * so it is refused rather than delivered whole under a region.
+ *
  * @param result - The value `main()` returned.
  * @param sessionLane - The session's resolved lane.
+ * @param region - The crop box, when the build asked for one.
  * @returns The durable native handle.
  */
-const normalizeResult = (result: unknown, sessionLane: PicovoxelLane): PicovoxelNativeHandle => {
+const normalizeResult = (
+  result: unknown,
+  sessionLane: PicovoxelLane,
+  region?: PicovoxelRegion,
+): PicovoxelNativeHandle => {
   const model = isRecordObject(result) && 'shapes' in result ? result : undefined;
   const modelShapes = model?.['shapes'];
   if (model && !Array.isArray(modelShapes)) {
@@ -730,6 +740,11 @@ const normalizeResult = (result: unknown, sessionLane: PicovoxelLane): Picovoxel
       ...(authoredName === undefined ? {} : { authoredName }),
     };
     if (isMesh(shape)) {
+      if (region !== undefined) {
+        throw new TypeError(
+          `PicoVoxel ${part.name} (output ${index + 1}) is a Mesh, which cannot be cropped to a region without opening its surface. Return Voxels (mesh.toVoxels()) for a region build, or omit region.`,
+        );
+      }
       return { ...snapshotMesh(shape, part, sessionLane), ...appearance };
     }
     if (isVoxels(shape)) {
@@ -738,13 +753,22 @@ const normalizeResult = (result: unknown, sessionLane: PicovoxelLane): Picovoxel
           `PicoVoxel ${part.name} (output ${index + 1}) is an empty Voxels field. Return [] for an empty scene.`,
         );
       }
-      return { ...snapshotMesh(shape.toMesh(), part, sessionLane), ...appearance };
+      if (region === undefined) {
+        return { ...snapshotMesh(shape.toMesh(), part, sessionLane), ...appearance };
+      }
+      const cropped = shape.trim({ min: region.min, max: region.max });
+      // A part the box misses entirely is outside the region, not an authoring error.
+      return cropped.isEmpty ? undefined : { ...snapshotMesh(cropped.toMesh(), part, sessionLane), ...appearance };
     }
     throw new TypeError(
       `PicoVoxel main() result ${index + 1} must be Mesh, Voxels or { shape: Mesh | Voxels, name?: string, material?: Material }; received ${describeValue(shape)}.`,
     );
   });
-  return { shapes, ...resources };
+  return {
+    shapes: shapes.filter((shape) => shape !== undefined),
+    ...resources,
+    ...(region === undefined ? {} : { region: { min: [...region.min], max: [...region.max] } }),
+  };
 };
 
 /**
@@ -880,6 +904,49 @@ const laneExportRefusal = (): KernelIssue => ({
   type: 'runtime',
   severity: 'error',
   details: { producer: { kernelId }, refusal: 'PICOVOXEL_LANE_EXPORT', lane: 'fast', format: 'glb' },
+});
+
+/**
+ * The notice every export of a cropped handle carries, so a consumer can confirm the crop it asked for
+ * and never read a region's bytes as the whole model.
+ *
+ * @param region - The box the handle was trimmed to.
+ * @param format - The exported format.
+ * @returns An informational issue naming the box.
+ */
+const regionNotice = (region: PicovoxelRegion, format: 'glb' | 'gltf' | 'stl'): KernelIssue => ({
+  message: `PicoVoxel exported only the region min [${region.min.join(', ')}] max [${region.max.join(', ')}] mm of this model; geometry outside it was trimmed away.`,
+  code: 'RESOURCE_LIMIT',
+  type: 'runtime',
+  severity: 'info',
+  details: { producer: { kernelId }, region: { min: [...region.min], max: [...region.max] }, format },
+});
+
+const regionKey = (region: PicovoxelRegion | undefined): string =>
+  region === undefined ? '' : JSON.stringify([region.min, region.max]);
+
+/**
+ * Refuse an export whose requested region differs from the one the handle was built with; the runtime
+ * replays the export's region into the build, so a mismatch means the bytes would misreport the crop.
+ *
+ * @param requested - The export's region option.
+ * @param built - The handle's region.
+ * @returns A typed refusal.
+ */
+const regionMismatchRefusal = (
+  requested: PicovoxelRegion | undefined,
+  built: PicovoxelRegion | undefined,
+): KernelIssue => ({
+  message: `PicoVoxel refuses to export a handle built for ${built === undefined ? 'the whole model' : 'a different region'} as ${requested === undefined ? 'the whole model' : 'the requested region'}. Rebuild the model with the export's region.`,
+  code: 'REPRESENTATION_UNSUPPORTED',
+  type: 'runtime',
+  severity: 'error',
+  details: {
+    producer: { kernelId },
+    refusal: 'PICOVOXEL_REGION_MISMATCH',
+    ...(requested === undefined ? {} : { requested: { min: [...requested.min], max: [...requested.max] } }),
+    ...(built === undefined ? {} : { built: { min: [...built.min], max: [...built.max] } }),
+  },
 });
 
 const noShapesIssue = (): KernelIssue => ({
@@ -1099,7 +1166,7 @@ export const picovoxelKernel = defineKernel({
           `PicoVoxel session variant=${sessionArtifact} pthreads=${pico.module.PThread?.runningWorkers.length ?? 0} lane=${pico.lane}`,
         );
         const result = await runMain(module, withAbortChecks(pico), parameters);
-        const nativeHandle = normalizeResult(result, lane);
+        const nativeHandle = normalizeResult(result, lane, options.region);
         const { mechanism, issues } = await readMechanismExport({
           module,
           parameters,
@@ -1218,6 +1285,7 @@ export const picovoxelKernel = defineKernel({
     const resources = snapshotResources(serialized);
     return {
       ...resources,
+      ...(serialized.region === undefined ? {} : { region: picovoxelRegionSchema.parse(serialized.region) }),
       ...(serialized.mechanism === undefined ? {} : { mechanism: snapshotJson(serialized.mechanism) }),
       ...(serialized.mechanismIssues === undefined
         ? {}
@@ -1273,7 +1341,11 @@ export const picovoxelKernel = defineKernel({
   },
 
   async export(input, _runtime, context) {
-    const { shapes } = input.handle;
+    const { shapes, region } = input.handle;
+    if (regionKey(input.options.region) !== regionKey(region)) {
+      throw new PicovoxelBuildError([regionMismatchRefusal(input.options.region, region)]);
+    }
+    const cropNotice: KernelIssue[] = region === undefined ? [] : [regionNotice(region, input.exportId)];
     switch (input.exportId) {
       case 'glb':
       case 'gltf': {
@@ -1292,7 +1364,7 @@ export const picovoxelKernel = defineKernel({
         });
         return {
           files: [createExportFile(input.exportId, `model.${input.exportId}`, asBuffer(bytes))],
-          issues: [...(input.handle.mechanismIssues ?? []), ...issues],
+          issues: [...(input.handle.mechanismIssues ?? []), ...issues, ...cropNotice],
         };
       }
       case 'stl': {
@@ -1323,7 +1395,7 @@ export const picovoxelKernel = defineKernel({
               ),
             ),
           ),
-          issues: [...(input.handle.mechanismIssues ?? [])],
+          issues: [...(input.handle.mechanismIssues ?? []), ...cropNotice],
         };
       }
       default: {
