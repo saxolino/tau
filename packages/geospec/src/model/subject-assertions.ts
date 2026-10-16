@@ -4,17 +4,22 @@ import { createGeoSpecMatcherMethods } from '#assertion-client/client.js';
 import { diagnosticForTransport, geometryDiagnosticSchema } from '#model/errors.js';
 import { resolveGeoSpecSubject } from '#model/subject.js';
 import type { GeoSpecSubject } from '#model/subject.js';
-import type { GeoSpecAssertion, GeoSpecMatcher } from '#runner/types.js';
+import type { GeoSpecAssertion, GeoSpecExpectOptions, GeoSpecMatcher } from '#runner/types.js';
 
 /**
  * Complete a standalone canonical assertion on the subject's admitting host.
  * @param subject - The opaque subject returned by the host's loader.
+ * @param options - Chain options; a `workUnitLimit` overrides the subject's `loadModel` budget.
  * @returns Synchronous matcher methods retaining the admitting owner.
  * @internal
  */
-export const expectGeoSubject = (subject: GeoSpecSubject): GeoSpecMatcher => {
+export const expectGeoSubject = (subject: GeoSpecSubject, options?: GeoSpecExpectOptions): GeoSpecMatcher => {
   const admission = resolveGeoSpecSubject(subject);
-  const chain = admission.client.expectGeo(admission.identity);
+  const workUnitLimit = options?.workUnitLimit ?? admission.load?.workUnitLimit;
+  const chain = admission.client.expectGeo(
+    admission.identity,
+    workUnitLimit === undefined ? undefined : { workUnitLimit },
+  );
   const wrap = (negative: boolean): Omit<GeoSpecMatcher, 'not'> =>
     createGeoSpecMatcherMethods({
       subject,

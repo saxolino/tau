@@ -2,6 +2,7 @@
 
 import type { JSONValue } from '@taucad/runtime/types';
 import {
+  assertGeoSpecAuthoredWorkUnitLimit,
   evaluateGeoSpecNativeClaim,
   evaluateGeoSpecNativeQuery,
   resolveGeoSpecNativeWorkUnitLimit,
@@ -17,7 +18,7 @@ import type {
 } from '#engine/client.js';
 import { geoSpecMatcherDescriptors, normalizeGeoSpecExpected } from '#engine/matchers.js';
 import type { GeoSpecMatcherName } from '#engine/matchers.js';
-import type { GeoSpecAssertion, GeoSpecMatcher } from '#runner/types.js';
+import type { GeoSpecAssertion, GeoSpecExpectOptions, GeoSpecMatcher } from '#runner/types.js';
 import { resolveGeoSpecSubject } from '#model/subject.js';
 import type { GeoSpecSubject } from '#model/subject.js';
 
@@ -43,7 +44,11 @@ export type GeoSpecAssertionMatchers = GeoSpecMatcherMethods<GeoSpecCanonicalCla
 
 /** Runner-independent native assertion client. @public */
 export type GeoSpecAssertionClient = {
-  expectGeo(subject: GeoSpecNativeSubject | GeoSpecSubject): GeoSpecAssertionMatchers;
+  /**
+   * Start a chain; `options.workUnitLimit` overrides the client budget for its claims.
+   * Without one, a loaded subject's `loadModel` budget applies, then the client's.
+   */
+  expectGeo(subject: GeoSpecNativeSubject | GeoSpecSubject, options?: GeoSpecExpectOptions): GeoSpecAssertionMatchers;
   query(options: MinimumDistanceQuery): Promise<MinimumDistanceResult>;
   query(options: GeoSpecQueryOptions): Promise<GeoSpecCanonicalClaimReport>;
 };
@@ -232,6 +237,45 @@ export class GeoSpecAssertionError extends Error {
   }
 }
 
+const centerOfMassAxes = ['x', 'y', 'z'] as const;
+
+/**
+ * Reject a center-of-mass point the engine cannot read before it becomes a claim.
+ *
+ * The engine evaluates an exact point within `tolerance`; it has no per-axis range form for center of
+ * mass, so `{ y: { greaterThan: 1 } }` would otherwise reach it and fail as a bare coordinate error.
+ *
+ * @param expected - The authored `toHaveCenterOfMass` expectation.
+ * @throws TypeError naming the matcher, the axis and the supported form.
+ */
+const assertCenterOfMassPoint = (expected: unknown): void => {
+  if (expected === null || typeof expected !== 'object' || !('point' in expected)) {
+    return;
+  }
+  const { point } = expected;
+  const entries: ReadonlyArray<readonly [string, unknown]> = Array.isArray(point)
+    ? point.map((value: unknown, index) => [centerOfMassAxes[index] ?? String(index), value] as const)
+    : point !== null && typeof point === 'object'
+      ? Object.entries(point)
+      : [];
+  if (entries.length === 0 && !(point !== null && typeof point === 'object')) {
+    throw new TypeError(
+      'GeoSpec matcher toHaveCenterOfMass needs point as [x, y, z] or { x, y, z } in millimetres, with an optional tolerance.',
+    );
+  }
+  for (const [axis, value] of entries) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      continue;
+    }
+    const range = value !== null && typeof value === 'object' && !Array.isArray(value);
+    throw new TypeError(
+      range
+        ? `GeoSpec matcher toHaveCenterOfMass point.${axis} must be a finite number in millimetres: per-axis ranges such as { greaterThan } are not supported for center of mass. Assert the expected point with a tolerance instead.`
+        : `GeoSpec matcher toHaveCenterOfMass point.${axis} must be a finite number in millimetres.`,
+    );
+  }
+};
+
 /**
  * Create the one registry-derived matcher surface used by every JavaScript host.
  *
@@ -250,6 +294,9 @@ export const createGeoSpecMatcherMethods = <Result>(options: {
     methods[matcher] = (...arguments_: readonly unknown[]): Result => {
       if (descriptor.expected === 'true' && arguments_.length > 0) {
         throw new TypeError(`GeoSpec matcher ${matcher} does not accept arguments.`);
+      }
+      if (matcher === 'toHaveCenterOfMass') {
+        assertCenterOfMassPoint(arguments_[0]);
       }
       return options.invoke({
         arguments: arguments_,
@@ -279,12 +326,16 @@ export const createGeoSpecAssertionClient = (options: GeoSpecAssertionClientOpti
     workUnitLimit ??= resolveGeoSpecNativeWorkUnitLimit(options.engine, options.workUnitLimit);
     return workUnitLimit;
   };
-  const methods = (subject: GeoSpecNativeSubject, polarity: GeoSpecClaimPolarity, validate: () => void) =>
+  const methods = (
+    subject: GeoSpecNativeSubject,
+    polarity: GeoSpecClaimPolarity,
+    chain: { readonly validate: () => void; readonly workUnitLimit: number | undefined },
+  ) =>
     createGeoSpecMatcherMethods<GeoSpecCanonicalClaimReport>({
       subject,
       polarity,
       invoke: (invocation) => {
-        validate();
+        chain.validate();
         sequence += 1;
         const claimId = options.claimId?.(invocation.matcher, sequence) ?? `geospec-claim-${sequence}`;
         const context = {
@@ -294,7 +345,7 @@ export const createGeoSpecAssertionClient = (options: GeoSpecAssertionClientOpti
           polarity,
           subject,
           subjectSlot,
-          workUnitLimit: resolveWorkUnitLimit(),
+          workUnitLimit: chain.workUnitLimit ?? resolveWorkUnitLimit(),
         };
         const report = evaluateGeoSpecNativeClaim({
           ...context,
@@ -381,16 +432,21 @@ export const createGeoSpecAssertionClient = (options: GeoSpecAssertionClientOpti
 
   return {
     query,
-    expectGeo(subject) {
+    expectGeo(subject, expectOptions) {
+      assertGeoSpecAuthoredWorkUnitLimit(expectOptions?.workUnitLimit, 'expectGeo workUnitLimit');
       const raw = 'subjectHash' in subject || 'contentHash' in subject;
-      const identity = raw ? subject : resolveGeoSpecSubject(subject, options.engine).identity;
-      const validate = (): void => {
-        if (!raw) {
-          resolveGeoSpecSubject(subject, options.engine);
-        }
+      const admission = raw ? undefined : resolveGeoSpecSubject(subject, options.engine);
+      const identity = raw ? subject : admission!.identity;
+      const chain = {
+        validate: (): void => {
+          if (!raw) {
+            resolveGeoSpecSubject(subject, options.engine);
+          }
+        },
+        workUnitLimit: expectOptions?.workUnitLimit ?? admission?.load?.workUnitLimit,
       };
-      const positive = methods(identity, 'positive', validate);
-      return Object.assign(positive, { not: methods(identity, 'negative', validate) });
+      const positive = methods(identity, 'positive', chain);
+      return Object.assign(positive, { not: methods(identity, 'negative', chain) });
     },
   };
 };

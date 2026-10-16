@@ -146,12 +146,28 @@ export type GeoSpecMassExpectation = {
 };
 
 /**
+ * Per-chain options accepted by `expectGeo(subject, options)`.
+ *
+ * @public
+ */
+export type GeoSpecExpectOptions = {
+  /**
+   * Deterministic work-unit budget for every claim in this chain: a positive integer no
+   * greater than `geoSpecMaximumWorkUnitLimit` (512 000 000). Omitted uses the subject's
+   * `loadModel` budget, then the host's, then the engine default. Raise it to retry a
+   * `MATCHER_TIMEOUT` refusal whose `details.used` exceeded `details.limit`.
+   */
+  readonly workUnitLimit?: number;
+};
+
+/**
  * Center-of-mass expectation accepted by
  * `expectGeo(...).toHaveCenterOfMass(...)`.
  *
  * @public
  */
 export type GeoSpecCenterOfMassExpectation = {
+  /** Exact expected point in millimetres; per-axis ranges such as `{ greaterThan }` are not supported. */
   point: GeoSpecPointExpectation;
   tolerance?: number;
 };
