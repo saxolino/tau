@@ -152,6 +152,7 @@ export type GeoSpecMassExpectation = {
  * @public
  */
 export type GeoSpecCenterOfMassExpectation = {
+  /** Exact expected point in millimetres; per-axis ranges such as `{ greaterThan }` are not supported. */
   point: GeoSpecPointExpectation;
   tolerance?: number;
 };

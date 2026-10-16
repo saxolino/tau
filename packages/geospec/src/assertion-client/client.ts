@@ -232,6 +232,45 @@ export class GeoSpecAssertionError extends Error {
   }
 }
 
+const centerOfMassAxes = ['x', 'y', 'z'] as const;
+
+/**
+ * Reject a center-of-mass point the engine cannot read before it becomes a claim.
+ *
+ * The engine evaluates an exact point within `tolerance`; it has no per-axis range form for center of
+ * mass, so `{ y: { greaterThan: 1 } }` would otherwise reach it and fail as a bare coordinate error.
+ *
+ * @param expected - The authored `toHaveCenterOfMass` expectation.
+ * @throws TypeError naming the matcher, the axis and the supported form.
+ */
+const assertCenterOfMassPoint = (expected: unknown): void => {
+  if (expected === null || typeof expected !== 'object' || !('point' in expected)) {
+    return;
+  }
+  const { point } = expected;
+  const entries: ReadonlyArray<readonly [string, unknown]> = Array.isArray(point)
+    ? point.map((value: unknown, index) => [centerOfMassAxes[index] ?? String(index), value] as const)
+    : point !== null && typeof point === 'object'
+      ? Object.entries(point)
+      : [];
+  if (entries.length === 0 && !(point !== null && typeof point === 'object')) {
+    throw new TypeError(
+      'GeoSpec matcher toHaveCenterOfMass needs point as [x, y, z] or { x, y, z } in millimetres, with an optional tolerance.',
+    );
+  }
+  for (const [axis, value] of entries) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      continue;
+    }
+    const range = value !== null && typeof value === 'object' && !Array.isArray(value);
+    throw new TypeError(
+      range
+        ? `GeoSpec matcher toHaveCenterOfMass point.${axis} must be a finite number in millimetres: per-axis ranges such as { greaterThan } are not supported for center of mass. Assert the expected point with a tolerance instead.`
+        : `GeoSpec matcher toHaveCenterOfMass point.${axis} must be a finite number in millimetres.`,
+    );
+  }
+};
+
 /**
  * Create the one registry-derived matcher surface used by every JavaScript host.
  *
@@ -250,6 +289,9 @@ export const createGeoSpecMatcherMethods = <Result>(options: {
     methods[matcher] = (...arguments_: readonly unknown[]): Result => {
       if (descriptor.expected === 'true' && arguments_.length > 0) {
         throw new TypeError(`GeoSpec matcher ${matcher} does not accept arguments.`);
+      }
+      if (matcher === 'toHaveCenterOfMass') {
+        assertCenterOfMassPoint(arguments_[0]);
       }
       return options.invoke({
         arguments: arguments_,
