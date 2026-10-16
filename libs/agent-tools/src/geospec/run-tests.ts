@@ -141,6 +141,7 @@ export const runGeoSpecTests = async (options: RunGeoSpecTestsOptions): Promise<
             files: entryPaths,
             ...(args.testNamePattern === undefined ? {} : { testNamePattern: args.testNamePattern }),
             ...(args.testTimeout === undefined ? {} : { testTimeout: args.testTimeout }),
+            ...(args.workUnitLimit === undefined ? {} : { workUnitLimit: args.workUnitLimit }),
           });
   } finally {
     stopProgress?.();

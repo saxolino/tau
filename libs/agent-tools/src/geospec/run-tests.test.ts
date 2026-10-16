@@ -1,3 +1,5 @@
+import { geoSpecMaxWorkUnitLimit } from '@taucad/chat/constants';
+import { geoSpecMaximumWorkUnitLimit } from 'geospec/assertion-client';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { GeoSpecDiscoveryFileSystem, GeoSpecTestCase } from 'geospec/runner';
@@ -134,14 +136,19 @@ describe('runGeoSpecTests', () => {
     await runGeoSpecTests({
       discovery: discoveryOver({ '': ['cube.geospec.ts'] }),
       runner,
-      args: { testNamePattern: 'watertight', testTimeout: 5000 },
+      args: { testNamePattern: 'watertight', testTimeout: 5000, workUnitLimit: 64_000_000 },
     });
 
     expect(runner.run).toHaveBeenCalledWith({
       files: ['cube.geospec.ts'],
       testNamePattern: 'watertight',
       testTimeout: 5000,
+      workUnitLimit: 64_000_000,
     });
+  });
+
+  it('caps the run work-unit budget at the engine bound', () => {
+    expect(geoSpecMaxWorkUnitLimit).toBe(geoSpecMaximumWorkUnitLimit);
   });
 });
 

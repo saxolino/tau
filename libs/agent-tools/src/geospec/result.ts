@@ -308,7 +308,7 @@ const categorySuggestion = (options: {
       return 'Keep the assertion: the model exceeds the engine admission limit named in the diagnostic. Load a coarser export or a smaller part of the model (a per-part or cropped file), then re-run.';
     }
     case 'work-budget': {
-      return 'Keep the assertion: the claim exhausted its deterministic work-unit budget (the diagnostic details give limit and used). Raise workUnitLimit for this claim or narrow its selection, then re-run.';
+      return 'Keep the assertion: the claim exhausted its deterministic work-unit budget (the diagnostic details give limit and used). Raise workUnitLimit for this claim (expectGeo or loadModel option, or test_model workUnitLimit for the whole run) or narrow its selection, then re-run.';
     }
     case 'unsupported-evidence': {
       return evidenceSuggestion(kernels, own ?? any);
