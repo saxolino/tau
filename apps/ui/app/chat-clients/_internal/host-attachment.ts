@@ -285,6 +285,15 @@ export const hostAttachment = createCallbackLogic<EventObject, HostAttachmentInp
           maxBytes: agentWireLimits.batchBytes,
           signal: capture.signal,
         })) {
+          console.warn(
+            '[W22C-DIAG] catchUp',
+            input.chatId,
+            JSON.stringify({
+              type: frame.type,
+              closed: readerClosed(),
+              reason: frame.type === 'refused' ? frame.answer.reason : undefined,
+            }),
+          );
           if (readerClosed()) {
             return;
           }
