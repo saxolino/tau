@@ -391,6 +391,51 @@ describe('browserProjectTasks', () => {
     expect(rows.map((row) => row.sequence)).toEqual([1, 2]);
   }, 10_000);
 
+  it('should leave a hidden follower idle and claim when shown after owner release', async () => {
+    const fileSystem = memoryFileSystem();
+    const first = createOwner();
+    const leader = await browserProjectTasks({
+      tabId: 'leader-visibility',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: first.create });
+    owners.push(leader);
+    let visible = false;
+    const listeners = new Set<(shown: boolean) => void>();
+    const second = createOwner();
+    const follower = await browserProjectTasks({
+      tabId: 'follower-visibility',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+      visibility: {
+        visible: () => visible,
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+    }).open({ projectId: 'project-1', createOwner: second.create });
+    owners.unshift(follower);
+    await leader.close();
+    expect(second.create).not.toHaveBeenCalled();
+    const before = new TextDecoder().decode(fileSystem.files.get(journalPath)).trim().split('\n');
+    expect(before).toHaveLength(1);
+
+    visible = true;
+    for (const listener of listeners) {
+      listener(true);
+    }
+    await until(() => second.create.mock.calls.length === 1);
+    const terms = new TextDecoder()
+      .decode(fileSystem.files.get(journalPath))
+      .trim()
+      .split('\n')
+      .map((row) => (JSON.parse(row) as { sequence: number }).sequence);
+    expect(terms).toEqual([1, 2]);
+    await follower.close();
+    expect(listeners.size).toBe(0);
+  }, 10_000);
+
   it('should refuse an incompatible build and ignore stale-term requests and replies', async () => {
     const fileSystem = memoryFileSystem();
     const started = Promise.withResolvers<void>();

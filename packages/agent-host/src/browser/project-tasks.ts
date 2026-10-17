@@ -458,6 +458,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
           if (retry) {
             clearInterval(retry);
           }
+          stopVisibility?.();
           for (const id of pendingCalls.keys()) {
             takeCall(id)?.reject(projectError('HOST_CLOSED', 'The project task host closed.'));
           }
@@ -586,7 +587,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
       void (async (): Promise<void> => {
         try {
           await navigator.locks.request(lockName, { ifAvailable: true }, async (lock) => {
-            if (lock === null) {
+            if (lock === null || options.visibility?.visible() === false) {
               settled.resolve(false);
               return;
             }
@@ -686,21 +687,47 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
       return settled.promise;
     };
 
-    const acquired = await own();
-    if (!acquired && options.visibility?.visible() !== false) {
-      // A follower remains attached, then attempts takeover after the holder releases its project lock.
-      retry = setInterval(() => {
-        if (!closed && !owner && options.visibility?.visible() !== false) {
-          // async-iife: bootstrap
-          void (async (): Promise<void> => {
-            try {
-              await own();
-            } catch {
-              /* Retry at the next interval. */
-            }
-          })();
+    let claiming: Promise<boolean> | undefined;
+    const tryClaim = async (): Promise<boolean> => {
+      if (claiming) {
+        return claiming;
+      }
+      if (closed || closing || owner !== undefined || options.visibility?.visible() === false) {
+        return false;
+      }
+      claiming = (async (): Promise<boolean> => {
+        try {
+          return await own();
+        } finally {
+          claiming = undefined;
         }
-      }, heartbeatTimeout);
+      })();
+      return claiming;
+    };
+    const retryClaim = (): void => {
+      // async-iife: bootstrap -- ownership retries are background work while this follower remains open.
+      void (async (): Promise<void> => {
+        try {
+          await tryClaim();
+        } catch {
+          /* A later visibility event or timer retries ownership. */
+        }
+      })();
+    };
+    const stopVisibility = options.visibility?.subscribe((visible) => {
+      if (visible) {
+        retryClaim();
+      }
+    });
+    try {
+      const acquired = await tryClaim();
+      if (!acquired) {
+        // A hidden follower holds no project lock. Visibility resumes immediately, with a timer for released owners.
+        retry = setInterval(retryClaim, heartbeatTimeout);
+      }
+      return facade;
+    } catch (error) {
+      stopVisibility?.();
+      throw error;
     }
-    return facade;
   });
