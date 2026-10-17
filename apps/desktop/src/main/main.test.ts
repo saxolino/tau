@@ -10,7 +10,7 @@ import type * as WorkerThreads from 'node:worker_threads';
 import type * as Host from '@taucad/host';
 import { machineStartWaitMilliseconds } from '@taucad/runtime/machine';
 import { desktopUpdateChannels } from '@taucad/types/desktop-updates';
-import type { DesktopUpdaterOptions } from '#main/updater.js';
+import type { DesktopUpdaterOptions, startDesktopUpdater } from '#main/updater.js';
 import type { TauHeaderInjectionOptions } from '#main/header-injection.js';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -111,18 +111,24 @@ vi.mock('#tau/native-store.js', () => ({
   }),
 }));
 
-vi.mock('#main/updater.js', () => ({
-  startDesktopUpdater: (options: DesktopUpdaterOptions) => {
-    state.prepareToRestart = options.prepareToRestart;
-    return {
-      check: state.updaterCheck,
-      install: state.updaterInstall,
-      status: () => 'Update ready',
-      snapshot: () => ({ phase: 'ready' }),
-      download: vi.fn(),
-    };
-  },
-}));
+vi.mock('#main/updater.js', async (importOriginal) => {
+  const actual = await importOriginal<{ startDesktopUpdater: typeof startDesktopUpdater }>();
+  return {
+    startDesktopUpdater: (options: DesktopUpdaterOptions) => {
+      state.prepareToRestart = options.prepareToRestart;
+      if (options.channel === 'staging') {
+        return actual.startDesktopUpdater({ ...options, schedule: () => undefined });
+      }
+      return {
+        check: state.updaterCheck,
+        install: state.updaterInstall,
+        status: () => 'Update ready',
+        snapshot: () => ({ phase: 'ready' }),
+        download: vi.fn(),
+      };
+    },
+  };
+});
 
 vi.mock('node:worker_threads', async (importOriginal) => {
   const actual = await importOriginal<typeof WorkerThreads>();
@@ -255,8 +261,6 @@ vi.mock('electron', () => ({
     }),
   },
   MessageChannelMain: vi.fn(() => ({ port1: {}, port2: {} })),
-  Menu: { getApplicationMenu: vi.fn(() => undefined) },
-  MenuItem: vi.fn(),
   net: { fetch: vi.fn() },
   powerSaveBlocker: { start: vi.fn(() => 1), stop: vi.fn() },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() },
