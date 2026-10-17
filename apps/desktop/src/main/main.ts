@@ -17,6 +17,7 @@ import { installBrowserHost } from '#main/browser-host.js';
 
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -305,6 +306,11 @@ const machineStreamingMilliseconds = machineStartWaitMilliseconds + 2000;
  * shortest idle-sleep timer an operating system offers (one minute).
  */
 const keepAwakeIntervalMilliseconds = 20_000;
+/* Kernel utility resident ceiling (D-DT-02): the upper bound on half of physical memory. */
+const maxKernelResidentBytes = 8 * 1024 * 1024 * 1024;
+const kernelResidentPollMilliseconds = 5000;
+/* One metrics read serves every sampler for this long. */
+const residentMetricsReuseMilliseconds = 500;
 
 /**
  * How long quit waits for the renderer's sessions registry (D31, P49).
@@ -573,21 +579,26 @@ const bootstrapElectronApp = async (): Promise<void> => {
   }
 
   let computeWorker: Worker | undefined;
-  const computeConnections = new Map<string, ReturnType<typeof connectSqliteComputeStoreWorker>>();
+  /* One connection per root while some utility runs durable compute on it,
+   * counted by holder: a root nobody runs keeps no connection in main. */
+  const computeConnections = new Map<
+    string,
+    { readonly connection: ReturnType<typeof connectSqliteComputeStoreWorker>; holders: number }
+  >();
   let registeredProjectRootFor = (_executionRoot: string): string | undefined => undefined;
   const invalidateComputeWorker = (worker: Worker): void => {
     if (computeWorker !== worker) {
       return;
     }
     for (const stale of computeConnections.values()) {
-      stale.dispose();
+      stale.connection.dispose();
     }
     computeConnections.clear();
     computeWorker = undefined;
   };
-  const computeConnection = (projectRoot: string) => {
-    let connection = computeConnections.get(projectRoot);
-    if (!connection) {
+  const holdComputeConnection = (projectRoot: string) => {
+    let entry = computeConnections.get(projectRoot);
+    if (!entry) {
       if (!computeWorker) {
         const worker = new Worker(computeStoreWorkerEntry, {
           workerData: { directory: join(app.getPath('userData'), 'compute') },
@@ -601,10 +612,60 @@ const bootstrapElectronApp = async (): Promise<void> => {
         });
         computeWorker = worker;
       }
-      connection = connectSqliteComputeStoreWorker({ worker: computeWorker, workspace: projectRoot });
-      computeConnections.set(projectRoot, connection);
+      entry = {
+        connection: connectSqliteComputeStoreWorker({ worker: computeWorker, workspace: projectRoot }),
+        holders: 0,
+      };
+      computeConnections.set(projectRoot, entry);
     }
-    return connection;
+    const held = entry;
+    held.holders += 1;
+    let released = false;
+    return {
+      connection: held.connection,
+      release: (): void => {
+        if (released) {
+          return;
+        }
+        released = true;
+        held.holders -= 1;
+        /* A worker restart already disposed and replaced a stale entry. */
+        if (held.holders === 0 && computeConnections.get(projectRoot) === held) {
+          computeConnections.delete(projectRoot);
+          held.connection.dispose();
+        }
+      },
+    };
+  };
+  /* A control call holds the root's connection for its own duration only. */
+  const withComputeConnection = async <Result>(
+    projectRoot: string,
+    use: (connection: ReturnType<typeof connectSqliteComputeStoreWorker>) => Promise<Result>,
+  ): Promise<Result> => {
+    const held = holdComputeConnection(projectRoot);
+    try {
+      return await use(held.connection);
+    } finally {
+      held.release();
+    }
+  };
+  /* One `getAppMetrics()` answers every utility sampled in the same moment: the
+   * kernel broker samples each adopted utility on one tick, and the geometry
+   * slot every second. */
+  let appMetrics: { readonly at: number; readonly residentBytes: ReadonlyMap<number, number> } | undefined;
+  const residentBytesOf = (utility: { readonly pid?: number | undefined }): number | undefined => {
+    if (utility.pid === undefined) {
+      return undefined;
+    }
+    const now = Date.now();
+    if (appMetrics === undefined || now - appMetrics.at > residentMetricsReuseMilliseconds) {
+      appMetrics = {
+        at: now,
+        // Electron ProcessMetric workingSetSize is KiB; the broker budgets are bytes.
+        residentBytes: new Map(app.getAppMetrics().map((entry) => [entry.pid, entry.memory.workingSetSize * 1024])),
+      };
+    }
+    return appMetrics.residentBytes.get(utility.pid);
   };
   const baseForkResolver = createKernelForkResolver({
     registry: roots,
@@ -629,6 +690,15 @@ const bootstrapElectronApp = async (): Promise<void> => {
      * three utilities and the sessions registry admits as many as memory holds,
      * so this sits an order of magnitude above realistic use. */
     maxUtilities: 64,
+    /* D-DT-02: WebAssembly memory never shrinks, so a kernel utility stays at
+     * its peak until it dies. Past the ceiling it is killed and its project
+     * reports the exit, rather than the machine swapping. Half of physical
+     * memory, at most 8 GiB, sits well above any single healthy model. */
+    residentLimit: {
+      maxBytes: Math.min(maxKernelResidentBytes, Math.floor(totalmem() / 2)),
+      intervalMilliseconds: kernelResidentPollMilliseconds,
+      sample: residentBytesOf,
+    },
     resolveFork: (context) => {
       const requestedRoot = context['projectRoot'];
       const registeredProjectRoot =
@@ -651,23 +721,31 @@ const bootstrapElectronApp = async (): Promise<void> => {
       if (!computeProjectRoot) {
         throw new Error('Desktop shell refused unadmitted compute project root.');
       }
-      const compute: ComputeBinding =
-        mode === 'durable' ? { mode, store: computeConnection(computeProjectRoot).store } : { mode };
       /* The execution root reaches the utility rooted on `fileSystemPort`, and
        * never through the process environment: an environment that varied per
        * project would give every open its own pool key, so no warm spare could
        * ever be adopted (W-L03-4). */
       const forkEnvironment = { ...resolved.env };
       delete forkEnvironment['TAU_PROJECT_ROOT'];
+      const fileSystem =
+        context['purpose'] === 'ephemeral'
+          ? {}
+          : { fileSystemPort: services.connect('runtimeFileSystem', { workspaceRoot: executionRoot }) };
+      /* Held for exactly the utility's life: the broker calls `release` when it goes. */
+      let held: ReturnType<typeof holdComputeConnection> | undefined;
+      let compute: ComputeBinding;
+      if (mode === 'durable') {
+        held = holdComputeConnection(computeProjectRoot);
+        compute = { mode, store: held.connection.store };
+      } else {
+        compute = { mode };
+      }
       return {
         ...resolved,
         env: forkEnvironment,
         compute,
-        ...(context['purpose'] === 'ephemeral'
-          ? {}
-          : {
-              fileSystemPort: services.connect('runtimeFileSystem', { workspaceRoot: executionRoot }),
-            }),
+        ...(held === undefined ? {} : { release: held.release }),
+        ...fileSystem,
       };
     },
     serviceName: 'tau-kernel-host',
@@ -708,15 +786,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
     fork: (entry, args, forkOptions) => utilityProcess.fork(entry, args, forkOptions),
     createChannel: () => new MessageChannelMain(),
     connectRuntime: (context) => runtimeMain.connect({ purpose: 'main-process-client', context }),
-    sampleResidentBytes: (utility) => {
-      if (utility.pid === undefined) {
-        return undefined;
-      }
-      const metric = app.getAppMetrics().find((entry) => entry.pid === utility.pid);
-      const kibibytes = metric?.memory.workingSetSize;
-      // Electron ProcessMetric workingSetSize is KiB; the broker budget is bytes.
-      return kibibytes === undefined ? undefined : kibibytes * 1024;
-    },
+    sampleResidentBytes: residentBytesOf,
     runtimeConfig: {
       tauApiUrl: environment['TAU_API_URL']!,
       tauWebSocketUrl: environment['TAU_WEBSOCKET_URL']!,
@@ -737,10 +807,10 @@ const bootstrapElectronApp = async (): Promise<void> => {
     return roots.canonical(services.computeProjectRoot(canonicalRoot) ?? canonicalRoot)!;
   };
   ipcMain.handle(computeControlChannels.inspect, async (event, projectRoot) =>
-    computeConnection(trustedComputeRoot(event, projectRoot)).control.inspect({}),
+    withComputeConnection(trustedComputeRoot(event, projectRoot), async (connection) => connection.control.inspect({})),
   );
   ipcMain.handle(computeControlChannels.clear, async (event, projectRoot) =>
-    computeConnection(trustedComputeRoot(event, projectRoot)).control.clear({}),
+    withComputeConnection(trustedComputeRoot(event, projectRoot), async (connection) => connection.control.clear({})),
   );
   ipcMain.handle(computeControlChannels.collect, async (event, projectRoot, input: unknown) => {
     const root = trustedComputeRoot(event, projectRoot);
@@ -751,7 +821,9 @@ const bootstrapElectronApp = async (): Promise<void> => {
     if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 1024)) {
       throw new Error('Desktop shell refused invalid compute collection cursor.');
     }
-    return computeConnection(root).control.collect({ budget: budget as number, ...(cursor ? { cursor } : {}) });
+    return withComputeConnection(root, async (connection) =>
+      connection.control.collect({ budget: budget as number, ...(cursor ? { cursor } : {}) }),
+    );
   });
 
   const services = createServicesBroker({
@@ -818,11 +890,61 @@ const bootstrapElectronApp = async (): Promise<void> => {
     }
     return { workspaceRoot, projectId, attachmentId };
   };
+  /*
+   * D-DT-04: the attachments each document holds, by the web contents that
+   * holds them. A renderer releases its own on the way out, but a deep link,
+   * Open-With, a crash reload or a recovery replaces the document without
+   * that, and the broker keeps a project's host (and its kernel utility) while
+   * any attachment remains. So main releases whatever a document still holds
+   * once it navigates away, its process is gone, or its contents are destroyed.
+   */
+  type AgentHostAttachment = ReturnType<typeof agentHostSessionInput>;
+  const documentAttachments = new Map<number, Map<string, AgentHostAttachment>>();
+  const attachmentKey = (input: AgentHostAttachment): string =>
+    JSON.stringify([input.workspaceRoot, input.attachmentId]);
+  const releaseAgentHostAttachment = async (input: AgentHostAttachment): Promise<void> => {
+    try {
+      await services.releaseAgentHost(input, quitQuiesceMilliseconds);
+    } catch (error) {
+      log.log('warn', 'main.agent-host-release', error);
+    }
+  };
+  const holdDocumentAttachment = (sender: IpcMainInvokeEvent['sender'], input: AgentHostAttachment): void => {
+    let held = documentAttachments.get(sender.id);
+    if (held === undefined) {
+      const attachments = new Map<string, AgentHostAttachment>();
+      held = attachments;
+      documentAttachments.set(sender.id, attachments);
+      const documentGone = (): void => {
+        sender.removeListener('did-navigate', documentGone);
+        sender.removeListener('render-process-gone', documentGone);
+        sender.removeListener('destroyed', documentGone);
+        if (documentAttachments.get(sender.id) === attachments) {
+          documentAttachments.delete(sender.id);
+        }
+        for (const attachment of attachments.values()) {
+          void releaseAgentHostAttachment(attachment);
+        }
+        attachments.clear();
+      };
+      sender.on('did-navigate', documentGone);
+      sender.on('render-process-gone', documentGone);
+      sender.on('destroyed', documentGone);
+    }
+    held.set(attachmentKey(input), input);
+  };
+  const dropDocumentAttachment = (sender: IpcMainInvokeEvent['sender'], input: AgentHostAttachment): void => {
+    documentAttachments.get(sender.id)?.delete(attachmentKey(input));
+  };
   ipcMain.handle(agentHostSessionChannels.retain, async (event, payload) => {
-    services.retainAgentHost(agentHostSessionInput(event, payload));
+    const input = agentHostSessionInput(event, payload);
+    services.retainAgentHost(input);
+    holdDocumentAttachment(event.sender, input);
   });
   ipcMain.handle(agentHostSessionChannels.release, async (event, payload) => {
-    await services.releaseAgentHost(agentHostSessionInput(event, payload), quitQuiesceMilliseconds);
+    const input = agentHostSessionInput(event, payload);
+    dropDocumentAttachment(event.sender, input);
+    await services.releaseAgentHost(input, quitQuiesceMilliseconds);
   });
   /* The secret half of the binding ceremony (D10). The renderer never keeps
    * the access code: it rides this one invoke to the utility, which saves it
@@ -1719,7 +1841,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
               log.log('error', 'main.shutdown', error);
             }
             try {
-              for (const connection of computeConnections.values()) {
+              for (const { connection } of computeConnections.values()) {
                 connection.dispose();
               }
               computeConnections.clear();

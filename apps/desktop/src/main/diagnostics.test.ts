@@ -59,7 +59,7 @@ describe('createDiagnosticsLog', () => {
     expect(file).not.toContain('\u001B');
   });
 
-  it('should hide debug and collapse consecutive duplicate terminal records without dropping file records', () => {
+  it('should hide debug and collapse consecutive duplicate terminal records without dropping file records', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const info = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -77,6 +77,7 @@ describe('createDiagnosticsLog', () => {
       expect.stringContaining('↳ repeated ×2'),
     ]);
     expect(String(info.mock.calls[0]?.[0])).toContain('[agent-host-served]');
+    await log.flush();
     expect(readFileSync(log.filePath, 'utf8').match(/duplicate warning/gu)).toHaveLength(3);
   });
 
@@ -95,11 +96,12 @@ describe('createDiagnosticsLog', () => {
     expect(readFileSync(log.filePath, 'utf8')).toContain('untrusted project root');
   });
 
-  it('rotates once the file passes its threshold', () => {
+  it('rotates once the file passes its threshold', async () => {
     const directory = logDirectory();
     const log = createDiagnosticsLog({ directory, echo: false, maxBytes: 32 });
     writeFileSync(log.filePath, 'x'.repeat(64));
     log.log('info', 'after.rotation');
+    await log.flush();
     expect(existsSync(join(directory, 'desktop.1.log'))).toBe(true);
     expect(readFileSync(log.filePath, 'utf8')).toContain('after.rotation');
   });
@@ -117,6 +119,34 @@ describe('createDiagnosticsLog', () => {
         })(),
       );
     }).not.toThrow();
+  });
+});
+
+describe('createDiagnosticsLog main-thread cost', () => {
+  it('should write no non-error record on the calling thread and the whole burst on flush', async () => {
+    const log = createDiagnosticsLog({ directory: logDirectory(), echo: false });
+
+    /* A chatty kernel's stderr arrives a chunk at a time on main's event loop. */
+    for (let index = 0; index < 100; index += 1) {
+      log.log('warn', 'kernel.stderr', { chunk: `line ${String(index)}` });
+    }
+
+    expect(existsSync(log.filePath)).toBe(false);
+    await log.flush();
+    const lines = readFileSync(log.filePath, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(100);
+    expect(lines[0]).toContain('"line 0"');
+    expect(lines.at(-1)).toContain('"line 99"');
+  });
+
+  it('should write an error record at once, after every record queued before it', () => {
+    const log = createDiagnosticsLog({ directory: logDirectory(), echo: false });
+
+    log.log('info', 'before.crash');
+    log.log('error', 'kernel.broker', new Error('fatal'));
+
+    const file = readFileSync(log.filePath, 'utf8');
+    expect(file).toMatch(/^\S+ INFO before\.crash\n\S+ ERROR kernel\.broker Error: fatal\n/u);
   });
 });
 
