@@ -896,7 +896,7 @@
     {
       "id": "PT6",
       "bound": "Root task transcript observation backstop, 24 h; stops only the read follower, never cancels model work, declares terminal state or releases an unresolved reservation",
-      "site": "packages/host/src/project-host.ts",
+      "site": "packages/host/src/project-tasks/core.ts",
       "token": "AbortSignal.timeout(24 * 60 * 60_000)",
       "class": "Liveness",
       "owner": "acp-projects W2"
@@ -908,6 +908,54 @@
       "token": "AbortSignal.timeout(30_000)",
       "class": "External edge",
       "owner": "acp-projects W3"
+    },
+    {
+      "id": "PT7B",
+      "bound": "Canonical project context filesystem reads, 30 s, for new task roots",
+      "site": "packages/host/src/project-tasks/core.ts",
+      "token": "AbortSignal.timeout(30_000)",
+      "class": "External edge",
+      "owner": "acp-projects W3"
+    },
+    {
+      "id": "PT12",
+      "bound": "Owner close observes active project task reservations at most 30 s per pass",
+      "site": "packages/host/src/project-tasks/core.ts",
+      "token": "coordinator.wait({ kind: 'host', projectId }, { after: snapshot.cursor, timeout: 30_000 }, signal)",
+      "class": "Liveness",
+      "owner": "acp-projects W1"
+    },
+    {
+      "id": "PT13",
+      "bound": "Follower waits at most 10 s to discover a project owner before a request is forwarded; an established owner proves long-operation liveness by heartbeat",
+      "site": "packages/agent-host/src/browser/project-tasks.ts",
+      "token": "setTimeout(() => {",
+      "class": "Liveness",
+      "owner": "acp-projects web platform"
+    },
+    {
+      "id": "PT14",
+      "bound": "Forwarded call checks project-owner heartbeat each second and rejects only after ownership loss",
+      "site": "packages/agent-host/src/browser/project-tasks.ts",
+      "token": "const liveness = setInterval(() => {",
+      "class": "Liveness",
+      "owner": "acp-projects web platform"
+    },
+    {
+      "id": "PT15",
+      "bound": "Project owner publishes a term heartbeat each second while holding its Web Lock",
+      "site": "packages/agent-host/src/browser/project-tasks.ts",
+      "token": "heartbeat = setInterval(() => { post({ kind: 'heartbeat', state: 'leading' }); }, heartbeatInterval)",
+      "class": "Liveness",
+      "owner": "acp-projects web platform"
+    },
+    {
+      "id": "PT16",
+      "bound": "Visible follower retries project lock acquisition after the old owner releases it",
+      "site": "packages/agent-host/src/browser/project-tasks.ts",
+      "token": "retry = setInterval(() => {",
+      "class": "Backoff",
+      "owner": "acp-projects web platform"
     },
     {
       "id": "PT8",

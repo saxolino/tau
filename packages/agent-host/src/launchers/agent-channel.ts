@@ -27,6 +27,10 @@ import type { AgentLauncher } from '#launchers/agent-launcher.js';
 import type { ProjectTaskChannelPort } from '#wire/project-task-channel.schema.js';
 import { projectTaskChannelRequestSchema } from '#wire/project-task-channel.schema.js';
 
+/** The asynchronous projections consumed by V1 and V2 channels. @public */
+export type AgentChannelSource = Pick<AgentLauncher, 'execute' | 'read' | 'catchUp' | 'liveEvents'> &
+  Readonly<{ host: Pick<AgentLauncher['host'], 'ledger' | 'snapshot' | 'waitForAdmission'> }>;
+
 /** Options for {@link serveAgentChannel}. @public */
 export type ServeAgentChannelOptions = {
   /** Project-bound task authority; absent on browser/older hosts. */
@@ -57,7 +61,7 @@ const defaultKeepaliveInterval = 2000;
  * runs the client started keep executing, because always-on lives in the launcher, never on a connection (D17).
  *
  * @param endpoint - Socket, message port, or already-wrapped port.
- * @param launcher - The always-on host answering the vocabulary.
+ * @param launcher - The always-on source answering the vocabulary.
  * @param options - The owner's build, keepalive and revision root.
  * @returns The channel handle for this one connection. The agent wire notifies nothing, so the handle names no
  * protocol (and not the internal v1 compatibility one).
@@ -77,7 +81,7 @@ const defaultKeepaliveInterval = 2000;
  */
 export const serveAgentChannel = (
   endpoint: AgentChannelEndpoint,
-  launcher: AgentLauncher,
+  launcher: AgentChannelSource,
   options: ServeAgentChannelOptions,
 ): ChannelServerHandle => {
   /* I32: the compatibility window is open, so this connection also answers a v1 client (`request`, `events`, and
