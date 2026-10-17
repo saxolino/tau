@@ -3,15 +3,26 @@ import { readFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
 import { Writable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
+import type { WorkerOptions } from 'node:worker_threads';
 
-import { keyedResource, openLocalMachines, openLocalParameterActors, serveLocalHostMcp } from '@taucad/host';
+import {
+  defaultMachineProviders,
+  keyedResource,
+  openLocalMachines,
+  openLocalParameterActors,
+  serveLocalHostMcp,
+} from '@taucad/host';
 import type { LocalMachines } from '@taucad/host';
 import { createHostToolRegistry } from '@taucad/host/agent-tools';
 import { systemSkillBundles } from '@taucad/skills/resources';
 import type { AnyRuntimeDefinition, RuntimeClient } from '@taucad/runtime';
 import { defineCommand } from 'citty';
 
-import { machineProviders } from '#machine-providers.js';
+import { childEnvironment } from '#child-environment.js';
+import { exitNow } from '#exit-now.js';
+import type * as NativeKernels from '#native-kernels.js';
+import type { NativeComposition, NativePreparation } from '#native-kernels.js';
 import type { RuntimeWorkerData } from '#runtime.worker.js';
 
 /**
@@ -77,6 +88,13 @@ const seconds = (name: string, value: string | undefined, fallback: number): num
  * in. The store has one writer, so the flag is off by default: a server holding it keeps the desktop app from its
  * printers until the agent closes, and a server whose one folder holds no `tau.json` does not take it.
  *
+ * Native kernels (Build123d for `.py`, PicoGK for `.cs`) run from closures in the payload store that `tau prepare`
+ * and the `prepare_kernel` tool fill (D7). The CAD tools never download: a file whose kernel is not prepared answers
+ * `KERNEL_NOT_PREPARED`, naming `prepare_kernel` and its input. The store is read again on every such refusal, so a
+ * closure another process prepared is used at once; after a preparation, each project's runtime is replaced, and the
+ * old one shuts down once its calls in flight finish. Runtime threads get only the environment
+ * {@link childEnvironment} allows, never the agent app's own.
+ *
  * @example <caption>Serve one project to an MCP client</caption>
  * ```text
  * tau mcp --project ./bracket
@@ -133,7 +151,7 @@ export const mcpCommand = defineCommand({
     machines: {
       type: 'boolean',
       description:
-        "Offer the print tools over this computer's Tau printers; a print starts only after the person approves it in the agent app (TAU_HOST_MACHINES=true)",
+        "Offer the machine tools over this computer's Tau machines; a job starts only after the person approves it in Tau's Print pane (TAU_HOST_MACHINES=true)",
       default: process.env['TAU_HOST_MACHINES'] === 'true',
     },
     'viewer-page': {
@@ -143,6 +161,9 @@ export const mcpCommand = defineCommand({
     },
   },
   async run({ args }) {
+    if (args.machines && !/^(1|true)$/iu.test(process.env['TAU_MACHINES_ENABLED'] ?? '')) {
+      throw new Error('Machines are not available in this release.');
+    }
     const operationTimeout = seconds('operation-timeout', args['operation-timeout'], defaultOperationTimeout) * 1000;
     const idleRelease = seconds('idle-release', args['idle-release'], defaultIdleRelease) * 1000;
 
@@ -173,6 +194,36 @@ export const mcpCommand = defineCommand({
     stdout.once('error', stop);
 
     const workspaceRoot = resolvePath(args.project ?? process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd());
+    /* The native kernels every new runtime thread composes, read from the store's receipts once per generation; a
+     * profile no host can honour leaves the native kernels out rather than every CAD tool. */
+    let composition: Promise<NativeComposition> | undefined;
+    /* Loaded on first use: the native packages' entries import their kernels, which `initialize` must not wait for. */
+    let nativeModule: Promise<typeof NativeKernels> | undefined;
+    const native = async (): Promise<typeof NativeKernels> => {
+      nativeModule ??= import('#native-kernels.js');
+      return nativeModule;
+    };
+    const composeOrNone = async (): Promise<NativeComposition> => {
+      try {
+        const { composeNativeKernels } = await native();
+        return await composeNativeKernels();
+      } catch (error) {
+        process.stderr.write(`tau mcp: serving without native kernels: ${String(error)}\n`);
+        return { unavailable: [] };
+      }
+    };
+    const nativeKernels = async (): Promise<NativeComposition> => {
+      composition ??= composeOrNone();
+      return composition;
+    };
+    /* The agent app's environment is not scrubbed (ruling X9): a runtime thread gets the allowed names only. */
+    const environment = childEnvironment(process.env);
+    /** A runtime thread started with {@link environment} rather than this process's own. */
+    class RuntimeThread extends Worker {
+      public constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, { ...options, env: environment });
+      }
+    }
     /* One realm per project (kernel-realm-shared-state blueprint, I8): each
      * project's kernels run in their own thread, which loads every kernel
      * module there — never in this process, never before `initialize`. */
@@ -182,8 +233,10 @@ export const mcpCommand = defineCommand({
         import('@taucad/runtime/transport/node'),
         import('@taucad/runtime/filesystem/node'),
       ]);
+      const native = await nativeKernels();
       return createRuntimeClient<AnyRuntimeDefinition>({
         transport: nodeWorkerTransport({
+          workerCtor: RuntimeThread,
           url: new URL(
             import.meta.url.endsWith('.ts') ? '../runtime.worker.ts' : './runtime-worker.mjs',
             import.meta.url,
@@ -192,16 +245,25 @@ export const mcpCommand = defineCommand({
             projectRoot: workspaceRoot,
             ...(args.plugin === undefined ? {} : { plugin: [args.plugin].flat() }),
             ...(args.config === undefined ? {} : { config: args.config }),
+            native,
           } satisfies RuntimeWorkerData,
           fileSystem: fromNodeFs(projectPath),
         }),
         operationTimeout,
       });
     };
+    /* Each client's operations in flight, so a retired client shuts down only once they settle. */
+    const pending = new WeakMap<ProjectRuntimeClient, Set<Promise<unknown>>>();
+    const retiring = new WeakSet<ProjectRuntimeClient>();
     /* A client whose thread exited is terminated, and replaced on its project's next call. */
     const clients = keyedResource<string, ProjectRuntimeClient>(
       openClient,
-      async (client) => client.shutdown(),
+      async (client) => {
+        if (retiring.has(client)) {
+          await Promise.allSettled(pending.get(client) ?? []);
+        }
+        await client.shutdown();
+      },
       (client) => client.lifecycleState !== 'terminated',
     );
     const inFlight = new Map<string, number>();
@@ -223,6 +285,29 @@ export const mcpCommand = defineCommand({
         }, idleRelease).unref(),
       );
     };
+    /**
+     * Replace every project's runtime with one composed from `next` (or the store, read again on next use). Each old
+     * client is evicted at once, so the next call starts a fresh thread, and shuts down after its calls in flight
+     * settle (D7, AR1-8).
+     * @param next - The composition the next clients use; omitted, the store is read again on next use.
+     * @returns Once every old client is evicted, before they drain.
+     */
+    const retireClients = async (next?: NativeComposition): Promise<void> => {
+      composition = next === undefined ? undefined : Promise.resolve(next);
+      await Promise.all(
+        clients.keys().map(async (projectPath) => {
+          let acquired: Awaited<ReturnType<typeof clients.acquire>>;
+          try {
+            acquired = await clients.acquire(projectPath);
+          } catch {
+            /* A client that failed to start has nothing to retire. */
+            return;
+          }
+          retiring.add(acquired.value);
+          void release(projectPath, acquired.incarnation);
+        }),
+      );
+    };
     const clientFor = async (projectPath: string): Promise<ProjectRuntimeClient> => {
       const [{ value, incarnation }, { isOperationTimeoutError }] = await Promise.all([
         clients.acquire(projectPath),
@@ -235,14 +320,19 @@ export const mcpCommand = defineCommand({
       /* An operation that times out evicts its thread at once (the eviction is synchronous), so the next call starts
        * a fresh one rather than meeting a thread the runtime terminates only after its grace. The tools turn the
        * rejection into a result, so the client's own calls are where it shows. */
-      const evictOnTimeout = async (pending: Promise<unknown>): Promise<unknown> => {
+      const inFlightOf = pending.get(value) ?? new Set<Promise<unknown>>();
+      pending.set(value, inFlightOf);
+      const evictOnTimeout = async (operation: Promise<unknown>): Promise<unknown> => {
+        inFlightOf.add(operation);
         try {
-          return await pending;
+          return await operation;
         } catch (error) {
           if (isOperationTimeoutError(error)) {
             void release(projectPath, incarnation);
           }
           throw error;
+        } finally {
+          inFlightOf.delete(operation);
         }
       };
       // ponytail: a Proxy over every method beats a hand-written wrapper of HostRuntimeClient's generic surface.
@@ -273,7 +363,7 @@ export const mcpCommand = defineCommand({
       ? await openLocalMachines({
           workspaceRoot,
           requireProject: args.project !== undefined || process.env['CLAUDE_PROJECT_DIR'] !== undefined,
-          ...(await machineProviders()),
+          providers: await defaultMachineProviders(),
           actorId: 'tau-mcp',
           onWarning: ({ message }) => {
             process.stderr.write(`tau mcp: ${message}\n`);
@@ -291,6 +381,15 @@ export const mcpCommand = defineCommand({
     const checkouts = new Map<string, { readonly cwd: string }>();
     /* `get_parameters` and `apply_parameter_operation`: one actor per entry, writing its sidecar. */
     const parameters = openLocalParameterActors({ runtimeClient: clientFor });
+    let preparation: Promise<NativePreparation> | undefined;
+    const startPreparation = async (): Promise<NativePreparation> => {
+      const { openNativePreparation } = await native();
+      return openNativePreparation();
+    };
+    const openPreparation = async (): Promise<NativePreparation> => {
+      preparation ??= startPreparation();
+      return preparation;
+    };
     const tools = createHostToolRegistry({
       workspaceRoot,
       checkouts,
@@ -298,7 +397,48 @@ export const mcpCommand = defineCommand({
       parameterActor: parameters.parameterActor,
       systemSkillBundles,
       ...(machines === undefined ? {} : { machines: machines.facet, projectIdOf: machines.projectOf }),
+      /* In this process, with its unrestricted fetch (D4); a ready kernel is composed by every later call. */
+      prepareKernel: async ({ kernel }, { signal, onProgress }) => {
+        const opened = await openPreparation();
+        const outcome = await opened.prepare(kernel, { signal, onProgress });
+        if (outcome.status === 'ready') {
+          await retireClients();
+        }
+        return outcome;
+      },
     });
+    /**
+     * A call that met an unprepared kernel reads the store again: a closure `tau prepare`, the desktop or another
+     * `tau mcp` sealed meanwhile is composed and the call repeated once, with no `prepare_kernel` (AR1-3).
+     * @param invocation - The registry call.
+     * @returns Its result, or the repeated call's.
+     */
+    const invokeComposed: typeof tools.invoke = async (invocation) => {
+      const result = await tools.invoke(invocation);
+      /* A refusal can only come from a runtime thread, which loaded the module already. */
+      if (nativeModule === undefined) {
+        return result;
+      }
+      const { composeNativeKernels, refusedKernels } = await native();
+      const refused = refusedKernels(result.content);
+      if (refused.size === 0) {
+        return result;
+      }
+      let fresh: NativeComposition;
+      try {
+        fresh = await composeNativeKernels();
+      } catch {
+        return result;
+      }
+      const stillRefused = new Set(
+        fresh.unavailable.filter(({ reason }) => reason === 'not-prepared').map(({ kernel }) => kernel),
+      );
+      if ([...refused].every((kernel) => stillRefused.has(kernel))) {
+        return result;
+      }
+      await retireClients(fresh);
+      return tools.invoke(invocation);
+    };
     /* The idle release waits for a project's last tool call to settle, not its last operation: a call may work
      * between two operations (GeoSpec checks between a test's exports) for longer than the release. The project is
      * found as the registry finds it. */
@@ -310,7 +450,7 @@ export const mcpCommand = defineCommand({
         inFlight.set(projectPath, (inFlight.get(projectPath) ?? 0) + 1);
         clearTimeout(idleTimers.get(projectPath));
         try {
-          return await tools.invoke(invocation);
+          return await invokeComposed(invocation);
         } finally {
           const left = (inFlight.get(projectPath) ?? 1) - 1;
           inFlight.set(projectPath, left);
@@ -322,7 +462,25 @@ export const mcpCommand = defineCommand({
     };
     const viewerPage = await readViewerPage(args['viewer-page'] ?? process.env['TAU_VIEWER_PAGE']);
     const local = await serveLocalHostMcp(
-      { workspaceRoot, pinned: args.project !== undefined, registry, checkouts, viewerPage },
+      {
+        workspaceRoot,
+        pinned: args.project !== undefined,
+        registry,
+        checkouts,
+        viewerPage,
+        runtimeClient: clientFor,
+        /* The direct share link packs the shown entry's source closure, as the Tau app does. */
+        snapshotSource: async ({ root, entryPath, additionalPaths, signal }) => {
+          const client = await clientFor(root);
+          const snapshot = await client.snapshotSource({ source: { path: entryPath }, additionalPaths, signal });
+          return snapshot.success
+            ? snapshot.data
+            : {
+                errorCode: 'SNAPSHOT_FAILED',
+                message: snapshot.issues[0]?.message ?? 'The project source snapshot could not be collected.',
+              };
+        },
+      },
       { stdout },
     );
     // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The SDK server exposes an onclose callback, not EventTarget.
@@ -345,9 +503,15 @@ export const mcpCommand = defineCommand({
         process.stderr.write(`tau mcp: the printer store did not close: ${String(error)}\n`);
       });
       await clients.closeAll();
+      if (preparation !== undefined) {
+        const opened = await preparation;
+        await opened.dispose();
+      }
     };
     await Promise.race([close().catch(() => undefined), sleep(shutdownGrace)]);
-    // oxlint-disable-next-line unicorn/no-process-exit -- a kernel thread that ignores termination would keep the event loop alive; the protocol is already closed, so no reader is truncated.
-    process.exit(0);
+    /* Not `process.exit`: a kernel's WebAssembly tier-up still compiling on V8's threads would hold it for seconds,
+     * and a kernel thread that ignores termination would keep the event loop alive. The protocol is already closed,
+     * so no reader is truncated. */
+    await exitNow(0);
   },
 });

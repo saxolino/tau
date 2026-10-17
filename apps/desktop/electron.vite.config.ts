@@ -10,6 +10,8 @@ if (cloudValue !== undefined && cloudValue !== 'true' && cloudValue !== 'false')
 const define = {
   tauCloudBuildEnabled: JSON.stringify(cloudValue === 'true'),
   tauSentryDsn: JSON.stringify(process.env['SENTRY_DSN'] ?? ''),
+  /* The release workflow passes the PostHog project key; without one the renderer's analytics stay inert. */
+  tauPostHogClientKey: JSON.stringify(process.env['POSTHOG_CLIENT_KEY'] ?? ''),
 } as const;
 
 const bundledWorkspaceDependencies = [
@@ -20,16 +22,19 @@ const bundledWorkspaceDependencies = [
   '@taucad/bambu',
   '@taucad/brep',
   '@taucad/build123d',
+  '@taucad/carvera',
   '@taucad/esbuild',
   '@taucad/events',
   '@taucad/filesystem',
   '@taucad/geospec-engine',
   '@taucad/gltf',
+  '@taucad/grbl',
   '@taucad/host',
   '@taucad/image',
   '@taucad/jscad',
   '@taucad/manifold',
   '@taucad/middleware',
+  '@taucad/native-process-core',
   '@taucad/opencascade',
   '@taucad/openrscad',
   '@taucad/picogk',

@@ -21,7 +21,7 @@
  * every turn of a chat and a capability tied to a run would expire under it.
  */
 
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -30,16 +30,17 @@ import { fileURLToPath } from 'node:url';
 
 import { z } from 'zod';
 
-import { createTauMcpHttpHandler, serveTauMcpStdio } from '@taucad/mcp';
+import { createTauMcpHttpHandler, serveTauMcpStdio, tauMcpToolNames } from '@taucad/mcp';
 import type {
-  TauMcpConfirm,
   TauMcpDispatch,
+  TauMcpDispatchOptions,
   TauMcpHostCall,
   TauMcpHostTool,
   TauMcpRpcFailure,
   TauMcpRpcName,
   TauMcpRpcSuccess,
   TauMcpStdioStreams,
+  TauMcpToolName,
 } from '@taucad/mcp';
 import { rpcName, toolName } from '@taucad/chat/constants';
 import { screenshotImageSchema, screenshotOutputSchema } from '@taucad/chat/schemas/tools/screenshot';
@@ -48,6 +49,10 @@ import { testModelOutputSchema } from '@taucad/chat/schemas/tools/test-model';
 import type { JsonObject, JsonValue, ToolRegistry } from '@taucad/agent-host';
 import { saveChatAttachment } from '#acp/media.js';
 import { createLocalMcpViewer } from '#mcp-viewer.js';
+import { createMcpViewerExport } from '#mcp-viewer-export.js';
+import type { ViewerExportRuntime } from '#mcp-viewer-export.js';
+import type { SourceSnapshotter } from '#mcp-viewer-share.js';
+import { prepareKernelToolName } from '#prepare-kernel-tool.js';
 
 /**
  * Milliseconds a host-minted capability may live.
@@ -83,13 +88,12 @@ export const hostMcpCapabilityPrefix = 'tau-mcp-host-v1';
 /**
  * The exact tool grant a host capability carries.
  *
- * The four CAD tools, the workbench record tool, the parameter tools (agent plugin UI blueprint G22), and the print
- * tools (blueprint D5, Bambu Studio D13): an
- * external agent may read the slicing profiles a machine offers, and open,
- * read, list and stop a print request through the same ledger a Tau turn
- * uses. A print starts only on the person's answer: in the client's own approval form when it declares form
- * elicitation (`tau mcp`), otherwise in Tau, while the agent is told to wait. Every name is dispatched into the
- * daemon's own registry by tool name.
+ * The four CAD tools, the workbench record tool, the parameter tools (agent plugin UI blueprint G22), and the
+ * machine tools: an external agent may read machines and their slicing profiles, apply the host's unattended
+ * actions, stop a machine, and request or check a job. A job, or an action needing a person's approval, goes ahead
+ * only on the person's answer in Tau's Print pane, while the agent is told so: nothing here starts a program. And
+ * `prepare_kernel`, the one tool that downloads, offered only by a host that prepares native kernels (D7). Every
+ * name is dispatched into the daemon's own registry by tool name.
  *
  * @public
  */
@@ -101,12 +105,15 @@ export const hostMcpAllowedTools = [
   toolName.arrangeWorkbench,
   toolName.getParameters,
   toolName.applyParameterOperation,
+  toolName.listMachines,
+  toolName.getMachine,
+  toolName.machineAction,
+  toolName.stopMachine,
   toolName.getPrintProfiles,
-  toolName.requestPrint,
-  toolName.getPrintRequest,
-  toolName.listPrintRequests,
-  toolName.cancelPrint,
+  toolName.requestJob,
+  toolName.checkJob,
   toolName.askQuestions,
+  prepareKernelToolName,
   toolName.taskSpawn,
   toolName.taskRead,
   toolName.taskSend,
@@ -135,11 +142,14 @@ const hostMcpRegistryTools: ReadonlySet<HostMcpAllowedTool> = new Set<HostMcpAll
   toolName.getParameters,
   toolName.applyParameterOperation,
   toolName.askQuestions,
+  toolName.listMachines,
+  toolName.getMachine,
+  toolName.machineAction,
+  toolName.stopMachine,
   toolName.getPrintProfiles,
-  toolName.requestPrint,
-  toolName.getPrintRequest,
-  toolName.listPrintRequests,
-  toolName.cancelPrint,
+  toolName.requestJob,
+  toolName.checkJob,
+  prepareKernelToolName,
 ]);
 
 /** The registry tools that change nothing, here or on a machine. */
@@ -147,10 +157,14 @@ const readOnlyRegistryTools: ReadonlySet<string> = new Set<string>([
   toolName.taskRead,
   toolName.taskWait,
   toolName.getParameters,
+  toolName.listMachines,
+  toolName.getMachine,
   toolName.getPrintProfiles,
-  toolName.getPrintRequest,
-  toolName.listPrintRequests,
+  toolName.checkJob,
 ]);
+
+/** The registry tools that can end a run or halt a machine. */
+const destructiveRegistryTools: ReadonlySet<string> = new Set<string>([toolName.machineAction, toolName.stopMachine]);
 
 /** Tool-specific hints where the derived registry defaults do not describe the effect. */
 const hostMcpAnnotationOverrides: Readonly<Partial<Record<string, NonNullable<TauMcpHostTool['annotations']>>>> = {
@@ -172,6 +186,13 @@ const hostMcpAnnotationOverrides: Readonly<Partial<Record<string, NonNullable<Ta
     destructiveHint: false,
     idempotentHint: true,
     openWorldHint: false,
+  },
+  /* Downloads a pinned runtime into the computer's shared store (D7); preparing a prepared kernel changes nothing. */
+  [prepareKernelToolName]: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
   },
   /* Records a question for the person and waits for them; nothing outside the chat changes. */
   [toolName.askQuestions]: {
@@ -229,9 +250,10 @@ const hostToolOf = (definition: ReturnType<ToolRegistry['list']>[number]): TauMc
       : definition.inputSchema,
     annotations: hostMcpAnnotationOverrides[definition.name] ?? {
       readOnlyHint: reads,
-      destructiveHint: definition.name === toolName.cancelPrint,
-      idempotentHint: definition.name !== toolName.cancelPrint,
-      /* A print request reaches a machine outside this process once accepted. */
+      destructiveHint: destructiveRegistryTools.has(definition.name),
+      /* Stopping twice stops once; every other effect is a new operation per call. */
+      idempotentHint: reads || definition.name === toolName.stopMachine,
+      /* A machine is outside this process. */
       openWorldHint: !reads,
     },
   };
@@ -350,6 +372,42 @@ const present = async (
     errorCode: typeof content['errorCode'] === 'string' ? content['errorCode'] : 'TOOL_ERROR',
     message: typeof content['message'] === 'string' ? content['message'] : `${tool} failed.`,
   };
+};
+
+/**
+ * Forward a registry tool's progress reports (partial results shaped `{ progress, total, message }`) to the client.
+ *
+ * @param progress - The call's reporter, present when the client asked for progress.
+ * @returns The registry's `onUpdate`, or `undefined`.
+ */
+const progressUpdates = (
+  progress: TauMcpDispatchOptions['progress'],
+): ((result: Awaited<ReturnType<ToolRegistry['invoke']>>) => void) | undefined =>
+  progress === undefined
+    ? undefined
+    : ({ content }) => {
+        if (isJsonObject(content) && typeof content['progress'] === 'number') {
+          void progress({
+            progress: content['progress'],
+            ...(typeof content['total'] === 'number' ? { total: content['total'] } : {}),
+            ...(typeof content['message'] === 'string' ? { message: content['message'] } : {}),
+          });
+        }
+      };
+
+/**
+ * The CAD tools an endpoint lists over one registry.
+ *
+ * `test_model` only when the registry offers it, which it does only when a
+ * GeoSpec runner resolves; the other three always, as the registry's own
+ * failures name what a missing runtime lacks.
+ *
+ * @param registry - The host registry the endpoint dispatches into.
+ * @returns The CAD tools to list.
+ */
+const cadToolsOf = (registry: ToolRegistry): readonly TauMcpToolName[] => {
+  const testsOffered = registry.list().some((definition) => definition.name === toolName.testModel);
+  return tauMcpToolNames.filter((name) => testsOffered || name !== toolName.testModel);
 };
 
 /**
@@ -509,7 +567,9 @@ export const createHostMcpEndpoint = (options: HostMcpEndpointOptions): HostMcpE
   /* Offered iff the registry offers them: a daemon without a granted machines
    * facet lists none, so an external agent is never told about a tool this
    * host cannot serve. */
+  const cadTools = cadToolsOf(options.registry);
   const handler = createTauMcpHttpHandler({
+    cadTools,
     hostTools: options.registry
       .list()
       .filter((definition) => hostMcpRegistryTools.has(definition.name as HostMcpAllowedTool))
@@ -602,7 +662,7 @@ export const createHostMcpEndpoint = (options: HostMcpEndpointOptions): HostMcpE
     /**
      * One allowed tool, by name, into the daemon's registry.
      *
-     * Keyed by tool name rather than RPC name because the print request tools
+     * Keyed by tool name rather than RPC name because the machine tools
      * have no chat RPC — they are registry tools — and this is the one call
      * the MCP adapter makes for either kind.
      *
@@ -639,6 +699,7 @@ export const createHostMcpEndpoint = (options: HostMcpEndpointOptions): HostMcpE
             (candidate): candidate is AbortSignal => candidate !== undefined,
           ),
         ),
+        onUpdate: progressUpdates(dispatchOptions.progress),
       });
       binding.pending.add(pending);
       try {
@@ -778,6 +839,16 @@ export type LocalHostMcpOptions = {
    * tools alone.
    */
   readonly viewerPage?: Readonly<{ html: string; sha256: string }> | undefined;
+  /**
+   * The project runtime `export_model` uses, per project folder. With it, the viewer page's Export pane lists the
+   * entry's formats and their options; without it, the page offers no Export pane tools.
+   */
+  readonly runtimeClient?: ((root: string) => Promise<ViewerExportRuntime>) | undefined;
+  /**
+   * Collect a source's closure, as the Tau app's direct share link packs it. Without it, the viewer page's direct
+   * link packs every project file git does not ignore.
+   */
+  readonly snapshotSource?: SourceSnapshotter | undefined;
 };
 
 /** A local MCP server serving one agent. @public */
@@ -872,12 +943,11 @@ export const serveLocalHostMcp = async (
     readonly call: {
       readonly toolCallId: string;
       readonly signal?: AbortSignal | undefined;
-      readonly confirm?: TauMcpConfirm | undefined;
+      readonly progress?: TauMcpDispatchOptions['progress'];
     };
   }): Promise<Awaited<ReturnType<ToolRegistry['invoke']>>> => {
     const runId = `mcp:${workspaceRoot}`;
     options.checkouts.set(runId, { cwd: workspaceRoot });
-    const { confirm } = call;
     return options.registry.invoke({
       toolCallId: call.toolCallId,
       toolName: tool,
@@ -885,26 +955,25 @@ export const serveLocalHostMcp = async (
       // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- the args were validated against the tool's own schema.
       input: args as unknown as JsonValue,
       signal: call.signal ?? new AbortController().signal,
-      /* A client that draws forms asks the person inside this call, so a print starts only on their answer (E9,
-       * W11). Without one the tool leaves its request awaiting approval in Tau. Nothing pauses here, so there is
-       * no later attempt to recall an answer. */
-      ...(confirm === undefined
-        ? {}
-        : {
-            approve: async ({ prompt }: { readonly prompt: string }) => {
-              const outcome = await confirm({ message: prompt, label: 'Approve' }).catch((error: unknown) => {
-                /* Not the person's answer: the tool leaves its request for them in Tau, and the operator learns why. */
-                process.stderr.write(
-                  `tau mcp: the agent app could not ask the person to approve ${tool}, so it waits for them in Tau: ${String(error)}\n`,
-                );
-                throw Object.assign(new Error('The agent app could not ask the person.', { cause: error }), {
-                  code: 'APPROVAL_UNAVAILABLE',
-                });
-              });
-              return { interruptId: call.toolCallId, outcome };
-            },
-          }),
+      onUpdate: progressUpdates(call.progress),
+      /* No approve here: a job or an action needing a person waits for them in Tau's Print pane, where their own
+       * session records the approval with its attestations (machines contract R15). */
     });
+  };
+  /** One adapter call in one project, answered as `tools/call` puts it in `structuredContent`. */
+  const dispatchIn = async (
+    workspaceRoot: string,
+    call: TauMcpHostCall,
+    dispatchOptions: TauMcpDispatchOptions,
+  ): Promise<TauMcpRpcSuccess | TauMcpRpcFailure> => {
+    const route = routeCall(call);
+    if ('errorCode' in route) {
+      return route;
+    }
+    const result = await invokeIn({ workspaceRoot, tool: route.tool, args: route.args, call: dispatchOptions });
+    return present({ save, signals: [dispatchOptions.signal] }, route.tool, result).catch((error: unknown) =>
+      hostFault(route.tool, error),
+    );
   };
   const viewer =
     options.viewerPage === undefined
@@ -941,10 +1010,19 @@ export const serveLocalHostMcp = async (
             }
             return artifactPath;
           },
+          snapshotSource: options.snapshotSource,
+          ...(options.runtimeClient === undefined
+            ? {}
+            : { export: createMcpViewerExport({ runtimeFor: options.runtimeClient }) }),
+          /* The loopback page's panes reach the same host tools an MCP App page reaches through `tools/call`. */
+          hostCall: async ({ root, call, signal }) =>
+            dispatchIn(root, call, { toolCallId: `loopback:${randomUUID()}`, signal }),
         });
+  const cadTools = cadToolsOf(options.registry);
   const server = await serveTauMcpStdio(
     {
       ...(viewer === undefined ? {} : { viewer }),
+      cadTools,
       hostTools: options.registry
         .list()
         .filter(
@@ -954,21 +1032,7 @@ export const serveLocalHostMcp = async (
         )
         .map((definition) => hostToolOf(definition)),
       screenshotImages: 'inline',
-      dispatch: async (call, dispatchOptions) => {
-        const route = routeCall(call);
-        if ('errorCode' in route) {
-          return route;
-        }
-        const result = await invokeIn({
-          workspaceRoot: rootOf(dispatchOptions.meta),
-          tool: route.tool,
-          args: route.args,
-          call: dispatchOptions,
-        });
-        return present({ save, signals: [dispatchOptions.signal] }, route.tool, result).catch((error: unknown) =>
-          hostFault(route.tool, error),
-        );
-      },
+      dispatch: async (call, dispatchOptions) => dispatchIn(rootOf(dispatchOptions.meta), call, dispatchOptions),
     },
     streams,
   );

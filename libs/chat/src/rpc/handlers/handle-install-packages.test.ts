@@ -5,8 +5,9 @@ import { dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import type { RpcFileSystem } from '#rpc/rpc-dependencies.js';
+import type { RpcFileSystem, RpcRuntimeClient } from '#rpc/rpc-dependencies.js';
 import { handleInstallPackages } from '#rpc/handlers/handle-install-packages.js';
+import { createRpcDispatcher } from '#rpc/rpc-dispatcher.js';
 
 const encoder = new TextEncoder();
 
@@ -180,5 +181,67 @@ describe('handleInstallPackages', () => {
     expect(result).toMatchObject({ success: true, manifestChanged: true, packages: [], issues: [] });
     expect(JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))).toMatchObject({ dependencies: {} });
     await expect(stat(join(root, 'node_modules/alea'))).rejects.toThrow();
+  });
+  it.each([
+    [
+      'a Python project',
+      ['main.py', 'pyproject.toml', 'uv.lock'],
+      'This is a Python project: install_packages installs npm packages into package.json, so it wrote nothing. Declare trimesh in pyproject.toml [project] dependencies and run uv sync to use them outside Tau. Inside Tau the kernel runs only the libraries it ships, so importing any other package fails.',
+    ],
+    [
+      'a Python project created before it had a pyproject.toml',
+      ['main.py'],
+      'Declare trimesh in pyproject.toml [project] dependencies and run uv sync',
+    ],
+    [
+      'a C# project',
+      ['main.cs', 'Plate.csproj', 'packages.lock.json'],
+      'This is a C# project: install_packages installs npm packages into package.json, so it wrote nothing. Add a PackageReference for trimesh to Plate.csproj and run dotnet restore to use them outside Tau.',
+    ],
+  ])('should refuse %s, naming the manifest to edit, and write nothing', async (_kind, names, message) => {
+    await rm(join(root, 'package.json'));
+    for (const name of names) {
+      // oxlint-disable-next-line no-await-in-loop -- a few fixture files
+      await writeFile(join(root, name), '');
+    }
+
+    const result = await handleInstallPackages({ add: { trimesh: '*' } }, fileSystem);
+
+    expect(result).toMatchObject({ success: true, manifestChanged: false, lockChanged: false, packages: [] });
+    const issues = result.success ? result.issues : [];
+    expect(issues.map(({ code }) => code)).toEqual(['manifest-conflict']);
+    expect(issues[0]?.message).toContain(message);
+    const written = await readdir(root);
+    expect(written.sort()).toEqual([...names].sort());
+    expect(registry).not.toHaveBeenCalled();
+  });
+
+  it('should install npm packages when a package.json sits beside Python files', async () => {
+    await writeFile(join(root, 'helper.py'), '');
+
+    const result = await handleInstallPackages({ add: { alea: '^1.0.1' } }, fileSystem);
+
+    expect(result).toMatchObject({ success: true, manifestChanged: true, issues: [] });
+  });
+
+  it('should refuse under the locked acquisition profile with no request and nothing written', async () => {
+    const dispatcher = createRpcDispatcher({
+      fileSystem,
+      kernelClient: mock<RpcRuntimeClient>(),
+      acquisition: 'locked',
+    });
+
+    const result = await dispatcher.dispatch({ rpcName: 'install_packages', args: { add: { alea: '^1.0.1' } } });
+
+    expect(result).toEqual({
+      success: true,
+      manifestChanged: false,
+      lockChanged: false,
+      packages: [],
+      issues: [{ code: 'registry-unavailable', message: expect.stringContaining('TAU_ACQUISITION=locked') as unknown }],
+    });
+    expect(registry).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual(['package.json']);
+    expect(await readFile(join(root, 'package.json'), 'utf8')).toBe(manifest);
   });
 });

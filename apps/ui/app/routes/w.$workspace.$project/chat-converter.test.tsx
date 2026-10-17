@@ -1,3 +1,4 @@
+import { compileExportConfigurationManifest } from '#components/machines/configuration-manifest.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { mock } from 'vitest-mock-extended';
@@ -185,6 +186,8 @@ vi.mock('#hooks/use-project.js', () => ({
     },
     geometryUnits: mockGeometryUnits,
     viewRecords: new Map(Object.entries(mockViewSettings)),
+    viewGraphics: new Map(),
+    viewEntryPaths: new Map(),
     mainEntryPath: 'main.ts',
     parameterService: mockParameterService,
   }),
@@ -361,8 +364,8 @@ vi.mock('@taucad/viewer/parameters/rjsf-theme', () => ({
   templates: {},
 }));
 
-const { ChatConverter, ExportSchemaForm, compileExportConfigurationManifest, resolveActiveSchema } =
-  await import('./chat-converter.js');
+const { ChatConverter, ExportSchemaForm } = await import('./chat-converter.js');
+const { resolveActiveSchema } = await import('@taucad/workbench-panes/export/export-source');
 
 function createCapabilities(overrides?: Partial<CapabilitiesManifest>): CapabilitiesManifest {
   return {
@@ -1010,8 +1013,12 @@ describe('ChatConverter', () => {
     ['X1C', bambuMachine],
     ['A1 mini', bambuA1MiniMachine],
   ])('compiles the %s submission form, external spool slot included', async (_name, machine) => {
+    const { jobs } = machine().manifest;
+    if (jobs.type !== 'supported') {
+      throw new Error('A Bambu printer takes jobs.');
+    }
     const { manifest } = await compileExportConfigurationManifest('bambu', 'machine.submission', {
-      schema: machine().submissionConfiguration.legacyProjection.inputSchema as JSONSchema7,
+      schema: jobs.submission.legacyProjection.inputSchema as JSONSchema7,
       defaults: {},
     });
 

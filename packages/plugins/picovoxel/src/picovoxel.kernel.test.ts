@@ -14,7 +14,7 @@ import type { CreatePicoOptions, CreatePicoRuntimeOptions, Mesh, Pico, PicoRunti
 import type * as PicovoxelModule from 'picovoxel';
 
 import { picovoxelBuiltinModuleNames, picovoxelDetectPattern, picovoxelKernel } from '#picovoxel.kernel.js';
-import type { PicovoxelOptionsInput } from '#picovoxel.schemas.js';
+import type { PicovoxelOptionsInput, PicovoxelRegion } from '#picovoxel.schemas.js';
 
 type Artifact = 'serial' | 'multi';
 
@@ -160,11 +160,16 @@ const evaluate = async (input: {
   lane?: 'fast' | 'exact';
   wasm?: PicovoxelOptionsInput['wasm'];
   parameters?: Record<string, unknown>;
+  region?: PicovoxelRegion;
 }) => {
   const runtime = createRuntime(input.module);
   const context = await initialize({ wasm: input.wasm ?? 'serial' }, runtime);
   const result = await definition.evaluate(
-    { entryPath: 'main.ts', parameters: input.parameters ?? {}, options: { lane: input.lane ?? 'fast' } },
+    {
+      entryPath: 'main.ts',
+      parameters: input.parameters ?? {},
+      options: { lane: input.lane ?? 'fast', ...(input.region === undefined ? {} : { region: input.region }) },
+    },
     runtime,
     context,
   );
@@ -227,7 +232,7 @@ describe('picovoxel kernel', () => {
   describe('identity', () => {
     it('should key the kernel version on the PicoVoxel version, both artifact digests and its scripts', () => {
       expect(definition.version).toMatch(
-        /^1\.4\.0\+picovoxel\.[\w.-]+\.serial-[\da-f]{12}\.multi-[\da-f]{12}\.scripts-[\da-f]{12}$/,
+        /^1\.5\.0\+picovoxel\.[\w.-]+\.serial-[\da-f]{12}\.multi-[\da-f]{12}\.scripts-[\da-f]{12}$/,
       );
     });
 
@@ -1306,8 +1311,8 @@ describe('picovoxel kernel', () => {
       const { result } = await evaluate({ module: sphereMinusBeam });
 
       expect(result.handle.shapes).toHaveLength(1);
-      // Two createVoxels calls, equals, subtract, then the kernel's toMesh.
-      expect(abort.checks).toBe(5);
+      // Two createVoxels calls, equals, subtract, then the kernel's toMesh and its active-voxel count.
+      expect(abort.checks).toBe(6);
     });
 
     it('should stop a superseded build at its next call, free the session, and build cleanly next time', async () => {
@@ -1359,7 +1364,8 @@ describe('picovoxel kernel', () => {
 
       expect(result.handle.shapes).toHaveLength(1);
       expect(sessions.author[0]!.options).toEqual({ memoryWarningBytes: 0, voxelSize: 1 });
-      expect(abort.checks).toBe(2);
+      // One createVoxels call, then the kernel's toMesh and its active-voxel count.
+      expect(abort.checks).toBe(3);
       expect(() => own!.allocated).toThrow(expect.objectContaining({ code: 'PICO_DISPOSED' }));
       expect(context.authorResources.size).toBe(0);
     });
@@ -1382,7 +1388,8 @@ describe('picovoxel kernel', () => {
 
       await definition.evaluate({ entryPath: 'main.ts', parameters: {}, options: { lane: 'fast' } }, runtime, context);
 
-      expect(abort.checks).toBe(2);
+      // One createVoxels call, then the kernel's toMesh and its active-voxel count.
+      expect(abort.checks).toBe(3);
       await expect(ownRuntime!.createPico()).rejects.toMatchObject({ code: 'PICO_DISPOSED' });
     });
   });
@@ -1621,6 +1628,71 @@ describe('picovoxel kernel', () => {
       );
 
       await expect(refused).rejects.toMatchObject({ issues: [{ code: 'KERNEL_CAPABILITY_MISSING' }] });
+    });
+  });
+
+  describe('cost reporting', () => {
+    it('reports triangles, vertices, meshing time and the grid with a rendered voxel field', async () => {
+      const { runtime, context, result } = await evaluate({ module: sphere(), parameters: { voxelSize: 1 } });
+      try {
+        const rendered = await definition.render!(
+          { handle: result.handle, view: 'model', options: {} },
+          runtime,
+          context,
+        );
+        const [shape] = result.handle.shapes;
+        expect(rendered.tessellation).toEqual({
+          triangles: shape!.triangles.length / 3,
+          vertices: shape!.vertices.length / 3,
+          elapsed: expect.any(Number) as number,
+          voxelSize: 1,
+          activeVoxels: expect.any(Number) as number,
+          memoryBytes: expect.any(Number) as number,
+        });
+        expect(rendered.tessellation!.triangles).toBeGreaterThan(0);
+        expect(rendered.tessellation!.elapsed).toBeGreaterThanOrEqual(0);
+        expect(rendered.tessellation!.activeVoxels).toBeGreaterThan(0);
+        expect(rendered.tessellation!.memoryBytes).toBeGreaterThan(0);
+      } finally {
+        await definition.onDispose!(context);
+      }
+    });
+
+    it('reports an authored mesh without voxel figures it does not have', async () => {
+      const { runtime, context, result } = await evaluate({ module: { default: helloCube } });
+      try {
+        const rendered = await definition.render!(
+          { handle: result.handle, view: 'model', options: {} },
+          runtime,
+          context,
+        );
+        expect(rendered.tessellation).toEqual({
+          triangles: 12,
+          vertices: 8,
+          elapsed: expect.any(Number) as number,
+          voxelSize: 0.5,
+        });
+      } finally {
+        await definition.onDispose!(context);
+      }
+    });
+
+    it('keeps the report through a handle snapshot and refuses a malformed one', async () => {
+      const { runtime, context, result } = await evaluate({ module: sphere() });
+      try {
+        const snapshot = structuredClone(definition.serializeHandle!({ handle: result.handle }, runtime, context));
+        const fresh = definition.deserializeHandle!({ serialized: snapshot }, runtime, context);
+        expect(fresh.tessellation).toEqual(result.handle.tessellation);
+        expect(() =>
+          definition.deserializeHandle!(
+            { serialized: { ...snapshot, tessellation: { ...snapshot.tessellation!, triangles: -1 } } },
+            runtime,
+            context,
+          ),
+        ).toThrow('tessellation: triangles must be a nonnegative number');
+      } finally {
+        await definition.onDispose!(context);
+      }
     });
   });
 
@@ -1946,4 +2018,134 @@ it('should recycle a mechanism trap and propagate mechanism cancellation after f
   } finally {
     await definition.onDispose!(context);
   }
+});
+
+describe('picovoxel region crop', () => {
+  const region: PicovoxelRegion = { min: [-10, -10, 0], max: [10, 10, 10] };
+  const halfSphere = {
+    defaultParams: { voxelSize: 0.5 },
+    default: (pico: Pico) => [
+      { name: 'Kept', shape: pico.createVoxels({ shape: 'sphere', radius: 4 }) },
+      { name: 'Outside', shape: pico.createVoxels({ shape: 'sphere', center: [40, 0, 0], radius: 2 }) },
+    ],
+  };
+  const zRange = (vertices: Float32Array) => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let index = 2; index < vertices.length; index += 3) {
+      min = Math.min(min, vertices[index]!);
+      max = Math.max(max, vertices[index]!);
+    }
+    return { min, max };
+  };
+  const exportHandle = async (
+    handle: Awaited<ReturnType<typeof evaluate>>['result']['handle'],
+    exportId: 'glb' | 'gltf' | 'stl',
+    options: Record<string, unknown>,
+  ) => {
+    const runtime = createRuntime({});
+    const context = await initialize({ wasm: 'serial' }, runtime);
+    return definition.export!(
+      {
+        exportId,
+        options: { ...definition.exports[exportId].optionsSchema.parse(options) },
+        handle,
+      } as ExportInput,
+      runtime,
+      context,
+    );
+  };
+
+  it('should trim Voxels parts to the box before meshing and drop parts the box misses', async () => {
+    const whole = await evaluate({ module: halfSphere, lane: 'exact' });
+    const cropped = await evaluate({ module: halfSphere, lane: 'exact', region });
+
+    expect(whole.result.handle).not.toHaveProperty('region');
+    expect(whole.result.handle.shapes.map(({ name }) => name)).toEqual(['Kept', 'Outside']);
+    expect(zRange(whole.result.handle.shapes[0]!.vertices).min).toBeLessThan(-3);
+    expect(cropped.result.handle.region).toEqual(region);
+    expect(cropped.result.handle.shapes.map(({ name }) => name)).toEqual(['Kept']);
+    const range = zRange(cropped.result.handle.shapes[0]!.vertices);
+    expect(range.min).toBeGreaterThanOrEqual(-0.5);
+    expect(range.max).toBeGreaterThan(3);
+    expect(cropped.result.handle.shapes[0]!.triangles.length).toBeLessThan(
+      whole.result.handle.shapes[0]!.triangles.length,
+    );
+  });
+
+  it('should refuse a Mesh part under a region instead of delivering it whole', async () => {
+    const issues = await buildIssues(evaluate({ module: { default: helloCube }, region }));
+
+    expect(issues[0]!.message).toContain(
+      'Shape 1 (output 1) is a Mesh, which cannot be cropped to a region without opening its surface.',
+    );
+  });
+
+  it.each(['glb', 'gltf', 'stl'] as const)(
+    'should report the crop box on every %s export of a cropped handle',
+    async (format) => {
+      const { result } = await evaluate({ module: halfSphere, lane: 'exact', region });
+      const exported = await exportHandle(result.handle, format, { region });
+
+      expect(exported.files.length).toBeGreaterThan(0);
+      expect(exported.issues).toContainEqual({
+        message:
+          'PicoVoxel exported only the region min [-10, -10, 0] max [10, 10, 10] mm of this model; geometry outside it was trimmed away.',
+        code: 'RESOURCE_LIMIT',
+        type: 'runtime',
+        severity: 'info',
+        details: { producer: { kernelId: 'picovoxel' }, region, format },
+      });
+    },
+  );
+
+  it('should carry no crop notice on a whole-model export', async () => {
+    const { result } = await evaluate({ module: halfSphere, lane: 'exact' });
+    const exported = await exportHandle(result.handle, 'glb', {});
+
+    expect(exported.issues).toEqual([]);
+  });
+
+  it('should refuse an export whose region differs from the handle it was built with', async () => {
+    const whole = await evaluate({ module: halfSphere, lane: 'exact' });
+    const cropped = await evaluate({ module: halfSphere, lane: 'exact', region });
+    const other: PicovoxelRegion = { min: [0, 0, 0], max: [1, 1, 1] };
+
+    await expect(exportHandle(whole.result.handle, 'glb', { region })).rejects.toMatchObject({
+      issues: [
+        {
+          code: 'REPRESENTATION_UNSUPPORTED',
+          message: expect.stringContaining('built for the whole model as the requested region'),
+          details: { refusal: 'PICOVOXEL_REGION_MISMATCH', requested: region },
+        },
+      ],
+    });
+    await expect(exportHandle(cropped.result.handle, 'stl', {})).rejects.toMatchObject({
+      issues: [
+        {
+          message: expect.stringContaining('built for a different region as the whole model'),
+          details: { refusal: 'PICOVOXEL_REGION_MISMATCH', built: region },
+        },
+      ],
+    });
+    await expect(exportHandle(cropped.result.handle, 'glb', { region: other })).rejects.toMatchObject({
+      issues: [{ details: { requested: other, built: region } }],
+    });
+  });
+
+  it('should keep the region across serialization and refuse a malformed one', async () => {
+    const { runtime, context, result } = await evaluate({ module: halfSphere, lane: 'exact', region });
+    const serialized = structuredClone(definition.serializeHandle!({ handle: result.handle }, runtime, context));
+    const restored = definition.deserializeHandle!({ serialized }, runtime, context);
+
+    expect(restored.region).toEqual(region);
+    expect(restored.shapes.map(({ name }) => name)).toEqual(['Kept']);
+    expect(() =>
+      definition.deserializeHandle!(
+        { serialized: { ...serialized, region: { min: [1, 1, 1], max: [0, 0, 0] } } },
+        runtime,
+        context,
+      ),
+    ).toThrow('region.min must be below region.max on every axis.');
+  });
 });

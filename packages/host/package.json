@@ -1,6 +1,6 @@
 {
   "name": "@taucad/host",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.5",
   "description": "Tau Host daemon for pairing browsers with supervised remote CAD runtimes",
   "type": "module",
   "sideEffects": false,
@@ -68,7 +68,9 @@
     "@taucad/agent-host": "workspace:*",
     "@taucad/bambu": "workspace:*",
     "@taucad/bundler-core": "workspace:*",
+    "@taucad/carvera": "workspace:*",
     "@taucad/filesystem": "workspace:*",
+    "@taucad/grbl": "workspace:*",
     "@taucad/jobs": "workspace:*",
     "@taucad/mcp": "workspace:*",
     "@taucad/parameters": "workspace:*",
@@ -84,6 +86,7 @@
     "minimatch": "^10.2.5",
     "nanoid": "catalog:",
     "safe-regex": "^2.1.1",
+    "smol-toml": "catalog:",
     "ws": "catalog:"
   },
   "peerDependencies": {
@@ -111,6 +114,7 @@
     "@taucad/chat": "workspace:*",
     "@taucad/formal": "workspace:*",
     "@taucad/geospec-engine": "workspace:*",
+    "@taucad/native-process-core": "workspace:*",
     "@taucad/revisions": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/types": "workspace:*",

@@ -10,6 +10,7 @@
     "server.ts",
     "netlify/edge-functions/*.ts",
     "geospec-mt-assets.vite-plugin.ts",
+    "asset-integrity.vite-plugin.ts",
     "geospec-mt-assets-cache-key.ts",
     "vite.calibration.config.ts",
     "react-router.config.ts",
@@ -19,6 +20,7 @@
     "package.json"
   ],
   "compilerOptions": {
+    "rewriteRelativeImportExtensions": true,
     "outDir": "./out-tsc/lib",
     "rootDirs": [".", "./.react-router/types"],
     "lib": ["DOM", "DOM.Iterable", "ES2024"],

@@ -12,7 +12,7 @@
  * @module
  */
 
-import { rpcClientErrorCode, testModelOutputSchema } from '@taucad/chat';
+import { rpcClientErrorCode } from '@taucad/chat/schemas/rpc';
 import type { RpcCall, RpcName, ToolInputValidationError } from '@taucad/chat';
 import { mutatingRpcNames, rpcName, toolDescriptions, toolMode, toolName } from '@taucad/chat/constants';
 import { createRpcDispatcher, writeArtifactSet } from '@taucad/chat/rpc';
@@ -27,8 +27,11 @@ import type {
   RpcWorkbenchClient,
   RpcSkillResolver,
 } from '@taucad/chat/rpc';
-import { getProviderFacingToolInputSchemas, toProviderToolJsonSchema } from '@taucad/chat/schemas';
-import { geoSpecRunLineageSchema } from '@taucad/chat/schemas/tools/test-model';
+import {
+  getProviderFacingToolInputSchemas,
+  toProviderToolJsonSchema,
+} from '@taucad/chat/schemas/provider-tool-schemas';
+import { geoSpecRunLineageSchema, testModelOutputSchema } from '@taucad/chat/schemas/tools/test-model';
 import type { MachineClient } from '@taucad/runtime/machine';
 import type { RuntimeTransportFacet } from '@taucad/runtime/transport';
 import { sha256Bytes, sha256String } from '@taucad/utils/hash';
@@ -296,11 +299,11 @@ export type ChatToolRegistryOptions = {
   /**
    * The host's part of printing: the `tau.json` id of the project the agent
    * works in, which names every print artifact, and a binary read of the
-   * recorded slice. The registry slices through its own `export_model`
-   * route, so `request_print` is offered only with these, a `graphics` client
-   * and an available `machines` facet. A host that cannot name its project
-   * omits this, and neither `request_print` nor `prepare_machine_print` is
-   * offered.
+   * recorded slice. `request_job` and `check_job` are offered with these and
+   * an available `machines` facet; they slice a `targetFile` through the
+   * registry's own `export_model` route, so without a `graphics` client they
+   * run finished programs (`artifact`) only. A host that cannot name its
+   * project omits this, and neither is offered.
    */
   readonly print?: Pick<MachinePrintPlannerDependencies, 'projectId' | 'readArtifact'> | undefined;
   readonly machineSettings?: Pick<MachineSettingsService, 'readMachineSettings'> | undefined;
@@ -310,6 +313,8 @@ export type ChatToolRegistryOptions = {
   readonly workbench?: RpcWorkbenchClient | undefined;
   /** `test_model`'s independent policy gate in `@taucad/chat`. */
   readonly testingEnabled: boolean;
+  /** The host's managed acquisition profile; `locked` makes `install_packages` refuse with no request. */
+  readonly acquisition?: 'open' | 'locked' | undefined;
 };
 
 /**
@@ -415,6 +420,7 @@ export const createChatToolRegistry = (options: ChatToolRegistryOptions): ToolRe
         ...(options.skillResolver === undefined ? {} : { skillResolver: options.skillResolver }),
         ...(options.revisions === undefined ? {} : { revisions: options.revisions }),
         ...(options.parameters === undefined ? {} : { parameters: options.parameters }),
+        ...(options.acquisition === undefined ? {} : { acquisition: options.acquisition }),
         workbench,
       });
       const dispatchOnce = async (): Promise<Awaited<ReturnType<typeof dispatcher.dispatch>>> => {
@@ -496,9 +502,11 @@ export const createChatToolRegistry = (options: ChatToolRegistryOptions): ToolRe
         }
         if (mapped.rpc === rpcName.runGeoSpecTests && result.success) {
           const verdict = testModelOutputSchema.parse(result);
-          const full = JSON.stringify(result);
+          /* The inline budget is the compact JSON the model would receive; the
+           * retained artifact is indented so grep and paged reads return rows. */
+          const oversized = new TextEncoder().encode(JSON.stringify(result)).byteLength > 128 * 1024;
+          const full = JSON.stringify(result, undefined, 2);
           const bytes = new TextEncoder().encode(full);
-          const oversized = bytes.byteLength > 128 * 1024;
           const hasCanonical = [...verdict.failures, ...verdict.passes].some((row) =>
             row.reports?.some((report) => report.canonical !== undefined),
           );
@@ -599,27 +607,29 @@ export const createChatToolRegistry = (options: ChatToolRegistryOptions): ToolRe
   const { machines, print } = options;
   const machineRegistry = machines?.available
     ? createMachineToolRegistry(machines, {
-        projectId: print?.projectId,
         /* The agent's own view, the one its edits to the print intent go through. */
         machineSettings: options.machineSettings,
+        /* Finished programs need only the project; slicing needs the export route too. */
         planPrint:
-          print === undefined || !servable(rpcForTool[toolName.exportModel])
+          print === undefined
             ? undefined
             : createMachinePrintPlanner({
                 ...print,
                 machines,
                 /* This registry's own route, so the slice is validated and recorded exactly as an export is. */
-                exportModel: async (input) =>
-                  invokeRpcTool({
-                    toolCallId: input.toolCallId,
-                    toolName: toolName.exportModel,
-                    input: {
-                      targetFile: input.targetFile,
-                      to: input.to,
-                      ...(input.options === undefined ? {} : { options: input.options }),
-                    },
-                    signal: input.signal,
-                  }),
+                exportModel: servable(rpcForTool[toolName.exportModel])
+                  ? async (input) =>
+                      invokeRpcTool({
+                        toolCallId: input.toolCallId,
+                        toolName: toolName.exportModel,
+                        input: {
+                          targetFile: input.targetFile,
+                          to: input.to,
+                          ...(input.options === undefined ? {} : { options: input.options }),
+                        },
+                        signal: input.signal,
+                      })
+                  : undefined,
               }),
       })
     : undefined;

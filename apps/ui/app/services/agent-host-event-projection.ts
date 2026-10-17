@@ -3,13 +3,24 @@ import { z } from 'zod';
 import type { ProviderMetadata, UIMessageChunk } from 'ai';
 import type { AgentLiveEvent, AgentLogEvent, KnownProjectionEvent, ProviderMessageMetadata } from '@taucad/agent-host';
 import { userProviderMessageSchema } from '@taucad/agent-host';
-import { externalAgentStopSchema } from '@taucad/agent-host/wire';
+import {
+  externalAgentStopSchema,
+  providerPermissionSchema,
+  providerPermissionResolutionSchema,
+} from '@taucad/agent-host/wire';
+import type { ProviderPermission } from '@taucad/agent-host/wire';
 import type { AcpSessionData, BillingInvocationStatus, MyUIMessage } from '@taucad/chat';
-import { acpSessionDataSchema, billingInvocationStatusSchema } from '@taucad/chat';
+import {
+  acpActivityDataSchema,
+  acpSessionDataSchema,
+  billingInvocationStatusSchema,
+  usageDataSchema,
+} from '@taucad/chat';
 import { errorCategoryTitles, httpStatusToCategory } from '@taucad/chat/utils';
 import { errorCategory } from '@taucad/types/constants';
 import type { TurnConflictedEvent, TurnFailedEvent, TurnFinalizedEvent } from '@taucad/revisions/revision-effects';
 import { isRecord } from '@taucad/utils/schema';
+import { externalToolOutputText } from '#utils/external-tool-output.js';
 import { isAttachmentUrl } from '#utils/attachment.utils.js';
 import { normalizedErrorCategoryOf } from '#utils/chat-error-card.js';
 
@@ -33,9 +44,8 @@ const failedOutputText = (value: unknown): string | undefined => {
   if (!isRecord(value)) {
     return undefined;
   }
-  const output = [value['formatted_output'], value['aggregated_output'], value['output'], value['error']].find(
-    (candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '',
-  );
+  const decoded = externalToolOutputText(value);
+  const output = decoded?.trim() ? decoded : typeof value['error'] === 'string' ? value['error'] : undefined;
   const result =
     isRecord(value['result']) && Array.isArray(value['result']['content']) ? value['result']['content'] : [];
   const resultText = result
@@ -233,6 +243,10 @@ const usageChunks = (message: AssistantProviderMessage): UIMessageChunk[] => {
    * to know that the missing charge is a fact and not a gap. */
   const tauInternal = isRecord(metadata.tauInternal) ? metadata.tauInternal : undefined;
   const agent = tauInternal?.['origin'] === 'external' ? tauInternal['agentId'] : undefined;
+  const vendorReport =
+    typeof agent === 'string'
+      ? usageDataSchema.shape.vendorReport.safeParse(tauInternal?.['vendorPromptUsage']).data
+      : undefined;
   return [
     {
       type: 'data-usage',
@@ -242,6 +256,7 @@ const usageChunks = (message: AssistantProviderMessage): UIMessageChunk[] => {
         id,
         ...(typeof agent === 'string' ? { agent } : {}),
         ...billingIdentity(tauInternal),
+        ...(vendorReport === undefined ? {} : { vendorReport }),
         model: metadata.responseModel ?? metadata.model ?? 'unknown',
         inputTokens: usage.input,
         outputTokens: usage.output,
@@ -410,11 +425,28 @@ const assistantChunks = (
       });
       continue;
     }
+    if (
+      value['type'] === 'provider-permission-observation' &&
+      tauInternal?.['kind'] === 'provider-permission-observation'
+    ) {
+      const parsed = providerPermissionResolutionSchema.safeParse(value['resolution']);
+      if (parsed.success && typeof value['interruptId'] === 'string' && value['interruptId'] !== '') {
+        chunks.push({ type: 'tool-output-available', toolCallId: value['interruptId'], output: parsed.data });
+      }
+      continue;
+    }
     if (value['type'] === 'acp-session') {
       const id = `${message.id}:acp-session:${String(index)}`;
       const parsed = acpSessionDataSchema.safeParse({ ...value, id });
       if (parsed.success) {
         chunks.push({ type: 'data-acp-session', id, data: parsed.data });
+      }
+    }
+    if (value['type'] === 'acp-activity') {
+      const id = `${message.id}:acp-activity:${String(index)}`;
+      const parsed = acpActivityDataSchema.safeParse({ ...value, id });
+      if (parsed.success) {
+        chunks.push({ type: 'data-acp-activity', id, data: parsed.data });
       }
     }
     // Tool-call blocks are projected from their explicit tool-input log row.
@@ -550,12 +582,20 @@ const messageChunks = (
 };
 
 /** Read the latest ACP session record for the selected agent from durable UI messages. @public */
-export const latestAcpSessionData = (messages: readonly MyUIMessage[], agentId: string): AcpSessionData | undefined => {
+export const latestAcpSessionData = (
+  messages: readonly MyUIMessage[],
+  agentId: string,
+  hostId?: string,
+): AcpSessionData | undefined => {
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
     const parts = messages[messageIndex]?.parts ?? [];
     for (let partIndex = parts.length - 1; partIndex >= 0; partIndex--) {
       const part = parts[partIndex];
-      if (part?.type === 'data-acp-session' && part.data.agentId === agentId) {
+      if (
+        part?.type === 'data-acp-session' &&
+        part.data.agentId === agentId &&
+        (hostId === undefined || part.data.hostId === hostId)
+      ) {
         return part.data;
       }
     }
@@ -891,11 +931,11 @@ export const projectAgentHostLiveEvent = (
   return chunks;
 };
 
-/** Whether this run left a checkpointed block open, so its next delta continues the same part. */
+/** Whether this run has open parts that must survive an approval pause in the same SDK step. */
 const hasOpenBlock = (runId: string, streamedBlocks: AgentHostLiveBlocks | undefined): boolean => {
   const prefix = `[${JSON.stringify(runId)},`;
   for (const [key, block] of streamedBlocks ?? []) {
-    if (block.type !== 'tool' && !block.closed && key.startsWith(prefix)) {
+    if (!block.closed && key.startsWith(prefix)) {
       return true;
     }
   }
@@ -918,12 +958,13 @@ const lifecycleChunks = (
       ];
     }
     case 'running': {
-      return [{ type: 'start-step' }];
+      // Input refinements are step-scoped in the SDK; a resumed call must not become a second tool part.
+      return hasOpenBlock(event.runId, streamedBlocks) ? [] : [{ type: 'start-step' }];
     }
     case 'paused': {
       /* The reducer forgets its active parts on `finish-step` without closing
-       * them, so a resumed checkpoint block would throw on its next delta
-       * (chat activity indicator closeout R5). The step stays open instead. */
+       * them. Keep the step open until its text and tools settle, so resume
+       * continues those same parts. */
       return hasOpenBlock(event.runId, streamedBlocks) ? [] : [{ type: 'finish-step' }];
     }
     case 'completed': {
@@ -968,6 +1009,8 @@ export type AgentHostApproval = {
   readonly kind: 'approval' | 'operator' | 'safeguard';
   readonly prompt: string;
   readonly options: readonly AgentHostApprovalOption[];
+  /** Provider-requested scope; recording an answer does not verify provider policy persistence. */
+  readonly providerPermission?: ProviderPermission | undefined;
   /**
    * External agent that raised this interrupt, when one did.
    *
@@ -987,9 +1030,9 @@ export type AgentHostApproval = {
   /**
    * The durable record this interrupt gates, when the tool named one.
    *
-   * `request_print` writes `{ requestId, machineId, fileName }` so the Print
-   * pane can resolve the same ledger record the banner shows; other tools may
-   * write nothing.
+   * A job request writes `{ jobId, machineId, fileName }` and a machine action
+   * `{ machineId, componentId, action, operationId, label, intent }`, so the Print pane
+   * can answer the same interrupt the banner shows; other tools may write nothing.
    */
   readonly context?: AgentHostApprovalContext | undefined;
   /** Structured request facts retained for compact presentation and Debug inspection. */
@@ -998,9 +1041,24 @@ export type AgentHostApproval = {
 
 /** Ledger correlation a tool attaches to the interrupt it raises. @public */
 export type AgentHostApprovalContext = {
-  readonly requestId?: string | undefined;
+  readonly jobId?: string | undefined;
   readonly machineId?: string | undefined;
   readonly fileName?: string | undefined;
+  /** For a machine action: the component, the action id, the operation it will send and its label. */
+  readonly componentId?: string | undefined;
+  readonly action?: string | undefined;
+  readonly operationId?: string | undefined;
+  readonly label?: string | undefined;
+  /** For a machine action: the parameters of the exact intent the person approves, from the tool's `intent`. */
+  readonly parameters?: Readonly<Record<string, unknown>> | undefined;
+  /** For a machine action: the action version of that intent, which the host's approval record names (R15). */
+  readonly version?: number | undefined;
+  /**
+   * For a machine action: the run the agent saw when it asked, `null` for none. The person approves the action for
+   * this run only (R16).
+   */
+  // oxlint-disable-next-line typescript/no-restricted-types -- null is the agent's statement that it saw no run.
+  readonly expectedRunId?: string | null | undefined;
 };
 
 /** One sign-in method an external agent offered. @public */
@@ -1043,18 +1101,38 @@ const interruptRequestSchema = z.looseObject({
     .looseObject({
       toolCall: z.looseObject({ title: z.string().optional(), rawInput: z.json().optional() }).optional(),
       options: z.array(approvalOptionSchema).optional(),
+      providerPermission: z.unknown().optional(),
       input: z.json().optional(),
       requestId: z.string().min(1).optional(),
+      jobId: z.string().min(1).optional(),
       machineId: z.string().min(1).optional(),
       fileName: z.string().min(1).optional(),
+      componentId: z.string().min(1).optional(),
+      action: z.string().min(1).optional(),
+      operationId: z.string().min(1).optional(),
+      label: z.string().min(1).optional(),
+      intent: z
+        .looseObject({
+          parameters: z.record(z.string(), z.unknown()).optional(),
+          version: z.number().int().optional(),
+          expectedRunId: z.string().min(1).nullable().optional(),
+        })
+        .optional(),
     })
     .optional(),
 });
 
 const agentHostApprovalContextSchema = z.object({
-  requestId: z.string().min(1).optional(),
+  jobId: z.string().min(1).optional(),
   machineId: z.string().min(1).optional(),
   fileName: z.string().min(1).optional(),
+  componentId: z.string().min(1).optional(),
+  action: z.string().min(1).optional(),
+  operationId: z.string().min(1).optional(),
+  label: z.string().min(1).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  version: z.number().int().optional(),
+  expectedRunId: z.string().min(1).nullable().optional(),
 });
 
 /**
@@ -1064,16 +1142,39 @@ const agentHostApprovalContextSchema = z.object({
  * @returns Only the correlation keys present, or `undefined` when none are.
  */
 const approvalContextOf = (
-  context: { requestId?: string; machineId?: string; fileName?: string } | undefined,
+  context:
+    | (AgentHostApprovalContext & {
+        readonly requestId?: string | undefined;
+        readonly intent?:
+          | {
+              readonly parameters?: Readonly<Record<string, unknown>> | undefined;
+              readonly version?: number | undefined;
+              // oxlint-disable-next-line typescript/no-restricted-types -- null is the agent's statement that it saw no run.
+              readonly expectedRunId?: string | null | undefined;
+            }
+          | undefined;
+      })
+    | undefined,
 ): AgentHostApprovalContext | undefined => {
   if (!context) {
     return undefined;
   }
-  const picked: AgentHostApprovalContext = {
-    ...(context.requestId === undefined ? {} : { requestId: context.requestId }),
-    ...(context.machineId === undefined ? {} : { machineId: context.machineId }),
-    ...(context.fileName === undefined ? {} : { fileName: context.fileName }),
-  };
+  // ponytail: a host from before jobs names the job `requestId`; drop the alias once every host writes `jobId`.
+  const jobId = context.jobId ?? context.requestId;
+  const picked: AgentHostApprovalContext = Object.fromEntries(
+    Object.entries({
+      jobId,
+      machineId: context.machineId,
+      fileName: context.fileName,
+      componentId: context.componentId,
+      action: context.action,
+      operationId: context.operationId,
+      label: context.label,
+      parameters: context.intent?.parameters,
+      version: context.intent?.version,
+      expectedRunId: context.intent?.expectedRunId,
+    }).filter(([, value]) => value !== undefined),
+  );
   return Object.keys(picked).length === 0 ? undefined : picked;
 };
 
@@ -1136,6 +1237,7 @@ const loginOf = (payload: unknown): AgentHostLogin | undefined => {
 
 const interruptResolutionSchema = z.looseObject({
   outcome: z.enum(['approved', 'denied', 'cancelled']).optional(),
+  optionId: z.string().min(1).max(512).optional(),
 });
 
 const agentHostApprovalSchema = z.object({
@@ -1143,6 +1245,7 @@ const agentHostApprovalSchema = z.object({
   kind: z.enum(['approval', 'operator', 'safeguard']),
   prompt: z.string(),
   options: z.array(z.object({ optionId: z.string().min(1), name: z.string(), kind: z.string().optional() })),
+  providerPermission: providerPermissionSchema.optional(),
   agentId: z.string().optional(),
   login: agentHostLoginSchema.optional(),
   context: agentHostApprovalContextSchema.optional(),
@@ -1167,10 +1270,18 @@ const approvalChunks = (
 ): readonly UIMessageChunk[] => {
   if (event.phase === 'resolved') {
     // `reason` carries the outcome verbatim on every host that writes one.
-    const outcome = interruptResolutionSchema.safeParse(event.payload).data?.outcome ?? event.reason;
-    return [{ type: 'tool-output-available', toolCallId: event.interruptId, output: { outcome } }];
+    const resolution = interruptResolutionSchema.safeParse(event.payload).data;
+    const outcome = resolution?.outcome ?? event.reason;
+    return [
+      {
+        type: 'tool-output-available',
+        toolCallId: event.interruptId,
+        output: { outcome, ...(resolution?.optionId === undefined ? {} : { optionId: resolution.optionId }) },
+      },
+    ];
   }
   const request = interruptRequestSchema.safeParse(event.payload).data;
+  const providerPermission = providerPermissionSchema.safeParse(request?.context?.providerPermission).data;
   const login = loginOf(event.payload);
   const context = approvalContextOf(request?.context);
   const content = request?.context?.toolCall?.['content'];
@@ -1193,6 +1304,7 @@ const approvalChunks = (
       ...(option.kind === undefined ? {} : { kind: option.kind }),
     })),
     ...(request?.agentId === undefined ? {} : { agentId: request.agentId }),
+    ...(providerPermission === undefined ? {} : { providerPermission }),
     ...(login === undefined ? {} : { login }),
     ...(context === undefined ? {} : { context }),
     ...(request?.context?.toolCall === undefined && request?.context?.input === undefined

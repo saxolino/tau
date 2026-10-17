@@ -55,6 +55,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import { permissionObservationOf, redactPermissionMetadata } from '#acp/provider-permission.js';
 
 import { CreateElicitationRequest as CreateElicitationRequestGuards } from '@agentclientprotocol/sdk';
 import type {
@@ -74,7 +75,6 @@ import type {
 } from '@agentclientprotocol/sdk';
 
 import type { ExternalAgentTurn } from '@taucad/agent-host/launcher';
-import type { ExternalAgentLogin, ExternalAgentStop } from '@taucad/agent-host/wire';
 import {
   projectTaskActionSchema,
   projectTaskMessageSchema,
@@ -85,6 +85,13 @@ import {
   projectTaskSpawnSchema,
   projectTaskWaitSchema,
   projectTaskRefusalCodes,
+  providerPermissionSchema,
+} from '@taucad/agent-host/wire';
+import type {
+  ExternalAgentLogin,
+  ExternalAgentStop,
+  ProviderPermissionObservation,
+  ProviderPermissionResolution,
 } from '@taucad/agent-host/wire';
 import type {
   ExternalAgentLogEvent,
@@ -95,25 +102,48 @@ import type {
   ToolInputProviderMessage,
 } from '@taucad/agent-host';
 
+import type { GrokNotification } from '#acp/grok-notifications.js';
+import { grokPromptUsageOf, grokVendorCostOf } from '#acp/grok-usage.js';
+import type { GrokPromptUsage } from '#acp/grok-usage.js';
+import { initialGrokNotificationState, grokNotificationAfter, finishGrokPresentation } from '#acp/grok-presentation.js';
+import type { GrokPresentation } from '#acp/grok-presentation.js';
 import type { AcpWireFrame } from '#acp/spawn.js';
 import type { AcpAdapter } from '#acp/registry.js';
 import { maskedPathCode } from '@taucad/agent-tools/registry';
+import { seemsBinary } from '@taucad/filesystem/content-metadata';
 import { NodeFsProvider } from '@taucad/filesystem/backend/node';
 import { classify } from '@taucad/filesystem/path-registry';
 import {
-  exportModelInputSchema,
-  exportModelOutputSchema,
-  evaluateModelInputSchema,
-  evaluateModelOutputSchema,
-  screenshotInputSchema,
-  screenshotMcpOutputSchema,
-  testModelInputSchema,
-  testModelOutputSchema,
+  getParametersInputSchema,
+  getParametersOutputSchema,
+  applyParameterOperationInputSchema,
+  applyParameterOperationOutputSchema,
+} from '@taucad/chat/schemas/tools/parameter';
+import {
+  machineActionInputSchema,
+  machineActionOutputSchema,
+  stopMachineInputSchema,
+  stopMachineOutputSchema,
+  getPrintProfilesInputSchema,
+  getPrintProfilesOutputSchema,
+  requestJobInputSchema,
+  requestJobOutputSchema,
+  checkJobInputSchema,
+  checkJobOutputSchema,
+  listMachinesInputSchema,
+  listMachinesOutputSchema,
+  getMachineInputSchema,
+  getMachineOutputSchema,
+} from '@taucad/chat/schemas/tools/machine';
+import { exportModelInputSchema, exportModelOutputSchema } from '@taucad/chat/schemas/tools/export-model';
+import { evaluateModelInputSchema, evaluateModelOutputSchema } from '@taucad/chat/schemas/tools/evaluate-model';
+import { screenshotInputSchema, screenshotMcpOutputSchema } from '@taucad/chat/schemas/tools/screenshot';
+import { testModelInputSchema, testModelOutputSchema } from '@taucad/chat/schemas/tools/test-model';
+import {
   arrangeWorkbenchInputSchema,
   arrangeWorkbenchOutputSchema,
-  askQuestionsInputSchema,
-  askQuestionsOutputSchema,
-} from '@taucad/chat';
+} from '@taucad/chat/schemas/tools/arrange-workbench';
+import { askQuestionsInputSchema, askQuestionsOutputSchema } from '@taucad/chat/schemas/tools/ask-questions';
 import { toolName } from '@taucad/chat/constants';
 import { rpcClientErrorCodeSchema } from '@taucad/chat/schemas/rpc';
 import { checkProjectManifestReplacement } from '@taucad/types';
@@ -296,10 +326,28 @@ export const readSessionTextFile = async (
     if (skillRoot === undefined || !(error instanceof Error) || !('code' in error) || error.code !== maskedPathCode) {
       throw error;
     }
-    return readSessionTextFile(skillRoot, { ...params, path: resolve(cwd, params.path) }, remaining);
+    try {
+      return await readSessionTextFile(skillRoot, { ...params, path: resolve(cwd, params.path) }, remaining);
+    } catch (skillError) {
+      if (skillError instanceof Error && 'code' in skillError && skillError.code === maskedPathCode) {
+        throw error;
+      }
+      throw skillError;
+    }
   }
   const provider = new NodeFsProvider(cwd);
-  const content = new TextDecoder().decode(await provider.readFile(path));
+  const bytes = await provider.readFile(path);
+  let content: string;
+  try {
+    if (seemsBinary(bytes)) {
+      throw new TypeError('Binary file');
+    }
+    content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new TypeError(
+      'ACP fs/read_text_file supports UTF-8 text only. Images must be delivered as image content blocks.',
+    );
+  }
   /* `unknown`, because ACP spells "no window" as an omitted field *and* as an
    * explicit JSON `null`, and a reader that trusted the declared type would
    * turn the second one into line zero and drop the file's first line. */
@@ -603,6 +651,43 @@ type JsonSchema = {
 };
 
 const tauMcpSchemas = {
+  [toolName.getParameters]: {
+    input: getParametersInputSchema,
+    output: getParametersOutputSchema,
+  },
+  [toolName.applyParameterOperation]: {
+    input: applyParameterOperationInputSchema,
+    output: applyParameterOperationOutputSchema,
+  },
+  [toolName.machineAction]: {
+    input: machineActionInputSchema,
+    output: machineActionOutputSchema,
+  },
+  [toolName.stopMachine]: {
+    input: stopMachineInputSchema,
+    output: stopMachineOutputSchema,
+  },
+  [toolName.getPrintProfiles]: {
+    input: getPrintProfilesInputSchema,
+    output: getPrintProfilesOutputSchema,
+  },
+  [toolName.requestJob]: {
+    input: requestJobInputSchema,
+    output: requestJobOutputSchema,
+  },
+  [toolName.checkJob]: {
+    input: checkJobInputSchema,
+    output: checkJobOutputSchema,
+  },
+  [toolName.listMachines]: {
+    input: listMachinesInputSchema,
+    output: z.object({ value: listMachinesOutputSchema }).transform(({ value }) => value),
+  },
+  [toolName.getMachine]: {
+    input: getMachineInputSchema,
+    output: z.object({ value: getMachineOutputSchema }).transform(({ value }) => value),
+  },
+
   [toolName.arrangeWorkbench]: { input: arrangeWorkbenchInputSchema, output: arrangeWorkbenchOutputSchema },
   [toolName.evaluateModel]: { input: evaluateModelInputSchema, output: evaluateModelOutputSchema },
   [toolName.testModel]: { input: testModelInputSchema, output: testModelOutputSchema },
@@ -634,9 +719,12 @@ const tauMcpHostErrorCodes = new Set([
 
 type NormalizedTauMcpCall = {
   readonly toolName: keyof typeof tauMcpSchemas;
-  readonly arguments: JsonValue;
+  /** The validated arguments; absent only while Claude is still streaming them. */
+  readonly arguments?: JsonValue;
   readonly outputSchema: JsonSchema;
   readonly grokServerName?: string;
+  /** Claude Code hands back the result as text: `structuredContent` as JSON, or the failure's own text. */
+  readonly claude?: true;
 };
 
 const normalizedTauMcpCall = (
@@ -649,21 +737,38 @@ const normalizedTauMcpCall = (
   const grok = agentId === 'grok' && grokTool?.['name'] === 'use_tool' && grokTool['namespace'] === 'grok_build';
   const qualifiedName = input?.['tool_name'];
   const grokPrefix = `${serverName}__`;
+  /* Claude names an MCP tool `mcp__<server>__<tool>` and passes its arguments as the whole input. */
+  const claudeName = asRecord(asRecord(update._meta)?.['claudeCode'])?.['toolName'];
+  const claudePrefix = `mcp__${serverName}__`;
+  const claude = agentId === 'claude' && typeof claudeName === 'string' && claudeName.startsWith(claudePrefix);
   const name = grok
     ? typeof qualifiedName === 'string' && qualifiedName.startsWith(grokPrefix)
       ? qualifiedName.slice(grokPrefix.length)
       : undefined
-    : input?.['tool'];
+    : claude
+      ? claudeName.slice(claudePrefix.length)
+      : input?.['tool'];
   if (
     serverName === undefined ||
-    (!grok && (input?.['server'] !== serverName || asRecord(update._meta)?.['is_mcp_tool_call'] !== true)) ||
+    (!grok && !claude && (input?.['server'] !== serverName || asRecord(update._meta)?.['is_mcp_tool_call'] !== true)) ||
     typeof name !== 'string' ||
     !Object.hasOwn(tauMcpSchemas, name)
   ) {
     return undefined;
   }
   const schema = tauMcpSchemas[name as keyof typeof tauMcpSchemas];
-  const parsed = schema.input.safeParse(input?.[grok ? 'tool_input' : 'arguments']);
+  const parsed = schema.input.safeParse(grok ? input?.['tool_input'] : claude ? input : input?.['arguments']);
+  if (claude) {
+    /* Claude announces the call before it has streamed the arguments, and a
+     * call's identity cannot change once it is logged, so the name alone
+     * qualifies it; the arguments join once they validate. */
+    return {
+      toolName: name as keyof typeof tauMcpSchemas,
+      ...(parsed.success ? { arguments: asJson(parsed.data) } : {}),
+      outputSchema: schema.output,
+      claude: true,
+    };
+  }
   return parsed.success
     ? {
         toolName: name as keyof typeof tauMcpSchemas,
@@ -716,6 +821,31 @@ const mcpResult = (
           },
         }
       : undefined;
+  }
+  if (tool.claude === true) {
+    /* Claude Code replaces a result's content with its `structuredContent` as
+     * JSON, and a failure keeps its `CODE: message` text. */
+    const blocks: readonly unknown[] | undefined =
+      typeof rawOutput === 'string'
+        ? [{ type: 'text', text: rawOutput }]
+        : Array.isArray(rawOutput)
+          ? rawOutput
+          : undefined;
+    const text = (blocks ?? [])
+      .flatMap((block) => {
+        const value = asRecord(block)?.['text'];
+        return typeof value === 'string' ? [value] : [];
+      })
+      .join('\n');
+    let structuredContent: unknown;
+    if (!failed && text !== '') {
+      try {
+        structuredContent = JSON.parse(text);
+      } catch {
+        /* Not JSON: refused by the output schema below. */
+      }
+    }
+    envelope = blocks === undefined ? undefined : { result: { structuredContent, content: blocks, isError: failed } };
   }
   if (!envelope) {
     return {
@@ -953,6 +1083,8 @@ export type AcpAgentFacts = {
   /** Login methods the agent offered, in its own order; empty when it needs none. */
   readonly authMethods: readonly AuthMethod[];
   readonly agentInfo: Implementation | undefined;
+  /** This pinned connection negotiated the optional settings readback extension. */
+  readonly permissionReadback?: boolean | undefined;
 };
 
 /** One live ACP session: an adapter child, its connection, and the vendor session. @public */
@@ -1000,20 +1132,29 @@ type TurnProjection = {
   /** The chat title the agent proposed, if any. */
   readonly title: string | undefined;
   update(update: SessionUpdate): void;
+  grokNotification(notification: GrokNotification): void;
   sessionState(state: AcpSessionPresentation): void;
-  approve(request: Parameters<ExternalAgentTurn['approve']>[0]): ReturnType<ExternalAgentTurn['approve']>;
+  approve(
+    request: Parameters<ExternalAgentTurn['approve']>[0],
+    readback?: { readonly observe: () => Promise<ProviderPermissionObservation> },
+  ): ReturnType<ExternalAgentTurn['approve']>;
   /**
    * The vendor's own end-of-turn report, before the last block is committed.
    *
    * `PromptResponse` arrives after every notification, so this is the last
    * thing the turn learns and the first thing its final message must carry.
    */
-  report(input: { readonly usage?: AcpUsage | undefined; readonly model?: string | undefined }): void;
+  report(input: {
+    readonly usage?: AcpUsage | undefined;
+    readonly model?: string | undefined;
+    readonly grokUsage?: GrokPromptUsage | undefined;
+  }): void;
   flush(): Promise<void>;
 };
 
 /** Latest replaceable presentation facts for one ACP session. @internal */
-export type AcpSessionPresentation = {
+export type AcpSessionPresentation = Partial<GrokPresentation> & {
+  readonly hostId?: string | undefined;
   readonly sessionId?: string | undefined;
   readonly title?: string | undefined;
   readonly plan?: JsonValue | undefined;
@@ -1141,15 +1282,6 @@ const vendorUsageOf = (usage: AcpUsage): JsonObject => {
   return totals;
 };
 
-const grokUsageSchema = z.object({
-  inputTokens: z.number().nonnegative(),
-  outputTokens: z.number().nonnegative(),
-  totalTokens: z.number().nonnegative(),
-  cachedReadTokens: z.number().nonnegative().optional(),
-  cacheCreationTokens: z.number().nonnegative().optional(),
-  reasoningTokens: z.number().nonnegative().optional(),
-});
-
 /**
  * Normalize Grok's per-prompt counters to the cumulative ACP usage contract.
  * @internal
@@ -1166,18 +1298,21 @@ export const promptUsageOf = (
   if (isPresent(response.usage) || agentId !== 'grok') {
     return response.usage ?? undefined;
   }
-  const parsed = grokUsageSchema.safeParse(response._meta?.['usage']);
-  if (!parsed.success) {
+  const usage = grokPromptUsageOf(response._meta);
+  if (usage === undefined) {
     return undefined;
   }
-  const usage = parsed.data;
   return {
-    inputTokens: (prior?.inputTokens ?? 0) + usage.inputTokens,
+    inputTokens:
+      (prior?.inputTokens ?? 0) +
+      Math.max(0, usage.inputTokens - (usage.cachedReadTokens ?? 0) - (usage.cacheCreationTokens ?? 0)),
     outputTokens: (prior?.outputTokens ?? 0) + usage.outputTokens,
     totalTokens: (prior?.totalTokens ?? 0) + usage.totalTokens,
     cachedReadTokens: (prior?.cachedReadTokens ?? 0) + (usage.cachedReadTokens ?? 0),
     cachedWriteTokens: (prior?.cachedWriteTokens ?? 0) + (usage.cacheCreationTokens ?? 0),
-    thoughtTokens: (prior?.thoughtTokens ?? 0) + (usage.reasoningTokens ?? 0),
+    ...(usage.reasoningTokens === undefined
+      ? {}
+      : { thoughtTokens: (prior?.thoughtTokens ?? 0) + usage.reasoningTokens }),
   };
 };
 
@@ -1191,8 +1326,11 @@ export const promptUsageOf = (
 // oxlint-disable-next-line eslint/max-lines-per-function -- one turn is one ordered projection; splitting the update switch from the handlers that feed it would hide the ordering this function exists to keep.
 export const createTurnProjection = (options: {
   readonly turn: AcpPromptTurn;
+  readonly requestId?: string | undefined;
   readonly createId: () => string;
   readonly agentId: string;
+  /** The pinned connection negotiated settings readback; never inferred from a tool update. */
+  readonly permissionReadback?: boolean | undefined;
   /** Where this agent puts a call's native name; defaults to {@link acpNativeToolNamePaths}. */
   readonly nativeToolName?: readonly string[] | undefined;
   /** The session's cumulative usage as of the end of the previous turn; see {@link usageMetadata}. */
@@ -1241,6 +1379,18 @@ export const createTurnProjection = (options: {
   let pending: AssistantBlock | undefined;
   let lastBlock: AssistantBlock | undefined;
   let finalized = false;
+  const observationStopped = (): boolean => finalized || turn.signal.aborted;
+  const requestedPermissionCalls = new Set<string>();
+  const ambiguousPermissionCalls = new Set<string>();
+  const permissionDecisions = new Map<
+    string,
+    {
+      interruptId: string;
+      resolution: ProviderPermissionResolution;
+      observed?: boolean;
+      readback?: { readonly observe: () => Promise<ProviderPermissionObservation> };
+    }
+  >();
   let finalCarrierId: string | undefined;
   /**
    * Tool calls awaiting their result, with the fullest facts seen so far, so a
@@ -1272,6 +1422,7 @@ export const createTurnProjection = (options: {
    */
   const reported: {
     usage?: AcpUsage | undefined;
+    grokUsage?: GrokPromptUsage | undefined;
     model?: string | undefined;
     title?: string | undefined;
     /** The vendor's own money report — its number, its currency, its label. */
@@ -1280,6 +1431,9 @@ export const createTurnProjection = (options: {
     context?: JsonValue | undefined;
   } = {};
   let sessionPresentation = emptySessionPresentation;
+  let grokState = initialGrokNotificationState();
+  let activityMessageId: string | undefined;
+  let activityCommitted = false;
   let sessionMessageId: string | undefined;
   let sessionCommitted = false;
 
@@ -1349,6 +1503,7 @@ export const createTurnProjection = (options: {
         ...(streamState === undefined ? {} : { streamState }),
         ...(!final || usage === undefined ? {} : { vendorUsage: vendorUsageOf(usage) }),
         ...(!final || cost === undefined ? {} : { vendorCost: cost }),
+        ...(!final || reported.grokUsage === undefined ? {} : { vendorPromptUsage: asJson(reported.grokUsage) }),
         ...(!final || context === undefined ? {} : { vendorContext: context }),
       },
     };
@@ -1415,6 +1570,7 @@ export const createTurnProjection = (options: {
     const content = asJson({
       type: 'acp-session',
       agentId: options.agentId,
+      ...(sessionPresentation.hostId === undefined ? {} : { hostId: sessionPresentation.hostId }),
       commands: sessionPresentation.commands,
       configOptions: sessionPresentation.configOptions,
       ...(sessionPresentation.sessionId === undefined ? {} : { sessionId: sessionPresentation.sessionId }),
@@ -1435,6 +1591,24 @@ export const createTurnProjection = (options: {
         : { type: 'message.appended', message },
     ]);
     sessionCommitted = true;
+  };
+
+  /** Keep each turn's observations beside its own transcript, independent of chat configuration. */
+  const publishGrokPresentation = async (): Promise<void> => {
+    await flushBoundary();
+    const state = grokState.presentation;
+    const message: ProviderMessage = {
+      id: (activityMessageId ??= options.createId()),
+      role: 'assistant',
+      content: [asJson({ type: 'acp-activity', agentId: options.agentId, ...state })],
+      metadata: externalMetadata,
+    };
+    await append([
+      activityCommitted
+        ? { type: 'message.envelope-replaced', messageId: message.id, replacement: message }
+        : { type: 'message.appended', message },
+    ]);
+    activityCommitted = true;
   };
 
   /**
@@ -1628,6 +1802,16 @@ export const createTurnProjection = (options: {
 
   // oxlint-disable-next-line eslint/complexity -- one branch per `session/update` variant is the point (V13): every variant carries an explicit ruling here, and a `default` would turn the next protocol addition into a silent drop.
   const project = async (update: SessionUpdate): Promise<void> => {
+    if (
+      sessionPresentation.activity?.status === 'running' &&
+      ['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update'].includes(update.sessionUpdate)
+    ) {
+      const { activity: _activity, ...rest } = sessionPresentation;
+      sessionPresentation = rest;
+      const { activity: _grokActivity, ...grokPresentation } = grokState.presentation;
+      grokState = { ...grokState, presentation: grokPresentation };
+      await publishGrokPresentation();
+    }
     switch (update.sessionUpdate) {
       case 'agent_message_chunk':
       case 'agent_thought_chunk': {
@@ -1762,41 +1946,188 @@ export const createTurnProjection = (options: {
 
   return {
     update: (update) => {
-      enqueue(async () => project(update));
+      enqueue(async () => {
+        if (finalized) {
+          return;
+        }
+        if (update.sessionUpdate === 'tool_call_update' || update.sessionUpdate === 'tool_call') {
+          const decision = permissionDecisions.get(update.toolCallId);
+          const terminal = update.status === 'completed' || update.status === 'failed';
+          let observation = options.permissionReadback
+            ? permissionObservationOf(update._meta?.['tau/permissionPersistence'])
+            : undefined;
+          // Wire readback belongs only to the negotiated Codex adapter. Native Grok uses the host reader.
+          if (observation?.provider !== 'codex') {
+            observation = undefined;
+          }
+          if (decision?.readback && !decision.observed && terminal && !turn.signal.aborted) {
+            decision.observed = true;
+            try {
+              observation = permissionObservationOf(await decision.readback.observe());
+              if (observation?.provider !== 'grok') {
+                observation = undefined;
+              }
+            } catch {
+              // Optional settings observation must never swallow the provider's actual tool result.
+              observation = undefined;
+            }
+          }
+          if (
+            !observationStopped() &&
+            decision &&
+            permissionDecisions.get(update.toolCallId) === decision &&
+            observation &&
+            terminal &&
+            observation.toolCallId === update.toolCallId &&
+            observation.optionId === decision.resolution.optionId
+          ) {
+            permissionDecisions.delete(update.toolCallId);
+            await append([
+              {
+                type: 'message.appended',
+                message: {
+                  id: options.createId(),
+                  role: 'assistant',
+                  content: [
+                    asJson({
+                      type: 'provider-permission-observation',
+                      interruptId: decision.interruptId,
+                      resolution: { ...decision.resolution, observation },
+                    }),
+                  ],
+                  metadata: {
+                    tauInternal: {
+                      kind: 'provider-permission-observation',
+                      origin: 'external',
+                      agentId: options.agentId,
+                    },
+                  },
+                },
+              },
+            ]);
+          }
+          // The adapter sends a separate terminal readback notification before the ordinary tool result.
+          // Consuming it as a completion would discard the real output that follows.
+          if (
+            options.permissionReadback &&
+            update._meta &&
+            'tau/permissionPersistence' in update._meta &&
+            update.sessionUpdate === 'tool_call_update' &&
+            Object.keys(update).every((key) => ['sessionUpdate', 'toolCallId', 'status', '_meta'].includes(key))
+          ) {
+            return;
+          }
+          // The extension is parsed above; unvalidated metadata must not survive in ordinary tool facts.
+          if (update._meta && 'tau/permissionPersistence' in update._meta) {
+            const metadata = Object.fromEntries(
+              Object.entries(update._meta).filter(([key]) => key !== 'tau/permissionPersistence'),
+            );
+            await project({ ...update, _meta: metadata });
+          } else {
+            await project(update);
+          }
+          return;
+        }
+        await project(update);
+      });
+    },
+    grokNotification: (notification) => {
+      if (options.agentId !== 'grok' || finalized) {
+        return;
+      }
+      enqueue(async () => {
+        const next = grokNotificationAfter(grokState, notification, {
+          sessionId: sessionPresentation.sessionId ?? '',
+          promptId: options.requestId,
+        });
+        if (next === grokState) {
+          return;
+        }
+        grokState = next;
+        sessionPresentation = { ...sessionPresentation, ...next.presentation };
+        if (next.presentation.servedModel !== undefined) {
+          reported.model = next.presentation.servedModel;
+        }
+        await publishGrokPresentation();
+      });
     },
     sessionState: (state) => {
       enqueue(async () => {
-        sessionPresentation = state;
+        sessionPresentation = { ...sessionPresentation, ...state };
         await publishSessionState();
       });
     },
-    approve: async (request) => {
+    approve: async (request, readback) => {
       await settleProjection();
       await flushBoundary();
       const payload = asRecord(request.payload);
       const requestedCall = asRecord(payload?.['toolCall']);
       const toolCallId = requestedCall?.['toolCallId'];
       const open = typeof toolCallId === 'string' ? openToolCalls.get(toolCallId) : undefined;
+      if (typeof toolCallId === 'string') {
+        if (requestedPermissionCalls.has(toolCallId)) {
+          ambiguousPermissionCalls.add(toolCallId);
+        }
+        requestedPermissionCalls.add(toolCallId);
+        permissionDecisions.delete(toolCallId);
+      }
+      const decide = async (approval: Parameters<ExternalAgentTurn['approve']>[0]) => {
+        const resolution = await turn.approve(approval);
+        const permission = providerPermissionSchema.safeParse(payload?.['providerPermission']).data;
+        const codexReadback =
+          options.permissionReadback === true &&
+          resolution.optionId === 'allow_always' &&
+          permission?.readback === 'config-layers';
+        const grokReadback =
+          readback !== undefined &&
+          resolution.optionId === 'always-allow' &&
+          permission?.readback === 'permission-file';
+        if (
+          !turn.signal.aborted &&
+          !finalized &&
+          typeof toolCallId === 'string' &&
+          !ambiguousPermissionCalls.has(toolCallId) &&
+          resolution.outcome === 'approved' &&
+          (codexReadback || grokReadback) &&
+          permission.options.some(
+            (option) => option.optionId === resolution.optionId && option.requestedScope === 'persistent',
+          )
+        ) {
+          permissionDecisions.set(toolCallId, {
+            interruptId: resolution.interruptId,
+            resolution: { outcome: resolution.outcome, optionId: resolution.optionId },
+            ...(readback ? { readback } : {}),
+          });
+        }
+        return resolution;
+      };
       if (!open) {
-        return turn.approve(request);
+        return decide(request);
       }
       const title =
         (typeof requestedCall?.['title'] === 'string' && requestedCall['title'] !== ''
           ? requestedCall['title']
           : open.facts.title) ?? open.toolName;
-      const summary = JSON.stringify(open.input).slice(0, 500);
-      return turn.approve({
+      const safeInput = redactPermissionMetadata(open.input);
+      const summary = JSON.stringify(safeInput).slice(0, 500);
+      return decide({
         prompt: `Allow ${title}${summary === 'null' ? '' : ` with ${summary}`}?`,
-        payload: asJson({
-          ...payload,
-          toolCall: { ...open.facts, ...requestedCall, title },
-          input: open.input,
-        }),
+        payload: redactPermissionMetadata(
+          asJson({
+            ...payload,
+            toolCall: { ...open.facts, ...requestedCall, title },
+            input: safeInput,
+          }),
+        ),
       });
     },
     report: (input) => {
       reported.usage = input.usage ?? reported.usage;
-      reported.model = input.model ?? reported.model;
+      reported.model = grokState.presentation.servedModel ?? input.model ?? reported.model;
+      reported.grokUsage = input.grokUsage ?? reported.grokUsage;
+      if (input.grokUsage !== undefined) {
+        reported.cost = asJson(grokVendorCostOf(input.grokUsage)) ?? undefined;
+      }
     },
     get title(): string | undefined {
       return reported.title;
@@ -1806,6 +2137,16 @@ export const createTurnProjection = (options: {
         return;
       }
       await settleProjection();
+      if (
+        options.agentId === 'grok' &&
+        (sessionPresentation.activity !== undefined || sessionPresentation.subagents !== undefined)
+      ) {
+        const finished = finishGrokPresentation(grokState.presentation);
+        const { activity: _activity, ...rest } = sessionPresentation;
+        sessionPresentation = { ...rest, ...finished };
+        grokState = { ...grokState, presentation: finished };
+        await publishGrokPresentation();
+      }
       for (const open of openToolCalls.values()) {
         // Preserve undecided media if cancellation or transport loss prevents a terminal result.
         // oxlint-disable-next-line no-await-in-loop -- durable call order is retained.

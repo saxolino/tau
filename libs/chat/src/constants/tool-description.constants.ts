@@ -1,6 +1,6 @@
 import { toolName } from '#constants/tool.constants.js';
 import { arrangeWorkbenchDescription } from '#schemas/tools/arrange-workbench.tool.schema.js';
-import { requestPrintOptionKeys } from '#schemas/tools/print.tool.schema.js';
+import { printOptionKeys } from '#schemas/tools/machine.tool.schema.js';
 
 const parameterUnitRule =
   'When current.entry.groups[g].units[pointer] exists, it is the unit of the stored number and of native-value writes; use unit-value with inputUnit to be explicit.';
@@ -8,6 +8,10 @@ const parameterUnitRule =
 /** R8/I5/I9: what every kernel-backed read promises about the bytes it answered for. */
 const sourceRevisionRule =
   'Computed from the bytes on disk at call time; `sourceRevision` names the digests it read. Compare it with the `revision.digest` of your last write; a result answering for superseded bytes returns as a `STALE_EVALUATION` error naming both digests, never as a result.';
+
+/** C-2: per-call parameter values never touch the person's parameter record. */
+const parameterOverrideRule =
+  "Pass `parameters` to use other parameter values for this call only (e.g. a print variant at a finer `voxelSize`): they merge over the active parameter group, are checked against the model's parameter schema, and are never saved. Use apply_parameter_operation only to change what the person sees.";
 
 /** R8/I5: what every write promises about the bytes it left behind. */
 const writeRevisionRule =
@@ -26,27 +30,27 @@ Filter examples:
 - Select a named requirement: { testNamePattern: 'intended envelope' }
 - Exclude an explicitly out-of-scope fixture: { exclude: ['**/fixtures/**'] }
 
-Returns compact rows tagged by targetFile, plus \`sourceRevisions\` for loaded models. Check \`runStatus\`, \`accounting\`, discovery completion and \`lineageStatus\`; empty failures alone do not qualify a run. Unsupported, inconclusive, skipped and not-run requirements are not passes. Filters qualify only the selected scope, never excluded requirements. Read the retained \`fullResult\` when compact details are omitted. ${sourceRevisionRule}
+Returns compact rows tagged by targetFile, plus \`sourceRevisions\` for loaded models. Check \`runStatus\`, \`accounting\`, discovery completion and \`lineageStatus\`; empty failures alone do not qualify a run. Unsupported, inconclusive, skipped and not-run requirements are not passes. Only a failure with \`category: 'geometry'\` is a decided claim; for any other category keep the assertion and follow its \`suggestion\`. A run that outlives its host budget returns \`timeout\` (\`OPERATION_TIMEOUT\`) with only the requirements it completed. Filters qualify only the selected scope, never excluded requirements. Read the retained \`fullResult\` when compact details are omitted. ${sourceRevisionRule}
 
 When NOT to use:
 - NOT as a substitute for \`evaluate_model\` when you only need build status; \`test_model\` measures geometry against requirements.`,
   [toolName.evaluateModel]: `Evaluate one CAD source file (\`targetFile\`) and its default view, then list what this build can show and export.
 
-Call it after every \`edit_file\`, \`create_file\` or \`delete_file\`. Returns \`status\`, \`kernelIssues\`, offered \`views\`, per-view \`instances\`, and an export-id-to-extension map. A ready build may still report error-severity design issues; inspect them. A default-view render failure is an error, and a valid export-only build can offer zero views. Set \`includeCapabilities: true\` to inspect view/export option schemas, defaults and reachable export targets. ${sourceRevisionRule}
+Call it after every \`edit_file\`, \`create_file\` or \`delete_file\`. ${parameterOverrideRule} Returns \`status\`, \`kernelIssues\`, offered \`views\`, per-view \`instances\`, and an export-id-to-extension map. A ready build may still report error-severity design issues; inspect them. A default-view render failure is an error, and a valid export-only build can offer zero views. Set \`includeCapabilities: true\` to inspect view/export option schemas, defaults and reachable export targets. ${sourceRevisionRule}
 
 Once 'ready', use \`test_model\` to measure the geometry against requirements.`,
   [toolName.exportModel]: `Export one model artifact set and write its files under \`.tau/artifacts/\` in the active project workspace.
 
-Give explicit \`targetFile\` and \`to\`: a declared export ID (such as \`bom\`) or an unambiguous reachable extension (such as \`stl\` or \`3mf\`), without a dot. IDs win over extensions. Use \`evaluate_model({ targetFile, includeCapabilities: true })\` to discover targets and options. An unavailable or ambiguous target returns the available choices.
+Give explicit \`targetFile\` and \`to\`: a declared export ID (such as \`bom\`) or an unambiguous reachable extension (such as \`stl\` or \`3mf\`), without a dot. IDs win over extensions. ${parameterOverrideRule} Use \`evaluate_model({ targetFile, includeCapabilities: true })\` to discover targets and options. An unavailable or ambiguous target returns the available choices.
 
 For a design question, text/JSON exports may be used as evidence only when both the declaration and every actual output file are text/JSON: call \`export_model\`, then \`read_file\` on the returned artifact path, and compare \`sourceRevision\` with the current source. A binary or mixed deliverable requires the person's export request.
 
 Returns the resolved \`exportId\`, pinned \`sourceRevision\`, and ordered \`files\` with producer names, persisted paths, MIME types and byte lengths. The first file is primary; later files are required companions. Report \`warnings\` about limits of the written result.
 
 For deterministic measurement runs, create or edit \`*.geospec.ts\` tests and use \`${toolName.testModel}\` instead.`,
-  [toolName.getParameters]: `Read the admitted parameter manifest and current checked parameter record for one geometry source file.
+  [toolName.getParameters]: `Read the parameters of one geometry source file and the person's checked parameter record.
 
-Use resolutionMode "declared-only" when inferred semantics are not acceptable. The result includes stored values, semantic bindings, provenance, diagnostics, and the exact identity required by apply_parameter_operation. ${sourceRevisionRule} ${parameterUnitRule} Reading in the same mode never disturbs a pending source-unit plan; reading in a different mode rejects it. An "unresolved" result carries a diagnostic code: INVALID_RECORD means the saved values cannot be read and are preserved untouched, and RESOLUTION_SUPERSEDED means a concurrent read changed the mode.`,
+By default (detail "values") the result lists \`parameters\` keyed by pointer, each with its effective \`value\` in the active group, \`default\`, \`unit\`, constraints and description, plus \`current\`: the stored record and the identity apply_parameter_operation requires as expected. A field marked \`unitInferred\` has a unit Tau guessed from its name. Request detail "full" for the whole admitted manifest with bindings and unit provenance: before trusting or changing an inferred unit, and to build a source-unit operation. Use resolutionMode "declared-only" when inferred semantics are not acceptable. To evaluate, capture or export other values without saving them, pass \`parameters\` to that tool instead. ${sourceRevisionRule} ${parameterUnitRule} Reading in the same mode never disturbs a pending source-unit plan; reading in a different mode rejects it. An "unresolved" result carries a diagnostic code: INVALID_RECORD means the saved values cannot be read and are preserved untouched, and RESOLUTION_SUPERSEDED means a concurrent read changed the mode.`,
   [toolName.applyParameterOperation]: `Propose one checked parameter operation, or confirm/cancel a plan a previous propose returned.
 
 Every call names an action:
@@ -60,7 +64,7 @@ Call get_parameters first and pass its exact identity as expected. ${parameterUn
 
 A value operation names its field by group and pointer, exactly as get_parameters lists them: native-value carries the number, unit-value carries text plus the inputUnit it was typed in. Nothing else identifies a field. Rejections: UNKNOWN_FIELD — fix the pointer, the manifest did not change; REPRESENTATION_UNSUPPORTED — address a scalar member, or send native-value for a field with no unit; STALE_MANIFEST — call get_parameters again.
 
-A source-unit operation changes the unit the source interprets a value in, and is the operation that asks for confirmation. Only a binding with sourceUnitCapability admits it. Build it from get_parameters, with binding = manifest.bindings[pointer]: producerCapability is { producer: manifest.source.id, sourceRevision: manifest.source.revision, capability: binding.sourceUnitCapability }.`,
+A source-unit operation changes the unit the source interprets a value in, and is the operation that asks for confirmation. Only a binding with sourceUnitCapability admits it. Build it from get_parameters with detail "full", with binding = manifest.bindings[pointer]: producerCapability is { producer: manifest.source.id, sourceRevision: manifest.source.revision, capability: binding.sourceUnitCapability }.`,
   [toolName.screenshot]: `Capture a declared model view for visual inspection.
 
 Pass \`targetFile\` explicitly. Choose a kernel \`view\`, optional sheet/drawing \`instance\`, and that view's \`options\` from \`evaluate_model\`; omit \`view\` for the default. A 2D view produces one image. Each result echoes its view, instance and, for 3D, camera \`angle\`. The call fails for a missing source, unavailable view or instance, render failure, timeout or invalid image. ${sourceRevisionRule}
@@ -68,6 +72,10 @@ Pass \`targetFile\` explicitly. Choose a kernel \`view\`, optional sheet/drawing
 Modes (\`mode\`, default \`single\`):
 - single: one deterministic perspective isometric image for a 3D view
 - multi_angle: six orthographic camera angles for a 3D view (front, back, right, left, top, bottom)
+
+Section (\`section\`, 3D views only) cuts the model with one axis plane to show its inside, e.g. { plane: 'xy', offsetMm: 6 } for a horizontal cut 6 mm above the origin. The kept half defaults to the one whose cut face looks at the single-mode camera; \`keep\` names the side to retain instead, and the result \`message\` states what was kept. Cuts are capped.
+
+${parameterOverrideRule}
 
 Annotated 3D images include:
 - an in-image view label; canonical axis-aligned labels name the camera position as View From ±axis
@@ -156,21 +164,27 @@ Returns each answer and who settled it. Unless status is "answered", proceed wit
 
 Call it when a JavaScript or TypeScript model imports an npm package that package.json does not list (pass it in add), when an import fails with package-not-locked or package-not-installed, or when the person asks to add, remove or upgrade a package. Until it runs, those imports fail or fall back to a CDN bundle; building never installs.
 
-add sets dependencies[name] to a range ("^4.0.3"), as \`npm install name@range\`; remove deletes names, as \`npm uninstall\`; upgrade re-resolves the named packages to the newest version their ranges allow. With none of them it installs what package.json and the lock already say. Only the npm registry is used, and package scripts never run.
+add sets dependencies[name] to a range ("^4.0.3"), as \`npm install name@range\`; remove deletes names, as \`npm uninstall\`; upgrade re-resolves the named packages to the newest version their ranges allow. With none of them it installs what package.json and the lock already say. Only the npm registry is used, and package scripts never run. A Python or C# project declares its packages in pyproject.toml or its .csproj instead; there it refuses with manifest-conflict, naming that file, and writes nothing.
 
 Returns whether each file changed, the direct dependencies as locked, and issues whose messages name the fix. When resolution is refused (no-matching-version, peer-conflict, manifest-conflict) nothing is written; a package that fails to download is reported and the rest still install.`,
-  [toolName.getMachine]:
-    'Read one bound machine: its readiness, loaded setup and printable envelope. Omit machineId when exactly one machine is bound; otherwise the error names every bound machine.',
-  [toolName.requestPrint]: `The only way to print. Slices one CAD source file to a .gcode.3mf in the project and opens a print request on a bound machine; nothing is uploaded or started until a person accepts. Tau turns, and apps showing the approval form, wait for the answer and start; elsewhere it returns the request awaiting-approval for the Print pane. Report the outcome as nextStep states it; an unconfirmed start is unknown, never "submitted" or "started". Never retry or work around a request with other machine tools. First run test_model, check the part fits get_machine's printable envelope, and call get_print_profiles. When get_machine shows no bedType, ask which plate is installed and pass it as plate. Under engine "bambu-studio" presets follow what the printer reports; change them with profiles and settings as get_print_profiles names them. Under the reference engine, options accept only ${requestPrintOptionKeys.join(', ')}.`,
-  [toolName.getPrintProfiles]: `List the slicing presets and settings request_print can use for a bound machine. Read-only.
+  [toolName.listMachines]:
+    'List every machine bound on this computer, one line each: id, name, model, connection, state and any run. Read-only.',
+  [toolName.getMachine]: `Read one bound machine as it last reported: state, run and progress, components, activities and the questions they ask, alerts and checks with remedies, recent jobs and operations, what stop does, and every declared action with its parameters, what it does, who may use it and whether you may use it now. Read-only.
 
-For a Bambu printer with Bambu Studio available it returns engine "bambu-studio": defaults (the presets chosen from the printer's model, nozzle, loaded filament and reported plate), the compatible printers, processes and filaments (source "user" marks the person's own), plates, and every setting's current value by group with enum choices. Pass profiles to read another selection, and keys for full descriptors (units, ranges, descriptions). Otherwise it returns engine "reference" and why. The project’s .tau/machines/settings/<typeId>.json retains named profiles shared by machines of that type. savedProfiles lists stable IDs and the active selection. Pass profileId to inspect or prepare a different saved profile without changing that selection. machinePreferences reports the exact profile and source versions used; request_print arguments override its sparse values. Edit the versioned record to change saved preferences.`,
-  [toolName.getPrintRequest]:
-    'Read one print request by its exact request ID: state, summary, receipts, any failure, and a nextStep saying what to tell the person and do next. A started request also says whether its run is still running or has ended; only get_machine says whether the machine is ready.',
-  [toolName.listPrintRequests]:
-    "List print requests, newest first, optionally for one machine. A started request's run says whether it is still running or has ended, so a finished print is not read as a busy machine.",
-  [toolName.cancelPrint]:
-    'Stop a print. Withdraws a request that has not started, or cancels the exact observed provider run of a started one, which stops the printer. Give requestId alone, or machineId with expectedProviderRunId.',
+Read it before machine_action, and to follow an action or a job. Omit machineId when exactly one machine is bound.`,
+  [toolName.machineAction]: `Apply one declared action that get_machine lists, by componentId, action and parameters.
+
+An action you may use now runs at once; one that needs approval pauses for the person to approve exactly this request in a Tau chat, and elsewhere returns needs-approval for the person to do it in Tau; one only a person at the machine may use is refused with what the person must do. Report the message as it states it. Never resend an action that is confirming or unknown, and never work around a refusal with other tools. To halt the machine, use stop_machine.`,
+  [toolName.stopMachine]:
+    'Stop the machine now: its fastest halt, open to you at any time without approval, and not an emergency stop. Returns what the machine is left doing and how a person recovers it. To pause a run that can continue, use machine_action with run.pause.',
+  [toolName.requestJob]: `The only way to start a program on a machine. Name targetFile, a CAD source Tau slices (3D printers only), or artifact, a finished program in the project run as is (get_machine lists what the machine accepts). Nothing starts until a person accepts. A Tau-hosted turn waits for the answer; otherwise, or when only the person can confirm something, the job awaits approval in Tau's Print pane. Report the outcome as nextStep states it; an unconfirmed start is unknown, never "started". Request a job once; after an approval reminder, repeat the same call to read the answer.
+
+For targetFile, first run test_model, fit get_machine's build volume and read get_print_profiles. When get_machine reports no plate, ask which is installed and pass plate. Under engine "bambu-studio" use bambuStudio.profiles and .settings as get_print_profiles names them; under the reference engine options accept only ${printOptionKeys.join(', ')}.`,
+  [toolName.checkJob]:
+    'Prepare exactly as request_job would (slice targetFile, or read artifact) and ask the machine whether it is ready for the program: ready, blocked (with the checks that fail and their remedies) or refused. Records no job and sends nothing to the machine.',
+  [toolName.getPrintProfiles]: `List the slicing presets and settings request_job can use for a bound machine with an fff process (a 3D printer); other machines take a finished program and have none. Read-only.
+
+For a Bambu printer with Bambu Studio available it returns engine "bambu-studio": defaults (the presets chosen from the printer's model, nozzle, loaded filament and reported plate), the compatible printers, processes and filaments (source "user" marks the person's own), plates, and every setting's current value by group with enum choices. Pass profiles to read another selection, and keys for full descriptors. Otherwise it returns engine "reference" and why. The project's .tau/machines/settings/<typeId>.json keeps named profiles shared by machines of that type; savedProfiles lists their ids and the active one. Pass profileId to read another without changing the selection. machinePreferences reports the profile and source versions used; request_job arguments override its sparse values.`,
   [toolName.revisions]: `Read this project's saved revisions. Read-only.
 
 Actions:

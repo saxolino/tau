@@ -1,5 +1,6 @@
 import { cadMaterialDefaults, tauCadTopologyExtension } from '@taucad/runtime/types';
 import type { KernelIssue } from '@taucad/runtime/types';
+import type { TessellationReport } from '@taucad/runtime/kernel';
 import {
   formatComponentId,
   formatPrimitiveSelector,
@@ -21,7 +22,7 @@ import { resolveMechanismComponents, transformMechanism } from '@taucad/kinemati
 
 import { projectSurfaceCoordinates } from '#picovoxel.surface-coordinates.js';
 
-import type { PicovoxelLane } from '#picovoxel.schemas.js';
+import type { PicovoxelLane, PicovoxelRegion } from '#picovoxel.schemas.js';
 
 const triangleMode = 4;
 
@@ -55,6 +56,10 @@ export type PicovoxelNativeHandle = GlbResources & {
   readonly mechanism?: unknown;
   /** Reader warnings retained for exports whose runtime result omits create-phase issues. */
   readonly mechanismIssues?: readonly KernelIssue[];
+  /** Crop box the voxel parts were trimmed to; absent for the whole model. */
+  readonly region?: PicovoxelRegion;
+  /** What the delivered meshes cost to produce, reported with each rendered view. */
+  readonly tessellation?: TessellationReport;
 };
 
 type PicovoxelGltfOptions = GeometryOutputTransformOptions & {

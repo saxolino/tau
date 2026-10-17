@@ -1,13 +1,9 @@
 /** Channel-specific desktop updates. macOS installs the verified ZIP through Squirrel.Mac. */
 import { z } from 'zod';
+import type { DesktopUpdateSnapshot } from '@taucad/types/desktop-updates';
 
 import type { DesktopChannel } from '#main/environment.js';
-import {
-  desktopArchiveName,
-  desktopDownloadOrigin,
-  desktopReleaseBaseUrl,
-  desktopReleaseIdentity,
-} from '#shared/desktop-release.js';
+import { desktopArchiveName, desktopDownloadOrigin, desktopReleaseIdentity } from '#shared/desktop-release.js';
 
 export const updateRepository = 'taucad/tau';
 /** Milliseconds between background checks. */
@@ -25,8 +21,69 @@ const updateFeedSchema = z.object({
 
 export type AvailableUpdate = { readonly version: string; readonly tag: string; readonly releasePage: string };
 
+/** The pointer to the latest release's feed under an update origin. */
+const latestFeedUrl = (origin: string, platform: string, arch: string): string =>
+  `${origin}/latest/desktop-update-${platform}-${arch}.json`;
+
 export const updateFeedUrl = (platform: string, arch: string, channel: DesktopChannel = 'production'): string =>
-  `${desktopDownloadOrigin(channel)}/latest/desktop-update-${platform}-${arch}.json`;
+  latestFeedUrl(desktopDownloadOrigin(channel), platform, arch);
+
+/** A release's immutable directory under an update origin: the channel's own, or a managed mirror of it. */
+const releaseBaseUrl = (tag: string, origin: string): string => `${origin}/releases/${encodeURIComponent(tag)}`;
+
+/** Where updates come from, or why there are none. */
+export type UpdateSource =
+  | { readonly kind: 'origin'; readonly origin: string }
+  | { readonly kind: 'disabled'; readonly reason: string };
+
+/**
+ * The managed switch (charter D25, guide Q37): `TAU_DESKTOP_UPDATES=off` turns updates off;
+ * `TAU_DESKTOP_UPDATE_FEED=<https base>` reads the feed and the releases from a mirror of the
+ * channel's download origin (the same `latest/` and `releases/<tag>/` layout, with the archive
+ * URLs in both feed files rewritten to the mirror); and the locked managed profile
+ * (`TAU_ACQUISITION=locked`) never reaches the public origin, so without a mirror it turns updates
+ * off. A malformed mirror turns updates off rather than fall back to the public origin.
+ *
+ * @param environment - The process environment.
+ * @param channel - The installed channel.
+ * @returns The update origin, or the reason updates are off.
+ */
+export const updateSource = (environment: NodeJS.ProcessEnv, channel: DesktopChannel): UpdateSource => {
+  if (environment['TAU_DESKTOP_UPDATES'] === 'off') {
+    return { kind: 'disabled', reason: 'Automatic updates are turned off by TAU_DESKTOP_UPDATES=off.' };
+  }
+  const mirror = environment['TAU_DESKTOP_UPDATE_FEED'];
+  if (mirror !== undefined && mirror !== '') {
+    let url: URL | undefined;
+    try {
+      url = new URL(mirror);
+    } catch {
+      url = undefined;
+    }
+    if (
+      url?.protocol !== 'https:' ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.search !== '' ||
+      url.hash !== ''
+    ) {
+      return {
+        kind: 'disabled',
+        reason:
+          'Automatic updates are off: TAU_DESKTOP_UPDATE_FEED must be an https:// URL without credentials, query or fragment.',
+      };
+    }
+    return { kind: 'origin', origin: url.href.replace(/\/+$/u, '') };
+  }
+  if (environment['TAU_ACQUISITION'] === 'locked') {
+    return {
+      kind: 'disabled',
+      reason:
+        'Automatic updates are off under the locked managed profile. Set TAU_DESKTOP_UPDATE_FEED to a mirror to enable them.',
+    };
+  }
+  return { kind: 'origin', origin: desktopDownloadOrigin(channel) };
+};
 
 export const isNewerVersion = (candidate: string, current: string): boolean => {
   const pattern = /^(\d+)\.(\d+)\.(\d+)$/u;
@@ -44,17 +101,18 @@ export const isNewerVersion = (candidate: string, current: string): boolean => {
   return false;
 };
 
-const defaultUpdateTarget = { channel: 'production', platform: 'darwin', arch: 'arm64' } satisfies {
-  channel: DesktopChannel;
-  platform: string;
-  arch: string;
-};
+type UpdateTarget = { channel: DesktopChannel; platform: string; arch: string; origin?: string };
 
-/** Refuse inconsistent metadata or a ZIP outside this channel's immutable release directory. */
+const defaultUpdateTarget = { channel: 'production', platform: 'darwin', arch: 'arm64' } satisfies UpdateTarget;
+
+/**
+ * Refuse inconsistent metadata or a ZIP outside this channel's immutable release directory under
+ * the update origin (the channel's own unless a managed mirror is configured).
+ */
 export const availableUpdate = (
   feed: unknown,
   currentVersion: string,
-  target: { channel: DesktopChannel; platform: string; arch: string } = defaultUpdateTarget,
+  target: UpdateTarget = defaultUpdateTarget,
 ): AvailableUpdate | undefined => {
   const { currentRelease, releases } = updateFeedSchema.parse(feed);
   const release = releases.find(({ version }) => version === currentRelease);
@@ -67,7 +125,8 @@ export const availableUpdate = (
     identity.channel !== target.channel ||
     identity.version !== currentRelease ||
     version !== currentRelease ||
-    url !== `${desktopReleaseBaseUrl(tag)}/${desktopArchiveName(target.platform, target.arch)}`
+    url !==
+      `${releaseBaseUrl(tag, target.origin ?? desktopDownloadOrigin(target.channel))}/${desktopArchiveName(target.platform, target.arch)}`
   ) {
     throw new TypeError('Update feed channel, version, tag or archive disagree');
   }
@@ -99,11 +158,9 @@ export type DesktopUpdaterOptions = {
   readonly environment: NodeJS.ProcessEnv;
   readonly autoUpdater: SquirrelUpdater;
   readonly fetchJson: (url: string) => Promise<unknown>;
-  readonly confirm: (message: {
-    readonly title: string;
-    readonly detail: string;
-    readonly accept: string;
-  }) => Promise<boolean>;
+  readonly onState?: (snapshot: DesktopUpdateSnapshot) => void;
+  /** Only the bounded native CI probe may install without a user gesture. */
+  readonly installForProbe?: boolean;
   /** Finish the same save/quiesce path as normal quit before Squirrel can close any window. */
   readonly prepareToRestart: () => Promise<boolean>;
   readonly openExternal: (url: string) => Promise<void>;
@@ -115,7 +172,9 @@ export type DesktopUpdaterOptions = {
 };
 
 export type DesktopUpdater = {
-  check(): Promise<AvailableUpdate | undefined>;
+  check(reveal?: boolean): Promise<AvailableUpdate | undefined>;
+  snapshot(): DesktopUpdateSnapshot;
+  download(): Promise<void>;
   status(): string;
   install(): Promise<void>;
 };
@@ -123,18 +182,36 @@ export type DesktopUpdater = {
 export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpdater => {
   const { platform, arch, currentVersion, autoUpdater, log } = options;
   const channel = options.channel ?? 'production';
-  let feedUrl = updateFeedUrl(platform, arch, channel);
+  const source = updateSource(options.environment, channel);
+  const origin = source.kind === 'origin' ? source.origin : desktopDownloadOrigin(channel);
+  let feedUrl = latestFeedUrl(origin, platform, arch);
   if (options.candidateTag) {
     if (desktopReleaseIdentity(options.candidateTag).channel !== channel) {
       throw new TypeError('Candidate update probes require the installed channel');
     }
-    feedUrl = `${desktopReleaseBaseUrl(options.candidateTag)}/desktop-update-${platform}-${arch}.json`;
+    feedUrl = `${releaseBaseUrl(options.candidateTag, origin)}/desktop-update-${platform}-${arch}.json`;
   }
-  if (!options.packaged || options.updatesEnabled === false || options.environment['TAU_DESKTOP_UPDATES'] === 'off') {
-    log('info', 'updater.disabled', { packaged: options.packaged, channel });
+  let snapshot: DesktopUpdateSnapshot = { revision: 0, requestId: 0, phase: 'checking', currentVersion, channel };
+  const publish = (phase: DesktopUpdateSnapshot['phase']): void => {
+    snapshot = { ...snapshot, revision: snapshot.revision + 1, phase };
+    options.onState?.(snapshot);
+  };
+  if (!options.packaged || options.updatesEnabled === false || source.kind === 'disabled') {
+    const reason =
+      options.packaged && source.kind === 'disabled' ? source.reason : 'Automatic updates are disabled for this build.';
+    log('info', 'updater.disabled', { packaged: options.packaged, channel, reason });
+    publish('disabled');
     return {
-      check: async () => undefined,
-      status: () => 'Automatic updates are disabled for this build.',
+      snapshot: () => snapshot,
+      download: async () => undefined,
+      check: async (reveal) => {
+        if (reveal) {
+          snapshot = { ...snapshot, requestId: snapshot.requestId + 1 };
+          publish('disabled');
+        }
+        return undefined;
+      },
+      status: () => reason,
       install: async () => undefined,
     };
   }
@@ -151,6 +228,8 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
     downloaded = false;
     offered = undefined;
     status = `Update failed: ${error instanceof Error ? error.message : String(error)}. Check again to retry.`;
+    snapshot = { ...snapshot, version: undefined, releasePage: undefined };
+    publish('error');
     log('warn', 'updater.error', { message: status });
   };
   const install = async (): Promise<void> => {
@@ -158,11 +237,16 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
       return;
     }
     installing = true;
+    publish('saving');
     try {
       if (await options.prepareToRestart()) {
+        publish('restarting');
         autoUpdater.quitAndInstall();
+      } else {
+        publish('restart-blocked');
       }
     } catch (error) {
+      publish('restart-blocked');
       log('error', 'updater.restart-failed', { message: error instanceof Error ? error.message : String(error) });
     } finally {
       installing = false;
@@ -174,27 +258,17 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
       downloading = false;
       offered = undefined;
       status = 'No update was downloaded. Check again to retry.';
+      publish('error');
     });
-    const promptInstall = async (): Promise<void> => {
-      try {
-        const accepted = await options.confirm({
-          title: `Tau ${offered?.version ?? ''} is ready to install`,
-          detail: 'Restart Tau to finish updating. Your projects will be saved first.',
-          accept: 'Restart now',
-        });
-        if (accepted) {
-          await install();
-        }
-      } catch (error) {
-        failed(error);
-      }
-    };
     autoUpdater.on('update-downloaded', () => {
       downloading = false;
       downloaded = true;
       status = `Tau ${offered?.version ?? ''} is ready. Restart to install.`;
       log('info', 'updater.downloaded', { version: offered?.version });
-      void promptInstall();
+      publish('ready');
+      if (options.installForProbe && options.candidateTag) {
+        void install();
+      }
     });
   }
 
@@ -204,33 +278,39 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
     }
     try {
       status = 'Checking for updates…';
-      const update = availableUpdate(await options.fetchJson(feedUrl), currentVersion, { channel, platform, arch });
+      publish('checking');
+      const update = availableUpdate(await options.fetchJson(feedUrl), currentVersion, {
+        channel,
+        platform,
+        arch,
+        origin,
+      });
       if (!update) {
         status = `Tau ${currentVersion} is up to date (${channel}).`;
+        offered = undefined;
+        snapshot = { ...snapshot, version: undefined, releasePage: undefined };
+        publish('current');
         return undefined;
       }
       if (update.version === offered?.version) {
+        publish('available');
         return update;
       }
       offered = update;
+      snapshot = { ...snapshot, version: update.version, releasePage: update.releasePage };
       log('info', 'updater.available', { version: update.version, current: currentVersion, channel, feedUrl });
       if (squirrel) {
         downloading = true;
         status = `Downloading Tau ${update.version}…`;
+        publish('downloading');
         // Pin the native fetch to the immutable candidate that passed our validation.
         autoUpdater.setFeedURL({
-          url: `${desktopReleaseBaseUrl(update.tag)}/desktop-update-${platform}-${arch}.json`,
+          url: `${releaseBaseUrl(update.tag, origin)}/desktop-update-${platform}-${arch}.json`,
           serverType: 'json',
         });
         autoUpdater.checkForUpdates();
-      } else if (
-        await options.confirm({
-          title: `Tau ${update.version} is available`,
-          detail: `You have ${currentVersion}. Download the new archive from its release page.`,
-          accept: 'Open release page',
-        })
-      ) {
-        await options.openExternal(update.releasePage);
+      } else {
+        publish('available');
       }
       return update;
     } catch (error) {
@@ -238,7 +318,11 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
       return undefined;
     }
   };
-  const check = async (): Promise<AvailableUpdate | undefined> => {
+  const check = async (reveal = false): Promise<AvailableUpdate | undefined> => {
+    if (reveal) {
+      snapshot = { ...snapshot, requestId: snapshot.requestId + 1 };
+      publish(snapshot.phase);
+    }
     if (checking) {
       return checking;
     }
@@ -253,5 +337,15 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
   (options.schedule ?? setInterval)(() => {
     void check();
   }, updateCheckInterval);
-  return { check, status: () => status, install };
+  return {
+    check,
+    status: () => status,
+    install,
+    snapshot: () => snapshot,
+    download: async () => {
+      if (!squirrel && offered) {
+        await options.openExternal(`${releaseBaseUrl(offered.tag, origin)}/${desktopArchiveName(platform, arch)}`);
+      }
+    },
+  };
 };

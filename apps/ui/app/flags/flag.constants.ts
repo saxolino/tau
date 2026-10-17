@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isMachinesFeatureEnabled } from '@taucad/types/constants';
 import { ENV } from '#environment.config.js';
 
 /**
@@ -29,6 +30,12 @@ export type FlagDefinition = {
 const tauDebugDefault = Boolean(ENV.TAU_DEBUG);
 
 export const flagRegistry = {
+  machines: {
+    schema: z.boolean().default(isMachinesFeatureEnabled(ENV.TAU_MACHINES_ENABLED)),
+    showInExperimental: false,
+    label: 'Machines',
+    description: 'Connect machines and use the Print workbench after deployment qualification.',
+  },
   automaticReload: {
     schema: z.boolean().default(false),
     showInExperimental: false,
@@ -36,25 +43,25 @@ export const flagRegistry = {
     description: 'Show automatic credit reload controls in Billing.',
   },
   partsWarehouse: {
-    showInExperimental: true,
-    schema: z.boolean().default(true),
+    showInExperimental: false,
+    schema: z.boolean().default(false),
     label: 'Parts warehouse',
     description: 'Browse and remix reusable parametric parts.',
   },
   webGpu: {
-    showInExperimental: true,
+    showInExperimental: false,
     schema: z.boolean().default(false),
     label: 'WebGPU rendering',
     description: 'Use the experimental WebGPU renderer when supported. Turn off to return to WebGL.',
   },
   webGpuShaderStacks: {
-    showInExperimental: true,
+    showInExperimental: false,
     schema: z.boolean().default(false),
     label: 'WebGPU shader stacks',
     description: 'Capture shader source stacks for diagnostics. This slows large model loading substantially.',
   },
   webGpuInspector: {
-    showInExperimental: true,
+    showInExperimental: false,
     schema: z.boolean().default(false),
     label: 'WebGPU inspector',
     description: 'Load the Three.js pipeline inspector for WebGPU diagnostics.',
@@ -72,7 +79,7 @@ export const flagRegistry = {
     description: 'Show mode selector and plan viewer in chat.',
   },
   pluginsStore: {
-    showInExperimental: true,
+    showInExperimental: false,
     schema: z.boolean().default(false),
     label: 'Plugins Store',
     description: 'Expose the plugin and skill store while it is under development.',
@@ -82,13 +89,6 @@ export const flagRegistry = {
     schema: z.boolean().default(tauDebugDefault),
     label: 'Tau Debug',
     description: 'Enable in-app debug surfaces (e2e diagnostic panels, geometry inspectors).',
-  },
-  marketingLanding: {
-    showInExperimental: true,
-    schema: z.boolean().default(false),
-    label: 'Marketing Landing',
-    description:
-      'Render the marketing landing page for signed-out visitors and the project library for signed-in users on the home route.',
   },
 } as const satisfies Record<string, FlagDefinition>;
 

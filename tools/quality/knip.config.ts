@@ -175,6 +175,8 @@ const config: KnipConfig = {
       // Electron's main/preload and utility-process bundles are separate entry points.
       entry: [
         'electron.vite.config.ts',
+        // Compiled by desktop: typecheck's tsconfig.spec.json.
+        'src/**/*.test-d.ts',
         'src/main/index.ts',
         'src/preload/**/*.ts',
         'src/tau/*.entry.ts',
@@ -187,6 +189,10 @@ const config: KnipConfig = {
       ignoreDependencies: [
         // The externalization test resolves this platform package from a synthetic install tree it writes.
         'geospec-engine-darwin-arm64',
+        // Externalized by electron.vite.config.ts and staged for the host's lazy provider imports.
+        '@taucad/bambu',
+        '@taucad/carvera',
+        '@taucad/grbl',
         // `desktopExternalizedDependencies` (electron.vite.config.ts): loaded from node_modules at run
         // time and copied in by the packaging script; the ACP adapters are resolved by name through
         // `discoverAcpAgents({ resolveFrom: import.meta.url })` (packages/host/src/acp/registry.ts).
@@ -309,8 +315,10 @@ const config: KnipConfig = {
       entry: ['src/**/*.test-d.ts'],
     },
     'packages/cli': {
-      // `tau serve` resolves the pinned ACP adapters by name from the CLI's own location
-      // (`externalAgents: { resolveFrom: import.meta.url }`, packages/host/src/acp/registry.ts).
+      // The `stage-acp` target runs it from the workspace root.
+      entry: ['scripts/stage-acp-adapters.mts'],
+      // `stage-acp` copies the pinned ACP adapters into `dist-acp` by name, and `tau serve`
+      // resolves them there (`acpAdapterResolveFrom`, packages/host/src/acp/registry.ts).
       ignoreDependencies: ['@agentclientprotocol/claude-agent-acp', '@agentclientprotocol/codex-acp'],
     },
     'packages/filesystem': {

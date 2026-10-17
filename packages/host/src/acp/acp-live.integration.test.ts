@@ -13,16 +13,29 @@
  * the suite still skips unless selected adapters resolve and their CLIs answer.
  */
 
-import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { parse as parseToml } from 'smol-toml';
 
 import {
   answersPath,
@@ -55,19 +68,24 @@ import type { AcpWireFrame } from '#acp/spawn.js';
 import { openAcpSession } from '#acp/acp-session.js';
 import { defaultConfigDirectory } from '#credential-store.js';
 import { createHostMcpEndpoint } from '#mcp-server.js';
+import { grokPermissionConfigId, grokPlanningConfigId } from '#acp/grok-controls.js';
+import { grokNotificationOf } from '#acp/grok-notifications.js';
+import { grokPromptUsageOf } from '#acp/grok-usage.js';
 
 const execFileAsync = promisify(execFile);
 
 /** A bounded prompt that must exercise the adapter's real filesystem tool. */
-const prompt = 'Use your filesystem read tool to read main.scad, then report the cube dimension. You must call a tool.';
+const prompt =
+  'Open main.scad in the current directory with your file-reading tool, then report the cube dimension. You must read the file. Do not use shell commands or search tools.';
 
 /**
  * The adapters this host may actually bill against.
  *
  * `TAU_ACP_LIVE` is checked first so an ordinary `nx test host` neither probes
- * nor spends. Codex is asked whether it is logged in, which is free; Claude
- * keeps its credential in the macOS Keychain and offers no equivalent, so its
- * turn is its own authentication probe.
+ * nor spends. Each CLI is asked whether it is logged in, which is free:
+ * `codex login status` exits non-zero when it is not, and `claude auth status`
+ * prints `loggedIn`. Both run the executable discovery resolved, which is the
+ * one the adapter itself is told to run.
  *
  * @returns The resolved adapters, or an empty list when this host is not live.
  */
@@ -93,13 +111,20 @@ const liveAdapters = async (): Promise<{
   });
   const authenticated = await Promise.all(
     discovery.agents.map(async (adapter) => {
-      if (adapter.id !== 'codex') {
-        return true;
+      const cli = adapter.executablePath ?? adapter.cli;
+      if (adapter.id === 'codex' && cli !== undefined) {
+        return execFileAsync(cli, ['login', 'status'], { timeout: 30_000 }).then(
+          () => true,
+          () => false,
+        );
       }
-      return execFileAsync('codex', ['login', 'status'], { timeout: 30_000 }).then(
-        () => true,
-        () => false,
-      );
+      if (adapter.id === 'claude' && cli !== undefined) {
+        return execFileAsync(cli, ['auth', 'status'], { timeout: 30_000 }).then(
+          ({ stdout }) => (JSON.parse(String(stdout)) as { loggedIn?: boolean }).loggedIn === true,
+          () => false,
+        );
+      }
+      return true;
     }),
   );
   const authenticatedAgents = discovery.agents.filter((_adapter, index) => authenticated[index] === true);
@@ -172,6 +197,19 @@ const readLog = async (workspaceRoot: string, chatId: string): Promise<readonly 
 };
 
 const messagesOf = (events: readonly AgentLogEvent[]): readonly ProviderMessage[] => reduceEventLog(events);
+
+/** Replay direct-session events with the same row envelope the durable appender supplies. */
+const directMessagesOf = (events: readonly ExternalAgentLogEvent[]): readonly ProviderMessage[] =>
+  messagesOf(
+    events.map((event, sequence) => ({
+      ...event,
+      version: 1,
+      leaderEpoch: 'test',
+      sequence,
+      recordedAt: new Date(0).toISOString(),
+      runId: 'run-live-direct',
+    })),
+  );
 
 const textOf = (message: ProviderMessage): string =>
   typeof message.content === 'string'
@@ -318,13 +356,14 @@ describe.each(adapters.filter((adapter) => adapter.id === 'codex' || adapter.id 
       const workspaceRoot = await mkdtemp(join(tmpdir(), 'tau-acp-capture-'));
       roots.push(workspaceRoot);
       const views = ['front', 'back', 'right', 'left', 'top', 'bottom'] as const;
+      // Large enough for native image normalization; filenames carry no color hints.
       const pixels = [
-        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGP4z8AARAAI/gH/xp559wAAAABJRU5ErkJggg==',
-        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGNg+M8ARAAHAAH/YKtA0QAAAABJRU5ErkJggg==',
-        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGNgYPgPRAAFAgH/wSuWnwAAAABJRU5ErkJggg==',
-        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGP4/58BiAAP9wP96sqNrAAAAABJRU5ErkJggg==',
-        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGP4z/AfiAAN+QP9Wkb9ewAAAABJRU5ErkJggg==',
-        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGNg+P8fiAAL+wP9PaUBYwAAAABJRU5ErkJggg==',
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC',
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLu58QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ24Pbjs8OLsrFddAAAAAElFTkSuQmCC',
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdNvJ8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ2oPcf88OIhvJ6vAAAAAElFTkSuQmCC',
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAdklEQVR4nO3PQQkAMAzAwPo33Yno4xgEIuAyu/N1XtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWjBsQcyl+HSnr9raQAAAABJRU5ErkJggg==',
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAdklEQVR4nO3PQQkAMAzAwPo33Yno4xgEIuAyO/t1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWHHtBp+HSthEAJgAAAABJRU5ErkJggg==',
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAdklEQVR4nO3PQQkAMAzAwPo33Yno4xgEIuAys/t3XtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWjBrQdQt+HSQM5t4gAAAABJRU5ErkJggg==',
       ];
       const registry: ToolRegistry = {
         list: () => [],
@@ -381,9 +420,7 @@ describe.each(adapters.filter((adapter) => adapter.id === 'codex' || adapter.id 
           ],
         });
         await session.prompt(
-          adapter.id === 'codex'
-            ? 'Call mcp.tau.screenshot with targetFile main.scad and mode multi_angle. Open each of the six returned local PNG files with your image viewing tool, then list the six view names. Do not edit files.'
-            : 'Call tau test_model with files ["main.geospec.ts"], then call tau screenshot with targetFile main.scad and mode multi_angle. Report the test counts and list the six view names from the results. Do not edit files or call other Tau tools.',
+          'Call tau test_model with files ["main.geospec.ts"], then call tau screenshot with targetFile main.scad and mode multi_angle. Inspect the actual pixels of all six images and report the dominant color of each view in order. Do not infer colors from names or inspect file bytes with code. Do not edit files or call other Tau tools.',
           {
             append: async (batch) => {
               events.push(...batch);
@@ -394,7 +431,7 @@ describe.each(adapters.filter((adapter) => adapter.id === 'codex' || adapter.id 
           },
           selectedModel(adapter.id),
         );
-        const messages = events.flatMap((event) => (event.type === 'message.appended' ? [event.message] : []));
+        const messages = directMessagesOf(events);
         expect(
           messages.some(
             (message) => message.role === 'tool-output' && message.toolName === 'screenshot' && !message.isError,
@@ -405,25 +442,18 @@ describe.each(adapters.filter((adapter) => adapter.id === 'codex' || adapter.id 
             messages.find((message) => message.role === 'tool-output' && message.toolName === toolName.testModel),
           ).toMatchObject({ isError: false, content: { failures: [], passed: 0, total: 0 } });
         }
+        const answer = messages
+          .filter((message) => message.role === 'assistant')
+          .map((message) => textOf(message))
+          .join(' ')
+          .toLowerCase();
+        expect(answer).toMatch(/red[\s\S]*green[\s\S]*blue[\s\S]*yellow[\s\S]*magenta[\s\S]*cyan/u);
         const attachments = await readdir(join(workspaceRoot, '.tau', 'chats', chatId, 'attachments'));
         expect(attachments).toHaveLength(6);
         const stored = await Promise.all(
           attachments.map(async (name) => readFile(join(workspaceRoot, '.tau', 'chats', chatId, 'attachments', name))),
         );
         expect(stored.map((bytes) => bytes.toString('base64')).sort()).toEqual([...pixels].sort());
-        if (adapter.id === 'codex') {
-          const imageViews = messages.flatMap((message) =>
-            message.role === 'tool-input' && message.toolName.startsWith('View Image ') ? [message.toolName] : [],
-          );
-          expect(imageViews).toHaveLength(6);
-          expect(new Set(imageViews).size).toBe(6);
-          expect(
-            messages.filter(
-              (message) =>
-                message.role === 'tool-output' && message.toolName.startsWith('View Image ') && !message.isError,
-            ),
-          ).toHaveLength(6);
-        }
       } finally {
         await session?.close();
         await release();
@@ -473,7 +503,7 @@ describe.each(adapters)('live $id question through Tau', (adapter) => {
           },
         ]),
       );
-      await record.writeFile(answersPath(chatId), serializeAnswersFile({ version: 1, answers }));
+      await record.writeFile(answersPath(chatId), serializeAnswersFile({ version: 2, answers }));
     };
     const registry: ToolRegistry = {
       list: () => [
@@ -541,7 +571,7 @@ describe.each(adapters)('live $id question through Tau', (adapter) => {
         },
         selectedModel(adapter.id),
       );
-      const messages = events.flatMap((event) => (event.type === 'message.appended' ? [event.message] : []));
+      const messages = directMessagesOf(events);
       const answered = messages.find(
         (message) => message.role === 'tool-output' && message.toolName === toolName.askQuestions && !message.isError,
       );
@@ -587,12 +617,18 @@ describe.each(adapters.filter((adapter) => adapter.id === 'codex' || adapter.id 
         const at = new Date().toISOString();
         const choices = (ask: (typeof asks)[number]) =>
           Object.fromEntries(
-            ask.questions.map((question) => [question.id, { choice: question.options[1]?.label ?? 'B', at }]),
+            ask.questions.map((question) => {
+              const option = question.options[1] ?? question.options[0];
+              if (!option) {
+                throw new Error('The live question did not offer a selectable answer.');
+              }
+              return [question.id, { value: option.value ?? option.label, at }];
+            }),
           );
         const answers = Object.fromEntries(asks.map((ask) => [ask.id, { questions: choices(ask) }]));
         await writeFile(
           join(workspaceRoot, answersPath(chatId)),
-          serializeAnswersFile({ version: 1, answers }),
+          serializeAnswersFile({ version: 2, answers }),
           'utf8',
         );
       };
@@ -957,7 +993,7 @@ describe.skipIf(!liveEnabled || codexAdapter === undefined)('a live ACP chat acr
 const grokAdapter = adapters.find((adapter) => adapter.id === 'grok');
 
 describe.skipIf(!liveEnabled || grokAdapter === undefined)('native Grok skills through ACP', () => {
-  it('should read a published skill support file through the ACP filesystem', async () => {
+  it('should read a published skill support file', async () => {
     if (!grokAdapter) {
       throw new Error('The selected Grok adapter is unavailable.');
     }
@@ -1155,3 +1191,563 @@ describe.skipIf(!liveEnabled || grokAdapter === undefined)('Grok native plan app
     }
   }, 150_000);
 });
+
+describe.skipIf(!liveEnabled || grokAdapter === undefined)('Grok composer control parity', () => {
+  it('should isolate two chats and execute MCP calls across Ask Always approve Ask with real plan approval', async () => {
+    if (!grokAdapter) {
+      throw new Error('The selected Grok adapter is unavailable.');
+    }
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'tau-grok-controls-'));
+    roots.push(workspaceRoot);
+    const serverName = `tau_probe_${randomUUID().replaceAll('-', '')}`;
+    const invoked: string[] = [];
+    const registry: ToolRegistry = {
+      list: () => [],
+      invoke: async (invocation) => {
+        invoked.push(invocation.toolName);
+        return { isError: false, content: { success: true, failures: [], passes: [], passed: 0, total: 0 } };
+      },
+    };
+    const endpoint = createHostMcpEndpoint({ secret: randomBytes(32).toString('base64url'), workspaceRoot, registry });
+    const server = createServer((request, response) => {
+      void endpoint.handle(request, response);
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('The controls MCP fixture did not open a TCP port.');
+    }
+    const frames: AcpWireFrame[] = [];
+    const events: ExternalAgentLogEvent[] = [];
+    const sessions: Array<Awaited<ReturnType<typeof openAcpSession>>> = [];
+    const releases: Array<() => void> = [];
+    const approvalCounts: number[] = [];
+    try {
+      for (const chatId of ['controls-A', 'controls-B']) {
+        const runId = `run-${chatId}`;
+        const capability = endpoint.mint({ chatId, runId });
+        releases.push(
+          endpoint.activate({ token: capability.token, chatId, runId, signal: new AbortController().signal }),
+        );
+        sessions.push(
+          // oxlint-disable-next-line no-await-in-loop -- two independently owned sessions stay resident together.
+          await openAcpSession({
+            adapter: grokAdapter,
+            cwd: workspaceRoot,
+            createId: randomUUID,
+            onFrame: (frame) => frames.push(frame),
+            mcpServers: [
+              {
+                type: 'http',
+                name: serverName,
+                url: `http://127.0.0.1:${String(address.port)}/mcp`,
+                headers: [{ name: 'Authorization', value: `Bearer ${capability.token}` }],
+              },
+            ],
+          }),
+        );
+      }
+      const [first, second] = sessions;
+      if (!first || !second) {
+        throw new Error('Both Grok control sessions must be open.');
+      }
+      for (const [session, mode] of [
+        [first, 'ask'],
+        [first, 'always-approve'],
+        [second, 'ask'],
+        [first, 'ask'],
+      ] as const) {
+        let approvals = 0;
+        const before = invoked.length;
+        // oxlint-disable-next-line no-await-in-loop -- each real permission state transition follows its predecessor.
+        await session.prompt(
+          `Call the ${serverName} MCP test_model tool exactly once with files ["main.geospec.ts"]. This fixture returns a simulated successful result; there is no file to read. Do not edit files or run shell commands. Reply only with the tool's success result.`,
+          {
+            append: async (batch) => {
+              events.push(...batch);
+            },
+            approve: async () => {
+              approvals++;
+              return { interruptId: randomUUID(), outcome: 'approved' };
+            },
+            publishLive: async () => undefined,
+            signal: AbortSignal.timeout(120_000),
+          },
+          selectedModel('grok'),
+          { reasoning_effort: 'low', [grokPermissionConfigId]: mode, [grokPlanningConfigId]: 'default' },
+        );
+        expect(
+          invoked.slice(before),
+          `Turn ${approvalCounts.length + 1} mode ${mode}: ${directMessagesOf(events)
+            .filter((message) => message.role === 'assistant')
+            .map((message) => textOf(message))
+            .join(' | ')}`,
+        ).toEqual([toolName.testModel]);
+        approvalCounts.push(approvals);
+        expect(approvals, `Mode ${mode} should control actual MCP approval requests`).toBe(mode === 'ask' ? 1 : 0);
+      }
+      let planApprovals = 0;
+      await first.prompt(
+        'Prepare a one-step plan to add a cube. Do not edit files. Use exit_plan_mode to ask for approval, then stop after approval without implementing.',
+        {
+          append: async (batch) => {
+            events.push(...batch);
+          },
+          approve: async (request) => {
+            if (/plan/iu.test(request.prompt)) {
+              planApprovals++;
+            }
+            return { interruptId: randomUUID(), outcome: 'approved' };
+          },
+          publishLive: async () => undefined,
+          signal: AbortSignal.timeout(120_000),
+        },
+        selectedModel('grok'),
+        { reasoning_effort: 'low', [grokPermissionConfigId]: 'always-approve', [grokPlanningConfigId]: 'plan' },
+      );
+      expect(planApprovals).toBeGreaterThan(0);
+      expect(sentFrames(frames, 'session/set_mode')).toBeGreaterThanOrEqual(5);
+      const proof = {
+        approvalCounts,
+        planApprovals,
+        toolInvocations: invoked,
+        actualUsageRecorded: directMessagesOf(events).some(
+          (message) => message.role === 'assistant' && message.metadata?.usage !== undefined,
+        ),
+        servedModelNotificationSeen: frames.some(
+          ({ direction, frame }) => direction === 'agent->client' && frame.includes('served_model'),
+        ),
+      };
+      expect(proof.actualUsageRecorded).toBe(true);
+      const evidence = join(process.cwd(), '../../out/research/grok-acp-parity');
+      await mkdir(evidence, { recursive: true });
+      await writeFile(join(evidence, 'controls-live.json'), JSON.stringify(proof, null, 2));
+    } finally {
+      await Promise.all(sessions.map(async (session) => session.close()));
+      for (const release of releases) {
+        release();
+      }
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
+  }, 600_000);
+});
+
+describe.skipIf(!liveEnabled || grokAdapter === undefined)('Grok delegated task telemetry', () => {
+  it('should report a real native child reading a disposable marker', async () => {
+    if (!grokAdapter) {
+      throw new Error('The selected Grok adapter is unavailable.');
+    }
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'tau-grok-delegation-'));
+    roots.push(workspaceRoot);
+    const marker = `tau-child-${randomUUID()}`;
+    await writeFile(join(workspaceRoot, 'delegation-marker.txt'), marker);
+    const frames: AcpWireFrame[] = [];
+    const events: ExternalAgentLogEvent[] = [];
+    const session = await openAcpSession({
+      adapter: grokAdapter,
+      cwd: workspaceRoot,
+      createId: randomUUID,
+      onFrame: (frame) => frames.push(frame),
+    });
+    try {
+      await session.prompt(
+        'Use your native Task tool to delegate exactly one child task: read delegation-marker.txt and return its entire content. Do not read the file yourself. Wait for that child result and repeat the marker. Do not edit any files, search the web, or run shell commands.',
+        {
+          append: async (batch) => {
+            events.push(...batch);
+          },
+          approve: async () => ({ interruptId: randomUUID(), outcome: 'approved' }),
+          publishLive: async () => undefined,
+          signal: AbortSignal.timeout(180_000),
+        },
+        selectedModel('grok'),
+        { reasoning_effort: 'low', [grokPermissionConfigId]: 'ask', [grokPlanningConfigId]: 'default' },
+      );
+      const wireSchema = z.object({
+        method: z.string().optional(),
+        params: z.unknown().optional(),
+        result: z.object({ _meta: z.unknown().optional() }).optional(),
+      });
+      const received = frames
+        .filter(({ direction }) => direction === 'agent->client')
+        .flatMap(({ frame }) => {
+          const parsed = wireSchema.safeParse(JSON.parse(frame));
+          return parsed.success ? [parsed.data] : [];
+        });
+      const notifications = received.flatMap(({ params }) => {
+        const notification = grokNotificationOf(params);
+        return notification ? [notification] : [];
+      });
+      const kinds = notifications.map(({ update }) => update.sessionUpdate);
+      const text = directMessagesOf(events)
+        .filter((message) => message.role === 'assistant')
+        .map((message) => textOf(message))
+        .join(' ');
+      const usage = received.flatMap(({ result }) => {
+        const ledger = grokPromptUsageOf(result?._meta);
+        return ledger ? [ledger] : [];
+      });
+      const activitySchema = z.object({
+        type: z.literal('acp-activity'),
+        subagents: z.array(
+          z.object({ status: z.string(), toolCalls: z.number().optional(), output: z.string().optional() }),
+        ),
+      });
+      const projectedChildren = directMessagesOf(events).flatMap((message) => {
+        const parts = Array.isArray(message.content) ? message.content : [];
+        return parts.flatMap((part) => activitySchema.safeParse(part).data?.subagents ?? []);
+      });
+      const proof = {
+        projectedChildren,
+        notificationKinds: kinds,
+        markerReturned: text.includes(marker),
+        promptUsage: usage,
+        subagentUpdates: notifications
+          .filter(({ update }) => update.sessionUpdate.startsWith('subagent_'))
+          .map(({ update }) => update),
+      };
+      const evidence = join(process.cwd(), '../../out/research/grok-acp-parity');
+      await mkdir(evidence, { recursive: true });
+      await writeFile(join(evidence, 'delegation-live.json'), JSON.stringify(proof, null, 2));
+      expect(kinds, text).toContain('subagent_spawned');
+      expect(kinds).toContain('subagent_finished');
+      expect(proof.markerReturned).toBe(true);
+      expect(usage.length).toBeGreaterThan(0);
+      expect(projectedChildren).toContainEqual({ status: 'completed', toolCalls: 1, output: marker });
+    } finally {
+      await session.close();
+    }
+  }, 240_000);
+});
+
+const grokPersistenceAdapter = adapters.find((adapter) => adapter.id === 'grok');
+it.skipIf(!grokPersistenceAdapter || process.env['TAU_ACP_LIVE_GROK_PERSISTENCE'] !== '1')(
+  'should persist an isolated Grok MCP permission and reuse it after provider restart',
+  async () => {
+    if (!grokPersistenceAdapter || grokPersistenceAdapter.modulePath !== undefined) {
+      throw new Error('Native Grok is required for persistence qualification');
+    }
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'tau-grok-permission-')));
+    roots.push(root);
+    const profile = join(root, 'profile');
+    const workspaceRoot = join(root, 'workspace');
+    await mkdir(profile, { mode: 0o700 });
+    await mkdir(workspaceRoot, { mode: 0o700 });
+    await copyFile(join(process.env['GROK_HOME'] ?? join(homedir(), '.grok'), 'auth.json'), join(profile, 'auth.json'));
+    await chmod(join(profile, 'auth.json'), 0o600);
+    const isolatedAdapter = {
+      ...grokPersistenceAdapter,
+      args: ['--no-auto-update', '--permission-mode', 'default', 'agent', '--no-leader', 'stdio'],
+      spawnEnv: { ...grokPersistenceAdapter.spawnEnv, GROK_HOME: profile },
+    };
+    let invocations = 0;
+    let approvals = 0;
+    let targetApprovals = 0;
+    const observed: ExternalAgentLogEvent[] = [];
+    const phases: JsonObject[] = [];
+    const endpoint = createHostMcpEndpoint({
+      secret: randomBytes(32).toString('base64url'),
+      workspaceRoot,
+      registry: {
+        list: () => [
+          {
+            name: toolName.askQuestions,
+            description: 'Read a harmless synthetic permission qualification marker. Call this exact tool when asked.',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          },
+        ],
+        invoke: async () => {
+          invocations++;
+          return { content: { marker: 'PERMISSION_PROBE_OK' }, isError: false };
+        },
+      },
+    });
+    const server = createServer((request, response) => {
+      void endpoint.handle(request, response);
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Permission fixture did not open a port');
+    }
+    const capability = endpoint.mint({ chatId: 'permission-test', runId: 'permission-run' });
+    const release = endpoint.activate({
+      token: capability.token,
+      chatId: 'permission-test',
+      runId: 'permission-run',
+      signal: new AbortController().signal,
+    });
+    let session: Awaited<ReturnType<typeof openAcpSession>> | undefined;
+    const permissionFile = join(profile, 'sessions', encodeURIComponent(workspaceRoot), 'permission.toml');
+    try {
+      const runAttempt = async (attempt: number): Promise<void> => {
+        session = await openAcpSession({
+          adapter: isolatedAdapter,
+          cwd: workspaceRoot,
+          createId: randomUUID,
+          mcpServers: [
+            {
+              type: 'http',
+              name: 'tau',
+              url: `http://127.0.0.1:${String(address.port)}/mcp`,
+              headers: [{ name: 'Authorization', value: `Bearer ${capability.token}` }],
+            },
+          ],
+        });
+        phases.push({ phase: 'opened', attempt, version: session.agent.agentInfo?.version ?? 'unknown' });
+        await session.prompt(
+          'Call the MCP tool tau ask_questions exactly once, then reply with the marker it returns. Do not run commands, edit files, or use any other tool.',
+          {
+            append: async (events) => {
+              observed.push(...events);
+            },
+            publishLive: async () => undefined,
+            signal: AbortSignal.timeout(120_000),
+            approve: async (request) => {
+              approvals++;
+              phases.push({ phase: 'approval', attempt });
+              const parsed = z
+                .object({
+                  toolCall: z
+                    .object({ toolCallId: z.string(), kind: z.string().optional(), rawInput: z.unknown().optional() })
+                    .optional(),
+                  options: z.array(z.object({ optionId: z.string(), kind: z.string() })),
+                })
+                .parse(request.payload);
+              const nativeName = z.object({ tool_name: z.string().max(200) }).safeParse(parsed.toolCall?.rawInput)
+                .data?.tool_name;
+              const targetInput = nativeName === 'tau__ask_questions';
+              phases.push({
+                phase: 'options',
+                optionIds: parsed.options.map((option) => option.optionId),
+                kind: parsed.toolCall?.kind ?? 'unknown',
+                callId: parsed.toolCall?.toolCallId ?? 'unknown',
+                nativeName: nativeName && /^[a-zA-Z0-9_:-]+$/u.test(nativeName) ? nativeName : 'unknown',
+                targetInput,
+              });
+              if (!targetInput) {
+                const once = parsed.options.find((option) => option.kind === 'allow_once');
+                // MCP discovery and the question wrapper are harmless; unknown native actions are cancelled.
+                const discovery =
+                  nativeName === 'list_mcp_tools' ||
+                  nativeName === 'search_mcp_tools' ||
+                  nativeName === 'ask_questions';
+                return once && discovery
+                  ? { interruptId: randomUUID(), outcome: 'approved', optionId: once.optionId }
+                  : { interruptId: randomUUID(), outcome: 'cancelled' };
+              }
+              targetApprovals++;
+              const always = parsed.options.find(
+                (option) => option.optionId === 'always-allow' && option.kind === 'allow_always',
+              );
+              if (attempt !== 0 || !always) {
+                return { interruptId: randomUUID(), outcome: 'cancelled' };
+              }
+              return { interruptId: randomUUID(), outcome: 'approved', optionId: always.optionId };
+            },
+          },
+          selectedModel('grok'),
+        );
+        await session.close();
+        session = undefined;
+        phases.push({ phase: 'completed', attempt, invocations, approvals });
+        expect(invocations).toBe(attempt + 1);
+        const state = await readFile(permissionFile, 'utf8').catch(() => '');
+        const permissions = z
+          .object({ allowed_mcp_tools: z.array(z.string()), disallowed_mcp_tools: z.array(z.string()) })
+          .parse(parseToml(state));
+        const profileFiles = await readdir(profile, { recursive: true });
+        phases.push({
+          phase: 'permission-files',
+          files: profileFiles.filter((path) => /(^|\/)permission[^/]*\.toml$/u.test(path)),
+        });
+        phases.push({
+          phase: 'store-read',
+          attempt,
+          found: state !== '',
+          exactToolPresent: permissions.allowed_mcp_tools.includes('tau__ask_questions'),
+        });
+        expect(permissions.allowed_mcp_tools.includes('tau__ask_questions')).toBe(true);
+        expect(permissions.disallowed_mcp_tools.includes('tau__ask_questions')).toBe(false);
+      };
+      await runAttempt(0);
+      expect(targetApprovals).toBe(1);
+      const observations = observed.flatMap((event) =>
+        event.type === 'message.appended' &&
+        event.message.metadata?.tauInternal?.['kind'] === 'provider-permission-observation'
+          ? (z.array(z.json()).safeParse(event.message.content).data ?? [])
+          : [],
+      );
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({
+        resolution: {
+          outcome: 'approved',
+          optionId: 'always-allow',
+          observation: {
+            provider: 'grok',
+            stored: 'present',
+            effective: 'unknown',
+            observation: 'permission-file-readback',
+          },
+        },
+      });
+      await runAttempt(1);
+      expect(targetApprovals).toBe(1);
+    } finally {
+      const evidence = process.env['TAU_ACP_LIVE_EVIDENCE'];
+      if (evidence) {
+        await writeFile(
+          resolve(process.env['NX_WORKSPACE_ROOT'] ?? process.cwd(), evidence),
+          JSON.stringify({ phases }, undefined, 2),
+        );
+      }
+      await session?.close();
+      await release();
+      await endpoint.close();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  },
+  300_000,
+);
+
+it.skipIf(!grokPersistenceAdapter || process.env['TAU_ACP_LIVE_GROK_SHELL'] !== '1')(
+  'should qualify an isolated Grok shell permission across provider restart',
+  async () => {
+    if (!grokPersistenceAdapter || grokPersistenceAdapter.modulePath !== undefined) {
+      throw new Error('Native Grok is required for shell qualification');
+    }
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'tau-grok-shell-')));
+    roots.push(root);
+    const profile = join(root, 'profile');
+    const workspaceRoot = join(root, 'workspace');
+    await mkdir(profile, { mode: 0o700 });
+    await mkdir(workspaceRoot, { mode: 0o700 });
+    await copyFile(join(process.env['GROK_HOME'] ?? join(homedir(), '.grok'), 'auth.json'), join(profile, 'auth.json'));
+    await chmod(join(profile, 'auth.json'), 0o600);
+    const isolatedAdapter = {
+      ...grokPersistenceAdapter,
+      args: ['--no-auto-update', '--permission-mode', 'default', 'agent', '--no-leader', 'stdio'],
+      spawnEnv: { ...grokPersistenceAdapter.spawnEnv, GROK_HOME: profile },
+    };
+    const command = `python3 -c "print('TAU_SHELL_PERMISSION_PROBE_OK')"`;
+    const phases: JsonObject[] = [];
+    let approvals = 0;
+    let requests = 0;
+    const runAttempt = async (attempt: number): Promise<void> => {
+      const requestedCommand = attempt === 2 ? command.replace('PROBE_OK', 'DIFFERENT') : command;
+      const session = await openAcpSession({ adapter: isolatedAdapter, cwd: workspaceRoot, createId: randomUUID });
+      const observed: ExternalAgentLogEvent[] = [];
+      try {
+        await session.prompt(
+          `Run this exact harmless shell command once: ${requestedCommand}. Do not read or edit files, use MCP, or run any other command. Reply with the command output.`,
+          {
+            append: async (events) => {
+              observed.push(...events);
+            },
+            publishLive: async () => undefined,
+            signal: AbortSignal.timeout(120_000),
+            approve: async (request) => {
+              requests++;
+              const parsed = z
+                .object({
+                  toolCall: z
+                    .object({
+                      title: z.string().optional(),
+                      kind: z.string().optional(),
+                      rawInput: z.json().optional(),
+                    })
+                    .optional(),
+                  options: z.array(z.object({ optionId: z.string(), kind: z.string(), name: z.string() })),
+                })
+                .parse(request.payload);
+              phases.push({ phase: 'approval', attempt, request: parsed });
+              const raw = z
+                .object({ command: z.string().optional(), cmd: z.string().optional() })
+                .safeParse(parsed.toolCall?.rawInput).data;
+              const exact = (raw?.command ?? raw?.cmd) === command;
+              const always = parsed.options.find((option) => option.kind === 'allow_always');
+              if (!exact || !always || attempt !== 0) {
+                return { interruptId: randomUUID(), outcome: 'cancelled' };
+              }
+              expect(always.name).toBe('Allow this command in future');
+              approvals++;
+              return { interruptId: randomUUID(), outcome: 'approved', optionId: always.optionId };
+            },
+          },
+          selectedModel('grok'),
+        );
+        const messages = directMessagesOf(observed);
+        const completed = messages.some(
+          (message) =>
+            message.role === 'tool-output' &&
+            !message.isError &&
+            JSON.stringify(message.content).includes('TAU_SHELL_PERMISSION_PROBE_OK'),
+        );
+        if (attempt === 0) {
+          expect(
+            messages.filter((message) => message.metadata?.tauInternal?.['kind'] === 'provider-permission-observation'),
+          ).toMatchObject([
+            {
+              content: [
+                {
+                  resolution: {
+                    outcome: 'approved',
+                    optionId: 'always-allow',
+                    observation: { provider: 'grok', stored: 'present', effective: 'unknown' },
+                  },
+                },
+              ],
+            },
+          ]);
+        }
+        const permissionFile = join(profile, 'sessions', encodeURIComponent(workspaceRoot), 'permission.toml');
+        const settings = await readFile(permissionFile, 'utf8').catch(() => '');
+        phases.push({ phase: 'completed', attempt, requests, approvals, completed, settings });
+        expect(
+          z
+            .object({ allowed_bash_commands: z.array(z.string()), allow_bash_execute: z.boolean() })
+            .parse(parseToml(settings)),
+        ).toEqual({
+          allowed_bash_commands: [command],
+          allow_bash_execute: false,
+        });
+        expect(requests).toBe(attempt === 2 ? 2 : 1);
+        expect(completed).toBe(attempt !== 2);
+        expect(approvals).toBe(1);
+      } finally {
+        await session.close();
+      }
+    };
+    try {
+      await runAttempt(0);
+      await runAttempt(1);
+      await runAttempt(2);
+    } finally {
+      const evidence = process.env['TAU_ACP_LIVE_EVIDENCE'];
+      if (evidence) {
+        await writeFile(
+          resolve(process.env['NX_WORKSPACE_ROOT'] ?? process.cwd(), evidence),
+          JSON.stringify({ phases }, undefined, 2),
+        );
+      }
+    }
+  },
+  300_000,
+);

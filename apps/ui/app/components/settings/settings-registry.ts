@@ -9,6 +9,7 @@ import {
   Printer,
   Settings2,
   Globe,
+  FolderGit2,
   User,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -105,8 +106,8 @@ const settingsCatalog = [
       },
       {
         id: 'github-permissions',
-        label: 'GitHub permissions',
-        description: "Review or revoke Tau's sign-in and Gist access on GitHub",
+        label: 'GitHub connections',
+        description: 'Manage separate GitHub sign-in, Gist and repository connections',
         keywords: ['github', 'gist', 'revoke', 'authorization', 'oauth', 'consent'],
       },
       {
@@ -114,6 +115,20 @@ const settingsCatalog = [
         label: 'Active sessions',
         description: 'Review devices and revoke sessions',
         keywords: ['logout', 'sign out'],
+      },
+    ],
+  },
+  {
+    id: 'repositories',
+    label: 'Repositories',
+    icon: FolderGit2,
+    group: 'Personal',
+    entries: [
+      {
+        id: 'github-repositories',
+        label: 'GitHub repositories',
+        description: 'Manage repository connections and enable writes per repository',
+        keywords: ['github', 'write', 'permissions', 'installation', 'push'],
       },
     ],
   },
@@ -183,13 +198,23 @@ const settingsCatalog = [
       {
         id: 'machines',
         label: 'Machines',
-        description: 'Add a simulated X1C or bind a Bambu Lab X1C on your network',
+        description: 'Bind a printer, router or CNC mill, or add a simulated one to try',
         keywords: [
           'printer',
+          'router',
+          'cnc',
+          'mill',
           'bambu',
           'x1c',
+          'a1 mini',
+          'grbl',
+          'longmill',
+          'carvera',
+          'makera',
           'simulator',
           '3d print',
+          'spindle',
+          'probe',
           'bind',
           'access code',
           'keychain',
@@ -341,10 +366,12 @@ const platformSections: readonly SettingsSectionDefinition[] = isDesktopTarget()
     )
   : cloudSections.filter((section) => section.id !== 'machines' && section.id !== 'browser');
 
-export const settingsSections: readonly SettingsSectionDefinition[] = platformSections.map((section) => ({
-  ...section,
-  entries: section.entries.filter((entry) => entry.id !== 'automatic-reload' || featureFlagDefaults.automaticReload),
-}));
+export const settingsSections: readonly SettingsSectionDefinition[] = platformSections
+  .filter((section) => section.id !== 'machines' || featureFlagDefaults.machines)
+  .map((section) => ({
+    ...section,
+    entries: section.entries.filter((entry) => entry.id !== 'automatic-reload' || featureFlagDefaults.automaticReload),
+  }));
 
 function normalizeSearch(value: string): string {
   return value

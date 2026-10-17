@@ -28,10 +28,20 @@ describe('ExperimentalSettings', () => {
     expect(mockState.setFlag).toHaveBeenCalledExactlyOnceWith('projectThreads', false);
   });
 
-  it('should render the Plugins Store feature flag from the registry', () => {
+  it('should render only the exposed feature flags from the registry', () => {
     render(<ExperimentalSettings />);
 
-    expect(screen.getByText('Plugins Store')).toBeInTheDocument();
-    expect(screen.getByText('Expose the plugin and skill store while it is under development.')).toBeInTheDocument();
+    expect(screen.getByText('Tau Debug')).toBeInTheDocument();
+    for (const hidden of [
+      'Marketing Landing',
+      'Machines',
+      'Parts warehouse',
+      'WebGPU rendering',
+      'WebGPU shader stacks',
+      'WebGPU inspector',
+      'Plugins Store',
+    ]) {
+      expect(screen.queryByText(hidden)).not.toBeInTheDocument();
+    }
   });
 });

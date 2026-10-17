@@ -23,41 +23,32 @@ import { createActor, createAsyncLogic, waitFor } from 'xstate';
 import { parameterSetMachine } from '@taucad/parameters/set-machine';
 import { defineRuntime } from '@taucad/runtime/worker';
 import { asKnownArtifact } from '@taucad/runtime';
-import { describe, expect, it } from 'vitest';
+import { installFetchTripwire } from '@taucad/runtime-testing/preparation';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-import { build123d } from '#index.js';
+import { prepareFromSeed, seedPresent } from '#build123d-closure.fixture.js';
+import { build123d, build123dOptionsFromClosure } from '#index.js';
 import type { ParameterSetActors } from '@taucad/parameters/set-machine';
 
-type ResourceManifest = {
-  readonly target: string;
-  readonly pythonRelativePath: string;
-  readonly pythonSha256: string;
-  readonly workerPath: string;
-  readonly workerSha256: string;
-  readonly supportFiles: ReadonlyArray<{ readonly path: string; readonly sha256: string }>;
-};
+// The kernels run from a closure already on disk: no request may leave this file (charter D27 tripwire).
+beforeAll(() => installFetchTripwire());
 
 const workspaceRoot = resolve(import.meta.dirname, '../../../..');
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const targetRoot = resolve(workspaceRoot, `apps/desktop/resources/python/${process.platform}-${process.arch}`);
-const manifest = JSON.parse(readFileSync(resolve(targetRoot, 'tau-runtime-manifest.json'), 'utf8')) as ResourceManifest;
+
+// The closure `tau prepare build123d` installs, prepared from the payload seed (`pnpm nx run build123d:seed`).
+const receipt = seedPresent ? await prepareFromSeed() : undefined;
 
 const runtime = defineRuntime({
-  plugins: [
-    build123d({
-      kernels: {
-        default: {
-          pythonExecutable: resolve(targetRoot, manifest.pythonRelativePath),
-          workerPath: resolve(targetRoot, manifest.workerPath),
-          pythonSha256: manifest.pythonSha256,
-          workerSha256: manifest.workerSha256,
-          supportFiles: manifest.supportFiles.map(({ path, sha256 }) => ({ path: resolve(targetRoot, path), sha256 })),
-          requestTimeout: 120_000,
-        },
-      },
-    }),
-  ],
+  plugins:
+    receipt === undefined
+      ? []
+      : [
+          build123d({
+            kernels: { default: { ...build123dOptionsFromClosure(receipt), requestTimeout: 120_000 } },
+          }),
+        ],
 });
 
 const modelSource = (metadata: string): string => `from dataclasses import dataclass
@@ -153,7 +144,7 @@ const readTopology = (
   return { json, payload };
 };
 
-describe('Build123d native kernel', () => {
+describe.runIf(seedPresent)('Build123d native kernel', () => {
   it('admits declared units without changing native values or geometry', async () => {
     const previousPath = process.env['PATH'];
     // Only the system directories the sandbox wrapper resolves `which` from: no user or tool PATH.
@@ -591,7 +582,7 @@ describe('Build123d native kernel', () => {
       const document = client.open({ source: { path: 'main.py' } });
       const outcome = await document
         .view('model', {
-          options: { tessellation: { linearTolerance: 0.25, angularTolerance: 0.2 } },
+          options: { tessellation: { linearTolerance: 0.25, angularTolerance: 20 } },
         })
         .rendering();
       expect(outcome.superseded).toBe(false);

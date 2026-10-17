@@ -348,7 +348,7 @@ describe('seeded first turn execution', () => {
       return <span />;
     }
     render(
-      <ChatComposerProvider surface='marketing'>
+      <ChatComposerProvider surface='library'>
         <Composer />
       </ChatComposerProvider>,
     );

@@ -37,7 +37,7 @@ import { ToggleGroup, ToggleGroupItem } from '@taucad/ui/components/toggle-group
 import { cn } from '@taucad/ui/utils/cn';
 import { useTheme } from '#hooks/use-theme.js';
 import { printerPreparation } from '#components/printer/printer-preparation.js';
-import { PaneButton } from '#components/ui/pane-button.js';
+import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { MaterialSwatch } from '@taucad/viewer/cad/material-swatch';
 import { printerAccent } from '#components/printer/printer-colors.constants.js';
 import type { PrinterFileKind } from '#components/printer/printer-file.js';
@@ -305,7 +305,8 @@ function PrinterViewerContent({ name, kind, readAll, renderPane }: Omit<PrinterV
  * @returns The resolved manifest and the scene geometry derived from it.
  */
 const usePrinterGeometry = (live: PrinterLiveState | undefined) => {
-  const manifest = resolvePrinterManifest(live?.manifest);
+  const followed = live?.manifest;
+  const manifest = useMemo(() => resolvePrinterManifest(followed), [followed]);
   const geometry = useMemo(() => derivePrinterGeometry(manifest), [manifest]);
   return { manifest, geometry };
 };

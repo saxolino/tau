@@ -74,6 +74,91 @@ describe('@taucad/mcp', () => {
     });
   });
 
+  it('returns the default view mesh cost in the evaluate_model result through a connected client', async () => {
+    const tessellation = {
+      triangles: 1308,
+      vertices: 656,
+      elapsed: 42,
+      voxelSize: 0.5,
+      activeVoxels: 2846,
+      memoryBytes: 1_296_848,
+    };
+    const client = await connect({ dispatch: async () => ({ success: true, status: 'ready', tessellation }) });
+    try {
+      const result = await client.callTool({ name: toolName.evaluateModel, arguments: { targetFile: 'main.ts' } });
+      expect(result.structuredContent).toEqual({ status: 'ready', tessellation });
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ status: 'ready', tessellation }) }]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('should return the effective tessellation resolution in the evaluate_model result (I7)', async () => {
+    const tessellation = {
+      triangles: 1_999_872,
+      vertices: 1_000_014,
+      elapsed: 812,
+      requested: 'extra-high',
+      linearTolerance: 0.02,
+      angularTolerance: 10,
+      downgraded: 1,
+    };
+    const client = await connect({ dispatch: async () => ({ success: true, status: 'ready', tessellation }) });
+    try {
+      const result = await client.callTool({ name: toolName.evaluateModel, arguments: { targetFile: 'main.ts' } });
+      expect(result.structuredContent).toEqual({ status: 'ready', tessellation });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('should pass evaluate_model default view options to the canonical RPC through a connected client', async () => {
+    const dispatchMock = vi.fn<TauMcpDispatch>(async () => ({ success: true, status: 'ready' }));
+    const client = await connect({ dispatch: dispatchMock });
+    try {
+      await client.callTool({
+        name: toolName.evaluateModel,
+        arguments: { targetFile: 'main.ts', options: { tessellation: 'low' } },
+      });
+      await client.callTool({ name: toolName.evaluateModel, arguments: { targetFile: 'main.ts' } });
+    } finally {
+      await client.close();
+    }
+
+    expect(dispatchMock.mock.calls.map(([call]) => call)).toEqual([
+      { rpcName: rpcName.evaluateModel, args: { targetFile: 'main.ts', options: { tessellation: 'low' } } },
+      { rpcName: rpcName.evaluateModel, args: { targetFile: 'main.ts' } },
+    ]);
+  });
+
+  it('should refuse invalid evaluate_model options as screenshot refuses them', async () => {
+    const dispatchMock = vi.fn<TauMcpDispatch>(async () => ({
+      success: false,
+      errorCode: 'VALIDATION_ERROR',
+      message: 'model option tessellation: Invalid input',
+    }));
+    const adapter = createTauMcpAdapter({ dispatch: dispatchMock });
+
+    for (const name of [toolName.evaluateModel, toolName.screenshot]) {
+      // oxlint-disable-next-line no-await-in-loop -- each tool's refusal is asserted in turn.
+      await expect(
+        adapter.call({ name, arguments: { targetFile: 'main.ts', options: 'low' }, toolCallId: 'tool-invalid' }),
+      ).rejects.toThrow();
+    }
+    expect(dispatchMock).not.toHaveBeenCalled();
+
+    await expect(
+      adapter.call({
+        name: toolName.evaluateModel,
+        arguments: { targetFile: 'main.ts', options: { tessellation: 'coarse' } },
+        toolCallId: 'tool-refused',
+      }),
+    ).resolves.toEqual({
+      isError: true,
+      content: [{ type: 'text', text: 'VALIDATION_ERROR: model option tessellation: Invalid input' }],
+    });
+  });
+
   it('should carry failure details as text the SDK client delivers instead of rejecting', async () => {
     const failure = {
       errorCode: 'TOOL_OUTPUT_VALIDATION_FAILED',
@@ -345,6 +430,27 @@ describe('@taucad/mcp', () => {
     }
   });
 
+  it('should list only the CAD tools the host names, with their canonical descriptions', async () => {
+    const client = await connect({
+      dispatch: async () => ({ success: true }),
+      cadTools: tauMcpToolNames.filter((name) => name !== toolName.testModel),
+    });
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.map(({ name }) => name)).toEqual([
+        toolName.evaluateModel,
+        toolName.screenshot,
+        toolName.exportModel,
+      ]);
+      expect(tools.find(({ name }) => name === toolName.evaluateModel)?.description).toBe(
+        tauMcpToolDefinitions[toolName.evaluateModel].description,
+      );
+      expect(client.getInstructions()).not.toContain(toolName.testModel);
+    } finally {
+      await client.close();
+    }
+  });
+
   it('should report its own package name and version as server info', async () => {
     const client = await connect({ dispatch: async () => ({ success: true }) });
     try {
@@ -446,5 +552,58 @@ describe('approval through the client (blueprint E9, W11)', () => {
     const silent = await ask({});
     const urlOnly = await ask({ elicitation: { url: {} } });
     expect([silent.outcome, urlOnly.outcome]).toEqual(['no form', 'no form']);
+  });
+});
+
+describe('progress on a host tool (D7)', () => {
+  /**
+   * Call one host tool whose dispatch reports three steps, with or without a progress listener.
+   *
+   * @param listen - Whether the client asks for progress.
+   * @returns What the client heard, and whether the dispatch was given a reporter.
+   */
+  const callWithProgress = async (listen: boolean) => {
+    let offered = false;
+    const client = await connect({
+      hostTools: [{ name: 'prepare_kernel', description: 'Prepare.', inputSchema: { type: 'object' } }],
+      dispatch: async (_call, options) => {
+        offered = options.progress !== undefined;
+        for (const progress of [10, 20, 30]) {
+          // oxlint-disable-next-line no-await-in-loop -- reports are ordered.
+          await options.progress?.({ progress, total: 30, message: `step ${String(progress / 10)}` });
+        }
+        return { success: true, status: 'ready' };
+      },
+    });
+    const heard: Array<{ progress: number; total?: number; message?: string }> = [];
+    try {
+      const result = await client.callTool(
+        { name: 'prepare_kernel', arguments: { kernel: 'picogk' } },
+        undefined,
+        listen ? { onprogress: (report) => heard.push(report) } : {},
+      );
+      return { heard, offered, result };
+    } finally {
+      await client.close();
+    }
+  };
+
+  it('should send each report as notifications/progress to a client that sent a progressToken', async () => {
+    const { heard, offered, result } = await callWithProgress(true);
+
+    expect(offered).toBe(true);
+    expect(heard).toEqual([
+      { progress: 10, total: 30, message: 'step 1' },
+      { progress: 20, total: 30, message: 'step 2' },
+      { progress: 30, total: 30, message: 'step 3' },
+    ]);
+    expect(result.structuredContent).toEqual({ status: 'ready' });
+  });
+
+  it('should give the dispatch no reporter when the client sent no progressToken', async () => {
+    const { heard, offered } = await callWithProgress(false);
+
+    expect(offered).toBe(false);
+    expect(heard).toEqual([]);
   });
 });

@@ -1,6 +1,7 @@
 import process from 'node:process';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MyUIMessage } from '@taucad/chat';
+import type { EvaluateModelOutput } from '@taucad/chat/schemas/tools/evaluate-model';
 import {
   buildEditedUserMessage,
   buildUserMessage,
@@ -382,6 +383,23 @@ describe('serializeMessage', () => {
     });
   });
 
+  describe('machine tool parts', () => {
+    it("keeps an old chat's object answer from get_machine readable", () => {
+      const message = baseMessage([
+        {
+          type: 'tool-get_machine',
+          toolCallId: 'c1',
+          state: 'output-available',
+          input: { machineId: 'workshop-x1c' },
+          // An answer recorded before get_machine answered in text.
+          output: { name: 'Workshop X1C' } as unknown as string,
+        },
+      ]);
+      expect(serializeMessage(message)).toContain('"name": "Workshop X1C"');
+      expect(serializeMessage(message)).not.toContain('[object Object]');
+    });
+  });
+
   describe('dynamic-tool parts', () => {
     it('serializes input-streaming state', () => {
       const message = baseMessage([
@@ -550,6 +568,51 @@ describe('serializeMessage', () => {
       expect(serializeMessage(message)).toBe(
         '<tool_call name="read_file">\ntargetFile: readme.md\n</tool_call>\n<tool_result>\nL1-L1\n```\nHello\n```\n</tool_result>',
       );
+    });
+
+    it('serializes a request_job for a finished program by its artifact', () => {
+      const message = baseMessage([
+        {
+          type: 'tool-request_job',
+          toolCallId: 'c1',
+          state: 'output-error',
+          input: { artifact: 'out/bracket.gcode', machineId: 'router' },
+          errorText: 'No machine',
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        '<tool_call name="request_job">\nartifact: out/bracket.gcode\nmachineId: router\n</tool_call>\n<tool_result>\n[Error: No machine]\n</tool_result>',
+      );
+    });
+
+    it.each([
+      { simulated: true, mark: ' (simulated)' },
+      { simulated: false, mark: '' },
+    ])('marks a request_job and check_job on a simulator: simulated $simulated', ({ simulated, mark }) => {
+      const program = { name: 'part' };
+      const message = baseMessage([
+        {
+          type: 'tool-request_job',
+          toolCallId: 'c1',
+          state: 'output-available',
+          input: { artifact: 'out/part.gcode.3mf' },
+          output: {
+            job: { jobId: 'job-1', machineId: 'x1c', state: 'started', program },
+            machineName: 'Workshop X1C',
+            simulated,
+          },
+        },
+        {
+          type: 'tool-check_job',
+          toolCallId: 'c2',
+          state: 'output-available',
+          input: { artifact: 'out/part.gcode.3mf' },
+          output: { status: 'ready', simulated, program },
+        },
+      ]);
+      const text = serializeMessage(message);
+      expect(text).toContain(`<tool_result>\npart on Workshop X1C${mark}: started\n</tool_result>`);
+      expect(text).toContain(`<tool_result>\nready${mark}: part\n</tool_result>`);
     });
 
     it('serializes tool with output-error state', () => {
@@ -729,6 +792,53 @@ describe('serializeMessage', () => {
       ]);
       expect(serializeMessage(message)).toBe(
         '<tool_call name="evaluate_model">\ntargetFile: main.kcl\n</tool_call>\n<tool_result>\nStatus: error\nIssues:\n  - Syntax error\n</tool_result>',
+      );
+    });
+
+    it.each<[string, NonNullable<EvaluateModelOutput['tessellation']>, string]>([
+      [
+        'a voxel kernel',
+        { triangles: 1308, vertices: 656, elapsed: 41.6, voxelSize: 0.5, activeVoxels: 2846, memoryBytes: 1_296_848 },
+        'Mesh: 1308 triangles, 656 vertices, 42 ms (voxelSize 0.5 mm, 2846 active voxels, 1296848 bytes)',
+      ],
+      ['a mesh kernel', { triangles: 12, vertices: 8, elapsed: 3 }, 'Mesh: 12 triangles, 8 vertices, 3 ms'],
+      [
+        'a preset render',
+        {
+          triangles: 4096,
+          vertices: 2050,
+          elapsed: 18,
+          requested: 'high',
+          linearTolerance: 0.06,
+          angularTolerance: 12,
+        },
+        'Mesh: 4096 triangles, 2050 vertices, 18 ms\nResolution: requested high, linearTolerance 0.06 mm, angularTolerance 12°',
+      ],
+      [
+        'a downgraded render',
+        {
+          triangles: 1_999_872,
+          vertices: 1_000_014,
+          elapsed: 812,
+          requested: 'extra-high',
+          linearTolerance: 0.02,
+          angularTolerance: 10,
+          downgraded: 1,
+        },
+        'Mesh: 1999872 triangles, 1000014 vertices, 812 ms\nResolution: requested extra-high, linearTolerance 0.02 mm, angularTolerance 10°, downgraded 1',
+      ],
+    ])('serializes the evaluate_model mesh cost of %s', (_kernel, tessellation, line) => {
+      const message = baseMessage([
+        {
+          type: 'tool-evaluate_model',
+          toolCallId: 'c1',
+          state: 'output-available',
+          input: { targetFile: 'main.ts' },
+          output: { status: 'ready', tessellation },
+        },
+      ]);
+      expect(serializeMessage(message)).toBe(
+        `<tool_call name="evaluate_model">\ntargetFile: main.ts\n</tool_call>\n<tool_result>\nStatus: ready\n${line}\n</tool_result>`,
       );
     });
 

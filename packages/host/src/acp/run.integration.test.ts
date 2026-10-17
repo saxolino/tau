@@ -49,6 +49,7 @@ import { createHostMcpEndpoint, hostMcpCapabilityLifetime } from '#mcp-server.js
 import type { AcpAdapter } from '#acp/registry.js';
 import type { HostSystemSkillBundle } from '#agent-tools.js';
 import { createNodeLauncher } from '#node-launcher.fixture.js';
+import { testModelTool } from '#test-model-tool.fixture.js';
 
 /* The model is not decoration: the `codex` pin carries one (`registry.ts`), an
  * adapter override spreads the whole pin, and a fixture that offered no
@@ -80,7 +81,7 @@ const geospecEvidence = {
 };
 
 const registry: ToolRegistry = {
-  list: () => [],
+  list: () => [testModelTool],
   invoke: async () => ({ content: geospecEvidence, isError: false }),
 };
 
@@ -877,6 +878,17 @@ describe('the external agent run kind', () => {
       };
       await until(awaitingApproval, 'the approval request', { dump: async () => readLog(workspaceRoot, chatId) });
       const [pending] = await launcher.pendingInterrupts(runId);
+      expect(pending?.payload).toMatchObject({
+        providerPermission: {
+          owner: 'provider',
+          persistence: 'unverified',
+          options: ['allow', 'allow-session', 'allow-always', 'reject'].map((optionId) => ({
+            optionId,
+            requestedScope: 'unspecified',
+          })),
+        },
+      });
+      expect(JSON.stringify(pending?.payload)).not.toContain('permission-metadata-canary');
       await launcher.execute({
         type: 'resolve-interrupt',
         commandId: 'cmd-2',
@@ -1128,6 +1140,27 @@ describe('the external agent run kind', () => {
     expect(terminal).toMatchObject({ state: 'failed', stopReason: 'max_tokens' });
     expect(lifecycleOf(events)).not.toContain('completed');
   }, 90_000);
+
+  it.each(['codex', 'grok'])(
+    'should negotiate the intended file authority for %s',
+    async (agentId) => {
+      const harness = await startHarness({ agents: [{ ...fakeAgent, id: agentId }] });
+      await runTurn(harness, { chatId: 'file-authority', runId: 'file-authority', text: 'noask', agentId });
+      const initialize = harness.frames.find(
+        ({ direction, frame }) => direction === 'client->agent' && frame.includes('"method":"initialize"'),
+      );
+      expect(JSON.parse(initialize?.frame ?? '{}')).toMatchObject({
+        params: {
+          clientCapabilities: {
+            fs: { readTextFile: agentId !== 'grok', writeTextFile: agentId !== 'grok' },
+            elicitation: { url: {}, form: {} },
+            terminal: false,
+          },
+        },
+      });
+    },
+    90_000,
+  );
 
   /* A usage limit is the person's own account, not a crash: it is recorded once,
    * typed, in the provider's words, with no duplicate prose and no stack. */
@@ -2621,6 +2654,45 @@ describe('authentication, initialize and prompt content', () => {
     expect(sent(harness.frames, 'session/prompt')).toBe(0);
   }, 30_000);
 
+  it('offers the CLI login for an agent that lists no auth method and refuses at prompt', async () => {
+    /* Claude's adapter (0.70.0) advertises no auth method and turns the CLI's
+     * "Please run /login" into `-32000` on `session/prompt`; the profile's own
+     * login command is then the only affordance to show. */
+    const claude: AcpAdapter = {
+      ...fakeAgent,
+      id: 'claude',
+      displayName: 'Claude Code',
+      loginCommand: 'claude auth login',
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- environment variables keep their wire names
+      spawnEnv: { TAU_FAKE_AGENT_MODE: 'prompt-auth' },
+    };
+    const harness = await startHarness({ agents: [claude] });
+
+    await runTurn(harness, { chatId: 'chat-claude-auth', runId: 'run-claude-auth', text: 'noask', agentId: 'claude' });
+
+    const events = await readLog(harness.workspaceRoot, 'chat-claude-auth');
+    expect(eventsOfType(events, 'run.lifecycle').at(-1)).toMatchObject({
+      state: 'failed',
+      detail: { code: 'EXTERNAL_AGENT_AUTH_REQUIRED' },
+    });
+    expect(eventsOfType(events, 'interrupt.recorded').at(0)?.payload).toMatchObject({
+      kind: 'external-agent-login',
+      agentId: 'claude',
+      authMethods: [{ id: 'cli-login', name: 'Sign in to Claude Code', terminalCommand: 'claude auth login' }],
+    });
+  }, 30_000);
+
+  it('should refuse a raw secret form before SDK normalization can create a plaintext question record', async () => {
+    const harness = await startHarness();
+    await runTurn(harness, { chatId: 'chat-secret-ask', runId: 'run-secret-ask', text: 'ask-secret-form noask' });
+    const events = await readLog(harness.workspaceRoot, 'chat-secret-ask');
+    expect(JSON.stringify(events)).toContain(String.raw`ask-secret-form: {\"action\":\"decline\"}`);
+    await expect(
+      readFile(join(harness.workspaceRoot, '.tau', 'chats', 'chat-secret-ask', 'questions.v2.yaml'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(lifecycleOf(events).at(-1)).toBe('completed');
+  });
+
   it('asks a form elicitation through the chat question record and answers with the person’s choice', async () => {
     const harness = await startHarness();
     const chatDirectory = join(harness.workspaceRoot, '.tau', 'chats', 'chat-ask');
@@ -2628,12 +2700,12 @@ describe('authentication, initialize and prompt content', () => {
     const answerWhenAsked = async (): Promise<void> => {
       for (let attempt = 0; attempt < 200; attempt += 1) {
         // oxlint-disable-next-line eslint/no-await-in-loop -- polling is sequential by design
-        const text = await readFile(join(chatDirectory, 'questions.yaml'), 'utf8').catch(() => undefined);
+        const text = await readFile(join(chatDirectory, 'questions.v2.yaml'), 'utf8').catch(() => undefined);
         const [recorded] = parseQuestionsFile(text).asks;
         if (recorded !== undefined) {
           // oxlint-disable-next-line eslint/no-await-in-loop -- polling is sequential by design
           await writeFile(
-            join(chatDirectory, 'answers.yaml'),
+            join(chatDirectory, 'answers.v2.yaml'),
             serializeAnswersFile({
               version: 1,
               answers: {
@@ -2655,7 +2727,7 @@ describe('authentication, initialize and prompt content', () => {
       answerWhenAsked(),
     ]);
 
-    const [ask] = parseQuestionsFile(await readFile(join(chatDirectory, 'questions.yaml'), 'utf8')).asks;
+    const [ask] = parseQuestionsFile(await readFile(join(chatDirectory, 'questions.v2.yaml'), 'utf8')).asks;
     expect(ask).toMatchObject({
       callId: 'ask-1',
       source: 'acp',
@@ -3209,6 +3281,11 @@ describe('external turns through the revision port', () => {
     await symlink(join(root, 'publication'), join(skills, 'escape'), 'dir');
 
     await expect(readSessionTextFile(cwd, { path: resource }, [skills])).resolves.toBe('skill marker');
+    await expect(readSessionTextFile(cwd, { path: '.tau/private.png' }, [skills])).rejects.toMatchObject({
+      message: 'No path under .tau/private.png exists for this agent.',
+    });
+    await writeFile(join(cwd, 'image.png'), new Uint8Array([137, 80, 78, 71, 0, 255]));
+    await expect(readSessionTextFile(cwd, { path: 'image.png' }, [skills])).rejects.toThrow('UTF-8 text');
     await expect(writeSessionTextFile(cwd, { path: resource, content: 'changed' })).rejects.toMatchObject({
       code: 'WORKSPACE_MASKED_PATH',
     });

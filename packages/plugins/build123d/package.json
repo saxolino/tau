@@ -1,6 +1,6 @@
 {
   "name": "@taucad/build123d",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.5",
   "description": "Native Build123d kernel for Tau",
   "type": "module",
   "sideEffects": false,
@@ -19,7 +19,11 @@
   "files": [
     "dist",
     "python",
+    "tau-plugin.json",
+    "tau-plugin.cdx.json",
+    "notices",
     "agent",
+    "project",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"
@@ -41,6 +45,8 @@
       "default": "./agent/skills.json"
     },
     "./agent/*": "./agent/*",
+    "./tau-plugin.json": "./tau-plugin.json",
+    "./project/*": "./project/*",
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -56,6 +62,8 @@
         "default": "./agent/skills.json"
       },
       "./agent/*": "./agent/*",
+      "./tau-plugin.json": "./tau-plugin.json",
+      "./project/*": "./project/*",
       "./package.json": "./package.json"
     },
     "imports": {}
@@ -70,6 +78,7 @@
   },
   "devDependencies": {
     "@taucad/agent-tools": "workspace:*",
+    "@taucad/archive-core": "workspace:*",
     "@taucad/geometry-core": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/runtime-testing": "workspace:*",
@@ -79,6 +88,7 @@
   "dependencies": {
     "@taucad/cache-core": "workspace:*",
     "@taucad/native-process-core": "workspace:*",
+    "@taucad/occt-core": "workspace:*",
     "@taucad/parameters": "workspace:*"
   },
   "taucad": {

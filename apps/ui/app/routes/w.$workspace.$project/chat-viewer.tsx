@@ -28,7 +28,8 @@ import { useFileContent } from '#hooks/use-file-content.js';
 import { useWorkbenchViewCommands } from '#workbench-records/view-actions.js';
 import { useLiveViewOptions } from '#workbench-records/live-view-options.js';
 import { setLocalInstanceChoice, useLocalInstanceChoice } from '#workbench-records/local-instance.js';
-import { newViewRecord, viewTabTitle } from '#workbench-records/projection.js';
+import { newViewRecord } from '#workbench-records/projection.js';
+import { viewTabTitle } from '#workbench-records/view-titles.js';
 import { CadProvider, useCad, useCadSelector } from '#hooks/use-cad.js';
 import {
   GraphicsProvider,
@@ -67,12 +68,12 @@ import {
   completeViewerSecondaryGesture,
   idleViewerSecondaryGestureState,
   moveViewerSecondaryGesture,
-} from '#routes/w.$workspace.$project/chat-viewer-secondary-gesture.js';
+} from '@taucad/workbench-panes/component-menu/viewer-secondary-gesture';
 import type {
   ViewerSecondaryGestureMenu,
   ViewerSecondaryGesturePoint,
   ViewerSecondaryGestureState,
-} from '#routes/w.$workspace.$project/chat-viewer-secondary-gesture.js';
+} from '@taucad/workbench-panes/component-menu/viewer-secondary-gesture';
 import { ExactMeasurementProvider } from '@taucad/viewer/graphics/three/react/exact-measurement';
 import type { ExactOccurrenceDistanceRequest } from '@taucad/viewer/graphics/three/react/exact-measurement';
 import { measureExactOccurrenceDistance } from '#workers/measurement-exact.client.js';

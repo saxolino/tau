@@ -20,9 +20,11 @@ import { z } from 'zod';
 import { rpcName, toolName } from '@taucad/chat/constants';
 import type * as TauMcp from '@taucad/mcp';
 import type { TauMcpServerOptions } from '@taucad/mcp';
-import type { HostToolInvocation, HostToolResult, ToolRegistry } from '@taucad/agent-host';
+import type { HostToolDefinition, HostToolInvocation, HostToolResult, ToolRegistry } from '@taucad/agent-host';
 
 import { serveLocalHostMcp } from '#mcp-server.js';
+import { prepareKernelToolName } from '#prepare-kernel-tool.js';
+import { testModelTool } from '#test-model-tool.fixture.js';
 
 const served = vi.hoisted(() => ({ options: undefined as TauMcpServerOptions | undefined, closed: 0 }));
 
@@ -42,16 +44,20 @@ vi.mock('@taucad/mcp', async (importOriginal) => ({
  * Serve over a registry that answers every call with `answer`.
  *
  * @param answer - The registry's result for any invocation.
- * @param options - Default folder and whether the launcher pinned it.
+ * @param options - Default folder, whether the launcher pinned it, and what the registry lists.
  * @returns The served dispatch, the recorded invocations, the run → root map and the local server.
  */
 const serve = async (
   answer: HostToolResult,
-  options?: { readonly workspaceRoot: string; readonly pinned?: boolean },
+  options?: {
+    readonly workspaceRoot?: string;
+    readonly pinned?: boolean;
+    readonly listed?: readonly HostToolDefinition[];
+  },
 ) => {
   const invocations: HostToolInvocation[] = [];
   const registry: ToolRegistry = {
-    list: () => [],
+    list: () => [...(options?.listed ?? [testModelTool])],
     invoke: async (invocation) => {
       invocations.push(invocation);
       return answer;
@@ -92,6 +98,27 @@ const exists = async (path: string): Promise<boolean> => {
 };
 
 describe('serveLocalHostMcp', () => {
+  it('should list test_model only over a registry that offers it', async () => {
+    const withEngine = await serve(ready);
+    try {
+      expect(served.options?.cadTools).toEqual([
+        toolName.evaluateModel,
+        toolName.testModel,
+        toolName.screenshot,
+        toolName.exportModel,
+      ]);
+    } finally {
+      await withEngine.local.close();
+    }
+
+    const { local } = await serve(ready, { listed: [] });
+    try {
+      expect(served.options?.cadTools).toEqual([toolName.evaluateModel, toolName.screenshot, toolName.exportModel]);
+    } finally {
+      await local.close();
+    }
+  });
+
   it('should work in the folder a call names, else the default folder', async () => {
     const { dispatch, invocations, checkouts, local } = await serve(ready);
     try {
@@ -110,54 +137,24 @@ describe('serveLocalHostMcp', () => {
     }
   });
 
-  it("should ask the person through the client's form only when the client can draw one", async () => {
+  it('should leave a job for the person in Tau even when the client can draw a form', async () => {
     const { dispatch, invocations, local } = await serve(ready);
     try {
       const asked: string[] = [];
       await dispatch(
-        { toolName: toolName.requestPrint, args: { targetFile: 'plate.ts' } },
+        { toolName: toolName.requestJob, args: { targetFile: 'plate.ts' } },
         {
-          toolCallId: 'print-1',
+          toolCallId: 'job-1',
           confirm: async ({ message }) => {
             asked.push(message);
-            return 'denied';
+            return 'approved';
           },
         },
       );
-      await dispatch({ toolName: toolName.requestPrint, args: { targetFile: 'plate.ts' } }, { toolCallId: 'print-2' });
 
-      const [withForm, withoutForm] = invocations;
-      expect(await withForm?.approve?.({ prompt: 'Print plate.3mf on X1C?' })).toEqual({
-        interruptId: 'print-1',
-        outcome: 'denied',
-      });
-      expect(asked).toEqual(['Print plate.3mf on X1C?']);
-      expect(withForm?.approve?.recall).toBeUndefined();
-      expect(withoutForm?.approve).toBeUndefined();
+      expect(invocations[0]?.approve).toBeUndefined();
+      expect(asked).toEqual([]);
     } finally {
-      await local.close();
-    }
-  });
-
-  it('should tell the tool, and the operator on stderr, when the client could not ask the person', async () => {
-    const { dispatch, invocations, local } = await serve(ready);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      await dispatch(
-        { toolName: toolName.requestPrint, args: { targetFile: 'plate.ts' } },
-        {
-          toolCallId: 'print-1',
-          confirm: async () => {
-            throw new Error('Method not found');
-          },
-        },
-      );
-      await expect(invocations[0]?.approve?.({ prompt: 'Print plate.3mf on X1C?' })).rejects.toMatchObject({
-        code: 'APPROVAL_UNAVAILABLE',
-      });
-      expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('Method not found');
-    } finally {
-      stderr.mockRestore();
       await local.close();
     }
   });
@@ -252,7 +249,7 @@ describe('serveLocalHostMcp', () => {
     await writeFile(join(root, 'main.ts'), '');
     const invocations: HostToolInvocation[] = [];
     const registry: ToolRegistry = {
-      list: () => [],
+      list: () => [testModelTool],
       invoke: async (invocation) => {
         invocations.push(invocation);
         await mkdir(join(root, '.tau', 'artifacts'), { recursive: true });
@@ -284,6 +281,50 @@ describe('serveLocalHostMcp', () => {
     } finally {
       await local.close();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('should offer prepare_kernel as open-world and idempotent, and forward its progress reports to the client', async () => {
+    const registry: ToolRegistry = {
+      list: () => [
+        { name: prepareKernelToolName, description: 'Prepare.', inputSchema: { type: 'object', properties: {} } },
+      ],
+      invoke: async (invocation) => {
+        invocation.onUpdate?.({
+          content: { progress: 10, total: 30, message: 'downloading dotnet (0/2)' },
+          isError: false,
+        });
+        invocation.onUpdate?.({ content: { note: 'not a progress report' }, isError: false });
+        invocation.onUpdate?.({ content: { progress: 30, total: 30 }, isError: false });
+        return { content: { status: 'ready', kernel: 'picogk' }, isError: false };
+      },
+    };
+    const local = await serveLocalHostMcp({ workspaceRoot: '/default', registry, checkouts: new Map() });
+    try {
+      const reports: unknown[] = [];
+      const result = await served.options?.dispatch(
+        { toolName: prepareKernelToolName, args: { kernel: 'picogk' } },
+        {
+          toolCallId: 'prepare-1',
+          progress: async (report) => {
+            reports.push(report);
+          },
+        },
+      );
+
+      expect(served.options?.hostTools).toEqual([
+        expect.objectContaining({
+          name: prepareKernelToolName,
+          annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        }),
+      ]);
+      expect(reports).toEqual([
+        { progress: 10, total: 30, message: 'downloading dotnet (0/2)' },
+        { progress: 30, total: 30 },
+      ]);
+      expect(result).toEqual({ success: true, status: 'ready', kernel: 'picogk' });
+    } finally {
+      await local.close();
     }
   });
 });

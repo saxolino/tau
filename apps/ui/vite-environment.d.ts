@@ -17,6 +17,19 @@ interface ImportMetaEnv {
    * left undefined under `mode === 'test'` so unit tests can stub it.
    */
   readonly TAU_TARGET?: 'web' | 'desktop';
+  /**
+   * `'absent'` in the web build (`vite.config.ts`), whose origin is the static
+   * site and never a `tau serve` daemon, so the page skips asking it for a
+   * `/.well-known/tau-host` descriptor. Undefined elsewhere, and under
+   * `mode === 'test'`.
+   */
+  readonly TAU_ORIGIN_AGENT_HOST?: 'absent';
+  /**
+   * `'true'` once a non-prerelease Tau Desktop release exists to download (charter Q56, go-live DSK-7); `'false'`
+   * otherwise. Substituted by `define` in `vite.config.ts` from `TAU_DESKTOP_RELEASED` at build time; undefined
+   * under `mode === 'test'` so tests can stub both branches.
+   */
+  readonly TAU_DESKTOP_RELEASED?: 'true' | 'false';
 }
 
 declare module '*?base64' {

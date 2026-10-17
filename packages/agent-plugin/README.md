@@ -10,7 +10,7 @@ Tau CAD plugin for Codex and Claude Code: skills and the tau mcp launcher
 ## Why this package?
 
 - **One plugin for both hosts.** This package's folder is a Codex plugin and a Claude Code plugin; each host reads its own manifest and MCP server config.
-- **The agent sees the part it builds.** Five Tau tools evaluate a model, run its GeoSpec tests, return screenshots as images, export STEP, STL, 3MF or glTF, and arrange the Tau workbench.
+- **The agent sees the part it builds.** Ten Tau tools evaluate a model, run its GeoSpec tests, return screenshots as images, export STEP, STL, 3MF or glTF, read and edit its parameters, arrange the Tau workbench, show it in the Tau viewer and prepare native kernels; see [Tools](#tools).
 - **You see it too.** `show_model` opens the Tau viewer: inside Codex desktop and Claude Desktop as an MCP App, and as a local browser link in the CLIs.
 - **Kernel knowledge when a task needs it.** An onboarding skill, `tau`, plus API skills for replicad, OpenSCAD, JSCAD, Manifold, PicoVoxel, tscircuit, GeoSpec and the workbench.
 - **Nothing to install inside the plugin.** It has no dependencies: a small launcher finds your Tau CLI, or fetches the matching release with `npx`.
@@ -18,7 +18,7 @@ Tau CAD plugin for Codex and Claude Code: skills and the tau mcp launcher
 
 ## Installation
 
-The plugin needs Node.js 24 or later and the Tau CLI. Tau's pre-1.0 releases are published under the `beta` tag:
+The plugin needs Node.js 24 or later, with the npm 11 it bundles, and the Tau CLI; npm 10 fails to resolve the CLI's dependency graph. Tau's pre-1.0 releases are published under the `beta` tag:
 
 ```bash
 npm install -g @taucad/cli@beta
@@ -29,16 +29,16 @@ Without a `tau` on `PATH`, the plugin runs `npx --yes --package=@taucad/cli@<thi
 ### Claude Code
 
 ```bash
-claude plugin marketplace add taucad/tau
+claude plugin marketplace add taucad/marketplace
 claude plugin install tau@taucad
 ```
 
-Claude Code 2.1.275 or later does both in one step: `claude plugin install tau --marketplace taucad/tau`, or `/plugin install tau --marketplace taucad/tau` inside a session. Add `--scope project` to record the plugin in the current project's settings rather than yours. The install is a copy under `~/.claude/plugins/cache/taucad/tau/<version>/`; `claude plugin update tau@taucad` refreshes it, and the next session runs it.
+Claude Code 2.1.275 or later does both in one step: `claude plugin install tau --marketplace taucad/marketplace`, or `/plugin install tau --marketplace taucad/marketplace` inside a session. Add `--scope project` to record the plugin in the current project's settings rather than yours. The install is a copy under `~/.claude/plugins/cache/taucad/tau/<version>/`; `claude plugin update tau@taucad` refreshes it, and the next session runs it.
 
 ### Codex
 
 ```bash
-codex plugin marketplace add taucad/tau
+codex plugin marketplace add taucad/marketplace
 codex plugin add tau@taucad
 ```
 
@@ -62,7 +62,7 @@ There are no peer dependencies.
 
 ```bash
 npm install -g @taucad/cli@beta
-claude plugin install tau --marketplace taucad/tau
+claude plugin install tau --marketplace taucad/marketplace
 mkdir bracket && cd bracket
 claude "Model a 40 mm wall bracket with two M4 screw holes in replicad. Write GeoSpec tests for its size and holes, make them pass, and show me a screenshot."
 ```
@@ -71,23 +71,30 @@ The same prompt works in `codex` after the Codex install. The agent writes `main
 
 ## Tools
 
-| Tool                        | What it does                                                                                  | Writes                                       |
-| --------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `evaluate_model`            | Builds one model file; returns its status, kernel issues, views and exports                   | Nothing                                      |
-| `test_model`                | Runs the project's GeoSpec tests (`*.geospec.ts`), one file or one test                       | A report over 128 KiB, in the session folder |
-| `screenshot`                | Renders views of a model and returns the images in the result                                 | The images, in the session folder            |
-| `export_model`              | Exports STEP, STL, 3MF, glTF or another format the model offers                               | `.tau/artifacts/` in the project             |
-| `arrange_workbench`         | Opens views and panes for a person who has the project open in the Tau app                    | `.tau/workbench/` in the project             |
-| `get_parameters`            | Reads a model's parameters: their schema, defaults and the values in effect                   | Nothing                                      |
-| `apply_parameter_operation` | Edits a model's parameters through a checked write; Tau shows the same values                 | `.tau/parameters/` in the project            |
-| `show_model`                | Shows a model in the Tau viewer; a CAD source or STEP/STL/3MF/OBJ becomes GLB first           | The GLB, under `.tau/artifacts/`             |
-| `view_state`                | Reports what the viewer shows: model, selection, visibility, camera; with `capture`, an image | Nothing                                      |
+| Tool                        | What it does                                                                                  | Writes                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `evaluate_model`            | Builds one model file; returns its status, kernel issues, views and exports                   | Nothing                                       |
+| `test_model`                | Runs the project's GeoSpec tests (`*.geospec.ts`), one file or one test                       | A report over 128 KiB, in the session folder  |
+| `screenshot`                | Renders views of a model and returns the images in the result                                 | The images, in the session folder             |
+| `export_model`              | Exports STEP, STL, 3MF, glTF or another format the model offers                               | `.tau/artifacts/` in the project              |
+| `arrange_workbench`         | Opens views and panes for a person who has the project open in the Tau app                    | `.tau/workbench/` in the project              |
+| `get_parameters`            | Reads a model's parameters: their schema, defaults and the values in effect                   | Nothing                                       |
+| `apply_parameter_operation` | Edits a model's parameters through a checked write; Tau shows the same values                 | `.tau/parameters/` in the project             |
+| `show_model`                | Shows a model in the Tau viewer; a CAD source or STEP/STL/3MF/OBJ becomes GLB first           | The GLB, under `.tau/artifacts/`              |
+| `view_state`                | Reports what the viewer shows: model, selection, visibility, camera; with `capture`, an image | Nothing                                       |
+| `prepare_kernel`            | Downloads the native runtime a `.py` or `.cs` model needs, once per computer                  | The shared payload store, outside the project |
 
-The tools load with the session in both hosts rather than waiting behind tool search.
+The tools load with the session in both hosts rather than waiting behind tool search. `test_model` is listed only when the server can resolve the GeoSpec engine, which `@taucad/cli` installs with itself; a server without it does not register the tool, so a client calling it anyway gets the MCP unknown-tool error.
 
 ### Printing
 
-With `TAU_HOST_MACHINES=true` in the server's environment (the Codex manifest passes it through), `tau mcp` also offers the print tools (`get_print_profiles`, `request_print`, `get_print_request`, `list_print_requests`, `cancel_print`) over the printers you bound in the Tau app. `request_print` slices the model in the folder the agent is working in, which must be a Tau project (it holds `tau.json`), and asks you to approve the print in the agent app's own form; the print starts only if you tick Approve and accept. An agent app that cannot show a form gets the request back waiting, and you approve it in Tau's Print pane. Printers are shared by every Tau app on the computer and only one can use them at a time, so while the Tau desktop app has them the server offers no print tools, and while the server has them the desktop app waits. That is why printing is off unless you turn it on, and why a server whose one folder is not a Tau project (Claude Code's project folder, or `--project`) leaves the printers alone and says so on stderr. Codex names the folder with each call, so its server prints from whichever project the thread works in. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
+With `TAU_HOST_MACHINES=true` in the server's environment (the Codex manifest passes it through), `tau mcp` also offers the machine tools (`list_machines`, `get_machine`, `machine_action`, `stop_machine`, `get_print_profiles`, `request_job`, `check_job`) over the machines you bound in the Tau app. `request_job` slices the model in the folder the agent is working in, which must be a Tau project (it holds `tau.json`), and leaves the job waiting: you approve it in Tau's Print pane, where Tau asks for the checks every job needs, and an action that needs your approval waits there too. Machines are shared by every Tau app on the computer and only one can use them at a time, so while the Tau desktop app has them the server offers no machine tools, and while the server has them the desktop app waits. That is why the machine tools are off unless you turn them on, and why a server whose one folder is not a Tau project (Claude Code's project folder, or `--project`) leaves the machines alone and says so on stderr. Codex names the folder with each call, so its server requests jobs from whichever project the thread works in. Hosts that draw MCP Apps also get the tools the viewer page calls; see [Viewer](#viewer).
+
+### Native kernels
+
+`.py` (Build123d) and `.cs` (PicoGK) files run on a native runtime, an interpreter and wheels or a .NET runtime, that is downloaded once into a payload store every Tau app on the computer shares. No CAD tool downloads: until the runtime is prepared, every tool answers a `.py` or `.cs` file with `KERNEL_NOT_PREPARED`, naming the kernel, the bytes preparing downloads and the call that prepares it. That call is `prepare_kernel` with `{ "kernel": "build123d" }` or `{ "kernel": "picogk" }`; it reports progress, keeps every verified file when it is cancelled, and is the one tool that reaches the network, so approving it is the consent to download. A runtime prepared elsewhere, by `tau prepare` or the Tau app, is used on the next call with no `prepare_kernel`.
+
+The server does not pass its environment on: the threads that run models get the platform's own variables, the proxy and CA variables, and Tau's `TAU_*` acquisition profile (`TAU_PAYLOAD_MIRROR`, `TAU_PAYLOAD_MIRROR_NO_FALLBACK`, `TAU_PAYLOAD_DIR`, `TAU_CONFIG_DIR`, `TAU_ACQUISITION`, `TAU_PAYLOAD_TARGET`, `TAU_PAYLOAD_EMULATION`), and nothing else. The Codex manifest forwards those names to the server, and with a proxy set the launcher sets `NODE_USE_ENV_PROXY=1` so downloads use it.
 
 ## Viewer
 

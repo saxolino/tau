@@ -781,6 +781,7 @@ class KernelRuntimeWorker extends KernelWorker<RuntimeWorkerOptions> {
           content: output.content,
           mimeType: declaration.mimeType,
           ...(output.units ? { units: output.units } : {}),
+          ...(output.tessellation ? { tessellation: output.tessellation } : {}),
         },
         issues: [...(output.issues ?? [])],
       };
@@ -1031,6 +1032,11 @@ class KernelRuntimeWorker extends KernelWorker<RuntimeWorkerOptions> {
     } catch (error) {
       if (isRenderAbortedError(error)) {
         throw error;
+      }
+      // A kernel refusal (an over-budget export's `RESOURCE_LIMIT`) keeps its code and details, as render does.
+      const carried = carriedKernelIssues(error);
+      if (carried) {
+        return { success: false, issues: carried };
       }
       return createKernelError([
         {

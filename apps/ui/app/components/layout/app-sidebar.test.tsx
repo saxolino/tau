@@ -78,13 +78,22 @@ describe('AppSidebar', () => {
     vi.unstubAllEnvs();
   });
 
-  it('should show Parts by default and hide it when disabled', () => {
+  it('hides Machines by default and shows it only when enabled', () => {
     const view = renderSidebar();
-    expect(getNavLink('Parts')).toHaveAttribute('href', '/parts');
+    expect(getNavLink('Machines')).toBeUndefined();
     view.unmount();
-    mockState.flags = { ...featureFlagDefaults, partsWarehouse: false };
+    mockState.flags = { ...featureFlagDefaults, machines: true };
     renderSidebar();
+    expect(getNavLink('Machines')).toHaveAttribute('href', '/machines');
+  });
+
+  it('should hide Parts by default and show it when enabled', () => {
+    const view = renderSidebar();
     expect(getNavLink('Parts')).toBeUndefined();
+    view.unmount();
+    mockState.flags = { ...featureFlagDefaults, partsWarehouse: true };
+    renderSidebar();
+    expect(getNavLink('Parts')).toHaveAttribute('href', '/parts');
   });
 
   it('should hide the Plugins nav item when the Plugins Store flag is disabled', () => {

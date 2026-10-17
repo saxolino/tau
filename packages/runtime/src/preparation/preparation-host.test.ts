@@ -1,6 +1,7 @@
 // Tier-2 scenarios of the preparation host (W2 oracle, T1): a real store on disk, in-test archives and a hermetic
 // registry `fetch`. The global `fetch` is replaced by a tripwire, so no scenario can reach the network.
-import { lstat, mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { lstat, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 
 import { measureCapacityDomain } from '@taucad/filesystem';
@@ -15,7 +16,9 @@ import type {
   CreatePreparationHostOptions,
   PluginPreparation,
   PreparationHost,
+  PreparationPlugin,
   PrepareOutcome,
+  SealClosureRefusal,
 } from '#preparation/preparation-host.types.js';
 import type { DependencyPayload, DependencyVariant, HostIndicators } from '#preparation/preparation.types.js';
 
@@ -79,6 +82,8 @@ const scenario = async (
     ) => readonly DependencyVariant[];
     readonly serve?: boolean;
     readonly host?: Partial<CreatePreparationHostOptions>;
+    readonly seal?: PreparationPlugin['seal'];
+    readonly launchSet?: PreparationPlugin['launchSet'];
   } = {},
 ): Promise<Scenario> => {
   const directory = await temporaryDirectory('tau-preparation-');
@@ -88,9 +93,11 @@ const scenario = async (
   await writeFile(hostPath, '// host installation\n');
   const bytes = pythonPayloadBytes();
   const payloads = pythonPayloads(bytes);
-  const plugin = pluginOf(packageName, {
-    engine: options.variants?.(payloads) ?? [{ target: linuxTarget, payloads }],
-  });
+  const plugin = {
+    ...pluginOf(packageName, { engine: options.variants?.(payloads) ?? [{ target: linuxTarget, payloads }] }),
+    ...(options.seal === undefined ? {} : { seal: options.seal }),
+    ...(options.launchSet === undefined ? {} : { launchSet: options.launchSet }),
+  };
   const registry = createFakeRegistry();
   if (options.serve !== false) {
     servePayloads(
@@ -244,6 +251,300 @@ describe('createPreparationHost', () => {
         expect(state.completedBytes).toBeLessThanOrEqual(totalBytes);
       }
       expect(new Set(preparing.map((state) => state.attemptId)).size).toBe(1);
+    });
+  });
+
+  describe('seal step', () => {
+    const bytecode = 'python/lib/python3.13/__pycache__/os.cpython-313.pyc';
+
+    it('should receipt the files the seal step adds with normalised modes and cover them in treeIntegrity', async () => {
+      const seen: Array<{ readonly root: string; readonly files: readonly string[] }> = [];
+      const { store, host, events } = await scenario({
+        seal: async ({ root, files }) => {
+          seen.push({ root, files: files.map(({ path }) => path) });
+          await mkdir(join(root, 'python', 'lib', 'python3.13', '__pycache__'), { recursive: true });
+          await writeFile(join(root, ...bytecode.split('/')), 'compiled', { mode: 0o600 });
+          return undefined;
+        },
+      });
+
+      const receipt = readyReceipt(await prepare(host));
+
+      const row = receipt.files.find(({ path }) => path === bytecode);
+      expect(row).toEqual({ path: bytecode, byteLength: 8, sha256: sha256Hex(utf8('compiled')), mode: 0o644 });
+      const written = await stat(join(receipt.root, ...bytecode.split('/')));
+      expect(written.mode % 0o1000).toBe(0o644);
+      expect(receipt.treeIntegrity).toBe(await computeTreeIntegrity(receipt.files));
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.root.startsWith(join(store, 'tmp'))).toBe(true);
+      expect(seen[0]?.files).toEqual(receipt.files.filter(({ path }) => path !== bytecode).map(({ path }) => path));
+      expect(events.some(({ state }) => state.status === 'preparing' && state.phase === 'sealing')).toBe(true);
+    });
+
+    it("should end blocked with the seal step's refusal, seal nothing and keep the verified blobs", async () => {
+      const { store, bytes, host } = await scenario({
+        seal: async () => ({
+          reason: 'missing-system-library',
+          message: 'needs libGL.so.1',
+          detail: { library: 'libGL.so.1' },
+        }),
+      });
+
+      const outcome = await prepare(host);
+
+      expect(outcome).toMatchObject({
+        status: 'blocked',
+        reason: 'missing-system-library',
+        message: 'needs libGL.so.1',
+        detail: { library: 'libGL.so.1' },
+      });
+      expect(await entriesOf(join(store, 'closures', 'sha256'))).toEqual([]);
+      expect(await entriesOf(join(store, 'tmp'))).toEqual([]);
+      expect(await exists(blobPath(store, bytes.python))).toBe(true);
+    });
+
+    it('should remove and regenerate every sealed file when a repair finds one damaged', async () => {
+      let runs = 0;
+      const { host } = await scenario({
+        // Like bytecode compilation, the step leaves a file it finds present untouched.
+        seal: async ({ root }) => {
+          runs += 1;
+          await mkdir(join(root, 'python', 'lib', 'python3.13', '__pycache__'), { recursive: true });
+          if (!(await exists(join(root, ...bytecode.split('/'))))) {
+            await writeFile(join(root, ...bytecode.split('/')), 'compiled');
+          }
+          return undefined;
+        },
+      });
+      const receipt = readyReceipt(await prepare(host));
+      await writeFile(join(receipt.root, ...bytecode.split('/')), 'tampered');
+
+      const [stale] = await host.verify({ package: packageName, signal: AbortSignal.timeout(prepareTimeout) });
+      const [repaired] = await host.verify({
+        package: packageName,
+        repair: true,
+        offline: true,
+        signal: AbortSignal.timeout(prepareTimeout),
+      });
+      const [intact] = await host.verify({ package: packageName, signal: AbortSignal.timeout(prepareTimeout) });
+
+      expect(stale).toMatchObject({ status: 'stale', payloads: [], files: [bytecode] });
+      expect(repaired).toMatchObject({ status: 'repaired', payloads: [] });
+      expect(intact).toMatchObject({ status: 'intact' });
+      expect(runs).toBe(2);
+    });
+
+    it("should end blocked with the seal step's refusal when a newer Tau repairs a closure on a host that lost a library", async () => {
+      let libraryPresent = true;
+      const refusal: SealClosureRefusal = {
+        reason: 'missing-system-library',
+        message: 'needs libGL.so.1',
+        detail: { library: 'libGL.so.1' },
+      };
+      const { host, reopen } = await scenario({
+        seal: async ({ root }) => {
+          if (!libraryPresent) {
+            return refusal;
+          }
+          await mkdir(join(root, 'python', 'lib', 'python3.13', '__pycache__'), { recursive: true });
+          await writeFile(join(root, ...bytecode.split('/')), 'compiled');
+          return undefined;
+        },
+      });
+      const receipt = readyReceipt(await prepare(host));
+      await writeFile(join(receipt.root, ...bytecode.split('/')), 'tampered');
+      libraryPresent = false;
+      const upgraded = reopen({ tauVersion: '2.0.0' });
+
+      await expect(prepare(upgraded, { offline: true })).resolves.toMatchObject({ status: 'blocked', ...refusal });
+      // The refused repair leaves the closure unsealed: no reader reports it intact, and no launch uses it.
+      await expect(
+        upgraded.verify({
+          package: packageName,
+          repair: true,
+          offline: true,
+          signal: AbortSignal.timeout(prepareTimeout),
+        }),
+      ).resolves.toMatchObject([{ status: 'absent', files: [] }]);
+      await expect(upgraded.inspect({ package: packageName })).resolves.toMatchObject({ state: { status: 'idle' } });
+      await expect(upgraded.inspectLaunch({ package: packageName })).resolves.toEqual({ status: 'idle' });
+      libraryPresent = true;
+      const rebuilt = readyReceipt(await prepare(upgraded, { offline: true }));
+      expect(rebuilt).toMatchObject({ tauVersion: '2.0.0', treeIntegrity: receipt.treeIntegrity });
+    });
+
+    it('should repair through a seal step that refuses any file it did not expect, as Build123d does (S4)', async () => {
+      const roots: string[][] = [];
+      const { store, bytes, host } = await scenario({
+        // Like Build123d's compileall check: only the payloads' files and bytecode may be under the root.
+        seal: async ({ root, files }) => {
+          const present = await listFiles(root);
+          roots.push(present);
+          const known = new Set(files.map(({ path }) => path));
+          const unexpected = present.filter((path) => !known.has(path) && path !== bytecode);
+          if (unexpected.length > 0) {
+            throw new PreparationError(
+              'EXTRACTION_REFUSED',
+              `left files that are not bytecode: ${unexpected.join(', ')}`,
+            );
+          }
+          await mkdir(join(root, 'python', 'lib', 'python3.13', '__pycache__'), { recursive: true });
+          await writeFile(join(root, ...bytecode.split('/')), 'compiled');
+          return undefined;
+        },
+        launchSet: () => ['python/bin/python3', 'worker/worker.py'],
+      });
+      const receipt = readyReceipt(await prepare(host));
+      await rm(join(receipt.root, ...bytecode.split('/')));
+      await rm(blobPath(store, bytes.demo));
+
+      const [repaired] = await host.verify({
+        package: packageName,
+        repair: true,
+        offline: true,
+        signal: AbortSignal.timeout(prepareTimeout),
+      });
+      const [intact] = await host.verify({ package: packageName, signal: AbortSignal.timeout(prepareTimeout) });
+
+      expect(repaired).toMatchObject({ status: 'repaired', payloads: [], files: [bytecode] });
+      expect(intact).toMatchObject({ status: 'intact' });
+      expect(roots).toHaveLength(2);
+      expect(roots.flat().filter((path) => path === 'receipt.json' || path === 'launch.json')).toEqual([]);
+    });
+
+    it('should leave a closure whose repair fails unsealed, so nothing reports it intact, and rebuild it on prepare', async () => {
+      let failRepair = false;
+      const { host } = await scenario({
+        seal: async ({ root }) => {
+          await mkdir(join(root, 'python', 'lib', 'python3.13', '__pycache__'), { recursive: true });
+          // Like compileall, the step restores the file before it fails: the tree then matches the receipt again.
+          await writeFile(join(root, ...bytecode.split('/')), 'compiled');
+          if (failRepair) {
+            throw new PreparationError('EXTRACTION_REFUSED', 'the seal step failed after it wrote its files');
+          }
+          return undefined;
+        },
+      });
+      const receipt = readyReceipt(await prepare(host));
+      await writeFile(join(receipt.root, ...bytecode.split('/')), 'tampered');
+      failRepair = true;
+
+      await expectPreparationError(
+        host.verify({ package: packageName, repair: true, offline: true, signal: AbortSignal.timeout(prepareTimeout) }),
+        'EXTRACTION_REFUSED',
+      );
+      const [after] = await host.verify({ package: packageName, signal: AbortSignal.timeout(prepareTimeout) });
+
+      expect(after).toMatchObject({ status: 'absent' });
+      expect(await exists(join(receipt.root, 'receipt.json'))).toBe(false);
+      await expect(host.inspect({ package: packageName })).resolves.toMatchObject({ state: { status: 'idle' } });
+      failRepair = false;
+      expect(readyReceipt(await prepare(host, { offline: true })).treeIntegrity).toBe(receipt.treeIntegrity);
+      await expect(
+        host.verify({ package: packageName, signal: AbortSignal.timeout(prepareTimeout) }),
+      ).resolves.toMatchObject([{ status: 'intact' }]);
+    });
+  });
+
+  describe('launch index', () => {
+    const launchSet = (): readonly string[] => ['python/bin/python3', 'worker/worker.py'];
+
+    it('should seal a launch index of the launch set rows that treeIntegrity covers', async () => {
+      const { host } = await scenario({ launchSet });
+
+      const receipt = readyReceipt(await prepare(host));
+      const index = JSON.parse(await readFile(join(receipt.root, 'launch.json'), 'utf8')) as {
+        readonly files: ReadonlyArray<{ readonly path: string }>;
+      };
+
+      expect(index).toEqual({
+        schemaVersion: 1,
+        package: packageName,
+        dependency: 'engine',
+        closureIntegrity: receipt.closureIntegrity,
+        files: receipt.files.filter(({ path }) => launchSet().includes(path)),
+      });
+      const row = receipt.files.find(({ path }) => path === 'launch.json');
+      const indexBytes = new Uint8Array(await readFile(join(receipt.root, 'launch.json')));
+      expect(row).toMatchObject({ mode: 0o644, sha256: sha256Hex(indexBytes) });
+      expect(row?.payload).toBeUndefined();
+      expect(receipt.treeIntegrity).toBe(await computeTreeIntegrity(receipt.files));
+      // The version stamp leads the receipt, so a launch reads it from the head.
+      const written = await readFile(join(receipt.root, 'receipt.json'), 'utf8');
+      expect(written.startsWith('{\n  "tauVersion": "1.0.0",')).toBe(true);
+    });
+
+    it('should answer a launch from the index and the receipt head alone, as inspect answers it', async () => {
+      const { host, reopen } = await scenario({ launchSet });
+      await expect(host.inspectLaunch({ package: packageName })).resolves.toEqual({ status: 'idle' });
+      const receipt = readyReceipt(await prepare(host));
+
+      const launch = await host.inspectLaunch({ package: packageName });
+
+      expect(launch).toEqual({
+        status: 'ready',
+        closures: {
+          engine: {
+            package: packageName,
+            dependency: 'engine',
+            root: receipt.root,
+            closureIntegrity: receipt.closureIntegrity,
+            files: receipt.files.filter(({ path }) => launchSet().includes(path)),
+          },
+        },
+      });
+      // Only the head of the receipt is read: a body no parser accepts does not change the launch's answer.
+      const text = await readFile(join(receipt.root, 'receipt.json'), 'utf8');
+      await writeFile(join(receipt.root, 'receipt.json'), `${text.slice(0, 200)} not json`);
+      await expect(host.inspect({ package: packageName })).resolves.toMatchObject({ state: { status: 'idle' } });
+      await expect(host.inspectLaunch({ package: packageName })).resolves.toEqual(launch);
+      await writeFile(join(receipt.root, 'receipt.json'), text);
+      // A receipt from another Tau version is stale for a launch too, and an unsealed closure is absent.
+      await expect(reopen({ tauVersion: '2.0.0' }).inspectLaunch({ package: packageName })).resolves.toEqual({
+        status: 'idle',
+      });
+      await rm(join(receipt.root, 'receipt.json'));
+      await expect(host.inspectLaunch({ package: packageName })).resolves.toEqual({ status: 'idle' });
+    });
+
+    it('should read the full receipt for a closure sealed without a launch index', async () => {
+      const { host } = await scenario();
+      const receipt = readyReceipt(await prepare(host));
+
+      expect(await exists(join(receipt.root, 'launch.json'))).toBe(false);
+      await expect(host.inspectLaunch({ package: packageName })).resolves.toMatchObject({
+        status: 'ready',
+        closures: { engine: { root: receipt.root, files: receipt.files } },
+      });
+    });
+
+    it('should catch a changed launch index on verify and rewrite it without running the seal step', async () => {
+      let runs = 0;
+      const { host } = await scenario({
+        launchSet,
+        seal: async () => {
+          runs += 1;
+          return undefined;
+        },
+      });
+      const receipt = readyReceipt(await prepare(host));
+      const path = join(receipt.root, 'launch.json');
+      const original = await readFile(path, 'utf8');
+      const worker = receipt.files.find((row) => row.path === 'worker/worker.py')!;
+      await writeFile(path, original.replace(worker.sha256, '0'.repeat(64)));
+
+      const [stale] = await host.verify({ package: packageName, signal: AbortSignal.timeout(prepareTimeout) });
+      const [repaired] = await host.verify({
+        package: packageName,
+        repair: true,
+        offline: true,
+        signal: AbortSignal.timeout(prepareTimeout),
+      });
+
+      expect(stale).toMatchObject({ status: 'stale', payloads: [], files: ['launch.json'] });
+      expect(repaired).toMatchObject({ status: 'repaired', payloads: [] });
+      expect(await readFile(path, 'utf8')).toBe(original);
+      expect(runs).toBe(1);
     });
   });
 
@@ -418,6 +719,61 @@ describe('createPreparationHost', () => {
       expect(leftOutcome.status).toBe('cancelled');
       await expect(stays).resolves.toMatchObject({ status: 'ready' });
     });
+
+    it('should start a fresh attempt for a call made right after every caller cancelled, while those callers see the cancellation', async () => {
+      const { store, registry, reopen } = await scenario();
+      /* The first download of the wheel ignores its abort until released, so the cancelled attempt is still winding
+       * down when the retry arrives. */
+      const stuck = Promise.withResolvers<void>();
+      let held = false;
+      const host = reopen({
+        fetch: async (input, init) => {
+          const url = input instanceof Request ? input.url : String(input);
+          if (!held && url === originOf('demo')) {
+            held = true;
+            await stuck.promise;
+          }
+          return registry.fetch(input, init);
+        },
+      });
+      const events: PluginPreparation[] = [];
+      host.on('preparation', (event) => {
+        events.push(event);
+      });
+      const cancel = new AbortController();
+      const joined = [prepare(host, { signal: cancel.signal }), prepare(host, { signal: cancel.signal })];
+      await vi.waitFor(() => {
+        expect(held).toBe(true);
+      });
+
+      cancel.abort(new Error('cancelled by the test'));
+      const cancelled = await Promise.all(joined);
+      const retried = await Promise.race([
+        prepare(host),
+        new Promise<'joined the cancelled attempt'>((resolve) => {
+          setTimeout(resolve, 5000, 'joined the cancelled attempt');
+        }),
+      ]);
+      stuck.resolve();
+      await vi.waitFor(async () => {
+        expect(await entriesOf(join(store, 'tmp'))).toEqual([]);
+      });
+
+      const [cancelledId] = cancelled.map((outcome) => outcome.attemptId);
+      expect(cancelled).toEqual([
+        { status: 'cancelled', attemptId: cancelledId },
+        { status: 'cancelled', attemptId: cancelledId },
+      ]);
+      expect(retried).toMatchObject({ status: 'ready' });
+      expect(typeof retried === 'object' && retried.attemptId !== cancelledId).toBe(true);
+      /* The cancelled attempt ends without reporting over the newer one: the last state is the retry's ready. */
+      expect(events.at(-1)?.state).toMatchObject({ status: 'ready' });
+      expect(
+        events.filter(
+          ({ state }) => 'attemptId' in state && state.attemptId === cancelledId && state.status !== 'preparing',
+        ),
+      ).toEqual([]);
+    });
   });
 
   describe('offline', () => {
@@ -531,6 +887,43 @@ describe('createPreparationHost', () => {
       expect(registry.calls).toHaveLength(calls);
     });
 
+    it('should record a payload the store already held as acquired from the store, offline or not', async () => {
+      const { store, registry, host } = await scenario();
+      const first = readyReceipt(await prepare(host));
+      await rm(join(store, 'closures'), { recursive: true });
+      const calls = registry.calls.length;
+
+      const again = readyReceipt(await prepare(host, { offline: true }));
+
+      expect(registry.calls).toHaveLength(calls);
+      expect(again.payloads.map(({ name, acquiredFrom }) => [name, acquiredFrom])).toEqual(
+        first.payloads.map(({ name, sha256 }) => [name, { kind: 'store', location: `blobs/sha256/${sha256}` }]),
+      );
+    });
+
+    it('should verify intact after a tar of the sealed closures is extracted under the usual umask (S30)', async () => {
+      const { store, host, reopen } = await scenario({ launchSet: () => ['python/bin/python3'] });
+      const receipt = readyReceipt(await prepare(host));
+      const seeded = await temporaryDirectory('tau-tar-seed-');
+      cleanups.push(seeded.remove);
+      const archive = join(seeded.path, 'closures.tar');
+      const copy = join(seeded.path, 'store');
+      await mkdir(copy);
+      execFileSync('tar', ['-cf', archive, '-C', store, 'closures']);
+      // What a user who is not root gets: tar applies the umask instead of the archived modes.
+      execFileSync('sh', ['-c', 'umask 022 && tar --no-same-permissions -xf "$0" -C "$1"', archive, copy]);
+
+      const [verified] = await reopen({ store: copy }).verify({
+        package: packageName,
+        offline: true,
+        signal: AbortSignal.timeout(prepareTimeout),
+      });
+
+      expect(verified).toMatchObject({ status: 'intact', files: [] });
+      expect(receipt.files.find(({ path }) => path === 'python/lib/python3.13/os.py')?.mode).toBe(0o644);
+      expect(new Set(receipt.files.map(({ mode }) => mode))).toEqual(new Set([0o644, 0o755]));
+    });
+
     it('should treat a receipt from another Tau version as idle, then re-verify it locally on prepare', async () => {
       const { registry, payloads, host, reopen } = await scenario();
       readyReceipt(await prepare(host));
@@ -601,6 +994,42 @@ describe('createPreparationHost', () => {
       expect(refused.status === 'blocked' && refused.message).toContain('Native kernels do not run on Windows yet');
       expect(darwin.registry.calls).toEqual([]);
       await expect(darwin.host.describe()).resolves.toMatchObject([{ state: 'unsupported' }]);
+    });
+
+    it('should record the host snapshot, the candidates and the emulation flag in every receipt', async () => {
+      const { host } = await scenario({
+        variants: (payloads) => [{ target: { ...linuxTarget, minimumLibcVersion: '2.31' }, payloads }],
+      });
+
+      const receipt = readyReceipt(await prepare(host));
+
+      expect(receipt.selection).toEqual({
+        host: linuxHost,
+        candidates: [{ ...linuxTarget, minimumLibcVersion: '2.31' }],
+        emulated: false,
+      });
+    });
+
+    // Charter W14 and spike S17: a glibc 2.28 host, a musl host and Windows on arm64 refuse with the failing axis
+    // before a single request, never with a late resolver error or an import crash.
+    it.each<[string, HostIndicators, Record<string, unknown>]>([
+      ['glibc 2.28', glibcHost('2.28'), { axis: 'minimumLibcVersion', nearest: { minimumLibcVersion: '2.31' } }],
+      ['musl', { ...linuxHost, libc: 'musl', libcVersion: undefined }, { axis: 'libc', nearest: linuxTarget }],
+      [
+        'win32-arm64',
+        { os: 'win32', arch: 'arm64', osVersion: '10.0.26100', translated: false, wasm: { threads: false } },
+        { axis: 'os' },
+      ],
+    ])('should refuse a %s host on its axis before any request', async (_name, indicators, detail) => {
+      const { host, registry } = await scenario({
+        variants: (payloads) => [{ target: { ...linuxTarget, minimumLibcVersion: '2.31' }, payloads }],
+        host: { indicators },
+      });
+
+      const outcome = await prepare(host);
+
+      expect(outcome).toMatchObject({ status: 'blocked', reason: 'unsupported-target', detail });
+      expect(registry.calls).toEqual([]);
     });
   });
 

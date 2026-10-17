@@ -65,11 +65,33 @@ limits still apply. Workspace mirroring has no fixed byte, file-count or directo
 | Tau Desktop    | Yes        | Pinned CPython/Build123d/OCP resource tree and project trust       |
 | Custom Node.js | Host-owned | `>=24`; the host must provide the same resource and trust contract |
 
+## Native targets
+
+`tau-plugin.json` pins one closure per target: python-build-standalone's `install_only_stripped`
+CPython plus the wheels the target's `pylock.<target>.toml` chose. The generator computes each floor
+as the highest of the interpreter's and the wheels' floors; on Linux that is OCP's `manylinux_2_31`.
+
+| Target              | Floor      | Checked in CI on   |
+| ------------------- | ---------- | ------------------ |
+| `darwin-arm64`      | macOS 12   | `macos-26`         |
+| `darwin-x64`        | macOS 11   | `macos-26-intel`   |
+| `linux-x64-glibc`   | glibc 2.31 | `ubuntu-24.04`     |
+| `linux-arm64-glibc` | glibc 2.31 | `ubuntu-24.04-arm` |
+
+`tau prepare build123d` refuses every other host before it downloads anything, with
+`blocked: unsupported-target` and the failing axis: `minimumLibcVersion` below glibc 2.31, `libc` on
+musl Linux, and `os` on Windows. On a Linux host without the system `libGL.so.1` or `libX11.so.6`
+that OCP links, it refuses with `missing-system-library` naming the library.
+
 ## Model contract
 
 A `.py` entry defines a top-level `@dataclass(frozen=True) class Params` and synchronous `main(params)`. Supported parameter types are `bool`, `int`, `float`, `str`, and scalar `Literal`. Return one `build123d.Shape` or a non-empty list or tuple of uniquely labeled shapes. Declare non-Python inputs in `__tau__ = {"dependencies": [...]}`.
 
 See the package's [`cad-build123d` agent skill](./agent/SKILL.md) and the [Build123d runtime reference](https://docs.tau.new/runtime/reference/build123d) for the complete authoring and trust contract.
+
+## Project files
+
+`@taucad/build123d/project/*` holds the files a new Build123d project carries, so it runs outside Tau with uv (`uv sync --locked`, then `uv run main.py`): a `pyproject.toml` that pins `build123d` and `cadquery-ocp-novtk` at the versions this kernel runs, a PEP 751 `pylock.toml` of the kernel's own wheels for every supported target, and a `uv.lock` of the same versions. `pnpm nx run build123d:generate-project-template` regenerates them from `python/pylock.<target>.toml`. When a project's `pyproject.toml` pins one of those libraries at another version, evaluation succeeds with a `LIBRARY_VERSION_MISMATCH` warning located at the pin.
 
 ## Versioning and stability
 

@@ -489,9 +489,9 @@ export const ChatTextareaDesktop = memo(function ({
   const dictationRecording = useMemo(
     () =>
       dictationActive ? (
-        <DictationRecording phase={dictation.phase} levels={dictation.levels} onCancel={dictation.cancel} />
+        <DictationRecording phase={dictation.phase} waveform={dictation.waveform} onCancel={dictation.cancel} />
       ) : undefined,
-    [dictation.cancel, dictation.levels, dictation.phase, dictationActive],
+    [dictation.cancel, dictation.waveform, dictation.phase, dictationActive],
   );
   const blockReasonId = useId();
   /* F19: the beam follows the box's corners. */
@@ -739,7 +739,10 @@ export const ChatTextareaBar = memo(function ({
     selectedModel === undefined
       ? discoveredAgent?.thoughtLevel
       : discoveredAgent?.models.find((model) => model.id === selectedModel)?.thoughtLevel;
-  const agentConfig = useAgentConfig(acpSessionData, status, discoveredThoughtLevel);
+  const agentConfig = useAgentConfig(acpSessionData, status, [
+    ...(discoveredAgent?.configOptions ?? []),
+    ...(discoveredThoughtLevel ? [discoveredThoughtLevel] : []),
+  ]);
   /* F6: only the composer being typed in owns ⌘/ and ⌘. — the edit box while
    * focus is inside it, the main composer otherwise. */
   const ownsShortcuts = useCallback(

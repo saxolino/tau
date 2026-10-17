@@ -16,6 +16,8 @@
 \* duplicate TypeScript event union does not change these transitions or guards.
 \* Project threads opt-out only narrows task_spawn in the captured Prepare
 \* command; queued/replayed commands keep that grant and the same identity.
+\* Grok config discovery and host-owned session selection affect composer controls;
+\* queued admission, FIFO delivery and durable cancellation retain these owners.
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS Messages, Tabs, Durable, QuietSubmit, StableIdentity,
           ObserveBarrier, TargetedCancel, TerminalBeforeSend,

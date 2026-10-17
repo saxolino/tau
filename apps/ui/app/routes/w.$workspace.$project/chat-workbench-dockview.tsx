@@ -1,3 +1,4 @@
+import { isFeatureEnabled } from '#flags/feature-flags.js';
 import { useProjectAvailability } from '#hooks/use-project-availability.js';
 import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
 import { BrowserPane } from '#components/browser/browser-pane.js';
@@ -121,7 +122,7 @@ import type {
 import { Button } from '@taucad/ui/components/button';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import type { OpenFile } from '#types/editor.types.js';
-import { PaneButton } from '#components/ui/pane-button.js';
+import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import {
   DropdownMenu,
@@ -531,7 +532,7 @@ const sharedWorkbenchSurfaceIds = new Set<WorkbenchPanelId>([
 ]);
 
 export const isWorkbenchSurfaceAllowed = (id: WorkbenchPanelId, profile: WorkbenchProfile): boolean =>
-  profile === 'editor' || sharedWorkbenchSurfaceIds.has(id);
+  (id !== 'print' || isFeatureEnabled('machines')) && (profile === 'editor' || sharedWorkbenchSurfaceIds.has(id));
 
 const visibleWorkbenchSurfaceGroups = (
   isTauDebugEnabled: boolean,
@@ -575,6 +576,9 @@ export function replaceWorkbenchPlaceholderWithUtility({
   readonly placeholder: IDockviewPanel;
   readonly panelId: WorkbenchUtilityPanelId;
 }): void {
+  if (panelId === 'print' && !isFeatureEnabled('machines')) {
+    return;
+  }
   const definition = workbenchPanels[panelId];
   const existing = panelId === 'browser' ? undefined : api.panels.find((panel) => panel.id === definition.id);
   if (existing) {
@@ -912,6 +916,9 @@ export function openWorkbenchUtility(
   panelId: WorkbenchUtilityPanelId,
   group?: DockviewGroupPanel,
 ): void {
+  if (panelId === 'print' && !isFeatureEnabled('machines')) {
+    return;
+  }
   const definition = workbenchPanels[panelId];
   const existing = panelId === 'browser' ? undefined : api.panels.find((panel) => panel.id === definition.id);
   if (existing) {
@@ -1291,7 +1298,6 @@ export const FileEditor = memo(function ({
   const fileManager = useFileManager();
   const { contentService } = fileManager;
   const { modelService, markerService } = useMonacoServices();
-  const planModeEnabled = useFeature('planMode');
   const handledSaveCompletion = useRef<Promise<void> | undefined>(undefined);
   // Resolve the live path via the stable paneId. The path param the
   // panel was created with is a starting hint only — once the panel is
@@ -1483,7 +1489,7 @@ export const FileEditor = memo(function ({
                 head: result.head,
                 revision: result.revision,
               },
-        options: { planModeEnabled, readOnly },
+        options: { readOnly },
       });
       const paneState = normalizeFilePaneState({
         parameters: paneParameters,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DesktopUpdaterOptions, SquirrelUpdater } from '#main/updater.js';
-import { availableUpdate, isNewerVersion, startDesktopUpdater, updateFeedUrl } from '#main/updater.js';
+import { availableUpdate, isNewerVersion, startDesktopUpdater, updateFeedUrl, updateSource } from '#main/updater.js';
 
 const feed = (version: string, tag = `desktop@${version}`, platform = 'darwin'): unknown => ({
   currentRelease: version,
@@ -39,7 +39,6 @@ const options = (overrides: Partial<DesktopUpdaterOptions> = {}): DesktopUpdater
   environment: {},
   autoUpdater: squirrel(),
   fetchJson: vi.fn(async () => feed('0.3.0')),
-  confirm: vi.fn(async () => true),
   prepareToRestart: vi.fn(async () => true),
   openExternal: vi.fn(async () => undefined),
   log: vi.fn(),
@@ -83,12 +82,99 @@ describe('updateFeedUrl', () => {
   });
 });
 
+describe('managed update source', () => {
+  const mirror = 'https://mirror.example/tau';
+  const mirrored = (version: string): unknown => ({
+    currentRelease: version,
+    releases: [
+      {
+        version,
+        updateTo: {
+          version,
+          name: `desktop@${version}`,
+          url: `${mirror}/releases/${encodeURIComponent(`desktop@${version}`)}/Tau-macos-arm64.zip`,
+        },
+      },
+    ],
+  });
+
+  it('should read the public origin unless managed, and never fall back from a managed setting', () => {
+    expect(updateSource({}, 'production')).toEqual({ kind: 'origin', origin: 'https://downloads.tau.new' });
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+    expect(updateSource({ TAU_DESKTOP_UPDATE_FEED: `${mirror}/` }, 'production')).toEqual({
+      kind: 'origin',
+      origin: mirror,
+    });
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+    expect(updateSource({ TAU_ACQUISITION: 'locked', TAU_DESKTOP_UPDATE_FEED: mirror }, 'staging')).toEqual({
+      kind: 'origin',
+      origin: mirror,
+    });
+    for (const value of [
+      'not a url',
+      'http://mirror.example',
+      'https://user:pw@mirror.example',
+      'https://mirror.example/?x=1',
+    ]) {
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+      expect(updateSource({ TAU_DESKTOP_UPDATE_FEED: value }, 'production').kind).toBe('disabled');
+    }
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+    expect(updateSource({ TAU_DESKTOP_UPDATES: 'off', TAU_DESKTOP_UPDATE_FEED: mirror }, 'production').kind).toBe(
+      'disabled',
+    );
+  });
+
+  it('should explain why a managed desktop does not update', () => {
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+    const updater = startDesktopUpdater(options({ environment: { TAU_ACQUISITION: 'locked' } }));
+    expect(updater.snapshot().phase).toBe('disabled');
+    expect(updater.status()).toContain('TAU_DESKTOP_UPDATE_FEED');
+  });
+
+  it('should check, validate and download only from the mirror', async () => {
+    const autoUpdater = squirrel();
+    const fetchJson = vi.fn(async () => mirrored('0.3.0'));
+    const updater = startDesktopUpdater(
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+      options({ autoUpdater, fetchJson, environment: { TAU_DESKTOP_UPDATE_FEED: mirror } }),
+    );
+
+    await expect(updater.check()).resolves.toMatchObject({ version: '0.3.0', tag: 'desktop@0.3.0' });
+    expect(fetchJson).toHaveBeenCalledWith(`${mirror}/latest/desktop-update-darwin-arm64.json`);
+    expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      url: `${mirror}/releases/desktop%400.3.0/desktop-update-darwin-arm64.json`,
+      serverType: 'json',
+    });
+  });
+
+  it('should refuse a mirrored feed that still names the public archive', async () => {
+    const autoUpdater = squirrel();
+    const updater = startDesktopUpdater(
+      options({
+        autoUpdater,
+        fetchJson: vi.fn(async () => feed('0.3.0')),
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+        environment: { TAU_DESKTOP_UPDATE_FEED: mirror },
+      }),
+    );
+
+    await expect(updater.check()).resolves.toBeUndefined();
+    expect(updater.snapshot().phase).toBe('error');
+    expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
+  });
+});
+
 describe('startDesktopUpdater', () => {
   it.each([
     ['unpackaged', { packaged: false }],
     ['ad-hoc package', { updatesEnabled: false }],
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
     ['switched off', { environment: { TAU_DESKTOP_UPDATES: 'off' } }],
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+    ['locked without a mirror', { environment: { TAU_ACQUISITION: 'locked' } }],
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+    ['given a plain-HTTP mirror', { environment: { TAU_DESKTOP_UPDATE_FEED: 'http://mirror.example/tau' } }],
   ] as const)('does nothing when %s', async (_case, overrides) => {
     const disabled = options(overrides);
     const updater = startDesktopUpdater(disabled);
@@ -97,7 +183,7 @@ describe('startDesktopUpdater', () => {
     expect(disabled.autoUpdater.setFeedURL).not.toHaveBeenCalled();
   });
 
-  it('lets Squirrel download a newer macOS release and restarts once the person accepts', async () => {
+  it('should download quietly and restart only after an explicit install', async () => {
     const autoUpdater = squirrel();
     const updater = startDesktopUpdater(options({ autoUpdater, schedule: vi.fn() }));
     await updater.check();
@@ -108,9 +194,10 @@ describe('startDesktopUpdater', () => {
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
 
     autoUpdater.listeners.get('update-downloaded')?.();
-    await vi.waitFor(() => {
-      expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
-    });
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(updater.snapshot().phase).toBe('ready');
+    await updater.install();
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
   });
 
   it('never starts a Squirrel download for a release that is not newer', async () => {
@@ -134,7 +221,12 @@ describe('startDesktopUpdater', () => {
     );
     await updater.check();
     expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/taucad/tau/releases/tag/desktop%400.3.0');
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(updater.snapshot().phase).toBe('available');
+    await updater.download();
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://downloads.tau.new/releases/desktop%400.3.0/Tau-linux-x64.tar.gz',
+    );
   });
 
   it('logs a feed failure and keeps running', async () => {
@@ -200,7 +292,7 @@ describe('staging and restart safety', () => {
 
   it('should retry a native failure even after a download completed', async () => {
     const autoUpdater = squirrel();
-    const updater = startDesktopUpdater(options({ autoUpdater, confirm: async () => false }));
+    const updater = startDesktopUpdater(options({ autoUpdater }));
     await updater.check();
     autoUpdater.listeners.get('update-downloaded')?.();
     autoUpdater.listeners.get('error')?.(new Error('download validation failed'));
@@ -216,16 +308,48 @@ describe('staging and restart safety', () => {
     const updater = startDesktopUpdater(options({ autoUpdater, prepareToRestart }));
     await updater.check();
     autoUpdater.listeners.get('update-downloaded')?.();
+    const installation = updater.install();
+    expect(updater.snapshot().phase).toBe('saving');
+    await updater.install();
     await vi.waitFor(() => {
       expect(prepareToRestart).toHaveBeenCalledOnce();
     });
     expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     saving.resolve(false);
-    await saving.promise;
+    await installation;
+    expect(updater.snapshot().phase).toBe('restart-blocked');
     expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     prepareToRestart.mockResolvedValue(true);
     await vi.waitFor(async () => {
       await updater.install();
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+    });
+  });
+});
+
+describe('quiet update snapshots', () => {
+  it('should retain pending readiness across checks and reveal only manual requests', async () => {
+    const autoUpdater = squirrel();
+    const onState = vi.fn();
+    const updater = startDesktopUpdater(options({ autoUpdater, onState }));
+    await updater.check();
+    autoUpdater.listeners.get('update-downloaded')?.();
+    const ready = updater.snapshot();
+    expect(ready).toMatchObject({ phase: 'ready', requestId: 0, version: '0.3.0' });
+    await updater.check();
+    expect(updater.snapshot()).toEqual(ready);
+    await updater.check(true);
+    expect(updater.snapshot()).toMatchObject({ phase: 'ready', requestId: 1 });
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledOnce();
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(onState).toHaveBeenLastCalledWith(updater.snapshot());
+  });
+  it('should preserve automated installation only for a bounded candidate probe', async () => {
+    const autoUpdater = squirrel();
+    const updater = startDesktopUpdater(options({ autoUpdater, installForProbe: true, candidateTag: 'desktop@0.3.0' }));
+    await updater.check();
+    autoUpdater.listeners.get('update-downloaded')?.();
+    await vi.waitFor(() => {
       expect(autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
     });
   });

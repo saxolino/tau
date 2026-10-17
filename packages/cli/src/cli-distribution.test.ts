@@ -11,6 +11,7 @@ import { NodeIO } from '@gltf-transform/core';
 import { getBounds } from '@gltf-transform/functions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createRuntimeClient } from '@taucad/runtime';
+import { validateGlbData } from '@taucad/runtime-testing';
 import { fromNodeFs } from '@taucad/runtime/filesystem/node';
 import { nodeWorkerTransport } from '@taucad/runtime/transport/node';
 import type { RuntimeWorkerData } from '#runtime.worker.js';
@@ -27,14 +28,21 @@ const birdhouse = resolve(repoRoot, 'libs/tau-examples/src/kernels/replicad/bird
 const openrscadKitchenSink = resolve(repoRoot, 'libs/tau-examples/src/kernels/openscad/kitchen-sink/main.scad');
 const picovoxelHelloWorld = resolve(repoRoot, 'libs/tau-examples/src/kernels/picovoxel/hello-world/main.ts');
 const picogkSphere = resolve(repoRoot, 'libs/tau-examples/src/kernels/picogk/parameterized-sphere/main.cs');
-const picogkResourceRoot = resolve(repoRoot, 'apps/desktop/resources/picogk');
-const picogkResourceRootEnvironment = 'TAU_PICOGK_RESOURCE_ROOT';
-const picogkManifest = resolve(picogkResourceRoot, `${process.platform}-${process.arch}`, 'tau-runtime-manifest.json');
-// Linux payloads are worker-only: upstream ships no voxel library there, so exports need `picogk.<n>`.
+// `picogk:prepare-layer` stages Microsoft's runtime archive and the locally built layer here.
+const picogkSeed = resolve(repoRoot, 'out/picogk-layer/seed');
+/*
+ * The engine is built for darwin-arm64 only (D13), and `tau prepare picogk` can seal a closure only once a release run
+ * has pinned a published layer in place of the empty digest.
+ */
+/* The native-darwin job opts in (D30): a darwin-arm64 host that may download the pinned PicoGK closure. */
+const nativeDarwin =
+  process.env['TAU_NATIVE_DARWIN'] === '1' && process.platform === 'darwin' && process.arch === 'arm64';
 const picogkNativeEngine =
-  existsSync(picogkManifest) &&
-  (JSON.parse(readFileSync(picogkManifest, 'utf8')) as { resourceFiles: Array<{ path: string }> }).resourceFiles.some(
-    ({ path }) => /^picogk\.\d/u.test(path),
+  process.platform === 'darwin' &&
+  process.arch === 'arm64' &&
+  existsSync(picogkSeed) &&
+  !readFileSync(resolve(repoRoot, 'packages/plugins/picogk/tau-plugin.json'), 'utf8').includes(
+    'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=',
   );
 
 /**
@@ -140,6 +148,15 @@ describe('tau CLI dist (real binary)', () => {
     }
   });
 
+  it.each(['serve', 'mcp'])('refuses %s machine opt-in while the deployment flag is off', async (command) => {
+    const environment: NodeJS.ProcessEnv = {};
+    environment['TAU_MACHINES_ENABLED'] = 'false';
+    environment['TAU_HOST_MACHINES'] = 'true';
+    const result = await runCli([command, '--machines'], environment);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('Machines are not available in this release.');
+  });
+
   it('should ship a hashbang executable at dist/bin/tau.mjs', async () => {
     const head = await readFile(cliBinPath, 'utf8');
 
@@ -163,7 +180,7 @@ describe('tau CLI dist (real binary)', () => {
     const workerStat = await stat(computeStoreWorkerPath);
 
     expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
-    expect(result.stdout).toContain('experimental Tau Host remote-compute daemon');
+    expect(result.stdout).toContain('Serve a project folder to the browser on this machine');
     expect(childStat.isFile()).toBe(true);
     expect(workerStat.isFile()).toBe(true);
   });
@@ -202,10 +219,10 @@ describe('tau CLI dist (real binary)', () => {
     }
   }, 120_000);
 
-  it('should require explicit trust before starting the Tau Host daemon', async () => {
-    const result = await runCli(['serve']);
+  it('should require explicit trust before relaying projects to this machine', async () => {
+    const result = await runCli(['serve', '--relay=http://127.0.0.1:1']);
 
-    expect(result.exitCode).not.toBe(0);
+    expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain('requires --trust-projects');
   });
 
@@ -293,15 +310,17 @@ describe('tau CLI dist (real binary)', () => {
     expect(summary.bounds.max[1]).toBeCloseTo(0.05, 4);
   }, 240_000);
 
-  describe.runIf(picogkNativeEngine)('PicoGK native resources', () => {
+  describe.runIf(picogkNativeEngine)('PicoGK prepared closure', () => {
     it.each(['3mf', 'usdz'])(
-      'exports a .cs entry point to %s through the built CLI',
+      'exports a .cs entry point to %s through the built CLI after tau prepare picogk',
       async (extension) => {
         const outputPath = join(workspace, `picogk-sphere.${extension}`);
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- environment variables are not camelCase
+        const store = { TAU_CONFIG_DIR: join(workspace, 'config'), TAU_PAYLOAD_DIR: picogkSeed };
+        const prepared = await runCli(['prepare', 'picogk'], store);
+        expect(prepared.exitCode, `prepare stderr: ${prepared.stderr}`).toBe(0);
 
-        const result = await runCli(['export', picogkSphere, `--ext=${extension}`, `--output=${outputPath}`], {
-          [picogkResourceRootEnvironment]: picogkResourceRoot,
-        });
+        const result = await runCli(['export', picogkSphere, `--ext=${extension}`, `--output=${outputPath}`], store);
 
         expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
         const bytes = await readFile(outputPath);
@@ -322,6 +341,52 @@ describe('tau CLI dist (real binary)', () => {
       },
       240_000,
     );
+  });
+
+  /*
+   * W17 tier 4b on the native-darwin job (D30): `tau export main.cs` from an empty store refuses naming
+   * `tau prepare picogk`, `tau prepare picogk` downloads the pinned runtime and Tau layer from their origins, and the
+   * same export then succeeds with no Tau variable in the environment at all (no `TAU_PICOGK_RESOURCE_ROOT`, no
+   * payload directory or mirror): the kernel composes from the store's receipts alone.
+   */
+  describe.runIf(nativeDarwin)('tau export main.cs with no environment (W17 tier 4b, native-darwin)', () => {
+    it('should refuse, prepare from the pinned origins, then export the sphere to GLB', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'tau-cli-picogk-home-'));
+      /* Every TAU_* variable is dropped; only the store location rides HOME, as on a fresh machine. */
+      const environment = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !name.startsWith('TAU_')),
+      ) as NodeJS.ProcessEnv;
+      environment['HOME'] = home;
+      environment['NX_PREFER_NODE_STRIP_TYPES'] = 'true';
+      const run = async (args: readonly string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+        try {
+          const { stdout, stderr } = await execFileAsync(
+            process.execPath,
+            ['--import', '@oxc-node/core/register', cliBinPath, ...args],
+            { cwd: repoRoot, env: environment, maxBuffer: 64 * 1024 * 1024 },
+          );
+          return { stdout, stderr, exitCode: 0 };
+        } catch (error) {
+          const failure = error as { stdout?: string; stderr?: string; code?: number };
+          return { stdout: failure.stdout ?? '', stderr: failure.stderr ?? '', exitCode: failure.code ?? 1 };
+        }
+      };
+      try {
+        const output = join(home, 'sphere.glb');
+        const refused = await run(['export', picogkSphere, '--ext=glb', `--output=${output}`]);
+        expect(refused.exitCode, refused.stderr).toBe(3);
+        expect(refused.stderr).toContain('tau prepare picogk');
+
+        const prepared = await run(['prepare', 'picogk', '--json']);
+        expect(prepared.exitCode, prepared.stderr).toBe(0);
+
+        const exported = await run(['export', picogkSphere, '--ext=glb', `--output=${output}`]);
+        expect(exported.exitCode, exported.stderr).toBe(0);
+        validateGlbData(new Uint8Array(await readFile(output)));
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    }, 900_000);
   });
 
   it('should exit non-zero with an unrecognized-extension error when --ext is invalid', async () => {

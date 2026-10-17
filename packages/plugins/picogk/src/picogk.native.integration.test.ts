@@ -18,27 +18,14 @@ import {
 } from '@taucad/runtime-testing';
 import { createNodeClient } from '@taucad/runtime/node';
 import { defineRuntime } from '@taucad/runtime/worker';
-import { describe, expect, it, vi } from 'vitest';
+import { installFetchTripwire } from '@taucad/runtime-testing/preparation';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { picogk } from '#index.js';
+import { nativeEngineAvailable, nativeKernelOptions } from '#picogk-native.fixture.js';
 
-type ResourceManifest = {
-  readonly target: string;
-  readonly workerPath: string;
-  readonly workerSha256: string;
-  readonly resourceFiles: ReadonlyArray<{
-    readonly path: string;
-    readonly sha256: string;
-    readonly label: string;
-  }>;
-};
-
-const workspaceRoot = resolve(import.meta.dirname, '../../../..');
-const targetRoot = resolve(workspaceRoot, `apps/desktop/resources/picogk/${process.platform}-${process.arch}`);
-const manifest = JSON.parse(readFileSync(resolve(targetRoot, 'tau-runtime-manifest.json'), 'utf8')) as ResourceManifest;
-// Upstream PicoGK ships no Linux voxel library, so a Linux payload carries the managed worker
-// without it and these suites run only where the native engine is present.
-const nativeEngineAvailable = manifest.resourceFiles.some(({ path }) => /^picogk\.\d/u.test(path));
+// The kernels run from a closure already on disk: no request may leave this file (charter D27 tripwire).
+beforeAll(() => installFetchTripwire());
 
 const runtime = defineRuntime({
   plugins: [
@@ -46,12 +33,7 @@ const runtime = defineRuntime({
     picogk({
       kernels: {
         default: {
-          workerExecutable: resolve(targetRoot, manifest.workerPath),
-          workerSha256: manifest.workerSha256,
-          resourceFiles: manifest.resourceFiles.map(({ path, ...resource }) => ({
-            ...resource,
-            path: resolve(targetRoot, path),
-          })),
+          ...nativeKernelOptions,
           requestTimeout: 120_000,
         },
       },

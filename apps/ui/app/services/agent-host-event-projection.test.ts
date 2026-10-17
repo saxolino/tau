@@ -33,6 +33,75 @@ const base = {
   runId: 'run-1',
 } as const;
 
+it('should preserve unverified provider scope without turning a recorded response into a saved permission', () => {
+  const providerPermission = {
+    owner: 'provider',
+    persistence: 'unverified',
+    options: [
+      { optionId: 'allow_session', requestedScope: 'session' },
+      { optionId: 'allow_always', requestedScope: 'persistent' },
+    ],
+  };
+  const [part] = projectAgentHostEvent({
+    ...base,
+    type: 'interrupt.recorded',
+    interruptId: 'provider-permission',
+    phase: 'requested',
+    reason: 'Allow tool?',
+    payload: {
+      agentId: 'codex',
+      context: {
+        providerPermission,
+        options: [
+          { optionId: 'allow_session', name: 'Session', kind: 'allow_always' },
+          { optionId: 'allow_always', name: 'Always', kind: 'allow_always' },
+        ],
+      },
+    },
+  });
+  expect(part).toMatchObject({ type: 'tool-input-available', input: { providerPermission } });
+  if (part?.type !== 'tool-input-available') {
+    throw new Error('Expected the permission presentation input.');
+  }
+  expect(parseAgentHostApproval(part.input)).toMatchObject({ providerPermission });
+  expect(
+    projectAgentHostEvent({
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'provider-permission',
+      phase: 'resolved',
+      reason: 'approved',
+      payload: { outcome: 'approved', optionId: 'allow_always' },
+    }),
+  ).toEqual([
+    {
+      type: 'tool-output-available',
+      toolCallId: 'provider-permission',
+      output: { outcome: 'approved', optionId: 'allow_always' },
+    },
+  ]);
+});
+
+it('should retain offered choices when unsupported provider status claims are omitted', () => {
+  const options = [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }];
+  const [part] = projectAgentHostEvent({
+    ...base,
+    type: 'interrupt.recorded',
+    interruptId: 'unverified',
+    phase: 'requested',
+    reason: 'Allow tool?',
+    payload: {
+      agentId: 'codex',
+      context: { options, providerPermission: { owner: 'provider', persistence: 'saved', options: [] } },
+    },
+  });
+  expect(part).toMatchObject({ type: 'tool-input-available', input: { agentId: 'codex', options } });
+  if (part?.type !== 'tool-input-available') {
+    throw new Error('Expected the permission presentation input.');
+  }
+  expect(parseAgentHostApproval(part.input)?.providerPermission).toBeUndefined();
+});
+
 it('should keep external reasoning open across an interleaved tool result', async () => {
   const blocks = new Map();
   const live = { chatId: 'chat', runId: base.runId, messageId: 'thought', contentIndex: 0 };
@@ -771,7 +840,7 @@ describe('projectAgentHostEvent', () => {
     });
   });
 
-  it('carries the ledger correlation a print request attaches, and nothing else from its context', () => {
+  it('carries the job a request attaches, and nothing else from its context', () => {
     const [part] = projectAgentHostEvent({
       ...base,
       type: 'interrupt.recorded',
@@ -788,10 +857,78 @@ describe('projectAgentHostEvent', () => {
       type: 'tool-input-available',
       input: {
         interruptId: 'approval-print',
-        context: { requestId: 'req-7f3a', machineId: 'bambu-simulator', fileName: 'pyramid.gcode.3mf' },
+        context: { jobId: 'req-7f3a', machineId: 'bambu-simulator', fileName: 'pyramid.gcode.3mf' },
       },
     });
-    expect(parseAgentHostApproval((part as { input: unknown }).input)?.context?.requestId).toBe('req-7f3a');
+    expect(parseAgentHostApproval((part as { input: unknown }).input)?.context?.jobId).toBe('req-7f3a');
+  });
+
+  it('carries the exact intent a machine action pauses on', () => {
+    const context = {
+      machineId: 'machine-1',
+      componentId: 'controller',
+      action: 'run.cancel',
+      operationId: 'operation-1',
+      label: 'Cancel print',
+    };
+    const [part] = projectAgentHostEvent({
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'approval-action',
+      phase: 'requested',
+      reason: 'Cancel print on Workshop X1C',
+      payload: { kind: 'approval', prompt: 'Cancel print on Workshop X1C', context },
+    });
+    expect(parseAgentHostApproval((part as { input: unknown }).input)?.context).toStrictEqual(context);
+  });
+
+  it('keeps the parameters and version of the intent a machine action pauses on, so the person approves exactly it', () => {
+    const [part] = projectAgentHostEvent({
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'approval-speed',
+      phase: 'requested',
+      reason: 'Set speed on Workshop X1C',
+      payload: {
+        kind: 'approval',
+        prompt: 'Set speed ({"ratio":1.5}) on Workshop X1C?',
+        context: {
+          machineId: 'machine-1',
+          componentId: 'speed',
+          action: 'level.set',
+          operationId: 'operation-2',
+          label: 'Set speed',
+          intent: { machineId: 'machine-1', version: 2, expectedRunId: 'run-7', parameters: { ratio: 1.5 } },
+        },
+      },
+    });
+    expect(parseAgentHostApproval((part as { input: unknown }).input)?.context).toMatchObject({
+      parameters: { ratio: 1.5 },
+      version: 2,
+      expectedRunId: 'run-7',
+    });
+  });
+
+  it('keeps an intent that saw no run as null, so the approval admits it only while no run is in progress', () => {
+    const [part] = projectAgentHostEvent({
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'approval-light',
+      phase: 'requested',
+      reason: 'Chamber light on Workshop X1C',
+      payload: {
+        kind: 'approval',
+        prompt: 'Chamber light ({"on":true}) on Workshop X1C?',
+        context: {
+          machineId: 'machine-1',
+          componentId: 'chamber-light',
+          action: 'switch.set',
+          operationId: 'operation-3',
+          intent: { version: 1, expectedRunId: null, parameters: { on: true } },
+        },
+      },
+    });
+    expect(parseAgentHostApproval((part as { input: unknown }).input)?.context).toHaveProperty('expectedRunId', null);
   });
 
   it('projects a login an external agent is waiting on as facts, not a decision', () => {
@@ -1911,6 +2048,41 @@ describe('chat activity indicator closeout: projection seams', () => {
   const states = (message: MyUIMessage | undefined): string[] =>
     (message?.parts ?? []).map((part) => `${part.type}:${String(Reflect.get(part, 'state') ?? '-')}`);
 
+  it.each(['grok', 'codex'])(
+    'keeps %s tool identity across an approval pause and input refinement',
+    async (agentId) => {
+      const input = {
+        id: 'screenshot-input',
+        role: 'tool-input',
+        toolCallId: 'screenshot-call',
+        toolName: 'screenshot',
+        content: { targetFile: 'main.py', mode: 'multi_angle' },
+        metadata: { tauInternal: { origin: 'external', agentId, presentation: 'tau-mcp' } },
+      } as const;
+      const result = await reduce([
+        lifecycle('admitted'),
+        lifecycle('running'),
+        { ...base, type: 'message.appended', message: input },
+        interrupt('requested'),
+        lifecycle('paused'),
+        interrupt('resolved'),
+        lifecycle('running'),
+        { ...base, type: 'message.envelope-replaced', messageId: input.id, replacement: input },
+        {
+          ...base,
+          type: 'message.appended',
+          message: { ...input, id: 'screenshot-output', role: 'tool-output', content: { images: [] }, isError: false },
+        },
+      ]);
+
+      expect(result.error).toBeUndefined();
+      const calls = result.message?.parts.filter(
+        (part) => part.type === 'dynamic-tool' && part.toolCallId === input.toolCallId,
+      );
+      expect(calls).toEqual([expect.objectContaining({ state: 'output-available', output: { images: [] } })]);
+    },
+  );
+
   it('should resume a checkpointed ACP thought after an approval pause without a reducer error', async () => {
     const thought = { messageId: 'thought-1', contentIndex: 0 };
     const result = await reduce([
@@ -2326,4 +2498,196 @@ it('should keep the latest structured summary through live, checkpoint, duplicat
       );
     }),
   );
+});
+
+it('should keep Grok activity beside its turn and preserve vendor accounting without a Tau charge', () => {
+  const chunks = projectAgentHostEvent({
+    ...base,
+    type: 'message.appended',
+    message: {
+      id: 'grok-turn-activity',
+      role: 'assistant',
+      content: [
+        {
+          type: 'acp-activity',
+          agentId: 'grok',
+          servedModel: 'Actual Grok',
+          subagents: [{ id: 'child', status: 'completed', toolCalls: 1, output: 'Fixture inspected' }],
+        },
+      ],
+      metadata: {
+        responseModel: 'Actual Grok',
+        usage: {
+          input: 50,
+          output: 20,
+          cacheRead: 40,
+          cacheWrite: 10,
+          totalTokens: 120,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        tauInternal: {
+          origin: 'external',
+          agentId: 'grok',
+          vendorPromptUsage: {
+            inputTokens: 100,
+            outputTokens: 20,
+            totalTokens: 120,
+            costUsdTicks: 1,
+            costIsPartial: false,
+            usageIsIncomplete: false,
+            modelCalls: 2,
+          },
+        },
+      },
+    },
+  });
+  expect(chunks).toMatchObject([
+    {
+      type: 'data-acp-activity',
+      id: 'grok-turn-activity:acp-activity:0',
+      data: {
+        agentId: 'grok',
+        servedModel: 'Actual Grok',
+        subagents: [{ id: 'child', status: 'completed' }],
+      },
+    },
+    {
+      type: 'data-usage',
+      data: {
+        agent: 'grok',
+        model: 'Actual Grok',
+        inputTokens: 50,
+        cacheReadTokens: 40,
+        vendorReport: { costUsdTicks: 1, costIsPartial: false, usageIsIncomplete: false, modelCalls: 2 },
+      },
+    },
+  ]);
+  expect(chunks.some((chunk) => chunk.type === 'finish-step' || chunk.type === 'data-acp-session')).toBe(false);
+});
+
+it('should use only the selected host session controls for the same agent', () => {
+  const messages: MyUIMessage[] = ['A', 'B'].map((hostId) => ({
+    id: `session-${hostId}`,
+    role: 'assistant',
+    parts: [
+      {
+        type: 'data-acp-session',
+        data: {
+          type: 'acp-session',
+          id: hostId,
+          agentId: 'grok',
+          hostId,
+          commands: [],
+          configOptions: [],
+        },
+      },
+    ],
+  }));
+  expect(latestAcpSessionData(messages, 'grok', 'A')?.hostId).toBe('A');
+  expect(latestAcpSessionData(messages, 'grok', 'B')?.hostId).toBe('B');
+  expect(latestAcpSessionData(messages, 'grok', 'C')).toBeUndefined();
+});
+
+it('should preserve the selected provider option when replaying a resolved permission', () => {
+  expect(
+    projectAgentHostEvent({
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'saved-choice',
+      phase: 'resolved',
+      reason: 'approved',
+      payload: { outcome: 'approved', optionId: 'allow_session' },
+    }),
+  ).toEqual([
+    {
+      type: 'tool-output-available',
+      toolCallId: 'saved-choice',
+      output: {
+        outcome: 'approved',
+        optionId: 'allow_session',
+      },
+    },
+  ]);
+});
+
+it('should replay a host-bound settings readback into the original permission output', async () => {
+  const resolution = {
+    outcome: 'approved',
+    optionId: 'allow_always',
+    observation: {
+      version: 1,
+      provider: 'codex',
+      optionId: 'allow_always',
+      toolCallId: 'native-call',
+      requestedScope: 'persistent',
+      stored: 'present',
+      effective: 'allowed',
+      preexisting: false,
+      observation: 'config-readback',
+      reason: 'policy-observed',
+    },
+  };
+  const observed: AgentLogEvent = {
+    ...base,
+    type: 'message.appended',
+    message: {
+      id: 'readback-observation',
+      role: 'assistant',
+      content: [{ type: 'provider-permission-observation', interruptId: 'saved-choice', resolution }],
+      metadata: { tauInternal: { kind: 'provider-permission-observation', origin: 'external', agentId: 'codex' } },
+    },
+  };
+  const events: AgentLogEvent[] = [
+    {
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'saved-choice',
+      phase: 'requested',
+      reason: 'Allow?',
+      payload: { kind: 'approval' },
+    },
+    {
+      ...base,
+      type: 'interrupt.recorded',
+      interruptId: 'saved-choice',
+      phase: 'resolved',
+      reason: 'approved',
+      payload: { outcome: 'approved', optionId: 'allow_always' },
+    },
+    observed,
+  ];
+  const chunks = events.flatMap((event) => projectAgentHostEvent(event));
+  let result: MyUIMessage | undefined;
+  const errors: unknown[] = [];
+  const stream = new ReadableStream<UIMessageChunk>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  });
+  for await (const message of readUIMessageStream<MyUIMessage>({ stream, onError: (error) => errors.push(error) })) {
+    result = message;
+  }
+  expect(errors).toEqual([]);
+  expect(result?.parts).toContainEqual(
+    expect.objectContaining({ type: 'dynamic-tool', toolCallId: 'saved-choice', output: resolution }),
+  );
+  expect(projectAgentHostEvent({ ...observed, message: { ...observed.message, metadata: {} } })).toEqual([]);
+  expect(
+    projectAgentHostEvent({
+      ...observed,
+      message: {
+        ...observed.message,
+        content: [
+          {
+            type: 'provider-permission-observation',
+            interruptId: 'saved-choice',
+            resolution: { ...resolution, optionId: 'allow_once' },
+          },
+        ],
+      },
+    }),
+  ).toEqual([]);
 });

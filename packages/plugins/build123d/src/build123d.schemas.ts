@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 
-import { gltfExportConventionSchema, quantity, quantityKinds } from '@taucad/runtime/kernel';
+import { occtQualityGltfExportSchema, occtQualityRenderOptionSchema } from '@taucad/occt-core';
 import { z } from 'zod';
 
 const absolutePath = z.string().min(1).refine(isAbsolute, 'Expected an absolute path');
@@ -23,30 +23,25 @@ export const build123dOptionsSchema = z.object({
         context.addIssue({ code: 'custom', message: 'Support files must contain analyzer.py and glb.py' });
       }
     }),
+  /**
+   * The closure root the sandbox may read, when the interpreter and the worker scripts share one (a closure the
+   * preparation host sealed). Absent, it is the interpreter's prefix, which must then hold the worker too.
+   */
+  runtimePath: absolutePath.optional(),
   /** Milliseconds. Zero waits for completion or cancellation. */
   requestTimeout: z.number().int().nonnegative().default(0),
   /** Optional host policy; by default only the representable byte length is bounded. */
   maxArtifactBytes: z.number().int().positive().default(Number.MAX_SAFE_INTEGER),
 });
 
-const tessellation = z
-  .object({
-    linearTolerance: quantity({ unit: 'mm', quantityKind: quantityKinds.length, space: 'linear' })
-      .positive()
-      .default(0.05),
-    // BRepMesh takes radians; unlike OCCT-core's degrees this is passed through unconverted.
-    angularTolerance: quantity({ unit: 'rad', quantityKind: quantityKinds.planeAngle, space: 'linear' })
-      .positive()
-      .max(Math.PI)
-      .default(0.1),
-  })
-  .default({ linearTolerance: 0.05, angularTolerance: 0.1 });
+/**
+ * Build123d display tessellation options: a quality preset derived from the shape's bounding-box diagonal, or explicit
+ * tolerances in millimetres and degrees, never both. Previews default to `medium`. @public
+ */
+export const build123dRenderSchema = z.object({ tessellation: occtQualityRenderOptionSchema.shape.tessellation });
 
-/** Build123d display tessellation options. @public */
-export const build123dRenderSchema = z.object({ tessellation });
-
-/** Build123d native export options. @public */
+/** Build123d native export options; mesh exports default to the `high` preset. @public */
 export const build123dExportSchemas = {
-  glb: z.object({ tessellation }).extend(gltfExportConventionSchema.shape),
+  glb: occtQualityGltfExportSchema,
   step: z.object({}),
 } as const satisfies Record<string, z.ZodType>;

@@ -4,6 +4,7 @@
  * Uses Zod for validation
  */
 import { z } from 'zod';
+import { isMachinesFeatureEnabled } from '@taucad/types/constants';
 import { cloudClientEnvironmentKeys, cloudEnvironmentShape } from '#cloud/environment-billing.js';
 import type { CloudBillingEnvironment } from '#cloud/environment-billing.types.js';
 import { isDesktopTarget } from '#lib/build-target.js';
@@ -51,8 +52,12 @@ const environmentSchema = z.preprocess(
 
     return {
       ...rawEnvironment,
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- environment variable name
+      /* eslint-disable @typescript-eslint/naming-convention -- environment variable names */
       TAU_FRONTEND_URL: frontendUrl,
+      /* A build product, not deployment configuration: the web build defines it for the server graph
+       * only, so client chunks keep stable hashes across rebuilds (`#lib/build-identity`). */
+      TAU_BUILD_ID: typeof tauBuildId === 'number' ? String(tauBuildId) : undefined,
+      /* eslint-enable @typescript-eslint/naming-convention -- environment variable names */
     };
   },
   z.object({
@@ -61,6 +66,10 @@ const environmentSchema = z.preprocess(
     ...cloudEnvironmentShape,
     TAU_WEBSOCKET_URL: z.url().describe('WebSocket URL for the API (e.g., wss://api.tau.new or ws://localhost:4001)'),
     TAU_FRONTEND_URL: z.url(),
+    /** Ordered build identity for the stale-tab skew guard (blueprint DF20); set by the build, never the host. */
+    TAU_BUILD_ID: z.string().optional(),
+    /** Deployment opt-in while machine qualification is incomplete. Never a localStorage override. */
+    TAU_MACHINES_ENABLED: z.string().optional().transform(isMachinesFeatureEnabled),
     /**
      * Toggle in-app debug surfaces (per-route diagnostic panels, e2e
      * inspectors). Surfaced in the React tree via the `tauDebug` feature
@@ -88,6 +97,19 @@ const environmentSchema = z.preprocess(
       .optional()
       .transform((value) => (value === undefined ? false : /^(1|true)$/i.test(value)))
       .describe('Accept private/loopback http git remotes in Connect. Default false.'),
+    /**
+     * The managed acquisition profile (`TAU_ACQUISITION`). `locked` keeps the editor's type acquisition to the static
+     * types, with no request. Only unset, empty or `open` is `open`; any other value is `locked`, so a typo never
+     * opens the network.
+     */
+    TAU_ACQUISITION: z
+      .string()
+      .optional()
+      .transform((value): 'open' | 'locked' => {
+        const trimmed = value?.trim() ?? '';
+        return trimmed === '' || trimmed === 'open' ? 'open' : 'locked';
+      })
+      .describe('Managed acquisition profile: open (default) or locked (no CDN type acquisition).'),
     NODE_ENV: z.enum(['development', 'production', 'test']),
 
     // PostHog Analytics
@@ -133,8 +155,11 @@ const baseClientEnvironmentKeys = [
   'TAU_API_URL',
   'TAU_WEBSOCKET_URL',
   'TAU_FRONTEND_URL',
+  'TAU_BUILD_ID',
   'TAU_DEBUG',
+  'TAU_MACHINES_ENABLED',
   'TAU_GIT_REMOTE_ALLOW_PRIVATE',
+  'TAU_ACQUISITION',
   'NODE_ENV',
   'POSTHOG_API_HOST',
   'POSTHOG_UI_HOST',

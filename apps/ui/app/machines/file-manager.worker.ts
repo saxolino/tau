@@ -24,7 +24,7 @@ import type { PushRecorder } from '@taucad/revisions';
 import { serveTurnPlacementChannel } from '@taucad/agent-host/channel-client';
 import { createIndexedDbComputeEngine, exposeComputeStoreChannel, MachineSettingsOwner } from '@taucad/runtime/host';
 import { slicingPreferences } from '@taucad/slicer/preferences';
-import { bambuSettingsConfiguration } from '@taucad/bambu/settings';
+import { providerSettingsDefinitions } from '#machines/machine-settings-definitions.js';
 import {
   RootedFileSystemError,
   ChangeEventBus,
@@ -55,6 +55,7 @@ import {
   versionedChangePaths,
 } from '#machines/file-manager.worker.revisions.js';
 import { dependencyMountRoot } from '#lib/bundled-types-tree.constants.js';
+import { readBuildIdentity } from '#lib/build-identity.js';
 import { systemSkillsOverlay } from '#workers/system-skills-overlay.js';
 
 /**
@@ -285,7 +286,7 @@ const installBundledTypes = async (): Promise<void> => {
     buildBundledTypesPayload(kernelTypePackageMaps, authoringTypeMaps),
     {
       populate: async (payload) => populateBundledTypesMount(nodeModules, payload),
-      buildIdentity: typeof tauBuildId === 'number' ? String(tauBuildId) : undefined,
+      buildIdentity: readBuildIdentity(),
     },
   );
   console.debug(`[FM-Worker] bundled types ${outcome} +${(performance.now() - t0).toFixed(1)}ms`);
@@ -323,7 +324,7 @@ const settingsForRoot = (root: string, policy: typeof tauPathPolicy): MachineSet
     const view = composeView({ filesystem }, { consumer: 'agent', policy });
     owner = new MachineSettingsOwner({
       filesystem: view,
-      definitions: [bambuSettingsConfiguration, slicingPreferences],
+      definitions: [...providerSettingsDefinitions, slicingPreferences],
     });
     roots.set(key, owner);
   }

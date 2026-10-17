@@ -18,6 +18,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { Fragment, memo, useMemo, useState } from 'react';
 import { messageRole, toolName } from '@taucad/chat/constants';
+import { providerPermissionResolutionSchema } from '@taucad/agent-host/wire';
 import type { MyMessagePart, ToolInvocation, UsageData } from '@taucad/chat';
 import type { DynamicToolUIPart } from 'ai';
 import { useChatActions, useChatSelector } from '#hooks/use-chat.js';
@@ -34,6 +35,7 @@ import { AtReferenceChip } from '#components/chat/at-reference-chip.js';
 import { useAtReferenceContext } from '#components/chat/at-reference-context.js';
 import { ContextChip } from '#components/chat/context-chip.js';
 import { ChatPermissionRequest } from '#components/chat/chat-permission-request.js';
+import { ChatAcpActivity } from '#components/chat/chat-acp-activity.js';
 import { externalAgentDisplayName } from '#lib/agent-host-placement.js';
 import { ChatActivityGroup } from '#components/chat/chat-activity-group.js';
 import { agentApprovalToolName, parseAgentHostApproval } from '#services/agent-host-event-projection.js';
@@ -71,7 +73,7 @@ import {
   ChatMessageToolExternalOrQuestion,
 } from '#routes/w.$workspace.$project/chat-message-tool-ask-questions.js';
 import { ChatMessageToolArrangeWorkbench } from '#routes/w.$workspace.$project/chat-message-tool-arrange-workbench.js';
-import { ChatMessageToolRequestPrint } from '#routes/w.$workspace.$project/chat-message-tool-request-print.js';
+import { ChatMessageToolRequestJob } from '#routes/w.$workspace.$project/chat-message-tool-request-job.js';
 import { ChatMessagePartUnknown } from '#routes/w.$workspace.$project/chat-message-tool-unknown.js';
 import {
   ChatMessageToolExternal,
@@ -208,24 +210,46 @@ const genericToolPart = (
   part:
     | ToolInvocation<typeof toolName.getParameters>
     | ToolInvocation<typeof toolName.applyParameterOperation>
+    | ToolInvocation<typeof toolName.listMachines>
     | ToolInvocation<typeof toolName.getMachine>
+    | ToolInvocation<typeof toolName.machineAction>
+    | ToolInvocation<typeof toolName.stopMachine>
     | ToolInvocation<typeof toolName.getPrintProfiles>
-    | ToolInvocation<typeof toolName.getPrintRequest>
-    | ToolInvocation<typeof toolName.listPrintRequests>
-    | ToolInvocation<typeof toolName.cancelPrint>,
+    | ToolInvocation<typeof toolName.checkJob>,
   name:
     | typeof toolName.getParameters
     | typeof toolName.applyParameterOperation
+    | typeof toolName.listMachines
     | typeof toolName.getMachine
+    | typeof toolName.machineAction
+    | typeof toolName.stopMachine
     | typeof toolName.getPrintProfiles
-    | typeof toolName.getPrintRequest
-    | typeof toolName.listPrintRequests
-    | typeof toolName.cancelPrint,
+    | typeof toolName.checkJob,
 ): DynamicToolUIPart => ({
   ...part,
   type: 'dynamic-tool',
   toolName: name,
 });
+
+/**
+ * A tool part from a tool Tau no longer offers (an old chat's `request_print`, `cancel_print`, …): the generic card
+ * shows it under its own name rather than as an unknown part.
+ *
+ * @param part - A part no case of the dispatch names.
+ * @returns The part as a dynamic tool part, or `undefined` when it is not a tool part.
+ */
+const retiredToolPart = (part: unknown): DynamicToolUIPart | undefined => {
+  if (!isRecord(part) || typeof part['type'] !== 'string' || typeof part['toolCallId'] !== 'string') {
+    return undefined;
+  }
+  const { type } = part;
+  if (!type.startsWith('tool-')) {
+    return undefined;
+  }
+  // SAFETY: a static tool part carries every field a dynamic one does; only the name moves from `type` to `toolName`.
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- a persisted part of a retired tool has no static type.
+  return { ...part, type: 'dynamic-tool', toolName: type.slice(5) } as DynamicToolUIPart;
+};
 
 // oxlint-disable-next-line complexity -- Part type dispatch requires many branches
 function renderAssistantPart(
@@ -271,14 +295,19 @@ function renderAssistantPart(
     }
 
     case 'data-acp-session': {
-      return <ChatMessageAcpPlan key={`${messageId}-acp-plan-${index}`} data={part.data} />;
+      return <ChatMessageAcpPlan key={`${messageId}-acp-session-${index}`} data={part.data} />;
+    }
+
+    case 'data-acp-activity': {
+      return <ChatAcpActivity key={`${messageId}-acp-activity-${index}`} data={part.data} />;
     }
 
     case 'dynamic-tool': {
       // Pending decisions belong above the composer; their settled record stays inspectable here.
       if (part.toolName === agentApprovalToolName) {
         const approval = parseAgentHostApproval(part.input);
-        const outcome = isRecord(part.output) ? part.output['outcome'] : undefined;
+        const resolution = providerPermissionResolutionSchema.safeParse(part.output).data;
+        const outcome = resolution?.outcome ?? (isRecord(part.output) ? part.output['outcome'] : undefined);
         if (
           approval === undefined ||
           approval.login !== undefined ||
@@ -293,6 +322,7 @@ function renderAssistantPart(
             approval={approval}
             name={approval.agentId ? externalAgentDisplayName(approval.agentId) : 'Agent'}
             outcome={outcome}
+            resolution={resolution}
           />
         );
       }
@@ -519,35 +549,44 @@ function renderAssistantPart(
       return <ChatMessageToolInstallPackages key={part.toolCallId} part={part} />;
     }
 
-    case 'tool-request_print': {
-      return <ChatMessageToolRequestPrint key={part.toolCallId} part={part} />;
+    case 'tool-request_job': {
+      return <ChatMessageToolRequestJob key={part.toolCallId} part={part} />;
     }
 
-    /* The other print tools read or stop what the request card and the Print
-     * pane already show, so the generic card is enough. */
+    /* The other machine tools read, check or act on what the job card and the Print pane already show, so the
+     * generic card is enough; the pane's History records every action and stop with how the machine confirmed it. */
+    case 'tool-list_machines': {
+      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.listMachines)} />;
+    }
+
     case 'tool-get_machine': {
       return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.getMachine)} />;
+    }
+
+    case 'tool-machine_action': {
+      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.machineAction)} />;
+    }
+
+    case 'tool-stop_machine': {
+      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.stopMachine)} />;
     }
 
     case 'tool-get_print_profiles': {
       return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.getPrintProfiles)} />;
     }
 
-    case 'tool-get_print_request': {
-      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.getPrintRequest)} />;
-    }
-
-    case 'tool-list_print_requests': {
-      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.listPrintRequests)} />;
-    }
-
-    case 'tool-cancel_print': {
-      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.cancelPrint)} />;
+    case 'tool-check_job': {
+      return <ChatMessageToolExternal key={part.toolCallId} part={genericToolPart(part, toolName.checkJob)} />;
     }
 
     default: {
       const unknownPart: never = part;
-      return <ChatMessagePartUnknown key={String(unknownPart)} part={unknownPart} />;
+      const retired = retiredToolPart(unknownPart);
+      return retired === undefined ? (
+        <ChatMessagePartUnknown key={String(unknownPart)} part={unknownPart} />
+      ) : (
+        <ChatMessageToolExternal key={retired.toolCallId} part={retired} />
+      );
     }
   }
 }

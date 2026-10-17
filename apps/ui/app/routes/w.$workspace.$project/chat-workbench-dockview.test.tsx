@@ -27,7 +27,7 @@ import { TooltipProvider } from '@taucad/ui/components/tooltip';
 
 const { featureState, mobileState, mockOpenPanel, mockProjectSend, mockToastError, mockPrintBody, mockExportBody } =
   vi.hoisted(() => ({
-    featureState: { value: false, projectThreads: true },
+    featureState: { value: false, projectThreads: true, machines: true },
     mobileState: { value: false },
     mockOpenPanel: vi.fn(),
     mockProjectSend: vi.fn(),
@@ -102,7 +102,7 @@ vi.mock('#routes/w.$workspace.$project/chat-file-tree.js', () => ({
     </>
   ),
 }));
-vi.mock('#components/ui/pane-button.js', () => ({
+vi.mock('@taucad/workbench-panes/components/pane-button', () => ({
   PaneButton: ({
     tooltip: _tooltip,
     tooltipSide: _tooltipSide,
@@ -206,7 +206,11 @@ vi.mock('#hooks/use-project.js', () => ({
     editorRef: mockEditorRef,
     geometryUnits: new Map(),
     mainEntryPath: 'main.ts',
-    projectRef: { send: mockProjectSend },
+    projectRef: {
+      send: mockProjectSend,
+      getSnapshot: () => ({ context: { project: undefined } }),
+      subscribe: () => ({ unsubscribe: () => undefined }),
+    },
   }),
 }));
 
@@ -220,6 +224,7 @@ vi.mock('#hooks/use-kernel-diagnostics.js', () => ({
   useKernelDiagnostics: () => ({ handleValidate: vi.fn() }),
 }));
 
+vi.mock('#flags/feature-flags.js', () => ({ isFeatureEnabled: () => featureState.machines }));
 vi.mock('#flags/use-feature.js', () => ({
   useFeature: (flag: string) => (flag === 'projectThreads' ? featureState.projectThreads : featureState.value),
 }));
@@ -1806,6 +1811,15 @@ describe('Workbench file reconciliation', () => {
       'console',
     ]);
     expect(workbenchSurfaces.find(({ id }) => id === 'share')?.shortcut).toBeUndefined();
+  });
+
+  it('hides Print and refuses a direct utility open when machines are disabled', () => {
+    featureState.machines = false;
+    const dockview = createTestDockview();
+    expect(isWorkbenchSurfaceAllowed('print', 'editor')).toBe(false);
+    openWorkbenchUtility(dockview.api, 'print');
+    expect(dockview.addPanel).not.toHaveBeenCalled();
+    featureState.machines = true;
   });
 
   it('keeps Share editor-only while retaining shared viewer utilities', () => {

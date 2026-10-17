@@ -49,6 +49,7 @@
  * | `grouped` | `configOptions` offers the models as `SessionConfigSelectGroup[]` rather than a flat list |
  * | `auth-required` | `initialize` advertises a `terminal-auth` method and `session/new` errors `-32000` |
  * | `restore-auth` | restoring an existing session errors `-32000` instead of silently starting fresh |
+ * | `prompt-auth` | no auth method is advertised and `session/prompt` errors `-32000`, as claude-agent-acp does for a logged-out `claude` |
  * | `images` | `promptCapabilities.image` is advertised; withheld otherwise |
  * | `protocol-2` | `initialize` answers a protocol version this client does not speak |
  * | `silent` | `initialize` is never answered at all |
@@ -702,6 +703,23 @@ const askForm = async (sessionId: string): Promise<void> => {
   await textChunk(sessionId, `ask-form: ${result?.action ?? 'none'} ${JSON.stringify(result?.content ?? null)}`);
 };
 
+/** Request a secret-marked form across the actual wire; it must never become a project record. */
+const askSecretForm = async (sessionId: string): Promise<void> => {
+  const answer = await request('elicitation/create', {
+    sessionId,
+    mode: 'form',
+    message: 'PRIVATE_FIELD_CANARY',
+    requestedSchema: {
+      type: 'object',
+      required: ['secret'],
+      properties: { secret: { type: 'string', writeOnly: true } },
+    },
+    // oxlint-disable-next-line tau-lint/no-time-unit-suffix -- codex-acp wire spelling; prevents the pre-fix fixture from hanging.
+    _meta: { codex: { autoResolutionMs: 0 } },
+  });
+  await textChunk(sessionId, `ask-secret-form: ${JSON.stringify(answer.result)}`);
+};
+
 /**
  * The permission-gated write every turn ends with.
  *
@@ -718,11 +736,16 @@ const writeGatedFile = async (sessionId: string, session: SessionState, text: st
     ? { result: { outcome: { outcome: 'selected', optionId: 'allow' } } }
     : await request('session/request_permission', {
         sessionId,
-        toolCall: { toolCallId: 'write-1', title: 'write hello.txt' },
+        toolCall: { toolCallId: 'write-1', title: 'write hello.txt', _meta: { token: 'permission-metadata-canary' } },
         options: [
           { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
           { optionId: 'allow-session', name: 'Allow for this session', kind: 'allow_always' },
-          { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
+          {
+            optionId: 'allow-always',
+            name: 'Always allow',
+            kind: 'allow_always',
+            _meta: { token: 'permission-metadata-canary' },
+          },
           { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
         ],
       });
@@ -805,6 +828,9 @@ const runPrompt = async (sessionId: string, blocks: readonly unknown[]): Promise
     void request('fs/write_text_file', { sessionId, path: 'admitted.txt', content: 'admitted write' });
     await pause(250);
     return 'end_turn';
+  }
+  if (text.includes('ask-secret-form')) {
+    await askSecretForm(sessionId);
   }
   if (text.includes('ask-form')) {
     await askForm(sessionId);
@@ -1107,6 +1133,10 @@ const handle = async (message: JsonRpcMessage): Promise<void> => {
        * gone" indistinguishable from "the model refused" (review 1-review S5). */
       if (!promptSession || promptSession.closed) {
         fail(-32_602, 'Unknown session');
+        return;
+      }
+      if (inMode('prompt-auth')) {
+        fail(-32_000, 'Authentication required');
         return;
       }
       const promptSessionId = asString(params['sessionId']);

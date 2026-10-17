@@ -1,6 +1,6 @@
 {
   "name": "@taucad/cli",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.5",
   "description": "CLI for @taucad/runtime",
   "type": "module",
   "sideEffects": [
@@ -24,6 +24,7 @@
   },
   "files": [
     "dist",
+    "dist-acp",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"
@@ -66,22 +67,23 @@
     "#*": "./src/*"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "catalog:",
-    "@agentclientprotocol/codex-acp": "catalog:",
     "@parcel/watcher": "catalog:",
     "@taucad/agent-host": "workspace:*",
     "@taucad/assimp": "workspace:*",
-    "@taucad/bambu": "workspace:*",
     "@taucad/brep": "workspace:*",
+    "@taucad/build123d": "workspace:*",
+    "@taucad/camera": "workspace:*",
     "@taucad/bundler-core": "workspace:*",
     "@taucad/esbuild": "workspace:*",
     "@taucad/filesystem": "workspace:*",
+    "@taucad/geospec-engine": "workspace:*",
     "@taucad/gltf": "workspace:*",
     "@taucad/host": "workspace:*",
     "@taucad/image": "workspace:*",
     "@taucad/jscad": "workspace:*",
     "@taucad/manifold": "workspace:*",
     "@taucad/middleware": "workspace:*",
+    "@taucad/native-process-core": "workspace:*",
     "@taucad/opencascade": "workspace:*",
     "@taucad/openrscad": "workspace:*",
     "@taucad/parameters": "workspace:*",
@@ -96,6 +98,8 @@
     "@taucad/zoo": "workspace:*",
     "citty": "catalog:",
     "consola": "catalog:",
+    "geospec": "workspace:*",
+    "geospec-engine": "catalog:",
     "ink": "catalog:",
     "react": "catalog:",
     "semver": "catalog:",
@@ -104,7 +108,11 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@agentclientprotocol/claude-agent-acp": "catalog:",
+    "@agentclientprotocol/codex-acp": "catalog:",
     "@modelcontextprotocol/sdk": "catalog:",
+    "@taucad/nx": "workspace:*",
+    "@taucad/runtime-testing": "workspace:*",
     "@taucad/utils": "workspace:*",
     "@types/react": "catalog:",
     "@types/semver": "catalog:",

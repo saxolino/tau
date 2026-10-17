@@ -86,6 +86,7 @@ const buildResult = (id = 'component:picogk-1') => ({
     picoGkNativeBytes: 0,
     processWorkingSetBytes: 20,
   },
+  voxelSize: 0.25,
 });
 
 const contextData = () => ({
@@ -312,6 +313,52 @@ describe('PicoGK kernel', () => {
     );
   });
 
+  it('renders a protocol-8 worker build without a voxel size, and raises no issue for it', async () => {
+    const value = context();
+    const { voxelSize: _voxelSize, ...withoutVoxelSize } = buildResult();
+    value.session.request.mockResolvedValueOnce(withoutVoxelSize);
+
+    const built = await definition.evaluate({ entryPath: 'main.cs', parameters: {}, options: {} }, runtime, value);
+    const artifact = await definition.render!({ view: 'model', handle: built.handle, options: {} }, runtime, value);
+
+    expect(built.issues).toEqual([]);
+    expect(artifact.tessellation).toEqual({
+      triangles: 1,
+      vertices: 3,
+      elapsed: workerTimings.meshConstruction + workerTimings.meshExtraction + workerTimings.normalGeneration,
+    });
+    expect(artifact.tessellation).not.toHaveProperty('voxelSize');
+  });
+
+  it('warns when a root .csproj references PicoGK at a version the kernel does not run', async () => {
+    const value = context();
+    value.mirror.sync.mockResolvedValueOnce(['Plate.csproj', 'main.cs', 'tools/Other.csproj']);
+    value.session.request.mockResolvedValueOnce(buildResult());
+    const project = createMockKernelRuntime({
+      filesystemOverrides: {
+        readFileResult: '<Project>\n  <PackageReference Include="PicoGK" Version="2.2.0" />\n</Project>\n',
+      },
+    });
+
+    const result = await definition.evaluate({ entryPath: 'main.cs', parameters: {}, options: {} }, project, value);
+
+    expect(project.filesystem.mocks.readFile.mock.calls).toEqual([['Plate.csproj', 'utf8']]);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'LIBRARY_VERSION_MISMATCH',
+        severity: 'warning',
+        location: { fileName: 'Plate.csproj', startLineNumber: 2, startColumn: 1 },
+        details: {
+          producer: { kernelId: 'picogk' },
+          manifest: 'Plate.csproj',
+          library: 'PicoGK',
+          declared: '2.2.0',
+          runs: '2.3.0',
+        },
+      }),
+    ]);
+  });
+
   it('returns parameters, canonical inline geometry, immutable handles, and GLB exports', async () => {
     const value = context();
     value.session.request.mockResolvedValueOnce({
@@ -335,13 +382,49 @@ describe('PicoGK kernel', () => {
     // W17/D2: an aborted build stops the worker cooperatively, which is what the live-edit lane needs.
     expect(value.session.request).toHaveBeenLastCalledWith(expect.objectContaining({ cancelMethod: 'cancel' }));
     expect(definition.cancellation).toBe('cooperative');
-    const handle = built.handle as { glb: Uint8Array<ArrayBuffer> };
+    const { handle } = built;
     const artifact = await definition.render!({ view: 'model', handle, options: {} }, runtime, value);
     expect(handle.glb).toEqual(artifact.content);
+    expect(artifact.tessellation).toEqual(handle.tessellation);
+    expect(artifact.tessellation).toEqual({
+      triangles: 1,
+      vertices: 3,
+      elapsed: workerTimings.meshConstruction + workerTimings.meshExtraction + workerTimings.normalGeneration,
+      voxelSize: 0.25,
+    });
     const serialized = definition.serializeHandle!({ handle }, runtime, value);
-    const restored = definition.deserializeHandle!({ serialized }, runtime, value);
-    expect(restored.glb).toEqual(handle.glb);
+    const restored = definition.deserializeHandle!({ serialized: structuredClone(serialized) }, runtime, value);
+    expect(restored).toEqual(handle);
     expect(restored.glb).not.toBe(handle.glb);
+    // A snapshot written before the report existed is its GLB bytes alone and restores without one.
+    expect(definition.deserializeHandle!({ serialized: new Uint8Array(handle.glb) }, runtime, value)).toEqual({
+      glb: handle.glb,
+    });
+    // A snapshot written before the report carried the voxel size still restores, without one.
+    const { voxelSize: _voxelSize, ...withoutVoxelSize } = handle.tessellation!;
+    expect(
+      definition.deserializeHandle!(
+        { serialized: { glb: handle.glb, tessellation: withoutVoxelSize } },
+        runtime,
+        value,
+      ),
+    ).toEqual({ glb: handle.glb, tessellation: withoutVoxelSize });
+    const restoreWithVoxelSize = (voxelSize: number) => () =>
+      definition.deserializeHandle!(
+        { serialized: { glb: handle.glb, tessellation: { ...handle.tessellation!, voxelSize } } },
+        runtime,
+        value,
+      );
+    for (const voxelSize of [0, -1, Number.POSITIVE_INFINITY]) {
+      expect(restoreWithVoxelSize(voxelSize)).toThrow();
+    }
+    expect(() =>
+      definition.deserializeHandle!(
+        { serialized: { glb: handle.glb, tessellation: { ...handle.tessellation!, triangles: -1 } } },
+        runtime,
+        value,
+      ),
+    ).toThrow();
 
     const exported = await definition.export!(
       { exportId: 'glb', handle, options: picogkExportSchemas.glb.parse({}) },

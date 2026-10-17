@@ -1,6 +1,6 @@
 {
   "name": "@taucad/agent-plugin",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.5",
   "description": "Tau CAD plugin for Codex and Claude Code: skills and the tau mcp launcher",
   "type": "module",
   "sideEffects": [
@@ -78,10 +78,12 @@
     "@taucad/chat": "workspace:*",
     "@taucad/mcp": "workspace:*",
     "@taucad/parameters": "workspace:*",
+    "@taucad/project-core": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/types": "workspace:*",
     "@taucad/ui": "workspace:*",
     "@taucad/viewer": "workspace:*",
+    "@taucad/workbench-panes": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "@xstate/react": "7.0.0-alpha.3",
     "immer": "^10.2.0",

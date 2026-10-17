@@ -1,3 +1,4 @@
+import type { DirectShareProtection } from '@taucad/project-core/share-direct';
 import type { ShareArtifactCodec, ShareOpenedArtifact } from '#artifact.js';
 import type { ShareLocator, ShareLocatorSecrets } from '#locator.js';
 import type { ShareProjectSnapshot } from '#snapshot.js';
@@ -29,27 +30,23 @@ export type SharePublication = {
 };
 
 /** Portable artifact protection selected by the person sharing. @public */
-export type ShareProtection =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'password'; readonly password: string; readonly includePassword: boolean };
+export type ShareProtection = DirectShareProtection;
 
 /** Provider visibility independent from artifact encryption. @public */
 export type ShareVisibility = 'unlisted' | 'public';
 
-/** Short-lived OAuth access-token lease returned to a provider. @public */
-export type ShareAccessTokenLease = {
-  readonly accessToken: string;
-  readonly grantedScopes: readonly string[];
-  readonly expiresAt?: Date;
-};
-
-/** Credential authority injected by the application shell. @public */
-export type ShareCredentialBroker = {
-  readonly getAccessToken: (request: {
-    readonly connectionId: string;
-    readonly scopes: readonly string[];
-    readonly audience: string;
-  }) => Promise<ShareAccessTokenLease>;
+/** Narrow server-side Gist mutation port; OAuth credentials never cross this boundary. @public */
+export type GithubGistTransport = {
+  readonly mutate: (input: {
+    readonly action: 'create' | 'update' | 'delete';
+    readonly id?: string;
+    readonly revision?: string;
+    readonly payload?: {
+      readonly public?: boolean;
+      readonly files: Readonly<Record<string, { readonly content: string }>>;
+    };
+    readonly signal?: AbortSignal;
+  }) => Promise<Record<string, unknown>>;
 };
 
 /** Existing Tau publication transport injected without coupling providers to app APIs. @public */
@@ -69,7 +66,7 @@ export type ShareProviderContext = {
   readonly origin: string;
   readonly artifactCodec: ShareArtifactCodec;
   readonly fetch: typeof globalThis.fetch;
-  readonly credentialBroker?: ShareCredentialBroker;
+  readonly githubGist?: GithubGistTransport;
   readonly tau?: TauShareTransport;
 };
 
@@ -114,30 +111,7 @@ export type ShareProviderDefinition = {
   readonly load: () => Promise<ShareProvider>;
 };
 
-/** Typed share failure categories safe for UI branching and logging. @public */
-export type ShareErrorCode =
-  | 'SHARE_ARTIFACT_INVALID'
-  | 'SHARE_ARTIFACT_LIMIT'
-  | 'SHARE_AUTH_REQUIRED'
-  | 'SHARE_PERMISSION_REQUIRED'
-  | 'SHARE_PROVIDER_INVALID_RESPONSE'
-  | 'SHARE_PROVIDER_UNAVAILABLE'
-  | 'SHARE_LOCATOR_INVALID'
-  | 'SHARE_PASSWORD_REQUIRED'
-  | 'SHARE_PROVIDER_UNKNOWN';
-
-/** Error containing only a stable code and non-sensitive presentation message. @public */
-export class ShareError extends Error {
-  public readonly code: ShareErrorCode;
-
-  /** Create a typed share error. @public */
-  public constructor(code: ShareErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = 'ShareError';
-    this.code = code;
-  }
-}
-
-/** Realm-safe guard for {@link ShareError}. @public */
-export const isShareError = (error: unknown): error is ShareError =>
-  error instanceof Error && error.name === 'ShareError' && 'code' in error;
+// oxlint-disable-next-line no-barrel-files/no-barrel-files -- the moved error keeps its app subpath
+export { ShareError, isShareError } from '@taucad/project-core/share-error';
+// oxlint-disable-next-line no-barrel-files/no-barrel-files -- ditto
+export type { ShareErrorCode } from '@taucad/project-core/share-error';

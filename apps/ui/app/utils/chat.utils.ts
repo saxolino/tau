@@ -34,6 +34,9 @@ const maxSnippetLength = 200;
 
 const joinLines = (...lines: Array<string | undefined | false>): string => lines.filter(Boolean).join('\n');
 
+/* A job on a simulator reads as one in Copy and export, as the job card says it. */
+const simulatedMark = (simulated: boolean | undefined): string => (simulated === true ? ' (simulated)' : '');
+
 type SerializableFileMetadata =
   | {
       readonly size: number;
@@ -91,6 +94,10 @@ type ToolSerializer<T extends keyof MyTools> = {
 };
 
 type ToolPartFor<Name extends keyof MyTools> = ToolUIPart<Pick<MyTools, Name>>;
+
+/** The machine tools answer in text; an old chat's object answer is kept readable rather than `[object Object]`. */
+const machineTextOf = (output: unknown): string =>
+  typeof output === 'string' ? output : JSON.stringify(output, undefined, 2);
 
 const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
   [toolName.taskSpawn]: {
@@ -271,6 +278,37 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
     input: (input) => `targetFile: ${input.targetFile}`,
     output(output) {
       const lines = [`Status: ${output.status}`];
+      if (output.tessellation) {
+        const {
+          triangles,
+          vertices,
+          elapsed,
+          voxelSize,
+          activeVoxels,
+          memoryBytes,
+          requested,
+          linearTolerance,
+          angularTolerance,
+          downgraded,
+        } = output.tessellation;
+        const grid = [
+          voxelSize === undefined ? undefined : `voxelSize ${voxelSize} mm`,
+          activeVoxels === undefined ? undefined : `${activeVoxels} active voxels`,
+          memoryBytes === undefined ? undefined : `${memoryBytes} bytes`,
+        ].filter(Boolean);
+        lines.push(
+          `Mesh: ${triangles} triangles, ${vertices} vertices, ${Math.round(elapsed)} ms${grid.length > 0 ? ` (${grid.join(', ')})` : ''}`,
+        );
+        const resolution = [
+          requested === undefined ? undefined : `requested ${requested}`,
+          linearTolerance === undefined ? undefined : `linearTolerance ${linearTolerance} mm`,
+          angularTolerance === undefined ? undefined : `angularTolerance ${angularTolerance}°`,
+          downgraded === undefined ? undefined : `downgraded ${downgraded}`,
+        ].filter(Boolean);
+        if (resolution.length > 0) {
+          lines.push(`Resolution: ${resolution.join(', ')}`);
+        }
+      }
       if (output.kernelIssues && output.kernelIssues.length > 0) {
         const issues = output.kernelIssues.map((issue) => `  - ${issue.message}`).join('\n');
         lines.push('Issues:', issues);
@@ -332,39 +370,56 @@ const toolSerializers: { [Name in keyof MyTools]: ToolSerializer<Name> } = {
         ...output.issues.map((issue) => `${issue.code}: ${issue.message}`),
       ),
   },
+  [toolName.listMachines]: {
+    input: () => '',
+    output: (output: unknown) => machineTextOf(output),
+  },
   [toolName.getMachine]: {
     input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
-    output: (output) => JSON.stringify(output, null, 2),
+    output: (output: unknown) => machineTextOf(output),
+  },
+  [toolName.machineAction]: {
+    input: (input) =>
+      joinLines(
+        input.machineId === undefined ? undefined : `machineId: ${input.machineId}`,
+        `${input.componentId}: ${input.action}`,
+        input.parameters === undefined ? undefined : JSON.stringify(input.parameters),
+      ),
+    output: (output) => `${output.status}: ${output.message}`,
+  },
+  [toolName.stopMachine]: {
+    input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
+    output: (output) => `${output.status}: ${output.message}`,
   },
   [toolName.getPrintProfiles]: {
     input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
     output: (output) => JSON.stringify(output, null, 2),
   },
-  [toolName.requestPrint]: {
+  [toolName.requestJob]: {
     input: (input) =>
       joinLines(
-        `targetFile: ${input.targetFile}`,
+        input.artifact === undefined ? `targetFile: ${input.targetFile}` : `artifact: ${input.artifact}`,
         input.machineId === undefined ? undefined : `machineId: ${input.machineId}`,
         input.preset === undefined ? undefined : `preset: ${input.preset}`,
       ),
     output: (output) =>
       joinLines(
-        `${output.request.summary.fileName} on ${output.machineName ?? output.request.machineId}: ${output.request.state}`,
-        output.request.failure?.message,
+        `${output.job.program.name} on ${output.machineName ?? output.job.machineId}${simulatedMark(output.simulated)}: ${output.job.state}`,
+        output.job.failure?.message,
         output.nextStep,
       ),
   },
-  [toolName.getPrintRequest]: {
-    input: (input) => `requestId: ${input.requestId}`,
-    output: (output) => `${output.request.summary.fileName}: ${output.request.state}`,
-  },
-  [toolName.listPrintRequests]: {
-    input: (input) => (input.machineId === undefined ? '' : `machineId: ${input.machineId}`),
-    output: (output) => `${String(output.total)} print request(s)`,
-  },
-  [toolName.cancelPrint]: {
-    input: (input) => JSON.stringify(input),
-    output: (output) => JSON.stringify(output, null, 2),
+  [toolName.checkJob]: {
+    input: (input) =>
+      joinLines(
+        input.artifact === undefined ? `targetFile: ${input.targetFile}` : `artifact: ${input.artifact}`,
+        input.machineId === undefined ? undefined : `machineId: ${input.machineId}`,
+      ),
+    output: (output) =>
+      joinLines(
+        `${output.status}${simulatedMark(output.simulated)}${output.program ? `: ${output.program.name}` : ''}`,
+        output.message,
+      ),
   },
   [toolName.revisions]: {
     input: (input) => `action: ${input.action}`,
@@ -475,6 +530,7 @@ function serializePart(part: MyMessagePart): string {
       return '';
     }
 
+    case 'data-acp-activity':
     case 'data-acp-session': {
       return '';
     }

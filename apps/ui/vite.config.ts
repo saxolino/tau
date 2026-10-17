@@ -18,6 +18,8 @@ import { base64Loader } from '@taucad/vite/base64-loader';
 import { resolveTauCloudBuildEnabled } from './build-environment.js';
 // oxlint-disable-next-line eslint/no-restricted-imports -- Vite config cannot use app aliases.
 import { createGeoSpecMtAssets } from './geospec-mt-assets.vite-plugin.js';
+// oxlint-disable-next-line eslint/no-restricted-imports -- Vite config cannot use app aliases.
+import { createAssetIntegrity } from './asset-integrity.vite-plugin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const testScriptsAlias = '#scripts';
@@ -108,12 +110,11 @@ const desktopSourceOverrides = new Map([
   ['#constants/local-kernel-options.js', '#constants/local-kernel-options.desktop.js'],
   ['#constants/ephemeral-kernel-options.js', '#constants/ephemeral-kernel-options.desktop.js'],
   ['#runtime/converter-client-options.js', '#runtime/converter-client-options.desktop.js'],
-  ['#runtime/demo-client-options.js', '#runtime/demo-client-options.desktop.js'],
   ['#services/headless-image-backend.js', '#services/headless-image-backend.desktop.js'],
   ['#services/browser-agent-worker.js', '#services/browser-agent-worker.desktop.js'],
   ['#services/browser-geospec-worker.js', '#services/browser-geospec-worker.desktop.js'],
   ['#workers/measurement-exact.transport.js', '#workers/measurement-exact.transport.desktop.js'],
-  ['#components/layout/route-footer.js', '#components/layout/route-footer.desktop.js'],
+  ['#components/cookie-preferences.js', '#components/cookie-preferences.desktop.js'],
 ]);
 
 const selfHostSourceOverrides = new Map([
@@ -121,7 +122,6 @@ const selfHostSourceOverrides = new Map([
   ['#components/icons/svg-sprite-mount.js', '#components/icons/svg-sprite-mount.self-host.js'],
   ['#hooks/use-credit-preflight.js', '#hooks/use-credit-preflight.self-host.js'],
   ['#offline/offline-shell.js', '#offline/offline-shell.self-host.js'],
-  ['#utils/model-tier.js', '#utils/model-tier.self-host.js'],
   ['#routes/_index/billing-section.js', '#routes/_index/billing-section.self-host.js'],
   [
     '#routes/w.$workspace.$project/chat-details-usage.js',
@@ -394,9 +394,22 @@ export const createUiReactCompilerPlugin = (): Plugin => {
   };
 };
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const mtAssets = createGeoSpecMtAssets(process.env['GEOSPEC_MT_STAGED_PACKAGE_ROOT']);
   const isTest = mode === 'test';
+  /*
+   * Ordered build identity for the stale-tab skew guard (blueprint DF20).
+   * Evaluated once per build / dev-server start, which is exactly the
+   * granularity at which a tab's app-logic vintage can diverge.
+   *
+   * A production build defines it for the server only, which publishes it to
+   * the page as `window.ENV.TAU_BUILD_ID` (`#lib/build-identity`). Baked into a
+   * client chunk, a fresh timestamp changed that chunk's hash on every build,
+   * and with it the hash of every chunk importing it: about 3.4 MB of the app
+   * shell got new URLs per deploy without a source change.
+   */
+  const buildIdDefine = { tauBuildId: JSON.stringify(Date.now()) };
+  const isProductionBuild = command === 'build' && !isTest;
   // Netlify's own CI sets NETLIFY=true; `netlify deploy` from GitHub Actions
   // (deploy-ui.yml) builds with NETLIFY_LOCAL=true instead. Both need the SSR function.
   const isNetlify = process.env['NETLIFY'] === 'true' || process.env['NETLIFY_LOCAL'] === 'true';
@@ -408,10 +421,7 @@ export default defineConfig(({ mode }) => {
     cacheDir: '../../node_modules/.vite/apps/ui',
     define: {
       tauBuildFrontendUrl: JSON.stringify(buildFrontendUrl ?? ''),
-      // Ordered build identity for the stale-tab skew guard (blueprint DF20).
-      // Evaluated once per build / dev-server start, which is exactly the
-      // granularity at which a tab's app-logic vintage can diverge.
-      tauBuildId: JSON.stringify(Date.now()),
+      ...(isProductionBuild ? {} : buildIdDefine),
       tauCloudBuildEnabled: JSON.stringify(tauCloudEnabled),
       tauGeoSpecMtReceipts: JSON.stringify(mtAssets.receipts),
       /*
@@ -423,6 +433,18 @@ export default defineConfig(({ mode }) => {
       // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
       ...(isTest ? {} : { 'import.meta.env.TAU_TARGET': '"web"' }),
       /*
+       * Whether a non-prerelease Tau Desktop exists to download (Q56, DSK-7): every "Get Tau Desktop" offer stays
+       * hidden until the release build sets `TAU_DESKTOP_RELEASED=true`. Undefined under `mode === 'test'`.
+       */
+      // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
+      ...(isTest
+        ? {}
+        : {
+            'import.meta.env.TAU_DESKTOP_RELEASED': JSON.stringify(
+              process.env['TAU_DESKTOP_RELEASED'] === 'true' ? 'true' : 'false',
+            ),
+          }),
+      /*
        * Offline shell seam (B5 R3). Only this config defines it, so only the
        * web bundle registers the service worker: `desktop/vite.config.ts` and
        * `serve/vite.config.ts` have their own `define` blocks and their own
@@ -431,10 +453,20 @@ export default defineConfig(({ mode }) => {
        */
       // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
       ...(isTest ? {} : { 'import.meta.env.TAU_OFFLINE_SHELL': '"enabled"' }),
+      /*
+       * This bundle is served by the web host, never by a `tau serve` daemon
+       * (`serve/vite.config.ts`), so its origin has no agent descriptor. The
+       * probe otherwise reached the SSR catch-all, which answered every workspace
+       * load with a full HTML page.
+       */
+      // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
+      ...(isTest ? {} : { 'import.meta.env.TAU_ORIGIN_AGENT_HOST': '"absent"' }),
     },
     plugins: [
       mtAssets.plugin,
       createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled }),
+      // WASM `fetch` integrity and the asset receipt (charter D26): build only.
+      createAssetIntegrity({ receipt: true }),
 
       /*
        * @taucad/runtime contract: COOP/COEP for SharedArrayBuffer, keep .wasm
@@ -472,8 +504,13 @@ export default defineConfig(({ mode }) => {
     worker: {
       // Workers need their own plugins.
       // https://vite.dev/config/worker-options.html#worker-plugins
-      plugins: () => [createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled })],
+      plugins: () => [
+        createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled }),
+        createAssetIntegrity({ receipt: false }),
+      ],
     },
+    // Merged over the shared `define` for the server graph only (see `buildIdDefine`).
+    ...(isProductionBuild ? { environments: { ssr: { define: buildIdDefine } } } : {}),
     resolve: {
       alias: [
         ...uiResolveAlias,

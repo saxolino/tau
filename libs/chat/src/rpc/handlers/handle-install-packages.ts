@@ -65,6 +65,31 @@ const toIssues = (issues: readonly PackageIssue[]): InstallPackagesOutput['issue
 };
 
 /**
+ * A Python or C# project's package manifest, read from the project root: npm serves neither language, so
+ * `install_packages` refuses rather than writing a package.json nothing reads (charter D35). A root that has a
+ * package.json, or none of these files, is an npm project.
+ * @param fileSystem - The project's record filesystem, rooted at the project.
+ * @returns The language and the manifest the person edits instead, or undefined for an npm project.
+ */
+const nonNpmManifest = async (
+  fileSystem: RpcFileSystem,
+): Promise<{ readonly language: 'Python' | 'C#'; readonly manifest: string } | undefined> => {
+  const entries = await fileSystem.readdir('');
+  const names = entries.filter(({ type }) => type !== 'dir').map(({ name }) => name);
+  if (names.includes('package.json')) {
+    return undefined;
+  }
+  if (names.some((name) => name === 'pyproject.toml' || name.endsWith('.py'))) {
+    return { language: 'Python', manifest: 'pyproject.toml' };
+  }
+  const csproj = names.find((name) => name.endsWith('.csproj'));
+  if (csproj !== undefined || names.some((name) => name.endsWith('.cs'))) {
+    return { language: 'C#', manifest: csproj ?? "the project's .csproj" };
+  }
+  return undefined;
+};
+
+/**
  * Install the project's packages: edit package.json, write package-lock.json, then unpack every locked tarball.
  *
  * Refusals are issues in a success result, so the agent reads one shape. The two manifest writes are checked
@@ -72,16 +97,58 @@ const toIssues = (issues: readonly PackageIssue[]): InstallPackagesOutput['issue
  *
  * @param input - Dependency edits; `upgrade` present selects upgrade mode with exactly those names.
  * @param fileSystem - The project's record filesystem, rooted at the project.
- * @param signal - Cancels resolution and downloads.
+ * @param options - The invocation's cancellation and the host's acquisition profile.
+ * @param options.signal - Cancels resolution and downloads.
+ * @param options.acquisition - The host's managed acquisition profile; `locked` refuses before any read or request.
  * @returns What changed, the direct dependencies as locked, and issues, or a typed failure.
  * @public
  */
 export async function handleInstallPackages(
   input: InstallPackagesRpcInput,
   fileSystem: RpcFileSystem,
-  signal: AbortSignal = new AbortController().signal,
+  {
+    signal = new AbortController().signal,
+    acquisition = 'open',
+  }: { readonly signal?: AbortSignal | undefined; readonly acquisition?: 'open' | 'locked' | undefined } = {},
 ): Promise<InstallPackagesRpcResult> {
+  if (acquisition === 'locked') {
+    // The locked profile makes no request, and resolving or installing a package needs the npm registry (X43).
+    return {
+      success: true,
+      manifestChanged: false,
+      lockChanged: false,
+      packages: [],
+      issues: [
+        {
+          code: 'registry-unavailable',
+          message:
+            'The acquisition profile is locked (TAU_ACQUISITION=locked), so install_packages contacts no registry and wrote nothing. Install where the registry is reachable and bring package.json, package-lock.json and node_modules into the project; its imports then load from node_modules.',
+        },
+      ],
+    };
+  }
   try {
+    const native = await nonNpmManifest(fileSystem);
+    if (native !== undefined) {
+      const names = [...Object.keys(input.add ?? {}), ...(input.remove ?? []), ...(input.upgrade ?? [])];
+      const packages = names.length === 0 ? 'packages' : names.join(', ');
+      const declaration =
+        native.language === 'Python'
+          ? `Declare ${packages} in ${native.manifest} [project] dependencies and run uv sync`
+          : `Add a PackageReference for ${packages} to ${native.manifest} and run dotnet restore`;
+      return {
+        success: true,
+        manifestChanged: false,
+        lockChanged: false,
+        packages: [],
+        issues: [
+          {
+            code: 'manifest-conflict',
+            message: `This is a ${native.language} project: install_packages installs npm packages into package.json, so it wrote nothing. ${declaration} to use them outside Tau. Inside Tau the kernel runs only the libraries it ships, so importing any other package fails.`,
+          },
+        ],
+      };
+    }
     const filesystem = toBundlerFileSystem(fileSystem);
     const installed = await installPackages({
       filesystem,

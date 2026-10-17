@@ -7,6 +7,7 @@ import type {
   Integrity,
   PluginDeployment,
   PreparationErrorCode,
+  ReceiptFile,
   VariantAxis,
   DependencyVariant,
 } from '#preparation/preparation.types.js';
@@ -69,8 +70,9 @@ export type PreparationState =
   | {
       readonly status: 'preparing';
       readonly attemptId: string;
-      readonly phase: 'downloading' | 'verifying' | 'extracting';
-      /** Name of the payload the phase is about. */
+      /** `sealing` runs the plugin's seal step (such as bytecode compilation) after every payload is unpacked. */
+      readonly phase: 'downloading' | 'verifying' | 'extracting' | 'sealing';
+      /** Name of the payload the phase is about; the dependency's name while `sealing`. */
       readonly payload: string;
       readonly completedPayloads: number;
       readonly totalPayloads: number;
@@ -229,6 +231,11 @@ export type PreparationHost = {
   /** Current state from receipts alone: no network, no plugin code, no download. */
   inspect(input: PluginSelection): Promise<PluginPreparation>;
   /**
+   * What a launch uses, read from each closure's launch index and its receipt's version stamp: the per-launch read,
+   * whose cost does not grow with the closure (I11). It reports `ready` exactly when {@link inspect} does.
+   */
+  inspectLaunch(input: PluginSelection): Promise<LaunchInspection>;
+  /**
    * Prepare a selection, joining an attempt already running in this host for the same selection.
    * @throws {PreparationError} After emitting `failed`.
    */
@@ -250,6 +257,38 @@ export type PreparationHost = {
 };
 
 /**
+ * Input of a plugin's {@link PreparationPlugin.seal} step.
+ * @public
+ */
+export type SealClosureInput = {
+  /** The declaring plugin's npm package name. */
+  readonly package: string;
+  readonly dependency: string;
+  /** The selected variant's target. */
+  readonly target: DependencyTarget;
+  /**
+   * Absolute closure root: the staging directory while preparing, the sealed closure while repairing. It holds only
+   * the payloads' files and what an earlier run of the step added: the host's own `receipt.json` and launch index are
+   * never there while the step runs.
+   */
+  readonly root: string;
+  /** Rows of the files the payloads wrote, sorted by path. */
+  readonly files: readonly ReceiptFile[];
+  readonly signal: AbortSignal;
+};
+
+/**
+ * Why a seal step refuses a closure this host cannot run, such as a missing system library. Preparation then ends
+ * `blocked` with this reason; nothing is sealed and the verified blobs are kept.
+ * @public
+ */
+export type SealClosureRefusal = {
+  readonly reason: PreparationBlockedReason;
+  readonly message: string;
+  readonly detail?: Extract<PreparationState, { status: 'blocked' }>['detail'];
+};
+
+/**
  * One plugin the host can prepare.
  * @public
  */
@@ -260,7 +299,41 @@ export type PreparationPlugin = {
   readonly deployment: PluginDeployment;
   /** Absolute package root; required when a payload's origin is `packagePath` or `packageAsset`. */
   readonly directory?: string;
+  /**
+   * Seal-time compute, run after every payload of a closure is unpacked and before its receipt is written: it may
+   * only add files, which the host receipts (with no payload name, regular files normalised to mode `0o644`, or
+   * `0o755` when executable) so `treeIntegrity` covers them. A repair that touches the closure runs it again in place.
+   * It runs verified bytes only and must be deterministic: the same closure must give the same files on every host.
+   * @param input - The closure being sealed.
+   * @returns A refusal when this host cannot run the closure, else `undefined`.
+   */
+  readonly seal?: (input: SealClosureInput) => Promise<SealClosureRefusal | undefined>;
+  /**
+   * The launch set: closure-relative paths of the files the kernel's process loads first, which every launch hashes
+   * (D8, ruling X29). The host writes their rows to the closure's launch index at seal time, so a launch reads that
+   * small file instead of the full receipt; the rest of the closure is re-verified after a failed handshake. Keep it
+   * to the executable and the few files the process opens before it is ready.
+   * @param files - Every row of the closure being sealed.
+   * @returns Paths that `files` lists.
+   */
+  readonly launchSet?: (files: readonly ReceiptFile[]) => readonly string[];
 };
+
+/**
+ * What a launch needs of one sealed closure: where it is, which pins it holds and the rows of its launch set (every
+ * row, for a closure sealed without a launch index).
+ * @public
+ */
+export type ClosureLaunch = Pick<ClosureReceipt, 'package' | 'dependency' | 'root' | 'closureIntegrity' | 'files'>;
+
+/**
+ * {@link PreparationHost.inspectLaunch}'s answer: the closures a launch uses, or why there are none.
+ * @public
+ */
+export type LaunchInspection =
+  | { readonly status: 'ready'; readonly closures: Readonly<Record<string, ClosureLaunch>> }
+  | { readonly status: 'idle' }
+  | Extract<PreparationState, { status: 'blocked' }>;
 
 /**
  * Options of {@link createPreparationHost}.
@@ -323,5 +396,10 @@ export type EffectiveProfile = {
   readonly proxy: 'env-proxy' | 'none';
   /** Which certificate authorities Node trusts for downloads. */
   readonly ca: 'bundled' | 'extra' | 'system';
+  /**
+   * The managed variables (`TAU_ACQUISITION`, `TAU_PAYLOAD_*`, `TAU_CONFIG_DIR`) and the proxy and CA variables set in
+   * this environment, by name only: a proxy URL can carry a credential.
+   */
+  readonly variables: readonly string[];
   readonly closures: readonly ClosureDescription[];
 };

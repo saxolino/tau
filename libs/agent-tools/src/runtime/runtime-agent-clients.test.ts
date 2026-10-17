@@ -14,6 +14,7 @@ import type {
   ViewUpdateOutcome,
   WideViewRequest,
 } from '@taucad/runtime';
+import type { TessellationReport } from '@taucad/runtime/types';
 import { createActor, createAsyncLogic, waitFor } from 'xstate';
 import { parameterSetMachine } from '@taucad/parameters/set-machine';
 import type { ParameterSetActors, ParameterSetLoadInput } from '@taucad/parameters/set-machine';
@@ -67,8 +68,13 @@ type RuntimeFixtureOptions = Readonly<{
 
 const runtimeFixture = (options: RuntimeFixtureOptions = {}) => {
   const documents: RuntimeDocument[] = [];
+  const viewRequests: Array<Readonly<{ path: string; id: string | undefined; request: WideViewRequest }>> = [];
   const documentFor = (path: string): RuntimeDocument => {
-    const view = (id?: string, request: WideViewRequest = {}): ViewSubscription => ({
+    const view = (id?: string, request: WideViewRequest = {}): ViewSubscription => {
+      viewRequests.push({ path, id, request });
+      return viewSubscription(id, request);
+    };
+    const viewSubscription = (id: string | undefined, request: WideViewRequest): ViewSubscription => ({
       view: id,
       request,
       on: () => () => undefined,
@@ -126,7 +132,7 @@ const runtimeFixture = (options: RuntimeFixtureOptions = {}) => {
     describe: vi.fn(async (): Promise<Description> => ({ success: false, kernelId: undefined, issues: [] })),
     capabilities: undefined,
   };
-  return { runtime, open, documents };
+  return { runtime, open, documents, viewRequests };
 };
 
 const clientsFor = (
@@ -176,6 +182,54 @@ describe('createRuntimeAgentClients', () => {
     for (const document of fixture.documents) {
       expect(document.close).toHaveBeenCalledOnce();
     }
+  });
+
+  it('reports the default view mesh cost the kernel delivered', async () => {
+    const tessellation = {
+      triangles: 1308,
+      vertices: 656,
+      elapsed: 42,
+      voxelSize: 0.5,
+      activeVoxels: 2846,
+      memoryBytes: 1_296_848,
+    };
+    const clients = clientsFor(
+      runtimeFixture({ render: () => rendering({ mimeType: 'model/gltf-binary', content: glb(), tessellation }) }),
+    );
+
+    await expect(clients.kernelClient.evaluateModel({ targetFile: 'main.ts' })).resolves.toMatchObject({
+      success: true,
+      status: 'ready',
+      tessellation,
+    });
+  });
+
+  it('should report the effective tessellation resolution the kernel delivered (I7)', async () => {
+    const tessellation: TessellationReport = {
+      triangles: 1_999_872,
+      vertices: 1_000_014,
+      elapsed: 812,
+      requested: 'extra-high',
+      linearTolerance: 0.02,
+      angularTolerance: 10,
+      downgraded: 1,
+    };
+    const clients = clientsFor(
+      runtimeFixture({ render: () => rendering({ mimeType: 'model/gltf-binary', content: glb(), tessellation }) }),
+    );
+
+    await expect(clients.kernelClient.evaluateModel({ targetFile: 'main.ts' })).resolves.toMatchObject({
+      success: true,
+      status: 'ready',
+      tessellation,
+    });
+  });
+
+  it('omits the mesh cost when the kernel reports none', async () => {
+    const clients = clientsFor(runtimeFixture());
+
+    const result = await clients.kernelClient.evaluateModel({ targetFile: 'main.ts' });
+    expect(result).not.toHaveProperty('tessellation');
   });
 
   it('should open every request-scoped document unwatched', async () => {
@@ -392,6 +446,216 @@ describe('createRuntimeAgentClients', () => {
   });
 });
 
+describe('createRuntimeAgentClients per-call parameters and sections', () => {
+  it('passes per-call parameters to every geometry document as caller overrides', async () => {
+    const fixture = runtimeFixture();
+    const clients = clientsFor(fixture);
+    const parameters = { voxelSize: 0.5, part: 'Shade Print' };
+
+    await clients.kernelClient.evaluateModel({ targetFile: 'main.ts', parameters });
+    await clients.graphics.exportModel({ targetFile: 'main.ts', to: 'stl', parameters });
+    await clients.images.captureImages({ targetFile: 'main.ts', mode: 'single', parameters });
+    await clients.kernelClient.evaluateModel({ targetFile: 'main.ts', parameters: {} });
+
+    const inputs = fixture.open.mock.calls.map(([input]) => input);
+    expect(inputs.slice(0, 3).map((input) => input.parameters)).toEqual([parameters, parameters, parameters]);
+    // An empty object is the stored group alone, exactly like omitting it.
+    expect(inputs[3]).not.toHaveProperty('parameters');
+  });
+
+  it('cuts a 3D capture with the requested plane, keys its identity and reports what was kept', async () => {
+    const fixture = runtimeFixture();
+    const clients = clientsFor(fixture);
+
+    const plain = await clients.images.captureImages({ targetFile: 'main.ts', mode: 'single' });
+    const cut = await clients.images.captureImages({
+      targetFile: 'main.ts',
+      mode: 'single',
+      section: { plane: 'xy', offsetMm: 6 },
+    });
+
+    expect(plain).not.toHaveProperty('message');
+    expect(cut).toMatchObject({ success: true, message: 'Section xy: kept z ≤ 6 mm; the cut face is capped.' });
+    const [plainJob, cutJob] = clients.exporter.mock.calls.map(([job]) => job);
+    expect(plainJob?.exportOptions).not.toHaveProperty('sections');
+    expect(cutJob?.exportOptions).toMatchObject({
+      sections: { planes: [{ point: [0, 0, 0.006], normal: [0, 0, -1] }] },
+    });
+    expect(cutJob?.identity).not.toBe(plainJob?.identity);
+  });
+
+  it('names what a cut needs when the renderer refuses a section', async () => {
+    const fixture = runtimeFixture();
+    const clients = clientsFor(fixture, async () => {
+      throw new Error('parse: sections: topology: source node 1/mesh 1/primitive 0 contains a degenerate triangle');
+    });
+
+    const result = await clients.images.captureImages({
+      targetFile: 'main.ts',
+      mode: 'single',
+      section: { plane: 'xy', offsetMm: 6 },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.success ? undefined : result.message).toContain(
+      'The xy section at 6 mm could not be rendered: parse: sections: topology: source node 1/mesh 1/primitive 0 contains a degenerate triangle. A section caps the cut',
+    );
+  });
+
+  it('refuses a section on a 2D view before rendering an image', async () => {
+    const fixture = runtimeFixture({
+      evaluate: () => evaluation([{ id: 'drawing', title: 'Drawing', mimeType: 'image/svg+xml' }]),
+      render: (_path, view) =>
+        rendering({ mimeType: 'image/svg+xml', content: '<svg xmlns="http://www.w3.org/2000/svg"></svg>' }, view),
+    });
+    const clients = clientsFor(fixture);
+
+    await expect(
+      clients.images.captureImages({
+        targetFile: 'drawing.ts',
+        mode: 'single',
+        section: { plane: 'xz', offsetMm: 0 },
+      }),
+    ).resolves.toEqual({
+      success: false,
+      errorCode: 'VALIDATION_ERROR',
+      message: 'section applies to 3D views only; view drawing is a 2D drawing. Omit section for this view.',
+    });
+    expect(clients.exporter).not.toHaveBeenCalled();
+  });
+});
+
+describe('createRuntimeAgentClients default view options', () => {
+  const optionsRefusal = {
+    code: 'VIEW_OPTIONS_INVALID',
+    message: 'model option tessellation: Invalid input',
+    type: 'kernel',
+    severity: 'error',
+  } as const;
+
+  it('renders the default view with the options evaluate_model was given', async () => {
+    const tessellation = { triangles: 96, vertices: 50, elapsed: 3 };
+    const fixture = runtimeFixture({
+      render: () => rendering({ mimeType: 'model/gltf-binary', content: glb(), tessellation }),
+    });
+    const clients = clientsFor(fixture);
+
+    await expect(
+      clients.kernelClient.evaluateModel({ targetFile: 'main.ts', options: { tessellation: 'low' } }),
+    ).resolves.toMatchObject({ success: true, status: 'ready', views: ['model'], tessellation });
+    expect(fixture.viewRequests).toEqual([
+      { path: 'main.ts', id: 'model', request: { options: { tessellation: 'low' } } },
+    ]);
+  });
+
+  it('renders the default view exactly as before when options are omitted', async () => {
+    const fixture = runtimeFixture();
+    const clients = clientsFor(fixture);
+
+    await expect(clients.kernelClient.evaluateModel({ targetFile: 'main.ts' })).resolves.toEqual({
+      success: true,
+      status: 'ready',
+      kernelIssues: [],
+      views: ['model'],
+      instances: {},
+      exports: {},
+    });
+    expect(fixture.viewRequests).toEqual([{ path: 'main.ts', id: undefined, request: {} }]);
+  });
+
+  it('refuses options the default view rejects with VALIDATION_ERROR, as screenshot does', async () => {
+    const fixture = runtimeFixture({
+      render: () => ({
+        success: false,
+        requestId: 'render-1',
+        evaluationId: 'evaluation-1',
+        transient: false,
+        issues: [optionsRefusal],
+      }),
+    });
+    const clients = clientsFor(fixture);
+    const refusal = {
+      success: false,
+      errorCode: 'VALIDATION_ERROR',
+      message: 'model option tessellation: Invalid input',
+    };
+
+    await expect(
+      clients.kernelClient.evaluateModel({ targetFile: 'main.ts', options: { tessellation: 'coarse' } }),
+    ).resolves.toEqual(refusal);
+    await expect(
+      clients.images.captureImages({ targetFile: 'main.ts', mode: 'single', options: { tessellation: 'coarse' } }),
+    ).resolves.toEqual(refusal);
+    expect(clients.exporter).not.toHaveBeenCalled();
+    for (const document of fixture.documents) {
+      expect(document.close).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('refuses options for a model that offers no view instead of ignoring them', async () => {
+    const fixture = runtimeFixture({ evaluate: () => evaluation([]) });
+    const clients = clientsFor(fixture);
+
+    await expect(
+      clients.kernelClient.evaluateModel({ targetFile: 'lib.ts', options: { tessellation: 'low' } }),
+    ).resolves.toMatchObject({ success: false, errorCode: 'VALIDATION_ERROR' });
+    await expect(clients.kernelClient.evaluateModel({ targetFile: 'lib.ts' })).resolves.toMatchObject({
+      success: true,
+      status: 'ready',
+      views: [],
+    });
+    expect(fixture.viewRequests).toEqual([]);
+  });
+
+  it('asks the runtime for edge lines only when the screenshot asks for them', async () => {
+    const fixture = runtimeFixture();
+    const clients = clientsFor(fixture);
+
+    await clients.images.captureImages({ targetFile: 'main.ts', mode: 'single', includeEdges: true });
+    await clients.images.captureImages({ targetFile: 'main.ts', mode: 'single', includeEdges: false });
+    await clients.images.captureImages({ targetFile: 'main.ts', mode: 'single' });
+
+    expect(fixture.viewRequests.map(({ request }) => request)).toEqual([{ content: { includeEdges: true } }, {}, {}]);
+    // A false request also tells the image renderer to leave lines out; omission keeps its default.
+    expect(clients.exporter.mock.calls.map(([job]) => 'lines' in job.exportOptions)).toEqual([false, true, false]);
+  });
+
+  it('refuses edge lines a view cannot carry with VALIDATION_ERROR', async () => {
+    const message = 'Content property "includeEdges" is not supported by this route.';
+    const clients = clientsFor(
+      runtimeFixture({
+        render: () => ({
+          success: false,
+          requestId: 'render-1',
+          evaluationId: 'evaluation-1',
+          transient: false,
+          issues: [{ code: 'RUNTIME_CONTENT_UNSUPPORTED', message, type: 'runtime', severity: 'error' }],
+        }),
+      }),
+    );
+
+    await expect(
+      clients.images.captureImages({ targetFile: 'main.ts', mode: 'single', view: 'drawing', includeEdges: true }),
+    ).resolves.toEqual({ success: false, errorCode: 'VALIDATION_ERROR', message });
+    expect(clients.exporter).not.toHaveBeenCalled();
+  });
+
+  it('refuses export options the kernel rejects with VALIDATION_ERROR', async () => {
+    const clients = clientsFor(
+      runtimeFixture({
+        export: () => ({
+          success: false,
+          issues: [{ ...optionsRefusal, code: 'EXPORT_OPTIONS_INVALID', message: 'stl option binary: Invalid input' }],
+        }),
+      }),
+    );
+
+    await expect(
+      clients.graphics.exportModel({ targetFile: 'main.ts', to: 'stl', options: { binary: 'yes' } }),
+    ).resolves.toEqual({ success: false, errorCode: 'VALIDATION_ERROR', message: 'stl option binary: Invalid input' });
+  });
+});
+
 describe('createRuntimeParameterAgentClient', () => {
   const fixture = async (gate?: Promise<void>, options: Readonly<{ sourceUnit?: boolean; unbound?: boolean }> = {}) => {
     const target = { authority: 'test', root: '/project', entry: 'main.py' };
@@ -567,7 +831,7 @@ describe('createRuntimeParameterAgentClient', () => {
 
   const proposeSourceUnit = async (adapter: Awaited<ReturnType<typeof fixture>>['adapter']) => {
     // The request is built only from what `get_parameters` returned.
-    const read = await adapter.getParameters({ targetFile: 'main.py' });
+    const read = await adapter.getParameters({ targetFile: 'main.py', detail: 'full' });
     if (!read.success || read.manifest === undefined || read.current === undefined) {
       throw new Error('Expected resolved parameters');
     }
@@ -687,6 +951,42 @@ describe('createRuntimeParameterAgentClient', () => {
       status: 'unresolved',
       diagnostics: [{ code: 'INVALID_RECORD', severity: 'error', resource: 'main.py' }],
     });
+    actor.stop();
+  });
+
+  it('reads the values projection by default and the manifest only under detail full', async () => {
+    const { actor, adapter, current } = await fixture(undefined, { sourceUnit: true, unbound: true });
+
+    const values = await adapter.getParameters({ targetFile: 'main.py' });
+    expect(values).toMatchObject({
+      success: true,
+      status: 'resolved',
+      detail: 'values',
+      parameters: {
+        '/label': { value: 'plate', default: 'plate' },
+        '/width': { value: 1, default: 1, unit: 'mm' },
+      },
+      current: { identity: current.identity },
+    });
+    expect(values).not.toHaveProperty('manifest');
+    if (values.success && values.status === 'resolved') {
+      expect(values.parameters?.['/width']).not.toHaveProperty('unitInferred');
+    }
+
+    const full = await adapter.getParameters({ targetFile: 'main.py', detail: 'full' });
+    expect(full).toMatchObject({
+      success: true,
+      status: 'resolved',
+      detail: 'full',
+      manifest: { revision: current.manifest.revision },
+    });
+    expect(full).not.toHaveProperty('parameters');
+    if (!full.success || full.status !== 'resolved') {
+      throw new Error('Expected a resolved full read');
+    }
+    // The full read is the exact admitted manifest, so it can be admitted again unchanged.
+    await expect(admitParameterManifest(full.manifest)).resolves.toMatchObject({ revision: current.manifest.revision });
+    expect(JSON.stringify(values).length).toBeLessThan(JSON.stringify(full).length);
     actor.stop();
   });
 

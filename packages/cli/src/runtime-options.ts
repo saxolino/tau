@@ -1,14 +1,22 @@
 import { createCliRuntime } from '#cli-runtime.js';
 import { loadTauPlugin, loadTauPluginConfig } from '#plugin-loader.js';
 import type { AnyRuntimeDefinition } from '@taucad/runtime/worker';
+import type { Build123dClosureOptions } from '@taucad/build123d';
 import type { PicogkKernelOptions } from '@taucad/picogk';
+import type { UnavailableNativeKernel } from '#unprepared-kernels.js';
+import { acquisitionOf } from '#acquisition.js';
+import type { Acquisition } from '#acquisition.js';
 
 export const loadCliRuntime = async (options: {
   readonly projectRoot: string;
   readonly plugin: unknown;
   readonly config?: string;
   readonly picogk?: PicogkKernelOptions;
+  readonly build123d?: Build123dClosureOptions;
+  readonly unavailableKernels?: readonly UnavailableNativeKernel[];
   readonly zooProxyUrl?: string;
+  /** Default `TAU_ACQUISITION` from this process's environment. */
+  readonly acquisition?: Acquisition;
 }): Promise<AnyRuntimeDefinition> => {
   const pluginSpecifiers = Array.isArray(options.plugin)
     ? options.plugin.filter((value): value is string => typeof value === 'string')
@@ -23,6 +31,9 @@ export const loadCliRuntime = async (options: {
     explicitFactories,
     configuredPlugins,
     ...(options.picogk ? { picogk: options.picogk } : {}),
+    ...(options.build123d ? { build123d: options.build123d } : {}),
+    ...(options.unavailableKernels ? { unavailableKernels: options.unavailableKernels } : {}),
     ...(options.zooProxyUrl ? { zooProxyUrl: options.zooProxyUrl } : {}),
+    acquisition: options.acquisition ?? acquisitionOf(process.env['TAU_ACQUISITION']),
   });
 };

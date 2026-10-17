@@ -1,8 +1,9 @@
 import '#styles/global.css';
 import 'dockview-react/dist/styles/dockview.css';
 import 'allotment/dist/style.css';
-import { cleanup, render } from '@testing-library/react';
-import { StrictMode, useState } from 'react';
+import { act, cleanup, render } from '@testing-library/react';
+import axe from 'axe-core';
+import { StrictMode, Suspense, use, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { DockviewApi, IDockviewHeaderActionsProps } from 'dockview-react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,10 +11,17 @@ import { page, userEvent } from 'vitest/browser';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { Allotment } from '#components/panes/allotment.js';
 import { Dockview } from '#components/panes/dockview.js';
+import { DockviewTab } from '#components/panes/dockview-tab.js';
 import { useIsTopLeftGroup, useIsTopRightGroup } from '#components/panes/use-is-top-right-group.js';
 
 const Content = (): React.JSX.Element => <textarea aria-label='Persistent editor' defaultValue='Keep this draft' />;
 const components = { content: Content };
+const SuspendedContent = ({ pending }: { readonly pending: Promise<void> | undefined }): React.JSX.Element => {
+  if (pending) {
+    use(pending);
+  }
+  return <Content />;
+};
 const CornerActions = ({ group, containerApi }: IDockviewHeaderActionsProps): React.JSX.Element => {
   const left = useIsTopLeftGroup(group, containerApi);
   const right = useIsTopRightGroup(group, containerApi);
@@ -97,7 +105,156 @@ const afterLayout = async (change: () => void): Promise<void> => {
 
 afterEach(cleanup);
 
+describe('Dockview tab close action in Chromium', () => {
+  it('should close each tab from its own glyph, without a group-level close or nested interactive', async () => {
+    let api: DockviewApi | undefined;
+    const view = render(
+      <TooltipProvider>
+        <div data-testid='tab-frame' style={{ width: 900, height: 300 }}>
+          <Dockview
+            components={components}
+            defaultTabComponent={DockviewTab}
+            rightHeaderActionsComponent={CornerActions}
+            onReady={(event) => {
+              api = event.api;
+              createPanels(event.api);
+            }}
+          />
+        </div>
+      </TooltipProvider>,
+    );
+    await vi.waitFor(() => {
+      expect(api?.panels).toHaveLength(6);
+    });
+    const root = view.getByTestId('tab-frame');
+    const tabFor = (title: string): HTMLElement => root.querySelector<HTMLElement>(`.dv-tab[aria-label="${title}"]`)!;
+    await vi.waitFor(() => {
+      expect(tabFor('File 1.tsx')).not.toBeNull();
+    });
+    const rightActions = root.querySelector<HTMLElement>('.dv-right-actions-container')!;
+    expect(rightActions.querySelector('[aria-label^="Close"]')).toBeNull();
+
+    const inactiveTab = tabFor('File 1.tsx');
+    const close = inactiveTab.querySelector<HTMLElement>('.dv-default-tab-action')!;
+    const tabBox = inactiveTab.getBoundingClientRect();
+    const closeBox = close.getBoundingClientRect();
+    expect(closeBox.left).toBeGreaterThanOrEqual(tabBox.left);
+    expect(closeBox.right).toBeLessThanOrEqual(tabBox.right);
+    expect(closeBox.top).toBeGreaterThanOrEqual(tabBox.top);
+    expect(closeBox.bottom).toBeLessThanOrEqual(tabBox.bottom);
+
+    const results = await axe.run(root, { runOnly: { type: 'rule', values: ['nested-interactive'] } });
+    expect(results.violations).toEqual([]);
+
+    await userEvent.hover(inactiveTab);
+    await userEvent.click(close);
+    expect(api!.panels.map((panel) => panel.title)).not.toContain('File 1.tsx');
+    expect(api!.activePanel?.title).toBe('File 5.tsx');
+  });
+});
+
 describe('editor chrome layout stability in Chromium', () => {
+  it.each([
+    { defaultSizes: undefined, nested: false },
+    { defaultSizes: [200, 600], nested: false },
+    { defaultSizes: undefined, nested: true },
+  ])(
+    'should keep panes mounted during Suspense with defaultSizes=$defaultSizes, nested=$nested',
+    async ({ defaultSizes, nested }) => {
+      await page.viewport(1300, 650);
+      const fixture = (pending?: Promise<void>, visible = true): React.JSX.Element => {
+        const workspace = (
+          <Allotment paneLabels={['Chat', 'Viewer']} defaultSizes={defaultSizes}>
+            <Allotment.Pane visible={visible} preferredSize={200} minSize={100}>
+              <div className='size-full'>
+                Chat history
+                <input aria-label='Chat draft' />
+              </div>
+            </Allotment.Pane>
+            <Allotment.Pane minSize={100}>
+              <SuspendedContent pending={pending} />
+            </Allotment.Pane>
+          </Allotment>
+        );
+        return (
+          <Suspense fallback={<p>Loading workspace</p>}>
+            <div style={{ width: nested ? 1000 : 800, height: 400 }}>
+              {nested ? (
+                <Allotment paneLabels={['Sidebar', 'Content']}>
+                  <Allotment.Pane preferredSize={200} minSize={100}>
+                    Sidebar
+                  </Allotment.Pane>
+                  <Allotment.Pane>{workspace}</Allotment.Pane>
+                </Allotment>
+              ) : (
+                workspace
+              )}
+            </div>
+          </Suspense>
+        );
+      };
+      const view = render(fixture());
+      const editor = view.container.querySelector('textarea')!;
+      await vi.waitFor(() => {
+        expect(view.container.querySelectorAll('.sash')).toHaveLength(nested ? 2 : 1);
+        expect(editor.getBoundingClientRect().width).toBeGreaterThan(0);
+      });
+      await userEvent.fill(editor, 'Unsaved work');
+      const draft = view.container.querySelector('input')!;
+      await userEvent.fill(draft, 'Unsent message');
+      const sashes = [...view.container.querySelectorAll('.sash')];
+      /* oxlint-disable eslint/no-await-in-loop -- Each reveal must finish before suspending the same mounted panes again. */
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        draft.focus();
+        const { promise, resolve } = Promise.withResolvers<void>();
+        await act(async () => {
+          view.rerender(fixture(promise));
+        });
+        await vi.waitFor(() => {
+          expect(view.getByRole('status', { name: 'Loading' }).getBoundingClientRect().height).toBeGreaterThan(0);
+          expect(view.queryByText('Loading workspace')).toBeNull();
+          expect(document.activeElement).toBe(draft);
+          expect(draft.value).toBe('Unsent message');
+          expect([...view.container.querySelectorAll('.sash')]).toEqual(sashes);
+          expect(view.getByText('Chat history').getBoundingClientRect().width).toBe(200);
+        });
+        const sash = await view.findByRole('separator', { name: 'Resize Chat and Viewer panes' });
+        sash.focus();
+        await userEvent.keyboard('{ArrowRight}');
+        await vi.waitFor(() => {
+          expect(view.getByText('Chat history').getBoundingClientRect().width).toBe(208);
+        });
+        await userEvent.keyboard('{ArrowLeft}');
+        if (nested && cycle === 0) {
+          await page.screenshot({ path: '../../../../../out/test-results/editor-layout/suspense-pending.png' });
+        }
+        await act(async () => {
+          resolve();
+          await promise;
+        });
+        await vi.waitFor(() => {
+          expect(view.queryByRole('status', { name: 'Loading' })).toBeNull();
+          expect(view.getByRole('textbox', { name: 'Persistent editor' })).toBe(editor);
+          expect(editor.value).toBe('Unsaved work');
+          expect(view.container.querySelectorAll('.sash')).toHaveLength(nested ? 2 : 1);
+          expect(view.getByText('Chat history').getBoundingClientRect().width).toBe(200);
+        });
+        if (nested && cycle === 0) {
+          await page.screenshot({ path: '../../../../../out/test-results/editor-layout/suspense-resolved.png' });
+        }
+        view.rerender(fixture(undefined, false));
+        await vi.waitFor(() => {
+          expect(view.getByText('Chat history').getBoundingClientRect().width).toBe(0);
+        });
+        view.rerender(fixture());
+        await vi.waitFor(() => {
+          expect(view.getByText('Chat history').getBoundingClientRect().width).toBeGreaterThan(100);
+        });
+      }
+      /* oxlint-enable eslint/no-await-in-loop */
+    },
+  );
+
   it('should settle nested pane bounds before the next frame during toggles and continuous resize', async () => {
     await page.viewport(1300, 650);
     let api: DockviewApi | undefined;

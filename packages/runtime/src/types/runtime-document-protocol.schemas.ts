@@ -113,6 +113,21 @@ const description = discriminatedWireUnion('success', [
     })
     .strip(),
 ]);
+const count = z.number().int().nonnegative();
+const tessellationReport = z
+  .object({
+    triangles: count,
+    vertices: count,
+    elapsed: z.number().nonnegative(),
+    voxelSize: z.number().positive().optional(),
+    activeVoxels: count.optional(),
+    memoryBytes: count.optional(),
+    requested: z.enum(['low', 'medium', 'high', 'extra-high', 'explicit']).optional(),
+    linearTolerance: z.number().positive().optional(),
+    angularTolerance: z.number().positive().optional(),
+    downgraded: count.optional(),
+  })
+  .strip();
 const artifact = z
   .object({
     mimeType: mediaType,
@@ -121,6 +136,7 @@ const artifact = z
       .object({ length: z.enum(cadLengthUnits) })
       .strip()
       .optional(),
+    tessellation: tessellationReport.optional(),
   })
   .strip();
 const rendering = discriminatedWireUnion('success', [

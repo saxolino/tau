@@ -1,3 +1,5 @@
+import { desktopUpdateChannels } from '@taucad/types/desktop-updates';
+import type { DesktopUpdateBridge, DesktopUpdateSnapshot } from '@taucad/types/desktop-updates';
 import { browserChannels } from '@taucad/types/browser';
 import type { BrowserBridge, BrowserSnapshot } from '@taucad/types/browser';
 /**
@@ -28,6 +30,7 @@ import { exposeElectronRuntime, relayElectronPorts } from '@taucad/runtime/elect
 import {
   appIconThemeChannel,
   openDirectoryChannel,
+  revealPathChannel,
   agentHostSessionChannels,
   externalAgentsChannel,
   machinesChannels,
@@ -63,14 +66,30 @@ ipcRenderer.on(windowFullscreenChannel, (_event, isFullscreen: unknown) => {
   }
 });
 
-let pendingQuitAsk = false;
-let quitAskHandler: (() => void) | undefined;
-ipcRenderer.on(quitChannels.ask, () => {
-  if (quitAskHandler === undefined) {
-    pendingQuitAsk = true;
+let pendingQuitAsk: string | undefined;
+let quitAskHandler: ((attemptId: string) => void) | undefined;
+ipcRenderer.on(quitChannels.ask, (_event, attemptId: unknown) => {
+  if (typeof attemptId !== 'string') {
     return;
   }
-  quitAskHandler();
+  if (quitAskHandler === undefined) {
+    pendingQuitAsk = attemptId;
+    return;
+  }
+  quitAskHandler(attemptId);
+});
+
+let pendingMachineRoute: string | undefined;
+let machineNavigationHandler: ((route: string) => void) | undefined;
+ipcRenderer.on(quitChannels.navigate, (_event, route: unknown) => {
+  if (typeof route !== 'string' || !/^\/machines(?:\/[^/?#]+\/[^/?#]+)?$/u.test(route)) {
+    return;
+  }
+  if (machineNavigationHandler) {
+    machineNavigationHandler(route);
+  } else {
+    pendingMachineRoute = route;
+  }
 });
 
 exposeElectronRuntime();
@@ -96,7 +115,30 @@ contextBridge.exposeInMainWorld('tauAuth', {
   },
 });
 
+const updates: DesktopUpdateBridge = {
+  snapshot: async () => ipcRenderer.invoke(desktopUpdateChannels.snapshot) as Promise<DesktopUpdateSnapshot>,
+  subscribe: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopUpdateSnapshot): void => {
+      listener(snapshot);
+    };
+    ipcRenderer.on(desktopUpdateChannels.changed, handler);
+    return () => {
+      ipcRenderer.off(desktopUpdateChannels.changed, handler);
+    };
+  },
+  check: async () => {
+    await ipcRenderer.invoke(desktopUpdateChannels.check);
+  },
+  install: async () => {
+    await ipcRenderer.invoke(desktopUpdateChannels.install);
+  },
+  download: async () => {
+    await ipcRenderer.invoke(desktopUpdateChannels.download);
+  },
+};
+
 contextBridge.exposeInMainWorld('tau', {
+  updates,
   /* The page matches relays on this tag rather than repeating the literal:
    * a duplicated string across a process boundary is how relays go quiet. */
   relayTag: servicesPortRelayTag,
@@ -114,7 +156,9 @@ contextBridge.exposeInMainWorld('tau', {
   machines: {
     /* The one route a secret takes: invoke → main → the utility's ceremony,
      * which saves it once the printer accepts it. Omit `accessCode` to reuse
-     * a saved one. The port relay above carries the non-secret half. */
+     * a saved one. The port relay above carries the non-secret half. A failed
+     * ceremony resolves `{ status: 'failed', code?, message }`, keeping the
+     * host's typed code, which a rejection across this bridge would drop. */
     completeBinding: async (input: { ceremonyId: string; address?: string; accessCode?: string }): Promise<unknown> =>
       ipcRenderer.invoke(machinesChannels.completeBinding, input),
   },
@@ -138,8 +182,17 @@ contextBridge.exposeInMainWorld('tau', {
         : process.platform === 'win32'
           ? 'Open in File Explorer'
           : 'Open in file manager',
+    revealLabel:
+      process.platform === 'darwin'
+        ? 'Reveal in Finder'
+        : process.platform === 'win32'
+          ? 'Reveal in File Explorer'
+          : 'Reveal in file manager',
     open: async (path: string): Promise<void> => {
       await ipcRenderer.invoke(openDirectoryChannel, path);
+    },
+    reveal: async (path: string): Promise<void> => {
+      await ipcRenderer.invoke(revealPathChannel, path);
     },
   },
   nodeFs: { homeRoot: bootstrap.homeRoot },
@@ -174,11 +227,25 @@ contextBridge.exposeInMainWorld('tau', {
   },
   quit: {
     isReady: (): boolean => quitAskHandler !== undefined,
-    onAsk: (handler: () => void): (() => void) => {
+    onNavigate: (handler: (route: string) => void): (() => void) => {
+      machineNavigationHandler = handler;
+      if (pendingMachineRoute !== undefined) {
+        const route = pendingMachineRoute;
+        pendingMachineRoute = undefined;
+        handler(route);
+      }
+      return () => {
+        if (machineNavigationHandler === handler) {
+          machineNavigationHandler = undefined;
+        }
+      };
+    },
+    onAsk: (handler: (attemptId: string) => void): (() => void) => {
       quitAskHandler = handler;
-      if (pendingQuitAsk) {
-        pendingQuitAsk = false;
-        handler();
+      if (pendingQuitAsk !== undefined) {
+        const attemptId = pendingQuitAsk;
+        pendingQuitAsk = undefined;
+        handler(attemptId);
       }
       return () => {
         if (quitAskHandler === handler) {
@@ -186,8 +253,8 @@ contextBridge.exposeInMainWorld('tau', {
         }
       };
     },
-    reportQuiesced: (forced: boolean): void => {
-      ipcRenderer.send(quitChannels.quiesced, forced);
+    reportQuiesced: (attemptId: string, forced: boolean): void => {
+      ipcRenderer.send(quitChannels.quiesced, attemptId, forced);
     },
   },
   dialog: {

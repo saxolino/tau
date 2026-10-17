@@ -764,6 +764,23 @@
       "owner": "machines"
     },
     {
+      "id": "M9",
+      "bound": "Keep-awake poll of the machines a streamed run is feeding (20 s, inside the shortest one-minute sleep timer); a slow answer skips the next tick",
+      "site": "packages/host/src/keep-awake.ts",
+      "token": "options.intervalMilliseconds ?? 20_000",
+      "class": "Liveness",
+      "owner": "machines"
+    },
+    {
+      "id": "M10",
+      "bound": "Desktop quit and keep-awake question to the services utility: which machines a streamed run is feeding (bound derived from machineStartWaitMilliseconds)",
+      "site": "apps/desktop/src/main/services-broker.ts",
+      "token": "The desktop machine host did not say whether a program is streaming.",
+      "class": "Peer",
+      "owner": "machines",
+      "fixedBy": "outside this charter: the machines owner (desktop streaming read answered by the utility)"
+    },
+    {
       "id": "N3",
       "bound": "Not a timer: the RevisionClock host-clock interface declares setTimeout without scheduling it",
       "site": "packages/revisions/src/revision-effects.types.ts",
@@ -786,6 +803,22 @@
       "token": "idleRelease",
       "class": "Debounce",
       "owner": "tau mcp"
+    },
+    {
+      "id": "E33",
+      "bound": "tau check evaluation deadline: one evaluation fails with EVALUATION_TIMEOUT (exit 1) after 600 s, the MCP operation budget",
+      "site": "packages/cli/src/commands/check.ts",
+      "token": "evaluationTimeout",
+      "class": "External edge (backstop)",
+      "owner": "W17"
+    },
+    {
+      "id": "E34",
+      "bound": "tau serve --smoke-test: the daemon's /.well-known/tau-host descriptor must answer within 30 s",
+      "site": "packages/cli/src/commands/serve.ts",
+      "token": "smokeTestTimeout",
+      "class": "Liveness",
+      "owner": "W17"
     },
     {
       "id": "D25",
@@ -908,6 +941,30 @@
       "token": "AbortSignal.timeout(10_000)",
       "class": "External edge",
       "owner": "acp-projects model admission"
+    },
+    {
+      "id": "D29",
+      "bound": "Viewer Share pane's direct link: each git call that lists the project's files, 10 s",
+      "site": "packages/host/src/mcp-viewer-share.ts",
+      "token": "timeout: gitTimeout",
+      "class": "External edge",
+      "owner": "agent-plugin-viewer-parity-blueprint V10"
+    },
+    {
+      "id": "M11",
+      "bound": "Desktop recovery waits for actual utility settlement before replacing its service",
+      "site": "apps/desktop/src/main/services-broker.ts",
+      "token": "Projects are still settling. Retry recovery when saving finishes.",
+      "class": "External edge",
+      "owner": "machines"
+    },
+    {
+      "id": "ACP-PERMISSION-READBACK",
+      "bound": "Optional native Grok version/repository probes and settings snapshot, 2 s; expiry reports unverified state and never decides approval",
+      "site": "packages/host/src/acp/grok-permission-readback.ts",
+      "token": "probeTimeout",
+      "class": "External edge",
+      "owner": "Provider permission readback"
     }
   ]
 }

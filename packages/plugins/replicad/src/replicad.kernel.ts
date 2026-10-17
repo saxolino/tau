@@ -59,10 +59,20 @@ import {
   resolveOcctModuleFactory,
   wrapOcWithTracing,
   wrapOcForExceptions,
+  createTessellationBudgetExceededIssue,
+  occtExplicitTessellationDefaults,
+  occtTriangleBudgets,
 } from '@taucad/occt-core';
-import type { OcctModuleFactory, OcErrorContext, OcTracingSummary } from '@taucad/occt-core';
+import type { OcctModuleFactory, OcctResolvedTessellation, OcErrorContext, OcTracingSummary } from '@taucad/occt-core';
 
-import { isDrawingShape, normalizeRenderShapes, render } from '#utils/render-output.js';
+import {
+  countMesh,
+  isDrawingShape,
+  normalizeRenderShapes,
+  render,
+  renderWithinBudget,
+  resolveReplicadTessellation,
+} from '#utils/render-output.js';
 import * as tauReplicadAnnotations from '#annotations/index.js';
 import { exportSTEP } from '#export/interface-export.js';
 import { resolveEntryInterfaces, rotateNativeEntryToYup } from '#interface-resolution.js';
@@ -485,7 +495,10 @@ export const replicadKernel = defineKernel({
   extensions: ['ts', 'js'],
   detectImport: replicadDetectPattern,
   builtinModuleNames: ['replicad', '@taucad/replicad/annotations'],
-  builtinPackages: { replicad: replicadPackage },
+  builtinPackages: {
+    replicad: replicadPackage,
+    'replicad-opencascadejs': { name: '@taulabs/replicad-opencascadejs', version: '0.23.0-beta.0' },
+  },
   name: 'ReplicadKernel',
   version: '1.4.0',
   optionsSchema: replicadOptionsSchema,
@@ -913,7 +926,9 @@ export const replicadKernel = defineKernel({
       }));
 
       let renderMode: 'flat' | 'tessellation-instanced' | 'mixed' = 'flat';
-      const renderedShapes = await tracedPhase(tracer, 'mesh.renderDisplayTessellation', () => {
+      // The render hook cannot tell a viewer preview from a capture, so every render takes the
+      // preview budget.
+      const budgeted = await tracedPhase(tracer, 'mesh.renderDisplayTessellation', () => {
         const renderOutputSpan = tracer.startSpan('replicad.render-output', {
           phase: 'computingGeometry',
           stage: 'render-output',
@@ -922,8 +937,9 @@ export const replicadKernel = defineKernel({
           return context.libraryTrace.runInScope({
             scope: 'render-output',
             operation: () =>
-              render(namedShapes, {
-                tessellation,
+              renderWithinBudget(namedShapes, {
+                request: { tessellation, explicitDefaults: occtExplicitTessellationDefaults.preview },
+                budget: occtTriangleBudgets.preview,
                 collectBrepEdges: includeEdges || includeTopology,
                 openCascade: context.openCascade,
                 tessellationInstancing: context.tessellationInstancing,
@@ -938,6 +954,7 @@ export const replicadKernel = defineKernel({
         }
       });
 
+      const renderedShapes = budgeted.geometries;
       const shapes3d = renderedShapes.filter((shape): shape is GeometryReplicad => shape.format === 'replicad');
       if (shapes3d.length === 0) {
         runtime.logger.warn('meshGeometry returning empty: render-output-filtered-empty', {
@@ -978,7 +995,11 @@ export const replicadKernel = defineKernel({
           gltfSpan.end();
         }
       });
-      return { content: gltfBlob, issues: mechanismIssues };
+      return {
+        content: gltfBlob,
+        tessellation: budgeted.tessellation,
+        issues: [...budgeted.issues, ...mechanismIssues],
+      };
     } catch (error) {
       const issue = formatOcRuntimeError(error, context.openCascade, buildErrorContext(context, {}));
       throw new ReplicadBuildError([issue]);
@@ -1024,7 +1045,6 @@ export const replicadKernel = defineKernel({
               return emptyGltfExport(exportId);
             }
 
-            const { linearTolerance, angularTolerance } = options.tessellation;
             const { coordinateSystem, unit } = options;
             const namedShapes = entries.map((shapeConfig, index) => ({
               ...shapeConfig,
@@ -1034,6 +1054,11 @@ export const replicadKernel = defineKernel({
                 source: 'generated',
               }),
             }));
+            const requested = resolveReplicadTessellation(namedShapes, {
+              tessellation: options.tessellation,
+              explicitDefaults: occtExplicitTessellationDefaults.export,
+            });
+            const { linearTolerance, angularTolerance } = requested;
             const renderedShapes = await tracedPhase(runtime.tracer, 'export.renderGlbTessellation', () =>
               render(namedShapes, {
                 tessellation: { linearTolerance, angularTolerance },
@@ -1043,6 +1068,7 @@ export const replicadKernel = defineKernel({
                 tracer: runtime.tracer,
               }),
             );
+            assertWithinExportBudget(requested, countMesh(renderedShapes).triangles);
             const temporaryShapes = renderedShapes.filter(
               (shape): shape is GeometryReplicad => shape.format === 'replicad',
             );
@@ -1114,7 +1140,11 @@ export const replicadKernel = defineKernel({
               return noGeometryExportError();
             }
 
-            const { linearTolerance, angularTolerance } = options.tessellation;
+            const requested = resolveReplicadTessellation(entries, {
+              tessellation: options.tessellation,
+              explicitDefaults: occtExplicitTessellationDefaults.export,
+            });
+            const { linearTolerance, angularTolerance } = requested;
             const angularToleranceRad = angularTolerance * (Math.PI / 180);
             const { coordinateSystem } = options;
 
@@ -1135,6 +1165,10 @@ export const replicadKernel = defineKernel({
                 });
                 return createExportFile('stl', resolveShapeName({ index, name, source: 'generated' }), bytes);
               }),
+            );
+            assertWithinExportBudget(
+              requested,
+              result.reduce((total, file) => total + countStlTriangles(file.bytes, options.binary), 0),
             );
             return { files: nonemptyExportFiles(result) };
           }
@@ -1204,6 +1238,37 @@ async function buildExportBytes(
 ): Promise<Uint8Array<ArrayBuffer>> {
   const blob = shape.blobSTL(tessellation.binary ? { ...tessellation, binary: true } : tessellation);
   return new Uint8Array(await blob.arrayBuffer());
+}
+
+const binaryStlHeaderBytes = 80;
+
+/**
+ * Triangles in an STL file: the binary header count, or the ASCII facet count.
+ * @param bytes - STL file bytes.
+ * @param binary - Whether the file is binary STL.
+ * @returns The triangle count.
+ */
+function countStlTriangles(bytes: Uint8Array<ArrayBuffer>, binary: boolean): number {
+  if (!binary) {
+    return new TextDecoder().decode(bytes).match(/^\s*facet\b/gm)?.length ?? 0;
+  }
+  return bytes.byteLength < binaryStlHeaderBytes + 4
+    ? 0
+    : new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(binaryStlHeaderBytes, true);
+}
+
+/**
+ * Exports refuse instead of coarsening: an over-budget mesh fails with a suggested tessellation.
+ * @param requested - The resolved request the export meshed with.
+ * @param triangles - Triangles the export produced.
+ */
+function assertWithinExportBudget(requested: OcctResolvedTessellation, triangles: number): void {
+  const budget = occtTriangleBudgets.export;
+  if (triangles > budget) {
+    throw new ReplicadBuildError([
+      createTessellationBudgetExceededIssue({ producer: 'replicad', requested, triangles, budget }),
+    ]);
+  }
 }
 
 class ReplicadBuildError extends Error {
