@@ -158,7 +158,11 @@ try {
 
   const application = await electron.launch({
     executablePath: join(app, 'Contents/MacOS/Tau'),
-    args: [`--user-data-dir=${join(runRoot, 'user-data')}`],
+    // Match the shared desktop harness: an ad-hoc signed build must not ask for the person's Chromium cookie Keychain.
+    args: [
+      `--user-data-dir=${join(runRoot, 'user-data')}`,
+      ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
+    ],
     env: {
       LANG: 'C.UTF-8',
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
