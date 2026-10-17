@@ -9,6 +9,7 @@ import { authoritativeGatewayWireFixtures } from '../../../../packages/agent-hos
 const taskGatewaySteps = new Map<string, number>();
 const taskGatewayResponse = (name: string, step: number): string[] => {
   const tool = (toolName: string, input: Record<string, unknown>): string[] => [
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- OpenAI streaming wire fields use snake_case.
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `${name}-${step}`, function: { name: toolName, arguments: JSON.stringify(input) } }] }, finish_reason: 'tool_calls' }] })}\n\n`,
     'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4}}\n\n',
     'data: [DONE]\n\n',
@@ -36,6 +37,7 @@ const taskGatewayResponse = (name: string, step: number): string[] => {
     return tool('read_file', { targetFile: 'main.scad' });
   }
   return [
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- OpenAI streaming wire fields use snake_case.
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: `${name} completed.` }, finish_reason: 'stop' }] })}\n\n`,
     'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4}}\n\n',
     'data: [DONE]\n\n',
@@ -124,12 +126,12 @@ export default defineConfig({
       '@taucad/image > nanoraster/options',
       '@taucad/brep > occt-import-js',
       'meshoptimizer/simplifier',
-      'picovoxel',
-      'picovoxel/latticelibrary',
-      'picovoxel/multi',
-      'picovoxel/numerics',
-      'picovoxel/shapekernel',
-      'picovoxel/slicing',
+      '@taucad/picovoxel > picovoxel',
+      '@taucad/picovoxel > picovoxel/latticelibrary',
+      '@taucad/picovoxel > picovoxel/multi',
+      '@taucad/picovoxel > picovoxel/numerics',
+      '@taucad/picovoxel > picovoxel/shapekernel',
+      '@taucad/picovoxel > picovoxel/slicing',
       'replicad',
       'replicad-opencascadejs/multi/init',
       'replicad-opencascadejs/single/init',
