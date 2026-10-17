@@ -6,7 +6,6 @@ import type { AgentLauncher } from '@taucad/agent-host/launcher';
 import type { ProjectTask, ProjectTaskAttempt } from '@taucad/agent-host/wire';
 
 import { createProjectTaskBackend } from '#project-task-integration.js';
-import type { ProjectRevisions } from '#revisions.js';
 
 const selected: AgentSessionModel = {
   id: 'catalog-model',
@@ -21,14 +20,10 @@ const setup = (
     provider: ProjectTask['provider'];
     model?: AgentSessionModel;
     resolveModel?: (modelId: string, signal: AbortSignal) => Promise<AgentSessionModel | undefined>;
+    onContext?: () => void;
   }>,
 ) => {
-  const channel = mock<ProjectRevisions['channel']>();
-  channel.request.mockResolvedValue({
-    status: 'applied',
-    result: { checkoutId: 'candidate', checkoutRoot: '/candidate' },
-  });
-  const revisions = mock<ProjectRevisions>({ channel });
+  const createCandidate = vi.fn(async () => ({ checkoutId: 'candidate', checkoutRoot: '/candidate' }));
   const launcher = mockDeep<AgentLauncher>();
   launcher.read.mockRejectedValue(Object.assign(new Error('closed'), { code: 'HOST_CLOSED' }));
   launcher.host.ledger.mockResolvedValue({
@@ -48,7 +43,7 @@ const setup = (
   });
   const resolved = vi.fn(input.resolveModel ?? (async () => undefined));
   const backend = createProjectTaskBackend({
-    revisions,
+    createCandidate,
     launcher: () => launcher,
     agents: ['codex'],
     systemPrompt: 'System',
@@ -56,7 +51,10 @@ const setup = (
     resolveModel: async ({ modelId, signal }) => resolved(modelId, signal),
     bind: vi.fn(),
     allocated: vi.fn(),
-    context: async () => ({}),
+    context: async () => {
+      input.onContext?.();
+      return {};
+    },
     rememberGrant: vi.fn(),
     released: vi.fn(),
     waitForOwnerClose: async () => undefined,
@@ -83,7 +81,7 @@ const setup = (
     closed: false,
   };
   const launch = { task, attempt, messages: [], signal: new AbortController().signal };
-  return { backend, channel, launcher, resolved, launch };
+  return { backend, createCandidate, launcher, resolved, launch };
 };
 
 describe('Tau child model admission', () => {
@@ -92,7 +90,7 @@ describe('Tau child model admission', () => {
     const host = setup({ provider: { id: 'tau', model: 'catalog-model' }, resolveModel: async () => row });
     const allocation = await host.backend.allocate(host.launch);
     expect(host.resolved).toHaveBeenCalledOnce();
-    expect(host.channel.request).toHaveBeenCalledOnce();
+    expect(host.createCandidate).toHaveBeenCalledOnce();
     row.cost.input = 999;
     expect(allocation.model?.cost?.input).toBe(1);
     host.launcher.execute.mockResolvedValue({
@@ -127,7 +125,7 @@ describe('Tau child model admission', () => {
   ] as const)('fails unresolved Tau selection before creating a candidate', async (provider, row) => {
     const host = setup({ provider, resolveModel: async () => row });
     await expect(host.backend.allocate(host.launch)).rejects.toMatchObject({ code: 'TASK_UNAVAILABLE' });
-    expect(host.channel.request).not.toHaveBeenCalled();
+    expect(host.createCandidate).not.toHaveBeenCalled();
     expect(host.launcher.execute).not.toHaveBeenCalled();
   });
 
@@ -181,7 +179,7 @@ describe('Tau child model admission', () => {
     expect(first.model?.cost?.input).toBe(1);
     expect(second.model?.cost?.input).toBe(2);
     expect(host.resolved).toHaveBeenCalledTimes(2);
-    expect(host.channel.request).toHaveBeenCalledTimes(2);
+    expect(host.createCandidate).toHaveBeenCalledTimes(2);
   });
 
   it('honors cancellation while catalog resolution is pending', async () => {
@@ -194,6 +192,27 @@ describe('Tau child model admission', () => {
       },
     });
     await expect(host.backend.allocate({ ...host.launch, signal: controller.signal })).rejects.toBeDefined();
-    expect(host.channel.request).not.toHaveBeenCalled();
+    expect(host.createCandidate).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty candidate identity before starting a child', async () => {
+    const host = setup({ provider: { id: 'codex' } });
+    host.createCandidate.mockResolvedValue({ checkoutId: '', checkoutRoot: '/candidate' });
+    await expect(host.backend.allocate(host.launch)).rejects.toMatchObject({ code: 'TASK_SOURCE_UNAVAILABLE' });
+    expect(host.launcher.execute).not.toHaveBeenCalled();
+  });
+
+  it('does not start a child when cancellation arrives during context assembly', async () => {
+    const controller = new AbortController();
+    const host = setup({
+      provider: { id: 'codex' },
+      onContext: () => {
+        controller.abort();
+      },
+    });
+    const launch = { ...host.launch, signal: controller.signal };
+    const allocation = await host.backend.allocate(launch);
+    await expect(host.backend.start(launch, allocation)).rejects.toBeDefined();
+    expect(host.launcher.execute).not.toHaveBeenCalled();
   });
 });

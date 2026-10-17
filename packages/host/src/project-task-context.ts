@@ -1,6 +1,6 @@
 import type { AgentChannelAdmissionConfig } from '@taucad/agent-host/wire';
 import { contextMemoryMaxBytes, contextMemoryMaxLines } from '@taucad/chat/schemas';
-import type { HostToolFileSystem } from '#agent-tools.js';
+import type { FileSystemProvider } from '@taucad/filesystem';
 
 /**
  * Read bounded canonical project instructions through the host's project authority.
@@ -10,7 +10,7 @@ import type { HostToolFileSystem } from '#agent-tools.js';
  * @internal
  */
 export const readProjectTaskContext = async (
-  filesystem: HostToolFileSystem,
+  filesystem: Required<Pick<FileSystemProvider, 'exists' | 'readFileStream'>>,
   signal: AbortSignal,
 ): Promise<NonNullable<AgentChannelAdmissionConfig['contextPayload']>> => {
   const path = '.tau/AGENTS.md';

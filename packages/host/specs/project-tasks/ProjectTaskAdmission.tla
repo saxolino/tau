@@ -8,6 +8,8 @@ EXTENDS Naturals, FiniteSets, TLC
 \* ModelResolved includes non-Tau tasks and Tau tasks whose selected catalog row
 \* resolved. Admission may precede this check, but a failed selection cannot
 \* allocate a revision checkout or attach a model to the private candidate.
+\* Task identifiers are opaque here; browser-safe UUID generation changes no
+\* reservation, lineage or resource transition.
 CONSTANTS Tasks, Root, Requests, Cap, Depth, ModelResolved
 VARIABLES phase, parent, depth, source, closed, resources, admitted, lineage
 vars == <<phase, parent, depth, source, closed, resources, admitted, lineage>>

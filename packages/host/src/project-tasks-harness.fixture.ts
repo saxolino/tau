@@ -11,7 +11,7 @@ import { NodeFsChannel, NodeFsProviderClient } from '@taucad/filesystem/backend'
 import { NodeFsAuthorityHost, serveNodeFsProvider, toNodeFsPort } from '@taucad/filesystem/backend/node';
 import { tauPathPolicy } from '@taucad/filesystem/path-registry';
 
-import { createProjectHost } from '#project-host.js';
+import { openProjectHost } from '#project-host.js';
 import type { ProjectHost, ProjectHostOptions, ProjectHostRuntimeClient } from '#project-host.js';
 import { projectTaskChannelAnswerSchema } from '@taucad/agent-host/wire';
 import type {
@@ -32,6 +32,7 @@ import type { HostRevisionEvent } from '#revisions.js';
 /** Harness retains revision facts and actual authored files until explicit close. */
 export type ProjectTasksHarness = Readonly<{
   host: ProjectHost;
+  drained: (signal: AbortSignal) => Promise<void>;
   workspaceRoot: string;
   checkoutsDirectory: string;
   revisions: HostRevisionEvent[];
@@ -136,7 +137,7 @@ export const createProjectTasksHarness = async (
     throw new Error('MCP server did not open a port.');
   }
   const revisions: HostRevisionEvent[] = [];
-  const project = createProjectHost({
+  const opened = openProjectHost({
     workspaceRoot,
     checkoutsDirectory,
     projectId: 'project-task-integration',
@@ -174,6 +175,7 @@ export const createProjectTasksHarness = async (
       revisions.push(event);
     },
   });
+  const project = opened.host;
   hostRef.current = project;
   const request = async (input: ProjectTaskChannelRequest): Promise<ProjectTaskChannelAnswer> => {
     const answer = projectTaskChannelAnswerSchema.parse(await project.projectTasks.request(input));
@@ -186,6 +188,7 @@ export const createProjectTasksHarness = async (
   let closed = false;
   return {
     host: project,
+    drained: opened.drained,
     workspaceRoot,
     checkoutsDirectory,
     revisions,

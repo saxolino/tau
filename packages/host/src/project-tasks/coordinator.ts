@@ -1,5 +1,5 @@
 import { toPromise } from 'xstate';
-import { randomUUID } from 'node:crypto';
+import { randomUuid } from '@taucad/utils/id';
 import {
   projectTaskMailboxLimits,
   projectTaskActionSchema,
@@ -92,7 +92,7 @@ export const createProjectTaskCoordinator = async (
   const { projectId, store, backend } = options;
   const maxActive = options.maxActive ?? 8;
   const maxDepth = options.maxDepth ?? 4;
-  const id = options.id ?? randomUUID;
+  const id = options.id ?? randomUuid;
   const now = options.now ?? Date.now;
   const cancellationTimeout = options.cancellationTimeout ?? projectTaskCancellationTimeout;
   const schedule =

@@ -290,7 +290,11 @@ describe('project tasks through real host authority, revisions and scripted ACP'
       reopen: { workspaceRoot, checkoutsDirectory },
     });
     harnesses.push(reopened);
-    expect(await reopened.tasks.read()).toEqual(snapshot);
+    expect(await reopened.tasks.read()).toEqual({
+      ...snapshot,
+      cursor: snapshot.cursor + 1,
+      nextCursor: snapshot.nextCursor + 1,
+    });
     expect(git(['worktree', 'list', '--porcelain'])).toContain('branch refs/heads/side');
     expect(git(['-C', userWorktree, 'rev-parse', 'HEAD'])).toBe(userWorktreeBefore);
   }, 90_000);
@@ -365,7 +369,11 @@ describe('project tasks through real host authority, revisions and scripted ACP'
       reopen: { workspaceRoot: harness.workspaceRoot, checkoutsDirectory: harness.checkoutsDirectory },
     });
     harnesses.push(reopened);
-    expect(await reopened.tasks.read()).toEqual(snapshot);
+    expect(await reopened.tasks.read()).toEqual({
+      ...snapshot,
+      cursor: snapshot.cursor + 1,
+      nextCursor: snapshot.nextCursor + 1,
+    });
     expect(await Promise.all(snapshot.tasks.map(async (task) => reopened.readLog(task.chatId)))).toEqual(transcripts);
     const request = { requestId: 'post-restart-message', taskId: child.id, text: 'RECOVERED_INBOX_NONCE' };
     const [sent, duplicate] = await Promise.all([reopened.tasks.send(request), reopened.tasks.send(request)]);
@@ -942,6 +950,36 @@ describe('native task continuation after actual process loss', () => {
 });
 
 describe('project host close across delayed native child settlement', () => {
+  it('should keep draining while a child remains active after its root has completed', async () => {
+    const harness = await createProjectTasksHarness({ agents: [fixtureAgent] });
+    harnesses.push(harness);
+    const root = await startRoot({
+      harness,
+      suffix: 'drain-held-child',
+      prompt: 'PROJECT_TASK_FIXTURE:spawn-hold',
+    });
+    await waitStatus(harness, root.id, 'completed');
+    const snapshot = await harness.tasks.read();
+    const child = snapshot.tasks.find((task) => task.parentTaskId === root.id);
+    if (!child) {
+      throw new Error('Fixture child was not admitted.');
+    }
+    await waitStatus(harness, child.id, 'running');
+
+    let drained = false;
+    const drain = (async () => {
+      await harness.drained(AbortSignal.timeout(10_000));
+      drained = true;
+    })();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    expect(drained).toBe(false);
+    await harness.tasks.cancel({ taskId: child.id, requestId: 'cancel-held-child-after-root' });
+    await drain;
+    expect(drained).toBe(true);
+  }, 30_000);
+
   it('should wait through task close timeout, drain the existing launcher and release the task writer on retry', async () => {
     const entered = Promise.withResolvers<void>();
     const cancelled = Promise.withResolvers<void>();

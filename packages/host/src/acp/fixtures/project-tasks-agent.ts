@@ -145,6 +145,19 @@ const run = async (sessionId: string, prompt: string): Promise<void> => {
     await session.cancellation;
     return;
   }
+  if (prompt.includes('PROJECT_TASK_FIXTURE:spawn-hold')) {
+    await call({
+      sessionId,
+      tool: 'task_spawn',
+      args: {
+        requestId: 'spawn-held-child',
+        title: 'Held child',
+        prompt: 'PROJECT_TASK_FIXTURE:hold',
+        provider: { id: 'codex' },
+      },
+    });
+    return;
+  }
   if (prompt.includes('PROJECT_TASK_FIXTURE:tau-root')) {
     const snapshot = await call({ sessionId, tool: 'task_read', args: {} });
     const taskList = snapshot['tasks'];

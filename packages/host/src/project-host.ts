@@ -8,8 +8,9 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 
-import { followChat, unsettledAttempts, jsonValueSchema } from '@taucad/agent-host';
+import { followChat, unsettledAttempts } from '@taucad/agent-host';
 import type {
   AgentSessionModel,
   ChatLedger,
@@ -18,19 +19,14 @@ import type {
   TauClientContextInput,
 } from '@taucad/agent-host';
 import { createAgentLauncher } from '@taucad/agent-host/launcher';
-import { chatIdSchema, projectTaskRefusalCodes } from '@taucad/agent-host/wire';
-import type {
-  ProjectTaskChannelPort,
-  AgentChannelAdmissionConfig,
-  HostCommand,
-  ProjectTask,
-  CommandAnswer,
-} from '@taucad/agent-host/wire';
+import { chatIdSchema } from '@taucad/agent-host/wire';
+import type { ProjectTaskChannelPort } from '@taucad/agent-host/wire';
 import type { AgentLauncher, AgentLauncherOptions } from '@taucad/agent-host/launcher';
-import { createNodeChatStore } from '@taucad/agent-host/node';
+import { createNodeChatStore, createNodeExclusiveRecordStorage } from '@taucad/agent-host/node';
 import type { NodeFsProviderClient } from '@taucad/filesystem/backend';
 import type { RuntimeFileSystemBase } from '@taucad/runtime/types';
 import { createActor } from 'xstate';
+import { z } from 'zod';
 import type { Actor, ActorOptions, AnyActorLogic } from 'xstate';
 
 import { createAcpExternalAgentPort } from '#acp/index.js';
@@ -45,19 +41,9 @@ import type { HostMcpEndpoint } from '#mcp-server.js';
 import { hostRevisionActor } from '#revision-actor.js';
 import { createProjectRevisions } from '#revisions.js';
 import type { HostRevisionEvent, ProjectRevisions, ProjectRevisionsOptions, TurnCheckout } from '#revisions.js';
-import { createProjectTaskCoordinator } from '#project-tasks/coordinator.js';
-import { materializeProjectTaskLineage } from '#project-tasks/chat-lineage.js';
-import { createNodeProjectTaskStore } from '#project-tasks/node-store.js';
-import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
-import {
-  createProjectTaskBackend,
-  withProjectTaskTools,
-  readRecordedToolGrant,
-  waitForTaskLeaseRetirement,
-} from '#project-task-integration.js';
 import { readProjectTaskContext } from '#project-task-context.js';
 import { createTauAgentAcpTransport } from '#acp/tau-agent.js';
-import { formatProjectTaskMailboxMessage } from '#project-tasks/mailbox.js';
+import { createProjectTaskComposition } from '#project-tasks/core.js';
 import type { TauAgentAcpOptions } from '#acp/tau-agent.js';
 
 /**
@@ -197,73 +183,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
   /* The runs a client sent while this host served, by chat: counted before anything is awaited, so a drain that begins
    * while one is still being placed follows it, and the launcher admits it though it arrives during the drain (T3). */
   const entered = new Map<string, Set<string>>();
-  const taskChats = new Map<string, string>();
-  const taskRoots = new Map<string, string>();
-  const rootCommands = new Map<string, Extract<HostCommand, { type: 'start' }>>();
-  const rootDelivery = new Map<string, number>();
-  const taskGrants = new Map<string, Pick<AgentChannelAdmissionConfig, 'toolChoice' | 'allowedTools'>>();
-  let tasks: Promise<ProjectTaskCoordinator> | undefined;
-  let taskOwner: ProjectTaskCoordinator | undefined;
-  const taskCoordinator = async (): Promise<ProjectTaskCoordinator> => {
-    if (tasks === undefined) {
-      throw Object.assign(new Error('This host has no durable project identity.'), { code: 'TASK_UNAVAILABLE' });
-    }
-    return tasks;
-  };
-  const taskFollowers = new Map<string, Promise<void>>();
-  const stopTaskFollowers = new AbortController();
-  const ownerClosed = Promise.withResolvers<void>();
-  const trackTask = (coordinator: ProjectTaskCoordinator, task: ProjectTask, runId: string): void => {
-    const attemptId = task.attempts.at(-1)!.id;
-    if (taskFollowers.has(attemptId)) {
-      return;
-    }
-    const follow = async (): Promise<void> => {
-      const signal = AbortSignal.any([stopTaskFollowers.signal, AbortSignal.timeout(24 * 60 * 60_000)]);
-      try {
-        const rootSettled = (ledger: ChatLedger): boolean => {
-          const run = ledger.runs[runId];
-          return (
-            run !== undefined &&
-            ['completed', 'failed', 'cancelled'].includes(run.lifecycle ?? '') &&
-            settled(new Set([runId]))(ledger)
-          );
-        };
-        for await (const { ledger } of followChat(launcher.read, task.chatId, {
-          signal,
-          until: rootSettled,
-        })) {
-          const run = ledger.runs[runId];
-          if (run !== undefined && rootSettled(ledger)) {
-            await waitForTaskLeaseRetirement(turnPlacement, task.chatId, { runId, signal });
-            signal.throwIfAborted();
-            await coordinator.finishRoot({
-              taskId: task.id,
-              attemptId,
-              status:
-                run.lifecycle === 'completed' ? 'completed' : run.lifecycle === 'cancelled' ? 'cancelled' : 'failed',
-            });
-            return;
-          }
-        }
-        signal.throwIfAborted();
-      } catch (error) {
-        /* Shutdown has already settled the coordinator before closing its journal; a delayed follower cannot
-         * finish that same record again. Other settlement failures, including a held lease, remain visible. */
-        if (
-          !stopTaskFollowers.signal.aborted &&
-          !(closing !== undefined && error instanceof Error && 'code' in error && error.code === 'TASK_CLOSED')
-        ) {
-          console.error('[project tasks] root settlement tracking failed', error);
-        }
-      } finally {
-        taskFollowers.delete(attemptId);
-        taskChats.delete(runId);
-        taskGrants.delete(runId);
-      }
-    };
-    taskFollowers.set(attemptId, follow());
-  };
+  let tasks: Promise<unknown> | undefined;
   /* The counted starts and resumes not yet answered: a drain waits for them, so it never follows a run it is still
    * unknown whether the launcher admitted (W6.r1 round 5). */
   const answering = new Set<Promise<unknown>>();
@@ -344,6 +264,25 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     events: options.onRevisionEvent,
   });
 
+  const projectTask =
+    options.projectId === undefined
+      ? undefined
+      : createProjectTaskComposition({
+          projectId: options.projectId,
+          filesystem: asHostToolFileSystem(fileSystem.open(workspaceRoot)),
+          createCandidate: async ({ requestId, name, from, signal }) => {
+            signal.throwIfAborted();
+            const answer = await revisions.channel.request({ command: 'createBranch', requestId, name, from });
+            return z.object({ checkoutId: z.string().min(1), checkoutRoot: z.string().min(1) }).parse(answer.result);
+          },
+          systemPrompt: options.systemPrompt,
+          model: options.model,
+          resolveModel: options.resolveModel,
+          agentIds: options.externalAgents?.agents.map((agent) => agent.id) ?? [],
+          placementToolsAlreadyDecorated: true,
+          admitting,
+        });
+
   /* One registry over every run's root (`checkouts`), or one rooted at a placed attempt's checkout. */
   const registryOptions = {
     revisions: revisions.history,
@@ -359,31 +298,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     /* `prepare_kernel` (D7, D37): offered to Tau's agent and, through the host-local MCP endpoint, to ACP agents. */
     ...(options.prepareKernel === undefined ? {} : { prepareKernel: options.prepareKernel }),
   };
-  const decorateTools = (registry: ToolRegistry): ToolRegistry => {
-    if (options.projectId === undefined) {
-      return registry;
-    }
-    const tools = withProjectTaskTools(registry, taskCoordinator, (runId) => taskChats.get(runId));
-    return {
-      ...tools,
-      invoke: async (invocation) => {
-        const grant = invocation.runId === undefined ? undefined : taskGrants.get(invocation.runId);
-        const explicitChoice = Array.isArray(grant?.toolChoice) ? grant.toolChoice : undefined;
-        if (
-          (invocation.runId !== undefined && grant === undefined) ||
-          grant?.toolChoice === 'none' ||
-          (grant?.allowedTools !== undefined && !grant.allowedTools.includes(invocation.toolName)) ||
-          (explicitChoice !== undefined && !explicitChoice.includes(invocation.toolName))
-        ) {
-          return {
-            isError: true,
-            content: { errorCode: 'TOOL_NOT_ALLOWED', message: 'This tool is outside the admitted parent grant.' },
-          };
-        }
-        return tools.invoke(invocation);
-      },
-    };
-  };
+  const decorateTools = (registry: ToolRegistry): ToolRegistry => projectTask?.decorateTools(registry) ?? registry;
   const toolRegistry = decorateTools(createHostToolRegistry({ ...registryOptions, workspaceRoot, checkouts }));
   const toolRegistryFor = (root: string, filesystem?: HostToolFileSystem): ToolRegistry =>
     decorateTools(
@@ -401,54 +316,6 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         input.toolRegistryFor(root, asHostToolFileSystem(filesystem)),
       ))
   )({ revisions, toolRegistryFor });
-  const turnPlacement: TurnPlacementPort = {
-    ...placement,
-    admit: async (input) => {
-      const answer = await placement.admit(input);
-      const command = rootCommands.get(input.key.runId);
-      if (answer.status !== 'refused' && command !== undefined && options.projectId !== undefined) {
-        try {
-          const source = answer.placement;
-          if (source.baseRevisionId === undefined) {
-            throw Object.assign(new Error('The admitted checkout has no immutable source revision.'), {
-              code: 'TASK_SOURCE_UNAVAILABLE',
-            });
-          }
-          const coordinator = await taskCoordinator();
-          const text =
-            typeof command.payload.message.content === 'string'
-              ? command.payload.message.content
-              : 'Project agent turn';
-          const task = await coordinator.admitRoot({
-            requestId: command.commandId,
-            chatId: input.key.chatId,
-            runId: input.key.runId,
-            title: text.slice(0, 256) || 'Project agent turn',
-            prompt: text || 'Project agent turn',
-            provider: {
-              id: command.payload.config?.agent?.id ?? 'tau',
-              ...(command.payload.config?.agent?.model === undefined
-                ? {}
-                : { model: command.payload.config.agent.model }),
-            },
-            source: { revisionId: source.baseRevisionId, checkoutId: source.checkoutId },
-            toolGrant: taskGrants.get(input.key.runId) ?? { toolChoice: 'none' },
-          });
-          const through = rootDelivery.get(input.key.runId);
-          if (through !== undefined) {
-            await coordinator.acknowledgeDelivery({ taskId: task.id, attemptId: task.attempts.at(-1)!.id, through });
-          }
-          taskChats.set(input.key.runId, input.key.chatId);
-          rootCommands.delete(input.key.runId);
-          trackTask(coordinator, task, input.key.runId);
-        } catch (error) {
-          await placement.abandon({ requestId: `${input.requestId}-task-refusal`, key: input.key });
-          throw error;
-        }
-      }
-      return answer;
-    },
-  };
 
   const externalAgents =
     options.externalAgents !== undefined && options.externalAgents.agents.length > 0
@@ -460,6 +327,7 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
       ? undefined
       : createHostMcpEndpoint({ secret: randomBytes(32).toString('base64url'), registry: toolRegistry, workspaceRoot });
 
+  const turnPlacement = projectTask?.wrapPlacement(placement) ?? placement;
   const launcher = createAgentLauncher({
     chats: createNodeChatStore({ workspaceRoot }),
     modelTransport: options.modelTransport,
@@ -477,7 +345,11 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     turnPlacement,
     ...(admitting === undefined
       ? {}
-      : { admitting: (run) => admitting() || entered.get(run.chatId)?.has(run.runId) === true }),
+      : {
+          admitting: (run) =>
+            admitting() ||
+            (projectTask?.hasEntered(run.chatId, run.runId) ?? entered.get(run.chatId)?.has(run.runId) === true),
+        }),
     ...(externalAgents === undefined || mcp === undefined
       ? {}
       : {
@@ -497,54 +369,15 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
           }),
         }),
   });
-  if (options.projectId !== undefined) {
-    const { projectId } = options;
-    const initializeTasks = async (): Promise<ProjectTaskCoordinator> => {
+  projectTask?.bindLauncher(launcher);
+  if (projectTask !== undefined) {
+    const storage = (async () => {
       await revisions.opened();
-      const store = await createNodeProjectTaskStore({ workspaceRoot, projectId });
-      const coordinator = await createProjectTaskCoordinator({
-        projectId,
-        store,
-        materializeLineage: async (entry, task) =>
-          materializeProjectTaskLineage(fileSystem.open(workspaceRoot), entry, task),
-        backend: createProjectTaskBackend({
-          revisions,
-          launcher: () => launcher,
-          agents: externalAgents?.agents.map((agent) => agent.id) ?? [],
-          systemPrompt: options.systemPrompt,
-          tauModel: options.model,
-          resolveModel: options.resolveModel,
-          bind: (runId, chatId) => {
-            taskChats.set(runId, chatId);
-          },
-          allocated: (checkoutId, root) => {
-            taskRoots.set(checkoutId, root);
-          },
-          context: async (checkoutId, signal) => {
-            if (!taskRoots.has(checkoutId)) {
-              throw Object.assign(new Error('The task candidate root is unavailable.'), {
-                code: 'TASK_SOURCE_UNAVAILABLE',
-              });
-            }
-            return readProjectTaskContext(asHostToolFileSystem(fileSystem.open(workspaceRoot)), signal);
-          },
-          rememberGrant: (runId, grant) => {
-            taskGrants.set(runId, grant);
-          },
-          released: (runId, checkoutId) => {
-            taskChats.delete(runId);
-            taskGrants.delete(runId);
-            taskRoots.delete(checkoutId);
-          },
-          waitForOwnerClose: async () => ownerClosed.promise,
-          placement: turnPlacement,
-        }),
+      return createNodeExclusiveRecordStorage({
+        filePath: join(workspaceRoot, '.tau', 'chats', '.project-tasks', 'records.jsonl'),
       });
-      taskOwner = coordinator;
-      await coordinator.recover();
-      return coordinator;
-    };
-    tasks = initializeTasks();
+    })();
+    tasks = projectTask.initialize(storage);
     const ready = tasks;
     // async-iife: bootstrap -- initialization failure is reported while calls retain the same rejected authority.
     void (async () => {
@@ -568,7 +401,6 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         failures.push(error);
       }
     };
-    let retryTaskClose = false;
     if (tasks !== undefined) {
       try {
         await tasks;
@@ -577,24 +409,16 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
          * opening one, in which case that owner still needs the close below. */
       }
     }
-    stopTaskFollowers.abort();
-    await Promise.allSettled(taskFollowers.values());
-    if (taskOwner !== undefined) {
-      try {
-        await taskOwner.close();
-      } catch {
-        retryTaskClose = true;
-      }
-    }
-    await settle(async () => {
-      await launcher.close();
-      ownerClosed.resolve();
-    });
-    if (retryTaskClose && taskOwner !== undefined) {
-      const owner = taskOwner;
-      await settle(async () => {
-        await owner.close();
-      });
+    const retryProjectTaskClose = (await projectTask?.closeBeforeLauncher()) ?? false;
+    const launcherClosed = await launcher.close().then(
+      () => true,
+      (error: unknown) => {
+        failures.push(error);
+        return false;
+      },
+    );
+    if (launcherClosed) {
+      await settle(async () => projectTask?.closeAfterLauncher(retryProjectTaskClose));
     }
     /* After the launcher: its attempts are settled, so the tree records what is on disk and stops. */
     await settle(async () => revisions.release());
@@ -616,11 +440,13 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
     launcher: {
       ...launcher,
       execute: async (command) => {
+        if (projectTask !== undefined) {
+          return projectTask.execute(command);
+        }
         if (command.type !== 'start' && command.type !== 'resume') {
           return launcher.execute(command);
         }
         const { chatId, runId } = command.payload;
-        /* A chat id no log could live under is refused before anything counts or records it (W6.r1 round 5). */
         if (!chatIdSchema.safeParse(chatId).success) {
           return {
             commandId: command.commandId,
@@ -637,173 +463,37 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
         const runs = entered.get(chatId) ?? new Set<string>();
         const counted = !runs.has(runId);
         entered.set(chatId, runs.add(runId));
-        /* A run that was refused, or whose placement threw, is no run to drain. */
-        const answered = (async (): Promise<CommandAnswer> => {
-          let admitted = false;
-          let continuation:
-            | Readonly<{ coordinator: ProjectTaskCoordinator; task: ProjectTask; newlyReserved: boolean }>
-            | undefined;
-          try {
-            if (command.type === 'resume' && options.projectId !== undefined) {
-              const coordinator = await taskCoordinator();
-              try {
-                const before = await coordinator.read({ kind: 'host', projectId: options.projectId });
-                const previous = before.tasks.find((task) => task.chatId === chatId)?.attempts.at(-1)?.id;
-                const task = await coordinator.admitContinuation({ requestId: command.commandId, chatId, runId });
-                const attempt = task.attempts.at(-1)!;
-                taskChats.set(runId, chatId);
-                taskGrants.set(runId, attempt.toolGrant);
-                continuation = { coordinator, task, newlyReserved: attempt.id !== previous };
-              } catch (error) {
-                if (error instanceof Error && 'code' in error && error.code === 'TASK_NOT_FOUND') {
-                  const grant = await readRecordedToolGrant(launcher, chatId, runId);
-                  taskGrants.set(runId, grant ?? { toolChoice: 'none' });
-                } else {
-                  return {
-                    commandId: command.commandId,
-                    generation: 0,
-                    status: 'refused',
-                    effect: 'not-applied',
-                    code: error instanceof Error && 'code' in error ? String(error.code) : 'TASK_UNAVAILABLE',
-                    message: error instanceof Error ? error.message : String(error),
-                  };
-                }
-              }
-            }
-            if (command.type === 'start' && options.projectId !== undefined) {
-              const coordinator = await taskCoordinator();
-              const snapshot = await coordinator.read({ kind: 'host', projectId: options.projectId });
-              if (snapshot.tasks.some((task) => task.chatId === chatId && task.parentTaskId !== undefined)) {
-                return {
-                  commandId: command.commandId,
-                  generation: 0,
-                  status: 'refused',
-                  effect: 'not-applied',
-                  code: 'TASK_FORBIDDEN',
-                  message: 'This chat belongs to a delegated task. Send a task message and use Resume to continue it.',
-                };
-              }
-              const rootTask = snapshot.tasks.find((task) => task.chatId === chatId && task.parentTaskId === undefined);
-              if (rootTask !== undefined) {
-                const messages = await coordinator.inbox({ taskId: rootTask.id });
-                if (messages.length > 0) {
-                  const mailbox = messages.map((message) => formatProjectTaskMailboxMessage(message)).join('\n');
-                  const original = command.payload.message.content;
-                  command = {
-                    ...command,
-                    payload: {
-                      ...command.payload,
-                      message: {
-                        ...command.payload.message,
-                        content:
-                          typeof original === 'string'
-                            ? `${original}\n${mailbox}`
-                            : [
-                                ...(Array.isArray(original) ? jsonValueSchema.array().parse(original) : [original]),
-                                { type: 'text', text: mailbox },
-                              ],
-                      },
-                    },
-                  };
-                  rootDelivery.set(runId, messages.at(-1)!.sequence);
-                }
-              }
-              const contextPayload = await readProjectTaskContext(
-                asHostToolFileSystem(fileSystem.open(workspaceRoot)),
-                AbortSignal.timeout(30_000),
-              );
-              command = {
-                ...command,
-                payload: {
-                  ...command.payload,
-                  config: {
-                    systemPrompt: options.systemPrompt,
-                    toolChoice: 'auto',
-                    ...command.payload.config,
-                    contextPayload: {
-                      ...command.payload.config?.contextPayload,
-                      ...contextPayload,
-                      memory: contextPayload.memory ?? {},
-                    },
-                  },
-                },
-              };
-              rootCommands.set(runId, command);
-              taskGrants.set(runId, {
-                toolChoice: command.payload.config?.toolChoice ?? 'auto',
-                ...(command.payload.config?.allowedTools === undefined
-                  ? {}
-                  : { allowedTools: command.payload.config.allowedTools }),
-              });
-            }
-            const answer = await launcher.execute(command);
-            if (continuation !== undefined) {
-              if (answer.status === 'refused' && continuation.newlyReserved) {
-                await continuation.coordinator.finishRoot({
-                  taskId: continuation.task.id,
-                  attemptId: continuation.task.attempts.at(-1)!.id,
-                  status: 'failed',
-                  detail: answer.message,
-                });
-              } else if (answer.status !== 'refused') {
-                trackTask(continuation.coordinator, continuation.task, runId);
-              }
-            }
-            admitted = answer.status !== 'refused';
-            return answer;
-          } finally {
-            if (counted && !admitted) {
-              rootCommands.delete(runId);
-              rootDelivery.delete(runId);
-              taskGrants.delete(runId);
-              taskChats.delete(runId);
-              runs.delete(runId);
-              if (runs.size === 0 && entered.get(chatId) === runs) {
-                entered.delete(chatId);
-              }
-            }
-          }
-        })();
+        const answered = launcher.execute(command);
         answering.add(answered);
         try {
-          return await answered;
+          const answer = await answered;
+          if (counted && answer.status === 'refused') {
+            runs.delete(runId);
+            if (runs.size === 0) {
+              entered.delete(chatId);
+            }
+          }
+          return answer;
+        } catch (error) {
+          if (counted) {
+            runs.delete(runId);
+            if (runs.size === 0) {
+              entered.delete(chatId);
+            }
+          }
+          throw error;
         } finally {
           answering.delete(answered);
         }
       },
     },
     revisions,
-    projectTasks: {
-      request: async (request, signal) => {
-        try {
-          const coordinator = await taskCoordinator();
-          const caller = { kind: 'host', projectId: options.projectId! } as const;
-          switch (request.operation) {
-            case 'read': {
-              return { kind: 'snapshot', snapshot: await coordinator.read(caller, request.input) };
-            }
-            case 'wait': {
-              return { kind: 'snapshot', snapshot: await coordinator.wait(caller, request.input, signal) };
-            }
-            case 'send': {
-              return { kind: 'message', message: await coordinator.send(caller, request.input) };
-            }
-            case 'cancel': {
-              return { kind: 'task', task: await coordinator.cancel(caller, request.input) };
-            }
-            case 'resume': {
-              return { kind: 'task', task: await coordinator.resume(caller, request.input) };
-            }
-          }
-        } catch (error) {
-          const code = error instanceof Error && 'code' in error ? String(error.code) : 'TASK_UNAVAILABLE';
-          return {
-            kind: 'refused',
-            code: projectTaskRefusalCodes.find((value) => value === code) ?? 'TASK_UNAVAILABLE',
-            message: error instanceof Error ? error.message : String(error),
-          };
-        }
-      },
+    projectTasks: projectTask?.projectTasks ?? {
+      request: async () => ({
+        kind: 'refused',
+        code: 'TASK_UNAVAILABLE',
+        message: 'This host has no durable project identity.',
+      }),
     },
     mcp,
     close: async () => {
@@ -823,6 +513,9 @@ export const openProjectHost = (options: ProjectHostOptions, admitting?: () => b
   return {
     host,
     drained: async (signal) => {
+      if (projectTask !== undefined) {
+        return projectTask.drain(signal);
+      }
       /* Every run a client sent while this host served, re-read until a pass adds none: one sent while the last pass
        * followed is followed too (W6.r1 round 4). */
       const ended = new Promise<void>((resolve) => {

@@ -11,6 +11,8 @@ import { createProjectTasksHarness } from '#project-tasks-harness.fixture.js';
 import type { ProjectTasksHarness } from '#project-tasks-harness.fixture.js';
 
 const liveEnabled = process.env['TAU_PROJECT_TASKS_LIVE'] === '1';
+const codexModel = process.env['TAU_ACP_LIVE_CODEX_MODEL'];
+const codexProvider = JSON.stringify({ id: 'codex', ...(codexModel === undefined ? {} : { model: codexModel }) });
 const discovery = liveEnabled
   ? await discoverAcpAgents({
       resolveFrom: process.env['TAU_ACP_LIVE_RESOLVE_FROM'] ?? import.meta.url,
@@ -38,8 +40,8 @@ describe.skipIf(!liveEnabled)('real Codex nested project task qualification', ()
     const reply = `PARENT_REPLY_${randomUUID()}`;
     const proof = `GRANDCHILD_PROOF_${randomUUID()}`;
     const grandchildPrompt = `You are a disposable live integration grandchild. Use native filesystem/shell tools to write grandchild-proof.txt containing exactly ${proof}. Read it back with a tool. Do not modify main.scad. Use mcp.tau.task_read to find your task (title Live grandchild) and parentTaskId, then mcp.tau.task_send to send the actual read-back contents to your parent with requestId grandchild-proof. Report the inherited project instruction nonce and stop.`;
-    const childPrompt = `You are a disposable live integration child. Use native tools to write child-proof.txt containing exactly ${ready} and read it back. Do not modify main.scad. Use mcp.tau.task_read to find your task (title Live child) and parentTaskId. Send the read-back contents to your parent using mcp.tau.task_send requestId child-ready. Wait for message ${reply} by bounded mcp.tau.task_read/task_wait polling. After observing it, invoke mcp.tau.task_spawn with requestId spawn-grandchild, title Live grandchild, provider {"id":"codex"}, and this exact prompt: ${JSON.stringify(grandchildPrompt)}. Wait until your inbox contains ${proof}. Forward that exact result to your parent using mcp.tau.task_send requestId child-forward. Report the inherited project instruction nonce and stop. Do not invent results; every operation must use actual tools.`;
-    const parentPrompt = `This is an authorized disposable live integration test. Use mcp.tau.task_spawn to create one child: requestId spawn-child, title Live child, provider {"id":"codex"}, exact prompt ${JSON.stringify(childPrompt)}. Keep the returned child task ID. Use mcp.tau.task_read to find your root task by chatId live-root-chat. Wait for inbox message ${ready}, then send ${reply} to your child using mcp.tau.task_send requestId parent-reply. Wait until your inbox contains ${proof}, then report exactly that proof and the project instruction nonce. Do not edit files or spawn extra children. Every spawn, send and read must invoke the tool; do not merely narrate them.`;
+    const childPrompt = `You are a disposable live integration child. Use native tools to write child-proof.txt containing exactly ${ready} and read it back. Do not modify main.scad. Use mcp.tau.task_read to find your task (title Live child) and parentTaskId. Send the read-back contents to your parent using mcp.tau.task_send requestId child-ready. Wait for message ${reply} by bounded mcp.tau.task_read/task_wait polling. After observing it, invoke mcp.tau.task_spawn with requestId spawn-grandchild, title Live grandchild, provider ${codexProvider}, and this exact prompt: ${JSON.stringify(grandchildPrompt)}. Wait until your inbox contains ${proof}. Forward that exact result to your parent using mcp.tau.task_send requestId child-forward. Report the inherited project instruction nonce and stop. Do not invent results; every operation must use actual tools.`;
+    const parentPrompt = `This is an authorized disposable live integration test. Use mcp.tau.task_spawn to create one child: requestId spawn-child, title Live child, provider ${codexProvider}, exact prompt ${JSON.stringify(childPrompt)}. Keep the returned child task ID. Use mcp.tau.task_read to find your root task by chatId live-root-chat. Wait for inbox message ${ready}, then send ${reply} to your child using mcp.tau.task_send requestId parent-reply. Wait until your inbox contains ${proof}, then report exactly that proof and the project instruction nonce. Do not edit files or spawn extra children. Every spawn, send and read must invoke the tool; do not merely narrate them.`;
     const accepted = await harness.host.launcher.execute({
       type: 'start',
       commandId: 'live-root-start',
@@ -53,7 +55,7 @@ describe.skipIf(!liveEnabled)('real Codex nested project task qualification', ()
           content: parentPrompt,
         },
         config: {
-          agent: { kind: 'acp', id: 'codex' },
+          agent: { kind: 'acp', id: 'codex', ...(codexModel === undefined ? {} : { model: codexModel }) },
           systemPrompt: '',
           toolChoice: 'auto',
         },
@@ -77,6 +79,9 @@ describe.skipIf(!liveEnabled)('real Codex nested project task qualification', ()
     expect(child.parentTaskId).toBe(parent.id);
     expect(grandchild.parentTaskId).toBe(child.id);
     expect(snapshot.tasks.map((task) => task.depth)).toEqual([0, 1, 2]);
+    if (codexModel !== undefined) {
+      expect(snapshot.tasks.map((task) => task.provider.model)).toEqual([codexModel, codexModel, codexModel]);
+    }
     expect(
       snapshot.messages.map((message) => ({
         from: message.senderTaskId,
@@ -129,6 +134,7 @@ describe.skipIf(!liveEnabled)('real Codex nested project task qualification', ()
         {
           kind: 'actual Codex model qualification',
           adapter: { package: codex.package, version: codex.version },
+          model: codexModel ?? 'CLI default',
           node: process.versions.node,
           nonces: { ready, reply, proof },
           tasks: snapshot.tasks.map((task) => ({

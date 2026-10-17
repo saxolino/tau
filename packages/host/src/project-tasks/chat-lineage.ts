@@ -1,5 +1,5 @@
 import { chatRecordFileName, chatRecordsPath } from '@taucad/revisions';
-import type { NodeFsProviderClient } from '@taucad/filesystem/backend';
+import type { FileSystemProvider } from '@taucad/filesystem';
 import type { ProjectTask, ProjectTaskChatLineage } from '@taucad/agent-host/wire';
 import { ProjectTaskError } from '#project-tasks/store.js';
 
@@ -55,7 +55,7 @@ const parseExistingRecord = (
  * @param task - Durable child task for initial metadata fields.
  */
 export const materializeProjectTaskLineage = async (
-  filesystem: NodeFsProviderClient,
+  filesystem: Required<Pick<FileSystemProvider, 'exists' | 'readFile' | 'writeFileChecked'>>,
   entry: ProjectTaskChatLineage,
   task: ProjectTask,
 ): Promise<void> => {

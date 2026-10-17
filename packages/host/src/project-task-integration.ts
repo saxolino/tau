@@ -22,7 +22,6 @@ import { toolName } from '@taucad/chat/constants';
 import type { ProjectTaskBackend, ProjectTaskLaunch } from '#project-tasks/backend.js';
 import type { ProjectTaskCoordinator } from '#project-tasks/types.js';
 import { formatProjectTaskMailboxMessage } from '#project-tasks/mailbox.js';
-import type { ProjectRevisions } from '#revisions.js';
 
 /** Canonical task tools shared by the internal registry and session-bound MCP. @internal */
 export const projectTaskTools = [
@@ -199,7 +198,9 @@ export const withProjectTaskTools = (
  */
 export const createProjectTaskBackend = (
   options: Readonly<{
-    revisions: ProjectRevisions;
+    createCandidate: (
+      input: Readonly<{ requestId: string; name: string; from: string; signal: AbortSignal }>,
+    ) => Promise<Readonly<{ checkoutId: string; checkoutRoot: string }>>;
     launcher: () => AgentLauncher;
     agents: readonly string[];
     systemPrompt: string;
@@ -214,7 +215,7 @@ export const createProjectTaskBackend = (
       signal: AbortSignal,
     ) => Promise<NonNullable<AgentChannelAdmissionConfig['contextPayload']>>;
     rememberGrant: (runId: string, grant: Pick<AgentChannelAdmissionConfig, 'toolChoice' | 'allowedTools'>) => void;
-    released: (runId: string, checkoutId: string) => void;
+    released: (runId: string, checkoutId: string) => void | Promise<void>;
     waitForOwnerClose: () => Promise<void>;
     placement: TurnPlacementPort;
   }>,
@@ -274,21 +275,21 @@ export const createProjectTaskBackend = (
       });
     }
     signal.throwIfAborted();
-    const answer = await options.revisions.channel.request({
-      command: 'createBranch',
+    const result = await options.createCandidate({
       requestId: `task-${attempt.id}`,
       name: `task-${task.id}-${attempt.number}`,
       from: attempt.source.revisionId,
+      signal,
     });
-    const parsed = z.object({ checkoutId: z.string(), checkoutRoot: z.string() }).safeParse(answer.result);
+    const parsed = z.object({ checkoutId: z.string().min(1), checkoutRoot: z.string().min(1) }).safeParse(result);
     if (!parsed.success) {
       throw Object.assign(new Error('The revision owner did not allocate a private checkout.'), {
         code: 'TASK_SOURCE_UNAVAILABLE',
       });
     }
-    const result = parsed.data;
-    options.allocated(result.checkoutId, result.checkoutRoot);
-    return { placementId: attempt.id, checkoutId: result.checkoutId, ...(model === undefined ? {} : { model }) };
+    const candidate = parsed.data;
+    options.allocated(candidate.checkoutId, candidate.checkoutRoot);
+    return { placementId: attempt.id, checkoutId: candidate.checkoutId, ...(model === undefined ? {} : { model }) };
   },
   start: async (launch, allocation) => {
     const { task, attempt, signal } = launch;
@@ -296,6 +297,7 @@ export const createProjectTaskBackend = (
     options.bind(runId, task.chatId);
     const prompt = taskPrompt(launch, allocation.checkoutId);
     const contextPayload = await options.context(allocation.checkoutId, signal);
+    signal.throwIfAborted();
     const grant = attempt.toolGrant;
     options.rememberGrant(runId, grant);
     const admissionModel =
@@ -404,7 +406,7 @@ export const createProjectTaskBackend = (
       });
     }
     await waitForTaskLeaseRetirement(options.placement, task.chatId, { runId });
-    options.released(attempt.runId ?? attempt.id, allocation.checkoutId);
+    await options.released(attempt.runId ?? attempt.id, allocation.checkoutId);
   },
   reconcile: async ({ task, attempt }) => {
     await options
