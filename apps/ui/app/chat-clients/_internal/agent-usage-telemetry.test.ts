@@ -162,7 +162,7 @@ const usageRow = (id: string, input: number) =>
     },
   });
 
-/* Preserve the deployed ingest v1 row contract independently of the current canonical vocabulary. */
+/* Pin the current named-tool ingest vocabulary independently of the producer's canonical map. */
 const deployedToolNames = [
   'read_file',
   'list_directory',
@@ -184,12 +184,13 @@ const deployedToolNames = [
   'use_skill',
   'update_todos',
   'ask_questions',
+  'list_machines',
   'get_machine',
-  'request_print',
-  'get_print_request',
+  'machine_action',
+  'stop_machine',
   'get_print_profiles',
-  'list_print_requests',
-  'cancel_print',
+  'request_job',
+  'check_job',
 ] as const;
 const deployedToolCalls = z
   .array(
@@ -200,7 +201,7 @@ const deployedToolCalls = z
       count: z.number().int().positive(),
     }),
   )
-  .max(72);
+  .max(74);
 const newToolKinds = [
   ['install_packages', 'edit'],
   ['task_spawn', 'execute'],
@@ -250,7 +251,7 @@ describe('trackAgentTurn', () => {
     },
   );
 
-  it('keeps the old maximum row cardinality and every quantity when new calls join all named and generic statuses', () => {
+  it('keeps the named row bound and every quantity when new calls join all named and generic statuses', () => {
     const runId = 'compatible-cardinality';
     const { publish, report } = harness(runId, {
       identity: { agentId: 'tau', placement: 'desktop' },
@@ -278,9 +279,17 @@ describe('trackAgentTurn', () => {
     if (entry.name !== 'agent.turn') {
       throw new Error('Expected a settled agent turn.');
     }
-    expect(entry.detail.toolCalls).toHaveLength(72);
-    expect(entry.detail.toolCalls?.reduce((count, call) => count + call.count, 0)).toBe(86);
-    expect(entry.detail.toolCalls?.filter((call) => call.tool !== undefined)).toHaveLength(52);
+    expect(entry.detail.toolCalls).toHaveLength(74);
+    expect(entry.detail.toolCalls?.reduce((count, call) => count + call.count, 0)).toBe(88);
+    expect(entry.detail.toolCalls?.filter((call) => call.tool !== undefined)).toHaveLength(54);
+    expect(
+      entry.detail.toolCalls
+        ?.filter((call) => call.status === 'completed')
+        .reduce((count, call) => count + call.count, 0),
+    ).toBe(44);
+    expect(
+      entry.detail.toolCalls?.filter((call) => call.status === 'failed').reduce((count, call) => count + call.count, 0),
+    ).toBe(44);
     expect(deployedToolCalls.parse(entry.detail.toolCalls)).toEqual(entry.detail.toolCalls);
   });
 
