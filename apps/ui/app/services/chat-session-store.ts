@@ -3182,6 +3182,29 @@ export class ChatSessionStore {
 
   /** Version async SDK materialization so only the newest caught-up log can replace a ready transcript. */
   #materializeProjectedTranscript(session: InternalSession, projection: ChatProjection): void {
+    console.warn(
+      '[W22C-DIAG] materialize',
+      session.chatId,
+      JSON.stringify({
+        display: this.#hasDisplayAuthority(session.chatId, projection),
+        transcript: this.#hasTranscriptAuthority(session.chatId, projection),
+        foreign: this.#foreignDisplayReady(session.chatId, projection),
+        answered: this.#answeredLogReads.has(session.chatId),
+        remote: projection.remote === undefined ? null : Object.keys(projection.remote.views ?? {}).length,
+        rv: this.#remoteReadVersions.get(session.chatId),
+        rc: this.#remoteReadCompletedVersions.get(session.chatId),
+        status: session.status,
+        watched: session.watchedRunId,
+        recovering: session.recoveringPresentation,
+        failed: session.failedTranscriptProjection !== undefined,
+        sameSource: session.transcriptSource?.views === projection.views,
+        tv: session.transcriptSourceVersion,
+        mv: session.materializeVersion,
+        views: Object.keys(projection.views).length,
+        cursor: projection.ledger.position.cursor,
+        msgs: session.chat.messages.length,
+      }),
+    );
     if (
       !this.#hasDisplayAuthority(session.chatId, projection) ||
       (session.status !== 'ready' && session.status !== 'error') ||
@@ -3208,6 +3231,19 @@ export class ChatSessionStore {
   ): Promise<void> {
     try {
       const messages = await materializeTranscript(projection);
+      console.warn(
+        '[W22C-DIAG] materialized',
+        session.chatId,
+        JSON.stringify({
+          n: messages.length,
+          same: this.#sessions.get(session.chatId) === session,
+          display: this.#hasDisplayAuthority(session.chatId, projection),
+          status: session.status,
+          watched: session.watchedRunId,
+          version,
+          mv: session.materializeVersion,
+        }),
+      );
       if (
         this.#sessions.get(session.chatId) === session &&
         this.#hasDisplayAuthority(session.chatId, projection) &&
@@ -3594,6 +3630,13 @@ export class ChatSessionStore {
                 ...loadedChat.messages.filter((message) => !inFlightIds.has(message.id)),
                 ...inFlight,
               ];
+              console.warn(
+                '[W22C-DIAG] loaded',
+                input.chatId,
+                loadedChat.messages.length,
+                inFlight.length,
+                session.chat.messages.length,
+              );
 
               const lastMessage = session.chat.messages.at(-1);
               const { startupRequest } = loadedChat;
