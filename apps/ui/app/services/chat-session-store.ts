@@ -2286,6 +2286,7 @@ export class ChatSessionStore {
   }
 
   #stopObservedAttachment(chatId: string, observed: ObservedChat): void {
+    console.warn('[W22C-DIAG] stop', chatId, new Error('stack').stack?.split('\n').slice(1, 5).join(' <- '));
     this.#answeredLogReads.delete(chatId);
     const session = this.#sessions.get(chatId);
     if (session !== undefined) {
@@ -2303,6 +2304,7 @@ export class ChatSessionStore {
 
   #startObservedAttachment(chatId: string, observed: ObservedChat): void {
     const connector = this.#projectHostConnectors.get(observed.projectId);
+    console.warn('[W22C-DIAG] start', chatId, observed.projectId, connector !== undefined);
     if (connector === undefined) {
       return;
     }
@@ -2321,6 +2323,7 @@ export class ChatSessionStore {
           },
         },
         onStatus: (event) => {
+          console.warn('[W22C-DIAG] status', chatId, event.type, event.reason, observed.attachment === attachment);
           if (observed.attachment !== attachment || this.#deletedProjections.has(this.#projectionOf(chatId))) {
             return;
           }
