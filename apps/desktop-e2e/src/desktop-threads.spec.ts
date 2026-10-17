@@ -253,6 +253,26 @@ test('should navigate packaged fixture-backed child and grandchild histories wit
       })
       .toBe(true);
     await session.capture('threads-fixture-restored-root');
+
+    const settingsUrl = new URL(page.url());
+    settingsUrl.searchParams.set('settings', 'experimental');
+    await page.goto(settingsUrl.toString());
+    const threadsToggle = page.getByRole('switch', { name: 'Project threads' });
+    await threadsToggle.waitFor({ state: 'visible' });
+    expect(await threadsToggle.isChecked()).toBe(true);
+    await threadsToggle.click();
+    expect(await threadsToggle.isChecked()).toBe(false);
+    await page.reload();
+    await threadsToggle.waitFor({ state: 'visible' });
+    expect(await threadsToggle.isChecked()).toBe(false);
+    await session.capture('threads-settings-disabled');
+    await threadsToggle.click();
+    expect(await threadsToggle.isChecked()).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect
+      .poll(async () => overview.getByRole('button', { name: `Open ${childName}` }).isVisible(), { timeout: 30_000 })
+      .toBe(true);
+    await session.capture('threads-settings-restored');
   } catch (error) {
     await session?.capture('threads-fixture-failure');
     throw error;

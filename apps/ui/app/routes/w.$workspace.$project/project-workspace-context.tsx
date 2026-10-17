@@ -208,6 +208,7 @@ export function ProjectWorkspaceProvider({
   const location = useLocation();
   const routeKey = location.key;
   const isMobile = useIsMobile();
+  const focusedChatId = useSelector(editorRef, (snapshot) => snapshot.context.focusedChatId);
   const isEditorReady = useSelector(editorRef, (snapshot) => snapshot.matches('ready'));
   const openerRef = useRef<((panelId: WorkbenchPanelId) => void) | undefined>(undefined);
   const pendingFilesRef = useRef<string | undefined>(undefined);
@@ -505,7 +506,7 @@ export function ProjectWorkspaceProvider({
   return (
     <ProjectWorkspaceContext.Provider value={value}>
       <FileReturnContext.Provider value={fileReturn}>
-        <ProjectTasksProvider projectId={projectId} enabled={workbenchMode !== 'pane'}>
+        <ProjectTasksProvider rootChatId={focusedChatId} projectId={projectId} enabled={workbenchMode !== 'pane'}>
           <ThreadNavigationProvider openPanel={openPanel}>{children}</ThreadNavigationProvider>
         </ProjectTasksProvider>
       </FileReturnContext.Provider>

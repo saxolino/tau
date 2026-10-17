@@ -621,9 +621,10 @@ export type ProjectClosePlan = Readonly<{
 }>;
 
 type ProjectHostConnector = Readonly<{
+  identity: symbol;
   connect: (
     chatId: string,
-  ) => Promise<Pick<AgentHostClient, 'read' | 'catchUp' | 'subscribe' | 'hostCommand' | 'close'>>;
+  ) => Promise<Pick<AgentHostClient, 'read' | 'catchUp' | 'subscribe' | 'hostCommand' | 'projectTasks' | 'close'>>;
   stoppability?: (chatId: string) => Promise<'stoppable' | 'other-build' | 'background-window'>;
 }>;
 
@@ -631,6 +632,7 @@ export class ChatSessionStore {
   readonly #sessions = new Map<string, InternalSession>();
   readonly #observed = new Map<string, ObservedChat>();
   readonly #projectHostConnectors = new Map<string, ProjectHostConnector>();
+  readonly #projectHostTopics = new Map<string, Topic<void>>();
   readonly #remoteReadVersions = new Map<string, number>();
   readonly #remoteReadCompletedVersions = new Map<string, number>();
   readonly #remoteHistoryPresence = new WeakMap<NonNullable<ChatProjection['remote']>['views'], boolean>();
@@ -870,14 +872,30 @@ export class ChatSessionStore {
     });
   }
 
+  /** Observe the same connector used by the project's chat sessions. */
+  public subscribeProjectHost(projectId: string, listener: () => void): () => void {
+    return this.#addPerChatListener({
+      bucket: this.#projectHostTopics,
+      namePrefix: 'projectHost',
+      chatId: projectId,
+      listener,
+    });
+  }
+
+  /** Current connector; absent until the workspace publishes its execution authority. */
+  public getProjectHost(projectId: string): ProjectHostConnector | undefined {
+    return this.#projectHostConnectors.get(projectId);
+  }
+
   /** Publish the active project's real W6 connector to every listed chat. @public */
   public publishProjectHostConnector(
     projectId: string,
     connect: ProjectHostConnector['connect'],
     stoppability?: ProjectHostConnector['stoppability'],
   ): () => void {
-    const connector = { connect, stoppability };
+    const connector = { connect, stoppability, identity: Symbol(projectId) };
     this.#projectHostConnectors.set(projectId, connector);
+    this.#projectHostTopics.get(projectId)?.emit();
     this.#projectRunKeys.delete(projectId);
     this.#refreshProjectRuns(projectId);
     for (const [chatId, observed] of this.#observed) {
@@ -895,10 +913,11 @@ export class ChatSessionStore {
       }
     }
     return () => {
-      if (this.#projectHostConnectors.get(projectId) !== connector) {
+      if (this.#projectHostConnectors.get(projectId)?.identity !== connector.identity) {
         return;
       }
       this.#projectHostConnectors.delete(projectId);
+      this.#projectHostTopics.get(projectId)?.emit();
       this.#projectRunKeys.delete(projectId);
       this.#refreshProjectRuns(projectId);
       for (const [chatId, observed] of this.#observed) {
@@ -3654,7 +3673,17 @@ export class ChatSessionStore {
           }),
           persistActiveExecutionActor: createAsyncLogic({
             run: async ({ input }) => {
+              const previous = await this.getChatExecution(input.chatId);
               await depsRef().patchChat(input.chatId, 'activeExecution', input.activeExecution);
+              if (previous === undefined || previous.hostId !== input.activeExecution?.hostId) {
+                const projectId =
+                  this.#sessions.get(input.chatId)?.projectId ?? this.#observed.get(input.chatId)?.projectId;
+                const connector = projectId === undefined ? undefined : this.#projectHostConnectors.get(projectId);
+                if (projectId !== undefined && connector !== undefined) {
+                  this.#projectHostConnectors.set(projectId, { ...connector });
+                  this.#projectHostTopics.get(projectId)?.emit();
+                }
+              }
             },
           }),
           persistActiveKernelActor: createAsyncLogic({

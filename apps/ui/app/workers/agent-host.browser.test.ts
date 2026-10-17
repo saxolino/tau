@@ -100,11 +100,13 @@ const readAll = async (sessionId: string, chatId: string, endCursor?: number): P
     end = answer.status === 'applied' && answer.effect === 'not-applied' ? Number(answer.details['endCursor'] ?? 0) : 0;
   }
   const events: AgentLogEvent[] = [];
+  let sourceGeneration: string | undefined;
   for (let cursor = 0; cursor < end; ) {
     // oxlint-disable-next-line no-await-in-loop -- pages are read in order.
     const answer = await sessionOf(sessionId).read({
       chatId,
       cursor,
+      ...(sourceGeneration === undefined ? {} : { sourceGeneration }),
       limit: agentWireLimits.batchRows,
       maxBytes: agentWireLimits.batchBytes,
     });
@@ -112,6 +114,7 @@ const readAll = async (sessionId: string, chatId: string, endCursor?: number): P
       throw new Error(`The read of chat ${chatId} was refused (${answer.reason}).`);
     }
     events.push(...(answer.events as AgentLogEvent[]));
+    sourceGeneration = answer.sourceGeneration;
     cursor = answer.nextCursor;
   }
   return events;
@@ -729,6 +732,22 @@ const initializeSeededSession = async (
     input.delays,
   );
 };
+
+it('attaches to an empty browser project task authority without creating a child chat', async () => {
+  const { fileSystemProvider, providerBasePath } = await seededProject('task-read');
+  const sessionId = `session-${crypto.randomUUID()}`;
+  try {
+    await initializeSeededSession(fileSystemProvider, { providerBasePath, sessionId });
+    const chatNames = await fileSystemProvider.readdir(`${providerBasePath}/.tau/chats`);
+    await expect(sessionOf(sessionId).projectTasks({ operation: 'read', input: {} })).resolves.toMatchObject({
+      kind: 'snapshot',
+      snapshot: { tasks: [], messages: [] },
+    });
+    expect(await fileSystemProvider.readdir(`${providerBasePath}/.tau/chats`)).toEqual(chatNames);
+  } finally {
+    await closeSession(sessionId);
+  }
+});
 
 /*
  * I4: a takeover *records* what it found; it never drives a run. Resuming the

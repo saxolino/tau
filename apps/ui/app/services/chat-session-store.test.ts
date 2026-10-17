@@ -372,6 +372,31 @@ function publishAdmission(
   }));
 }
 
+describe('project host observers', () => {
+  it('publishes only the current connector and releases listeners independently', () => {
+    const store = createStore();
+    const listener = vi.fn();
+    const other = vi.fn();
+    const off = store.subscribeProjectHost('project-a', listener);
+    const offOther = store.subscribeProjectHost('project-b', other);
+    const first = vi.fn(async () => mock<AgentHostClient>());
+    const second = first;
+    expect(store.getProjectHost('project-a')).toBeUndefined();
+    const releaseFirst = store.publishProjectHostConnector('project-a', first);
+    expect(store.getProjectHost('project-a')?.connect).toBe(first);
+    const releaseSecond = store.publishProjectHostConnector('project-a', second);
+    releaseFirst();
+    expect(store.getProjectHost('project-a')?.connect).toBe(second);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(other).not.toHaveBeenCalled();
+    off();
+    releaseSecond();
+    expect(store.getProjectHost('project-a')).toBeUndefined();
+    expect(listener).toHaveBeenCalledTimes(2);
+    offOther();
+  });
+});
+
 describe('ChatSessionStore — host command/watch cutover (PV-S10/S11)', () => {
   // An SDK watch requires a visible admitted input; lifecycle-only logs cannot
   // seed a new response safely from an earlier assistant.

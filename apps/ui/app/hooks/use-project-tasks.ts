@@ -1,12 +1,21 @@
-import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import type { ReactNode } from 'react';
-import type { AgentChannelClient } from '@taucad/agent-host';
-import type { ProjectTaskChannelRequest, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
+import type { AgentHostClient } from '#services/agent-host-client.js';
+import { useChatSessionStore } from '#hooks/chat-session-store-provider.js';
+import type { ProjectTaskChannelAnswer, ProjectTaskChannelRequest, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
 import { projectTaskSendSchema } from '@taucad/agent-host/wire';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { idPrefix } from '@taucad/types/constants';
-import { isDesktopTarget } from '#filesystem/desktop-bridge.js';
-import { desktopWorkspaceRoot, openAgentHostChannel } from '#lib/agent-host-placement.js';
 import type { ProjectTaskActions } from '#components/project-tasks/project-task-actions.js';
 
 export type ProjectTasksView = Readonly<{
@@ -18,8 +27,7 @@ export type ProjectTasksView = Readonly<{
   actions: ProjectTaskActions;
 }>;
 
-const browserReason =
-  'Child tasks require the desktop project host. Open this project in Tau desktop to use child tasks.';
+type TaskClient = Pick<AgentHostClient, 'projectTasks' | 'close'>;
 
 const projectTasksContext = createContext<Readonly<{ projectId: string; view: ProjectTasksView }> | undefined>(
   undefined,
@@ -29,29 +37,38 @@ const projectTasksContext = createContext<Readonly<{ projectId: string; view: Pr
 function projectTasksProvider({
   projectId,
   enabled = true,
+  rootChatId,
   children,
-}: Readonly<{ projectId: string; enabled?: boolean; children: ReactNode }>): ReactNode {
-  const view = useProjectTasksOwner(projectId, enabled);
+}: Readonly<{ projectId: string; rootChatId?: string; enabled?: boolean; children: ReactNode }>): ReactNode {
+  const view = useProjectTasksOwner(projectId, enabled, rootChatId);
   const context = useMemo(() => ({ projectId, view }), [projectId, view]);
   return createElement(projectTasksContext.Provider, { value: context }, children);
 }
 export { projectTasksProvider as ProjectTasksProvider };
 
 /** Consume the project observer when present; standalone surfaces retain their own observer. */
-export function useProjectTasks(projectId: string, isEnabled = true): ProjectTasksView {
+export function useProjectTasks(projectId: string, isEnabled = true, rootChatId?: string): ProjectTasksView {
   const shared = useContext(projectTasksContext);
-  const own = useProjectTasksOwner(projectId, isEnabled && shared?.projectId !== projectId);
+  const own = useProjectTasksOwner(projectId, isEnabled && shared?.projectId !== projectId, rootChatId);
   return shared?.projectId === projectId && isEnabled ? shared.view : own;
 }
 
 /** Observe the host journal; React never owns admission, task execution or a second transcript. */
-function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasksView {
+function useProjectTasksOwner(projectId: string, isEnabled: boolean, rootChatId?: string): ProjectTasksView {
+  const store = useChatSessionStore();
+  const subscribe = useCallback(
+    (listener: () => void) => store.subscribeProjectHost(projectId, listener),
+    [store, projectId],
+  );
+  const getConnector = useCallback(() => store.getProjectHost(projectId), [store, projectId]);
+  const connector = useSyncExternalStore(subscribe, getConnector, getConnector);
+  const scope = useMemo(() => ({ projectId, rootChatId, connector }), [projectId, rootChatId, connector]);
   const [generation, setGeneration] = useState(0);
-  const owner = useMemo(() => ({ projectId, generation, isEnabled }), [projectId, generation, isEnabled]);
+  const owner = useMemo(() => ({ scope, generation, isEnabled }), [scope, generation, isEnabled]);
   const connection = useRef<
-    Readonly<{ owner: typeof owner; client: AgentChannelClient; controller: AbortController }> | undefined
+    Readonly<{ owner: typeof owner; client: TaskClient; controller: AbortController }> | undefined
   >(undefined);
-  const requests = useMemo(() => ({ projectId, ids: new Map<string, string>() }), [projectId]);
+  const requests = useMemo(() => ({ ids: new Map<string, string>() }), [scope]);
   const [view, setView] = useState<
     Readonly<{
       owner: typeof owner;
@@ -63,15 +80,13 @@ function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasks
   >({ owner, isLoading: true });
 
   useEffect(() => {
-    if (!isEnabled || !isDesktopTarget) {
+    if (!isEnabled || rootChatId === undefined || connector === undefined) {
       return;
     }
     const controller = new AbortController();
-    let observationClient: AgentChannelClient | undefined;
+    let observationClient: TaskClient | undefined;
     const observe = async (): Promise<void> => {
-      const workspaceRoot = await desktopWorkspaceRoot(projectId);
-      controller.signal.throwIfAborted();
-      const client = await openAgentHostChannel('desktop', { workspaceRoot, projectId });
+      const client = await connector.connect(rootChatId);
       observationClient = client;
       controller.signal.throwIfAborted();
       connection.current = { owner, client, controller };
@@ -84,14 +99,17 @@ function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasks
           : { operation: 'wait', input: { after, limit: 100, timeout: 30_000 } };
         // One bounded owner wait at a time; closing the pane aborts it and releases the channel.
         // oxlint-disable-next-line eslint/no-await-in-loop -- Ordered cursors must be consumed before requesting the next page.
-        const answer = await client.projectTasks(request, controller.signal);
+        const answer: ProjectTaskChannelAnswer | undefined = await client.projectTasks?.(request, controller.signal);
+        if (answer === undefined) {
+          setView({ owner, isLoading: false, unavailable: 'This host does not support project threads.' });
+          return;
+        }
         controller.signal.throwIfAborted();
         if (answer.kind === 'refused') {
           if (answer.code === 'TASK_UNAVAILABLE') {
             setView((previous) => ({
               owner,
-              snapshot:
-                previous.owner.projectId === projectId && previous.owner.isEnabled ? previous.snapshot : undefined,
+              snapshot: previous.owner.scope === scope && previous.owner.isEnabled ? previous.snapshot : undefined,
               isLoading: false,
               unavailable: answer.message,
             }));
@@ -121,29 +139,28 @@ function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasks
         if (!controller.signal.aborted) {
           setView((previous) => ({
             owner,
-            snapshot:
-              previous.owner.projectId === projectId && previous.owner.isEnabled ? previous.snapshot : undefined,
+            snapshot: previous.owner.scope === scope && previous.owner.isEnabled ? previous.snapshot : undefined,
             isLoading: false,
             error: error instanceof Error ? error.message : 'Could not read project tasks. Reconnect and try again.',
           }));
         }
       } finally {
         controller.abort();
-        observationClient?.close('project-task-observation-ended');
+        void observationClient?.close();
       }
     };
     // async-iife: bootstrap — This pane owns and aborts its bounded host observation.
     void supervise();
     return () => {
       controller.abort();
-      observationClient?.close('project-task-view-closed');
+      void observationClient?.close();
     };
-  }, [isEnabled, owner, projectId]);
+  }, [isEnabled, owner, scope, connector, rootChatId]);
 
   const command = useCallback(
     async (operation: 'send' | 'cancel' | 'resume', taskId: string, text?: string): Promise<void> => {
       const active = connection.current;
-      if (!isDesktopTarget || active === undefined || active.owner !== owner || active.controller.signal.aborted) {
+      if (active === undefined || active.owner !== owner || active.controller.signal.aborted) {
         throw new Error('The project task host is unavailable. Reconnect and try again.');
       }
       const { client, controller } = active;
@@ -154,7 +171,10 @@ function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasks
         operation === 'send'
           ? { operation, input: projectTaskSendSchema.parse({ taskId, requestId, text: text ?? '' }) }
           : { operation, input: { taskId, requestId } };
-      const answer = await client.projectTasks(request, controller.signal);
+      const answer: ProjectTaskChannelAnswer | undefined = await client.projectTasks?.(request, controller.signal);
+      if (answer === undefined) {
+        throw new Error('This host does not support project threads.');
+      }
       if (answer.kind === 'refused') {
         requests.ids.delete(key);
         throw new Error(answer.message);
@@ -176,17 +196,14 @@ function useProjectTasksOwner(projectId: string, isEnabled = true): ProjectTasks
   const retry = useCallback(() => {
     setGeneration((value) => value + 1);
   }, []);
-  if (!isEnabled) {
+  if (!isEnabled || rootChatId === undefined) {
     return { isLoading: false, retry, actions };
-  }
-  if (!isDesktopTarget) {
-    return { isLoading: false, unavailable: browserReason, retry, actions };
   }
   if (view.owner === owner) {
     return { ...view, retry, actions };
   }
   return {
-    snapshot: view.owner.projectId === projectId && view.owner.isEnabled ? view.snapshot : undefined,
+    snapshot: view.owner.scope === scope && view.owner.isEnabled ? view.snapshot : undefined,
     isLoading: true,
     retry,
     actions,

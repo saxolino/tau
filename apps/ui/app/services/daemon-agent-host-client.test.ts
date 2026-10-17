@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentChannelClient, AgentLogEvent, HostRunSnapshot } from '@taucad/agent-host';
 import type { CatchUpFrame, CommandAnswer, HostCommand, ReadRequest } from '@taucad/agent-host/wire';
 import { createAgentHostClient } from '#services/agent-host-client.js';
@@ -371,6 +371,26 @@ describe('createDaemonAgentHostTransport', () => {
       code: 'HOST_NOT_PAIRED',
       message: 'This computer is no longer paired with your account.',
     });
+    await client.close();
+  });
+});
+
+describe('project task transport', () => {
+  it('uses the same channel and propagates the caller cancellation signal', async () => {
+    const channel = fakeChannel();
+    const request = { operation: 'read', input: { after: 0, limit: 100 } } as const;
+    const projectTasks = vi.spyOn(channel, 'projectTasks');
+    const client = createAgentHostClient(createDaemonAgentHostTransport(channel));
+    const controller = new AbortController();
+    await expect(client.projectTasks?.(request, controller.signal)).resolves.toMatchObject({
+      kind: 'refused',
+      code: 'TASK_UNAVAILABLE',
+    });
+    expect(projectTasks).toHaveBeenCalledWith(request, controller.signal);
+    controller.abort();
+    await expect(client.projectTasks?.(request, controller.signal)).rejects.toThrow();
+    expect(projectTasks).toHaveBeenCalledTimes(1);
+    expect(channel.commands).toEqual([]);
     await client.close();
   });
 });

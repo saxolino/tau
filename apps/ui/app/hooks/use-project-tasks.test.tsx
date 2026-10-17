@@ -13,16 +13,26 @@ import type {
 } from '@taucad/agent-host/wire';
 import { ProjectTasksProvider, useProjectTasks } from '#hooks/use-project-tasks.js';
 
-const placement = vi.hoisted(() => ({ isDesktopTarget: true, workspaceRoot: vi.fn(), open: vi.fn() }));
-vi.mock('#filesystem/desktop-bridge.js', () => ({
-  get isDesktopTarget() {
-    return placement.isDesktopTarget;
+const placement = vi.hoisted(() => {
+  const open = vi.fn<(chatId: string) => Promise<AgentChannelClient>>();
+  const connector = { connect: open };
+  return {
+    open,
+    connector: connector as typeof connector | undefined,
+    initial: connector,
+    listeners: new Set<() => void>(),
+  };
+});
+vi.mock('#hooks/chat-session-store-provider.js', () => ({
+  useChatSessionStore: () => store,
+}));
+const store = {
+  getProjectHost: () => placement.connector,
+  subscribeProjectHost: (_projectId: string, listener: () => void) => {
+    placement.listeners.add(listener);
+    return () => placement.listeners.delete(listener);
   },
-}));
-vi.mock('#lib/agent-host-placement.js', () => ({
-  desktopWorkspaceRoot: placement.workspaceRoot,
-  openAgentHostChannel: placement.open,
-}));
+};
 const root: ProjectTask = {
   id: 'root',
   projectId: 'project-a',
@@ -69,8 +79,8 @@ const pending = async (_request: ProjectTaskChannelRequest, signal?: AbortSignal
 
 beforeEach(() => {
   vi.clearAllMocks();
-  placement.isDesktopTarget = true;
-  placement.workspaceRoot.mockResolvedValue('/projects/a');
+  placement.connector = placement.initial;
+  placement.listeners.clear();
 });
 afterEach(cleanup);
 
@@ -84,10 +94,12 @@ describe('Project task observation', () => {
     next.projectTasks.mockImplementation(pending);
     let providerProjectId = 'project-a';
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <ProjectTasksProvider projectId={providerProjectId}>{children}</ProjectTasksProvider>
+      <ProjectTasksProvider rootChatId='chat-root' projectId={providerProjectId}>
+        {children}
+      </ProjectTasksProvider>
     );
     const view = renderHook(
-      ({ projectId }) => ({ first: useProjectTasks(projectId), second: useProjectTasks(projectId) }),
+      ({ projectId }) => ({ first: useProjectTasks(projectId, true, 'chat-root'), second: useProjectTasks(projectId) }),
       { wrapper, initialProps: { projectId: 'project-a' } },
     );
     await waitFor(() => {
@@ -102,9 +114,9 @@ describe('Project task observation', () => {
     await waitFor(() => {
       expect(placement.open).toHaveBeenCalledTimes(2);
     });
-    expect(client.close).toHaveBeenCalledWith('project-task-view-closed');
+    expect(client.close).toHaveBeenCalled();
     view.unmount();
-    expect(next.close).toHaveBeenCalledWith('project-task-view-closed');
+    expect(next.close).toHaveBeenCalled();
   });
   it('keeps the same project snapshot during reconnect and clears it when the project changes', async () => {
     const first = mock<AgentChannelClient>();
@@ -115,7 +127,7 @@ describe('Project task observation', () => {
     first.projectTasks.mockImplementation(pending);
     second.projectTasks.mockImplementation(pending);
     third.projectTasks.mockImplementation(pending);
-    const view = renderHook(({ projectId }) => useProjectTasks(projectId), {
+    const view = renderHook(({ projectId }) => useProjectTasks(projectId, true, 'chat-root'), {
       initialProps: { projectId: 'project-a' },
     });
     await waitFor(() => {
@@ -180,7 +192,7 @@ describe('Project task observation', () => {
       }),
     });
     client.projectTasks.mockImplementation(pending);
-    const view = renderHook(() => useProjectTasks('project-a'));
+    const view = renderHook(() => useProjectTasks('project-a', true, 'chat-root'));
     await waitFor(() => {
       expect(view.result.current.snapshot?.messages.map((message) => message.text)).toEqual(['First', 'Second']);
     });
@@ -192,7 +204,7 @@ describe('Project task observation', () => {
     const signal = client.projectTasks.mock.calls[2]?.[1];
     view.unmount();
     expect(signal?.aborted).toBe(true);
-    expect(client.close).toHaveBeenCalledWith('project-task-view-closed');
+    expect(client.close).toHaveBeenCalled();
   });
 
   it('retains an uncertain message request identity until the host acknowledges it', async () => {
@@ -223,7 +235,7 @@ describe('Project task observation', () => {
       }
       return pending(request, signal);
     });
-    const view = renderHook(() => useProjectTasks('project-a'));
+    const view = renderHook(() => useProjectTasks('project-a', true, 'chat-root'));
     await waitFor(() => {
       expect(view.result.current.snapshot?.tasks).toEqual([root]);
     });
@@ -236,13 +248,115 @@ describe('Project task observation', () => {
     expect(sends[0]?.input).toEqual(sends[1]?.input);
   });
 
-  it('does not attach a task host for a browser project and explains capability honestly', async () => {
-    placement.isDesktopTarget = false;
-    const view = renderHook(() => useProjectTasks('project-a'));
+  it('waits for the workspace connector and routes through the selected root chat', async () => {
+    placement.connector = undefined;
+    const client = mock<AgentChannelClient>();
+    client.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot() });
+    client.projectTasks.mockImplementation(pending);
+    placement.open.mockResolvedValue(client);
+    const view = renderHook(() => useProjectTasks('project-a', true, 'chat-root'));
+    expect(placement.open).not.toHaveBeenCalled();
+    act(() => {
+      placement.connector = placement.initial;
+      for (const listener of placement.listeners) {
+        listener();
+      }
+    });
     await waitFor(() => {
-      expect(view.result.current.unavailable).toContain('Tau desktop');
+      expect(view.result.current.snapshot?.tasks).toEqual([root]);
+    });
+    expect(placement.open).toHaveBeenCalledWith('chat-root');
+  });
+
+  it('resets the cursor and mailbox when the root chat selects another host', async () => {
+    const local = mock<AgentChannelClient>();
+    const remote = mock<AgentChannelClient>();
+    local.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot({ nextCursor: 42 }) });
+    local.projectTasks.mockImplementation(pending);
+    remote.projectTasks.mockImplementation(pending);
+    placement.open.mockResolvedValueOnce(local).mockResolvedValueOnce(remote);
+    const view = renderHook(({ chatId }) => useProjectTasks('project-a', true, chatId), {
+      initialProps: { chatId: 'local-root' },
+    });
+    await waitFor(() => {
+      expect(view.result.current.snapshot).toBeDefined();
+    });
+    const localSignal = local.projectTasks.mock.calls[1]?.[1];
+    view.rerender({ chatId: 'remote-root' });
+    expect(view.result.current.snapshot).toBeUndefined();
+    await waitFor(() => {
+      expect(remote.projectTasks).toHaveBeenCalled();
+    });
+    expect(placement.open.mock.calls.map(([chatId]) => chatId)).toEqual(['local-root', 'remote-root']);
+    expect(remote.projectTasks.mock.calls[0]?.[0]).toEqual({ operation: 'read', input: { after: 0, limit: 100 } });
+    expect(localSignal?.aborted).toBe(true);
+  });
+
+  it('reconnects when the workspace replaces its host without reusing the old snapshot', async () => {
+    const client = mock<AgentChannelClient>();
+    const replacement = mock<AgentChannelClient>();
+    client.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot() });
+    client.projectTasks.mockImplementation(pending);
+    replacement.projectTasks.mockImplementation(pending);
+    placement.open.mockResolvedValueOnce(client).mockResolvedValueOnce(replacement);
+    const view = renderHook(() => useProjectTasks('project-a', true, 'chat-root'));
+    await waitFor(() => {
+      expect(view.result.current.snapshot).toBeDefined();
+    });
+    act(() => {
+      placement.connector = { connect: placement.open };
+      for (const listener of placement.listeners) {
+        listener();
+      }
+    });
+    expect(view.result.current.snapshot).toBeUndefined();
+    await waitFor(() => {
+      expect(replacement.projectTasks).toHaveBeenCalled();
+    });
+    expect(client.close).toHaveBeenCalled();
+  });
+
+  it('does not attach without a root or when disabled, and disabling never cancels tasks', async () => {
+    const client = mock<AgentChannelClient>();
+    client.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot() });
+    client.projectTasks.mockImplementation(pending);
+    placement.open.mockResolvedValue(client);
+    const view = renderHook(({ enabled, chatId }) => useProjectTasks('project-a', enabled, chatId), {
+      initialProps: { enabled: true, chatId: undefined as string | undefined },
     });
     expect(placement.open).not.toHaveBeenCalled();
+    view.rerender({ enabled: false, chatId: 'chat-root' });
+    expect(placement.open).not.toHaveBeenCalled();
+    view.rerender({ enabled: true, chatId: 'chat-root' });
+    await waitFor(() => {
+      expect(view.result.current.snapshot).toBeDefined();
+    });
+    view.rerender({ enabled: false, chatId: 'chat-root' });
+    expect(view.result.current.snapshot).toBeUndefined();
+    expect(client.projectTasks.mock.calls.map(([request]) => request.operation)).toEqual(['read', 'wait']);
+    expect(client.close).toHaveBeenCalled();
+  });
+
+  it('closes a late connection after switching roots without reading its journal', async () => {
+    const delayed = Promise.withResolvers<AgentChannelClient>();
+    const previous = mock<AgentChannelClient>();
+    const current = mock<AgentChannelClient>();
+    current.projectTasks.mockResolvedValueOnce({ kind: 'snapshot', snapshot: snapshot() });
+    current.projectTasks.mockImplementation(pending);
+    placement.open.mockReturnValueOnce(delayed.promise).mockResolvedValueOnce(current);
+    const view = renderHook(({ chatId }) => useProjectTasks('project-a', true, chatId), {
+      initialProps: { chatId: 'previous-root' },
+    });
+    view.rerender({ chatId: 'current-root' });
+    await waitFor(() => {
+      expect(view.result.current.snapshot).toBeDefined();
+    });
+    await act(async () => {
+      delayed.resolve(previous);
+    });
+    expect(previous.close).toHaveBeenCalled();
+    expect(previous.projectTasks).not.toHaveBeenCalled();
+    expect(view.result.current.snapshot?.tasks).toEqual([root]);
   });
 
   it('can attach after the Strict Mode cleanup probe and refuses no fabricated snapshot', async () => {
@@ -253,7 +367,7 @@ describe('Project task observation', () => {
       code: 'TASK_UNAVAILABLE',
       message: 'This host does not support child tasks.',
     });
-    const view = renderHook(() => useProjectTasks('project-a'), { wrapper: StrictMode });
+    const view = renderHook(() => useProjectTasks('project-a', true, 'chat-root'), { wrapper: StrictMode });
     await waitFor(() => {
       expect(view.result.current.unavailable).toBe('This host does not support child tasks.');
     });
