@@ -241,32 +241,66 @@ export function forwardAtaProjectSessionChange(_projectId: string): void {
   ataInstance?.onProjectSessionChange();
 }
 
+type FamilyDefaults = Pick<
+  Monaco.typescript.LanguageServiceDefaults,
+  'getCompilerOptions' | 'inlayHintsOptions' | 'setCompilerOptions' | 'setInlayHintsOptions'
+>;
+
+const sameOptions = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+
+/**
+ * Apply a family's options only when they differ from what is set (B-16, D-UI-30).
+ *
+ * Every Monaco defaults setter fires `onDidChange`, and each `WorkerManager`
+ * stops its TypeScript worker on that event; the next request starts a new
+ * one. Reactivation on every project reopen used to set identical options,
+ * restarting the worker each time.
+ */
+const applyFamilyOptions = (
+  defaults: FamilyDefaults,
+  compilerOptions: Monaco.typescript.CompilerOptions,
+  hints: Parameters<FamilyDefaults['setInlayHintsOptions']>[0],
+): void => {
+  if (!sameOptions(defaults.getCompilerOptions(), compilerOptions)) {
+    defaults.setCompilerOptions(compilerOptions);
+  }
+  if (!sameOptions(defaults.inlayHintsOptions, hints)) {
+    defaults.setInlayHintsOptions(hints);
+  }
+};
+
 export function setTsCompilerOptions(monaco: typeof Monaco): void {
-  monaco.typescript.typescriptDefaults.setCompilerOptions({
-    experimentalDecorators: true,
-    allowSyntheticDefaultImports: true,
-    allowImportingTsExtensions: true,
-    moduleResolution: moduleResolutionBundler,
-    target: monaco.typescript.ScriptTarget.ESNext,
-    module: monaco.typescript.ModuleKind.ESNext,
-    noLib: false,
-    allowNonTsExtensions: true,
-    noEmit: true,
-    esModuleInterop: true,
-    baseUrl: '.',
-  });
-  monaco.typescript.typescriptDefaults.setInlayHintsOptions(inlayHintsOptions);
+  applyFamilyOptions(
+    monaco.typescript.typescriptDefaults,
+    {
+      experimentalDecorators: true,
+      allowSyntheticDefaultImports: true,
+      allowImportingTsExtensions: true,
+      moduleResolution: moduleResolutionBundler,
+      target: monaco.typescript.ScriptTarget.ESNext,
+      module: monaco.typescript.ModuleKind.ESNext,
+      noLib: false,
+      allowNonTsExtensions: true,
+      noEmit: true,
+      esModuleInterop: true,
+      baseUrl: '.',
+    },
+    inlayHintsOptions,
+  );
 }
 
 export function setJsCompilerOptions(monaco: typeof Monaco): void {
-  monaco.typescript.javascriptDefaults.setCompilerOptions({
-    allowSyntheticDefaultImports: true,
-    moduleResolution: moduleResolutionBundler,
-    target: monaco.typescript.ScriptTarget.ESNext,
-    module: monaco.typescript.ModuleKind.ESNext,
-    allowJs: true,
-    checkJs: true,
-    esModuleInterop: true,
-  });
-  monaco.typescript.javascriptDefaults.setInlayHintsOptions(inlayHintsOptions);
+  applyFamilyOptions(
+    monaco.typescript.javascriptDefaults,
+    {
+      allowSyntheticDefaultImports: true,
+      moduleResolution: moduleResolutionBundler,
+      target: monaco.typescript.ScriptTarget.ESNext,
+      module: monaco.typescript.ModuleKind.ESNext,
+      allowJs: true,
+      checkJs: true,
+      esModuleInterop: true,
+    },
+    inlayHintsOptions,
+  );
 }
