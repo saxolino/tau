@@ -1357,7 +1357,7 @@ describe('Workbench file reconciliation', () => {
     const props = {
       api: launcher.api as unknown as IDockviewPanelProps['api'],
       containerApi: dockview.api,
-      params: { mode: 'launcher' },
+      params: { mode: 'launcher' as const },
     };
     const view = render(<WorkbenchPlaceholderPanel {...props} />);
     expect(screen.queryByRole('button', { name: /Threads/ })).not.toBeInTheDocument();
