@@ -5,7 +5,6 @@ import { jscadKernel } from '@taucad/jscad';
 import { manifoldKernel } from '@taucad/manifold';
 import { picovoxelKernel } from '@taucad/picovoxel';
 import { tscircuitKernel } from '@taucad/tscircuit';
-import { replicadKernel } from '@taucad/replicad';
 import { kernelLibraries } from '#utils/kernel-libraries.js';
 import { getKernelDependencies, kernelsWithLibraries } from '#utils/kernel.utils.js';
 

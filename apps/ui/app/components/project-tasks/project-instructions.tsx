@@ -13,7 +13,7 @@ import {
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
 import { readCanonicalProjectInstructions, projectInstructionsMaxBytes } from '#hooks/use-context-payload.js';
-import { PaneButton } from '#components/ui/pane-button.js';
+import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 
 const instructionsPath = '.tau/AGENTS.md';
 type LoadedInstructions = Readonly<{ bytes?: Uint8Array<ArrayBuffer> }>;
