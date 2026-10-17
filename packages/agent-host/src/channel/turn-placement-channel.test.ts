@@ -65,6 +65,7 @@ const connect = (served: TurnPlacementSession) => {
     (_tools: {
       readonly port: MessagePort;
       readonly checkoutId: string;
+      readonly mode: 'direct' | 'candidate';
       readonly root: string;
       readonly key: typeof key;
     }) => registry,
@@ -89,6 +90,7 @@ describe('the placement session channel', () => {
     expect(toolsFor).toHaveBeenCalledWith({
       port: expect.any(MessagePort) as unknown,
       checkoutId: 'live',
+      mode: 'direct',
       root: '/project',
       key,
     });

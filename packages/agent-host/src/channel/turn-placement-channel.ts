@@ -33,7 +33,7 @@ export type TurnPlacementToolPort = Readonly<{ port: MessagePort }>;
 
 /** The admitted checkout and attempt whose revocable tool port is being opened. @public */
 export type TurnPlacementToolContext = TurnPlacementToolPort &
-  Pick<TurnPlacementGrant, 'checkoutId' | 'root'> &
+  Pick<TurnPlacementGrant, 'checkoutId' | 'mode' | 'root'> &
   Readonly<{ key: TurnAttemptKey }>;
 
 type AdmitCode = Extract<Awaited<ReturnType<TurnPlacementPort['admit']>>, { status: 'refused' }>['code'];
@@ -296,6 +296,7 @@ export const connectTurnPlacementChannel = (options: ConnectTurnPlacementChannel
           tools: options.toolsFor({
             ...answer.placement.tools,
             checkoutId: answer.placement.checkoutId,
+            mode: answer.placement.mode,
             root: answer.placement.root,
             key: input.key,
           }),
