@@ -8,7 +8,7 @@ import { authoritativeGatewayWireFixtures } from '../../../../packages/agent-hos
 
 const taskGatewaySteps = new Map<string, number>();
 const taskGatewayResponse = (name: string, step: number): string[] => {
-  const tool = (toolName: string, input: object): string[] => [
+  const tool = (toolName: string, input: Record<string, unknown>): string[] => [
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `${name}-${step}`, function: { name: toolName, arguments: JSON.stringify(input) } }] }, finish_reason: 'tool_calls' }] })}\n\n`,
     'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4}}\n\n',
     'data: [DONE]\n\n',
@@ -49,8 +49,8 @@ export default defineConfig({
       name: 'agent-host-gateway-fixture',
       configureServer(server) {
         server.middlewares.use('/task-fixture/v1/llm/openai/v1/chat/completions', (request, response) => {
-          const chunks: Uint8Array[] = [];
-          request.on('data', (chunk: Uint8Array) => {
+          const chunks: Array<Uint8Array<ArrayBuffer>> = [];
+          request.on('data', (chunk: Uint8Array<ArrayBuffer>) => {
             chunks.push(chunk);
           });
           request.on('end', () => {
