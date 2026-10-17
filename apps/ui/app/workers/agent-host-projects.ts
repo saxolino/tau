@@ -134,7 +134,7 @@ export const createProjectHosts = <Host extends ProjectHostIncarnation>(
     }
   >();
 
-  const closeRetiring = (entry: NonNullable<ReturnType<typeof retiring.get>>): Promise<void> => {
+  const closeRetiring = async (entry: NonNullable<ReturnType<typeof retiring.get>>): Promise<void> => {
     entry.closing = true;
     entry.failed = false;
     const closed = (async (): Promise<void> => {
@@ -142,11 +142,11 @@ export const createProjectHosts = <Host extends ProjectHostIncarnation>(
       try {
         await entry.host.close();
         retiring.delete(entry.host.hostId);
-      } catch (cause) {
+      } catch (error) {
         entry.closing = false;
         entry.failed = true;
         throw Object.assign(
-          new Error('The project task host still has resources to settle; retry release.', { cause }),
+          new Error('The project task host still has resources to settle; retry release.', { cause: error }),
           {
             code: 'PROJECT_HOST_CLOSE_RETRY',
           },
@@ -210,6 +210,8 @@ export const createProjectHosts = <Host extends ProjectHostIncarnation>(
         }
         /* The replaced incarnation drains, then closes; the page releases it by `hostId` and disposes only its
          * bridges once that release answers (I31). */
+        // async-iife: bootstrap -- the retiring registry owns the drain, outside this project's serial queue.
+        // oxlint-disable-next-line promise/prefer-await-to-then -- awaiting here would block the new incarnation.
         void retire(previous).catch(logCloseFailure);
         return { replaced: previous.hostId };
       }),

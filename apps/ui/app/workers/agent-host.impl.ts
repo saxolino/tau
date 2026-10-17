@@ -591,12 +591,17 @@ const composeProjectHost = async (
   /* RH-S12: the one parameter-actor factory, over this project's root bridge. */
   const parameterActors = new Map<string, ParameterSetActor>();
   const parameterActorFor =
-    (
-      actors: Map<string, ParameterSetActor>,
-      files: ProjectFileSystemBridge,
-      runtime: AppRuntimeClient,
-      authority: string,
-    ) =>
+    ({
+      actors,
+      files,
+      runtime,
+      authority,
+    }: {
+      actors: Map<string, ParameterSetActor>;
+      files: ProjectFileSystemBridge;
+      runtime: AppRuntimeClient;
+      authority: string;
+    }) =>
     async (targetFile: string): Promise<ParameterSetActor> => {
       const existing = actors.get(targetFile);
       if (existing) {
@@ -625,12 +630,12 @@ const composeProjectHost = async (
     };
   const parameters = createRuntimeParameterAgentClient({
     mapRuntimeError: (error) => toRpcError(error),
-    parameterActorFor: parameterActorFor(
-      parameterActors,
-      projectRoot,
-      runtimeClient,
-      `browser:${provide.authority.workspaceId}:${provide.authority.projectId}`,
-    ),
+    parameterActorFor: parameterActorFor({
+      actors: parameterActors,
+      files: projectRoot,
+      runtime: runtimeClient,
+      authority: `browser:${provide.authority.workspaceId}:${provide.authority.projectId}`,
+    }),
   });
   const baseServices = { runtimeClient, runtimeRpc, parameters, geoSpecClient };
   /* The registry over one filesystem: the project's own, or an attempt's checkout its placement granted (W8 G09). */
@@ -684,7 +689,7 @@ const composeProjectHost = async (
   }>;
   const placedServices = new Map<string, Promise<PlacedServices>>();
   const attemptKey = ({ key }: TurnPlacementToolContext): string => `${key.runId}/${String(key.attempt)}`;
-  const placedServicesFor = (
+  const placedServicesFor = async (
     context: TurnPlacementToolContext,
     proxy: ProjectFileSystemBridge,
     provider: FileSystemProvider,
@@ -721,12 +726,12 @@ const composeProjectHost = async (
       const actors = new Map<string, ParameterSetActor>();
       const candidateParameters = createRuntimeParameterAgentClient({
         mapRuntimeError: (error) => toRpcError(error),
-        parameterActorFor: parameterActorFor(
+        parameterActorFor: parameterActorFor({
           actors,
-          proxy,
-          candidateRuntime,
-          `browser:${provide.authority.workspaceId}:${provide.authority.projectId}:${context.checkoutId}`,
-        ),
+          files: proxy,
+          runtime: candidateRuntime,
+          authority: `browser:${provide.authority.workspaceId}:${provide.authority.projectId}:${context.checkoutId}`,
+        }),
       });
       return {
         checkoutId: context.checkoutId,
@@ -759,14 +764,12 @@ const composeProjectHost = async (
       if (resource.checkoutId !== checkoutId) {
         continue;
       }
-      // oxlint-disable-next-line no-await-in-loop -- each close waits for its accepted writes to finish.
-      let closed = true;
-      await resource.close().catch((error: unknown) => {
-        closed = false;
-        failures.push(error);
-      });
-      if (closed) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- each close waits for its accepted writes to finish.
+        await resource.close();
         placedServices.delete(id);
+      } catch (error) {
+        failures.push(error);
       }
     }
     if (failures.length > 0) {
@@ -780,10 +783,8 @@ const composeProjectHost = async (
       try {
         const proxy = await createProjectFileSystemProxy(tools.port);
         const provider = createRelayedFileSystemProvider(proxy);
-        const services =
-          tools.root === `/projects/${provide.authority.projectId}`
-            ? baseServices
-            : (await placedServicesFor(tools, proxy, provider)).services;
+        const placed = tools.mode === 'direct' ? undefined : await placedServicesFor(tools, proxy, provider);
+        const services = placed?.services ?? baseServices;
         return { registry: toolRegistryOver(provider, proxy, services) };
       } catch (error) {
         return { failure: error };
@@ -852,7 +853,7 @@ const composeProjectHost = async (
   };
   function readProjectFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
   function readProjectFile(path: string, encoding: 'utf8'): Promise<string>;
-  function readProjectFile(path: string, encoding?: 'utf8'): Promise<string | Uint8Array<ArrayBuffer>> {
+  async function readProjectFile(path: string, encoding?: 'utf8'): Promise<string | Uint8Array<ArrayBuffer>> {
     return encoding === 'utf8' ? projectRoot.readFile(path, encoding) : projectRoot.readFile(path);
   }
   const projectTasks = await createProjectTaskHost({
@@ -931,7 +932,7 @@ const composeProjectHost = async (
       visibility: worker.visibility,
     }),
     filesystem: {
-      exists: (path) => projectRoot.exists(path),
+      exists: async (path) => projectRoot.exists(path),
       readFile: readProjectFile,
       readFileStream: (path, options) =>
         new ReadableStream<Uint8Array<ArrayBuffer>>({
@@ -942,7 +943,9 @@ const composeProjectHost = async (
               for (;;) {
                 // oxlint-disable-next-line no-await-in-loop -- chunks are emitted in file order.
                 const item = await reader.read();
-                if (item.done) break;
+                if (item.done) {
+                  break;
+                }
                 controller.enqueue(item.value);
               }
               controller.close();
@@ -951,7 +954,7 @@ const composeProjectHost = async (
             }
           },
         }),
-      writeFileChecked: (input) => projectRoot.writeFileChecked(input),
+      writeFileChecked: async (input) => projectRoot.writeFileChecked(input),
     },
     createCandidate: async ({ requestId, name, from, signal }) => {
       signal.throwIfAborted();
@@ -991,7 +994,7 @@ const composeProjectHost = async (
       },
     },
   });
-  opened(() => projectTasks.close());
+  opened(async () => projectTasks.close());
   const channels = new Set<ReturnType<typeof serveAgentChannel>>();
 
   return {
@@ -1090,7 +1093,7 @@ const composeProjectHost = async (
       for (const [id, pending] of placedServices) {
         placedServices.delete(id);
         // oxlint-disable-next-line no-await-in-loop -- close waits for each placed executor to settle before releasing bridges.
-        await pending.then((resource) => resource.close()).catch((error: unknown) => failures.push(error));
+        await pending.then(async (resource) => resource.close()).catch((error: unknown) => failures.push(error));
       }
       await geoSpecClient.close().catch((error: unknown) => {
         failures.push(error);

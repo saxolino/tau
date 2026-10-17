@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { OPFSProvider } from '@taucad/filesystem/backend';
+import type { CheckedFileWrite, CheckedFileWriteResult } from '@taucad/filesystem';
 import { Topic } from '@taucad/events';
 import { createFileSystemBridgePort } from '@taucad/fs-bridge';
 import { serveTurnPlacementChannel } from '@taucad/agent-host/channel-client';
@@ -13,18 +14,16 @@ it('runs nested Tau tasks in a real browser worker over isolated revision candid
   const provider = new OPFSProvider();
   await provider.initialize();
   const projectId = `browser-tasks-${crypto.randomUUID()}`;
-  await (await navigator.storage.getDirectory()).getDirectoryHandle(projectId, { create: true });
+  const storageRoot = await navigator.storage.getDirectory();
+  await storageRoot.getDirectoryHandle(projectId, { create: true });
   await provider.writeFile(`${projectId}/main.scad`, 'cube(99);\n');
   const root = rootedProvider(provider, projectId);
   const encoder = new TextEncoder();
   const rootedAuthority = {
     ...root,
-    writeFileChecked: async (input: {
-      path: string;
-      data: string | Uint8Array<ArrayBuffer>;
-      preconditions: readonly { path: string; expected: string | Uint8Array<ArrayBuffer> | null }[];
-    }) => {
+    writeFileChecked: async (input: CheckedFileWrite): Promise<CheckedFileWriteResult> => {
       for (const precondition of input.preconditions) {
+        // oxlint-disable-next-line no-await-in-loop -- compare the preconditions against the same rooted provider.
         const actual = (await root.exists(precondition.path)) ? await root.readFile(precondition.path) : null;
         const expected =
           precondition.expected === null
@@ -37,12 +36,12 @@ it('runs nested Tau tasks in a real browser worker over isolated revision candid
             ? expected !== null
             : expected === null || new TextDecoder().decode(actual) !== new TextDecoder().decode(expected)
         ) {
-          return { status: 'conflict' as const, conflicts: [{ path: precondition.path, actual }] };
+          return { status: 'conflict', conflicts: [{ path: precondition.path, actual }] };
         }
       }
       await root.writeFile(input.path, input.data);
       return {
-        status: 'applied' as const,
+        status: 'applied',
         content: typeof input.data === 'string' ? encoder.encode(input.data) : input.data,
       };
     },
@@ -67,8 +66,9 @@ it('runs nested Tau tasks in a real browser worker over isolated revision candid
           return;
         }
         const checkoutId = `candidate-${allocated.length + 1}`;
-        const id = data.id;
+        const { id } = data;
         allocated.push({ checkoutId, from: data.from, requestId: data.requestId });
+        // async-iife: bootstrap -- the candidate must exist before this revision request is answered.
         void (async () => {
           await provider.writeFile(`${projectId}/checkouts/${checkoutId}/main.scad`, 'cube(11);\n');
           port2.postMessage({

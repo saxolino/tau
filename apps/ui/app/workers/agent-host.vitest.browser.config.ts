@@ -125,7 +125,7 @@ export default defineConfig({
       'manifold-3d/manifoldCAD',
       '@taucad/image > nanoraster/options',
       '@taucad/brep > occt-import-js',
-      'meshoptimizer/simplifier',
+      '@taucad/middleware > meshoptimizer/simplifier',
       '@taucad/picovoxel > picovoxel',
       '@taucad/picovoxel > picovoxel/latticelibrary',
       '@taucad/picovoxel > picovoxel/multi',
@@ -137,6 +137,7 @@ export default defineConfig({
       'replicad-opencascadejs/single/init',
       '@taucad/rhino > rhino3dm',
       'vitest-mock-extended',
+      'vscode-uri',
     ],
   },
   test: {

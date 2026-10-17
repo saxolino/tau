@@ -1515,7 +1515,8 @@ describe('the revisions reader port (W6.r1 finding 9)', () => {
     await vi.waitFor(() => {
       expect(page.frames).toContainEqual({ type: 'result', id: 51, result: { kind: 'saved' } });
     });
-    const source = (await fixture.root('alpha')).status().headRevisionId;
+    const revisions = await fixture.root('alpha');
+    const source = revisions.status().headRevisionId;
     expect(source).toBeDefined();
     const agent = reader(fixture, 'alpha');
     const taskChannel = new MessageChannel();
@@ -1532,7 +1533,8 @@ describe('the revisions reader port (W6.r1 finding 9)', () => {
       expect(agent.frames).toContainEqual(expect.objectContaining({ type: 'error', id: 52 }));
       expect(taskFrames).toContainEqual(expect.objectContaining({ type: 'error', id: 53 }));
     });
-    expect((await fixture.root('alpha')).status().branches.map((branch) => branch.name)).not.toContain('reader-branch');
+    const afterRefusal = await fixture.root('alpha');
+    expect(afterRefusal.status().branches.map((branch) => branch.name)).not.toContain('reader-branch');
 
     taskChannel.port2.postMessage({
       command: 'createBranch',

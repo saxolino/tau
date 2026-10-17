@@ -1242,36 +1242,54 @@ const runningRows = (runId: string) => [
   { type: 'run.lifecycle', state: 'running' },
 ];
 
-/* RH-A19 (I25): reconciliation never takes a chat another live tab leads; it runs when that tab lets go. */
+/* The project owner still respects the canonical chat lock an older tab holds and reads its log without writing. */
 it("should skip a chat another tab leads and reconcile it when that tab's lock is released", async () => {
   const { fileSystemProvider, providerBasePath } = await seededProject('skip');
-  const leader = `session-${crypto.randomUUID()}`;
-  const other = `session-${crypto.randomUUID()}`;
-  const model = gateModel();
+  const sessionId = `session-${crypto.randomUUID()}`;
+  const chatId = 'chat-skip';
+  await seedChatLog(fileSystemProvider, { providerBasePath, chatId, runId: 'run-skip', rows: runningRows('x') });
+  const held = Promise.withResolvers<void>();
+  const leased = Promise.withResolvers<void>();
+  const lease = navigator.locks.request(chatLockName(providerBasePath, chatId), async () => {
+    leased.resolve();
+    await held.promise;
+  });
+  await leased.promise;
   try {
-    await initializeSeededSession(fileSystemProvider, { providerBasePath, sessionId: leader });
-    await initializeSeededSession(fileSystemProvider, { providerBasePath, sessionId: other });
-    await command(leader, { type: 'start', payload: startPayload('chat-skip', 'run-skip') });
-    await settled(leader, 'chat-skip', 'running');
-
-    /* RH-R1: the attach answers at once and may ask for a claim; while the leader holds the lock the claim writes
-     * nothing, so the log still ends `running` a heartbeat and more later. */
-    await attach(other, 'chat-skip');
+    await initializeSeededSession(fileSystemProvider, { providerBasePath, sessionId });
+    await attach(sessionId, chatId);
     await new Promise((resolve) => {
       globalThis.setTimeout(resolve, 1500);
     });
-    const { snapshot, events } = await attach(other, 'chat-skip');
+    const { snapshot, events } = await attach(sessionId, chatId);
     expect(snapshot).toMatchObject({ state: 'running' });
     expect(events.filter((event) => event.type === 'run.lifecycle' && event.state === 'failed')).toEqual([]);
-    await closeSession(leader);
+    held.resolve();
+    await lease;
 
-    await expect(settled(other, 'chat-skip', 'failed')).resolves.toMatchObject({
+    /* Reconciliation must wake itself when the legacy lock leaves; another attach cannot be its trigger. */
+    await vi.waitFor(async () => {
+      const log = await fileSystemProvider.readFile(`${providerBasePath}/.tau/chats/${chatId}/events.jsonl`, 'utf8');
+      const events = log
+        .split('\n')
+        .filter(Boolean)
+        .map((row) => JSON.parse(row) as AgentLogEvent);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'run.lifecycle' && event.state === 'failed' && event.detail?.code === 'RUN_ABANDONED',
+        ),
+      ).toBe(true);
+    });
+    const { snapshot: recovered } = await attach(sessionId, chatId);
+    expect(recovered).toMatchObject({
+      state: 'failed',
       failure: { code: 'RUN_ABANDONED' },
     });
   } finally {
-    model.restore();
-    await closeSession(other);
-    await closeSession(leader);
+    held.resolve();
+    await lease;
+    await closeSession(sessionId);
   }
 });
 
@@ -1317,22 +1335,16 @@ it('should finish a live run after its project host is released, then close', as
 /* RH-A19 with W8 (TS-R16): the placement's `leaseHeld` fact reaches `reconcile{wait:true}` (RH-S11). */
 it.todo("should queue for a chat's lock on a leaseHeld fact");
 
-/* RH-A19 (RH-R16): a hidden page never queues for a chat's lock; it queues again once visible. */
-it('should drop a queued reconcile request when the page is hidden and queue it again when visible', async () => {
+/* A hidden follower cannot take project ownership even after the current owner releases its project lock. */
+it('should take project ownership only after a hidden follower becomes visible', async () => {
   const { fileSystemProvider, providerBasePath } = await seededProject('hidden');
-  const chatId = 'chat-hidden';
-  await seedChatLog(fileSystemProvider, { providerBasePath, chatId, runId: 'run-hidden', rows: runningRows('x') });
+  const leaderSession = `session-${crypto.randomUUID()}`;
+  await initializeSeededSession(fileSystemProvider, { providerBasePath, sessionId: leaderSession });
   const { createFileSystemBridgePort } = await import('@taucad/fs-bridge');
   const workspace = rootedProvider(fileSystemProvider, providerBasePath);
-  let visible = true;
+  let visible = false;
   const listeners = new Set<(value: boolean) => void>();
-  const held = Promise.withResolvers<void>();
-  const leased = Promise.withResolvers<void>();
-  const lease = navigator.locks.request(chatLockName(providerBasePath, chatId), async () => {
-    leased.resolve();
-    await held.promise;
-  });
-  await leased.promise;
+  const projectLock = `agent-host-project-log:${encodeURIComponent(providerBasePath)}`;
   const host = await openBrowserProjectHost(
     {
       projectId: providerBasePath,
@@ -1376,37 +1388,32 @@ it('should drop a queued reconcile request when the page is hidden and queue it 
     }
   };
   try {
-    /* The silent holder is past its heartbeat bound, so the chat queues for its lock. */
-    void client.execute({ type: 'attach', commandId: 'req_hidden', payload: { chatId } } as Parameters<
-      AgentChannelClient['execute']
-    >[0]);
-    await vi.waitFor(
-      async () => {
-        const { pending } = await chatLocks(providerBasePath);
-        expect(pending).toContain(chatLockName(providerBasePath, chatId));
-      },
-      { timeout: 10_000 },
-    );
-
-    setVisible(false);
+    await closeSession(leaderSession);
     await vi.waitFor(async () => {
-      const { pending } = await chatLocks(providerBasePath);
-      expect(pending).toEqual([]);
+      const locks = await navigator.locks.query();
+      expect(locks.held?.map((lock) => lock.name)).not.toContain(projectLock);
+      expect(locks.pending?.map((lock) => lock.name)).not.toContain(projectLock);
     });
 
     setVisible(true);
     await vi.waitFor(
       async () => {
-        const { pending } = await chatLocks(providerBasePath);
-        expect(pending).toContain(chatLockName(providerBasePath, chatId));
+        const locks = await navigator.locks.query();
+        expect(locks.held?.map((lock) => lock.name)).toContain(projectLock);
       },
       { timeout: 10_000 },
     );
+    await expect(
+      client.execute({
+        type: 'attach',
+        commandId: 'req_hidden',
+        payload: { chatId: 'chat-hidden' },
+      } as Parameters<AgentChannelClient['execute']>[0]),
+    ).resolves.toMatchObject({ status: 'applied' });
   } finally {
-    held.resolve();
-    await lease;
     client.close();
     await host.close();
+    await closeSession(leaderSession);
   }
 });
 

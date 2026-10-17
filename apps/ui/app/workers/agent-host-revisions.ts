@@ -89,11 +89,6 @@ export const createPortRevisionsClient = (port: MessagePort): PortRevisionsClien
   return {
     createCandidate: async (name, sourceRevisionId, requestId) => {
       const result = await ask({ command: 'createBranch', name, from: sourceRevisionId, requestId }, 'branch');
-      if (result.checkoutId === undefined || result.checkoutRoot === undefined) {
-        throw Object.assign(new Error('The revision owner did not allocate a private checkout.'), {
-          code: 'TASK_SOURCE_UNAVAILABLE',
-        });
-      }
       return { branch: result.branch, checkoutId: result.checkoutId, checkoutRoot: result.checkoutRoot };
     },
     fetchGeoSpecCandidates: async () => {
