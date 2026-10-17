@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { TabsList, TabsTrigger } from '@taucad/ui/components/tabs';
 import { cn } from '@taucad/ui/utils/cn';
+import { useFeature } from '#flags/use-feature.js';
 import type { MobilePanelId } from '#constants/editor.constants.js';
 
 export const chatTabs = [
@@ -64,6 +65,7 @@ export const chatTabs = [
 ] as const satisfies Array<{ id: MobilePanelId; label: string; icon: React.ReactNode }>;
 
 export function ChatInterfaceNav({ className }: { readonly className?: string }): React.ReactNode {
+  const isProjectThreadsEnabled = useFeature('projectThreads');
   return (
     <TabsList
       enableAnimation={false}
@@ -73,25 +75,27 @@ export function ChatInterfaceNav({ className }: { readonly className?: string })
         className,
       )}
     >
-      {chatTabs.map((tab) => (
-        <TabsTrigger
-          key={tab.id}
-          enableAnimation={false}
-          value={tab.id}
-          className={cn(
-            'flex min-w-12 flex-1 flex-col items-center justify-center gap-0.5 pb-0.5 text-[10px]',
-            'rounded-lg border border-transparent transition-[color,background-color,border-color] duration-200 ease-linear',
-            'data-[state=active]:border-border',
-            'data-[state=active]:bg-accent',
-            'data-[state=active]:text-accent-foreground',
-            'data-[state=active]:[&_svg]:text-accent-foreground',
-            tab.id === 'viewer' && 'border-sidebar-primary/20 data-[state=inactive]:bg-neutral/20',
-          )}
-        >
-          {tab.icon}
-          {tab.label}
-        </TabsTrigger>
-      ))}
+      {chatTabs
+        .filter((tab) => tab.id !== 'agents' || isProjectThreadsEnabled)
+        .map((tab) => (
+          <TabsTrigger
+            key={tab.id}
+            enableAnimation={false}
+            value={tab.id}
+            className={cn(
+              'flex min-w-12 flex-1 flex-col items-center justify-center gap-0.5 pb-0.5 text-[10px]',
+              'rounded-lg border border-transparent transition-[color,background-color,border-color] duration-200 ease-linear',
+              'data-[state=active]:border-border',
+              'data-[state=active]:bg-accent',
+              'data-[state=active]:text-accent-foreground',
+              'data-[state=active]:[&_svg]:text-accent-foreground',
+              tab.id === 'viewer' && 'border-sidebar-primary/20 data-[state=inactive]:bg-neutral/20',
+            )}
+          >
+            {tab.icon}
+            {tab.label}
+          </TabsTrigger>
+        ))}
     </TabsList>
   );
 }

@@ -16,6 +16,8 @@ import { publishChatTurnAdmission } from '#chat-clients/_internal/chat-host-bind
 import type { ChatRequest, ChatTurn, ChatTurnGesture } from '#machines/chat-session.machine.js';
 import { generatePrefixedId } from '@taucad/utils/id';
 import { idPrefix } from '@taucad/types/constants';
+import { isFeatureEnabled } from '#flags/feature-flags.js';
+import { projectThreadGrant } from '#chat-clients/_internal/project-thread-grant.js';
 import { hostAdmission } from '#chat-clients/_internal/turn-body.js';
 import { commandOf, turnIntentOf, turnReferencesOf, turnTriggerOf } from '#chat-clients/turn-intent.js';
 import { externalAdmissionConfig, wireAdmissionConfig } from '#services/agent-host-client.js';
@@ -180,10 +182,12 @@ export function ChatTurnHost(): ReactNode {
           {
             chatId: activeChatId,
             commandId: runId,
-            config:
+            config: projectThreadGrant(
               'config' in browserHost
                 ? wireAdmissionConfig(browserHost.config)
                 : externalAdmissionConfig(browserHost.agent, browserHost.context),
+              isFeatureEnabled('projectThreads'),
+            ),
           },
         );
         const request: ChatRequest =

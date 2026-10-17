@@ -535,11 +535,15 @@ export const isWorkbenchSurfaceAllowed = (id: WorkbenchPanelId, profile: Workben
 
 const visibleWorkbenchSurfaceGroups = (
   isTauDebugEnabled: boolean,
+  isProjectThreadsEnabled: boolean,
   profile: WorkbenchProfile = 'editor',
 ): readonly WorkbenchSurfaceGroup[] =>
   workbenchSurfaceGroups.flatMap((group) => {
     const surfaces = group.surfaces.filter(
-      (surface) => isWorkbenchSurfaceAllowed(surface.id, profile) && (!surface.debugOnly || isTauDebugEnabled),
+      (surface) =>
+        isWorkbenchSurfaceAllowed(surface.id, profile) &&
+        (surface.id !== 'agents' || isProjectThreadsEnabled) &&
+        (!surface.debugOnly || isTauDebugEnabled),
     );
     return surfaces.length === 0 ? [] : [{ ...group, surfaces }];
   });
@@ -649,7 +653,8 @@ function WorkbenchSurfaceSelector({
 }): React.JSX.Element {
   const isTauDebugEnabled = useFeature('tauDebug');
   const profile = useContext(WorkbenchProfileContext);
-  const groups = visibleWorkbenchSurfaceGroups(isTauDebugEnabled, profile);
+  const isProjectThreadsEnabled = useFeature('projectThreads');
+  const groups = visibleWorkbenchSurfaceGroups(isTauDebugEnabled, isProjectThreadsEnabled, profile);
 
   return (
     <div className='size-full scroll-shadows-y overflow-y-auto px-4 [--scroll-fade-end:transparent] [--scroll-fade-size:28px]'>
@@ -783,7 +788,8 @@ export function WorkbenchPlaceholderPanel(
 export function WorkbenchLeftActions(properties: IDockviewHeaderActionsProps): React.JSX.Element {
   const isTauDebugEnabled = useFeature('tauDebug');
   const profile = useContext(WorkbenchProfileContext);
-  const groups = visibleWorkbenchSurfaceGroups(isTauDebugEnabled, profile);
+  const isProjectThreadsEnabled = useFeature('projectThreads');
+  const groups = visibleWorkbenchSurfaceGroups(isTauDebugEnabled, isProjectThreadsEnabled, profile);
 
   return (
     <div className='flex h-full items-center gap-1'>

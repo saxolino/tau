@@ -27,7 +27,7 @@ import { TooltipProvider } from '@taucad/ui/components/tooltip';
 
 const { featureState, mobileState, mockOpenPanel, mockProjectSend, mockToastError, mockPrintBody, mockExportBody } =
   vi.hoisted(() => ({
-    featureState: { value: false },
+    featureState: { value: false, projectThreads: true },
     mobileState: { value: false },
     mockOpenPanel: vi.fn(),
     mockProjectSend: vi.fn(),
@@ -221,7 +221,7 @@ vi.mock('#hooks/use-kernel-diagnostics.js', () => ({
 }));
 
 vi.mock('#flags/use-feature.js', () => ({
-  useFeature: () => featureState.value,
+  useFeature: (flag: string) => (flag === 'projectThreads' ? featureState.projectThreads : featureState.value),
 }));
 
 vi.mock('#hooks/use-monaco-configuration.js', () => ({ useConfiguredMonaco: () => undefined }));
@@ -1346,6 +1346,25 @@ describe('normalizeFilePaneState', () => {
 describe('Workbench file reconciliation', () => {
   beforeEach(() => {
     featureState.value = false;
+    featureState.projectThreads = true;
+  });
+
+  it('should hide Threads from new-tab choices when disabled and restore them when enabled', () => {
+    featureState.projectThreads = false;
+    const launcher = panel('workbench-tab-test', { mode: 'launcher' });
+    const dockview = createTestDockview([launcher]);
+    Object.assign(launcher.api, { id: launcher.id, group: dockview.group });
+    const props = {
+      api: launcher.api as unknown as IDockviewPanelProps['api'],
+      containerApi: dockview.api,
+      params: { mode: 'launcher' },
+    };
+    const view = render(<WorkbenchPlaceholderPanel {...props} />);
+    expect(screen.queryByRole('button', { name: /Threads/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Revisions/ })).toBeVisible();
+    featureState.projectThreads = true;
+    view.rerender(<WorkbenchPlaceholderPanel {...props} />);
+    expect(screen.getByRole('button', { name: /Threads/ })).toBeVisible();
   });
 
   it('creates a real New tab panel in the invoking group', () => {

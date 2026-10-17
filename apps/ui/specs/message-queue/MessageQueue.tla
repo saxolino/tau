@@ -14,6 +14,8 @@
 \* action error cannot offer a retry. Admission bridge hashing fences Prepare inputs.
 \* The executable queue event alphabet comes from its schemas; removing an unused
 \* duplicate TypeScript event union does not change these transitions or guards.
+\* Project threads opt-out only narrows task_spawn in the captured Prepare
+\* command; queued/replayed commands keep that grant and the same identity.
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS Messages, Tabs, Durable, QuietSubmit, StableIdentity,
           ObserveBarrier, TargetedCancel, TerminalBeforeSend,

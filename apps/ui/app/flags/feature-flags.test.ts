@@ -35,6 +35,17 @@ describe('isFeatureEnabled', () => {
     expect(isFeatureEnabled('automaticReload', storage)).toBe(false);
   });
 
+  it('should persist the Project threads opt-out and allow enabling it again', () => {
+    const storage = createMockStorage();
+    expect(isFeatureEnabled('projectThreads', storage)).toBe(true);
+    setFlagOverrides({ projectThreads: false }, storage);
+    expect(isFeatureEnabled('projectThreads', storage)).toBe(false);
+    resetFlagCache();
+    expect(getAllFlags(storage).projectThreads).toBe(false);
+    setFlagOverrides({ projectThreads: true }, storage);
+    expect(isFeatureEnabled('projectThreads', storage)).toBe(true);
+  });
+
   it('should disable WebGPU by default and persist an opt-in', () => {
     const storage = createMockStorage();
     expect(isFeatureEnabled('webGpu', storage)).toBe(false);

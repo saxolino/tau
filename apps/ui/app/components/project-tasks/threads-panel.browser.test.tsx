@@ -4,6 +4,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import type { ProjectTask, ProjectTaskSnapshot } from '@taucad/agent-host/wire';
 import type { AgentProjection } from '#hooks/use-agent-projections.js';
+import { ExperimentalSettings } from '#components/settings/experimental-settings.js';
+import { ChatInterfaceNav } from '#routes/w.$workspace.$project/chat-interface-nav.js';
+import { Tabs } from '@taucad/ui/components/tabs';
+import { featureFlagStorageKey } from '#flags/flag.constants.js';
 import { ThreadsPanelBody } from '#components/project-tasks/threads-panel.js';
 
 const panelView = vi.hoisted(() => ({
@@ -182,5 +186,34 @@ it('keeps root-scoped Threads groups reachable at desktop and narrow widths in l
   } finally {
     document.documentElement.classList.remove('dark');
     await page.viewport(800, 720);
+  }
+});
+
+it('should persist the settings toggle and immediately update Threads navigation', async () => {
+  await page.viewport(800, 1000);
+  render(
+    <main aria-label='Experimental settings and navigation' className='bg-background p-4 text-foreground'>
+      <ExperimentalSettings />
+      <Tabs defaultValue='chat'>
+        <ChatInterfaceNav />
+      </Tabs>
+    </main>,
+  );
+  const toggle = screen.getByRole('switch', { name: 'Project threads' });
+  expect(toggle).toBeChecked();
+  expect(screen.getByRole('tab', { name: 'Threads' })).toBeVisible();
+  await userEvent.click(toggle);
+  expect(toggle).not.toBeChecked();
+  expect(JSON.parse(localStorage.getItem(featureFlagStorageKey) ?? '{}').projectThreads).toBe(false);
+  expect(screen.queryByRole('tab', { name: 'Threads' })).toBeNull();
+  await page.screenshot({ element: screen.getByRole('main', { name: 'Experimental settings and navigation' }) });
+  await userEvent.click(toggle);
+  expect(toggle).toBeChecked();
+  expect(screen.getByRole('tab', { name: 'Threads' })).toBeVisible();
+  document.documentElement.classList.add('dark');
+  try {
+    await page.screenshot({ element: screen.getByRole('main', { name: 'Experimental settings and navigation' }) });
+  } finally {
+    document.documentElement.classList.remove('dark');
   }
 });
