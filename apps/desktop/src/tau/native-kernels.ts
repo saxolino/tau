@@ -32,21 +32,6 @@ export type DesktopNativeKernels = {
   readonly unavailable?: PluginInstance;
 };
 
-/*
- * Desktop host policy for every native request (D-DT-02). The kernels default to
- * no deadline and no artifact bound, so one runaway script could hold all memory
- * for as long as it ran; a request past the deadline recycles its worker, which
- * returns the Python or CoreCLR heap to the system. Ten minutes matches the
- * geometry slot's suite deadline; no artifact the viewer or an export reads is
- * near a gibibyte, and `readFile` cannot read past two.
- */
-const nativeRequestTimeoutMilliseconds = 10 * 60_000;
-const nativeMaxArtifactBytes = 1024 * 1024 * 1024;
-const nativeBounds = {
-  requestTimeout: nativeRequestTimeoutMilliseconds,
-  maxArtifactBytes: nativeMaxArtifactBytes,
-} as const;
-
 const isFrame = (value: unknown): value is NativeKernelsFrame =>
   typeof value === 'object' &&
   value !== null &&
@@ -136,9 +121,9 @@ export const desktopNativeKernels = (frame: NativeKernelsFrame): DesktopNativeKe
   const missing: NativeKernelSlot[] = [];
   for (const slot of frame.kernels) {
     if (slot.closure !== undefined && slot.package === '@taucad/build123d') {
-      kernels.build123d = { ...build123dOptionsFromClosure(slot.closure), ...nativeBounds };
+      kernels.build123d = build123dOptionsFromClosure(slot.closure);
     } else if (slot.closure !== undefined && slot.package === '@taucad/picogk') {
-      kernels.picogk = { ...picogkOptionsFromClosure(slot.closure), ...nativeBounds };
+      kernels.picogk = picogkOptionsFromClosure(slot.closure);
     } else if (slot.extensions.length > 0) {
       missing.push(slot);
     }
