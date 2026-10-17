@@ -6,16 +6,20 @@ import { createProjectOwnedBrowserChatStore } from '#browser/project-chat-store.
 import { memoryFileSystem } from '#browser/leadership.fixture.js';
 import type { AgentChannelSource } from '#launchers/agent-channel.js';
 import { chatStoreBinding } from '#launchers/chat-store.js';
+import type { LeadershipHost } from '#launchers/chat-store.js';
+import { chatLeadershipNames } from '#launchers/leadership/names.js';
 import type { ProjectTaskOwner, ProjectTaskOwnerInput } from '#launchers/project-task-platform.js';
+import type { EventLogAppender } from '#log/event-log-appender.js';
 
 const encoder = new TextEncoder();
 const journalPath = '.tau/chats/.project-tasks/records.jsonl';
 const owners: ProjectTaskOwner[] = [];
 const channels: BroadcastChannel[] = [];
 
-const until = async (condition: () => boolean, timeout = 6000): Promise<void> => {
+const until = async (condition: () => boolean | Promise<boolean>, timeout = 6000): Promise<void> => {
   const deadline = performance.now() + timeout;
-  while (!condition()) {
+  // oxlint-disable-next-line no-await-in-loop -- bounded polling observes an asynchronous channel or retry.
+  while (!(await condition())) {
     if (performance.now() >= deadline) {
       throw new Error('Project task condition did not become true.');
     }
@@ -72,6 +76,140 @@ const createOwner = (
 };
 
 describe('browserProjectTasks', () => {
+  it('should reconcile behind a released legacy chat lock in the same project owner', async () => {
+    const fileSystem = memoryFileSystem();
+    const chatId = 'legacy-release';
+    const lockName = chatLeadershipNames('project-1', chatId).lock;
+    const legacyHeld = Promise.withResolvers<void>();
+    const releaseLegacy = Promise.withResolvers<void>();
+    const legacy = navigator.locks.request(lockName, async () => {
+      legacyHeld.resolve();
+      await releaseLegacy.promise;
+    });
+    await legacyHeld.promise;
+    const ownership = new AbortController();
+    const chats = createProjectOwnedBrowserChatStore(
+      'project-1',
+      { projectId: 'project-1', tabId: 'project-owner', build: 'build-1', log: { kind: 'provider', fileSystem } },
+      () => !ownership.signal.aborted,
+      ownership.signal,
+    );
+    const binding = chatStoreBinding(chats);
+    let writer: EventLogAppender | undefined;
+    const host = mockDeep<LeadershipHost>();
+    host.claim.mockImplementation(async () => {
+      try {
+        writer ??= await binding.openWriter(chatId);
+        return undefined;
+      } catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error) {
+          return String(error.code);
+        }
+        throw error;
+      }
+    });
+    const leadership = binding.leadership(host);
+    try {
+      leadership.reconcile(chatId, { wait: true });
+      await until(() => host.claim.mock.calls.length === 1);
+      expect(writer).toBeUndefined();
+      await until(async () => {
+        const locks = await navigator.locks.query();
+        return locks.pending?.some((lock) => lock.name === lockName) === true;
+      });
+      releaseLegacy.resolve();
+      await legacy;
+      await until(() => writer !== undefined);
+      expect(host.claim).toHaveBeenCalledTimes(2);
+      expect(ownership.signal.aborted).toBe(false);
+    } finally {
+      releaseLegacy.resolve();
+      ownership.abort();
+      await leadership.close();
+      await writer?.close();
+      await legacy;
+    }
+  });
+
+  it('should defer legacy chat reconciliation while hidden and resume when shown', async () => {
+    const fileSystem = memoryFileSystem();
+    const chatId = 'legacy-hidden';
+    const lockName = chatLeadershipNames('project-1', chatId).lock;
+    const legacyHeld = Promise.withResolvers<void>();
+    const releaseLegacy = Promise.withResolvers<void>();
+    const legacy = navigator.locks.request(lockName, async () => {
+      legacyHeld.resolve();
+      await releaseLegacy.promise;
+    });
+    await legacyHeld.promise;
+    let shown = false;
+    const listeners = new Set<(shown: boolean) => void>();
+    const visibility = {
+      visible: () => shown,
+      subscribe: (listener: (visible: boolean) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const ownership = new AbortController();
+    const chats = createProjectOwnedBrowserChatStore(
+      'project-1',
+      {
+        projectId: 'project-1',
+        tabId: 'project-owner-hidden',
+        build: 'build-1',
+        log: { kind: 'provider', fileSystem },
+        visibility,
+      },
+      () => !ownership.signal.aborted,
+      ownership.signal,
+    );
+    const binding = chatStoreBinding(chats);
+    let writer: EventLogAppender | undefined;
+    const host = mockDeep<LeadershipHost>();
+    host.claim.mockImplementation(async () => {
+      try {
+        writer ??= await binding.openWriter(chatId);
+        return undefined;
+      } catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error) {
+          return String(error.code);
+        }
+        throw error;
+      }
+    });
+    const leadership = binding.leadership(host);
+    const show = (value: boolean): void => {
+      shown = value;
+      for (const listener of listeners) {
+        listener(value);
+      }
+    };
+    try {
+      leadership.reconcile(chatId, { wait: true });
+      expect(host.claim).not.toHaveBeenCalled();
+      show(true);
+      await until(() => host.claim.mock.calls.length === 1);
+      show(false);
+      await until(async () => {
+        const locks = await navigator.locks.query();
+        return !locks.pending?.some((lock) => lock.name === lockName);
+      });
+      releaseLegacy.resolve();
+      await legacy;
+      expect(writer).toBeUndefined();
+      show(true);
+      await until(() => writer !== undefined);
+      expect(host.claim).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseLegacy.resolve();
+      ownership.abort();
+      await leadership.close();
+      await writer?.close();
+      await legacy;
+    }
+  });
+
   it('should preserve a native writer marker while taking a project chat lock', async () => {
     const fileSystem = memoryFileSystem();
     const marker = '.tau/chats/chat-1/events.jsonl.lock';

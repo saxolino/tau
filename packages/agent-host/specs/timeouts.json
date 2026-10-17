@@ -929,7 +929,7 @@
       "id": "PT13",
       "bound": "Follower waits at most 10 s to discover a project owner before a request is forwarded; an established owner proves long-operation liveness by heartbeat",
       "site": "packages/agent-host/src/browser/project-tasks.ts",
-      "token": "setTimeout(() => {",
+      "token": "const timer = setTimeout(done, remaining)",
       "class": "Liveness",
       "owner": "acp-projects web platform"
     },
@@ -945,7 +945,7 @@
       "id": "PT15",
       "bound": "Project owner publishes a term heartbeat each second while holding its Web Lock",
       "site": "packages/agent-host/src/browser/project-tasks.ts",
-      "token": "heartbeat = setInterval(() => { post({ kind: 'heartbeat', state: 'leading' }); }, heartbeatInterval)",
+      "token": "heartbeat = setInterval(() => {",
       "class": "Liveness",
       "owner": "acp-projects web platform"
     },
@@ -953,7 +953,15 @@
       "id": "PT16",
       "bound": "Visible follower retries project lock acquisition after the old owner releases it",
       "site": "packages/agent-host/src/browser/project-tasks.ts",
-      "token": "retry = setInterval(() => {",
+      "token": "retry = setInterval(retryClaim, heartbeatTimeout)",
+      "class": "Backoff",
+      "owner": "acp-projects web platform"
+    },
+    {
+      "id": "PT17",
+      "bound": "A released legacy chat lock retries reconciliation after 250 ms when a native marker still blocks the writer",
+      "site": "packages/agent-host/src/browser/project-chat-store.ts",
+      "token": "const timer = setTimeout(done, 250)",
       "class": "Backoff",
       "owner": "acp-projects web platform"
     },

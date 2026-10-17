@@ -2,7 +2,7 @@
 import { createOpfsEventLog, createProviderAttachmentReader, createProviderEventLog } from '#browser.js';
 import type { BrowserChatStoreOptions } from '#browser.js';
 import { createChatStore, requireChatPathSegment } from '#launchers/chat-store.js';
-import type { ChatStore } from '#launchers/chat-store.js';
+import type { ChatStore, LeadershipHost, LeadershipPort } from '#launchers/chat-store.js';
 import { chatLeadershipNames } from '#launchers/leadership/names.js';
 import { createNodeLeadership } from '#launchers/node/node-leadership.js';
 import type { EventLogAppender } from '#log/event-log-appender.js';
@@ -70,6 +70,7 @@ export const createProjectOwnedBrowserChatStore = (
   projectId: string,
   options: BrowserChatStoreOptions,
   active: () => boolean,
+  ownership?: AbortSignal,
 ): ChatStore => {
   const requireActive = (): void => {
     if (!active()) {
@@ -139,6 +140,100 @@ export const createProjectOwnedBrowserChatStore = (
           }>,
         ) => options.observeLog!({ ...input, path: logPath(chatId) });
 
+  /** A reconcile waits behind a legacy chat writer without occupying a second project or execution term. */
+  const leadership = (host: LeadershipHost): LeadershipPort => {
+    const local = createNodeLeadership(host);
+    const wanted = new Set<string>();
+    const queued = new Map<string, AbortController>();
+    let closed = false;
+    const visible = (): boolean => options.visibility?.visible() !== false;
+    const cancelQueues = (): void => {
+      for (const controller of queued.values()) {
+        controller.abort();
+      }
+    };
+    const drive = (chatId: string): void => {
+      if (closed || !active() || !visible() || !wanted.has(chatId) || queued.has(chatId)) {
+        return;
+      }
+      const controller = new AbortController();
+      queued.set(chatId, controller);
+      // async-iife: bootstrap -- this is the existing launcher's pending reconcile, not a new chat execution owner.
+      void (async (): Promise<void> => {
+        try {
+          while (!controller.signal.aborted && active() && visible()) {
+            // oxlint-disable-next-line no-await-in-loop -- each refusal waits for the legacy writer's lock release.
+            const refusal = await host.claim(chatId);
+            if (refusal !== 'WRITER_LOCKED') {
+              wanted.delete(chatId);
+              return;
+            }
+            // The queued request is only a release notification; openWriter takes the actual exclusive lock.
+            // oxlint-disable-next-line no-await-in-loop -- one canonical chat lock wait per pending reconciliation.
+            await navigator.locks.request(
+              chatLeadershipNames(projectId, chatId).lock,
+              { signal: controller.signal },
+              () => undefined,
+            );
+            // A native writer marker may still block after the Web Lock frees. Avoid a lock-free busy loop.
+            // oxlint-disable-next-line no-await-in-loop -- a bounded backoff follows each unsuccessful claim.
+            await new Promise<void>((resolve) => {
+              const done = (): void => {
+                clearTimeout(timer);
+                controller.signal.removeEventListener('abort', done);
+                resolve();
+              };
+              const timer = setTimeout(done, 250);
+              controller.signal.addEventListener('abort', done, { once: true });
+              if (controller.signal.aborted) {
+                done();
+              }
+            });
+          }
+        } catch (error) {
+          if (!controller.signal.aborted && active()) {
+            console.error('[agent-host] a queued legacy chat reconciliation failed', chatId, error);
+          }
+        } finally {
+          queued.delete(chatId);
+          // A hide/show pair may have happened before the aborted wait unwound.
+          if (controller.signal.aborted) {
+            drive(chatId);
+          }
+        }
+      })();
+    };
+    const stopVisibility = options.visibility?.subscribe((shown) => {
+      if (shown) {
+        for (const chatId of wanted) {
+          drive(chatId);
+        }
+      } else {
+        cancelQueues();
+      }
+    });
+    ownership?.addEventListener('abort', cancelQueues, { once: true });
+    return {
+      ...local,
+      reconcile: (chatId, request) => {
+        if (!request.wait) {
+          local.reconcile(chatId, request);
+          return;
+        }
+        wanted.add(chatId);
+        drive(chatId);
+      },
+      close: async () => {
+        closed = true;
+        wanted.clear();
+        cancelQueues();
+        stopVisibility?.();
+        ownership?.removeEventListener('abort', cancelQueues);
+        await local.close();
+      },
+    };
+  };
+
   if (options.log.kind === 'opfs') {
     const { directory } = options.log;
     const bytesOf = async (path: string): Promise<Uint8Array<ArrayBuffer> | undefined> => {
@@ -156,7 +251,7 @@ export const createProjectOwnedBrowserChatStore = (
       attachments: { read: async (chatId, path) => bytesOf(chatAttachmentPath(chatId, path)) },
       readBytes: async (chatId) => (await bytesOf(logPath(chatId))) ?? new Uint8Array(),
       openWriter,
-      leadership: createNodeLeadership,
+      leadership,
     });
   }
   const { fileSystem } = options.log;
@@ -170,6 +265,6 @@ export const createProjectOwnedBrowserChatStore = (
       return (await fileSystem.exists(path)) ? fileSystem.readFile(path) : new Uint8Array();
     },
     openWriter,
-    leadership: createNodeLeadership,
+    leadership,
   });
 };

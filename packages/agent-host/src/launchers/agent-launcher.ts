@@ -705,6 +705,7 @@ export const createAgentLauncher = (options: AgentLauncherOptions): AgentLaunche
       if ('refused' in claim && claim.refused.status === 'refused' && claim.refused.code !== 'HOST_CLOSED') {
         console.error('[agent-launcher] a claim was refused', chatId, claim.refused.code, claim.refused.message);
       }
+      return 'refused' in claim && claim.refused.status === 'refused' ? claim.refused.code : undefined;
     },
     relinquish: async (chatId) => {
       await host.relinquish(chatId);

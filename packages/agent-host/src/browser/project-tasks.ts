@@ -599,6 +599,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
                 projectId,
                 { ...options, projectId },
                 () => !ownership.signal.aborted,
+                ownership.signal,
               );
               const requireOwnership = (): void => {
                 if (ownership.signal.aborted) {
