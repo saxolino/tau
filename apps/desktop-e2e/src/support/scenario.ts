@@ -245,7 +245,14 @@ export const cancelRun = async (page: Page, settled?: () => boolean): Promise<vo
   const stop = stopButtonOf(page);
   await expect.poll(async () => settled?.() === true || (await stop.count()) > 0, { timeout: 15_000 }).toBe(true);
   if (settled?.() !== true && (await stop.count()) > 0) {
-    await stop.click();
+    /* The run can settle between the count and the click, taking the button
+     * with it; that is the idle state this cancel waits for below, so only a
+     * button that is still there makes a failed click a failure. */
+    await stop.click({ timeout: 10_000 }).catch(async (error: unknown) => {
+      if ((await stop.count()) > 0) {
+        throw error;
+      }
+    });
   }
   await expectCount(stop, 0, 120_000);
 };
@@ -283,13 +290,31 @@ export const expectNativeKernelEngine = async (logPath: string): Promise<string>
   return engine!.version!;
 };
 
+/**
+ * Whether a person could use the Files pane: present, and the topmost element at its centre. A pane in a squeezed
+ * editor group is still "visible" to Playwright while the viewer covers it, and only *Open files* gives the workbench
+ * room (`openPanel` opens it with `compactAuxiliary: 'workbench'`).
+ */
+const isFilesPaneUsable = async (page: Page): Promise<boolean> => {
+  try {
+    return await filesPaneOf(page).evaluate(
+      (pane) => {
+        const box = pane.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return box.width > 0 && box.height > 0 && hit !== null && pane.contains(hit);
+      },
+      undefined,
+      { timeout: 1000 },
+    );
+  } catch {
+    /* No pane yet. */
+    return false;
+  }
+};
+
 /** Open the Files pane through the command palette when it is not already up. */
 export const ensureFilesPane = async (page: Page): Promise<void> => {
-  if (
-    !(await filesPaneOf(page)
-      .isVisible()
-      .catch(() => false))
-  ) {
+  if (!(await isFilesPaneUsable(page))) {
     await page
       .getByRole('button', { name: /Search/u })
       .first()
@@ -298,6 +323,43 @@ export const ensureFilesPane = async (page: Page): Promise<void> => {
     await page.getByText('Open files', { exact: true }).first().click();
   }
   await expectVisible(filesPaneOf(page), 30_000);
+  await expect
+    .poll(async () => isFilesPaneUsable(page), {
+      message: 'the Files pane never took room in the workbench',
+      timeout: 30_000,
+    })
+    .toBe(true);
+};
+
+/**
+ * Open the viewer bar's issues list and return it. The list is closed by default (`ViewerIssuesContent`); its segment
+ * reads `Issues: …`, prefixed `Build failed. ` when the build failed, and appears once there is an issue to show.
+ *
+ * @param page - The renderer.
+ * @returns The open `Issues` region.
+ */
+export const openViewerIssues = async (page: Page): Promise<Locator> => {
+  const segment = page.getByRole('button', { name: /^(?:Build failed\. )?Issues: /u }).first();
+  await expectVisible(segment, 120_000);
+  if ((await segment.getAttribute('aria-expanded')) !== 'true') {
+    await segment.click();
+  }
+  const list = page.getByRole('region', { name: 'Issues', exact: true });
+  await expectVisible(list, 30_000);
+  return list;
+};
+
+/**
+ * Narrow the console to the lines containing `query` (an empty query shows them all). The console is a virtualised
+ * list pinned to its newest line, so an older line is in the DOM only while the list is short enough to render it;
+ * filtering by the line's own text keeps a witness of an early log independent of how much was logged after it.
+ *
+ * @param page - The renderer, with the console open.
+ * @param query - The text to filter by.
+ * @returns Nothing.
+ */
+export const filterConsoleLogs = async (page: Page, query: string): Promise<void> => {
+  await page.getByLabel('Filter logs', { exact: true }).fill(query);
 };
 
 /** One viewer bridge's camera state, for the framing assertion and its report. */
@@ -369,10 +431,10 @@ const renderCycleState = async (page: Page): Promise<{ readonly busy: boolean; r
     }
 
     /* `ChatViewerStatus` renders the CAD machine's own loading phase — and
-     * nothing else — as `<span>{phase}...</span>`, one per open viewer pane. */
+     * nothing else — as `<span>{phase}…</span>` (one U+2026), one per open viewer pane. */
     const isBusy = (): boolean =>
       [...document.querySelectorAll('span')].some((element) =>
-        /^(?:buffering|connecting|rendering)\.\.\.$/u.test(element.textContent.trim().toLowerCase()),
+        /^(?:buffering|connecting|rendering)…$/u.test(element.textContent.trim().toLowerCase()),
       );
     const state = { busy: isBusy(), completed: 0 };
     const observer = new MutationObserver(() => {
@@ -637,8 +699,8 @@ export const expectModelBuilt = async (options: {
  *
  * @param page - The renderer.
  * @param parameterLabel - The pane's label for a declaration present only in the
- *   new bytes, in `formatDisplayLabel` casing (`tauSmokeDepth` reads as
- *   `Tau Smoke Depth`).
+ *   new bytes, as `formatFieldLabel` shows it: a kernel that titles a
+ *   declaration with its own name keeps that name (OpenSCAD's `tauSmokeDepth`).
  * @returns Nothing.
  */
 export const expectKernelReparsed = async (page: Page, parameterLabel: string): Promise<void> => {

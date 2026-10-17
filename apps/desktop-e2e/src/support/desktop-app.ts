@@ -1,10 +1,12 @@
 /* oxlint-disable no-await-in-loop -- Teardown steps are intentionally sequential. */
 /* eslint-disable @typescript-eslint/naming-convention -- Environment variables retain their wire names. */
+import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import process from 'node:process';
 import { setTimeout as wait } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import type { BrowserWindow, DownloadItem, Event } from 'electron';
 import { _electron as electron } from 'playwright';
 import type { ElectronApplication, Page } from 'playwright';
@@ -37,6 +39,49 @@ const clientRoot = process.env['TAU_DESKTOP_CLIENT_ROOT'] ?? join(workspaceRoot,
 const desktopRoot = join(workspaceRoot, 'apps/desktop');
 const defaultPackagedExecutable = join(desktopRoot, 'package-out/Tau-darwin-arm64/Tau.app/Contents/MacOS/Tau');
 const diagnosticsRoot = join(workspaceRoot, 'out/test-results/desktop-e2e');
+const execFileAsync = promisify(execFile);
+
+/**
+ * How long a process naming a fixture root may take to exit on its own: longer than the 10 s the Build123d and PicoGK
+ * rows give their workers to exit and remove their temporary roots after the app quits.
+ */
+const childExitGraceMilliseconds = 15_000;
+
+const isAnyProcessNaming = async (pattern: string): Promise<boolean> => {
+  try {
+    await execFileAsync('pgrep', ['-f', pattern]);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Remove a throwaway root the app wrote into, once nothing is still writing there.
+ *
+ * Main's children outlive it: a packaged launch seeds the payload store under the profile with `/bin/cp -c -R`
+ * (`apps/desktop/src/tau/native-store.ts`), and when the fixture stops main with `app.exit` or `SIGKILL` that copy
+ * keeps adding files, so a recursive remove meets a directory it has just emptied filled again (`ENOTEMPTY`). Every
+ * such process names the root in its arguments. Native workers do too, since a packaged worker runs from the store
+ * under the profile, and they clean their own temporary roots once their parent is gone; so each process gets
+ * {@link childExitGraceMilliseconds} to exit on its own, and only what remains is killed by that name. The remove
+ * then retries the transient errors Node lists for `rm`.
+ * @param root - The profile or picked-directory parent this fixture created.
+ * @returns Nothing.
+ */
+export const removeDesktopRoot = async (root: string): Promise<void> => {
+  if (process.platform !== 'win32') {
+    const pattern = root.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
+    const deadline = Date.now() + childExitGraceMilliseconds;
+    // `pgrep` exits 1 when nothing matched: every process naming the root has exited.
+    while (Date.now() < deadline && (await isAnyProcessNaming(pattern))) {
+      await wait(250);
+    }
+    // `pkill` exits 1 when nothing matched, the usual case.
+    await execFileAsync('pkill', ['-KILL', '-f', pattern]).catch(() => undefined);
+  }
+  await rm(root, { force: true, recursive: true, maxRetries: 10, retryDelay: 200 });
+};
 
 /** Select the complete descendant command records from one successful ps snapshot. */
 export const desktopDescendants = (
@@ -344,6 +389,8 @@ export const launchDesktopApp = async (options: {
   readonly captureStartupNetwork?: boolean | undefined;
   /** WAV input for Chromium's fake capture driver; leaves the OS microphone unchanged. */
   readonly fakeMicrophonePath?: string | undefined;
+  /** Launch this copy of the packaged app instead of the built one, e.g. one whose bundled closure a spec damaged. */
+  readonly packagedExecutable?: string | undefined;
 }): Promise<DesktopSession> => {
   if (desktopE2ECompletedArtifact && options.packaged === false) {
     throw new Error('A completed-artifact run cannot launch the workspace desktop app.');
@@ -415,7 +462,9 @@ export const launchDesktopApp = async (options: {
   };
   const inheritedEnvironment = { ...(process.env as Record<string, string>) };
   const packaged = desktopE2ECompletedArtifact || options.packaged === true;
-  const packagedExecutable = desktopE2ECompletedArtifact ? desktopE2EPackagedExecutable() : defaultPackagedExecutable;
+  const packagedExecutable =
+    options.packagedExecutable ??
+    (desktopE2ECompletedArtifact ? desktopE2EPackagedExecutable() : defaultPackagedExecutable);
   if (desktopE2ECompletedArtifact) {
     delete inheritedEnvironment['NODE_OPTIONS'];
     delete inheritedEnvironment['NODE_PATH'];
@@ -797,9 +846,9 @@ export const launchDesktopApp = async (options: {
       return;
     }
     if (!options.preserveProfile) {
-      await rm(userData, { force: true, recursive: true });
+      await removeDesktopRoot(userData);
     }
-    await rm(pickedParent, { force: true, recursive: true });
+    await removeDesktopRoot(pickedParent);
   };
 
   return {
