@@ -62,13 +62,15 @@ function useProjectTasksOwner(projectId: string, isEnabled: boolean, rootChatId?
   );
   const getConnector = useCallback(() => store.getProjectHost(projectId), [store, projectId]);
   const connector = useSyncExternalStore(subscribe, getConnector, getConnector);
-  const scope = useMemo(() => ({ projectId, rootChatId, connector }), [projectId, rootChatId, connector]);
+  const scope = useMemo(
+    () => ({ projectId, rootChatId, connector, requestIds: new Map<string, string>() }),
+    [projectId, rootChatId, connector],
+  );
   const [generation, setGeneration] = useState(0);
   const owner = useMemo(() => ({ scope, generation, isEnabled }), [scope, generation, isEnabled]);
   const connection = useRef<
     Readonly<{ owner: typeof owner; client: TaskClient; controller: AbortController }> | undefined
   >(undefined);
-  const requests = useMemo(() => ({ ids: new Map<string, string>() }), [scope]);
   const [view, setView] = useState<
     Readonly<{
       owner: typeof owner;
@@ -165,8 +167,8 @@ function useProjectTasksOwner(projectId: string, isEnabled: boolean, rootChatId?
       }
       const { client, controller } = active;
       const key = JSON.stringify([operation, taskId, text]);
-      const requestId = requests.ids.get(key) ?? generatePrefixedId(idPrefix.request);
-      requests.ids.set(key, requestId);
+      const requestId = owner.scope.requestIds.get(key) ?? generatePrefixedId(idPrefix.request);
+      owner.scope.requestIds.set(key, requestId);
       const request: ProjectTaskChannelRequest =
         operation === 'send'
           ? { operation, input: projectTaskSendSchema.parse({ taskId, requestId, text: text ?? '' }) }
@@ -176,15 +178,15 @@ function useProjectTasksOwner(projectId: string, isEnabled: boolean, rootChatId?
         throw new Error('This host does not support project threads.');
       }
       if (answer.kind === 'refused') {
-        requests.ids.delete(key);
+        owner.scope.requestIds.delete(key);
         throw new Error(answer.message);
       }
       if ((operation === 'send' && answer.kind !== 'message') || (operation !== 'send' && answer.kind !== 'task')) {
         throw new Error('The project host returned an unexpected task response. Reconnect and try again.');
       }
-      requests.ids.delete(key);
+      owner.scope.requestIds.delete(key);
     },
-    [owner, requests],
+    [owner],
   );
   const send = useCallback(
     async (taskId: string, text: string): Promise<void> => command('send', taskId, text),
