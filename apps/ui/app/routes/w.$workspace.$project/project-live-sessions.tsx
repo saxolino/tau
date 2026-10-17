@@ -228,6 +228,7 @@ function ProjectSessionBinding({
       } = choices.current;
       const execution = stored?.activeExecution ?? fallback;
       const daemonHostId = daemonPlacementOf(execution);
+      console.warn('[W22C-DIAG] connector', chatId, daemonHostId, stored?.activeExecution === undefined);
       if (daemonHostId !== undefined) {
         return createAgentHostClient(
           createDaemonAgentHostTransport(async () => dialAgentHost(daemonHostId, projectId)),

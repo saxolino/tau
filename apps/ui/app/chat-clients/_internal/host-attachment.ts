@@ -63,6 +63,21 @@ export const hostAttachment = createCallbackLogic<EventObject, HostAttachmentInp
   };
 
   const onAnswer: NonNullable<Parameters<AgentHostClient['subscribe']>[3]> = (answer) => {
+    console.warn(
+      '[W22C-DIAG] answer',
+      input.chatId,
+      JSON.stringify({
+        closed,
+        status: answer.status,
+        reason: (answer as { reason?: unknown }).reason,
+        expected: (answer as { expected?: unknown }).expected,
+        n: (answer as { events?: unknown[] }).events?.length,
+        cursor: (answer as { cursor?: unknown }).cursor,
+        next: (answer as { nextCursor?: unknown }).nextCursor,
+        gen: (answer as { sourceGeneration?: unknown }).sourceGeneration,
+        types: (answer as { events?: Array<{ type?: unknown }> }).events?.map((e) => e.type),
+      }),
+    );
     if (closed) {
       return;
     }
@@ -198,6 +213,15 @@ export const hostAttachment = createCallbackLogic<EventObject, HostAttachmentInp
   };
 
   const beginRead = async (): Promise<void> => {
+    console.warn(
+      '[W22C-DIAG] beginRead',
+      input.chatId,
+      JSON.stringify({
+        hasClient: client !== undefined,
+        closed,
+        pos: input.projection.getSnapshot().context.ledger.position,
+      }),
+    );
     if (client === undefined || closed) {
       return;
     }
