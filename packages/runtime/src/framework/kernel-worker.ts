@@ -217,8 +217,7 @@ type DocumentEvaluation = {
   readonly transient: boolean;
   readonly result: Evaluation;
   readonly artifact?: MaterializedRender;
-  /** The latest projection of each offered view, instance and content, whatever options rendered it. */
-  projections?: Map<string, { readonly hash: string; readonly result: RenderResult }>;
+  projections?: Map<string, RenderResult>;
 };
 type ViewRecord = {
   readonly document: DocumentRecord;
@@ -1876,9 +1875,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
             canonicalJson([await this.computeDependencyHash(dependencies), key]),
           );
           evaluation.projections ??= new Map();
-          const slot = canonicalJson([selection.view, selection.instance ?? null, view.content ?? null]);
-          const latest = evaluation.projections.get(slot);
-          let projected = latest?.hash === projectionHash ? latest.result : undefined;
+          let projected = evaluation.projections.get(projectionHash);
           if (!projected) {
             this.onDocumentProgressUpdate?.({
               documentId: document.id,
@@ -1947,9 +1944,8 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
                 ]);
               }
             }
+            evaluation.projections.set(projectionHash, projected);
           }
-          // One projection per offered view: a scrubbed option set replaces the last one instead of accumulating.
-          evaluation.projections.set(slot, { hash: projectionHash, result: projected });
           result = projected.success
             ? {
                 success: true,
