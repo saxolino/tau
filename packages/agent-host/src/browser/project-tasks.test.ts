@@ -130,6 +130,38 @@ describe('browserProjectTasks', () => {
     expect(JSON.parse(rows[0]!)).toEqual({ version: 1, projectId: 'project-1', sequence: 1, tasks: [] });
   });
 
+  it('should end follower waits promptly on cancellation and close before an owner is ready', async () => {
+    const fileSystem = memoryFileSystem();
+    const gate = Promise.withResolvers<void>();
+    const first = createOwner();
+    const opening = browserProjectTasks({
+      tabId: 'leader-not-ready',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({
+      projectId: 'project-1',
+      createOwner: async (input) => {
+        await gate.promise;
+        return first.create(input);
+      },
+    });
+    const follower = await browserProjectTasks({
+      tabId: 'follower-not-ready',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: async () => expect.fail('follower claimed') });
+    const abort = new AbortController();
+    const cancelled = follower.projectTasks.request({ operation: 'read', input: { limit: 1 } }, abort.signal);
+    abort.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+
+    const pending = follower.source.host.ledger('chat-1');
+    await follower.close();
+    await expect(pending).rejects.toMatchObject({ code: 'HOST_CLOSED' });
+    gate.resolve();
+    owners.push(await opening);
+  });
+
   it('should keep a healthy forwarded projection pending beyond ten seconds', async () => {
     const fileSystem = memoryFileSystem();
     const first = createOwner();
@@ -165,6 +197,112 @@ describe('browserProjectTasks', () => {
     await expect(result).resolves.toBeUndefined();
     expect(first.source.host.waitForAdmission).toHaveBeenCalledWith('chat-1', undefined);
   }, 20_000);
+
+  it('should re-send an unanswered keyed execute to the next project term', async () => {
+    const fileSystem = memoryFileSystem();
+    const first = createOwner();
+    const addressed = Promise.withResolvers<void>();
+    const unanswered = Promise.withResolvers<Awaited<ReturnType<AgentChannelSource['execute']>>>();
+    first.source.execute.mockImplementation(async () => {
+      addressed.resolve();
+      return unanswered.promise;
+    });
+    const leader = await browserProjectTasks({
+      tabId: 'leader-replay',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: first.create });
+    owners.push(leader);
+    const second = createOwner();
+    second.source.execute.mockResolvedValue({
+      commandId: 'cancel-replay',
+      generation: 2,
+      status: 'replayed',
+      effect: 'durable',
+      cursor: 0,
+    });
+    const follower = await browserProjectTasks({
+      tabId: 'follower-replay',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: second.create });
+    owners.unshift(follower);
+    const command = {
+      type: 'cancel',
+      commandId: 'cancel-replay',
+      payload: { chatId: 'chat-1', runId: 'run-1' },
+    } as const;
+    const answer = follower.source.execute(command);
+    await addressed.promise;
+    await leader.close();
+
+    await expect(answer).resolves.toMatchObject({ commandId: command.commandId, status: 'replayed' });
+    expect(first.source.execute).toHaveBeenCalledWith(command);
+    expect(second.source.execute).toHaveBeenCalledWith(command);
+    expect(second.source.execute).toHaveBeenCalledOnce();
+    const terms = new TextDecoder()
+      .decode(fileSystem.files.get(journalPath))
+      .trim()
+      .split('\n')
+      .map((row) => (JSON.parse(row) as { sequence: number }).sequence);
+    expect(terms).toEqual([1, 2]);
+  }, 10_000);
+
+  it('should not re-send an owner error that already answered a keyed execute', async () => {
+    const fileSystem = memoryFileSystem();
+    const first = createOwner();
+    first.source.execute.mockRejectedValue(Object.assign(new Error('owner refused'), { code: 'PEER_UNRESPONSIVE' }));
+    const leader = await browserProjectTasks({
+      tabId: 'leader-replied',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: first.create });
+    owners.push(leader);
+    const follower = await browserProjectTasks({
+      tabId: 'follower-replied',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: async () => expect.fail('follower claimed') });
+    owners.unshift(follower);
+
+    await expect(
+      follower.source.execute({ type: 'attach', commandId: 'attach-replied', payload: { chatId: 'chat-1' } }),
+    ).rejects.toMatchObject({ code: 'PEER_UNRESPONSIVE', message: 'owner refused' });
+    expect(first.source.execute).toHaveBeenCalledOnce();
+  });
+
+  it('should not re-send a task request when its addressed term disappears', async () => {
+    const fileSystem = memoryFileSystem();
+    const addressed = Promise.withResolvers<void>();
+    const unanswered = Promise.withResolvers<Awaited<ReturnType<ProjectTaskOwner['projectTasks']['request']>>>();
+    const first = createOwner(async () => {
+      addressed.resolve();
+      return unanswered.promise;
+    });
+    const leader = await browserProjectTasks({
+      tabId: 'leader-task-loss',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: first.create });
+    owners.push(leader);
+    const second = createOwner();
+    const follower = await browserProjectTasks({
+      tabId: 'follower-task-loss',
+      build: 'build-1',
+      log: { kind: 'provider', fileSystem },
+    }).open({ projectId: 'project-1', createOwner: second.create });
+    owners.unshift(follower);
+    const answer = follower.projectTasks.request({
+      operation: 'cancel',
+      input: { taskId: 'task-1', requestId: 'cancel-once' },
+    });
+    await addressed.promise;
+    await leader.close();
+
+    await expect(answer).rejects.toMatchObject({ code: 'PEER_UNRESPONSIVE' });
+    await until(() => second.create.mock.calls.length === 1);
+    expect(second.request).not.toHaveBeenCalled();
+  }, 10_000);
 
   it('should cancel an aborted follower request at the owner without appending a task row', async () => {
     const fileSystem = memoryFileSystem();

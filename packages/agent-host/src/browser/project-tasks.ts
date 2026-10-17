@@ -69,8 +69,15 @@ type PendingStream = Readonly<{
 const heartbeatInterval = 1000;
 const heartbeatTimeout = 3500;
 const responseTimeout = 10_000;
+/** Match the agent channel's bounded keyed-command redial budget across project terms. */
+const executeTermRetries = 5;
 
 const projectError = (code: string, message: string): Error => Object.assign(new Error(message), { code });
+class AddressedTermLost extends Error {
+  public get code(): string {
+    return 'PEER_UNRESPONSIVE';
+  }
+}
 const describeError = (error: unknown): Readonly<{ code: string; message: string }> => ({
   code:
     error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'HOST_FAULT',
@@ -187,10 +194,11 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
       }
       return undefined;
     };
-    const waitForHolder = async (): Promise<NonNullable<typeof holder>> => {
+    const waitForHolder = async (signal?: AbortSignal): Promise<NonNullable<typeof holder>> => {
       const deadline = performance.now() + responseTimeout;
       for (;;) {
-        if (closed) {
+        signal?.throwIfAborted();
+        if (closed || closing) {
           throw projectError('HOST_CLOSED', 'The project task host is closed.');
         }
         if (owner) {
@@ -212,15 +220,18 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
         }
         // oxlint-disable-next-line no-await-in-loop -- each wake rechecks the current holder and remaining bound.
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            waiters.delete(done);
-            resolve();
-          }, remaining);
           const done = (): void => {
             clearTimeout(timer);
+            waiters.delete(done);
+            signal?.removeEventListener('abort', done);
             resolve();
           };
+          const timer = setTimeout(done, remaining);
           waiters.add(done);
+          signal?.addEventListener('abort', done, { once: true });
+          if (signal?.aborted) {
+            done();
+          }
         });
       }
     };
@@ -271,9 +282,13 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
           });
     };
 
-    const remoteCall = async <Result>(operation: CallName, input: unknown, signal?: AbortSignal): Promise<Result> => {
+    const remoteCallOnce = async <Result>(
+      operation: CallName,
+      input: unknown,
+      signal?: AbortSignal,
+    ): Promise<Result> => {
       signal?.throwIfAborted();
-      const target = await waitForHolder();
+      const target = await waitForHolder(signal);
       signal?.throwIfAborted();
       if (owner) {
         return (await invokeLocal(operation, input, signal ?? new AbortController().signal)) as Result;
@@ -285,9 +300,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
           if (active?.sender === target.sender && active.term === target.term) {
             return;
           }
-          takeCall(id)?.reject(
-            projectError('PEER_UNRESPONSIVE', 'The project owner stopped heartbeating before answering.'),
-          );
+          takeCall(id)?.reject(new AddressedTermLost('The project owner stopped heartbeating before answering.'));
         }, heartbeatInterval);
         const abort = (): void => {
           if (!takeCall(id)) {
@@ -314,6 +327,21 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
       });
     };
 
+    const remoteCall = async <Result>(operation: CallName, input: unknown, signal?: AbortSignal): Promise<Result> => {
+      for (let retry = 0; ; retry += 1) {
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- only an unanswered keyed execute can cross a new project term.
+          return await remoteCallOnce<Result>(operation, input, signal);
+        } catch (error) {
+          if (operation !== 'execute' || !(error instanceof AddressedTermLost) || retry >= executeTermRetries) {
+            throw error;
+          }
+          // The addressed term disappeared without answering. The next owner decides whether this same key was
+          // durably applied; a replied refusal or an unrelated task/projection mutation is never re-sent here.
+        }
+      }
+    };
+
     const remoteStream = (operation: StreamName, input: unknown, signal: AbortSignal): AsyncIterable<unknown> => {
       let activeId: string | undefined;
       const detached = new AbortController();
@@ -322,7 +350,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
         start: async (controller) => {
           try {
             activeSignal.throwIfAborted();
-            const target = await waitForHolder();
+            const target = await waitForHolder(activeSignal);
             activeSignal.throwIfAborted();
             if (owner) {
               for await (const value of listenLocal(operation, input, activeSignal)) {
@@ -418,6 +446,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
           throw projectError('TASK_BUSY', 'The project owner is already closing.');
         }
         closing = true;
+        wake();
         try {
           await owner?.close();
           ownership.abort();
@@ -667,7 +696,7 @@ export const browserProjectTasks = (options: BrowserProjectTasksOptions): Projec
             try {
               await own();
             } catch {
-              /* retry at the next interval */
+              /* Retry at the next interval. */
             }
           })();
         }
