@@ -83,6 +83,16 @@ const environmentSchema = z.preprocess(
       .transform((value) => (value === undefined ? false : /^(1|true)$/i.test(value)))
       .describe('Enable in-app debug surfaces (debug panel, inspectors). Default false.'),
     /**
+     * Offer "Continue with ChatGPT". Set only where the API has an OpenAI client (`CHATGPT_CLIENT_ID`): OpenAI
+     * issues one per deployment, and a button without it fails at the provider. Tau Cloud sets both from one
+     * HCP pair. Accepts `'1'`/`'true'`; anything else is `false`.
+     */
+    TAU_CHATGPT_SIGN_IN_ENABLED: z
+      .string()
+      .optional()
+      .transform((value) => (value === undefined ? false : /^(1|true)$/i.test(value)))
+      .describe('Show Sign in with ChatGPT. Default false.'),
+    /**
      * Let *Connect* accept a private or loopback `http://` git address (P50).
      *
      * A test posture, and only for the two rules a local git http-backend
@@ -159,6 +169,7 @@ const baseClientEnvironmentKeys = [
   'TAU_DEBUG',
   'TAU_MACHINES_ENABLED',
   'TAU_GIT_REMOTE_ALLOW_PRIVATE',
+  'TAU_CHATGPT_SIGN_IN_ENABLED',
   'TAU_ACQUISITION',
   'NODE_ENV',
   'POSTHOG_API_HOST',
