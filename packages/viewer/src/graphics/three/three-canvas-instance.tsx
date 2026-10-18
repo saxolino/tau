@@ -56,7 +56,13 @@ const installTauPointerRays = (state: RootState): void => {
 
 // The R3F scene root unmounts separately from the DOM canvas root.
 function CanvasRendererLifetime({ factory }: { readonly factory: TauR3fGlFactory }): undefined {
-  useEffect(factory.retainScene, [factory]);
+  const release = useRef<(() => void) | undefined>(undefined);
+  useLayoutEffect(() => {
+    // Environment targets are allocated in layout effects. The DOM canvas can retire
+    // before passive effects mount, so ownership must already exist at that point.
+    release.current = factory.retainScene();
+  }, [factory]);
+  useEffect(() => release.current, [factory]);
   return undefined;
 }
 

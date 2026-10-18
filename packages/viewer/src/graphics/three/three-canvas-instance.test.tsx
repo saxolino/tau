@@ -1,7 +1,7 @@
 import type * as ReactThreeFiber from '@react-three/fiber';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import type { JSX } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import {
   OrthographicCamera,
@@ -17,6 +17,7 @@ import { mock } from 'vitest-mock-extended';
 import { WebglErrorBoundary } from '#cad/webgl-error-boundary.jsx';
 import { WebglErrorFallback } from '#cad/webgl-fallback.jsx';
 import { ThreeCanvasInstance } from '#graphics/three/three-canvas-instance.jsx';
+import * as CanvasGl from '#graphics/three/canvas-three-gl.js';
 import {
   infiniteGridFadeEndVisibleSpans,
   infiniteGridPresentationPlaneByUpDirection,
@@ -249,6 +250,34 @@ describe('ThreeCanvasInstance', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('retains the renderer before scene layout effects can allocate environment targets', () => {
+    const events: string[] = [];
+    const createFactory = CanvasGl.createTauR3fGlProp;
+    vi.spyOn(CanvasGl, 'createTauR3fGlProp').mockImplementation((...parameters) => {
+      const factory = createFactory(...parameters);
+      const { retainScene } = factory;
+      vi.spyOn(factory, 'retainScene').mockImplementation(() => {
+        events.push('retained');
+        return retainScene();
+      });
+      return factory;
+    });
+    function EnvironmentAllocation(): undefined {
+      useLayoutEffect(() => {
+        events.push('environment-layout');
+      }, []);
+      return undefined;
+    }
+    render(
+      <ThreeCanvasInstance graphicsBackend='webgl' onRetry={() => undefined}>
+        <EnvironmentAllocation />
+      </ThreeCanvasInstance>,
+    );
+    expect(events).toContain('retained');
+    expect(events).toContain('environment-layout');
+    expect(events.indexOf('retained')).toBeLessThan(events.indexOf('environment-layout'));
   });
 
   describe('drawing-buffer pixel ratio', () => {
