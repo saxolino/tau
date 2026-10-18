@@ -149,6 +149,8 @@ const wedgeObject = [
 ].join('\n');
 
 let project = '';
+/** The servers' Tau config folder, so their durable compute store never lands in the user's own. */
+let configDirectory = '';
 /** Uncaught errors in the current test's harness pages; each test expects none. */
 const pageErrors: string[] = [];
 let hostScript = '';
@@ -213,6 +215,7 @@ const connect = async (
   }
   env['CLAUDE_PROJECT_DIR'] = project;
   env['TAU_VIEWER_PAGE'] = pagePath;
+  env['TAU_CONFIG_DIR'] = configDirectory;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--import', 'tsx', join(repoRoot, 'packages/cli/src/bin.ts'), 'mcp'],
@@ -443,6 +446,7 @@ const launched = (): Browser => {
 beforeAll(async () => {
   await readFile(pagePath);
   project = await mkdtemp(join(tmpdir(), 'viewer-page-e2e-'));
+  configDirectory = await mkdtemp(join(tmpdir(), 'viewer-page-e2e-config-'));
   await writeFile(
     join(project, 'main.ts'),
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
@@ -499,6 +503,9 @@ afterAll(async () => {
   }
   if (project !== '') {
     await rm(project, { recursive: true, force: true });
+  }
+  if (configDirectory !== '') {
+    await rm(configDirectory, { recursive: true, force: true });
   }
 });
 
