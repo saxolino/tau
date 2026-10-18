@@ -7,7 +7,7 @@ import { SvgIcon } from '#components/icons/svg-icon.js';
 
 type ProviderIcon = React.ComponentType<React.SVGProps<SVGSVGElement>>;
 
-/** Better Auth provider id for Sign in with ChatGPT; the API registers it under the same id. */
+/** Better Auth provider id for Sign in with ChatGPT; must match `chatgptProviderId` in `apps/api/app/config/better-auth.config.ts`. */
 export const chatgptProviderId = 'chatgpt';
 
 const chatgptName = 'ChatGPT';

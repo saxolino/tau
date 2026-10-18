@@ -27,6 +27,9 @@ describe('getSocialProviderDisplay', () => {
       name: 'GitHub',
     });
     expect(getSocialProviderDisplay('github').Icon).toBeDefined();
-    expect(getSocialProviderDisplay('google').Icon).toBeUndefined();
+  });
+
+  it('names a provider with no known mark and leaves its icon to the caller', () => {
+    expect(getSocialProviderDisplay('company-sso').Icon).toBeUndefined();
   });
 });
