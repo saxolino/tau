@@ -63,6 +63,10 @@ type ChatTextareaDesktopProperties = {
   /** Which composer this is: the edit box speaks as one and owns shortcuts only while focused (F6, F19). */
   readonly mode?: 'main' | 'edit';
   readonly taskMailbox?: boolean;
+  /** Rest as one row on a phone until focused or drafted; see `ChatTextareaProperties`. */
+  readonly enableMobileCollapse?: boolean;
+  /** Whether focus is inside the composer or its portalled menus. */
+  readonly isFocused?: boolean;
 
   // State
   readonly dragKind: ChatTextareaDragKind | undefined;
@@ -109,6 +113,7 @@ type ChatTextareaDesktopProperties = {
   readonly handleAddImage: (image: string, options?: ChatAttachmentAddOptions) => void;
   readonly onScreenshotAction: (item: ContextSuggestionItem) => void;
   readonly onEscapePressed?: () => void;
+  readonly handleTextareaFocus?: () => void;
   readonly handleTextareaBlur: () => void;
   readonly removeAttachment: (index: number) => void;
 };
@@ -129,6 +134,30 @@ export const acpCommandToSlashCommand = (
     source: agentId,
   };
 };
+
+/**
+ * At rest a collapsible composer is one row; anything in flight — focus, a
+ * draft, dictation, a send, a drag — unfolds it. The `max-md:` variants
+ * confine the collapsed layout to phones.
+ *
+ * @returns Whether the composer collapses: it may, and nothing holds it open.
+ */
+const isComposerAtRest = (input: {
+  readonly enableMobileCollapse: boolean | undefined;
+  readonly isFocused: boolean | undefined;
+  readonly dictationActive: boolean;
+  readonly isSubmitting: boolean;
+  readonly dragKind: ChatTextareaDragKind | undefined;
+  readonly inputText: string;
+  readonly attachments: readonly DraftAttachment[];
+}): boolean =>
+  input.enableMobileCollapse === true &&
+  input.isFocused !== true &&
+  !input.dictationActive &&
+  !input.isSubmitting &&
+  input.dragKind === undefined &&
+  input.inputText.trim().length === 0 &&
+  input.attachments.length === 0;
 
 /**
  * Why Send refuses, in the words its tooltip and description use (F14).
@@ -179,6 +208,8 @@ export const ChatTextareaDesktop = memo(function ({
   isSubmitDisabled = false,
   mode = 'main',
   taskMailbox = false,
+  enableMobileCollapse,
+  isFocused,
 
   // State
   dragKind,
@@ -221,6 +252,7 @@ export const ChatTextareaDesktop = memo(function ({
   handleAddImage,
   onScreenshotAction,
   onEscapePressed,
+  handleTextareaFocus,
   handleTextareaBlur,
   removeAttachment,
 }: ChatTextareaDesktopProperties): React.JSX.Element {
@@ -494,6 +526,16 @@ export const ChatTextareaDesktop = memo(function ({
     [dictation.cancel, dictation.waveform, dictation.phase, dictationActive],
   );
   const blockReasonId = useId();
+  const collapse = collapsibleClassNames(enableMobileCollapse, dictation.available);
+  const isCollapsed = isComposerAtRest({
+    enableMobileCollapse,
+    isFocused,
+    dictationActive,
+    isSubmitting,
+    dragKind,
+    inputText,
+    attachments,
+  });
   /* F19: the beam follows the box's corners. */
   const radius = mode === 'edit' ? 'rounded-lg' : 'rounded-2xl';
 
@@ -512,11 +554,14 @@ export const ChatTextareaDesktop = memo(function ({
           'relative flex w-full flex-col border border-border/60 bg-background',
           chatComposerPaddingClassName,
           radius,
+          collapse.composer,
           'cursor-text overflow-hidden',
           'shadow-sm',
           'has-[.tiptap:focus-visible]:focus-outline',
           className,
         )}
+        data-collapsed={isCollapsed ? '' : undefined}
+        onFocus={handleTextareaFocus}
         onBlur={handleTextareaBlur}
         onDragOver={taskMailbox ? undefined : handleDragOver}
         onDragLeave={taskMailbox ? undefined : handleDragLeave}
@@ -551,6 +596,7 @@ export const ChatTextareaDesktop = memo(function ({
           className={cn(
             'max-h-48 min-w-0 overflow-y-auto overscroll-contain',
             mode === 'main' && 'max-h-[min(12rem,30cqh)]',
+            collapse.editor,
           )}
           onClick={handleEditorAreaClick}
         >
@@ -561,6 +607,7 @@ export const ChatTextareaDesktop = memo(function ({
             contextKeydownRef={chatEditor.contextKeydownRef}
             slashKeydownRef={chatEditor.slashKeydownRef}
             isLoading={isSubmitting}
+            className={collapse.editorContent}
           />
         </div>
 
@@ -606,6 +653,51 @@ export const ChatTextareaDesktop = memo(function ({
 });
 
 ChatTextareaDesktop.displayName = 'ChatTextareaDesktop';
+
+/* The collapsed composer (phones only, `max-md:`): one row. The editor makes
+ * room for + on the left and dictation and Send on the right; the bar rises
+ * onto the editor's line, and every other control fades out in place, keeping
+ * its width so the bar's measured collapse (D6) never re-runs. */
+const collapseTransition =
+  'transition-[padding,margin,border-radius,opacity,visibility] duration-200 ease-out motion-reduce:transition-none';
+
+/**
+ * A collapsible composer's own classes: the box's corners, and the editor's
+ * room for + on the left and for dictation (when offered) and Send on the right.
+ *
+ * @returns The composer's, the editor area's and the editor content's classes; none when not collapsible.
+ */
+const collapsibleClassNames = (
+  isCollapsible: boolean | undefined,
+  hasDictation: boolean | undefined,
+): { readonly composer?: string; readonly editor?: string; readonly editorContent?: string } =>
+  isCollapsible === true
+    ? {
+        composer: cn(collapseTransition, 'max-md:data-[collapsed]:rounded-3xl'),
+        editor: cn(
+          collapseTransition,
+          'max-md:group-data-[collapsed]/chat-textarea:pl-7',
+          'max-md:group-data-[collapsed]/chat-textarea:max-h-6 max-md:group-data-[collapsed]/chat-textarea:overflow-hidden',
+          hasDictation === true
+            ? 'max-md:group-data-[collapsed]/chat-textarea:pr-15'
+            : 'max-md:group-data-[collapsed]/chat-textarea:pr-7',
+        ),
+        editorContent: cn(collapseTransition, 'max-md:group-data-[collapsed]/chat-textarea:pb-0'),
+      }
+    : {};
+
+/** The bar, risen onto the editor's line; taps between its controls reach the editor. */
+const collapsedBarClassName = cn(
+  collapseTransition,
+  'max-md:group-data-[collapsed]/chat-textarea:-mt-6.5 max-md:group-data-[collapsed]/chat-textarea:pointer-events-none',
+);
+
+/** Controls a collapsed composer hides: every one but +, dictation and Send. */
+const collapsibleControlsClassName = cn(
+  collapseTransition,
+  'flex min-w-0 flex-row items-center empty:hidden',
+  'max-md:group-data-[collapsed]/chat-textarea:invisible max-md:group-data-[collapsed]/chat-textarea:opacity-0',
+);
 
 /** The labels that leave, in order, before the model's name is cut (D6). */
 const collapseSteps = ['data-hide-kernel', 'data-hide-mode', 'data-hide-level'] as const;
@@ -754,9 +846,13 @@ export const ChatTextareaBar = memo(function ({
   );
 
   return (
-    <div ref={barRef} data-slot='composer-bar' className='group/bar flex items-center justify-between gap-2 px-2'>
+    <div
+      ref={barRef}
+      data-slot='composer-bar'
+      className={cn('group/bar flex items-center justify-between gap-2 px-2', collapsedBarClassName)}
+    >
       {dictationRecording === undefined ? (
-        <div data-slot='composer-left' className='flex shrink-0 flex-row items-center gap-0.5'>
+        <div data-slot='composer-left' className='pointer-events-auto flex shrink-0 flex-row items-center gap-0.5'>
           {taskMailbox ? null : (
             <ChatAddMenu
               enableContextActions={enableContextActions}
@@ -766,11 +862,17 @@ export const ChatTextareaBar = memo(function ({
               focusEditor={focusEditor}
             />
           )}
-          {taskMailbox ? null : (
-            <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
-          )}
-          {creationLocationControl}
-          {enableKernelSelector && !taskMailbox ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
+          <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-0.5')}>
+            {taskMailbox ? null : (
+              <ChatAgentModeControl
+                agentConfig={agentConfig}
+                focusEditor={focusEditor}
+                enableShortcut={ownsShortcuts}
+              />
+            )}
+            {creationLocationControl}
+            {enableKernelSelector && !taskMailbox ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
+          </div>
           {taskMailbox ? null : (
             <input
               ref={fileInputReference}
@@ -783,13 +885,13 @@ export const ChatTextareaBar = memo(function ({
           )}
         </div>
       ) : (
-        <div data-slot='composer-left' className='flex min-w-0 flex-1 flex-row items-center gap-2'>
+        <div data-slot='composer-left' className='pointer-events-auto flex min-w-0 flex-1 flex-row items-center gap-2'>
           {dictationRecording}
         </div>
       )}
-      <div data-slot='composer-right' className='flex min-w-0 flex-row items-center gap-1'>
+      <div data-slot='composer-right' className='pointer-events-auto flex min-w-0 flex-row items-center gap-1'>
         {dictationRecording === undefined ? (
-          <>
+          <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-1')}>
             {taskMailbox ? null : <ChatContextIndicator />}
             {taskMailbox ? null : (
               <ChatAgentSheet
@@ -799,7 +901,7 @@ export const ChatTextareaBar = memo(function ({
                 enableShortcut={ownsShortcuts}
               />
             )}
-          </>
+          </div>
         ) : null}
         {dictationButton}
         <ChatTextareaSubmitButton

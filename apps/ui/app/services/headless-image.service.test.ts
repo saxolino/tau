@@ -54,6 +54,7 @@ describe('HeadlessImageService', () => {
     }
     activeServices.clear();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('transcodes the settled thumbnail GLB without a kernel render or filesystem', async () => {
@@ -68,6 +69,7 @@ describe('HeadlessImageService', () => {
   });
 
   it('defers only cold automatic part batches and lets one explicit retry warm the shared worker', async () => {
+    vi.stubEnv('TAU_TARGET', 'web');
     const { imageClient, service } = createFixture();
     vi.mocked(imageClient.transcode).mockRejectedValueOnce(new Error('Invalid GLB'));
     const partBatch: WebpGlbJob = {
@@ -86,6 +88,23 @@ describe('HeadlessImageService', () => {
     await expect(service.export({ ...partBatch, kind: 'manual-thumbnail' })).resolves.toEqual(files());
     await expect(service.export({ ...partBatch, identity: 'warm-part' })).resolves.toEqual(files());
     expect(imageClient.transcode).toHaveBeenCalledTimes(3);
+  });
+
+  it('should render cold desktop part previews through the native worker without a prior capture', async () => {
+    vi.stubEnv('TAU_TARGET', 'desktop');
+    const { imageClient, service } = createFixture();
+    const partBatch: WebpGlbJob = {
+      ...thumbnailJob('cold-native-part'),
+      exportOptions: { mode: 'batch', width: 256, height: 256, views: [] },
+    };
+    await expect(service.export(partBatch)).resolves.toEqual(files());
+    expect(imageClient.connect).toHaveBeenCalledOnce();
+    expect(imageClient.transcode).toHaveBeenCalledWith({
+      from: 'glb',
+      to: 'webp',
+      files: [{ name: 'render.glb', bytes: glb, mimeType: 'model/gltf-binary' }],
+      options: partBatch.exportOptions,
+    });
   });
 
   it('transcodes settled GLB bytes without a kernel render or filesystem', async () => {
@@ -329,13 +348,65 @@ describe('HeadlessImageService', () => {
     expect(imageClient.transcode).toHaveBeenCalledOnce();
   });
 
-  it('retains the image client until owner disposal', async () => {
+  it('should keep the image worker warm across back-to-back jobs and terminate it on owner disposal', async () => {
     const { imageClient, service } = createFixture();
     await service.export(thumbnailJob('thumb'));
     await service.export(captureJob('capture'));
     expect(imageClient.terminate).not.toHaveBeenCalled();
     service.dispose();
     expect(imageClient.terminate).toHaveBeenCalledOnce();
+  });
+
+  it('should terminate the idle image worker after 30 s and start a fresh one for the next job', async () => {
+    // The worker holds a WebGPU device, its render targets and a wasm heap that never shrinks.
+    vi.useFakeTimers();
+    try {
+      const clients: Array<ReturnType<typeof createMockRuntimeClient<typeof imageRuntime>>> = [];
+      const createImageClient = vi.fn(async () => {
+        const client = createMockRuntimeClient<typeof imageRuntime>();
+        vi.mocked(client.transcode).mockResolvedValue({
+          success: true,
+          data: files(),
+          issues: [],
+        });
+        clients.push(client);
+        return client;
+      });
+      const { service } = createFixture({ createImageClient });
+      await service.export(thumbnailJob('thumb'));
+      const [first] = clients;
+
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(first?.terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(first?.terminate).toHaveBeenCalledOnce();
+
+      await expect(service.export(captureJob('capture'))).resolves.toEqual(files());
+      expect(createImageClient).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should not count idle time while a job is running', async () => {
+    vi.useFakeTimers();
+    try {
+      const { imageClient, service } = createFixture();
+      await service.export(thumbnailJob('warm'));
+      const gate = Promise.withResolvers<void>();
+      vi.mocked(imageClient.transcode).mockImplementationOnce(async () => {
+        await gate.promise;
+        return { success: true, data: files(), issues: [] };
+      });
+      const slow = service.export(captureJob('slow'));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(imageClient.terminate).not.toHaveBeenCalled();
+      gate.resolve();
+      await expect(slow).resolves.toEqual(files());
+      expect(imageClient.terminate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('terminates a client whose connection fails', async () => {
@@ -674,4 +745,28 @@ describe('HeadlessImageService', () => {
     expect(createImageClient).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
+
+  it.each([{ pointer: 'coarse' }, { pointer: 'fine' }])(
+    'should admit automatic GPU previews on a $pointer-pointer device',
+    async ({ pointer }) => {
+      // Phones capture thumbnails too; the idle-terminated image worker bounds what they hold.
+      vi.stubGlobal('navigator', {
+        gpu: {
+          requestAdapter: async () => ({
+            isFallbackAdapter: false,
+            info: { vendor: 'apple', architecture: 'gpu' },
+          }),
+        },
+      });
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: pointer === 'coarse' && query === '(pointer: coarse)',
+      }));
+      try {
+        const { headlessImageBackend } = await import('#services/headless-image-backend.js');
+        await expect(headlessImageBackend.isAutomaticGpuAvailable?.()).resolves.toBe(true);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 });

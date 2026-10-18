@@ -63,9 +63,11 @@ const visibleCount = async (locator: ReturnType<Page['getByText']>): Promise<num
   return visibility.filter(Boolean).length;
 };
 
+/** The route lists its input formats once its converter client has connected and reported capabilities. */
 const waitForConverterReady = async (page: Page): Promise<void> => {
+  await page.getByRole('heading', { name: 'Convert', exact: true }).waitFor({ state: 'visible' });
   await expect
-    .poll(async () => visibleCount(page.getByText(/^[1-9]\d* formats supported$/u)), { timeout: 120_000 })
+    .poll(async () => visibleCount(page.getByRole('listitem', { name: /\(GLB\)$/u })), { timeout: 120_000 })
     .toBeGreaterThan(0);
 };
 
@@ -99,7 +101,7 @@ const expectUsdzDownload = async (path: string, expectTexture: boolean): Promise
 };
 
 const expectCapabilityParity = async (page: Page): Promise<void> => {
-  await expect.poll(async () => visibleCount(page.getByText(/^[1-9]\d* formats supported$/u))).toBeGreaterThan(0);
+  await waitForConverterReady(page);
   for (const format of ['GLB', 'OBJ', 'STEP', 'USDZ']) {
     // oxlint-disable-next-line no-await-in-loop -- Each required route must be represented in the capability lists.
     expect(await visibleCount(page.getByText(format, { exact: true }))).toBeGreaterThan(0);
@@ -124,12 +126,14 @@ const chooseUsdzAndDownload = async (
   const format = page.getByLabel(/\(USDZ\)$/u);
   const glbFormat = page.getByLabel(/\(GLB\)$/u);
   await format.waitFor({ state: 'visible', timeout: 60_000 });
-  if ((await format.getAttribute('data-state')) !== 'checked') {
-    await format.click();
+  /* The selection persists in a cookie and starts at STL: clear it, so USDZ alone is downloaded. */
+  const reset = page.getByRole('button', { name: 'Reset', exact: true });
+  if (await reset.isVisible()) {
+    await reset.click();
   }
-  if ((await glbFormat.getAttribute('data-state')) !== 'checked') {
-    await glbFormat.click();
-  }
+  await format.click();
+  /* A second format shows the ZIP preference, which a single USDZ must not be wrapped by. */
+  await glbFormat.click();
   const zipOption = page.getByLabel('Download as ZIP file', { exact: true });
   await zipOption.waitFor({ state: 'visible' });
   if (await zipOption.isChecked()) {
@@ -138,7 +142,7 @@ const chooseUsdzAndDownload = async (
   await glbFormat.click();
   const path = join(dirname(desktopSession.homeRoot), `.e2e-${options.name}.usdz`);
   const download = await captureNextDesktopDownload(desktopSession, path, async () =>
-    page.getByRole('button', { name: 'Download', exact: true }).click(),
+    page.getByRole('button', { name: 'Download USDZ', exact: true }).click(),
   );
   expect(download.filename).toMatch(/\.usdz$/u);
   await expectUsdzDownload(path, options.expectTexture ?? false);
@@ -232,12 +236,6 @@ test('[completed-artifact] converts GLB, OBJ sidecars, and STEP to USDZ without 
   const pickedBefore = await directorySnapshot(session.pickedDirectory);
 
   await openRoute(session.page, '/convert');
-  const heading = session.page.getByRole('heading', {
-    name: '3D Model Converter',
-  });
-  await heading.waitFor({ state: 'visible' });
-  expect(await heading.isVisible()).toBe(true);
-  await waitForConverterReady(session.page);
   await expectCapabilityParity(session.page);
   await session.page.locator('input[type="file"]').first().setInputFiles(glbFixture);
   const glbName = session.page.getByText('cube.glb', { exact: true });
@@ -322,7 +320,9 @@ test('[completed-artifact] releases an in-flight conversion utility on unmount a
       mimeType: 'model/obj',
       name: 'slow.obj',
     });
-  await session.page.getByText('Converting file…', { exact: true }).waitFor({ state: 'visible', timeout: 60_000 });
+  await session.page
+    .getByRole('status', { name: 'Opening model', exact: true })
+    .waitFor({ state: 'visible', timeout: 60_000 });
   await openRoute(session.page, '/');
   await expect
     .poll(

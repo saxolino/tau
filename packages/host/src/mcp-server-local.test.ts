@@ -53,6 +53,7 @@ const serve = async (
     readonly workspaceRoot?: string;
     readonly pinned?: boolean;
     readonly listed?: readonly HostToolDefinition[];
+    readonly runtime?: TauMcpServerOptions['runtime'];
   },
 ) => {
   const invocations: HostToolInvocation[] = [];
@@ -69,6 +70,7 @@ const serve = async (
     pinned: options?.pinned ?? false,
     registry,
     checkouts,
+    runtime: options?.runtime,
   });
   const dispatch = served.options?.dispatch;
   if (dispatch === undefined) {
@@ -114,6 +116,19 @@ describe('serveLocalHostMcp', () => {
     const { local } = await serve(ready, { listed: [] });
     try {
       expect(served.options?.cadTools).toEqual([toolName.evaluateModel, toolName.screenshot, toolName.exportModel]);
+    } finally {
+      await local.close();
+    }
+  });
+
+  it('should hand the server the CLI and launch it names in initialize', async () => {
+    const runtime: TauMcpServerOptions['runtime'] = {
+      version: '0.1.0-beta.7',
+      launch: { source: 'npx', plugin: '0.1.0-beta.7', node: '24.20.0', skipped: [] },
+    };
+    const { local } = await serve(ready, { runtime });
+    try {
+      expect(served.options?.runtime).toEqual(runtime);
     } finally {
       await local.close();
     }
@@ -240,6 +255,48 @@ describe('serveLocalHostMcp', () => {
     }
   });
 
+  it('should name the engine and the runtime on every GeoSpec report, shortened or not (VER-3)', async () => {
+    const engine = {
+      name: 'geospec-engine',
+      version: '0.2.0',
+      protocol: 3,
+      numericProfile: 'geospec-demand-v6',
+      qualification: 'experimental',
+    };
+    const runtime: TauMcpServerOptions['runtime'] = {
+      version: '0.1.0-beta.7',
+      launch: {
+        source: 'installed',
+        path: '/opt/homebrew/bin/tau',
+        plugin: '0.1.0-beta.7',
+        node: '24.20.0',
+        skipped: [],
+      },
+    };
+    for (const reason of ['Too small', 'x'.repeat(140_000)]) {
+      const verdict = {
+        failures: [
+          { id: 'main.geospec.ts:size', requirement: 'Size', reason, suggestion: 'Fix', targetFile: 'main.ts' },
+        ],
+        passes: [],
+        passed: 0,
+        total: 1,
+        engine,
+      };
+      // oxlint-disable-next-line no-await-in-loop -- one server per report size.
+      const { dispatch, local } = await serve({ content: { success: true, ...verdict }, isError: false }, { runtime });
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- ditto.
+        const result = await dispatch({ rpcName: rpcName.runGeoSpecTests, args: {} }, { toolCallId: 'tests' });
+
+        expect(result).toMatchObject({ success: true, engine, runtime });
+      } finally {
+        // oxlint-disable-next-line no-await-in-loop -- ditto.
+        await local.close();
+      }
+    }
+  });
+
   it('should serve the viewer only with a page, rendering a shown source through export_model', async () => {
     const { local: withoutPage } = await serve(ready);
     expect(served.options?.viewer).toBeUndefined();
@@ -278,6 +335,60 @@ describe('serveLocalHostMcp', () => {
         expect.objectContaining({ toolName: 'export_model', input: { targetFile: 'main.ts', to: 'glb' } }),
       ]);
       expect(shown).toMatchObject({ model: { path: '.tau/artifacts/main.glb', sourceFile: 'main.ts' } });
+    } finally {
+      await local.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("should ask export_model for a shown source's topology only when its GLB route carries it", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tau-viewer-topology-'));
+    await writeFile(join(root, 'main.ts'), '');
+    await writeFile(join(root, 'main.scad'), '');
+    const invocations: HostToolInvocation[] = [];
+    const registry: ToolRegistry = {
+      list: () => [testModelTool],
+      invoke: async (invocation) => {
+        invocations.push(invocation);
+        await mkdir(join(root, '.tau', 'artifacts'), { recursive: true });
+        await writeFile(join(root, '.tau', 'artifacts', 'model.glb'), 'glb');
+        return {
+          content: {
+            success: true,
+            files: [{ artifactPath: '.tau/artifacts/model.glb', mimeType: 'model/gltf-binary' }],
+          },
+          isError: false,
+        };
+      },
+    };
+    const glb = { targetFormat: 'glb', fidelity: 'mesh', exportOptions: { schema: {}, defaults: {} } } as const;
+    const local = await serveLocalHostMcp({
+      workspaceRoot: root,
+      registry,
+      checkouts: new Map(),
+      viewerPage: { html: '<!doctype html>', sha256: 'd'.repeat(64) },
+      runtimeClient: async () => ({
+        capabilities: {
+          routes: [
+            {
+              ...glb,
+              kernelId: 'replicad',
+              content: { schema: { type: 'object', properties: { includeTopology: { type: 'boolean' } } } },
+            },
+            { ...glb, kernelId: 'openscad' },
+          ],
+        },
+        connect: async () => undefined,
+        describe: async ({ source }) => ({ kernelId: source.path.endsWith('.scad') ? 'openscad' : 'replicad' }),
+      }),
+    });
+    try {
+      await served.options?.viewer?.show({ targetFile: 'main.ts' }, { toolCallId: 'show-1', presentation: 'inline' });
+      await served.options?.viewer?.show({ targetFile: 'main.scad' }, { toolCallId: 'show-2', presentation: 'inline' });
+      expect(invocations.map(({ toolName: name, input }) => ({ name, input }))).toEqual([
+        { name: 'export_model', input: { targetFile: 'main.ts', to: 'glb', content: { includeTopology: true } } },
+        { name: 'export_model', input: { targetFile: 'main.scad', to: 'glb' } },
+      ]);
     } finally {
       await local.close();
       await rm(root, { recursive: true, force: true });

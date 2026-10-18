@@ -13,7 +13,7 @@ import type { ClientContext } from '#harness/cad-middleware.js';
 import { codedFailureDetail } from '#harness/coded-failure.js';
 import { createInterruptRecoveryMessage } from '#harness/interrupt-recovery.js';
 import { createOutputLimitRecoveryMessage } from '#harness/output-limit-recovery.js';
-import { createAgentSession, fundingPrincipal, settledRowOf } from '#harness/session.js';
+import { createAgentSession, fundingPrincipal, settledInvocation, settledRowOf } from '#harness/session.js';
 import type {
   AgentRunOutcome,
   AgentSession,
@@ -310,6 +310,12 @@ type AdmissionRecord = Readonly<{
 }>;
 
 const attemptKeyOf = (key: TurnAttemptKey): string => `${key.runId}:${String(key.attempt)}`;
+
+/** The turn an admission row admitted, when the row is one. */
+const admittedTurnIdOf = (event: AgentLogEvent): string | undefined =>
+  event.type === 'run.lifecycle' && event.state === 'admitted'
+    ? (event as AgentLogEvent & { readonly admission?: AdmissionRecord }).admission?.turnId
+    : undefined;
 
 /** A reply lost in transit: the transport's own failure, or a stalled stream. Not a refusal the gateway decided. */
 const isLostReply = (ended: AgentRunOutcome): boolean => {
@@ -1107,9 +1113,10 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
 
   /**
    * Resolve every unresolved model attempt in the chat before a Resume prepares anything (RA-S11, EQ1): each terminal
-   * or voided answer becomes a settled row; a pending one refuses `MODEL_ATTEMPT_PENDING`; an attempt another account
-   * funded (or any, on an unfunded transport) refuses `MODEL_ATTEMPT_OTHER_ACCOUNT` before any lookup, and is neither
-   * voided nor recorded (RV5-F2).
+   * or voided answer becomes a settled row; a pending one is asked again within the run's waits (a Resume right after
+   * Stop finds the cut call still settling, StopSettlement), then refuses `MODEL_ATTEMPT_PENDING`; an attempt another
+   * account funded (or any, on an unfunded transport) refuses `MODEL_ATTEMPT_OTHER_ACCOUNT` before any lookup, and is
+   * neither voided nor recorded (RV5-F2).
    */
   const resolveInvocations = async (ledger: ChatLedger): Promise<LogRowBody[]> => {
     const open = unresolvedInvocations(ledger);
@@ -1136,7 +1143,12 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
     const rows: LogRowBody[] = [];
     for (const attemptId of open) {
       // oxlint-disable-next-line no-await-in-loop -- one lookup at a time, in preparation order.
-      const resolution = await funding.resolveInvocation({ attemptId, signal: new AbortController().signal });
+      const resolution = await settledInvocation({
+        funding,
+        attemptId,
+        clock: options.clock ?? globalThis,
+        signal: new AbortController().signal,
+      });
       if (resolution.status === 'pending' || resolution.status === 'unavailable') {
         throw coded(
           'MODEL_ATTEMPT_PENDING' satisfies RefusalCode,
@@ -1253,7 +1265,18 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
         if (messages.length > 0) {
           /* The rewind point is the turn the caller names; the prefix it keeps is this log's own (F2). */
           const rewindTo = messages.findIndex((message) => message.id === start.message.id);
-          const retained = start.retainedMessageIds ?? [];
+          /* A turn this log admitted whose run ended before ever recording its message (a session that could not rebuild
+           * its history) left nothing to rewind: its retry keeps the whole history. The page names its own messages
+           * (an assistant reply by its run id), so its prefix cannot be compared with this log's here. */
+          const unrecorded =
+            rewindTo === -1 &&
+            events.some((event) => admittedTurnIdOf(event) === start.message.id) &&
+            !events.some(
+              (event) =>
+                (event.type === 'message.appended' || event.type === 'turn.history-projection-committed') &&
+                event.message.id === start.message.id,
+            );
+          const retained = unrecorded ? messages.map((message) => message.id) : (start.retainedMessageIds ?? []);
           if (
             rewindTo === -1 &&
             (retained.length > messages.length || retained.some((id, index) => messages[index]?.id !== id))

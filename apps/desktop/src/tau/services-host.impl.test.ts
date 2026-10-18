@@ -1188,6 +1188,51 @@ describe('createServicesHost — the agentHost concern (launcher 2)', () => {
     expect(broker.releases[0]).toHaveBeenCalled();
   });
 
+  it('should retire an idle agent runtime client and fork a fresh one on its next use', async () => {
+    const broker = runtimePortBroker();
+    const { host, workspaceRoot } = await configuredHost({}, { requestRuntimePort: broker.requestRuntimePort });
+    connect(host, workspaceRoot);
+    const registry = toolRegistryCalls.at(-1)!;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const first = await registry.runtimeClient!(workspaceRoot);
+
+      /* The renderer's own utility serves the project; this one only serves tool calls. */
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(runtimeClientCalls[0]!.terminate).toHaveBeenCalledOnce();
+      const second = await registry.runtimeClient!(workspaceRoot);
+      expect(second).not.toBe(first);
+      expect(broker.requestRuntimePort).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should keep an agent runtime client while a document it opened is still open', async () => {
+    const broker = runtimePortBroker();
+    const { host, workspaceRoot } = await configuredHost({}, { requestRuntimePort: broker.requestRuntimePort });
+    connect(host, workspaceRoot);
+    const registry = toolRegistryCalls.at(-1)!;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const client = await registry.runtimeClient!(workspaceRoot);
+      /* A tool call holds its document until it is done with it. */
+      const document = client.open({ source: { files: { 'main.ts': 'model' } }, watch: false });
+
+      await vi.advanceTimersByTimeAsync(240_000);
+
+      expect(runtimeClientCalls[0]!.terminate).not.toHaveBeenCalled();
+      await expect(registry.runtimeClient!(workspaceRoot)).resolves.toBe(client);
+
+      document.close();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(runtimeClientCalls[0]!.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('should admit a candidate checkout named by its physical path', async () => {
     const authorityDirectory = await mkdtemp(join(tmpdir(), 'tau-desktop-candidate-authority-'));
     workspaces.push(authorityDirectory);
@@ -1291,9 +1336,12 @@ describe('createServicesHost — the agentHost concern (launcher 2)', () => {
       expect(requestRuntimePort).toHaveBeenCalledTimes(2);
     });
     leases[1]!.resolve({ port: fakeRuntimePort(), release: vi.fn() });
-    expect(await connecting).toBe(runtimeClientCalls[1]);
+    /* The served client is a use-tracking view of the one created; its transport is that client's own. */
+    const served = await connecting;
+    expect(Reflect.get(served, 'transport')).toBe(runtimeClientCalls[1]!.transport);
     checkouts.set('run-2', candidateCheckout(cwd));
-    expect(await registry.runtimeClient!(cwd)).toBe(runtimeClientCalls[1]);
+    const reused = await registry.runtimeClient!(cwd);
+    expect(Reflect.get(reused, 'transport')).toBe(runtimeClientCalls[1]!.transport);
   });
 
   it('should never serve a terminated client from the cache', async () => {

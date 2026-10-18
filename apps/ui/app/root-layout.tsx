@@ -1,4 +1,5 @@
 import { onDesktopMachineNavigation } from '#filesystem/desktop-bridge.js';
+import { installLoopbackHandOff } from '#lib/agent-host-placement.js';
 import type { ComponentType, ReactNode } from 'react';
 import { Links, Meta, Scripts, ScrollRestoration, useMatch, useNavigate, useRouteLoaderData } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -30,6 +31,7 @@ import { ProjectSessionsHost, projectRoutePath } from '#routes/w.$workspace.$pro
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
 import { CommunityPageSkeleton } from '#routes/_index/community-page-skeleton.js';
 import { GlobalChatFlushGuard } from '#components/global-chat-flush-guard.js';
+import { DocumentMemoryKillReporter } from '#components/memory-kill-reporter.js';
 import { SvgSpriteMount } from '#components/icons/svg-sprite-mount.js';
 import { HeadlessImageProvider } from '#providers/headless-image-provider.js';
 import { authErrorMessage, betterFetchErrorBodyMessage } from '#utils/auth-error.utils.js';
@@ -137,6 +139,7 @@ export function RootLayout({
                 {/* A35: liveness is owned by the registry, not by a route. */}
                 <SessionsProvider>
                   <GlobalChatFlushGuard />
+                  <DocumentMemoryKillReporter />
                   <RevisionActorIdentity />
                   {children}
                 </SessionsProvider>
@@ -261,6 +264,18 @@ export function ProductApp(): React.JSX.Element {
         void navigate(route);
       }),
     [navigate],
+  );
+  /* A daemon `tau open --desktop` (or `--ui-origin`) handed this page joins Runs on (X54). */
+  useEffect(
+    () =>
+      installLoopbackHandOff((outcome) => {
+        if ('error' in outcome) {
+          toast.error(outcome.error.message);
+        } else {
+          toast.success(`${outcome.target.label} is ready to run agents. Choose it under Runs on.`);
+        }
+      }),
+    [],
   );
   useCloudPaymentActionReturn();
   const data = useRouteLoaderData<RootLoaderData>('root');

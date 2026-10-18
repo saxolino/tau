@@ -35,7 +35,7 @@ tau check main.py --json          # {"v":1,"kind":"evaluation","status":"refused
 tau check main.ts --params='{"width":20}'
 ```
 
-`tau test [project]` runs the project's GeoSpec suites (`*.geospec.ts`) headlessly with the same runner `tau mcp`'s `test_model` uses. Exit `0` means every selected test passed, `1` that a test failed, `3` that nothing could run (no suite, no GeoSpec engine, a kernel not prepared).
+`tau test [project]` runs the project's GeoSpec suites (`*.geospec.ts`) headlessly with the same runner `tau mcp`'s `test_model` uses. Exit `0` means every selected test passed, `1` that a test failed or was left undecided (with `--json`, the record's `status` is `inconclusive` when nothing failed), `3` that nothing could run (no suite, no GeoSpec engine, a kernel not prepared).
 
 ```bash
 tau test
@@ -115,7 +115,7 @@ A seed file is used only when it hashes to its name, so a bundle from an untrust
 
 ## Serve and open
 
-`tau serve [dir]` serves a project folder on this machine. Without `--relay` it is local-first: it binds loopback only, pairs with no server and needs no account. With `--ui` it also serves a prebuilt Tau UI build and opens it in the browser.
+`tau serve [dir]` serves a project folder on this machine. Without `--relay` it is local-first: it binds loopback only, pairs with no server and needs no account. It also serves the Tau UI: by default the digest-pinned UI layer, downloaded into the payload store once and verified against the pin the CLI ships, or with `--ui=<dir>` a prebuilt Tau UI build. `--no-ui` serves agents only; when the layer cannot be prepared (offline, unsupported platform, not yet published) the daemon serves agents only and says why.
 
 ```bash
 tau serve . --ui=./tau-ui                 # http://127.0.0.1:7180, opened in the browser
@@ -127,7 +127,9 @@ tau serve . --smoke-test --port=0         # start, check /.well-known/tau-host, 
 
 The default port is `7180`; a busy port moves to the next free one unless `--strict-port` is given. The browser opens only on an interactive terminal outside CI, and never with `--print`, `--json` or `--no-open`. Reports go to stderr, so `--print` and `--json` leave exactly the URL or the record on stdout.
 
-`tau open [path|url]` is the one-step launcher: a folder or file is served as above (`--ui` or `TAU_HOST_UI_DIR` names the UI) and opened in the browser, and a URL is opened as it is. `--print` and `--json` print instead of opening. `--desktop` is best effort: a `tau://` link goes to Tau Desktop, and a served folder still opens in the browser until the desktop can take one from the terminal.
+`--allowed-origins=<origin,…>` (or `TAU_HOST_ALLOWED_ORIGINS`) lets a page on another origin, such as `https://tau.new` or a local web build at `http://localhost:3000`, read `/.well-known/tau-host` and open the `/agent` socket. Origins are exact (no path, trailing slash or wildcard), and the agent token is still required.
+
+`tau open [path|url]` is the one-step launcher: a folder or file is served as above (the store's UI layer, or the build `--ui` or `TAU_HOST_UI_DIR` names) and opened in the browser, and a URL is opened as it is. `--print` and `--json` print instead of opening. `--desktop` hands a served folder to Tau Desktop: the daemon serves agents only, admits `app://tau`, and opens `tau://host/<loopback origin>?code=<one-time code>`, which the desktop redeems once (within a minute) to list the daemon under Runs on. `--ui-origin=<origin>` does the same for the Tau UI on a website such as `https://tau.new`, with the code in the link's fragment; `tau serve --hand-off=desktop|<origin>` is the same hand-off without the launcher. A `tau://` link goes to Tau Desktop as it is.
 
 ### Relay
 
@@ -182,9 +184,9 @@ Stdout carries result data only: tab-separated plain lines by default, one `{"v"
 
 ## Agent plugins
 
-`tau mcp` serves Tau's CAD tools — `evaluate_model`, `test_model`, `screenshot`, `export_model` and `arrange_workbench` — over stdio to the MCP client that launched it. Stdout carries the MCP protocol only. Each call works in the first of: `--project`; the folder Codex sends with the call; `CLAUDE_PROJECT_DIR`; the working directory. Screenshots come back inline; they and GeoSpec reports over 128 KiB are saved in a temporary folder that is removed when the server stops. `--plugin` and `--config` work as they do for `export`.
+`tau mcp` serves Tau's CAD tools — `evaluate_model`, `test_model`, `screenshot`, `export_model` and `arrange_workbench` — over stdio to the MCP client that launched it. Stdout carries the MCP protocol only. Each call works in the first of: `--project`; the folder Codex sends with the call; `CLAUDE_PROJECT_DIR`; the working directory. Screenshots come back inline; they and GeoSpec reports over 128 KiB are saved in a temporary folder that is removed when the server stops. `--plugin` and `--config` work as they do for `export`. The last sentence of its `initialize` instructions names the CLI version, how it was started (the rung the agent plugin's launcher reports in `TAU_LAUNCH`, or "started directly"), the plugin and Node.js versions, and the `@taucad/mcp` version, so an agent that sees it has the Tau tools. `test_model` sends `notifications/progress` as its run and each test start, to a client that asks for progress, and its results name the GeoSpec `engine` that decided them and the serving `runtime` (this CLI's version and the launcher's descriptor).
 
-Each project folder gets its own worker thread on its first call, so projects evaluate, export and screenshot in parallel (`test_model` calls run one at a time) and a model that hangs or crashes its thread costs only that project. An operation that runs past `--operation-timeout` seconds (default 600) fails, and the project's next call starts a fresh thread. A thread with no tool call in flight for `--idle-release` seconds (default 900) is released, and the project's next call loads a fresh one.
+Each project folder gets its own worker thread on its first call, so projects evaluate, export and screenshot in parallel (`test_model` calls run one at a time) and a model that hangs or crashes its thread costs only that project. An operation that runs past `--operation-timeout` seconds (default 600) fails, and the project's next call starts a fresh thread. A thread with no tool call in flight for `--idle-release` seconds (default 900) is released, and the project's next call loads a fresh one. Finished builds are kept in the same durable compute store `tau serve` uses (`compute` in the Tau config folder, one file per project), so a restarted server reuses a model it, or `tau serve`, already built; `--compute-mode memory` keeps them for this process only and `off` disables reuse.
 
 Native kernels are composed from the payload store, never downloaded by a CAD tool: a `.py` or `.cs` file whose runtime is not prepared answers `KERNEL_NOT_PREPARED`, and the `prepare_kernel` tool prepares it — a download of about 162 MB for build123d and 49 MB for PicoGK, which an agent host that approves tools without asking starts without a prompt — in the server's process with progress and cancellation, then replaces each project's thread once its in-flight calls finish. A runtime `tau prepare` sealed meanwhile is picked up on the next call. Worker threads start with an allowlisted environment: the platform's variables, proxy and CA settings, and the `TAU_*` acquisition profile.
 

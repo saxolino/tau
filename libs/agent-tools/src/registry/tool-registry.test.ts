@@ -1201,6 +1201,41 @@ describe('createChatToolRegistry freshness gate', () => {
       },
     });
   });
+
+  it('keeps test_model progress rising across the stale-evaluation retry', async () => {
+    const runTests = vi.fn<RpcGeoSpecClient['runTests']>(async (_args, context) => {
+      context?.onProgress?.({ progress: 0, total: 2 });
+      context?.onProgress?.({ progress: 1, total: 2 });
+      // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- a hand-built RPC result stands in for the runner's.
+      return {
+        success: true,
+        summary: { total: 1, passed: 0, failed: 1 },
+        sourceRevisions: [closure(digestOf('broken'))],
+      } as unknown as Awaited<ReturnType<RpcGeoSpecClient['runTests']>>;
+    });
+    const store = new Map<string, string>();
+    const registry = build({ geospec: { runTests }, fileSystemFor: () => storedFileSystem(store) });
+    await invoke(registry, 'create_file', { input: { targetFile: 'main.ts', content: 'repaired' } });
+    const reported: unknown[] = [];
+
+    await registry.invoke({
+      toolCallId: 'call-1',
+      toolName: 'test_model',
+      input: {},
+      signal: new AbortController().signal,
+      onUpdate: (update) => {
+        reported.push(update.content);
+      },
+    });
+
+    expect(runTests).toHaveBeenCalledTimes(2);
+    expect(reported).toEqual([
+      { progress: 0, total: 2 },
+      { progress: 1, total: 2 },
+      { progress: 2, total: 2 },
+      { progress: 3, total: 2 },
+    ]);
+  });
 });
 describe('createChatToolRegistry GeoSpec evidence normalization', () => {
   const verdict = (
@@ -1591,16 +1626,34 @@ describe('createChatToolRegistry GeoSpec evidence normalization', () => {
   });
 
   it('should retain the full oversized result before limiting inline failure rows', async () => {
+    const limit = {
+      kind: 'capacity',
+      name: 'continuousEvidenceBytes',
+      declared: 33_554_432,
+      measured: 37_290_112,
+      unit: 'bytes',
+      operation: 'toHaveNoComponentInterference',
+      subject: 'run:load:5',
+      retry: null,
+      source: 'engine',
+    } as const;
     const original = {
       ...verdict(6),
       total: 26,
-      failures: Array.from({ length: 25 }, (_, index) => ({
-        id: `failure-${index}`,
-        requirement: `requirement-${index}`,
-        reason: 'x'.repeat(7000),
-        suggestion: 'Inspect complete evidence',
-        targetFile: 'main.geospec.ts',
-      })),
+      failures: Array.from(
+        { length: 25 },
+        (_, index) =>
+          ({
+            id: `failure-${index}`,
+            requirement: `requirement-${index}`,
+            reason: 'x'.repeat(7000),
+            suggestion: 'Inspect complete evidence',
+            status: 'inconclusive',
+            category: 'analysis-limit',
+            limit,
+            targetFile: 'main.geospec.ts',
+          }) as const,
+      ),
     };
     const recordWrite = vi.fn<RpcFileSystem['writeBinaryFile']>(async () => undefined);
     const result = await invoke(
@@ -1616,6 +1669,9 @@ describe('createChatToolRegistry GeoSpec evidence normalization', () => {
     expect(compact).toMatchObject({ passed: 1, total: 26, omittedFailures: 5, omittedPasses: 1 });
     expect(compact.failures).toHaveLength(20);
     expect(compact.failures[0]?.reason).toHaveLength(512);
+    expect(
+      compact.failures.map((row) => ({ status: row.status, category: row.category, limit: row.limit })),
+    ).toStrictEqual(Array.from({ length: 20 }, () => ({ status: 'inconclusive', category: 'analysis-limit', limit })));
     expect(compact.passes).toEqual([]);
     expect(recordWrite).toHaveBeenCalledOnce();
     expect(JSON.parse(new TextDecoder().decode(recordWrite.mock.calls[0]![1]))).toEqual(original);

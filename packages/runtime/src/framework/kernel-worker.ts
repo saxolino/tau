@@ -217,7 +217,8 @@ type DocumentEvaluation = {
   readonly transient: boolean;
   readonly result: Evaluation;
   readonly artifact?: MaterializedRender;
-  projections?: Map<string, RenderResult>;
+  /** The latest projection of each offered view, instance and content, whatever options rendered it. */
+  projections?: Map<string, { readonly hash: string; readonly result: RenderResult }>;
 };
 type ViewRecord = {
   readonly document: DocumentRecord;
@@ -1875,7 +1876,9 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
             canonicalJson([await this.computeDependencyHash(dependencies), key]),
           );
           evaluation.projections ??= new Map();
-          let projected = evaluation.projections.get(projectionHash);
+          const slot = canonicalJson([selection.view, selection.instance ?? null, view.content ?? null]);
+          const latest = evaluation.projections.get(slot);
+          let projected = latest?.hash === projectionHash ? latest.result : undefined;
           if (!projected) {
             this.onDocumentProgressUpdate?.({
               documentId: document.id,
@@ -1944,8 +1947,10 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
                 ]);
               }
             }
-            evaluation.projections.set(projectionHash, projected);
           }
+          // One projection per offered view: a scrubbed option set replaces the last one instead of accumulating.
+          evaluation.projections.set(slot, { hash: projectionHash, result: projected });
+          const heapBytes = projected.success ? this.kernelHeapBytesForOwner(artifact.owner) : undefined;
           result = projected.success
             ? {
                 success: true,
@@ -1958,6 +1963,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
                 transient: evaluation.transient,
                 issues: projected.issues,
                 ...(evaluation.result.sourceRevision ? { sourceRevision: evaluation.result.sourceRevision } : {}),
+                ...(heapBytes === undefined ? {} : { heapBytes }),
               }
             : {
                 success: false,
@@ -4269,6 +4275,16 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
    * @returns A diagnostic sentence, or undefined when the worker cannot describe the miss.
    */
   protected describeUnselectedKernel(_owner: OperationOwner): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * Committed WebAssembly heap of the kernel bound to `owner`, read when a rendering is delivered (D-RT-03).
+   *
+   * @param _owner - The rendering's operation owner.
+   * @returns The heap in bytes, or `undefined` when the kernel reports none.
+   */
+  protected kernelHeapBytesForOwner(_owner: OperationOwner): number | undefined {
     return undefined;
   }
 

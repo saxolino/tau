@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import { afterEach, expect, test } from 'vitest';
-import type { Page } from 'playwright';
+import type { Locator, Page } from 'playwright';
 import { desktopE2ECompletedArtifact } from '#support/config.js';
 import { authenticatePackagedDesktop, launchDesktopApp } from '#support/desktop-app.js';
 import type { DesktopSession } from '#support/desktop-app.js';
@@ -82,6 +82,14 @@ const recordTurnMarker = async (page: Page): Promise<() => Promise<readonly stri
   return async () =>
     page.evaluate(() => [...((globalThis as { tauTurnMarkerLabels?: string[] }).tauTurnMarkerLabels ?? [])]);
 };
+
+/** The newest turn revision marker's text, as a poll callback. */
+const lastMarkerText =
+  (markers: Locator): (() => Promise<string | undefined>) =>
+  async () => {
+    const texts = await markers.allTextContents();
+    return texts.at(-1)?.trim();
+  };
 
 let session: DesktopSession | undefined;
 let fixture: GatewayFixture | undefined;
@@ -202,7 +210,7 @@ test('builds an openrscad model on disk from the project chat', async () => {
      * arrived from `completed` straight to `done` without passing through
      * `finishing` (`chat-session.machine.ts:339-343`), and the marker prefers a
      * settled revision over any run state (`chat-turn-revision-state.ts:73`).
-     * So assert the promise — Working first, the confirmed save last, and any
+     * So assert the promise — any Working first, the confirmed save last, and any
      * *Saving revision* strictly between them — not the intermediate beat. */
     const lastLabel = async (): Promise<string | undefined> => {
       const seen = await markerLabels();
@@ -214,10 +222,26 @@ test('builds an openrscad model on disk from the project chat', async () => {
      * base revision has a name. */
     const working = labels.findLastIndex((label) => label === 'New revision' || label.startsWith('Starting '));
     console.info(`[desktop-e2e] in-project turn marker: ${JSON.stringify(labels)}`);
-    expect(working, `marker never said Working: ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(0);
+    /* Working is shown only while the attempt's change proof is in and its terminal row is not
+     * (`deriveTurnRevisionState`: no proof yet hides the marker, proof after the terminal row is *Saving revision*),
+     * so a turn this short can skip it. When it is shown it comes before the save; either way the turn ends on a
+     * newer revision than any the marker showed before it (the seed's, sampled as the recorder starts). */
+    const revision = (label: string | undefined): number =>
+      Number(/^Rev (\d+) saved/u.exec(label ?? '')?.[1] ?? Number.NaN);
+    const earlierRevisions = labels
+      .slice(0, -1)
+      .map((label) => revision(label))
+      .filter((value) => Number.isFinite(value));
+    expect(earlierRevisions, `the seed's save never showed: ${JSON.stringify(labels)}`).not.toHaveLength(0);
+    expect(revision(labels.at(-1)), `this turn saved no newer revision: ${JSON.stringify(labels)}`).toBeGreaterThan(
+      Math.max(...earlierRevisions),
+    );
     expect(labels.length - 1, `marker never settled after Working: ${JSON.stringify(labels)}`).toBeGreaterThan(working);
-    /* Sliced from Working, because the seeding turn's own labels are in front. */
-    const thisTurn = labels.slice(working);
+    /* Sliced from Working, or from the seed's last save, because the seeding turn's labels are in front. */
+    const seedSaved = labels.findLastIndex(
+      (label, index) => index < labels.length - 1 && Number.isFinite(revision(label)),
+    );
+    const thisTurn = labels.slice(working === -1 ? seedSaved + 1 : working);
     expect(
       thisTurn.lastIndexOf('Saving revision'),
       `Saving revision outlived this turn's save: ${JSON.stringify(labels)}`,
@@ -234,8 +258,11 @@ test('builds an openrscad model on disk from the project chat', async () => {
 });
 
 /* Row 18's other half: a turn whose provider call is refused must not claim a
- * save it never made. */
-test('says Save not confirmed when the gateway refuses the turn', async () => {
+ * save it never made. A refused turn that changed nothing derives the `hidden`
+ * revision state (`deriveTurnRevisionState`: "the run's own card says why"), so
+ * it adds no marker of its own and the paused-turn card names the refusal;
+ * *Save not confirmed* is reserved for a host that cannot be reached. */
+test('claims no save when the gateway refuses the turn', async () => {
   const account = tauTestAccount('in-project-failure');
   seededEmail = account.email;
   const token = await seedTauTestUser(account);
@@ -254,21 +281,27 @@ test('says Save not confirmed when the gateway refuses the turn', async () => {
     await submitPrompt(page, prompt);
     await expect.poll(() => fixture!.gatewayRequests.length, { timeout: 120_000 }).toBeGreaterThanOrEqual(2);
 
+    /* The seeding turn's marker settles on its save; it can remount while the route settles, so sample its count
+     * and text together. */
+    const markers = page.locator('[role="status"][aria-label="Turn revision status"]');
+    await expect
+      .poll(async () => `${String(await markers.count())} ${(await lastMarkerText(markers)()) ?? ''}`, {
+        timeout: 120_000,
+      })
+      .toMatch(/^1 Rev \d+ saved/u);
+    const markersBefore = 1;
+    const savedBefore = await lastMarkerText(markers)();
+
     fixture.setFailure({ status: 500, message: 'Provider unavailable for this test.' });
     const markerLabels = await recordTurnMarker(page);
     await sendPrompt(page, prompt);
-    await expect
-      .poll(
-        async () => {
-          const seen = await markerLabels();
-          return seen.at(-1);
-        },
-        {
-          message: 'the refused turn must end on Save not confirmed',
-          timeout: 300_000,
-        },
-      )
-      .toBe('Save not confirmed');
+    await expectVisible(page.getByText('Tau paused this turn', { exact: true }), 300_000);
+    await expectVisible(page.getByText('The model provider is unavailable.', { exact: true }), 30_000);
+    expect(await markers.count(), 'the refused turn must add no revision marker').toBe(markersBefore);
+    expect(await lastMarkerText(markers)(), 'the refused turn must not claim a new save').toBe(savedBefore);
+    expect(await markerLabels(), 'the refused turn must never say a revision is saving or saved').toEqual(
+      savedBefore === undefined ? [] : [savedBefore],
+    );
     console.info(`[desktop-e2e] refused turn marker: ${JSON.stringify(await markerLabels())}`);
   } catch (error) {
     console.info(

@@ -41,9 +41,10 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
           'animate-in duration-200 fade-in-50 motion-reduce:animate-none',
         )}
       >
-        {/* Main viewer - always visible */}
+        {/* Main viewer - always visible. Its box changes size in one step: an animated size
+          reallocates the canvas and every render target on each frame of the transition. */}
         <div
-          className='relative h-full transition-all duration-200 ease-linear'
+          className='relative h-full'
           style={{
             paddingBottom: isViewerTab ? 'var(--nav-height)' : `calc(${Number(activeSnapPoint)} * 100dvh)`,
           }}
@@ -92,7 +93,11 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
               {/* Tab contents */}
               <Tabs
                 value={activeTab}
-                className='flex h-full flex-col p-0'
+                className={cn(
+                  'flex h-full flex-col p-0',
+                  // While typing, the drawer is the frame above the keyboard and the panel fills it.
+                  'group-data-[keyboard=open]/drawer-content:h-auto! group-data-[keyboard=open]/drawer-content:min-h-0 group-data-[keyboard=open]/drawer-content:flex-1',
+                )}
                 style={{
                   height: isViewerTab ? '100dvh' : `calc(${Number(activeSnapPoint)} * 100dvh - var(--spacing)*12)`,
                 }}
@@ -145,7 +150,13 @@ export const ChatInterfaceMobile = memo(function (): React.JSX.Element {
         </Drawer>
 
         {/* Navigation tabs - Always visible and sticky to bottom */}
-        <div className={cn('pointer-events-auto fixed right-0 bottom-0 left-0 z-50')}>
+        <div
+          className={cn(
+            'pointer-events-auto fixed right-0 bottom-0 left-0 z-50',
+            // Safari pans the page to show a focused field, which would lift the nav over the composer.
+            '[:root:has([data-slot=drawer-content][data-keyboard=open])_&]:hidden',
+          )}
+        >
           <Tabs value={activeTab} onValueChange={handleTabChange}>
             <ChatInterfaceNav className='h-(--nav-height)' />
           </Tabs>

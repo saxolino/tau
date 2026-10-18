@@ -156,7 +156,7 @@ test('signs in and creates a project on real disk from the composer', async () =
     const slug = await submitPrompt(page, prompt);
     const projectRoot = join(location === 'picked' ? session.pickedDirectory : session.homeRoot, slug);
     await expect
-      .poll(() => ['tau.json', 'package.json', 'main.scad'].every((entry) => existsSync(join(projectRoot, entry))), {
+      .poll(() => ['tau.json', 'main.scad'].every((entry) => existsSync(join(projectRoot, entry))), {
         timeout: 180_000,
       })
       .toBe(true);
@@ -218,7 +218,7 @@ test('renders an external write through the native kernel utility', async () => 
       'tauSmokeDepth = 7;\ndifference() {\n  cube([20, 20, tauSmokeDepth], center = true);\n  cylinder(h = 40, r = 3, center = true, $fn = 64);\n}\n',
       'utf8',
     );
-    await expectKernelReparsed(page, 'Tau Smoke Depth');
+    await expectKernelReparsed(page, 'tauSmokeDepth');
     await expectGeometryFramed(page);
     // O9 (G23): the desktop render-to-frame baseline. In-process native bench
     // figures do not transfer — this crosses the copy-only utility wire.

@@ -11,6 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { runCommand } from 'citty';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as Host from '@taucad/host';
+import { createHostToolRegistry } from '@taucad/host/agent-tools';
 import type { HostRuntimeClient, HostToolRegistryOptions } from '@taucad/host/agent-tools';
 import type * as Runtime from '@taucad/runtime';
 
@@ -104,6 +105,7 @@ describe('mcpCommand', () => {
     }
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it.each(['operation-timeout', 'idle-release'])(
@@ -116,6 +118,71 @@ describe('mcpCommand', () => {
       );
     },
   );
+
+  it('should exit non-zero with its error when it cannot start serving', async () => {
+    vi.mocked(createHostToolRegistry).mockImplementationOnce(() => {
+      throw new Error('Provider tool schema has a tuple that cannot use one items schema');
+    });
+    const written: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array<ArrayBuffer>) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const mcpCommand = await importMcpCommand();
+
+    await runCommand(mcpCommand, { rawArgs: [] });
+
+    expect(exitNow).toHaveBeenCalledExactlyOnceWith(1);
+    expect(written.join('')).toContain(
+      'tau mcp: could not start: Error: Provider tool schema has a tuple that cannot use one items schema',
+    );
+    expect(serveLocalHostMcp).not.toHaveBeenCalled();
+  });
+
+  it('should name a --project root on stderr and pin every call to it', async () => {
+    const written: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array<ArrayBuffer>) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+
+    const server = await serve(['--project', '/fixture/project']);
+
+    expect(server.workspaceRoot).toBe('/fixture/project');
+    expect(server.pinned).toBe(true);
+    expect(written).toContain('tau mcp: project root /fixture/project (--project)\n');
+    await server.stop();
+  });
+
+  it('should name its start root and each folder a call names once, with where each came from', async () => {
+    vi.stubEnv('CLAUDE_PROJECT_DIR', '/fixture/claude');
+    const written: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array<ArrayBuffer>) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const server = await serve([]);
+    const call = async (runId?: string) =>
+      server.registry.invoke({
+        toolCallId: 'call-1',
+        toolName: 'evaluate_model',
+        ...(runId === undefined ? {} : { runId }),
+        input: {},
+        signal: new AbortController().signal,
+      });
+
+    server.checkouts.set('mcp:/fixture/codex', { cwd: '/fixture/codex' });
+    await call();
+    await call('mcp:/fixture/codex');
+    await call('mcp:/fixture/codex');
+
+    expect(server.pinned).toBe(false);
+    expect(written.filter((line) => line.startsWith('tau mcp: project root'))).toEqual([
+      'tau mcp: project root /fixture/claude (CLAUDE_PROJECT_DIR); a call that names its own folder works there\n',
+      'tau mcp: project root /fixture/codex (the folder a call named)\n',
+    ]);
+    await server.stop();
+  });
 
   it('should keep a thread while its tool call works between two operations past the idle release', async () => {
     const project = '/fixture/project';

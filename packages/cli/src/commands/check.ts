@@ -13,9 +13,8 @@
  *
  * @module
  */
-import { existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 
 import { createNodeClient } from '@taucad/runtime/node';
 import type { KernelIssue } from '@taucad/runtime/kernel';
@@ -23,6 +22,7 @@ import { defineCommand } from 'citty';
 
 import { parseJsonObject } from '#commands/export.js';
 import { composeNativeKernels } from '#native-kernels.js';
+import { resolveProjectRoot } from '#project-root.js';
 import { cliError, createOutput, emit, exitCodes, sanitize } from '#output.js';
 import { loadCliRuntime } from '#runtime-options.js';
 import { authorizeCliZooProxy, cliZooProxyUrl } from '#zoo-proxy.js';
@@ -57,24 +57,6 @@ export type CheckRecord = Readonly<{
   views: readonly string[];
   exports: readonly string[];
 }>;
-
-/**
- * The project a model belongs to: the nearest folder at or above it holding a `tau.json`, else the model's own folder.
- *
- * @internal
- * @param inputPath - Absolute path of the model.
- * @returns The absolute project root.
- */
-export const projectRootOf = (inputPath: string): string => {
-  for (let current = dirname(inputPath); ; current = dirname(current)) {
-    if (existsSync(resolve(current, 'tau.json'))) {
-      return current;
-    }
-    if (dirname(current) === current) {
-      return dirname(inputPath);
-    }
-  }
-};
 
 /**
  * Classify one evaluation's issues into the `check` status.
@@ -157,7 +139,7 @@ export const checkCommand = defineCommand({
         exitCodes.refused,
       );
     }
-    const projectRoot = args.project === undefined ? projectRootOf(inputPath) : resolve(args.project);
+    const { root: projectRoot } = resolveProjectRoot({ project: args.project, file: inputPath, cwd: process.cwd() });
     const sourcePath = relative(projectRoot, inputPath);
     if (sourcePath.startsWith('..') || resolve(projectRoot, sourcePath) !== inputPath) {
       throw cliError('INPUT_OUTSIDE_PROJECT', `${inputPath} is outside the project ${projectRoot}.`, exitCodes.usage);

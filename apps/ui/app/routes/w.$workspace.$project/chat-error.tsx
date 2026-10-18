@@ -10,6 +10,7 @@ import { CodeViewer } from '#components/code/code-viewer.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { chatHistoryTidyFailureMessage, parseErrorForPersistence } from '#utils/error.utils.js';
 import { cardOf } from '#utils/chat-error-card.js';
+import { autoResumableRateLimitCode } from '#utils/rate-limit-auto-resume.js';
 import { ChatErrorCard } from '#routes/w.$workspace.$project/chat-error-card.js';
 import { ChatErrorDetails } from '#routes/w.$workspace.$project/chat-error-details.js';
 import { ChatErrorPausedTurn } from '#routes/w.$workspace.$project/chat-error-paused-turn.js';
@@ -415,6 +416,14 @@ function codedErrorCard({
   return undefined;
 }
 
+/** Only the provider's transient `RATE_LIMITED` resumes on its own; the card still asks `resumable`. */
+const rateLimitAutoResume = (
+  code: string | undefined,
+  runId: string | undefined,
+  attempt: number | undefined,
+): Readonly<{ runId: string; attempt: number }> | undefined =>
+  code === autoResumableRateLimitCode && runId !== undefined && attempt !== undefined ? { runId, attempt } : undefined;
+
 export const ChatError = memo(function ({
   className,
   isClosedDelegatedTask = false,
@@ -434,6 +443,12 @@ export const ChatError = memo(function ({
       state.projection !== undefined &&
       selectCaughtUp(state.projection) &&
       isResumableRun(selectCurrentRun(state.projection)),
+  );
+  const currentRunId = useChatSelector((state) =>
+    state.projection === undefined ? undefined : selectCurrentRun(state.projection)?.runId,
+  );
+  const currentAttempt = useChatSelector((state) =>
+    state.projection === undefined ? undefined : selectCurrentRun(state.projection)?.attempt,
   );
   const { regenerate } = useChatActions();
   const { openNewChat, isReady: canOpenNewChat } = useOpenNewChat();
@@ -563,6 +578,7 @@ export const ChatError = memo(function ({
               ? parsedError.details['retryAfterSeconds']
               : undefined
           }
+          autoResume={rateLimitAutoResume(parsedError.code, currentRunId, currentAttempt)}
         />
       );
     }

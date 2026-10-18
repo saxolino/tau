@@ -24,7 +24,7 @@ The plugin needs Node.js 24 or later, with the npm 11 it bundles, and the Tau CL
 npm install -g @taucad/cli@beta
 ```
 
-Without a `tau` on `PATH`, the plugin runs `npx --yes --package=@taucad/cli@<this plugin's version> tau mcp`, which downloads the CLI and its kernels on first use and can take several minutes. Codex waits up to 10 minutes for that first start. Claude Code waits `MCP_TIMEOUT` milliseconds, which a plugin cannot set: install the CLI first, or start Claude with `MCP_TIMEOUT=600000 claude` the first time. To run a particular CLI, set `TAU_CLI` to its `tau` executable.
+Without a `tau` of the plugin's version on `PATH`, the plugin runs `npx --yes --package=@taucad/cli@<this plugin's version> tau mcp`, which downloads the CLI and its kernels on first use and can take several minutes. Codex waits up to 10 minutes for that first start. Claude Code waits `MCP_TIMEOUT` milliseconds, which a plugin cannot set: install the CLI first, or start Claude with `MCP_TIMEOUT=600000 claude` the first time. To run a particular CLI, set `TAU_CLI` to its `tau` executable.
 
 ### Claude Code
 
@@ -106,11 +106,11 @@ The server does not pass its environment on: the threads that run models get the
 | Claude Desktop         | An inline card in the conversation, with Add to chat and Open full view                                                                                          |
 | Claude Code, Codex CLI | A `http://127.0.0.1` link to the same page, served by `tau mcp` for its session; screenshots still come back inline                                              |
 
-The card shows the canvas and two actions. The tab, fullscreen and the browser page add the control bar: grid, section, measure and fit. Add to chat hands the model, or the part you right-clicked, to the host as context: the part's name and its `@cad[<file>#<component>]` token as text, and the same structured reference Tau's own chat chip carries as `structuredContent`. A host that takes only messages gets Send to chat, with the text; where a host takes neither (the browser page) it becomes Copy prompt. Colours and font follow the host.
+The card shows the canvas and two actions. The tab, fullscreen and the browser page add a header with the file, Share, Export and the workbench toggle, and the control bar: grid, section, measure and fit. Add to chat, on the card or in a part's right-click menu, hands the model or that part to the host as context: the part's name and its `@cad[<file>#<component>]` token as text, and the same structured reference Tau's own chat chip carries as `structuredContent`. A host that takes only messages gets Send to chat, with the text; where a host takes neither (the browser page) the page copies it to the clipboard instead. Colours and font follow the host.
 
 The page stays live with the agent. It long-polls `app_sync`, a tool only the page can call, to report its view and to hear of the next model: a tab, fullscreen or browser page switches to each model `show_model` shows, while an inline card keeps its own. `show_model` with `select` selects components by id once the model is drawn. `view_state` reads the page the person used last; with `capture: true` that page draws its canvas into a PNG of at most 1280 px wide and returns it through `app_capture_reply`. Without a page open, `view_state` answers `NO_VIEWER` and `screenshot` still renders.
 
-The tab and fullscreen page have a side panel (Panels in the bottom bar): the component tree, where a click selects a component and the eye hides or shows it; the model's parameters, where an edit is written to the project and the page shows the model rendered with it; the selected part's properties; and switches for the grid, axes, edges and surfaces. When you move the camera or hide a part, `tau mcp` saves that view in the project's `.tau/workbench` records, so Tau opens the project with the same camera and hidden parts.
+The tab and fullscreen page have a workbench beside the canvas, opened and closed with the toggle at the header's right, where Share and Export open their panes: the component tree, where a click selects a component and the eye hides or shows it; the model's parameters, where an edit is written to the project and the page shows the model rendered with it; the selected part's properties; and switches for the grid, axes, edges and surfaces. When you move the camera or hide a part, `tau mcp` saves that view in the project's `.tau/workbench` records, so Tau opens the project with the same camera and hidden parts.
 
 The page is one HTML file, `dist-app/app.html`, that `tau mcp` serves as the resource `ui://tau/<hash>/app.html`. It makes no network request: model bytes reach it through `app_read`, a tool only the page can call, in ranges of at most 4 MiB. The server reads only the range asked for, gzips a range that shrinks by a tenth or more, and refuses a range once the file has changed, so the page shows the new file instead of a mix of two. A 50 MB GLB streams in thirteen calls. The browser link carries a per-session token and answers only on `127.0.0.1`.
 
@@ -139,6 +139,7 @@ Running `tau mcp` without the plugin serves no viewer unless you pass `--viewer-
 | `cad-jscad`         | JSCAD (`@jscad/modeling`)                                                                            |
 | `cad-manifold`      | Manifold mesh booleans (`manifold-3d`)                                                               |
 | `cad-picovoxel`     | PicoVoxel voxels, signed distance fields and lattices                                                |
+| `cad-smlib`         | SMLib NURBS BRep solids (`@classcad/smlibwasm`)                                                      |
 | `cad-tscircuit`     | tscircuit circuit boards                                                                             |
 | `geospec-authoring` | Writing `*.geospec.ts` geometry tests                                                                |
 | `workbench`         | The Tau app's workbench views and panes                                                              |
@@ -161,16 +162,28 @@ Each call works in the first of: the `--project` folder, when you run `tau mcp` 
 
 Both hosts start `node dist/launch.mjs`. The launcher starts `<tau> mcp` on its own stdio, forwards `SIGINT` and `SIGTERM`, and exits with the CLI's exit code. It runs the first of:
 
-1. `TAU_CLI`, a path to a `tau` executable.
+1. `TAU_CLI`, a path to a `tau` executable, whatever its version.
 2. `.dev/cli.json`, the workspace checkout's CLI (see [Development](#development)).
-3. `tau` on `PATH`, then `/opt/homebrew/bin/tau` and `/usr/local/bin/tau`, for desktop apps started with a minimal `PATH`.
+3. The first installed `tau` whose `tau --version` prints this package's version, searching `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin` for desktop apps started with a minimal `PATH`. A `tau` of another version, or one that fails, prints more than 128 bytes or does not answer within 2 seconds, is passed over.
 4. `npx --yes --package=@taucad/cli@<version> tau mcp`, where `<version>` is this package's version.
 
-`resolveTauCli`, the package's one export, is that resolution as a pure function.
+Before `npx`, the launcher checks what `npx` needs. When a check fails it starts nothing: it writes one line to stderr that begins with `tau:` and names the fix, and exits with the check's code.
+
+| Exit code | Cause                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------- |
+| 2         | Node.js is older than 24                                                                              |
+| 3         | npm's cache is not writable, as when `sudo npm` left it owned by root; the line gives the `chown` fix |
+| 4         | npm was not found on `PATH` or does not run, or is older than 11                                      |
+
+When the CLI cannot be started, the launcher exits 1. A host shows only that the server failed to start; run `node <plugin folder>/dist/launch.mjs </dev/null` to read the line.
+
+The launcher hands the CLI `TAU_LAUNCH`, a JSON object: `source` (`explicit`, `workspace`, `installed` or `npx`), `path` (the `TAU_CLI` or installed `tau` it ran), `cli` (that CLI's version), `plugin` (this package's version), `node` (the Node.js version running the launcher) and `skipped` (each installed `tau` passed over, with the version it printed if it answered within 2 seconds and 128 bytes). `tau mcp` names it in the last sentence of its `initialize` instructions, which the agent reads at session start.
+
+`resolveTauCli`, the package's one export, is that resolution as a pure function; its caller passes `versionOf`, which reads what `<path> --version` prints.
 
 ### Versions
 
-This package is released with `@taucad/cli` in one fixed version group, so `@taucad/agent-plugin@<version>` pairs with `@taucad/cli@<version>`, which the `npx` fallback pins. Both plugin manifests carry the same version: the release writes all three files. A `tau` on `PATH` runs whatever its version; keep it on the plugin's release, since older CLIs have no `tau mcp`.
+This package is released with `@taucad/cli` in one fixed version group, so `@taucad/agent-plugin@<version>` pairs with `@taucad/cli@<version>`, which the `npx` fallback pins. Both plugin manifests carry the same version: the release writes all three files. An installed `tau` runs only when it prints that version, so after a plugin update also run `npm install -g @taucad/cli@<version>`, or the launcher fetches the matching CLI with `npx`.
 
 ## Development
 
@@ -218,7 +231,7 @@ claude plugin validate --strict packages/agent-plugin
 
 | Component    | Support                                                                                                         |
 | ------------ | --------------------------------------------------------------------------------------------------------------- |
-| Node.js      | 24 or later; on an older Node the launcher says so and starts the CLI anyway                                    |
+| Node.js      | 24 or later; on an older Node the launcher exits 2 rather than fetch the CLI with `npx`                         |
 | Claude Code  | Verified with 2.1.295                                                                                           |
 | Codex CLI    | Verified with 0.157.1                                                                                           |
 | Viewer       | MCP Apps hosts per the ext-apps specification 2026-01-26; covered by an ext-apps basic-host harness in Chromium |

@@ -168,6 +168,12 @@ export type ChatTextareaProperties = {
   readonly taskMailbox?: boolean;
   /** Whether an active session may present actionable run approvals above this composer. */
   readonly enableApprovals?: boolean;
+  /**
+   * Below the `md` breakpoint, rest as one row — +, the editor, dictation and
+   * Send — until the composer is focused or holds a draft; the rest of the bar
+   * unfolds on focus. Wider viewports always show the full composer.
+   */
+  readonly enableMobileCollapse?: boolean;
 };
 
 // Define the key combination for cancelling the stream

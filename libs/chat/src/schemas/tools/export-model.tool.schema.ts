@@ -14,6 +14,17 @@ export const exportModelInputSchema = z
       .describe('JSON object of options for the chosen export or route.')
       .pipe(z.record(z.string(), z.json()))
       .optional(),
+    content: z
+      .object({
+        includeEdges: z.boolean().optional().describe('true adds the visible edge lines as line geometry.'),
+        includeTopology: z
+          .boolean()
+          .optional()
+          .describe('true embeds the CAD topology (components and mechanism) in a GLB or glTF.'),
+      })
+      .strict()
+      .optional()
+      .describe('What the export carries besides geometry; a route that cannot carry a key set to true refuses it.'),
     parameters: parameterOverridesSchema.optional(),
   })
   .strict();
@@ -35,6 +46,11 @@ export const exportModelOutputSchema = z.object({
     .describe('Ordered files, primary first, followed by required companions.'),
   warnings: z.array(kernelIssueSchema).optional(),
   sourceRevision: sourceRevisionSchema.optional().describe('Digests of the pinned source exported.'),
+  projectRoot: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Absolute project root targetFile and artifactPath resolve against.'),
 });
 
 /** @public */

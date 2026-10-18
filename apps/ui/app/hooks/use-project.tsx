@@ -1,6 +1,8 @@
 /* oxlint-disable typescript/no-restricted-types -- Workbench record entry paths are nullable by schema. */
 /* oxlint-disable eslint/no-await-in-loop -- Producer flushes must finish in owner order before project close. */
 import { parameterRecordInputValues } from '@taucad/parameters';
+import { recordMemoryBreadcrumb } from '#lib/memory-kill-signal.js';
+import { isMemoryConstrainedDevice, runtimeRecycleHeapBytes } from '#lib/device-memory-class.js';
 import { usePreviewParameterLifetime } from '#hooks/use-preview-parameter-lifetime.js';
 import { canOpenCloudProject, isCloudProjectPending, tauCloudIntent } from '#hooks/use-cloud-projects.js';
 import { peekRevisionClient } from '#hooks/use-revision-status.js';
@@ -513,12 +515,15 @@ export function ProjectProvider({
     }),
   } satisfies Partial<MachineActors<typeof projectMachine>>;
 
+  // D-RT-03: read once, as the actor's input is fixed at creation.
+  const [recycleHeapBytes] = useState(() => runtimeRecycleHeapBytes(isMemoryConstrainedDevice()));
   const actorRef = useActorRef(projectMachine.provide({ actors: provide?.actors ?? projectActors }), {
     input: {
       projectId,
       fileManagerRef: fileManager.fileManagerRef,
       fileSystemRoot,
       kernelOptionsFactory: resolvedKernelOptionsFactory,
+      recycleHeapBytes,
       ...input,
     },
     inspect,
@@ -768,6 +773,7 @@ export function ProjectProvider({
            * them and observes that revision itself, so the sidecar's own watch event has nothing left
            * to re-render, and this machine keeps no second copy of the stored values. */
           performance.mark('tau:parameter-dispatch', { detail: { entryPath } });
+          recordMemoryBreadcrumb('render');
           cadRef.send({ type: 'commitParameters', stage });
         }
       });

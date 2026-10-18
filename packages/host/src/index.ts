@@ -31,7 +31,13 @@ export type {
 } from '#job-attempt-host.js';
 export type { HostCredential } from '#credential-store.js';
 export { defaultConfigDirectory, defaultPayloadStore } from '#credential-store.js';
-export { hostDescriptorPath, hostSessionCookieName, startAgentServer } from '#agent-server.js';
+export {
+  handOffMintPath,
+  handOffSessionPath,
+  hostDescriptorPath,
+  hostSessionCookieName,
+  startAgentServer,
+} from '#agent-server.js';
 export type { AgentServerHandle, AgentServerOptions } from '#agent-server.js';
 export { startRunReporter } from '#run-reporter.js';
 export type { RunReporter, RunReporterOptions } from '#run-reporter.js';
@@ -115,6 +121,7 @@ export { prepareKernelToolName } from '#prepare-kernel-tool.js';
 export type { HostPrepareKernel, HostPrepareKernelProgress } from '#agent-tools.js';
 export type {
   RuntimeChildNativeKernels,
+  RuntimeChildRuntimeDamage,
   RuntimeChildWorker,
   RuntimeChildWorkerLaunch,
 } from '#runtime-child-supervisor.js';
@@ -164,6 +171,9 @@ export {
   hostMcpCapabilityPrefix,
   serveLocalHostMcp,
 } from '#mcp-server.js';
+/* `tau mcp` reads the agent plugin's launcher descriptor with the parser of the server that names it. */
+export { parseTauMcpLaunch } from '@taucad/mcp';
+export type { TauMcpRuntime } from '@taucad/mcp';
 export type {
   HostMcpCapabilityClaims,
   HostMcpEndpoint,

@@ -18,7 +18,7 @@ Tau makes use of, and is based in part on, facilities provided by the **Open CAS
 OCCT runs in the web and desktop apps as WebAssembly and, in the desktop app, as a native library, through these
 components:
 
-- The GeoSpec engine (`geospec-engine` 0.1.0), built from OCCT upstream
+- The GeoSpec engine (`geospec-engine` 0.2.1), built from OCCT upstream
   revision `3d097a0328e71b826377d4814ab05ec3c3d23871` ([source](https://github.com/taucad/geospec))
 - libcascade 3.1.0 ([source](https://github.com/taucad/opencascade.js))
 - occt-import-js 0.0.23 ([source](https://github.com/kovacsv/occt-import-js))
@@ -31,7 +31,7 @@ including how it builds and links OCCT, is at [github.com/taucad/geospec](https:
 
 ## Third-Party Packages
 
-The web and desktop apps include the following 750 packages, with the license each declares.
+The web and desktop apps include the following 751 packages, with the license each declares.
 Their copyright notices and full license texts ship inside each package and are available from its source.
 
 | Package | Version | License |
@@ -91,6 +91,7 @@ Their copyright notices and full license texts ship inside each package and are 
 | [@better-auth/utils](https://github.com/better-auth/utils) | 0.5.0 | MIT |
 | [@better-fetch/fetch](https://github.com/better-auth/better-fetch) | 1.3.2 | MIT |
 | [@cfworker/json-schema](https://github.com/cfworker/cfworker) | 4.1.1 | MIT |
+| [@classcad/smlibwasm](https://github.com/awv-informatik/smlibpy) | 0.3.4 | MIT AND Apache-2.0 AND OFL-1.1 |
 | [@cspotcode/source-map-support](https://github.com/cspotcode/node-source-map-support) | 0.8.1 | MIT |
 | [@date-fns/tz](https://github.com/date-fns/date-fns) | 1.5.0 | MIT |
 | [@dimforge/rapier3d-compat](https://github.com/dimforge/rapier.js) | 0.12.0 | Apache-2.0 |
@@ -260,7 +261,7 @@ Their copyright notices and full license texts ship inside each package and are 
 | [@taucad/kcl-wasm-lib](https://github.com/taucad/modeling-app) | 0.1.191 | MIT |
 | [@taulabs/openrscad-engine](https://github.com/taucad/openrscad) | 0.11.0-beta.4 | Apache-2.0 OR MIT |
 | [@taulabs/openrscad-engine-{platform}](https://github.com/taucad/openrscad) | 0.11.0-beta.4 | Apache-2.0 OR MIT |
-| [@taulabs/replicad](https://github.com/taucad/replicad) | 1.1.0-taulabs.0 | MIT |
+| [@taulabs/replicad](https://github.com/taucad/replicad) | 1.1.0-taulabs.1 | MIT |
 | [@taulabs/replicad-opencascadejs](https://github.com/taucad/replicad) | 0.23.0-beta.0 | MIT |
 | [@taulabs/three-viewport-gizmo](https://github.com/taucad/three-viewport-gizmo) | 2.2.4 | MIT |
 | [@tscircuit/manifold-2d](https://github.com/tscircuit/manifold-2d) | 0.0.6 | Apache-2.0 |
@@ -465,9 +466,9 @@ Their copyright notices and full license texts ship inside each package and are 
 | [function-bind](https://github.com/Raynos/function-bind) | 1.1.2 | MIT |
 | [gaxios](https://github.com/googleapis/google-cloud-node) | 7.3.1 | Apache-2.0 |
 | [gcp-metadata](https://github.com/googleapis/google-cloud-node-core) | 8.1.2 | Apache-2.0 |
-| [geospec-engine](https://github.com/taucad/geospec) | 0.1.0 | Apache-2.0 |
-| [geospec-engine-darwin-arm64](https://github.com/taucad/geospec) | 0.1.0 | Apache-2.0 |
-| [geospec-engine-linux-x64-gnu](https://github.com/taucad/geospec) | 0.1.0 | Apache-2.0 |
+| [geospec-engine](https://github.com/taucad/geospec) | 0.2.1 | Apache-2.0 |
+| [geospec-engine-darwin-arm64](https://github.com/taucad/geospec) | 0.2.1 | Apache-2.0 |
+| [geospec-engine-linux-x64-gnu](https://github.com/taucad/geospec) | 0.2.1 | Apache-2.0 |
 | [get-intrinsic](https://github.com/ljharb/get-intrinsic) | 1.3.0 | MIT |
 | [get-nonce](https://github.com/theKashey/get-nonce) | 1.0.1 | MIT |
 | [get-proto](https://github.com/ljharb/get-proto) | 1.0.1 | MIT |
@@ -578,8 +579,8 @@ Their copyright notices and full license texts ship inside each package and are 
 | [ms](https://github.com/vercel/ms) | 2.1.3 | MIT |
 | [n8ao](https://github.com/N8python/n8ao) | 1.10.2 | ISC |
 | [nanoid](https://github.com/ai/nanoid) | 5.1.16 | MIT |
-| [nanoraster](https://github.com/taucad/nanoraster) | 0.6.0 | Apache-2.0 |
-| [nanoraster-{platform}](https://github.com/taucad/nanoraster) | 0.6.0 | Apache-2.0 |
+| [nanoraster](https://github.com/taucad/nanoraster) | 0.6.1 | Apache-2.0 |
+| [nanoraster-{platform}](https://github.com/taucad/nanoraster) | 0.6.1 | Apache-2.0 |
 | [nanostores](https://github.com/nanostores/nanostores) | 1.5.5 | MIT |
 | [ndarray](https://github.com/mikolalysenko/ndarray) | 1.1.1 | MIT |
 | [ndarray-lanczos](https://github.com/donmccurdy/ndarray-lanczos) | 0.3.0 | MIT |

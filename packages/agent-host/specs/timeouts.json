@@ -142,6 +142,14 @@
       "fixedBy": "outside this charter: desktop geometry broker owner"
     },
     {
+      "id": "B14I",
+      "bound": "Desktop agent-tool runtime client idle retirement (120 s with no tool call or open document)",
+      "site": "apps/desktop/src/tau/idle-runtime-clients.ts",
+      "token": "entry.timer = setTimeout(",
+      "class": "Debounce",
+      "owner": "desktop memory"
+    },
+    {
       "id": "B15",
       "bound": "Agent-host configuration from main",
       "site": "apps/desktop/src/tau/services-host.impl.ts",
@@ -522,6 +530,14 @@
       "owner": "W7"
     },
     {
+      "id": "E35",
+      "bound": "Waits between lookups of an earlier model attempt the gateway is still settling, by a run's first step or a Resume (about 15 s in all; then MODEL_ATTEMPT_PENDING)",
+      "site": "packages/agent-host/src/harness/session.ts",
+      "token": "waitTimer",
+      "class": "External edge",
+      "owner": "W7"
+    },
+    {
       "id": "B16",
       "bound": "Project-host drain before the close begins (15 min; the close stops what is left and records its terminal rows)",
       "site": "packages/host/src/project-host.ts",
@@ -821,6 +837,14 @@
       "owner": "W17"
     },
     {
+      "id": "E36",
+      "bound": "tau mcp compute store open: a project's durable store must answer its first inspect within 10 s, else that project's builds stay in memory",
+      "site": "packages/cli/src/commands/mcp.ts",
+      "token": "computeStoreOpenLimit",
+      "class": "Liveness",
+      "owner": "tau mcp"
+    },
+    {
       "id": "D25",
       "bound": "Charter D17: read-only oversized replay retirement after 2 s idle; cancelled by active reads/acquisition, never source freshness authority",
       "site": "packages/agent-host/src/launchers/agent-launcher.ts",
@@ -1021,6 +1045,14 @@
       "token": "probeTimeout",
       "class": "External edge",
       "owner": "Provider permission readback"
+    },
+    {
+      "id": "HI1",
+      "bound": "Headless image worker idle release (30 s with no queued or running render)",
+      "site": "apps/ui/app/services/headless-image.service.ts",
+      "token": "this.idleTimer = setTimeout(",
+      "class": "Debounce",
+      "owner": "viewer memory"
     }
   ]
 }

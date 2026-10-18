@@ -306,6 +306,59 @@ const nextWithin = async <T>(watch: StallWatch<T>): Promise<IteratorResult<T>> =
   }
 };
 
+/** The waits between lookups of an attempt the gateway is still settling, about 15 s in all, before the run ends. */
+const pendingAttemptWaits = [250, 500, 1000, 2000, 4000, 8000] as const;
+
+/** Resolve after `milliseconds` on the clock, or reject with the signal's reason once it aborts. */
+const waitOn = async (clock: HostClock, milliseconds: number, signal: AbortSignal): Promise<void> => {
+  signal.throwIfAborted();
+  let waitTimer: unknown;
+  await new Promise<void>((resolve, reject) => {
+    const abort = (): void => {
+      clock.clearTimeout(waitTimer);
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException('The wait was aborted.', 'AbortError'));
+    };
+    waitTimer = clock.setTimeout(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+};
+
+/**
+ * Ask about one earlier attempt until it settles, within {@link pendingAttemptWaits} (EQ1: Tau waits by itself). A
+ * stopped run's call is still settling at the gateway when the next message starts or the run resumes at once
+ * (StopSettlement); a run's first step and a Resume both wait here.
+ *
+ * @param input - The funded transport that asks the gateway, the earlier attempt, the clock the waits run on, and the
+ *   signal that aborts the waits and the lookups.
+ * @returns The last answer: `pending` or `unavailable` once the waits are spent.
+ */
+export const settledInvocation = async ({
+  funding,
+  attemptId,
+  clock,
+  signal,
+}: Readonly<{
+  funding: Extract<InvocationFunding, { type: 'funded' }>;
+  attemptId: string;
+  clock: HostClock;
+  signal: AbortSignal;
+}>): Promise<InvocationResolution> => {
+  let resolution = await funding.resolveInvocation({ attemptId, signal });
+  for (const wait of pendingAttemptWaits) {
+    if (resolution.status !== 'pending' && resolution.status !== 'unavailable') {
+      break;
+    }
+    // oxlint-disable-next-line no-await-in-loop -- each lookup follows the previous answer's wait.
+    await waitOn(clock, wait, signal);
+    // oxlint-disable-next-line no-await-in-loop -- as above.
+    resolution = await funding.resolveInvocation({ attemptId, signal });
+  }
+  return resolution;
+};
+
 /**
  * Bound the silence between a stream's events (E9, L4 D-105). A firing late by a whole bound means the process was
  * frozen, not the stream silent: it re-arms once (W4 T9, RV7-F1).
@@ -1222,6 +1275,7 @@ const runFailureDetail = async (
 export const createAgentSession = async (options: CreateAgentSessionOptions): Promise<AgentSession> => {
   const now = options.now ?? (() => new Date());
   const createId = options.createId ?? createPortableId;
+  const writeChatAttachment = options.attachments?.write?.bind(options.attachments);
   const record = await createSessionRecord({
     log: options.eventLog,
     runId: options.runId,
@@ -1229,6 +1283,12 @@ export const createAgentSession = async (options: CreateAgentSessionOptions): Pr
     createId,
     now: () => now().toISOString(),
     ...(options.appendEvent ? { append: options.appendEvent } : {}),
+    ...(writeChatAttachment === undefined
+      ? {}
+      : {
+          writeAttachment: async (path: string, bytes: Uint8Array<ArrayBuffer>) =>
+            writeChatAttachment(options.chatId, path, bytes),
+        }),
   });
   /*
    * D15: durable rows name attachments; a model reads bytes. Each user message
@@ -1496,7 +1556,12 @@ export const createAgentSession = async (options: CreateAgentSessionOptions): Pr
       }
       for (const attemptId of unresolved) {
         // oxlint-disable-next-line no-await-in-loop -- each answer is recorded before the next attempt is asked about.
-        const resolution = await funding.resolveInvocation({ attemptId, signal });
+        const resolution = await settledInvocation({
+          funding,
+          attemptId,
+          clock: options.clock ?? globalThis,
+          signal,
+        });
         if (resolution.status === 'pending' || resolution.status === 'unavailable') {
           throw Object.assign(
             new Error(`The gateway has not finished model request ${attemptId}; resume the turn once it has.`),

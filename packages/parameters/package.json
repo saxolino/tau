@@ -1,6 +1,6 @@
 {
   "name": "@taucad/parameters",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Portable parameter semantics and checked change planning",
   "type": "module",
   "sideEffects": false,
@@ -77,7 +77,7 @@
   },
   "peerDependencies": {
     "xstate": "^6.0.0-alpha.59",
-    "zod": "^4.0.0"
+    "zod": "^4.1.0"
   },
   "devDependencies": {
     "@taucad/json-schema": "workspace:*",

@@ -129,20 +129,36 @@ export const observeGeometryHost = async (
         const child = originalFork(...args);
         if (geometry) {
           let spawnedPid: number | undefined;
+          /* Electron gives a utility its pid only at `spawn`, and the broker posts a fresh
+           * slot's first `geometry-run` synchronously after `fork`. Frames seen before the
+           * pid is known wait here and are recorded, in order, right after `spawn`. */
+          let unspawned: Array<{ kind: GeometryHostEvent['kind']; at: number; extra?: Partial<GeometryHostEvent> }> =
+            [];
+          const validPid = (pid: number | undefined): pid is number =>
+            pid !== undefined && Number.isSafeInteger(pid) && pid > 0;
           const record = (kind: GeometryHostEvent['kind'], extra?: Partial<GeometryHostEvent>): void => {
             const pid = spawnedPid ?? child.pid;
-            if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) {
+            if (!validPid(pid)) {
+              unspawned.push({ kind, at: Date.now(), ...(extra === undefined ? {} : { extra }) });
               return;
             }
             state.tauE2eGeometryEvents?.push({ kind, pid, at: Date.now(), ...extra });
           };
-          if (child.pid !== undefined && Number.isSafeInteger(child.pid) && child.pid > 0) {
-            spawnedPid = child.pid;
-            record('spawn');
+          const spawned = (pid: number): void => {
+            spawnedPid = pid;
+            state.tauE2eGeometryEvents?.push({ kind: 'spawn', pid, at: Date.now() });
+            for (const early of unspawned) {
+              state.tauE2eGeometryEvents?.push({ kind: early.kind, pid, at: early.at, ...early.extra });
+            }
+            unspawned = [];
+          };
+          if (validPid(child.pid)) {
+            spawned(child.pid);
           } else {
             child.once('spawn', () => {
-              spawnedPid = child.pid;
-              record('spawn');
+              if (validPid(child.pid)) {
+                spawned(child.pid);
+              }
             });
           }
           const originalPost = child.postMessage.bind(child);
@@ -236,7 +252,16 @@ export const restoreGeometryHost = async (session: DesktopSession): Promise<void
   }
 };
 
-/** The machines hello is emitted by the independent real services utility. */
+/**
+ * Launch environment the services probe needs. Machines are a deployment
+ * opt-in that defaults off, and the probe asks for the machines concern, so a
+ * spec that probes the services utility opts in; the e2e package honours the
+ * override that a release build strips.
+ */
+// eslint-disable-next-line @typescript-eslint/naming-convention -- Environment names are SCREAMING_SNAKE.
+export const servicesProbeEnvironment = { TAU_MACHINES_ENABLED: '1' } as const;
+
+/** The machines hello is emitted by the independent real services utility; launch with {@link servicesProbeEnvironment}. */
 export const probeServicesHost = async (session: DesktopSession): Promise<number> => {
   const before = Date.now();
   const hello = await session.page.evaluate(async (requestId) => {

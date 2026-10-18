@@ -8,13 +8,14 @@ import type { KernelProvider } from '@taucad/runtime';
  */
 export const kernelLibraries: Partial<Record<KernelProvider, Readonly<Record<string, string>>>> = {
   replicad: {
-    replicad: 'npm:@taulabs/replicad@1.1.0-taulabs.0',
+    replicad: 'npm:@taulabs/replicad@1.1.0-taulabs.1',
     'replicad-opencascadejs': 'npm:@taulabs/replicad-opencascadejs@0.23.0-beta.0',
   },
   opencascadejs: { libcascade: '3.1.0' },
   jscad: { '@jscad/modeling': '2.13.0' },
   manifold: { 'manifold-3d': '3.4.1' },
   picovoxel: { picovoxel: '0.1.0' },
+  smlib: { '@classcad/smlibwasm': '0.3.4' },
   tscircuit: {
     tscircuit: 'npm:@tscircuit/core@0.0.1844',
     '@tscircuit/core': '0.0.1844',

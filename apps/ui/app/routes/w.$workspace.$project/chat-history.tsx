@@ -972,6 +972,7 @@ const ExpandedChatHistory = memo(function ({
               ) : null}
               <ChatTextarea
                 ref={chatTextareaRef}
+                enableMobileCollapse
                 mode='main'
                 enableAutoFocus={false}
                 onSubmit={onSubmit}

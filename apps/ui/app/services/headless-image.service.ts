@@ -143,6 +143,11 @@ const captureCacheKey = (job: HeadlessImageJob): string | undefined =>
     : undefined;
 
 const failedAutomaticIdentityLimit = 100;
+/**
+ * The image worker holds a WebGPU device, its render targets and a wasm heap that never shrinks,
+ * so it is released once nothing has asked for an image for this long.
+ */
+export const imageWorkerIdleMilliseconds = 30_000;
 const maxQueuedExplicitJobs = 16;
 const maxQueuedExplicitBytes = 64 * 1024 * 1024;
 const maxQueuedAutomaticJobs = 8;
@@ -196,7 +201,8 @@ const hasAutomaticQueueCapacity = (queue: readonly QueuedJob[], incoming: Headle
 /**
  * App-owned, lazy image export client shared by thumbnails and agent captures.
  * It serializes GPU work, bounds queued automatic and explicit jobs, coalesces
- * automatic jobs by project, and retains its image worker until disposal.
+ * automatic jobs by project, and releases its image worker after
+ * {@link imageWorkerIdleMilliseconds} without work.
  */
 export class HeadlessImageService {
   // oxlint-disable-next-line typescript/parameter-properties -- UI uses erasableSyntaxOnly, which forbids TypeScript parameter properties.
@@ -213,6 +219,7 @@ export class HeadlessImageService {
   private unsubscribeTelemetry: (() => void) | undefined;
   private generation = 0;
   private lastSuccessfulCapture: { readonly key: string; readonly files: ExportFile[] } | undefined;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   public constructor(dependencies: HeadlessImageServiceDependencies = {}) {
     this.dependencies = dependencies;
@@ -246,13 +253,16 @@ export class HeadlessImageService {
     if (!automaticGpuAvailable) {
       throw new HeadlessImageError(
         'driver-unsupported',
-        'Automatic part previews are deferred on this software WebGPU adapter.',
+        'Automatic previews are deferred on this software WebGPU adapter.',
       );
     }
+    // Desktop renders in its native utility process; only browser batches need
+    // a prior successful render to avoid cold WebGPU startup in the viewport.
     if (
       job.kind === 'automatic-thumbnail' &&
       job.sourceFormat === 'glb' &&
       job.exportOptions.mode === 'batch' &&
+      !isDesktopTarget() &&
       !this.successfulGlbRender
     ) {
       throw new HeadlessImageError(
@@ -355,6 +365,7 @@ export class HeadlessImageService {
 
   public dispose(): void {
     this.disposed = true;
+    this.cancelIdleRelease();
     this.lastSuccessfulCapture = undefined;
     this.terminateClients();
     if (this.activeJob && !this.activeJob.settled) {
@@ -375,6 +386,7 @@ export class HeadlessImageService {
     if (this.running || this.disposed) {
       return;
     }
+    this.cancelIdleRelease();
     this.running = true;
     try {
       /* oxlint-disable no-await-in-loop -- A single GPU queue must execute image exports serially. */
@@ -455,6 +467,8 @@ export class HeadlessImageService {
       if (!this.disposed && this.queue.length > 0) {
         void this.drain();
         // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- dispose() can run while execute() awaits.
+      } else if (!this.disposed) {
+        this.scheduleIdleRelease();
       }
     }
   }
@@ -559,6 +573,26 @@ export class HeadlessImageService {
     }
     recordHeadlessImageTiming('worker.ready', startedAt, { cold: true });
     return client;
+  }
+
+  private scheduleIdleRelease(): void {
+    if (!this.imageClient || this.idleTimer) {
+      return;
+    }
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      if (!this.running && this.queue.length === 0) {
+        // The worker already proved it can render, so a later part batch need not defer as cold.
+        const { successfulGlbRender } = this;
+        this.terminateClients();
+        this.successfulGlbRender = successfulGlbRender;
+      }
+    }, imageWorkerIdleMilliseconds);
+  }
+
+  private cancelIdleRelease(): void {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
   }
 
   private terminateClients(): void {

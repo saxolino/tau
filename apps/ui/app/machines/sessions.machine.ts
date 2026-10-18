@@ -16,11 +16,35 @@ import type { ProjectSessionCloseReason, ProjectSessionState } from '#machines/p
  * `touch`; nothing in the app closes a project as a side effect of leaving it
  * (I22). The two visible policies — the idle window and the live-project
  * budget — refuse to touch a running, dirty or unpushed project (I24, I25) and
- * say why on the snapshot the sidebar reads.
+ * say why on the snapshot the sidebar reads. On a one-project device, opening
+ * another project is the person leaving the current one, so it closes that
+ * project as their own close unless a run would stop (B-08).
  */
 
 /** The browser holds at most eight live projects (OQ-W25, operator ruling). */
 export const browserLiveProjectBudget = 8;
+
+/**
+ * A phone or low-memory device holds one live project (B-08).
+ *
+ * Each live project keeps its kernel WASM, workers and caches; on an iPhone a
+ * second retained OCCT project alone can reach the tab's memory limit.
+ */
+export const constrainedLiveProjectBudget = 1;
+
+/**
+ * The live-project budget for a host.
+ *
+ * @param host - Whether this is the desktop app, and whether the device is memory-constrained.
+ * @returns Desktop: no count (it is memory-bound). Otherwise the constrained or browser budget.
+ * @public
+ */
+export const liveProjectBudgetFor = (host: Readonly<{ desktop: boolean; constrained: boolean }>): number => {
+  if (host.desktop) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return host.constrained ? constrainedLiveProjectBudget : browserLiveProjectBudget;
+};
 
 /** Why a policy refused to close a project. @public */
 export type SessionsCloseRefusal = 'running' | 'dirty' | 'unpushed';
@@ -86,6 +110,8 @@ export type SessionsMachineEvent =
   | { readonly type: 'close'; readonly projectId: string; readonly reason: ProjectSessionCloseReason }
   | { readonly type: 'touch'; readonly projectId: string }
   | { readonly type: 'idleExpired'; readonly projectId: string }
+  /** Free memory: close every project a policy may close except the focused one (B-08). */
+  | { readonly type: 'releaseMemory'; readonly keepProjectId?: string }
   | {
       readonly type: 'sessionState';
       readonly projectId: string;
@@ -155,6 +181,21 @@ export const sessionsCloseSuggestions = (context: SessionsMachineContext): reado
     .filter((projectId) => isClosable(context, projectId))
     .sort((left, right) => (context.touchOrder[left] ?? 0) - (context.touchOrder[right] ?? 0));
 
+/**
+ * On a one-project device, the live projects opening another may close as the
+ * person's own close: anything but a project with a run in flight, which only
+ * the person may stop (I24). Least recently touched first.
+ */
+const switchCloseCandidates = (context: SessionsMachineContext): readonly string[] =>
+  context.budget > constrainedLiveProjectBudget
+    ? []
+    : Object.keys(context.refs)
+        .filter((projectId) => {
+          const status = statusOf(context, projectId);
+          return status?.runs === 0 && status.state !== 'closing';
+        })
+        .sort((left, right) => (context.touchOrder[left] ?? 0) - (context.touchOrder[right] ?? 0));
+
 type SessionsEnqueue = EnqueueObject<
   SessionsMachineEvent,
   SessionsMachineEmitted,
@@ -183,7 +224,7 @@ const withoutKey = <T>(record: Readonly<Record<string, T>>, key: string): Record
  * @public
  */
 export const sessionsIgnoredEvents: ReadonlyArray<readonly [state: string, eventType: string]> = [
-  ...['open', 'touch', 'close', 'idleExpired', 'quit'].map((type) => ['quitting', type] as const),
+  ...['open', 'touch', 'close', 'idleExpired', 'releaseMemory', 'quit'].map((type) => ['quitting', type] as const),
   ['ready', 'quitAnyway'],
 ];
 
@@ -233,27 +274,39 @@ export const sessionsMachine = setup({
   initial: 'ready',
   on: {
     /* A child says where it is; the registry's policies read nothing else. */
-    sessionState: {
-      context: ({ context, event }) => ({
-        status: {
-          ...context.status,
-          [event.projectId]: {
-            state: event.state,
-            runs: event.runs,
-            dirty: event.dirty,
-            pushed: event.pushed,
-            pending: event.pending ?? 0,
+    sessionState: ({ context, event }, enq) => {
+      /* A close made to free a slot came back live or failed (a producer
+       * refused, R4): the slot will not free, so the open the registry was
+       * holding for it becomes the refusal the person answers (I28). */
+      if (
+        context.pendingOpen !== undefined &&
+        context.status[event.projectId]?.state === 'closing' &&
+        (event.state === 'live' || event.state === 'failed')
+      ) {
+        enq.emit({ type: 'budgetRefused', projectId: context.pendingOpen, suggestions: Object.keys(context.refs) });
+      }
+      return {
+        context: {
+          status: {
+            ...context.status,
+            [event.projectId]: {
+              state: event.state,
+              runs: event.runs,
+              dirty: event.dirty,
+              pushed: event.pushed,
+              pending: event.pending ?? 0,
+            },
           },
+          /* R6: a refusal is about the facts at the time, not about the project.
+           * The run settled, the tree was saved, the push landed — the reason is
+           * gone, so the row stops saying it and the next `idleExpired` decides
+           * again. */
+          refusals:
+            context.refusals[event.projectId] !== undefined && event.runs === 0 && !event.dirty && event.pushed
+              ? withoutKey(context.refusals, event.projectId)
+              : context.refusals,
         },
-        /* R6: a refusal is about the facts at the time, not about the project.
-         * The run settled, the tree was saved, the push landed — the reason is
-         * gone, so the row stops saying it and the next `idleExpired` decides
-         * again. */
-        refusals:
-          context.refusals[event.projectId] !== undefined && event.runs === 0 && !event.dirty && event.pushed
-            ? withoutKey(context.refusals, event.projectId)
-            : context.refusals,
-      }),
+      };
     },
     /* The person said *Not now* to the budget: forget the refused open, or the
      * next close would resume something nobody is waiting for any more. */
@@ -322,6 +375,16 @@ export const sessionsMachine = setup({
             }
             return { context: { pendingOpen: event.projectId } };
           }
+          /* One-project device (B-08): the dialog below could only offer
+           * *Close X and open*, so the open takes that answer itself — the
+           * person's close, whose `closing` cuts and flushes a dirty or unpushed
+           * project before releasing it (I25). A run would stop, so a running
+           * project still asks (I24). */
+          const [leaving] = switchCloseCandidates(context);
+          if (leaving !== undefined) {
+            enq.sendTo(context.refs[leaving]!, { type: 'close', reason: 'user' });
+            return { context: { pendingOpen: event.projectId } };
+          }
           /* Nothing is idle: the budget refuses and names the candidates, so
            * the person picks (I28). Never a silent drop.
            *
@@ -361,6 +424,26 @@ export const sessionsMachine = setup({
               refusals: refusal === undefined ? context.refusals : { ...context.refusals, [event.projectId]: refusal },
             },
           };
+        },
+        /* The memory policy is a visible policy too: it closes only what the
+         * idle window could, says why on the row, and leaves the project on
+         * screen alone (I24, I25, B-08). */
+        releaseMemory: ({ context, event }, enq) => {
+          let { refusals } = context;
+          for (const [projectId, ref] of Object.entries(context.refs)) {
+            if (projectId === event.keepProjectId) {
+              continue;
+            }
+            if (isClosable(context, projectId)) {
+              enq.sendTo(ref, { type: 'close', reason: 'memory' });
+              continue;
+            }
+            const refusal = refusalFor(context, projectId);
+            if (refusal !== undefined) {
+              refusals = { ...refusals, [projectId]: refusal };
+            }
+          }
+          return refusals === context.refusals ? {} : { context: { refusals } };
         },
         quit: { target: 'quitting' },
       },

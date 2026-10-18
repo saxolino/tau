@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { waitFor } from 'xstate';
 import type { ActorRefFrom } from 'xstate';
@@ -50,6 +50,7 @@ export const ChatTextarea = memo(function ({
   mode = 'main',
   taskMailbox = false,
   enableApprovals = true,
+  enableMobileCollapse = false,
 }: ChatTextareaProperties): React.JSX.Element {
   // Mutable refs populated by ChatTextareaDesktop so that drops anywhere on the
   // outer container can route file/editor chips into Tiptap nodes.
@@ -78,12 +79,22 @@ export const ChatTextarea = memo(function ({
     handleViewerScreenshotDropRef.current(entryPath);
   }, []);
 
+  /* Focus inside the composer or its portalled menus; a collapsible composer unfolds while it holds. */
+  const [isFocused, setIsFocused] = useState(false);
+  const handleFocus = useCallback((): void => {
+    setIsFocused(true);
+  }, []);
+  const handleBlur = useCallback((): void => {
+    setIsFocused(false);
+    onBlur?.();
+  }, [onBlur]);
+
   const logic = useChatTextareaLogic({
     ref,
     onSubmit,
     enableAutoFocus,
     onEscapePressed,
-    onBlur,
+    onBlur: handleBlur,
     mode,
     isSubmitDisabled,
     taskMailbox,
@@ -312,7 +323,7 @@ export const ChatTextarea = memo(function ({
     [captureEntry],
   );
 
-  const skeleton = <ChatTextareaSkeleton className={className} />;
+  const skeleton = <ChatTextareaSkeleton className={className} enableMobileCollapse={enableMobileCollapse} />;
   /* A paused run is answered from the composer, not the transcript. Only the
    * main composer, and only under a real session: the new-project composer runs
    * on `ChatComposerProvider`, which has no chat to be paused. */
@@ -331,6 +342,8 @@ export const ChatTextarea = memo(function ({
         isSubmitDisabled={logic.isSubmitDisabled}
         mode={mode}
         taskMailbox={taskMailbox}
+        enableMobileCollapse={enableMobileCollapse}
+        isFocused={isFocused}
         // State
         dragKind={logic.dragKind}
         isSubmitting={logic.isSubmitting}
@@ -369,6 +382,7 @@ export const ChatTextarea = memo(function ({
         handleAddImage={logic.handleAddImage}
         onScreenshotAction={handleScreenshotAction}
         onEscapePressed={onEscapePressed}
+        handleTextareaFocus={handleFocus}
         handleTextareaBlur={logic.handleTextareaBlur}
         removeAttachment={logic.removeAttachment}
       />

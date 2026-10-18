@@ -1,6 +1,6 @@
 {
   "name": "@taucad/cli",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "CLI for @taucad/runtime",
   "type": "module",
   "sideEffects": [
@@ -41,7 +41,8 @@
   "author": "Richard Fontein",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
   },
   "exports": {
     ".": "./src/index.ts",
@@ -72,8 +73,8 @@
     "@taucad/assimp": "workspace:*",
     "@taucad/brep": "workspace:*",
     "@taucad/build123d": "workspace:*",
-    "@taucad/camera": "workspace:*",
     "@taucad/bundler-core": "workspace:*",
+    "@taucad/camera": "workspace:*",
     "@taucad/esbuild": "workspace:*",
     "@taucad/filesystem": "workspace:*",
     "@taucad/geospec-engine": "workspace:*",
@@ -94,6 +95,7 @@
     "@taucad/runtime": "workspace:*",
     "@taucad/skills": "workspace:*",
     "@taucad/slicer": "workspace:*",
+    "@taucad/smlib": "workspace:*",
     "@taucad/tscircuit": "workspace:*",
     "@taucad/zoo": "workspace:*",
     "citty": "catalog:",

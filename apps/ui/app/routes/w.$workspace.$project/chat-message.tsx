@@ -1034,6 +1034,8 @@ export const ChatMessage = memo(function ({
             'opacity-0',
             'group-hover/chat-message:opacity-100',
             'group-focus-within/chat-message:opacity-100',
+            // A touch screen has no hover to reveal the row.
+            'pointer-coarse:opacity-100',
             // An answer's last paragraph carries the markdown viewer's own bottom
             // margin, so its row cancels the column gap; a bubble has none, so a
             // request's row keeps it above and gives it back below, where the
@@ -1045,6 +1047,7 @@ export const ChatMessage = memo(function ({
           <CopyButton
             tooltipContentProperties={{ side: 'bottom' }}
             size='icon-xs'
+            className='pointer-coarse:size-8'
             getText={() => serializeMessage(displayMessage)}
             tooltip='Copy message'
           />

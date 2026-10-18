@@ -27,6 +27,7 @@ import {
   expectSignedIn,
   expectVisible,
   fileTreeItemOf,
+  openViewerIssues,
   renderCycleCount,
   selectChatModel,
   selectKernel,
@@ -219,7 +220,10 @@ const picogkWorkers = (): readonly NativeWorker[] => {
   }
   const result = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
   expect(result.status, result.stderr).toBe(0);
-  const workerCommand = /^\s*(\d+)\s+.*Tau\.PicoGK\.Worker --workspace (\S+) --artifacts (\S+) --parent-pid \d+$/u;
+  /* The apphost (`Tau.PicoGK.Worker`) from prepared resources, or the store closure's `dotnet` running the assembly
+   * (`tau-worker/Tau.PicoGK.Worker.dll`, `picogk-closure.ts`). */
+  const workerCommand =
+    /^\s*(\d+)\s+.*Tau\.PicoGK\.Worker(?:\.dll)? --workspace (\S+) --artifacts (\S+) --parent-pid \d+$/u;
   return result.stdout.split('\n').flatMap((line) => {
     const match = workerCommand.exec(line);
     const pid = match?.[1];
@@ -417,8 +421,11 @@ test('[completed-artifact] runs the Build123d filesystem, parameter, topology, w
   seededEmail = account.email;
   const token = await seedTauTestUser(account);
   fixture = await startGatewayFixture({ targetFile: 'main.py', content: build123dSource });
+  /* The package, not the workspace app: only a packaged app bundles the Build123d closure its store seeds from
+   * (`main.ts` passes no bundle when unpackaged), so the workspace app reports the closure absent and cannot build. */
   session = await launchDesktopApp({
     token,
+    packaged: true,
     env: { TAU_E2E_DISABLE_CREDENTIAL_PERSISTENCE: '1' },
   });
   const { page } = session;
@@ -432,9 +439,7 @@ test('[completed-artifact] runs the Build123d filesystem, parameter, topology, w
 
   try {
     await expectVisible(page.locator('[aria-label="Ask Tau to build anything..."]'), 120_000);
-    if (desktopE2ECompletedArtifact) {
-      await authenticatePackagedDesktop(session, token);
-    }
+    await authenticatePackagedDesktop(session, token);
     await expectSignedIn(page);
     await selectKernel(page, 'Build123d');
     await connectPickedFolder(session);
@@ -452,7 +457,8 @@ test('[completed-artifact] runs the Build123d filesystem, parameter, topology, w
     await expectGeometryFramed(page);
 
     writeFileSync(sourcePath, failingBuild123dSource, 'utf8');
-    const editorFailure = page.getByText(failureSentinel, { exact: true });
+    const failureIssues = await openViewerIssues(page);
+    const editorFailure = failureIssues.getByText(failureSentinel, { exact: true });
     await expectVisible(editorFailure, 120_000);
     await expectCount(editorFailure, 1);
     await expectCount(page.getByRole('alert', { name: 'CAD runtime error' }), 0);
@@ -523,6 +529,24 @@ test('[completed-artifact] runs the Build123d filesystem, parameter, topology, w
     if (process.platform !== 'win32') {
       const workers = nativeWorkers().filter(({ pid }) => !existingWorkerPids.has(pid));
       expect(workers.length).toBeGreaterThan(0);
+      /* A real quit, as the PicoGK row below: the fixture's own disposal is `app.exit`, which skips the shutdown
+       * that removes each worker's temporary root. */
+      const electronProcess = session.application.process();
+      await expect
+        .poll(
+          async () =>
+            page.evaluate(() => {
+              const shell = globalThis as typeof globalThis & { tau?: { quit?: { isReady(): boolean } } };
+              return shell.tau?.quit?.isReady() ?? false;
+            }),
+          { timeout: 120_000 },
+        )
+        .toBe(true);
+      await session.application.evaluate(({ app }) => {
+        app.quit();
+      });
+      await expect.poll(() => electronProcess.exitCode, { timeout: 15_000 }).toBe(0);
+      expect(electronProcess.signalCode).toBeNull();
       await session.close();
       session = undefined;
       await expect
@@ -676,7 +700,7 @@ test('[completed-artifact] runs packaged PicoGK C# through filesystem, topology,
       const capture = (): void => {
         const status = [...document.querySelectorAll('span')].find((element) => {
           const text = element.textContent.trim().toLowerCase();
-          return text === 'buffering...' || text === 'rendering...';
+          return text === 'buffering…' || text === 'rendering…';
         });
         const state = status?.textContent.trim().toLowerCase();
         const next = state ?? 'idle';
@@ -701,7 +725,7 @@ test('[completed-artifact] runs packaged PicoGK C# through filesystem, topology,
             return (
               states.length >= 2 &&
               states.at(-1) === 'idle' &&
-              states.every((state, index) => state === (index % 2 === 0 ? 'rendering...' : 'idle'))
+              states.every((state, index) => state === (index % 2 === 0 ? 'rendering…' : 'idle'))
             );
           }),
         { timeout: 120_000 },
@@ -716,7 +740,7 @@ test('[completed-artifact] runs packaged PicoGK C# through filesystem, topology,
       return target.__tauPicoGkStates ?? [];
     });
     expect(multiStepStates.length).toBeGreaterThanOrEqual(2);
-    expect(multiStepStates).toEqual(multiStepStates.map((_, index) => (index % 2 === 0 ? 'rendering...' : 'idle')));
+    expect(multiStepStates).toEqual(multiStepStates.map((_, index) => (index % 2 === 0 ? 'rendering…' : 'idle')));
     expect(multiStepStates.at(-1)).toBe('idle');
 
     // Observe a fresh lifecycle before restoring bytes: the previous scene is
@@ -781,9 +805,7 @@ test('[completed-artifact] runs packaged PicoGK C# through filesystem, topology,
       picogkHelperSource(3).replace('radius * scale', 'MissingPicoGkSymbol * scale'),
       'utf8',
     );
-    const issues = page.locator('[data-slot="collapsible"]').filter({
-      has: page.getByRole('button', { name: /^Issues/u }),
-    });
+    const issues = await openViewerIssues(page);
     const compileFailure = issues.getByText("The name 'MissingPicoGkSymbol' does not exist in the current context", {
       exact: true,
     });
@@ -802,9 +824,11 @@ test('[completed-artifact] runs packaged PicoGK C# through filesystem, topology,
     await expectVisible(page.getByTestId('cad-viewer-canvas-region').locator('canvas'), 120_000);
 
     writeFileSync(sourcePath, failingPicogkRuntimeSource, 'utf8');
-    const runtimeFailure = issues.getByText(picogkRuntimeFailure, { exact: true });
+    /* The project route remounted the viewer bar, whose issues list starts closed. */
+    const runtimeIssues = await openViewerIssues(page);
+    const runtimeFailure = runtimeIssues.getByText(picogkRuntimeFailure, { exact: true });
     await expectVisible(runtimeFailure, 120_000);
-    await expectCount(issues, 1);
+    await expectCount(runtimeIssues, 1);
     await expectCount(runtimeFailure, 1);
     writeFileSync(sourcePath, picogkSource, 'utf8');
     await expectCount(runtimeFailure, 0, 120_000);
@@ -815,7 +839,7 @@ test('[completed-artifact] runs packaged PicoGK C# through filesystem, topology,
 
     const workersBeforeReload = ownedPicoGkWorkers(session.application.process().pid);
     expect(workersBeforeReload).not.toHaveLength(0);
-    const renderingStatus = page.getByText('rendering...', { exact: true });
+    const renderingStatus = page.getByText('rendering…', { exact: true });
     await expectCount(renderingStatus, 0, 120_000);
     writeFileSync(sourcePath, slowPicogkSource, 'utf8');
     await expectVisible(renderingStatus, 120_000);

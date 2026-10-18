@@ -1,6 +1,6 @@
 {
   "name": "@taucad/opencascade",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Browser/WASM OpenCascade kernel plugin for Tau",
   "type": "module",
   "sideEffects": false,
@@ -71,7 +71,7 @@
   },
   "peerDependencies": {
     "@taucad/runtime": "^0.1.0-beta.0",
-    "zod": "^4.0.0"
+    "zod": "^4.1.0"
   },
   "devDependencies": {
     "@taucad/esbuild": "workspace:*",

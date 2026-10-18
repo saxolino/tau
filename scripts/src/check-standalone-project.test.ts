@@ -43,7 +43,7 @@ describe('standalone-project oracle', () => {
     expect(ecosystemKernels('none')).toEqual(['openscad']);
     expect(ecosystemKernels('kcl')).toEqual(['zoo']);
     expect(ecosystemKernels('npm')).toEqual(
-      expect.arrayContaining(['replicad', 'manifold', 'jscad', 'opencascadejs', 'picovoxel', 'tscircuit']),
+      expect.arrayContaining(['replicad', 'manifold', 'jscad', 'opencascadejs', 'picovoxel', 'smlib', 'tscircuit']),
     );
   });
 
@@ -52,7 +52,7 @@ describe('standalone-project oracle', () => {
     try {
       const expected = {
         replicad: {
-          replicad: 'npm:@taulabs/replicad@1.1.0-taulabs.0',
+          replicad: 'npm:@taulabs/replicad@1.1.0-taulabs.1',
           'replicad-opencascadejs': 'npm:@taulabs/replicad-opencascadejs@0.23.0-beta.0',
         },
         opencascadejs: { libcascade: '3.1.0' },

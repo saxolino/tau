@@ -82,6 +82,7 @@ import { systemSkillBundles } from '@taucad/skills/resources';
 import { canonicalPath } from '#main/project-roots.js';
 import { createGeometryRunnerClient } from '#tau/geometry-runner-client.js';
 import { createProjectModelResolver } from '#tau/project-model-resolver.js';
+import { agentRuntimeIdleMilliseconds, retireIdleClients } from '#tau/idle-runtime-clients.js';
 import type { createDesktopRuntime } from '#tau/desktop-runtime.factory.js';
 
 /**
@@ -848,6 +849,15 @@ export const createServicesHost = (options: ServicesHostOptions = {}): ServicesH
       }
     })();
   };
+  /* D-DT-01: the renderer's own utility serves the open project; this one serves
+   * tool calls only, so it goes once idle and the next call forks a fresh one. */
+  const agentRuntimeClients = retireIdleClients({
+    clients: runtimeClients,
+    idleMilliseconds: agentRuntimeIdleMilliseconds,
+    retire: (root, incarnation) => {
+      closeRuntimeClients(async () => runtimeClients.close(root, incarnation));
+    },
+  });
 
   /**
    * Admit a turn checkout's root for one holder (a run or a revision capture).
@@ -916,7 +926,7 @@ export const createServicesHost = (options: ServicesHostOptions = {}): ServicesH
       },
       /* Rooted per run, exactly as the daemon does it: a candidate turn's kernel
        * and GeoSpec tools read the checkout its file tools write. */
-      runtimeClient: async (root) => runtimeClients.get(root),
+      runtimeClient: async (root) => agentRuntimeClients.get(root),
       geospecRunner: async (root) => {
         if (!requestGeometryPort) {
           throw new Error('The desktop services host has no isolated geometry runner broker.');
@@ -1554,6 +1564,7 @@ export const createServicesHost = (options: ServicesHostOptions = {}): ServicesH
       mcpServer?.close();
       mcpServer = undefined;
       mcpOrigin = '';
+      agentRuntimeClients.dispose();
       closeRuntimeClients(async () => runtimeClients.closeAll());
       /** Keep the internal authority alive through every final revision write. */
       const settleForcedCleanup = async (): Promise<void> => {

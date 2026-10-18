@@ -21,6 +21,12 @@
 \* item and successor run barrier still use the original command identity.
 \* Grok config discovery and host-owned session selection affect composer controls;
 \* queued admission, FIFO delivery and durable cancellation retain these owners.
+\* Relabelling Steer as Send now changes only presentation; Steer keeps its targeted
+\* durable cancel, and the next message's run waits on the stopped attempt in the host.
+\* The composer's mobile collapse tracks focus for layout only; submit, admission
+\* and queue delivery keep the same paths.
+\* A foreign segment rescan that ends unchanged re-presents the local transcript;
+\* it reads the projection only and leaves admission, delivery and the queue alone.
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS Messages, Tabs, Durable, QuietSubmit, StableIdentity,
           ObserveBarrier, TargetedCancel, TerminalBeforeSend,

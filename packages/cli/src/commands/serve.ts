@@ -4,11 +4,15 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
-import { Worker } from 'node:worker_threads';
 
-import { defaultConfigDirectory, defaultMachineProviders, defaultPayloadStore, startHostDaemon } from '@taucad/host';
+import {
+  defaultConfigDirectory,
+  defaultMachineProviders,
+  defaultPayloadStore,
+  handOffMintPath,
+  startHostDaemon,
+} from '@taucad/host';
 import { startNativeWorker } from '@taucad/native-process-core';
-import { connectSqliteComputeStoreWorker } from '@taucad/runtime/node';
 import type { ComputeBinding } from '@taucad/runtime/types';
 import type {
   HostDaemonAgentOptions,
@@ -22,11 +26,14 @@ import { createConsola } from 'consola';
 
 import { acquisitionOf } from '#acquisition.js';
 import type { Acquisition } from '#acquisition.js';
+import { prepareServeUi } from '#serve-ui.js';
+import type { ServeUi } from '#serve-ui.js';
 import { stageUiEnvironment } from '#ui-environment.js';
 import { cliZooProxyUrl } from '#zoo-proxy.js';
 import { requireGitToolchain } from '#commands/revisions.js';
 import { cliError, emit, exitCodes, writeStdout } from '#output.js';
-import type { ComputeStoreWorkerData } from '#compute-store.worker.js';
+import { createComputeStoreHost } from '#compute-store.js';
+import type { ComputeStoreConnection } from '#compute-store.js';
 import type * as NativeKernels from '#native-kernels.js';
 import type { NativeComposition, NativePreparation } from '#native-kernels.js';
 
@@ -52,14 +59,6 @@ const tauCloudEnabled = (): boolean => {
   }
   throw new TypeError('TAU_CLOUD_ENABLED must be exactly true or false');
 };
-
-const computeStoreWorkerModulePath = (): string =>
-  fileURLToPath(
-    new URL(
-      import.meta.url.endsWith('.ts') ? '../compute-store.worker.ts' : './compute-store-worker.mjs',
-      import.meta.url,
-    ),
-  );
 
 /**
  * The arguments of one runtime child. The daemon starts it with a minimal environment, so the acquisition profile
@@ -197,6 +196,92 @@ export const agentWorkspaceRoot = (workspace: string | undefined, cwd: string): 
   }
 };
 
+/* An origin as a browser sends it: a scheme, `://` and an authority, nothing after (`app://tau` included). */
+const originPattern = /^[a-z][\d+.a-z-]*:\/\/[^\s#/?]+$/u;
+
+/**
+ * The browser origins `--allowed-origins` lists (charter S32, ruling X32): exact strings, as a browser sends `Origin`,
+ * comma-separated or repeated. A listed origin may read the descriptor across origins and its `/agent` upgrade passes
+ * the origin check; admission still needs the token. A wildcard, a path or a trailing slash never matches a browser's
+ * `Origin`, so each is refused rather than silently ignored.
+ *
+ * @internal
+ * @param value - The flag's value or values, or `TAU_HOST_ALLOWED_ORIGINS`.
+ * @returns The origins, deduplicated, in the order given.
+ * @throws {CliError} `ORIGIN_INVALID` (exit 2) for a value that is not an exact origin.
+ */
+export const parseAllowedOrigins = (value: string | readonly string[] | undefined): readonly string[] => {
+  const values = (typeof value === 'string' ? [value] : (value ?? []))
+    .flatMap((entry) => entry.split(','))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+  for (const origin of values) {
+    const special = /^https?:/u.test(origin) && URL.canParse(origin) ? new URL(origin).origin : undefined;
+    if (!originPattern.test(origin) || (special !== undefined && special !== origin)) {
+      throw cliError(
+        'ORIGIN_INVALID',
+        `--allowed-origins takes exact origins such as https://tau.new or http://localhost:3000 (no path, no trailing slash, no wildcard); ${JSON.stringify(origin)} is not one.`,
+        exitCodes.usage,
+      );
+    }
+  }
+  return [...new Set(values)];
+};
+
+/** The renderer origin of Tau Desktop (`app://tau`), admitted for a desktop hand-off (X54). */
+export const desktopOrigin = 'app://tau';
+
+/** Where a served daemon is handed after it is ready: Tau Desktop, or the Tau UI at a listed website origin. */
+export type HandOffTarget =
+  | Readonly<{ kind: 'desktop'; origin: string }>
+  | Readonly<{ kind: 'website'; origin: string }>;
+
+/**
+ * Read `--hand-off`: `desktop`, or one exact website origin serving the Tau UI (the `tau open --ui-origin` escape
+ * hatch, charter S32). Either way its origin is admitted, for that hand-off.
+ *
+ * @internal
+ * @param value - The flag's value.
+ * @returns The target, or `undefined` when there is no hand-off.
+ * @throws {CliError} `ORIGIN_INVALID` (exit 2) for a value that is neither `desktop` nor one exact origin.
+ */
+export const handOffTarget = (value: unknown): HandOffTarget | undefined => {
+  if (typeof value !== 'string' || value === '') {
+    return undefined;
+  }
+  if (value === 'desktop') {
+    return { kind: 'desktop', origin: desktopOrigin };
+  }
+  const origins = parseAllowedOrigins(value);
+  if (origins.length !== 1 || !/^https?:\/\//u.test(origins[0]!)) {
+    throw cliError(
+      'ORIGIN_INVALID',
+      `--hand-off takes desktop or one exact http(s) origin serving the Tau UI, such as https://tau.new; ${JSON.stringify(value)} is not one.`,
+      exitCodes.usage,
+    );
+  }
+  return { kind: 'website', origin: origins[0]! };
+};
+
+/**
+ * The link that hands a served daemon to its target with a one-time code (X54). Tau Desktop takes
+ * `tau://host/<loopback origin>?code=<code>`; a website takes the same two values in its fragment, which never
+ * reaches the website's server.
+ *
+ * @internal
+ * @param target - Where the daemon is handed.
+ * @param served - The daemon's served URL.
+ * @param code - The one-time code.
+ * @returns The link to open.
+ */
+export const handOffLink = (target: HandOffTarget, served: string, code: string): string => {
+  const { origin } = new URL(served);
+  if (target.kind === 'desktop') {
+    return `tau://host/${origin}?code=${encodeURIComponent(code)}`;
+  }
+  return `${target.origin}/#${new URLSearchParams({ 'tau-host': origin, 'tau-code': code }).toString()}`;
+};
+
 /**
  * Build Launcher 1's configuration from the CLI surface.
  *
@@ -210,7 +295,7 @@ export const agentWorkspaceRoot = (workspace: string | undefined, cwd: string): 
  */
 const agentOptions = (
   args: {
-    readonly ui?: string;
+    readonly ui?: string | undefined;
     readonly workspace?: string;
     readonly gateway?: string;
     readonly model: string;
@@ -219,10 +304,12 @@ const agentOptions = (
     readonly externalAgents?: boolean;
     readonly testModel?: boolean;
     readonly computeMode: string;
+    readonly allowedOrigins?: string | readonly string[];
   },
   port: number | undefined,
 ): HostDaemonAgentOptions | undefined => {
   const uiRoot = args.ui ? resolve(args.ui) : undefined;
+  const allowedOrigins = parseAllowedOrigins(args.allowedOrigins);
   if (port === undefined) {
     return undefined;
   }
@@ -260,6 +347,7 @@ const agentOptions = (
     token,
     port,
     ...(uiRoot ? { uiRoot } : {}),
+    ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
     /* On by default and self-limiting: an adapter that is not installed, or a
      * CLI that is not on PATH, is simply not advertised. `--no-external-agents`
      * is the operator's off switch, not a prerequisite. Resolution is anchored
@@ -342,6 +430,11 @@ export const serveNativeKernels = (): {
         return closureRoots ?? [];
       },
       start: startNativeWorker,
+      /* A runtime child cannot read the store, so a failed handshake is re-verified here (D8, X35). */
+      verify: async (runtimePath, signal) => {
+        const { verifyStoreClosure } = await nativeKernels();
+        return verifyStoreClosure(runtimePath, signal);
+      },
     },
     prepareKernel: async ({ kernel }, { signal, onProgress }) => {
       preparation ??= openPreparation();
@@ -495,6 +588,8 @@ const parsePositiveInteger = (name: string, value: string): number => {
  */
 const announceServed = async (served: {
   readonly url: string;
+  /** The hand-off link, which is printed and opened in place of the URL. */
+  readonly handOff?: string | undefined;
   readonly workspace: string;
   readonly relay: string | undefined;
   readonly ui: boolean;
@@ -510,38 +605,137 @@ const announceServed = async (served: {
       workspace: served.workspace,
       relay: served.relay ?? null,
       ui: served.ui,
+      ...(served.handOff === undefined ? {} : { handOff: served.handOff }),
     });
   } else if (served.print) {
-    await writeStdout(`${served.url}\n`);
+    await writeStdout(`${served.handOff ?? served.url}\n`);
   }
   consola.success(`Serving ${served.workspace} at ${served.url}${served.relay === undefined ? ' (local only)' : ''}`);
   if (served.open) {
-    openInBrowser(served.url);
+    openInBrowser(served.handOff ?? served.url);
   }
 };
 
 /**
- * `--smoke-test`: the daemon's descriptor must answer, as a page or client would ask it.
+ * Which UI `tau serve` serves: none (`--no-ui`), a directory (`--ui <dir>`, for development), or by default the
+ * digest-pinned Tau UI layer from the payload store (charter W18).
+ *
+ * @internal
+ * @param value - The `--ui` value: a directory, `false` under `--no-ui`, or absent.
+ * @returns The choice.
+ */
+export const serveUiChoice = (
+  value: unknown,
+): Readonly<{ kind: 'none' }> | Readonly<{ kind: 'store' }> | Readonly<{ kind: 'directory'; directory: string }> => {
+  if (value === false || value === 'false') {
+    return { kind: 'none' };
+  }
+  return typeof value === 'string' && value !== '' ? { kind: 'directory', directory: value } : { kind: 'store' };
+};
+
+/**
+ * Bytes as megabytes with one decimal, for progress lines.
+ *
+ * @param bytes - A byte count.
+ * @returns The count in megabytes, such as `122.0 MB`.
+ */
+const megabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} MB`;
+
+/**
+ * Prepare the pinned Tau UI layer into the payload store, saying what it downloads (I5: automatic, with visible
+ * progress). A sealed layer answers at once and says nothing; a download reports every tenth of its bytes on stderr.
+ *
+ * @param options - Cancellation, and the preparation for tests.
+ * @returns The sealed UI directory, or why there is none.
+ */
+export const prepareStoreUi = async (
+  options: { readonly signal?: AbortSignal; readonly prepare?: typeof prepareServeUi } = {},
+): Promise<ServeUi> => {
+  /* Mutated by the progress callback, so an object: a `let` here narrows to its initial value. */
+  const progress = { announced: false, reportedTenth: 0 };
+  const ui = await (options.prepare ?? prepareServeUi)({
+    signal: options.signal ?? new AbortController().signal,
+    onProgress: ({ completedBytes, totalBytes }) => {
+      if (!progress.announced) {
+        progress.announced = true;
+        consola.start(`Downloading the Tau UI (${megabytes(totalBytes)}, once; verified against its pinned digest)`);
+      }
+      const tenth = totalBytes > 0 ? Math.floor((completedBytes / totalBytes) * 10) : 0;
+      if (tenth > progress.reportedTenth) {
+        progress.reportedTenth = tenth;
+        consola.info(`Tau UI: ${megabytes(completedBytes)} of ${megabytes(totalBytes)} (${String(tenth * 10)}%)`);
+      }
+    },
+  });
+  if (ui.status === 'ready' && progress.announced) {
+    consola.success('The Tau UI is verified and sealed in the payload store.');
+  }
+  return ui;
+};
+
+/**
+ * Mint one hand-off code at the daemon, with the token this process minted for it.
+ *
+ * @param served - The daemon's served URL.
+ * @param token - The daemon's admission token.
+ * @returns The code.
+ * @throws {CliError} `HAND_OFF_FAILED` (exit 1) when the daemon does not mint one.
+ */
+const mintHandOffCode = async (served: string, token: string): Promise<string> => {
+  try {
+    const response = await fetch(new URL(handOffMintPath, served), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(smokeTestTimeout),
+    });
+    const body = (await response.json()) as { readonly code?: unknown };
+    if (!response.ok || typeof body.code !== 'string') {
+      throw new Error(`answered ${String(response.status)}`);
+    }
+    return body.code;
+  } catch (error) {
+    throw cliError(
+      'HAND_OFF_FAILED',
+      `The daemon at ${served} did not mint a hand-off code: ${error instanceof Error ? error.message : String(error)}`,
+      exitCodes.error,
+    );
+  }
+};
+
+/**
+ * `--smoke-test`: the daemon's descriptor must answer, as a page or client would ask it, and so must the UI's document
+ * when one is served.
  *
  * @param url - The served origin.
- * @throws {CliError} `SMOKE_TEST_FAILED` (exit 1) when it does not answer 200 with a descriptor.
+ * @param ui - Whether a UI is served.
+ * @throws {CliError} `SMOKE_TEST_FAILED` (exit 1) when it does not answer 200 with a descriptor, or with a document.
  */
-const smokeTest = async (url: string): Promise<void> => {
+const smokeTest = async (url: string, ui: boolean): Promise<void> => {
   const descriptorUrl = new URL('/.well-known/tau-host', url);
+  const documentUrl = new URL('/', url);
+  let checked = descriptorUrl;
   try {
     const response = await fetch(descriptorUrl, { signal: AbortSignal.timeout(smokeTestTimeout) });
     const body: unknown = await response.json();
     if (!response.ok || typeof body !== 'object' || body === null) {
       throw new Error(`answered ${String(response.status)}`);
     }
+    if (ui) {
+      checked = documentUrl;
+      const document = await fetch(documentUrl, { signal: AbortSignal.timeout(smokeTestTimeout) });
+      await document.body?.cancel();
+      if (!document.ok || !(document.headers.get('content-type') ?? '').includes('text/html')) {
+        throw new Error(`answered ${String(document.status)} ${document.headers.get('content-type') ?? ''}`.trim());
+      }
+    }
   } catch (error) {
     throw cliError(
       'SMOKE_TEST_FAILED',
-      `${descriptorUrl.href} did not answer: ${error instanceof Error ? error.message : String(error)}`,
+      `${checked.href} did not answer: ${error instanceof Error ? error.message : String(error)}`,
       exitCodes.error,
     );
   }
-  consola.success(`Smoke test passed: ${descriptorUrl.href} answers.`);
+  consola.success(`Smoke test passed: ${descriptorUrl.href}${ui ? ` and ${documentUrl.href}` : ''} answer.`);
 };
 
 /** `tau serve` command. */
@@ -636,9 +830,24 @@ export const serveCommand = defineCommand({
     },
     ui: {
       type: 'string',
-      description: 'Directory of a prebuilt Tau UI served beside the agent channel, cross-origin isolated',
+      description:
+        'Directory of a prebuilt Tau UI to serve instead of the digest-pinned one from the payload store (development); --no-ui serves agents only (TAU_HOST_UI_DIR)',
       required: false,
       default: process.env['TAU_HOST_UI_DIR'],
+    },
+    allowedOrigins: {
+      type: 'string',
+      description:
+        'Browser origins that may read /.well-known/tau-host and open /agent across origins, comma-separated and exact (e.g. https://tau.new); the agent token is still required (TAU_HOST_ALLOWED_ORIGINS)',
+      required: false,
+      multiple: true,
+      default: process.env['TAU_HOST_ALLOWED_ORIGINS'],
+    },
+    handOff: {
+      type: 'string',
+      description:
+        'Once ready, hand the daemon to Tau Desktop (desktop) or to the Tau UI at one exact origin (e.g. https://tau.new) with a one-time code, admitting that origin',
+      required: false,
     },
     workspace: {
       type: 'string',
@@ -714,6 +923,7 @@ export const serveCommand = defineCommand({
       throw new TypeError('--compute-mode must be off, memory, or durable');
     }
     const workspace = typeof args.dir === 'string' && args.dir !== '' ? args.dir : args.workspace;
+    const handOff = handOffTarget(args.handOff);
     /* `--agentPort` is exact (its old contract); `--port` and the default search upward unless strict. Relayed, the
      * channel stays off unless a port or a UI asks for it, as before. */
     const explicitAgentPort =
@@ -723,6 +933,7 @@ export const serveCommand = defineCommand({
       explicitAgentPort !== undefined ||
       (args.port !== undefined && args.port !== '') ||
       Boolean(args.ui) ||
+      handOff !== undefined ||
       args.smokeTest ||
       args.print ||
       args.json;
@@ -732,7 +943,35 @@ export const serveCommand = defineCommand({
         : await resolveServePort({ port: explicitAgentPort, strict: true })
       : undefined;
     const apiUrl = relay ?? process.env['TAU_API_URL'] ?? 'https://api.tau.new';
-    const configured = agentOptions({ ...args, ...(workspace === undefined ? {} : { workspace }), apiUrl }, port);
+    /* The UI: a development directory, none, or the pinned layer, prepared into the store on first use (W18). A layer
+     * that cannot be prepared leaves agents served and says why; `tau open`, which needs a UI, refuses instead. */
+    const uiChoice = serveUiChoice(args.ui);
+    let uiDirectory = uiChoice.kind === 'directory' ? uiChoice.directory : undefined;
+    if (uiChoice.kind === 'store' && port !== undefined) {
+      const storeUi = await prepareStoreUi();
+      if (storeUi.status === 'ready') {
+        uiDirectory = storeUi.root;
+      } else {
+        consola.warn(
+          `Serving agents without a UI: ${storeUi.message} Pass --ui=<directory of a Tau UI build> to serve one.`,
+        );
+      }
+    }
+    /* A hand-off admits its target's origin beside the listed ones (X54). */
+    /* `multiple` yields an array at run time though citty types one string. */
+    const listedOrigins: unknown = args.allowedOrigins;
+    const configured = agentOptions(
+      {
+        ...args,
+        ui: uiDirectory,
+        ...(workspace === undefined ? {} : { workspace }),
+        apiUrl,
+        allowedOrigins: [listedOrigins, handOff?.origin]
+          .flat()
+          .filter((origin): origin is string => typeof origin === 'string'),
+      },
+      port,
+    );
     if (args.machines && !configured) {
       throw new TypeError('--machines serves beside the agent channel: pass --agentPort or --ui as well');
     }
@@ -750,37 +989,18 @@ export const serveCommand = defineCommand({
                 : acquisitionOf(acquisitionValue),
           });
     const agent = configured && stagedUi ? { ...configured, uiRoot: stagedUi.root } : configured;
-    let computeWorker: Worker | undefined;
-    let computeConnection: ReturnType<typeof connectSqliteComputeStoreWorker> | undefined;
     const computeWorkspaceRoot = agent?.workspaceRoot;
-    const invalidateComputeWorker = (worker: Worker): void => {
-      if (computeWorker !== worker) {
-        return;
-      }
-      computeConnection?.dispose();
-      computeConnection = undefined;
-      computeWorker = undefined;
-    };
-    const ensureCompute = (): ReturnType<typeof connectSqliteComputeStoreWorker> => {
-      if (computeConnection) {
-        return computeConnection;
-      }
+    const computeStore = createComputeStoreHost({
+      directory: join(defaultConfigDirectory(), 'compute'),
+      onError: (error) => {
+        consola.error(`Compute store worker failed: ${error.message.replaceAll(/\s+/gu, ' ')}`);
+      },
+    });
+    const ensureCompute = (): ComputeStoreConnection => {
       if (!computeWorkspaceRoot) {
         throw new Error('Durable compute requires an admitted workspace.');
       }
-      const worker = new Worker(computeStoreWorkerModulePath(), {
-        workerData: { directory: join(defaultConfigDirectory(), 'compute') } satisfies ComputeStoreWorkerData,
-      });
-      worker.once('exit', () => {
-        invalidateComputeWorker(worker);
-      });
-      worker.on('error', (error) => {
-        invalidateComputeWorker(worker);
-        consola.error(`Compute store worker failed: ${error.message.replaceAll(/\s+/gu, ' ')}`);
-      });
-      computeWorker = worker;
-      computeConnection = connectSqliteComputeStoreWorker({ worker, workspace: computeWorkspaceRoot });
-      return computeConnection;
+      return computeStore.connect(computeWorkspaceRoot);
     };
     const compute: ComputeBinding | (() => ComputeBinding) | undefined = agent
       ? args.computeMode === 'durable'
@@ -875,23 +1095,33 @@ export const serveCommand = defineCommand({
               stopped.promise.then(() => undefined),
             ]);
       if (configuredAgent !== undefined && url !== undefined) {
+        const scripted = args.print || args.json || args.smokeTest;
+        const handOffUrl =
+          handOff === undefined
+            ? undefined
+            : handOffLink(handOff, url, await mintHandOffCode(url, configuredAgent.token));
         await announceServed({
           url,
+          handOff: handOffUrl,
           workspace: configuredAgent.workspaceRoot,
           relay,
           ui: configuredAgent.uiRoot !== undefined,
           print: args.print,
           json: args.json,
-          open: shouldOpenBrowser({
-            open: args.open,
-            ui: configuredAgent.uiRoot !== undefined,
-            scripted: args.print || args.json || args.smokeTest,
-            interactive: process.stdout.isTTY,
-            ci: Boolean(process.env['CI']),
-          }),
+          /* A hand-off is the point of the run: it opens unless printed for a script or refused with --no-open. */
+          open:
+            handOffUrl === undefined
+              ? shouldOpenBrowser({
+                  open: args.open,
+                  ui: configuredAgent.uiRoot !== undefined,
+                  scripted,
+                  interactive: process.stdout.isTTY,
+                  ci: Boolean(process.env['CI']),
+                })
+              : (args.open ?? !scripted),
         });
         if (args.smokeTest) {
-          await smokeTest(url);
+          await smokeTest(url, configuredAgent.uiRoot !== undefined);
           return;
         }
       }
@@ -927,8 +1157,7 @@ export const serveCommand = defineCommand({
         );
         process.exitCode = exitCodes.error;
       } finally {
-        computeConnection?.dispose();
-        await computeWorker?.terminate();
+        await computeStore.close();
         await kernels.dispose().catch(() => undefined);
         await stagedUi?.dispose();
       }

@@ -39,6 +39,7 @@ import type {
   TauMcpRpcFailure,
   TauMcpRpcName,
   TauMcpRpcSuccess,
+  TauMcpRuntime,
   TauMcpStdioStreams,
   TauMcpToolName,
 } from '@taucad/mcp';
@@ -49,7 +50,7 @@ import { testModelOutputSchema } from '@taucad/chat/schemas/tools/test-model';
 import type { JsonObject, JsonValue, ToolRegistry } from '@taucad/agent-host';
 import { saveChatAttachment } from '#acp/media.js';
 import { createLocalMcpViewer } from '#mcp-viewer.js';
-import { createMcpViewerExport } from '#mcp-viewer-export.js';
+import { createMcpViewerExport, shownModelContent } from '#mcp-viewer-export.js';
 import type { ViewerExportRuntime } from '#mcp-viewer-export.js';
 import type { SourceSnapshotter } from '#mcp-viewer-share.js';
 import { prepareKernelToolName } from '#prepare-kernel-tool.js';
@@ -320,6 +321,7 @@ const present = async (
         images,
         ...(capture.sourceRevision ? { sourceRevision: capture.sourceRevision } : {}),
         ...(capture.message === undefined ? {} : { message: capture.message }),
+        ...(capture.projectRoot === undefined ? {} : { projectRoot: capture.projectRoot }),
       };
     }
     if (tool === toolName.testModel && !result.isError && isJsonObject(result.content)) {
@@ -337,6 +339,9 @@ const present = async (
           requirement: shortDiagnostic(failure.requirement),
           reason: shortDiagnostic(failure.reason),
           suggestion: shortDiagnostic(failure.suggestion),
+          ...(failure.status === undefined ? {} : { status: failure.status }),
+          ...(failure.category === undefined ? {} : { category: failure.category }),
+          ...(failure.limit === undefined ? {} : { limit: failure.limit }),
           targetFile: failure.targetFile,
         }));
         return {
@@ -346,6 +351,8 @@ const present = async (
           ...(verdict.runStatus === undefined ? {} : { runStatus: verdict.runStatus }),
           ...(verdict.accounting === undefined ? {} : { accounting: verdict.accounting }),
           ...(verdict.lineageStatus === undefined ? {} : { lineageStatus: verdict.lineageStatus }),
+          ...(verdict.projectRoot === undefined ? {} : { projectRoot: verdict.projectRoot }),
+          ...(verdict.engine === undefined ? {} : { engine: verdict.engine }),
           failures,
           passes: [],
           omittedFailures: (verdict.omittedFailures ?? 0) + verdict.failures.length - failures.length,
@@ -841,7 +848,8 @@ export type LocalHostMcpOptions = {
   readonly viewerPage?: Readonly<{ html: string; sha256: string }> | undefined;
   /**
    * The project runtime `export_model` uses, per project folder. With it, the viewer page's Export pane lists the
-   * entry's formats and their options; without it, the page offers no Export pane tools.
+   * entry's formats and their options, and a shown source's GLB carries its topology wherever the route can; without
+   * it, the page offers no Export pane tools and shows the mesh alone.
    */
   readonly runtimeClient?: ((root: string) => Promise<ViewerExportRuntime>) | undefined;
   /**
@@ -849,6 +857,8 @@ export type LocalHostMcpOptions = {
    * link packs every project file git does not ignore.
    */
   readonly snapshotSource?: SourceSnapshotter | undefined;
+  /** The serving CLI and how it was started: the `initialize` instructions name it, and every `test_model` answer carries it as `runtime`. */
+  readonly runtime?: TauMcpRuntime | undefined;
 };
 
 /** A local MCP server serving one agent. @public */
@@ -971,9 +981,12 @@ export const serveLocalHostMcp = async (
       return route;
     }
     const result = await invokeIn({ workspaceRoot, tool: route.tool, args: route.args, call: dispatchOptions });
-    return present({ save, signals: [dispatchOptions.signal] }, route.tool, result).catch((error: unknown) =>
-      hostFault(route.tool, error),
+    const presented = await present({ save, signals: [dispatchOptions.signal] }, route.tool, result).catch(
+      (error: unknown) => hostFault(route.tool, error),
     );
+    return route.tool === toolName.testModel && presented.success === true && options.runtime !== undefined
+      ? { ...presented, runtime: options.runtime }
+      : presented;
   };
   const viewer =
     options.viewerPage === undefined
@@ -988,10 +1001,15 @@ export const serveLocalHostMcp = async (
             },
           },
           renderGlb: async ({ root, targetFile, toolCallId, signal }) => {
+            /* The page's Kinematics pane and component menu read the GLB's topology; without it they have nothing. */
+            const glbContent =
+              options.runtimeClient === undefined
+                ? undefined
+                : await shownModelContent({ runtimeFor: options.runtimeClient, root, targetFile, signal });
             const result = await invokeIn({
               workspaceRoot: root,
               tool: toolName.exportModel,
-              args: { targetFile, to: 'glb' },
+              args: { targetFile, to: 'glb', ...(glbContent === undefined ? {} : { content: glbContent }) },
               call: { toolCallId, signal },
             });
             const content: JsonObject = isJsonObject(result.content) ? result.content : {};
@@ -1022,6 +1040,7 @@ export const serveLocalHostMcp = async (
   const server = await serveTauMcpStdio(
     {
       ...(viewer === undefined ? {} : { viewer }),
+      runtime: options.runtime,
       cadTools,
       hostTools: options.registry
         .list()

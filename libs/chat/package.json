@@ -46,6 +46,11 @@
       "import": "./src/schemas/tools/test-model.tool.schema.ts",
       "default": "./src/schemas/tools/test-model.tool.schema.ts"
     },
+    "./schemas/tools/test-model-summary": {
+      "types": "./src/schemas/tools/test-model-summary.ts",
+      "import": "./src/schemas/tools/test-model-summary.ts",
+      "default": "./src/schemas/tools/test-model-summary.ts"
+    },
     "./schemas/tools/evaluate-model": {
       "types": "./src/schemas/tools/evaluate-model.tool.schema.ts",
       "import": "./src/schemas/tools/evaluate-model.tool.schema.ts",
@@ -122,7 +127,8 @@
   "devDependencies": {
     "@taucad/runtime": "workspace:*",
     "@types/js-yaml": "catalog:",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "zod-latest": "npm:zod@4.6.7"
   },
   "imports": {
     "#*.js": "./src/*.ts",

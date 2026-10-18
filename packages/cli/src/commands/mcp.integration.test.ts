@@ -269,6 +269,8 @@ const launch = (
   if (viewerPage !== undefined) {
     env['TAU_VIEWER_PAGE'] = viewerPage;
   }
+  /* Each server keeps its durable compute store here, so no test reuses another's builds or the user's own. */
+  env['TAU_CONFIG_DIR'] = join(scratch, 'config', String(launches));
   Object.assign(env, extra.env);
   const child = spawn(
     process.execPath,
@@ -399,6 +401,45 @@ const stopIfRunning = (served: Served) => async (): Promise<void> => {
   }
 };
 
+/**
+ * A preload that replaces the global `fetch` in every thread of a server with one that records the URL and throws:
+ * guarantee G1 of the managed profile (charter D25, W10) at full depth, where a warm store under
+ * `TAU_ACQUISITION=locked` must let `tau mcp` evaluate with no request at all. Worker threads inherit the `--import`.
+ * `file:`, `data:` and `blob:` URLs reach no origin, so they pass through to the original `fetch`.
+ *
+ * @param name - Names the preload and its log, one per server.
+ * @returns The `--import` specifier, and the URLs the server has tried to fetch so far.
+ */
+const fetchTripwire = async (name: string) => {
+  const log = join(scratch, `${name}.fetches.log`);
+  const hook = join(scratch, `${name}.fetch-tripwire.mjs`);
+  await writeFile(
+    hook,
+    `import { appendFileSync } from 'node:fs';
+const local = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  /* Not a request: the runtime's loadBinaryFile tries fetch on a file: URL before reading the file itself. */
+  if (/^(?:file|data|blob):/u.test(url)) {
+    return local(input, init);
+  }
+  appendFileSync(${JSON.stringify(log)}, url + '\\n');
+  throw new TypeError('G1 tripwire: tau mcp fetched ' + url + ' on a warm store under TAU_ACQUISITION=locked');
+};
+`,
+  );
+  return {
+    specifier: pathToFileURL(hook).href,
+    fetched: async (): Promise<string[]> => {
+      if (!(await exists(log))) {
+        return [];
+      }
+      const recorded = await readFile(log, 'utf8');
+      return recorded.split('\n').filter((line) => line !== '');
+    },
+  };
+};
+
 describe('tau mcp over stdio', () => {
   let served: Served;
   let client: Client;
@@ -432,8 +473,8 @@ describe('tau mcp over stdio', () => {
       `initialize answered in ${String(Math.round(initializeTime))} ms (load ${String(loadavg()[0])} on ${String(availableParallelism())} cores)`,
     );
     expect(client.getServerVersion()?.name).toBe('@taucad/mcp');
-    /* Codex sends the project folder only to a server that declares this. */
-    expect(client.getServerCapabilities()?.experimental).toHaveProperty(['codex/sandbox-state-meta']);
+    /* Codex's capability goes to Codex only (INS-2); 'tau mcp identity' checks that Codex receives it. */
+    expect(client.getServerCapabilities()).not.toHaveProperty('experimental');
 
     const { tools } = await client.listTools();
     expect(tools.map(({ name }) => name)).toEqual(
@@ -451,7 +492,32 @@ describe('tau mcp over stdio', () => {
       const result = await call({ name: 'evaluate_model', arguments: { targetFile: 'main.ts' } });
 
       expect(result.isError ?? false, textOf(result)).toBe(false);
-      expect(result.structuredContent).toMatchObject({ status: 'ready' });
+      /* The admission limits are the native GeoSpec engine's own, as its initialize configuration reports them. */
+      expect(result.structuredContent).toMatchObject({
+        status: 'ready',
+        projectRoot: join(scratch, 'block'),
+        summary: {
+          bounds: {
+            min: { x: -10, y: -5, z: 0 },
+            max: { x: 10, y: 5, z: 4 },
+            size: { x: 20, y: 10, z: 4 },
+            unit: 'mm',
+          },
+          componentCount: 1,
+          admission: {
+            triangles: { limit: 4_000_000 },
+            vertices: { limit: 2_000_000 },
+            subjectBytes: { limit: 67_108_864 },
+          },
+        },
+      });
+      expect(result.structuredContent).not.toHaveProperty('summary.admission.warning');
+      expect(result.structuredContent).toMatchObject({ mechanism: { declared: false, admitted: false } });
+      /* The build went to the durable compute store a restarted server reads it back from. */
+      expect(await readdir(join(scratch, 'config'), { recursive: true })).toContainEqual(
+        expect.stringMatching(/compute\/[0-9a-f]+\.sqlite$/u),
+      );
+      expect(served.stderr()).toContain(`tau mcp: project root ${join(scratch, 'block')} (CLAUDE_PROJECT_DIR)`);
       /* The first call loads the runtime, which proves the module log sees kernels at all. */
       expect(await served.kernelModules()).toContainEqual(expect.stringMatching(/\/replicad\.kernel\.ts$/u));
     },
@@ -473,6 +539,7 @@ describe('tau mcp over stdio', () => {
         mimeType: expect.stringMatching(/^image\/(?:png|webp)$/u) as string,
       });
       expect(image).toHaveProperty('data', expect.stringMatching(/^[A-Za-z0-9+/]{100,}=*$/u));
+      expect(textOf(result)).toContain(`\nprojectRoot: ${join(scratch, 'block')}`);
       screenshotPath =
         /: (\/\S+\/attachments\/[\da-f]{64}\.(?:png|webp)) \(\d+ bytes\)$/mu.exec(textOf(result))?.[1] ?? '';
       expect(screenshotPath.startsWith(join(tmpdir(), 'tau-mcp-'))).toBe(true);
@@ -527,8 +594,10 @@ describe('tau mcp over stdio', () => {
       const named = await call({ name: 'evaluate_model', arguments: { targetFile: 'lid.ts' }, _meta: meta });
       const unnamed = await call({ name: 'evaluate_model', arguments: { targetFile: 'lid.ts' } });
 
-      expect(named.structuredContent).toMatchObject({ status: 'ready' });
+      expect(named.structuredContent).toMatchObject({ status: 'ready', projectRoot: join(scratch, 'lid') });
+      expect(served.stderr()).toContain(`tau mcp: project root ${join(scratch, 'lid')} (the folder a call named)`);
       expect(unnamed.structuredContent).toMatchObject({
+        projectRoot: join(scratch, 'block'),
         status: 'error',
         kernelIssues: expect.arrayContaining([
           expect.objectContaining({ message: expect.stringContaining(join(scratch, 'block', 'lid.ts')) as string }),
@@ -601,7 +670,7 @@ describe('tau mcp over stdio', () => {
       const result = await call({ name: 'test_model', arguments: {} });
 
       expect(result.isError ?? false, textOf(result)).toBe(false);
-      expect(result.structuredContent).toMatchObject({ passed: 1, total: 1 });
+      expect(result.structuredContent).toMatchObject({ passed: 1, total: 1, projectRoot: join(scratch, 'block') });
     },
     kernelCallLimit,
   );
@@ -698,6 +767,55 @@ const hostShapes = {
     },
   },
 } as const;
+
+describe('tau mcp identity (INS-2)', () => {
+  it(
+    'should name the rung TAU_LAUNCH reports and declare the Codex capability to Codex only',
+    async () => {
+      const cliVersion = (
+        JSON.parse(readFileSync(join(repoRoot, 'packages/cli/package.json'), 'utf8')) as {
+          version: string;
+        }
+      ).version;
+      const descriptor = {
+        source: 'installed',
+        path: '/opt/homebrew/bin/tau',
+        cli: cliVersion,
+        plugin: cliVersion,
+        node: process.versions.node,
+        skipped: [{ path: '/usr/local/bin/tau', version: '0.1.0-beta.2' }],
+      };
+      await mkdir(join(scratch, 'identity'), { recursive: true });
+      /* Built by assignment so no environment key is a source literal. */
+      const env: Record<string, string> = {};
+      env['TAU_LAUNCH'] = JSON.stringify(descriptor);
+      const seen: Array<{
+        instructions: string | undefined;
+        capabilities: ReturnType<Client['getServerCapabilities']>;
+      }> = [];
+      for (const shape of [hostShapes.claudeCode, hostShapes.codexCli]) {
+        const served = launch(join(scratch, 'identity'), undefined, { env });
+        disposers.push(stopIfRunning(served));
+        const client = new Client(shape.clientInfo, { capabilities: shape.capabilities });
+        // oxlint-disable-next-line no-await-in-loop -- one server per host shape.
+        await connect(client, served);
+        seen.push({ instructions: client.getInstructions(), capabilities: client.getServerCapabilities() });
+        // oxlint-disable-next-line no-await-in-loop -- ditto.
+        await client.close();
+      }
+      const [claude, codex] = seen;
+
+      expect(claude?.instructions).toMatch(/^Use your native filesystem/u);
+      expect(claude?.instructions).toContain(
+        `Tau CLI ${cliVersion} (installed tau at /opt/homebrew/bin/tau; installed tau 0.1.0-beta.2 at /usr/local/bin/tau skipped) started by plugin ${cliVersion} on Node.js ${process.versions.node}; server @taucad/mcp `,
+      );
+      expect(claude?.instructions?.length).toBeLessThan(2048);
+      expect(claude?.capabilities).not.toHaveProperty('experimental');
+      expect(codex?.capabilities?.experimental).toEqual({ 'codex/sandbox-state-meta': {} });
+    },
+    kernelCallLimit,
+  );
+});
 
 describe('tau mcp viewer presentation', () => {
   const page = '<!doctype html><title>Tau viewer fixture</title>';
@@ -1542,6 +1660,7 @@ describe('tau mcp native kernels (W5 tier 4a)', () => {
       'from build123d import Box\n\n\ndef main():\n    return Box(10, 20, 30)\n',
     );
     await writeFile(join(project, 'main.cs'), 'using PicoGK;\n\npublic static class Model {}\n');
+    await writeFile(join(project, 'main.ts'), files.block['main.ts']);
     const manifest = join(scratch, 'picogk-tau-plugin.json');
     await writeFile(manifest, JSON.stringify(syntheticManifest));
     rosterHook = join(scratch, 'native-roster.mjs');
@@ -1703,6 +1822,44 @@ registerHooks({
           code: 'KERNEL_NOT_PREPARED',
           details: { kernel: 'build123d' },
         });
+      },
+      kernelCallLimit,
+    );
+
+    it(
+      'G1: should make no request while a second server evaluates .cs and .ts on the warm store under TAU_ACQUISITION=locked',
+      async () => {
+        /* Warm the store here rather than rely on the tests above; on a sealed closure this is a no-op. */
+        const warmed = await callOn(client, { name: 'prepare_kernel', arguments: { kernel: 'picogk' } });
+        expect(warmed.structuredContent, textOf(warmed)).toMatchObject({ status: 'ready', kernel: 'picogk' });
+        const tripwire = await fetchTripwire('g1-locked');
+        const mirrorRequests = mirror.requests.length;
+        const env = nativeEnvironment(store);
+        env['TAU_ACQUISITION'] = 'locked';
+        const locked = launch(project, undefined, {
+          env,
+          imports: [pathToFileURL(rosterHook).href, tripwire.specifier],
+        });
+        disposers.push(stopIfRunning(locked));
+        const lockedClient = new Client({ name: 'tau-mcp-integration-native-g1', version: '1' });
+        await connect(lockedClient, locked);
+
+        const prepared = await callOn(lockedClient, { name: 'prepare_kernel', arguments: { kernel: 'picogk' } });
+        const csharp = await callOn(lockedClient, { name: 'evaluate_model', arguments: { targetFile: 'main.cs' } });
+        const typescript = await callOn(lockedClient, { name: 'evaluate_model', arguments: { targetFile: 'main.ts' } });
+        const python = await callOn(lockedClient, { name: 'evaluate_model', arguments: { targetFile: 'main.py' } });
+        await keepFrames('g1-locked', locked);
+        await lockedClient.close();
+
+        expect(prepared.structuredContent, textOf(prepared)).toMatchObject({ status: 'ready', kernel: 'picogk' });
+        expect(kernelIssuesOf(csharp).map(({ code }) => code)).not.toContain('KERNEL_NOT_PREPARED');
+        expect(typescript.structuredContent, textOf(typescript)).toMatchObject({ status: 'ready' });
+        expect(kernelIssuesOf(python)[0]).toMatchObject({
+          code: 'KERNEL_NOT_PREPARED',
+          details: { kernel: 'build123d' },
+        });
+        expect(await tripwire.fetched()).toEqual([]);
+        expect(mirror.requests).toHaveLength(mirrorRequests);
       },
       kernelCallLimit,
     );
@@ -1890,6 +2047,21 @@ describe.runIf(nativeDarwin)('tau mcp native kernels on darwin-arm64 (W5 tier 4b
   ): Promise<CallToolResult> =>
     CallToolResultSchema.parse(await client.callTool(params, undefined, { timeout: realPrepareLimit, ...options }));
 
+  /**
+   * Built by assignment so no environment key is a source literal. The rest of the managed profile is cleared: the
+   * manifests' own origins, this host's target, this suite's store.
+   */
+  const darwinEnvironment = (acquisition: '' | 'locked'): Record<string, string> => {
+    const env: Record<string, string> = {};
+    env['TAU_CONFIG_DIR'] = store;
+    env['TAU_ACQUISITION'] = acquisition;
+    env['TAU_PAYLOAD_DIR'] = '';
+    env['TAU_PAYLOAD_MIRROR'] = '';
+    env['TAU_PAYLOAD_MIRROR_NO_FALLBACK'] = '';
+    env['TAU_PAYLOAD_TARGET'] = '';
+    return env;
+  };
+
   const closuresIn = async (): Promise<string[]> => {
     const entries = await entriesOf(store);
     return entries.filter((entry) => /(?:^|\/)closures\/sha256\/[\da-f]{64}\/receipt\.json$/u.test(entry));
@@ -1901,18 +2073,10 @@ describe.runIf(nativeDarwin)('tau mcp native kernels on darwin-arm64 (W5 tier 4b
     await mkdir(project);
     await writeFile(join(project, 'main.py'), egressCheckedPython(canary.port));
     await writeFile(join(project, 'main.cs'), egressCheckedCsharp(canary.port));
+    await writeFile(join(project, 'main.ts'), files.block['main.ts']);
     store = await mkdtemp(join(tmpdir(), 'mcp-native-darwin-store-'));
     disposers.push(async () => rm(store, { recursive: true, force: true }));
-    /* Built by assignment so no environment key is a source literal. The managed profile is cleared: the manifests'
-     * own origins, this host's target, an empty store. */
-    const env: Record<string, string> = {};
-    env['TAU_CONFIG_DIR'] = store;
-    env['TAU_ACQUISITION'] = '';
-    env['TAU_PAYLOAD_DIR'] = '';
-    env['TAU_PAYLOAD_MIRROR'] = '';
-    env['TAU_PAYLOAD_MIRROR_NO_FALLBACK'] = '';
-    env['TAU_PAYLOAD_TARGET'] = '';
-    served = launch(project, undefined, { env });
+    served = launch(project, undefined, { env: darwinEnvironment('') });
     disposers.push(stopIfRunning(served));
     disposers.push(async () => {
       const directory = process.env['TAU_TEST_FRAME_LOG_DIR'];
@@ -2062,6 +2226,36 @@ describe.runIf(nativeDarwin)('tau mcp native kernels on darwin-arm64 (W5 tier 4b
       }
     },
     kernelCallLimit,
+  );
+
+  it(
+    'G1: should evaluate .py, .cs and .ts with no request from a second server on the warm store under TAU_ACQUISITION=locked',
+    async () => {
+      const tripwire = await fetchTripwire('g1-native-darwin');
+      const locked = launch(project, undefined, { env: darwinEnvironment('locked'), imports: [tripwire.specifier] });
+      disposers.push(stopIfRunning(locked));
+      const lockedClient = new Client({ name: 'tau-mcp-integration-native-darwin-g1', version: '1' });
+      await connect(lockedClient, locked);
+
+      const results: Array<[string, CallToolResult]> = [];
+      for (const targetFile of ['main.py', 'main.cs', 'main.ts']) {
+        // oxlint-disable-next-line no-await-in-loop -- one server, one evaluation at a time.
+        const evaluated = await lockedClient.callTool(
+          { name: 'evaluate_model', arguments: { targetFile } },
+          undefined,
+          { timeout: kernelCallLimit },
+        );
+        results.push([targetFile, CallToolResultSchema.parse(evaluated)]);
+      }
+      await lockedClient.close();
+
+      for (const [targetFile, evaluated] of results) {
+        expect(evaluated.structuredContent, `${targetFile}: ${textOf(evaluated)}`).toMatchObject({ status: 'ready' });
+        expect(kernelIssuesOf(evaluated), targetFile).toEqual([]);
+      }
+      expect(await tripwire.fetched()).toEqual([]);
+    },
+    kernelCallLimit * 3,
   );
 
   it('should keep both workers from reaching the network or the loopback canary', () => {

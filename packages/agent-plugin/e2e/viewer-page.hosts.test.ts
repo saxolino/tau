@@ -16,14 +16,16 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { chromium } from 'playwright';
-import type { Browser, Frame, Page } from 'playwright';
+import type { Browser, Frame, Locator, Page } from 'playwright';
 import { build } from 'vite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 
 import type { TauViewerShowResult, TauViewerViewState } from '@taucad/mcp/viewer-protocol';
 import { tauViewerReadLimit } from '@taucad/mcp/viewer-protocol';
 
 import type { HostRecord, TauHost } from '#e2e/basic-host/host.js';
+// oxlint-disable-next-line no-restricted-imports -- relative import is the only portable way to load this package's own package.json (matches `packages/runtime/src/utils/package-info.ts`).
+import packageJson from '../package.json' with { type: 'json' };
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -147,7 +149,9 @@ const wedgeObject = [
 ].join('\n');
 
 let project = '';
-/** Uncaught errors in any harness page; each test expects none. */
+/** The servers' Tau config folder, so their durable compute store never lands in the user's own. */
+let configDirectory = '';
+/** Uncaught errors in the current test's harness pages; each test expects none. */
 const pageErrors: string[] = [];
 let hostScript = '';
 let browser: Browser | undefined;
@@ -170,6 +174,7 @@ const connect = async (name: string, capabilities: Record<string, unknown>): Pro
   }
   env['CLAUDE_PROJECT_DIR'] = project;
   env['TAU_VIEWER_PAGE'] = pagePath;
+  env['TAU_CONFIG_DIR'] = configDirectory;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--import', 'tsx', join(repoRoot, 'packages/cli/src/bin.ts'), 'mcp'],
@@ -217,11 +222,16 @@ const viewerFrame = (page: Page): Frame => {
   return frame;
 };
 
-/** The harness host: its display mode, and how it differs from the default (what it declares, the height it allows). */
+/**
+ * The harness host: its display mode, and how it differs from the default (what it declares, the height it allows,
+ * the replies it gives in place of the server's).
+ */
 type HarnessHost = Readonly<{
   displayMode: 'inline' | 'fullscreen';
   hostCapabilities?: Parameters<TauHost['mount']>[0]['hostCapabilities'];
   maxHeight?: number;
+  /** A reply to a call the test answers itself, or `undefined` to forward the call to the server. */
+  answer?: (name: string) => CallToolResult | undefined;
 }>;
 
 /**
@@ -245,11 +255,14 @@ const mountInHarness = async (client: Client, result: CallToolResult | undefined
   const { resources } = await client.listResources();
   const listed = resources.find((resource) => resource.uri === resourceUri);
   const page = await launched().newPage({ viewport: { width: 900, height: 640 } });
+  /* Closed when its test ends, passed or failed, so it reports nothing into a later test. */
+  onTestFinished(async () => page.close());
   page.on('pageerror', (error) => {
     pageErrors.push(error.message);
   });
-  await page.exposeFunction('tauCallTool', async (name: string, args: Record<string, unknown>) =>
-    callTool(client, name, args),
+  await page.exposeFunction(
+    'tauCallTool',
+    async (name: string, args: Record<string, unknown>) => host.answer?.(name) ?? callTool(client, name, args),
   );
   await page.setContent(
     `<!doctype html><html><body style="margin:0"><script type="module">${hostScript}</script></body></html>`,
@@ -284,17 +297,76 @@ const mountInHarness = async (client: Client, result: CallToolResult | undefined
 };
 
 /**
- * Wait until the page draws a model: the preview is up and Add to chat is live.
+ * Wait until the page draws a model: the preview is up and an action that needs the model is live.
  *
  * @param root - The frame or page the viewer is in.
- * @param action - The name of the reference action.
+ * @param action - The card's reference action, or `Export` in the tab's header.
  */
 const drawn = async (root: Frame | Page, action: string): Promise<void> => {
   await root.getByRole('img', { name: '3D model preview' }).waitFor({ timeout: 120_000 });
   await root.locator('canvas').waitFor();
   await expect
-    .poll(async () => root.getByRole('button', { name: action }).isEnabled(), { timeout: 120_000 })
+    .poll(async () => root.getByRole('button', { name: action, exact: true }).isEnabled(), { timeout: 120_000 })
     .toBe(true);
+};
+
+/**
+ * Check the tab's chrome against the desktop's (VUI-1, VUI-2): the bar ends with Viewer settings, the header carries
+ * Share, Export and the one workbench toggle, which hides and shows the lane, and Export opens its pane.
+ *
+ * @param root - The frame or page the viewer is in, drawn in the tab composition.
+ * @param isOpenAtLoad - Whether the lane is open when the page loads (the tab is at least 720 px wide).
+ */
+const checkTabChrome = async (root: Frame | Page, isOpenAtLoad: boolean): Promise<void> => {
+  const bar = root.getByRole('group', { name: 'Viewer controls' });
+  const barSnapshot = await bar.ariaSnapshot();
+  expect(barSnapshot.trimEnd()).toMatch(/- button "Viewer settings"$/u);
+  for (const name of ['Add to chat', 'Send to chat', 'Copy prompt', 'Hide panes', 'Show panes', 'Hide workbench']) {
+    // oxlint-disable-next-line no-await-in-loop -- one name at a time.
+    expect(await root.getByRole('button', { name, exact: true }).count()).toBe(0);
+  }
+  const header = root.getByRole('group', { name: 'Workbench actions' });
+  const toggle = header.getByRole('button', { name: 'Toggle Workbench lane' });
+  expect(await header.ariaSnapshot()).toBe(
+    [
+      '- group "Workbench actions":',
+      '  - button "Share"',
+      '  - button "Export"',
+      `  - button "Toggle Workbench lane"${isOpenAtLoad ? ' [pressed]' : ''}`,
+    ].join('\n'),
+  );
+  const lane = root.getByRole('complementary', { name: 'Workbench' });
+  expect(await lane.count()).toBe(isOpenAtLoad ? 1 : 0);
+
+  if (isOpenAtLoad) {
+    await toggle.click();
+    await expect.poll(async () => lane.count()).toBe(0);
+    expect(await toggle.getAttribute('aria-pressed')).toBe('false');
+  }
+  /* Export opens the closed lane on its pane. */
+  await header.getByRole('button', { name: 'Export', exact: true }).click();
+  await lane.getByRole('tabpanel', { name: 'Export' }).waitFor();
+  expect(await toggle.getAttribute('aria-pressed')).toBe('true');
+  await header.getByRole('button', { name: 'Share', exact: true }).click();
+  await lane.getByRole('tabpanel', { name: 'Share' }).waitFor();
+  await toggle.click();
+  await expect.poll(async () => lane.count()).toBe(0);
+};
+
+/**
+ * Open a pane from the lane's tab menu.
+ *
+ * @param root - The frame or page the viewer is in.
+ * @param pane - The pane's name.
+ * @returns The pane's panel.
+ */
+const openPane = async (root: Frame | Page, pane: string): Promise<Locator> => {
+  const lane = root.getByRole('complementary', { name: 'Workbench' });
+  await lane.getByRole('button', { name: 'Open workbench tab' }).click();
+  await root.getByRole('menuitem', { name: pane }).click();
+  const panel = lane.getByRole('tabpanel', { name: pane });
+  await panel.waitFor();
+  return panel;
 };
 
 /**
@@ -324,6 +396,7 @@ const launched = (): Browser => {
 beforeAll(async () => {
   await readFile(pagePath);
   project = await mkdtemp(join(tmpdir(), 'viewer-page-e2e-'));
+  configDirectory = await mkdtemp(join(tmpdir(), 'viewer-page-e2e-config-'));
   await writeFile(
     join(project, 'main.ts'),
     `import { drawRectangle } from 'replicad';\n\nexport default function main() {\n  return drawRectangle(20, 10).sketchOnPlane('XY').extrude(4);\n}\n`,
@@ -370,6 +443,11 @@ afterAll(async () => {
     await client.close();
   }
   await rm(project, { recursive: true, force: true });
+  await rm(configDirectory, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  pageErrors.length = 0;
 });
 
 describe('the viewer page in an MCP Apps host', () => {
@@ -408,6 +486,7 @@ describe('the viewer page in an MCP Apps host', () => {
       await frame.getByRole('group', { name: 'Viewer controls' }).waitFor();
       expect(await frame.getByRole('button', { name: 'Open full view' }).count()).toBe(0);
       await capture(page, 'basic-host-fullscreen');
+      await checkTabChrome(frame, true);
 
       await page.evaluate(() => {
         globalThis.tauHost.setHostContext({ theme: 'dark' });
@@ -474,7 +553,7 @@ describe('the viewer page in an MCP Apps host', () => {
       const page = await mountInHarness(client, result, { displayMode: 'fullscreen' });
       const frame = viewerFrame(page);
 
-      await drawn(frame, 'Add to chat');
+      await drawn(frame, 'Export');
       const calls = await recorded(page, 'toolCalls');
       const reads = calls.filter((call) => call.name === 'app_read');
       expect(reads.length).toBe(Math.ceil(model.byteLength / tauViewerReadLimit));
@@ -501,7 +580,7 @@ describe('exchange formats (W7)', () => {
       }
       const result = await callTool(client, 'show_model', { targetFile: 'cylinders.step' });
       const page = await mountInHarness(client, result, { displayMode: 'fullscreen' });
-      await drawn(viewerFrame(page), 'Add to chat');
+      await drawn(viewerFrame(page), 'Export');
       await capture(page, 'step-converted');
       expect(pageErrors).toEqual([]);
       await page.close();
@@ -523,7 +602,7 @@ describe("the tab's panels (W10)", () => {
       const first = await callTool(client, 'show_model', { targetFile: 'plate.ts' });
       const page = await mountInHarness(client, first, { displayMode: 'fullscreen' });
       const frame = viewerFrame(page);
-      await drawn(frame, 'Add to chat');
+      await drawn(frame, 'Export');
       const panels = frame.getByRole('complementary', { name: 'Workbench' });
       await panels.waitFor();
       const before = (first.structuredContent as { model: { id: string } }).model.id;
@@ -605,6 +684,56 @@ describe("the tab's panels (W10)", () => {
     },
     kernelCallLimit,
   );
+
+  it(
+    'should say why Export lists no formats: a server without the tool, or a failure it can retry',
+    async () => {
+      const shownMain = await callTool(client, 'show_model', { targetFile: 'main.ts' });
+      const { version } = packageJson;
+
+      /* A `tau` from before the formats tool: the MCP SDK's answer to a tool the server does not serve. */
+      const older = await mountInHarness(client, shownMain, {
+        displayMode: 'fullscreen',
+        answer: (name) =>
+          name === 'app_export_formats'
+            ? { isError: true, content: [{ type: 'text', text: `MCP error -32602: Tool ${name} not found` }] }
+            : undefined,
+      });
+      await drawn(viewerFrame(older), 'Export');
+      const olderPanel = await openPane(viewerFrame(older), 'Export');
+      const mismatch = olderPanel.getByRole('alert', { name: 'Export formats could not be loaded' });
+      await expect
+        .poll(async () => mismatch.textContent())
+        .toContain(
+          `This Tau server has no export formats; plugin ${version} needs the same version: npm install -g @taucad/cli@${version}, then restart the Tau server or your agent`,
+        );
+      expect(await mismatch.getByRole('button').count()).toBe(0);
+      await capture(older, 'export-older-server');
+      await older.close();
+
+      /* A failure the server reports, then a retry it answers. */
+      let isFailing = true;
+      const failing = await mountInHarness(client, shownMain, {
+        displayMode: 'fullscreen',
+        answer: (name) =>
+          name === 'app_export_formats' && isFailing
+            ? { isError: true, content: [{ type: 'text', text: 'NO_KERNEL: No kernel exports main.ts.' }] }
+            : undefined,
+      });
+      await drawn(viewerFrame(failing), 'Export');
+      const panel = await openPane(viewerFrame(failing), 'Export');
+      const failure = panel.getByRole('alert', { name: 'Export formats could not be loaded' });
+      await expect.poll(async () => failure.textContent()).toContain('No kernel exports main.ts.');
+      await capture(failing, 'export-retry');
+      isFailing = false;
+      await failure.getByRole('button', { name: 'Retry' }).click();
+      await panel.getByRole('region', { name: 'Formats' }).waitFor({ timeout: 60_000 });
+      expect(await panel.getByRole('checkbox', { name: 'Save to project' }).isChecked()).toBe(true);
+      expect(pageErrors).toEqual([]);
+      await failing.close();
+    },
+    kernelCallLimit,
+  );
 });
 
 describe('the live view (W6)', () => {
@@ -620,7 +749,7 @@ describe('the live view (W6)', () => {
       const cardClient = await connect('claude-ai', mcpAppsCapabilities);
       const first = await callTool(cardClient, 'show_model', { targetFile: 'main.ts' });
       const page = await mountInHarness(cardClient, first, { displayMode: 'fullscreen' });
-      await drawn(viewerFrame(page), 'Add to chat');
+      await drawn(viewerFrame(page), 'Export');
       /* The card reports its view once its model is drawn, which can land after its actions are live. */
       await expect
         .poll(
@@ -655,7 +784,7 @@ describe('the live view (W6)', () => {
       /* A thread tab opens without a tool result and follows what the agent shows. */
       const page = await mountInHarness(client, undefined, { displayMode: 'fullscreen' });
       const frame = viewerFrame(page);
-      await drawn(frame, 'Add to chat');
+      await drawn(frame, 'Export');
 
       /* The person picks the box in the middle of the canvas. */
       const canvasBox = await frame.locator('canvas').first().boundingBox();
@@ -761,11 +890,104 @@ describe('the viewer page from a text host', () => {
       const page = await launched().newPage({ viewport: { width: 900, height: 640 } });
       await page.goto(viewerUrl ?? '');
 
-      await drawn(page, 'Copy prompt');
+      await drawn(page, 'Export');
       /* The workbench's file tab names the source the link shows. */
       expect(await page.getByTitle('main.ts', { exact: true }).count()).toBe(1);
       await page.getByRole('group', { name: 'Viewer controls' }).waitFor();
       await capture(page, 'loopback');
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should carry Share, Export and the workbench toggle in the header of a narrow tab, and no host actions in the bar',
+    async () => {
+      const client = await connect('claude-code', claudeCodeCapabilities);
+      const { viewerUrl } = shown(await callTool(client, 'show_model', { targetFile: 'main.ts' }));
+      /* Below 720 px the tab opens with the canvas whole; the header is the only way to the panes. */
+      const page = await launched().newPage({ viewport: { width: 700, height: 640 } });
+      await page.goto(viewerUrl ?? '');
+      await drawn(page, 'Export');
+
+      await checkTabChrome(page, false);
+      const share = page.getByRole('group', { name: 'Workbench actions' }).getByRole('button', { name: 'Share' });
+      const shareLabel = share.getByText('Share', { exact: true });
+      expect(await shareLabel.isVisible()).toBe(true);
+      await capture(page, 'loopback-header');
+      /* A narrower tab folds the labels to their icons; the names stay. */
+      await page.setViewportSize({ width: 480, height: 640 });
+      await expect.poll(async () => shareLabel.isVisible()).toBe(false);
+      const folded = await share.boundingBox();
+      expect(folded?.width).toBe(28);
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should name the version mismatch when the server has no formats tool',
+    async () => {
+      const client = await connect('claude-code', claudeCodeCapabilities);
+      const { viewerUrl } = shown(await callTool(client, 'show_model', { targetFile: 'small.glb' }));
+      const page = await launched().newPage({ viewport: { width: 900, height: 640 } });
+      /* A `tau` from before the formats tool answers the loopback call as the server does for any tool it lacks. */
+      await page.route('**/api/tools/call', async (route) => {
+        const { name } = route.request().postDataJSON() as { name: string };
+        await (name === 'app_export_formats'
+          ? route.fulfill({ status: 404, contentType: 'application/json', body: '{"errorCode":"UNKNOWN_TOOL"}' })
+          : route.continue());
+      });
+      await page.goto(viewerUrl ?? '');
+      await drawn(page, 'Export');
+
+      const { version } = packageJson;
+      const panel = await openPane(page, 'Export');
+      const mismatch = panel.getByRole('alert', { name: 'Export formats could not be loaded' });
+      await expect
+        .poll(async () => mismatch.textContent())
+        .toContain(
+          `plugin ${version} needs the same version: npm install -g @taucad/cli@${version}, then restart the Tau server or your agent`,
+        );
+      expect(await mismatch.getByRole('button').count()).toBe(0);
+      await capture(page, 'loopback-older-server');
+      await page.close();
+    },
+    kernelCallLimit,
+  );
+
+  it(
+    'should fit the opening tabs beside the header buttons and activate each at its centre (VUI-5)',
+    async () => {
+      const client = await connect('claude-code', claudeCodeCapabilities);
+      const { viewerUrl } = shown(await callTool(client, 'show_model', { targetFile: 'small.glb' }));
+      const page = await launched().newPage({ viewport: { width: 1200, height: 800 } });
+      await page.goto(viewerUrl ?? '');
+      await drawn(page, 'Export');
+
+      const lane = page.getByRole('complementary', { name: 'Workbench' });
+      const tablist = lane.getByRole('tablist', { name: 'Open panes' });
+      const tabs = tablist.getByRole('tab');
+      expect(await tabs.allTextContents()).toEqual(['Parameters', 'Model', 'Kinematics']);
+      expect(await lane.getByRole('button', { name: 'Hide workbench' }).count()).toBe(0);
+      expect(await tablist.evaluate((list) => list.scrollWidth <= list.clientWidth)).toBe(true);
+      /* Each tab's centre hits the tab, never a header button drawn over it. */
+      const hits = await tabs.evaluateAll((elements) =>
+        elements.map((tab) => {
+          const box = tab.getBoundingClientRect();
+          return tab.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        }),
+      );
+      expect(hits).toEqual([true, true, true]);
+      /* A pointer click at the centre, as a browser agent clicks, with nothing scrolling the tab into view first. */
+      const kinematics = await tablist.getByRole('tab', { name: 'Kinematics' }).boundingBox();
+      if (kinematics === null) {
+        throw new Error('The Kinematics tab has no box.');
+      }
+      await page.mouse.click(kinematics.x + kinematics.width / 2, kinematics.y + kinematics.height / 2);
+      await lane.getByRole('tabpanel', { name: 'Kinematics' }).waitFor();
+      expect(await tablist.evaluate((list) => list.scrollLeft)).toBe(0);
+      await capture(page, 'lane-header');
       await page.close();
     },
     kernelCallLimit,

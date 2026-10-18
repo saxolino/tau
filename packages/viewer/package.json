@@ -1,6 +1,6 @@
 {
   "name": "@taucad/viewer",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Tau's interactive CAD viewer: the React Three Fiber canvas, graphics machines and model controls",
   "type": "module",
   "sideEffects": [
@@ -95,6 +95,7 @@
     "./graphics/three/utils/section-cap-polygon-types": "./src/graphics/three/utils/section-cap-polygon-types.ts",
     "./graphics/three/utils/section-cap-region": "./src/graphics/three/utils/section-cap-region.ts",
     "./graphics/three/utils/section-cap-render-parts": "./src/graphics/three/utils/section-cap-render-parts.ts",
+    "./graphics/three/utils/section-cap-stencil-debug": "./src/graphics/three/utils/section-cap-stencil-debug.ts",
     "./graphics/three/utils/three-shader-debug": "./src/graphics/three/utils/three-shader-debug.ts",
     "./graphics/three/utils/tsl-node-graph-snapshot": "./src/graphics/three/utils/tsl-node-graph-snapshot.ts",
     "./hooks/use-graphics": "./src/hooks/use-graphics.tsx",
@@ -425,6 +426,11 @@
         "import": "./dist/graphics/three/utils/section-cap-render-parts.mjs",
         "default": "./dist/graphics/three/utils/section-cap-render-parts.mjs"
       },
+      "./graphics/three/utils/section-cap-stencil-debug": {
+        "types": "./dist/graphics/three/utils/section-cap-stencil-debug.d.mts",
+        "import": "./dist/graphics/three/utils/section-cap-stencil-debug.mjs",
+        "default": "./dist/graphics/three/utils/section-cap-stencil-debug.mjs"
+      },
       "./graphics/three/utils/three-shader-debug": {
         "types": "./dist/graphics/three/utils/three-shader-debug.d.mts",
         "import": "./dist/graphics/three/utils/three-shader-debug.mjs",
@@ -596,7 +602,7 @@
     "react-dom": "^19.0.0",
     "three": "^0.184.0",
     "xstate": "^6.0.0-alpha.59",
-    "zod": "^4.0.0"
+    "zod": "^4.1.0"
   },
   "devDependencies": {
     "@react-three/fiber": "^9.6.1",

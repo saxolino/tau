@@ -24,6 +24,7 @@ const skillSlugs = [
   'cad-openscad',
   'cad-picovoxel',
   'cad-replicad',
+  'cad-smlib',
   'cad-tscircuit',
   'geospec-authoring',
   'tau',
@@ -34,6 +35,14 @@ describe('plugin manifests', () => {
   it('should name the plugin tau and carry the package version in both host manifests', () => {
     expect(readJson('.codex-plugin/plugin.json')).toMatchObject({ name: 'tau', version });
     expect(readJson('.claude-plugin/plugin.json')).toMatchObject({ name: 'tau', version });
+  });
+
+  it("should release with the CLI's version and engines, which the launcher's installed and npx rungs need", () => {
+    const cli = readJson('../cli/package.json');
+    const engines = { node: '>=24.0.0', npm: '>=11.0.0' };
+    expect(version).toBe(cli['version']);
+    expect(readJson('package.json')['engines']).toEqual(engines);
+    expect(cli['engines']).toEqual(engines);
   });
 
   it('should point each host at its own MCP config, and Codex at the skills and the onboarding skill', () => {

@@ -22,6 +22,7 @@ import { picogk } from '@taucad/picogk';
 import { picovoxel } from '@taucad/picovoxel';
 import { replicad } from '@taucad/replicad';
 import { rhino } from '@taucad/rhino';
+import { smlib } from '@taucad/smlib';
 import { slicer } from '@taucad/slicer';
 import { tscircuit } from '@taucad/tscircuit';
 import { zoo } from '@taucad/zoo';
@@ -57,7 +58,8 @@ export const desktopOpenrscadKernel = createOpenrscadKernel({
       engineIdentityRecorded = true;
       try {
         const definition = await resolveRuntimePluginDefinition('kernel', desktopOpenrscadKernel);
-        createDiagnosticsLog({ directory, producer: 'kernel' }).log(
+        const engineLog = createDiagnosticsLog({ directory, producer: 'kernel' });
+        engineLog.log(
           'info',
           kernelEngineEvent,
           kernelEngineRecord({
@@ -67,6 +69,8 @@ export const desktopOpenrscadKernel = createOpenrscadKernel({
             versions: process.versions,
           }),
         );
+        /* The record is the e2e's only witness of the engine that loaded: on disk before the kernel is. */
+        await engineLog.flush();
       } catch (error) {
         // oxlint-disable-next-line no-console -- diagnostics must not prevent kernel initialization
         console.error('[kernel] engine diagnostics failed', error);
@@ -103,6 +107,7 @@ const createDesktopRuntimeImplementation = (options: DesktopRuntimeOptions = {})
           // Kernels run in Node utility processes, where shared WebAssembly memory is available, so 'auto'
           // serves the fast lane multi-threaded.
           picovoxel(),
+          smlib(),
           gltf(),
           brep(),
           rhino(),

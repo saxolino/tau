@@ -41,16 +41,33 @@ describe('desktop native kernels', () => {
   it('should map each sealed closure to its kernel options and stand in for none', () => {
     const frame = nativeKernelsFixture({ picogk: true });
     const native = desktopNativeKernels(frame);
+    const build123dRoot = frame.kernels[0]!.closure!.root;
     const picogkRoot = frame.kernels[1]!.closure!.root;
 
     expect(native.unavailable).toBeUndefined();
     expect(native.build123d).toMatchObject({ pythonSha256: '1'.repeat(64) });
+    expect(native.build123d?.supportFiles).toEqual([
+      { path: `${build123dRoot}/tau-worker/analyzer.py`, sha256: '2'.repeat(64) },
+      { path: `${build123dRoot}/tau-worker/glb.py`, sha256: '3'.repeat(64) },
+      { path: `${build123dRoot}/tau-worker/native_materials.py`, sha256: 'b'.repeat(64) },
+      { path: `${build123dRoot}/tau-worker/mechanisms.py`, sha256: 'c'.repeat(64) },
+    ]);
     expect(native.picogk).toMatchObject({
       workerExecutable: `${picogkRoot}/dotnet/dotnet`,
       workerSha256: '5'.repeat(64),
       runtimePath: picogkRoot,
       workerArguments: [`${picogkRoot}/tau-worker/Tau.PicoGK.Worker.dll`],
     });
+  });
+
+  it('should bound every native request and artifact so a runaway worker is recycled', () => {
+    const native = desktopNativeKernels(nativeKernelsFixture({ picogk: true }));
+
+    /* Unbounded defaults let one script hold all memory for as long as it runs. */
+    for (const options of [native.build123d, native.picogk]) {
+      expect(options?.requestTimeout).toBe(10 * 60_000);
+      expect(options?.maxArtifactBytes).toBe(1024 * 1024 * 1024);
+    }
   });
 
   it('should answer describe, render and export of a file whose kernel has no closure with main refusal', async () => {

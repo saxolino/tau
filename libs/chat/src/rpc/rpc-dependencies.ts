@@ -40,7 +40,15 @@ import type { KernelIssue } from '@taucad/runtime';
 export type RpcInvocationContext = Readonly<{
   /** Cancels only the active wait and its cooperative operation. */
   signal?: AbortSignal;
+  /**
+   * Receives the operation's progress while it runs, when the caller listens; never its answer. `progress` increases
+   * with every report, and `total` is present only when the end is known.
+   */
+  onProgress?: ((report: RpcProgressReport) => void) | undefined;
 }>;
+
+/** One progress report of a running operation, as {@link RpcInvocationContext.onProgress} receives it. @public */
+export type RpcProgressReport = Readonly<{ progress: number; total?: number; message?: string }>;
 /**
  * One direct child returned by {@link RpcFileSystem.readdir}.
  * `name` is a basename, never a path.
@@ -194,12 +202,15 @@ export type RpcGraphicsExportModelResult =
  *
  * Every method takes an explicit `targetFile` so the agent must name the
  * geometry unit it is acting on; there is no project-level fallback. Export
- * options, when present, are the host's and go to the runtime export as given.
+ * options, when present, are the host's and go to the runtime export as
+ * given. Of the content, only a key set to `true` is a request: an export
+ * carries no edges or topology by default, so `false` means the same as
+ * leaving the key out.
  * @public
  */
 export type RpcGraphicsClient = {
   exportModel(
-    args: Pick<ExportModelRpcInput, 'targetFile' | 'to' | 'options' | 'parameters'>,
+    args: Pick<ExportModelRpcInput, 'targetFile' | 'to' | 'options' | 'content' | 'parameters'>,
     context?: RpcInvocationContext,
   ): Promise<RpcGraphicsExportModelResult>;
 };
