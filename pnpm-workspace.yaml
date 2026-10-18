@@ -339,6 +339,7 @@ catalog:
   '@better-auth-ui/core': 1.7.29
   '@better-auth-ui/react': 1.7.29
   smol-toml: 1.9.1
+  google-auth-library: 11.2.0
 catalogs:
   electron-vite7:
     electron-vite: 5.0.0

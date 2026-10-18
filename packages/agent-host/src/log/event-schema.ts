@@ -544,5 +544,5 @@ export const parseLogEvent = (value: unknown): AgentLogEvent => {
       cause: result.error,
     });
   }
-  return result.data as AgentLogEvent;
+  return result.data;
 };

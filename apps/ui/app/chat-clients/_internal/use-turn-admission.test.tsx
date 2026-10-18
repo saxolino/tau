@@ -51,7 +51,7 @@ describe('useTurnAdmission', () => {
     harness.catalog = { status: 'unavailable' };
     await expect(admit(opus)).rejects.toMatchObject({
       code: 'CHAT_PLACEMENT_UNAVAILABLE',
-      message: expect.stringContaining("can't reach its model list") as unknown as string,
+      message: expect.stringContaining("can't reach its model list"),
     });
     expect(harness.creditPreflight).not.toHaveBeenCalled();
   });
@@ -60,13 +60,13 @@ describe('useTurnAdmission', () => {
     harness.catalog = { status: 'loaded', models: [row('anthropic-claude-opus-4.9')] };
     await expect(admit(opus)).rejects.toMatchObject({
       code: 'CHAT_PLACEMENT_UNAVAILABLE',
-      message: expect.stringContaining('anthropic-claude-opus-4.8 is no longer offered') as unknown as string,
+      message: expect.stringContaining('anthropic-claude-opus-4.8 is no longer offered'),
     });
   });
 
   it('should admit a Tau turn once the awaited catalog offers its model', async () => {
     harness.catalog = { status: 'loaded', models: [row('anthropic-claude-opus-4.8')] };
-    await expect(admit(opus)).resolves.toEqual({ hostId: expect.any(String) as unknown as string });
+    await expect(admit(opus)).resolves.toEqual({ hostId: expect.any(String) });
     expect(harness.creditPreflight).toHaveBeenCalledWith('anthropic-claude-opus-4.8', 'anthropic-claude-opus-4.8');
   });
 

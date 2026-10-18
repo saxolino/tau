@@ -45,7 +45,7 @@ const mount = async (
   const meshes: THREE.Mesh[] = [];
   state?.scene.traverse((object) => {
     if (object instanceof THREE.Mesh) {
-      meshes.push(object as unknown as THREE.Mesh);
+      meshes.push(object);
     }
   });
   return {

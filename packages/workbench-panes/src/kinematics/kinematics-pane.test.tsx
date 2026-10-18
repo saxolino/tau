@@ -261,7 +261,7 @@ describe('KinematicsPane', () => {
         },
       },
     });
-    expect(field('Slide')).toHaveAccessibleDescription(expect.stringContaining('Range 0 mm to unbounded'));
+    expect(field('Slide')).toHaveAccessibleDescription(/Range 0 mm to unbounded/);
     for (const slider of screen.queryAllByRole('slider')) {
       expect(slider.getAttribute('aria-valuemin')).not.toBe('-Infinity');
       expect(slider.getAttribute('aria-valuemax')).not.toBe('Infinity');
@@ -349,7 +349,7 @@ describe('KinematicsPane', () => {
       loaded: { ...mechanism, joints: { ...mechanism.joints, arm: { ...mechanism.joints['arm']!, name: 'Shoulder' } } },
     });
 
-    expect(field('Shoulder')).toHaveAccessibleDescription(expect.stringContaining('Revolute joint · driver · arm'));
+    expect(field('Shoulder')).toHaveAccessibleDescription(/Revolute joint · driver · arm/);
     expect(screen.queryByRole('spinbutton', { name: 'Arm' })).not.toBeInTheDocument();
   });
 

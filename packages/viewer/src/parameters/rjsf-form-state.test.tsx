@@ -206,10 +206,10 @@ describe('RJSF form-state policy', () => {
   it('should derive a complete default for a newly added production object-array item', () => {
     const jsonSchema = inputJsonSchema(imageEdgeSchemas.png);
     const visiblePrimitives = requireRjsfSchema(
-      jsonSchema.properties?.['visiblePrimitives'] as unknown,
+      jsonSchema.properties?.['visiblePrimitives'],
       'Expected the visible-primitives schema',
     );
-    const itemSchema = requireRjsfSchema(visiblePrimitives.items as unknown, 'Expected the visible-primitives item');
+    const itemSchema = requireRjsfSchema(visiblePrimitives.items, 'Expected the visible-primitives item');
 
     const item = schemaUtilsFor(jsonSchema).getDefaultFormState(itemSchema);
 

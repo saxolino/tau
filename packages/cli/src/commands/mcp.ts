@@ -280,7 +280,7 @@ export const mcpCommand = defineCommand({
         openClient,
         async (client) => {
           if (retiring.has(client)) {
-            await Promise.allSettled(pending.get(client) ?? []);
+            await Promise.allSettled([...(pending.get(client) ?? [])]);
           }
           await client.shutdown();
         },

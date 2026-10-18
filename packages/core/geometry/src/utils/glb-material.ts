@@ -356,7 +356,7 @@ export function collectGltfExtensions(value: unknown, extensions: Set<string>): 
         continue;
       }
       if (key === 'extensions' && child !== null && typeof child === 'object') {
-        for (const name of Object.keys(child as Record<string, unknown>)) {
+        for (const name of Object.keys(child)) {
           extensions.add(name);
         }
       }

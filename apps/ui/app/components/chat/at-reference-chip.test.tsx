@@ -35,7 +35,7 @@ function createEntry(path: string, partial: Partial<FileEntry> = {}): FileEntry 
   const mtimeMs = partial.mtimeMs ?? 0;
 
   if (partial.type === 'dir') {
-    const directoryPartial = partial as Partial<DirectoryFileEntry>;
+    const directoryPartial: Partial<DirectoryFileEntry> = partial;
     return {
       path,
       name,

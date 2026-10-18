@@ -507,12 +507,13 @@ describe('serializeMessage', () => {
     });
 
     it('serializes tool-edit_file output-available', () => {
+      const legacyInput = { targetFile: 'src/foo.ts', codeEdit: 'const x = 1;' };
       const message = baseMessage([
         {
           type: 'tool-edit_file',
           toolCallId: 'c1',
           state: 'output-available',
-          input: { targetFile: 'src/foo.ts', codeEdit: 'const x = 1;' },
+          input: legacyInput,
           output: {
             diffStats: {
               linesAdded: 1,

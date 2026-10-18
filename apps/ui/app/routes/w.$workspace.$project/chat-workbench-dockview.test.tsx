@@ -308,7 +308,7 @@ vi.mock('#routes/w.$workspace.$project/file-viewers/built-in-viewers.js', () => 
                 filePath={request.path}
                 content={content}
                 isEditorReady={request.textEditor?.isReady}
-                onChange={request.textEditor?.onChange as (value: string) => void}
+                onChange={request.textEditor?.onChange}
               />
             ),
           });

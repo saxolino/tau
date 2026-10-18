@@ -44,7 +44,7 @@ const host = createGeometryHost({
       config: runtimeConfig,
     });
     try {
-      const runner = await createHostGeoSpecRunner(root, client as unknown as HostGeoSpecRuntimeClient);
+      const runner = await createHostGeoSpecRunner(root, client as HostGeoSpecRuntimeClient);
       return {
         ...runner,
         async close() {

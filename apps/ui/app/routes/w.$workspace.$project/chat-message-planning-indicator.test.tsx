@@ -51,9 +51,12 @@ const setChat = (status: SelectorState['status'], messages: MyUIMessage[]): void
   mockSelectorState = { status, messages, messagesById: new Map(messages.map((m) => [m.id, m])) };
 };
 
-const user = (id: string): MyUIMessage =>
-  // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- minimal MyUIMessage shape for test
-  ({ id, role: messageRole.user, parts: [{ type: 'text', text: 'hi' }], metadata: { createdAt: 0 } }) as MyUIMessage;
+const user = (id: string): MyUIMessage => ({
+  id,
+  role: messageRole.user,
+  parts: [{ type: 'text', text: 'hi' }],
+  metadata: { createdAt: 0 },
+});
 
 const assistant = (id: string, parts: Array<Record<string, unknown>>): MyUIMessage =>
   // oxlint-disable-next-line @typescript-eslint/consistent-type-assertions -- reducer-shaped parts for test

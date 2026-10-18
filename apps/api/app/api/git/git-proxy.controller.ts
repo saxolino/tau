@@ -833,7 +833,7 @@ export class GitProxyController {
     }
     let addresses: LookupAddress[];
     try {
-      addresses = await lookup(hostname, { all: true, verbatim: true });
+      addresses = await lookup(hostname, { all: true, order: 'verbatim' });
     } catch {
       throw new BadGatewayException({ code: 'GIT_PROXY_DNS_FAILED' });
     }

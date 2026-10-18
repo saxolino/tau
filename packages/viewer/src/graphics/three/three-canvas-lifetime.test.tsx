@@ -96,7 +96,7 @@ describe('ThreeCanvasInstance renderer lifetime', () => {
         private readonly notify: () => void;
         public constructor(callback: ResizeObserverCallback) {
           this.notify = () => {
-            callback([], this as unknown as ResizeObserver);
+            callback([], this);
           };
         }
         public observe(): void {

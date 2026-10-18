@@ -162,7 +162,7 @@ describe.each(['webgl', 'webgpu'] as const)('surface batching actual %s', (backe
               .length,
           };
         };
-        const { gpu } = navigator as Navigator & {
+        const { gpu } = navigator as {
           readonly gpu: { requestAdapter: () => Promise<unknown> };
         };
         const adapter = await gpu.requestAdapter();

@@ -564,6 +564,9 @@ catalogs:
     geospec-engine:
       specifier: 0.2.1
       version: 0.2.1
+    google-auth-library:
+      specifier: 11.2.0
+      version: 11.2.0
     graphics-debug:
       specifier: 0.0.100
       version: 0.0.100
@@ -1072,7 +1075,7 @@ importers:
         version: 4.6.2
       '@react-router/express':
         specifier: 'catalog:'
-        version: 7.18.2(express@5.3.0(supports-color@11.0.0))(react-router@7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(typescript@5.9.3)
+        version: 7.18.2(express@5.3.0)(react-router@7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(typescript@5.9.3)
       '@react-router/node':
         specifier: 'catalog:'
         version: 7.18.2(react-router@7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(typescript@5.9.3)
@@ -1234,7 +1237,7 @@ importers:
         version: 7.37.5(eslint@9.39.5(jiti@2.7.0))
       express:
         specifier: 'catalog:'
-        version: 5.3.0(supports-color@11.0.0)
+        version: 5.3.0
       fake-indexeddb:
         specifier: 'catalog:'
         version: 6.2.5
@@ -1457,13 +1460,13 @@ importers:
         version: 23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
       '@nx/nest':
         specifier: 'catalog:'
-        version: 23.3.0(01747dee3a0eb99c1a997434fb1678d3)
+        version: 23.3.0(15c06659e148d02d30978958a0f3112a)
       '@nx/node':
         specifier: 'catalog:'
-        version: 23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(@zkochan/js-yaml@0.0.7)(babel-plugin-macros@3.1.0)(eslint@9.39.5(jiti@2.7.0))(express@5.3.0(supports-color@11.0.0))(fastify@5.12.5)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3)
+        version: 23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(@zkochan/js-yaml@0.0.7)(babel-plugin-macros@3.1.0)(eslint@9.39.5(jiti@2.7.0))(express@5.3.0)(fastify@5.12.5)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3)
       '@nx/react':
         specifier: 'catalog:'
-        version: 23.3.0(e9717be06343bd622c47cac49121bc16)
+        version: 23.3.0(6f839d71d0c01d58f3ec04fa8568d93a)
       '@nx/vite':
         specifier: 'catalog:'
         version: 23.3.0(6e063f6efcd256bbfee29a24ba96011b)
@@ -1809,6 +1812,9 @@ importers:
       ai:
         specifier: 'catalog:'
         version: 6.0.304(zod@4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315))
+      google-auth-library:
+        specifier: 'catalog:'
+        version: 11.2.0
       react:
         specifier: 'catalog:'
         version: 19.3.0
@@ -29412,13 +29418,13 @@ snapshots:
       - nx
       - supports-color
 
-  '@nx/nest@23.3.0(01747dee3a0eb99c1a997434fb1678d3)':
+  '@nx/nest@23.3.0(15c06659e148d02d30978958a0f3112a)':
     dependencies:
       '@nestjs/schematics': 11.1.0(chokidar@4.0.3)(prettier@3.9.10)(typescript@5.9.3)
       '@nx/devkit': 23.3.0(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
       '@nx/eslint': 23.3.0(@babel/traverse@7.29.10)(@nx/jest@23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(babel-plugin-macros@3.1.0)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3))(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@zkochan/js-yaml@0.0.7)(eslint@9.39.5(jiti@2.7.0))(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
       '@nx/js': 23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
-      '@nx/node': 23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(@zkochan/js-yaml@0.0.7)(babel-plugin-macros@3.1.0)(eslint@9.39.5(jiti@2.7.0))(express@5.3.0(supports-color@11.0.0))(fastify@5.12.5)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3)
+      '@nx/node': 23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(@zkochan/js-yaml@0.0.7)(babel-plugin-macros@3.1.0)(eslint@9.39.5(jiti@2.7.0))(express@5.3.0)(fastify@5.12.5)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3)
       semver: 7.8.5
       tslib: 2.8.1
     optionalDependencies:
@@ -29451,7 +29457,7 @@ snapshots:
       - typescript
       - verdaccio
 
-  '@nx/node@23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(@zkochan/js-yaml@0.0.7)(babel-plugin-macros@3.1.0)(eslint@9.39.5(jiti@2.7.0))(express@5.3.0(supports-color@11.0.0))(fastify@5.12.5)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3)':
+  '@nx/node@23.3.0(@babel/traverse@7.29.10)(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(@zkochan/js-yaml@0.0.7)(babel-plugin-macros@3.1.0)(eslint@9.39.5(jiti@2.7.0))(express@5.3.0)(fastify@5.12.5)(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))(ts-node@10.9.2(@swc/core@1.15.8(@swc/helpers@0.5.23))(@types/node@24.0.15)(typescript@5.9.3))(typescript@5.9.3)':
     dependencies:
       '@nx/devkit': 23.3.0(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
       '@nx/docker': 23.3.0(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
@@ -29463,7 +29469,7 @@ snapshots:
       tcp-port-used: 1.0.3
       tslib: 2.8.1
     optionalDependencies:
-      express: 5.3.0(supports-color@11.0.0)
+      express: 5.3.0
       fastify: 5.12.5
     transitivePeerDependencies:
       - '@babel/traverse'
@@ -29514,7 +29520,7 @@ snapshots:
   '@nx/nx-win32-x64-msvc@23.3.0':
     optional: true
 
-  '@nx/react@23.3.0(e9717be06343bd622c47cac49121bc16)':
+  '@nx/react@23.3.0(6f839d71d0c01d58f3ec04fa8568d93a)':
     dependencies:
       '@babel/preset-react': 7.29.7(@babel/core@7.29.7)
       '@nx/devkit': 23.3.0(nx@23.3.0(@swc-node/register@1.11.1(@swc/core@1.15.8(@swc/helpers@0.5.23))(@swc/types@0.1.28)(supports-color@11.0.0)(typescript@5.9.3))(@swc/core@1.15.8(@swc/helpers@0.5.23)))
@@ -29529,7 +29535,7 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@nx/vite': 23.3.0(6e063f6efcd256bbfee29a24ba96011b)
-      express: 5.3.0(supports-color@11.0.0)
+      express: 5.3.0
       http-proxy-middleware: 3.0.7
     transitivePeerDependencies:
       - '@babel/core'
@@ -32245,10 +32251,10 @@ snapshots:
       - babel-plugin-macros
       - supports-color
 
-  '@react-router/express@7.18.2(express@5.3.0(supports-color@11.0.0))(react-router@7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(typescript@5.9.3)':
+  '@react-router/express@7.18.2(express@5.3.0)(react-router@7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(typescript@5.9.3)':
     dependencies:
       '@react-router/node': 7.18.2(react-router@7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(typescript@5.9.3)
-      express: 5.3.0(supports-color@11.0.0)
+      express: 5.3.0
       react-router: 7.18.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
     optionalDependencies:
       typescript: 5.9.3
@@ -35629,20 +35635,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  body-parser@2.3.0(supports-color@11.0.0):
-    dependencies:
-      bytes: 3.1.2
-      content-type: 2.1.0
-      debug: 4.4.3(supports-color@11.0.0)
-      http-errors: 2.0.1
-      iconv-lite: 0.7.3
-      on-finished: 2.4.1
-      qs: 6.16.0
-      raw-body: 3.0.2
-      type-is: 2.1.0
-    transitivePeerDependencies:
-      - supports-color
-
   bonjour-service@1.4.4:
     dependencies:
       fast-deep-equal: 3.1.3
@@ -38083,39 +38075,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  express@5.3.0(supports-color@11.0.0):
-    dependencies:
-      accepts: 2.0.0
-      body-parser: 2.3.0(supports-color@11.0.0)
-      content-disposition: 2.0.1
-      content-type: 2.1.0
-      cookie: 0.7.2
-      cookie-signature: 1.2.2
-      debug: 4.4.3(supports-color@11.0.0)
-      depd: 2.0.0
-      encodeurl: 2.0.0
-      escape-html: 1.0.3
-      etag: 1.8.1
-      finalhandler: 2.1.1(supports-color@11.0.0)
-      fresh: 2.0.0
-      http-errors: 2.0.1
-      merge-descriptors: 2.0.0
-      mime-types: 3.0.2
-      on-finished: 2.4.1
-      once: 1.4.0
-      parseurl: 1.3.3
-      proxy-addr: 2.0.8
-      qs: 6.16.0
-      range-parser: 1.3.0
-      router: 2.2.0(supports-color@11.0.0)
-      send: 1.2.1(supports-color@11.0.0)
-      serve-static: 2.2.1
-      statuses: 2.0.2
-      type-is: 2.1.0
-      vary: 1.1.2
-    transitivePeerDependencies:
-      - supports-color
-
   exsolve@1.1.3: {}
 
   extend-shallow@2.0.1:
@@ -38350,17 +38309,6 @@ snapshots:
   finalhandler@2.1.1:
     dependencies:
       debug: 4.4.3
-      encodeurl: 2.0.0
-      escape-html: 1.0.3
-      on-finished: 2.4.1
-      parseurl: 1.3.3
-      statuses: 2.0.2
-    transitivePeerDependencies:
-      - supports-color
-
-  finalhandler@2.1.1(supports-color@11.0.0):
-    dependencies:
-      debug: 4.4.3(supports-color@11.0.0)
       encodeurl: 2.0.0
       escape-html: 1.0.3
       on-finished: 2.4.1
@@ -40504,7 +40452,7 @@ snapshots:
       form-data: 4.0.6
       html-encoding-sniffer: 4.0.0
       http-proxy-agent: 7.0.2(supports-color@11.0.0)
-      https-proxy-agent: 7.0.6(supports-color@11.0.0)
+      https-proxy-agent: 7.0.6
       is-potential-custom-element-name: 1.0.1
       nwsapi: 2.2.28
       parse5: 7.3.0
@@ -45013,16 +44961,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  router@2.2.0(supports-color@11.0.0):
-    dependencies:
-      debug: 4.4.3(supports-color@11.0.0)
-      depd: 2.0.0
-      is-promise: 4.0.0
-      parseurl: 1.3.3
-      path-to-regexp: 8.4.2
-    transitivePeerDependencies:
-      - supports-color
-
   rrweb-cssom@0.8.0: {}
 
   run-applescript@7.0.0: {}
@@ -45283,22 +45221,6 @@ snapshots:
   send@1.2.1:
     dependencies:
       debug: 4.4.3
-      encodeurl: 2.0.0
-      escape-html: 1.0.3
-      etag: 1.8.1
-      fresh: 2.0.0
-      http-errors: 2.0.1
-      mime-types: 3.0.2
-      ms: 2.1.3
-      on-finished: 2.4.1
-      range-parser: 1.3.0
-      statuses: 2.0.2
-    transitivePeerDependencies:
-      - supports-color
-
-  send@1.2.1(supports-color@11.0.0):
-    dependencies:
-      debug: 4.4.3(supports-color@11.0.0)
       encodeurl: 2.0.0
       escape-html: 1.0.3
       etag: 1.8.1

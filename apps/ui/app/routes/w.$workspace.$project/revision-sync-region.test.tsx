@@ -1109,7 +1109,7 @@ describe('RevisionSyncRegion with a moved GitHub repository (D11)', () => {
 
     await waitFor(() => {
       expect(region.connect).toHaveBeenCalledWith('git', 'https://github.com/octo/renamed.git', {
-        authorization: expect.stringMatching(/^Basic /u) as unknown as string,
+        authorization: expect.stringMatching(/^Basic /u),
         provider: 'github',
         repositoryId: '99',
         connectionId,

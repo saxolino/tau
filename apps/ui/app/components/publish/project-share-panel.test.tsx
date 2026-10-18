@@ -662,7 +662,7 @@ describe('ProjectSharePanel', () => {
   });
 
   it('presents signed-out Tau persistence as a normal state', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 } as Response);
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
 
     renderPanel(<ProjectSharePanel projectId='proj_signed_out' projectName='Demo' entryPath='main.ts' />);
 
@@ -675,7 +675,7 @@ describe('ProjectSharePanel', () => {
   });
 
   it('preserves unrelated return parameters when building the sign-in link', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 } as Response);
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
 
     renderPanel(<ProjectSharePanel projectId='proj_signed_out' projectName='Demo' entryPath='main.ts' />, [
       '/?error=another-feature&source=editor',

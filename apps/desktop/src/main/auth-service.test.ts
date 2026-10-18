@@ -198,7 +198,7 @@ describe('createAuthService — refresh and sign-out', () => {
         new Response(undefined, {
           status: 200,
           headers: { [setAuthTokenHeader]: 'rotated-token' },
-        })) as unknown as typeof globalThis.fetch,
+        })) as typeof globalThis.fetch,
     });
     await refreshed.restore();
     const notified = vi.fn();
@@ -221,7 +221,7 @@ describe('createAuthService — refresh and sign-out', () => {
     const identified = createAuthService({
       ...options,
       fetch: (async () =>
-        Response.json({ session: { id: 'session_1' }, user: { id: 'user_1' } })) as unknown as typeof globalThis.fetch,
+        Response.json({ session: { id: 'session_1' }, user: { id: 'user_1' } })) as typeof globalThis.fetch,
     });
     await identified.restore();
     expect(identified.principal()).toBeUndefined();
@@ -245,7 +245,7 @@ describe('createAuthService — refresh and sign-out', () => {
 
     const expired = createAuthService({
       ...options,
-      fetch: (async () => new Response(undefined, { status: 401 })) as unknown as typeof globalThis.fetch,
+      fetch: (async () => new Response(undefined, { status: 401 })) as typeof globalThis.fetch,
     });
     await expired.restore();
     const notified = vi.fn();

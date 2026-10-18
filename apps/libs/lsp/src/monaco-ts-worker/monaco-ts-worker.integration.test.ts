@@ -56,7 +56,7 @@ vi.mock('monaco-editor/esm/vs/language/typescript/ts.worker.js', () => {
   return Object.fromEntries([
     ['TypeScriptWorker', TypeScriptWorker],
     ['initialize', initialize],
-  ]) as unknown as MonacoTsWorkerEsm;
+  ]);
 });
 
 const buildClient = vi.fn(() => ({

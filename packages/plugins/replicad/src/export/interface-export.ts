@@ -355,7 +355,7 @@ const prepareStepProducts = (oc: OpenCascadeInstance, shapes: StepShapeEntry[]):
       throw new TypeError(`GeoSpec: entry ${index} must declare a finite positive density in g/cm3`);
     }
 
-    const identity = inspectReplicadShapeIdentity({ openCascade: oc, shape: shape as Meshable });
+    const identity = inspectReplicadShapeIdentity({ openCascade: oc, shape });
     const { prototypeHash = `entry-${index}` } = identity;
     const prototypeInterfaces = transformInterfacesToProductFrame(oc, shape, resolvedInterfaces);
     const signature = interfaceSignature(prototypeInterfaces);

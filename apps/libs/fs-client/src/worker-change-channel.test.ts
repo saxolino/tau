@@ -13,7 +13,7 @@ function createTestChannel(listen: Mock<WorkerChangeChannelTransport['listen']>)
   wire: (data: unknown) => void;
 } {
   const channel = new WorkerChangeChannel({ transport: { listen } });
-  const wire = listen.mock.calls[0]![1] as (data: unknown) => void;
+  const wire = listen.mock.calls[0][1] as (data: unknown) => void;
   return { channel, wire };
 }
 

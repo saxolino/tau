@@ -12,7 +12,7 @@ import type { FileEntry, FileStat } from '@taucad/types';
 import type { ListedDirectoryEntry } from '@taucad/fs-client/directory-listing';
 import { FileNotFoundError } from '@taucad/fs-client/file-content-errors';
 import { rpcName } from '@taucad/chat/constants';
-import type { RpcHandlerDependencies, RpcCallInput } from '#hooks/rpc-handlers.js';
+import type { RpcHandlerDependencies } from '#hooks/rpc-handlers.js';
 import { omittedSectionCutsNotice } from '#services/headless-capture.js';
 import type { SectionCut } from '@taucad/viewer/graphics/section-cuts';
 import { workbenchPaths, workbenchRecords } from '@taucad/workbench';
@@ -321,7 +321,7 @@ function buildDeps(overrides?: {
 
   createRpcHandlers({
     chatId: 'chat_rpc_handlers_test_deps',
-    fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+    fileManager: mockFm,
     projectRef: (overrides?.projectRef ?? createMockProjectRef()) as unknown as RpcHandlerDependencies['projectRef'],
     headlessImageService: overrides?.headlessImageService,
     createGeoSpecClient: overrides?.createGeoSpecClient,
@@ -332,7 +332,7 @@ function buildDeps(overrides?: {
 
 /** Extracts typed write args from the mock's call history. */
 function getWriteCall(mockFm: ReturnType<typeof createMockFileManager>, index = 0): FileManagerWriteCall {
-  return mockFm.writeFile.mock.calls[index]! as FileManagerWriteCall;
+  return mockFm.writeFile.mock.calls[index]!;
 }
 
 // ===================================================================
@@ -956,12 +956,12 @@ describe('rpc-handlers', () => {
         mockFm.whenServicesReady.mockResolvedValue({ treeService });
         createRpcHandlers({
           chatId: 'chat_concurrent_edit_a',
-          fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+          fileManager: mockFm,
         });
         const firstAdapter = capturedDeps!.fileSystem;
         createRpcHandlers({
           chatId: 'chat_concurrent_edit_b',
-          fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+          fileManager: mockFm,
         });
         const secondAdapter = capturedDeps!.fileSystem;
 
@@ -2104,7 +2104,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_ok',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 
@@ -2112,7 +2112,7 @@ describe('rpc-handlers', () => {
         rpcName: rpcName.createFile,
         args: { targetFile: 'a.scad', content: '// x' },
         toolCallId: 'tool_call_cf_1',
-      } as RpcCallInput);
+      });
 
       expect(ledgerMocks.recordRpcOutcome).toHaveBeenCalledWith('chat_ledger_ok', 'tool_call_cf_1', {
         kind: 'success',
@@ -2130,7 +2130,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_err',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 
@@ -2139,7 +2139,7 @@ describe('rpc-handlers', () => {
           rpcName: rpcName.editFile,
           args: { targetFile: 'a.scad', oldString: 'a', newString: 'b' },
           toolCallId: 'tool_call_ef_1',
-        } as RpcCallInput),
+        }),
       ).rejects.toThrow('boom');
 
       expect(ledgerMocks.recordRpcOutcome).toHaveBeenCalledWith('chat_ledger_err', 'tool_call_ef_1', {
@@ -2161,7 +2161,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_numeric',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 
@@ -2170,7 +2170,7 @@ describe('rpc-handlers', () => {
           rpcName: rpcName.createFile,
           args: { targetFile: 'x.scad', content: '//' },
           toolCallId: 'tool_call_num_1',
-        } as RpcCallInput),
+        }),
       ).rejects.toThrow('numeric');
 
       expect(ledgerMocks.recordRpcOutcome).toHaveBeenCalledWith('chat_ledger_numeric', 'tool_call_num_1', {
@@ -2190,7 +2190,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_nocode',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 
@@ -2199,7 +2199,7 @@ describe('rpc-handlers', () => {
           rpcName: rpcName.deleteFile,
           args: { targetFile: 'y.scad' },
           toolCallId: 'tool_call_plain_1',
-        } as RpcCallInput),
+        }),
       ).rejects.toThrow('plain');
 
       expect(ledgerMocks.recordRpcOutcome).toHaveBeenCalledWith('chat_ledger_nocode', 'tool_call_plain_1', {
@@ -2221,7 +2221,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_strcode',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 
@@ -2230,7 +2230,7 @@ describe('rpc-handlers', () => {
           rpcName: rpcName.appendFile,
           args: { targetFile: 'y.scad', content: '//' },
           toolCallId: 'tool_call_estr_1',
-        } as RpcCallInput),
+        }),
       ).rejects.toThrow('unknown-str');
 
       expect(ledgerMocks.recordRpcOutcome).toHaveBeenCalledWith('chat_ledger_strcode', 'tool_call_estr_1', {
@@ -2252,7 +2252,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_readonly',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 
@@ -2260,7 +2260,7 @@ describe('rpc-handlers', () => {
         rpcName: rpcName.readFile,
         args: { targetFile: 'a.scad' },
         toolCallId: 'tool_call_rf_1',
-      } as RpcCallInput);
+      });
 
       expect(ledgerMocks.recordRpcOutcome).not.toHaveBeenCalled();
     });
@@ -2283,7 +2283,7 @@ describe('rpc-handlers', () => {
 
       const handlers = createRpcHandlers({
         chatId: 'chat_rpc_handlers_factory_test',
-        fileManager: mockFm as RpcHandlerDependencies['fileManager'],
+        fileManager: mockFm,
         projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
       });
 

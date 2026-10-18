@@ -1018,7 +1018,7 @@ describe('ChatConverter', () => {
       throw new Error('A Bambu printer takes jobs.');
     }
     const { manifest } = await compileExportConfigurationManifest('bambu', 'machine.submission', {
-      schema: jobs.submission.legacyProjection.inputSchema as JSONSchema7,
+      schema: jobs.submission.legacyProjection.inputSchema,
       defaults: {},
     });
 

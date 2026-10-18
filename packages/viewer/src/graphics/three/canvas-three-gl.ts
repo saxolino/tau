@@ -127,7 +127,7 @@ export function createTauR3fGlProp(
       if (retired || !canvas.isConnected) {
         await retire();
       }
-      return renderer as FiberCompatibleGl;
+      return renderer;
     }
     // R3F reapplies DPR on every resize. WebGLRenderer.setPixelRatio also calls
     // setSize, clearing/reallocating the old buffer before R3F sizes the new one.
@@ -146,7 +146,7 @@ export function createTauR3fGlProp(
       Object.assign(camera, { _reversedDepth: reversedDepth });
       camera.updateProjectionMatrix();
     }
-    return renderer as FiberCompatibleGl;
+    return renderer;
   };
   // R3F can reenter configure before this async factory settles. One canvas/backend
   // mount must share the complete setup; a new keyed factory owns a fresh retry.

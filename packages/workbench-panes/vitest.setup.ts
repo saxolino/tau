@@ -139,8 +139,8 @@ const stubEntry = {
   // eslint-disable-next-line @typescript-eslint/naming-convention -- the PerformanceEntry member name
   toJSON: () => ({}),
 };
-globalThis.performance.mark = (() => stubEntry) as typeof globalThis.performance.mark;
-globalThis.performance.measure = (() => stubEntry) as typeof globalThis.performance.measure;
+globalThis.performance.mark = () => stubEntry;
+globalThis.performance.measure = () => stubEntry;
 
 // Jsdom returns null from HTMLCanvasElement.getContext('2d'), which crashes
 // `three/addons` modules that call `ctx.fillStyle = …` at module load time

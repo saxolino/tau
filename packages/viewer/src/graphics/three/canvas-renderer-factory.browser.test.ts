@@ -37,7 +37,7 @@ it.each(['webgl', 'webgpu'] as const)(
     if (!('gpu' in navigator)) {
       throw new Error('Expected browser GPU adapter surface');
     }
-    const { gpu } = navigator;
+    const { gpu } = navigator as { readonly gpu?: GPU | null };
     if (typeof gpu !== 'object' || gpu === null) {
       throw new Error('Expected browser GPU adapter surface');
     }

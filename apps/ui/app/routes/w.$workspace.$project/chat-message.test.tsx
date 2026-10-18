@@ -7,14 +7,17 @@ import { ChatMessage } from '#routes/w.$workspace.$project/chat-message.js';
 import { AtReferenceProvider } from '#components/chat/at-reference-context.js';
 
 const { mockMessagesById, mockMessageOrder, mockStatus, mockSkillsCatalog, mockStartEditingMessage, textRenderCounts } =
-  vi.hoisted(() => ({
-    mockMessagesById: new Map<string, MyUIMessage>(),
-    mockMessageOrder: [] as string[],
-    mockStatus: { value: 'ready' as 'ready' | 'streaming' | 'submitted' | 'error' },
-    mockSkillsCatalog: [] as SkillMetadata[],
-    mockStartEditingMessage: vi.fn(),
-    textRenderCounts: new Map<string, number>(),
-  }));
+  vi.hoisted(() => {
+    const mockStatus: { value: 'ready' | 'streaming' | 'submitted' | 'error' } = { value: 'ready' };
+    return {
+      mockMessagesById: new Map<string, MyUIMessage>(),
+      mockMessageOrder: [] as string[],
+      mockStatus,
+      mockSkillsCatalog: [] as SkillMetadata[],
+      mockStartEditingMessage: vi.fn(),
+      textRenderCounts: new Map<string, number>(),
+    };
+  });
 
 const getMockChatSelectorState = (): {
   messages: MyUIMessage[];

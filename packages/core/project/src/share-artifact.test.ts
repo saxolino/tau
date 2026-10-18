@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { CompactEncrypt } from 'jose';
+import { base64url, CompactEncrypt, decodeProtectedHeader } from 'jose';
 import { describe, expect, it } from 'vitest';
 import { createShareArchive, openShareArchive, shareArtifactCodec } from '@taucad/project-core/share-artifact';
 import type { ShareProjectSnapshot } from '@taucad/project-core/share-snapshot';
@@ -60,6 +60,37 @@ describe('portable share artifacts', () => {
     ).rejects.toMatchObject({ code: 'SHARE_ARTIFACT_INVALID' });
   });
 
+  it('should use a fresh random salt while preserving the password encryption profile', async () => {
+    const first = await shareArtifactCodec.sealWithPassword(snapshot(), password);
+    const second = await shareArtifactCodec.sealWithPassword(snapshot(), password);
+    const firstHeader = decodeProtectedHeader(first.compactJwe);
+    const secondHeader = decodeProtectedHeader(second.compactJwe);
+
+    expect(firstHeader).toMatchObject({
+      alg: 'PBES2-HS512+A256KW',
+      enc: 'A256GCM',
+      cty: 'application/zip',
+      p2c: 210_000,
+      p2s: expect.any(String),
+    });
+    expect(secondHeader).toMatchObject({ ...firstHeader, p2s: expect.any(String) });
+    expect(typeof firstHeader.p2s).toBe('string');
+    expect(typeof secondHeader.p2s).toBe('string');
+    if (typeof firstHeader.p2s !== 'string' || typeof secondHeader.p2s !== 'string') {
+      throw new Error('Password encryption did not emit its salt.');
+    }
+    expect(base64url.decode(firstHeader.p2s)).toHaveLength(16);
+    expect(base64url.decode(secondHeader.p2s)).toHaveLength(16);
+    expect(secondHeader.p2s).not.toBe(firstHeader.p2s);
+    expect(second.compactJwe).not.toBe(first.compactJwe);
+    expect((await shareArtifactCodec.openWithPassword({ compactJwe: first.compactJwe, password })).archive).toEqual(
+      first.archive,
+    );
+    expect((await shareArtifactCodec.openWithPassword({ compactJwe: second.compactJwe, password })).archive).toEqual(
+      second.archive,
+    );
+  });
+
   it.each([
     '{"activeGroup":"default","groups":{"default":{"values":{"width":12},"units":{"/width":"in"}}}}',
     '{"recordVersion":1,"activeGroup":"default","groups":{"default":{"values":{"width":12}}}}',
@@ -78,7 +109,6 @@ describe('portable share artifacts', () => {
 
   it('rejects unexpected JWE headers', async () => {
     const archive = await createShareArchive(snapshot());
-    const p2s = new Uint8Array(16).fill(4);
     const compactJwe = await new CompactEncrypt(archive)
       .setProtectedHeader({
         alg: 'PBES2-HS512+A256KW',
@@ -86,7 +116,7 @@ describe('portable share artifacts', () => {
         cty: 'application/zip',
         typ: 'unexpected',
       })
-      .setKeyManagementParameters({ p2c: 210_000, p2s })
+      .setKeyManagementParameters({ p2c: 210_000 })
       .encrypt(bytes(password));
     await expect(shareArtifactCodec.openWithPassword({ compactJwe, password })).rejects.toMatchObject({
       code: 'SHARE_ARTIFACT_INVALID',

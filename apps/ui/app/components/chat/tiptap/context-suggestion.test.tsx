@@ -368,7 +368,7 @@ describe('ContextSuggestionDropdown', () => {
     it('should return undefined when clientRect returns null', () => {
       const keydownRef = createKeydownRef();
       // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- Tiptap returns null
-      const state = createState({ clientRect: () => null as unknown as DOMRect });
+      const state = createState({ clientRect: () => null });
 
       const { container } = render(<ContextSuggestionDropdown state={state} keydownHandlerRef={keydownRef} />);
 

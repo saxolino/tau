@@ -27,7 +27,7 @@ function makeScene(): { scene: Group; lines: LineSegments2[] } {
     geometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0]), 3));
     scene.add(new LineSegments(geometry, new LineBasicMaterial()));
   }
-  applyFatLineSegments({ scene } as unknown as GLTF, { backend: 'webgl', resolution: new Vector2(800, 600) });
+  applyFatLineSegments({ scene }, { backend: 'webgl', resolution: new Vector2(800, 600) });
   const lines: LineSegments2[] = [];
   scene.traverse((object) => {
     if (object.type === 'LineSegments2') {

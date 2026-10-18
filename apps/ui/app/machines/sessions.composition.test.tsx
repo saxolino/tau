@@ -65,6 +65,7 @@ const {
   flushProducers,
   runtimeShutdown,
 } = vi.hoisted(() => {
+  const projection: { current: unknown } = { current: undefined };
   const frames: Array<{ type: string; projectId?: string }> = [];
   const calls: string[] = [];
   const live: string[] = [];
@@ -124,7 +125,7 @@ const {
     /** Every `setRoot` the workbench's file manager was asked for (S48(14)). */
     rootCalls: [] as Array<{ type: string; path?: string; projectId?: string }>,
     /** The revision projection the workbench follows; a test moves it. */
-    revisionProjection: { current: undefined as unknown },
+    revisionProjection: projection,
     /** What the checkout route table currently holds. */
     installedCheckoutRoutes: { current: '' },
     revisionClientLifecycle: [] as string[],
