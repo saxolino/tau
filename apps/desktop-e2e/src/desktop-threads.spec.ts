@@ -14,6 +14,23 @@ const grandchildName = 'Fixture grandchild';
 
 const jsonLine = (value: unknown): string => `${JSON.stringify(value)}\n`;
 
+/** The fixture's forced exit must wait until native seeding and collection stop writing into its profile. */
+const waitForNativeStore = async (session: DesktopSession, logOffset: number): Promise<void> => {
+  await expect
+    .poll(
+      async () => {
+        const log = await readFile(session.logPath, 'utf8');
+        const launchLog = log.slice(logOffset);
+        if (/ native\.store /u.test(launchLog)) {
+          throw new Error('Packaged native payload seeding failed.');
+        }
+        return / native\.seed /u.test(launchLog) && / native\.gc /u.test(launchLog);
+      },
+      { timeout: 240_000 },
+    )
+    .toBe(true);
+};
+
 /** Seed only completed, schema-valid records while the packaged app is closed. */
 const seedThreads = async ({
   projectRoot,
@@ -145,7 +162,9 @@ const seedThreads = async ({
 
 test('should navigate packaged fixture-backed child and grandchild histories without opening a generic child chat', async () => {
   const profileRoot = await mkdtemp(join(tmpdir(), 'tau-threads-e2e-'));
+  const logPath = join(profileRoot, 'logs', 'desktop.log');
   let session: DesktopSession | undefined;
+  let failure: Error | undefined;
   try {
     session = await launchDesktopApp({
       token: 'offline-preferences',
@@ -189,10 +208,13 @@ test('should navigate packaged fixture-backed child and grandchild histories wit
       .toBeTruthy();
     const alternateChatId = new URL(page.url()).searchParams.get('chat')!;
     expect(alternateChatId).toBeTruthy();
+    await waitForNativeStore(session, 0);
     await session.close();
     session = undefined;
 
     await seedThreads({ projectRoot, projectId, rootChatId, alternateChatId });
+    const firstLaunchLog = await readFile(logPath, 'utf8');
+    const secondLogOffset = firstLaunchLog.length;
     session = await launchDesktopApp({
       token: 'offline-preferences',
       packaged: true,
@@ -273,11 +295,22 @@ test('should navigate packaged fixture-backed child and grandchild histories wit
       .poll(async () => overview.getByRole('button', { name: `Open ${childName}` }).isVisible(), { timeout: 30_000 })
       .toBe(true);
     await session.capture('threads-settings-restored');
+    await waitForNativeStore(session, secondLogOffset);
   } catch (error) {
-    await session?.capture('threads-fixture-failure');
-    throw error;
-  } finally {
+    failure = error instanceof Error ? error : new Error(String(error));
+    await session?.capture('threads-fixture-failure').catch(() => undefined);
+  }
+  try {
     await session?.close();
+  } catch (error) {
+    failure ??= error instanceof Error ? error : new Error(String(error));
+  }
+  try {
     await rm(profileRoot, { recursive: true, force: true });
+  } catch (error) {
+    failure ??= error instanceof Error ? error : new Error(String(error));
+  }
+  if (failure) {
+    throw failure;
   }
 });
