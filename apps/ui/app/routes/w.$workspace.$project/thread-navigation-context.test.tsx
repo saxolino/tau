@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import type { ProjectTask } from '@taucad/agent-host/wire';
 import type { PanelState } from '#types/editor.types.js';
@@ -64,9 +64,11 @@ const task = (id: string, parentTaskId?: string): ProjectTask => ({
 });
 function Probe(): React.JSX.Element {
   const nav = useThreadNavigation();
+  const location = useLocation();
   return (
     <>
       <output>{nav.selectedTaskId ?? 'overview'}</output>
+      <div data-testid='search'>{location.search}</div>
       <span>{nav.candidateReview?.checkoutId ?? 'no review'}</span>
       <span>{String(nav.getThreadGroupOpen('Ongoing'))}</span>
       <span>{nav.getThreadView('child').scrollTop ?? 0}</span>
@@ -120,7 +122,7 @@ function Probe(): React.JSX.Element {
 const openPanel = vi.fn();
 const tree = (): React.JSX.Element => (
   <MemoryRouter>
-    <ThreadNavigationProvider openPanel={openPanel}>
+    <ThreadNavigationProvider openPanel={openPanel} isLayoutControllerReady>
       <Probe />
     </ThreadNavigationProvider>
   </MemoryRouter>
@@ -181,7 +183,7 @@ describe('Threads navigation', () => {
   it('should consume a deep link once without replaying it after Back', () => {
     const linkedTree = (): React.JSX.Element => (
       <MemoryRouter initialEntries={['/w/home/project?chat=chat-root&thread=grandchild']}>
-        <ThreadNavigationProvider openPanel={openPanel}>
+        <ThreadNavigationProvider openPanel={openPanel} isLayoutControllerReady>
           <Probe />
         </ThreadNavigationProvider>
       </MemoryRouter>
@@ -191,6 +193,39 @@ describe('Threads navigation', () => {
     expect(screen.getByRole('status')).toHaveTextContent('grandchild');
     fireEvent.click(screen.getByText('Back'));
     view.rerender(linkedTree());
+    expect(screen.getByRole('status')).toHaveTextContent('overview');
+    expect(openPanel).toHaveBeenCalledTimes(2);
+  });
+  it('should wait for the layout owner before accepting a thread deep link', () => {
+    const view = render(
+      <MemoryRouter initialEntries={['/w/home/project?chat=chat-root&thread=child']}>
+        <ThreadNavigationProvider openPanel={openPanel} isLayoutControllerReady={false}>
+          <Probe />
+        </ThreadNavigationProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('overview');
+    expect(screen.getByTestId('search')).toHaveTextContent('thread=child');
+    expect(openPanel).not.toHaveBeenCalled();
+
+    view.rerender(
+      <MemoryRouter initialEntries={['/w/home/project?chat=chat-root&thread=child']}>
+        <ThreadNavigationProvider openPanel={openPanel} isLayoutControllerReady>
+          <Probe />
+        </ThreadNavigationProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('child');
+    expect(screen.getByTestId('search')).not.toHaveTextContent('thread=child');
+    expect(openPanel).toHaveBeenCalledExactlyOnceWith('agents');
+    fireEvent.click(screen.getByText('Back'));
+    view.rerender(
+      <MemoryRouter initialEntries={['/w/home/project?chat=chat-root&thread=child']}>
+        <ThreadNavigationProvider openPanel={openPanel} isLayoutControllerReady>
+          <Probe />
+        </ThreadNavigationProvider>
+      </MemoryRouter>,
+    );
     expect(screen.getByRole('status')).toHaveTextContent('overview');
     expect(openPanel).toHaveBeenCalledTimes(2);
   });

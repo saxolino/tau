@@ -10,7 +10,18 @@ vi.mock('#hooks/use-project-tasks.js', () => ({
   ProjectTasksProvider: ({ children }: { readonly children: React.JSX.Element }) => children,
 }));
 vi.mock('#routes/w.$workspace.$project/thread-navigation-context.js', () => ({
-  ThreadNavigationProvider: ({ children }: { readonly children: React.JSX.Element }) => children,
+  ThreadNavigationProvider: ({
+    children,
+    isLayoutControllerReady,
+  }: {
+    readonly children: React.JSX.Element;
+    readonly isLayoutControllerReady: boolean;
+  }) => (
+    <>
+      <span data-testid='layout-owner-ready'>{String(isLayoutControllerReady)}</span>
+      {children}
+    </>
+  ),
 }));
 
 const state = vi.hoisted(() => ({ isMobile: false, isEditorReady: true }));
@@ -86,6 +97,33 @@ describe('ProjectWorkspaceProvider', () => {
     send.mockClear();
     listeners.clear();
     keyboard.useKeybinding.mockImplementation(stubKeybinding);
+  });
+
+  it('should report layout owner registration and cleanup to thread navigation', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    expect(screen.getByTestId('layout-owner-ready')).toHaveTextContent('false');
+    const controller: WorkbenchLayoutController = {
+      snapshot: () => undefined,
+      subscribe: () => () => undefined,
+      restorePreviousArrangement: async () => false,
+      registerViewer: () => () => undefined,
+      registerWorkbench: () => () => undefined,
+      personViewerChanged: () => undefined,
+      personWorkbenchChanged: () => undefined,
+    };
+    let release: () => void = () => undefined;
+    act(() => {
+      release = workspace.registerLayoutController(controller);
+    });
+    expect(screen.getByTestId('layout-owner-ready')).toHaveTextContent('true');
+    act(() => {
+      release();
+    });
+    expect(screen.getByTestId('layout-owner-ready')).toHaveTextContent('false');
   });
 
   it.each(['replace', 'gap', 'moved'] as const)(

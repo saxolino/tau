@@ -1,4 +1,14 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useLayoutEffect,
+  useSyncExternalStore,
+} from 'react';
 import { useProject } from '#hooks/use-project.js';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import type { MobilePanelId } from '#constants/editor.constants.js';
@@ -255,6 +265,8 @@ export function ProjectWorkspaceProvider({
     }),
     [],
   );
+  const hasLayoutController = useCallback(() => layoutControllerRef.current !== undefined, []);
+  const isLayoutControllerReady = useSyncExternalStore(layoutController.subscribe, hasLayoutController, () => false);
   const registerLayoutController = useCallback((controller: WorkbenchLayoutController) => {
     layoutControllerRef.current = controller;
     const unsubscribe = controller.subscribe(() => {
@@ -268,6 +280,9 @@ export function ProjectWorkspaceProvider({
     return () => {
       if (layoutControllerRef.current === controller) {
         layoutControllerRef.current = undefined;
+        for (const listener of layoutListenersRef.current) {
+          listener();
+        }
       }
       unsubscribe();
     };
@@ -507,7 +522,9 @@ export function ProjectWorkspaceProvider({
     <ProjectWorkspaceContext.Provider value={value}>
       <FileReturnContext.Provider value={fileReturn}>
         <ProjectTasksProvider rootChatId={focusedChatId} projectId={projectId} enabled={workbenchMode !== 'pane'}>
-          <ThreadNavigationProvider openPanel={openPanel}>{children}</ThreadNavigationProvider>
+          <ThreadNavigationProvider openPanel={openPanel} isLayoutControllerReady={isLayoutControllerReady}>
+            {children}
+          </ThreadNavigationProvider>
         </ProjectTasksProvider>
       </FileReturnContext.Provider>
     </ProjectWorkspaceContext.Provider>

@@ -68,9 +68,11 @@ export function useThreadNavigation(options?: { readonly enableNoContext?: boole
 export function ThreadNavigationProvider({
   children,
   openPanel,
+  isLayoutControllerReady,
 }: {
   readonly children: React.ReactNode;
   readonly openPanel: (panel: WorkbenchPanelId) => void;
+  readonly isLayoutControllerReady: boolean;
 }): React.JSX.Element {
   const { projectId, editorRef } = useProject();
   const rootChatId = useSelector(editorRef, (state) => state.context.focusedChatId);
@@ -206,7 +208,7 @@ export function ThreadNavigationProvider({
   const linkedTask = new URLSearchParams(location.search).get(searchParameterName.thread);
   useEffect(() => {
     const identity = `${location.key}:${rootChatId ?? ''}:${linkedTask ?? ''}`;
-    if (linkedTask && canSelect(linkedTask) && handledLink.current !== identity) {
+    if (linkedTask && isLayoutControllerReady && canSelect(linkedTask) && handledLink.current !== identity) {
       handledLink.current = identity;
       openThreads(linkedTask);
       const parameters = new URLSearchParams(location.search);
@@ -219,6 +221,7 @@ export function ThreadNavigationProvider({
   }, [
     canSelect,
     linkedTask,
+    isLayoutControllerReady,
     location.key,
     location.search,
     location.pathname,
