@@ -1266,9 +1266,11 @@ describe('the session read', () => {
 
   it('should read the session again once the page is shown again, as another tab may have changed it', async () => {
     auth.getSession.mockReset().mockResolvedValue(signedIn('user-one'));
-    const page: EventTarget & { visibilityState: DocumentVisibilityState } = Object.assign(new EventTarget(), {
-      visibilityState: 'visible' satisfies DocumentVisibilityState,
-    });
+    const visibility: { visibilityState: DocumentVisibilityState } = { visibilityState: 'visible' };
+    const page: EventTarget & { visibilityState: DocumentVisibilityState } = Object.assign(
+      new EventTarget(),
+      visibility,
+    );
     vi.stubGlobal('document', page);
     const worker = new FakeResidentWorker();
     const createWorker = workerOf(worker);

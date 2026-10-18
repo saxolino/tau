@@ -66,7 +66,7 @@ for (const { part } of definitions) {
         ao: {},
       },
     });
-    const file = result.files.at(0);
+    const file = result.success ? result.files.at(0) : undefined;
     if (!result.success || result.files.length !== 1 || !file) {
       throw new Error(`Thumbnail failed: ${part.id}: ${JSON.stringify(result.issues)}`);
     }

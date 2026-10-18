@@ -101,13 +101,15 @@ const mocks = vi.hoisted(() => {
     sectionView: { isActive: false },
     raycastClipState: undefined as RaycastClipState | undefined,
     sceneBounds,
-    backend: 'webgl' satisfies 'webgl' | 'webgpu',
     sectionClip: undefined as SectionClip | undefined,
     /** What the GPU pick answers; `unavailable` routes every ray through the trees, as a renderer without it does. */
     modelPickResult: pickResult({ status: 'unavailable' }),
     modelPickReplay: vi.fn(),
   };
-  const mutableMocks: Omit<typeof initialMocks, 'backend'> & { backend: 'webgl' | 'webgpu' } = initialMocks;
+  const mutableMocks: typeof initialMocks & { backend: 'webgl' | 'webgpu' } = {
+    ...initialMocks,
+    backend: 'webgl',
+  };
   return mutableMocks;
 });
 

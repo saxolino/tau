@@ -41,7 +41,7 @@ const activeWrites = new Map<string, Set<Promise<CheckedFileWriteResult>>>();
 export async function fenceClosedView(path: string): Promise<void> {
   closingViews.add(path);
   viewLifetimes.delete(path);
-  await Promise.allSettled([...(activeWrites.get(path) ?? [])]);
+  await Promise.allSettled(activeWrites.get(path) ?? []);
 }
 
 /** Release the close fence after checked deletion; new owners get a new lifetime. */
