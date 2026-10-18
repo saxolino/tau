@@ -5,7 +5,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { APIError } from 'better-auth/api';
 import { apiKey } from '@better-auth/api-key';
 import { bearer, genericOAuth, magicLink, oneTimeToken } from 'better-auth/plugins';
-import type { GenericOAuthConfig } from 'better-auth/plugins';
+import type { GenericOAuthConfig, GenericOAuthUserInfo } from 'better-auth/plugins';
 import type { ConfigService } from '@nestjs/config';
 import type { LogLevel } from '@nestjs/common';
 import { ConflictException, Logger } from '@nestjs/common';
@@ -102,22 +102,74 @@ const loggerFromLogLevel = {
   success: 'log',
 } as const satisfies Record<BetterAuthLogLevel, LogLevel>;
 
-/** Better Auth provider id for Sign in with ChatGPT; the callback is `/v1/auth/callback/chatgpt`. */
+/** Better Auth provider id for Sign in with ChatGPT; the callback is `/v1/auth/callback/chatgpt`. The UI repeats it in `apps/ui/app/components/auth/social-providers.tsx`. */
 export const chatgptProviderId = 'chatgpt';
 
-/** OpenAI's production OpenID Connect discovery document. */
-const chatgptDiscoveryUrl = 'https://auth.openai.com/.well-known/openid-configuration';
+/** OpenAI's issuer and its production OpenID Connect discovery document. */
+const chatgptIssuer = 'https://auth.openai.com';
+const chatgptDiscoveryUrl = `${chatgptIssuer}/.well-known/openid-configuration`;
+
+/** One discovery attempt's budget. Milliseconds. */
+const chatgptDiscoveryTimeout = 5000;
+/** How many discovery attempts boot makes before going without ChatGPT. */
+const chatgptDiscoveryAttempts = 3;
+
+/** The ID token claims Tau reads from OpenAI. */
+type ChatgptIdTokenClaims = {
+  readonly sub?: unknown;
+  readonly email?: unknown;
+  readonly email_verified?: unknown;
+  readonly name?: unknown;
+  readonly picture?: unknown;
+};
+
+/**
+ * The OpenAI identity a ChatGPT sign-in may use, or `null` to refuse it.
+ *
+ * Better Auth calls this only after it has verified the ID token's signature, issuer, audience and nonce, so the
+ * payload is decoded here, not verified again. A response without an ID token is refused rather than read from the
+ * userinfo endpoint, and so is an email OpenAI has not verified: refusing here, before Better Auth creates or links
+ * anything, means no Tau user or account row is ever written for an unverified address.
+ *
+ * @param tokens - The token endpoint's response.
+ * @param tokens.idToken - OpenAI's ID token.
+ * @returns The profile, or `null`.
+ */
+// oxlint-disable-next-line typescript/no-restricted-types -- Better Auth's getUserInfo contract answers null.
+export function chatgptUserInfo(tokens: { readonly idToken?: string | undefined }): GenericOAuthUserInfo | null {
+  const payload = tokens.idToken?.split('.')[1];
+  if (payload === undefined) {
+    return null;
+  }
+  let claims: ChatgptIdTokenClaims;
+  try {
+    claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as ChatgptIdTokenClaims;
+  } catch {
+    return null;
+  }
+  const { sub, email, email_verified: emailVerified, name, picture } = claims;
+  if (typeof sub !== 'string' || sub === '' || typeof email !== 'string' || emailVerified !== true) {
+    return null;
+  }
+  return {
+    id: sub,
+    sub,
+    email,
+    emailVerified: true,
+    name: typeof name === 'string' ? name : '',
+    image: typeof picture === 'string' ? picture : undefined,
+  };
+}
 
 /**
  * Sign in with ChatGPT, or nothing when this deployment has no OpenAI client.
  *
- * OpenAI is a plain OIDC provider, so discovery supplies the endpoints and the JWKS every ID token is
- * verified against (signature, issuer, audience and nonce). `requireIdTokenVerification` drops the provider
- * rather than fall back to unverified decoding if discovery fails at boot. Identity scopes only: plan usage
- * needs its own consent and is not requested here.
+ * OpenAI is a plain OIDC provider: discovery supplies the endpoints and the JWKS every ID token is verified against
+ * (signature, issuer, audience and nonce), and `requireIdTokenVerification` refuses to register the provider
+ * without them. Identity scopes only: plan usage needs its own consent and is not requested here. Boot goes through
+ * {@link resolveChatgptProvider}, which bounds discovery first.
  *
- * ChatGPT is not a trusted linking provider, so it joins an existing same-email account only when OpenAI
- * reports the email verified, and `requireEmailVerification` issues no session for an unverified one.
+ * ChatGPT is not a trusted linking provider, and {@link chatgptUserInfo} refuses an unverified email outright.
  *
  * @param configService - The API configuration.
  * @returns The provider configuration, or `undefined` when `CHATGPT_CLIENT_ID` is unset.
@@ -143,8 +195,54 @@ export function getChatgptProviderConfig(
       : { tokenEndpointAuth: { method: 'none' } }),
     scopes: ['openid', 'profile', 'email'],
     pkce: true,
+    getUserInfo: async (tokens) => chatgptUserInfo(tokens),
+    // Belt and braces: chatgptUserInfo already refuses an unverified email.
     requireEmailVerification: true,
   };
+}
+
+/**
+ * The ChatGPT provider this process can serve, with OpenAI's discovery checked under a deadline first.
+ *
+ * Better Auth fetches `discoveryUrl` while it builds the auth context, with no timeout, and every auth request
+ * waits for that context; a failed fetch drops the provider for the life of the process. Checking discovery here,
+ * bounded and retried, keeps an unreachable `auth.openai.com` from stalling sign-in of every kind: the API boots
+ * without ChatGPT and says so, and Better Auth's own fetch follows a fresh success.
+ *
+ * @param configService - The API configuration.
+ * @param fetchImpl - The fetch to use; tests pass a stub.
+ * @returns The provider configuration, or `undefined` when it is unset or OpenAI's discovery is unusable.
+ */
+export async function resolveChatgptProvider(
+  configService: ConfigService<Environment, true>,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<GenericOAuthConfig | undefined> {
+  const provider = getChatgptProviderConfig(configService);
+  if (!provider) {
+    return undefined;
+  }
+  const logger = new Logger('BetterAuth');
+  let failure = 'no attempt made';
+  for (let attempt = 1; attempt <= chatgptDiscoveryAttempts; attempt += 1) {
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- attempts are sequential retries.
+      const response = await fetchImpl(chatgptDiscoveryUrl, { signal: AbortSignal.timeout(chatgptDiscoveryTimeout) });
+      // oxlint-disable-next-line no-await-in-loop -- read the attempt that answered.
+      const document = (response.ok ? await response.json() : undefined) as
+        | { readonly issuer?: unknown; readonly jwks_uri?: unknown }
+        | undefined;
+      if (document?.issuer === chatgptIssuer && typeof document.jwks_uri === 'string') {
+        return provider;
+      }
+      failure = response.ok ? 'unexpected issuer or no jwks_uri' : `HTTP ${response.status}`;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+  }
+  logger.error(
+    `Sign in with ChatGPT is off on this Machine: OpenAI discovery failed ${chatgptDiscoveryAttempts} times (${failure}). Restart to retry.`,
+  );
+  return undefined;
 }
 
 type BetterAuthConfigOptions = {
@@ -154,6 +252,8 @@ type BetterAuthConfigOptions = {
   closure?: Pick<BillingAccountClosureService, 'prepareForAuthDeletion'> | undefined;
   /** Stops the account's cloud hosts before the cascade takes their rows (W10 a4). */
   cloudHosts?: Pick<HostsService, 'retireCloudHosts'> | undefined;
+  /** Sign in with ChatGPT, from {@link resolveChatgptProvider}; absent leaves the provider unregistered. */
+  chatgptProvider?: GenericOAuthConfig | undefined;
 };
 
 /**
@@ -166,7 +266,7 @@ export function getBetterAuthConfig(options: BetterAuthConfigOptions): BetterAut
   const { databaseService, configService, emailService } = options;
   const baseURL = configService.get('AUTH_URL', { infer: true });
   const secureCookies = new URL(baseURL).protocol === 'https:';
-  const chatgptProvider = getChatgptProviderConfig(configService);
+  const { chatgptProvider } = options;
 
   /**
    * Runtime plugin configuration with custom options.
