@@ -124,6 +124,73 @@ afterEach(async () => {
 });
 
 describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (backend) => {
+  it('should match canonical pixels when shared, mirrored and singleton edges move together', async () => {
+    const renderer = await createRenderer('viewport', backend, document.createElement('canvas'));
+    renderers.push(renderer);
+    renderer.setSize(128, 128, false);
+    installRendererOutput(renderer, webGpuProfile);
+    const scene = new Scene();
+    scene.background = new Color(0xff_ff_ff);
+    const root = new Group();
+    scene.add(root);
+    const camera = new OrthographicCamera(-2, 2, 2, -2, 0.1, 100);
+    camera.position.z = 20;
+    camera.updateMatrixWorld();
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute([-0.3, 0, 0, 0.3, 0, 0], 3));
+    const singleton = geometry.clone();
+    const material = new LineBasicMaterial();
+    const parents = [geometry, geometry, singleton].map((prototype, index) => {
+      const line = new LineSegments(prototype, material);
+      line.position.x = index - 1;
+      root.add(line);
+      return line;
+    });
+    const resolution = new Vector2(128, 128);
+    applyFatLineSegments({ scene: root }, { backend, resolution, preserveSourceNodes: true });
+    const sources: Array<Mesh<BufferGeometry, GltfFatLineMaterial>> = [];
+    root.traverse((object) => {
+      if (object.type === 'LineSegments2') {
+        sources.push(fatLine(object));
+      }
+    });
+    const owner = createGltfSurfaceBatches(root, [], {
+      sources,
+      backend,
+      resolution,
+      prepareMaterial() {
+        return undefined;
+      },
+    });
+    try {
+      owner.sync();
+      expect(sources.map((source) => source.layers.mask)).toEqual([0, 0, 1]);
+      parents[0]!.scale.x = -1;
+      for (const parent of parents) {
+        parent.position.y = 0.5;
+      }
+      owner.syncMatrices(parents);
+      renderer.render(scene, camera);
+      const posed = await captureRendererOutput(renderer);
+      expect(posed.some((value, index) => index % 4 !== 3 && value < 128)).toBe(true);
+      owner.dispose();
+      renderer.render(scene, camera);
+      expect(await captureRendererOutput(renderer)).toEqual(posed);
+    } finally {
+      await disposeRendererOutput(renderer);
+      owner.dispose();
+      for (const value of new Set(sources.map((source) => source.geometry))) {
+        value.dispose();
+      }
+      for (const value of new Set(sources.flatMap((source) => collectGltfFatLineMaterials(source)))) {
+        value.dispose();
+      }
+      geometry.dispose();
+      singleton.dispose();
+      material.dispose();
+    }
+  });
+
   it('should replace the initial lines-off owner once and reuse off/on cohorts', async () => {
     const renderer = await createRenderer('viewport', backend, document.createElement('canvas'));
     renderers.push(renderer);

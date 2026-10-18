@@ -194,7 +194,8 @@ export function createGltfEdgeBatches(
   const inverseRoot = new Matrix4();
   const local = new Matrix4();
   const descendants = new Map<Object3D, Set<Mesh>>();
-  const slots = new Map<Mesh, { batch: EdgeBatch; slot: number }>();
+  const slots = new Map<Mesh, { batch: EdgeBatch; slot: number } | 'canonical' | 'unsupported-transform'>();
+  const affected = new Set<Mesh>();
   let disposed = false;
   for (const source of sources) {
     for (
@@ -235,6 +236,7 @@ export function createGltfEdgeBatches(
     slots.clear();
     const members = new Map<BufferGeometry, Map<string, Mesh[]>>();
     for (const source of sources) {
+      slots.set(source, 'canonical');
       hooks.restore(source);
       const prototype = getFatLinePrototypeSource(source);
       const material = Array.isArray(source.material) ? undefined : source.material;
@@ -246,9 +248,12 @@ export function createGltfEdgeBatches(
         !visible(source) ||
         !material.visible ||
         material.transparent ||
-        material.opacity < 1 ||
-        !valid(placement(source))
+        material.opacity < 1
       ) {
+        continue;
+      }
+      if (!valid(placement(source))) {
+        slots.set(source, 'unsupported-transform');
         continue;
       }
       const byMaterial = members.get(prototype) ?? new Map<string, Mesh[]>();
@@ -333,19 +338,35 @@ export function createGltfEdgeBatches(
     group,
     sync,
     syncMatrices(changed: readonly Object3D[]): void {
-      if (disposed) {
+      if (disposed || changed.length === 0) {
         return;
       }
       root.updateWorldMatrix(true, false);
+      for (const object of changed) {
+        object.updateWorldMatrix(true, true);
+      }
       inverseRoot.copy(root.matrixWorld).invert();
-      for (const source of new Set(changed.flatMap((node) => [...(descendants.get(node) ?? [])]))) {
+      affected.clear();
+      for (const object of changed) {
+        for (const source of descendants.get(object) ?? []) {
+          affected.add(source);
+        }
+      }
+      for (const source of affected) {
         const entry = slots.get(source);
         if (!entry) {
           sync();
           return;
         }
-        const matrix = placement(source);
-        if (!valid(matrix)) {
+        if (entry === 'canonical') {
+          continue;
+        }
+        const matrix = local.multiplyMatrices(inverseRoot, source.matrixWorld);
+        const supported = valid(matrix);
+        if (entry === 'unsupported-transform' && !supported) {
+          continue;
+        }
+        if (entry === 'unsupported-transform' || !supported) {
           sync();
           return;
         }
@@ -375,6 +396,7 @@ export function createGltfEdgeBatches(
       cohorts.clear();
       slots.clear();
       descendants.clear();
+      affected.clear();
     },
   };
 }
