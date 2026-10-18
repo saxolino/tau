@@ -36,16 +36,34 @@ const expected = new Map([
   ['app/api/git/lfs-retirement.test.ts', 12],
 ]);
 class FixtureGuardError extends Error {}
+let qualificationPhase = 'arguments';
+const diagnosticCodes = new Set([
+  '42P01',
+  '42703',
+  '42601',
+  '42501',
+  '28P01',
+  '3D000',
+  '08001',
+  '08006',
+  '53300',
+  '57014',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+]);
 const insist = (condition: unknown, message: string): void => {
   if (!condition) {
     throw new FixtureGuardError(message);
   }
 };
 async function preflight(): Promise<void> {
+  qualificationPhase = 'raw-environment';
   // ProcessEnv includes parsed API types; this executable must validate raw Node environment strings.
-  const environment = new Map(Object.entries(z.record(z.string(), z.string()).parse(process.env)));
+  const environment = new Map(z.array(z.tuple([z.string(), z.string()])).parse(Object.entries(process.env)));
   insist(environment.get('GITHUB_ACTIONS') === 'true', 'Only the isolated Actions API service lane is admitted.');
   insist(environment.get('TAU_CLOUD_ENABLED') === 'false', 'Cloud execution must be disabled.');
+  qualificationPhase = 'fixture-url';
   const database = new URL(environment.get('DATABASE_URL') ?? '');
   insist(
     database.protocol === 'postgresql:' &&
@@ -58,6 +76,7 @@ async function preflight(): Promise<void> {
       database.hash === '',
     'Database is not the exact public local CI fixture.',
   );
+  qualificationPhase = 'fixture-values';
   const fixtures = new Map([
     ['TAU_S3_ENDPOINT', 'http://localhost:9000'],
     ['TAU_S3_REGION', 'us-east-1'],
@@ -71,18 +90,22 @@ async function preflight(): Promise<void> {
   for (const [key, value] of fixtures) {
     insist(environment.get(key) === value, `Local object-store fixture mismatch: ${key}`);
   }
+  qualificationPhase = 'database-client';
   const sql = postgres(database.href, {
     max: 1,
     // eslint-disable-next-line @typescript-eslint/naming-convention -- postgres.js option name
     connect_timeout: 5,
     prepare: false,
   });
+  let failedPhase: string | undefined;
   try {
+    qualificationPhase = 'database-identity';
     const [identity] = await sql`select current_database() as database, current_user as role`;
     insist(
       z.object({ database: z.literal('tau_dev'), role: z.literal('dev_user') }).safeParse(identity).success,
       'Connected database identity mismatch.',
     );
+    qualificationPhase = 'outbox-empty';
     const [queue] = await sql`select count(*)::integer as count from job_dispatch_outbox`;
     insist(
       z.object({ count: z.literal(0) }).safeParse(queue).success,
@@ -90,6 +113,7 @@ async function preflight(): Promise<void> {
     );
     // The retireDueLfsObjects query scans project_git_lfs_object joined to project.
     // Retirement also reads/updates project_git. Require ALL rows absent.
+    qualificationPhase = 'lfs-empty';
     const [lfs] = await sql`select
       (select count(*)::integer from project_git_lfs_object) as objects,
       (select count(*)::integer from project) as projects,
@@ -98,12 +122,23 @@ async function preflight(): Promise<void> {
       z.object({ objects: z.literal(0), projects: z.literal(0), repositories: z.literal(0) }).safeParse(lfs).success,
       'LFS/project tables are not empty; refusing globally scanning fixtures.',
     );
+  } catch (error) {
+    failedPhase = qualificationPhase;
+    throw error;
   } finally {
-    await sql.end();
+    qualificationPhase = 'database-close';
+    try {
+      await sql.end();
+    } finally {
+      if (failedPhase !== undefined) {
+        qualificationPhase = failedPhase;
+      }
+    }
   }
   console.log('Exact local database/object-store fixture configuration and empty outbox verified.');
 }
 function admit(filename: string): void {
+  qualificationPhase = 'report-admission';
   const report = reportSchema.parse(JSON.parse(readFileSync(resolve(repoRoot, filename), 'utf8')));
   insist(
     report.success &&
@@ -145,6 +180,12 @@ const main = async (): Promise<void> => {
 try {
   await main();
 } catch (error) {
-  console.error(error instanceof FixtureGuardError ? error.message : 'Focused database fixture qualification failed.');
+  const diagnostic = z.object({ code: z.string() }).safeParse(error);
+  const code = diagnostic.success && diagnosticCodes.has(diagnostic.data.code) ? diagnostic.data.code : 'unclassified';
+  console.error(
+    error instanceof FixtureGuardError
+      ? error.message
+      : `Focused database fixture qualification failed during ${qualificationPhase} (${code}).`,
+  );
   process.exit(1);
 }
