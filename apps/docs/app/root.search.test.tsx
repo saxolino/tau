@@ -15,7 +15,7 @@ beforeEach(() => {
     'ResizeObserver',
     class ResizeObserver {
       public observe(): void {
-        // jsdom has no layout; mirror the shared UI test observer contract.
+        // JSDOM has no layout; mirror the shared UI test observer contract.
       }
 
       public unobserve(): void {
