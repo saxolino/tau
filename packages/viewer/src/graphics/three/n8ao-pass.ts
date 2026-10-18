@@ -299,17 +299,6 @@ export class ManagedN8AoPass extends n8AoConstructor {
       renderer.setRenderTarget(this.writeTargetInternal);
       this.poissonBlurQuad.render(renderer);
     }
-    if (configuration.halfRes) {
-      // Native accumulation replaces alpha with 1 at frame zero. Half-res upsampling
-      // reads .gba as a normal, so retain that behavior until separately qualified.
-      const { autoClear } = renderer;
-      renderer.autoClear = false;
-      renderer.setRenderTarget(this.accumulationRenderTarget);
-      this.accumulationQuad.material.uniforms['tDiffuse']!.value = this.writeTargetInternal.texture;
-      this.accumulationQuad.material.uniforms['frame']!.value = 0;
-      this.accumulationQuad.render(renderer);
-      renderer.autoClear = autoClear;
-    }
   }
 
   private renderComposite(renderer: WebGLRenderer, inputBuffer: WebGLRenderTarget, radius: number): void {
@@ -340,9 +329,10 @@ export class ManagedN8AoPass extends n8AoConstructor {
     compositeUniforms['gammaCorrection']!.value = this.autosetGamma
       ? this.renderToScreen
       : configuration.gammaCorrection;
-    compositeUniforms['tDiffuse']!.value = configuration.halfRes
-      ? this.accumulationRenderTarget.texture
-      : this.writeTargetInternal.texture;
+    // The upsampler reads .gba as the normal. Temporal accumulation replaces
+    // alpha with a blend weight, corrupting normal.z even at frame zero.
+    // Spatial AO consumes the denoised RGBA result directly at either scale.
+    compositeUniforms['tDiffuse']!.value = this.writeTargetInternal.texture;
     compositeUniforms['color']!.value = this.aoColor.copy(configuration.color).convertSRGBToLinear();
     compositeUniforms['colorMultiply']!.value = configuration.colorMultiply;
     compositeUniforms['cameraPos']!.value = this.cameraPosition;

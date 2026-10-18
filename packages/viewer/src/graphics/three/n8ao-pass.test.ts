@@ -112,7 +112,7 @@ describe('ManagedN8AoPass', () => {
   });
 
   it.each([true, false])(
-    'should publish AO directly and retain accumulation only for half-resolution normal parity when halfRes=%s',
+    'should publish spatial AO without overwriting normal channels when halfRes=%s',
     (halfResolution) => {
       const { pass } = createFixture();
       pass.configuration.halfRes = halfResolution;
@@ -153,12 +153,10 @@ describe('ManagedN8AoPass', () => {
           pass.render(renderer, input, output, 0, false);
           expect(draws.at(-1)?.target).toBe(pass.outputTargetInternal);
           expect(draws.at(-1)?.material).toBe(pass.effectCompositerQuad.material);
-          expect(draws).toHaveLength(halfResolution ? 6 : 4);
+          expect(draws).toHaveLength(halfResolution ? 5 : 4);
           expect(draws.some((draw) => draw.material === pass.copyQuad.material)).toBe(false);
-          expect(draws.some((draw) => draw.material === pass.accumulationQuad.material)).toBe(halfResolution);
-          expect(pass.effectCompositerQuad.material.uniforms['tDiffuse']?.value).toBe(
-            halfResolution ? pass.accumulationRenderTarget.texture : pass.writeTargetInternal.texture,
-          );
+          expect(draws.some((draw) => draw.material === pass.accumulationQuad.material)).toBe(false);
+          expect(pass.effectCompositerQuad.material.uniforms['tDiffuse']?.value).toBe(pass.writeTargetInternal.texture);
           expect(draws.every((draw) => !draw.sampledTextures.includes(draw.target!.texture))).toBe(true);
         }
       } finally {
@@ -219,9 +217,7 @@ describe('ManagedN8AoPass', () => {
         captures.push(
           Object.fromEntries(
             Object.entries(material.uniforms)
-              .filter(
-                ([name]) => halfResolution || material !== pass.effectCompositerQuad.material || name !== 'tDiffuse',
-              )
+              .filter(([name]) => material !== pass.effectCompositerQuad.material || name !== 'tDiffuse')
               .map(([name, uniform]) => {
                 const value: unknown = uniform.value;
                 if (name === 'ortho') {
@@ -259,7 +255,7 @@ describe('ManagedN8AoPass', () => {
     },
   );
 
-  it('should restore renderer flags if the retained half-resolution accumulation draw fails', () => {
+  it('should restore renderer flags if the half-resolution composite draw fails', () => {
     const { pass } = createFixture();
     pass.configuration.halfRes = true;
     const renderer = mock<WebGLRenderer>({
@@ -269,7 +265,7 @@ describe('ManagedN8AoPass', () => {
     });
     const failure = new Error('draw failed');
     renderer.render.mockImplementation((object) => {
-      if (object instanceof Mesh && object.material === pass.accumulationQuad.material) {
+      if (object instanceof Mesh && object.material === pass.effectCompositerQuad.material) {
         throw failure;
       }
     });
