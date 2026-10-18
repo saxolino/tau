@@ -245,6 +245,58 @@ describe('createTauR3fGlProp', () => {
     expect(forceContextLoss).toHaveBeenCalledOnce();
   });
 
+  it('keeps renderer resource bookkeeping alive through scene effect cleanup', async () => {
+    const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
+    const events: string[] = [];
+    const renderer = {
+      setPixelRatio: vi.fn(),
+      getPixelRatio: () => 1,
+      dispose: vi.fn(() => {
+        events.push('renderer');
+      }),
+      forceContextLoss: vi.fn(() => {
+        events.push('context');
+      }),
+    };
+    hoisted.createRenderer.mockResolvedValue(renderer);
+    const factory = createTauR3fGlProp('webgl');
+    const canvas = document.createElement('canvas');
+    factory.bindCanvas(canvas);
+    await factory({ canvas });
+    const releaseScene = factory.retainScene();
+
+    factory.bindCanvas(undefined);
+    await Promise.resolve();
+    expect(factory.isRetired()).toBe(true);
+    expect(renderer.dispose).not.toHaveBeenCalled();
+
+    // The parent's passive cleanup runs before descendant environment/target cleanup.
+    releaseScene();
+    events.push('cube-target');
+    expect(renderer.dispose).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(events).toEqual(['cube-target', 'renderer', 'context']);
+  });
+
+  it('preserves a replayed scene until its final cleanup', async () => {
+    const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
+    const renderer = { setPixelRatio: vi.fn(), getPixelRatio: () => 1, dispose: vi.fn() };
+    hoisted.createRenderer.mockResolvedValue(renderer);
+    const factory = createTauR3fGlProp('webgpu');
+    const canvas = document.createElement('canvas');
+    factory.bindCanvas(canvas);
+    await factory({ canvas });
+    const releaseFirst = factory.retainScene();
+    releaseFirst();
+    const releaseReplay = factory.retainScene();
+    factory.bindCanvas(undefined);
+    await Promise.resolve();
+    expect(renderer.dispose).not.toHaveBeenCalled();
+    releaseReplay();
+    await Promise.resolve();
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+  });
+
   it('should retire a WebGPU renderer, which has no context to lose, by disposing it', async () => {
     const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
     const renderer = { setPixelRatio: vi.fn(), getPixelRatio: () => 1, dispose: vi.fn() };

@@ -2,12 +2,13 @@ import type { RootState } from '@react-three/fiber';
 import { Canvas, flushSync as flushThreeSync } from '@react-three/fiber';
 import { flushSync } from 'react-dom';
 import type { RefCallback } from 'react';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { WebGPURenderer } from 'three/webgpu';
 import { RenderFpsOverlay } from '#graphics/three/render-fps-overlay.jsx';
 import { renderLoopObservers } from '#graphics/three/render-loop-observer.js';
 import { ActorBridge } from '#graphics/three/actor-bridge.jsx';
 import { createTauR3fGlProp } from '#graphics/three/canvas-three-gl.js';
+import type { TauR3fGlFactory } from '#graphics/three/canvas-three-gl.js';
 import { GraphicsContextLostFallback } from '#graphics/three/graphics-context-lost-fallback.jsx';
 import { Grid } from '#graphics/three/grid.jsx';
 import { PostProcessing } from '#graphics/three/post-processing.jsx';
@@ -52,6 +53,12 @@ const installTauPointerRays = (state: RootState): void => {
     },
   });
 };
+
+// The R3F scene root unmounts separately from the DOM canvas root.
+function CanvasRendererLifetime({ factory }: { readonly factory: TauR3fGlFactory }): undefined {
+  useEffect(factory.retainScene, [factory]);
+  return undefined;
+}
 
 /**
  * One R3F `<Canvas>` mount plus lifecycle state tied to that GPU binding (`isCanvasReady`, loss handlers).
@@ -218,6 +225,7 @@ export function ThreeCanvasInstance({
       className={cn('bg-background', className)}
       onCreated={onCanvasCreated}
     >
+      <CanvasRendererLifetime factory={glProperty} />
       <ThreeGraphicsBackendProvider value={graphicsBackend}>
         <Scene
           enableGizmo={enableGizmo}

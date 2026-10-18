@@ -14,6 +14,8 @@ type TauR3fGlDefaults = Parameters<Extract<CanvasProps['gl'], (defaults: never) 
 export type TauR3fGlFactory = ((defaults: TauR3fGlDefaults) => Promise<FiberCompatibleGl>) & {
   /** Bind the Canvas ref; StrictMode ref replay keeps a reattached canvas alive. */
   readonly bindCanvas: (canvas: HTMLCanvasElement | undefined) => void;
+  /** Keep renderer bookkeeping alive until the mounted scene's passive cleanups finish. Returns its release callback. */
+  readonly retainScene: () => () => void;
   /** Whether this factory's mounted canvas has been removed. */
   readonly isRetired: () => boolean;
 };
@@ -51,6 +53,7 @@ export function createTauR3fGlProp(
   let hasCanvasBinding = false;
   let retired = false;
   let disposed = false;
+  let sceneOwners = 0;
   const pending = async (): Promise<never> =>
     new Promise<never>(() => {
       // Never settles while R3F waits for a retired or failed canvas.
@@ -59,18 +62,30 @@ export function createTauR3fGlProp(
   const isRetired = (): boolean => retired || (hasCanvasBinding && mountedCanvas === undefined);
   const retire = (): void => {
     retired = true;
-    if (ownedRenderer && !disposed) {
+    if (ownedRenderer && !disposed && sceneOwners === 0) {
       disposed = true;
       ownedRenderer.dispose();
-      // R3F loses the context only 500 ms after unmount, so a quick remount would hold two drawing buffers.
-      // `dispose()` frees what three tracks; losing the context now frees the drawing buffer too, and R3F's
-      // deferred call then finds nothing left to lose.
+      // Release after scene effects, before R3F's 500 ms deferred context loss. Disposing at DOM ref
+      // removal is too early: later cube-target cleanup still needs Three's renderer bookkeeping.
       if ('forceContextLoss' in ownedRenderer) {
         const loseContext = ownedRenderer.forceContextLoss.bind(ownedRenderer);
         ownedRenderer.forceContextLoss = (): void => undefined;
         loseContext();
       }
     }
+  };
+  const retainScene = (): (() => void) => {
+    sceneOwners += 1;
+    return () => {
+      // Passive effect replay can acquire a replacement before this release. The microtask also
+      // lets descendant passive cleanups finish even when this owner's cleanup ran first.
+      queueMicrotask(() => {
+        sceneOwners -= 1;
+        if (retired) {
+          retire();
+        }
+      });
+    };
   };
   const bindCanvas = (canvas: HTMLCanvasElement | undefined): void => {
     hasCanvasBinding = true;
@@ -140,6 +155,6 @@ export function createTauR3fGlProp(
     }
     return renderer;
   };
-  return Object.assign(factory, { bindCanvas, isRetired });
+  return Object.assign(factory, { bindCanvas, retainScene, isRetired });
 }
 /* oxlint-enable unicorn-js/prevent-abbreviations */
