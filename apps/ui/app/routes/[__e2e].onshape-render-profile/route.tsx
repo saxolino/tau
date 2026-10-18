@@ -233,7 +233,8 @@ function CalibrationProbe({
     appliedCamera: -1,
     benchmark,
     capture: capture.sequence,
-    completedCapture: 0,
+    // A new renderer inherits completed capture requests; only a new sequence requests another capture.
+    completedCapture: capture.sequence,
     interruptions: [] as string[],
     samples: [] as FrameSample[],
     gpuSamples: [] as number[],
@@ -490,7 +491,11 @@ function CalibrationProbe({
           frameInterval: current.start - current.previous,
           projectionSwitch: current.projectionSwitch,
           cpuSubmission: now - current.start,
-          calls: gl.info.render.calls,
+          // WebGPU's `calls` is lifetime render submissions; only `drawCalls` resets per frame.
+          calls:
+            'drawCalls' in gl.info.render && typeof gl.info.render.drawCalls === 'number'
+              ? gl.info.render.drawCalls
+              : gl.info.render.calls,
           triangles: gl.info.render.triangles,
           lines: gl.info.render.lines,
         });
