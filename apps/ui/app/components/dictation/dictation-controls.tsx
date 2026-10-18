@@ -9,17 +9,11 @@ import type { DictationPhase, DictationWaveform } from '#components/dictation/us
 
 type DictationControls = {
   readonly phase: DictationPhase;
-  readonly size?: 'icon-xs' | 'icon-sm';
   readonly onStart: () => Promise<void>;
   readonly onStop: () => Promise<boolean>;
 };
 
-export const DictationButton = memo(function ({
-  phase,
-  size = 'icon-sm',
-  onStart,
-  onStop,
-}: DictationControls): React.JSX.Element {
+export const DictationButton = memo(function ({ phase, onStart, onStop }: DictationControls): React.JSX.Element {
   const recording = phase === 'recording';
   const busy = phase !== 'idle' && !recording;
   const label = recording ? 'Stop dictation' : busy ? dictationLabels[phase] : 'Dictate';
@@ -39,7 +33,7 @@ export const DictationButton = memo(function ({
         <Button
           type='button'
           variant='ghost'
-          size={size}
+          size='icon-sm'
           aria-label={label}
           aria-disabled={busy}
           aria-busy={busy}
@@ -62,12 +56,10 @@ export const DictationButton = memo(function ({
 
 export const DictationRecording = memo(function ({
   phase,
-  size = 'icon-sm',
   waveform: { levels, batch },
   onCancel,
 }: {
   readonly phase: DictationPhase;
-  readonly size?: 'icon-xs' | 'icon-sm';
   readonly waveform: DictationWaveform;
   readonly onCancel: () => void;
 }): React.JSX.Element {
@@ -78,7 +70,7 @@ export const DictationRecording = memo(function ({
           <Button
             type='button'
             variant='ghost'
-            size={size}
+            size='icon-sm'
             aria-label='Cancel dictation'
             className='shrink-0 rounded-full bg-muted'
             onClick={onCancel}
