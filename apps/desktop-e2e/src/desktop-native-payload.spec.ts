@@ -176,6 +176,9 @@ try {
     },
   });
   try {
+    const window = await application.firstWindow();
+    await window.waitForURL('app://tau/', { waitUntil: 'load', timeout: 60_000 });
+
     const profile = await application.evaluate(({ app }) => ({
       userData: app.getPath('userData'),
       sessionData: app.getPath('sessionData'),
@@ -184,9 +187,6 @@ try {
       userData: join(runRoot, 'user-data'),
       sessionData: join(runRoot, 'user-data'),
     });
-
-    const window = await application.firstWindow();
-    await window.waitForURL('app://tau/', { waitUntil: 'load', timeout: 60_000 });
     await expect
       .poll(async () => window.getByRole('heading', { name: 'What can I help you build?', exact: true }).isVisible(), {
         timeout: 60_000,
