@@ -4,7 +4,8 @@ import type { BetterAuthOptions, LogLevel as BetterAuthLogLevel, ModelNames } fr
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { APIError } from 'better-auth/api';
 import { apiKey } from '@better-auth/api-key';
-import { bearer, magicLink, oneTimeToken } from 'better-auth/plugins';
+import { bearer, genericOAuth, magicLink, oneTimeToken } from 'better-auth/plugins';
+import type { GenericOAuthConfig } from 'better-auth/plugins';
 import type { ConfigService } from '@nestjs/config';
 import type { LogLevel } from '@nestjs/common';
 import { ConflictException, Logger } from '@nestjs/common';
@@ -101,6 +102,51 @@ const loggerFromLogLevel = {
   success: 'log',
 } as const satisfies Record<BetterAuthLogLevel, LogLevel>;
 
+/** Better Auth provider id for Sign in with ChatGPT; the callback is `/v1/auth/callback/chatgpt`. */
+export const chatgptProviderId = 'chatgpt';
+
+/** OpenAI's production OpenID Connect discovery document. */
+const chatgptDiscoveryUrl = 'https://auth.openai.com/.well-known/openid-configuration';
+
+/**
+ * Sign in with ChatGPT, or nothing when this deployment has no OpenAI client.
+ *
+ * OpenAI is a plain OIDC provider, so discovery supplies the endpoints and the JWKS every ID token is
+ * verified against (signature, issuer, audience and nonce). `requireIdTokenVerification` drops the provider
+ * rather than fall back to unverified decoding if discovery fails at boot. Identity scopes only: plan usage
+ * needs its own consent and is not requested here.
+ *
+ * ChatGPT is not a trusted linking provider, so it joins an existing same-email account only when OpenAI
+ * reports the email verified, and `requireEmailVerification` issues no session for an unverified one.
+ *
+ * @param configService - The API configuration.
+ * @returns The provider configuration, or `undefined` when `CHATGPT_CLIENT_ID` is unset.
+ */
+export function getChatgptProviderConfig(
+  configService: ConfigService<Environment, true>,
+): GenericOAuthConfig | undefined {
+  const clientId = configService.get('CHATGPT_CLIENT_ID', { infer: true });
+  if (!clientId) {
+    return undefined;
+  }
+  const clientSecret = configService.get('CHATGPT_CLIENT_SECRET', { infer: true });
+
+  return {
+    providerId: chatgptProviderId,
+    name: 'ChatGPT',
+    discoveryUrl: chatgptDiscoveryUrl,
+    requireIdTokenVerification: true,
+    clientId,
+    // OpenAI's confidential clients authenticate with HTTP Basic; a public client sends no secret.
+    ...(clientSecret
+      ? { clientSecret, tokenEndpointAuth: { method: 'client_secret_basic' } }
+      : { tokenEndpointAuth: { method: 'none' } }),
+    scopes: ['openid', 'profile', 'email'],
+    pkce: true,
+    requireEmailVerification: true,
+  };
+}
+
 type BetterAuthConfigOptions = {
   databaseService: DatabaseService;
   configService: ConfigService<Environment, true>;
@@ -120,6 +166,7 @@ export function getBetterAuthConfig(options: BetterAuthConfigOptions): BetterAut
   const { databaseService, configService, emailService } = options;
   const baseURL = configService.get('AUTH_URL', { infer: true });
   const secureCookies = new URL(baseURL).protocol === 'https:';
+  const chatgptProvider = getChatgptProviderConfig(configService);
 
   /**
    * Runtime plugin configuration with custom options.
@@ -150,6 +197,7 @@ export function getBetterAuthConfig(options: BetterAuthConfigOptions): BetterAut
     }),
     // Desktop sign-in handoff (ruling D7) — must mirror auth.ts at this index.
     oneTimeToken({ storeToken: 'hashed' }),
+    genericOAuth({ config: chatgptProvider ? [chatgptProvider] : [] }),
     // `bearer()` stays LAST (see auth.ts).
     bearer(),
   ];
