@@ -24,7 +24,7 @@ import {
 } from 'three/tsl';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
-import { LinearSRGBColorSpace, SRGBColorSpace, Vector3 } from 'three';
+import { HalfFloatType, LinearSRGBColorSpace, SRGBColorSpace, Vector3 } from 'three';
 import type { Camera, ToneMapping, WebGLRenderTarget } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { CameraDriverSnapshot } from '@taucad/camera/machine';
@@ -213,7 +213,9 @@ const createPipelineResources = ({
       select<'float'>(displayMode.equal(1), float(1), float(0)),
     );
     // FXAA samples display RGB; return to linear for the renderer's single output encoding.
-    antialiasInput = rtt(workingToColorSpace(composite, SRGBColorSpace));
+    // This intermediate feeds only FXAA color. Overlay depth remains owned by scenePass.
+    const antialiasTargetOptions = { type: HalfFloatType, depthBuffer: false, stencilBuffer: false };
+    antialiasInput = rtt(workingToColorSpace(composite, SRGBColorSpace), null, null, antialiasTargetOptions);
     outputQuad = createOutputQuad(colorSpaceToWorking(fxaa(antialiasInput), SRGBColorSpace));
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 

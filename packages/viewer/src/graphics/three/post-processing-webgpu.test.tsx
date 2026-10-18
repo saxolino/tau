@@ -1,6 +1,6 @@
 import { act, render } from '@testing-library/react';
 import { useLayoutEffect } from 'react';
-import { NeutralToneMapping } from 'three';
+import { HalfFloatType, NeutralToneMapping } from 'three';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -206,6 +206,7 @@ const mocks = vi.hoisted(() => {
     prewarm,
     postDispose,
     antialiasDispose,
+    antialiasTargetOptions: vi.fn(),
     rig,
     scene,
     snapshot,
@@ -263,7 +264,11 @@ vi.mock('#graphics/three/gtao-depth-camera.js', () => ({
 vi.mock('three/tsl', () => ({
   colorSpaceToWorking: (value: unknown) => value,
   workingToColorSpace: (value: unknown) => value,
-  rtt: (value: Record<string, unknown>) => Object.assign(value, { dispose: mocks.antialiasDispose }),
+  // oxlint-disable-next-line eslint/max-params -- Match the native RTT factory signature.
+  rtt: (value: Record<string, unknown>, width: unknown, height: unknown, options: unknown) => {
+    mocks.antialiasTargetOptions(width, height, options);
+    return Object.assign(value, { dispose: mocks.antialiasDispose });
+  },
   colorToDirection: vi.fn((value: unknown): unknown => value),
   directionToColor: vi.fn((value: unknown): unknown => value),
   float: vi.fn((value: number) => value),
@@ -364,6 +369,7 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     mocks.rendererState.target = { kind: 'prior-target' };
     mocks.postDispose.mockClear();
     mocks.antialiasDispose.mockClear();
+    mocks.antialiasTargetOptions.mockClear();
     mocks.rig.activeCamera = mocks.perspectiveCamera;
     mocks.state.camera = mocks.perspectiveCamera;
     mocks.state.size.height = 1000;
@@ -385,6 +391,19 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     mocks.getFrame()?.(mocks.state, 0);
     expect(mocks.outputQuads[0]!.render).toHaveBeenCalledOnce();
     expect(isBeautyOnly(mocks.outputQuads[0]!)).toBe(true);
+  });
+
+  it('keeps final antialias input color-only while retaining scene depth for overlays', async () => {
+    await mount();
+    expect(mocks.antialiasTargetOptions).toHaveBeenCalledWith(null, null, {
+      type: HalfFloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+    mocks.getFrame()?.(mocks.state, 0);
+    mocks.glRender.mockClear();
+    mocks.getRestoreDepth()?.();
+    expect(mocks.glRender).toHaveBeenCalledOnce();
   });
 
   it('should create the other projection only on demand and reuse it on return', async () => {

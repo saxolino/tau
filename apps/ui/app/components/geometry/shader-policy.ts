@@ -379,7 +379,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should pass the actual log-depth convention to the half-resolution shader',
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
       'packages/viewer/src/graphics/three/post-processing-webgl.test.tsx::should compose display AO after tone mapping and bypass tone mapping for the raw AO diagnostic',
-      'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should copy AO color without rejecting pixels against a reused composer depth attachment',
+      'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should publish AO directly and retain accumulation only for half-resolution normal parity when halfRes=%s',
       'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should distinguish opacity-aware tone-map blending from the installed default that ignores opacity',
     ],
     lifecycle: [
@@ -392,8 +392,8 @@ export const shaderEvidence = {
     ],
     'structural-perf': [
       'packages/viewer/src/graphics/three/post-processing-webgl.test.tsx::bypasses AO execution while retaining the same tone-mapping composer',
-      'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should route the native AO copy without texture feedback when needsSwap=',
-      'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should restart native composer frames at the MSAA geometry target after an in-place post chain',
+      'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should publish AO directly and retain accumulation only for half-resolution normal parity when halfRes=%s',
+      'packages/viewer/src/graphics/three/post-processing-webgl.pipeline.test.tsx::should keep fullscreen color writes out of geometry MSAA across frames with %j',
     ],
   },
   'webgpu-post': {
@@ -414,6 +414,7 @@ export const shaderEvidence = {
     ],
     'structural-perf': [
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should prepare only the active beauty endpoint when AO is disabled',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::keeps final antialias input color-only while retaining scene depth for overlays',
     ],
   },
   'model-emphasis-silhouette': evidence(
