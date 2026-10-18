@@ -380,6 +380,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
       'packages/viewer/src/graphics/three/post-processing-webgl.test.tsx::should compose display AO after tone mapping and bypass tone mapping for the raw AO diagnostic',
       'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should publish spatial AO without overwriting normal channels when halfRes=%s',
+      'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should initialize the weighted AO sum after every composite shader reconfiguration',
       'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should distinguish opacity-aware tone-map blending from the installed default that ignores opacity',
     ],
     lifecycle: [

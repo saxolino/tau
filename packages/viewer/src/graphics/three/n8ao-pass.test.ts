@@ -176,8 +176,32 @@ describe('ManagedN8AoPass', () => {
     expect(createHash('sha256').update(source).digest('hex')).toBe(
       '8c4797567c3a2643942e64e006cbc75ed438bc73a7362c26119c9db82ac62a2a',
     );
+    const composite = sourceMap.sourcesContent[sourceMap.sources.indexOf('src/EffectCompositer.js')]!;
+    expect(createHash('sha256').update(composite).digest('hex')).toBe(
+      '9ce856628c5534c6e5f9b3e3d9df020886cb97ae4755ce7a75e09d2c7f89b047',
+    );
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Verify the exact upstream exported enum keys.
     expect(DepthType).toEqual({ Default: 1, Log: 2, Reverse: 3 });
+  });
+
+  it('should initialize the weighted AO sum after every composite shader reconfiguration', () => {
+    const { pass } = createFixture();
+    for (const halfResolution of [false, true, false, true]) {
+      pass.configuration.halfRes = halfResolution;
+      for (const depthType of [1, 2, 3]) {
+        for (const orthographic of [false, true]) {
+          pass.configureEffectCompositer(depthType, orthographic);
+          const shader = pass.effectCompositerQuad.material.fragmentShader;
+          const start = shader.indexOf('#ifdef HALFRES');
+          const weightedSum = shader.indexOf('texel += sampleInfo * weight;');
+          expect(start).toBeGreaterThan(-1);
+          expect(weightedSum).toBeGreaterThan(start);
+          expect(shader.slice(start, weightedSum)).toContain('vec4 texel = vec4(0.0);');
+          expect(shader).not.toContain('vec4 texel;');
+          expect(shader).toContain('texel = texture2D(tDiffuse, vUv);');
+        }
+      }
+    }
   });
 
   it.each([

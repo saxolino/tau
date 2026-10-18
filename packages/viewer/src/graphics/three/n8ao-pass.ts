@@ -59,7 +59,8 @@ type N8AoPass = Pass & {
   renderTransparency(renderer: WebGLRenderer): void;
 };
 
-// Render orchestration adapted from N8AO 1.10.2 src/N8AOPostPass.js; shaders stay upstream.
+// Render orchestration adapted from N8AO 1.10.2 src/N8AOPostPass.js; the composite
+// shader also receives the guarded weighted-sum initialization below.
 // https://github.com/N8python/n8ao/blob/d3dd84bdb4e66b1f78bc7946e98b50f4e90dd19e/src/N8AOPostPass.js
 // Its distributed LICENSE is CC0-1.0 (package.json labels it ISC). The source-map hash
 // and depth constants are guarded by n8ao-pass.test.ts. No workspace patch is needed here.
@@ -89,6 +90,14 @@ export class ManagedN8AoPass extends n8AoConstructor {
     // The terminal pass reads outputTargetInternal directly; no composer swap or copy.
     this.needsSwap = false;
     this.isReady = true;
+  }
+
+  public override configureEffectCompositer(depthBufferType: number, orthographic: boolean): void {
+    super.configureEffectCompositer(depthBufferType, orthographic);
+    // Upstream accumulates into an uninitialized local in HALFRES. Apply this to
+    // each fresh material, including those rebuilt for depth/projection changes.
+    const { material } = this.effectCompositerQuad;
+    material.fragmentShader = material.fragmentShader.replace('vec4 texel;', 'vec4 texel = vec4(0.0);');
   }
 
   // oxlint-disable-next-line eslint/max-params -- Preserve postprocessing Pass.render's upstream signature.
