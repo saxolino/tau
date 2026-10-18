@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
 // oxlint-disable-next-line import-x/no-unassigned-import -- this is a side effect
 import '@testing-library/jest-dom';
+import { toHaveTextContent as toMatchTextContent } from '@testing-library/jest-dom/matchers';
+import { expect } from 'vitest';
+
+// Preserve original jest-dom substring/regex semantics in this jsdom owner.
+expect.extend({ toMatchTextContent });
 
 // Vite rewrites package-owned WASM/font assets to /@fs/ URLs. Jsdom has no Vite
 // HTTP server, so load those same real bytes directly while preserving normal fetches.

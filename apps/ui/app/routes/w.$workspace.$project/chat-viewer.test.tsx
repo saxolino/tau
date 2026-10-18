@@ -811,7 +811,7 @@ describe('ChatViewer reopen-renderer overlay', () => {
     act(() => {
       runtime.emitViewStatus('error');
     });
-    expect(screen.getByRole('alert')).toHaveTextContent('The selected view is unavailable.');
+    expect(screen.getByRole('alert')).toMatchTextContent('The selected view is unavailable.');
     act(() => {
       runtime.emitRendered({
         success: false,
@@ -822,7 +822,7 @@ describe('ChatViewer reopen-renderer overlay', () => {
       });
       runtime.emitViewStatus('error');
     });
-    expect(screen.getByRole('alert')).toHaveTextContent('PCB render failed');
+    expect(screen.getByRole('alert')).toMatchTextContent('PCB render failed');
     expect(mockCadViewerProps?.artifactHash).toBe('drawing-picture');
     pane.unmount();
   });
@@ -862,7 +862,7 @@ describe('ChatViewer reopen-renderer overlay', () => {
 
     renderViewer(<ChatViewer viewId='view-1' entryPath={helperEntryPath} panelApi={mockPanelApi} />);
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Saved view “missing-drawing” is unavailable');
+    expect(screen.getByRole('alert')).toMatchTextContent('Saved view “missing-drawing” is unavailable');
     expect(runtime.viewSpy).not.toHaveBeenCalled();
     expect(screen.getByTestId('cad-viewer-canvas')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Use default view' }));
@@ -1045,7 +1045,7 @@ describe('ChatViewer reopen-renderer overlay', () => {
     renderViewer(<ChatViewer viewId='view-1' entryPath={helperEntryPath} panelApi={mockPanelApi} profile='shared' />);
 
     expect(screen.getByTestId('cad-viewer-canvas')).toBeInTheDocument();
-    expect(screen.getByRole('alert', { name: 'CAD runtime error' })).toHaveTextContent(message);
+    expect(screen.getByRole('alert', { name: 'CAD runtime error' })).toMatchTextContent(message);
     expect(screen.queryByTestId('chat-stack-trace')).not.toBeInTheDocument();
   });
 
@@ -1371,7 +1371,7 @@ describe('ChatViewer reopen-renderer overlay', () => {
     fireCanvasPointerMove(screen.getByTestId('cad-viewer-canvas-region'), { clientX: 74, clientY: 92 });
 
     const label = screen.getByTestId('model-component-name-badge');
-    expect(label).toHaveTextContent('Right Rim');
+    expect(label).toMatchTextContent('Right Rim');
     expect(label).toHaveAttribute('aria-hidden', 'true');
     expect(label.className).toContain('pointer-events-none');
     // The badge is placed from custom properties written straight to the

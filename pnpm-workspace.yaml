@@ -180,9 +180,9 @@ catalog:
   '@types/three': ^0.184.1
   '@typescript/native-preview': 7.0.0-dev.20260223.1
   '@vitejs/plugin-react': 6.1.1
-  '@vitest/coverage-v8': 4.1.11
-  '@vitest/browser-playwright': 4.1.11
-  '@vitest/ui': 4.1.11
+  '@vitest/coverage-v8': 5.0.3
+  '@vitest/browser-playwright': 5.0.3
+  '@vitest/ui': 5.0.3
   '@xyflow/react': ^12.11.0
   axe-core: ^4.12.1
   better-auth: 1.7.7
@@ -203,7 +203,7 @@ catalog:
   es-module-lexer: ^2.1.0
   esbuild: 0.28.2
   esbuild-wasm: 0.28.2
-  eslint: 9.32.0
+  eslint: 9.39.5
   eslint-plugin-import-x: ^4.16.2
   eslint-plugin-jsdoc: ^65.2.4
   eslint-plugin-max-params-no-constructor: ^0.0.4
@@ -247,7 +247,7 @@ catalog:
   '@taulabs/openrscad-engine': 0.11.0-beta.4
   oxfmt: ^0.36.0
   oxlint: ^1.80.0
-  oxlint-tsgolint: ^0.16.0
+  oxlint-tsgolint: 7.0.2004
   oxc-transform-react: 0.148.0
   pdf-parse: 2.4.5
   polygon-clipping: ^0.15.7
@@ -293,7 +293,7 @@ catalog:
   vite-plugin-mkcert: 2.0.0
   vite-plugin-singlefile: 2.3.3
   vite-plugin-static-copy: ^4.1.1
-  vitest: 4.1.11
+  vitest: 5.0.3
   vitest-mock-extended: ^5.1.1
   vscode-uri: 3.1.0
   web-vitals: ^5.3.0
