@@ -828,7 +828,7 @@ The circuit kernel bundles the following components. Their full license texts ac
 | base64-js | 1.5.1 | MIT |
 | boolbase | 1.0.0 | ISC |
 | bpc-graph | 0.0.67 | MIT |
-| buffer | 6.0.3 | MIT |
+| buffer | 5.6.0 | MIT |
 | calculate-cell-boundaries | 0.0.19 | MIT |
 | calculate-elbow | 0.0.12 | MIT |
 | calculate-elbow | 0.0.13 | MIT |
@@ -878,7 +878,7 @@ The circuit kernel bundles the following components. Their full license texts ac
 | parseunit | 0.3.1 | MIT |
 | performance-now | 2.1.0 | MIT |
 | polished | 4.3.1 | MIT |
-| react | 19.2.7 | MIT |
+| react | 19.3.0 | MIT |
 | react-reconciler | 0.32.0 | MIT |
 | scheduler | 0.26.0 | MIT |
 | schematic-symbols | 0.0.244 | MIT |
