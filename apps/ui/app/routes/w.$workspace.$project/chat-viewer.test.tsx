@@ -1376,10 +1376,9 @@ describe('ChatViewer reopen-renderer overlay', () => {
     expect(label.className).toContain('pointer-events-none');
     // The badge is placed from custom properties written straight to the
     // layout element, so a pointer move never re-renders the viewer subtree.
-    expect(screen.getByTestId('chat-viewer-layout')).toHaveStyle({
-      '--viewer-hover-label-x': '64px',
-      '--viewer-hover-label-y': '72px',
-    });
+    expect(screen.getByTestId('chat-viewer-layout')).toHaveStyle(
+      '--viewer-hover-label-x: 64px; --viewer-hover-label-y: 72px;',
+    );
     expect(label).toHaveStyle({
       left: 'var(--viewer-hover-label-x, 0px)',
       top: 'var(--viewer-hover-label-y, 0px)',
@@ -1408,10 +1407,9 @@ describe('ChatViewer reopen-renderer overlay', () => {
     fireCanvasPointerMove(canvasRegion, { clientX: 160, clientY: 180 });
 
     expect(onRender.mock.calls.length).toBe(commitsAfterFirstMove);
-    expect(screen.getByTestId('chat-viewer-layout')).toHaveStyle({
-      '--viewer-hover-label-x': '150px',
-      '--viewer-hover-label-y': '160px',
-    });
+    expect(screen.getByTestId('chat-viewer-layout')).toHaveStyle(
+      '--viewer-hover-label-x: 150px; --viewer-hover-label-y: 160px;',
+    );
   });
 
   it('should flip the hover badge above the pointer as the pointer nears the top of a grown bar', () => {
@@ -1428,10 +1426,10 @@ describe('ChatViewer reopen-renderer overlay', () => {
     const layout = screen.getByTestId('chat-viewer-layout');
 
     fireCanvasPointerMove(canvasRegion, { clientX: 74, clientY: 150 });
-    expect(layout).toHaveStyle({ '--viewer-hover-label-translate-y': 'calc(-100% - 10px)' });
+    expect(layout).toHaveStyle('--viewer-hover-label-translate-y: calc(-100% - 10px);');
 
     fireCanvasPointerMove(canvasRegion, { clientX: 74, clientY: 100 });
-    expect(layout).toHaveStyle({ '--viewer-hover-label-translate-y': '10px' });
+    expect(layout).toHaveStyle('--viewer-hover-label-translate-y: 10px;');
   });
 
   it('should hide the hovered component label when the pointer leaves the canvas region', () => {
