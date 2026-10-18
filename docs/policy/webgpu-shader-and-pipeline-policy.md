@@ -3,7 +3,7 @@ title: 'WebGPU Shader and Pipeline Policy'
 description: 'Rules for portable Three.js shaders, generated-source evidence, and render-pipeline ownership'
 status: active
 created: '2026-05-15'
-updated: '2026-10-01'
+updated: '2026-10-18'
 related:
   - docs/policy/graphics-backend-policy.md
   - docs/policy/webgpu-rendering-pipeline.md
@@ -225,7 +225,7 @@ Raw WGSL/GLSL is an escape hatch, not the default. Use TSL for logic that must e
 
 When the scene pass already produces a depth + normal MRT (as it must to feed GTAO inputs), the AO factor must be composited into the final image by multiplying the beauty color: `scenePassColor.mul(vec4(vec3(aoOutput.r), 1))`. Do not wire `scenePass.contextNode = builtinAOContext(...)` to re-render the scene with AO applied per-fragment.
 
-**Why**: `builtinAOContext` requires a second scene rasterization (the depth/normal prepass plus the lit pass). Compose-based AO turns it into a single fullscreen multiply on the existing scene color attachment — saving an entire 4-MSAA scene render per frame. The math is identical (`scene_lit * ao_factor === scene_with_ao`); GTAO's own canonical example uses this pattern (`three/addons/tsl/display/GTAONode.js`).
+**Why**: `builtinAOContext` requires a second scene rasterization (the depth/normal prepass plus the lit pass). Compose-based AO turns it into a single fullscreen multiply on the existing scene color attachment — saving an entire 4-MSAA scene render per frame. This composition is not mathematically equivalent to occluding only indirect illumination. Preserve the selected scene/display composition as an explicit CAD appearance contract; compare unoccluded color, metallic highlights and alpha when changing it.
 
 CORRECT:
 
