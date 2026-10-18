@@ -4,6 +4,7 @@ import { useActorRef, useSelector } from '@xstate/react';
 import type { ActorRefFrom } from 'xstate';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Box3, HalfFloatType, REVISION, Vector3, WebGLRenderer, WebGLRenderTarget } from 'three';
+import { WebGPUBackend, WebGPURenderer } from 'three/webgpu';
 import type { Scene } from 'three';
 import { applyCanonicalGltfBounds } from '@taucad/viewer/graphics/three/gltf-world';
 import { z } from 'zod';
@@ -250,6 +251,8 @@ function CalibrationProbe({
   const report = useCallback((): Record<string, unknown> => {
     const context = gl instanceof WebGLRenderer ? gl.getContext() : undefined;
     const debug = context?.getExtension('WEBGL_debug_renderer_info');
+    const nodeRenderer = gl instanceof WebGPURenderer ? gl : undefined;
+    const nativeGpu = nodeRenderer?.backend instanceof WebGPUBackend ? nodeRenderer.backend : undefined;
     const radiusCssPixels = resolveAoRadiusCssPixels(
       metadata.post.radiusCssPixels ?? defaultPostProcessingSettings.radiusCssPixels,
       { width: size.width, height: size.height, dpr: gl.getPixelRatio() },
@@ -274,6 +277,14 @@ function CalibrationProbe({
       aoRadius: { cssPixels: radiusCssPixels, physicalPixels: radiusCssPixels * gl.getPixelRatio() },
       exposure: gl.toneMappingExposure,
       renderer: debug ? context?.getParameter(debug.UNMASKED_RENDERER_WEBGL) : 'unavailable',
+      effectiveBackend: context ? 'webgl' : nativeGpu ? 'webgpu' : 'webgl2-node',
+      webgpuCapabilities: nodeRenderer
+        ? {
+            samples: nodeRenderer.samples,
+            native: Boolean(nativeGpu),
+            compatibilityMode: nativeGpu && 'compatibilityMode' in nativeGpu ? nativeGpu.compatibilityMode : undefined,
+          }
+        : undefined,
       gpuTimer:
         measurementMode === 'natural' ? 'disabled-for-natural-cadence' : (gpuTimer.current?.support ?? 'unavailable'),
       webglCapabilities: context
