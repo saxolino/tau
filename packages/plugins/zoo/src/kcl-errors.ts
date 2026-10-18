@@ -406,7 +406,7 @@ export const extractWasmKclErrorDetails = (error: unknown): WasmKclErrorExtracti
   if (isKclErrorWithOutputs(error)) {
     const extended = error.error as ExtendedWasmKclError;
     extended.filenames = error.filenames as unknown as ExtendedWasmKclError['filenames'];
-    extended.sourceFiles = error.sourceFiles as unknown as ExtendedWasmKclError['sourceFiles'];
+    extended.sourceFiles = error.sourceFiles;
     return {
       wasmError: extended,
       partialOutcome: mapKclErrorWithOutputsToPartialExecutionResult(error),

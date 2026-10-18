@@ -321,8 +321,7 @@ const buildCodec: CacheCodec<EvaluateResult> = {
       signal,
       readContent,
     });
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- Zod validates every persisted field before restoring the symbol carrier.
-    return { ...entry.result, serializedHandle, [nativeBuildInputSymbol]: entry.nativeBuildInput } as BuildCacheResult;
+    return { ...entry.result, serializedHandle, [nativeBuildInputSymbol]: entry.nativeBuildInput };
   },
 };
 

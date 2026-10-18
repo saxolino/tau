@@ -277,8 +277,7 @@ const measureNativeParts = async (): Promise<Record<string, number>> => {
   const actors = createRevisionActors({
     port,
     projectId: 'gate-bench',
-    // oxlint-disable-next-line typescript/consistent-type-assertions -- the provider is the live checkout.
-    filesystem: async () => filesystem as unknown as RevisionFileSystem,
+    filesystem: async (): Promise<RevisionFileSystem> => filesystem,
   });
   const parts: { cut: number[]; write: number[]; ref: number[] } = { cut: [], write: [], ref: [] };
   let head: string | undefined;

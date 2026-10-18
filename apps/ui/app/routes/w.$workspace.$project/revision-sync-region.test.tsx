@@ -1107,9 +1107,10 @@ describe('RevisionSyncRegion with a moved GitHub repository (D11)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Update remote' }));
 
+    const expectedAuthorization: unknown = expect.stringMatching(/^Basic /u);
     await waitFor(() => {
       expect(region.connect).toHaveBeenCalledWith('git', 'https://github.com/octo/renamed.git', {
-        authorization: expect.stringMatching(/^Basic /u),
+        authorization: expectedAuthorization,
         provider: 'github',
         repositoryId: '99',
         connectionId,

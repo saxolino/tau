@@ -322,7 +322,7 @@ function buildDeps(overrides?: {
   createRpcHandlers({
     chatId: 'chat_rpc_handlers_test_deps',
     fileManager: mockFm,
-    projectRef: (overrides?.projectRef ?? createMockProjectRef()) as unknown as RpcHandlerDependencies['projectRef'],
+    projectRef: overrides?.projectRef ?? createMockProjectRef(),
     headlessImageService: overrides?.headlessImageService,
     createGeoSpecClient: overrides?.createGeoSpecClient,
   });
@@ -2105,7 +2105,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_ok',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       await handlers.executeRpcCall({
@@ -2131,7 +2131,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_err',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       await expect(
@@ -2162,7 +2162,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_numeric',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       await expect(
@@ -2191,7 +2191,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_nocode',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       await expect(
@@ -2222,7 +2222,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_strcode',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       await expect(
@@ -2253,7 +2253,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_ledger_readonly',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       await handlers.executeRpcCall({
@@ -2284,7 +2284,7 @@ describe('rpc-handlers', () => {
       const handlers = createRpcHandlers({
         chatId: 'chat_rpc_handlers_factory_test',
         fileManager: mockFm,
-        projectRef: createMockProjectRef() as unknown as RpcHandlerDependencies['projectRef'],
+        projectRef: createMockProjectRef(),
       });
 
       expect(handlers).toHaveProperty('executeRpcCall');

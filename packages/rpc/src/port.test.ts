@@ -519,7 +519,7 @@ describe('wrapMessagePortMain', () => {
     expect(() => {
       wrapped.postMessage({ bytes }, [bytes.buffer]);
     }).not.toThrow();
-    wrapped.postMessage({ handoff }, [handoff as unknown as Transferable]);
+    wrapped.postMessage({ handoff }, [handoff]);
 
     expect(received).toEqual([{ bytes }, { handoff }]);
     /* Copied, not transferred: the sender still owns its bytes. */

@@ -372,7 +372,7 @@ export const buildRockerArm = (place: Placement): BuiltPart => {
 
 /** Rocker pivot ball: sphere R8 with a stud bore and a flat top. */
 export const buildPivotBall = (place: Placement): BuiltPart => {
-  const ball = (makeSphere(8) as Shape3D)
+  const ball = makeSphere(8)
     .cut(makeCylinder(5.1, 20, [0, 0, -10], [0, 0, 1]))
     .cut(makeCylinder(9, 4, [0, 0, 5], [0, 0, 1]));
   const shape = place.shape(ball);

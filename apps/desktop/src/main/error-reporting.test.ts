@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Sentry request fields use the SDK wire names. */
 import { describe, expect, it, vi } from 'vitest';
 import type { ErrorEvent } from '@sentry/electron/main';
-import { scrubDesktopEvent } from './error-reporting.js';
+import { scrubDesktopEvent } from '#main/error-reporting.js';
 
 const { initialize } = vi.hoisted(() => ({ initialize: vi.fn() }));
 vi.mock('@sentry/electron/main', () => ({ init: initialize }));

@@ -63,32 +63,33 @@ describe('portable share artifacts', () => {
   it('should use a fresh random salt while preserving the password encryption profile', async () => {
     const first = await shareArtifactCodec.sealWithPassword(snapshot(), password);
     const second = await shareArtifactCodec.sealWithPassword(snapshot(), password);
-    const firstHeader = decodeProtectedHeader(first.compactJwe);
-    const secondHeader = decodeProtectedHeader(second.compactJwe);
+    const { p2s: firstSalt, ...firstHeader }: Readonly<Record<string, unknown>> = decodeProtectedHeader(
+      first.compactJwe,
+    );
+    const { p2s: secondSalt, ...secondHeader }: Readonly<Record<string, unknown>> = decodeProtectedHeader(
+      second.compactJwe,
+    );
 
     expect(firstHeader).toMatchObject({
       alg: 'PBES2-HS512+A256KW',
       enc: 'A256GCM',
       cty: 'application/zip',
       p2c: 210_000,
-      p2s: expect.any(String),
     });
-    expect(secondHeader).toMatchObject({ ...firstHeader, p2s: expect.any(String) });
-    expect(typeof firstHeader.p2s).toBe('string');
-    expect(typeof secondHeader.p2s).toBe('string');
-    if (typeof firstHeader.p2s !== 'string' || typeof secondHeader.p2s !== 'string') {
-      throw new Error('Password encryption did not emit its salt.');
+    expect(secondHeader).toEqual(firstHeader);
+    expect(typeof firstSalt).toBe('string');
+    expect(typeof secondSalt).toBe('string');
+    if (typeof firstSalt !== 'string' || typeof secondSalt !== 'string') {
+      throw new TypeError('Password encryption did not emit its salt.');
     }
-    expect(base64url.decode(firstHeader.p2s)).toHaveLength(16);
-    expect(base64url.decode(secondHeader.p2s)).toHaveLength(16);
-    expect(secondHeader.p2s).not.toBe(firstHeader.p2s);
+    expect(base64url.decode(firstSalt)).toHaveLength(16);
+    expect(base64url.decode(secondSalt)).toHaveLength(16);
+    expect(secondSalt).not.toBe(firstSalt);
     expect(second.compactJwe).not.toBe(first.compactJwe);
-    expect((await shareArtifactCodec.openWithPassword({ compactJwe: first.compactJwe, password })).archive).toEqual(
-      first.archive,
-    );
-    expect((await shareArtifactCodec.openWithPassword({ compactJwe: second.compactJwe, password })).archive).toEqual(
-      second.archive,
-    );
+    const firstOpened = await shareArtifactCodec.openWithPassword({ compactJwe: first.compactJwe, password });
+    const secondOpened = await shareArtifactCodec.openWithPassword({ compactJwe: second.compactJwe, password });
+    expect(firstOpened.archive).toEqual(first.archive);
+    expect(secondOpened.archive).toEqual(second.archive);
   });
 
   it.each([

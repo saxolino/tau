@@ -1358,7 +1358,7 @@ export const uiQualifyWebGpu: BrowserCommand<[profile: TargetWebGpuProfile], Tar
       readonly isFallbackAdapter?: boolean;
       requestDevice(): Promise<GpuDevice>;
     };
-    type GpuNavigator = {
+    type GpuNavigator = Pick<Navigator, 'userAgent'> & {
       readonly gpu?: { requestAdapter(): Promise<GpuAdapter | null> };
     };
     type GpuConstants = typeof globalThis & {

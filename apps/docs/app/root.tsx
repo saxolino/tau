@@ -60,7 +60,7 @@ export function Layout({ children }: { readonly children: ReactNode }): React.JS
   );
 }
 
-const StaticSearchDialog = lazy(() => import('#components/static-search-dialog.js'));
+const StaticSearchDialog = lazy(async () => import('#components/static-search-dialog.js'));
 
 export default function App(): React.JSX.Element {
   const { searchIndexUrl } = useLoaderData<typeof loader>();

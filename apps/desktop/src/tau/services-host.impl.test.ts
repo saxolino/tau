@@ -9,7 +9,7 @@ import { MessageChannel } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TurnPlacementPort } from '@taucad/agent-host';
 import { createAgentChannelClient } from '@taucad/agent-host/channel-client';
-import type { AgentChannelClient, AgentChannelEndpoint } from '@taucad/agent-host/channel-client';
+import type { AgentChannelClient } from '@taucad/agent-host/channel-client';
 import { NodeFsChannel, NodeFsProviderClient } from '@taucad/filesystem/backend';
 import { acquireNodeAuthorityWriter, serveNodeFsProvider, toNodeFsPort } from '@taucad/filesystem/backend/node';
 import { tauPathPolicy } from '@taucad/filesystem/path-registry';
@@ -163,7 +163,10 @@ const hostHarness = (overrides: Partial<ServicesHostOptions> = {}) => {
 const frame = (
   data: unknown,
   ports: Array<ReturnType<typeof stubPort>> | readonly UtilityPort[] = [],
-): UtilityMessage => ({ data, ports }) as UtilityMessage;
+): UtilityMessage => {
+  const message: UtilityMessage = { data, ports };
+  return message;
+};
 
 describe('refusedRuntimePortMessage', () => {
   it('should quote the reason main refused with, so the tool error names it', () => {
@@ -358,9 +361,7 @@ public static class Params
     try {
       host.handleMessage(frame({ type: 'allowRoots', roots: [root] }));
       host.handleMessage(
-        frame({ type: 'concern', concern: 'runtimeFileSystem', context: { workspaceRoot: root } }, [
-          ports.port1 as UtilityPort,
-        ]),
+        frame({ type: 'concern', concern: 'runtimeFileSystem', context: { workspaceRoot: root } }, [ports.port1]),
       );
       await proxy.ready;
       await expect(proxy.readFile('main.cs', 'utf8')).resolves.toBe(starter);
@@ -598,10 +599,10 @@ describe('createServicesHost — filesystem authority lifetime', () => {
     const firstPorts = new MessageChannel();
     const secondPorts = new MessageChannel();
     host.handleMessage(frame({ type: 'allowRoots', roots: [root] }));
-    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [firstPorts.port2 as UtilityPort]));
-    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [secondPorts.port2 as UtilityPort]));
-    const firstChannel = new NodeFsChannel(toNodeFsPort(firstPorts.port1 as UtilityPort));
-    const secondChannel = new NodeFsChannel(toNodeFsPort(secondPorts.port1 as UtilityPort));
+    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [firstPorts.port2]));
+    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [secondPorts.port2]));
+    const firstChannel = new NodeFsChannel(toNodeFsPort(firstPorts.port1));
+    const secondChannel = new NodeFsChannel(toNodeFsPort(secondPorts.port1));
     const parentView = new NodeFsProviderClient(firstChannel, root);
     const projectView = new NodeFsProviderClient(secondChannel, project);
 
@@ -645,8 +646,8 @@ describe('createServicesHost — filesystem authority lifetime', () => {
     const host = createServicesHost({ authorityDirectory, log: vi.fn() });
     const ports = new MessageChannel();
     host.handleMessage(frame({ type: 'allowRoots', roots: [sandbox] }));
-    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [ports.port2 as UtilityPort]));
-    const channel = new NodeFsChannel(toNodeFsPort(ports.port1 as UtilityPort));
+    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [ports.port2]));
+    const channel = new NodeFsChannel(toNodeFsPort(ports.port1));
     const broadView = new NodeFsProviderClient(channel, sandbox);
 
     try {
@@ -681,7 +682,7 @@ describe('createServicesHost — filesystem authority lifetime', () => {
     const connections = [new MessageChannel(), new MessageChannel()];
     host.handleMessage(frame({ type: 'allowRoots', roots: [sandbox, alias] }));
     for (const connection of connections) {
-      host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [connection.port2 as UtilityPort]));
+      host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [connection.port2]));
     }
     const channels = connections.map(({ port1 }) => new NodeFsChannel(toNodeFsPort(port1 as unknown as UtilityPort)));
     const broadViews = [new NodeFsProviderClient(channels[0]!, sandbox), new NodeFsProviderClient(channels[1]!, alias)];
@@ -725,8 +726,8 @@ describe('createServicesHost — filesystem authority lifetime', () => {
     const host = createServicesHost({ authorityDirectory, log });
     const ports = new MessageChannel();
     host.handleMessage(frame({ type: 'allowRoots', roots: [root] }));
-    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [ports.port2 as UtilityPort]));
-    const channel = new NodeFsChannel(toNodeFsPort(ports.port1 as UtilityPort));
+    host.handleMessage(frame({ type: 'concern', concern: 'nodeFs' }, [ports.port2]));
+    const channel = new NodeFsChannel(toNodeFsPort(ports.port1));
     const provider = new NodeFsProviderClient(channel, root);
 
     try {
@@ -1020,10 +1021,10 @@ describe('createServicesHost — the agentHost concern (launcher 2)', () => {
             ...(geoSpecEngine === undefined ? {} : { geoSpecEngine }),
           },
         },
-        [channel.port1 as UtilityPort],
+        [channel.port1],
       ),
     );
-    const client = createAgentChannelClient({ connect: () => channel.port2 as AgentChannelEndpoint });
+    const client = createAgentChannelClient({ connect: () => channel.port2 });
     clients.push(client);
     return client;
   };
@@ -1384,7 +1385,7 @@ describe('createServicesHost — the agentHost concern (launcher 2)', () => {
           concern: 'agentHost',
           context: { workspaceRoot, projectId: 'proj_test', attachmentGeneration: '1' },
         },
-        [channel.port1 as UtilityPort],
+        [channel.port1],
       ),
     );
 
@@ -1431,10 +1432,10 @@ describe('createServicesHost — the agentHost concern (launcher 2)', () => {
             concern: 'agentHost',
             context: { workspaceRoot, projectId: 'proj_test', attachmentGeneration },
           },
-          [channel.port1 as UtilityPort],
+          [channel.port1],
         ),
       );
-      const client = createAgentChannelClient({ connect: () => channel.port2 as AgentChannelEndpoint });
+      const client = createAgentChannelClient({ connect: () => channel.port2 });
       clients.push(client);
       return client;
     };

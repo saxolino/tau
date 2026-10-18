@@ -56,7 +56,6 @@ import { reduceEventLog } from '#log/reducer.js';
 import type {
   AgentLogEvent,
   JsonObject,
-  JsonValue,
   ProviderMessage,
   RunTrigger,
   TurnContextSnapshot,
@@ -1554,7 +1553,8 @@ export const createTauAgentHost = (options: CreateTauAgentHostOptions): TauAgent
           const events = await log.read();
           const admission = admittedRowOf(events, runId)?.admission;
           const resumed = events.findLast(
-            (event) => event.runId === runId && event.type === 'run.lifecycle' && event.state === 'running',
+            (event): event is Extract<AgentLogEvent, { type: 'run.lifecycle' }> =>
+              event.runId === runId && event.type === 'run.lifecycle' && event.state === 'running',
           );
           const selection = mode === 'start' ? undefined : resumed?.selection;
           const committed = events.findLast(

@@ -18,8 +18,7 @@ const parameterCodec: CacheCodec<DescribeResult<ParameterManifest>> = {
     }
     return utf8.encode(JSON.stringify(value));
   },
-  decode: ({ bytes }) =>
-    describeResultSchema.parse(JSON.parse(strictUtf8.decode(bytes))) as DescribeResult<ParameterManifest>,
+  decode: ({ bytes }) => describeResultSchema.parse(JSON.parse(strictUtf8.decode(bytes))),
 };
 
 const parameterAction = (semanticHash: string): ComputeAction => ({

@@ -13,8 +13,10 @@ describe('parameter cache compatibility export', () => {
   });
 
   it('should keep explicit parameter-cache selection executable with its previous identity', async () => {
-    const selected = await resolveRuntimePluginDefinition('middleware', parameterCacheDefinition());
-    expect(selected).toMatchObject({ id: 'parameterCache', name: 'ParameterCache', version: '4.0.0' });
+    const invocation = parameterCacheDefinition();
+    expect(invocation.id).toBe('parameterCache');
+    const selected = await resolveRuntimePluginDefinition('middleware', invocation);
+    expect(selected).toMatchObject({ name: 'ParameterCache', version: '4.0.0' });
     expect(typeof selected.wrapDescribe).toBe('function');
     expect(publicExports.middleware().capabilities.middleware.map(({ id }) => id)).not.toContain('parameterCache');
     expect(publicExports.middleware({ preset: 'cache' }).capabilities.middleware.map(({ id }) => id)).toEqual([

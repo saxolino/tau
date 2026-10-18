@@ -68,7 +68,10 @@ describe('ProviderService Vertex service-account ownership', () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('Unexpected provider network'));
     vi.stubGlobal('fetch', fetch);
     const build = vi.spyOn(ChatVertexAI.prototype, 'buildAbstractedClient');
-    construct(credentials);
+    const model = construct(credentials);
+    if (!(model instanceof ChatVertexAI)) {
+      throw new Error('Expected the actual Vertex model');
+    }
     const fields = build.mock.calls[0]?.[0];
     const auth = fields?.authOptions?.authClient;
     expect(auth).toBeInstanceOf(JWT);
@@ -86,7 +89,7 @@ describe('ProviderService Vertex service-account ownership', () => {
     expect(fields?.authOptions).not.toHaveProperty('credentials');
     expect(fields?.location).toBe('global');
     expect(fields?.maxOutputTokens).toBe(128);
-    expect(fields?.streamUsage).toBe(true);
+    expect(model.streamUsage).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
   });
 

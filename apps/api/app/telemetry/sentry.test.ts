@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Sentry event and breadcrumb fields are SDK wire names. */
 import { describe, expect, it, vi } from 'vitest';
 import { NodeClient } from '@sentry/node';
-import type { ErrorEvent, Transport } from '@sentry/node';
+import type { ErrorEvent } from '@sentry/node';
 import { reportServerError, scrubSentryEvent } from '#telemetry/sentry.js';
+
+type Transport = ReturnType<NonNullable<ConstructorParameters<typeof NodeClient>[0]['transport']>>;
 
 describe('Sentry privacy defaults', () => {
   it('should keep sensitive collection disabled and scrub the outgoing envelope', async () => {
