@@ -68,13 +68,6 @@ const n8AoConstructor = N8AOPostPass as unknown as new (scene: Scene, camera: Th
 // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Guarded exported constants from the same untyped dependency.
 const depthTypes = DepthType as { Default: number; Log: number; Reverse: number };
 
-/** Assign native shader uniforms without replacing their owned uniform objects. */
-const setUniforms = (quad: FullscreenTriangle, values: Readonly<Record<string, unknown>>): void => {
-  for (const name of Object.keys(values)) {
-    quad.material.uniforms[name]!.value = values[name];
-  }
-};
-
 /** Owns spatial N8AO and publishes its composite target for the viewer's output pass. */
 export class ManagedN8AoPass extends n8AoConstructor {
   // The base constructor calls detectTransparency before finishing its target setup.
@@ -238,68 +231,71 @@ export class ManagedN8AoPass extends n8AoConstructor {
   private renderSpatialAo(renderer: WebGLRenderer, inputBuffer: WebGLRenderTarget, radius: number): void {
     const { configuration, camera } = this;
     if (configuration.halfRes) {
-      setUniforms(this.depthDownsampleQuad!, {
-        sceneDepth: this.depthTexture,
-        resolution: this.resolution,
-        near: camera.near,
-        far: camera.far,
-        projectionMatrixInv: camera.projectionMatrixInverse,
-        viewMatrixInv: camera.matrixWorld,
-        logDepth: configuration.depthBufferType === depthTypes.Log,
-        ortho: camera instanceof OrthographicCamera,
-      });
+      const downsampleUniforms = this.depthDownsampleQuad!.material.uniforms;
+      downsampleUniforms['sceneDepth']!.value = this.depthTexture;
+      downsampleUniforms['resolution']!.value = this.resolution;
+      downsampleUniforms['near']!.value = camera.near;
+      downsampleUniforms['far']!.value = camera.far;
+      downsampleUniforms['projectionMatrixInv']!.value = camera.projectionMatrixInverse;
+      downsampleUniforms['viewMatrixInv']!.value = camera.matrixWorld;
+      downsampleUniforms['logDepth']!.value = configuration.depthBufferType === depthTypes.Log;
+      downsampleUniforms['ortho']!.value = camera instanceof OrthographicCamera;
       renderer.setRenderTarget(this.depthDownsampleTarget!);
       this.depthDownsampleQuad!.render(renderer);
     }
     const depth = configuration.halfRes ? this.depthDownsampleTarget!.textures[0] : this.depthTexture;
-    setUniforms(this.effectShaderQuad, {
-      sceneDiffuse: inputBuffer.texture,
-      sceneDepth: depth,
-      sceneNormal: configuration.halfRes ? this.depthDownsampleTarget!.textures[1] : null,
-      projMat: camera.projectionMatrix,
-      viewMat: camera.matrixWorldInverse,
-      projViewMat: this.projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
-      projectionMatrixInv: camera.projectionMatrixInverse,
-      viewMatrixInv: camera.matrixWorld,
-      cameraPos: this.cameraPosition,
-      biasAdjustment: this.biasAdjustment.set(configuration.biasOffset, configuration.biasMultiplier),
-      resolution: this.aoResolution,
-      time: performance.now() / 1000,
-      samples: this.samples,
-      bluenoise: this.bluenoise,
-      radius,
-      distanceFalloff: configuration.distanceFalloff,
-      near: camera.near,
-      far: camera.far,
-      ortho: camera instanceof OrthographicCamera,
-      screenSpaceRadius: configuration.screenSpaceRadius,
-      // Viewer AO is spatial: no history is reused across camera or model motion.
-      frame: 0,
-    });
+    const effectUniforms = this.effectShaderQuad.material.uniforms;
+    effectUniforms['sceneDiffuse']!.value = inputBuffer.texture;
+    effectUniforms['sceneDepth']!.value = depth;
+    effectUniforms['sceneNormal']!.value = configuration.halfRes ? this.depthDownsampleTarget!.textures[1] : null;
+    effectUniforms['projMat']!.value = camera.projectionMatrix;
+    effectUniforms['viewMat']!.value = camera.matrixWorldInverse;
+    effectUniforms['projViewMat']!.value = this.projectionView.multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse,
+    );
+    effectUniforms['projectionMatrixInv']!.value = camera.projectionMatrixInverse;
+    effectUniforms['viewMatrixInv']!.value = camera.matrixWorld;
+    effectUniforms['cameraPos']!.value = this.cameraPosition;
+    effectUniforms['biasAdjustment']!.value = this.biasAdjustment.set(
+      configuration.biasOffset,
+      configuration.biasMultiplier,
+    );
+    effectUniforms['resolution']!.value = this.aoResolution;
+    effectUniforms['time']!.value = performance.now() / 1000;
+    effectUniforms['samples']!.value = this.samples;
+    effectUniforms['bluenoise']!.value = this.bluenoise;
+    effectUniforms['radius']!.value = radius;
+    effectUniforms['distanceFalloff']!.value = configuration.distanceFalloff;
+    effectUniforms['near']!.value = camera.near;
+    effectUniforms['far']!.value = camera.far;
+    effectUniforms['ortho']!.value = camera instanceof OrthographicCamera;
+    effectUniforms['screenSpaceRadius']!.value = configuration.screenSpaceRadius;
+    // Viewer AO is spatial: no history is reused across camera or model motion.
+    effectUniforms['frame']!.value = 0;
     renderer.setRenderTarget(this.writeTargetInternal);
     this.effectShaderQuad.render(renderer);
     for (let index = 0; index < configuration.denoiseIterations; index++) {
       [this.writeTargetInternal, this.readTargetInternal] = [this.readTargetInternal, this.writeTargetInternal];
-      setUniforms(this.poissonBlurQuad, {
-        tDiffuse: this.readTargetInternal.texture,
-        sceneDepth: depth,
-        projMat: camera.projectionMatrix,
-        viewMat: camera.matrixWorldInverse,
-        projectionMatrixInv: camera.projectionMatrixInverse,
-        viewMatrixInv: camera.matrixWorld,
-        cameraPos: this.cameraPosition,
-        resolution: this.aoResolution,
-        time: performance.now() / 1000,
-        blueNoise: this.bluenoise,
-        radius: configuration.denoiseRadius * (configuration.halfRes ? 0.5 : 1),
-        worldRadius: radius,
-        distanceFalloff: configuration.distanceFalloff,
-        index,
-        poissonDisk: this.samplesDenoise,
-        near: camera.near,
-        far: camera.far,
-        screenSpaceRadius: configuration.screenSpaceRadius,
-      });
+      const blurUniforms = this.poissonBlurQuad.material.uniforms;
+      blurUniforms['tDiffuse']!.value = this.readTargetInternal.texture;
+      blurUniforms['sceneDepth']!.value = depth;
+      blurUniforms['projMat']!.value = camera.projectionMatrix;
+      blurUniforms['viewMat']!.value = camera.matrixWorldInverse;
+      blurUniforms['projectionMatrixInv']!.value = camera.projectionMatrixInverse;
+      blurUniforms['viewMatrixInv']!.value = camera.matrixWorld;
+      blurUniforms['cameraPos']!.value = this.cameraPosition;
+      blurUniforms['resolution']!.value = this.aoResolution;
+      blurUniforms['time']!.value = performance.now() / 1000;
+      blurUniforms['blueNoise']!.value = this.bluenoise;
+      blurUniforms['radius']!.value = configuration.denoiseRadius * (configuration.halfRes ? 0.5 : 1);
+      blurUniforms['worldRadius']!.value = radius;
+      blurUniforms['distanceFalloff']!.value = configuration.distanceFalloff;
+      blurUniforms['index']!.value = index;
+      blurUniforms['poissonDisk']!.value = this.samplesDenoise;
+      blurUniforms['near']!.value = camera.near;
+      blurUniforms['far']!.value = camera.far;
+      blurUniforms['screenSpaceRadius']!.value = configuration.screenSpaceRadius;
       renderer.setRenderTarget(this.writeTargetInternal);
       this.poissonBlurQuad.render(renderer);
     }
@@ -309,7 +305,8 @@ export class ManagedN8AoPass extends n8AoConstructor {
       const { autoClear } = renderer;
       renderer.autoClear = false;
       renderer.setRenderTarget(this.accumulationRenderTarget);
-      setUniforms(this.accumulationQuad, { tDiffuse: this.writeTargetInternal.texture, frame: 0 });
+      this.accumulationQuad.material.uniforms['tDiffuse']!.value = this.writeTargetInternal.texture;
+      this.accumulationQuad.material.uniforms['frame']!.value = 0;
       this.accumulationQuad.render(renderer);
       renderer.autoClear = autoClear;
     }
@@ -317,45 +314,46 @@ export class ManagedN8AoPass extends n8AoConstructor {
 
   private renderComposite(renderer: WebGLRenderer, inputBuffer: WebGLRenderTarget, radius: number): void {
     const { configuration, camera } = this;
-    setUniforms(this.effectCompositerQuad, {
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- Exact upstream shader uniform name.
-      transparencyDWFalse: this.transparencyRenderTargetDWFalse?.texture ?? null,
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- Exact upstream shader uniform name.
-      transparencyDWTrue: this.transparencyRenderTargetDWTrue?.texture ?? null,
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- Exact upstream shader uniform name.
-      transparencyDWTrueDepth: this.transparencyRenderTargetDWTrue?.depthTexture ?? null,
-      transparencyAware: configuration.transparencyAware,
-      sceneDiffuse: inputBuffer.texture,
-      sceneDepth: this.depthTexture,
-      aoTones: configuration.aoTones,
-      near: camera.near,
-      far: camera.far,
-      projectionMatrixInv: camera.projectionMatrixInverse,
-      viewMatrixInv: camera.matrixWorld,
-      ortho: camera instanceof OrthographicCamera,
-      downsampledDepth: configuration.halfRes ? this.depthDownsampleTarget!.textures[0] : this.depthTexture,
-      resolution: this.resolution,
-      blueNoise: this.bluenoise,
-      intensity: configuration.intensity,
-      renderMode: configuration.renderMode,
-      screenSpaceRadius: configuration.screenSpaceRadius,
-      radius,
-      distanceFalloff: configuration.distanceFalloff,
-      gammaCorrection: this.autosetGamma ? this.renderToScreen : configuration.gammaCorrection,
-      tDiffuse: configuration.halfRes ? this.accumulationRenderTarget.texture : this.writeTargetInternal.texture,
-      color: this.aoColor.copy(configuration.color).convertSRGBToLinear(),
-      colorMultiply: configuration.colorMultiply,
-      cameraPos: this.cameraPosition,
-      fog: this.scene.fog !== null,
-    });
+    const compositeUniforms = this.effectCompositerQuad.material.uniforms;
+    compositeUniforms['transparencyDWFalse']!.value = this.transparencyRenderTargetDWFalse?.texture ?? null;
+    compositeUniforms['transparencyDWTrue']!.value = this.transparencyRenderTargetDWTrue?.texture ?? null;
+    compositeUniforms['transparencyDWTrueDepth']!.value = this.transparencyRenderTargetDWTrue?.depthTexture ?? null;
+    compositeUniforms['transparencyAware']!.value = configuration.transparencyAware;
+    compositeUniforms['sceneDiffuse']!.value = inputBuffer.texture;
+    compositeUniforms['sceneDepth']!.value = this.depthTexture;
+    compositeUniforms['aoTones']!.value = configuration.aoTones;
+    compositeUniforms['near']!.value = camera.near;
+    compositeUniforms['far']!.value = camera.far;
+    compositeUniforms['projectionMatrixInv']!.value = camera.projectionMatrixInverse;
+    compositeUniforms['viewMatrixInv']!.value = camera.matrixWorld;
+    compositeUniforms['ortho']!.value = camera instanceof OrthographicCamera;
+    compositeUniforms['downsampledDepth']!.value = configuration.halfRes
+      ? this.depthDownsampleTarget!.textures[0]
+      : this.depthTexture;
+    compositeUniforms['resolution']!.value = this.resolution;
+    compositeUniforms['blueNoise']!.value = this.bluenoise;
+    compositeUniforms['intensity']!.value = configuration.intensity;
+    compositeUniforms['renderMode']!.value = configuration.renderMode;
+    compositeUniforms['screenSpaceRadius']!.value = configuration.screenSpaceRadius;
+    compositeUniforms['radius']!.value = radius;
+    compositeUniforms['distanceFalloff']!.value = configuration.distanceFalloff;
+    compositeUniforms['gammaCorrection']!.value = this.autosetGamma
+      ? this.renderToScreen
+      : configuration.gammaCorrection;
+    compositeUniforms['tDiffuse']!.value = configuration.halfRes
+      ? this.accumulationRenderTarget.texture
+      : this.writeTargetInternal.texture;
+    compositeUniforms['color']!.value = this.aoColor.copy(configuration.color).convertSRGBToLinear();
+    compositeUniforms['colorMultiply']!.value = configuration.colorMultiply;
+    compositeUniforms['cameraPos']!.value = this.cameraPosition;
+    compositeUniforms['fog']!.value = this.scene.fog !== null;
     if (this.scene.fog instanceof Fog) {
-      setUniforms(this.effectCompositerQuad, {
-        fogExp: false,
-        fogNear: this.scene.fog.near,
-        fogFar: this.scene.fog.far,
-      });
+      compositeUniforms['fogExp']!.value = false;
+      compositeUniforms['fogNear']!.value = this.scene.fog.near;
+      compositeUniforms['fogFar']!.value = this.scene.fog.far;
     } else if (this.scene.fog instanceof FogExp2) {
-      setUniforms(this.effectCompositerQuad, { fogExp: true, fogDensity: this.scene.fog.density });
+      compositeUniforms['fogExp']!.value = true;
+      compositeUniforms['fogDensity']!.value = this.scene.fog.density;
     }
     renderer.setRenderTarget(this.outputTargetInternal);
     this.effectCompositerQuad.render(renderer);
