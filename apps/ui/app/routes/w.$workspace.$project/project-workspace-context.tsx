@@ -17,6 +17,7 @@ import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useLocation } from 'react-router';
 import { useSelector } from '@xstate/react';
 import type { WorkbenchLayoutController } from '#routes/w.$workspace.$project/workbench-layout-controller.js';
+import { workbenchPaths } from '@taucad/workbench';
 import type { WorkbenchLaneNode } from '@taucad/workbench';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { ProjectTasksProvider } from '#hooks/use-project-tasks.js';
@@ -172,7 +173,7 @@ export function ProjectWorkspaceProvider({
   readonly workbenchMode?: 'responsive' | 'pane';
   readonly onWorkbenchOpen?: () => void;
 }): React.JSX.Element {
-  const { editorRef, mainEntryPath, projectId } = useProject();
+  const { appliedWorkbenchRevisions, editorRef, mainEntryPath, projectId } = useProject();
   const providerActiveRef = useRef(true);
   const recordRecoveryFocusRef = useRef<HTMLButtonElement>(null);
   const pendingRecordRecoveryFocus = useRef(false);
@@ -250,6 +251,7 @@ export function ProjectWorkspaceProvider({
   const layoutController = useMemo<WorkbenchLayoutController>(
     () => ({
       snapshot: () => layoutControllerRef.current?.snapshot(),
+      isReady: () => layoutControllerRef.current?.isReady() ?? false,
       subscribe: (listener) => {
         layoutListenersRef.current.add(listener);
         return () => {
@@ -266,7 +268,11 @@ export function ProjectWorkspaceProvider({
     [],
   );
   const hasLayoutController = useCallback(() => layoutControllerRef.current !== undefined, []);
-  const isLayoutControllerReady = useSyncExternalStore(layoutController.subscribe, hasLayoutController, () => false);
+  const isLayoutControllerReady = useSyncExternalStore(
+    layoutController.subscribe,
+    layoutController.isReady,
+    () => false,
+  );
   const registerLayoutController = useCallback((controller: WorkbenchLayoutController) => {
     layoutControllerRef.current = controller;
     const unsubscribe = controller.subscribe(() => {
@@ -356,7 +362,12 @@ export function ProjectWorkspaceProvider({
         return;
       }
       setWorkbenchOpen(true);
-      if (openerRef.current) {
+      const layout = layoutController.snapshot();
+      const isLayoutApplied =
+        layout?.layoutDigest !== undefined &&
+        layout.layoutDigest !== 'missing' &&
+        appliedWorkbenchRevisions.get(workbenchPaths.layout) === layout.layoutDigest;
+      if (openerRef.current && (panelId === 'files' || !hasLayoutController() || isLayoutApplied)) {
         openerRef.current(panelId);
       } else if (panelId === 'files') {
         pendingFilesRef.current = routeKey;
@@ -364,7 +375,17 @@ export function ProjectWorkspaceProvider({
         layoutController.personWorkbenchChanged((node) => addPane(node, panelId));
       }
     },
-    [editorRef, isMobile, layoutController, setWorkbenchOpen, routeKey, workbenchMode, onWorkbenchOpen],
+    [
+      appliedWorkbenchRevisions,
+      editorRef,
+      hasLayoutController,
+      isMobile,
+      layoutController,
+      setWorkbenchOpen,
+      routeKey,
+      workbenchMode,
+      onWorkbenchOpen,
+    ],
   );
 
   const connectWorkbench = useCallback(
