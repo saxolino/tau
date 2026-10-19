@@ -112,6 +112,8 @@ export const shaderSites = [
   {
     id: 'webgpu-post',
     modules: ['packages/viewer/src/graphics/three/post-processing-webgpu.tsx'],
+    // Pure graph helpers share this site's contract without owning a material/pass.
+    helpers: ['packages/viewer/src/graphics/three/ao-denoise.ts'],
     authoring: ['tsl', 'render-pipeline'],
     backends: ['webgpu'],
     risks: ['camera', 'depth', 'lifecycle', 'hot-path', 'private-api', 'upstream-drift'],
@@ -403,7 +405,24 @@ export const shaderEvidence = {
       'restores the selected scene-pass depth with one direct fullscreen draw',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ),
+    'generated-source': [
+      'packages/viewer/src/graphics/three/ao-denoise.test.ts::should preserve the deterministic depth and normal filter graph',
+      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile AO rejection without promoting view-space distances to vec4',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
+    ],
+    pixels: [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
+    ],
+    'backend-differential': [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
+    ],
+    'real-compile': [
+      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile AO rejection without promoting view-space distances to vec4',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
+    ],
     reference: [
+      'packages/viewer/src/graphics/three/utils/spatial.utils.test.ts::uses the actual orthographic span',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should tone-map the scene once in linear light and leave the sRGB encode to the output pass',
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],

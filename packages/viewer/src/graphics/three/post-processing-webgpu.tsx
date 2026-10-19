@@ -24,6 +24,7 @@ import {
 } from 'three/tsl';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
+import { createAoDenoise } from '#graphics/three/ao-denoise.js';
 import { HalfFloatType, LinearSRGBColorSpace, SRGBColorSpace, Vector3 } from 'three';
 import type { Camera, Texture, ToneMapping, WebGLRenderTarget } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -42,6 +43,7 @@ type PostProcessingPipelineResources = Readonly<{
   outputQuad?: QuadMesh;
   outputQuadWithoutAo: QuadMesh;
   aoNode?: ReturnType<typeof ao>;
+  denoiseNode?: ReturnType<typeof createAoDenoise>;
   antialiasInput?: ReturnType<typeof rtt>;
   depthRestore: QuadMesh;
   depthRestoreMaterial: NodeMaterial;
@@ -107,6 +109,9 @@ const updateGtaoSpatialScale = ({
     if (resource.aoNode) {
       resource.aoNode.radius.value = radius;
       resource.aoNode.thickness.value = radius * gtaoThicknessToRadiusRatio;
+      if (resource.denoiseNode) {
+        resource.denoiseNode.depthPhi.value = radius * 0.1;
+      }
     }
   }
 };
@@ -171,6 +176,7 @@ const createPipelineResources = ({
 }): PostProcessingPipelineResources => {
   const scenePass = pass(scene, camera);
   let aoNode: ReturnType<typeof ao> | undefined;
+  let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
   let antialiasInput: ReturnType<typeof rtt> | undefined;
   let outputQuad: QuadMesh | undefined;
   let outputQuadWithoutAo: QuadMesh | undefined;
@@ -232,8 +238,17 @@ const createPipelineResources = ({
     aoNode.distanceFallOff.value = defaultPostProcessingSettings.gtaoDistanceFalloff;
 
     const aoTexture = aoNode.getTextureNode();
+    // GTAO is a stochastic estimate, not a finished visibility image. FXAA cannot
+    // remove its interior noise. Filter with the same forward depth/camera pair,
+    // reusing the scene MRT instead of rasterising geometry again.
+    denoiseNode = createAoDenoise({
+      texture: aoTexture,
+      depth: aoDepth,
+      normal: scenePassNormal,
+      camera: aoCamera.camera as Camera,
+    });
     /* oxlint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access -- TSL fluent builder (`.mul`, `.sample`) is typed as `any` in `@types/three`; the runtime shape is verified via the unit + snapshot tests. */
-    const aoFactor = aoTexture.sample(screenUV).r;
+    const aoFactor = denoiseNode.visibility(screenUV);
     const visibility = select<'float'>(displayMode.equal(2), float(1), aoFactor);
     const beforeTone = select<'float'>(compositeStage.equal(0), visibility, float(1));
     const afterTone = select<'float'>(compositeStage.equal(1), visibility, float(1));
@@ -261,6 +276,7 @@ const createPipelineResources = ({
       outputQuad,
       outputQuadWithoutAo,
       aoNode,
+      denoiseNode,
       antialiasInput,
       depthRestore,
       depthRestoreMaterial,
@@ -334,6 +350,10 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
     (selected: PostProcessingPipelineResources): void => {
       if (!selected.aoNode) {
         return;
+      }
+      if (selected.denoiseNode) {
+        // Keep the reconstruction footprint in CSS pixels at every DPR.
+        selected.denoiseNode.step.value.set(3 / size.width, 3 / size.height);
       }
       selected.aoNode.scale.value = gtaoIntensity;
       selected.aoNode.distanceFallOff.value = gtaoDistanceFalloff;

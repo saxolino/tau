@@ -185,6 +185,11 @@ const mocks = vi.hoisted(() => {
   });
 
   return {
+    denoise: vi.fn(() => ({
+      visibility: vi.fn(() => ({ kind: 'denoised-ao-r' })),
+      step: { value: { set: vi.fn() } },
+      depthPhi: { value: 1 },
+    })),
     ao,
     aoDispose,
     noiseDispose,
@@ -267,6 +272,7 @@ vi.mock('#graphics/three/scene-overlay.jsx', () => ({
 
 vi.mock('three/addons/tsl/display/FXAANode.js', () => ({ fxaa: mocks.fxaa }));
 vi.mock('three/addons/tsl/display/GTAONode.js', () => ({ ao: mocks.ao }));
+vi.mock('#graphics/three/ao-denoise.js', () => ({ createAoDenoise: mocks.denoise }));
 vi.mock('#graphics/three/gtao-depth-camera.js', () => ({
   createGtaoCameraAdapter: mocks.createGtaoCameraAdapter,
 }));
@@ -359,6 +365,7 @@ const isBeautyOnly = ({ material }: { material: { fragmentNode?: unknown } }): b
 describe('PostProcessingWebGPU active endpoint pipeline', () => {
   beforeEach(() => {
     mocks.ao.mockClear();
+    mocks.denoise.mockClear();
     mocks.aoDispose.mockClear();
     mocks.noiseDispose.mockClear();
     mocks.aoNodes.length = 0;
@@ -397,11 +404,32 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.setRenderTarget.mockClear();
   });
 
+  it('should denoise contact visibility before compositing without allocating another noise texture', async () => {
+    const mounted = await mount();
+    expect(mocks.denoise).toHaveBeenCalledOnce();
+    expect(mocks.denoise).toHaveBeenCalledWith({
+      texture: mocks.aoTexture,
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- Vitest asymmetric matcher.
+      depth: expect.anything(),
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- Vitest asymmetric matcher.
+      normal: expect.anything(),
+      camera: mocks.perspectiveCamera,
+    });
+    const composed = mocks.outputQuads.find((quad) => !isBeautyOnly(quad));
+    expect(composed?.material.fragmentNode).toMatchObject({
+      aoOnly: [{ kind: 'denoised-ao-r' }, { kind: 'scene-alpha' }],
+    });
+    expect(mocks.denoise.mock.results[0]!.value.step.value.set).toHaveBeenCalledWith(3 / 1500, 3 / 1000);
+    mounted.unmount();
+    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
+  });
+
   it('should prepare only the active beauty endpoint when AO is disabled', async () => {
     await mount({ aoAllowed: false });
     expect(mocks.pass).toHaveBeenCalledTimes(1);
     expect(mocks.pass).toHaveBeenCalledWith(mocks.scene, mocks.perspectiveCamera);
     expect(mocks.ao).not.toHaveBeenCalled();
+    expect(mocks.denoise).not.toHaveBeenCalled();
     expect(mocks.scenePasses[0]!.setMRT).not.toHaveBeenCalled();
     expect(mocks.compileAsync).not.toHaveBeenCalled();
     expect(mocks.glRender).not.toHaveBeenCalled();
@@ -480,7 +508,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const composed = mocks.outputQuads.find((quad) => !isBeautyOnly(quad));
     expect(composed?.material.fragmentNode).toMatchObject({
       beauty: { kind: 'display-composed-color', color: { kind: 'composed-color' } },
-      aoOnly: [{ kind: 'ao-r' }, { kind: 'scene-alpha' }],
+      aoOnly: [{ kind: 'denoised-ao-r' }, { kind: 'scene-alpha' }],
     });
     expect(mocks.scenePasses[0]!.setMRT).toHaveBeenCalledWith({
       output: { kind: 'output' },
