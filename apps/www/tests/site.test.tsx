@@ -128,6 +128,9 @@ test('should serve the agent page as plain-text Markdown naming the configured o
     expect(text).toMatch(/^- \[.+\]\(https:\/\/.+\)/mu);
     expect(text).toContain('    npm install -g @taucad/cli@beta\n');
     expect(text).not.toMatch(/\{(?:origin|release)\}|\n\n\n/u);
+    expect(text).not.toContain('Current release');
+    vi.stubEnv('WWW_PLUGIN_VERSION', '0.1.0-beta.7');
+    expect(await llms().text()).toContain('\n\nCurrent release: 0.1.0-beta.7 (npm tag `beta`).\n\n## Install');
   } finally {
     vi.unstubAllEnvs();
   }
@@ -213,6 +216,10 @@ test('should render download CTAs and every archive before JavaScript', () => {
   expect(heroLink).toContain('href="/download/"');
   expect(heroLink).toContain('data-host-download="page"');
   expect(html).toContain('Download Tau');
+  const agentPrompt = /<div class="agent-prompt">.*?<\/div>/u.exec(html)?.[0];
+  expect(agentPrompt).toContain('Install the Tau plugin from https://tau.new/llms.txt</code>');
+  expect(agentPrompt).toMatch(/<button[^>]*type="button"[^>]*data-placement="hero-agent"[^>]*hidden=""/u);
+  expect(agentPrompt).toContain('role="status"');
   const downloads = renderToStaticMarkup(<MemoryRouter>{download()}</MemoryRouter>);
   for (const platform of ['mac', 'macIntel', 'windows', 'linux'] as const) {
     expect(downloads).toContain(desktopDownloadHref(platform));
