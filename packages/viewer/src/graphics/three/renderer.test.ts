@@ -33,6 +33,7 @@ vi.mock('three/webgpu', async (importOriginal) => {
   class WebGPURendererStub {
     public readonly setTransparentSort = vi.fn();
     public readonly setOpaqueSort = vi.fn();
+    public readonly setRenderObjectFunction = vi.fn();
     public readonly backend = new actual.WebGPUBackend();
     public readonly dispose = vi.fn();
     public get coordinateSystem() {
@@ -69,6 +70,7 @@ vi.mock('three', async (importOriginal) => {
   class WebGLRendererStub {
     public readonly setTransparentSort = vi.fn();
     public readonly setOpaqueSort = vi.fn();
+    public readonly setRenderObjectFunction = vi.fn();
     public readonly domElement: HTMLCanvasElement;
     // oxlint-disable-next-line @typescript-eslint/parameter-properties -- `erasableSyntaxOnly` forbids constructor parameter properties in Vitest specs
     public readonly parameters: { canvas: HTMLCanvasElement };

@@ -311,11 +311,19 @@ export const shaderEvidence = {
       `${sectionStencilCapsBrowser}::should spend main-thread time on pieces and meshes, not triangles`,
     ],
   },
-  'surface-depth-bias': evidence(
-    'packages/viewer/src/graphics/three/materials/gltf-surface-depth-bias.test.ts',
-    'fails compilation when the expected log-depth chunk is absent or duplicated',
-    'packages/viewer/src/graphics/three/materials/gltf-surface-depth-bias.test.ts::also separates orthographic surfaces when the renderer writes fragment depth',
-  ),
+  'surface-depth-bias': {
+    ...evidence(
+      'packages/viewer/src/graphics/three/materials/gltf-surface-depth-bias.test.ts',
+      'fails compilation when the expected log-depth chunk is absent or duplicated',
+      'packages/viewer/src/graphics/three/materials/gltf-surface-depth-bias.test.ts::also separates orthographic surfaces when the renderer writes fragment depth',
+    ),
+    reference: [
+      'packages/viewer/src/graphics/three/materials/gltf-surface-depth-bias.test.ts::sizes node surface separation to actual DPR and reversed depth',
+    ],
+    pixels: [
+      'packages/viewer/src/graphics/three/materials/gltf-edge-end-bleed.browser.test.ts::should keep a hidden edge that ends on a face boundary behind that face',
+    ],
+  },
   'section-clip': {
     ...evidence(sectionClipUnit, 'should remove what the cut model removes for'),
     reference: [

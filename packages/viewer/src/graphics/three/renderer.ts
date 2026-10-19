@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { WebGPUBackend, WebGPURenderer as ThreeWebGPURenderer } from 'three/webgpu';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import { reversedDepthTransparentSort } from '#graphics/three/reversed-depth-transparent-sort.js';
+import { syncGltfSurfaceDepthBias } from '#graphics/three/materials/gltf-surface-depth-bias.js';
 import { WebGpuInitializationError } from '#graphics/three/webgpu-initialization-error.js';
 
 /**
@@ -184,6 +185,13 @@ export async function createRenderer(
     }
 
     if (useCase === 'viewport') {
+      // NodeRenderer does not invoke Material.onBeforeRender. Use its supported
+      // draw callback for renderer-dependent surface bias, without per-draw arrays.
+      renderer.setRenderObjectFunction((object, scene, camera, geometry, material, group, lights, clipping, passId) => {
+        syncGltfSurfaceDepthBias.call(material, renderer);
+        renderer.renderObject(object, scene, camera, geometry, material, group, lights, clipping, passId);
+      });
+
       // Compensates for `reversedDepthBuffer: true` flipping clip-space Z direction:
       // upstream `reversePainterSortStable` (`node_modules/three/src/renderers/common/RenderList.js`)
       // assumes "larger clip-z = farther", which is INVERTED under reversed-Z and silently sorts
