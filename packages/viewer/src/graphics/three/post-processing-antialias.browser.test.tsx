@@ -3,8 +3,8 @@ import { cleanup, render } from '@testing-library/react';
 import { useMemo } from 'react';
 import { createPortal, useFrame, useThree } from '@react-three/fiber';
 import type { RootState } from '@react-three/fiber';
-import { DataTexture, NearestFilter, RGBAFormat, Scene } from 'three';
-import { WebGPUBackend, WebGLBackend } from 'three/webgpu';
+import { BoxGeometry, DataTexture, DoubleSide, Mesh, MeshBasicMaterial, NearestFilter, RGBAFormat, Scene } from 'three';
+import { WebGPUBackend, WebGLBackend, WebGPURenderer } from 'three/webgpu';
 import { createActor, createAsyncLogic } from 'xstate';
 import { afterEach, expect, inject, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
@@ -13,6 +13,11 @@ import { GraphicsProvider } from '#hooks/use-graphics.jsx';
 import { graphicsMachine } from '#machines/graphics.machine.js';
 import { ThreeCanvasInstance } from '#graphics/three/three-canvas-instance.jsx';
 import { isViewportWebGpu } from '#graphics/three/viewport-cad-renderer.js';
+import { syncGltfSurfaceDepthBias } from '#graphics/three/materials/gltf-surface-depth-bias.js';
+import { resolveSectionPieces } from '#graphics/section-cuts.js';
+import { writeSectionClip } from '#graphics/three/materials/section-clip.js';
+import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
+import { createSectionStencilCaps } from '#graphics/three/utils/section-stencil-caps.js';
 import type * as rendererModule from '#graphics/three/renderer.js';
 import {
   captureRendererOutput as captureInstalledRendererOutput,
@@ -49,7 +54,21 @@ vi.mock('#graphics/three/renderer.js', async (importOriginal) => {
     ...actual,
     createRenderer: async (...args: Parameters<typeof actual.createRenderer>) => {
       if (referenceMode.forceNodeWebGl2) {
-        return actual.createRenderer('showcase', 'webgl', args[2]);
+        const target = args[2];
+        const renderer = new WebGPURenderer({
+          canvas: 'canvas' in target ? target.canvas : target,
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- Three constructor option.
+          forceWebGL: true,
+          antialias: true,
+          alpha: true,
+          stencil: true,
+        });
+        await renderer.init();
+        renderer.setRenderObjectFunction((...draw) => {
+          syncGltfSurfaceDepthBias.call(draw[4], renderer);
+          renderer.renderObject(...draw);
+        });
+        return renderer;
       }
       const renderer = await actual.createRenderer(...args);
       installRendererOutput(renderer, inject('webGpuProfile'));
@@ -663,5 +682,208 @@ it.each([1, 1.5, 2].flatMap((dpr) => [0x00_00_00, 0xff_d5_4a].map((color) => ({ 
       .flatMap((candidate) => results[0]!.map((value, index) => Math.abs(value - candidate[index]!)));
     expect(Math.min(...results.flat()), JSON.stringify(results)).toBeGreaterThan(0.05);
     expect(Math.max(...differences), JSON.stringify({ dpr, results, differences })).toBeLessThanOrEqual(0.1);
+  },
+);
+
+it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((side) => ({ execution, side }))))(
+  'should occlude grid and hidden outlines through actual stencil caps: $execution side $side',
+  async ({ execution, side }) => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    await page.viewport(400, 400);
+    referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+    const backend = execution === 'webgl' ? 'webgl' : 'webgpu';
+    const actor = createActor(
+      graphicsMachine.provide({
+        actors: {
+          probeWebGpu: createAsyncLogic({ run: async () => backend === 'webgpu' }),
+        },
+      }),
+      { input: { enablePostProcessing: true } },
+    ).start();
+    const geometry = new BoxGeometry(2, 2, 2);
+    const material = new MeshBasicMaterial({ color: 'blue', side: DoubleSide, toneMapped: false });
+    const surface = new Mesh(geometry, material);
+    const pieces = resolveSectionPieces([{ id: 'cut', kind: 'plane', plane: 'xy', offset: 0, isFlipped: false }]);
+    const caps = createSectionStencilCaps(backend);
+    let state: RootState | undefined;
+    let pending: Promise<void> | undefined;
+    let pixels: Uint8ClampedArray | undefined;
+    let beforeGrid: Uint8ClampedArray | undefined;
+    let beforeCaps: Uint8ClampedArray | undefined;
+    let capsEnabled = side === 1;
+    let grid: Mesh | undefined;
+    let captureError: Error | undefined;
+    let frame = 0;
+    let captured = 0;
+    let retired = false;
+    const Cap = (): undefined => {
+      const clip = useSectionClip();
+      useFrame(() => {
+        writeSectionClip(clip, pieces);
+      }, 0.5);
+      const restoreDepth = useOverlayDepthRestorer();
+      useFrame(({ gl, camera }) => {
+        if (!capsEnabled) {
+          return;
+        }
+        restoreDepth();
+        caps.render(gl, {
+          camera,
+          pieces,
+          sources: [{ key: 'box', ownerKey: 'box', meshes: [surface], tintHex: 0xff_00_00, edgeHex: 0xff_ff_00 }],
+          stripes: { stripeFrequency: 1e6, stripeWidth: 0 },
+          outlineWidthPixels: 1.5,
+          viewportHeightPixels: 128,
+        });
+      }, 1.2);
+      return undefined;
+    };
+    const measure = async (current: RootState): Promise<void> => {
+      const requestedFrame = frame;
+      try {
+        pixels = await captureRendererOutput(current.gl);
+        captured = requestedFrame;
+        if (captured >= 4 && !beforeCaps) {
+          beforeCaps = pixels;
+          capsEnabled = true;
+        }
+        if (captured >= 8 && !beforeGrid && grid) {
+          beforeGrid = pixels;
+          grid.visible = true;
+        }
+      } catch (error) {
+        captureError = error instanceof Error ? error : new Error('Renderer capture failed', { cause: error });
+      } finally {
+        pending = undefined;
+      }
+    };
+    const Probe = (): undefined => {
+      state = useThree();
+      useFrame((current) => {
+        frame++;
+        if (!pending && !retired) {
+          pending = measure(current);
+        }
+      }, 4);
+      return undefined;
+    };
+    try {
+      render(
+        <div style={{ width: 128, height: 128 }}>
+          <GraphicsProvider
+            graphicsRef={actor}
+            seed={{
+              camera: {
+                cameraFovAngle: 0,
+                cameraView: {
+                  frameId: 'tau:root',
+                  target: [0, 0, 0],
+                  direction: [0.4, 0, side],
+                  up: [0, 1, 0],
+                  verticalSpan: 4,
+                  perspectiveZoom: 1,
+                },
+              },
+            }}
+          >
+            <ThreeCanvasInstance
+              graphicsBackend={backend}
+              upDirection='y'
+              onRetry={() => undefined}
+              postProcessingSettings={{ intensity: 0, gtaoIntensity: 0, toneMapping: 'none' }}
+            >
+              <primitive object={surface} />
+              <mesh visible={side === -1} position={[0, 0, -1.5]}>
+                <boxGeometry args={[2.4, 2.4, 0.1]} />
+                <meshBasicMaterial color='magenta' toneMapped={false} />
+              </mesh>
+              <Cap />
+              <SceneOverlay overlayActive>
+                <mesh
+                  ref={(node) => {
+                    grid = node ?? undefined;
+                  }}
+                  visible={false}
+                  position={[0, 0, -0.25]}
+                >
+                  <planeGeometry args={[4, 4]} />
+                  <meshBasicMaterial color='lime' side={DoubleSide} toneMapped={false} />
+                </mesh>
+              </SceneOverlay>
+              <Probe />
+            </ThreeCanvasInstance>
+          </GraphicsProvider>
+        </div>,
+      );
+      await vi.waitFor(
+        () => {
+          if (!pending && captured < 12) {
+            state?.advance(performance.now(), true);
+          }
+          if (captureError) {
+            throw captureError;
+          }
+          expect(captured).toBeGreaterThanOrEqual(12);
+        },
+        { timeout: 45_000 },
+      );
+      retired = true;
+      await pending;
+      if (isViewportWebGpu(state!.gl)) {
+        expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+      }
+      // The cut-facing view is red; the back-facing cut is hidden by a magenta
+      // opaque occluder. Neither
+      // may contain the later green grid or a yellow hidden cap outline. Compare
+      // before/after adding the grid so the existing striped tint is preserved.
+      for (let y = 38; y < 90; y++) {
+        for (let x = 48; x < 80; x++) {
+          const offset = (y * 128 + x) * 4;
+          const actual = [...pixels!.subarray(offset, offset + 3)];
+          expect(actual, `${execution}, side ${side}, ${x},${y}`).toEqual([
+            ...beforeGrid!.subarray(offset, offset + 3),
+          ]);
+          if (side === 1) {
+            expect(actual[0]! - actual[1]!).toBeGreaterThan(100);
+            expect(Math.abs(actual[1]! - actual[2]!)).toBeLessThanOrEqual(1);
+          } else {
+            expect(actual).toEqual([255, 0, 255]);
+          }
+        }
+      }
+      if (side === -1) {
+        const isOccluderInterior = (x: number, y: number): boolean =>
+          [-2, 0, 2].every((dy) =>
+            [-2, 0, 2].every((dx) => {
+              const offset = ((y + dy) * 128 + x + dx) * 4;
+              return beforeCaps![offset] === 255 && beforeCaps![offset + 1] === 0 && beforeCaps![offset + 2] === 255;
+            }),
+          );
+        let checked = 0;
+        for (let y = 38; y < 90; y++) {
+          for (let x = 8; x < 120; x++) {
+            if (!isOccluderInterior(x, y)) {
+              continue;
+            }
+            const offset = (y * 128 + x) * 4;
+            expect([...beforeGrid!.subarray(offset, offset + 3)], `hidden outline at ${x},${y}`).toEqual([255, 0, 255]);
+            checked++;
+          }
+        }
+        expect(checked).toBeGreaterThan(1000);
+      }
+      expect([...pixels!.subarray((64 * 128 + 20) * 4, (64 * 128 + 20) * 4 + 3)]).toEqual([0, 255, 0]);
+    } finally {
+      retired = true;
+      await pending;
+      if (state) {
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
+      actor.stop();
+      caps.dispose();
+      material.dispose();
+      geometry.dispose();
+    }
   },
 );

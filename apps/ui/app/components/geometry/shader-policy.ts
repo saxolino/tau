@@ -270,6 +270,7 @@ export const shaderEvidence = {
     pixels: [`${sectionStencilCapsBrowser}::should cap each owner where its solids hold the cut, and nowhere else`],
     'depth-clipping': [
       `${sectionStencilCapsBrowser}::should cap each owner where its solids hold the cut, and nowhere else`,
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
     ],
     lifecycle: [
       `${sectionStencilCapsUnit}::should reuse its pooled draws frame after frame, and let go of a source that left`,
@@ -289,6 +290,7 @@ export const shaderEvidence = {
     ],
     pixels: [
       `${sectionStencilCapsBrowser}::should cap each owner where its solids hold the cut, and nowhere else`,
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       `${sectionStencilCapsBrowser}::should show overlap on exactly the pixels where two owners overlap`,
       `${sectionStencilCapsBrowser}::should outline the cut edges, beside the caps`,
       `${sectionStencilCapsBrowser}::should draw an unbroken line along every visible cut edge`,
@@ -299,6 +301,7 @@ export const shaderEvidence = {
     ],
     'depth-clipping': [
       `${sectionStencilCapsBrowser}::should cap each owner where its solids hold the cut, and nowhere else`,
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       `${sectionStencilCapsUnit}::should cap with the shared surface depth bias and the cap stencil test`,
     ],
     lifecycle: [
