@@ -114,7 +114,7 @@ export const shaderSites = [
     modules: ['packages/viewer/src/graphics/three/post-processing-webgpu.tsx'],
     authoring: ['tsl', 'render-pipeline'],
     backends: ['webgpu'],
-    risks: ['camera', 'depth', 'lifecycle', 'hot-path'],
+    risks: ['camera', 'depth', 'lifecycle', 'hot-path', 'private-api', 'upstream-drift'],
   },
   {
     id: 'model-emphasis-silhouette',
@@ -398,6 +398,9 @@ export const shaderEvidence = {
     ],
   },
   'webgpu-post': {
+    'generated-source': [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
+    ],
     ...evidence(
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx',
       'restores the selected scene-pass depth with one direct fullscreen draw',

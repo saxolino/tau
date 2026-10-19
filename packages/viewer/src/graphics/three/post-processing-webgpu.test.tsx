@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { act, render } from '@testing-library/react';
 import { useLayoutEffect } from 'react';
 import { HalfFloatType, NeutralToneMapping } from 'three';
@@ -15,6 +18,7 @@ type MockAoNode = {
   scale: { value: number };
   getTextureNode: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  _noiseNode: { value: { dispose: ReturnType<typeof vi.fn> } };
 };
 
 const mocks = vi.hoisted(() => {
@@ -103,6 +107,7 @@ const mocks = vi.hoisted(() => {
   const postDispose = vi.fn();
   const antialiasDispose = vi.fn();
   const aoDispose = vi.fn();
+  const noiseDispose = vi.fn();
 
   const depthNode = { kind: 'depth', sample: vi.fn(() => ({ kind: 'sampled-depth' })) };
   const normalNode = { sample: vi.fn(() => ({ kind: 'normal-sample' })) };
@@ -173,6 +178,7 @@ const mocks = vi.hoisted(() => {
       scale: { value: 0 },
       getTextureNode: vi.fn(() => aoTexture),
       dispose: aoDispose,
+      _noiseNode: { value: { dispose: noiseDispose } },
     };
     aoNodes.push(node);
     return node;
@@ -181,6 +187,7 @@ const mocks = vi.hoisted(() => {
   return {
     ao,
     aoDispose,
+    noiseDispose,
     aoNodes,
     aoTexture,
     clearDepth,
@@ -190,6 +197,7 @@ const mocks = vi.hoisted(() => {
     createGtaoCameraAdapter,
     depthNode,
     displayUniforms,
+    fxaa: vi.fn((value: unknown) => value),
     getFrame: () => frame,
     getCurrentViewport,
     getRetarget: () => retarget,
@@ -206,6 +214,8 @@ const mocks = vi.hoisted(() => {
     prewarm,
     postDispose,
     antialiasDispose,
+    antialiasTargetDispose: vi.fn(),
+    antialiasMaterialDispose: vi.fn(),
     antialiasTargetOptions: vi.fn(),
     rig,
     scene,
@@ -255,7 +265,7 @@ vi.mock('#graphics/three/scene-overlay.jsx', () => ({
   },
 }));
 
-vi.mock('three/addons/tsl/display/FXAANode.js', () => ({ fxaa: (value: unknown) => value }));
+vi.mock('three/addons/tsl/display/FXAANode.js', () => ({ fxaa: mocks.fxaa }));
 vi.mock('three/addons/tsl/display/GTAONode.js', () => ({ ao: mocks.ao }));
 vi.mock('#graphics/three/gtao-depth-camera.js', () => ({
   createGtaoCameraAdapter: mocks.createGtaoCameraAdapter,
@@ -267,7 +277,11 @@ vi.mock('three/tsl', () => ({
   // oxlint-disable-next-line eslint/max-params -- Match the native RTT factory signature.
   rtt: (value: Record<string, unknown>, width: unknown, height: unknown, options: unknown) => {
     mocks.antialiasTargetOptions(width, height, options);
-    return Object.assign(value, { dispose: mocks.antialiasDispose });
+    return Object.assign(value, {
+      dispose: mocks.antialiasDispose,
+      renderTarget: { dispose: mocks.antialiasTargetDispose },
+      _quadMesh: { material: { dispose: mocks.antialiasMaterialDispose } },
+    });
   },
   colorToDirection: vi.fn((value: unknown): unknown => value),
   directionToColor: vi.fn((value: unknown): unknown => value),
@@ -346,6 +360,7 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
   beforeEach(() => {
     mocks.ao.mockClear();
     mocks.aoDispose.mockClear();
+    mocks.noiseDispose.mockClear();
     mocks.aoNodes.length = 0;
     mocks.aoTexture.sample.mockClear();
     mocks.clearDepth.mockClear();
@@ -369,6 +384,8 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     mocks.rendererState.target = { kind: 'prior-target' };
     mocks.postDispose.mockClear();
     mocks.antialiasDispose.mockClear();
+    mocks.antialiasTargetDispose.mockClear();
+    mocks.antialiasMaterialDispose.mockClear();
     mocks.antialiasTargetOptions.mockClear();
     mocks.rig.activeCamera = mocks.perspectiveCamera;
     mocks.state.camera = mocks.perspectiveCamera;
@@ -494,6 +511,9 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     expect(mocks.aoNodes).toHaveLength(1);
     mounted.rerender(<PostProcessingWebGpu {...endpointProperties} settings={{ displayMode: 'no-ao' }} />);
     expect(mocks.aoDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledOnce();
+    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.aoNodes).toHaveLength(1);
     expect(mocks.scenePasses[2]!.setMRT).not.toHaveBeenCalled();
     mocks.getFrame()?.(mocks.state, 0);
@@ -506,6 +526,18 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     expect(mocks.renderOutput).toHaveBeenCalledWith(mocks.colorNode, NeutralToneMapping, 'srgb-linear');
   });
 
+  it('should guard the upstream implementations whose owned resources require explicit disposal', () => {
+    const require = createRequire(import.meta.url);
+    const source = readFileSync(require.resolve('three/src/nodes/utils/RTTNode.js'), 'utf8');
+    expect(createHash('sha256').update(source).digest('hex')).toBe(
+      'f87704938524dc419b91d9dd29c89d53272c78819d17537780a1c3b7e42c921b',
+    );
+    const aoSource = readFileSync(require.resolve('three/addons/tsl/display/GTAONode.js'), 'utf8');
+    expect(createHash('sha256').update(aoSource).digest('hex')).toBe(
+      '2786bf04e0a166e11d18153f0e26776792701c2294b9b1a9fb93ced6a22f148c',
+    );
+  });
+
   it('should dispose every demanded endpoint once on unmount', async () => {
     const mounted = await mount();
     act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
@@ -516,6 +548,9 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     }
     expect(mocks.aoDispose).toHaveBeenCalledTimes(2);
     expect(mocks.antialiasDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.noiseDispose).toHaveBeenCalledTimes(2);
     expect(mocks.postDispose).toHaveBeenCalledTimes(4);
   });
 
@@ -529,6 +564,22 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     expect(mocks.postDispose).toHaveBeenCalledOnce();
     mounted.unmount();
     expect(mocks.scenePasses[0]!.dispose).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it('should release allocated AO and RTT resources when FXAA construction fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mocks.fxaa.mockImplementationOnce(() => {
+      throw new Error('FXAA failed');
+    });
+    const mounted = await mount();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledOnce();
+    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
+    expect(mocks.aoDispose).toHaveBeenCalledOnce();
+    expect(mocks.scenePasses[0]!.dispose).toHaveBeenCalledOnce();
+    mounted.unmount();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
     error.mockRestore();
   });
 

@@ -25,7 +25,7 @@ import {
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { HalfFloatType, LinearSRGBColorSpace, SRGBColorSpace, Vector3 } from 'three';
-import type { Camera, ToneMapping, WebGLRenderTarget } from 'three';
+import type { Camera, Texture, ToneMapping, WebGLRenderTarget } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { CameraDriverSnapshot } from '@taucad/camera/machine';
 import type { ThreeCamera } from '@taucad/three/camera';
@@ -117,6 +117,43 @@ const createOutputQuad = (fragmentNode: NodeMaterial['fragmentNode']): QuadMesh 
   material.depthTest = false;
   material.depthWrite = false;
   return new QuadMesh(material);
+};
+
+/**
+ * Release the RTT resources omitted by Three r184's inherited Node.dispose.
+ * @param input - Owned FXAA intermediate, if this graph includes AO.
+ */
+const disposeAntialiasInput = (input: ReturnType<typeof rtt> | undefined): void => {
+  if (!input) {
+    return;
+  }
+  // Backport upstream RTTNode.dispose (Three 0978e2b62). A source-hash test guards
+  // this private seam; remove the backport when upgrading to the upstream fix.
+  // The quad geometry is shared by Three and must not be disposed here.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exact installed RTTNode source is fingerprinted in the adjacent test.
+  const owned = input as typeof input & {
+    _quadMesh: { material: NodeMaterial };
+  };
+  input.renderTarget?.dispose();
+  owned._quadMesh.material.dispose();
+  input.dispose();
+};
+
+/**
+ * Release the per-instance noise texture omitted by Three r184's GTAONode.dispose.
+ * @param node - Owned AO estimator, if this graph includes AO.
+ */
+const disposeAoNode = (node: ReturnType<typeof ao> | undefined): void => {
+  if (!node) {
+    return;
+  }
+  // Upstream now releases this texture. Keep borrowed depth/normal inputs alive.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exact installed GTAONode source is fingerprinted in the adjacent test.
+  const owned = node as typeof node & {
+    _noiseNode: { value: Texture };
+  };
+  owned._noiseNode.value.dispose();
+  node.dispose();
 };
 
 const createPipelineResources = ({
@@ -236,8 +273,8 @@ const createPipelineResources = ({
     depthRestoreMaterial?.dispose();
     (outputQuad?.material as NodeMaterial | undefined)?.dispose();
     (outputQuadWithoutAo?.material as NodeMaterial | undefined)?.dispose();
-    antialiasInput?.dispose();
-    aoNode?.dispose();
+    disposeAntialiasInput(antialiasInput);
+    disposeAoNode(aoNode);
     scenePass.dispose();
     throw error;
   }
@@ -247,8 +284,8 @@ const disposePipelineResources = (resources: readonly PostProcessingPipelineReso
   for (const resource of resources) {
     (resource.outputQuad?.material as NodeMaterial | undefined)?.dispose();
     (resource.outputQuadWithoutAo.material as NodeMaterial).dispose();
-    resource.antialiasInput?.dispose();
-    resource.aoNode?.dispose();
+    disposeAntialiasInput(resource.antialiasInput);
+    disposeAoNode(resource.aoNode);
     resource.depthRestoreMaterial.dispose();
     resource.scenePass.dispose();
   }
