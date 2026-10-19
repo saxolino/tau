@@ -76,3 +76,34 @@ node apps/ui/scripts/render-calibration/render-nano.mts \
 The CLI verifies fixture hashes, preserves all GLB bytes/materials/native edges, and saves white-background and transparent-mask PNGs plus complete option/adapter/timing metadata under `out/render-calibration/captures/nano`. Defaults are 1276×798, 1 px lines, installed studio lighting, canonical isometric orthographic camera, 0.1985 m span and the fixture bounds center. `--camera` accepts the harness capture JSON; only the supported fixed-camera fields are forwarded. `--span`, `--distance`, `--width`, `--height`, `--line-width`, `--output` and `--catalog` allow explicit aligned captures. `--profile` accepts a nanoraster lighting JSON, strictly validated by its public API; `--fixtures` is a comma-separated catalog ID list.
 
 The installed ESM runtime and types are resolved through the existing image-plugin dependency owner, without adding a UI dependency. API-only lighting experiments and the reproduced orthographic shading defect are documented in `docs/research/artifacts/onshape-viewer-lighting-profile/runs/pbr-calibration/nano-lane.md`. The tested candidate lost housing wall contrast on F7 and was rejected as a universal default; no profile is selected or applied by this CLI.
+
+### Performance ablation (calibration server only)
+
+The calibration Vite configuration applies guarded source experiments through
+`app/routes/[__e2e].onshape-render-profile/ablation-transform.ts`. Production configuration
+never installs them; no viewer API or product default changes. Restart the calibration
+server after editing that transform. Query parameters are fixed at page load:
+
+- `abl=full|direct|beauty|mrt|raw-ao|filtered-ao`: full graph; direct PBR draw; beauty/FXAA;
+  beauty/FXAA with normal MRT; raw GTAO with bilinear sampling; filtered GTAO with bilinear sampling.
+- `aa=off`: remove FXAA **and its input RTT dependency**.
+- `samples=0`: single-sample renderer; `sceneSamples=0|4`: independently set the scene target.
+- `nodegl=1`: force the node WebGL2 backend, preserving standard depth and reporting actual execution.
+- `edges=off`: omit BRep lines. `overlay=grid|axes|both`: enable only those overlays.
+- `depthRestore=off`: intentionally incorrect occlusion control; omit the later depth restore.
+- `overlayBlend=linear`: ordinary linear blending, omitting the sRGB viewport-copy compensation.
+- `view=close`: initial span request 0.09 m; full is 0.22 m.
+
+Example: `/calibration-preview.html?abl=full&view=close&overlay=both&sceneSamples=0`.
+Select the desired backend after loading; wait for readiness, then explicitly set the span
+(the initial auto-fit can override it). Verify the actual projection and drawing buffer in
+the completed report. For the 5K experiment use CSS 2560×1440, DPR 2, natural cadence and
+Benchmark combined. Save PNG + metadata only after timing finishes. Warmup is 30 frames,
+then 300 samples. Run matched repeats; never report capped cadence as exclusive GPU time.
+
+`mrt`, `raw-ao`, `filtered-ao` and `aa=off` remove graph dependencies, not merely their visible
+contribution. Draw counts and allocated target counts verify the intended execution. No-AA
+and raw/filtered controls intentionally change appearance. Reduced MSAA and linear overlay
+blending are experiments, not appearance-qualified replacements. Direct rendering still
+uses Tau's loaded meshes, materials, lighting and update owners; it is not a standalone
+Three.js application or a measurement of all Tau CPU overhead.

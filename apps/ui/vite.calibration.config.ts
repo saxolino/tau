@@ -7,6 +7,8 @@ import react from '@vitejs/plugin-react';
 import { z } from 'zod';
 // oxlint-disable-next-line eslint/no-restricted-imports -- Vite configuration lives outside the app alias root.
 import uiConfig from './vite.config.js';
+// oxlint-disable-next-line eslint/no-restricted-imports -- Calibration-only experiment; never enters product configuration.
+import { transformRenderingAblation } from './app/routes/[__e2e].onshape-render-profile/ablation-transform.js';
 // oxlint-disable-next-line eslint/no-restricted-imports -- Config shares the existing dev TLS identity; no implicit trust installation.
 import { httpsCertPemPath, httpsKeyPemPath } from './app/lib/certificates/https-certs-path.js';
 
@@ -28,6 +30,13 @@ export default defineConfig(() => {
     ...config,
     cacheDir: '../../node_modules/.vite/render-calibration',
     plugins: [
+      {
+        name: 'tau-render-ablation',
+        enforce: 'pre',
+        transform(source, id) {
+          return transformRenderingAblation(source, id);
+        },
+      },
       ...(config.plugins ?? []),
       react(),
       {
