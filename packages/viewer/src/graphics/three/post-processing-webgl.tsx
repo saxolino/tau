@@ -188,12 +188,15 @@ class CanvasDepthRestorePass extends Pass {
   /** Stamp this frame's depth into `target`, or the canvas when it is omitted. */
   public restore(renderer: WebGLRenderer, target?: WebGLRenderTarget): void {
     const previousTarget = renderer.getRenderTarget();
+    const previousAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
     renderer.setRenderTarget(target ?? null);
     try {
       // AlwaysDepth replaces every depth texel; clearing first repeats the same work.
       renderer.render(this.scene, this.camera);
     } finally {
       renderer.setRenderTarget(previousTarget);
+      renderer.autoClear = previousAutoClear;
     }
   }
 }

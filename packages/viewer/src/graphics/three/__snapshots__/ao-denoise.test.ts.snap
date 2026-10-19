@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`should preserve the deterministic depth and normal filter graph 1`] = `
+exports[`should preserve the deterministic depth and normal denoise graph 1`] = `
 "{
   "blendColor": 0,
   "inputNodes": {
@@ -30,6 +30,39 @@ exports[`should preserve the deterministic depth and normal filter graph 1`] = `
     },
     {
       "type": "ScreenNode"
+    }
+  ],
+  "type": "NodeMaterial"
+}
+"
+`;
+
+exports[`should preserve the deterministic depth and normal upsample graph 1`] = `
+"{
+  "blendColor": 0,
+  "inputNodes": {
+    "fragmentNode": "<nodeRef>"
+  },
+  "metadata": {
+    "generator": "Material.toJSON",
+    "type": "Material",
+    "version": 4.7
+  },
+  "nodes": [
+    {
+      "inputNodes": {
+        "node": "<nodeRef>"
+      },
+      "type": "VarNode"
+    },
+    {
+      "inputNodes": {
+        "shaderNode": "<nodeRef>"
+      },
+      "type": "Node"
+    },
+    {
+      "type": "Node"
     }
   ],
   "type": "NodeMaterial"

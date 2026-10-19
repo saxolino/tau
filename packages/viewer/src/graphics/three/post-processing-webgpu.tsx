@@ -4,7 +4,6 @@ import { NodeMaterial, QuadMesh, UnsignedByteType } from 'three/webgpu';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
   colorToDirection,
-  colorSpaceToWorking,
   directionToColor,
   float,
   mix,
@@ -20,12 +19,11 @@ import {
   uniform,
   vec3,
   vec4,
-  workingToColorSpace,
 } from 'three/tsl';
-import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
+import { createViewportFxaa } from '#graphics/three/fxaa.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { createAoDenoise } from '#graphics/three/ao-denoise.js';
-import { HalfFloatType, LinearSRGBColorSpace, SRGBColorSpace, Vector3 } from 'three';
+import { AlwaysDepth, WebGLCoordinateSystem, HalfFloatType, RedFormat, LinearSRGBColorSpace, Vector3 } from 'three';
 import type { Camera, Texture, ToneMapping, WebGLRenderTarget } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { CameraDriverSnapshot } from '@taucad/camera/machine';
@@ -40,11 +38,11 @@ import { createGtaoCameraAdapter } from '#graphics/three/gtao-depth-camera.js';
 
 type PostProcessingPipelineResources = Readonly<{
   camera: ThreeCamera;
-  outputQuad?: QuadMesh;
-  outputQuadWithoutAo: QuadMesh;
+  outputQuad: QuadMesh;
   aoNode?: ReturnType<typeof ao>;
   denoiseNode?: ReturnType<typeof createAoDenoise>;
   antialiasInput?: ReturnType<typeof rtt>;
+  denoiseInput?: ReturnType<typeof rtt>;
   depthRestore: QuadMesh;
   depthRestoreMaterial: NodeMaterial;
   scenePass: ReturnType<typeof pass>;
@@ -126,7 +124,7 @@ const createOutputQuad = (fragmentNode: NodeMaterial['fragmentNode']): QuadMesh 
 
 /**
  * Release the RTT resources omitted by Three r184's inherited Node.dispose.
- * @param input - Owned FXAA intermediate, if this graph includes AO.
+ * @param input - Owned color-only post-processing intermediate, if this graph includes AO.
  */
 const disposeAntialiasInput = (input: ReturnType<typeof rtt> | undefined): void => {
   if (!input) {
@@ -178,8 +176,8 @@ const createPipelineResources = ({
   let aoNode: ReturnType<typeof ao> | undefined;
   let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
   let antialiasInput: ReturnType<typeof rtt> | undefined;
+  let denoiseInput: ReturnType<typeof rtt> | undefined;
   let outputQuad: QuadMesh | undefined;
-  let outputQuadWithoutAo: QuadMesh | undefined;
   let depthRestoreMaterial: NodeMaterial | undefined;
   try {
     if (withAo) {
@@ -199,7 +197,11 @@ const createPipelineResources = ({
 
     depthRestoreMaterial = new NodeMaterial();
     depthRestoreMaterial.colorWrite = false;
-    depthRestoreMaterial.depthTest = false;
+    // GL suppresses writes when its depth test is disabled; enable AlwaysDepth there.
+    // Native GPU uses compare-always with depthTest=false, avoiding reversed-Z
+    // remapping of explicit AlwaysDepth in Three r184.
+    depthRestoreMaterial.depthTest = gpuRenderer.coordinateSystem === WebGLCoordinateSystem;
+    depthRestoreMaterial.depthFunc = AlwaysDepth;
     depthRestoreMaterial.depthWrite = true;
     /* oxlint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- TSL texture node fluent API */
     depthRestoreMaterial.depthNode = scenePassDepth.sample(screenUV);
@@ -207,11 +209,19 @@ const createPipelineResources = ({
 
     const displayMode = uniform(0);
     const compositeStage = uniform(0);
-    outputQuadWithoutAo = createOutputQuad(renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace));
+    const antialiasTargetOptions = { type: HalfFloatType, depthBuffer: false, stencilBuffer: false };
     if (!withAo) {
+      antialiasInput = rtt(
+        renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace),
+        null,
+        null,
+        antialiasTargetOptions,
+      );
+      outputQuad = createOutputQuad(createViewportFxaa(antialiasInput));
       return {
         camera,
-        outputQuadWithoutAo,
+        outputQuad,
+        antialiasInput,
         depthRestore,
         depthRestoreMaterial,
         scenePass,
@@ -248,7 +258,18 @@ const createPipelineResources = ({
       camera: aoCamera.camera as Camera,
     });
     /* oxlint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access -- TSL fluent builder (`.mul`, `.sample`) is typed as `any` in `@types/three`; the runtime shape is verified via the unit + snapshot tests. */
-    const aoFactor = denoiseNode.visibility(screenUV);
+    const denoiseTargetOptions = {
+      type: HalfFloatType,
+      format: RedFormat,
+      depthBuffer: false,
+      stencilBuffer: false,
+    };
+    denoiseInput = rtt(denoiseNode.visibility(screenUV), 1, 1, denoiseTargetOptions);
+    const aoFactor = select<'float'>(
+      aoNode.scale.greaterThan(0),
+      denoiseNode.upsample(denoiseInput, screenUV),
+      float(1),
+    );
     const visibility = select<'float'>(displayMode.equal(2), float(1), aoFactor);
     const beforeTone = select<'float'>(compositeStage.equal(0), visibility, float(1));
     const afterTone = select<'float'>(compositeStage.equal(1), visibility, float(1));
@@ -264,19 +285,18 @@ const createPipelineResources = ({
       vec4(vec3(aoFactor), scenePassColor.a),
       select<'float'>(displayMode.equal(1), float(1), float(0)),
     );
-    // FXAA samples display RGB; return to linear for the renderer's single output encoding.
+    // Match the accepted WebGL pipeline: filter tone-mapped linear RGB, then encode once.
     // This intermediate feeds only FXAA color. Overlay depth remains owned by scenePass.
-    const antialiasTargetOptions = { type: HalfFloatType, depthBuffer: false, stencilBuffer: false };
-    antialiasInput = rtt(workingToColorSpace(composite, SRGBColorSpace), null, null, antialiasTargetOptions);
-    outputQuad = createOutputQuad(colorSpaceToWorking(fxaa(antialiasInput), SRGBColorSpace));
+    antialiasInput = rtt(composite, null, null, antialiasTargetOptions);
+    outputQuad = createOutputQuad(createViewportFxaa(antialiasInput));
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
       camera,
       outputQuad,
-      outputQuadWithoutAo,
       aoNode,
       denoiseNode,
+      denoiseInput,
       antialiasInput,
       depthRestore,
       depthRestoreMaterial,
@@ -288,8 +308,8 @@ const createPipelineResources = ({
   } catch (error) {
     depthRestoreMaterial?.dispose();
     (outputQuad?.material as NodeMaterial | undefined)?.dispose();
-    (outputQuadWithoutAo?.material as NodeMaterial | undefined)?.dispose();
     disposeAntialiasInput(antialiasInput);
+    disposeAntialiasInput(denoiseInput);
     disposeAoNode(aoNode);
     scenePass.dispose();
     throw error;
@@ -298,9 +318,9 @@ const createPipelineResources = ({
 
 const disposePipelineResources = (resources: readonly PostProcessingPipelineResources[]): void => {
   for (const resource of resources) {
-    (resource.outputQuad?.material as NodeMaterial | undefined)?.dispose();
-    (resource.outputQuadWithoutAo.material as NodeMaterial).dispose();
+    (resource.outputQuad.material as NodeMaterial).dispose();
     disposeAntialiasInput(resource.antialiasInput);
+    disposeAntialiasInput(resource.denoiseInput);
     disposeAoNode(resource.aoNode);
     resource.depthRestoreMaterial.dispose();
     resource.scenePass.dispose();
@@ -351,9 +371,20 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       if (!selected.aoNode) {
         return;
       }
+      selected.aoNode.resolutionScale = 0.5 / viewport.dpr;
       if (selected.denoiseNode) {
         // Keep the reconstruction footprint in CSS pixels at every DPR.
         selected.denoiseNode.step.value.set(3 / size.width, 3 / size.height);
+      }
+      if (selected.denoiseInput) {
+        // Estimate and smooth at half CSS resolution, independent of display DPR.
+        // r184 RTTNode has no resolutionScale. Own physical dimensions explicitly;
+        // its pixelRatio stays 1 and ordinary frames never resize the allocation.
+        const width = Math.max(1, Math.ceil(size.width * 0.5));
+        const height = Math.max(1, Math.ceil(size.height * 0.5));
+        if (selected.denoiseInput.width !== width || selected.denoiseInput.height !== height) {
+          selected.denoiseInput.setSize(width, height);
+        }
       }
       selected.aoNode.scale.value = gtaoIntensity;
       selected.aoNode.distanceFallOff.value = gtaoDistanceFalloff;
@@ -407,11 +438,14 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       }
       const renderer = gl as unknown as WebGPURenderer;
       const previousTarget = renderer.getRenderTarget();
+      const previousAutoClear = renderer.autoClear;
+      renderer.autoClear = false;
       renderer.setRenderTarget(target ?? null);
       try {
         selected.depthRestore.render(renderer);
       } finally {
         renderer.setRenderTarget(previousTarget);
+        renderer.autoClear = previousAutoClear;
       }
     },
     [gl],
@@ -432,7 +466,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       resourcesRef.current.set(camera, selected);
     }
     updateAoSettings(selected);
-    (selected.outputQuad ?? selected.outputQuadWithoutAo).render(state.gl as unknown as WebGPURenderer);
+    selected.outputQuad.render(state.gl as unknown as WebGPURenderer);
   }, 1);
   return null;
 }

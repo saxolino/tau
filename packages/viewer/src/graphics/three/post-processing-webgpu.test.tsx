@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { act, render } from '@testing-library/react';
 import { useLayoutEffect } from 'react';
-import { HalfFloatType, NeutralToneMapping } from 'three';
+import { HalfFloatType, RedFormat, NeutralToneMapping } from 'three';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +15,7 @@ type MockAoNode = {
   thickness: { value: number };
   samples: { value: number };
   distanceFallOff: { value: number };
-  scale: { value: number };
+  scale: { value: number; greaterThan: (value: number) => unknown };
   getTextureNode: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   _noiseNode: { value: { dispose: ReturnType<typeof vi.fn> } };
@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => {
     rendererState.mrt = value;
   });
   const gl = {
+    autoClear: true,
     clearDepth,
     compileAsync,
     getRenderTarget,
@@ -175,7 +176,7 @@ const mocks = vi.hoisted(() => {
       thickness: { value: 0 },
       samples: { value: 0 },
       distanceFallOff: { value: 0 },
-      scale: { value: 0 },
+      scale: { value: 0, greaterThan: (value: number) => ({ intensityAbove: value }) },
       getTextureNode: vi.fn(() => aoTexture),
       dispose: aoDispose,
       _noiseNode: { value: { dispose: noiseDispose } },
@@ -186,7 +187,8 @@ const mocks = vi.hoisted(() => {
 
   return {
     denoise: vi.fn(() => ({
-      visibility: vi.fn(() => ({ kind: 'denoised-ao-r' })),
+      visibility: vi.fn(() => ({ kind: 'coarse-ao-r' })),
+      upsample: vi.fn(() => ({ kind: 'denoised-ao-r' })),
       step: { value: { set: vi.fn() } },
       depthPhi: { value: 1 },
     })),
@@ -222,6 +224,7 @@ const mocks = vi.hoisted(() => {
     antialiasTargetDispose: vi.fn(),
     antialiasMaterialDispose: vi.fn(),
     antialiasTargetOptions: vi.fn(),
+    denoiseSize: vi.fn(),
     rig,
     scene,
     snapshot,
@@ -270,7 +273,7 @@ vi.mock('#graphics/three/scene-overlay.jsx', () => ({
   },
 }));
 
-vi.mock('three/addons/tsl/display/FXAANode.js', () => ({ fxaa: mocks.fxaa }));
+vi.mock('#graphics/three/fxaa.js', () => ({ createViewportFxaa: mocks.fxaa }));
 vi.mock('three/addons/tsl/display/GTAONode.js', () => ({ ao: mocks.ao }));
 vi.mock('#graphics/three/ao-denoise.js', () => ({ createAoDenoise: mocks.denoise }));
 vi.mock('#graphics/three/gtao-depth-camera.js', () => ({
@@ -284,6 +287,12 @@ vi.mock('three/tsl', () => ({
   rtt: (value: Record<string, unknown>, width: unknown, height: unknown, options: unknown) => {
     mocks.antialiasTargetOptions(width, height, options);
     return Object.assign(value, {
+      width,
+      height,
+      setSize: (nextWidth: number, nextHeight: number) => {
+        mocks.denoiseSize(nextWidth, nextHeight);
+        Object.assign(value, { width: nextWidth, height: nextHeight });
+      },
       dispose: mocks.antialiasDispose,
       renderTarget: { dispose: mocks.antialiasTargetDispose },
       _quadMesh: { material: { dispose: mocks.antialiasMaterialDispose } },
@@ -366,6 +375,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
   beforeEach(() => {
     mocks.ao.mockClear();
     mocks.denoise.mockClear();
+    mocks.denoiseSize.mockClear();
     mocks.aoDispose.mockClear();
     mocks.noiseDispose.mockClear();
     mocks.aoNodes.length = 0;
@@ -378,6 +388,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.displayUniforms.length = 0;
     mocks.glRender.mockReset();
     mocks.gl.isWebGPURenderer = true;
+    mocks.gl.autoClear = true;
     mocks.getCurrentViewport.mockClear();
     mocks.invalidate.mockClear();
     mocks.normalNode.sample.mockClear();
@@ -397,11 +408,51 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.rig.activeCamera = mocks.perspectiveCamera;
     mocks.state.camera = mocks.perspectiveCamera;
     mocks.state.size.height = 1000;
+    mocks.state.size.width = 1500;
+    mocks.state.viewport.dpr = 2;
     mocks.scenePasses.length = 0;
     mocks.setFrame(undefined);
     mocks.setRetarget(undefined);
     mocks.setRestoreDepth(undefined);
     mocks.setRenderTarget.mockClear();
+  });
+
+  it('should budget AO in CSS pixels independently of device pixel ratio', async () => {
+    const mounted = await mount();
+    expect(mocks.antialiasTargetOptions).toHaveBeenCalledWith(1, 1, {
+      type: HalfFloatType,
+      format: RedFormat,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+    expect(mocks.denoiseSize).toHaveBeenCalledWith(750, 500);
+    expect(mocks.aoNodes[0]!.resolutionScale).toBe(0.25);
+    mocks.denoiseSize.mockClear();
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.denoiseSize).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
+  it('should resize the AO budget only for CSS size changes and retain it across DPR changes', async () => {
+    mocks.state.size.width = 1501;
+    mocks.state.size.height = 1001;
+    mocks.state.viewport.dpr = 1;
+    const mounted = await mount();
+    expect(mocks.denoiseSize).toHaveBeenLastCalledWith(751, 501);
+    expect(mocks.aoNodes[0]!.resolutionScale).toBe(0.5);
+    mocks.denoiseSize.mockClear();
+    mocks.state.viewport.dpr = 2;
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.aoNodes[0]!.resolutionScale).toBe(0.25);
+    expect(mocks.denoiseSize).not.toHaveBeenCalled();
+    mocks.state.size.width = 2560;
+    mocks.state.size.height = 1440;
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.denoiseSize).toHaveBeenCalledOnce();
+    expect(mocks.denoiseSize).toHaveBeenLastCalledWith(1280, 720);
+    expect(mocks.pass).toHaveBeenCalledOnce();
+    expect(mocks.aoNodes).toHaveLength(1);
+    mounted.unmount();
   });
 
   it('should denoise contact visibility before compositing without allocating another noise texture', async () => {
@@ -417,7 +468,10 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     });
     const composed = mocks.outputQuads.find((quad) => !isBeautyOnly(quad));
     expect(composed?.material.fragmentNode).toMatchObject({
-      aoOnly: [{ kind: 'denoised-ao-r' }, { kind: 'scene-alpha' }],
+      aoOnly: [
+        { condition: { intensityAbove: 0 }, ifTrue: { kind: 'denoised-ao-r' }, ifFalse: 1 },
+        { kind: 'scene-alpha' },
+      ],
     });
     expect(mocks.denoise.mock.results[0]!.value.step.value.set).toHaveBeenCalledWith(3 / 1500, 3 / 1000);
     mounted.unmount();
@@ -457,7 +511,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const firstPass = mocks.scenePasses[0]!;
     act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
     expect(firstPass.dispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.pass).toHaveBeenCalledTimes(1);
     mocks.getFrame()?.(mocks.state, 0);
@@ -476,7 +530,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     for (const pass of mocks.scenePasses) {
       expect(pass.dispose).toHaveBeenCalledOnce();
     }
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(3);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(6);
     expect(mocks.noiseDispose).toHaveBeenCalledTimes(3);
   });
 
@@ -484,21 +538,31 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     await mount({ aoAllowed: false });
     mocks.getFrame()?.(mocks.state, 0);
     mocks.glRender.mockClear();
+    mocks.glRender.mockImplementationOnce(() => {
+      expect(mocks.gl.autoClear).toBe(false);
+    });
     mocks.getRestoreDepth()?.();
+    expect(mocks.gl.autoClear).toBe(true);
     expect(mocks.glRender).toHaveBeenCalledOnce();
     expect(mocks.clearDepth).not.toHaveBeenCalled();
     expect(mocks.gl.getRenderTarget()).toEqual({ kind: 'prior-target' });
     expect(mocks.gl.getMRT()).toBeNull();
   });
 
-  it('should restore the target when depth submission throws', async () => {
-    await mount({ aoAllowed: false });
-    mocks.glRender.mockImplementationOnce(() => {
-      throw new Error('draw failed');
-    });
-    expect(() => mocks.getRestoreDepth()?.()).toThrow('draw failed');
-    expect(mocks.gl.getRenderTarget()).toEqual({ kind: 'prior-target' });
-  });
+  it.each([true, false])(
+    'should restore the target and autoClear=%s when depth submission throws',
+    async (autoClear) => {
+      await mount({ aoAllowed: false });
+      mocks.gl.autoClear = autoClear;
+      mocks.glRender.mockImplementationOnce(() => {
+        expect(mocks.gl.autoClear).toBe(false);
+        throw new Error('draw failed');
+      });
+      expect(() => mocks.getRestoreDepth()?.()).toThrow('draw failed');
+      expect(mocks.gl.autoClear).toBe(autoClear);
+      expect(mocks.gl.getRenderTarget()).toEqual({ kind: 'prior-target' });
+    },
+  );
 
   it('keeps beauty ahead of AO dependencies and preserves its alpha in the AO visualization', async () => {
     await mount();
@@ -508,7 +572,10 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const composed = mocks.outputQuads.find((quad) => !isBeautyOnly(quad));
     expect(composed?.material.fragmentNode).toMatchObject({
       beauty: { kind: 'display-composed-color', color: { kind: 'composed-color' } },
-      aoOnly: [{ kind: 'denoised-ao-r' }, { kind: 'scene-alpha' }],
+      aoOnly: [
+        { condition: { intensityAbove: 0 }, ifTrue: { kind: 'denoised-ao-r' }, ifFalse: 1 },
+        { kind: 'scene-alpha' },
+      ],
     });
     expect(mocks.scenePasses[0]!.setMRT).toHaveBeenCalledWith({
       output: { kind: 'output' },
@@ -516,7 +583,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     });
     expect(mocks.normalTexture.type).toBe(1009);
     expect(mocks.aoNodes[0]).toMatchObject({
-      resolutionScale: 0.5,
+      resolutionScale: 0.25,
       useTemporalFiltering: false,
       samples: { value: 8 },
     });
@@ -554,8 +621,8 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(mocks.aoNodes).toHaveLength(1);
     mounted.rerender(<PostProcessingWebGpu {...endpointProperties} settings={{ displayMode: 'no-ao' }} />);
     expect(mocks.aoDispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(3);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(3);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.aoNodes).toHaveLength(1);
     expect(mocks.scenePasses[2]!.setMRT).not.toHaveBeenCalled();
@@ -590,11 +657,11 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
       expect(pass.dispose).toHaveBeenCalledOnce();
     }
     expect(mocks.aoDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasDispose).toHaveBeenCalledTimes(4);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(4);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(4);
     expect(mocks.noiseDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.postDispose).toHaveBeenCalledTimes(4);
+    expect(mocks.postDispose).toHaveBeenCalledTimes(2);
   });
 
   it('should release partial resources when graph construction fails', async () => {
@@ -604,7 +671,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     });
     const mounted = await mount();
     expect(mocks.scenePasses[0]!.dispose).toHaveBeenCalledOnce();
-    expect(mocks.postDispose).toHaveBeenCalledOnce();
+    expect(mocks.postDispose).not.toHaveBeenCalled();
     mounted.unmount();
     expect(mocks.scenePasses[0]!.dispose).toHaveBeenCalledOnce();
     error.mockRestore();
@@ -616,13 +683,13 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
       throw new Error('FXAA failed');
     });
     const mounted = await mount();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(2);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.aoDispose).toHaveBeenCalledOnce();
     expect(mocks.scenePasses[0]!.dispose).toHaveBeenCalledOnce();
     mounted.unmount();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
     error.mockRestore();
   });
 

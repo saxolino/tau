@@ -113,7 +113,7 @@ export const shaderSites = [
     id: 'webgpu-post',
     modules: ['packages/viewer/src/graphics/three/post-processing-webgpu.tsx'],
     // Pure graph helpers share this site's contract without owning a material/pass.
-    helpers: ['packages/viewer/src/graphics/three/ao-denoise.ts'],
+    helpers: ['packages/viewer/src/graphics/three/ao-denoise.ts', 'packages/viewer/src/graphics/three/fxaa.ts'],
     authoring: ['tsl', 'render-pipeline'],
     backends: ['webgpu'],
     risks: ['camera', 'depth', 'lifecycle', 'hot-path', 'private-api', 'upstream-drift'],
@@ -376,6 +376,9 @@ export const shaderEvidence = {
       'restores the selected composer depth directly to canvas',
       'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should guard the dependency implementation whose owned wrappers it disposes',
     ),
+    'depth-clipping': [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should retain scene and cap depth before later overlays',
+    ],
     reference: [
       'packages/viewer/src/graphics/three/post-processing-webgl.test.tsx::restores the selected composer depth directly to canvas',
       'packages/viewer/src/graphics/three/n8ao-pass.test.ts::should pass the actual log-depth convention to the half-resolution shader',
@@ -406,8 +409,11 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ),
     'generated-source': [
-      'packages/viewer/src/graphics/three/ao-denoise.test.ts::should preserve the deterministic depth and normal filter graph',
-      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile AO rejection without promoting view-space distances to vec4',
+      'packages/viewer/src/graphics/three/ao-denoise.test.ts::should preserve the deterministic depth and normal %s graph',
+      'packages/viewer/src/graphics/three/fxaa.test.ts::should preserve the resource-free FXAA graph for a caller-owned color input',
+      'packages/viewer/src/graphics/three/fxaa.test.ts::should guard the exact classic FXAA source and quality contract paired with the node port',
+      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with native validation and an invalid-shader control',
+      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with WebGL2 validation and an invalid-shader control',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ],
     pixels: [
@@ -417,8 +423,12 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
     ],
     'real-compile': [
-      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile AO rejection without promoting view-space distances to vec4',
+      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with native validation and an invalid-shader control',
+      'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with WebGL2 validation and an invalid-shader control',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
+    ],
+    'depth-clipping': [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should retain scene and cap depth before later overlays',
     ],
     reference: [
       'packages/viewer/src/graphics/three/utils/spatial.utils.test.ts::uses the actual orthographic span',
@@ -435,6 +445,8 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should configure both native camera projections before the first WebGPU scene pass',
     ],
     'structural-perf': [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should budget AO in CSS pixels independently of device pixel ratio',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should resize the AO budget only for CSS size changes and retain it across DPR changes',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should prepare only the active beauty endpoint when AO is disabled',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::keeps final antialias input color-only while retaining scene depth for overlays',
     ],

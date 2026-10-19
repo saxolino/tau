@@ -281,20 +281,20 @@ export function ThreeCanvasInstance({
     >
       <CanvasRendererLifetime factory={glProperty} />
       <ThreeGraphicsBackendProvider value={graphicsBackend}>
-        <Scene
-          enableGizmo={enableGizmo}
-          enableDamping={enableDamping}
-          enableZoom={enableZoom}
-          enablePan={enablePan}
-          secondaryMouseButtonMode={secondaryMouseButtonMode}
-          upDirection={upDirection}
-          stageOptions={stageOptions}
-          zoomSpeed={zoomSpeed}
-          gizmoContainer={gizmoContainer}
-        >
-          {children}
-        </Scene>
         <OverlayDepthProvider>
+          <Scene
+            enableGizmo={enableGizmo}
+            enableDamping={enableDamping}
+            enableZoom={enableZoom}
+            enablePan={enablePan}
+            secondaryMouseButtonMode={secondaryMouseButtonMode}
+            upDirection={upDirection}
+            stageOptions={stageOptions}
+            zoomSpeed={zoomSpeed}
+            gizmoContainer={gizmoContainer}
+          >
+            {children}
+          </Scene>
           <PostProcessing settings={postProcessingSettings} />
           {isInspectorEnabled ? <WebGpuInspectorOverlay /> : null}
           <ModelEmphasisOverlay />
