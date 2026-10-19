@@ -1,7 +1,8 @@
+import type { GraphicsEvent } from '#machines/graphics.machine.js';
 import type * as ReactThreeFiber from '@react-three/fiber';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import type { JSX } from 'react';
-import { useEffect, useLayoutEffect } from 'react';
+import { StrictMode, useEffect, useLayoutEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import {
   OrthographicCamera,
@@ -11,7 +12,7 @@ import {
   WebGLCoordinateSystem,
   WebGPUCoordinateSystem,
 } from 'three';
-import type { Camera } from 'three';
+import type { Camera, CoordinateSystem } from 'three';
 import { mock } from 'vitest-mock-extended';
 
 import { WebglErrorBoundary } from '#cad/webgl-error-boundary.jsx';
@@ -38,6 +39,7 @@ let exposureAfterCreated: number | undefined;
 let latestCanvasState: StubRootState | undefined;
 /** The camera the stub root rays from; a test replaces it. */
 let stubRootCamera: Camera = new PerspectiveCamera();
+let stubCoordinateSystem: CoordinateSystem = WebGLCoordinateSystem;
 
 type StubPointerEvent = Readonly<Record<'offsetX' | 'offsetY' | 'clientX' | 'clientY', number>>;
 type StubCompute = (event: StubPointerEvent, state: StubRootState, previous?: StubRootState) => void;
@@ -55,6 +57,7 @@ const rigCamera = new PerspectiveCamera();
 const orthographicCamera = new OrthographicCamera();
 const setClipPlanes = vi.fn();
 const cameraRig = { activeCamera: rigCamera, perspectiveCamera: rigCamera, orthographicCamera, setClipPlanes };
+const reportRenderer = vi.hoisted(() => vi.fn<(event: GraphicsEvent) => void>());
 const enabledFeatures = vi.hoisted(() => new Set<string>());
 /** When set, the mocked renderer factory throws it, as three's `WebGLRenderer` does without a context. */
 const rendererFailure = vi.hoisted((): { error: Error | undefined } => ({ error: undefined }));
@@ -81,6 +84,7 @@ vi.mock('#graphics/three/render-fps-overlay.jsx', () => ({
 
 vi.mock('#hooks/use-graphics.jsx', () => ({
   useCameraRig: () => cameraRig,
+  useGraphics: () => ({ send: reportRenderer }),
 }));
 
 vi.mock('@react-three/fiber', async (importOriginal) => {
@@ -126,6 +130,7 @@ vi.mock('@react-three/fiber', async (importOriginal) => {
 
       const gl = {
         toneMappingExposure: 0.37,
+        coordinateSystem: stubCoordinateSystem,
         domElement,
       };
 
@@ -235,6 +240,7 @@ function KeyedThreeCanvas({ canvasKey }: { readonly canvasKey: string }) {
 describe('ThreeCanvasInstance', () => {
   beforeEach(() => {
     enabledFeatures.clear();
+    reportRenderer.mockClear();
     fireLatestWebGlContextLost = undefined;
     latestCanvasEventPrefix = undefined;
     latestCanvasEventSource = undefined;
@@ -244,12 +250,70 @@ describe('ThreeCanvasInstance', () => {
     exposureAfterCreated = undefined;
     latestCanvasState = undefined;
     stubRootCamera = new PerspectiveCamera();
+    stubCoordinateSystem = WebGLCoordinateSystem;
     setClipPlanes.mockClear();
     rendererFailure.error = undefined;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('should publish the initialized backend, then clear it on context loss', async () => {
+    const view = render(<ThreeCanvasInstance graphicsBackend='webgpu' onRetry={() => undefined} />);
+    expect(reportRenderer).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(reportRenderer.mock.lastCall?.[0]).toMatchObject({
+        type: 'rendererInitialized',
+        payload: { backend: 'webgl' },
+      });
+    });
+    const initialized = reportRenderer.mock.lastCall?.[0];
+    if (initialized?.type !== 'rendererInitialized') {
+      throw new Error('Expected initialized renderer status.');
+    }
+    act(() => fireLatestWebGlContextLost?.());
+    expect(reportRenderer).toHaveBeenLastCalledWith({
+      type: 'rendererRemoved',
+      canvasId: initialized.payload.canvasId,
+    });
+    view.unmount();
+  });
+
+  it('should publish WebGPU only when the initialized renderer uses its coordinate system', async () => {
+    stubCoordinateSystem = WebGPUCoordinateSystem;
+    const view = render(<ThreeCanvasInstance graphicsBackend='webgpu' onRetry={() => undefined} />);
+    await waitFor(() => {
+      expect(reportRenderer.mock.lastCall?.[0]).toMatchObject({
+        type: 'rendererInitialized',
+        payload: { backend: 'webgpu' },
+      });
+    });
+    view.unmount();
+    expect(reportRenderer.mock.lastCall?.[0].type).toBe('rendererRemoved');
+  });
+
+  it('should retain truthful status through StrictMode and retire it on unmount', async () => {
+    const view = render(
+      <StrictMode>
+        <KeyedThreeCanvas canvasKey='status' />
+      </StrictMode>,
+    );
+    await waitFor(() => {
+      expect(reportRenderer.mock.lastCall?.[0]).toMatchObject({
+        type: 'rendererInitialized',
+        payload: { backend: 'webgl' },
+      });
+    });
+    const initialized = reportRenderer.mock.lastCall?.[0];
+    if (initialized?.type !== 'rendererInitialized') {
+      throw new Error('Expected initialized renderer status.');
+    }
+    view.unmount();
+    expect(reportRenderer).toHaveBeenLastCalledWith({
+      type: 'rendererRemoved',
+      canvasId: initialized.payload.canvasId,
+    });
   });
 
   it('retains the renderer before scene layout effects can allocate environment targets', () => {

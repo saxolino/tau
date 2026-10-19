@@ -2,7 +2,10 @@ import type { RootState } from '@react-three/fiber';
 import { Canvas, flushSync as flushThreeSync } from '@react-three/fiber';
 import { flushSync } from 'react-dom';
 import type { RefCallback } from 'react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { WebGPUCoordinateSystem } from 'three';
+import type { RendererInstance } from '#graphics/three/renderer.js';
+import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import type { WebGPURenderer } from 'three/webgpu';
 import { RenderFpsOverlay } from '#graphics/three/render-fps-overlay.jsx';
 import { renderLoopObservers } from '#graphics/three/render-loop-observer.js';
@@ -25,7 +28,7 @@ import {
 import { setRaycasterFromCamera } from '#graphics/three/utils/raycaster-from-camera.js';
 import { WebGpuInspectorOverlay } from '#graphics/three/webgpu-inspector-overlay.jsx';
 import { cn } from '@taucad/ui/utils/cn';
-import { useCameraRig } from '#hooks/use-graphics.jsx';
+import { useCameraRig, useGraphics } from '#hooks/use-graphics.jsx';
 import { useViewerEnvironment, useViewerFeature } from '#environment/viewer-environment.jsx';
 import { resolveViewerPixelRatio } from '#graphics/three/utils/device-tier.js';
 
@@ -94,7 +97,12 @@ export function ThreeCanvasInstance({
   const isInspectorEnabled = useViewerFeature('webGpuInspector');
   const { showRenderFps = true, readableCanvas = false } = useViewerEnvironment();
   const isTauDebugEnabled = useViewerFeature('tauDebug');
-  const [isCanvasReady, setIsCanvasReady] = useState(false);
+  const canvasId = useId();
+  const graphicsRef = useGraphics();
+  const [initializedRenderer, setInitializedRenderer] = useState<{
+    factory: TauR3fGlFactory;
+    backend: ResolvedGraphicsBackend;
+  }>();
   const [isContextLost, setIsContextLost] = useState(false);
   const [rendererError, setRendererError] = useState<Error>();
   const cameraRig = useCameraRig();
@@ -148,6 +156,17 @@ export function ThreeCanvasInstance({
     [cameraRig, graphicsBackend, readableCanvas],
   );
 
+  const isCanvasReady = initializedRenderer?.factory === glProperty;
+  useEffect(() => {
+    if (!initializedRenderer || initializedRenderer.factory !== glProperty || isContextLost || glProperty.isRetired()) {
+      return;
+    }
+    graphicsRef.send({ type: 'rendererInitialized', payload: { canvasId, backend: initializedRenderer.backend } });
+    return () => {
+      graphicsRef.send({ type: 'rendererRemoved', canvasId });
+    };
+  }, [canvasId, glProperty, graphicsRef, initializedRenderer, isContextLost]);
+
   const bindCanvas = useCallback<RefCallback<HTMLCanvasElement>>(
     (canvas) => {
       glProperty.bindCanvas(canvas ?? undefined);
@@ -180,10 +199,11 @@ export function ThreeCanvasInstance({
       }
       rootRef.current = state;
       installTauPointerRays(state);
-      const renderer = state.gl;
+      // R3F types its renderer as WebGL even when the factory supplies WebGPU.
+      const renderer = state.gl as RendererInstance;
 
-      if ('isWebGPURenderer' in renderer && renderer.isWebGPURenderer) {
-        const webGpuRenderer = renderer as unknown as InstanceType<typeof WebGPURenderer>;
+      if ('isWebGPURenderer' in renderer) {
+        const webGpuRenderer = renderer;
         const previousOnDeviceLost = webGpuRenderer.onDeviceLost;
         webGpuRenderer.onDeviceLost = (
           info: Parameters<InstanceType<typeof WebGPURenderer>['onDeviceLost']>[0],
@@ -204,7 +224,10 @@ export function ThreeCanvasInstance({
         });
       }
 
-      setIsCanvasReady(true);
+      setInitializedRenderer({
+        factory: glProperty,
+        backend: renderer.coordinateSystem === WebGPUCoordinateSystem ? 'webgpu' : 'webgl',
+      });
     },
     [glProperty],
   );

@@ -5513,6 +5513,9 @@ importers:
       '@taucad/utils':
         specifier: workspace:*
         version: link:../../libs/utils
+      '@taucad/xstate-testing':
+        specifier: workspace:*
+        version: link:../../libs/xstate-testing
       '@testing-library/jest-dom':
         specifier: 'catalog:'
         version: 6.6.3
