@@ -237,13 +237,7 @@ catalogs:
     '@streamdown/cjk':
       specifier: ^1.0.3
       version: 1.0.4
-    '@streamdown/code':
-      specifier: ^1.1.1
-      version: 1.1.1
     '@streamdown/math':
-      specifier: ^1.0.2
-      version: 1.0.3
-    '@streamdown/mermaid':
       specifier: ^1.0.2
       version: 1.0.3
     '@swc-node/register':
@@ -643,8 +637,8 @@ catalogs:
       specifier: ^5.1.16
       version: 5.1.16
     nanoraster:
-      specifier: ^0.6.1
-      version: 0.6.1
+      specifier: ^0.7.0
+      version: 0.7.0
     netlify-cli:
       specifier: ^27.12.0
       version: 27.12.0
@@ -1103,13 +1097,7 @@ importers:
       '@streamdown/cjk':
         specifier: 'catalog:'
         version: 1.0.4(@types/mdast@4.0.4)(micromark-util-types@2.0.3)(micromark@4.0.3)(react@19.2.7)(unified@11.0.5)
-      '@streamdown/code':
-        specifier: 'catalog:'
-        version: 1.1.1(react@19.2.7)
       '@streamdown/math':
-        specifier: 'catalog:'
-        version: 1.0.3(react@19.2.7)
-      '@streamdown/mermaid':
         specifier: 'catalog:'
         version: 1.0.3(react@19.2.7)
       '@tanstack/react-table':
@@ -1972,6 +1960,9 @@ importers:
       '@taucad/smlib':
         specifier: workspace:*
         version: link:../../packages/plugins/smlib
+      '@taucad/smlibpy':
+        specifier: workspace:*
+        version: link:../../packages/plugins/smlibpy
       '@taucad/tscircuit':
         specifier: workspace:*
         version: link:../../packages/plugins/tscircuit
@@ -1998,7 +1989,7 @@ importers:
         version: 0.3.0
       nanoraster:
         specifier: 'catalog:'
-        version: 0.6.1
+        version: 0.7.0
       pino-pretty:
         specifier: 'catalog:'
         version: 13.2.0
@@ -2030,6 +2021,9 @@ importers:
       '@taucad/nx':
         specifier: workspace:*
         version: link:../../tools/nx
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../../packages/runtime-testing
       '@taucad/xstate-testing':
         specifier: workspace:*
         version: link:../../libs/xstate-testing
@@ -2207,6 +2201,12 @@ importers:
       '@taucad/runtime':
         specifier: workspace:*
         version: link:../../../packages/runtime
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../../../packages/runtime-testing
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../../../libs/types
 
   apps/libs/fs-client:
     dependencies:
@@ -2724,6 +2724,9 @@ importers:
       '@taucad/smlib':
         specifier: workspace:*
         version: link:../../packages/plugins/smlib
+      '@taucad/smlibpy':
+        specifier: workspace:*
+        version: link:../../packages/plugins/smlibpy
       '@taucad/tau-examples':
         specifier: workspace:*
         version: link:../../libs/tau-examples
@@ -3317,6 +3320,9 @@ importers:
 
   libs/tau-examples:
     dependencies:
+      '@taucad/build123d':
+        specifier: workspace:*
+        version: link:../../packages/plugins/build123d
       '@taucad/esbuild':
         specifier: workspace:*
         version: link:../../packages/plugins/esbuild
@@ -3332,6 +3338,9 @@ importers:
       '@taucad/middleware':
         specifier: workspace:*
         version: link:../../packages/plugins/middleware
+      '@taucad/native-process-core':
+        specifier: workspace:*
+        version: link:../../packages/core/native-process
       '@taucad/opencascade':
         specifier: workspace:*
         version: link:../../packages/plugins/opencascade
@@ -3353,6 +3362,9 @@ importers:
       '@taucad/smlib':
         specifier: workspace:*
         version: link:../../packages/plugins/smlib
+      '@taucad/smlibpy':
+        specifier: workspace:*
+        version: link:../../packages/plugins/smlibpy
       '@taucad/tscircuit':
         specifier: workspace:*
         version: link:../../packages/plugins/tscircuit
@@ -3366,15 +3378,15 @@ importers:
       '@jscad/modeling':
         specifier: 'catalog:'
         version: 2.13.0
-      '@taucad/build123d':
-        specifier: workspace:*
-        version: link:../../packages/plugins/build123d
       '@taucad/geometry-core':
         specifier: workspace:*
         version: link:../../packages/core/geometry
       '@taucad/kinematics':
         specifier: workspace:*
         version: link:../../packages/kinematics
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../../packages/runtime-testing
       geospec:
         specifier: workspace:*
         version: link:../../packages/geospec
@@ -3399,6 +3411,9 @@ importers:
 
   libs/telemetry:
     devDependencies:
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../types
       zod:
         specifier: 'catalog:'
         version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
@@ -3674,6 +3689,9 @@ importers:
       '@taucad/smlib':
         specifier: workspace:*
         version: link:../plugins/smlib
+      '@taucad/smlibpy':
+        specifier: workspace:*
+        version: link:../plugins/smlibpy
       '@taucad/tscircuit':
         specifier: workspace:*
         version: link:../plugins/tscircuit
@@ -3726,6 +3744,9 @@ importers:
       '@taucad/runtime-testing':
         specifier: workspace:*
         version: link:../runtime-testing
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../../libs/types
       '@taucad/utils':
         specifier: workspace:*
         version: link:../../libs/utils
@@ -3768,6 +3789,22 @@ importers:
 
   packages/core/cache: {}
 
+  packages/core/dotnet-kernel:
+    dependencies:
+      '@taucad/native-process-core':
+        specifier: workspace:*
+        version: link:../native-process
+    devDependencies:
+      '@taucad/runtime':
+        specifier: workspace:*
+        version: link:../../runtime
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../../runtime-testing
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
+
   packages/core/geometry:
     dependencies:
       '@gltf-transform/core':
@@ -3808,6 +3845,9 @@ importers:
       '@taucad/runtime-testing':
         specifier: workspace:*
         version: link:../../runtime-testing
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
 
   packages/core/occt:
     devDependencies:
@@ -3833,6 +3873,28 @@ importers:
         specifier: ^3.10.1
         version: 3.10.2
     devDependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
+
+  packages/core/python-kernel:
+    dependencies:
+      '@taucad/archive-core':
+        specifier: workspace:*
+        version: link:../archive
+      '@taucad/native-process-core':
+        specifier: workspace:*
+        version: link:../native-process
+    devDependencies:
+      '@anthropic-ai/sandbox-runtime':
+        specifier: 'catalog:'
+        version: 0.0.75
+      '@taucad/runtime':
+        specifier: workspace:*
+        version: link:../../runtime
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../../runtime-testing
       zod:
         specifier: 'catalog:'
         version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
@@ -3962,9 +4024,24 @@ importers:
         specifier: 'catalog:'
         version: 0.2.1
     devDependencies:
+      '@taucad/build123d':
+        specifier: workspace:*
+        version: link:../plugins/build123d
+      '@taucad/native-process-core':
+        specifier: workspace:*
+        version: link:../core/native-process
       '@taucad/picogk':
         specifier: workspace:*
         version: link:../plugins/picogk
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../runtime-testing
+      '@taucad/smlibpy':
+        specifier: workspace:*
+        version: link:../plugins/smlibpy
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../../libs/types
       vitest:
         specifier: 4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(happy-dom@21.0.1)(jsdom@26.0.0(canvas@3.2.3))(vite@8.0.16(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(less@4.5.1)(sass-embedded@1.105.1)(sass@1.105.1)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
@@ -4001,6 +4078,9 @@ importers:
       '@taucad/mcp':
         specifier: workspace:*
         version: link:../mcp
+      '@taucad/native-process-core':
+        specifier: workspace:*
+        version: link:../core/native-process
       '@taucad/parameters':
         specifier: workspace:*
         version: link:../parameters
@@ -4059,9 +4139,6 @@ importers:
       '@taucad/geospec-engine':
         specifier: workspace:*
         version: link:../geospec-engine
-      '@taucad/native-process-core':
-        specifier: workspace:*
-        version: link:../core/native-process
       '@taucad/revisions':
         specifier: workspace:*
         version: link:../revisions
@@ -4275,6 +4352,9 @@ importers:
       '@taucad/parameters':
         specifier: workspace:*
         version: link:../../parameters
+      '@taucad/python-kernel-core':
+        specifier: workspace:*
+        version: link:../../core/python-kernel
     devDependencies:
       '@taucad/agent-tools':
         specifier: workspace:*
@@ -4291,6 +4371,9 @@ importers:
       '@taucad/runtime-testing':
         specifier: workspace:*
         version: link:../../runtime-testing
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../../../libs/types
       '@taucad/utils':
         specifier: workspace:*
         version: link:../../../libs/utils
@@ -4389,7 +4472,7 @@ importers:
         version: 3.4.1(@gltf-transform/core@4.5.1)(@gltf-transform/extensions@4.5.1)(@gltf-transform/functions@4.5.1(@types/node@26.6.5))(esbuild-wasm@0.28.2)
       nanoraster:
         specifier: 'catalog:'
-        version: 0.6.1
+        version: 0.7.0
     devDependencies:
       '@taucad/camera':
         specifier: workspace:*
@@ -4401,8 +4484,8 @@ importers:
         specifier: 'catalog:'
         version: 1.7.2(next@16.4.0(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(babel-plugin-macros@3.1.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.105.1))
       nanoraster-darwin-arm64:
-        specifier: 0.6.1
-        version: 0.6.1
+        specifier: 0.7.0
+        version: 0.7.0
       vite:
         specifier: 'catalog:'
         version: 8.0.16(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(less@4.5.1)(sass-embedded@1.105.1)(sass@1.105.1)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -4597,6 +4680,9 @@ importers:
       '@taucad/cache-core':
         specifier: workspace:*
         version: link:../../core/cache
+      '@taucad/dotnet-kernel-core':
+        specifier: workspace:*
+        version: link:../../core/dotnet-kernel
       '@taucad/geometry-core':
         specifier: workspace:*
         version: link:../../core/geometry
@@ -4625,6 +4711,9 @@ importers:
       '@taucad/runtime-testing':
         specifier: workspace:*
         version: link:../../runtime-testing
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../../../libs/types
       zod:
         specifier: 'catalog:'
         version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
@@ -4842,6 +4931,52 @@ importers:
       '@taucad/runtime-testing':
         specifier: workspace:*
         version: link:../../runtime-testing
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
+
+  packages/plugins/smlibpy:
+    dependencies:
+      '@gltf-transform/core':
+        specifier: 'catalog:'
+        version: 4.5.1
+      '@gltf-transform/extensions':
+        specifier: 'catalog:'
+        version: 4.5.1
+      '@taucad/cache-core':
+        specifier: workspace:*
+        version: link:../../core/cache
+      '@taucad/geometry-core':
+        specifier: workspace:*
+        version: link:../../core/geometry
+      '@taucad/kinematics':
+        specifier: workspace:*
+        version: link:../../kinematics
+      '@taucad/native-process-core':
+        specifier: workspace:*
+        version: link:../../core/native-process
+      '@taucad/occt-core':
+        specifier: workspace:*
+        version: link:../../core/occt
+      '@taucad/python-kernel-core':
+        specifier: workspace:*
+        version: link:../../core/python-kernel
+    devDependencies:
+      '@taucad/archive-core':
+        specifier: workspace:*
+        version: link:../../core/archive
+      '@taucad/runtime':
+        specifier: workspace:*
+        version: link:../../runtime
+      '@taucad/runtime-testing':
+        specifier: workspace:*
+        version: link:../../runtime-testing
+      '@taucad/types':
+        specifier: workspace:*
+        version: link:../../../libs/types
+      '@taucad/utils':
+        specifier: workspace:*
+        version: link:../../../libs/utils
       zod:
         specifier: 'catalog:'
         version: 4.4.3(patch_hash=d7585ce5c65a536c3bc4dc9d847622bd10ceed46b28fde35ddc0ff952b48e315)
@@ -5290,6 +5425,9 @@ importers:
       '@taucad/smlib':
         specifier: workspace:*
         version: link:../plugins/smlib
+      '@taucad/smlibpy':
+        specifier: workspace:*
+        version: link:../plugins/smlibpy
       '@taucad/tscircuit':
         specifier: workspace:*
         version: link:../plugins/tscircuit
@@ -5302,6 +5440,10 @@ importers:
       geospec:
         specifier: workspace:*
         version: link:../geospec
+    devDependencies:
+      '@taucad/telemetry':
+        specifier: workspace:*
+        version: link:../../libs/telemetry
 
   packages/spatial: {}
 
@@ -12912,18 +13054,8 @@ packages:
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
-  '@streamdown/code@1.1.1':
-    resolution: {integrity: sha512-i7HTNuDgZWb+VdrNVOam9gQhIc5MSSDXKWXgbUrn/4vSRaSMM+Rtl10MQj4wLWPNpF7p80waJsAqFP8HZfb0Jg==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
   '@streamdown/math@1.0.3':
     resolution: {integrity: sha512-TOTRlPYs4LBNT8GaIWNCEVrcGVQsVcfc8WZ/x/0IyO+Rvsu6W+nF+YCS4Pl3JTVWQK8QX7LbWUChSilwlyzPZw==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
-  '@streamdown/mermaid@1.0.3':
-    resolution: {integrity: sha512-TgdL9Evm4CiaBaADjQVCaXe5eEZpJpTZ7JYw/OY1OO2JCmlc/6DN2DISXj+KUYAzRw+GgJioCoorpuCN/OIXyA==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
@@ -20690,110 +20822,110 @@ packages:
     engines: {node: ^18 || >=20}
     hasBin: true
 
-  nanoraster-android-arm-eabi@0.6.1:
-    resolution: {integrity: sha512-3OfkkUr29TjmOVslsC8k6L3XAGA2aKTUk9hG2wzgNAtrtGAHt0na0ieuIHAua/xP1W8XsYIr/9pnCxoxfW/jxA==}
+  nanoraster-android-arm-eabi@0.7.0:
+    resolution: {integrity: sha512-Z7f58WAGkWzLq7DqjjrzHqBZoUDpHjddigSm2w2XUC+xJsLClMVVIvFhOMspddJ4YMDe/vgu+chiYsOF4upV/A==}
     engines: {node: '>=22.13.0'}
     cpu: [arm]
     os: [android]
 
-  nanoraster-android-arm64@0.6.1:
-    resolution: {integrity: sha512-Nfqt2YEPsZWPGGGcNtCzdp0Jb4HPTA/3KOhnhlLB95P7c/iXyRRYJB1jMAxAP08+dHQuIdX/ep98NhTvF2MvIw==}
+  nanoraster-android-arm64@0.7.0:
+    resolution: {integrity: sha512-ATX82Fw3oZfzcb/UsbIQvnIp5lXTS3imjd/ArIwbR3snEEQBkIFs+Nv56RerXTWTS/XsxcZTLivZHCt0ht4EvA==}
     engines: {node: '>=22.13.0'}
     cpu: [arm64]
     os: [android]
 
-  nanoraster-darwin-arm64@0.6.1:
-    resolution: {integrity: sha512-1d0kKwC0oMcSTFq6MQukitZrHedhX54cUl42bFEni2JsrXW3mHC4H9M0dv22E2IM3iqps0JDrs4/JSWMuucabg==}
+  nanoraster-darwin-arm64@0.7.0:
+    resolution: {integrity: sha512-H25cN1lLiMBuOQCkpsJgGq9lOKCOKbEOYu13o4PetiKUjv+V2/eu0ajxg3vD+sOdq4/ndf3+yPyyZxvyzyNfWw==}
     engines: {node: '>=22.13.0'}
     cpu: [arm64]
     os: [darwin]
 
-  nanoraster-darwin-x64@0.6.1:
-    resolution: {integrity: sha512-mUK6t5AD72QpptOwBI76F8eHTQ7wFczQeTEwMHLchBT5KD+TdzBD7S1VCqnVAg7eUJxdi13ZIQq2BENwfe+ULA==}
+  nanoraster-darwin-x64@0.7.0:
+    resolution: {integrity: sha512-cPTVhriAM9p1ai0+1Dk3CvZ28AtnFKV4rWxZAN7zcXXBLLMJamf7lILacENUZkscCQ1jPjdBWGkfSYl3IA1JuQ==}
     engines: {node: '>=22.13.0'}
     cpu: [x64]
     os: [darwin]
 
-  nanoraster-freebsd-x64@0.6.1:
-    resolution: {integrity: sha512-b86uhYY0ZtAODi6GKmZJgcjIw7eNbcLAuCuEZSx8bEuO/kRXlBWmJzQWIK19UwEJoueMqRlKRaFQKSbb9Vm9MA==}
+  nanoraster-freebsd-x64@0.7.0:
+    resolution: {integrity: sha512-ArXw7WYtN7vw31ptbQHtA4j/HahYFZAA798OVDJCf70tbV05GKz0GtL6ix/fWZ5fIy2t2GPs5G4aU2IP0qMxIA==}
     engines: {node: '>=22.13.0'}
     cpu: [x64]
     os: [freebsd]
 
-  nanoraster-linux-arm-gnueabihf@0.6.1:
-    resolution: {integrity: sha512-G//uubhjpDtukekk3TrEzWeACaBUaE/Hf6WEGEklDAnfSfPtM2rPnjlUav4DFXu6XYLETz80PI6VxMTLtbB+xQ==}
+  nanoraster-linux-arm-gnueabihf@0.7.0:
+    resolution: {integrity: sha512-Nr3eoDPL2O7HZ+RY9bIPwfYZXbRqCQq1z09ugJVN/gb7nB+iT16D8GUGRnD2Xhx4q56fqW/xPdhrv5/DRqTklA==}
     engines: {node: '>=22.13.0'}
     cpu: [arm]
     os: [linux]
 
-  nanoraster-linux-arm-musleabihf@0.6.1:
-    resolution: {integrity: sha512-GTPnuQHb56sdJlZyFqQfuHBy8h4CFUdLz64/ApRJiHoVm/89CU/E6AX8pOZgMUTneHMzU3LGW3xYs5EEEH6sFg==}
+  nanoraster-linux-arm-musleabihf@0.7.0:
+    resolution: {integrity: sha512-rV1yFfQ746ag6rLPX6HNcZHc6GV9XYm5rtlX370cPVm+KRS4E9j/6XiSoSj04QH0QYQbPVk4NqUcpz1LPkQupQ==}
     engines: {node: '>=22.13.0'}
     cpu: [arm]
     os: [linux]
 
-  nanoraster-linux-arm64-gnu@0.6.1:
-    resolution: {integrity: sha512-tyF9aweevfMSAkGv+hOcfAqXmmm1IyQ35gJOByt04a9NBq304TTrAjaAiCMem6NZTX3gUF0ammVw/sa7yX4HeA==}
+  nanoraster-linux-arm64-gnu@0.7.0:
+    resolution: {integrity: sha512-ca3bc/zt3E0d3PtmobcJbHZR9CiWCgqoLJMNAMkTdlKwwBDpjH4SPyFpingG5bIcrH+liW3AeCUKpObUbzDcmA==}
     engines: {node: '>=22.13.0'}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  nanoraster-linux-arm64-musl@0.6.1:
-    resolution: {integrity: sha512-2TIhy3pewFZK6GpfAQ54tIs0+irNDd2bkBv1kOIUgMbv32oyBJDPBXVxsc8qHGupNyxQIlM3KQD5I3SDflQt/w==}
+  nanoraster-linux-arm64-musl@0.7.0:
+    resolution: {integrity: sha512-NIqmsIKBDleUQQJrwrLBXYOq+MY663uXYbBk5qm2aHkE3qXZi5pqouYc5LjY6OmzhUFbO5c3sEmfqso8W8N3ww==}
     engines: {node: '>=22.13.0'}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  nanoraster-linux-ppc64-gnu@0.6.1:
-    resolution: {integrity: sha512-irfsOlIIPodE+EZ7RDoLlhcHUX2dzGCSKBCNowfx4uitQ2IKvNOU3Huv2is1YJ4zBw7yYVSyowi0v9X2YPxu+A==}
+  nanoraster-linux-ppc64-gnu@0.7.0:
+    resolution: {integrity: sha512-Lg7cJn4/i4P7IGs3XpezPulsD/DV1q3llaKuufaqCdmCcPgQyEga2i4oRSfI6lWLdr4bgcXYGvGT/t7SidqHAQ==}
     engines: {node: '>=22.13.0'}
     cpu: [ppc64]
     os: [linux]
     libc: [glibc]
 
-  nanoraster-linux-s390x-gnu@0.6.1:
-    resolution: {integrity: sha512-2MWJsgHu1OKieIDGFk+74oHguqGP7l5EOoyNI32eXgNHU6vmqYI9+9TaiAf5oa69WTWwjx63IvM4/rBRBVkFaQ==}
+  nanoraster-linux-s390x-gnu@0.7.0:
+    resolution: {integrity: sha512-SLXZxmbD5DR4OItqhY93pNZP9q01q1SRQl2/aXwSDXlps+6Ald1QChLS7TZmSf7mqKwLUgLDHamfunaBWQQI9A==}
     engines: {node: '>=22.13.0'}
     cpu: [s390x]
     os: [linux]
     libc: [glibc]
 
-  nanoraster-linux-x64-gnu@0.6.1:
-    resolution: {integrity: sha512-0PTTuqFcIHF9MzZro39ypPArgOadeTVDGItWAZ6jZbZcb+O3wkW+S85Pl8hoceKrvwd1VpFwkP3MslhxWRm4WQ==}
+  nanoraster-linux-x64-gnu@0.7.0:
+    resolution: {integrity: sha512-sk7qNbsU1IkfTt711RnReO1lijLj76NFIyfRnY5d9B2TFRtNAxjJHMdsVP3IYhdM1bpDEVtfuvLEoXGJwe3S7Q==}
     engines: {node: '>=22.13.0'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  nanoraster-linux-x64-musl@0.6.1:
-    resolution: {integrity: sha512-dHfTg5evK5AdTCbK3GmH1+ocmNQyCHuNS8dnNJvnsYQS+bBSOrdAr55DNELbyM5TprSF3j8q3pKwAvCofQaAMw==}
+  nanoraster-linux-x64-musl@0.7.0:
+    resolution: {integrity: sha512-MolH7vrfNoqEtQomAu6+dH9+Ar6ThKhnJANm/lzfKwmjF8IlI28/Za0WMXXAJzFha4xBKmlZ1VBAZaZRcEckvQ==}
     engines: {node: '>=22.13.0'}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  nanoraster-win32-arm64-msvc@0.6.1:
-    resolution: {integrity: sha512-ppd9K7uzJcGBKo8t3FOrYM2octM/Stc+MMhtMT5WCaGUd7u8d3DpvTA6U2enAPA78WufXboYpO6Tcrp+uWuWHA==}
+  nanoraster-win32-arm64-msvc@0.7.0:
+    resolution: {integrity: sha512-E1Hy9IxTlBMyRrTjmoHeeI4HaVAJ7JD4z8BrOigL/AQsFcSCPlz81wcKSdlMnYtzt9yZVOb8Kh2BMleSpcd4AQ==}
     engines: {node: '>=22.13.0'}
     cpu: [arm64]
     os: [win32]
 
-  nanoraster-win32-ia32-msvc@0.6.1:
-    resolution: {integrity: sha512-EBcuJFbR3EvTv6b7GqKc2n8fWgUy0v4icZ231qfj39tQuCloK4CNOu5FZZ8hX/46hXivszrIYm5qjbjuJw1nfw==}
+  nanoraster-win32-ia32-msvc@0.7.0:
+    resolution: {integrity: sha512-9c1scO8NBI37RhvAY4ewq/y1Sz3+roTdNra0qLXjHc+XeXuy06eXjGp2oyg5UFZwWRZvzQ12MKIxSGap9PAU+A==}
     engines: {node: '>=22.13.0'}
     cpu: [ia32]
     os: [win32]
 
-  nanoraster-win32-x64-msvc@0.6.1:
-    resolution: {integrity: sha512-T2mt6n3tsJXuxD6z5JdEPDYWioBPi0hl11WVce+TclYp8xsSF4A181SFfK+R+hFibSLwq4mpB+lLCIhDPo3VTw==}
+  nanoraster-win32-x64-msvc@0.7.0:
+    resolution: {integrity: sha512-AfrNe1XHMBEoFlnM2Lzh6Rwr/9MFOEVv0Adpru0X7hMdngxwkfDGq1FMngdQujMRNVJ+2ZL9FANAQW7oy3Iz7A==}
     engines: {node: '>=22.13.0'}
     cpu: [x64]
     os: [win32]
 
-  nanoraster@0.6.1:
-    resolution: {integrity: sha512-YwWIdXkKYz+cWO7EQ0Sz0AvLyNBhwMva9VdSfmyjlRkBSrUh2clZh5y8aU7JdTjsnJrUjKUL+cf0KOhXSUj74A==}
+  nanoraster@0.7.0:
+    resolution: {integrity: sha512-AKIk5bAyHiEpKIBSKVOalvObdxjvJNaRcT5wxEBKksZMv0V15OYZ+wWQ64iP/JXGFnRcB5RJAejcTS2660Zjmg==}
     engines: {node: '>=22.13.0'}
 
   nanospinner@1.2.2:
@@ -33414,11 +33546,6 @@ snapshots:
       - supports-color
       - unified
 
-  '@streamdown/code@1.1.1(react@19.2.7)':
-    dependencies:
-      react: 19.2.7
-      shiki: 3.23.0
-
   '@streamdown/math@1.0.3(react@19.2.7)':
     dependencies:
       katex: 0.18.2
@@ -33427,11 +33554,6 @@ snapshots:
       remark-math: 6.0.0
     transitivePeerDependencies:
       - supports-color
-
-  '@streamdown/mermaid@1.0.3(react@19.2.7)':
-    dependencies:
-      mermaid: 11.17.2
-      react: 19.2.7
 
   '@svgr/babel-plugin-add-jsx-attribute@8.0.0(@babel/core@7.29.7)':
     dependencies:
@@ -42425,71 +42547,71 @@ snapshots:
 
   nanoid@5.1.16: {}
 
-  nanoraster-android-arm-eabi@0.6.1:
+  nanoraster-android-arm-eabi@0.7.0:
     optional: true
 
-  nanoraster-android-arm64@0.6.1:
+  nanoraster-android-arm64@0.7.0:
     optional: true
 
-  nanoraster-darwin-arm64@0.6.1: {}
+  nanoraster-darwin-arm64@0.7.0: {}
 
-  nanoraster-darwin-x64@0.6.1:
+  nanoraster-darwin-x64@0.7.0:
     optional: true
 
-  nanoraster-freebsd-x64@0.6.1:
+  nanoraster-freebsd-x64@0.7.0:
     optional: true
 
-  nanoraster-linux-arm-gnueabihf@0.6.1:
+  nanoraster-linux-arm-gnueabihf@0.7.0:
     optional: true
 
-  nanoraster-linux-arm-musleabihf@0.6.1:
+  nanoraster-linux-arm-musleabihf@0.7.0:
     optional: true
 
-  nanoraster-linux-arm64-gnu@0.6.1:
+  nanoraster-linux-arm64-gnu@0.7.0:
     optional: true
 
-  nanoraster-linux-arm64-musl@0.6.1:
+  nanoraster-linux-arm64-musl@0.7.0:
     optional: true
 
-  nanoraster-linux-ppc64-gnu@0.6.1:
+  nanoraster-linux-ppc64-gnu@0.7.0:
     optional: true
 
-  nanoraster-linux-s390x-gnu@0.6.1:
+  nanoraster-linux-s390x-gnu@0.7.0:
     optional: true
 
-  nanoraster-linux-x64-gnu@0.6.1:
+  nanoraster-linux-x64-gnu@0.7.0:
     optional: true
 
-  nanoraster-linux-x64-musl@0.6.1:
+  nanoraster-linux-x64-musl@0.7.0:
     optional: true
 
-  nanoraster-win32-arm64-msvc@0.6.1:
+  nanoraster-win32-arm64-msvc@0.7.0:
     optional: true
 
-  nanoraster-win32-ia32-msvc@0.6.1:
+  nanoraster-win32-ia32-msvc@0.7.0:
     optional: true
 
-  nanoraster-win32-x64-msvc@0.6.1:
+  nanoraster-win32-x64-msvc@0.7.0:
     optional: true
 
-  nanoraster@0.6.1:
+  nanoraster@0.7.0:
     optionalDependencies:
-      nanoraster-android-arm-eabi: 0.6.1
-      nanoraster-android-arm64: 0.6.1
-      nanoraster-darwin-arm64: 0.6.1
-      nanoraster-darwin-x64: 0.6.1
-      nanoraster-freebsd-x64: 0.6.1
-      nanoraster-linux-arm-gnueabihf: 0.6.1
-      nanoraster-linux-arm-musleabihf: 0.6.1
-      nanoraster-linux-arm64-gnu: 0.6.1
-      nanoraster-linux-arm64-musl: 0.6.1
-      nanoraster-linux-ppc64-gnu: 0.6.1
-      nanoraster-linux-s390x-gnu: 0.6.1
-      nanoraster-linux-x64-gnu: 0.6.1
-      nanoraster-linux-x64-musl: 0.6.1
-      nanoraster-win32-arm64-msvc: 0.6.1
-      nanoraster-win32-ia32-msvc: 0.6.1
-      nanoraster-win32-x64-msvc: 0.6.1
+      nanoraster-android-arm-eabi: 0.7.0
+      nanoraster-android-arm64: 0.7.0
+      nanoraster-darwin-arm64: 0.7.0
+      nanoraster-darwin-x64: 0.7.0
+      nanoraster-freebsd-x64: 0.7.0
+      nanoraster-linux-arm-gnueabihf: 0.7.0
+      nanoraster-linux-arm-musleabihf: 0.7.0
+      nanoraster-linux-arm64-gnu: 0.7.0
+      nanoraster-linux-arm64-musl: 0.7.0
+      nanoraster-linux-ppc64-gnu: 0.7.0
+      nanoraster-linux-s390x-gnu: 0.7.0
+      nanoraster-linux-x64-gnu: 0.7.0
+      nanoraster-linux-x64-musl: 0.7.0
+      nanoraster-win32-arm64-msvc: 0.7.0
+      nanoraster-win32-ia32-msvc: 0.7.0
+      nanoraster-win32-x64-msvc: 0.7.0
 
   nanospinner@1.2.2:
     dependencies:

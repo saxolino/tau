@@ -4,7 +4,9 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertKernelRosterCoverage } from '@taucad/runtime-testing/roster';
 import { projectManifestSchema } from '@taucad/types';
+import { kernelConfigurations } from '@taucad/types/constants';
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import {
@@ -12,6 +14,7 @@ import {
   createExampleRuntimeClient,
   exampleKernelIds,
   exampleRuntime,
+  workspaceRuntime,
 } from '#scripts/runtime.js';
 
 type ManifestEntry = {
@@ -37,6 +40,35 @@ describe('generated example artifacts', () => {
       'parameterUnits',
       'gltfEdgeDetection',
     ]);
+  });
+
+  it('covers the product catalog, listing the native kernels like any other', () => {
+    assertKernelRosterCoverage({
+      runtime: exampleRuntime,
+      catalog: kernelConfigurations,
+      omitted: {
+        zoo: 'credentialed: example thumbnails render offline, with no Zoo proxy token',
+        build123d: 'no checked-in thumbnails: only the workspace runtime lists Build123d',
+        smlibpy: 'no checked-in thumbnails: only the workspace runtime lists SMLibPy',
+      },
+    });
+  });
+
+  it('lists SMLibPy and Build123d in the workspace runtime only', () => {
+    const ids = (runtime: typeof exampleRuntime | typeof workspaceRuntime) => runtime.kernels.map(({ id }) => id);
+    expect(ids(workspaceRuntime)).toEqual([
+      ...ids(exampleRuntime).slice(0, -2),
+      'smlibpy',
+      'build123d',
+      'picogk',
+      'tscircuit',
+    ]);
+  });
+
+  it('evaluates a native kernel only once the payload store holds its closure sealed', () => {
+    const listed = new Set<string>(exampleRuntime.kernels.map(({ id }) => id));
+    expect([...exampleKernelIds].every((id) => listed.has(id))).toBe(true);
+    expect([...listed].filter((id) => !exampleKernelIds.has(id)).every((id) => id === 'picogk')).toBe(true);
   });
 
   it('strictly validates unique manifest-backed builtins and excludes runtime caches', () => {
@@ -82,13 +114,14 @@ describe('generated example artifacts', () => {
     expect(manifest.find((entry) => entry.kernel === 'openscad')?.mainFile).toBe('main.scad');
     expect(manifest.find((entry) => entry.kernel === 'occt')?.mainFile).toBe('main.cpp');
     expect(manifest.find((entry) => entry.kernel === 'build123d')?.mainFile).toBe('main.py');
+    expect(manifest.find((entry) => entry.kernel === 'smlibpy')?.mainFile).toBe('main.py');
     expect(manifest.find((entry) => entry.kernel === 'picogk')?.mainFile).toBe('main.cs');
     expect(manifest.find((entry) => entry.name === 'v8-engine-rev2')?.mainFile).toBeUndefined();
 
     // PicoVoxel adds three test fixtures, the helix-heat-x heavy reference and six implicit references (D36).
     expect(manifest.filter((entry) => entry.kind === 'test-fixture')).toHaveLength(12);
     expect(manifest.filter((entry) => entry.kind === 'spec-fixture')).toHaveLength(1);
-    expect(manifest.filter((entry) => entry.kind === 'reference')).toHaveLength(10);
+    expect(manifest.filter((entry) => entry.kind === 'reference')).toHaveLength(13);
 
     for (const entry of manifest) {
       expect(entry.files.some((path) => path === 'thumbnail.webp' || path === 'thumbnail-featured.webp')).toBe(false);

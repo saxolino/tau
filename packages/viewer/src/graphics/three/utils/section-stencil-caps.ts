@@ -10,6 +10,7 @@ import {
   writeSectionCapOutlineCamera,
   writeSectionCapOutlineFaces,
 } from '#graphics/three/materials/section-cap-outline.material.js';
+import type { SectionCapOutlineFaces } from '#graphics/three/materials/section-cap-outline.material.js';
 import { createSectionClip, installSectionClip, writeSectionClip } from '#graphics/three/materials/section-clip.js';
 import type { SectionClip } from '#graphics/three/materials/section-clip.js';
 import {
@@ -22,15 +23,23 @@ import {
   setVertexColoredStripedMaterialStripes,
 } from '#graphics/three/materials/striped-material.js';
 import type { StripedCapStripes } from '#graphics/three/materials/striped-material.js';
+import { sectionCapOpenChainColor, sectionCapOpenChainWidthScale } from '#graphics/three/overlay-colors.constants.js';
 import { getBvhGeometryBounds } from '#graphics/three/utils/bvh-cache.js';
 import { resolveSectionCapStyle } from '#graphics/three/utils/section-cap-style.js';
+import type { SectionLoopCapSource } from '#graphics/three/utils/section-loop-caps.js';
 
-/** One closed solid to cap: the meshes that bound it, as drawn, and how its cut faces look. */
+/** One source to cap: the meshes that bound it, as drawn, and how its cut faces look. */
 export type SectionStencilCapSource = Readonly<{
   key: string;
   /** Overlap is shown only between sources of different owners. */
   ownerKey: string;
+  /** The meshes the source shows: counted for an exact cap, and outlined either way. */
   meshes: readonly THREE.Mesh[];
+  /**
+   * Set for a source that is not a closed solid: its cap is counted from the fans over the closed loops each face's
+   * slice found instead of from its meshes, and its open chains are outlined in the open-chain colour.
+   */
+  loops?: SectionLoopCapSource;
   /** The cap's tint, emphasis included. */
   tintHex: number;
   /** The outline colour where the cut meets the source's surfaces. */
@@ -58,7 +67,11 @@ export type SectionStencilCapStats = {
   /** Per drawn piece, the sources tested for overlap with an earlier owner, summed. */
   overlapCandidateSourceCount: number;
   outlineSourceCount: number;
-  /** Mesh draws of the sources' own geometry: stencil counts and outlines. */
+  /** Per drawn piece, the crossing sources capped from their per-loop slices, summed. */
+  loopSourceCount: number;
+  /** Draws of open-chain outlines. */
+  openChainDrawCount: number;
+  /** Mesh draws of the sources' own geometry and per-loop slices: stencil counts and outlines. */
   meshDrawCount: number;
   /** Draws of cap polygons: caps, marks and clears. */
   polygonDrawCount: number;
@@ -328,6 +341,7 @@ const createDrawObject = (geometry: THREE.BufferGeometry): THREE.Mesh => {
 
 type CapSlot = { clip: SectionClip; material: THREE.Material };
 type CountSlot = { clip: SectionClip; back: THREE.Material; front: THREE.Material };
+type FillSlot = { clip: SectionClip; material: THREE.Material };
 
 type SourceBox = Readonly<{ source: SectionStencilCapSource; box: THREE.Box3 }>;
 
@@ -344,6 +358,14 @@ const writeSourceBox = (source: SectionStencilCapSource, box: THREE.Box3, scratc
   }
   return box;
 };
+
+/** The pieces that remove what lies outside a face's bounds, so a fan on its plane counts only inside the face. */
+const outsideFaceBounds = (face: SectionFace): SectionPiece[] =>
+  face.bounds.map(({ normal, constant }) => ({
+    cutId: face.cutId,
+    halfSpaces: [{ normal: [-normal[0], -normal[1], -normal[2]], constant: -constant }],
+    faces: [],
+  }));
 
 const isOrthographic = (camera: THREE.Camera): boolean =>
   (camera as Partial<THREE.OrthographicCamera>).isOrthographicCamera === true;
@@ -368,7 +390,9 @@ export const resolveSectionExitHalfSpaces = (camera: THREE.Camera, piece: Sectio
  *
  * For each piece seen from its removed side, every closed source whose bounds cross the piece's exit region counts its
  * surfaces behind the exit face into the stencil (back faces up, front faces down, clipped to the exit region alone),
- * so a pixel's count is non-zero exactly where its cap point lies inside the solid. The cap is then drawn there in the
+ * so a pixel's count is non-zero exactly where its cap point lies inside the solid. A source that is not a closed solid
+ * counts the fans over the closed loops its per-loop slice found on each face instead, even-odd, so it caps what closes
+ * at the plane and leaves the rest open; its open chains are outlined in the open-chain colour. The cap is then drawn there in the
  * source's tint, trimmed to what the other cuts leave. Overlap marks where a later owner's solid also holds a point an
  * earlier owner's did, and the overlap colour is drawn over the visible caps there. An outline follows each face over
  * the sources' kept surfaces. Main-thread work per frame grows with pieces and meshes, never with triangles.
@@ -384,10 +408,14 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
   let polygonsUsed = 0;
 
   const countSlots: CountSlot[] = [];
+  const fillSlots: FillSlot[] = [];
   const capSlots: CapSlot[] = [];
   const outlineFaces = createSectionCapOutlineFaces();
+  /** The same faces as {@link outlineFaces}, at the open chains' wider line. */
+  const openChainFaces = createSectionCapOutlineFaces();
   const outlineClip = createSectionClip(backend);
   const outlineMaterials = new Map<number, THREE.Material>();
+  let openChainMaterial: THREE.Material | undefined;
   const stencilMaterials = new Map<SectionStencilPass, THREE.Material>();
   let overlapCapMaterial: THREE.Material | undefined;
   let stripes: StripedCapStripes | undefined;
@@ -397,7 +425,9 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
     return material;
   };
 
-  const stencilMaterial = (pass: Exclude<SectionStencilPass, 'cap' | 'overlap-cap' | 'count-back' | 'count-front'>) => {
+  const stencilMaterial = (
+    pass: Exclude<SectionStencilPass, 'cap' | 'overlap-cap' | 'count-back' | 'count-front' | 'count-parity'>,
+  ) => {
     let material = stencilMaterials.get(pass);
     if (!material) {
       material = own(createSectionStencilMaterial(backend, pass));
@@ -416,6 +446,18 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
       installSectionClip(front, clip);
       slot = { clip, back, front };
       countSlots[index] = slot;
+    }
+    return slot;
+  };
+
+  const fillSlot = (index: number): FillSlot => {
+    let slot = fillSlots[index];
+    if (!slot) {
+      const clip = createSectionClip(backend);
+      const material = own(createSectionStencilMaterial(backend, 'count-parity'));
+      installSectionClip(material, clip);
+      slot = { clip, material };
+      fillSlots[index] = slot;
     }
     return slot;
   };
@@ -441,15 +483,20 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
     return slot;
   };
 
+  const createOutlineMaterial = (faces: SectionCapOutlineFaces, color: number): THREE.Material => {
+    const material = own(
+      backend === 'webgpu'
+        ? createSectionCapOutlineNodeMaterial(faces, color)
+        : createSectionCapOutlineMaterial(faces, color),
+    );
+    installSectionClip(material, outlineClip);
+    return material;
+  };
+
   const outlineMaterial = (color: number): THREE.Material => {
     let material = outlineMaterials.get(color);
     if (!material) {
-      material = own(
-        backend === 'webgpu'
-          ? createSectionCapOutlineNodeMaterial(outlineFaces, color)
-          : createSectionCapOutlineMaterial(outlineFaces, color),
-      );
-      installSectionClip(material, outlineClip);
+      material = createOutlineMaterial(outlineFaces, color);
       outlineMaterials.set(color, material);
     }
     return material;
@@ -517,6 +564,8 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
       crossingSourceCount: 0,
       overlapCandidateSourceCount: 0,
       outlineSourceCount: 0,
+      loopSourceCount: 0,
+      openChainDrawCount: 0,
       meshDrawCount: 0,
       polygonDrawCount: 0,
       submitMilliseconds: 0,
@@ -576,6 +625,9 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
           capSlot(slot).clip,
           resolveSectionTrimmingPieces({ plane: face.plane, faces: [face] }, frame.pieces),
         );
+        if (crossing.some(({ source }) => source.loops)) {
+          writeSectionClip(fillSlot(slot).clip, outsideFaceBounds(face));
+        }
       }
 
       // Owners in the order their first source appears; overlap is tested between owners only.
@@ -594,9 +646,20 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
         const earlier = groups.slice(0, groupIndex);
         for (const entry of group) {
           const countOrder = order++;
-          for (const mesh of entry.source.meshes) {
-            takeMesh(mesh.geometry, counts.back, mesh.matrixWorld, countOrder);
-            takeMesh(mesh.geometry, counts.front, mesh.matrixWorld, countOrder);
+          const { loops } = entry.source;
+          if (loops) {
+            stats.loopSourceCount++;
+            for (const { slot } of faces) {
+              const geometry = loops.bySlot.get(slot);
+              if (geometry && geometry.closedLoopCount > 0) {
+                takeMesh(geometry.fill, fillSlot(slot).material, loops.matrix, countOrder);
+              }
+            }
+          } else {
+            for (const mesh of entry.source.meshes) {
+              takeMesh(mesh.geometry, counts.back, mesh.matrixWorld, countOrder);
+              takeMesh(mesh.geometry, counts.front, mesh.matrixWorld, countOrder);
+            }
           }
           if (meetsAny(entry, earlier)) {
             stats.overlapCandidateSourceCount++;
@@ -657,6 +720,8 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
     if (allFaces.length > 0) {
       writeSectionCapOutlineFaces(outlineFaces, allFaces, frame.outlineWidthPixels);
       writeSectionCapOutlineCamera(outlineFaces, frame.camera, frame.viewportHeightPixels);
+      writeSectionCapOutlineFaces(openChainFaces, allFaces, frame.outlineWidthPixels * sectionCapOpenChainWidthScale);
+      writeSectionCapOutlineCamera(openChainFaces, frame.camera, frame.viewportHeightPixels);
       writeSectionClip(outlineClip, frame.pieces);
       const outlineOrder = order++;
       for (const { source, box } of boxes) {
@@ -671,6 +736,17 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
         const material = outlineMaterial(source.edgeHex);
         for (const mesh of source.meshes) {
           takeMesh(mesh.geometry, material, mesh.matrixWorld, outlineOrder);
+        }
+      }
+      // Open chains over the ordinary outline, in one colour on every theme and emphasis: the cut there bounds no cap.
+      const openChainOrder = order++;
+      for (const { source } of boxes) {
+        for (const geometry of source.loops?.bySlot.values() ?? []) {
+          if (geometry.openChainCount > 0) {
+            stats.openChainDrawCount++;
+            openChainMaterial ??= createOutlineMaterial(openChainFaces, sectionCapOpenChainColor);
+            takeMesh(geometry.open, openChainMaterial, source.loops!.matrix, openChainOrder);
+          }
         }
       }
     }
@@ -712,8 +788,10 @@ export const createSectionStencilCaps = (backend: ResolvedGraphicsBackend): Sect
       meshPool.length = 0;
       emptyGeometry.dispose();
       countSlots.length = 0;
+      fillSlots.length = 0;
       capSlots.length = 0;
       outlineMaterials.clear();
+      openChainMaterial = undefined;
       stencilMaterials.clear();
       overlapCapMaterial = undefined;
       scene.clear();

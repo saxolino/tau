@@ -20,11 +20,13 @@
     "#*": "./src/*"
   },
   "dependencies": {
+    "@taucad/build123d": "workspace:*",
     "@taucad/esbuild": "workspace:*",
     "@taucad/image": "workspace:*",
     "@taucad/jscad": "workspace:*",
     "@taucad/manifold": "workspace:*",
     "@taucad/middleware": "workspace:*",
+    "@taucad/native-process-core": "workspace:*",
     "@taucad/opencascade": "workspace:*",
     "@taucad/openrscad": "workspace:*",
     "@taucad/picogk": "workspace:*",
@@ -32,15 +34,16 @@
     "@taucad/replicad": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "@taucad/smlib": "workspace:*",
+    "@taucad/smlibpy": "workspace:*",
     "@taucad/tscircuit": "workspace:*",
     "@taucad/types": "workspace:*"
   },
   "devDependencies": {
     "@classcad/smlibwasm": "catalog:",
     "@jscad/modeling": "catalog:",
-    "@taucad/build123d": "workspace:*",
     "@taucad/geometry-core": "workspace:*",
     "@taucad/kinematics": "workspace:*",
+    "@taucad/runtime-testing": "workspace:*",
     "geospec": "workspace:*",
     "libcascade": "catalog:",
     "manifold-3d": "catalog:",

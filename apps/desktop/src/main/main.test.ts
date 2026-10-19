@@ -74,6 +74,7 @@ const state = vi.hoisted(() => ({
   servicesRecover: vi.fn(async () => undefined),
   runtimePrewarm: vi.fn(),
   runtimeMaxUtilities: undefined as number | undefined,
+  runtimeSpareIdleMilliseconds: undefined as number | undefined,
   runtimeResidentLimit: undefined as
     | undefined
     | {
@@ -117,6 +118,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('#tau/native-store.js', () => ({
+  desktopNativeKernelIds: () => ['build123d'],
   startNativeStore: vi.fn(async (options: unknown) => {
     state.nativeStoreOptions = options;
     return undefined;
@@ -288,8 +290,10 @@ vi.mock('@taucad/runtime/electron/main', () => ({
       maxUtilities?: number;
       residentLimit?: typeof state.runtimeResidentLimit;
       resolveFork?: typeof state.resolveFork;
+      spareIdleMilliseconds?: number;
       utilityEntry: string;
     }) => {
+      state.runtimeSpareIdleMilliseconds = options.spareIdleMilliseconds;
       state.resolveFork = options.resolveFork;
       state.runtimeMaxUtilities = options.maxUtilities;
       state.runtimeResidentLimit = options.residentLimit;
@@ -734,6 +738,17 @@ describe('desktop main compute owner', () => {
       ]);
       expect(limit!.sample({ pid: 42 })).toBe(512 * 1024);
       expect(limit!.sample({ pid: undefined })).toBeUndefined();
+    },
+    bootMilliseconds,
+  );
+
+  it(
+    'should keep the prewarmed kernel spare only while projects are being opened',
+    async () => {
+      await bootstrap();
+      expect(state.runtimePrewarm).toHaveBeenCalled();
+      /* D-DT-09: the same idle bound as the geometry slot, so an idle app holds no spare utility. */
+      expect(state.runtimeSpareIdleMilliseconds).toBe(120_000);
     },
     bootMilliseconds,
   );

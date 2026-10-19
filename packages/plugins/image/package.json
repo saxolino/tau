@@ -73,7 +73,7 @@
   "peerDependencies": {
     "@taucad/camera": "^0.1.0-beta.0",
     "@taucad/runtime": "^0.1.0-beta.0",
-    "zod": "^4.0.0"
+    "zod": "^4.1.0"
   },
   "dependencies": {
     "@gltf-transform/core": "catalog:",
@@ -87,7 +87,7 @@
     "@taucad/camera": "workspace:*",
     "@taucad/runtime": "workspace:*",
     "geist": "catalog:",
-    "nanoraster-darwin-arm64": "0.6.1",
+    "nanoraster-darwin-arm64": "0.7.0",
     "vite": "catalog:",
     "vitest-mock-extended": "catalog:",
     "zod": "catalog:"

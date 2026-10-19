@@ -2,7 +2,7 @@ import { memo, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { useSelector } from '@xstate/react';
-import { ArrowLeftRight, CircleAlert, FlipHorizontal, PieChart, Plus, X } from 'lucide-react';
+import { ArrowLeftRight, FlipHorizontal, PieChart, Plus, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { SnapshotFrom } from 'xstate';
 import { Button } from '@taucad/ui/components/button';
@@ -372,7 +372,8 @@ const AddSectionMenu = memo(function AddSectionMenu(): React.JSX.Element {
               aria-label='Add section'
               // `aria-disabled` rather than `disabled`, so the reason stays reachable by hover and focus.
               aria-disabled={isFull || undefined}
-              className='size-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50'
+              // `ml-auto` holds Add against Done at the row's end, however many chips precede it.
+              className='ml-auto size-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50'
             >
               <Plus />
             </Button>
@@ -418,14 +419,14 @@ const areIdsEqual = (left: readonly string[], right: readonly string[]): boolean
   left.length === right.length && left.every((id, index) => id === right[index]);
 
 /**
- * The cuts in play, one chip each, then Add. Re-renders only when a cut comes or goes.
+ * The cuts in play, one chip each, then Add at the row's end. Re-renders only when a cut comes or goes.
  *
  * @public
  */
 export function SectionOptions(): React.JSX.Element {
   const cutIds = useSelector(useGraphics(), selectCutIds, areIdsEqual);
   return (
-    <div role='group' aria-label='Sections' className='flex min-w-0 flex-wrap items-center gap-1'>
+    <div role='group' aria-label='Sections' className='flex min-w-0 flex-1 flex-wrap items-center gap-1'>
       {cutIds.map((id) => (
         <SectionChip key={id} cutId={id} />
       ))}
@@ -756,27 +757,4 @@ export function SectionEditor(): React.ReactNode {
   const cutId = useGraphicsSelector((state) => selectOpenCut(state)?.id);
   const kind = useGraphicsSelector((state) => selectOpenCut(state)?.kind);
   return cutId && kind ? <SectionCutEditor key={cutId} cutId={cutId} kind={kind} /> : null;
-}
-
-/**
- * Says so when the caps refuse the latest cuts, and that the view keeps the last section they drew, if they ever drew
- * one. It stays mounted with the row, so the words are announced when they arrive, and takes no room while there is
- * nothing to say.
- * @public
- */
-export function SectionStatus(): React.JSX.Element {
-  const isRejected = useGraphicsSelector((state) => state.context.sectionCertification === 'rejected');
-  const hasLastSection = useGraphicsSelector((state) => state.context.committedSectionCuts.length > 0);
-  return (
-    <p role='status' className={isRejected ? 'flex items-center gap-1 px-1 text-xs text-muted-foreground' : 'sr-only'}>
-      {isRejected ? (
-        <>
-          <CircleAlert aria-hidden='true' className='size-3.5 shrink-0 text-feature' />
-          {hasLastSection
-            ? 'Section unavailable for this model; showing the last section'
-            : 'Section unavailable for this model'}
-        </>
-      ) : null}
-    </p>
-  );
 }

@@ -111,7 +111,7 @@ import { readWindowState, writeWindowState } from '#main/window-state.js';
 import { prepareOtaProbe } from '#main/ota-probe.js';
 import type { DesktopUpdater } from '#main/updater.js';
 import { startDesktopUpdater } from '#main/updater.js';
-import { startNativeStore } from '#tau/native-store.js';
+import { desktopNativeKernelIds, startNativeStore } from '#tau/native-store.js';
 import {
   appIconThemeChannel,
   openDirectoryChannel,
@@ -122,7 +122,6 @@ import {
   hostHandOffChannel,
   quitChannels,
   bootstrapArgumentPrefix,
-  desktopNativeKernelIds,
   computeControlChannels,
   servicesPortRelayTag,
   slicersChannels,
@@ -309,6 +308,8 @@ const keepAwakeIntervalMilliseconds = 20_000;
 /* Kernel utility resident ceiling (D-DT-02): the upper bound on half of physical memory. */
 const maxKernelResidentBytes = 8 * 1024 * 1024 * 1024;
 const kernelResidentPollMilliseconds = 5000;
+/* D-DT-09: an unadopted spare retires after the geometry slot's idle time; the next fork warms another. */
+const kernelSpareIdleMilliseconds = 120_000;
 /* One metrics read serves every sampler for this long. */
 const residentMetricsReuseMilliseconds = 500;
 
@@ -699,6 +700,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
       intervalMilliseconds: kernelResidentPollMilliseconds,
       sample: residentBytesOf,
     },
+    spareIdleMilliseconds: kernelSpareIdleMilliseconds,
     resolveFork: (context) => {
       const requestedRoot = context['projectRoot'];
       const registeredProjectRoot =
@@ -1457,7 +1459,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
           `${bootstrapArgumentPrefix}${JSON.stringify({
             env: clientEnvironment(environment),
             homeRoot,
-            runtimeKernelIds: desktopNativeKernelIds,
+            runtimeKernelIds: desktopNativeKernelIds(),
           })}`,
         ],
       },
