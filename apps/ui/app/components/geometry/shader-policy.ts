@@ -411,6 +411,7 @@ export const shaderEvidence = {
     ],
     lifecycle: [
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should dispose every demanded endpoint once on unmount',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should create each projection on demand without retaining the inactive graph',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::updates AO output and estimator uniforms without rebuilding the production graph',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should release partial resources when graph construction fails',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::keeps beauty ahead of AO dependencies and preserves its alpha in the AO visualization',

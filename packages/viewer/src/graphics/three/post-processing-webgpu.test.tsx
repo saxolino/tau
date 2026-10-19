@@ -356,7 +356,7 @@ const mount = async (properties: { aoAllowed?: boolean; settings?: Partial<PostP
 const isBeautyOnly = ({ material }: { material: { fragmentNode?: unknown } }): boolean =>
   (material.fragmentNode as { color?: unknown }).color === mocks.colorNode;
 
-describe('PostProcessingWebGPU retained endpoint pipelines', () => {
+describe('PostProcessingWebGPU active endpoint pipeline', () => {
   beforeEach(() => {
     mocks.ao.mockClear();
     mocks.aoDispose.mockClear();
@@ -423,18 +423,33 @@ describe('PostProcessingWebGPU retained endpoint pipelines', () => {
     expect(mocks.glRender).toHaveBeenCalledOnce();
   });
 
-  it('should create the other projection only on demand and reuse it on return', async () => {
-    await mount({ aoAllowed: false });
+  it('should create each projection on demand without retaining the inactive graph', async () => {
+    const mounted = await mount();
+    mocks.getFrame()?.(mocks.state, 0);
+    const firstPass = mocks.scenePasses[0]!;
     act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
+    expect(firstPass.dispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.pass).toHaveBeenCalledTimes(1);
     mocks.getFrame()?.(mocks.state, 0);
-    expect(mocks.pass).toHaveBeenCalledTimes(2);
-    expect(mocks.outputQuads[1]!.endpointCamera).toBe(mocks.orthographicCamera);
-    expect(mocks.outputQuads[1]!.render).toHaveBeenCalledOnce();
-    act(() => mocks.getRetarget()?.(mocks.perspectiveCamera, mocks.snapshot));
+    const secondPass = mocks.scenePasses[1]!;
+    act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
+    expect(secondPass.dispose).not.toHaveBeenCalled();
     mocks.getFrame()?.(mocks.state, 0);
     expect(mocks.pass).toHaveBeenCalledTimes(2);
-    expect(mocks.outputQuads[0]!.render).toHaveBeenCalledOnce();
+    act(() => mocks.getRetarget()?.(mocks.perspectiveCamera, mocks.snapshot));
+    expect(secondPass.dispose).toHaveBeenCalledOnce();
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.pass).toHaveBeenCalledTimes(3);
+    expect(mocks.ao).toHaveBeenCalledTimes(3);
+    expect(mocks.compileAsync).not.toHaveBeenCalled();
+    mounted.unmount();
+    for (const pass of mocks.scenePasses) {
+      expect(pass.dispose).toHaveBeenCalledOnce();
+    }
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(3);
+    expect(mocks.noiseDispose).toHaveBeenCalledTimes(3);
   });
 
   it('restores the selected scene-pass depth with one direct fullscreen draw', async () => {

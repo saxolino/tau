@@ -361,6 +361,15 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
 
   const retarget = useCallback(
     (camera: ThreeCamera, snapshot: CameraDriverSnapshot): void => {
+      if (selectedCameraRef.current !== camera) {
+        const previous = resourcesRef.current.get(selectedCameraRef.current);
+        if (previous) {
+          // At 5K each inactive endpoint retains ~358 MB of attachments. Retire its graph
+          // as a unit: reusing compiled graphs after target disposal regresses orthographic edges in r184.
+          disposePipelineResources([previous]);
+          resourcesRef.current.delete(selectedCameraRef.current);
+        }
+      }
       selectedCameraRef.current = camera;
       const target = toThreeRenderPoint({ renderFrame: cameraRig.renderFrame, pointMeters: snapshot.view.target });
       targetRef.current.set(target.x, target.y, target.z);
