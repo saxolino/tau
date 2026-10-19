@@ -32,7 +32,7 @@ import {
 import { ThemeProvider } from '#hooks/use-theme.js';
 import { createNodeFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-node-timing.js';
 import { createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
-import type { FrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
+import type { FrameGpuTimer, GpuPassRange } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import { getEnvironment } from '#environment.config.js';
 import {
   prepareBenchmarkPlayback,
@@ -242,6 +242,7 @@ function CalibrationProbe({
     interruptions: [] as string[],
     samples: [] as FrameSample[],
     gpuSamples: [] as number[],
+    gpuPassRanges: [] as GpuPassRange[][],
     benchmarkResult: undefined as Record<string, unknown> | undefined,
     saved: undefined as unknown,
     gpuPendingPeak: 0,
@@ -298,8 +299,9 @@ function CalibrationProbe({
           }
         : undefined,
       timingDefinitions:
-        'Frame interval is start-to-start render callback cadence, not independently confirmed display presentation. CPU submission covers frame callbacks; Native GPU diagnostic samples sum render-pass timestamp intervals and exclude copies, compute and presentation; classic WebGL samples enclose the submitted frame in an elapsed-time query. They can perturb scheduling and include preemption; they are not exclusive utilization or uninstrumented headroom.',
+        'Frame interval is start-to-start render callback cadence, not independently confirmed display presentation. CPU submission covers frame callbacks; Native GPU diagnostics retain overlapping render-pass ranges: gpuElapsed is their non-additive sum, gpuPassSpan is earliest start to latest end. They exclude commands outside those boundaries and presentation. WebGL queries enclose the submitted frame. They can perturb scheduling and include preemption; they are not exclusive utilization or uninstrumented headroom.',
       benchmark: state.current.benchmarkResult,
+      benchmarkSequence: benchmark,
       benchmarkRunning: benchmark !== state.current.benchmark,
       saved: state.current.saved,
       completedCaptureSequence: state.current.completedCapture,
@@ -391,6 +393,7 @@ function CalibrationProbe({
         current.benchmarkResult = undefined;
         current.samples = [];
         current.gpuSamples = [];
+        current.gpuPassRanges = [];
         current.gpuPendingPeak = 0;
         current.drainStarted = 0;
         current.playbackStarted = false;
@@ -491,6 +494,7 @@ function CalibrationProbe({
     const gpu = gpuTimer.current?.poll();
     if (benchmark !== current.benchmark && gpu) {
       current.gpuSamples.push(...gpu.milliseconds);
+      current.gpuPassRanges.push(...(gpu.passRanges ?? []));
     }
     current.gpuPendingPeak = Math.max(current.gpuPendingPeak, gpu?.pending ?? 0);
     if (current.appliedCamera !== cameraSettings.revision || requested !== presented) {
@@ -574,6 +578,11 @@ function CalibrationProbe({
                         : 'no-valid-samples'
                 : 'unsupported',
           gpuElapsed: current.gpuSamples.length > 0 ? summarize(current.gpuSamples) : undefined,
+          gpuPassRanges: current.gpuPassRanges.slice(0, 16),
+          gpuPassSpan:
+            current.gpuPassRanges.length > 0
+              ? summarize(current.gpuPassRanges.map((passes) => Math.max(...passes.map((pass) => pass.end))))
+              : undefined,
           gpuPendingPeak: current.gpuPendingPeak,
           gpuDrainMilliseconds: now - current.drainStarted,
           gpuDisjointDiscarded: gpu?.disjointDiscarded ?? 0,

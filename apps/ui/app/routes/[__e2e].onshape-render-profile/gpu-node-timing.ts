@@ -1,12 +1,16 @@
-import { REVISION, WebGPUCoordinateSystem } from 'three';
+import { REVISION, WebGLCoordinateSystem } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
-import type { FrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
+import { createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
+import type { FrameGpuTimer, GpuPassRange } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 
 type TimedPassDescriptor = { timestampWrites?: unknown };
 
 type TimestampPool = {
   readonly queryOffsets: Map<string, number>;
   readonly timestamps: Map<string, number>;
+  readonly resultBuffer?: GPUBuffer;
+  // oxlint-disable-next-line typescript/no-restricted-types -- Three r184 uses null for an idle query pool.
+  readonly pendingResolve: Promise<number> | null;
   resolveQueriesAsync: () => Promise<number>;
 };
 
@@ -18,11 +22,13 @@ type TimestampBackend = WebGPURenderer['backend'] & {
 
 /** Diagnose all render passes in a Tau frame; never enable queries in ordinary rendering. */
 export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer | undefined {
-  if (
-    REVISION !== '184' ||
-    renderer.coordinateSystem !== WebGPUCoordinateSystem ||
-    !renderer.hasFeature('timestamp-query')
-  ) {
+  if (renderer.coordinateSystem === WebGLCoordinateSystem) {
+    // Three r184 declares the common renderer context as unknown; its initialized
+    // WebGL coordinate system identifies the WebGL2 backend's actual context.
+    const context = renderer.getContext() as WebGL2RenderingContext;
+    return createFrameGpuTimer({ getContext: () => context });
+  }
+  if (REVISION !== '184' || !renderer.hasFeature('timestamp-query')) {
     return undefined;
   }
   // Three r184 declarations omit this backend surface. The source fingerprint and async
@@ -32,6 +38,7 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
     return undefined;
   }
   const completed: number[] = [];
+  const passRanges: GpuPassRange[][] = [];
   let active = false;
   let disposed = false;
   let pending: Promise<void> | undefined;
@@ -57,8 +64,21 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
     active = false;
   };
 
-  const collect = async (pool: TimestampPool, keys: string[]): Promise<void> => {
+  const collect = async (pool: TimestampPool, offsets: Map<string, number>): Promise<void> => {
+    const keys = [...offsets.keys()];
+    const buffer = pool.resultBuffer;
+    const originalGetMappedRange = buffer?.getMappedRange;
+    let raw: BigUint64Array | undefined;
+    const getMappedRange: GPUBuffer['getMappedRange'] = (offset, size) => {
+      const mapped = originalGetMappedRange!.call(buffer, offset, size);
+      // Copy before Three unmaps its owned buffer. Diagnostic-only, one pending frame.
+      raw = new BigUint64Array(mapped).slice();
+      return mapped;
+    };
     try {
+      if (buffer) {
+        buffer.getMappedRange = getMappedRange;
+      }
       // Its returned number covers only the last Three render call. The pool's
       // resolved per-pass map covers all nested calls made during this Tau frame.
       await pool.resolveQueriesAsync();
@@ -71,11 +91,32 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
         return;
       }
       completed.push(values.reduce<number>((sum, value) => sum + (value ?? 0), 0));
+      if (
+        raw &&
+        [...offsets.values()].every((offset) => raw![offset] !== undefined && raw![offset + 1] !== undefined)
+      ) {
+        let origin = raw[0]!;
+        for (const offset of offsets.values()) {
+          if (raw[offset]! < origin) {
+            origin = raw[offset]!;
+          }
+        }
+        passRanges.push(
+          [...offsets].map(([uid, offset]) => ({
+            uid,
+            start: Number(raw![offset]! - origin) / 1_000_000,
+            end: Number(raw![offset + 1]! - origin) / 1_000_000,
+          })),
+        );
+      }
     } catch {
       if (!disposed) {
         failedSamples++;
       }
     } finally {
+      if (buffer?.getMappedRange === getMappedRange) {
+        buffer.getMappedRange = originalGetMappedRange!;
+      }
       for (const key of keys) {
         pool.timestamps.delete(key);
       }
@@ -86,7 +127,13 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
   return {
     support: { extension: 'WebGPU timestamp-query (sum of render passes)', counterBits: 64 },
     begin() {
-      if (disposed || active || pending !== undefined || backend.trackTimestamp) {
+      if (
+        disposed ||
+        active ||
+        pending !== undefined ||
+        backend.trackTimestamp ||
+        backend.timestampQueryPool.render?.pendingResolve
+      ) {
         return false;
       }
       active = true;
@@ -103,11 +150,12 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
         failedSamples++;
         return;
       }
-      pending = collect(pool, [...pool.queryOffsets.keys()]);
+      pending = collect(pool, new Map(pool.queryOffsets));
     },
     poll() {
       return {
         milliseconds: completed.splice(0),
+        passRanges: passRanges.splice(0),
         pending: Number(Boolean(pending)),
         disjointDiscarded: 0,
         failedSamples,
@@ -122,6 +170,7 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
       }
       disposed = true;
       completed.length = 0;
+      passRanges.length = 0;
       // In-flight readback can finish, but cannot publish into a retired timer.
       // Do not dispose the borrowed pool: the renderer owns it until teardown.
     },

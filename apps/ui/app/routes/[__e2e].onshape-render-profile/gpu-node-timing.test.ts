@@ -11,12 +11,15 @@ import { createNodeFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/
 type Pool = {
   queryOffsets: Map<string, number>;
   timestamps: Map<string, number>;
+  resultBuffer?: GPUBuffer;
+  // oxlint-disable-next-line typescript/no-restricted-types -- Match Three r184 query-pool state.
+  pendingResolve: Promise<number> | null;
   resolveQueriesAsync: () => Promise<number>;
 };
 
 it('should sum all node passes once and stop collecting while readback is pending', async () => {
   const pending = Promise.withResolvers<number>();
-  const pool = mock<Pool>();
+  const pool = mock<Pool>({ pendingResolve: null });
   pool.queryOffsets = new Map();
   pool.timestamps = new Map();
   pool.resolveQueriesAsync.mockReturnValue(pending.promise);
@@ -93,7 +96,12 @@ it('should leave unsupported or externally owned timestamp tracking untouched', 
   expect(backend.trackTimestamp).toBe(false);
   const nodeWebGl = mock<WebGPURenderer>({ coordinateSystem: WebGLCoordinateSystem });
   nodeWebGl.hasFeature.mockReturnValue(true);
+  const context = mock<WebGL2RenderingContext>();
+  context.getExtension.mockReturnValue(null);
+  context.createQuery.mockReturnValue(mock<WebGLQuery>());
+  nodeWebGl.getContext.mockReturnValue(context);
   expect(createNodeFrameGpuTimer(nodeWebGl)).toBeUndefined();
+  expect(context.getExtension).toHaveBeenCalledWith('EXT_disjoint_timer_query_webgl2');
 });
 
 it('should guard the timestamp pool implementation used for whole-frame timing', () => {
@@ -115,7 +123,7 @@ it('should guard the timestamp pool implementation used for whole-frame timing',
 it.each(['missing', 'negative', 'nonfinite', 'rejected'] as const)(
   'should discard %s timestamp results without publishing stale durations',
   async (failure) => {
-    const pool = mock<Pool>();
+    const pool = mock<Pool>({ pendingResolve: null });
     pool.queryOffsets = new Map([['surface:f1', 0]]);
     pool.timestamps = new Map();
     const backend = mock<
@@ -152,3 +160,71 @@ it.each(['missing', 'negative', 'nonfinite', 'rejected'] as const)(
     timer.dispose();
   },
 );
+
+it('should retain raw overlapping pass ranges instead of treating their sum as elapsed time', async () => {
+  const pool = mock<Pool>({ pendingResolve: null });
+  pool.queryOffsets = new Map();
+  pool.timestamps = new Map();
+  pool.resultBuffer = mock<GPUBuffer>();
+  // Two overlapping passes: 3 + 2 ms of intervals, but only 4 ms from first to last.
+  const raw = new BigUint64Array([1_000_000n, 4_000_000n, 3_000_000n, 5_000_000n]);
+  const mapped = vi.mocked(pool.resultBuffer.getMappedRange);
+  mapped.mockReturnValue(raw.buffer);
+  pool.resolveQueriesAsync.mockImplementation(async () => {
+    pool.resultBuffer?.getMappedRange(0, raw.byteLength);
+    pool.timestamps.set('beauty:f1', 3);
+    pool.timestamps.set('output:f2', 2);
+    return 2;
+  });
+  const backend = mock<
+    WebGPURenderer['backend'] & {
+      trackTimestamp: boolean;
+      timestampQueryPool: { render?: Pool };
+    }
+  >({ trackTimestamp: false });
+  backend.timestampQueryPool = { render: pool };
+  const renderer = mock<WebGPURenderer>({ coordinateSystem: WebGPUCoordinateSystem });
+  renderer.backend = backend;
+  renderer.hasFeature.mockReturnValue(true);
+  const timer = createNodeFrameGpuTimer(renderer)!;
+  timer.begin();
+  pool.queryOffsets.set('beauty:f1', 0);
+  pool.queryOffsets.set('output:f2', 2);
+  timer.end();
+  await vi.waitFor(() => {
+    expect(timer.poll()).toMatchObject({
+      milliseconds: [5],
+      passRanges: [
+        [
+          { uid: 'beauty:f1', start: 0, end: 3 },
+          { uid: 'output:f2', start: 2, end: 4 },
+        ],
+      ],
+    });
+  });
+  expect(pool.resultBuffer.getMappedRange).toBe(mapped);
+  expect(timer.poll()).toMatchObject({ passRanges: [] });
+  timer.dispose();
+});
+
+it('should wait for a retired timer readback before borrowing the same pool', () => {
+  const pool = mock<Pool>({ pendingResolve: null });
+  pool.queryOffsets = new Map();
+  pool.pendingResolve = Promise.resolve(0);
+  const backend = mock<
+    WebGPURenderer['backend'] & {
+      trackTimestamp: boolean;
+      timestampQueryPool: { render?: Pool };
+    }
+  >({ trackTimestamp: false });
+  backend.timestampQueryPool = { render: pool };
+  const renderer = mock<WebGPURenderer>({ coordinateSystem: WebGPUCoordinateSystem });
+  renderer.backend = backend;
+  renderer.hasFeature.mockReturnValue(true);
+  const timer = createNodeFrameGpuTimer(renderer)!;
+  expect(timer.begin()).toBe(false);
+  expect(backend.trackTimestamp).toBe(false);
+  pool.pendingResolve = null;
+  expect(timer.begin()).toBe(true);
+  timer.dispose();
+});
