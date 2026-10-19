@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as ThreeModule from 'three';
+import type * as ThreeWebGpuModule from 'three/webgpu';
 /* eslint-disable @typescript-eslint/naming-convention -- stub class + module-export property names mirror three.js's WebGPURenderer/WebGLRenderer spellings */
 
 /**
@@ -14,38 +15,52 @@ const hoisted = vi.hoisted(() => {
     readonly setTransparentSort: ReturnType<typeof vi.fn>;
     readonly setOpaqueSort: ReturnType<typeof vi.fn>;
     readonly init: ReturnType<typeof vi.fn>;
+    readonly dispose: ReturnType<typeof vi.fn>;
     readonly options: unknown;
     readonly kind: 'webgl' | 'webgpu';
   };
 
   return {
     createdRenderers: [] as RecordedRenderer[],
+    initializationError: undefined as Error | undefined,
+    nativeBackend: true,
+    destroyDevice: vi.fn(),
   };
 });
 
-vi.mock('three/webgpu', () => {
+vi.mock('three/webgpu', async (importOriginal) => {
+  const actual = await importOriginal<typeof ThreeWebGpuModule>();
   class WebGPURendererStub {
     public readonly setTransparentSort = vi.fn();
     public readonly setOpaqueSort = vi.fn();
+    public readonly backend = new actual.WebGPUBackend();
+    public readonly dispose = vi.fn();
+    public get coordinateSystem() {
+      return hoisted.nativeBackend ? actual.WebGPUCoordinateSystem : actual.WebGLCoordinateSystem;
+    }
     public readonly init = vi.fn(async () => {
-      // Jsdom has no GPU adapter; the real `init` is irrelevant for this factory test.
+      if (hoisted.initializationError) {
+        throw hoisted.initializationError;
+      }
     });
     // oxlint-disable-next-line @typescript-eslint/parameter-properties -- `erasableSyntaxOnly` forbids constructor parameter properties in Vitest specs
     public readonly options: unknown;
 
     public constructor(options: unknown) {
       this.options = options;
+      Object.assign(this.backend, { device: { destroy: hoisted.destroyDevice } });
       hoisted.createdRenderers.push({
         setTransparentSort: this.setTransparentSort,
         setOpaqueSort: this.setOpaqueSort,
         init: this.init,
+        dispose: this.dispose,
         options,
         kind: 'webgpu',
       });
     }
   }
 
-  return { WebGPURenderer: WebGPURendererStub };
+  return { ...actual, WebGPURenderer: WebGPURendererStub };
 });
 
 vi.mock('three', async (importOriginal) => {
@@ -65,6 +80,7 @@ vi.mock('three', async (importOriginal) => {
         setTransparentSort: this.setTransparentSort,
         setOpaqueSort: this.setOpaqueSort,
         init: vi.fn(),
+        dispose: vi.fn(),
         options: parameters,
         kind: 'webgl',
       });
@@ -81,6 +97,29 @@ vi.mock('three', async (importOriginal) => {
 describe('createRenderer', () => {
   beforeEach(() => {
     hoisted.createdRenderers.length = 0;
+    hoisted.initializationError = undefined;
+    hoisted.nativeBackend = true;
+    hoisted.destroyDevice.mockClear();
+  });
+
+  it('should reject a node-WebGL fallback instead of labeling it WebGPU', async () => {
+    const { createRenderer } = await import('#graphics/three/renderer.js');
+    hoisted.nativeBackend = false;
+    await expect(createRenderer('viewport', 'webgpu', document.createElement('canvas'))).rejects.toThrow(
+      'WebGPU initialization did not select a native WebGPU backend',
+    );
+    expect(hoisted.createdRenderers[0]?.dispose).toHaveBeenCalledOnce();
+    expect(hoisted.destroyDevice).toHaveBeenCalledOnce();
+  });
+
+  it('should release a partially initialized GPU device without disposing an uninitialized renderer', async () => {
+    const { createRenderer } = await import('#graphics/three/renderer.js');
+    hoisted.initializationError = new Error('GPU device request rejected');
+    await expect(createRenderer('viewport', 'webgpu', document.createElement('canvas'))).rejects.toThrow(
+      'GPU device request rejected',
+    );
+    expect(hoisted.destroyDevice).toHaveBeenCalledOnce();
+    expect(hoisted.createdRenderers[0]?.dispose).not.toHaveBeenCalled();
   });
 
   describe('reversed-Z transparent sort wiring', () => {
@@ -143,6 +182,9 @@ describe('createRenderer', () => {
 describe('createRenderer showcase preset', () => {
   beforeEach(() => {
     hoisted.createdRenderers.length = 0;
+    hoisted.initializationError = undefined;
+    hoisted.nativeBackend = true;
+    hoisted.destroyDevice.mockClear();
   });
 
   it('should build the node renderer on the WebGPU backend without forcing WebGL', async () => {

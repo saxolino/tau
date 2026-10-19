@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { WebGPURenderer as ThreeWebGPURenderer } from 'three/webgpu';
+import { WebGPUBackend, WebGPURenderer as ThreeWebGPURenderer } from 'three/webgpu';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import { reversedDepthTransparentSort } from '#graphics/three/reversed-depth-transparent-sort.js';
+import { WebGpuInitializationError } from '#graphics/three/webgpu-initialization-error.js';
 
 /**
  * WebGL renderer instantiated by Tau helpers.
@@ -72,6 +73,14 @@ const isShowcaseTarget = (surface: HTMLCanvasElement | OffscreenCanvas | Rendere
 async function initWebGpuIfNeeded(renderer: WebGpuRenderer): Promise<void> {
   await renderer.init();
 }
+
+const destroyAllocatedDevice = (backend: WebGpuRenderer['backend']): void => {
+  if (backend instanceof WebGPUBackend) {
+    // Three owns this property; the published Backend declaration omits it.
+    const gpuBackend = backend as WebGPUBackend & { readonly device?: { destroy: () => void } };
+    gpuBackend.device?.destroy();
+  }
+};
 
 /**
  * Instantiate a Tau-normalised Three.js renderer for the given GPU backend and UI surface.
@@ -159,7 +168,20 @@ export async function createRenderer(
     }
 
     const renderer = new ThreeWebGPURenderer(options);
-    await initWebGpuIfNeeded(renderer);
+    const requestedBackend = renderer.backend;
+    try {
+      await initWebGpuIfNeeded(renderer);
+    } catch (error) {
+      // Three.dispose() calls init again through setAnimationLoop when init never completed.
+      // This factory supplied no external device: release any partially allocated one directly.
+      destroyAllocatedDevice(requestedBackend);
+      throw new WebGpuInitializationError(error instanceof Error ? error.message : String(error), { cause: error });
+    }
+    if (renderer.coordinateSystem !== THREE.WebGPUCoordinateSystem) {
+      renderer.dispose();
+      destroyAllocatedDevice(requestedBackend);
+      throw new WebGpuInitializationError('WebGPU initialization did not select a native WebGPU backend');
+    }
 
     if (useCase === 'viewport') {
       // Compensates for `reversedDepthBuffer: true` flipping clip-space Z direction:

@@ -5,6 +5,8 @@ import { ThreeCanvasInstance } from '#graphics/three/three-canvas-instance.jsx';
 import type { ThreeContextProperties } from '#graphics/three/three-viewer-properties.js';
 import { useWebglContextRef } from '#hooks/use-webgl-context-tracker.jsx';
 import { useViewerFeature } from '#environment/viewer-environment.jsx';
+import { WebglErrorBoundary } from '#cad/webgl-error-boundary.jsx';
+import { WebGpuInitializationError } from '#graphics/three/webgpu-initialization-error.js';
 
 // Three owns one global switch; each requesting WebGPU canvas holds a reference.
 let shaderStackOwners = 0;
@@ -16,7 +18,24 @@ let shaderStackOwners = 0;
  * @returns The canvas, or the WebGL limit fallback.
  * @public
  */
-export function ThreeProvider({
+export function ThreeProvider(properties: ThreeContextProperties): React.JSX.Element {
+  return (
+    <WebglErrorBoundary
+      key={properties.graphicsBackend}
+      fallback={({ error }) => {
+        if (properties.graphicsBackend !== 'webgpu' || !(error instanceof WebGpuInitializationError)) {
+          throw error ?? new Error('Renderer failed without an error description');
+        }
+        // A canvas cannot change its GPU context type. Mount the classic pipeline on a fresh owner.
+        return <ThreeProviderCanvas {...properties} graphicsBackend='webgl' />;
+      }}
+    >
+      <ThreeProviderCanvas {...properties} />
+    </WebglErrorBoundary>
+  );
+}
+
+function ThreeProviderCanvas({
   children,
   graphicsBackend,
   enableGizmo = false,

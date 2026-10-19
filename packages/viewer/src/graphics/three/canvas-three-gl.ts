@@ -3,6 +3,7 @@ import type { ThreeCamera } from '@taucad/three/camera';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import type { RendererInstance } from '#graphics/three/renderer.js';
 import { createRenderer } from '#graphics/three/renderer.js';
+import { WebGpuInitializationError } from '#graphics/three/webgpu-initialization-error.js';
 
 type TauR3fGlDefaults = Parameters<Extract<CanvasProps['gl'], (defaults: never) => unknown>>[0];
 
@@ -112,7 +113,11 @@ export function createTauR3fGlProp(
       if (isRetired()) {
         return pending();
       }
-      const failure = error instanceof Error ? error : new Error(String(error));
+      const cause = error instanceof Error ? error : new Error(String(error));
+      const failure =
+        graphicsBackend === 'webgpu' && !(cause instanceof WebGpuInitializationError)
+          ? new WebGpuInitializationError(cause.message, { cause })
+          : cause;
       console.warn('[createTauR3fGlProp] Renderer creation failed:', failure);
       onCreateError?.(failure);
       return pending();
