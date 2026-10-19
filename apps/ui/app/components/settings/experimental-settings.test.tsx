@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExperimentalSettings } from '#components/settings/experimental-settings.js';
 import { featureFlagDefaults } from '#flags/flag.constants.js';
@@ -23,17 +23,24 @@ describe('ExperimentalSettings', () => {
   it('should render only the exposed feature flags from the registry', () => {
     render(<ExperimentalSettings />);
 
+    expect(screen.getByRole('switch', { name: 'Prefer WebGPU' })).toBeChecked();
+    expect(screen.getByText(/Uses WebGL when WebGPU is unavailable or cannot start/)).toBeInTheDocument();
     expect(screen.getByText('Tau Debug')).toBeInTheDocument();
     for (const hidden of [
       'Marketing Landing',
       'Machines',
       'Parts warehouse',
-      'WebGPU rendering',
       'WebGPU shader stacks',
       'WebGPU inspector',
       'Plugins Store',
     ]) {
       expect(screen.queryByText(hidden)).not.toBeInTheDocument();
     }
+  });
+
+  it('should let the user prefer WebGL without disabling the viewer', () => {
+    render(<ExperimentalSettings />);
+    fireEvent.click(screen.getByRole('switch', { name: 'Prefer WebGPU' }));
+    expect(mockState.setFlag).toHaveBeenCalledExactlyOnceWith('webGpu', false);
   });
 });

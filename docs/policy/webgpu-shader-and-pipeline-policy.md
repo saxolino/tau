@@ -3,7 +3,7 @@ title: 'WebGPU Shader and Pipeline Policy'
 description: 'Rules for portable Three.js shaders, generated-source evidence, and render-pipeline ownership'
 status: active
 created: '2026-05-15'
-updated: '2026-10-18'
+updated: '2026-10-19'
 related:
   - docs/policy/graphics-backend-policy.md
   - docs/policy/webgpu-rendering-pipeline.md
@@ -217,7 +217,7 @@ Every custom shader site must be registered in `shader-policy.ts` and prove each
 5. Deterministic backend pixel/interaction tests for visible behavior.
 6. Frame/GPU timings for hot ubiquitous shaders or changes that add/remove render passes.
 
-Raw WGSL/GLSL is an escape hatch, not the default. Use TSL for logic that must execute on WebGPU and keep a paired classic WebGL material while the public renderer remains WebGL. A raw WGSL specialization requires a measured bottleneck, a documented portability boundary, and the same validation layers.
+Raw WGSL/GLSL is an escape hatch, not the default. Use TSL for logic that must execute on WebGPU and keep a paired classic WebGL material while the classic WebGL fallback remains supported. A raw WGSL specialization requires a measured bottleneck, a documented portability boundary, and the same validation layers.
 
 **Why**: A graph snapshot can remain stable while generated source, validation, state, or pixels regress. The layers catch different failure classes and keep the inventory auditable.
 

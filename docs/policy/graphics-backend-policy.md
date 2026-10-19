@@ -3,7 +3,7 @@ title: 'Graphics Backend Policy'
 description: 'Dual WebGL/WebGPU Three.js rendering, portable shaders, resource ownership, interaction, backend evidence, and kernel mesh resolution'
 status: active
 created: '2026-05-07'
-updated: '2026-10-17'
+updated: '2026-10-19'
 related:
   - docs/policy/compatibility-policy.md
   - docs/research/viewer-webgpu-selector-removal.md
@@ -18,7 +18,7 @@ related:
 
 # Graphics Backend Policy
 
-Tau maintains WebGL and WebGPU Three.js paths in `apps/ui`. WebGL is the default interactive baseline. The default-off `webGpu` feature flag enables experimental WebGPU viewers when an adapter is available; this opt-in does not establish default-backend readiness.
+Tau prefers native WebGPU for interactive CAD on supported devices and retains the classic WebGL renderer as a compatibility fallback. PBR remains the default material model; enabled AO stays visible during motion. The visible, default-on `webGpu` feature flag selects the backend preference. Rollout qualification is owned by the [high-resolution rendering blueprint](../research/high-resolution-rendering-blueprint.md).
 
 Rules 15 to 17 govern the meshes kernels hand the viewer, captures and exports: how their resolution is named, bounded and reported. The [kernel tessellation blueprint](../research/kernel-tessellation-policy-blueprint.md) holds the rulings (R1, R2) and the measurements behind them.
 
@@ -26,7 +26,11 @@ Rules 15 to 17 govern the meshes kernels hand the viewer, captures and exports: 
 
 ### 1. Resolve the backend once
 
-Resolve interactive viewers through `resolveViewerGraphicsBackend` in `apps/ui/app/utils/graphics-backend-override.ts`: the `webGpu` feature flag requests WebGPU only when an adapter is available, otherwise WebGL. Keep persisted per-view preferences normalized to WebGL; the experimental flag is the public opt-in. The internal `?graphicsBackend=` override takes precedence for manual and e2e evidence.
+Resolve interactive viewers through `resolveViewerGraphicsBackend` in `apps/ui/app/utils/graphics-backend-override.ts`: the `webGpu` feature flag prefers WebGPU when an adapter is available, otherwise WebGL. Keep persisted per-view preferences normalized to WebGL; the application flag owns the user-facing preference. The internal `?graphicsBackend=` override takes precedence for manual and e2e evidence.
+
+If WebGPU initialization fails, mount the classic WebGL pipeline on a fresh canvas. Do not mistake Three's node renderer with its WebGL2 backend for native WebGPU, and do not route arbitrary scene or shader errors through an initialization fallback. Dispose a partially allocated owned device; never call Three's normal renderer disposal before initialization completes.
+
+Record the initialized renderer's effective backend in validation evidence. API presence, adapter-probe success and requested preferences are not proof of the selected backend. Qualify packaged CAD interaction, transparency/transmission, edge thickness, captures, lifecycle recovery, larger scenes and additional hardware before rollout. Attribute whole-pipeline comparisons to those pipelines, not to the graphics API or later fixes. Evaluate consolidation onto the node renderer's WebGL2 backend separately.
 
 Key `ThreeCanvasInstance` by backend as `ThreeProvider` does. A backend switch must recreate renderer-owned state rather than reusing an incompatible canvas, material graph, controls instance, or post-processing pipeline.
 

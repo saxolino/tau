@@ -3,7 +3,7 @@ title: 'WebGPU Rendering Pipeline Policy'
 description: 'Canonical Tau WebGPU CAD stack: reversed-Z renderer, MSAA viewport, single beauty/normal MRT with spatial GTAO, tauDebug Inspector'
 status: active
 created: '2026-05-08'
-updated: '2026-10-18'
+updated: '2026-10-19'
 category: policy
 related:
   - docs/research/webgpu-cad-rendering-blueprint.md
@@ -28,13 +28,13 @@ Composite AO using the selected scene/display boundary while preserving alpha. T
 
 ### 2. Disabled AO and demand lifecycle
 
-Allocate only the requested projection endpoint. With AO disabled, acquire beauty/depth without normal MRT or GTAO resources. Retain the necessary output graph for the backend's frame-target/overlay contract; a disabled effect does not require unmounting that owner. Dispose owned resources on topology, backend and lifetime transitions, and retain no borrowed texture ownership.
+Allocate only the requested projection endpoint and retire the previous endpoint graph when switching projection. Do not retain both full-resolution camera attachment sets. Releasing only their targets while keeping the compiled graphs regresses orthographic edge pixels in Three r184; release the owned graph as a unit and measure its rebuild latency. With AO disabled, acquire beauty/depth without normal MRT or GTAO resources. Retain the necessary output graph for the backend's frame-target/overlay contract; a disabled effect does not require unmounting that owner. Dispose owned resources on topology, backend and lifetime transitions, and retain no borrowed texture ownership.
 
 Keep AO visible during motion when enabled. Do not enable temporal filtering without a separately qualified history, disocclusion and bounded demand-convergence contract. Record cold first-use cost separately from warm interaction.
 
-### 3. WebGL baseline
+### 3. WebGPU preference and WebGL compatibility
 
-WebGL remains the default interactive backend. Repair its post-target routing and qualify effect-specific quality alongside WebGPU, using each backend's existing owner. Do not force identical concrete passes or infer one backend's performance from the other. Preserve paired shader semantics, native edges, depth, alpha and authored PBR materials.
+Prefer native WebGPU on supported devices and fall back to classic WebGL when unavailable or initialization fails. The visible, default-on `webGpu` flag controls preference. Qualify effect-specific quality through each backend's existing owner. Do not force identical concrete passes or infer one backend's performance from the other. Preserve paired shader semantics, native edges, depth, alpha and authored PBR materials.
 
 ### 4. Debug Inspector overlay
 
