@@ -496,3 +496,172 @@ it.each((['webgl', 'webgpu'] as const).flatMap((backend) => ['front', 'behind'].
     }
   },
 );
+
+// Diagnostic qualification: accepted WebGL is the reference. Integrate contrast
+// around isolated strokes so subpixel placement cannot hide width differences.
+it.each([1, 1.5, 2].flatMap((dpr) => [0x00_00_00, 0xff_d5_4a].map((color) => ({ dpr, color }))))(
+  'should match final edge contrast across subpixel phases at DPR $dpr color $color',
+  async ({ dpr, color }) => {
+    vi.stubGlobal('devicePixelRatio', dpr);
+    await page.viewport(600, 500);
+    const { Vector2 } = await import('three');
+    const { createGltfFatLineMaterial, createGltfFatLineSegmentsFromPositions } =
+      await import('#graphics/three/materials/gltf-edges.js');
+    const phases = [0, 0.25, 0.5, 0.75];
+    const centers = phases.flatMap((phase, row) =>
+      [0, Math.PI / 2, Math.PI / 4, null].map((angle, column) => ({
+        x: 32 + column * 64 + phase,
+        y: 32 + row * 64 + phase,
+        angle,
+      })),
+    );
+    const positions = new Float32Array(
+      centers.flatMap(({ x, y, angle }) => {
+        if (angle === null) {
+          const radius = 16;
+          const point = (index: number) => {
+            const theta = -1.25 + (index * 2.5) / 32;
+            return [x - 128 - radius + radius * Math.cos(theta), 128 - y + radius * Math.sin(theta), 0.01];
+          };
+          return Array.from({ length: 32 }, (_, index) => [...point(index), ...point(index + 1)]).flat();
+        }
+        const dx = Math.cos(angle) * 20;
+        const dy = Math.sin(angle) * 20;
+        return [x - 128 - dx, 128 - y - dy, 0.01, x - 128 + dx, 128 - y + dy, 0.01];
+      }),
+    );
+    const results: number[][] = [];
+    for (const execution of ['webgl', 'webgpu', 'node-webgl2'] as const) {
+      referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+      const backend = execution === 'webgl' ? 'webgl' : 'webgpu';
+      const actor = createActor(
+        graphicsMachine.provide({
+          actors: {
+            probeWebGpu: createAsyncLogic({ run: async () => backend === 'webgpu' }),
+          },
+        }),
+        { input: { enablePostProcessing: true } },
+      ).start();
+      const material = createGltfFatLineMaterial({ backend, resolution: new Vector2(256, 256), edgeColor: color });
+      const lines = createGltfFatLineSegmentsFromPositions({ backend, positions, material });
+      if (!lines) {
+        throw new Error('Expected non-empty edge fixture');
+      }
+      let state: RootState | undefined;
+      let pending: Promise<void> | undefined;
+      let pixels: Uint8ClampedArray | undefined;
+      let captureError: Error | undefined;
+      let frame = 0;
+      let capturedFrame = 0;
+      let retired = false;
+      const measure = async (current: RootState): Promise<void> => {
+        const requestedFrame = frame;
+        try {
+          pixels = await captureRendererOutput(current.gl);
+          capturedFrame = requestedFrame;
+        } catch (error) {
+          captureError = error instanceof Error ? error : new Error(String(error));
+        } finally {
+          pending = undefined;
+        }
+      };
+      const Probe = (): undefined => {
+        state = useThree();
+        useFrame((current) => {
+          frame++;
+          if (!pending && !retired) {
+            pending = measure(current);
+          }
+        }, 4);
+        return undefined;
+      };
+      try {
+        render(
+          <div style={{ width: 256, height: 256 }}>
+            <GraphicsProvider
+              graphicsRef={actor}
+              seed={{
+                camera: {
+                  cameraFovAngle: 0,
+                  cameraView: {
+                    frameId: 'tau:root',
+                    target: [0, 0, 0],
+                    direction: [0, 0, 1],
+                    up: [0, 1, 0],
+                    verticalSpan: 256,
+                    perspectiveZoom: 1,
+                  },
+                },
+              }}
+            >
+              <ThreeCanvasInstance
+                graphicsBackend={backend}
+                upDirection='y'
+                postProcessingSettings={{ intensity: 0, gtaoIntensity: 0 }}
+                onRetry={() => undefined}
+              >
+                <mesh>
+                  <planeGeometry args={[512, 512]} />
+                  <meshBasicMaterial color={0xff_ff_ff} />
+                </mesh>
+                <primitive object={lines} />
+                <Probe />
+              </ThreeCanvasInstance>
+            </GraphicsProvider>
+          </div>,
+        );
+        // oxlint-disable-next-line no-await-in-loop -- comparison must dispose one backend before opening the next.
+        await vi.waitFor(
+          () => {
+            if (!pending && capturedFrame < 4) {
+              state?.advance(performance.now(), true);
+            }
+            if (captureError) {
+              throw captureError;
+            }
+            expect(state?.gl.domElement.width).toBe(256 * dpr);
+            expect(capturedFrame).toBeGreaterThanOrEqual(4);
+          },
+          { timeout: 45_000 },
+        );
+        retired = true;
+        // oxlint-disable-next-line no-await-in-loop -- drain the final readback before measurement.
+        await pending;
+        expect(state!.camera.type).toBe('OrthographicCamera');
+        expect(isViewportWebGpu(state!.gl)).toBe(backend === 'webgpu');
+        if (isViewportWebGpu(state!.gl)) {
+          expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+        }
+        const background = pixels![2]!;
+        expect(background).toBeGreaterThan(200);
+        const widths = centers.map(({ x, y }) => {
+          let contrast = 0;
+          for (let row = Math.floor((y - 26) * dpr); row < Math.ceil((y + 26) * dpr); row++) {
+            for (let column = Math.floor((x - 26) * dpr); column < Math.ceil((x + 26) * dpr); column++) {
+              contrast += 1 - pixels![(row * 256 * dpr + column) * 4 + 2]! / background;
+            }
+          }
+          return contrast / (40 * dpr * dpr);
+        });
+        results.push(widths);
+      } finally {
+        retired = true;
+        // oxlint-disable-next-line no-await-in-loop -- drain owned resources before the next backend.
+        await pending;
+        if (state) {
+          // oxlint-disable-next-line no-await-in-loop -- teardown is sequential.
+          await disposeRendererOutput(state.gl);
+        }
+        cleanup();
+        actor.stop();
+        lines.geometry.dispose();
+        material.dispose();
+      }
+    }
+    const differences = results
+      .slice(1)
+      .flatMap((candidate) => results[0]!.map((value, index) => Math.abs(value - candidate[index]!)));
+    expect(Math.min(...results.flat()), JSON.stringify(results)).toBeGreaterThan(0.05);
+    expect(Math.max(...differences), JSON.stringify({ dpr, results, differences })).toBeLessThanOrEqual(0.1);
+  },
+);

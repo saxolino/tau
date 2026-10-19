@@ -20,12 +20,10 @@ import { viewportRenderTiers } from '#graphics/three/utils/render-order.utils.js
  */
 export const gltfEdgeLineWidth = 1;
 
-/**
- * Expanded WebGPU edge quad width in CSS pixels. The material shades only the central
- * {@link gltfEdgeLineWidth} stroke as fully covered and uses the extra width as an analytic
- * AA fringe, avoiding the inconsistent opaque-MSAA thickness of near-1px lines.
- */
-const webGpuEdgePresentationGeometryLineWidth = 2;
+// Node edges do not write depth. Draw them after opaque surfaces so a later
+// surface cannot overwrite their color; depth testing still rejects hidden edges.
+// This is before section caps and emphasis tiers. Classic ordering is unchanged.
+const nodeEdgeRenderOrder = 1;
 
 /**
  * Disable raycast on edge meshes. Pointer events traverse the scene every move; the default
@@ -214,14 +212,14 @@ export function createWebGlGltfFatLineMaterial(
 export function createWebGpuGltfFatLineMaterial(edgeColor: number = gltfEdgeColorLightMode): Line2NodeMaterial {
   const material = new Line2NodeMaterial({
     color: edgeColor,
-    linewidth: webGpuEdgePresentationGeometryLineWidth,
+    linewidth: gltfEdgeLineWidth,
     worldUnits: false,
   });
 
   material.alphaToCoverage = false;
   material.depthWrite = false;
   material.transparent = false;
-  material.edgePresentationCoverage = true;
+  material.edgePresentationCoverage = false;
   material.edgePresentationLineWidth = gltfEdgeLineWidth;
   material.useViewportSrgbBlend = false;
 
@@ -259,6 +257,9 @@ export function createGltfFatLineSegmentsFromPositions(
   // R5: edge meshes are render-only overlays; skip the expensive per-segment screen-space
   // raycast that R3F's pointermove handler would otherwise invoke on every mouse move.
   fatLine.raycast = disableRaycast;
+  if (backend === 'webgpu') {
+    fatLine.renderOrder = nodeEdgeRenderOrder;
+  }
 
   return fatLine;
 }
@@ -314,8 +315,10 @@ function wrapAsFatLineSegments(
   fatLine.name = lineSegments.name;
   fatLine.userData = { ...lineSegments.userData };
 
-  // Keep surfaces and owner-local edges adjacent in the ordinary render order. Surface
-  // materials provide the bounded coplanar separation; edges retain geometric depth.
+  // Reused prototypes bypass the allocating factory but have the same ordering contract.
+  if (backend === 'webgpu') {
+    fatLine.renderOrder = nodeEdgeRenderOrder;
+  }
 
   return fatLine;
 }
@@ -415,7 +418,7 @@ export function setGltfFatLineEmphasis(object: Object3D, emphasis: ModelComponen
   const line = object as LineSegments2;
   if (emphasis === 'none') {
     line.material = base as LineMaterial;
-    line.renderOrder = viewportRenderTiers.model;
+    line.renderOrder = base instanceof Line2NodeMaterial ? nodeEdgeRenderOrder : viewportRenderTiers.model;
     return;
   }
   const materials = getOrCreateEdgeEmphasisMaterials(base);

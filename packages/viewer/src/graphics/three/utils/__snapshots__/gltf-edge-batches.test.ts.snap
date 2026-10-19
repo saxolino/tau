@@ -12,7 +12,6 @@ exports[`edge occurrence semantics > should retain the stripped occurrence endpo
     "edgeEndNode": "<nodeRef>",
     "edgeStartNode": "<nodeRef>"
   },
-  "linewidth": 2,
   "metadata": {
     "generator": "Material.toJSON",
     "type": "Material",
