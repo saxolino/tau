@@ -398,12 +398,10 @@ export const shaderEvidence = {
     ],
   },
   'webgpu-post': {
-    'generated-source': [
-      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
-    ],
     ...evidence(
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx',
       'restores the selected scene-pass depth with one direct fullscreen draw',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ),
     reference: [
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should tone-map the scene once in linear light and leave the sRGB encode to the output pass',
