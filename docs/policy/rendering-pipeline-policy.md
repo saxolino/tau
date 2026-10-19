@@ -76,7 +76,7 @@ Keep AO-off and unoccluded AO-on pixels consistent. The accepted display-space A
 
 ## Ambient Occlusion
 
-Keep PBR as the default material foundation. WebGL uses N8AO and WebGPU uses GTAO. AO must remain visible during orbit and mechanism motion whenever enabled; never implement interaction quality by silently disabling it. The global post-processing default remains gated on measured motion quality and native-resolution performance.
+Keep PBR as the default material foundation. The classic WebGL reference currently uses N8AO and the native WebGPU candidate uses GTAO. Evaluate shared node AO estimation/reconstruction on forced WebGL2 and native WebGPU; matching definitions is preferred where supported and measured, not a requirement to force an inefficient or incorrect algorithm. AO must remain visible during orbit and mechanism motion whenever enabled; never implement interaction quality by silently disabling it. The global post-processing default remains gated on measured motion quality and native-resolution performance.
 
 `post-processing-settings.ts` owns radius, estimator, denoiser and composition settings. The default radius is 1% of the CSS viewport diagonal with a four-device-pixel minimum, converted once to physical pixels. N8AO intensity is 3 and screen-space distance falloff is 0.2; zero falloff suppresses occlusion samples. GTAO uses its separate intensity/falloff controls, eight samples and half-resolution spatial estimation without temporal filtering.
 
