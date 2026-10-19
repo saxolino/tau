@@ -104,6 +104,16 @@ describe('createRenderer', () => {
     hoisted.destroyDevice.mockClear();
   });
 
+  it('should keep the lean node viewport single-sample without changing classic or offscreen antialiasing', async () => {
+    const { createRenderer } = await import('#graphics/three/renderer.js');
+    await createRenderer('viewport', 'webgpu', document.createElement('canvas'));
+    await createRenderer('viewport', 'webgl', document.createElement('canvas'));
+    await createRenderer('offscreen', 'webgpu', document.createElement('canvas'));
+    expect(hoisted.createdRenderers[0]?.options).toMatchObject({ antialias: false, samples: 0, stencil: true });
+    expect(hoisted.createdRenderers[1]?.options).toMatchObject({ antialias: true });
+    expect(hoisted.createdRenderers[2]?.options).toMatchObject({ antialias: true });
+  });
+
   it('should reject a node-WebGL fallback instead of labeling it WebGPU', async () => {
     const { createRenderer } = await import('#graphics/three/renderer.js');
     hoisted.nativeBackend = false;

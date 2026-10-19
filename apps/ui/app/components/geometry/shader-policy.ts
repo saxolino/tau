@@ -456,10 +456,11 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should configure both native camera projections before the first WebGPU scene pass',
     ],
     'structural-perf': [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should keep AO active without multisampled scene attachments or a native-resolution AA intermediate',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should budget AO in CSS pixels independently of device pixel ratio',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should resize the AO budget only for CSS size changes and retain it across DPR changes',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should prepare only the active beauty endpoint when AO is disabled',
-      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::keeps final antialias input color-only while retaining scene depth for overlays',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain scene depth for overlays without a final antialias target',
     ],
   },
   'model-emphasis-silhouette': evidence(

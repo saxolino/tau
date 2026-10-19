@@ -59,7 +59,8 @@ vi.mock('#graphics/three/renderer.js', async (importOriginal) => {
           canvas: 'canvas' in target ? target.canvas : target,
           // eslint-disable-next-line @typescript-eslint/naming-convention -- Three constructor option.
           forceWebGL: true,
-          antialias: true,
+          antialias: false,
+          samples: 0,
           alpha: true,
           stencil: true,
         });

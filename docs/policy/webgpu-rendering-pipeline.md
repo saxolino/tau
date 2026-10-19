@@ -1,9 +1,9 @@
 ---
 title: 'WebGPU Rendering Pipeline Policy'
-description: 'Canonical Tau WebGPU CAD stack: reversed-Z renderer, MSAA viewport, single beauty/normal MRT with spatial GTAO, tauDebug Inspector'
+description: 'Canonical Tau WebGPU CAD stack: reversed-Z renderer, lean single-sample scene MRT, spatial GTAO and explicit output/depth ownership'
 status: active
 created: '2026-05-08'
-updated: '2026-10-19'
+updated: '2026-10-20'
 category: policy
 related:
   - docs/research/webgpu-cad-rendering-blueprint.md
@@ -22,9 +22,11 @@ The interactive viewport runs `frameloop="demand"`. Use one scene acquisition an
 
 ### 1. Canonical graph
 
-Use the shared viewport renderer factory with reversed depth, hardware MSAA and no logarithmic depth. When AO is requested, one `PassNode` acquires beauty, depth and packed UNORM8 normals. Feed its resolved depth and decoded normals to GTAO at half resolution, eight samples, and `useTemporalFiltering = false`.
+Use the shared viewport renderer factory with reversed depth and no logarithmic depth. The performance-first node candidate explicitly uses single-sample scene attachments (`pass(scene, camera, { samples: 0 })`), and a single-sample renderer frame target (`antialias: false, samples: 0`). When AO is requested, one `PassNode` acquires beauty, depth and packed UNORM8 normals. Feed its depth and decoded normals to GTAO at half CSS resolution (`0.5 / DPR`), eight samples, and `useTemporalFiltering = false`. Keep spatial bilateral filtering at that AO budget and bilinearly sample the filtered visibility into native-resolution beauty. Native-resolution depth/normal gathers are excluded from the lean candidate; AO boundary halos remain an appearance qualification gate.
 
 Composite AO using the selected scene/display boundary while preserving alpha. The default display-space composition is an accepted CAD appearance, not an identity with indirect-only physical occlusion. Keep tone mapping explicit and encode sRGB once. The output `QuadMesh` must draw through the renderer's frame target so later overlays cannot overwrite it with stale contents. Do not reintroduce `RenderPipeline.render()` as the canvas output owner.
+
+The user-authorized lean candidate removes the native-resolution FXAA intermediate and composes tone mapping/AO directly into the renderer frame target. Grid and transparent line overlays use ordinary linear hardware blending without viewport-copy color compensation. Keep authoritative depth restoration and cap stencil semantics. Edge antialiasing and classic gamma-space appearance parity remain unqualified; this performance candidate does not promote node WebGL2 or change classic WebGL. Record fresh full/close, both-backend 5K evidence before claiming a gain.
 
 ### 2. Disabled AO and demand lifecycle
 
@@ -48,7 +50,7 @@ three.js **`Inspector`** mounts only when the viewer switch **`useViewerFeature(
 
 ## Summary Checklist
 
-- [ ] Shared viewport factory retains reversed depth and explicit hardware MSAA.
+- [ ] Scene acquisition explicitly selects single-sample attachments; the viewport frame target is also single-sample.
 - [ ] One scene acquisition; normals/GTAO exist only when requested.
 - [ ] Spatial GTAO uses resolved depth and decoded normals without temporal jitter.
 - [ ] Output passes through the frame target; tone mapping and encoding occur once.

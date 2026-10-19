@@ -9,8 +9,6 @@ const files = [
   'packages/viewer/src/graphics/three/post-processing.tsx',
   'packages/viewer/src/graphics/three/renderer.ts',
   'packages/viewer/src/graphics/three/scene-overlay.tsx',
-  'packages/viewer/src/graphics/three/materials/infinite-grid-material.node.ts',
-  'packages/viewer/src/graphics/three/materials/line2.material.ts',
   'apps/ui/app/routes/[__e2e].onshape-render-profile/route.tsx',
 ];
 

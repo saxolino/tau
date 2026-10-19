@@ -20,7 +20,6 @@ import {
   vec3,
   vec4,
 } from 'three/tsl';
-import { createViewportFxaa } from '#graphics/three/fxaa.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { createAoDenoise } from '#graphics/three/ao-denoise.js';
 import { AlwaysDepth, WebGLCoordinateSystem, HalfFloatType, RedFormat, LinearSRGBColorSpace, Vector3 } from 'three';
@@ -41,7 +40,6 @@ type PostProcessingPipelineResources = Readonly<{
   outputQuad: QuadMesh;
   aoNode?: ReturnType<typeof ao>;
   denoiseNode?: ReturnType<typeof createAoDenoise>;
-  antialiasInput?: ReturnType<typeof rtt>;
   denoiseInput?: ReturnType<typeof rtt>;
   depthRestore: QuadMesh;
   depthRestoreMaterial: NodeMaterial;
@@ -52,7 +50,7 @@ type PostProcessingPipelineResources = Readonly<{
 }>;
 
 /**
- * WebGPU-only GTAO post-pipeline.
+ * Shared node GTAO post-pipeline for native WebGPU and diagnostic WebGL2.
  *
  * Architecture (see `docs/research/webgpu-post-processing-performance-audit.md` R1 and
  * `docs/research/webgpu-composite-quad-depth-write-non-functional.md` for the C2 reversal):
@@ -70,12 +68,10 @@ type PostProcessingPipelineResources = Readonly<{
  * - **Demand preparation** — only the active camera and requested AO graph are created. Compilation occurs
  *   through the actual frame target on first use.
  *
- * **AA strategy.** Anti-aliasing comes from hardware MSAA on the `WebGPURenderer` (`antialias: true`). The
- * scenePass inherits 4-MSAA on both attachments; final FXAA covers edges introduced by AO.
- * The normal MRT being multisampled is acceptable since we no
- * longer pay for a second scene rasterisation (see audit D1a). TRAA was removed because the viewport runs
- * `frameloop='demand'`: temporal AA cannot accumulate while the scene is idle, and a single un-converged TRAA
- * frame surfaces as edge graininess.
+ * **Lean candidate.** Beauty/depth/normal attachments are single-sample. AO keeps its
+ * half-CSS spatial filter and bilinear reconstruction during motion. Compose and
+ * tone-map directly into the renderer frame target, without a native-resolution FXAA RTT.
+ * Edge aliasing is an explicit qualification tradeoff, not an AO motion bypass.
  *
  * Does **not** monkey-patch `gl.render` — `QuadMesh.render` calls `renderer.render`.
  */
@@ -124,9 +120,9 @@ const createOutputQuad = (fragmentNode: NodeMaterial['fragmentNode']): QuadMesh 
 
 /**
  * Release the RTT resources omitted by Three r184's inherited Node.dispose.
- * @param input - Owned color-only post-processing intermediate, if this graph includes AO.
+ * @param input - Owned low-resolution AO intermediate, if this graph includes AO.
  */
-const disposeAntialiasInput = (input: ReturnType<typeof rtt> | undefined): void => {
+const disposeOwnedRtt = (input: ReturnType<typeof rtt> | undefined): void => {
   if (!input) {
     return;
   }
@@ -172,10 +168,9 @@ const createPipelineResources = ({
   readonly toneMapping: ToneMapping;
   readonly withAo: boolean;
 }): PostProcessingPipelineResources => {
-  const scenePass = pass(scene, camera);
+  const scenePass = pass(scene, camera, { samples: 0 });
   let aoNode: ReturnType<typeof ao> | undefined;
   let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
-  let antialiasInput: ReturnType<typeof rtt> | undefined;
   let denoiseInput: ReturnType<typeof rtt> | undefined;
   let outputQuad: QuadMesh | undefined;
   let depthRestoreMaterial: NodeMaterial | undefined;
@@ -209,19 +204,11 @@ const createPipelineResources = ({
 
     const displayMode = uniform(0);
     const compositeStage = uniform(0);
-    const antialiasTargetOptions = { type: HalfFloatType, depthBuffer: false, stencilBuffer: false };
     if (!withAo) {
-      antialiasInput = rtt(
-        renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace),
-        null,
-        null,
-        antialiasTargetOptions,
-      );
-      outputQuad = createOutputQuad(createViewportFxaa(antialiasInput));
+      outputQuad = createOutputQuad(renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace));
       return {
         camera,
         outputQuad,
-        antialiasInput,
         depthRestore,
         depthRestoreMaterial,
         scenePass,
@@ -265,11 +252,9 @@ const createPipelineResources = ({
       stencilBuffer: false,
     };
     denoiseInput = rtt(denoiseNode.visibility(screenUV), 1, 1, denoiseTargetOptions);
-    const aoFactor = select<'float'>(
-      aoNode.scale.greaterThan(0),
-      denoiseNode.upsample(denoiseInput, screenUV),
-      float(1),
-    );
+    // Performance candidate: filter at the AO budget, then bilinearly reconstruct.
+    // This avoids native-resolution depth/normal gathers; boundary halos remain a visual gate.
+    const aoFactor = select<'float'>(aoNode.scale.greaterThan(0), denoiseInput.sample(screenUV).r, float(1));
     const visibility = select<'float'>(displayMode.equal(2), float(1), aoFactor);
     const beforeTone = select<'float'>(compositeStage.equal(0), visibility, float(1));
     const afterTone = select<'float'>(compositeStage.equal(1), visibility, float(1));
@@ -285,10 +270,8 @@ const createPipelineResources = ({
       vec4(vec3(aoFactor), scenePassColor.a),
       select<'float'>(displayMode.equal(1), float(1), float(0)),
     );
-    // Match the accepted WebGL pipeline: filter tone-mapped linear RGB, then encode once.
-    // This intermediate feeds only FXAA color. Overlay depth remains owned by scenePass.
-    antialiasInput = rtt(composite, null, null, antialiasTargetOptions);
-    outputQuad = createOutputQuad(createViewportFxaa(antialiasInput));
+    // Compose directly: avoid a full-resolution HDR intermediate and its FXAA draw.
+    outputQuad = createOutputQuad(composite);
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
@@ -297,7 +280,6 @@ const createPipelineResources = ({
       aoNode,
       denoiseNode,
       denoiseInput,
-      antialiasInput,
       depthRestore,
       depthRestoreMaterial,
       scenePass,
@@ -308,8 +290,7 @@ const createPipelineResources = ({
   } catch (error) {
     depthRestoreMaterial?.dispose();
     (outputQuad?.material as NodeMaterial | undefined)?.dispose();
-    disposeAntialiasInput(antialiasInput);
-    disposeAntialiasInput(denoiseInput);
+    disposeOwnedRtt(denoiseInput);
     disposeAoNode(aoNode);
     scenePass.dispose();
     throw error;
@@ -319,8 +300,7 @@ const createPipelineResources = ({
 const disposePipelineResources = (resources: readonly PostProcessingPipelineResources[]): void => {
   for (const resource of resources) {
     (resource.outputQuad.material as NodeMaterial).dispose();
-    disposeAntialiasInput(resource.antialiasInput);
-    disposeAntialiasInput(resource.denoiseInput);
+    disposeOwnedRtt(resource.denoiseInput);
     disposeAoNode(resource.aoNode);
     resource.depthRestoreMaterial.dispose();
     resource.scenePass.dispose();

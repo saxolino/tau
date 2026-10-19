@@ -7,7 +7,7 @@
 /* oxlint-disable unicorn-js/prevent-abbreviations -- identifiers match upstream Line2NodeMaterial.js */
 
 import type { Node, Line2NodeMaterialParameters as ThreeLine2NodeMaterialParameters } from 'three/webgpu';
-import { NoBlending } from 'three';
+import { NoBlending, NormalBlending } from 'three';
 import { Line2NodeMaterial as ThreeLine2NodeMaterial } from 'three/webgpu';
 import {
   attribute,
@@ -124,7 +124,7 @@ export const compositeOverViewportSrgb = (rgb: unknown, alpha: unknown, viewport
  * CB-3 entry quotes. We close the seam for line materials by transferring both operands
  * into sRGB space via `sRGBTransferOETF`, mixing, and converting the result back to
  * working color space with `sRGBTransferEOTF` before assigning `outputNode.rgb`. The
- * infinite grid uses the same {@link compositeOverViewportSrgb} over its own viewport copy.
+ * lean viewport leaves this appearance-reference path disabled.
  *
  * The viewport sample uses {@link tauOpaqueViewportTexture} (a non-mip singleton over
  * `viewportTexture()`) rather than upstream `viewportOpaqueMipTexture` because the
@@ -167,29 +167,23 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
   public edgePresentationCoverageGamma = 2.2;
 
   /**
-   * Transparent overlay lines normally use Tau's explicit sRGB viewport blend. GLTF edge
-   * presentation coverage intentionally keeps normal GPU blending to avoid a framebuffer
-   * copy on the main model path.
+   * Explicit appearance-reference opt-in. Ordinary overlays use hardware linear blending
+   * without copying the framebuffer; gamma-space matching is not part of the lean path.
    */
-  public useViewportSrgbBlend = true;
+  public useViewportSrgbBlend = false;
 
   public constructor(parameters?: ThreeLine2NodeMaterialParameters) {
     super(parameters);
   }
 
   /**
-   * Screen-space overlays composited in sRGB space carry their own analytic coverage in alpha.
+   * Screen-space overlays carry analytic coverage in alpha independently of blend color space.
    * Hardware alpha-to-coverage would turn that composited alpha into dropped samples, and WebGPU
    * resolves samples in the linear frame target, which lightens every partly covered pixel of a
    * thin line (about half the ink of WebGL's sRGB-space resolve for the 1.25 px viewport axes).
    */
   public get usesAnalyticCoverage(): boolean {
-    return (
-      this.transparent &&
-      this.useViewportSrgbBlend &&
-      !this.edgePresentationCoverage &&
-      (this as any).worldUnits !== true
-    );
+    return this.transparent && !this.edgePresentationCoverage && (this as any).worldUnits !== true;
   }
 
   /** @inheritdoc */
@@ -536,6 +530,8 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
       // tint × opacity mix against transparent black into a dark opaque line.
       self.outputNode = compositeOverViewportSrgb(self.colorNode.rgb, opacityNode, viewportColor);
       self.blending = NoBlending;
+    } else if (self.transparent) {
+      self.blending = NormalBlending;
     }
 
     generatedLineNodes.set(

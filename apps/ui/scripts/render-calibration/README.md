@@ -81,17 +81,18 @@ The installed ESM runtime and types are resolved through the existing image-plug
 
 The calibration Vite configuration applies guarded source experiments through
 `app/routes/[__e2e].onshape-render-profile/ablation-transform.ts`. Production configuration
-never installs them; no viewer API or product default changes. Restart the calibration
+never installs them; query choices do not enter the viewer API. The current branch
+contains the lean production candidate described below. Restart the calibration
 server after editing that transform. Query parameters are fixed at page load:
 
-- `abl=full|direct|beauty|mrt|raw-ao|filtered-ao`: full graph; direct PBR draw; beauty/FXAA;
-  beauty/FXAA with normal MRT; raw GTAO with bilinear sampling; filtered GTAO with bilinear sampling.
-- `aa=off`: remove FXAA **and its input RTT dependency**.
-- `samples=0`: single-sample renderer; `sceneSamples=0|4`: independently set the scene target.
+- `abl=full|direct|beauty|mrt|raw-ao|filtered-ao|bilateral-ao`: full graph; direct PBR draw; tone-mapped beauty;
+  tone-mapped beauty with normal MRT; raw GTAO with bilinear sampling; filtered GTAO with bilinear sampling (the lean default); filtered GTAO with native bilateral reconstruction.
+- The lean candidate has no FXAA intermediate. Historical `aa=off` comparisons belong to commit `1cec9efe67`.
+- `samples=0|4`: override the single-sample renderer default; `sceneSamples=0|4`: independently set the scene target.
 - `nodegl=1`: force the node WebGL2 backend, preserving standard depth and reporting actual execution.
 - `edges=off`: omit BRep lines. `overlay=grid|axes|both`: enable only those overlays.
 - `depthRestore=off`: intentionally incorrect occlusion control; omit the later depth restore.
-- `overlayBlend=linear`: ordinary linear blending, omitting the sRGB viewport-copy compensation.
+- The lean candidate uses ordinary linear overlay blending without viewport copies. Historical `overlayBlend` comparisons belong to commit `1cec9efe67`.
 - `view=close`: initial span request 0.09 m; full is 0.22 m.
 
 Example: `/calibration-preview.html?abl=full&view=close&overlay=both&sceneSamples=0`.
@@ -101,9 +102,8 @@ the completed report. For the 5K experiment use CSS 2560×1440, DPR 2, natural c
 Benchmark combined. Save PNG + metadata only after timing finishes. Warmup is 30 frames,
 then 300 samples. Run matched repeats; never report capped cadence as exclusive GPU time.
 
-`mrt`, `raw-ao`, `filtered-ao` and `aa=off` remove graph dependencies, not merely their visible
-contribution. Draw counts and allocated target counts verify the intended execution. No-AA
-and raw/filtered controls intentionally change appearance. Reduced MSAA and linear overlay
-blending are experiments, not appearance-qualified replacements. Direct rendering still
+`mrt` and `raw-ao` remove graph dependencies, not merely their visible
+contribution. `filtered-ao` matches the lean full graph; `bilateral-ao` restores the expensive reconstruction for controlled comparison. Draw counts and allocated target counts verify the intended execution. Raw/filtered controls intentionally change appearance. The lean branch defaults to single-sample
+scene acquisition and frame targets, bilinear AO reconstruction, no FXAA intermediate and linear overlay blending; it is not appearance-qualified. Direct rendering still
 uses Tau's loaded meshes, materials, lighting and update owners; it is not a standalone
 Three.js application or a measurement of all Tau CPU overhead.

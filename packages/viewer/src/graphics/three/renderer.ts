@@ -29,11 +29,11 @@ export type RendererInstance = WebGlRenderer | WebGpuRenderer;
 /**
  * Tau-owned renderer presets for disparate surfaces:
  *
- * - **`viewport`** — Interactive CAD `<Canvas>`: MSAA on for both backends — WebGPU adds reversed-Z + GTAO,
- *   WebGL adds log-depth + N8AO and `powerPreference: 'high-performance'` (matches @react-three/fiber defaults
+ * - **`viewport`** — Interactive CAD `<Canvas>`: the lean node candidate uses single-sample targets with reversed-Z + GTAO;
+ *   classic WebGL retains MSAA, log-depth + N8AO and `powerPreference: 'high-performance'` (matches @react-three/fiber defaults
  *   for object-form `gl` props; factory `gl` must set it explicitly). TRAA/temporal AA is intentionally absent because the viewport runs
  *   `frameloop='demand'` (see `docs/policy/graphics-backend-policy.md`) and temporal effects cannot
- *   converge while the scene is idle, so static frames must be AA-clean from a single render.
+ *   converge while the scene is idle. Single-frame edge quality remains a qualification gate for the lean candidate.
  * - **`offscreen`** — Shared/doc bitmap path: MSAA + log-depth + stencil; WebGL omits preserve-buffer (bitmap transfer).
  * - **`showcase`** — Brand surfaces built on TSL node materials (the metal morph loader): always Three's node
  *   renderer so one TSL graph serves both GPU APIs. `backend: 'webgpu'` uses the WebGPU backend and lets Three
@@ -155,7 +155,8 @@ export async function createRenderer(
 
     if (useCase === 'viewport') {
       Object.assign(options, {
-        antialias: true,
+        antialias: false,
+        samples: 0,
         reversedDepthBuffer: true,
         logarithmicDepthBuffer: false,
         stencil: true,
@@ -187,6 +188,7 @@ export async function createRenderer(
     if (useCase === 'viewport') {
       // NodeRenderer does not invoke Material.onBeforeRender. Use its supported
       // draw callback for renderer-dependent surface bias, without per-draw arrays.
+      // oxlint-disable-next-line max-params -- Three draw callback signature; avoid a rest-array allocation per draw.
       renderer.setRenderObjectFunction((object, scene, camera, geometry, material, group, lights, clipping, passId) => {
         syncGltfSurfaceDepthBias.call(material, renderer);
         renderer.renderObject(object, scene, camera, geometry, material, group, lights, clipping, passId);

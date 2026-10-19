@@ -205,6 +205,7 @@ const mocks = vi.hoisted(() => {
     depthNode,
     displayUniforms,
     fxaa: vi.fn((value: unknown) => value),
+    mix: vi.fn((beauty: unknown, aoOnly: unknown, factor: unknown) => ({ beauty, aoOnly, factor })),
     getFrame: () => frame,
     getCurrentViewport,
     getRetarget: () => retarget,
@@ -289,6 +290,7 @@ vi.mock('three/tsl', () => ({
     return Object.assign(value, {
       width,
       height,
+      sample: vi.fn(() => ({ r: { kind: 'filtered-ao-r' } })),
       setSize: (nextWidth: number, nextHeight: number) => {
         mocks.denoiseSize(nextWidth, nextHeight);
         Object.assign(value, { width: nextWidth, height: nextHeight });
@@ -302,7 +304,7 @@ vi.mock('three/tsl', () => ({
   directionToColor: vi.fn((value: unknown): unknown => value),
   float: vi.fn((value: number) => value),
   mrt: vi.fn((value: unknown): unknown => value),
-  mix: vi.fn((beauty: unknown, aoOnly: unknown, factor: unknown) => ({ beauty, aoOnly, factor })),
+  mix: mocks.mix,
   normalView: { kind: 'normal-view' },
   output: { kind: 'output' },
   pass: mocks.pass,
@@ -375,6 +377,8 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
   beforeEach(() => {
     mocks.ao.mockClear();
     mocks.denoise.mockClear();
+    mocks.fxaa.mockReset();
+    mocks.mix.mockClear();
     mocks.denoiseSize.mockClear();
     mocks.aoDispose.mockClear();
     mocks.noiseDispose.mockClear();
@@ -433,6 +437,19 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mounted.unmount();
   });
 
+  it('should keep AO active without multisampled scene attachments or a native-resolution AA intermediate', async () => {
+    const mounted = await mount();
+    expect(mocks.pass).toHaveBeenCalledWith(mocks.scene, mocks.perspectiveCamera, { samples: 0 });
+    expect(mocks.antialiasTargetOptions).toHaveBeenCalledTimes(1);
+    expect(mocks.fxaa).not.toHaveBeenCalled();
+    expect(mocks.denoise.mock.results[0]!.value.upsample).not.toHaveBeenCalled();
+    expect(mocks.aoNodes[0]!.scale.value).toBeGreaterThan(0);
+    mocks.getFrame()?.(mocks.state, 1 / 60);
+    expect(mocks.updateAoCamera).toHaveBeenCalled();
+    mounted.unmount();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+  });
+
   it('should resize the AO budget only for CSS size changes and retain it across DPR changes', async () => {
     mocks.state.size.width = 1501;
     mocks.state.size.height = 1001;
@@ -469,7 +486,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const composed = mocks.outputQuads.find((quad) => !isBeautyOnly(quad));
     expect(composed?.material.fragmentNode).toMatchObject({
       aoOnly: [
-        { condition: { intensityAbove: 0 }, ifTrue: { kind: 'denoised-ao-r' }, ifFalse: 1 },
+        { condition: { intensityAbove: 0 }, ifTrue: { kind: 'filtered-ao-r' }, ifFalse: 1 },
         { kind: 'scene-alpha' },
       ],
     });
@@ -481,7 +498,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
   it('should prepare only the active beauty endpoint when AO is disabled', async () => {
     await mount({ aoAllowed: false });
     expect(mocks.pass).toHaveBeenCalledTimes(1);
-    expect(mocks.pass).toHaveBeenCalledWith(mocks.scene, mocks.perspectiveCamera);
+    expect(mocks.pass).toHaveBeenCalledWith(mocks.scene, mocks.perspectiveCamera, { samples: 0 });
     expect(mocks.ao).not.toHaveBeenCalled();
     expect(mocks.denoise).not.toHaveBeenCalled();
     expect(mocks.scenePasses[0]!.setMRT).not.toHaveBeenCalled();
@@ -492,13 +509,9 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(isBeautyOnly(mocks.outputQuads[0]!)).toBe(true);
   });
 
-  it('keeps final antialias input color-only while retaining scene depth for overlays', async () => {
+  it('should retain scene depth for overlays without a final antialias target', async () => {
     await mount();
-    expect(mocks.antialiasTargetOptions).toHaveBeenCalledWith(null, null, {
-      type: HalfFloatType,
-      depthBuffer: false,
-      stencilBuffer: false,
-    });
+    expect(mocks.antialiasTargetOptions).not.toHaveBeenCalledWith(null, null, expect.anything());
     mocks.getFrame()?.(mocks.state, 0);
     mocks.glRender.mockClear();
     mocks.getRestoreDepth()?.();
@@ -511,7 +524,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const firstPass = mocks.scenePasses[0]!;
     act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
     expect(firstPass.dispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(1);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.pass).toHaveBeenCalledTimes(1);
     mocks.getFrame()?.(mocks.state, 0);
@@ -530,7 +543,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     for (const pass of mocks.scenePasses) {
       expect(pass.dispose).toHaveBeenCalledOnce();
     }
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(6);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(3);
     expect(mocks.noiseDispose).toHaveBeenCalledTimes(3);
   });
 
@@ -573,7 +586,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(composed?.material.fragmentNode).toMatchObject({
       beauty: { kind: 'display-composed-color', color: { kind: 'composed-color' } },
       aoOnly: [
-        { condition: { intensityAbove: 0 }, ifTrue: { kind: 'denoised-ao-r' }, ifFalse: 1 },
+        { condition: { intensityAbove: 0 }, ifTrue: { kind: 'filtered-ao-r' }, ifFalse: 1 },
         { kind: 'scene-alpha' },
       ],
     });
@@ -621,8 +634,8 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(mocks.aoNodes).toHaveLength(1);
     mounted.rerender(<PostProcessingWebGpu {...endpointProperties} settings={{ displayMode: 'no-ao' }} />);
     expect(mocks.aoDispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(3);
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(3);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(1);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(1);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.aoNodes).toHaveLength(1);
     expect(mocks.scenePasses[2]!.setMRT).not.toHaveBeenCalled();
@@ -657,9 +670,9 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
       expect(pass.dispose).toHaveBeenCalledOnce();
     }
     expect(mocks.aoDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasDispose).toHaveBeenCalledTimes(4);
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(4);
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(4);
+    expect(mocks.antialiasDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(2);
     expect(mocks.noiseDispose).toHaveBeenCalledTimes(2);
     expect(mocks.postDispose).toHaveBeenCalledTimes(2);
   });
@@ -677,19 +690,19 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     error.mockRestore();
   });
 
-  it('should release allocated AO and RTT resources when FXAA construction fails', async () => {
+  it('should release allocated AO and RTT resources when composition construction fails', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    mocks.fxaa.mockImplementationOnce(() => {
-      throw new Error('FXAA failed');
+    mocks.mix.mockImplementationOnce(() => {
+      throw new Error('Composition failed');
     });
     const mounted = await mount();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(1);
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(1);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.aoDispose).toHaveBeenCalledOnce();
     expect(mocks.scenePasses[0]!.dispose).toHaveBeenCalledOnce();
     mounted.unmount();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(1);
     error.mockRestore();
   });
 

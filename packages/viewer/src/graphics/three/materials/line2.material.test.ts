@@ -192,6 +192,7 @@ describe('Line2NodeMaterial.outputNode (gamma-space blend regression guard)', ()
       worldUnits: false,
     });
 
+    material.useViewportSrgbBlend = true;
     runSetupWithStubbedAncestors(material);
 
     const view = material as unknown as ColorNodeBearing;
@@ -244,6 +245,18 @@ describe('Line2NodeMaterial.outputNode (gamma-space blend regression guard)', ()
    * and the upstream `NodeMaterial.setupOutput` chain. The smoking-gun guard ensures the
    * transparent-only branch never leaks into opaque consumers.
    */
+  it('should leave transparent overlays on hardware blending without a viewport copy by default', () => {
+    const material = new Line2NodeMaterial({ transparent: true, opacity: 0.6 });
+    try {
+      runSetupWithStubbedAncestors(material);
+      expect(material.useViewportSrgbBlend).toBe(false);
+      expect(material.outputNode).toBeNull();
+      expect(material.blending).not.toBe(NoBlending);
+    } finally {
+      material.dispose();
+    }
+  });
+
   it('leaves outputNode unset when the material is opaque', () => {
     const material = new Line2NodeMaterial({
       color: 0xff_00_ff,
