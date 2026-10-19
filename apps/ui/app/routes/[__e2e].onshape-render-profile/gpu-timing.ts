@@ -12,7 +12,7 @@ export type FrameGpuTimer = {
   begin: () => boolean;
   end: () => void;
   /** Returns completed samples without waiting; discarded count is cumulative. */
-  poll: () => { milliseconds: number[]; pending: number; disjointDiscarded: number };
+  poll: () => { milliseconds: number[]; pending: number; disjointDiscarded: number; failedSamples?: number };
   dispose: () => void;
 };
 

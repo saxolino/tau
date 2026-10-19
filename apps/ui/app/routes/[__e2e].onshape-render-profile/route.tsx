@@ -30,6 +30,7 @@ import {
   useRenderFrame,
 } from '@taucad/viewer/hooks/use-graphics';
 import { ThemeProvider } from '#hooks/use-theme.js';
+import { createNodeFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-node-timing.js';
 import { createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import type { FrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import { getEnvironment } from '#environment.config.js';
@@ -161,6 +162,7 @@ async function captureEnvironment(renderer: WebGLRenderer, scene: Scene): Promis
 function summarize(values: number[]): {
   median: number;
   p95: number;
+  p99: number;
   mad: number;
   samples: number;
 } {
@@ -170,6 +172,7 @@ function summarize(values: number[]): {
   return {
     median,
     p95: ordered[Math.floor(ordered.length * 0.95)] ?? 0,
+    p99: ordered[Math.floor(ordered.length * 0.99)] ?? 0,
     mad: deviations[Math.floor(values.length / 2)] ?? 0,
     samples: values.length,
   };
@@ -295,7 +298,7 @@ function CalibrationProbe({
           }
         : undefined,
       timingDefinitions:
-        'Frame interval is start-to-start render callback cadence, not independently confirmed display presentation. CPU submission covers frame callbacks; asynchronous GPU queries include scheduling/preemption, not exclusive GPU utilization.',
+        'Frame interval is start-to-start render callback cadence, not independently confirmed display presentation. CPU submission covers frame callbacks; Native GPU diagnostic samples sum render-pass timestamp intervals and exclude copies, compute and presentation; classic WebGL samples enclose the submitted frame in an elapsed-time query. They can perturb scheduling and include preemption; they are not exclusive utilization or uninstrumented headroom.',
       benchmark: state.current.benchmarkResult,
       benchmarkRunning: benchmark !== state.current.benchmark,
       saved: state.current.saved,
@@ -330,7 +333,12 @@ function CalibrationProbe({
   }, [gl]);
   useEffect(() => {
     // A new renderer restarts the measurement on its own GPU timer.
-    gpuTimer.current = measurementMode === 'gpu' && gl instanceof WebGLRenderer ? createFrameGpuTimer(gl) : undefined;
+    gpuTimer.current =
+      measurementMode === 'gpu'
+        ? gl instanceof WebGLRenderer
+          ? createFrameGpuTimer(gl)
+          : createNodeFrameGpuTimer(gl)
+        : undefined;
     state.current.measured = undefined;
     return () => {
       gpuTimer.current?.dispose();
@@ -375,7 +383,11 @@ function CalibrationProbe({
         // Resize/settings changes restart the full sample window, including outstanding queries.
         gpuTimer.current?.dispose();
         gpuTimer.current =
-          measurementMode === 'gpu' && gl instanceof WebGLRenderer ? createFrameGpuTimer(gl) : undefined;
+          measurementMode === 'gpu'
+            ? gl instanceof WebGLRenderer
+              ? createFrameGpuTimer(gl)
+              : createNodeFrameGpuTimer(gl)
+            : undefined;
         current.benchmarkResult = undefined;
         current.samples = [];
         current.gpuSamples = [];
@@ -553,16 +565,19 @@ function CalibrationProbe({
               : gpuTimer.current
                 ? (gpu?.pending ?? 0) > 0
                   ? 'timeout'
-                  : (gpu?.disjointDiscarded ?? 0) > 0
-                    ? 'disjoint-samples-discarded'
-                    : current.gpuSamples.length > 0
-                      ? 'available'
-                      : 'no-valid-samples'
+                  : (gpu?.failedSamples ?? 0) > 0
+                    ? 'invalid-samples-discarded'
+                    : (gpu?.disjointDiscarded ?? 0) > 0
+                      ? 'disjoint-samples-discarded'
+                      : current.gpuSamples.length > 0
+                        ? 'available'
+                        : 'no-valid-samples'
                 : 'unsupported',
           gpuElapsed: current.gpuSamples.length > 0 ? summarize(current.gpuSamples) : undefined,
           gpuPendingPeak: current.gpuPendingPeak,
           gpuDrainMilliseconds: now - current.drainStarted,
           gpuDisjointDiscarded: gpu?.disjointDiscarded ?? 0,
+          gpuFailedSamples: gpu?.failedSamples ?? 0,
           draws: summarize(current.samples.map((sample) => sample.calls)),
           // Report both diagnostics without silently choosing a new product acceptance target.
           frameBudgets: [60, 120].map((fps) => ({
