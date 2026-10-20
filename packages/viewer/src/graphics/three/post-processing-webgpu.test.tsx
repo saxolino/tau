@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
     rendererState.mrt = value;
   });
   const gl = {
+    coordinateSystem: 2001,
     autoClear: true,
     outputColorSpace: 'srgb',
     toneMapping: 0,
@@ -408,10 +409,12 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.glRender.mockReset();
     mocks.gl.isWebGPURenderer = true;
     mocks.gl.autoClear = true;
+    mocks.gl.coordinateSystem = 2001;
     mocks.getCurrentViewport.mockClear();
     mocks.invalidate.mockClear();
     mocks.normalNode.sample.mockClear();
     mocks.normalTexture.type = 0;
+    mocks.normalTexture.format = 0;
     mocks.pass.mockClear();
     mocks.outputQuads.length = 0;
     mocks.prewarm.mockReset();
@@ -618,6 +621,13 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     });
     expect(mocks.aoNodes[0]!.radius.value).toBeCloseTo(0.3605551275, 9);
     expect(mocks.updateAoCamera).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses hardware-filtered RGBA8 normals on the node WebGL2 backend', async () => {
+    mocks.gl.coordinateSystem = 2000;
+    await mount();
+    expect(mocks.normalTexture.type).toBe(1009);
+    expect(mocks.normalTexture.format).toBe(1023);
   });
 
   it('updates AO output and estimator uniforms without rebuilding the production graph', async () => {

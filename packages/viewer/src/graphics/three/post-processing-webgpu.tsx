@@ -3,6 +3,8 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 import { NodeMaterial, QuadMesh, RenderTarget, UnsignedByteType } from 'three/webgpu';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
+  colorToDirection,
+  directionToColor,
   float,
   mix,
   mrt,
@@ -28,6 +30,7 @@ import {
   HalfFloatType,
   RedFormat,
   RGFormat,
+  RGBAFormat,
   LinearSRGBColorSpace,
   NoToneMapping,
   DepthTexture,
@@ -170,6 +173,9 @@ const createPipelineResources = ({
   readonly toneMapping: ToneMapping;
   readonly withAo: boolean;
 }): PostProcessingPipelineResources => {
+  // Four decoded normal taps save memory on native GPU, but cost more than
+  // hardware filtering on node WebGL2 in the matched 5K comparison.
+  const compactNormals = gpuRenderer.coordinateSystem !== WebGLCoordinateSystem;
   const scenePass = pass(scene, camera, { samples: 0 });
   let aoNode: ReturnType<typeof ao> | undefined;
   let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
@@ -182,8 +188,7 @@ const createPipelineResources = ({
         mrt({
           // Beauty colour — TSL `output` is the standard fragment output (lit scene colour).
           output,
-          // Two-channel octahedral normals retain both hemispheres at half the RGBA8 storage.
-          normal: encodeAoNormal(normalView),
+          normal: compactNormals ? encodeAoNormal(normalView) : directionToColor(normalView),
         }),
       );
     }
@@ -221,8 +226,12 @@ const createPipelineResources = ({
       };
     }
     scenePass.getTexture('normal').type = UnsignedByteType;
-    scenePass.getTexture('normal').format = RGFormat;
-    const scenePassNormal = sample((uv) => sampleAoNormal(scenePass.getTextureNode('normal'), uv));
+    scenePass.getTexture('normal').format = compactNormals ? RGFormat : RGBAFormat;
+    const scenePassNormal = sample((uv) =>
+      compactNormals
+        ? sampleAoNormal(scenePass.getTextureNode('normal'), uv)
+        : colorToDirection(scenePass.getTextureNode('normal').sample(uv)),
+    );
 
     // GTAONode rejects forward depth >= 1 as background. Pair 1-depth with
     // forward projection matrices; changing only the samples corrupts positions.

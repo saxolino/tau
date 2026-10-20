@@ -456,6 +456,7 @@ export const shaderEvidence = {
     ],
     reference: [
       'packages/viewer/src/graphics/three/utils/spatial.utils.test.ts::uses the actual orthographic span',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::uses hardware-filtered RGBA8 normals on the node WebGL2 backend',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should tone-map the scene once in linear light and leave the sRGB encode to the output pass',
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
