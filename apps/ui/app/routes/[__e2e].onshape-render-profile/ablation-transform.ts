@@ -57,6 +57,13 @@ export function transformRenderingAblation(source: string, id: string): string |
       'if (renderer.coordinateSystem !== THREE.WebGPUCoordinateSystem) {',
       "if (tauAblation.get('nodegl') !== '1' && renderer.coordinateSystem !== THREE.WebGPUCoordinateSystem) {",
     );
+    code =
+      `import { installAllocationLedger } from '/app/routes/[__e2e].onshape-render-profile/allocation-ledger.ts';\n` +
+      code;
+    replace(
+      "if (useCase === 'viewport') {\n      // NodeRenderer",
+      "if (tauAblation.has('ledger')) installAllocationLedger(renderer, tauAblation.get('passCost') ?? undefined);\n    if (useCase === 'viewport') {\n      // NodeRenderer",
+    );
     replace(
       'renderer.setTransparentSort(reversedDepthTransparentSort);',
       'if (renderer.reversedDepthBuffer) renderer.setTransparentSort(reversedDepthTransparentSort);',
@@ -64,6 +71,21 @@ export function transformRenderingAblation(source: string, id: string): string |
   } else if (file.endsWith('/graphics/three/scene-overlay.tsx')) {
     replace('restoreDepth();', "if (tauAblation.get('depthRestore') !== 'off') restoreDepth();");
   } else if (file.endsWith('/[__e2e].onshape-render-profile/route.tsx')) {
+    code =
+      `import { readAllocationLedgers, resetAllocationCosts } from '/app/routes/[__e2e].onshape-render-profile/allocation-ledger.ts';\n` +
+      code;
+    replace(
+      'if (current.frame >= 30 && current.samples.length < 300) {',
+      "if (tauAblation.has('passCost') && current.frame === 30) resetAllocationCosts();\n      if (current.frame >= 30 && current.samples.length < 300) {",
+    );
+    replace(
+      'current.drainStarted = now;',
+      "current.drainStarted = now;\n        if (tauAblation.has('passCost')) resetAllocationCosts(false);",
+    );
+    replace(
+      'current.gpuPassRanges.slice(0, 16)',
+      "current.gpuPassRanges.slice(0, tauAblation.has('ledger') ? undefined : 16)",
+    );
     replace('enableGrid={overlay}', "enableGrid={overlay && tauAblation.get('overlay') !== 'axes'}");
     replace('enableAxes={overlay}', "enableAxes={overlay && tauAblation.get('overlay') !== 'grid'}");
     replace(
@@ -91,6 +113,7 @@ export function transformRenderingAblation(source: string, id: string): string |
     replace(
       '...metadata,\n      geometryHash:',
       `...metadata,
+      allocationLedger: tauAblation.has('ledger') ? readAllocationLedgers() : undefined,
       ablation: Object.fromEntries(tauAblation),
       scenePassSamples: scene.userData.calibrationScenePass?.renderTarget.samples,
       geometryHash:`,
