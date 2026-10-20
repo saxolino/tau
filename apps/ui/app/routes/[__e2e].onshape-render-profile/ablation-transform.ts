@@ -86,11 +86,13 @@ export function transformRenderingAblation(source: string, id: string): string |
       'setModelEmphasisSet(rootScene, emphasised);',
       `const calibrationMode = tauAblation.get('emphasis');
       const calibrationMeshes = calibrationMode ? getComponentInventory(scene).filter((object): object is Mesh => isSurfaceObject(object)) : [];
+      const calibrationIndex = Number(tauAblation.get('emphasisIndex') ?? 0);
+      if (!Number.isSafeInteger(calibrationIndex) || calibrationIndex < 0 || (calibrationMeshes.length > 0 && calibrationIndex >= calibrationMeshes.length)) throw new Error('Invalid calibration emphasisIndex');
       const calibrationEmphasis = calibrationMode ? {
         hover: calibrationMode === 'hover' || calibrationMode === 'both' ? calibrationMeshes.slice(1, 2) : [],
-        selected: calibrationMode === 'selected' || calibrationMode === 'both' ? calibrationMeshes.slice(0, 1) : [],
+        selected: calibrationMode === 'selected' || calibrationMode === 'both' ? calibrationMeshes.slice(calibrationIndex, calibrationIndex + 1) : [],
       } : emphasised;
-      if (calibrationMode) rootScene.userData.calibrationEmphasis = { mode: calibrationMode, hover: calibrationEmphasis.hover.map((mesh) => mesh.name), selected: calibrationEmphasis.selected.map((mesh) => mesh.name) };
+      if (calibrationMode) rootScene.userData.calibrationEmphasis = { mode: calibrationMode, selectedIndex: calibrationIndex, hover: calibrationEmphasis.hover.map((mesh) => mesh.name), selected: calibrationEmphasis.selected.map((mesh) => mesh.name) };
       setModelEmphasisSet(rootScene, calibrationEmphasis);`,
     );
   } else if (file.endsWith('/graphics/three/scene-overlay.tsx')) {
