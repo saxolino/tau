@@ -2,6 +2,7 @@ import type { CanvasProps, Renderer as FiberCompatibleGl } from '@react-three/fi
 import type { ThreeCamera } from '@taucad/three/camera';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import type { RendererInstance } from '#graphics/three/renderer.js';
+import { isViewportWebGpu } from '#graphics/three/viewport-cad-renderer.js';
 import { createRenderer } from '#graphics/three/renderer.js';
 import { WebGpuInitializationError } from '#graphics/three/webgpu-initialization-error.js';
 
@@ -26,7 +27,8 @@ export type TauR3fGlFactory = ((defaults: TauR3fGlDefaults) => Promise<FiberComp
  * R3F `gl` factory / props for {@link ResolvedGraphicsBackend}.
  *
  * Builds renderers via {@link createRenderer} with the **`viewport`** use case (MSAA,
- * WebGL log-depth / WebGPU reversed-Z — see `tau-renderer.ts`).
+ * WebGL log-depth / WebGPU reversed-Z — see `renderer.ts`). Node canvases use
+ * the viewer's composed post frame for depth/stencil; the canvas only encodes final color.
  *
  * R3F awaits this factory inside a `configure()` call that nothing awaits, so a renderer that cannot be created
  * (no WebGL context, or a context Safari hands back already lost) would surface as an unhandled rejection that no
@@ -126,6 +128,13 @@ export function createTauR3fGlProp(
     if (isRetired()) {
       retire();
       return pending();
+    }
+    if (isViewportWebGpu(renderer)) {
+      // This canvas always uses the node post owner's explicit depth/stencil frame,
+      // including with AO off. Its only canvas draw is a depth-free final encoding.
+      // Set this before the first draw; leave standalone/offscreen factory users intact.
+      renderer.depth = false;
+      renderer.stencil = false;
     }
     // R3F reapplies DPR on every resize. WebGLRenderer.setPixelRatio also calls
     // setSize, clearing/reallocating the old buffer before R3F sizes the new one.

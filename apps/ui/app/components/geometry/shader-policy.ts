@@ -462,6 +462,7 @@ export const shaderEvidence = {
     'structural-perf': [
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain one linear stencil frame through overlays and encode only at frame completion',
+      'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should leave canvas depth to the composed frame without changing standalone renderers',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should keep AO active without multisampled scene attachments or a native-resolution AA intermediate',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should budget AO in CSS pixels independently of device pixel ratio',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should resize the AO budget only for CSS size changes and retain it across DPR changes',

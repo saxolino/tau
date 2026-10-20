@@ -76,6 +76,16 @@ describe('createTauR3fGlProp', () => {
     expect(hoisted.createRenderer).toHaveBeenCalledWith('viewport', 'webgl', canvas);
   });
 
+  it('should leave canvas depth to the composed frame without changing standalone renderers', async () => {
+    const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
+    const canvas = document.createElement('canvas');
+    const renderer = new WebGPURenderer({ canvas, stencil: true });
+    expect([renderer.depth, renderer.stencil]).toEqual([true, true]);
+    hoisted.createRenderer.mockResolvedValue(renderer);
+    await createTauR3fGlProp('webgpu')({ canvas, alpha: true });
+    expect([renderer.depth, renderer.stencil]).toEqual([false, false]);
+  });
+
   it('should size one renderer through overlapping and later resized R3F configurations', async () => {
     const { createTauR3fGlProp } = await import('#graphics/three/canvas-three-gl.js');
     const canvas = document.createElement('canvas');
