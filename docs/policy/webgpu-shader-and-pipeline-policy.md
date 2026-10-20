@@ -3,7 +3,7 @@ title: 'WebGPU Shader and Pipeline Policy'
 description: 'Rules for portable Three.js shaders, generated-source evidence, and render-pipeline ownership'
 status: active
 created: '2026-05-15'
-updated: '2026-10-20'
+updated: '2026-10-21'
 related:
   - docs/policy/graphics-backend-policy.md
   - docs/policy/webgpu-rendering-pipeline.md
@@ -274,7 +274,25 @@ await Promise.all([perspective, orthographic].map((camera) => gl.compileAsync(un
 
 ### 14. Qualify optimization against the installed runtime and whole frame
 
-Record exact build, dependency version/patches, initialized backend, device, fixture, poses, CSS size, DPR and drawing buffer. Inspect installed source before applying upstream guidance. Predeclare correctness tolerances and meaningful gain; use unchanged A/A repeats to estimate noise, then alternating independent A/B runs. Report distributions and variability across runs, query/sample counts, CPU submission, GPU query scope/precision, and instrumentation-off throughput. Do not sum overlapping intervals or compare different timing scopes as identical metrics. Separate cold startup/first use from steady state and descriptor allocations from physical memory. A saving smaller than variability remains inconclusive; a qualified memory saving can be accepted without claiming a speedup.
+Record exact build, dependency version/patches, initialized backend, device, fixture, poses, CSS size, DPR and drawing buffer. Inspect installed source before applying upstream guidance. Predeclare the expected benefit and its measurement uncertainty; use unchanged A/A repeats to estimate noise, then alternating independent A/B runs. Report absolute milliseconds and bytes alongside percentages, distributions and variability across runs, query/sample counts, CPU submission, GPU query scope/precision, and instrumentation-off throughput. Correlate sparse GPU samples to submitted poses before making paired-pose claims. Do not sum overlapping intervals or compare different timing scopes as identical metrics. Separate cold startup/first use from steady state and descriptor allocations from physical memory.
+
+Do not impose a universal percentage improvement cutoff. Judge a repeatable saving against uncertainty, frame budget, CPU/tail/startup tradeoffs and implementation complexity. A saving smaller than variability remains inconclusive, not proof of no benefit. Memory, latency, reduced work and simpler ownership may independently justify a change without an FPS gain; state which benefit is actually established. Backend-specific acceptance is allowed when the other path remains correct and its cost is explicitly qualified.
+
+### 15. Separate functional correctness, appearance and optimization acceptance
+
+Declare these three decisions independently before evaluating a candidate:
+
+| Decision               | Evidence and disposition                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Functional correctness | Preserve required geometry, picking, clipping, depth precision, cap/grid occlusion, highlight visibility semantics, lifecycle and backend validation. Missing geometry, stale output or wrong visibility is a failure regardless of speed.                                                                          |
+| Appearance             | For arithmetic-preserving changes, exact or tightly bounded pixel comparison is appropriate. For changed rasterization, sampling or filtering, also measure boundary displacement, continuity, contrast/width and temporal residuals. A maximum channel error alone identifies difference, not perceptual severity. |
+| Benefit and complexity | Weigh measured GPU/CPU time, tails, memory, first use and ownership complexity. Neither fewer passes nor lower nominal storage proves faster rendering. A small repeatable improvement is not automatically rejected.                                                                                               |
+
+Calibrate appearance tolerances using reference variation, known defective controls and the intended display scale. Keep interior/occlusion checks distinct from antialiased boundary checks; whole-image averages must not hide broken small features. Include motion, camera/DPR changes and full production composition. Numerical thresholds are engineering contracts, not universal perceptual laws. A borderline noise or integrated-width failure needs spatial/temporal investigation before declaring the algorithm unacceptable.
+
+Keep depth precision and required CAD behavior as invariants. Sample count, target dimensions and pass sequence are implementations that may change when their replacements satisfy the contract. Preserve classic appearance as the reference; do not degrade it to pass a candidate.
+
+Version any justified gate revision with its rationale, negative controls, authorization and fresh evidence. Preserve original thresholds and failures; never relabel an old failed run as passed under a new gate. Use explicit dispositions: functional failure, appearance investigation, benefit inconclusive, bounded acceptance, or rollout qualified. Qualification of an optimization does not promote an execution backend or require completing unrelated rollout gates first.
 
 ## Anti-Patterns
 

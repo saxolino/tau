@@ -47,7 +47,9 @@ Try applicable documented attachment configuration, lifetime and format changes 
 
 ### 3. Write the failing evidence first
 
-For a regression, add the smallest red test that reproduces the actual failure before changing production code. For new behavior, establish the oracle before the implementation. For optimization, state one falsifiable hypothesis, predeclare semantic/pixel tolerances and the meaningful gain, and run an unchanged A/A baseline to estimate noise. Allocation assertions prove a storage constraint, not visual correctness.
+For a regression, add the smallest red test that reproduces the actual failure before changing production code. For new behavior, establish the oracle before the implementation. For optimization, state one falsifiable hypothesis and separate functional correctness, appearance and benefit under pipeline policy rules 14–15. Run an unchanged A/A baseline to estimate noise. Do not require a universal percentage saving or an FPS gain for a memory improvement. Allocation assertions prove a storage constraint, not visual correctness.
+
+Use exact pixels where arithmetic should be preserved. When changing rasterization/filtering, predeclare boundary, continuity, contrast and motion metrics with defective negative controls; a maximum channel delta alone cannot classify appearance. Keep depth precision and CAD occlusion strict. Record a justified gate revision before new trials, retain old failures and classify inconclusive results separately from defects. Do not change thresholds simply to admit a candidate.
 
 Select every layer required by the declared risks:
 

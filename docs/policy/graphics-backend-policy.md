@@ -3,7 +3,7 @@ title: 'Graphics Backend Policy'
 description: 'Dual WebGL/WebGPU Three.js rendering, portable shaders, resource ownership, interaction, backend evidence, and kernel mesh resolution'
 status: active
 created: '2026-05-07'
-updated: '2026-10-20'
+updated: '2026-10-21'
 related:
   - docs/policy/compatibility-policy.md
   - docs/research/viewer-webgpu-selector-removal.md
@@ -120,6 +120,8 @@ Send measurement and overlay pointer events to their owning XState machine. Use 
 Shader graph snapshots and source fingerprints are supplementary. Pair them with focused runtime assertions. For user-visible parity, use the backend e2e harness and remote-canvas screenshots with deterministic pixel characteristics. Where a headless adapter cannot present frames, read an offscreen render target back through the renderer so the backend still yields pixel evidence; keep presented-canvas screenshots wherever the canvas does present.
 
 Test backend construction, WebGPU initialization, reversed-depth transparent ordering, alpha/depth state, clone ownership, cross-renderer material isolation, demand-frame invalidation, cache eviction, clipping-aware picking, and gesture cancellation.
+
+Apply [shader/pipeline policy rules 14–15](webgpu-shader-and-pipeline-policy.md) to optimization acceptance: distinguish functional correctness, appearance investigation, measured benefit and rollout qualification. Backend parity does not require byte-identical antialiasing from different rasterization algorithms. Preserve CAD semantics and qualify boundary/temporal appearance explicitly.
 
 ### 13. Change pointer-rate scene objects in place
 
