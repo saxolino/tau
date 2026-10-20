@@ -163,7 +163,7 @@ it.each([
     expect(isViewportWebGpu(renderer)).toBe(backend === 'webgpu');
     if (isViewportWebGpu(renderer)) {
       expect('isWebGPUBackend' in renderer.backend && renderer.backend.isWebGPUBackend).toBe(true);
-      expect(renderer.samples).toBe(4);
+      expect(renderer.samples).toBe(0);
       expect(renderer.reversedDepthBuffer).toBe(true);
     }
     const capture = async (): Promise<Uint8ClampedArray> => {
@@ -200,7 +200,7 @@ it.each([
     };
     const empty = await capture();
     if (isViewportWebGpu(renderer)) {
-      expect(sceneSamples, 'the actual scene pass remains multisampled').toBe(4);
+      expect(sceneSamples, 'the lean scene pass remains single-sample').toBe(0);
     }
     const origin = new Vector3().project(state!.camera);
     expect(Math.abs(origin.x), 'default camera centres the origin horizontally').toBeLessThan(0.001);

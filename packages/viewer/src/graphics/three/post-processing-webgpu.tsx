@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useCallback, useLayoutEffect, useRef } from 'react';
-import { NodeMaterial, QuadMesh, UnsignedByteType } from 'three/webgpu';
+import { NodeMaterial, QuadMesh, RenderTarget, UnsignedByteType } from 'three/webgpu';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
   colorToDirection,
@@ -16,13 +16,26 @@ import {
   sample,
   screenUV,
   select,
+  texture,
   uniform,
   vec3,
   vec4,
 } from 'three/tsl';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { createAoDenoise } from '#graphics/three/ao-denoise.js';
-import { AlwaysDepth, WebGLCoordinateSystem, HalfFloatType, RedFormat, LinearSRGBColorSpace, Vector3 } from 'three';
+import {
+  AlwaysDepth,
+  WebGLCoordinateSystem,
+  HalfFloatType,
+  RedFormat,
+  LinearSRGBColorSpace,
+  NoToneMapping,
+  DepthTexture,
+  UnsignedInt248Type,
+  DepthStencilFormat,
+  Vector2,
+  Vector3,
+} from 'three';
 import type { Camera, Texture, ToneMapping, WebGLRenderTarget } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { CameraDriverSnapshot } from '@taucad/camera/machine';
@@ -49,32 +62,15 @@ type PostProcessingPipelineResources = Readonly<{
   updateAoCamera?: () => void;
 }>;
 
-/**
- * Shared node GTAO post-pipeline for native WebGPU and diagnostic WebGL2.
- *
- * Architecture (see `docs/research/webgpu-post-processing-performance-audit.md` R1 and
- * `docs/research/webgpu-composite-quad-depth-write-non-functional.md` for the C2 reversal):
- * - **Single scenePass** — one rasterisation produces beauty color + depth and, when AO is requested, normals. The legacy
- *   prePass (which re-rasterised the scene purely to harvest depth/normals) is gone.
- * - **Compose-based AO** — the composite quad multiplies beauty by visibility, either before tone mapping
- *   or in linear display RGB. The graph tone-maps once; the AO-only diagnostic bypasses tone mapping.
- * - **Framebuffer output** — the composite is a plain `QuadMesh` drawn through the renderer's
- *   frame target, whose output pass only encodes sRGB (`renderer.toneMapping` stays `NoToneMapping`).
- *   Overlays then draw into that same target: a `RenderPipeline` writes the canvas directly, and the
- *   next overlay's output pass would copy the frame target's stale contents over it.
- * - **Explicit depth restore** — the active scene-pass depth is sampled by a retained `QuadMesh`
- *   that writes depth into the canvas, or into a caller's target, only when a pass asks for it.
- *   The main scene is never traversed or replayed.
- * - **Demand preparation** — only the active camera and requested AO graph are created. Compilation occurs
- *   through the actual frame target on first use.
- *
- * **Lean candidate.** Beauty/depth/normal attachments are single-sample. AO keeps its
- * half-CSS spatial filter and bilinear reconstruction during motion. Compose and
- * tone-map directly into the renderer frame target, without a native-resolution FXAA RTT.
- * Edge aliasing is an explicit qualification tradeoff, not an AO motion bypass.
- *
- * Does **not** monkey-patch `gl.render` — `QuadMesh.render` calls `renderer.render`.
- */
+/** One linear, single-sample frame survives all CAD draws; only the final quad encodes output. */
+type LinearFrame = {
+  target: RenderTarget;
+  output: QuadMesh;
+  depth: QuadMesh;
+  previousTarget: ReturnType<WebGPURenderer['getRenderTarget']>;
+  pending: boolean;
+};
+
 // Preserve the tuned GTAO depth acceptance while making both values derive from one screen-space contract.
 const gtaoThicknessToRadiusRatio = 1 / 0.09;
 const aoDisplayModes = { combined: 0, ao: 1, 'no-ao': 2 } as const;
@@ -110,11 +106,17 @@ const updateGtaoSpatialScale = ({
   }
 };
 
-const createOutputQuad = (fragmentNode: NodeMaterial['fragmentNode']): QuadMesh => {
+const createOutputQuad = (fragmentNode: NodeMaterial['fragmentNode'], depthMaterial?: NodeMaterial): QuadMesh => {
   const material = new NodeMaterial();
   material.fragmentNode = fragmentNode;
   material.depthTest = false;
   material.depthWrite = false;
+  if (depthMaterial) {
+    material.depthNode = depthMaterial.depthNode;
+    material.depthTest = depthMaterial.depthTest;
+    material.depthFunc = AlwaysDepth;
+    material.depthWrite = true;
+  }
   return new QuadMesh(material);
 };
 
@@ -205,7 +207,10 @@ const createPipelineResources = ({
     const displayMode = uniform(0);
     const compositeStage = uniform(0);
     if (!withAo) {
-      outputQuad = createOutputQuad(renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace));
+      outputQuad = createOutputQuad(
+        renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace),
+        depthRestoreMaterial,
+      );
       return {
         camera,
         outputQuad,
@@ -271,7 +276,7 @@ const createPipelineResources = ({
       select<'float'>(displayMode.equal(1), float(1), float(0)),
     );
     // Compose directly: avoid a full-resolution HDR intermediate and its FXAA draw.
-    outputQuad = createOutputQuad(composite);
+    outputQuad = createOutputQuad(composite, depthRestoreMaterial);
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
@@ -324,6 +329,43 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
   const resourcesRef = useRef(new Map<Camera, PostProcessingPipelineResources>());
   const selectedCameraRef = useRef<ThreeCamera>(cameraRig.activeCamera);
   const targetRef = useRef(new Vector3());
+  const frameRef = useRef<LinearFrame | undefined>(undefined);
+  const drawingSize = useRef(new Vector2());
+  useLayoutEffect(() => {
+    const renderer = gl as unknown as WebGPURenderer;
+    const target = new RenderTarget(1, 1, { type: HalfFloatType, samples: 0, stencilBuffer: true });
+    target.texture.colorSpace = LinearSRGBColorSpace;
+    target.texture.name = 'Tau linear frame';
+    target.depthTexture = new DepthTexture(1, 1, UnsignedInt248Type);
+    target.depthTexture.format = DepthStencilFormat;
+    const finalOutput = createOutputQuad(
+      renderOutput(texture(target.texture), NoToneMapping, renderer.outputColorSpace),
+    );
+    finalOutput.name = 'Tau final output';
+    const depthMaterial = new NodeMaterial();
+    depthMaterial.colorWrite = false;
+    depthMaterial.depthTest = renderer.coordinateSystem === WebGLCoordinateSystem;
+    depthMaterial.depthFunc = AlwaysDepth;
+    depthMaterial.depthWrite = true;
+    depthMaterial.depthNode = texture(target.depthTexture, screenUV);
+    const frame: LinearFrame = {
+      target,
+      output: finalOutput,
+      depth: new QuadMesh(depthMaterial),
+      previousTarget: null,
+      pending: false,
+    };
+    frameRef.current = frame;
+    return () => {
+      if (frame.pending) {
+        renderer.setRenderTarget(frame.previousTarget);
+      }
+      frameRef.current = undefined;
+      target.dispose();
+      (finalOutput.material as NodeMaterial).dispose();
+      depthMaterial.dispose();
+    };
+  }, [gl]);
   const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao';
 
   // Only the current endpoint is needed now. The other projection is created on its first frame.
@@ -419,10 +461,15 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       const renderer = gl as unknown as WebGPURenderer;
       const previousTarget = renderer.getRenderTarget();
       const previousAutoClear = renderer.autoClear;
+      const frame = frameRef.current;
+      // The composite already installed scene depth. Do not overwrite later cap writes.
+      if (!target && frame?.pending) {
+        return;
+      }
       renderer.autoClear = false;
       renderer.setRenderTarget(target ?? null);
       try {
-        selected.depthRestore.render(renderer);
+        (frame?.pending ? frame.depth : selected.depthRestore).render(renderer);
       } finally {
         renderer.setRenderTarget(previousTarget);
         renderer.autoClear = previousAutoClear;
@@ -446,8 +493,57 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       resourcesRef.current.set(camera, selected);
     }
     updateAoSettings(selected);
-    selected.outputQuad.render(state.gl as unknown as WebGPURenderer);
+    const renderer = state.gl as unknown as WebGPURenderer;
+    const frame = frameRef.current;
+    if (!frame) {
+      return;
+    }
+    // Recover the destination if a later subscriber aborted the preceding frame.
+    if (frame.pending) {
+      renderer.setRenderTarget(frame.previousTarget);
+    }
+    frame.previousTarget = renderer.getRenderTarget();
+    renderer.getDrawingBufferSize(drawingSize.current);
+    frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
+    frame.pending = true;
+    renderer.setRenderTarget(frame.target);
+    const previousAutoClear = renderer.autoClear;
+    renderer.autoClear = true;
+    try {
+      selected.outputQuad.render(renderer);
+    } catch (error) {
+      renderer.setRenderTarget(frame.previousTarget);
+      frame.pending = false;
+      throw error;
+    } finally {
+      renderer.autoClear = previousAutoClear;
+    }
   }, 1);
+
+  // Caps (1.2), emphasis (1.4/1.5), grid (2), handles (2.5), and gizmo (3) share this frame.
+  useFrame(() => {
+    const frame = frameRef.current;
+    if (!frame?.pending) {
+      return;
+    }
+    const renderer = gl as unknown as WebGPURenderer;
+    const previousColorSpace = renderer.outputColorSpace;
+    const previousToneMapping = renderer.toneMapping;
+    const previousAutoClear = renderer.autoClear;
+    try {
+      renderer.setRenderTarget(frame.previousTarget);
+      renderer.outputColorSpace = LinearSRGBColorSpace;
+      renderer.toneMapping = NoToneMapping;
+      renderer.autoClear = true;
+      frame.output.render(renderer);
+    } finally {
+      renderer.setRenderTarget(frame.previousTarget);
+      renderer.outputColorSpace = previousColorSpace;
+      renderer.toneMapping = previousToneMapping;
+      renderer.autoClear = previousAutoClear;
+      frame.pending = false;
+    }
+  }, 3.5);
   return null;
 }
 

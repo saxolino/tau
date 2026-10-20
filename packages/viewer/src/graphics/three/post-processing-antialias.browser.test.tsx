@@ -1,9 +1,20 @@
 import '#test/browser.css';
 import { cleanup, render } from '@testing-library/react';
 import { useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal, useFrame, useThree } from '@react-three/fiber';
 import type { RootState } from '@react-three/fiber';
-import { BoxGeometry, DataTexture, DoubleSide, Mesh, MeshBasicMaterial, NearestFilter, RGBAFormat, Scene } from 'three';
+import {
+  BoxGeometry,
+  DataTexture,
+  DoubleSide,
+  Mesh,
+  MeshBasicMaterial,
+  NearestFilter,
+  RGBAFormat,
+  Scene,
+  OrthographicCamera,
+} from 'three';
 import { WebGPUBackend, WebGLBackend, WebGPURenderer } from 'three/webgpu';
 import { createActor, createAsyncLogic } from 'xstate';
 import { afterEach, expect, inject, it, vi } from 'vitest';
@@ -707,6 +718,9 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
     const pieces = resolveSectionPieces([{ id: 'cut', kind: 'plane', plane: 'xy', offset: 0, isFlipped: false }]);
     const caps = createSectionStencilCaps(backend);
     let state: RootState | undefined;
+    let outputTransforms = 0;
+    let measuredOutputTransforms = 0;
+    let observedRenderer: RootState['gl'] | undefined;
     let pending: Promise<void> | undefined;
     let pixels: Uint8ClampedArray | undefined;
     let beforeGrid: Uint8ClampedArray | undefined;
@@ -739,6 +753,44 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
       }, 1.2);
       return undefined;
     };
+    const ColorProbe = (): ReactNode => {
+      const overlayScene = useMemo(() => new Scene(), []);
+      const camera = useMemo(() => new OrthographicCamera(-1, 1, 1, -1, 0.1, 10), []);
+      camera.position.z = 2;
+      useFrame(({ gl }) => {
+        const previous = gl.autoClear;
+        gl.autoClear = false;
+        try {
+          gl.render(overlayScene, camera);
+        } finally {
+          gl.autoClear = previous;
+        }
+      }, 2.2);
+      return createPortal(
+        <>
+          <mesh position={[-0.75, 0.75, 0]}>
+            <planeGeometry args={[0.25, 0.25]} />
+            <meshBasicMaterial color='#808080' depthTest={false} depthWrite={false} toneMapped={false} />
+          </mesh>
+          <mesh position={[0.75, 0.75, 0]} renderOrder={1}>
+            <planeGeometry args={[0.25, 0.25]} />
+            <meshBasicMaterial color='#808080' depthTest={false} depthWrite={false} toneMapped={false} />
+          </mesh>
+          <mesh position={[0.75, 0.75, 0]} renderOrder={2}>
+            <planeGeometry args={[0.25, 0.25]} />
+            <meshBasicMaterial
+              color='red'
+              transparent
+              opacity={0.5}
+              depthTest={false}
+              depthWrite={false}
+              toneMapped={false}
+            />
+          </mesh>
+        </>,
+        overlayScene,
+      );
+    };
     const measure = async (current: RootState): Promise<void> => {
       const requestedFrame = frame;
       try {
@@ -759,8 +811,28 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
       }
     };
     const Probe = (): undefined => {
-      state = useThree();
+      const current = useThree();
+      state = current;
+      if (current.gl !== observedRenderer && isViewportWebGpu(current.gl)) {
+        observedRenderer = current.gl;
+        const renderer = current.gl;
+        const previous = renderer.getRenderObjectFunction();
+        renderer.setRenderObjectFunction((...draw) => {
+          if (draw[0].name === 'Output Color Transform' || draw[0].name === 'Tau final output') {
+            outputTransforms++;
+          }
+          if (previous) {
+            previous(...draw);
+          } else {
+            renderer.renderObject(...draw);
+          }
+        });
+      }
+      useFrame(() => {
+        outputTransforms = 0;
+      }, 0.9);
       useFrame((current) => {
+        measuredOutputTransforms = outputTransforms;
         frame++;
         if (!pending && !retired) {
           pending = measure(current);
@@ -811,6 +883,7 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
                   <meshBasicMaterial color='lime' side={DoubleSide} toneMapped={false} />
                 </mesh>
               </SceneOverlay>
+              <ColorProbe />
               <Probe />
             </ThreeCanvasInstance>
           </GraphicsProvider>
@@ -832,6 +905,19 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
       await pending;
       if (isViewportWebGpu(state!.gl)) {
         expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+      }
+      if (backend === 'webgpu') {
+        expect(measuredOutputTransforms, 'one encoding after all cap and overlay draws').toBe(1);
+        // Encoded grey and a linear-light 50% red blend distinguish missing/double encoding.
+        for (const [x, expected] of [
+          [16, [128, 128, 128]],
+          [112, [205, 92, 92]],
+        ] as const) {
+          const actual = pixels!.subarray((16 * 128 + x) * 4, (16 * 128 + x) * 4 + 3);
+          for (const [channel, value] of expected.entries()) {
+            expect(Math.abs(actual[channel]! - value)).toBeLessThanOrEqual(2);
+          }
+        }
       }
       // The cut-facing view is red; the back-facing cut is hidden by a magenta
       // opaque occluder. Neither

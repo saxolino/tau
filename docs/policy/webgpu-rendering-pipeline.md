@@ -12,7 +12,7 @@ related:
 
 # WebGPU Rendering Pipeline Policy
 
-Internal reference binding the Tau CAD viewer’s **WebGPU** post/lighting topology (R3F + three.js **r184** `RenderPipeline` + TSL addons). Divergences belong in ADRs (`docs/architecture/` or follow-up research), not silent refactors.
+Internal reference binding the Tau CAD viewer’s **WebGPU** post/lighting topology (R3F + Three.js **r184** TSL and owned frame targets). Divergences belong in ADRs (`docs/architecture/` or follow-up research), not silent refactors.
 
 ## Rationale
 
@@ -24,9 +24,9 @@ The interactive viewport runs `frameloop="demand"`. Use one scene acquisition an
 
 Use the shared viewport renderer factory with reversed depth and no logarithmic depth. The performance-first node candidate explicitly uses single-sample scene attachments (`pass(scene, camera, { samples: 0 })`), and a single-sample renderer frame target (`antialias: false, samples: 0`). When AO is requested, one `PassNode` acquires beauty, depth and packed UNORM8 normals. Feed its depth and decoded normals to GTAO at half CSS resolution (`0.5 / DPR`), eight samples, and `useTemporalFiltering = false`. Keep spatial bilateral filtering at that AO budget and bilinearly sample the filtered visibility into native-resolution beauty. Native-resolution depth/normal gathers are excluded from the lean candidate; AO boundary halos remain an appearance qualification gate.
 
-Composite AO using the selected scene/display boundary while preserving alpha. The default display-space composition is an accepted CAD appearance, not an identity with indirect-only physical occlusion. Keep tone mapping explicit and encode sRGB once. The output `QuadMesh` must draw through the renderer's frame target so later overlays cannot overwrite it with stale contents. Do not reintroduce `RenderPipeline.render()` as the canvas output owner.
+Composite AO using the selected scene/display boundary while preserving alpha. The default display-space composition is an accepted CAD appearance, not an identity with indirect-only physical occlusion. Keep tone mapping explicit and encode sRGB once. The post owner allocates one native-resolution RGBA16F linear frame with depth/stencil. Its priority-1 composite writes tone-mapped color and retained scene depth together. Caps, highlights, grid, handles and gizmo draw into this target before the priority-3.5 final quad encodes the complete frame once. Suppress Three's implicit output conversion only during that final draw and restore renderer state in `finally`. Never publish the canvas before later CAD draws finish.
 
-The user-authorized lean candidate removes the native-resolution FXAA intermediate and composes tone mapping/AO directly into the renderer frame target. Grid and transparent line overlays use ordinary linear hardware blending without viewport-copy color compensation. Keep authoritative depth restoration and cap stencil semantics. Edge antialiasing and classic gamma-space appearance parity remain unqualified; this performance candidate does not promote node WebGL2 or change classic WebGL. Record fresh full/close, both-backend 5K evidence before claiming a gain.
+The user-authorized lean candidate removes the native-resolution FXAA intermediate and composes tone mapping/AO directly into the owned linear frame target. Grid and transparent line overlays use ordinary linear hardware blending without viewport-copy color compensation. Preserve cap stencil semantics and accumulated frame depth. A separate mask target samples the frame depth after caps; ordinary overlays need no depth copy. Edge antialiasing and classic gamma-space appearance parity remain unqualified; this performance candidate does not promote node WebGL2 or change classic WebGL. Record fresh full/close, both-backend 5K evidence before claiming a gain.
 
 ### 2. Disabled AO and demand lifecycle
 
@@ -46,7 +46,7 @@ three.js **`Inspector`** mounts only when the viewer switch **`useViewerFeature(
 
 ### 5. Overlay scene graph
 
-`SceneOverlay` renders after the priority-1 post owner. Restore authoritative scene depth directly before the overlay; never replay the main scene. Keep stencil caps in that overlay, with the canvas stencil attachment available, as required by [Graphics Backend Policy](graphics-backend-policy.md).
+`SceneOverlay` renders after the priority-1 post owner into the same linear color/depth/stencil target. The composite installs scene depth once; caps extend it. Never stamp pre-cap depth over cap writes or replay the scene. Keep the classic depth bridge unchanged. View cube and plane picker must set the explicit target viewport/scissor in device pixels: Three’s canvas `setViewport` does not update a render target. Restore those rectangles after the draw, including on failure.
 
 ## Summary Checklist
 

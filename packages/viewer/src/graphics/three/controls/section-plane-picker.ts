@@ -37,7 +37,7 @@ export const resolveSectionPlanePickerRect = (cube: SectionPlanePickerRect): Sec
 /** The renderer the picker draws with: WebGL's, or WebGPU's, whose viewport `y` runs from the top. */
 export type SectionPlanePickerRenderer = Pick<
   THREE.WebGLRenderer,
-  'autoClear' | 'clearDepth' | 'getViewport' | 'render' | 'setViewport'
+  'autoClear' | 'clearDepth' | 'getViewport' | 'render' | 'setViewport' | 'getRenderTarget' | 'getPixelRatio'
 > &
   Readonly<{ domElement: Readonly<{ clientHeight: number }>; isWebGPURenderer?: boolean }>;
 
@@ -197,6 +197,8 @@ export const createSectionPlanePicker = (backend: ResolvedGraphicsBackend = 'web
     scene.updateMatrixWorld(true);
   };
 
+  const targetViewport = new THREE.Vector4();
+  const targetScissor = new THREE.Vector4();
   const picker: SectionPlanePicker = {
     scene,
     camera,
@@ -215,6 +217,13 @@ export const createSectionPlanePicker = (backend: ResolvedGraphicsBackend = 'web
       align(view);
       renderer.getViewport(viewport);
       const previousAutoClear = renderer.autoClear;
+      const target = isTopDown ? renderer.getRenderTarget() : undefined;
+      if (target) {
+        targetViewport.copy(target.viewport);
+        targetScissor.copy(target.scissor);
+        target.viewport.set(next.left, next.top, next.size, next.size).multiplyScalar(renderer.getPixelRatio());
+        target.scissor.copy(target.viewport);
+      }
       renderer.autoClear = false;
       try {
         renderer.clearDepth();
@@ -226,6 +235,10 @@ export const createSectionPlanePicker = (backend: ResolvedGraphicsBackend = 'web
         );
         renderer.render(scene, camera);
       } finally {
+        if (target) {
+          target.viewport.copy(targetViewport);
+          target.scissor.copy(targetScissor);
+        }
         renderer.setViewport(viewport.x, viewport.y, viewport.z, viewport.w);
         renderer.autoClear = previousAutoClear;
       }

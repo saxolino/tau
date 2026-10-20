@@ -3,7 +3,7 @@ title: 'WebGPU Shader and Pipeline Policy'
 description: 'Rules for portable Three.js shaders, generated-source evidence, and render-pipeline ownership'
 status: active
 created: '2026-05-15'
-updated: '2026-10-19'
+updated: '2026-10-20'
 related:
   - docs/policy/graphics-backend-policy.md
   - docs/policy/webgpu-rendering-pipeline.md
@@ -253,17 +253,17 @@ scenePass.contextNode = builtinAOContext(aoOutput.getTextureNode().sample(screen
 post.outputNode = scenePass;
 ```
 
-### 12. Post owners restore authoritative depth directly before overlays
+### 12. Post owners preserve authoritative scene and cap depth
 
-The priority-1 post owner must expose one retained direct-to-canvas depth restore to the priority-2 `SceneOverlay`. The overlay invokes that restore and renders its own scene exactly once. It must never traverse, mutate, clone, or replay the main scene.
+The priority-1 post owner owns authoritative scene depth. In the node pipeline, its color composite writes that depth into the explicit linear frame target. Later caps extend the frame depth; ordinary overlays retain it without copying. A separate emphasis mask target receives the accumulated frame depth, including caps, through the retained depth-only quad. The classic pipeline retains its direct-to-canvas bridge. Never traverse, mutate, clone, or replay the main scene for depth.
 
 - WebGL: retain the composer's stable depth texture in a `Pass`, then run one depth-only fullscreen draw to the default framebuffer.
-- WebGPU: sample the active `PassNode` depth with a separate retained `QuadMesh`/`NodeMaterial`, targeting the canvas immediately before the overlay.
+- Node backends: sample active `PassNode` depth in the color composite. Restore into separate mask targets only, sampling the current frame depth after caps. Keep the retained scene-depth quad for calls outside an active composed frame.
 - Without post-processing: restoration is a no-op because the ordinary main render already owns canvas depth.
 
 Do **not** use `RenderPipeline._quadMesh`: it is private and, in Three.js r184, writes the pipeline's internal target rather than the canvas depth attachment. Do **not** fall back to a scene clone-swap replay; that duplicates geometry work and reintroduces heterogeneous vertex-layout hazards.
 
-**Why**: WebGPU canvas depth persists across frames (rule 2), while both post stacks render main color/depth offscreen. A direct bridge preserves exact clipping/depth output and costs one fullscreen depth write rather than a second scene rasterization. See `docs/research/webgpu-composite-quad-depth-write-non-functional.md` and `docs/research/threejs-shader-foundation-and-testing-blueprint.md`.
+**Why**: Both post stacks acquire scene color/depth offscreen. Compositing depth into the owned node frame preserves exact clipping and later cap writes without a separate scene replay or default-framebuffer conversion. The classic stack still needs its depth-only bridge. The historical default-framebuffer failure in `docs/research/webgpu-composite-quad-depth-write-non-functional.md` does not prohibit writing depth into an explicitly bound target.
 
 CORRECT (priority-2 overlay):
 
@@ -277,7 +277,7 @@ useFrame(({ gl, camera }) => {
 }, 2);
 ```
 
-INCORRECT (composite-quad depth wiring — does not reach canvas depth in r184):
+INCORRECT (private RenderPipeline quad wiring — does not reach canvas depth in r184):
 
 ```typescript
 const post = new RenderPipeline(gpuRenderer);
@@ -295,7 +295,7 @@ if (compositeMaterial !== undefined) {
 
 Finalize ownership, saved pose, visibility/opacity, physical bounds, render frame and the active camera before the first active scene draw. Preserve the previous committed scene until its replacement is valid. Build only the selected endpoint and required output graph. With AO disabled, allocate neither GTAO nor a normal MRT attachment. Construct inactive projections and optional Section/Measure helpers on first demand by default; spatial rebasing is a uniform update, not a reason to compile an inactive endpoint.
 
-The current qualified integration draws the viewport's node output graph with a `QuadMesh` through the renderer's frame target: the pipeline writes the canvas directly, and the next overlay's output pass would copy the frame target's stale contents over it. The graph tone-maps the scene itself and `renderer.toneMapping` stays `NoToneMapping`, so the output pass only encodes sRGB and overlays stay untone-mapped, as on WebGL.
+The node post owner retains one linear RGBA16F frame target across the synchronous frame callbacks. It draws scene color/depth at priority 1, allows later CAD draws to preserve/extend those attachments, then encodes once at priority 3.5. The graph tone-maps the scene itself; overlays remain untone-mapped. Final output and cleanup restore the prior target. A subsequent frame recovers the destination if an intervening subscriber threw. Do not hold this binding across an await.
 
 Evaluate standard `RenderPipeline.render()` as part of the shared node consolidation, using final-output tests that include later depth-writing caps and overlays. Adopt it only when later draws preserve both color and depth, with explicit sample/clear/output ownership; a standalone output screenshot is insufficient.
 
@@ -333,7 +333,7 @@ The following idioms read fine in a WebGL world but break or silently misbehave 
 - **Setting `transparent = true` on a depth-only pass material** (rule 7).
 - **Sharing a `RenderPipeline` across multiple React components** (rule 9).
 - **`builtinAOContext` + dedicated prepass when a single MRT scenepass would suffice** (rule 11).
-- **Relying on `RenderPipeline._quadMesh.material.depthNode` to populate canvas depth** (rule 12). Use the post owner's retained direct-to-canvas depth restore.
+- **Relying on `RenderPipeline._quadMesh.material.depthNode` to populate canvas depth** (rule 12). Use the post owner's explicit frame depth or classic direct-to-canvas bridge.
 - **Traversing/cloning/swapping/replaying the main scene to recover post depth** (rules 1 and 12). Reuse the authoritative pass output.
 - **First frame of a `RenderPipeline` blocking on synchronous pipeline compile** (rule 13).
 - **`useTemporalFiltering = true` on a node-graph AO under `frameloop='demand'`** — accumulator never converges; the per-frame rotation produces shimmer instead of smoothing. Set `false` until either `frameloop='always'` or a true history-buffer TAA pass exists.
@@ -355,7 +355,7 @@ Before merging a new TSL material or render-pipeline change:
 - [ ] New `NodeMaterial` factory has a graph snapshot plus generated-source/compile/pixel evidence proportional to risk.
 - [ ] `RenderPipeline` instances have single React-owned lifecycle.
 - [ ] AO composes via `scenePassColor.mul(vec4(vec3(aoOutput.r), 1))`, not `builtinAOContext` + dedicated prepass.
-- [ ] Overlay depth comes from the active post owner's retained direct-to-canvas restore; the main scene is not replayed.
+- [ ] Node overlays preserve the composed frame depth, including caps; classic uses its retained direct-to-canvas restore. No scene replay.
 - [ ] The first active draw sees finalized pose/visibility/bounds/camera; disabled AO and unused projections perform no speculative work. Cold and warmed first-use latency are measured separately.
 
 ## References

@@ -79,6 +79,32 @@ describe('section plane picker', () => {
     expect(renderer.render).toHaveBeenCalledOnce();
   });
 
+  it('should draw in the linear target viewport at DPR two and restore it after failure', () => {
+    const renderer = createRenderer(true);
+    const target = new THREE.WebGLRenderTarget(1600, 1200);
+    const viewport = target.viewport.clone();
+    const scissor = target.scissor.clone();
+    renderer.getRenderTarget.mockReturnValue(target);
+    renderer.getPixelRatio.mockReturnValue(2);
+    const picker = createSectionPlanePicker('webgpu');
+    renderer.render.mockImplementation(() => {
+      expect(target.viewport.toArray()).toEqual([1240, 12, 176, 176]);
+      expect(target.scissor.toArray()).toEqual(target.viewport.toArray());
+      throw new Error('picker draw failed');
+    });
+    try {
+      expect(() => {
+        picker.render({ renderer, camera: new THREE.PerspectiveCamera(), cubeViewport: [704, 2, 96, 96] });
+      }).toThrow('picker draw failed');
+      expect(target.viewport.equals(viewport)).toBe(true);
+      expect(target.scissor.equals(scissor)).toBe(true);
+      expect(renderer.autoClear).toBe(true);
+    } finally {
+      picker.dispose();
+      target.dispose();
+    }
+  });
+
   it('should pick the tile under a point in its square, and nothing outside it', () => {
     const picker = createSectionPlanePicker();
     picker.render({ renderer: createRenderer(false), camera: createTopCamera(), cubeViewport: [704, 494, 96, 96] });

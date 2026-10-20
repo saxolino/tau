@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { act, render } from '@testing-library/react';
 import { useLayoutEffect } from 'react';
-import { HalfFloatType, RedFormat, NeutralToneMapping } from 'three';
+import { HalfFloatType, RedFormat, NeutralToneMapping, NoToneMapping, SRGBColorSpace, RenderTarget } from 'three';
+import type { Vector2 } from 'three';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,6 +47,9 @@ const mocks = vi.hoisted(() => {
   });
   const gl = {
     autoClear: true,
+    outputColorSpace: 'srgb',
+    toneMapping: 0,
+    getDrawingBufferSize: (target: Vector2) => target.set(3000, 2000),
     clearDepth,
     compileAsync,
     getRenderTarget,
@@ -85,6 +89,7 @@ const mocks = vi.hoisted(() => {
         delta: number,
       ) => void)
     | undefined;
+  let finalFrame: typeof frame;
   let retarget: ((camera: typeof perspectiveCamera, snapshot: MockCameraSnapshot) => void) | undefined;
   let restoreDepth: ((target?: unknown) => void) | undefined;
   let constructionCamera: unknown;
@@ -207,6 +212,10 @@ const mocks = vi.hoisted(() => {
     fxaa: vi.fn((value: unknown) => value),
     mix: vi.fn((beauty: unknown, aoOnly: unknown, factor: unknown) => ({ beauty, aoOnly, factor })),
     getFrame: () => frame,
+    getFinalFrame: () => finalFrame,
+    setFinalFrame: (callback: typeof frame) => {
+      finalFrame = callback;
+    },
     getCurrentViewport,
     getRetarget: () => retarget,
     getRestoreDepth: () => restoreDepth,
@@ -253,6 +262,8 @@ vi.mock('@react-three/fiber', () => ({
   useFrame: (callback: Parameters<typeof mocks.setFrame>[0], priority: number) => {
     if (priority === 1) {
       mocks.setFrame(callback);
+    } else if (priority === 3.5) {
+      mocks.setFinalFrame(callback);
     }
   },
   useThree: () => mocks.state,
@@ -282,6 +293,7 @@ vi.mock('#graphics/three/gtao-depth-camera.js', () => ({
 }));
 
 vi.mock('three/tsl', () => ({
+  texture: (value: unknown) => ({ kind: 'frame-texture', value }),
   colorSpaceToWorking: (value: unknown) => value,
   workingToColorSpace: (value: unknown) => value,
   // oxlint-disable-next-line eslint/max-params -- Match the native RTT factory signature.
@@ -349,15 +361,14 @@ vi.mock('three/webgpu', () => {
     public constructor(material: NodeMaterial) {
       this.material = material;
       // Output quads carry a fragment graph; the depth-restore quad only a depth node.
-      if (material.fragmentNode !== undefined) {
+      if (
+        material.fragmentNode !== undefined &&
+        (material.fragmentNode as { color?: { kind?: string } }).color?.kind !== 'frame-texture'
+      ) {
         material.dispose = mocks.postDispose;
         mocks.outputQuads.push(this);
       }
     }
-  }
-
-  class RenderTarget {
-    public dispose = vi.fn();
   }
 
   return { NodeMaterial, QuadMesh, RenderTarget, UnsignedByteType: 1009 };
@@ -416,6 +427,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.state.viewport.dpr = 2;
     mocks.scenePasses.length = 0;
     mocks.setFrame(undefined);
+    mocks.setFinalFrame(undefined);
     mocks.setRetarget(undefined);
     mocks.setRestoreDepth(undefined);
     mocks.setRenderTarget.mockClear();
@@ -515,7 +527,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.getFrame()?.(mocks.state, 0);
     mocks.glRender.mockClear();
     mocks.getRestoreDepth()?.();
-    expect(mocks.glRender).toHaveBeenCalledOnce();
+    expect(mocks.glRender).not.toHaveBeenCalled();
   });
 
   it('should create each projection on demand without retaining the inactive graph', async () => {
@@ -549,7 +561,6 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
 
   it('restores the selected scene-pass depth with one direct fullscreen draw', async () => {
     await mount({ aoAllowed: false });
-    mocks.getFrame()?.(mocks.state, 0);
     mocks.glRender.mockClear();
     mocks.glRender.mockImplementationOnce(() => {
       expect(mocks.gl.autoClear).toBe(false);
@@ -645,8 +656,59 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
 
   it('should tone-map the scene once in linear light and leave the sRGB encode to the output pass', async () => {
     await mount({ aoAllowed: false });
-    expect(mocks.renderOutput).toHaveBeenCalledOnce();
+    expect(mocks.renderOutput).toHaveBeenCalledTimes(2);
     expect(mocks.renderOutput).toHaveBeenCalledWith(mocks.colorNode, NeutralToneMapping, 'srgb-linear');
+    expect(mocks.renderOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'frame-texture' }),
+      NoToneMapping,
+      SRGBColorSpace,
+    );
+  });
+
+  it('should retain one linear stencil frame through overlays and encode only at frame completion', async () => {
+    const mounted = await mount();
+    const destination = mocks.gl.getRenderTarget();
+    mocks.getFrame()?.(mocks.state, 0);
+    const target = mocks.gl.getRenderTarget() as RenderTarget;
+    expect(target).toBeInstanceOf(RenderTarget);
+    expect([target.width, target.height, target.samples, target.stencilBuffer]).toEqual([3000, 2000, 0, true]);
+    expect(target.texture.colorSpace).toBe('srgb-linear');
+    const dispose = vi.spyOn(target, 'dispose');
+    const { material } = mocks.outputQuads[0]!;
+    expect(material).toMatchObject({ depthWrite: true, depthNode: { kind: 'sampled-depth' } });
+    mocks.glRender.mockClear();
+    mocks.getRestoreDepth()?.();
+    expect(mocks.glRender).not.toHaveBeenCalled();
+    mocks.glRender.mockImplementationOnce(() => {
+      expect(mocks.gl.getRenderTarget()).toBe(destination);
+      expect(mocks.gl.outputColorSpace).toBe('srgb-linear');
+    });
+    mocks.getFinalFrame()?.(mocks.state, 0);
+    expect(mocks.glRender).toHaveBeenCalledOnce();
+    expect(mocks.gl.outputColorSpace).toBe('srgb');
+    expect(mocks.gl.getRenderTarget()).toBe(destination);
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.gl.getRenderTarget()).toBe(target);
+    mounted.unmount();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(mocks.gl.getRenderTarget()).toBe(destination);
+  });
+
+  it('should restore output state when final encoding fails and recover the following frame', async () => {
+    const mounted = await mount();
+    const destination = mocks.gl.getRenderTarget();
+    mocks.getFrame()?.(mocks.state, 0);
+    mocks.glRender.mockImplementationOnce(() => {
+      throw new Error('encoding failed');
+    });
+    expect(() => mocks.getFinalFrame()?.(mocks.state, 0)).toThrow('encoding failed');
+    expect(mocks.gl.getRenderTarget()).toBe(destination);
+    expect(mocks.gl.outputColorSpace).toBe('srgb');
+    expect(mocks.gl.autoClear).toBe(true);
+    mocks.getFrame()?.(mocks.state, 0);
+    mocks.getFinalFrame()?.(mocks.state, 0);
+    expect(mocks.gl.getRenderTarget()).toBe(destination);
+    mounted.unmount();
   });
 
   it('should guard the upstream implementations whose owned resources require explicit disposal', () => {

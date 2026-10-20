@@ -428,6 +428,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ],
     pixels: [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
     ],
     'backend-differential': [
@@ -439,6 +440,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
     ],
     'depth-clipping': [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should retain scene and cap depth before later overlays',
     ],
     reference: [
@@ -448,6 +450,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],
     lifecycle: [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should restore output state when final encoding fails and recover the following frame',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should dispose every demanded endpoint once on unmount',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should create each projection on demand without retaining the inactive graph',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::updates AO output and estimator uniforms without rebuilding the production graph',
@@ -456,6 +459,8 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should configure both native camera projections before the first WebGPU scene pass',
     ],
     'structural-perf': [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain one linear stencil frame through overlays and encode only at frame completion',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should keep AO active without multisampled scene attachments or a native-resolution AA intermediate',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should budget AO in CSS pixels independently of device pixel ratio',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should resize the AO budget only for CSS size changes and retain it across DPR changes',
