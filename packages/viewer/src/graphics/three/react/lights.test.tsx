@@ -1,10 +1,14 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { useDeferredValue, useLayoutEffect, useMemo } from 'react';
 import type * as ReactModule from 'react';
-import { CubeTexture, PerspectiveCamera, Scene, Texture, WebGLRenderTarget } from 'three';
+import { CubeTexture, REVISION, PerspectiveCamera, Scene, Texture, WebGLRenderTarget } from 'three';
 import type * as ThreeModule from 'three';
-import type { WebGLRenderer } from 'three';
+import type { RenderTarget, WebGLRenderer } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import { useFrame } from '@react-three/fiber';
 import type { RootState } from '@react-three/fiber';
@@ -52,7 +56,7 @@ const scene = new Scene();
 const camera = new PerspectiveCamera();
 const invalidate = vi.fn();
 let renderer: WebGLRenderer | WebGPURenderer;
-let targets: WebGLRenderTarget[];
+let targets: RenderTarget[];
 
 vi.mock('@react-three/fiber', () => ({
   useThree: () => ({ camera, scene, gl: renderer, invalidate }),
@@ -99,8 +103,8 @@ describe('Lights', () => {
     renderer = mock<WebGLRenderer>({ toneMappingExposure: 1 });
     scene.environment = null;
     targets = [];
-    const prefilter = (): WebGLRenderTarget => {
-      const target = new WebGLRenderTarget();
+    const prefilter = (_source: CubeTexture, supplied?: RenderTarget): RenderTarget => {
+      const target = supplied ?? new WebGLRenderTarget();
       vi.spyOn(target, 'dispose');
       targets.push(target);
       return target;
@@ -186,7 +190,7 @@ describe('Lights', () => {
     'should own the filtered %s environment and dispose replaced outputs without disposing borrowed textures',
     (backend) => {
       if (backend === 'webgpu') {
-        // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's runtime backend discriminator.
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
         renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
       }
       const previous = new Texture();
@@ -211,6 +215,21 @@ describe('Lights', () => {
     },
   );
 
+  it('should prefilter node lighting into a depth-free target at the requested resolution', () => {
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
+    renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
+    render(<Lights settings={{ environment: 'room' }} />);
+    expect(mocks.webgpuPrefilter).toHaveBeenCalledWith(
+      expect.any(CubeTexture),
+      expect.objectContaining({
+        width: 1536,
+        height: 2048,
+        depthBuffer: false,
+        stencilBuffer: false,
+      }),
+    );
+  });
+
   it('should release the PMREM working target as soon as each environment is filtered', () => {
     // The generator's ping-pong target is as large as the filtered output (24 MiB at 512 px) and
     // is only needed while filtering.
@@ -224,6 +243,19 @@ describe('Lights', () => {
     expect(mocks.webglPrefilter).toHaveBeenCalledTimes(2);
     expect(mocks.generatorDispose).toHaveBeenCalledTimes(2);
     expect(scene.environment).toBe(targets[1]?.texture);
+  });
+
+  it('should release the supplied node target when filtering fails', () => {
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
+    renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
+    const disposed = vi.fn();
+    mocks.webgpuPrefilter.mockImplementation((_source: CubeTexture, target: RenderTarget) => {
+      target.addEventListener('dispose', disposed);
+      throw new Error('node filter failed');
+    });
+    expect(() => render(<Lights settings={{ environment: 'studio' }} />)).toThrow('node filter failed');
+    expect(disposed).toHaveBeenCalledTimes(1);
+    expect(mocks.generatorDispose).toHaveBeenCalledTimes(1);
   });
 
   it('should release the PMREM working target when filtering throws', () => {
@@ -245,7 +277,10 @@ describe('Lights', () => {
       }),
     );
     try {
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
+      renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
       render(<Lights settings={{ environment: 'studio' }} />);
+      expect(targets[0]).toMatchObject({ width: 3 * resolution, height: 4 * resolution, depthBuffer: false });
       expect(mocks.environmentResolution).toHaveBeenLastCalledWith(resolution);
     } finally {
       vi.mocked(globalThis.matchMedia).mockRestore();
@@ -311,4 +346,16 @@ describe('Lights', () => {
       expect(mocks.webglPrefilter).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+// The supplied public target retains r184's CubeUV layout and texture semantics.
+it('should guard the upstream PMREM output layout', () => {
+  const require = createRequire(import.meta.url);
+  const root = resolve(dirname(require.resolve('three')), '..');
+  expect(REVISION).toBe('184');
+  expect(
+    createHash('sha256')
+      .update(readFileSync(resolve(root, 'src/renderers/common/extras/PMREMGenerator.js')))
+      .digest('hex'),
+  ).toBe('60fb90e3fde030868357d0e85889020b6f0e7aa28ebf98b40b77893a73d736c6');
 });
