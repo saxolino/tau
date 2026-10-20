@@ -36,6 +36,7 @@ export default defineConfig({
     include: [
       'src/graphics/three/empty-viewer.browser.test.tsx',
       'src/graphics/three/node-frame-reference.browser.test.ts',
+      'src/graphics/three/transmission-retirement.browser.test.ts',
       'src/graphics/three/post-processing-antialias.browser.test.tsx',
       'src/graphics/three/ao-denoise.browser.test.ts',
       'src/graphics/three/ao-normal.browser.test.ts',

@@ -106,6 +106,7 @@ const mocks = vi.hoisted(() => {
   let constructionCamera: unknown;
   const scenePasses: Array<{
     camera: unknown;
+    renderTarget: { camera: unknown };
     compileAsync: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
     getTexture: ReturnType<typeof vi.fn>;
@@ -125,6 +126,7 @@ const mocks = vi.hoisted(() => {
   const antialiasDispose = vi.fn();
   const aoDispose = vi.fn();
   const noiseDispose = vi.fn();
+  const retireTransmissionCopy = vi.fn();
 
   const depthNode = { kind: 'depth', sample: vi.fn(() => ({ kind: 'sampled-depth' })) };
   const normalNode = { sample: vi.fn(() => ({ kind: 'normal-sample' })) };
@@ -145,6 +147,7 @@ const mocks = vi.hoisted(() => {
     constructionCamera = camera;
     const scenePass = {
       camera,
+      renderTarget: { camera },
       compileAsync: vi.fn(async () => {
         const previousMrt = rendererState.mrt;
         const previousTarget = rendererState.target;
@@ -237,6 +240,7 @@ const mocks = vi.hoisted(() => {
     normalTexture,
     orthographicCamera,
     pass,
+    retireTransmissionCopy,
     perspectiveCamera,
     outputQuads,
     prewarm,
@@ -296,6 +300,7 @@ vi.mock('#graphics/three/scene-overlay.jsx', () => ({
   },
 }));
 
+vi.mock('#graphics/three/transmission-retirement.js', () => ({ retireTransmissionCopy: mocks.retireTransmissionCopy }));
 vi.mock('#graphics/three/fxaa.js', () => ({ createViewportFxaa: mocks.fxaa }));
 vi.mock('three/addons/tsl/display/GTAONode.js', () => ({ ao: mocks.ao }));
 vi.mock('#graphics/three/ao-normal.js', () => ({
@@ -410,6 +415,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.denoiseSize.mockClear();
     mocks.aoDispose.mockClear();
     mocks.noiseDispose.mockClear();
+    mocks.retireTransmissionCopy.mockClear();
     mocks.aoNodes.length = 0;
     mocks.aoTexture.sample.mockClear();
     mocks.clearDepth.mockClear();
@@ -766,6 +772,15 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.getFinalFrame()?.(mocks.state, 0);
     expect(mocks.gl.getRenderTarget()).toBe(destination);
     mounted.unmount();
+  });
+
+  it('should retire the scene transmission copy with its owning graph', async () => {
+    const mounted = await mount();
+    const pass = mocks.scenePasses[0]!;
+    mounted.unmount();
+    expect(mocks.retireTransmissionCopy).toHaveBeenCalledOnce();
+    expect(mocks.retireTransmissionCopy).toHaveBeenCalledWith(pass.renderTarget);
+    expect(pass.dispose).toHaveBeenCalledOnce();
   });
 
   it('should guard the upstream implementations whose owned resources require explicit disposal', () => {

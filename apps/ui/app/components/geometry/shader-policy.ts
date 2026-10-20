@@ -112,9 +112,10 @@ export const shaderSites = [
   {
     id: 'webgpu-post',
     modules: ['packages/viewer/src/graphics/three/post-processing-webgpu.tsx'],
-    // Pure graph helpers share this site's contract without owning a material/pass.
+    // Internal graph and lifecycle helpers share this site's contract.
     helpers: [
       'packages/viewer/src/graphics/three/ao-normal.ts',
+      'packages/viewer/src/graphics/three/transmission-retirement.ts',
       'packages/viewer/src/graphics/three/ao-denoise.ts',
       'packages/viewer/src/graphics/three/fxaa.ts',
     ],
@@ -464,6 +465,10 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],
     lifecycle: [
+      'packages/viewer/src/graphics/three/transmission-retirement.test.ts::should retire only the viewport copy belonging to the disposed scene pass',
+      'packages/viewer/src/graphics/three/transmission-retirement.test.ts::should pin the upstream viewport-copy and transmission ownership contract',
+      'packages/viewer/src/graphics/three/transmission-retirement.browser.test.ts::should release a retired transmission copy and reacquire it safely on %s',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retire the scene transmission copy with its owning graph',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain HDR frame storage for unbounded output and retire it on tone-map changes',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should restore output state when final encoding fails and recover the following frame',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should dispose every demanded endpoint once on unmount',

@@ -51,6 +51,7 @@ import { pixelsToWorldUnits } from '#graphics/three/utils/spatial.utils.js';
 import { useOverlayDepthRestore } from '#graphics/three/scene-overlay.jsx';
 import { defaultPostProcessingSettings, resolveAoRadiusCssPixels } from '#graphics/three/post-processing-settings.js';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
+import { retireTransmissionCopy } from '#graphics/three/transmission-retirement.js';
 import { createGtaoCameraAdapter } from '#graphics/three/gtao-depth-camera.js';
 
 type PostProcessingPipelineResources = Readonly<{
@@ -308,6 +309,7 @@ const createPipelineResources = ({
     (outputQuad?.material as NodeMaterial | undefined)?.dispose();
     disposeOwnedRtt(denoiseInput);
     disposeAoNode(aoNode);
+    retireTransmissionCopy(scenePass.renderTarget);
     scenePass.dispose();
     throw error;
   }
@@ -319,6 +321,7 @@ const disposePipelineResources = (resources: readonly PostProcessingPipelineReso
     disposeOwnedRtt(resource.denoiseInput);
     disposeAoNode(resource.aoNode);
     resource.depthRestoreMaterial.dispose();
+    retireTransmissionCopy(resource.scenePass.renderTarget);
     resource.scenePass.dispose();
   }
 };
