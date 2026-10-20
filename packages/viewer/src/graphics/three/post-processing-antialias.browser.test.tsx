@@ -767,9 +767,13 @@ it.each([1, 1.5, 2].flatMap((dpr) => [0x00_00_00, 0xff_d5_4a].map((color) => ({ 
   },
 );
 
-it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((side) => ({ execution, side }))))(
-  'should occlude grid and hidden outlines through actual stencil caps: $execution side $side',
-  async ({ execution, side }) => {
+it.each(
+  ['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) =>
+    [1, -1].flatMap((side) => (['none', 'neutral'] as const).map((toneMapping) => ({ execution, side, toneMapping }))),
+  ),
+)(
+  'should occlude grid and hidden outlines through actual stencil caps: $execution side $side tone $toneMapping',
+  async ({ execution, side, toneMapping }) => {
     vi.stubGlobal('devicePixelRatio', 1);
     await page.viewport(400, 400);
     referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
@@ -933,7 +937,7 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
               graphicsBackend={backend}
               upDirection='y'
               onRetry={() => undefined}
-              postProcessingSettings={{ intensity: 0, gtaoIntensity: 0, toneMapping: 'none' }}
+              postProcessingSettings={{ intensity: 0, gtaoIntensity: 0, toneMapping }}
             >
               <primitive object={surface} />
               <mesh visible={side === -1} position={[0, 0, -1.5]}>
@@ -989,6 +993,11 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
           }
         }
       }
+      const occluderColor = [...beforeCaps!.subarray((64 * 128 + 64) * 4, (64 * 128 + 64) * 4 + 3)];
+      if (side === -1) {
+        expect(occluderColor[0]! - occluderColor[1]!).toBeGreaterThan(100);
+        expect(occluderColor[2]! - occluderColor[1]!).toBeGreaterThan(100);
+      }
       // The cut-facing view is red; the back-facing cut is hidden by a magenta
       // opaque occluder. Neither
       // may contain the later green grid or a yellow hidden cap outline. Compare
@@ -1004,7 +1013,7 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
             expect(actual[0]! - actual[1]!).toBeGreaterThan(100);
             expect(Math.abs(actual[1]! - actual[2]!)).toBeLessThanOrEqual(1);
           } else {
-            expect(actual).toEqual([255, 0, 255]);
+            expect(actual).toEqual(occluderColor);
           }
         }
       }
@@ -1013,7 +1022,7 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
           [-2, 0, 2].every((dy) =>
             [-2, 0, 2].every((dx) => {
               const offset = ((y + dy) * 128 + x + dx) * 4;
-              return beforeCaps![offset] === 255 && beforeCaps![offset + 1] === 0 && beforeCaps![offset + 2] === 255;
+              return occluderColor.every((value, channel) => beforeCaps![offset + channel] === value);
             }),
           );
         let checked = 0;
@@ -1023,7 +1032,7 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
               continue;
             }
             const offset = (y * 128 + x) * 4;
-            expect([...beforeGrid!.subarray(offset, offset + 3)], `hidden outline at ${x},${y}`).toEqual([255, 0, 255]);
+            expect([...beforeGrid!.subarray(offset, offset + 3)], `hidden outline at ${x},${y}`).toEqual(occluderColor);
             checked++;
           }
         }

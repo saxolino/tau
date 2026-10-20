@@ -15,6 +15,10 @@ export function transformRenderingAblation(source: string, id: string): string |
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     replace(
+      'const compactFrame = toneMapping === NeutralToneMapping;',
+      "const compactFrame = tauAblation.get('frameStorage') !== 'half' && toneMapping === NeutralToneMapping;",
+    );
+    replace(
       'const compactNormals = gpuRenderer.coordinateSystem !== WebGLCoordinateSystem;',
       "const compactNormals = tauAblation.get('normalStorage') === 'rgba' ? false : tauAblation.get('normalStorage') === 'rg' ? true : gpuRenderer.coordinateSystem !== WebGLCoordinateSystem;",
     );

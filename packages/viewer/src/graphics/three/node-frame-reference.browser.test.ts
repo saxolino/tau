@@ -1,6 +1,11 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import {
+  RenderTarget,
+  HalfFloatType,
+  UnsignedByteType,
+  LinearSRGBColorSpace,
+  NormalBlending,
   Vector2,
   AlwaysDepth,
   WebGLCoordinateSystem,
@@ -187,3 +192,104 @@ it.each(['webgpu', 'webgl'] as const)('should draw Tau node lines directly on %s
     canvas.remove();
   }
 });
+
+it.each(['webgpu', 'webgl'] as const)(
+  'should preserve display ramps, alpha and linear overlay blends in compact frame storage on %s',
+  async (backend) => {
+    const { texture, renderOutput, uv, vec3, uniform } = await import('three/tsl');
+    const canvas = document.createElement('canvas');
+    const renderer = await createRenderer('showcase', backend, canvas);
+    const reference = new RenderTarget(256, 32, { type: HalfFloatType, depthBuffer: false });
+    reference.texture.colorSpace = LinearSRGBColorSpace;
+    const compact = new RenderTarget(256, 32, { type: UnsignedByteType, depthBuffer: false });
+    compact.texture.colorSpace = SRGBColorSpace;
+    // Deliberately wrong storage: uniformly spaced linear bytes visibly crush dark ramps.
+    const negative = new RenderTarget(256, 32, { type: UnsignedByteType, depthBuffer: false });
+    negative.texture.colorSpace = LinearSRGBColorSpace;
+    const destination = new RenderTarget(256, 32, { type: UnsignedByteType, depthBuffer: false });
+    const base = new NodeMaterial();
+    const alpha = uniform(1);
+    const dark = uniform(0.05);
+    base.fragmentNode = vec4(uv().x.mul(dark), uv().x.mul(dark), uv().x.mul(dark), alpha);
+    base.depthTest = false;
+    base.depthWrite = false;
+    const baseQuad = new QuadMesh(base);
+    const overlay = new NodeMaterial();
+    overlay.fragmentNode = vec4(vec3(1, 0.12, 0.02), 0.17);
+    overlay.transparent = true;
+    overlay.blending = NormalBlending;
+    overlay.depthTest = false;
+    overlay.depthWrite = false;
+    const overlayQuad = new QuadMesh(overlay);
+    const outputs = [reference, compact, negative].map((target) => {
+      const material = new NodeMaterial();
+      material.fragmentNode = renderOutput(texture(target.texture), NoToneMapping, SRGBColorSpace);
+      material.depthTest = false;
+      material.depthWrite = false;
+      return new QuadMesh(material);
+    });
+    const onError = vi.fn();
+    // Installed r184 declarations omit the native device property.
+    const device =
+      renderer.backend instanceof WebGPUBackend && 'device' in renderer.backend
+        ? (renderer.backend.device as Pick<EventTarget, 'addEventListener' | 'removeEventListener'>)
+        : undefined;
+    device?.addEventListener('uncapturederror', onError);
+    try {
+      expect(renderer.backend).toBeInstanceOf(backend === 'webgpu' ? WebGPUBackend : WebGLBackend);
+      renderer.setSize(256, 32);
+      renderer.outputColorSpace = LinearSRGBColorSpace;
+      renderer.toneMapping = NoToneMapping;
+      for (const scenario of [
+        { range: 0.05, alpha: 1, layers: 0, tolerance: 2 },
+        { range: 1, alpha: 0.31, layers: 0, tolerance: 2 },
+        { range: 1, alpha: 1, layers: 1, tolerance: 2 },
+        { range: 1, alpha: 0.31, layers: 4, tolerance: 3 },
+      ]) {
+        dark.value = scenario.range;
+        alpha.value = scenario.alpha;
+        const images: Array<Uint8Array<ArrayBuffer>> = [];
+        for (const [index, target] of [reference, compact, negative].entries()) {
+          renderer.setRenderTarget(target);
+          renderer.autoClear = true;
+          baseQuad.render(renderer);
+          renderer.autoClear = false;
+          for (let layer = 0; layer < scenario.layers; layer++) {
+            overlayQuad.render(renderer);
+          }
+          renderer.setRenderTarget(destination);
+          renderer.autoClear = true;
+          outputs[index]!.render(renderer);
+          // oxlint-disable-next-line no-await-in-loop -- Read each completed variant before reusing the destination.
+          const bytes = await renderer.readRenderTargetPixelsAsync(destination, 0, 0, 256, 32);
+          images.push(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).slice());
+        }
+        const maximum = (image: Uint8Array<ArrayBuffer>): number => {
+          let largest = 0;
+          for (const [index, value] of image.entries()) {
+            largest = Math.max(largest, Math.abs(value - images[0]![index]!));
+          }
+          return largest;
+        };
+        expect(maximum(images[1]!), JSON.stringify(scenario)).toBeLessThanOrEqual(scenario.tolerance);
+        if (scenario.range === 0.05) {
+          expect(maximum(images[2]!)).toBeGreaterThan(3);
+        }
+      }
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      device?.removeEventListener('uncapturederror', onError);
+      renderer.setRenderTarget(null);
+      for (const quad of outputs) {
+        (quad.material as NodeMaterial).dispose();
+      }
+      base.dispose();
+      overlay.dispose();
+      reference.dispose();
+      compact.dispose();
+      negative.dispose();
+      destination.dispose();
+      renderer.dispose();
+    }
+  },
+);

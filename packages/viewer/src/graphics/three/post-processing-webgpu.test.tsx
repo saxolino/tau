@@ -3,8 +3,18 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { act, render } from '@testing-library/react';
 import { useLayoutEffect } from 'react';
-import { HalfFloatType, RedFormat, NeutralToneMapping, NoToneMapping, SRGBColorSpace, RenderTarget } from 'three';
-import type { Vector2 } from 'three';
+import {
+  UnsignedByteType,
+  UnsignedInt248Type,
+  DepthStencilFormat,
+  HalfFloatType,
+  RedFormat,
+  NeutralToneMapping,
+  NoToneMapping,
+  SRGBColorSpace,
+  RenderTarget,
+} from 'three';
+import type { ToneMapping, Vector2 } from 'three';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -381,7 +391,9 @@ vi.mock('three/webgpu', () => {
 
 const endpointProperties = { aoAllowed: true, toneMapping: NeutralToneMapping } as const;
 
-const mount = async (properties: { aoAllowed?: boolean; settings?: Partial<PostProcessingSettings> } = {}) => {
+const mount = async (
+  properties: { aoAllowed?: boolean; settings?: Partial<PostProcessingSettings>; toneMapping?: ToneMapping } = {},
+) => {
   const { PostProcessingWebGPU: PostProcessingWebGpu } = await import('#graphics/three/post-processing-webgpu.jsx');
   return render(<PostProcessingWebGpu {...endpointProperties} {...properties} />);
 };
@@ -438,6 +450,36 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.setRetarget(undefined);
     mocks.setRestoreDepth(undefined);
     mocks.setRenderTarget.mockClear();
+  });
+
+  it('should halve display-frame color storage while retaining depth precision', async () => {
+    const mounted = await mount();
+    mocks.getFrame()?.(mocks.state, 0);
+    const target = mocks.gl.getRenderTarget() as RenderTarget;
+    expect(target.texture.type).toBe(UnsignedByteType);
+    expect(target.texture.colorSpace).toBe(SRGBColorSpace);
+    expect(target.depthTexture?.type).toBe(UnsignedInt248Type);
+    expect(target.depthTexture?.format).toBe(DepthStencilFormat);
+    expect(target.samples).toBe(0);
+    expect(target.width).toBe(3000);
+    expect(target.height).toBe(2000);
+    mounted.unmount();
+  });
+
+  it('should retain HDR frame storage for unbounded output and retire it on tone-map changes', async () => {
+    const mounted = await mount({ toneMapping: NoToneMapping });
+    mocks.getFrame()?.(mocks.state, 0);
+    const previous = mocks.gl.getRenderTarget() as RenderTarget;
+    const dispose = vi.spyOn(previous, 'dispose');
+    expect(previous.texture.type).toBe(HalfFloatType);
+    const { PostProcessingWebGPU: PostProcessingWebGpu } = await import('#graphics/three/post-processing-webgpu.jsx');
+    mounted.rerender(<PostProcessingWebGpu {...endpointProperties} />);
+    mocks.getFrame()?.(mocks.state, 0);
+    const current = mocks.gl.getRenderTarget() as RenderTarget;
+    expect(current).not.toBe(previous);
+    expect(current.texture.type).toBe(UnsignedByteType);
+    expect(dispose).toHaveBeenCalledOnce();
+    mounted.unmount();
   });
 
   it('should budget AO in CSS pixels independently of device pixel ratio', async () => {
@@ -687,7 +729,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const target = mocks.gl.getRenderTarget() as RenderTarget;
     expect(target).toBeInstanceOf(RenderTarget);
     expect([target.width, target.height, target.samples, target.stencilBuffer]).toEqual([3000, 2000, 0, true]);
-    expect(target.texture.colorSpace).toBe('srgb-linear');
+    expect(target.texture.colorSpace).toBe(SRGBColorSpace);
     const dispose = vi.spyOn(target, 'dispose');
     const { material } = mocks.outputQuads[0]!;
     expect(material).toMatchObject({ depthWrite: true, depthNode: { kind: 'sampled-depth' } });

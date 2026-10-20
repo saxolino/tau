@@ -33,6 +33,8 @@ import {
   RGBAFormat,
   LinearSRGBColorSpace,
   NoToneMapping,
+  NeutralToneMapping,
+  SRGBColorSpace,
   DepthTexture,
   UnsignedInt248Type,
   DepthStencilFormat,
@@ -342,8 +344,16 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
   const drawingSize = useRef(new Vector2());
   useLayoutEffect(() => {
     const renderer = gl as unknown as WebGPURenderer;
-    const target = new RenderTarget(1, 1, { type: HalfFloatType, samples: 0, stencilBuffer: true });
-    target.texture.colorSpace = LinearSRGBColorSpace;
+    // Neutral tone mapping has already bounded the scene to display range. Hardware
+    // sRGB storage preserves linear-light blending with half the color bandwidth.
+    // Keep HDR storage for unbounded/other tone mappings until separately qualified.
+    const compactFrame = toneMapping === NeutralToneMapping;
+    const target = new RenderTarget(1, 1, {
+      type: compactFrame ? UnsignedByteType : HalfFloatType,
+      samples: 0,
+      stencilBuffer: true,
+    });
+    target.texture.colorSpace = compactFrame ? SRGBColorSpace : LinearSRGBColorSpace;
     target.texture.name = 'Tau linear frame';
     target.depthTexture = new DepthTexture(1, 1, UnsignedInt248Type);
     target.depthTexture.format = DepthStencilFormat;
@@ -374,7 +384,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       (finalOutput.material as NodeMaterial).dispose();
       depthMaterial.dispose();
     };
-  }, [gl]);
+  }, [gl, toneMapping]);
   const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao';
 
   // Only the current endpoint is needed now. The other projection is created on its first frame.

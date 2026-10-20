@@ -63,7 +63,7 @@ When opacity is below one, set `transparent: true` on both backends. Library wra
 
 Highlights, ghosts, labels, contours, gizmos, and other overlays must state `depthTest` and `depthWrite` deliberately. Preserve opaque focused-surface depth writes; dimmed/ghost surfaces and overlay outlines must not occlude later geometry unless their contract explicitly requires it.
 
-Overlays retain the same CAD semantics on both backends; final appearance parity remains a qualification gate. The node candidate blends transparent lines and grid in its linear half-float frame target and encodes the completed frame once. Do not add viewport-copy gamma compensation to that path. Keep the classic reference unchanged and measure coverage, blending and final encoding separately.
+Overlays retain the same CAD semantics on both backends; final appearance parity remains a qualification gate. The node candidate blends transparent lines and grid in linear light and performs one final shader output conversion. For Neutral tone mapping, its bounded composed color uses hardware-sRGB RGBA8 storage (automatic decode/encode around linear blending); HDR scene radiance stays RGBA16F. Other tone mappings retain a linear RGBA16F frame. Do not confuse storage encoding with shader output encoding or reduce depth precision when changing color storage. Do not add viewport-copy gamma compensation to that path. Keep the classic reference unchanged and measure coverage, blending and final encoding separately.
 
 ### 5. Preserve depth ordering
 

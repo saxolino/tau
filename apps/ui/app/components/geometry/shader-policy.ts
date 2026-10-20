@@ -438,6 +438,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ],
     pixels: [
+      'packages/viewer/src/graphics/three/node-frame-reference.browser.test.ts::should preserve display ramps, alpha and linear overlay blends in compact frame storage',
       'packages/viewer/src/graphics/three/ao-normal.browser.test.ts::should round-trip both normal hemispheres through RG8 on %s',
       'packages/viewer/src/graphics/three/ao-normal.browser.test.ts::should interpolate decoded normals across folds and clear texels on %s',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
@@ -463,6 +464,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],
     lifecycle: [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain HDR frame storage for unbounded output and retire it on tone-map changes',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should restore output state when final encoding fails and recover the following frame',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should dispose every demanded endpoint once on unmount',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should create each projection on demand without retaining the inactive graph',
@@ -472,6 +474,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should configure both native camera projections before the first WebGPU scene pass',
     ],
     'structural-perf': [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should halve display-frame color storage while retaining depth precision',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain one linear stencil frame through overlays and encode only at frame completion',
       'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should leave canvas depth to the composed frame without changing standalone renderers',
