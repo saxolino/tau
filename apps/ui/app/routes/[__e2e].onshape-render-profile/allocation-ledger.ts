@@ -29,6 +29,8 @@ type PassContext = {
   width: number;
   height: number;
   sampleCount: number;
+  depth: boolean;
+  stencil: boolean;
   clearColor: boolean;
   clearDepth: boolean;
   clearStencil: boolean;
@@ -54,6 +56,10 @@ type Ledger = {
   timingEnabled: boolean;
   peak: number;
   disposed: boolean;
+  disposedAt?: number;
+  retirement?: string;
+  retirementObservation?: Promise<void>;
+  canvasDepth?: unknown;
 };
 const ledgers: Ledger[] = [];
 
@@ -115,7 +121,14 @@ export function readAllocationLedgers(): unknown {
     revision: ledger.revision,
     backend: ledger.backend,
     costStatus: ledger.costStatus,
-    textures: [...ledger.records.values()],
+    // The backendLive field is the last per-texture event, not proof of surviving a destroyed device/context.
+    textures: [...ledger.records.values()].map((record) => ({
+      ...record,
+      activeBackendAllocation: !ledger.disposed && ledger.retirement === undefined && record.backendLive,
+    })),
+    canvasDepth: ledger.canvasDepth,
+    disposedAt: ledger.disposedAt,
+    retirement: ledger.retirement,
     events: ledger.events,
     passes: [...ledger.passes.values()],
     costs: ledger.costs,
@@ -125,6 +138,12 @@ export function readAllocationLedgers(): unknown {
     peak: ledger.peak,
     disposed: ledger.disposed,
   }));
+}
+
+/** Track device retirement without treating historical texture events as live allocations. */
+async function observeDeviceRetirement(lost: Promise<{ reason: string }>, ledger: Ledger): Promise<void> {
+  const { reason } = await lost;
+  ledger.retirement = `device-${reason}`;
 }
 
 /** Install only before first use, only in the separate calibration build. */
@@ -145,6 +164,10 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
   };
   ledgers.push(ledger);
   const backend = renderer.backend as ObservedBackend;
+  if (ledger.backend === 'webgpu' && 'device' in backend && backend.device) {
+    const device = backend.device as { lost: Promise<{ reason: string }> };
+    ledger.retirementObservation = observeDeviceRetirement(device.lost, ledger);
+  }
   const { info } = renderer;
   const started = performance.now();
   const recordTexture = (texture: Texture): TextureRecord => {
@@ -282,6 +305,8 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
       samples: context.sampleCount,
       color: textures.map((texture) => texture.uuid),
       depth: context.depthTexture?.uuid,
+      depthEnabled: context.depth,
+      stencilEnabled: context.stencil,
       clearColor: context.clearColor,
       clearDepth: context.clearDepth,
       clearStencil: context.clearStencil,
@@ -312,6 +337,18 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
       }
     }
     begin(context);
+    if (context.textures === null) {
+      if (glBackend) {
+        // Context attributes are stable; do not add a synchronous query to each frame.
+        ledger.canvasDepth ??= (renderer.getContext() as WebGL2RenderingContext).getContextAttributes();
+      } else {
+        const canvasDepth = renderer.getCanvasTarget().depthTexture;
+        const data = backend.get(canvasDepth) as { textureDescriptorGPU?: unknown };
+        ledger.canvasDepth = data.textureDescriptorGPU
+          ? structuredClone(data.textureDescriptorGPU)
+          : { allocated: false };
+      }
+    }
     // One synchronous inspection per mask allocation, before warmed timing. Never retain
     // live renderbuffers in the scalar ledger or query them on ordinary timed frames.
     if (glBackend && names.has('tau-emphasis-mask') && context.renderTarget) {
@@ -354,5 +391,11 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
     timer?.dispose();
     dispose();
     ledger.disposed = true;
+    ledger.disposedAt = performance.now() - started;
+    if (glBackend) {
+      ledger.retirement = (renderer.getContext() as WebGL2RenderingContext).isContextLost()
+        ? 'context-lost'
+        : 'dispose-without-context-loss';
+    }
   };
 }

@@ -14,6 +14,11 @@ export function transformRenderingAblation(source: string, id: string): string |
   };
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
+    code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
+    replace(
+      'material.depthNode = depthMaterial.depthNode;',
+      "material.depthNode = tauAblation.get('depthCopy') === 'load' ? (depthMaterial.depthNode as ReturnType<typeof texture>).load(ivec2(screenCoordinate)) : depthMaterial.depthNode;",
+    );
     replace(
       'const compactFrame = toneMapping === NeutralToneMapping;',
       "const compactFrame = tauAblation.get('frameStorage') !== 'half' && toneMapping === NeutralToneMapping;",

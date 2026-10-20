@@ -108,3 +108,9 @@ contribution. `filtered-ao` matches the lean full graph; `bilateral-ao` restores
 scene acquisition and frame targets, bilinear AO reconstruction, no FXAA intermediate and linear overlay blending; it is not appearance-qualified. Direct rendering still
 uses Tau's loaded meshes, materials, lighting and update owners; it is not a standalone
 Three.js application or a measurement of all Tau CPU overhead.
+
+### Transmission retirement and depth-copy experiment
+
+`ledger=1` now distinguishes historical per-texture events from active renderer allocations. `backendLive` is the last texture event; `activeBackendAllocation` also excludes disposed/lost renderers. `retirement` records observed device destruction or GL context loss, and `disposedAt` records renderer disposal time. `canvasDepth` reports the separate native descriptor or GL context attributes; it is not process/driver VRAM. Three's byte counter may be stale after viewport-copy resize, so calculate mip storage from the latest allocation descriptor.
+
+`depthCopy=load` tests integer texel loads only in the full-resolution composed depth copy. The default retains normalized nearest sampling, and scaled explicit depth bridges are unchanged. It is diagnostic-only: the October21 5K trials were pixel-identical but did not establish a repeatable timing benefit. Match the actual initialized backend, poses, output depth state and current factory before admitting a comparison; the canvas-depth optimization already ships in `canvas-three-gl.ts`.

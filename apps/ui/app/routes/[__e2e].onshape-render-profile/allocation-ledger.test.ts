@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { DataTexture, HalfFloatType, RGBAFormat, RGFormat } from 'three';
+import { describe, expect, it, vi } from 'vitest';
+import { DataTexture, HalfFloatType, RGBAFormat, RGFormat, Texture, WebGLCoordinateSystem } from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import {
   installAllocationLedger,
@@ -55,7 +55,8 @@ it('should guard private allocation and pass boundaries against dependency chang
     createHash('sha256')
       .update(readFileSync(resolve(root, 'src/renderers/common/Textures.js')))
       .digest('hex'),
-  ).toBe('28faf9665bfdcbc063be31cd7725fa4e5d2d1ee822e890bbb6b6c204d88978a4');
+    // Reviewed 8697c563a4: unresolved nodeGL mask depth uses a renderbuffer; sampled depth is unchanged.
+  ).toBe('f254ca8221e17bf58a2aad3e99735bc6b5b183331dc9aeafd530d73bf2b3347c');
   expect(
     createHash('sha256')
       .update(readFileSync(resolve(root, 'src/renderers/common/Backend.js')))
@@ -81,4 +82,71 @@ it('should guard private allocation and pass boundaries against dependency chang
       .update(readFileSync(resolve(root, 'src/renderers/webgl-fallback/utils/WebGLTextureUtils.js')))
       .digest('hex'),
   ).toBe('6b08fc0d0af38b893bd243991ba09eef844c2af99cb07c59f53f7a1c7149acc0');
+});
+
+describe('allocation ledger retirement', () => {
+  it.each(['webgpu', 'webgl2-node'] as const)(
+    'distinguishes historical texture events from retired %s resources',
+    async (backend) => {
+      let retireDevice: (value: { reason: string }) => void = vi.fn();
+      let contextLost = false;
+      const renderer = {
+        coordinateSystem: backend === 'webgl2-node' ? WebGLCoordinateSystem : 2001,
+        info: {
+          memory: { texturesSize: 0 },
+          createTexture: vi.fn(),
+          destroyTexture: vi.fn(),
+        },
+        backend: {
+          device: {
+            lost: new Promise<{ reason: string }>((resolve) => {
+              retireDevice = resolve;
+            }),
+          },
+          createTexture: vi.fn(),
+          destroyTexture: vi.fn(),
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- Match the upstream descriptor field.
+          get: () => ({ textureDescriptorGPU: { size: { width: 5120, height: 2880 }, format: 'rgba16float' } }),
+          beginRender: vi.fn(),
+          finishRender: vi.fn(),
+          draw: vi.fn(),
+        },
+        getContext: () => ({ isContextLost: () => contextLost }),
+        dispose: () => {
+          contextLost = true;
+          retireDevice({ reason: 'destroyed' });
+        },
+      };
+      installAllocationLedger(renderer as unknown as WebGPURenderer);
+      const texture = new Texture();
+      renderer.backend.createTexture(texture);
+      expect(readAllocationLedgers()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            disposed: false,
+            textures: [expect.objectContaining({ activeBackendAllocation: true })],
+          }),
+        ]),
+      );
+      if (backend === 'webgpu') {
+        retireDevice({ reason: 'destroyed' });
+        await Promise.resolve();
+        const lost = readAllocationLedgers() as unknown[];
+        expect(lost.at(-1)).toMatchObject({
+          disposed: false,
+          retirement: 'device-destroyed',
+          textures: [{ activeBackendAllocation: false }],
+        });
+      }
+      renderer.dispose();
+      await Promise.resolve();
+      const receipts = readAllocationLedgers() as unknown[];
+      expect(receipts.at(-1)).toMatchObject({
+        disposed: true,
+        disposedAt: expect.any(Number) as unknown,
+        retirement: backend === 'webgpu' ? 'device-destroyed' : 'context-lost',
+        textures: [{ backendLive: true, activeBackendAllocation: false }],
+      });
+    },
+  );
 });
