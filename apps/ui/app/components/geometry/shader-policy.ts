@@ -478,9 +478,11 @@ export const shaderEvidence = {
     ),
     pixels: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::preserves fractional and occluded highlights with node WebGL2',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should clear persistent emphasis through the production node frame',
     ],
     'backend-differential': [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::preserves fractional and occluded highlights with node WebGL2',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should clear persistent emphasis through the production node frame',
     ],
     lifecycle: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::packs one node emphasis state without reducing coverage samples or depth precision',

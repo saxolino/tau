@@ -6,6 +6,7 @@ import { createPortal, useFrame, useThree } from '@react-three/fiber';
 import type { RootState } from '@react-three/fiber';
 import {
   BoxGeometry,
+  Color,
   DataTexture,
   DoubleSide,
   Mesh,
@@ -20,13 +21,19 @@ import { createActor, createAsyncLogic } from 'xstate';
 import { afterEach, expect, inject, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { SceneOverlay, useOverlayDepthRestorer } from '#graphics/three/scene-overlay.jsx';
-import { GraphicsProvider } from '#hooks/use-graphics.jsx';
+import { GraphicsProvider, useCameraRig } from '#hooks/use-graphics.jsx';
 import { graphicsMachine } from '#machines/graphics.machine.js';
 import { ThreeCanvasInstance } from '#graphics/three/three-canvas-instance.jsx';
 import { isViewportWebGpu } from '#graphics/three/viewport-cad-renderer.js';
 import { syncGltfSurfaceDepthBias } from '#graphics/three/materials/gltf-surface-depth-bias.js';
 import { resolveSectionPieces } from '#graphics/section-cuts.js';
 import { writeSectionClip } from '#graphics/three/materials/section-clip.js';
+import {
+  createModelEmphasisResources,
+  renderModelEmphasisMask,
+  syncModelEmphasisFrame,
+  syncModelEmphasisProxies,
+} from '#graphics/three/react/model-emphasis-overlay.jsx';
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 import { createSectionStencilCaps } from '#graphics/three/utils/section-stencil-caps.js';
 import type * as rendererModule from '#graphics/three/renderer.js';
@@ -1033,6 +1040,212 @@ it.each(['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) => [1, -1].map((s
       caps.dispose();
       material.dispose();
       geometry.dispose();
+    }
+  },
+);
+
+// Use the live post owner (PBR, AO, retained frame depth, overlays and final encoding),
+// not a standalone mask render. The prior native fusion passed isolated mask pixels.
+it.each([false, true])(
+  'should clear persistent emphasis through the production node frame: WebGL2=%s',
+  async (forceNodeWebGl2) => {
+    referenceMode.forceNodeWebGl2 = forceNodeWebGl2;
+    vi.stubGlobal('devicePixelRatio', 2);
+    await page.viewport(500, 500);
+    const actor = createActor(
+      graphicsMachine.provide({
+        actors: {
+          probeWebGpu: createAsyncLogic({ run: async () => true }),
+        },
+      }),
+      { input: { enablePostProcessing: true } },
+    ).start();
+    let state: RootState | undefined;
+    let resources: ReturnType<typeof createModelEmphasisResources> | undefined;
+    let source: Mesh | undefined;
+    let occluder: Mesh | undefined;
+    let cameraRig: ReturnType<typeof useCameraRig> | undefined;
+    let separate = false;
+    let pixels: Uint8ClampedArray | undefined;
+    let pending: Promise<void> | undefined;
+    let captureError: Error | undefined;
+    let retired = false;
+    let frames = 0;
+    let captured = 0;
+    const Mask = (): ReactNode => {
+      state = useThree();
+      cameraRig = useCameraRig();
+      const clip = useSectionClip();
+      const restoreDepth = useOverlayDepthRestorer();
+      const owned = useMemo(() => createModelEmphasisResources('webgpu', clip), [clip]);
+      resources = owned;
+      const previousClear = useMemo(() => new Color(), []);
+      useFrame(({ gl, camera }) => {
+        if (!source) {
+          return;
+        }
+        owned.setMaskSize({ width: gl.domElement.width, height: gl.domElement.height, pixelRatio: gl.getPixelRatio() });
+        syncModelEmphasisFrame(owned);
+        const selected = separate ? { ...owned, setFrameDepth: () => false } : owned;
+        renderModelEmphasisMask(selected, { gl, camera, restoreDepth, previousClear });
+      }, 1.4);
+      useFrame((current) => {
+        frames++;
+        if (retired || pending) {
+          return;
+        }
+        const requested = frames;
+        pending = (async () => {
+          try {
+            pixels = new Uint8ClampedArray(await captureRendererOutput(current.gl));
+            captured = requested;
+          } catch (error) {
+            captureError = error instanceof Error ? error : new Error(String(error));
+          } finally {
+            pending = undefined;
+          }
+        })();
+      }, 4);
+      return (
+        <SceneOverlay overlayActive renderPriority={1.5}>
+          <primitive object={owned.overlayGroup} />
+        </SceneOverlay>
+      );
+    };
+    try {
+      render(
+        <div style={{ width: 256, height: 256 }}>
+          <GraphicsProvider
+            graphicsRef={actor}
+            seed={{
+              camera: {
+                cameraFovAngle: 0,
+                cameraView: {
+                  frameId: 'tau:root',
+                  target: [0, 0, 0],
+                  direction: [0, 0, 1],
+                  up: [0, 1, 0],
+                  verticalSpan: 4,
+                  perspectiveZoom: 1,
+                },
+              },
+            }}
+          >
+            <ThreeCanvasInstance graphicsBackend='webgpu' upDirection='y' onRetry={() => undefined}>
+              <mesh
+                ref={(mesh) => {
+                  source = mesh ?? undefined;
+                }}
+              >
+                <sphereGeometry args={[0.5, 24, 16]} />
+                <meshStandardMaterial color={0x42_8a_c4} roughness={0.6} metalness={0.2} />
+              </mesh>
+              <mesh
+                ref={(mesh) => {
+                  occluder = mesh ?? undefined;
+                }}
+                position={[0.4, 0, 0.8]}
+              >
+                <boxGeometry args={[0.35, 1.6, 0.1]} />
+                <meshStandardMaterial color='white' />
+              </mesh>
+              <directionalLight position={[1, 2, 4]} intensity={3} />
+              <Mask />
+            </ThreeCanvasInstance>
+          </GraphicsProvider>
+        </div>,
+      );
+      await vi.waitFor(
+        () => {
+          expect(state).toBeDefined();
+          expect(resources).toBeDefined();
+          expect(source).toBeDefined();
+        },
+        { timeout: 30_000 },
+      );
+      const capture = async (): Promise<Uint8ClampedArray> => {
+        await pending;
+        const start = frames;
+        await vi.waitFor(
+          () => {
+            if (!pending) {
+              state!.advance(performance.now(), true);
+            }
+            if (captureError) {
+              throw captureError;
+            }
+            expect(captured).toBeGreaterThan(start + 2);
+          },
+          { timeout: 30_000 },
+        );
+        await pending;
+        return new Uint8ClampedArray(pixels!);
+      };
+      for (const [index, x] of [-0.6, 0.6, 0, -0.3, 0.25, -0.5, 0, 0.5].entries()) {
+        source!.position.x = x;
+        if (index === 2 || index === 5) {
+          cameraRig!.actorRef.send({ type: 'setVerticalFieldOfView', verticalFieldOfView: index === 2 ? 40 : 0 });
+        }
+        if (index === 4) {
+          syncModelEmphasisProxies(resources!, { hover: [], selected: [] });
+          expect(resources!.maskTarget.width).toBe(1);
+          state!.setDpr(1.5);
+        }
+        syncModelEmphasisProxies(
+          resources!,
+          index % 3 === 0
+            ? { hover: [occluder!], selected: [source!] }
+            : index % 3 === 1
+              ? { hover: [], selected: [source!] }
+              : { hover: [source!], selected: [] },
+        );
+        separate = false;
+        // oxlint-disable-next-line no-await-in-loop -- Reuse the same frame and mask through successive poses.
+        const candidate = await capture();
+        expect(state!.camera instanceof OrthographicCamera).toBe(index < 2 || index >= 5);
+        expect(state!.gl.getPixelRatio()).toBe(index < 4 ? 2 : 1.5);
+        const candidateCamera = {
+          world: state!.camera.matrixWorld.toArray(),
+          projection: state!.camera.projectionMatrix.toArray(),
+        };
+        separate = true;
+        // oxlint-disable-next-line no-await-in-loop -- Explicit-clear reference for exactly the same live composition.
+        const reference = await capture();
+        expect({
+          world: state!.camera.matrixWorld.toArray(),
+          projection: state!.camera.projectionMatrix.toArray(),
+        }).toEqual(candidateCamera);
+        let maxDifference = 0;
+        let different = 0;
+        let yellow = 0;
+        for (let i = 0; i < reference.length; i += 4) {
+          if (reference[i]! > reference[i + 2]! + 15 && reference[i + 1]! > reference[i + 2]! + 10) {
+            yellow++;
+          }
+        }
+        expect(yellow, JSON.stringify({ forceNodeWebGl2, index, yellow })).toBeGreaterThan(30);
+        for (const [i, value] of candidate.entries()) {
+          const difference = Math.abs(value - reference[i]!);
+          maxDifference = Math.max(maxDifference, difference);
+          if (difference > 1) {
+            different++;
+          }
+        }
+        expect(maxDifference, JSON.stringify({ forceNodeWebGl2, index, different })).toBeLessThanOrEqual(1);
+      }
+      expect(isViewportWebGpu(state!.gl)).toBe(true);
+      if (isViewportWebGpu(state!.gl)) {
+        expect(state!.gl.backend).toBeInstanceOf(forceNodeWebGl2 ? WebGLBackend : WebGPUBackend);
+      }
+    } finally {
+      retired = true;
+      await pending;
+      if (state) {
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
+      resources?.dispose();
+      actor.stop();
     }
   },
 );
