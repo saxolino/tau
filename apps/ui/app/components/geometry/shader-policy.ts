@@ -177,6 +177,7 @@ const gltfMeshLifecycleUnit = 'packages/viewer/src/graphics/three/react/gltf-mes
 const sectionStencilCapsUnit = 'packages/viewer/src/graphics/three/utils/section-stencil-caps.test.ts';
 const sectionStencilCapsBrowser = 'packages/viewer/src/graphics/three/utils/section-stencil-caps.browser.test.ts';
 const sectionCapOutlineUnit = 'packages/viewer/src/graphics/three/materials/section-cap-outline.material.test.ts';
+const modelPickRegion = 'packages/viewer/src/graphics/three/utils/model-gpu-pick-region.browser.test.ts';
 const modelPickBrowser = 'packages/viewer/src/graphics/three/utils/model-gpu-pick.browser.test.ts';
 const evidence = (unit: string, semantic: string, generatedSource = `${unit}::${semantic}`) => ({
   reference: [`${unit}::${semantic}`],
@@ -521,8 +522,16 @@ export const shaderEvidence = {
     'backend-differential': [
       `${modelPickBrowser}::should name the mesh and the distance the BVH names, away from silhouettes`,
     ],
-    'depth-clipping': [`${modelPickBrowser}::should pick what the section cut leaves, through what it removes`],
+    'depth-clipping': [
+      `${modelPickBrowser}::should pick what the section cut leaves, through what it removes`,
+      `${modelPickRegion}::should allocate only on demand and preserve pixel-centre hits at 5K and small viewports`,
+      'packages/viewer/src/graphics/three/utils/model-gpu-pick-upstream.test.ts::should guard the installed cropped-camera depth flag and readback row stride',
+    ],
+    'structural-perf': [
+      `${modelPickRegion}::should allocate only on demand and preserve pixel-centre hits at 5K and small viewports`,
+    ],
     lifecycle: [
+      `${modelPickRegion}::should coalesce pending regions and suppress replay after disposal`,
       `${modelPickBrowser}::should answer pending for a scene the buffer does not show, then replay once when the pass lands`,
       `${gltfMeshLifecycleUnit}::should leave hover and selection alone while the model pick is pending, then resolve the replayed pointer`,
     ],
