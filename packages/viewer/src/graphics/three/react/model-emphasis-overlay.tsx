@@ -47,6 +47,7 @@ import {
 import type { SilhouetteMaskSize } from '#graphics/three/materials/model-emphasis-silhouette.js';
 import { installSectionClip } from '#graphics/three/materials/section-clip.js';
 import type { SectionClip } from '#graphics/three/materials/section-clip.js';
+import { createEmphasisCompositeRegion } from '#graphics/three/materials/model-emphasis-region.js';
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 
 /** Frame-loop slots: after the main/post pass (1), before grid/axes overlays (2). */
@@ -97,10 +98,12 @@ export type ModelEmphasisResources = Readonly<{
   setFrameDepth: (depth: DepthTexture | undefined, isWebGl: boolean) => boolean;
   renderFrameDepth: (renderer: WebGPURenderer) => void;
   setMaskSize: (size: SilhouetteMaskSize) => void;
+  setCompositeRegion: (camera: Camera, bounded: boolean) => void;
   dispose: () => void;
 }>;
 
 const disableRaycast = (): void => undefined;
+const emptyCompositeSources: Proxy[] = [];
 const maskClearColor = new Color(0x00_00_00);
 
 /** One mask channel per (layer, state): coverage in RG, visibility in BA. */
@@ -213,6 +216,8 @@ export function createModelEmphasisResources(
       ? createWebGpuSilhouetteMaterial(maskTarget.texture)
       : createWebGlSilhouetteMaterial(maskTarget.texture);
   const quad = new Mesh(new PlaneGeometry(2, 2), composite);
+  const updateCompositeRegion = createEmphasisCompositeRegion(quad.geometry);
+  let maskSize: SilhouetteMaskSize = { width: 1, height: 1, pixelRatio: 1 };
   quad.frustumCulled = false;
   quad.raycast = disableRaycast;
   // Transparent draws sort by renderOrder first; the composite must land on top of the wash.
@@ -247,6 +252,7 @@ export function createModelEmphasisResources(
   };
 
   const setMaskSize = (size: SilhouetteMaskSize): void => {
+    maskSize = size;
     maskTarget.setSize(size.width, size.height);
     if (backend === 'webgpu') {
       setWebGpuSilhouetteMaskSize(composite as ReturnType<typeof createWebGpuSilhouetteMaterial>, size);
@@ -265,6 +271,9 @@ export function createModelEmphasisResources(
     wash,
     proxies,
     setMaskSize,
+    setCompositeRegion: (camera, bounded) => {
+      updateCompositeRegion(bounded && backend === 'webgpu' ? proxies : emptyCompositeSources, camera, maskSize);
+    },
     setFrameDepth,
     renderFrameDepth: (renderer) => {
       depthQuad?.render(renderer);
@@ -372,13 +381,16 @@ export function renderModelEmphasisMask(
     camera,
     restoreDepth,
     previousClear,
+    boundedComposite = true,
   }: {
     gl: WebGLRenderer;
     camera: Camera;
     restoreDepth: DepthRestore;
     previousClear: Color;
+    boundedComposite?: boolean;
   },
 ): void {
+  resources.setCompositeRegion(camera, boundedComposite);
   const previousTarget = gl.getRenderTarget();
   const previousAutoClear = gl.autoClear;
   const previousAutoClearColor = gl.autoClearColor;
@@ -452,7 +464,7 @@ function ModelEmphasisMaskPass({ resources }: { readonly resources: ModelEmphasi
  * multisampled device-resolution target, alongside a second proxy under the frame's restored
  * depth so the same target also carries where the part is frontmost. Overlay stage (priority 1.5, `SceneOverlay`
  * so the post owner's depth restore applies): translucent wash proxies depth-tested against the
- * frame at geometric depth, then one fullscreen composite that draws the outline where coverage
+ * frame at geometric depth, then one conservatively bounded node composite (fullscreen on classic) that draws the outline where coverage
  * changes — full strength where it is visible, dimmer where it is behind something. Idle cost is
  * zero — neither stage subscribes while nothing is emphasised.
  */

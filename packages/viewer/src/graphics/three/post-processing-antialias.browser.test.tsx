@@ -1087,7 +1087,7 @@ it.each([false, true])(
         owned.setMaskSize({ width: gl.domElement.width, height: gl.domElement.height, pixelRatio: gl.getPixelRatio() });
         syncModelEmphasisFrame(owned);
         const selected = separate ? { ...owned, setFrameDepth: () => false } : owned;
-        renderModelEmphasisMask(selected, { gl, camera, restoreDepth, previousClear });
+        renderModelEmphasisMask(selected, { gl, camera, restoreDepth, previousClear, boundedComposite: !separate });
       }, 1.4);
       useFrame((current) => {
         frames++;

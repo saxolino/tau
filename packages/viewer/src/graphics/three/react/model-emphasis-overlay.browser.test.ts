@@ -238,7 +238,14 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
             camera,
             previousClear: new Color(),
             restoreDepth,
+            boundedComposite: !reference,
           });
+          if (!reference) {
+            const quad = output.children[0] as Mesh;
+            quad.geometry.computeBoundingBox();
+            const bounds = quad.geometry.boundingBox!;
+            expect(bounds.max.x - bounds.min.x).toBeLessThan(2);
+          }
         }
         expect(restoreDepth).toHaveBeenCalledTimes(reference || !forceWebGl ? 3 : 0);
         renderer.setRenderTarget(target);
