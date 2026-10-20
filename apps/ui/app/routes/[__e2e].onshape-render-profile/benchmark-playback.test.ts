@@ -3,6 +3,7 @@ import { createActor } from 'xstate';
 import type { Mechanism } from '@taucad/kinematics';
 import { kinematicsMachine } from '@taucad/viewer/machines/kinematics.machine';
 import {
+  advanceBenchmarkPlayback,
   finishBenchmarkPlayback,
   prepareBenchmarkPlayback,
   sampleBenchmarkPlayback,
@@ -68,6 +69,38 @@ describe('calibration playback workload', () => {
     const still = prepareBenchmarkPlayback(actor, true);
     sampleBenchmarkPlayback(actor, still);
     expect(finishBenchmarkPlayback(actor, still, 1)[0]!.valid).toBe(false);
+  });
+
+  it('should reproduce frame-indexed poses despite different wall-clock ticks', () => {
+    const runs = [0.001, 0.1].map((elapsed) => {
+      const actor = createFixture();
+      const measurement = prepareBenchmarkPlayback(actor, true, 'fixed-step');
+      const poses = [];
+      for (let frame = 0; frame < 12; frame++) {
+        advanceBenchmarkPlayback(actor, measurement, frame);
+        actor.send({ type: 'tick', unitId: 'gear', elapsed });
+        sampleBenchmarkPlayback(actor, measurement);
+        const unit = actor.getSnapshot().context.unitsById['gear']!;
+        poses.push({ time: unit.playback.time, coordinates: unit.coordinates });
+      }
+      expect(finishBenchmarkPlayback(actor, measurement, 12)[0]).toMatchObject({
+        valid: true,
+        matchedSampleFrames: 12,
+        end: { time: 11 / 60, status: 'paused' },
+      });
+      expect(poses[0]).not.toEqual(poses[11]);
+      return poses;
+    });
+    expect(runs[0]).toEqual(runs[1]);
+  });
+
+  it('should reject a fixed-step workload changed before rendering', () => {
+    const actor = createFixture();
+    const measurement = prepareBenchmarkPlayback(actor, true, 'fixed-step');
+    advanceBenchmarkPlayback(actor, measurement, 10);
+    actor.send({ type: 'seek', unitId: 'gear', time: 0.8 });
+    sampleBenchmarkPlayback(actor, measurement);
+    expect(finishBenchmarkPlayback(actor, measurement, 1)[0]!.valid).toBe(false);
   });
 
   it('keeps orbit-only units paused and reports no motion for absent mechanisms', () => {

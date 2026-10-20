@@ -35,6 +35,7 @@ import { createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-
 import type { FrameGpuTimer, GpuPassRange } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import { getEnvironment } from '#environment.config.js';
 import {
+  advanceBenchmarkPlayback,
   prepareBenchmarkPlayback,
   sampleBenchmarkPlayback,
   finishBenchmarkPlayback,
@@ -94,6 +95,9 @@ type FrameSample = {
   triangles: number;
   lines: number;
   projectionSwitch: boolean;
+  cameraWorld: number[];
+  cameraProjection: number[];
+  playbackPose: Array<{ unitId: string; time: number; coordinates: Record<string, number> }>;
 };
 
 async function compressCapture(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
@@ -285,6 +289,14 @@ function CalibrationProbe({
       webgpuCapabilities: nodeRenderer
         ? {
             samples: nodeRenderer.samples,
+            canvasDepth: nodeRenderer.depth,
+            canvasStencil: nodeRenderer.stencil,
+            canvasDepthTexture: {
+              width: nodeRenderer.getCanvasTarget().depthTexture.image.width,
+              height: nodeRenderer.getCanvasTarget().depthTexture.image.height,
+              type: nodeRenderer.getCanvasTarget().depthTexture.type,
+              format: nodeRenderer.getCanvasTarget().depthTexture.format,
+            },
             native: Boolean(nativeGpu),
             compatibilityMode: nativeGpu && 'compatibilityMode' in nativeGpu ? nativeGpu.compatibilityMode : undefined,
           }
@@ -452,7 +464,7 @@ function CalibrationProbe({
       }
       if (!current.playbackStarted) {
         const withPlayback = benchmarkKind === 'playback' || benchmarkKind === 'combined';
-        current.playbackMeasurements = prepareBenchmarkPlayback(kinematicsRef, withPlayback);
+        current.playbackMeasurements = prepareBenchmarkPlayback(kinematicsRef, withPlayback, 'fixed-step');
         if (withPlayback && current.playbackMeasurements.length === 0) {
           current.benchmark = benchmark;
           current.benchmarkResult = {
@@ -465,8 +477,9 @@ function CalibrationProbe({
         }
         current.playbackStarted = true;
       }
+      advanceBenchmarkPlayback(kinematicsRef, current.playbackMeasurements, Math.min(current.frame, 329));
       if (benchmarkKind === 'orbit' || benchmarkKind === 'combined') {
-        const angle = (current.frame * Math.PI) / 150;
+        const angle = (Math.min(current.frame, 329) * Math.PI) / 150;
         const { view } = rig.actorRef.getSnapshot().context;
         rig.actorRef.send({
           ...view,
@@ -515,6 +528,12 @@ function CalibrationProbe({
       if (current.frame > 30 && current.samples.length < 300) {
         sampleBenchmarkPlayback(kinematicsRef, current.playbackMeasurements);
         current.samples.push({
+          cameraWorld: rig.activeCamera.matrixWorld.toArray(),
+          cameraProjection: rig.activeCamera.projectionMatrix.toArray(),
+          playbackPose: current.playbackMeasurements.map(({ unitId }) => {
+            const unit = kinematicsRef.getSnapshot().context.unitsById[unitId]!;
+            return { unitId, time: unit.playback.time, coordinates: { ...unit.coordinates } };
+          }),
           frameInterval: current.start - current.previous,
           projectionSwitch: current.projectionSwitch,
           cpuSubmission: now - current.start,
@@ -544,6 +563,7 @@ function CalibrationProbe({
               : true,
           sequence: benchmark,
           measurementMode,
+          poseSchedule: { kind: 'fixed-step', secondsPerFrame: 1 / 60, firstFrame: 30, lastFrame: 329 },
           validForeground:
             current.hiddenFrames === 0 && current.unfocusedFrames === 0 && current.interruptions.length === 0,
           interruptions: current.interruptions,

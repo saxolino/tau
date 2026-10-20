@@ -3,6 +3,9 @@ import { getKinematicsAnimation } from '@taucad/viewer/machines/kinematics.machi
 
 export type PlaybackMeasurement = {
   unitId: string;
+  timing: 'realtime' | 'fixed-step';
+  expectedTime: number;
+  matchedSampleFrames: number;
   animation: { id: string; duration: number; loop: string };
   speed: number;
   start: { time: number; revision: number };
@@ -12,7 +15,11 @@ export type PlaybackMeasurement = {
 };
 
 /** Reset all mechanism units; only playable units enter the motion workload. */
-export function prepareBenchmarkPlayback(actor: KinematicsRef, play: boolean): PlaybackMeasurement[] {
+export function prepareBenchmarkPlayback(
+  actor: KinematicsRef,
+  play: boolean,
+  timing: PlaybackMeasurement['timing'] = 'realtime',
+): PlaybackMeasurement[] {
   const measurements: PlaybackMeasurement[] = [];
   for (const [unitId, unit] of Object.entries(actor.getSnapshot().context.unitsById)) {
     if (!unit.mechanism) {
@@ -28,11 +35,16 @@ export function prepareBenchmarkPlayback(actor: KinematicsRef, play: boolean): P
     if (!play || !animation) {
       continue;
     }
-    actor.send({ type: 'play', unitId });
+    if (timing === 'realtime') {
+      actor.send({ type: 'play', unitId });
+    }
     const started = actor.getSnapshot().context.unitsById[unitId]!;
-    if (started.playback.status === 'playing') {
+    if (timing === 'fixed-step' || started.playback.status === 'playing') {
       measurements.push({
         unitId,
+        timing,
+        expectedTime: 0,
+        matchedSampleFrames: 0,
         animation: { id: animation.id, duration: animation.duration, loop: animation.loop ?? 'none' },
         speed: started.playback.speed,
         start: { time: started.playback.time, revision: started.revision },
@@ -45,6 +57,20 @@ export function prepareBenchmarkPlayback(actor: KinematicsRef, play: boolean): P
   return measurements;
 }
 
+/** Seek while paused: the production wall-clock callback cannot advance the selected pose. */
+export function advanceBenchmarkPlayback(
+  actor: KinematicsRef,
+  measurements: PlaybackMeasurement[],
+  frame: number,
+): void {
+  for (const measurement of measurements) {
+    if (measurement.timing === 'fixed-step') {
+      measurement.expectedTime = (frame / 60) * measurement.speed;
+      actor.send({ type: 'seek', unitId: measurement.unitId, time: measurement.expectedTime });
+    }
+  }
+}
+
 /** Count actual actor motion after each sampled render, independently of camera motion. */
 export function sampleBenchmarkPlayback(actor: KinematicsRef, measurements: PlaybackMeasurement[]): void {
   for (const measurement of measurements) {
@@ -52,6 +78,9 @@ export function sampleBenchmarkPlayback(actor: KinematicsRef, measurements: Play
     if (!unit) {
       continue;
     }
+    measurement.matchedSampleFrames += Number(
+      unit.playback.status === 'paused' && unit.playback.time === measurement.expectedTime,
+    );
     measurement.playingSampleFrames += Number(unit.playback.status === 'playing');
     measurement.advancingSampleFrames += Number(unit.playback.time !== measurement.previousTime);
     measurement.previousTime = unit.playback.time;
@@ -74,7 +103,10 @@ export function finishBenchmarkPlayback(
     return {
       ...measurement,
       end: unit ? { time: unit.playback.time, revision: unit.revision, status: unit.playback.status } : undefined,
-      valid: measurement.playingSampleFrames === frames && measurement.advancingSampleFrames > 0,
+      valid:
+        (measurement.timing === 'fixed-step'
+          ? measurement.matchedSampleFrames === frames
+          : measurement.playingSampleFrames === frames) && measurement.advancingSampleFrames > 0,
     };
   });
 }
