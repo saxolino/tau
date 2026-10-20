@@ -14,6 +14,19 @@ export function transformRenderingAblation(source: string, id: string): string |
   };
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
+    code = `import { directionToColor, colorToDirection } from 'three/tsl';\n` + code;
+    replace(
+      'normal: encodeAoNormal(normalView),',
+      "normal: tauAblation.get('normalStorage') === 'rgba' ? directionToColor(normalView) : encodeAoNormal(normalView),",
+    );
+    replace(
+      "scenePass.getTexture('normal').format = RGFormat;",
+      "if (tauAblation.get('normalStorage') !== 'rgba') scenePass.getTexture('normal').format = RGFormat;",
+    );
+    replace(
+      "sampleAoNormal(scenePass.getTextureNode('normal'), uv)",
+      "tauAblation.get('normalStorage') === 'rgba' ? colorToDirection(scenePass.getTextureNode('normal').sample(uv)) : sampleAoNormal(scenePass.getTextureNode('normal'), uv)",
+    );
     replace(
       'const scenePass = pass(scene, camera, { samples: 0 });',
       `const scenePass = pass(scene, camera,

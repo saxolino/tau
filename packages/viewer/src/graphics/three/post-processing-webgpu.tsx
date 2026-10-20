@@ -3,8 +3,6 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 import { NodeMaterial, QuadMesh, RenderTarget, UnsignedByteType } from 'three/webgpu';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
-  colorToDirection,
-  directionToColor,
   float,
   mix,
   mrt,
@@ -22,12 +20,14 @@ import {
   vec4,
 } from 'three/tsl';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
+import { encodeAoNormal, sampleAoNormal } from '#graphics/three/ao-normal.js';
 import { createAoDenoise } from '#graphics/three/ao-denoise.js';
 import {
   AlwaysDepth,
   WebGLCoordinateSystem,
   HalfFloatType,
   RedFormat,
+  RGFormat,
   LinearSRGBColorSpace,
   NoToneMapping,
   DepthTexture,
@@ -182,9 +182,8 @@ const createPipelineResources = ({
         mrt({
           // Beauty colour — TSL `output` is the standard fragment output (lit scene colour).
           output,
-          // View-space normal encoded into a UNORM8 RGB channel; decoded below before feeding GTAO.
-          // Encoding keeps the MRT attachment compact and matches the existing type override.
-          normal: directionToColor(normalView),
+          // Two-channel octahedral normals retain both hemispheres at half the RGBA8 storage.
+          normal: encodeAoNormal(normalView),
         }),
       );
     }
@@ -222,7 +221,8 @@ const createPipelineResources = ({
       };
     }
     scenePass.getTexture('normal').type = UnsignedByteType;
-    const scenePassNormal = sample((uv) => colorToDirection(scenePass.getTextureNode('normal').sample(uv)));
+    scenePass.getTexture('normal').format = RGFormat;
+    const scenePassNormal = sample((uv) => sampleAoNormal(scenePass.getTextureNode('normal'), uv));
 
     // GTAONode rejects forward depth >= 1 as background. Pair 1-depth with
     // forward projection matrices; changing only the samples corrupts positions.

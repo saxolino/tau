@@ -125,7 +125,7 @@ const mocks = vi.hoisted(() => {
     mul: (factor: unknown) => ({ kind: 'display-composed-color', color, factor }),
   }));
   const aoTexture = { sample: vi.fn(() => ({ r: { kind: 'ao-r' } })) };
-  const normalTexture = { type: 0 };
+  const normalTexture = { type: 0, format: 0 };
   const prewarm = vi.fn();
   const updateAoCamera = vi.fn();
   const createGtaoCameraAdapter = vi.fn((camera: unknown) => ({ camera, update: updateAoCamera }));
@@ -287,6 +287,10 @@ vi.mock('#graphics/three/scene-overlay.jsx', () => ({
 
 vi.mock('#graphics/three/fxaa.js', () => ({ createViewportFxaa: mocks.fxaa }));
 vi.mock('three/addons/tsl/display/GTAONode.js', () => ({ ao: mocks.ao }));
+vi.mock('#graphics/three/ao-normal.js', () => ({
+  encodeAoNormal: (normal: unknown) => normal,
+  sampleAoNormal: (encoded: unknown) => encoded,
+}));
 vi.mock('#graphics/three/ao-denoise.js', () => ({ createAoDenoise: mocks.denoise }));
 vi.mock('#graphics/three/gtao-depth-camera.js', () => ({
   createGtaoCameraAdapter: mocks.createGtaoCameraAdapter,
@@ -606,6 +610,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
       normal: { kind: 'normal-view' },
     });
     expect(mocks.normalTexture.type).toBe(1009);
+    expect(mocks.normalTexture.format).toBe(1030);
     expect(mocks.aoNodes[0]).toMatchObject({
       resolutionScale: 0.25,
       useTemporalFiltering: false,
