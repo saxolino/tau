@@ -47,6 +47,7 @@ import {
 import type { SilhouetteMaskSize } from '#graphics/three/materials/model-emphasis-silhouette.js';
 import { installSectionClip } from '#graphics/three/materials/section-clip.js';
 import type { SectionClip } from '#graphics/three/materials/section-clip.js';
+import { createEmphasisMaskCrop } from '#graphics/three/materials/model-emphasis-crop.js';
 import { createEmphasisCompositeRegion } from '#graphics/three/materials/model-emphasis-region.js';
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 
@@ -98,7 +99,8 @@ export type ModelEmphasisResources = Readonly<{
   setFrameDepth: (depth: DepthTexture | undefined, isWebGl: boolean) => boolean;
   renderFrameDepth: (renderer: WebGPURenderer) => void;
   setMaskSize: (size: SilhouetteMaskSize) => void;
-  setCompositeRegion: (camera: Camera, bounded: boolean) => void;
+  frameSize: SilhouetteMaskSize;
+  prepareMask: (camera: Camera, bounded: boolean, cropped: boolean) => Camera;
   dispose: () => void;
 }>;
 
@@ -217,7 +219,8 @@ export function createModelEmphasisResources(
       : createWebGlSilhouetteMaterial(maskTarget.texture);
   const quad = new Mesh(new PlaneGeometry(2, 2), composite);
   const updateCompositeRegion = createEmphasisCompositeRegion(quad.geometry);
-  let maskSize: SilhouetteMaskSize = { width: 1, height: 1, pixelRatio: 1 };
+  const maskSize: SilhouetteMaskSize = { width: 1, height: 1, pixelRatio: 1 };
+  const crop = createEmphasisMaskCrop();
   quad.frustumCulled = false;
   quad.raycast = disableRaycast;
   // Transparent draws sort by renderOrder first; the composite must land on top of the wash.
@@ -239,21 +242,29 @@ export function createModelEmphasisResources(
   let depthStamp: ReturnType<typeof createWebGpuEmphasisDepthMaterial> | undefined;
   let depthQuad: QuadMesh | undefined;
   const setFrameDepth = (source: DepthTexture | undefined, isWebGl: boolean): boolean => {
-    if (!source || backend !== 'webgpu' || !isWebGl) {
+    if (!source || backend !== 'webgpu') {
       if (depthStamp) {
         depthStamp.frameDepth.value = depthStamp.emptyDepth;
       }
       return false;
     }
     depthStamp ??= createWebGpuEmphasisDepthMaterial(source);
+    depthStamp.material.depthTest = isWebGl;
     depthQuad ??= new QuadMesh(depthStamp.material);
     depthStamp.frameDepth.value = source;
+    depthStamp.frameRegion.value.copy(crop.uv);
     return true;
   };
 
   const setMaskSize = (size: SilhouetteMaskSize): void => {
-    maskSize = size;
-    maskTarget.setSize(size.width, size.height);
+    if (maskSize.width !== size.width || maskSize.height !== size.height) {
+      crop.reset();
+      maskTarget.setSize(size.width, size.height);
+    }
+    Object.assign(maskSize, size);
+    if (size.width === 1 && size.height === 1) {
+      maskTarget.setSize(1, 1);
+    }
     if (backend === 'webgpu') {
       setWebGpuSilhouetteMaskSize(composite as ReturnType<typeof createWebGpuSilhouetteMaterial>, size);
     } else {
@@ -271,8 +282,29 @@ export function createModelEmphasisResources(
     wash,
     proxies,
     setMaskSize,
-    setCompositeRegion: (camera, bounded) => {
-      updateCompositeRegion(bounded && backend === 'webgpu' ? proxies : emptyCompositeSources, camera, maskSize);
+    frameSize: maskSize,
+    prepareMask: (camera, bounded, cropped) => {
+      const region = updateCompositeRegion(
+        bounded && backend === 'webgpu' ? proxies : emptyCompositeSources,
+        camera,
+        maskSize,
+      );
+      const maskCamera = crop.update(
+        camera,
+        cropped && backend === 'webgpu' && proxies.length > 0 ? region : undefined,
+        maskSize,
+      );
+      maskTarget.setSize(crop.pixels.z, crop.pixels.w);
+      if (backend === 'webgpu') {
+        const nodeComposite = composite as ReturnType<typeof createWebGpuSilhouetteMaterial>;
+        nodeComposite.silhouetteRegion.value.copy(crop.uv);
+        setWebGpuSilhouetteMaskSize(nodeComposite, {
+          width: crop.pixels.z,
+          height: crop.pixels.w,
+          pixelRatio: maskSize.pixelRatio,
+        });
+      }
+      return maskCamera;
     },
     setFrameDepth,
     renderFrameDepth: (renderer) => {
@@ -382,53 +414,72 @@ export function renderModelEmphasisMask(
     restoreDepth,
     previousClear,
     boundedComposite = true,
+    croppedMask = true,
+    fuseNativeClear = true,
   }: {
     gl: WebGLRenderer;
     camera: Camera;
     restoreDepth: DepthRestore;
     previousClear: Color;
     boundedComposite?: boolean;
+    croppedMask?: boolean;
+    fuseNativeClear?: boolean;
   },
 ): void {
-  resources.setCompositeRegion(camera, boundedComposite);
   const previousTarget = gl.getRenderTarget();
   const previousAutoClear = gl.autoClear;
   const previousAutoClearColor = gl.autoClearColor;
   const previousAutoClearDepth = gl.autoClearDepth;
   const previousAutoClearStencil = gl.autoClearStencil;
   // A composed node frame stays bound until final encoding. Its current depth includes caps.
-  // Only node WebGL2 is qualified for the clear/depth fusion. Native WebGPU retains
-  // explicit clear + the post owner’s depth restore: fusion left stale full-frame outlines
-  // in r184 despite passing isolated pixels. Keep geometry in its own render pass.
-  const inPassDepth = resources.setFrameDepth(
+  const isWebGl = (gl as unknown as WebGPURenderer).coordinateSystem === WebGLCoordinateSystem;
+  const compatibleFrame =
     previousTarget &&
-      previousTarget.samples <= 1 &&
-      previousTarget.width === resources.maskTarget.width &&
-      previousTarget.height === resources.maskTarget.height
+    previousTarget.samples <= 1 &&
+    previousTarget.width === resources.frameSize.width &&
+    previousTarget.height === resources.frameSize.height
       ? (previousTarget.depthTexture ?? undefined)
-      : undefined,
-    (gl as unknown as WebGPURenderer).coordinateSystem === WebGLCoordinateSystem,
+      : undefined;
+  const maskCamera = resources.prepareMask(camera, boundedComposite, croppedMask && Boolean(compatibleFrame));
+  const cropped =
+    resources.maskTarget.width !== resources.frameSize.width ||
+    resources.maskTarget.height !== resources.frameSize.height;
+  // Native clears color with coverage, GL before its depth-only draw (color-mask state differs).
+  // Keep the explicit native sequence as a qualification control, including cropped depth stamping.
+  const inPassDepth = resources.setFrameDepth(
+    isWebGl || fuseNativeClear || cropped ? compatibleFrame : undefined,
+    isWebGl,
   );
+  const fusedClear = inPassDepth && (isWebGl || fuseNativeClear);
   gl.getClearColor(previousClear);
   const previousClearAlpha = gl.getClearAlpha();
   try {
     gl.setRenderTarget(resources.maskTarget);
     gl.setClearColor(maskClearColor, 0);
-    if (inPassDepth) {
+    if (fusedClear) {
       gl.autoClear = true;
-      gl.autoClearColor = true;
+      gl.autoClearColor = isWebGl;
       gl.autoClearDepth = true;
       gl.autoClearStencil = false;
       resources.renderFrameDepth(gl as unknown as WebGPURenderer);
     } else {
       gl.autoClear = false;
       gl.clear(true, true, false);
-      restoreDepth(resources.maskTarget);
+      if (inPassDepth) {
+        resources.renderFrameDepth(gl as unknown as WebGPURenderer);
+      } else {
+        restoreDepth(resources.maskTarget);
+      }
     }
-    gl.autoClear = false;
+    gl.autoClear = fusedClear && !isWebGl;
+    if (gl.autoClear) {
+      gl.autoClearColor = true;
+      gl.autoClearDepth = false;
+      gl.autoClearStencil = false;
+    }
     // Both layers in one pass: a second `gl.render` would cost a second multisample resolve of a
     // device-resolution target for nothing, since the layers never read each other.
-    gl.render(resources.maskScene, camera);
+    gl.render(resources.maskScene, maskCamera);
   } finally {
     gl.setRenderTarget(previousTarget);
     gl.setClearColor(previousClear, previousClearAlpha);
@@ -447,7 +498,11 @@ function ModelEmphasisMaskPass({ resources }: { readonly resources: ModelEmphasi
   useFrame((state) => {
     const { gl, camera } = state;
     gl.getDrawingBufferSize(sizeRef);
-    if (resources.maskTarget.width !== sizeRef.x || resources.maskTarget.height !== sizeRef.y) {
+    if (
+      resources.frameSize.width !== sizeRef.x ||
+      resources.frameSize.height !== sizeRef.y ||
+      resources.frameSize.pixelRatio !== gl.getPixelRatio()
+    ) {
       resources.setMaskSize({ width: sizeRef.x, height: sizeRef.y, pixelRatio: gl.getPixelRatio() });
     }
     syncModelEmphasisFrame(resources);

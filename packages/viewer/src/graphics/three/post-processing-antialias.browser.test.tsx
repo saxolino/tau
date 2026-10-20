@@ -34,6 +34,7 @@ import {
   syncModelEmphasisFrame,
   syncModelEmphasisProxies,
 } from '#graphics/three/react/model-emphasis-overlay.jsx';
+import { measureEmphasisPixels } from '#graphics/three/materials/model-emphasis-pixels.test-utils.js';
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 import { createSectionStencilCaps } from '#graphics/three/utils/section-stencil-caps.js';
 import type * as rendererModule from '#graphics/three/renderer.js';
@@ -1066,6 +1067,8 @@ it.each([false, true])(
     let occluder: Mesh | undefined;
     let cameraRig: ReturnType<typeof useCameraRig> | undefined;
     let separate = false;
+    let cropped = true;
+    const comparisons: unknown[] = [];
     let pixels: Uint8ClampedArray | undefined;
     let pending: Promise<void> | undefined;
     let captureError: Error | undefined;
@@ -1087,7 +1090,15 @@ it.each([false, true])(
         owned.setMaskSize({ width: gl.domElement.width, height: gl.domElement.height, pixelRatio: gl.getPixelRatio() });
         syncModelEmphasisFrame(owned);
         const selected = separate ? { ...owned, setFrameDepth: () => false } : owned;
-        renderModelEmphasisMask(selected, { gl, camera, restoreDepth, previousClear, boundedComposite: !separate });
+        renderModelEmphasisMask(selected, {
+          gl,
+          camera,
+          restoreDepth,
+          previousClear,
+          boundedComposite: true,
+          croppedMask: cropped,
+          fuseNativeClear: !separate,
+        });
       }, 1.4);
       useFrame((current) => {
         frames++;
@@ -1191,6 +1202,9 @@ it.each([false, true])(
           expect(resources!.maskTarget.width).toBe(1);
           state!.setDpr(1.5);
         }
+        if (index === 1) {
+          syncModelEmphasisProxies(resources!, { hover: [], selected: [] });
+        }
         syncModelEmphasisProxies(
           resources!,
           index % 3 === 0
@@ -1200,14 +1214,23 @@ it.each([false, true])(
               : { hover: [source!], selected: [] },
         );
         separate = false;
+        cropped = true;
         // oxlint-disable-next-line no-await-in-loop -- Reuse the same frame and mask through successive poses.
         const candidate = await capture();
+        if (index === 1) {
+          expect(resources!.maskTarget.width * resources!.maskTarget.height).toBeLessThan(
+            state!.gl.domElement.width * state!.gl.domElement.height,
+          );
+        }
         expect(state!.camera instanceof OrthographicCamera).toBe(index < 2 || index >= 5);
         expect(state!.gl.getPixelRatio()).toBe(index < 4 ? 2 : 1.5);
         const candidateCamera = {
           world: state!.camera.matrixWorld.toArray(),
           projection: state!.camera.projectionMatrix.toArray(),
         };
+        cropped = false;
+        // oxlint-disable-next-line no-await-in-loop -- Clear-only control isolates pass ordering from changed projection.
+        const clearOnly = await capture();
         separate = true;
         // oxlint-disable-next-line no-await-in-loop -- Explicit-clear reference for exactly the same live composition.
         const reference = await capture();
@@ -1215,24 +1238,22 @@ it.each([false, true])(
           world: state!.camera.matrixWorld.toArray(),
           projection: state!.camera.projectionMatrix.toArray(),
         }).toEqual(candidateCamera);
-        let maxDifference = 0;
-        let different = 0;
         let yellow = 0;
         for (let i = 0; i < reference.length; i += 4) {
           if (reference[i]! > reference[i + 2]! + 15 && reference[i + 1]! > reference[i + 2]! + 10) {
             yellow++;
           }
         }
-        expect(yellow, JSON.stringify({ forceNodeWebGl2, index, yellow })).toBeGreaterThan(30);
-        for (const [i, value] of candidate.entries()) {
-          const difference = Math.abs(value - reference[i]!);
-          maxDifference = Math.max(maxDifference, difference);
-          if (difference > 1) {
-            different++;
-          }
-        }
-        expect(maxDifference, JSON.stringify({ forceNodeWebGl2, index, different })).toBeLessThanOrEqual(1);
+        expect(yellow).toBeGreaterThan(30);
+        const clearResult = measureEmphasisPixels(clearOnly, reference, state!.gl.domElement.width);
+        expect(clearResult.maxDelta, JSON.stringify({ forceNodeWebGl2, index, clearResult })).toBeLessThanOrEqual(1);
+        const result = measureEmphasisPixels(candidate, reference, state!.gl.domElement.width);
+        comparisons.push({ index, result });
+        // Gate revision 2: boundary-local screen, with negative controls in model-emphasis-pixels.test.ts.
+        expect(result.interiorChanges, JSON.stringify({ forceNodeWebGl2, index, result })).toBe(0);
+        expect(result.maxLocalMean, JSON.stringify({ forceNodeWebGl2, index, result })).toBeLessThanOrEqual(16);
       }
+      console.info('Mask crop pixel evidence', JSON.stringify({ forceNodeWebGl2, comparisons }));
       expect(isViewportWebGpu(state!.gl)).toBe(true);
       if (isViewportWebGpu(state!.gl)) {
         expect(state!.gl.backend).toBeInstanceOf(forceNodeWebGl2 ? WebGLBackend : WebGPUBackend);

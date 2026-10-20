@@ -120,7 +120,10 @@ export const shaderSites = [
   },
   {
     id: 'model-emphasis-silhouette',
-    helpers: ['packages/viewer/src/graphics/three/materials/model-emphasis-region.ts'],
+    helpers: [
+      'packages/viewer/src/graphics/three/materials/model-emphasis-region.ts',
+      'packages/viewer/src/graphics/three/materials/model-emphasis-crop.ts',
+    ],
     modules: [
       'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.material.ts',
       'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.node.ts',
@@ -480,6 +483,7 @@ export const shaderEvidence = {
     reference: [
       'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.test.ts::draws the outline only where mask coverage changes',
       'packages/viewer/src/graphics/three/materials/model-emphasis-region.test.ts::bounds the composite in original clip coordinates with device-pixel filter padding',
+      'packages/viewer/src/graphics/three/materials/model-emphasis-crop.test.ts::should preserve crop depth and pixel placement',
       'packages/viewer/src/graphics/three/materials/model-emphasis-region.test.ts::keeps full coverage for eye-plane crossings and deformation and bounds the union of separate parts',
       'packages/viewer/src/graphics/three/materials/model-emphasis-region.test.ts::retains padding at fractional DPR and restores bounds after offscreen motion and camera switching',
     ],
@@ -493,11 +497,12 @@ export const shaderEvidence = {
     ],
     lifecycle: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::packs one node emphasis state without reducing coverage samples or depth precision',
-      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::fuses clear with depth only on qualified node WebGL2=%s',
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::should clear color at the qualified node pass for WebGL2=%s',
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::should preserve required depth attachments and omit unused resolved mask depth',
     ],
     'structural-perf': [
       'packages/viewer/src/graphics/three/materials/model-emphasis-region.test.ts::bounds the composite in original clip coordinates with device-pixel filter padding',
+      'packages/viewer/src/graphics/three/materials/model-emphasis-crop.test.ts::should preserve crop depth and pixel placement',
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::should preserve required depth attachments and omit unused resolved mask depth',
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::should guard the installed depth allocation and framebuffer implementation',
     ],

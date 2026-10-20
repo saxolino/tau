@@ -73,7 +73,7 @@ describe('model emphasis overlay resources', () => {
     }
   });
 
-  it.each([false, true])('fuses clear with depth only on qualified node WebGL2=%s', (isWebGl) => {
+  it.each([false, true])('should clear color at the qualified node pass for WebGL2=%s', (isWebGl) => {
     const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
     const frame = new WebGLRenderTarget(200, 100);
     frame.depthTexture = new DepthTexture(200, 100);
@@ -95,14 +95,14 @@ describe('model emphasis overlay resources', () => {
     expect(resources.maskTarget.depthBuffer).toBe(true);
     expect(resources.maskTarget.samples).toBe(4);
     expect(resources.mask.visibility.selected.depthTest).toBe(true);
-    expect(restore).toHaveBeenCalledTimes(isWebGl ? 0 : 1);
-    expect(calls.filter((call) => call === 'draw')).toHaveLength(isWebGl ? 2 : 1);
-    expect(calls.includes('clear')).toBe(!isWebGl);
+    expect(restore).toHaveBeenCalledTimes(0);
+    expect(calls.filter((call) => call === 'draw')).toHaveLength(2);
+    expect(calls.includes('clear')).toBe(false);
     expect(resources.maskScene.children).toHaveLength(0);
     render();
     gl.getRenderTarget = () => null;
     render();
-    expect(restore).toHaveBeenCalledTimes(isWebGl ? 1 : 3);
+    expect(restore).toHaveBeenCalledTimes(1);
     expect(calls).toContain('clear');
     resources.dispose();
     expect(borrowedDispose).not.toHaveBeenCalled();

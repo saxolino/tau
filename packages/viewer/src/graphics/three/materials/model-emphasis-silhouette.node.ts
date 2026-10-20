@@ -1,6 +1,6 @@
 /* oxlint-disable new-cap -- three/tsl `Fn` is a shader graph factory */
 /* oxlint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- three/tsl fluent nodes are typed as `any` in @types/three; the graph is pinned by the stripped snapshot test. */
-import { AlwaysDepth, Color, DepthTexture, Vector2 } from 'three';
+import { AlwaysDepth, Color, DepthTexture, Vector2, Vector4 } from 'three';
 import type { Texture } from 'three';
 import { MeshBasicNodeMaterial, NodeMaterial } from 'three/webgpu';
 import {
@@ -33,6 +33,8 @@ export type SilhouetteNodeMaterial = MeshBasicNodeMaterial & {
   readonly silhouetteTexelSize: { value: Vector2 };
   /** Zero uses independent RGBA states; otherwise RG carries coverage/visibility at this alpha. */
   readonly silhouettePackedAlpha: { value: number };
+  /** Top-left crop offset and extent in full-frame UV. */
+  readonly silhouetteRegion: { value: Vector4 };
 };
 
 /**
@@ -51,6 +53,7 @@ export function createWebGpuSilhouetteMaterial(maskTexture: Texture): Silhouette
   const stateAlpha = uniform(new Vector2(silhouetteHoverAlpha, silhouetteSelectedAlpha));
   const hiddenAlphaScale = uniform(silhouetteHiddenAlphaScale);
   const packedAlpha = uniform(0);
+  const region = uniform(new Vector4(0, 0, 1, 1));
 
   const material = new MeshBasicNodeMaterial({
     transparent: true,
@@ -62,8 +65,9 @@ export function createWebGpuSilhouetteMaterial(maskTexture: Texture): Silhouette
   material.vertexNode = Fn(() => vec4(positionGeometry.xy, float(0), float(1)))();
 
   material.colorNode = Fn(() => {
-    const center = texture(maskTexture, screenUV);
-    const taps = silhouetteTapOffsets.map(([x, y]) => texture(maskTexture, screenUV.add(texelSize.mul(vec2(x, y)))));
+    const maskUv = screenUV.sub(region.xy).div(region.zw);
+    const center = texture(maskTexture, maskUv);
+    const taps = silhouetteTapOffsets.map(([x, y]) => texture(maskTexture, maskUv.add(texelSize.mul(vec2(x, y)))));
     let high = center.rg;
     let low = center.rg;
     let visible = center.ba;
@@ -91,6 +95,7 @@ export function createWebGpuSilhouetteMaterial(maskTexture: Texture): Silhouette
   return Object.assign(material, {
     silhouetteTexelSize: texelSize,
     silhouettePackedAlpha: packedAlpha,
+    silhouetteRegion: region,
   }) as SilhouetteNodeMaterial;
 }
 
@@ -104,7 +109,7 @@ export function setWebGpuSilhouetteMaskSize(
 }
 
 /**
- * Stamp retained frame depth while clearing the mask color in the same render pass.
+ * Stamp retained frame depth into the mask, optionally sampling a native-resolution crop.
  *
  * @param source - Borrowed authoritative depth, including later cap writes.
  * @returns Owned material and placeholder, plus the borrowed depth texture binding.
@@ -113,18 +118,21 @@ export function createWebGpuEmphasisDepthMaterial(source: DepthTexture): {
   material: NodeMaterial;
   frameDepth: ReturnType<typeof texture>;
   emptyDepth: DepthTexture;
+  frameRegion: { value: Vector4 };
 } {
   // Logical placeholder releases the borrowed frame reference while inactive; never rendered.
   const emptyDepth = new DepthTexture(1, 1);
-  const frameDepth = texture(source, screenUV);
+  const frameRegion = uniform(new Vector4(0, 0, 1, 1));
+  const frameDepth = texture(source, screenUV.mul(frameRegion.zw).add(frameRegion.xy));
   const material = new NodeMaterial();
   material.colorWrite = false;
   material.depthWrite = true;
-  // Qualified only on node WebGL2; writing fragment depth requires an enabled test.
+  // The owning renderer selects depthTest: GL needs it enabled; native reversed-Z
+  // uses disabled testing for compare-always.
   material.depthTest = true;
   material.depthFunc = AlwaysDepth;
   material.toneMapped = false;
   material.name = 'tau-emphasis-depth';
   material.depthNode = frameDepth;
-  return { material, frameDepth, emptyDepth };
+  return { material, frameDepth, emptyDepth, frameRegion };
 }

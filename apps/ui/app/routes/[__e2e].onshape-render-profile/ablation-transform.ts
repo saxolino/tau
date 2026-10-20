@@ -69,6 +69,8 @@ export function transformRenderingAblation(source: string, id: string): string |
       'if (renderer.reversedDepthBuffer) renderer.setTransparentSort(reversedDepthTransparentSort);',
     );
   } else if (file.endsWith('/graphics/three/react/model-emphasis-overlay.tsx')) {
+    replace('croppedMask = true,', "croppedMask = tauAblation.get('maskRegion') !== 'full',");
+    replace('fuseNativeClear = true,', "fuseNativeClear = tauAblation.get('nativeClear') !== 'separate',");
     replace('boundedComposite = true,', "boundedComposite = tauAblation.get('compositeRegion') !== 'full',");
     replace(
       "depthTexture: backend === 'webgpu' ? null : new DepthTexture(1, 1, UnsignedIntType),",

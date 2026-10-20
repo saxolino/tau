@@ -7,6 +7,7 @@
   "inputNodes": {
     "colorNode": "<nodeRef>",
     "silhouettePackedAlpha": "<nodeRef>",
+    "silhouetteRegion": "<nodeRef>",
     "silhouetteTexelSize": "<nodeRef>",
     "vertexNode": "<nodeRef>"
   },
@@ -71,6 +72,16 @@
       "type": "UniformNode",
       "value": 0,
       "valueType": "float"
+    },
+    {
+      "inputNodes": {
+        "groupNode": "<nodeRef>"
+      },
+      "nodeType": null,
+      "precision": null,
+      "type": "UniformNode",
+      "value": [0, 0, 1, 1],
+      "valueType": "vec4"
     }
   ],
   "reflectivity": 1,

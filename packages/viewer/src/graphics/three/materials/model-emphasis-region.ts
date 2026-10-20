@@ -9,13 +9,13 @@ function lower(value: number, length: number, padding: number): number {
 function upper(value: number, length: number, padding: number): number {
   return Math.max(-1, Math.min(1, (2 * (Math.ceil(((value + 1) * length) / 2) + padding)) / length - 1));
 }
-type UpdateRegion = (sources: ReadonlyArray<{ source: Mesh }>, camera: Camera, size: SilhouetteMaskSize) => void;
+type UpdateRegion = (sources: ReadonlyArray<{ source: Mesh }>, camera: Camera, size: SilhouetteMaskSize) => Vector4;
 
 /**
- * Bound only the node composite's raster area. Mask projection, storage and screenUV stay unchanged.
+ * Bound the node composite's raster area and return conservative device-pixel-aligned NDC bounds.
  * The owner retains all scratch state; unchanged bounds do not upload the four vertices again.
  * @param geometry - The owner's four-vertex clip-space composite plane.
- * @returns Updater; an empty source list restores the full-frame reference.
+ * @returns Updater returning owned scratch bounds; an empty source list restores the full-frame reference.
  */
 export function createEmphasisCompositeRegion(geometry: PlaneGeometry): UpdateRegion {
   const projection = new Matrix4();
@@ -23,7 +23,7 @@ export function createEmphasisCompositeRegion(geometry: PlaneGeometry): UpdateRe
   const corner = new Vector4();
   const region = new Vector4();
   const previous = new Vector4(-1, -1, 1, 1);
-  return (sources: ReadonlyArray<{ source: Mesh }>, camera: Camera, size: SilhouetteMaskSize): void => {
+  return (sources: ReadonlyArray<{ source: Mesh }>, camera: Camera, size: SilhouetteMaskSize): Vector4 => {
     region.set(-1, -1, 1, 1);
     if (sources.length > 0) {
       projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -95,5 +95,6 @@ export function createEmphasisCompositeRegion(geometry: PlaneGeometry): UpdateRe
       position.needsUpdate = true;
       previous.copy(region);
     }
+    return region;
   };
 }

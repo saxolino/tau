@@ -241,13 +241,14 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
             boundedComposite: !reference,
           });
           if (!reference) {
+            expect(resources.maskTarget.width * resources.maskTarget.height).toBeLessThan(width * height);
             const quad = output.children[0] as Mesh;
             quad.geometry.computeBoundingBox();
             const bounds = quad.geometry.boundingBox!;
             expect(bounds.max.x - bounds.min.x).toBeLessThan(2);
           }
         }
-        expect(restoreDepth).toHaveBeenCalledTimes(reference || !forceWebGl ? 3 : 0);
+        expect(restoreDepth).toHaveBeenCalledTimes(reference ? 3 : 0);
         renderer.setRenderTarget(target);
         renderer.setClearColor(0x12_34_56, 1);
         renderer.autoClear = true;
