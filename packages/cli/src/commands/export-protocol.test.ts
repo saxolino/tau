@@ -30,7 +30,11 @@ let out = '';
 beforeEach(async () => {
   out = await mkdtemp(join(tmpdir(), 'tau-protocol-'));
   owner.stdout.length = 0;
-  owner.tauExporter.mockImplementation(async () => ({ export: owner.exportModel, close: owner.close }));
+  owner.tauExporter.mockImplementation(async () => ({
+    capabilities: { formats: ['glb', 'step'] },
+    export: owner.exportModel,
+    close: owner.close,
+  }));
 });
 
 afterEach(async () => {
@@ -93,7 +97,6 @@ describe('parseProtocolArguments', () => {
 
   it.each([
     [['--file', 'main.ts', '--format', 'glb', '--out', '/tmp/out'], 'needs --file, --format, --project and --out'],
-    [[...base.slice(0, 3), 'stl', ...base.slice(4)], '--format must be glb or step'],
     [[...base, '--unknown'], "Unknown option '--unknown'"],
     [[...base, '--parameters-json', '{'], 'Invalid JSON in --parameters-json'],
     [[...base, '--parameters-json', '[1]'], '--parameters-json must be a JSON object'],
@@ -201,6 +204,18 @@ describe('runExportProtocol', () => {
     expect(await runExportProtocol(['--out', out])).toBe(2);
     expect(document()).toMatchObject({ protocol: 1, error: { code: 'ARG_INVALID' } });
     expect(owner.tauExporter).not.toHaveBeenCalled();
+  });
+
+  it('should refuse a format the exporter does not declare as an unusable request, exporting nothing', async () => {
+    expect(
+      await runExportProtocol(['--file', 'main.ts', '--format', 'stl', '--project', '/work/vise', '--out', out]),
+    ).toBe(2);
+    expect(document()).toEqual({
+      protocol: 1,
+      error: { code: 'ARG_INVALID', message: '--format must be glb or step, not "stl".' },
+    });
+    expect(owner.exportModel).not.toHaveBeenCalled();
+    expect(owner.close).toHaveBeenCalledOnce();
   });
 
   it('should report a runtime that cannot be composed under its own code', async () => {

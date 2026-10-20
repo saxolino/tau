@@ -8,7 +8,7 @@
  * runtime as they do for `tau export`. The export goes through {@link tauExporter}, the route `tau test` takes, and
  * the command prints exactly one JSON document on stdout: on success (exit 0)
  * `{ protocol: 1, format, sourceUnit?, primary, resources, consumedSources }` with the files under `--out`, on failure
- * `{ protocol: 1, error: { code, message, suggestion? } }`, exiting 2 for an unusable request, 3 for one the runtime
+ * `{ protocol: 1, error: { code, message, suggestion? } }`, exiting 2 for an unusable request (a format the exporter does not declare among them), 3 for one the runtime
  * declined and 1 otherwise.
  *
  * @module
@@ -17,7 +17,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 
-import type { GeoSpecModelExportRequest } from 'geospec/model';
+import type { GeoSpecExportFormat, GeoSpecModelExportRequest } from 'geospec/model';
 
 import { tauExporter } from '#geospec/tau-exporter.js';
 import { cliError, exitCodeFor, exitCodes, sanitize, writeStdout } from '#output.js';
@@ -26,7 +26,7 @@ import { cliError, exitCodeFor, exitCodes, sanitize, writeStdout } from '#output
 type ProtocolDocument =
   | Readonly<{
       protocol: 1;
-      format: 'glb' | 'step';
+      format: GeoSpecExportFormat;
       sourceUnit?: string;
       primary: string;
       resources: ReadonlyArray<Readonly<{ name: string; path: string }>>;
@@ -144,16 +144,14 @@ export const parseProtocolArguments = (argv: readonly string[]): ProtocolCall =>
   if (file === undefined || format === undefined || project === undefined || out === undefined) {
     throw usage('Protocol 1 needs --file, --format, --project and --out.');
   }
-  if (format !== 'glb' && format !== 'step') {
-    throw usage(`--format must be glb or step, not "${format}".`);
-  }
   const parameters = parametersOf(values['parameters-json']);
   const mesh = meshOf(values['mesh-linear-tolerance'], values['mesh-angular-tolerance-degrees']);
   const region = regionOf(values['region-min'], values['region-max']);
   return {
     request: {
       file,
-      format,
+      /* The exporter's declared formats decide; `runExportProtocol` refuses any other before exporting. */
+      format: format as GeoSpecModelExportRequest['format'],
       projectPath: resolve(project),
       ...(parameters === undefined ? {} : { parameters }),
       ...(mesh === undefined ? {} : { mesh }),
@@ -228,6 +226,9 @@ export const runExportProtocol = async (argv: readonly string[]): Promise<number
       ...(config === undefined ? {} : { config }),
     });
     try {
+      if (!exporter.capabilities.formats.includes(request.format)) {
+        throw usage(`--format must be ${exporter.capabilities.formats.join(' or ')}, not "${request.format}".`);
+      }
       const artifact = await exporter.export(request);
       const primary = await writeUnder(out, `model.${artifact.format}`, artifact.bytes);
       const resources = [];
