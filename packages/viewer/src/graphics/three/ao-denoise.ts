@@ -63,6 +63,10 @@ export function createAoDenoise({
       // Build the fixed stencil once; constant weights need no per-fragment exp.
       for (let x = -2; x <= 2; x++) {
         for (let y = -2; y <= 2; y++) {
+          // Keep the 13 strongest Gaussian taps; omit distant corners before shader generation.
+          if (x * x + y * y > 4) {
+            continue;
+          }
           const offset = vec2(x, y);
           const neighborUv = uv.add(offset.mul(step)).toVar();
           const neighborDepth = (depth.sample(neighborUv) as Node<'vec4'>).r.toVar();

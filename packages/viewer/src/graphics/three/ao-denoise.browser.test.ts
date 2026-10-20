@@ -61,6 +61,11 @@ it.each(['denoise', 'upsample', 'fxaa'] as const)(
       if (!source.fragmentShader) {
         throw new Error('The AO material did not produce a fragment shader');
       }
+      if (stage === 'denoise') {
+        const gathers = source.fragmentShader.match(/\btexture(?:Sample\w*|Load)\s*\(/g)?.length ?? 0;
+        expect(gathers).toBeGreaterThan(0);
+        expect(gathers).toBeLessThanOrEqual(14);
+      }
       // A homogeneous W=1 added to the distance dot product rejects coplanar taps.
       expect(source.fragmentShader).not.toMatch(/dot\(\s*vec4/);
       const compilation = await device.createShaderModule({ code: source.fragmentShader }).getCompilationInfo();
@@ -128,6 +133,11 @@ it.each(['denoise', 'upsample', 'fxaa'] as const)(
       const source = await getGeneratedShaderSource({ renderer, scene, camera: quad.camera, object: quad });
       if (!source.vertexShader || !source.fragmentShader) {
         throw new Error('WebGL2 did not produce the viewport shader program');
+      }
+      if (stage === 'denoise') {
+        const gathers = source.fragmentShader.match(/texture(?:Lod)?\(/g)?.length ?? 0;
+        expect(gathers).toBeGreaterThan(0);
+        expect(gathers).toBeLessThanOrEqual(14);
       }
       const vertex = compile(context.VERTEX_SHADER, source.vertexShader);
       const fragment = compile(context.FRAGMENT_SHADER, source.fragmentShader);

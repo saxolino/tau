@@ -414,6 +414,7 @@ export const shaderEvidence = {
     ],
   },
   'webgpu-post': {
+    // AO compile checks cap the 13-tap gather budget; pixel checks verify moving-image grain and shimmer.
     ...evidence(
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx',
       'restores the selected scene-pass depth with one direct fullscreen draw',

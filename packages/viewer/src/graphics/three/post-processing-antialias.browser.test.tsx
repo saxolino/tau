@@ -258,6 +258,11 @@ it.each(
   let pixels: Uint8ClampedArray | undefined;
   let captureError: Error | undefined;
   let retired = false;
+  let movingWall: Mesh | undefined;
+  let motionPhase: number | undefined;
+  let cameraOriginX = 0;
+  let cameraOriginY = 0;
+  let wallOriginY = 0;
   let frame = 0;
   let capturedFrame = 0;
   const measure = async (current: RootState): Promise<void> => {
@@ -274,6 +279,19 @@ it.each(
   const Probe = (): undefined => {
     const currentState = useThree();
     state = currentState;
+    useFrame((current) => {
+      if (motionPhase === undefined || !movingWall) {
+        return;
+      }
+      current.camera.position.x = cameraOriginX + (motionPhase * 4) / current.gl.domElement.width;
+      current.camera.position.y = cameraOriginY + (motionPhase * 4) / current.gl.domElement.width;
+      current.camera.updateMatrix();
+      current.camera.updateMatrixWorld(true);
+      movingWall.matrix.elements[12] = (motionPhase * 2) / current.gl.domElement.width;
+      movingWall.matrix.elements[13] = wallOriginY + (motionPhase * 2) / current.gl.domElement.width;
+      movingWall.matrixWorldNeedsUpdate = true;
+      movingWall.updateMatrixWorld(true);
+    }, 0.9);
     useFrame((current) => {
       frame++;
       state = current;
@@ -316,7 +334,12 @@ it.each(
               <planeGeometry args={[4, 4]} />
               <meshStandardMaterial />
             </mesh>
-            <mesh position={[0, 0.5, 0.2]}>
+            <mesh
+              position={[0, 0.5, 0.2]}
+              ref={(mesh) => {
+                movingWall = mesh ?? undefined;
+              }}
+            >
               <boxGeometry args={[3, 1, 0.4]} />
               <meshStandardMaterial />
             </mesh>
@@ -346,35 +369,74 @@ it.each(
     retired = true;
     await pending;
     const { width, height } = state!.gl.domElement;
-    const rowNoise: number[] = [];
-    const rowMeans: number[] = [];
-    // Floor below the contact, excluding the geometry/MSAA silhouette itself.
-    for (let y = Math.ceil(height * 0.51); y < Math.floor(height * 0.55); y++) {
-      const values: number[] = [];
-      for (let x = Math.ceil(width * 0.35); x < Math.floor(width * 0.65); x++) {
-        values.push(pixels![(y * width + x) * 4]!);
+    const measureContact = (image: Uint8ClampedArray): { noise: number; contact: number; residuals: number[] } => {
+      const rowNoise: number[] = [];
+      const rowMeans: number[] = [];
+      const residuals: number[] = [];
+      // A planar contact must be uniform along each row, including fractional-pixel motion.
+      for (let y = Math.ceil(height * 0.51); y < Math.floor(height * 0.55); y++) {
+        const values: number[] = [];
+        for (let x = Math.ceil(width * 0.35); x < Math.floor(width * 0.65); x++) {
+          values.push(image[(y * width + x) * 4]!);
+        }
+        const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+        rowMeans.push(mean);
+        residuals.push(...values.map((value) => value - mean));
+        rowNoise.push(Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length));
       }
-      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-      rowMeans.push(mean);
-      rowNoise.push(Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length));
+      return {
+        noise: Math.sqrt(rowNoise.reduce((sum, value) => sum + value ** 2, 0) / rowNoise.length),
+        contact: Math.min(...rowMeans),
+        residuals,
+      };
+    };
+    cameraOriginX = state!.camera.position.x;
+    cameraOriginY = state!.camera.position.y;
+    wallOriginY = movingWall!.matrix.elements[13]!;
+    const initialImage = new Uint8ClampedArray(pixels!);
+    let changedPixels = 0;
+    let previous = measureContact(pixels!).residuals;
+    // Remove each row's mean to separate the moving contact gradient from grain.
+    // Move camera and wall in both axes through subpixel phases.
+    for (const phase of [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 0]) {
+      motionPhase = phase;
+      // Node passes update once per animation frame; synchronous advances would reuse their textures.
+      // oxlint-disable-next-line no-await-in-loop -- Each phase must reach a separate GPU frame before changing transforms.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+      state!.advance(performance.now(), true);
+      // oxlint-disable-next-line no-await-in-loop -- Read this phase before submitting the next one.
+      const image = await captureRendererOutput(state!.gl);
+      changedPixels = Math.max(
+        changedPixels,
+        image.reduce((count, value, index) => count + Number(index % 4 === 0 && value !== initialImage[index]), 0),
+      );
+      const sample = measureContact(image);
+      const previousResiduals = previous;
+      const shimmer = Math.sqrt(
+        sample.residuals.reduce((sum, value, i) => sum + (value - previousResiduals[i]!) ** 2, 0) /
+          previousResiduals.length,
+      );
+      const diagnostic = JSON.stringify({
+        execution,
+        dpr,
+        fov,
+        phase,
+        noise: sample.noise,
+        contact: sample.contact,
+        shimmer,
+      });
+      expect(sample.noise, diagnostic).toBeLessThan(0.75);
+      expect(shimmer, diagnostic).toBeLessThan(1);
+      expect(sample.contact, diagnostic).toBeLessThan(250);
+      expect(sample.contact, diagnostic).toBeGreaterThan(80);
+      expect(image[(Math.floor(height * 0.8) * width + Math.floor(width / 2)) * 4], diagnostic).toBeGreaterThan(250);
+      previous = sample.residuals;
     }
-    const noise = Math.sqrt(rowNoise.reduce((sum, value) => sum + value ** 2, 0) / rowNoise.length);
-    const contact = Math.min(...rowMeans);
-    const diagnostic = JSON.stringify({
-      backend,
-      dpr,
-      fov,
-      width,
-      height,
-      noise,
-      contact,
-      rowMeans,
-    });
-    // Less than one sRGB code value of RMS variation on a physically uniform row.
-    expect(noise, diagnostic).toBeLessThan(0.75);
-    expect(contact, diagnostic).toBeLessThan(250);
-    expect(contact, diagnostic).toBeGreaterThan(80);
-    expect(pixels![(Math.floor(height * 0.8) * width + Math.floor(width / 2)) * 4], diagnostic).toBeGreaterThan(250);
+    expect(changedPixels, 'Motion must change the rendered image').toBeGreaterThan(10);
     expect(state!.camera.type).toBe(fov === 0 ? 'OrthographicCamera' : 'PerspectiveCamera');
     expect(isViewportWebGpu(state!.gl)).toBe(backend === 'webgpu');
     if (isViewportWebGpu(state!.gl)) {
