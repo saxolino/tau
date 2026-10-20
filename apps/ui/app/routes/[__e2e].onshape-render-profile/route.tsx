@@ -598,6 +598,8 @@ function CalibrationProbe({
                         : 'no-valid-samples'
                 : 'unsupported',
           gpuElapsed: current.gpuSamples.length > 0 ? summarize(current.gpuSamples) : undefined,
+          gpuElapsedSamples: [...current.gpuSamples],
+          gpuPassSpanSamples: current.gpuPassRanges.map((passes) => Math.max(...passes.map((pass) => pass.end))),
           gpuPassRanges: current.gpuPassRanges.slice(0, 16),
           gpuPassSpan:
             current.gpuPassRanges.length > 0
