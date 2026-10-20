@@ -199,9 +199,10 @@ export function createModelEmphasisResources(
     // Nothing ever samples the mask's depth — only the depth test reads it — so the resolve blit
     // that would produce a single-sample copy of it is pure cost.
     resolveDepthBuffer: false,
-    // 24-bit, matching the canvas the restored depth comes from; a 16-bit renderbuffer would
-    // quantise the frame's depth below the margin that separates a surface from its overlays.
-    depthTexture: new DepthTexture(1, 1, UnsignedIntType),
+    // Node renderers own implicit 24-bit depth. Node WebGL2 can keep only its MSAA
+    // renderbuffer when no depth resolve is requested; native keeps its depth texture.
+    // Classic needs an explicit 24-bit texture to avoid its default 16-bit renderbuffer.
+    depthTexture: backend === 'webgpu' ? null : new DepthTexture(1, 1, UnsignedIntType),
   });
   maskTarget.texture.name = 'tau-emphasis-mask';
   const maskScene = new Scene();

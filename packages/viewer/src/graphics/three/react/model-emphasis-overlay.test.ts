@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BoxGeometry,
@@ -18,6 +21,7 @@ import {
   Scene,
   RGFormat,
   RGBAFormat,
+  REVISION,
 } from 'three';
 import type { Group, Material, WebGLRenderer } from 'three';
 import {
@@ -56,6 +60,19 @@ const makeRecordingRenderer = (): { gl: WebGLRenderer; calls: string[] } => {
 };
 
 describe('model emphasis overlay resources', () => {
+  it('should guard the installed depth allocation and framebuffer implementation', () => {
+    expect(REVISION).toBe('184');
+    const require = createRequire(import.meta.url);
+    for (const [file, expected] of [
+      ['common/Textures.js', 'f254ca8221e17bf58a2aad3e99735bc6b5b183331dc9aeafd530d73bf2b3347c'],
+      ['webgl-fallback/WebGLBackend.js', '453ebc61fe7acf2530e6570a5a12699947fdca5dcbd02c092496c1b8363b82f8'],
+      ['webgl-fallback/utils/WebGLTextureUtils.js', '6b08fc0d0af38b893bd243991ba09eef844c2af99cb07c59f53f7a1c7149acc0'],
+    ]) {
+      const source = readFileSync(require.resolve(`three/src/renderers/${file}`), 'utf8');
+      expect(createHash('sha256').update(source).digest('hex'), file).toBe(expected);
+    }
+  });
+
   it.each([false, true])('fuses clear with depth only on qualified node WebGL2=%s', (isWebGl) => {
     const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
     const frame = new WebGLRenderTarget(200, 100);

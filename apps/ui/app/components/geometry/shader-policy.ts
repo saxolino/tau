@@ -487,6 +487,11 @@ export const shaderEvidence = {
     lifecycle: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::packs one node emphasis state without reducing coverage samples or depth precision',
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::fuses clear with depth only on qualified node WebGL2=%s',
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::should preserve required depth attachments and omit unused resolved mask depth',
+    ],
+    'structural-perf': [
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::should preserve required depth attachments and omit unused resolved mask depth',
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::should guard the installed depth allocation and framebuffer implementation',
     ],
   },
   'model-pick': {

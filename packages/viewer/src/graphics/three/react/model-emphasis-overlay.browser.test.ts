@@ -28,6 +28,80 @@ import {
   syncModelEmphasisProxies,
 } from '#graphics/three/react/model-emphasis-overlay.jsx';
 
+it.each(['implicit', 'explicit', 'resolved', 'single-sample'] as const)(
+  'should preserve required depth attachments and omit unused resolved mask depth: %s',
+  async (mode) => {
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Three constructor option.
+    const renderer = new WebGPURenderer({ forceWebGL: true });
+    await renderer.init();
+    const gl = renderer.domElement.getContext('webgl2');
+    if (!gl) {
+      throw new Error('Expected an initialized WebGL2 context');
+    }
+    const storage = vi.spyOn(gl, 'texStorage2D');
+    const multisample = vi.spyOn(gl, 'renderbufferStorageMultisample');
+    const buffers = vi.spyOn(gl, 'createRenderbuffer');
+    const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
+    try {
+      switch (mode) {
+        case 'explicit': {
+          resources.maskTarget.depthTexture = new DepthTexture(1, 1, UnsignedIntType);
+          break;
+        }
+        case 'resolved': {
+          resources.maskTarget.resolveDepthBuffer = true;
+          break;
+        }
+        case 'single-sample': {
+          resources.maskTarget.samples = 0;
+          break;
+        }
+        case 'implicit': {
+          break;
+        }
+      }
+      resources.setMaskSize({ width: 320, height: 240, pixelRatio: 1 });
+      renderer.setRenderTarget(resources.maskTarget);
+      renderer.clear();
+      if (mode !== 'single-sample') {
+        expect(multisample.mock.calls).toContainEqual([gl.RENDERBUFFER, 4, gl.DEPTH_COMPONENT24, 320, 240]);
+      }
+      expect(storage.mock.calls.filter((call) => call[2] === gl.DEPTH_COMPONENT24)).toHaveLength(
+        mode === 'implicit' ? 0 : 1,
+      );
+      expect(gl.getError()).toBe(gl.NO_ERROR);
+      const firstBuffers = buffers.mock.results
+        .filter((result) => result.type === 'return')
+        .map((result) => result.value);
+      renderer.setRenderTarget(null);
+      resources.setMaskSize({ width: 640, height: 480, pixelRatio: 2 });
+      expect(firstBuffers.every((buffer) => !gl.isRenderbuffer(buffer))).toBe(true);
+      renderer.setRenderTarget(resources.maskTarget);
+      renderer.clear();
+      if (mode !== 'single-sample') {
+        expect(multisample.mock.calls).toContainEqual([gl.RENDERBUFFER, 4, gl.DEPTH_COMPONENT24, 640, 480]);
+      }
+      expect(storage.mock.calls.filter((call) => call[2] === gl.DEPTH_COMPONENT24)).toHaveLength(
+        mode === 'implicit' ? 0 : 2,
+      );
+      renderer.setRenderTarget(null);
+      resources.dispose();
+      expect(
+        buffers.mock.results
+          .filter((result) => result.type === 'return')
+          .every((result) => !gl.isRenderbuffer(result.value)),
+      ).toBe(true);
+    } finally {
+      renderer.setRenderTarget(null);
+      resources.dispose();
+      storage.mockRestore();
+      multisample.mockRestore();
+      buffers.mockRestore();
+      renderer.dispose();
+    }
+  },
+);
+
 const comparePixels = (
   packed: Uint8Array<ArrayBuffer>,
   reference: Uint8Array<ArrayBuffer>,
@@ -127,6 +201,8 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
       source.position.x = shift;
       source.updateMatrixWorld();
       const capture = async (reference: boolean): Promise<Uint8Array<ArrayBuffer>> => {
+        resources.maskTarget.dispose();
+        resources.maskTarget.depthTexture = reference ? new DepthTexture(1, 1, UnsignedIntType) : null;
         syncModelEmphasisProxies(resources, {
           hover: mode === 'selected' ? [] : [source],
           selected: mode === 'hover' ? [] : [source],

@@ -70,6 +70,10 @@ export function transformRenderingAblation(source: string, id: string): string |
     );
   } else if (file.endsWith('/graphics/three/react/model-emphasis-overlay.tsx')) {
     replace(
+      "depthTexture: backend === 'webgpu' ? null : new DepthTexture(1, 1, UnsignedIntType),",
+      "depthTexture: backend === 'webgpu' && tauAblation.get('maskDepthStorage') !== 'resolved' ? null : new DepthTexture(1, 1, UnsignedIntType),",
+    );
+    replace(
       'previousTarget.samples <= 1 &&',
       "tauAblation.get('maskDepth') !== 'separate' && previousTarget.samples <= 1 &&",
     );
