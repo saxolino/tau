@@ -25,7 +25,7 @@ const cliExternals: Array<RegExp | string> = [
 ];
 
 const baseConfig: UserConfig = {
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/geospec/index.ts'],
   sourcemap: false,
   clean: ['dist'],
   dts: { eager: true },
@@ -44,6 +44,8 @@ const cliConfig: UserConfig = {
     'host-runtime-child': 'src/host-runtime-child.ts',
     'compute-store-worker': 'src/compute-store.worker.ts',
     'runtime-worker': 'src/runtime.worker.ts',
+    // Imported by URL inside each `tau test` GeoSpec pool worker, so it must be a real file.
+    'geospec-exporter': 'src/geospec/exporter-module.ts',
   },
   format: 'esm',
   outDir: 'dist/bin',

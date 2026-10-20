@@ -628,6 +628,68 @@ describe('T11 — tau check and tau test in CI', () => {
     expect(recordOf(failed)).toMatchObject({ kind: 'test', ok: false, status: 'failed', passed: 1, failed: 1 });
   });
 
+  it('should serve GeoSpec subprocess protocol 1 to geospec commandExporter from tau export --out', async () => {
+    const directory = join(scratch, 'geospec-protocol');
+    await geoSpecProject(directory, false);
+    const { commandExporter } = await import('geospec/model/node');
+    const exporter = commandExporter({
+      id: 'tau',
+      extensions: ['ts'],
+      command: [process.execPath, ...binArguments(['export'])],
+      cwd: repoRoot,
+      env: isolated(),
+      capabilities: { formats: ['glb', 'step'], parameters: true, region: true },
+    });
+
+    const glb = await exporter.export({ file: 'block.ts', format: 'glb', projectPath: directory });
+    const step = await exporter.export({ file: 'block.ts', format: 'step', projectPath: directory });
+
+    expect(glb.format).toBe('glb');
+    validateGlbData(glb.bytes);
+    expect(step.format).toBe('step');
+    expect(new TextDecoder().decode(step.bytes.subarray(0, 13))).toBe('ISO-10303-21;');
+    expect(glb.consumedSources).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'block.ts' })]));
+  });
+
+  it('should give the same verdicts through tau test as a Tau host does through its runtime client', async () => {
+    const directory = join(scratch, 'geospec-parity');
+    await geoSpecProject(directory, true);
+    const [{ createHostGeoSpecRunner }, { createNodeClient }, { loadCliRuntime }, { testRecord }] = await Promise.all([
+      import('@taucad/host/agent-tools'),
+      import('@taucad/runtime/node'),
+      import('#runtime-options.js'),
+      import('#commands/test.js'),
+    ]);
+    const client = await createNodeClient({
+      runtime: await loadCliRuntime({ projectRoot: directory, plugin: [] }),
+      projectPath: directory,
+    });
+    const files = ['block.geospec.ts'];
+    let hosted: ReturnType<typeof testRecord>;
+    try {
+      const runner = await createHostGeoSpecRunner(directory, client);
+      try {
+        hosted = testRecord(directory, files, (await runner.run({ files })) as Parameters<typeof testRecord>[2]);
+      } finally {
+        await runner.close();
+      }
+    } finally {
+      await client.shutdown();
+    }
+
+    const run = await tau(['test', directory, '--json']);
+    const verdicts = (tests: ReadonlyArray<{ file: string; name: string; status: string }>): string[] =>
+      tests.map(({ file, name, status }) => `${file} › ${name}: ${status}`).toSorted();
+
+    expect(verdicts(hosted.tests)).toEqual([
+      'block.geospec.ts › block > is 20 x 10 x 4 mm: passed',
+      'block.geospec.ts › block > is 21 mm long: failed',
+    ]);
+    expect(verdicts((recordOf(run) as { tests: Parameters<typeof verdicts>[0] }).tests)).toEqual(
+      verdicts(hosted.tests),
+    );
+  });
+
   it('should refuse with exit 3 when a project has no GeoSpec suite', async () => {
     const run = await tau(['test', project()]);
 
