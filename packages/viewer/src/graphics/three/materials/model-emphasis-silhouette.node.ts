@@ -3,7 +3,21 @@
 import { Color, Vector2 } from 'three';
 import type { Texture } from 'three';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
-import { float, Fn, max, min, mix, positionGeometry, screenUV, step, texture, uniform, vec2, vec4 } from 'three/tsl';
+import {
+  float,
+  Fn,
+  If,
+  max,
+  min,
+  mix,
+  positionGeometry,
+  screenUV,
+  step,
+  texture,
+  uniform,
+  vec2,
+  vec4,
+} from 'three/tsl';
 import type { SilhouetteMaskSize } from '#graphics/three/materials/model-emphasis-silhouette.js';
 import {
   silhouetteColor,
@@ -17,6 +31,8 @@ import {
 
 export type SilhouetteNodeMaterial = MeshBasicNodeMaterial & {
   readonly silhouetteTexelSize: { value: Vector2 };
+  /** Zero uses independent RGBA states; otherwise RG carries coverage/visibility at this alpha. */
+  readonly silhouettePackedAlpha: { value: number };
 };
 
 /**
@@ -34,6 +50,7 @@ export function createWebGpuSilhouetteMaterial(maskTexture: Texture): Silhouette
   const edgeColor = uniform(new Color(silhouetteColor));
   const stateAlpha = uniform(new Vector2(silhouetteHoverAlpha, silhouetteSelectedAlpha));
   const hiddenAlphaScale = uniform(silhouetteHiddenAlphaScale);
+  const packedAlpha = uniform(0);
 
   const material = new MeshBasicNodeMaterial({
     transparent: true,
@@ -59,13 +76,22 @@ export function createWebGpuSilhouetteMaterial(maskTexture: Texture): Silhouette
     // Per channel rather than vectorised: TSL types `step` on floats only.
     const hoverStrength = mix(hiddenAlphaScale, float(1), step(silhouetteMaskThreshold, visible.r));
     const selectedStrength = mix(hiddenAlphaScale, float(1), step(silhouetteMaskThreshold, visible.g));
-    return vec4(
-      edgeColor,
-      max(edge.r.mul(stateAlpha.x).mul(hoverStrength), edge.g.mul(stateAlpha.y).mul(selectedStrength)),
-    );
+    const alpha = max(
+      edge.r.mul(stateAlpha.x).mul(hoverStrength),
+      edge.g.mul(stateAlpha.y).mul(selectedStrength),
+    ).toVar();
+    // Single-state RG8: the same resolved coverage in R and visibility in G. Keep the
+    // existing taps, threshold and sample count; only the payload's channel placement changes.
+    If(packedAlpha.greaterThan(0), () => {
+      alpha.assign(edge.r.mul(packedAlpha).mul(mix(hiddenAlphaScale, float(1), step(silhouetteMaskThreshold, high.g))));
+    });
+    return vec4(edgeColor, alpha);
   })();
 
-  return Object.assign(material, { silhouetteTexelSize: texelSize }) as SilhouetteNodeMaterial;
+  return Object.assign(material, {
+    silhouetteTexelSize: texelSize,
+    silhouettePackedAlpha: packedAlpha,
+  }) as SilhouetteNodeMaterial;
 }
 
 /** Point the composite at a mask of `width × height` device pixels. */

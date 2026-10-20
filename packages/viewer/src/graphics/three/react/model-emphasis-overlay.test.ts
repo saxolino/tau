@@ -12,6 +12,8 @@ import {
   OneFactor,
   PerspectiveCamera,
   Scene,
+  RGFormat,
+  RGBAFormat,
 } from 'three';
 import type { Group, Material, WebGLRenderer } from 'three';
 import {
@@ -50,6 +52,31 @@ const makeRecordingRenderer = (): { gl: WebGLRenderer; calls: string[] } => {
 };
 
 describe('model emphasis overlay resources', () => {
+  it('packs one node emphasis state without reducing coverage samples or depth precision', () => {
+    const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
+    const source = makeSource();
+    syncModelEmphasisProxies(resources, { hover: [], selected: [source] });
+    expect(resources.maskTarget.texture.format).toBe(RGFormat);
+    expect(resources.maskTarget.samples).toBe(4);
+    expect(resources.mask.coverage.selected.color.toArray()).toEqual([1, 0, 0]);
+    expect(resources.mask.visibility.selected.color.toArray()).toEqual([0, 1, 0]);
+    expect(resources.mask.visibility.selected.opacity).toBe(0);
+    const dispose = vi.spyOn(resources.maskTarget, 'dispose');
+    syncModelEmphasisProxies(resources, { hover: [source], selected: [] });
+    expect(dispose).not.toHaveBeenCalled();
+    syncModelEmphasisProxies(resources, { hover: [source], selected: [makeSource()] });
+    expect(resources.maskTarget.texture.format).toBe(RGBAFormat);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(resources.mask.visibility.selected.opacity).toBe(1);
+    syncModelEmphasisProxies(resources, { hover: [], selected: [source] });
+    expect(resources.maskTarget.texture.format).toBe(RGBAFormat);
+    expect(dispose).toHaveBeenCalledOnce();
+    syncModelEmphasisProxies(resources, emptyModelEmphasisSet);
+    syncModelEmphasisProxies(resources, { hover: [source], selected: [] });
+    expect(resources.maskTarget.texture.format).toBe(RGFormat);
+    resources.dispose();
+  });
+
   it('proxies each emphasised mesh into both mask layers and the wash group, sharing six materials', () => {
     const resources = createModelEmphasisResources('webgl', createSectionClip('webgl'));
     const hovered = makeSource();

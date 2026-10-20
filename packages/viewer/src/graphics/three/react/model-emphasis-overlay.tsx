@@ -13,6 +13,7 @@ import {
   OneFactor,
   PlaneGeometry,
   RGBAFormat,
+  RGFormat,
   Scene,
   UnsignedByteType,
   UnsignedIntType,
@@ -34,7 +35,11 @@ import {
   createWebGpuSilhouetteMaterial,
   setWebGpuSilhouetteMaskSize,
 } from '#graphics/three/materials/model-emphasis-silhouette.node.js';
-import { silhouetteColor } from '#graphics/three/materials/model-emphasis-silhouette.js';
+import {
+  silhouetteColor,
+  silhouetteHoverAlpha,
+  silhouetteSelectedAlpha,
+} from '#graphics/three/materials/model-emphasis-silhouette.js';
 import type { SilhouetteMaskSize } from '#graphics/three/materials/model-emphasis-silhouette.js';
 import { installSectionClip } from '#graphics/three/materials/section-clip.js';
 import type { SectionClip } from '#graphics/three/materials/section-clip.js';
@@ -262,6 +267,30 @@ export function createModelEmphasisResources(
 
 /** Rebuild the proxy pair per emphasised mesh; called only when the emphasis set changes. */
 export function syncModelEmphasisProxies(resources: ModelEmphasisResources, set: ModelEmphasisSet): void {
+  if (resources.backend === 'webgpu') {
+    const both = set.hover.length > 0 && set.selected.length > 0;
+    // Once both states need independent channels, keep RGBA until emphasis ends. Moving
+    // the pointer across an existing selection must not recreate a 5K target every time.
+    const packed = !both && (resources.proxies.length === 0 || resources.maskTarget.texture.format === RGFormat);
+    const format = packed ? RGFormat : RGBAFormat;
+    if (resources.maskTarget.texture.format !== format) {
+      resources.maskTarget.dispose();
+      resources.maskTarget.texture.format = format;
+    }
+    const composite = resources.composite as ReturnType<typeof createWebGpuSilhouetteMaterial>;
+    composite.silhouettePackedAlpha.value = packed
+      ? set.selected.length > 0
+        ? silhouetteSelectedAlpha
+        : silhouetteHoverAlpha
+      : 0;
+    for (const state of ['hover', 'selected'] as const) {
+      for (const layer of modelEmphasisMaskLayers) {
+        const material = resources.mask[layer][state];
+        material.color.setHex(packed ? (layer === 'coverage' ? 0xff_00_00 : 0x00_ff_00) : maskLayerColor[layer][state]);
+        material.opacity = packed ? 0 : maskLayerOpacity[layer][state];
+      }
+    }
+  }
   const washGroup = resources.overlayGroup.children[0] as Group;
   resources.proxies.length = 0;
   resources.maskScene.clear();

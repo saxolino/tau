@@ -6,6 +6,7 @@
   "envMapRotation": [0, 0, 0, "XYZ"],
   "inputNodes": {
     "colorNode": "<nodeRef>",
+    "silhouettePackedAlpha": "<nodeRef>",
     "silhouetteTexelSize": "<nodeRef>",
     "vertexNode": "<nodeRef>"
   },
@@ -60,6 +61,16 @@
       "shared": false,
       "type": "UniformGroupNode",
       "version": 0
+    },
+    {
+      "inputNodes": {
+        "groupNode": "<nodeRef>"
+      },
+      "nodeType": null,
+      "precision": null,
+      "type": "UniformNode",
+      "value": 0,
+      "valueType": "float"
     }
   ],
   "reflectivity": 1,

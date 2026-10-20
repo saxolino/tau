@@ -19,6 +19,7 @@ export default defineConfig({
   test: {
     provide: { webGpuProfile },
     include: [
+      'src/graphics/three/react/model-emphasis-overlay.browser.test.ts',
       'src/graphics/three/utils/gltf-surface-batches.browser.test.ts',
       'src/graphics/three/utils/gltf-edge-batches.browser.test.ts',
       'src/graphics/three/materials/section-clip.browser.test.ts',

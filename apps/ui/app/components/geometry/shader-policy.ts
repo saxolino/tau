@@ -470,11 +470,22 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain scene depth for overlays without a final antialias target',
     ],
   },
-  'model-emphasis-silhouette': evidence(
-    'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.test.ts',
-    'draws the outline only where mask coverage changes',
-    'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.test.ts::matches stable stripped silhouette node material JSON snapshot',
-  ),
+  'model-emphasis-silhouette': {
+    ...evidence(
+      'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.test.ts',
+      'draws the outline only where mask coverage changes',
+      'packages/viewer/src/graphics/three/materials/model-emphasis-silhouette.test.ts::matches stable stripped silhouette node material JSON snapshot',
+    ),
+    pixels: [
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::preserves fractional and occluded highlights with node WebGL2',
+    ],
+    'backend-differential': [
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::preserves fractional and occluded highlights with node WebGL2',
+    ],
+    lifecycle: [
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::packs one node emphasis state without reducing coverage samples or depth precision',
+    ],
+  },
   'model-pick': {
     reference: [`${modelPickBrowser}::should name the mesh and the distance the BVH names, away from silhouettes`],
     'real-compile': [`${modelPickBrowser}::should name the mesh and the distance the BVH names, away from silhouettes`],
