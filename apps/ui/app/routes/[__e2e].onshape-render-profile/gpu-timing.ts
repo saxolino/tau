@@ -119,3 +119,20 @@ export function createFrameGpuTimer(renderer: Pick<WebGLRenderer, 'getContext'>)
     },
   };
 }
+
+/**
+ * Correlate ordered results with successful query submissions; never zip across missing results.
+ * @param frames - Render callbacks in workload order, including callbacks skipped by the timer.
+ * @param results - Resolved count and cumulative failure state for the same measurement window.
+ * @returns Sample frame indices only when every accepted query completed successfully.
+ */
+export function correlateGpuFrames(
+  frames: ReadonlyArray<{ gpuQueryStarted: boolean }>,
+  results: { samples: number; pending: number; disjointDiscarded: number; failedSamples?: number },
+): number[] | undefined {
+  if (results.pending > 0 || results.disjointDiscarded > 0 || (results.failedSamples ?? 0) > 0) {
+    return undefined;
+  }
+  const indices = frames.flatMap((frame, index) => (frame.gpuQueryStarted ? [index] : []));
+  return indices.length === results.samples ? indices : undefined;
+}

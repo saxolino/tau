@@ -31,7 +31,7 @@ import {
 } from '@taucad/viewer/hooks/use-graphics';
 import { ThemeProvider } from '#hooks/use-theme.js';
 import { createNodeFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-node-timing.js';
-import { createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
+import { correlateGpuFrames, createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import type { FrameGpuTimer, GpuPassRange } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import { getEnvironment } from '#environment.config.js';
 import {
@@ -89,6 +89,7 @@ type CameraSettings = {
 type BenchmarkKind = 'orbit' | 'projection' | 'playback' | 'combined';
 type MeasurementMode = 'natural' | 'gpu';
 type FrameSample = {
+  gpuQueryStarted: boolean;
   frameInterval: number;
   cpuSubmission: number;
   calls: number;
@@ -250,6 +251,7 @@ function CalibrationProbe({
     benchmarkResult: undefined as Record<string, unknown> | undefined,
     saved: undefined as unknown,
     gpuPendingPeak: 0,
+    gpuQueryStarted: false,
     drainStarted: 0,
     playbackStarted: false,
     playbackMeasurements: [] as PlaybackMeasurement[],
@@ -420,6 +422,7 @@ function CalibrationProbe({
       current.pendingFrames = 0;
       current.measured = next;
     }
+    current.gpuQueryStarted = false;
     current.start = performance.now();
     current.projectionSwitch = false;
     // Renderer remounts restore the production DPR; keep diagnostic captures at their selected DPR.
@@ -460,7 +463,7 @@ function CalibrationProbe({
     }
     if (benchmark !== current.benchmark) {
       if (current.frame >= 30 && current.samples.length < 300) {
-        gpuTimer.current?.begin();
+        current.gpuQueryStarted = gpuTimer.current?.begin() ?? false;
       }
       if (!current.playbackStarted) {
         const withPlayback = benchmarkKind === 'playback' || benchmarkKind === 'combined';
@@ -528,6 +531,7 @@ function CalibrationProbe({
       if (current.frame > 30 && current.samples.length < 300) {
         sampleBenchmarkPlayback(kinematicsRef, current.playbackMeasurements);
         current.samples.push({
+          gpuQueryStarted: current.gpuQueryStarted,
           cameraWorld: rig.activeCamera.matrixWorld.toArray(),
           cameraProjection: rig.activeCamera.projectionMatrix.toArray(),
           playbackPose: current.playbackMeasurements.map(({ unitId }) => {
@@ -599,6 +603,18 @@ function CalibrationProbe({
                 : 'unsupported',
           gpuElapsed: current.gpuSamples.length > 0 ? summarize(current.gpuSamples) : undefined,
           gpuElapsedSamples: [...current.gpuSamples],
+          gpuElapsedFrameIndices: correlateGpuFrames(current.samples, {
+            samples: current.gpuSamples.length,
+            pending: gpu?.pending ?? 0,
+            disjointDiscarded: gpu?.disjointDiscarded ?? 0,
+            failedSamples: gpu?.failedSamples,
+          }),
+          gpuPassSpanFrameIndices: correlateGpuFrames(current.samples, {
+            samples: current.gpuPassRanges.length,
+            pending: gpu?.pending ?? 0,
+            disjointDiscarded: gpu?.disjointDiscarded ?? 0,
+            failedSamples: gpu?.failedSamples,
+          }),
           gpuPassSpanSamples: current.gpuPassRanges.map((passes) => Math.max(...passes.map((pass) => pass.end))),
           gpuPassRanges: current.gpuPassRanges.slice(0, 16),
           gpuPassSpan:
