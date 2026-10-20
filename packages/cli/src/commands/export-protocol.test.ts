@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as OutputModule from '#output.js';
+
 const owner = vi.hoisted(() => ({
   exportModel: vi.fn(),
   close: vi.fn(async () => undefined),
@@ -13,7 +15,7 @@ const owner = vi.hoisted(() => ({
 
 vi.mock('#geospec/tau-exporter.js', () => ({ tauExporter: owner.tauExporter }));
 vi.mock('#output.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('#output.js')>()),
+  ...(await importOriginal<typeof OutputModule>()),
   writeStdout: async (chunk: string) => {
     owner.stdout.push(chunk);
   },
@@ -100,14 +102,13 @@ describe('parseProtocolArguments', () => {
     [[...base, '--region-min', '0,0,0'], '--region-min and --region-max come together'],
     [[...base, '--region-min', '0,0', '--region-max', '1,1,1'], '--region-min must be three comma-separated numbers'],
   ])('should refuse %j as an unusable request', (argv, message) => {
-    expect(() => parseProtocolArguments(argv)).toThrow(
-      expect.objectContaining({ code: 'ARG_INVALID', exit: 2, message: expect.stringContaining(message) }),
-    );
+    expect(() => parseProtocolArguments(argv)).toThrow(message);
+    expect(() => parseProtocolArguments(argv)).toThrow(expect.objectContaining({ code: 'ARG_INVALID', exit: 2 }));
   });
 });
 
 describe('runExportProtocol', () => {
-  const call = (...extra: string[]): Promise<number> =>
+  const call = async (...extra: string[]): Promise<number> =>
     runExportProtocol(['--file', 'main.ts', '--format', 'glb', '--project', '/work/vise', '--out', out, ...extra]);
 
   it('should write the artifact under --out and print one protocol 1 document', async () => {

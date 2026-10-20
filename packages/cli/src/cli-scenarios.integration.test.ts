@@ -23,10 +23,15 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { createHostGeoSpecRunner } from '@taucad/host/agent-tools';
+import { createNodeClient } from '@taucad/runtime/node';
 import { validateGlbData } from '@taucad/runtime-testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
+
+import { testRecord } from '#commands/test.js';
+import { loadCliRuntime } from '#runtime-options.js';
 
 const repoRoot = resolvePath(dirname(fileURLToPath(import.meta.url)), '../../..');
 const cliBinPath = resolvePath(repoRoot, 'packages/cli/dist/bin/tau.mjs');
@@ -654,12 +659,6 @@ describe('T11 — tau check and tau test in CI', () => {
   it('should give the same verdicts through tau test as a Tau host does through its runtime client', async () => {
     const directory = join(scratch, 'geospec-parity');
     await geoSpecProject(directory, true);
-    const [{ createHostGeoSpecRunner }, { createNodeClient }, { loadCliRuntime }, { testRecord }] = await Promise.all([
-      import('@taucad/host/agent-tools'),
-      import('@taucad/runtime/node'),
-      import('#runtime-options.js'),
-      import('#commands/test.js'),
-    ]);
     const client = await createNodeClient({
       runtime: await loadCliRuntime({ projectRoot: directory, plugin: [] }),
       projectPath: directory,
