@@ -70,6 +70,10 @@ export function transformRenderingAblation(source: string, id: string): string |
     );
   } else if (file.endsWith('/graphics/three/react/model-emphasis-overlay.tsx')) {
     replace(
+      'previousTarget.samples <= 1 &&',
+      "tauAblation.get('maskDepth') !== 'separate' && previousTarget.samples <= 1 &&",
+    );
+    replace(
       'const both = set.hover.length > 0 && set.selected.length > 0;',
       "const both = tauAblation.get('maskStorage') === 'rgba' || (set.hover.length > 0 && set.selected.length > 0);",
     );

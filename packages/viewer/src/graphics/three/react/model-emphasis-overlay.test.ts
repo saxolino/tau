@@ -5,6 +5,10 @@ import {
   Color,
   CustomBlending,
   DepthFormat,
+  DepthTexture,
+  WebGLRenderTarget,
+  WebGLCoordinateSystem,
+  WebGPUCoordinateSystem,
   DoubleSide,
   Matrix4,
   Mesh,
@@ -52,6 +56,79 @@ const makeRecordingRenderer = (): { gl: WebGLRenderer; calls: string[] } => {
 };
 
 describe('model emphasis overlay resources', () => {
+  it.each([false, true])('fuses clear with depth only on qualified node WebGL2=%s', (isWebGl) => {
+    const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
+    const frame = new WebGLRenderTarget(200, 100);
+    frame.depthTexture = new DepthTexture(200, 100);
+    resources.setMaskSize({ width: 200, height: 100, pixelRatio: 1 });
+    const { gl, calls } = makeRecordingRenderer();
+    Object.assign(gl, { coordinateSystem: isWebGl ? WebGLCoordinateSystem : WebGPUCoordinateSystem });
+    gl.getRenderTarget = () => frame;
+    const restore = vi.fn();
+    const borrowedDispose = vi.spyOn(frame.depthTexture, 'dispose');
+    const render = (): void => {
+      renderModelEmphasisMask(resources, {
+        gl,
+        camera: emptyCamera,
+        restoreDepth: restore,
+        previousClear: new Color(),
+      });
+    };
+    render();
+    expect(resources.maskTarget.depthBuffer).toBe(true);
+    expect(resources.maskTarget.samples).toBe(4);
+    expect(resources.mask.visibility.selected.depthTest).toBe(true);
+    expect(restore).toHaveBeenCalledTimes(isWebGl ? 0 : 1);
+    expect(calls.filter((call) => call === 'draw')).toHaveLength(isWebGl ? 2 : 1);
+    expect(calls.includes('clear')).toBe(!isWebGl);
+    expect(resources.maskScene.children).toHaveLength(0);
+    render();
+    gl.getRenderTarget = () => null;
+    render();
+    expect(restore).toHaveBeenCalledTimes(isWebGl ? 1 : 3);
+    expect(calls).toContain('clear');
+    resources.dispose();
+    expect(borrowedDispose).not.toHaveBeenCalled();
+    frame.dispose();
+  });
+
+  it('restores clear flags and the frame target when the fused depth draw throws', () => {
+    const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
+    const frame = new WebGLRenderTarget(200, 100);
+    frame.depthTexture = new DepthTexture(200, 100);
+    resources.setMaskSize({ width: 200, height: 100, pixelRatio: 1 });
+    const { gl } = makeRecordingRenderer();
+    Object.assign(gl, {
+      coordinateSystem: WebGLCoordinateSystem,
+      autoClear: false,
+      autoClearColor: false,
+      autoClearDepth: false,
+      autoClearStencil: true,
+    });
+    gl.getRenderTarget = () => frame;
+    const setTarget = vi.spyOn(gl, 'setRenderTarget');
+    gl.render = () => {
+      throw new Error('draw failed');
+    };
+    expect(() => {
+      renderModelEmphasisMask(resources, {
+        gl,
+        camera: emptyCamera,
+        restoreDepth: vi.fn(),
+        previousClear: new Color(),
+      });
+    }).toThrow('draw failed');
+    expect(setTarget).toHaveBeenLastCalledWith(frame);
+    expect([gl.autoClear, gl.autoClearColor, gl.autoClearDepth, gl.autoClearStencil]).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
+    resources.dispose();
+    frame.dispose();
+  });
+
   it('packs one node emphasis state without reducing coverage samples or depth precision', () => {
     const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
     const source = makeSource();

@@ -19,8 +19,11 @@ import {
   UnsignedIntType,
   Vector2,
   WebGLRenderTarget,
+  WebGLCoordinateSystem,
 } from 'three';
 import type { Camera, Material, WebGLRenderer } from 'three';
+import { QuadMesh } from 'three/webgpu';
+import type { WebGPURenderer } from 'three/webgpu';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import { useThreeGraphicsBackend } from '#graphics/three/three-graphics-backend-context.jsx';
 import { SceneOverlay, useOverlayDepthRestorer } from '#graphics/three/scene-overlay.jsx';
@@ -32,6 +35,7 @@ import {
   setWebGlSilhouetteMaskSize,
 } from '#graphics/three/materials/model-emphasis-silhouette.material.js';
 import {
+  createWebGpuEmphasisDepthMaterial,
   createWebGpuSilhouetteMaterial,
   setWebGpuSilhouetteMaskSize,
 } from '#graphics/three/materials/model-emphasis-silhouette.node.js';
@@ -90,6 +94,8 @@ export type ModelEmphasisResources = Readonly<{
   mask: Readonly<Record<ModelEmphasisMaskLayer, Readonly<Record<ModelEmphasisState, MeshBasicMaterial>>>>;
   wash: Readonly<Record<ModelEmphasisState, MeshBasicMaterial>>;
   proxies: Proxy[];
+  setFrameDepth: (depth: DepthTexture | undefined, isWebGl: boolean) => boolean;
+  renderFrameDepth: (renderer: WebGPURenderer) => void;
   setMaskSize: (size: SilhouetteMaskSize) => void;
   dispose: () => void;
 }>;
@@ -224,6 +230,20 @@ export function createModelEmphasisResources(
     installSectionClip(material, clip);
   }
   const proxies: Proxy[] = [];
+  let depthStamp: ReturnType<typeof createWebGpuEmphasisDepthMaterial> | undefined;
+  let depthQuad: QuadMesh | undefined;
+  const setFrameDepth = (source: DepthTexture | undefined, isWebGl: boolean): boolean => {
+    if (!source || backend !== 'webgpu' || !isWebGl) {
+      if (depthStamp) {
+        depthStamp.frameDepth.value = depthStamp.emptyDepth;
+      }
+      return false;
+    }
+    depthStamp ??= createWebGpuEmphasisDepthMaterial(source);
+    depthQuad ??= new QuadMesh(depthStamp.material);
+    depthStamp.frameDepth.value = source;
+    return true;
+  };
 
   const setMaskSize = (size: SilhouetteMaskSize): void => {
     maskTarget.setSize(size.width, size.height);
@@ -244,7 +264,16 @@ export function createModelEmphasisResources(
     wash,
     proxies,
     setMaskSize,
+    setFrameDepth,
+    renderFrameDepth: (renderer) => {
+      depthQuad?.render(renderer);
+    },
     dispose: () => {
+      depthStamp?.material.dispose();
+      depthStamp?.emptyDepth.dispose();
+      if (depthStamp) {
+        depthStamp.frameDepth.value = depthStamp.emptyDepth;
+      }
       proxies.length = 0;
       maskScene.clear();
       washGroup.clear();
@@ -312,6 +341,7 @@ export function syncModelEmphasisProxies(resources: ModelEmphasisResources, set:
   if (resources.proxies.length === 0) {
     // Nothing is emphasised: give back the device-resolution multisampled target. The mask pass
     // sizes it again on the next emphasised frame.
+    resources.setFrameDepth(undefined, false);
     resources.setMaskSize({ width: 1, height: 1, pixelRatio: 1 });
   }
 }
@@ -350,14 +380,39 @@ export function renderModelEmphasisMask(
 ): void {
   const previousTarget = gl.getRenderTarget();
   const previousAutoClear = gl.autoClear;
+  const previousAutoClearColor = gl.autoClearColor;
+  const previousAutoClearDepth = gl.autoClearDepth;
+  const previousAutoClearStencil = gl.autoClearStencil;
+  // A composed node frame stays bound until final encoding. Its current depth includes caps.
+  // Only node WebGL2 is qualified for the clear/depth fusion. Native WebGPU retains
+  // explicit clear + the post owner’s depth restore: fusion left stale full-frame outlines
+  // in r184 despite passing isolated pixels. Keep geometry in its own render pass.
+  const inPassDepth = resources.setFrameDepth(
+    previousTarget &&
+      previousTarget.samples <= 1 &&
+      previousTarget.width === resources.maskTarget.width &&
+      previousTarget.height === resources.maskTarget.height
+      ? (previousTarget.depthTexture ?? undefined)
+      : undefined,
+    (gl as unknown as WebGPURenderer).coordinateSystem === WebGLCoordinateSystem,
+  );
   gl.getClearColor(previousClear);
   const previousClearAlpha = gl.getClearAlpha();
   try {
     gl.setRenderTarget(resources.maskTarget);
     gl.setClearColor(maskClearColor, 0);
+    if (inPassDepth) {
+      gl.autoClear = true;
+      gl.autoClearColor = true;
+      gl.autoClearDepth = true;
+      gl.autoClearStencil = false;
+      resources.renderFrameDepth(gl as unknown as WebGPURenderer);
+    } else {
+      gl.autoClear = false;
+      gl.clear(true, true, false);
+      restoreDepth(resources.maskTarget);
+    }
     gl.autoClear = false;
-    gl.clear(true, true, false);
-    restoreDepth(resources.maskTarget);
     // Both layers in one pass: a second `gl.render` would cost a second multisample resolve of a
     // device-resolution target for nothing, since the layers never read each other.
     gl.render(resources.maskScene, camera);
@@ -365,6 +420,9 @@ export function renderModelEmphasisMask(
     gl.setRenderTarget(previousTarget);
     gl.setClearColor(previousClear, previousClearAlpha);
     gl.autoClear = previousAutoClear;
+    gl.autoClearColor = previousAutoClearColor;
+    gl.autoClearDepth = previousAutoClearDepth;
+    gl.autoClearStencil = previousAutoClearStencil;
   }
 }
 

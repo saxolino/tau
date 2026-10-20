@@ -484,6 +484,7 @@ export const shaderEvidence = {
     ],
     lifecycle: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::packs one node emphasis state without reducing coverage samples or depth precision',
+      'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::fuses clear with depth only on qualified node WebGL2=%s',
     ],
   },
   'model-pick': {

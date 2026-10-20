@@ -1,8 +1,8 @@
 /* oxlint-disable new-cap -- three/tsl `Fn` is a shader graph factory */
 /* oxlint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- three/tsl fluent nodes are typed as `any` in @types/three; the graph is pinned by the stripped snapshot test. */
-import { Color, Vector2 } from 'three';
+import { AlwaysDepth, Color, DepthTexture, Vector2 } from 'three';
 import type { Texture } from 'three';
-import { MeshBasicNodeMaterial } from 'three/webgpu';
+import { MeshBasicNodeMaterial, NodeMaterial } from 'three/webgpu';
 import {
   float,
   Fn,
@@ -101,4 +101,30 @@ export function setWebGpuSilhouetteMaskSize(
 ): void {
   const tap = silhouetteTapDistance(pixelRatio);
   material.silhouetteTexelSize.value.set(tap / width, tap / height);
+}
+
+/**
+ * Stamp retained frame depth while clearing the mask color in the same render pass.
+ *
+ * @param source - Borrowed authoritative depth, including later cap writes.
+ * @returns Owned material and placeholder, plus the borrowed depth texture binding.
+ */
+export function createWebGpuEmphasisDepthMaterial(source: DepthTexture): {
+  material: NodeMaterial;
+  frameDepth: ReturnType<typeof texture>;
+  emptyDepth: DepthTexture;
+} {
+  // Logical placeholder releases the borrowed frame reference while inactive; never rendered.
+  const emptyDepth = new DepthTexture(1, 1);
+  const frameDepth = texture(source, screenUV);
+  const material = new NodeMaterial();
+  material.colorWrite = false;
+  material.depthWrite = true;
+  // Qualified only on node WebGL2; writing fragment depth requires an enabled test.
+  material.depthTest = true;
+  material.depthFunc = AlwaysDepth;
+  material.toneMapped = false;
+  material.name = 'tau-emphasis-depth';
+  material.depthNode = frameDepth;
+  return { material, frameDepth, emptyDepth };
 }

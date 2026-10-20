@@ -1,5 +1,8 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
+  AlwaysDepth,
+  DepthTexture,
+  UnsignedIntType,
   BoxGeometry,
   Color,
   Mesh,
@@ -14,7 +17,8 @@ import {
   WebGLRenderTarget,
 } from 'three';
 import type { WebGLRenderer } from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import { NodeMaterial, QuadMesh, WebGPURenderer } from 'three/webgpu';
+import { texture, screenUV } from 'three/tsl';
 import { createSectionClip } from '#graphics/three/materials/section-clip.js';
 import type { SilhouetteNodeMaterial } from '#graphics/three/materials/model-emphasis-silhouette.node.js';
 import {
@@ -24,7 +28,11 @@ import {
   syncModelEmphasisProxies,
 } from '#graphics/three/react/model-emphasis-overlay.jsx';
 
-const comparePixels = (packed: Uint8Array<ArrayBuffer>, reference: Uint8Array<ArrayBuffer>, width: number): void => {
+const comparePixels = (
+  packed: Uint8Array<ArrayBuffer>,
+  reference: Uint8Array<ArrayBuffer>,
+  { width, context, fullyOccludedHalf }: { width: number; context: string; fullyOccludedHalf: boolean },
+): void => {
   let maxDifference = 0;
   let highlighted = 0;
   let visibleRed = 0;
@@ -48,12 +56,15 @@ const comparePixels = (packed: Uint8Array<ArrayBuffer>, reference: Uint8Array<Ar
   }
   expect(highlighted).toBeGreaterThan(100);
   expect(redLevels.size).toBeGreaterThan(5);
-  expect(visibleRed).toBeGreaterThan(hiddenRed + 30);
+  if (fullyOccludedHalf) {
+    expect(visibleRed, context).toBeGreaterThan(hiddenRed + 30);
+  }
   // Predeclared one-byte tolerance, including resolved fractional edge pixels.
-  expect(maxDifference).toBeLessThanOrEqual(1);
+  expect(maxDifference, context).toBeLessThanOrEqual(1);
 };
 
-// Compare storage layouts on the same initialized renderer, poses and sample locations.
+// Compare node WebGL2 clear/depth fusion with the separate stamp, plus RG/RGBA storage,
+// on the same initialized renderer, poses and sample locations.
 // The RGBA reference is the prior production channel contract, not a different renderer.
 it.each([false, true])('preserves fractional and occluded highlights with node WebGL2=%s', async (forceWebGl) => {
   const renderer = new WebGPURenderer({
@@ -74,16 +85,30 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
   const depthScene = new Scene();
   depthScene.add(occluder);
   const target = new WebGLRenderTarget(320, 240);
+  const frame = new WebGLRenderTarget(320, 240);
+  frame.depthTexture = new DepthTexture(320, 240, UnsignedIntType);
+  const depthCopy = new NodeMaterial();
+  depthCopy.colorWrite = false;
+  depthCopy.depthWrite = true;
+  depthCopy.depthTest = forceWebGl;
+  depthCopy.depthFunc = AlwaysDepth;
+  depthCopy.depthNode = texture(frame.depthTexture, screenUV);
+  const depthQuad = new QuadMesh(depthCopy);
   const resources = createModelEmphasisResources('webgpu', createSectionClip('webgpu'));
   const composite = resources.composite as SilhouetteNodeMaterial;
   const output = new Scene();
   // Isolate the outline; production wash and full composition are checked by the 5K fixture.
   output.add(resources.overlayGroup.children[1]!);
-  const cases = [false, true].flatMap((perspective) =>
-    [false, true].flatMap((selected) => [0, 0.003, 0.007].map((shift) => ({ perspective, selected, shift }))),
+  const poses = [false, true].flatMap((perspective) =>
+    ['hover', 'selected', 'both'].flatMap((mode) =>
+      [0.8, 0.35, -0.35].flatMap((occluderDepth) =>
+        [0, 0.003, 0.007].map((shift) => ({ perspective, mode, occluderDepth, shift })),
+      ),
+    ),
   );
+  const cases = poses.flatMap((pose) => [false, true].map((motion) => ({ ...pose, motion })));
   try {
-    for (const { perspective, selected, shift } of cases) {
+    for (const { perspective, mode, occluderDepth, shift, motion } of cases) {
       const camera = perspective
         ? new PerspectiveCamera(40, 4 / 3, 0.1, 10)
         : new OrthographicCamera(-1.6, 1.6, 1.2, -1.2, 0.1, 10);
@@ -93,14 +118,18 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
       const pixelRatio = shift === 0.007 ? 2 : 1;
       const width = 320 * pixelRatio;
       const height = 240 * pixelRatio;
-      renderer.setSize(width, height);
+      renderer.setPixelRatio(pixelRatio);
+      renderer.setSize(width / pixelRatio, height / pixelRatio);
       target.setSize(width, height);
+      frame.setSize(width, height);
+      occluder.position.z = occluderDepth;
+      occluder.rotation.y = occluderDepth === 0.8 ? 0 : 0.3;
       source.position.x = shift;
       source.updateMatrixWorld();
       const capture = async (reference: boolean): Promise<Uint8Array<ArrayBuffer>> => {
         syncModelEmphasisProxies(resources, {
-          hover: selected ? [] : [source],
-          selected: selected ? [source] : [],
+          hover: mode === 'selected' ? [] : [source],
+          selected: mode === 'hover' ? [] : [source],
         });
         if (reference) {
           resources.maskTarget.dispose();
@@ -114,14 +143,28 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
         }
         resources.setMaskSize({ width, height, pixelRatio });
         syncModelEmphasisFrame(resources);
-        renderModelEmphasisMask(resources, {
-          gl: renderer as unknown as WebGLRenderer,
-          camera,
-          previousClear: new Color(),
-          restoreDepth: () => {
-            renderer.render(depthScene, camera);
-          },
+        renderer.setRenderTarget(frame);
+        renderer.autoClear = true;
+        renderer.render(depthScene, camera);
+        if (reference) {
+          renderer.setRenderTarget(null);
+        }
+        const restoreDepth = vi.fn(() => {
+          depthQuad.render(renderer);
         });
+        // Persistent production resources are rendered repeatedly, not rebuilt every frame.
+        for (let frameIndex = 0; frameIndex < 3; frameIndex++) {
+          source.position.x = shift + (motion ? frameIndex * 0.1 : 0);
+          source.updateMatrixWorld();
+          syncModelEmphasisFrame(resources);
+          renderModelEmphasisMask(resources, {
+            gl: renderer as unknown as WebGLRenderer,
+            camera,
+            previousClear: new Color(),
+            restoreDepth,
+          });
+        }
+        expect(restoreDepth).toHaveBeenCalledTimes(reference || !forceWebGl ? 3 : 0);
         renderer.setRenderTarget(target);
         renderer.setClearColor(0x12_34_56, 1);
         renderer.autoClear = true;
@@ -135,11 +178,17 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
       const packed = await capture(false);
       // oxlint-disable-next-line no-await-in-loop -- Compare only after the preceding readback completes.
       const reference = await capture(true);
-      comparePixels(packed, reference, width);
+      comparePixels(packed, reference, {
+        width,
+        context: JSON.stringify({ perspective, mode, occluderDepth, shift, motion }),
+        fullyOccludedHalf: !motion && occluderDepth === 0.8,
+      });
     }
   } finally {
     resources.dispose();
     target.dispose();
+    frame.dispose();
+    depthCopy.dispose();
     geometry.dispose();
     source.material.dispose();
     occluderGeometry.dispose();
