@@ -90,25 +90,32 @@ export function createNodeFrameGpuTimer(renderer: WebGPURenderer): FrameGpuTimer
         failedSamples++;
         return;
       }
-      completed.push(values.reduce<number>((sum, value) => sum + (value ?? 0), 0));
       if (
         raw &&
         [...offsets.values()].every((offset) => raw![offset] !== undefined && raw![offset + 1] !== undefined)
       ) {
-        let origin = raw[0]!;
-        for (const offset of offsets.values()) {
+        // Three can reserve a pair for a clear whose descriptor is subsequently reused.
+        // An unwritten pair resolves to (0, 0), not a timestamp at device epoch zero.
+        const written = [...offsets].filter(([, offset]) => raw![offset] !== 0n || raw![offset + 1] !== 0n);
+        if (written.length === 0) {
+          failedSamples++;
+          return;
+        }
+        let origin = raw[written[0]![1]]!;
+        for (const [, offset] of written) {
           if (raw[offset]! < origin) {
             origin = raw[offset]!;
           }
         }
         passRanges.push(
-          [...offsets].map(([uid, offset]) => ({
+          written.map(([uid, offset]) => ({
             uid,
             start: Number(raw![offset]! - origin) / 1_000_000,
             end: Number(raw![offset + 1]! - origin) / 1_000_000,
           })),
         );
       }
+      completed.push(values.reduce<number>((sum, value) => sum + (value ?? 0), 0));
     } catch {
       if (!disposed) {
         failedSamples++;

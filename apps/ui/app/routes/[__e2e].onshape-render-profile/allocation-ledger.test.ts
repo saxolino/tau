@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DataTexture, HalfFloatType, RGBAFormat } from 'three';
+import { DataTexture, HalfFloatType, RGBAFormat, RGFormat } from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import {
   installAllocationLedger,
@@ -22,10 +22,11 @@ describe('allocation accounting', () => {
     );
     renderer.info.destroyTexture(texture);
     texture.image.width = 2;
+    texture.format = RGFormat;
     renderer.info.createTexture(texture);
-    expect(renderer.info.memory.texturesSize).toBe(32);
+    expect(renderer.info.memory.texturesSize).toBe(16);
     expect(readAllocationLedgers()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ trackedLive: 32, peak: 64 })]),
+      expect.arrayContaining([expect.objectContaining({ trackedLive: 16, peak: 64 })]),
     );
     renderer.info.destroyTexture(texture);
     expect(renderer.info.memory.texturesSize).toBe(0);
@@ -34,7 +35,7 @@ describe('allocation accounting', () => {
         expect.objectContaining({
           trackedLive: 0,
           peak: 64,
-          textures: [expect.objectContaining({ live: false, trackedBytes: 32 })],
+          textures: [expect.objectContaining({ live: false, trackedBytes: 16, format: RGFormat })],
         }),
       ]),
     );

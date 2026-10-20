@@ -1,5 +1,5 @@
 import { CubeTexture, REVISION, WebGLCoordinateSystem } from 'three';
-import type { Texture } from 'three';
+import type { RenderTarget, Texture } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import { createNodeFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-node-timing.js';
 
@@ -18,12 +18,14 @@ type TextureRecord = {
   backendLive: boolean;
   descriptor?: unknown;
   multisample?: { width: number; height: number; layers: number; samples: number; format: string };
+  renderbuffers?: Array<Record<string, number | string>>;
   origin: string;
 };
 type PassContext = {
   // oxlint-disable-next-line typescript/no-restricted-types -- Three uses null for the canvas target.
   textures: Texture[] | null;
   depthTexture?: Texture;
+  renderTarget?: RenderTarget;
   width: number;
   height: number;
   sampleCount: number;
@@ -34,7 +36,7 @@ type PassContext = {
 type ObservedBackend = WebGPURenderer['backend'] & {
   createTexture: (texture: Texture, options?: Record<string, unknown>) => void;
   destroyTexture: (texture: Texture, isDefaultTexture?: boolean) => void;
-  get: (texture: Texture) => unknown;
+  get: (texture: Texture | RenderTarget) => unknown;
   beginRender: (context: PassContext) => void;
   finishRender: (context: PassContext) => void;
   draw: (object: { context: PassContext }, ...rest: unknown[]) => void;
@@ -65,6 +67,46 @@ export function resetAllocationCosts(enabled = true): void {
       ledger.timingEnabled = enabled;
     }
   }
+}
+
+/** Read logical attachment precision once, preserving the caller's GL binding. */
+function readMaskRenderbuffers(
+  gl: WebGL2RenderingContext,
+  color: WebGLRenderbuffer,
+  depth: WebGLRenderbuffer | undefined,
+): Array<Record<string, number | string>> {
+  // oxlint-disable-next-line typescript/no-restricted-types -- WebGL uses null for an unbound renderbuffer.
+  const previous = gl.getParameter(gl.RENDERBUFFER_BINDING) as WebGLRenderbuffer | null;
+  const buffers: Array<Record<string, number | string>> = [];
+  try {
+    for (const [kind, buffer] of [
+      ['color', color],
+      ['depth', depth],
+    ] as const) {
+      if (!buffer) {
+        continue;
+      }
+      gl.bindRenderbuffer(gl.RENDERBUFFER, buffer);
+      const receipt: Record<string, number | string> = { kind };
+      for (const [key, parameter] of Object.entries({
+        width: gl.RENDERBUFFER_WIDTH,
+        height: gl.RENDERBUFFER_HEIGHT,
+        samples: gl.RENDERBUFFER_SAMPLES,
+        format: gl.RENDERBUFFER_INTERNAL_FORMAT,
+        red: gl.RENDERBUFFER_RED_SIZE,
+        green: gl.RENDERBUFFER_GREEN_SIZE,
+        blue: gl.RENDERBUFFER_BLUE_SIZE,
+        alpha: gl.RENDERBUFFER_ALPHA_SIZE,
+        depth: gl.RENDERBUFFER_DEPTH_SIZE,
+      })) {
+        receipt[key] = gl.getRenderbufferParameter(gl.RENDERBUFFER, parameter) as number;
+      }
+      buffers.push(receipt);
+    }
+  } finally {
+    gl.bindRenderbuffer(gl.RENDERBUFFER, previous);
+  }
+  return buffers;
 }
 
 /** Snapshot historical allocations without retaining renderer, texture or backend objects. */
@@ -125,6 +167,8 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
       ledger.records.set(texture.uuid, record);
     }
     record.name = texture.name;
+    record.format = texture.format;
+    record.type = texture.type;
     record.width = texture.width;
     record.height = texture.height;
     return record;
@@ -201,6 +245,7 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
   }
   const glBackend = renderer.coordinateSystem === WebGLCoordinateSystem;
   const passNames = new WeakMap<PassContext, string>();
+  const inspectedBuffers = new WeakSet<WebGLRenderbuffer>();
   let timedContext: PassContext | undefined;
   let timedUid = '';
   let frame = -1;
@@ -267,6 +312,20 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
       }
     }
     begin(context);
+    // One synchronous inspection per mask allocation, before warmed timing. Never retain
+    // live renderbuffers in the scalar ledger or query them on ordinary timed frames.
+    if (glBackend && names.has('tau-emphasis-mask') && context.renderTarget) {
+      const data = backend.get(context.renderTarget) as {
+        msaaRenderbuffers?: WebGLRenderbuffer[];
+        depthRenderbuffer?: WebGLRenderbuffer;
+      };
+      const color = data.msaaRenderbuffers?.[0];
+      if (color && !inspectedBuffers.has(color)) {
+        inspectedBuffers.add(color);
+        const gl = renderer.getContext() as WebGL2RenderingContext;
+        recordTexture(textures[0]!).renderbuffers = readMaskRenderbuffers(gl, color, data.depthRenderbuffer);
+      }
+    }
   };
   const draw = backend.draw.bind(backend);
   backend.draw = (object, ...rest) => {

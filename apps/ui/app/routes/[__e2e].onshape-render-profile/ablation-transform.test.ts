@@ -9,6 +9,8 @@ const files = [
   'packages/viewer/src/graphics/three/post-processing.tsx',
   'packages/viewer/src/graphics/three/renderer.ts',
   'packages/viewer/src/graphics/three/scene-overlay.tsx',
+  'packages/viewer/src/graphics/three/react/gltf-mesh.tsx',
+  'packages/viewer/src/graphics/three/react/model-emphasis-overlay.tsx',
   'apps/ui/app/routes/[__e2e].onshape-render-profile/route.tsx',
 ];
 

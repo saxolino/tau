@@ -161,51 +161,66 @@ it.each(['missing', 'negative', 'nonfinite', 'rejected'] as const)(
   },
 );
 
-it('should retain raw overlapping pass ranges instead of treating their sum as elapsed time', async () => {
-  const pool = mock<Pool>({ pendingResolve: null });
-  pool.queryOffsets = new Map();
-  pool.timestamps = new Map();
-  pool.resultBuffer = mock<GPUBuffer>();
-  // Two overlapping passes: 3 + 2 ms of intervals, but only 4 ms from first to last.
-  const raw = new BigUint64Array([1_000_000n, 4_000_000n, 3_000_000n, 5_000_000n]);
-  const mapped = vi.mocked(pool.resultBuffer.getMappedRange);
-  mapped.mockReturnValue(raw.buffer);
-  pool.resolveQueriesAsync.mockImplementation(async () => {
-    pool.resultBuffer?.getMappedRange(0, raw.byteLength);
-    pool.timestamps.set('beauty:f1', 3);
-    pool.timestamps.set('output:f2', 2);
-    return 2;
-  });
-  const backend = mock<
-    WebGPURenderer['backend'] & {
-      trackTimestamp: boolean;
-      timestampQueryPool: { render?: Pool };
-    }
-  >({ trackTimestamp: false });
-  backend.timestampQueryPool = { render: pool };
-  const renderer = mock<WebGPURenderer>({ coordinateSystem: WebGPUCoordinateSystem });
-  renderer.backend = backend;
-  renderer.hasFeature.mockReturnValue(true);
-  const timer = createNodeFrameGpuTimer(renderer)!;
-  timer.begin();
-  pool.queryOffsets.set('beauty:f1', 0);
-  pool.queryOffsets.set('output:f2', 2);
-  timer.end();
-  await vi.waitFor(() => {
-    expect(timer.poll()).toMatchObject({
-      milliseconds: [5],
-      passRanges: [
-        [
-          { uid: 'beauty:f1', start: 0, end: 3 },
-          { uid: 'output:f2', start: 2, end: 4 },
-        ],
-      ],
+it.each([false, true, 'all'] as const)(
+  'should retain overlapping pass ranges with unwritten clear query pair %s',
+  async (unwritten) => {
+    const pool = mock<Pool>({ pendingResolve: null });
+    pool.queryOffsets = new Map();
+    pool.timestamps = new Map();
+    pool.resultBuffer = mock<GPUBuffer>();
+    // Two overlapping passes: 3 + 2 ms of intervals, but only 4 ms from first to last.
+    const raw = new BigUint64Array(
+      unwritten === 'all' ? [0n, 0n, 0n, 0n, 0n, 0n] : [1_000_000n, 4_000_000n, 3_000_000n, 5_000_000n, 0n, 0n],
+    );
+    const mapped = vi.mocked(pool.resultBuffer.getMappedRange);
+    mapped.mockReturnValue(raw.buffer);
+    pool.resolveQueriesAsync.mockImplementation(async () => {
+      pool.resultBuffer?.getMappedRange(0, raw.byteLength);
+      pool.timestamps.set('beauty:f1', unwritten === 'all' ? 0 : 3);
+      pool.timestamps.set('output:f2', unwritten === 'all' ? 0 : 2);
+      if (unwritten) {
+        pool.timestamps.set('clear:f3', 0);
+      }
+      return 2;
     });
-  });
-  expect(pool.resultBuffer.getMappedRange).toBe(mapped);
-  expect(timer.poll()).toMatchObject({ passRanges: [] });
-  timer.dispose();
-});
+    const backend = mock<
+      WebGPURenderer['backend'] & {
+        trackTimestamp: boolean;
+        timestampQueryPool: { render?: Pool };
+      }
+    >({ trackTimestamp: false });
+    backend.timestampQueryPool = { render: pool };
+    const renderer = mock<WebGPURenderer>({ coordinateSystem: WebGPUCoordinateSystem });
+    renderer.backend = backend;
+    renderer.hasFeature.mockReturnValue(true);
+    const timer = createNodeFrameGpuTimer(renderer)!;
+    timer.begin();
+    pool.queryOffsets.set('beauty:f1', 0);
+    pool.queryOffsets.set('output:f2', 2);
+    if (unwritten) {
+      pool.queryOffsets.set('clear:f3', 4);
+    }
+    timer.end();
+    await vi.waitFor(() => {
+      expect(timer.poll()).toMatchObject(
+        unwritten === 'all'
+          ? { milliseconds: [], passRanges: [], failedSamples: 1 }
+          : {
+              milliseconds: [5],
+              passRanges: [
+                [
+                  { uid: 'beauty:f1', start: 0, end: 3 },
+                  { uid: 'output:f2', start: 2, end: 4 },
+                ],
+              ],
+            },
+      );
+    });
+    expect(pool.resultBuffer.getMappedRange).toBe(mapped);
+    expect(timer.poll()).toMatchObject({ passRanges: [] });
+    timer.dispose();
+  },
+);
 
 it('should wait for a retired timer readback before borrowing the same pool', () => {
   const pool = mock<Pool>({ pendingResolve: null });

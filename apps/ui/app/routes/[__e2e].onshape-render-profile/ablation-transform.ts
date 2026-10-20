@@ -68,6 +68,23 @@ export function transformRenderingAblation(source: string, id: string): string |
       'renderer.setTransparentSort(reversedDepthTransparentSort);',
       'if (renderer.reversedDepthBuffer) renderer.setTransparentSort(reversedDepthTransparentSort);',
     );
+  } else if (file.endsWith('/graphics/three/react/model-emphasis-overlay.tsx')) {
+    replace(
+      'const both = set.hover.length > 0 && set.selected.length > 0;',
+      "const both = tauAblation.get('maskStorage') === 'rgba' || (set.hover.length > 0 && set.selected.length > 0);",
+    );
+  } else if (file.endsWith('/graphics/three/react/gltf-mesh.tsx')) {
+    replace(
+      'setModelEmphasisSet(rootScene, emphasised);',
+      `const calibrationMode = tauAblation.get('emphasis');
+      const calibrationMeshes = calibrationMode ? getComponentInventory(scene).filter((object): object is Mesh => isSurfaceObject(object)) : [];
+      const calibrationEmphasis = calibrationMode ? {
+        hover: calibrationMode === 'hover' || calibrationMode === 'both' ? calibrationMeshes.slice(1, 2) : [],
+        selected: calibrationMode === 'selected' || calibrationMode === 'both' ? calibrationMeshes.slice(0, 1) : [],
+      } : emphasised;
+      if (calibrationMode) rootScene.userData.calibrationEmphasis = { mode: calibrationMode, hover: calibrationEmphasis.hover.map((mesh) => mesh.name), selected: calibrationEmphasis.selected.map((mesh) => mesh.name) };
+      setModelEmphasisSet(rootScene, calibrationEmphasis);`,
+    );
   } else if (file.endsWith('/graphics/three/scene-overlay.tsx')) {
     replace('restoreDepth();', "if (tauAblation.get('depthRestore') !== 'off') restoreDepth();");
   } else if (file.endsWith('/[__e2e].onshape-render-profile/route.tsx')) {
@@ -113,6 +130,7 @@ export function transformRenderingAblation(source: string, id: string): string |
     replace(
       '...metadata,\n      geometryHash:',
       `...metadata,
+      emphasis: scene.userData.calibrationEmphasis,
       allocationLedger: tauAblation.has('ledger') ? readAllocationLedgers() : undefined,
       ablation: Object.fromEntries(tauAblation),
       scenePassSamples: scene.userData.calibrationScenePass?.renderTarget.samples,
