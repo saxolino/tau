@@ -75,6 +75,12 @@ const main = async (): Promise<void> => {
   await mkdir(root, { recursive: true });
   const fixture = await mkdtemp(join(root, 'maker-'));
   const input = join(fixture, 'input');
+  // Package installation does not guarantee Electron's distribution; prepare the pinned host binary explicitly.
+  const prepared = spawnSync(process.execPath, [join(desktopRoot, 'node_modules/electron/install.js')], {
+    encoding: 'utf8',
+    timeout: 240_000,
+  });
+  assert.equal(prepared.status, 0, `${prepared.stdout}\n${prepared.stderr}`);
   await cp(join(desktopRoot, 'node_modules/electron/dist'), input, { recursive: true });
   await rename(join(input, 'electron.exe'), join(input, 'Tau.exe'));
   const source = join(fixture, 'source');
