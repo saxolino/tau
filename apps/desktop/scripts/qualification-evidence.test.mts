@@ -2,6 +2,7 @@
 /** Purpose: Exercise receipt decisions with synthetic observations; these tests create no native qualification evidence. */
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { parseDesktopArtifactManifest, desktopArtifactKinds, desktopArtifactName } from '#shared/desktop-release.js';
 /* oxlint-disable no-restricted-imports -- Test the actual collector decision boundary. */
 import { collectQualificationReceipt } from './qualification-evidence.mjs';
@@ -108,7 +109,7 @@ const fixture = (): QualificationEvidence => {
   const preserved = [
     { path: c.renderer.projectPath, sha256: c.renderer.projectSha256 },
     {
-      path: '/profile/route-qualification.sentinel',
+      path: join('/profile', 'route-qualification.sentinel'),
       sha256: createHash('sha256').update(profileSentinel).digest('hex'),
     },
   ];
