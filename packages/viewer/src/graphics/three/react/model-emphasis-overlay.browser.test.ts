@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest';
 import {
   AlwaysDepth,
   DepthTexture,
+  DepthStencilFormat,
+  UnsignedInt248Type,
   UnsignedIntType,
   BoxGeometry,
   Color,
@@ -19,6 +21,7 @@ import {
 import type { WebGLRenderer } from 'three';
 import { NodeMaterial, QuadMesh, WebGPURenderer } from 'three/webgpu';
 import { texture, screenUV } from 'three/tsl';
+import { createRenderer } from '#graphics/three/renderer.js';
 import { createSectionClip } from '#graphics/three/materials/section-clip.js';
 import type { SilhouetteNodeMaterial } from '#graphics/three/materials/model-emphasis-silhouette.node.js';
 import {
@@ -141,14 +144,25 @@ const comparePixels = (
 // on the same initialized renderer, poses and sample locations.
 // The RGBA reference is the prior production channel contract, not a different renderer.
 it.each([false, true])('preserves fractional and occluded highlights with node WebGL2=%s', async (forceWebGl) => {
-  const renderer = new WebGPURenderer({
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- Three constructor option.
-    forceWebGL: forceWebGl,
-    antialias: false,
-    reversedDepthBuffer: !forceWebGl,
-  });
+  const renderer = forceWebGl
+    ? new WebGPURenderer({
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Three constructor option.
+        forceWebGL: true,
+        antialias: false,
+      })
+    : await createRenderer('viewport', 'webgpu', document.createElement('canvas'));
+  if (!(renderer instanceof WebGPURenderer)) {
+    throw new Error('Expected node renderer');
+  }
   await renderer.init();
   expect(renderer.coordinateSystem).toBe(forceWebGl ? WebGLCoordinateSystem : WebGPUCoordinateSystem);
+  const { device } = renderer.backend as typeof renderer.backend & { device?: EventTarget };
+  const errors: string[] = [];
+  const observe = (event: Event): void => {
+    const gpuError = event as Event & { error: { message: string } };
+    errors.push(gpuError.error.message);
+  };
+  device?.addEventListener('uncapturederror', observe);
   renderer.setSize(320, 240);
   const geometry = new SphereGeometry(0.65, 32, 24);
   const source = new Mesh(geometry, new MeshBasicMaterial());
@@ -160,7 +174,9 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
   depthScene.add(occluder);
   const target = new WebGLRenderTarget(320, 240);
   const frame = new WebGLRenderTarget(320, 240);
-  frame.depthTexture = new DepthTexture(320, 240, UnsignedIntType);
+  frame.stencilBuffer = true;
+  frame.depthTexture = new DepthTexture(320, 240, UnsignedInt248Type);
+  frame.depthTexture.format = DepthStencilFormat;
   const depthCopy = new NodeMaterial();
   depthCopy.colorWrite = false;
   depthCopy.depthWrite = true;
@@ -262,6 +278,7 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
       const packed = await capture(false);
       // oxlint-disable-next-line no-await-in-loop -- Compare only after the preceding readback completes.
       const reference = await capture(true);
+      expect(errors).toEqual([]);
       comparePixels(packed, reference, {
         width,
         context: JSON.stringify({ perspective, mode, occluderDepth, shift, motion }),
@@ -269,6 +286,7 @@ it.each([false, true])('preserves fractional and occluded highlights with node W
       });
     }
   } finally {
+    device?.removeEventListener('uncapturederror', observe);
     resources.dispose();
     target.dispose();
     frame.dispose();

@@ -44,7 +44,11 @@ import {
   installRendererOutput,
 } from '@taucad/runtime-testing/browser/three-renderer-output';
 
-const referenceMode = vi.hoisted(() => ({ forceNodeWebGl2: false }));
+const referenceMode = vi.hoisted(() => ({
+  forceNodeWebGl2: false,
+  validationErrors: [] as string[],
+  removeObservers: [] as Array<() => void>,
+}));
 
 const captureRendererOutput = async (renderer: rendererModule.RendererInstance): Promise<Uint8ClampedArray> => {
   if (isViewportWebGpu(renderer) && renderer.backend instanceof WebGLBackend) {
@@ -91,6 +95,17 @@ vi.mock('#graphics/three/renderer.js', async (importOriginal) => {
         return renderer;
       }
       const renderer = await actual.createRenderer(...args);
+      if (isViewportWebGpu(renderer) && renderer.backend instanceof WebGPUBackend) {
+        const { device } = renderer.backend as typeof renderer.backend & { device: EventTarget };
+        const observe = (event: Event): void => {
+          const gpuError = event as Event & { error: { message: string } };
+          referenceMode.validationErrors.push(gpuError.error.message);
+        };
+        device.addEventListener('uncapturederror', observe);
+        referenceMode.removeObservers.push(() => {
+          device.removeEventListener('uncapturederror', observe);
+        });
+      }
       installRendererOutput(renderer, inject('webGpuProfile'));
       return renderer;
     },
@@ -102,6 +117,10 @@ afterEach(() => {
   referenceMode.forceNodeWebGl2 = false;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  for (const remove of referenceMode.removeObservers.splice(0)) {
+    remove();
+  }
+  expect(referenceMode.validationErrors.splice(0)).toEqual([]);
 });
 
 it.each(['webgl', 'webgpu'] as const)('should smooth shader edges in the final %s image', async (backend) => {

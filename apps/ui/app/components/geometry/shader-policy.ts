@@ -116,6 +116,7 @@ export const shaderSites = [
     helpers: [
       'packages/viewer/src/graphics/three/ao-normal.ts',
       'packages/viewer/src/graphics/three/transmission-retirement.ts',
+      'packages/viewer/src/graphics/three/webgpu-depth-sampling.ts',
       'packages/viewer/src/graphics/three/ao-denoise.ts',
       'packages/viewer/src/graphics/three/fxaa.ts',
     ],
@@ -431,6 +432,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ),
     'generated-source': [
+      'packages/viewer/src/graphics/three/webgpu-depth-sampling.test.ts::should require requalification when Three sampled-view caching or texture lifetime changes',
       'packages/viewer/src/graphics/three/ao-denoise.test.ts::should preserve the deterministic depth and normal %s graph',
       'packages/viewer/src/graphics/three/fxaa.test.ts::should preserve the resource-free FXAA graph for a caller-owned color input',
       'packages/viewer/src/graphics/three/fxaa.test.ts::should guard the exact classic FXAA source and quality contract paired with the node port',
@@ -439,6 +441,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should guard the upstream implementations whose owned resources require explicit disposal',
     ],
     pixels: [
+      'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should preserve sampled depth and attachment stencil through resize/recreation',
       'packages/viewer/src/graphics/three/node-frame-reference.browser.test.ts::should preserve display ramps, alpha and linear overlay blends in compact frame storage',
       'packages/viewer/src/graphics/three/ao-normal.browser.test.ts::should round-trip both normal hemispheres through RG8 on %s',
       'packages/viewer/src/graphics/three/ao-normal.browser.test.ts::should interpolate decoded normals across folds and clear texels on %s',
@@ -449,6 +452,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
     ],
     'real-compile': [
+      'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should preserve sampled depth and attachment stencil through resize/recreation',
       'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with native validation and an invalid-shader control',
       'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with WebGL2 validation and an invalid-shader control',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should keep contact AO smooth without erasing it',
@@ -465,6 +469,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],
     lifecycle: [
+      'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should preserve sampled depth and attachment stencil through resize/recreation',
       'packages/viewer/src/graphics/three/transmission-retirement.test.ts::should retire only the viewport copy belonging to the disposed scene pass',
       'packages/viewer/src/graphics/three/transmission-retirement.test.ts::should pin the upstream viewport-copy and transmission ownership contract',
       'packages/viewer/src/graphics/three/transmission-retirement.browser.test.ts::should release a retired transmission copy and reacquire it safely on %s',
