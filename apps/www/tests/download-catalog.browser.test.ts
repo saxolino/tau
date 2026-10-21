@@ -20,7 +20,7 @@ describe('shipping installer catalog browser behavior', () => {
       platform: 'browser',
     });
     const { chromium } = await loadPlaywright();
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ channel: 'chromium', headless: true });
     try {
       const page = await browser.newPage();
       await page.addInitScript(() => {
