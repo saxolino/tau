@@ -213,7 +213,8 @@ export const createWindowsQualificationDriver = (
 $user=@(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -eq $env:TAU_Q_NAME});
 $machine=@(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -eq $env:TAU_Q_NAME});
 $key='HKCU:\Software\Classes\'+$env:TAU_Q_SCHEME+'\shell\open\command';
-@{user=$user.Count;machine=$machine.Count;command=(Get-Item $key).GetValue('');machineProtocol=(Test-Path ('HKLM:\Software\Classes\'+$env:TAU_Q_SCHEME));installation=[string]$user[0].InstallLocation} | ConvertTo-Json -Compress`,
+# electron-builder stores InstallLocation under Software/<GUID>, separate from its same-GUID uninstall entry.
+@{user=$user.Count;machine=$machine.Count;command=(Get-Item $key).GetValue('');machineProtocol=(Test-Path ('HKLM:\Software\Classes\'+$env:TAU_Q_SCHEME));installation=[string](Get-ItemProperty -LiteralPath ('HKCU:\Software\'+$user[0].PSChildName)).InstallLocation} | ConvertTo-Json -Compress`,
           Object.fromEntries([
             ['TAU_Q_NAME', name],
             ['TAU_Q_SCHEME', scheme],
