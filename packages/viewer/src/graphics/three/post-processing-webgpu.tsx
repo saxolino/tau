@@ -56,6 +56,7 @@ import { createGtaoCameraAdapter } from '#graphics/three/gtao-depth-camera.js';
 
 type PostProcessingPipelineResources = Readonly<{
   camera: ThreeCamera;
+  frame: LinearFrame;
   outputQuad: QuadMesh;
   aoNode?: ReturnType<typeof ao>;
   denoiseNode?: ReturnType<typeof createAoDenoise>;
@@ -163,6 +164,48 @@ const disposeAoNode = (node: ReturnType<typeof ao> | undefined): void => {
   node.dispose();
 };
 
+const createLinearFrame = (renderer: WebGPURenderer, toneMapping: ToneMapping): LinearFrame => {
+  // Neutral tone mapping has already bounded the scene to display range. Hardware
+  // sRGB storage preserves linear-light blending with half the color bandwidth.
+  // Keep HDR storage for unbounded/other tone mappings until separately qualified.
+  const compactFrame = toneMapping === NeutralToneMapping;
+  const target = new RenderTarget(1, 1, {
+    type: compactFrame ? UnsignedByteType : HalfFloatType,
+    samples: 0,
+    stencilBuffer: true,
+  });
+  target.texture.colorSpace = compactFrame ? SRGBColorSpace : LinearSRGBColorSpace;
+  target.texture.name = 'Tau linear frame';
+  target.depthTexture = new DepthTexture(1, 1, UnsignedInt248Type);
+  target.depthTexture.format = DepthStencilFormat;
+  const finalOutput = createOutputQuad(renderOutput(texture(target.texture), NoToneMapping, renderer.outputColorSpace));
+  finalOutput.name = 'Tau final output';
+  const depthMaterial = new NodeMaterial();
+  depthMaterial.colorWrite = false;
+  depthMaterial.depthTest = renderer.coordinateSystem === WebGLCoordinateSystem;
+  depthMaterial.depthFunc = AlwaysDepth;
+  depthMaterial.depthWrite = true;
+  depthMaterial.depthNode = texture(target.depthTexture, screenUV);
+  const frame: LinearFrame = {
+    target,
+    output: finalOutput,
+    depth: new QuadMesh(depthMaterial),
+    previousTarget: null,
+    pending: false,
+  };
+  return frame;
+};
+
+const disposeLinearFrame = (frame: LinearFrame, renderer: WebGPURenderer): void => {
+  if (frame.pending) {
+    renderer.setRenderTarget(frame.previousTarget);
+    frame.pending = false;
+  }
+  frame.target.dispose();
+  (frame.output.material as NodeMaterial).dispose();
+  (frame.depth.material as NodeMaterial).dispose();
+};
+
 const createPipelineResources = ({
   camera,
   gpuRenderer,
@@ -180,12 +223,14 @@ const createPipelineResources = ({
   // hardware filtering on node WebGL2 in the matched 5K comparison.
   const compactNormals = gpuRenderer.coordinateSystem !== WebGLCoordinateSystem;
   const scenePass = pass(scene, camera, { samples: 0 });
+  let frame: LinearFrame | undefined;
   let aoNode: ReturnType<typeof ao> | undefined;
   let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
   let denoiseInput: ReturnType<typeof rtt> | undefined;
   let outputQuad: QuadMesh | undefined;
   let depthRestoreMaterial: NodeMaterial | undefined;
   try {
+    frame = createLinearFrame(gpuRenderer, toneMapping);
     if (withAo) {
       scenePass.setMRT(
         mrt({
@@ -220,6 +265,7 @@ const createPipelineResources = ({
       );
       return {
         camera,
+        frame,
         outputQuad,
         depthRestore,
         depthRestoreMaterial,
@@ -293,6 +339,7 @@ const createPipelineResources = ({
 
     return {
       camera,
+      frame,
       outputQuad,
       aoNode,
       denoiseNode,
@@ -305,6 +352,9 @@ const createPipelineResources = ({
       updateAoCamera: aoCamera.update,
     };
   } catch (error) {
+    if (frame) {
+      disposeLinearFrame(frame, gpuRenderer);
+    }
     depthRestoreMaterial?.dispose();
     (outputQuad?.material as NodeMaterial | undefined)?.dispose();
     disposeOwnedRtt(denoiseInput);
@@ -315,8 +365,12 @@ const createPipelineResources = ({
   }
 };
 
-const disposePipelineResources = (resources: readonly PostProcessingPipelineResources[]): void => {
+const disposePipelineResources = (
+  resources: readonly PostProcessingPipelineResources[],
+  renderer: WebGPURenderer,
+): void => {
   for (const resource of resources) {
+    disposeLinearFrame(resource.frame, renderer);
     (resource.outputQuad.material as NodeMaterial).dispose();
     disposeOwnedRtt(resource.denoiseInput);
     disposeAoNode(resource.aoNode);
@@ -345,49 +399,6 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
   const targetRef = useRef(new Vector3());
   const frameRef = useRef<LinearFrame | undefined>(undefined);
   const drawingSize = useRef(new Vector2());
-  useLayoutEffect(() => {
-    const renderer = gl as unknown as WebGPURenderer;
-    // Neutral tone mapping has already bounded the scene to display range. Hardware
-    // sRGB storage preserves linear-light blending with half the color bandwidth.
-    // Keep HDR storage for unbounded/other tone mappings until separately qualified.
-    const compactFrame = toneMapping === NeutralToneMapping;
-    const target = new RenderTarget(1, 1, {
-      type: compactFrame ? UnsignedByteType : HalfFloatType,
-      samples: 0,
-      stencilBuffer: true,
-    });
-    target.texture.colorSpace = compactFrame ? SRGBColorSpace : LinearSRGBColorSpace;
-    target.texture.name = 'Tau linear frame';
-    target.depthTexture = new DepthTexture(1, 1, UnsignedInt248Type);
-    target.depthTexture.format = DepthStencilFormat;
-    const finalOutput = createOutputQuad(
-      renderOutput(texture(target.texture), NoToneMapping, renderer.outputColorSpace),
-    );
-    finalOutput.name = 'Tau final output';
-    const depthMaterial = new NodeMaterial();
-    depthMaterial.colorWrite = false;
-    depthMaterial.depthTest = renderer.coordinateSystem === WebGLCoordinateSystem;
-    depthMaterial.depthFunc = AlwaysDepth;
-    depthMaterial.depthWrite = true;
-    depthMaterial.depthNode = texture(target.depthTexture, screenUV);
-    const frame: LinearFrame = {
-      target,
-      output: finalOutput,
-      depth: new QuadMesh(depthMaterial),
-      previousTarget: null,
-      pending: false,
-    };
-    frameRef.current = frame;
-    return () => {
-      if (frame.pending) {
-        renderer.setRenderTarget(frame.previousTarget);
-      }
-      frameRef.current = undefined;
-      target.dispose();
-      (finalOutput.material as NodeMaterial).dispose();
-      depthMaterial.dispose();
-    };
-  }, [gl, toneMapping]);
   const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao';
 
   // Only the current endpoint is needed now. The other projection is created on its first frame.
@@ -405,7 +416,8 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       console.error('Failed to create WebGPU post-processing pipeline', error);
     }
     return () => {
-      disposePipelineResources([...resources.values()]);
+      disposePipelineResources([...resources.values()], gl as unknown as WebGPURenderer);
+      frameRef.current = undefined;
       resources.clear();
     };
   }, [gl, invalidate, scene, toneMapping, withAo]);
@@ -461,7 +473,8 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
         if (previous) {
           // At 5K each inactive endpoint retains ~358 MB of attachments. Retire its graph
           // as a unit: reusing compiled graphs after target disposal regresses orthographic edges in r184.
-          disposePipelineResources([previous]);
+          disposePipelineResources([previous], gl as unknown as WebGPURenderer);
+          frameRef.current = undefined;
           resourcesRef.current.delete(selectedCameraRef.current);
         }
       }
@@ -470,7 +483,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       targetRef.current.set(target.x, target.y, target.z);
       invalidate();
     },
-    [cameraRig, invalidate],
+    [cameraRig, gl, invalidate],
   );
   useCameraRetarget(retarget);
 
@@ -516,10 +529,8 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
     }
     updateAoSettings(selected);
     const renderer = state.gl as unknown as WebGPURenderer;
-    const frame = frameRef.current;
-    if (!frame) {
-      return;
-    }
+    const { frame } = selected;
+    frameRef.current = frame;
     // Recover the destination if a later subscriber aborted the preceding frame.
     if (frame.pending) {
       renderer.setRenderTarget(frame.previousTarget);

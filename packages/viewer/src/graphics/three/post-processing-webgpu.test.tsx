@@ -589,7 +589,11 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const mounted = await mount();
     mocks.getFrame()?.(mocks.state, 0);
     const firstPass = mocks.scenePasses[0]!;
+    const firstFrame = mocks.gl.getRenderTarget() as RenderTarget;
+    const disposeFrame = vi.spyOn(firstFrame, 'dispose');
     act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
+    expect(disposeFrame).toHaveBeenCalledOnce();
+    expect(mocks.gl.getRenderTarget()).toEqual({ kind: 'prior-target' });
     expect(firstPass.dispose).toHaveBeenCalledOnce();
     expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(1);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();

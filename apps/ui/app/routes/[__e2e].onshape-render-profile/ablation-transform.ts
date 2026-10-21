@@ -15,9 +15,8 @@ export function transformRenderingAblation(source: string, id: string): string |
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
-    // Rejected native candidate: r184 samples combined depth/stencil with an invalid
-    // all-aspect view. Keep this opt-in until binding and coupled lifetime gates pass.
-    code = "import { FloatType } from 'three';\n" + code;
+    // Coupled-depth candidate remains opt-in until lifecycle, pixels and cost gates pass.
+    code = "import { FloatType } from 'three';\nconst tauDepthPrepared = new WeakSet<RenderTarget>();\n" + code;
     replace('if (depthMaterial) {', "if (depthMaterial && tauAblation.get('depthOwnership') !== 'shared') {");
     replace(
       "const scenePassColor = scenePass.getTextureNode('output');",
@@ -38,20 +37,26 @@ export function transformRenderingAblation(source: string, id: string): string |
     const scenePassColor = scenePass.getTextureNode('output');`,
     );
     replace(
+      "const scenePassDepth = scenePass.getTextureNode('depth');",
+      `const scenePassDepth = scenePass.getTextureNode('depth');
+    if (tauAblation.get('depthOwnership') === 'shared') {
+      frame.target.depthTexture = scenePass.getTexture('depth');
+      (frame.depth.material as NodeMaterial).depthNode = texture(frame.target.depthTexture, screenUV);
+    }`,
+    );
+    replace(
       'frame.target.setSize(drawingSize.current.x, drawingSize.current.y);',
       `if (tauAblation.get('depthOwnership') === 'shared') {
-      const depth = selected.scenePass.getTexture('depth');
-      if (frame.target.depthTexture !== depth) {
-        frame.target.dispose();
-        frame.target.depthTexture = depth;
-        const material = frame.depth.material as NodeMaterial;
-        material.depthNode = texture(depth, screenUV);
-        material.needsUpdate = true;
+      if (!tauDepthPrepared.has(frame.target) || frame.target.width !== drawingSize.current.x || frame.target.height !== drawingSize.current.y) {
+        // Retire both users before either re-creates the shared attachment.
+        selected.scenePass.renderTarget.setSize(drawingSize.current.x, drawingSize.current.y);
+        frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
+        // r184 dirties depth on each target's first initialization. Complete both
+        // before scene rendering; never re-initialize a populated shared attachment.
+        renderer.initRenderTarget(selected.scenePass.renderTarget);
+        renderer.initRenderTarget(frame.target);
+        tauDepthPrepared.add(frame.target);
       }
-      selected.scenePass.renderTarget.setSize(drawingSize.current.x, drawingSize.current.y);
-      frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
-      renderer.initRenderTarget(selected.scenePass.renderTarget);
-      renderer.initRenderTarget(frame.target);
     } else frame.target.setSize(drawingSize.current.x, drawingSize.current.y);`,
     );
     replace(

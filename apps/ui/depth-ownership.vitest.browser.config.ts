@@ -6,7 +6,12 @@ import { transformRenderingAblation } from './app/routes/[__e2e].onshape-render-
 
 // Diagnostic only: exercise the existing production-composition oracles with the candidate graph.
 export default mergeConfig(viewer, {
-  test: { include: ['../../apps/ui/depth-ownership.browser.test.ts'] },
+  test: {
+    include: [
+      '../../apps/ui/depth-ownership.browser.test.ts',
+      'src/graphics/three/post-processing-antialias.browser.test.tsx',
+    ],
+  },
   plugins: [
     {
       name: 'depth-ownership-experiment',
