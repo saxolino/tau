@@ -32,6 +32,7 @@ import {
   useRenderFrame,
 } from '@taucad/viewer/hooks/use-graphics';
 import { ThemeProvider } from '#hooks/use-theme.js';
+import { createCameraCompilationTiming } from '#routes/[__e2e].onshape-render-profile/camera-compilation-timing.js';
 import { createNodeFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-node-timing.js';
 import { correlateGpuFrames, createFrameGpuTimer } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
 import type { FrameGpuTimer, GpuPassRange } from '#routes/[__e2e].onshape-render-profile/gpu-timing.js';
@@ -98,6 +99,7 @@ type FrameSample = {
   triangles: number;
   lines: number;
   projectionSwitch: boolean;
+  nodeCompilation?: ReturnType<ReturnType<typeof createCameraCompilationTiming>['read']>;
   cameraWorld: number[];
   cameraProjection: number[];
   playbackPose: Array<{ unitId: string; time: number; coordinates: Record<string, number> }>;
@@ -209,6 +211,18 @@ function CalibrationProbe({
 }): undefined {
   const { gl, scene, invalidate, size, setDpr } = useThree();
   const gpuTimer = useRef<FrameGpuTimer | undefined>(undefined);
+  const compilationTiming = useRef<ReturnType<typeof createCameraCompilationTiming> | undefined>(undefined);
+  useEffect(() => {
+    if (!(gl instanceof WebGPURenderer) || !new URLSearchParams(location.search).has('cameraCompile')) {
+      return;
+    }
+    const timing = createCameraCompilationTiming(gl);
+    compilationTiming.current = timing;
+    return () => {
+      timing.dispose();
+      compilationTiming.current = undefined;
+    };
+  }, [gl]);
   const rig = useCameraRig();
   const graphics = useGraphics();
   const kinematicsRef = useKinematicsRef();
@@ -463,6 +477,7 @@ function CalibrationProbe({
     }
     current.gpuQueryStarted = false;
     current.start = performance.now();
+    compilationTiming.current?.reset();
     current.projectionSwitch = false;
     // Renderer remounts restore the production DPR; keep diagnostic captures at their selected DPR.
     if (gl.getPixelRatio() !== pixelRatio) {
@@ -579,6 +594,7 @@ function CalibrationProbe({
           }),
           frameInterval: current.start - current.previous,
           projectionSwitch: current.projectionSwitch,
+          nodeCompilation: compilationTiming.current?.read(),
           cpuSubmission: now - current.start,
           // WebGPU's `calls` is lifetime render submissions; only `drawCalls` resets per frame.
           calls:
@@ -800,6 +816,7 @@ const CalibrationCanvas = memo(function CalibrationCanvas({
         graphicsBackend={backend}
         upDirection='z'
         enablePan
+        enableGizmo={new URLSearchParams(location.search).has('gizmo')}
         enableZoom
         enableGrid={overlay}
         enableAxes={overlay}

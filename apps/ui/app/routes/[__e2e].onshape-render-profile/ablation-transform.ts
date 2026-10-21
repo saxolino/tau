@@ -82,6 +82,21 @@ export function transformRenderingAblation(source: string, id: string): string |
       `const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao'
         && !['beauty', 'mrt'].includes(tauAblation.get('abl') ?? '');`,
     );
+  } else if (file.endsWith('/graphics/three/controls/viewport-gizmo-cube-surface.ts')) {
+    replace(
+      "if (backend === 'webgpu') {",
+      "if (backend === 'webgpu' && tauAblation.get('pickerIdentity') !== 'legacy') {",
+    );
+  } else if (file.endsWith('/graphics/three/controls/viewport-gizmo-cube-axes.ts')) {
+    replace(
+      "const SpriteMaterial = renderingBackend === 'webgpu' ? SpriteNodeMaterial : THREE.SpriteMaterial;",
+      "const SpriteMaterial = renderingBackend === 'webgpu' && tauAblation.get('pickerIdentity') !== 'legacy' ? SpriteNodeMaterial : THREE.SpriteMaterial;",
+    );
+  } else if (file.endsWith('/graphics/three/controls/section-plane-picker.ts')) {
+    replace(
+      'material.positionNode = positionLocal;',
+      "if (tauAblation.get('pickerIdentity') !== 'legacy') material.positionNode = positionLocal;",
+    );
   } else if (file.endsWith('/graphics/three/post-processing.tsx')) {
     replace(
       "gl.toneMapping = backend === 'webgpu' ? NoToneMapping : rendererToneMappingModes[toneMapping];",

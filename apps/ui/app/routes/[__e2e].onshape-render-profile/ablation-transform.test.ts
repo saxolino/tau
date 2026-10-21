@@ -5,6 +5,9 @@ import { transformRenderingAblation } from '#routes/[__e2e].onshape-render-profi
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const files = [
+  'packages/viewer/src/graphics/three/controls/section-plane-picker.ts',
+  'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube-surface.ts',
+  'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube-axes.ts',
   'packages/viewer/src/graphics/three/post-processing-webgpu.tsx',
   'packages/viewer/src/graphics/three/post-processing.tsx',
   'packages/viewer/src/graphics/three/renderer.ts',
