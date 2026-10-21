@@ -211,7 +211,7 @@ app.whenReady().then(() => {
       '-NonInteractive',
       '-EncodedCommand',
       Buffer.from(
-        `$ErrorActionPreference='Stop'; $user=@(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -eq 'Tau Staging'}); $machine=@(Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -eq 'Tau Staging'}); @{user=$user.Count;machine=$machine.Count;userProtocol=(Test-Path 'HKCU:\\Software\\Classes\\tau-staging');machineProtocol=(Test-Path 'HKLM:\\Software\\Classes\\tau-staging')} | ConvertTo-Json -Compress`,
+        `$ErrorActionPreference='Stop'; $user=@(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -eq 'Tau Staging'}); $machine=@(Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -eq 'Tau Staging'}); @{user=$user.Count;machine=$machine.Count;userProtocol=(Test-Path 'HKCU:\\Software\\Classes\\tau-staging');command=(Get-Item 'HKCU:\\Software\\Classes\\tau-staging\\shell\\open\\command').GetValue('');machineProtocol=(Test-Path 'HKLM:\\Software\\Classes\\tau-staging')} | ConvertTo-Json -Compress`,
         'utf16le',
       ).toString('base64'),
     ],
@@ -223,6 +223,7 @@ app.whenReady().then(() => {
     machine: 0,
     userProtocol: true,
     machineProtocol: false,
+    command: `"${join(installed, 'Tau.exe')}" "%1"`,
   });
 
   assert.deepEqual(await readFile(join(installed, 'resources/app.asar')), original);
@@ -246,9 +247,64 @@ app.whenReady().then(() => {
     timeout: 120_000,
   });
   assert.equal(uninstall.status, 0, `${uninstall.stdout}\n${uninstall.stderr}`);
+  const removedProtocol = spawnSync(
+    join(windowsRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      String.raw`if (Test-Path 'HKCU:\Software\Classes\tau-staging') { exit 1 }`,
+    ],
+    { encoding: 'utf8', timeout: 30_000 },
+  );
+  assert.equal(removedProtocol.status, 0, removedProtocol.stderr);
   await assert.rejects(stat(join(installed, 'Tau.exe')), { code: 'ENOENT' });
   assert.equal(await readFile(join(profile, 'project.json'), 'utf8'), '{"keep":"user project"}');
   assert.equal(JSON.parse(await readFile(join(profile, 'startup.json'), 'utf8')).version, identity.version);
+  // A later installation can take over the protocol; this uninstaller must leave its command intact.
+  const reinstall = spawnSync(installer, ['/S', `/D=${installed}`], {
+    windowsVerbatimArguments: true,
+    env: environment,
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  assert.equal(reinstall.status, 0, `${reinstall.stdout}\n${reinstall.stderr}`);
+  const foreignCommand = String.raw`"C:\Other Tau\Tau.exe" "%1"`;
+  const replaceProtocol = spawnSync(
+    join(windowsRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(
+        `$ErrorActionPreference='Stop'; Set-Item 'HKCU:\\Software\\Classes\\tau-staging\\shell\\open\\command' '${foreignCommand}'`,
+        'utf16le',
+      ).toString('base64'),
+    ],
+    { encoding: 'utf8', timeout: 30_000 },
+  );
+  assert.equal(replaceProtocol.status, 0, replaceProtocol.stderr);
+  const foreignUninstall = spawnSync(join(installed, uninstallers[0]!), ['/S', `_?=${installed}`], {
+    windowsVerbatimArguments: true,
+    env: environment,
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  assert.equal(foreignUninstall.status, 0, `${foreignUninstall.stdout}\n${foreignUninstall.stderr}`);
+  const preservedProtocol = spawnSync(
+    join(windowsRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(
+        `$ErrorActionPreference='Stop'; $command=(Get-Item 'HKCU:\\Software\\Classes\\tau-staging\\shell\\open\\command').GetValue(''); if ($command -ne '${foreignCommand}') { throw 'Foreign handler changed' }; Remove-Item 'HKCU:\\Software\\Classes\\tau-staging' -Recurse`,
+        'utf16le',
+      ).toString('base64'),
+    ],
+    { encoding: 'utf8', timeout: 30_000 },
+  );
+  assert.equal(preservedProtocol.status, 0, preservedProtocol.stderr);
   console.log(
     'PASS native NSIS resources, payload, per-user install, actual fixture startup, uninstall and profile preservation; release signing/full Tau A-to-B remain gated',
   );
