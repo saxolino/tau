@@ -415,7 +415,10 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should preserve native reversed depth without a fragment-depth rewrite',
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::emits geometric viewZToLogarithmicDepth',
     ],
-    pixels: [`${graphicsBackendEndToEnd}::grid, axes and model shading display the same`],
+    pixels: [
+      `${graphicsBackendEndToEnd}::grid, axes and model shading display the same`,
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should match final edge contrast across subpixel phases',
+    ],
     'structural-perf': [
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should keep its semantic cache key stable across setup and equivalent materials',
     ],

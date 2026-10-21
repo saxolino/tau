@@ -699,6 +699,7 @@ it.each(
       }),
     );
     const results: number[][] = [];
+    const motionResults: Array<{ energy: number[]; minimumCoverage: number }> = [];
     for (const execution of ['webgl', 'webgpu', 'node-webgl2'] as const) {
       referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
       const backend = execution === 'webgl' ? 'webgl' : 'webgpu';
@@ -815,6 +816,53 @@ it.each(
           return contrast / (40 * dpr * dpr);
         });
         results.push(widths);
+        if (width === 2560) {
+          // Move the actual geometry through one CSS pixel. This exercises the full
+          // production frame, rather than treating unrelated static strokes as history.
+          const energy: number[] = [];
+          let minimumCoverage = 1;
+          for (let step = 0; step < 8; step++) {
+            const shift = step / 8;
+            lines.position.set(shift, -shift, 0);
+            // NodeFrame deduplicates passes within an animation frame.
+            // oxlint-disable-next-line no-await-in-loop -- sample distinct frames, not cached pass results.
+            await new Promise<void>((resolve) => {
+              requestAnimationFrame(() => {
+                resolve();
+              });
+            });
+            retired = false;
+            state!.advance(performance.now(), true);
+            // oxlint-disable-next-line no-await-in-loop -- each motion sample owns its completed frame/readback.
+            await pending;
+            retired = true;
+            const center = centers[3]!;
+            const cx = center.x + width / 2 - 128 + shift;
+            const cy = center.y + height / 2 - 128 + shift;
+            let ink = 0;
+            for (let row = Math.floor((cy - 26) * dpr); row < Math.ceil((cy + 26) * dpr); row++) {
+              for (let column = Math.floor((cx - 26) * dpr); column < Math.ceil((cx + 26) * dpr); column++) {
+                ink += 1 - pixels![(row * width * dpr + column) * 4 + 2]! / background;
+              }
+            }
+            energy.push(ink / (40 * dpr * dpr));
+            // Probe every join, excluding endpoints. A near-white hole anywhere
+            // on the curved stroke fails independently of its integrated ink.
+            for (let join = 1; join < 32; join++) {
+              const theta = -1.25 + (join * 2.5) / 32;
+              const px = Math.round((cx - 16 + 16 * Math.cos(theta)) * dpr);
+              const py = Math.round((cy - 16 * Math.sin(theta)) * dpr);
+              let coverage = 0;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  coverage = Math.max(coverage, 1 - pixels![((py + dy) * width * dpr + px + dx) * 4 + 2]! / background);
+                }
+              }
+              minimumCoverage = Math.min(minimumCoverage, coverage);
+            }
+          }
+          motionResults.push({ energy, minimumCoverage });
+        }
       } finally {
         retired = true;
         // oxlint-disable-next-line no-await-in-loop -- drain owned resources before the next backend.
@@ -827,6 +875,14 @@ it.each(
         actor.stop();
         lines.geometry.dispose();
         material.dispose();
+      }
+    }
+    if (motionResults.length > 0) {
+      const variation = motionResults.map(({ energy }) => Math.max(...energy) - Math.min(...energy));
+      console.info('line-motion', JSON.stringify({ dpr, width, color, motionResults, variation, results }));
+      expect(Math.min(...motionResults.map(({ minimumCoverage }) => minimumCoverage))).toBeGreaterThan(0.05);
+      for (const candidate of variation.slice(1)) {
+        expect(candidate).toBeLessThanOrEqual(variation[0]! + 0.08);
       }
     }
     const differences = results
@@ -1139,9 +1195,9 @@ it.each(
 
 // Use the live post owner (PBR, AO, retained frame depth, overlays and final encoding),
 // not a standalone mask render. The prior native fusion passed isolated mask pixels.
-it.each([false, true])(
-  'should clear persistent emphasis through the production node frame: WebGL2=%s',
-  async (forceNodeWebGl2) => {
+it.each([false, true].flatMap((forceNodeWebGl2) => [256, 2560].map((width) => ({ forceNodeWebGl2, width }))))(
+  'should clear persistent emphasis through the production node frame: WebGL2=$forceNodeWebGl2 width=$width',
+  async ({ forceNodeWebGl2, width }) => {
     referenceMode.forceNodeWebGl2 = forceNodeWebGl2;
     vi.stubGlobal('devicePixelRatio', 2);
     await page.viewport(500, 500);
@@ -1217,7 +1273,7 @@ it.each([false, true])(
     };
     try {
       render(
-        <div style={{ width: 256, height: 256 }}>
+        <div style={{ width, height: width === 2560 ? 1440 : 256 }}>
           <GraphicsProvider
             graphicsRef={actor}
             seed={{
@@ -1309,6 +1365,8 @@ it.each([false, true])(
         cropped = true;
         // oxlint-disable-next-line no-await-in-loop -- Reuse the same frame and mask through successive poses.
         const candidate = await capture();
+        expect(state!.gl.domElement.width).toBe(width * (index < 4 ? 2 : 1.5));
+        expect(state!.gl.domElement.height).toBe((width === 2560 ? 1440 : 256) * (index < 4 ? 2 : 1.5));
         if (index === 1) {
           expect(resources!.maskTarget.width * resources!.maskTarget.height).toBeLessThan(
             state!.gl.domElement.width * state!.gl.domElement.height,
