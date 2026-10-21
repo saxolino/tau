@@ -96,7 +96,9 @@ vi.mock('#graphics/three/renderer.js', async (importOriginal) => {
       }
       const renderer = await actual.createRenderer(...args);
       if (isViewportWebGpu(renderer) && renderer.backend instanceof WebGPUBackend) {
-        const { device } = renderer.backend as typeof renderer.backend & { device: EventTarget };
+        const { device } = renderer.backend as typeof renderer.backend & {
+          device: EventTarget;
+        };
         const observe = (event: Event): void => {
           const gpuError = event as Event & { error: { message: string } };
           referenceMode.validationErrors.push(gpuError.error.message);
@@ -1294,6 +1296,179 @@ it.each([false, true])(
       }
       cleanup();
       resources?.dispose();
+      actor.stop();
+    }
+  },
+);
+
+it.each(['webgpu', 'node-webgl2'] as const)(
+  'should retain transmissive composition and bounded resources across camera switches: %s',
+  async (execution) => {
+    referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+    await page.viewport(600, 500);
+    const actor = createActor(
+      graphicsMachine.provide({
+        actors: { probeWebGpu: createAsyncLogic({ run: async () => true }) },
+      }),
+      { input: { enablePostProcessing: true } },
+    ).start();
+    let state: RootState | undefined;
+    let rig: ReturnType<typeof useCameraRig> | undefined;
+    let pixels: Uint8ClampedArray | undefined;
+    let pending: Promise<void> | undefined;
+    let captureError: Error | undefined;
+    let retired = false;
+    const Probe = (): undefined => {
+      state = useThree();
+      rig = useCameraRig();
+      useFrame((current) => {
+        if (!pending && !retired) {
+          const read = async (): Promise<void> => {
+            try {
+              pixels = await captureRendererOutput(current.gl);
+            } catch (error) {
+              captureError = error instanceof Error ? error : new Error(String(error));
+            } finally {
+              pending = undefined;
+            }
+          };
+          pending = read();
+        }
+      }, 4);
+      return undefined;
+    };
+    const capture = async (): Promise<Uint8ClampedArray> => {
+      await pending;
+      pixels = undefined;
+      // Let camera subscriptions and pass frame IDs settle before the oracle.
+      for (let frame = 0; frame < 4; frame++) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Advance consecutive frames before reading their output.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+        state!.advance(performance.now(), true);
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Finish this frame readback before advancing the next.
+        await pending;
+      }
+      if (captureError) {
+        throw captureError;
+      }
+      expect(pixels).toBeDefined();
+      return new Uint8ClampedArray(pixels!);
+    };
+    const fixture = (fov: number): ReactNode => (
+      <div key={fov} style={{ width: 384, height: 256 }}>
+        <GraphicsProvider
+          graphicsRef={actor}
+          seed={{
+            camera: {
+              cameraFovAngle: fov,
+              cameraView: {
+                frameId: 'tau:root',
+                target: [0, 0, 0],
+                direction: [0.3, 0.2, 1],
+                up: [0, 1, 0],
+                verticalSpan: 4,
+                perspectiveZoom: 1,
+              },
+            },
+          }}
+        >
+          <ThreeCanvasInstance graphicsBackend='webgpu' upDirection='y' onRetry={() => undefined}>
+            <ambientLight intensity={2} />
+            <mesh position={[0, 0, -0.8]}>
+              <planeGeometry args={[4, 4]} />
+              <meshStandardMaterial color='#c03030' />
+            </mesh>
+            <mesh>
+              <boxGeometry args={[1.5, 1.5, 0.5]} />
+              <meshPhysicalMaterial transmission={1} thickness={0.5} roughness={0.2} side={DoubleSide} />
+            </mesh>
+            <mesh position={[0.7, -0.4, 0.5]}>
+              <boxGeometry args={[0.5, 0.5, 0.5]} />
+              <meshStandardMaterial color='#2040c0' />
+            </mesh>
+            <Probe />
+          </ThreeCanvasInstance>
+        </GraphicsProvider>
+      </div>
+    );
+    try {
+      const mounted = render(fixture(0));
+      await vi.waitFor(
+        () => {
+          expect(state).toBeDefined();
+          expect(rig).toBeDefined();
+        },
+        { timeout: 45_000 },
+      );
+      const renderer = state!.gl;
+      expect(isViewportWebGpu(renderer)).toBe(true);
+      if (!isViewportWebGpu(renderer)) {
+        throw new Error('Expected initialized node renderer');
+      }
+      expect(renderer.backend instanceof WebGLBackend).toBe(execution === 'node-webgl2');
+      const expected = new Map<number, Uint8ClampedArray>();
+      let warmedTextures = 0;
+      for (const [index, fov] of [0, 45, 0, 45, 0, 45].entries()) {
+        rig!.actorRef.send({
+          type: 'setVerticalFieldOfView',
+          verticalFieldOfView: fov,
+        });
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each projection depends on the previous rendered endpoint.
+        const image = await capture();
+        if (renderer.backend instanceof WebGLBackend) {
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Initialized node GL backend.
+          expect((renderer.getContext() as WebGL2RenderingContext).getError(), `FOV ${fov}, switch ${index}`).toBe(0);
+        }
+        const reference = expected.get(fov);
+        if (reference) {
+          let differences = 0;
+          for (const [pixel, value] of image.entries()) {
+            differences += Number(value !== reference[pixel]);
+          }
+          expect(differences, `FOV ${fov}, switch ${index}`).toBe(0);
+          expect(renderer.info.memory.textures).toBe(warmedTextures);
+        } else {
+          expected.set(fov, image);
+          warmedTextures = renderer.info.memory.textures;
+          expect(image.some((value, pixel) => pixel % 4 === 0 && value > 100)).toBe(true);
+        }
+      }
+      if (renderer.backend instanceof WebGLBackend) {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Initialized backend is narrowed above.
+        expect((renderer.getContext() as WebGL2RenderingContext).getError()).toBe(0);
+      }
+      // Repeated wrong shaders could be stable. Compare the switched perspective
+      // result with a separately initialized perspective graph as an independent oracle.
+      retired = true;
+      await pending;
+      await disposeRendererOutput(renderer);
+      state = undefined;
+      mounted.rerender(fixture(45));
+      await vi.waitFor(
+        () => {
+          expect(state).toBeDefined();
+        },
+        { timeout: 45_000 },
+      );
+      retired = false;
+      const fresh = await capture();
+      const switched = expected.get(45)!;
+      let freshDifferences = 0;
+      for (const [pixel, value] of fresh.entries()) {
+        freshDifferences += Number(value !== switched[pixel]);
+      }
+      expect(freshDifferences, 'Switched perspective must match a fresh perspective graph').toBe(0);
+    } finally {
+      retired = true;
+      await pending;
+      if (state) {
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
       actor.stop();
     }
   },

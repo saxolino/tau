@@ -33,13 +33,22 @@ type MockAoNode = {
 };
 
 const mocks = vi.hoisted(() => {
-  const perspectiveCamera = { kind: 'perspective' };
-  const orthographicCamera = { kind: 'orthographic' };
+  const perspectiveCamera = {
+    kind: 'perspective',
+    isOrthographicCamera: false,
+  };
+  const orthographicCamera = {
+    kind: 'orthographic',
+    isOrthographicCamera: true,
+  };
   const scene = { isScene: true };
   const invalidate = vi.fn();
   const glRender = vi.fn();
   const clearDepth = vi.fn();
-  const compileSettlers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+  const compileSettlers: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
   const compileAsync = vi.fn(
     async () =>
       new Promise<void>((resolve, reject) => {
@@ -96,7 +105,12 @@ const mocks = vi.hoisted(() => {
 
   let frame:
     | ((
-        state: { gl: typeof gl; scene: typeof scene; camera: typeof perspectiveCamera; invalidate: typeof invalidate },
+        state: {
+          gl: typeof gl;
+          scene: typeof scene;
+          camera: typeof perspectiveCamera;
+          invalidate: typeof invalidate;
+        },
         delta: number,
       ) => void)
     | undefined;
@@ -397,7 +411,11 @@ vi.mock('three/webgpu', () => {
 const endpointProperties = { aoAllowed: true, toneMapping: NeutralToneMapping } as const;
 
 const mount = async (
-  properties: { aoAllowed?: boolean; settings?: Partial<PostProcessingSettings>; toneMapping?: ToneMapping } = {},
+  properties: {
+    aoAllowed?: boolean;
+    settings?: Partial<PostProcessingSettings>;
+    toneMapping?: ToneMapping;
+  } = {},
 ) => {
   const { PostProcessingWebGPU: PostProcessingWebGpu } = await import('#graphics/three/post-processing-webgpu.jsx');
   return render(<PostProcessingWebGpu {...endpointProperties} {...properties} />);
@@ -568,7 +586,9 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(mocks.pass).toHaveBeenCalledWith(mocks.scene, mocks.perspectiveCamera, { samples: 0 });
     expect(mocks.ao).not.toHaveBeenCalled();
     expect(mocks.denoise).not.toHaveBeenCalled();
-    expect(mocks.scenePasses[0]!.setMRT).not.toHaveBeenCalled();
+    expect(mocks.scenePasses[0]!.setMRT).toHaveBeenCalledWith({
+      output: { kind: 'output' },
+    });
     expect(mocks.compileAsync).not.toHaveBeenCalled();
     expect(mocks.glRender).not.toHaveBeenCalled();
     mocks.getFrame()?.(mocks.state, 0);
@@ -585,37 +605,36 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(mocks.glRender).not.toHaveBeenCalled();
   });
 
-  it('should create each projection on demand without retaining the inactive graph', async () => {
+  it('should retarget one live graph and frame without rebuilding camera resources', async () => {
     const mounted = await mount();
     mocks.getFrame()?.(mocks.state, 0);
     const firstPass = mocks.scenePasses[0]!;
     const firstFrame = mocks.gl.getRenderTarget() as RenderTarget;
     const disposeFrame = vi.spyOn(firstFrame, 'dispose');
-    act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
-    expect(disposeFrame).toHaveBeenCalledOnce();
-    expect(mocks.gl.getRenderTarget()).toEqual({ kind: 'prior-target' });
-    expect(firstPass.dispose).toHaveBeenCalledOnce();
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(1);
-    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
-    expect(mocks.pass).toHaveBeenCalledTimes(1);
-    mocks.getFrame()?.(mocks.state, 0);
-    const secondPass = mocks.scenePasses[1]!;
-    act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
-    expect(secondPass.dispose).not.toHaveBeenCalled();
-    mocks.getFrame()?.(mocks.state, 0);
-    expect(mocks.pass).toHaveBeenCalledTimes(2);
-    act(() => mocks.getRetarget()?.(mocks.perspectiveCamera, mocks.snapshot));
-    expect(secondPass.dispose).toHaveBeenCalledOnce();
-    mocks.getFrame()?.(mocks.state, 0);
-    expect(mocks.pass).toHaveBeenCalledTimes(3);
-    expect(mocks.ao).toHaveBeenCalledTimes(3);
+    mocks.getFinalFrame()?.(mocks.state, 0);
+    for (const camera of [mocks.orthographicCamera, mocks.perspectiveCamera, mocks.orthographicCamera]) {
+      act(() => mocks.getRetarget()?.(camera, mocks.snapshot));
+      mocks.getFrame()?.(mocks.state, 0);
+      expect(firstPass.camera).toBe(camera);
+      expect(mocks.updateAoCamera).toHaveBeenLastCalledWith(camera);
+      expect(mocks.gl.getRenderTarget()).toBe(firstFrame);
+      mocks.getFinalFrame()?.(mocks.state, 0);
+      expect(disposeFrame).not.toHaveBeenCalled();
+      expect(firstPass.dispose).not.toHaveBeenCalled();
+      expect(mocks.pass).toHaveBeenCalledOnce();
+      expect(mocks.ao).toHaveBeenCalledOnce();
+    }
+    const outputs = firstPass.setMRT.mock.calls.map(([value]): unknown => value);
+    expect(outputs).toHaveLength(4);
+    expect(outputs[0]).toBe(outputs[2]);
+    expect(outputs[1]).toBe(outputs[3]);
+    expect(outputs[0]).not.toBe(outputs[1]);
     expect(mocks.compileAsync).not.toHaveBeenCalled();
     mounted.unmount();
-    for (const pass of mocks.scenePasses) {
-      expect(pass.dispose).toHaveBeenCalledOnce();
-    }
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(3);
-    expect(mocks.noiseDispose).toHaveBeenCalledTimes(3);
+    expect(disposeFrame).toHaveBeenCalledOnce();
+    expect(firstPass.dispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
   });
 
   it('restores the selected scene-pass depth with one direct fullscreen draw', async () => {
@@ -716,7 +735,9 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(1);
     expect(mocks.noiseDispose).toHaveBeenCalledOnce();
     expect(mocks.aoNodes).toHaveLength(1);
-    expect(mocks.scenePasses[2]!.setMRT).not.toHaveBeenCalled();
+    expect(mocks.scenePasses[2]!.setMRT).toHaveBeenCalledWith({
+      output: { kind: 'output' },
+    });
     mocks.getFrame()?.(mocks.state, 0);
     expect(mocks.outputQuads.at(-1)!.render).toHaveBeenCalledOnce();
   });
@@ -799,7 +820,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     );
   });
 
-  it('should dispose every demanded endpoint once on unmount', async () => {
+  it('should dispose the retargeted graph once on unmount', async () => {
     const mounted = await mount();
     act(() => mocks.getRetarget()?.(mocks.orthographicCamera, mocks.snapshot));
     mocks.getFrame()?.(mocks.state, 0);
@@ -807,12 +828,12 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     for (const pass of mocks.scenePasses) {
       expect(pass.dispose).toHaveBeenCalledOnce();
     }
-    expect(mocks.aoDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasTargetDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.noiseDispose).toHaveBeenCalledTimes(2);
-    expect(mocks.postDispose).toHaveBeenCalledTimes(2);
+    expect(mocks.aoDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasTargetDispose).toHaveBeenCalledOnce();
+    expect(mocks.antialiasMaterialDispose).toHaveBeenCalledOnce();
+    expect(mocks.noiseDispose).toHaveBeenCalledOnce();
+    expect(mocks.postDispose).toHaveBeenCalledOnce();
   });
 
   it('should release partial resources when graph construction fails', async () => {

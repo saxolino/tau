@@ -17,6 +17,22 @@ export function transformRenderingAblation(source: string, id: string): string |
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
     // Coupled-depth candidate remains opt-in until lifecycle, pixels and cost gates pass.
     code = "import { FloatType } from 'three';\nconst tauDepthPrepared = new WeakSet<RenderTarget>();\n" + code;
+    replace(
+      `          // Keep the complete live graph: no target disposal or second
+          // 5K endpoint. AO reads stable matrices updated from this scene camera.
+          previous.setCamera(camera);
+          resourcesRef.current.delete(selectedCameraRef.current);
+          resourcesRef.current.set(camera, previous);`,
+      `          if (tauAblation.get('cameraOwnership') === 'recreate') {
+            disposePipelineResources([previous], gl as unknown as WebGPURenderer);
+            frameRef.current = undefined;
+            resourcesRef.current.delete(selectedCameraRef.current);
+          } else {
+            previous.setCamera(camera);
+            resourcesRef.current.delete(selectedCameraRef.current);
+            resourcesRef.current.set(camera, previous);
+          }`,
+    );
     replace('if (depthMaterial) {', "if (depthMaterial && tauAblation.get('depthOwnership') !== 'shared') {");
     replace(
       "const scenePassColor = scenePass.getTextureNode('output');",
@@ -89,7 +105,7 @@ export function transformRenderingAblation(source: string, id: string): string |
       tauAblation.has('sceneSamples') ? { samples: Number(tauAblation.get('sceneSamples')) } : { samples: 0 });
     scene.userData.calibrationScenePass = scenePass;`,
     );
-    replace('if (withAo) {', "if (withAo || tauAblation.get('abl') === 'mrt') {");
+    replace('const withNormal = withAo;', "const withNormal = withAo || tauAblation.get('abl') === 'mrt';");
     replace(
       'if (!withAo) {',
       `if (!withAo) {

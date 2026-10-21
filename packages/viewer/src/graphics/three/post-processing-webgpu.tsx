@@ -56,6 +56,7 @@ import { createGtaoCameraAdapter } from '#graphics/three/gtao-depth-camera.js';
 
 type PostProcessingPipelineResources = Readonly<{
   camera: ThreeCamera;
+  setCamera: (camera: ThreeCamera) => void;
   frame: LinearFrame;
   outputQuad: QuadMesh;
   aoNode?: ReturnType<typeof ao>;
@@ -66,7 +67,7 @@ type PostProcessingPipelineResources = Readonly<{
   scenePass: ReturnType<typeof pass>;
   displayMode: { value: number };
   compositeStage: { value: number };
-  updateAoCamera?: () => void;
+  updateAoCamera?: (camera: ThreeCamera) => void;
 }>;
 
 /** One linear, single-sample frame survives all CAD draws; only the final quad encodes output. */
@@ -231,15 +232,29 @@ const createPipelineResources = ({
   let depthRestoreMaterial: NodeMaterial | undefined;
   try {
     frame = createLinearFrame(gpuRenderer, toneMapping);
-    if (withAo) {
-      scenePass.setMRT(
-        mrt({
-          // Beauty colour — TSL `output` is the standard fragment output (lit scene colour).
-          output,
-          normal: compactNormals ? encodeAoNormal(normalView) : directionToColor(normalView),
-        }),
-      );
-    }
+    // Three r184 specializes positionViewDirection by projection but omits that kind
+    // from the render-object key. Two bounded MRT identities give it distinct
+    // shader contexts without duplicating any framebuffer attachment.
+    const withNormal = withAo;
+    const projectionOutputs = new Map<boolean, ReturnType<typeof mrt>>();
+    const setCamera = (next: ThreeCamera): void => {
+      const orthographic = 'isOrthographicCamera' in next && next.isOrthographicCamera;
+      let outputs = projectionOutputs.get(orthographic);
+      if (!outputs) {
+        outputs = mrt(
+          withNormal
+            ? {
+                output,
+                normal: compactNormals ? encodeAoNormal(normalView) : directionToColor(normalView),
+              }
+            : { output },
+        );
+        projectionOutputs.set(orthographic, outputs);
+      }
+      scenePass.camera = next;
+      scenePass.setMRT(outputs);
+    };
+    setCamera(camera);
 
     const scenePassColor = scenePass.getTextureNode('output');
     const scenePassDepth = scenePass.getTextureNode('depth');
@@ -264,7 +279,10 @@ const createPipelineResources = ({
         depthRestoreMaterial,
       );
       return {
-        camera,
+        get camera() {
+          return scenePass.camera as ThreeCamera;
+        },
+        setCamera,
         frame,
         outputQuad,
         depthRestore,
@@ -338,7 +356,10 @@ const createPipelineResources = ({
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
-      camera,
+      get camera() {
+        return scenePass.camera as ThreeCamera;
+      },
+      setCamera,
       frame,
       outputQuad,
       aoNode,
@@ -453,7 +474,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
         viewport,
         radiusCssPixels: resolveAoRadiusCssPixels(radiusCssPixels, { ...size, dpr: viewport.dpr }),
       });
-      selected.updateAoCamera?.();
+      selected.updateAoCamera?.(selected.camera);
     },
     [aoCompositeStage, displayMode, gtaoDistanceFalloff, gtaoIntensity, radiusCssPixels, size, viewport],
   );
@@ -471,11 +492,11 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       if (selectedCameraRef.current !== camera) {
         const previous = resourcesRef.current.get(selectedCameraRef.current);
         if (previous) {
-          // At 5K each inactive endpoint retains ~358 MB of attachments. Retire its graph
-          // as a unit: reusing compiled graphs after target disposal regresses orthographic edges in r184.
-          disposePipelineResources([previous], gl as unknown as WebGPURenderer);
-          frameRef.current = undefined;
+          // Keep the complete live graph: no target disposal or second
+          // 5K endpoint. AO reads stable matrices updated from this scene camera.
+          previous.setCamera(camera);
           resourcesRef.current.delete(selectedCameraRef.current);
+          resourcesRef.current.set(camera, previous);
         }
       }
       selectedCameraRef.current = camera;
