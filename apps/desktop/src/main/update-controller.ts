@@ -122,6 +122,12 @@ export const startPlatformUpdateController = (
         );
         return undefined;
       }
+      if (
+        options.expectedUpdate &&
+        (offered.version !== options.expectedUpdate.version || offered.tag !== options.expectedUpdate.tag)
+      ) {
+        throw new Error('Qualification update differs from the expected release');
+      }
       snapshot = { ...snapshot, version: offered.version, releasePage: offered.releasePage };
       if (!backend.systemManaged) {
         publish('downloading', `Downloading Tau ${offered.version}…`);
@@ -134,7 +140,7 @@ export const startPlatformUpdateController = (
           ? 'APT installed a newer version. Save and restart to use it; this session keeps its original files.'
           : 'Saves your work, then restarts to install. Quitting normally leaves the update for later.',
       );
-      if (options.installForProbe && options.candidateTag) {
+      if (options.installForProbe && (options.candidateTag !== undefined || options.expectedUpdate !== undefined)) {
         void install();
       }
       return offered;

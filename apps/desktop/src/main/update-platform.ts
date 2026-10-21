@@ -160,6 +160,14 @@ export const startPlatformUpdater = async (options: PlatformUpdateOptions): Prom
       if (!isNewerVersion(selectedMarker.version, installation.version)) {
         return undefined;
       }
+      if (
+        options.expectedUpdate &&
+        (selectedMarker.version !== options.expectedUpdate.version ||
+          selectedMarker.tag !== options.expectedUpdate.tag ||
+          selectedMarker.sourceCommit !== options.expectedUpdate.sourceCommit)
+      ) {
+        throw new Error('Qualification APT selection differs from the expected release source');
+      }
       selected = runtime;
       return release(selectedMarker);
     };
@@ -223,6 +231,14 @@ export const startPlatformUpdater = async (options: PlatformUpdateOptions): Prom
       );
       if (options.candidateTag && candidate.tag !== options.candidateTag) {
         throw new Error('Candidate descriptor tag mismatch');
+      }
+      if (
+        options.expectedUpdate &&
+        (candidate.version !== options.expectedUpdate.version ||
+          candidate.tag !== options.expectedUpdate.tag ||
+          candidate.sourceCommit !== options.expectedUpdate.sourceCommit)
+      ) {
+        throw new Error('Qualification descriptor differs from the expected release source');
       }
       url = `${origin}/${candidate.path}`;
       return {

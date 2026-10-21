@@ -372,6 +372,19 @@ jobs:
           TAU_UPDATE_ISSUED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
           export TAU_UPDATE_ISSUED_AT
           pnpm nx run desktop:publish --args=prepare-routes
+      - name: Prepare the signed qualification APT snapshot
+        env:
+          GNUPGHOME: ${{ runner.temp }}/qualification-apt-keys
+          TAU_APT_PRIMARY_FINGERPRINT: ${{ vars.TAU_APT_PRIMARY_FINGERPRINT }}
+          TAU_APT_SIGNING_FINGERPRINT: ${{ vars.TAU_APT_SIGNING_FINGERPRINT }}
+          APT_PRIVATE_SUBKEY: ${{ secrets.TAU_APT_PRIVATE_KEY_BASE64 }}
+        run: |
+          : "${TAU_APT_PRIMARY_FINGERPRINT:?Configure the approved offline primary public fingerprint}"
+          : "${TAU_APT_SIGNING_FINGERPRINT:?Configure the distinct online signing subkey fingerprint}"
+          : "${APT_PRIVATE_SUBKEY:?Provide only the exported online signing subkey}"
+          install -d -m 700 "$GNUPGHOME"
+          printf '%s' "$APT_PRIVATE_SUBKEY" | base64 --decode | gpg --batch --import
+          pnpm nx run desktop:qualification-apt-snapshot --args=--prepare
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installer-candidate
@@ -379,8 +392,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           overwrite: false
-      - name: Remove temporary descriptor signing material
+      - name: Remove temporary signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/appimage-private.pem"
+        run: |
+          rm -f "$RUNNER_TEMP/appimage-private.pem"
+          if test -d "$RUNNER_TEMP/qualification-apt-keys"; then
+            gpgconf --homedir "$RUNNER_TEMP/qualification-apt-keys" --kill all
+            rm -rf "$RUNNER_TEMP/qualification-apt-keys"
+          fi
       - name: Record qualification boundary
         run: echo 'Candidate assembly preserves original descriptors. It does not grant CI/VM installed-route qualification or public promotion.' >> "$GITHUB_STEP_SUMMARY"

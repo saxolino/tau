@@ -36,6 +36,7 @@ const originalUncaught = new Set(process.listeners('uncaughtException'));
 const originalUnhandled = new Set(process.listeners('unhandledRejection'));
 
 const state = vi.hoisted(() => ({
+  initializeErrorReporting: vi.fn(),
   appListeners: new Map<string, Array<(...args: unknown[]) => void>>(),
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   /* Held open by the deep-link cases so a link can arrive before `ready`. */
@@ -123,6 +124,8 @@ const state = vi.hoisted(() => ({
   runtimePost: vi.fn(),
   servicesPost: vi.fn(),
 }));
+
+vi.mock('#main/error-reporting.js', () => ({ initializeDesktopErrorReporting: state.initializeErrorReporting }));
 
 vi.mock('#tau/native-preparation.js', () => ({
   createDesktopKernelPreparer: (options: unknown) => {
@@ -524,6 +527,10 @@ describe('desktop main compute owner', () => {
     await vi.waitFor(() => {
       expect(state.resolveFork).toBeDefined();
       expect(fakeWindow.loadURL).toHaveBeenCalledOnce();
+      expect(state.initializeErrorReporting).toHaveBeenCalledOnce();
+      expect(state.initializeErrorReporting.mock.invocationCallOrder[0]).toBeLessThan(
+        fakeWindow.loadURL.mock.invocationCallOrder[0] ?? 0,
+      );
     });
     return resolve(join(state.userData, 'home', 'project'));
   };
