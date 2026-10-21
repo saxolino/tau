@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { positionLocal } from 'three/tsl';
+import { MeshMatcapNodeMaterial } from 'three/webgpu';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import { sectionPlaneAxes } from '#graphics/section-cuts.js';
 import type { SectionPlane } from '#graphics/section-cuts.js';
@@ -37,9 +39,14 @@ export const resolveSectionPlanePickerRect = (cube: SectionPlanePickerRect): Sec
 /** The renderer the picker draws with: WebGL's, or WebGPU's, whose viewport `y` runs from the top. */
 export type SectionPlanePickerRenderer = Pick<
   THREE.WebGLRenderer,
-  'autoClear' | 'clearDepth' | 'getViewport' | 'render' | 'setViewport' | 'getRenderTarget' | 'getPixelRatio'
+  'autoClear' | 'clearDepth' | 'getViewport' | 'render' | 'setViewport' | 'getPixelRatio'
 > &
-  Readonly<{ domElement: Readonly<{ clientHeight: number }>; isWebGPURenderer?: boolean }>;
+  Readonly<{
+    domElement: Readonly<{ clientHeight: number }>;
+    isWebGPURenderer?: boolean;
+    // oxlint-disable-next-line typescript/no-restricted-types -- Three uses null for the canvas target.
+    getRenderTarget: () => THREE.RenderTarget | null;
+  }>;
 
 export type SectionPlanePicker = Readonly<{
   /** What it draws and the camera it draws with, for a renderer's `compileAsync`. */
@@ -133,6 +140,12 @@ export const createSectionPlanePicker = (backend: ResolvedGraphicsBackend = 'web
     const axis = sectionPlaneAxes[plane];
     const color = sectionAxisColors[axis];
     const material = createGripMaterial(color, backend);
+    if (material instanceof MeshMatcapNodeMaterial) {
+      // Three r184's shared material observer can retain an old transform when
+      // camera motion changes transparent draw order. An explicit identity node
+      // keeps these three moving tiles on the node uniform-update path.
+      material.positionNode = positionLocal;
+    }
     const tile = new THREE.Group();
     tile.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(...tileBases[plane]));
     const face = new THREE.Mesh(getTileGeometry(), material);

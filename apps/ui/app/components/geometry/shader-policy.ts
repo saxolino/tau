@@ -17,6 +17,17 @@ export const shaderRiskCapabilities = {
 
 export const shaderSites = [
   {
+    id: 'viewport-control-history',
+    modules: [
+      'packages/viewer/src/graphics/three/controls/section-plane-picker.ts',
+      'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube-surface.ts',
+      'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube-axes.ts',
+    ],
+    authoring: ['tsl'],
+    backends: ['webgpu'],
+    risks: ['camera', 'custom-position', 'upstream-drift'],
+  },
+  {
     id: 'gltf-edge-occurrences',
     modules: ['packages/viewer/src/graphics/three/utils/gltf-edge-batches.ts'],
     authoring: ['on-before-compile', 'tsl'],
@@ -199,6 +210,20 @@ const evidence = (unit: string, semantic: string, generatedSource = `${unit}::${
 
 /** Evidence names are checked against real test source by shader-policy.test.ts. */
 export const shaderEvidence = {
+  'viewport-control-history': {
+    reference: [
+      'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube.browser.test.ts::should return the 5K section picker to identical pixels and picks after camera round trips: %s',
+    ],
+    'generated-source': [
+      'packages/viewer/src/graphics/three/controls/section-plane-picker.test.ts::should guard the observer shortcut bypassed by the moving picker tiles',
+    ],
+    pixels: [
+      'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube.browser.test.ts::should return the 5K section picker to identical pixels and picks after camera round trips: %s',
+    ],
+    'backend-differential': [
+      'packages/viewer/src/graphics/three/controls/viewport-gizmo-cube.browser.test.ts::should return the 5K section picker to identical pixels and picks after camera round trips: %s',
+    ],
+  },
   'gltf-edge-occurrences': {
     'backend-differential': [
       'packages/viewer/src/graphics/three/utils/gltf-edge-batches.browser.test.ts::should preserve pixels and release actual occurrence buffers through material changes',

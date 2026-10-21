@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { mock } from 'vitest-mock-extended';
@@ -30,6 +33,15 @@ const createTopCamera = (): THREE.PerspectiveCamera => {
 };
 
 describe('section plane picker', () => {
+  it('should guard the observer shortcut bypassed by the moving picker tiles', () => {
+    expect(THREE.REVISION).toBe('184');
+    const require = createRequire(import.meta.url);
+    const source = readFileSync(require.resolve('three/src/materials/nodes/manager/NodeMaterialObserver.js'));
+    expect(createHash('sha256').update(source).digest('hex')).toBe(
+      '44e67b66854b65a96dfafe03f5b0ebd8100ede28c56a28853b974fef28089b83',
+    );
+  });
+
   it('should sit just left of the view cube, centred on it', () => {
     expect(resolveSectionPlanePickerRect({ left: 704, top: 10, size: 96 })).toEqual({ left: 620, top: 14, size: 88 });
   });
