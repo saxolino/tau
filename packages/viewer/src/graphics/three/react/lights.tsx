@@ -3,6 +3,8 @@ import type * as THREE from 'three';
 import {
   BackSide,
   CubeTexture,
+  CubeCamera,
+  Scene,
   CubeUVReflectionMapping,
   HalfFloatType,
   LinearFilter,
@@ -11,9 +13,9 @@ import {
   RenderTarget,
   RGBAFormat,
 } from 'three';
-import { PMREMGenerator as WebGpuPmremGenerator } from 'three/webgpu';
+import { CubeRenderTarget, PMREMGenerator as WebGpuPmremGenerator } from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { useThree, useFrame } from '@react-three/fiber';
+import { createPortal, useThree, useFrame } from '@react-three/fiber';
 import { Environment, Lightformer } from '@react-three/drei';
 import {
   applyLightingForCamera,
@@ -240,7 +242,57 @@ function RoomLightingEnvironment({ resolution }: { readonly resolution: number }
   );
 }
 
-/** Own the filtered target while Drei owns the unchanged source cubemap capture. */
+/** Capture node environments with the target recognized by both node backends. */
+function NodeLightingEnvironment({
+  children,
+  resolution,
+  near,
+  far,
+}: {
+  readonly children: React.ReactNode;
+  readonly resolution: number;
+  readonly near: number;
+  readonly far: number;
+}): React.JSX.Element {
+  const { scene, gl, invalidate } = useThree();
+  const captureScene = useMemo(() => new Scene(), []);
+  const target = useMemo(() => new CubeRenderTarget(resolution, { type: HalfFloatType }), [resolution]);
+  const camera = useMemo(() => new CubeCamera(near, far, target), [near, far, target]);
+  useLayoutEffect(
+    () => () => {
+      target.dispose();
+    },
+    [target],
+  );
+  useLayoutEffect(() => {
+    if (!isViewportWebGpu(gl)) {
+      return undefined;
+    }
+    const previous = scene.environment;
+    const previousMrt = gl.getMRT();
+    const previousTarget = gl.getRenderTarget();
+    const previousFace = gl.getActiveCubeFace();
+    const previousMip = gl.getActiveMipmapLevel();
+    const previousXr = gl.xr.enabled;
+    try {
+      gl.setMRT(null);
+      camera.update(gl, captureScene);
+    } finally {
+      gl.setMRT(previousMrt);
+      gl.setRenderTarget(previousTarget, previousFace, previousMip);
+      gl.xr.enabled = previousXr;
+    }
+    // oxlint-disable-next-line react/immutability -- Own this captured scene environment until replacement.
+    scene.environment = target.texture;
+    invalidate();
+    return () => {
+      scene.environment = previous;
+    };
+  }, [camera, captureScene, children, gl, invalidate, scene, target]);
+  return <>{createPortal(children, captureScene)}</>;
+}
+
+/** Own the filtered target and use the appropriate source capture for each renderer family. */
 function OwnedLightingEnvironment({
   children,
   resolution,
@@ -308,6 +360,13 @@ function OwnedLightingEnvironment({
     };
   }, [gl, invalidate, scene, resolution]);
 
+  if (isViewportWebGpu(gl)) {
+    return (
+      <NodeLightingEnvironment resolution={resolution} near={near} far={far}>
+        {children}
+      </NodeLightingEnvironment>
+    );
+  }
   return (
     <Environment resolution={resolution} near={near} far={far}>
       {children}

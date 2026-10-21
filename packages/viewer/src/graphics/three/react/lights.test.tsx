@@ -10,6 +10,7 @@ import { CubeTexture, REVISION, PerspectiveCamera, Scene, Texture, WebGLRenderTa
 import type * as ThreeModule from 'three';
 import type { RenderTarget, WebGLRenderer } from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
+import type * as ThreeGpuModule from 'three/webgpu';
 import { useFrame } from '@react-three/fiber';
 import type { RootState } from '@react-three/fiber';
 import { mock } from 'vitest-mock-extended';
@@ -20,6 +21,7 @@ import type * as ViewerEnvironmentModule from '#environment/viewer-environment.j
 
 const mocks = vi.hoisted(() => ({
   capture: vi.fn(),
+  cubeDispose: vi.fn(),
   webglPrefilter: vi.fn(),
   webgpuPrefilter: vi.fn(),
   generatorDispose: vi.fn(),
@@ -36,7 +38,17 @@ vi.mock('three', async (importOriginal) => {
   const actual = await importOriginal<typeof ThreeModule>();
   return {
     ...actual,
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's exported constructor name.
+    CubeCamera: class {
+      // oxlint-disable-next-line typescript/parameter-properties -- erasableSyntaxOnly forbids constructor parameter properties.
+      private readonly target: RenderTarget;
+      public constructor(_near: number, _far: number, target: RenderTarget) {
+        this.target = target;
+      }
+      public update(): void {
+        mocks.capture(this.target.texture);
+      }
+    },
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
     PMREMGenerator: class {
       public fromCubemap = mocks.webglPrefilter;
       public dispose = mocks.generatorDispose;
@@ -44,13 +56,24 @@ vi.mock('three', async (importOriginal) => {
   };
 });
 
-vi.mock('three/webgpu', () => ({
-  // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's exported constructor name.
-  PMREMGenerator: class {
-    public fromCubemap = mocks.webgpuPrefilter;
-    public dispose = mocks.generatorDispose;
-  },
-}));
+vi.mock('three/webgpu', async (importOriginal) => {
+  const actual = await importOriginal<typeof ThreeGpuModule>();
+  return {
+    ...actual,
+    CubeRenderTarget: class extends actual.CubeRenderTarget {
+      public constructor(size: number, options: ThreeModule.RenderTargetOptions) {
+        super(size, options);
+        mocks.environmentResolution(size);
+        this.addEventListener('dispose', mocks.cubeDispose);
+      }
+    },
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
+    PMREMGenerator: class {
+      public fromCubemap = mocks.webgpuPrefilter;
+      public dispose = mocks.generatorDispose;
+    },
+  };
+});
 
 const scene = new Scene();
 const camera = new PerspectiveCamera();
@@ -59,6 +82,7 @@ let renderer: WebGLRenderer | WebGPURenderer;
 let targets: RenderTarget[];
 
 vi.mock('@react-three/fiber', () => ({
+  createPortal: (children: React.ReactNode) => <div data-testid='environment'>{children}</div>,
   useThree: () => ({ camera, scene, gl: renderer, invalidate }),
   useFrame: vi.fn(),
 }));
@@ -190,8 +214,12 @@ describe('Lights', () => {
     'should own the filtered %s environment and dispose replaced outputs without disposing borrowed textures',
     (backend) => {
       if (backend === 'webgpu') {
-        // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
-        renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
+        renderer = mock<WebGPURenderer>({
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
+          isWebGPURenderer: true,
+          toneMappingExposure: 1,
+          xr: mock<WebGPURenderer['xr']>({ enabled: false }),
+        });
       }
       const previous = new Texture();
       const previousDispose = vi.spyOn(previous, 'dispose');
@@ -210,14 +238,23 @@ describe('Lights', () => {
       expect(scene.environment).toBe(previous);
       expect(targets[1]?.dispose).toHaveBeenCalledTimes(1);
       expect(mocks.generatorDispose).toHaveBeenCalledTimes(2);
-      expect(sourceDispose).not.toHaveBeenCalled();
+      if (backend === 'webgpu') {
+        expect(mocks.cubeDispose).toHaveBeenCalledTimes(2);
+        expect(sourceDispose).not.toHaveBeenCalled();
+      } else {
+        expect(sourceDispose).not.toHaveBeenCalled();
+      }
       expect(previousDispose).not.toHaveBeenCalled();
     },
   );
 
   it('should prefilter node lighting into a depth-free target at the requested resolution', () => {
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
-    renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
+    renderer = mock<WebGPURenderer>({
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
+      isWebGPURenderer: true,
+      toneMappingExposure: 1,
+      xr: mock<WebGPURenderer['xr']>({ enabled: false }),
+    });
     render(<Lights settings={{ environment: 'room' }} />);
     expect(mocks.webgpuPrefilter).toHaveBeenCalledWith(
       expect.any(CubeTexture),
@@ -246,8 +283,12 @@ describe('Lights', () => {
   });
 
   it('should release the supplied node target when filtering fails', () => {
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
-    renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
+    renderer = mock<WebGPURenderer>({
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
+      isWebGPURenderer: true,
+      toneMappingExposure: 1,
+      xr: mock<WebGPURenderer['xr']>({ enabled: false }),
+    });
     const disposed = vi.fn();
     mocks.webgpuPrefilter.mockImplementation((_source: CubeTexture, target: RenderTarget) => {
       target.addEventListener('dispose', disposed);
@@ -256,6 +297,31 @@ describe('Lights', () => {
     expect(() => render(<Lights settings={{ environment: 'studio' }} />)).toThrow('node filter failed');
     expect(disposed).toHaveBeenCalledTimes(1);
     expect(mocks.generatorDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('should restore node renderer state when environment capture fails', () => {
+    const target = new WebGLRenderTarget();
+    const mrt = mock<ReturnType<WebGPURenderer['getMRT']>>();
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
+    const node = mock<WebGPURenderer>({ isWebGPURenderer: true, xr: mock<WebGPURenderer['xr']>({ enabled: true }) });
+    node.getMRT.mockReturnValue(mrt);
+    node.getRenderTarget.mockReturnValue(target);
+    node.getActiveCubeFace.mockReturnValue(2);
+    node.getActiveMipmapLevel.mockReturnValue(1);
+    renderer = node;
+    const previous = new Texture();
+    scene.environment = previous;
+    mocks.capture.mockImplementationOnce(() => {
+      node.xr.enabled = false;
+      throw new Error('cube capture failed');
+    });
+    expect(() => render(<Lights settings={{ environment: 'room' }} />)).toThrow('cube capture failed');
+    expect(node.setMRT).toHaveBeenLastCalledWith(mrt);
+    expect(node.setRenderTarget).toHaveBeenLastCalledWith(target, 2, 1);
+    expect(node.xr.enabled).toBe(true);
+    expect(scene.environment).toBe(previous);
+    expect(mocks.cubeDispose).toHaveBeenCalledOnce();
+    expect(mocks.webgpuPrefilter).not.toHaveBeenCalled();
   });
 
   it('should release the PMREM working target when filtering throws', () => {
@@ -277,8 +343,12 @@ describe('Lights', () => {
       }),
     );
     try {
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's renderer discriminator.
-      renderer = mock<WebGPURenderer>({ isWebGPURenderer: true, toneMappingExposure: 1 });
+      renderer = mock<WebGPURenderer>({
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Match Three's discriminator or constructor name.
+        isWebGPURenderer: true,
+        toneMappingExposure: 1,
+        xr: mock<WebGPURenderer['xr']>({ enabled: false }),
+      });
       render(<Lights settings={{ environment: 'studio' }} />);
       expect(targets[0]).toMatchObject({ width: 3 * resolution, height: 4 * resolution, depthBuffer: false });
       expect(mocks.environmentResolution).toHaveBeenLastCalledWith(resolution);
