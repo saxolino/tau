@@ -12,7 +12,7 @@ import {
   createWindowsQualificationDriver,
   verifyWindowsQualificationArtifact,
 } from './qualification-windows.mjs';
-import { QualificationUnavailable } from './qualification-platform-types.mjs';
+import { createQualificationReinstallGuard, QualificationUnavailable } from './qualification-platform-types.mjs';
 /* oxlint-enable no-restricted-imports */
 const main = async (): Promise<void> => {
   // Exact desktopManifestFields production contract omits channel and false environmentOverrides.
@@ -73,6 +73,27 @@ const main = async (): Promise<void> => {
       ],
     });
     const candidate = { manifest, artifactDirectory: root, route: 'windows-nsis' } as const;
+    const lifecycle = createQualificationReinstallGuard();
+    const retained = [{ path: 'project', sha256: 'a'.repeat(64) }];
+    assert.throws(() => {
+      lifecycle.admit(candidate, retained);
+    }, /own completed removal/u);
+    lifecycle.installed();
+    lifecycle.observed(candidate);
+    assert.throws(() => {
+      lifecycle.admit(candidate, retained);
+    }, /own completed removal/u);
+    lifecycle.removed(retained);
+    assert.throws(() => {
+      lifecycle.admit({ ...candidate, manifest: { ...manifest, sourceCommit: 'b'.repeat(40) } }, retained);
+    }, /exact last observed candidate/u);
+    assert.throws(() => {
+      lifecycle.admit(candidate, []);
+    }, /preserved files/u);
+    lifecycle.admit(candidate, retained);
+    assert.throws(() => {
+      lifecycle.admit(candidate, retained);
+    }, /own completed removal/u);
     assert.equal(await verifyWindowsQualificationArtifact(candidate), path);
     await writeFile(path, Buffer.alloc(bytes.length, 1));
     await assert.rejects(verifyWindowsQualificationArtifact(candidate), /bytes differ/u);

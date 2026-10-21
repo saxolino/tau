@@ -9,7 +9,7 @@ import { extractFile, uncache } from '@electron/asar';
 import { z } from 'zod';
 import { parseDesktopArtifactManifest } from '#shared/desktop-release.js';
 /* oxlint-disable no-restricted-imports -- Native qualification scripts share the external collector contract. */
-import { QualificationUnavailable } from './qualification-platform-types.mjs';
+import { createQualificationReinstallGuard, QualificationUnavailable } from './qualification-platform-types.mjs';
 import type {
   QualificationCandidate,
   QualificationDriverOptions,
@@ -128,6 +128,8 @@ export const createMacosQualificationDriver = (
   ) {
     throw new Error('Mac qualification requires an isolated UUID application directory and exact Apple team');
   }
+  const lifecycle = createQualificationReinstallGuard();
+  let initialInstalled = false;
   let created = false;
   const verifyTrust = (path: string, diskImage = false): Record<string, string> => {
     const verification = command('/usr/bin/codesign', ['--verify', '--deep', '--strict', path]);
@@ -194,6 +196,7 @@ export const createMacosQualificationDriver = (
     if (executableSha256 !== expected.executable || asarSha256 !== expected.asar) {
       throw new Error('Installed Mac executable or ASAR differs from the authenticated candidate ZIP');
     }
+    lifecycle.observed(candidate);
     return {
       route: candidate.route,
       channel: manifest.channel,
@@ -213,36 +216,63 @@ export const createMacosQualificationDriver = (
       },
     };
   };
+  const installCandidate = async (candidate: QualificationCandidate): Promise<QualificationInstallation> => {
+    host(options.architecture);
+    const artifact = await verifyMacosQualificationArtifact(candidate, options.architecture, options.installFormat);
+    await mkdir(applications, { recursive: true });
+    if ((await realpath(applications)) !== applications) {
+      throw new Error('Mac Applications directory is redirected');
+    }
+    await mkdir(parent); // Exclusive ownership: refuse an existing directory, even an empty one.
+    created = true;
+    if (options.installFormat === 'zip') {
+      extractZip(artifact, parent);
+    } else {
+      verifyTrust(artifact, true);
+      const mount = await realpath(await mkdtemp(join(tmpdir(), 'tau-qualification-dmg-')));
+      let mounted = false;
+      try {
+        command('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', mount, artifact]);
+        mounted = true;
+        verifyTrust(join(mount, 'Tau.app'));
+        command('/usr/bin/ditto', [join(mount, 'Tau.app'), application]);
+      } finally {
+        if (mounted) {
+          command('/usr/bin/hdiutil', ['detach', mount]);
+        }
+        await rm(mount, { recursive: true, force: true });
+      }
+    }
+    lifecycle.installed();
+    return { ...(await observe(candidate)), artifactSha256: await hashFile(artifact) };
+  };
   return {
     observe,
     async install(candidate) {
-      host(options.architecture);
-      const artifact = await verifyMacosQualificationArtifact(candidate, options.architecture, options.installFormat);
-      await mkdir(applications, { recursive: true });
-      if ((await realpath(applications)) !== applications) {
-        throw new Error('Mac Applications directory is redirected');
+      if (initialInstalled) {
+        throw new Error('Mac driver installs initial baseline only');
       }
-      await mkdir(parent); // Exclusive ownership: refuse an existing directory, even an empty one.
-      created = true;
-      if (options.installFormat === 'zip') {
-        extractZip(artifact, parent);
-      } else {
-        verifyTrust(artifact, true);
-        const mount = await realpath(await mkdtemp(join(tmpdir(), 'tau-qualification-dmg-')));
-        let mounted = false;
-        try {
-          command('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', mount, artifact]);
-          mounted = true;
-          verifyTrust(join(mount, 'Tau.app'));
-          command('/usr/bin/ditto', [join(mount, 'Tau.app'), application]);
-        } finally {
-          if (mounted) {
-            command('/usr/bin/hdiutil', ['detach', mount]);
+      initialInstalled = true;
+      return installCandidate(candidate);
+    },
+    async reinstall(candidate, files) {
+      lifecycle.admit(candidate, files);
+      await Promise.all(
+        files.map(async (file) => {
+          if ((await hashFile(file.path)) !== file.sha256) {
+            throw new Error('Preserved file changed before Mac reinstall');
           }
-          await rm(mount, { recursive: true, force: true });
-        }
-      }
-      return { ...(await observe(candidate)), artifactSha256: await hashFile(artifact) };
+        }),
+      );
+      const observation = await installCandidate(candidate);
+      await Promise.all(
+        files.map(async (file) => {
+          if ((await hashFile(file.path)) !== file.sha256) {
+            throw new Error('Mac reinstall changed preserved file');
+          }
+        }),
+      );
+      return observation;
     },
     async measureSecurity(processes) {
       host(options.architecture);
@@ -284,7 +314,7 @@ int main(int argc,char **argv) { if(argc!=2) return 2; pid_t pid=(pid_t)strtol(a
       return {
         platform: 'darwin',
         architecture: options.architecture,
-        osVersion: release(),
+        osVersion: `Darwin ${release()}`,
         measurements: {
           sip: command('/usr/bin/csrutil', ['status']),
           gatekeeper: command('/usr/sbin/spctl', ['--status']),
@@ -295,6 +325,7 @@ int main(int argc,char **argv) { if(argc!=2) return 2; pid_t pid=(pid_t)strtol(a
       };
     },
     async remove(preservedFiles) {
+      lifecycle.assertRemoval();
       host(options.architecture);
       await Promise.all(
         preservedFiles.map(async (file) => {
@@ -315,6 +346,7 @@ int main(int argc,char **argv) { if(argc!=2) return 2; pid_t pid=(pid_t)strtol(a
           }
         }),
       );
+      lifecycle.removed(preservedFiles);
     },
   };
 };

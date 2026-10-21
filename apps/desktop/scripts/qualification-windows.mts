@@ -11,7 +11,7 @@ import { verifyWindowsSignature } from '#main/windows-signature.js';
 import { parseDesktopInstallation } from '#main/update-identity.js';
 import { parseDesktopArtifactManifest } from '#shared/desktop-release.js';
 /* oxlint-disable no-restricted-imports -- Native qualification scripts share one driver contract. */
-import { QualificationUnavailable } from './qualification-platform-types.mjs';
+import { createQualificationReinstallGuard, QualificationUnavailable } from './qualification-platform-types.mjs';
 import type {
   QualificationCandidate,
   QualificationDriverOptions,
@@ -147,6 +147,7 @@ export const createWindowsQualificationDriver = (
   if (options.mode === 'release' && !options.publisher?.trim()) {
     throw new QualificationUnavailable('Release qualification requires the configured Authenticode publisher');
   }
+  const lifecycle = createQualificationReinstallGuard();
   let installed = false;
   let active: QualificationCandidate | undefined;
   const verifyInstalledSignature = async (path: string, version: string, name: string): Promise<void> => {
@@ -229,6 +230,7 @@ $key='HKCU:\Software\Classes\'+$env:TAU_Q_SCHEME+'\shell\open\command';
       throw new Error('Windows per-user registration differs from installed executable');
     }
     active = candidate;
+    lifecycle.observed(candidate);
     return {
       route: 'windows-nsis',
       channel: manifest.channel,
@@ -284,7 +286,38 @@ $items=@(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Unins
       }
       executeInstaller(path, ['/S', `/D=${options.installationPath}`]);
       installed = true;
+      lifecycle.installed();
       return observe(candidate);
+    },
+    async reinstall(candidate, preservedFiles) {
+      lifecycle.admit(candidate, preservedFiles);
+      await Promise.all(
+        preservedFiles.map(async (file) => {
+          if ((await hashFile(file.path)) !== file.sha256) {
+            throw new Error('Preserved file changed before reinstall');
+          }
+        }),
+      );
+      const path = await verifyWindowsQualificationArtifact(candidate);
+      const manifest = parseDesktopArtifactManifest(candidate.manifest);
+      if (options.mode === 'release') {
+        await verifyWindowsSignature({
+          path,
+          publisher: options.publisher!,
+          expectedVersion: manifest.version,
+          expectedProductName: manifest.channel === 'staging' ? 'Tau Staging' : 'Tau',
+        });
+      }
+      executeInstaller(path, ['/S', `/D=${options.installationPath}`]);
+      const observation = await observe(candidate);
+      await Promise.all(
+        preservedFiles.map(async (file) => {
+          if ((await hashFile(file.path)) !== file.sha256) {
+            throw new Error('Reinstall changed preserved user file');
+          }
+        }),
+      );
+      return observation;
     },
     observe,
     async measureSecurity(processes) {
@@ -350,6 +383,7 @@ $os=Get-CimInstance Win32_OperatingSystem;
         .parse(result);
     },
     async remove(preservedFiles) {
+      lifecycle.assertRemoval();
       if (!active) {
         throw new Error('No observed installation to remove');
       }
@@ -381,6 +415,7 @@ $os=Get-CimInstance Win32_OperatingSystem;
           }
         }),
       );
+      lifecycle.removed(preservedFiles);
     },
   };
 };

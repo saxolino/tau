@@ -6,6 +6,8 @@
  * Exit: nonzero on installer identity, elevation, payload or prepackaged-input preservation failure.
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -13,7 +15,10 @@ import { join, resolve } from 'node:path';
 import { createPackage } from '@electron/asar';
 import { z } from 'zod';
 
-import { desktopArtifactName, desktopReleaseIdentity } from '#shared/desktop-release.js';
+import { desktopArtifactName, desktopReleaseIdentity, parseDesktopArtifactManifest } from '#shared/desktop-release.js';
+
+// oxlint-disable-next-line no-restricted-imports -- Native maker fixture exercises the actual qualification driver.
+import { createWindowsQualificationDriver } from './qualification-windows.mjs';
 
 const inspectScript = `
 $ErrorActionPreference = 'Stop'
@@ -196,14 +201,75 @@ app.whenReady().then(() => {
   environment['TAU_FIXTURE_PROFILE'] = profile;
   await mkdir(profile);
   await writeFile(join(profile, 'project.json'), '{"keep":"user project"}');
-  const install = spawnSync(installer, ['/S', `/D=${installed}`], {
-    // NSIS consumes the last /D= argument verbatim, including spaces, and rejects Node's wrapping quotes.
-    windowsVerbatimArguments: true,
-    env: environment,
-    encoding: 'utf8',
-    timeout: 120_000,
+  const originalQualificationGuard = process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'];
+  process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'] = '1';
+  const sha256 = createHash('sha256');
+  const sha512 = createHash('sha512');
+  for await (const bytes of createReadStream(installer)) {
+    assert.ok(bytes instanceof Uint8Array);
+    sha256.update(bytes);
+    sha512.update(bytes);
+  }
+  const installerInfo = await stat(installer);
+  const candidate = {
+    route: 'windows-nsis',
+    artifactDirectory: output,
+    manifest: parseDesktopArtifactManifest({
+      schemaVersion: 1,
+      ...identity,
+      tag,
+      sourceCommit,
+      artifacts: [
+        {
+          kind: 'windows-nsis',
+          target: 'win32-x64',
+          format: 'exe',
+          roles: ['installer', 'update'],
+          name: desktopArtifactName({ kind: 'windows-nsis', ...identity, arch: 'x64' }),
+          size: installerInfo.size,
+          sha256: sha256.digest('hex'),
+          sha512: sha512.digest('base64'),
+        },
+      ],
+    }),
+  } as const;
+  const occupied = join(fixture, 'occupied target');
+  await mkdir(occupied);
+  await writeFile(join(occupied, 'keep.txt'), 'existing application data');
+  const occupiedDriver = createWindowsQualificationDriver({ mode: 'fixture', installationPath: occupied });
+  await assert.rejects(occupiedDriver.install(candidate), /absent target and channel installation/u);
+  assert.equal(await readFile(join(occupied, 'keep.txt'), 'utf8'), 'existing application data');
+  const driver = createWindowsQualificationDriver({ mode: 'fixture', installationPath: installed });
+  const installedObservation = await driver.install(candidate);
+  assert.equal(installedObservation.version, identity.version);
+  assert.equal(installedObservation.sourceCommit, sourceCommit);
+  assert.equal(installedObservation.measurements['trust'], 'fixture');
+  assert.equal(installedObservation.asarSha256, createHash('sha256').update(original).digest('hex'));
+  assert.equal(
+    installedObservation.executableSha256,
+    createHash('sha256')
+      .update(await readFile(join(payload, 'Tau.exe')))
+      .digest('hex'),
+  );
+  assert.equal(installedObservation.measurements['expectedAsarSha256'], installedObservation.asarSha256);
+  assert.equal(installedObservation.measurements['expectedExecutableSha256'], installedObservation.executableSha256);
+  await assert.rejects(driver.install(candidate), /initial baseline only/u);
+  const registeredDriver = createWindowsQualificationDriver({
+    mode: 'fixture',
+    installationPath: join(fixture, 'different target'),
   });
-  assert.equal(install.status, 0, `${install.stdout}\n${install.stderr}`);
+  await assert.rejects(registeredDriver.install(candidate), /absent target and channel installation/u);
+  assert.deepEqual(await driver.observe(candidate), installedObservation);
+  const modifiedAsar = Buffer.from(original);
+  modifiedAsar[modifiedAsar.length - 1] = (modifiedAsar.at(-1)! + 1) % 256;
+  await writeFile(join(installed, 'resources/app.asar'), modifiedAsar);
+  try {
+    await assert.rejects(driver.observe(candidate), /payload differs from authenticated NSIS/u);
+  } finally {
+    await writeFile(join(installed, 'resources/app.asar'), original);
+  }
+  const restoredObservation = await driver.observe(candidate);
+  assert.equal(restoredObservation.asarSha256, installedObservation.asarSha256);
   const registrations = spawnSync(
     join(windowsRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     [
@@ -240,13 +306,24 @@ app.whenReady().then(() => {
   const installedFiles = await readdir(installed);
   const uninstallers = installedFiles.filter((name) => /^Uninstall.*\.exe$/iu.test(name));
   assert.equal(uninstallers.length, 1);
-  const uninstall = spawnSync(join(installed, uninstallers[0]!), ['/S', `_?=${installed}`], {
-    windowsVerbatimArguments: true,
-    env: environment,
-    encoding: 'utf8',
-    timeout: 120_000,
-  });
-  assert.equal(uninstall.status, 0, `${uninstall.stdout}\n${uninstall.stderr}`);
+  const preserved = await Promise.all(
+    ['project.json', 'startup.json'].map(async (name) => {
+      const path = join(profile, name);
+      return {
+        path,
+        sha256: createHash('sha256')
+          .update(await readFile(path))
+          .digest('hex'),
+      };
+    }),
+  );
+  await assert.rejects(driver.reinstall(candidate, preserved), /own completed removal/u);
+  await driver.remove(preserved);
+  if (originalQualificationGuard === undefined) {
+    delete process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'];
+  } else {
+    process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'] = originalQualificationGuard;
+  }
   const removedProtocol = spawnSync(
     join(windowsRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     [
@@ -262,13 +339,11 @@ app.whenReady().then(() => {
   assert.equal(await readFile(join(profile, 'project.json'), 'utf8'), '{"keep":"user project"}');
   assert.equal(JSON.parse(await readFile(join(profile, 'startup.json'), 'utf8')).version, identity.version);
   // A later installation can take over the protocol; this uninstaller must leave its command intact.
-  const reinstall = spawnSync(installer, ['/S', `/D=${installed}`], {
-    windowsVerbatimArguments: true,
-    env: environment,
-    encoding: 'utf8',
-    timeout: 120_000,
-  });
-  assert.equal(reinstall.status, 0, `${reinstall.stdout}\n${reinstall.stderr}`);
+  await assert.rejects(
+    driver.reinstall({ ...candidate, manifest: { ...candidate.manifest, sourceCommit: 'b'.repeat(40) } }, preserved),
+    /exact last observed candidate/u,
+  );
+  assert.deepEqual(await driver.reinstall(candidate, preserved), installedObservation);
   const foreignCommand = String.raw`"C:\Other Tau\Tau.exe" "%1"`;
   const replaceProtocol = spawnSync(
     join(windowsRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
@@ -306,7 +381,7 @@ app.whenReady().then(() => {
   );
   assert.equal(preservedProtocol.status, 0, preservedProtocol.stderr);
   console.log(
-    'PASS native NSIS resources, payload, per-user install, actual fixture startup, uninstall and profile preservation; release signing/full Tau A-to-B remain gated',
+    'PASS native NSIS resources, payload, actual qualification driver install/observe/tamper/preexisting refusal/uninstall, fixture startup and profile preservation; release signing/full Tau A-to-B remain gated',
   );
 };
 try {
