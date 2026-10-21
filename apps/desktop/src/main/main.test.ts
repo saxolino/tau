@@ -107,6 +107,7 @@ const state = vi.hoisted(() => ({
   autoQuiesce: true,
   autoForced: false,
   prepareToRestart: undefined as undefined | (() => Promise<boolean>),
+  prepareToInstall: undefined as DesktopUpdaterOptions['prepareToInstall'],
   /* Lets a case hold ACP discovery open while the window boots (D17). */
   acpDiscovery: undefined as Promise<{ agents: never[]; refused: never[] }> | undefined,
   bambuStudioStatus: vi.fn(async () => ({ available: false, reason: 'not installed' })),
@@ -141,6 +142,7 @@ vi.mock('#tau/native-store.js', () => ({
 vi.mock('#main/updater.js', () => ({
   startDesktopUpdater: (options: DesktopUpdaterOptions) => {
     state.prepareToRestart = options.prepareToRestart;
+    state.prepareToInstall = options.prepareToInstall;
     return {
       check: state.updaterCheck,
       install: state.updaterInstall,
@@ -462,6 +464,7 @@ afterEach(async () => {
   state.autoQuiesce = true;
   state.autoForced = false;
   state.prepareToRestart = undefined;
+  state.prepareToInstall = undefined;
   state.updateMenuItems = [{ label: 'About Tau' }];
   state.installedUpdateMenuItems = [];
   getWindows.mockReturnValue([fakeWindow]);
@@ -599,6 +602,43 @@ describe('desktop main compute owner', () => {
       state.appListeners.get('before-quit')!.at(-1)!({ preventDefault: vi.fn() });
       assessment.resolve([]);
       await expect(restart).resolves.toBe(true);
+      expect(state.servicesDispose).toHaveBeenCalledOnce();
+      expect(app.quit).not.toHaveBeenCalled();
+    },
+    bootMilliseconds,
+  );
+
+  it(
+    'installer failure restores services before permitting another install',
+    async () => {
+      await bootstrap();
+      const commit = vi.fn(async () => {
+        throw new Error('spawn refused');
+      });
+      await expect(state.prepareToInstall!(commit)).resolves.toBe(false);
+      expect(commit).toHaveBeenCalledOnce();
+      expect(state.servicesDispose).not.toHaveBeenCalled();
+      expect(state.geometryDispose).not.toHaveBeenCalled();
+      expect(state.servicesRecover).toHaveBeenCalledOnce();
+      expect(app.quit).not.toHaveBeenCalled();
+      const retry = vi.fn();
+      await expect(state.prepareToInstall!(retry)).resolves.toBe(true);
+      expect(retry).toHaveBeenCalledOnce();
+      expect(state.servicesDispose).toHaveBeenCalledOnce();
+    },
+    bootMilliseconds,
+  );
+
+  it(
+    'installer commits before destructive service teardown',
+    async () => {
+      await bootstrap();
+      const commit = vi.fn(() => {
+        expect(state.servicesDispose).not.toHaveBeenCalled();
+        expect(state.geometryDispose).not.toHaveBeenCalled();
+      });
+      await expect(state.prepareToInstall!(commit)).resolves.toBe(true);
+      expect(commit).toHaveBeenCalledOnce();
       expect(state.servicesDispose).toHaveBeenCalledOnce();
       expect(app.quit).not.toHaveBeenCalled();
     },

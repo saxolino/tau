@@ -161,6 +161,8 @@ export type DesktopUpdaterOptions = {
   readonly installForProbe?: boolean;
   /** Finish the same save/quiesce path as normal quit before Squirrel can close any window. */
   readonly prepareToRestart: () => Promise<boolean>;
+  /** Installer routes commit after save/quiesce and before destructive teardown. */
+  readonly prepareToInstall?: (commit: () => void | Promise<void>) => Promise<boolean>;
   readonly openExternal: (url: string) => Promise<void>;
   readonly log: (level: 'info' | 'warn' | 'error', event: string, detail?: unknown) => void;
   /** Milliseconds, defaults to setInterval. */
@@ -189,7 +191,14 @@ export const startDesktopUpdater = (options: DesktopUpdaterOptions): DesktopUpda
     }
     feedUrl = `${releaseBaseUrl(options.candidateTag, origin)}/desktop-update-${platform}-${arch}.json`;
   }
-  let snapshot: DesktopUpdateSnapshot = { revision: 0, requestId: 0, phase: 'checking', currentVersion, channel };
+  let snapshot: DesktopUpdateSnapshot = {
+    revision: 0,
+    requestId: 0,
+    phase: 'checking',
+    currentVersion,
+    channel,
+    installOnQuit: platform === 'darwin',
+  };
   const publish = (phase: DesktopUpdateSnapshot['phase']): void => {
     snapshot = { ...snapshot, revision: snapshot.revision + 1, phase };
     options.onState?.(snapshot);
