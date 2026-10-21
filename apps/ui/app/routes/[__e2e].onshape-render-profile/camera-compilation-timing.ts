@@ -11,6 +11,7 @@ type TimedBackend = WebGPURenderer['backend'] & {
 /** CPU-only node-build and pipeline-creation timing; opt-in calibration instrumentation, never production. */
 export const createCameraCompilationTiming = (
   renderer: WebGPURenderer,
+  captureSources = false,
 ): {
   reset: () => void;
   read: () => {
@@ -19,6 +20,7 @@ export const createCameraCompilationTiming = (
     materials: string[];
     pipelineCalls: number;
     pipelineMilliseconds: number;
+    sources?: Array<{ material: string; vertex: string; fragment: string }>;
   };
   dispose: () => void;
 } => {
@@ -28,6 +30,7 @@ export const createCameraCompilationTiming = (
   let builds = 0;
   let milliseconds = 0;
   let materials: string[] = [];
+  let sources: Array<{ material: string; vertex: string; fragment: string }> = [];
   let pipelineCalls = 0;
   let pipelineMilliseconds = 0;
   const originalPipeline = backend.createRenderPipeline;
@@ -42,6 +45,20 @@ export const createCameraCompilationTiming = (
     } finally {
       pipelineCalls++;
       pipelineMilliseconds += performance.now() - start;
+      if (captureSources) {
+        // Installed backend render object; declarations omit its pipeline stages.
+        const object = args[0] as unknown as {
+          material: { type: string };
+          pipeline?: { vertexProgram?: { code: string }; fragmentProgram?: { code: string } };
+        };
+        if (object.pipeline?.vertexProgram && object.pipeline.fragmentProgram) {
+          sources.push({
+            material: object.material.type,
+            vertex: object.pipeline.vertexProgram.code,
+            fragment: object.pipeline.fragmentProgram.code,
+          });
+        }
+      }
     }
   };
   backend.createRenderPipeline = createRenderPipeline;
@@ -69,10 +86,18 @@ export const createCameraCompilationTiming = (
       builds = 0;
       milliseconds = 0;
       materials = [];
+      sources = [];
       pipelineCalls = 0;
       pipelineMilliseconds = 0;
     },
-    read: () => ({ builds, milliseconds, materials: [...materials], pipelineCalls, pipelineMilliseconds }),
+    read: () => ({
+      builds,
+      milliseconds,
+      materials: [...materials],
+      pipelineCalls,
+      pipelineMilliseconds,
+      ...(captureSources ? { sources: [...sources] } : {}),
+    }),
     dispose: () => {
       active = false;
       if (backend.createRenderPipeline === createRenderPipeline) {

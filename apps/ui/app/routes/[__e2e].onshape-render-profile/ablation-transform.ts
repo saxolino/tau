@@ -15,6 +15,22 @@ export function transformRenderingAblation(source: string, id: string): string |
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
+    replace(
+      '    const preparation = scheduleCameraPreparation(renderer.domElement, () => {',
+      `    if (tauAblation.get('cameraPreparation') === 'off') return;
+    const preparation = scheduleCameraPreparation(renderer.domElement, () => {`,
+    );
+    replace(
+      '      if (eligibility.surfaces === 0) {',
+      `      scene.userData.calibrationPreparation = { ...eligibility };
+      if (eligibility.surfaces === 0) {`,
+    );
+    replace(
+      '        // Exact live pass context, with no second graph or final canvas draw.\n        selected.outputQuad.render(renderer);',
+      `        const preparationStart = performance.now();
+        selected.outputQuad.render(renderer);
+        scene.userData.calibrationPreparation = { milliseconds: performance.now() - preparationStart, at: performance.now() };`,
+    );
     // Native sharing remains experimental; node WebGL2 shares by default.
     code = "import { FloatType } from 'three';\n" + code;
     replace(
@@ -81,6 +97,11 @@ export function transformRenderingAblation(source: string, id: string): string |
       "const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao';",
       `const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao'
         && !['beauty', 'mrt'].includes(tauAblation.get('abl') ?? '');`,
+    );
+  } else if (file.endsWith('/graphics/three/materials/named-uniform-array.ts')) {
+    replace(
+      "  const array = uniformArray<'vec4'>(values, 'vec4').setName(name);",
+      "  if (tauAblation.get('shaderNames') === 'legacy') return uniformArray<'vec4'>(values, 'vec4');\n  const array = uniformArray<'vec4'>(values, 'vec4').setName(name);",
     );
   } else if (file.endsWith('/graphics/three/controls/viewport-gizmo-cube-surface.ts')) {
     replace(
@@ -201,12 +222,18 @@ export function transformRenderingAblation(source: string, id: string): string |
     );
     replace("graphicsBackend: 'webgl',", "graphicsBackend: tauAblation.has('abl') ? 'webgpu' : 'webgl',");
     replace(
-      '...metadata,\n      geometryHash:',
+      '    if (current.frame === 12) {',
+      `    if (current.frame === 12 || (scene.userData.calibrationPreparation !== undefined && scene.userData.calibrationPreparation !== scene.userData.reportedPreparation)) {
+      scene.userData.reportedPreparation = scene.userData.calibrationPreparation;`,
+    );
+    replace(
+      '...metadata,\n      startup: { ...startup.current },\n      geometryHash:',
       `...metadata,
+      startup: { ...startup.current },
       emphasis: scene.userData.calibrationEmphasis,
       allocationLedger: tauAblation.has('ledger') ? readAllocationLedgers() : undefined,
       ablation: Object.fromEntries(tauAblation),
-      scenePassSamples: scene.userData.calibrationScenePass?.renderTarget.samples,
+      scenePassSamples: scene.userData.calibrationScenePass?.renderTarget.samples, cameraPreparation: scene.userData.calibrationPreparation,
       geometryHash:`,
     );
   } else {

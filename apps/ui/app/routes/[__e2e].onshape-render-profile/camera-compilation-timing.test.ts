@@ -64,12 +64,12 @@ it('measures only synchronous builds and restores the backend without changing r
   }
 });
 
-it('preserves pipeline calls and failures, reports their CPU duration, and restores the original method', () => {
+it.each([false, true])('preserves pipeline calls and failures with source capture=%s', (captureSources) => {
   const renderer = mock<WebGPURenderer>();
   const backend = mock<WebGPURenderer['backend'] & { createRenderPipeline: (...args: unknown[]) => void }>();
   renderer.backend = backend;
   const original = backend.createRenderPipeline;
-  const timing = createCameraCompilationTiming(renderer);
+  const timing = createCameraCompilationTiming(renderer, captureSources);
   const clock = vi.spyOn(performance, 'now').mockReturnValueOnce(10).mockReturnValueOnce(17);
   const object = mock<Parameters<typeof backend.createNodeBuilder>[0]>();
   const promises: Array<Promise<void>> = [];

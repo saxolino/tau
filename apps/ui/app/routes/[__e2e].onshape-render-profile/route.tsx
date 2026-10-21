@@ -211,12 +211,17 @@ function CalibrationProbe({
 }): undefined {
   const { gl, scene, invalidate, size, setDpr } = useThree();
   const gpuTimer = useRef<FrameGpuTimer | undefined>(undefined);
+  const startup = useRef({
+    mounted: performance.now(),
+    firstReady: undefined as number | undefined,
+    firstReadyCpu: undefined as number | undefined,
+  });
   const compilationTiming = useRef<ReturnType<typeof createCameraCompilationTiming> | undefined>(undefined);
   useEffect(() => {
     if (!(gl instanceof WebGPURenderer) || !new URLSearchParams(location.search).has('cameraCompile')) {
       return;
     }
-    const timing = createCameraCompilationTiming(gl);
+    const timing = createCameraCompilationTiming(gl, new URLSearchParams(location.search).has('cameraSources'));
     compilationTiming.current = timing;
     return () => {
       timing.dispose();
@@ -312,6 +317,7 @@ function CalibrationProbe({
     );
     return {
       ...metadata,
+      startup: { ...startup.current },
       geometryHash: fixture.sha256,
       section: {
         active: section.isSectionViewActive,
@@ -560,6 +566,14 @@ function CalibrationProbe({
   useFrame(() => {
     const { current } = state;
     const now = performance.now();
+    if (
+      startup.current.firstReady === undefined &&
+      requested === presented &&
+      state.current.appliedCamera === cameraSettings.revision
+    ) {
+      startup.current.firstReady = now - startup.current.mounted;
+      startup.current.firstReadyCpu = now - state.current.start;
+    }
     gpuTimer.current?.end();
     const gpu = gpuTimer.current?.poll();
     if (benchmark !== current.benchmark && gpu) {
@@ -987,6 +1001,7 @@ export function RenderingProfile(): React.JSX.Element {
           <button
             type='button'
             onClick={() => {
+              setReport({});
               setViewerRevision((value) => value + 1);
             }}
           >
