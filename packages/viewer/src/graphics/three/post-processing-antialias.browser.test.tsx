@@ -15,6 +15,7 @@ import {
   RGBAFormat,
   Scene,
   OrthographicCamera,
+  Vector4,
 } from 'three';
 import { WebGPUBackend, WebGLBackend, WebGPURenderer } from 'three/webgpu';
 import { createActor, createAsyncLogic } from 'xstate';
@@ -1458,8 +1459,36 @@ it.each(
       const texturesBefore = renderer.info.memory.textures;
       const callsBefore = renderer.info.render.calls;
       expect(referenceMode.preparations.size).toBe(1);
-      for (const prepare of referenceMode.preparations) {
-        expect(prepare()).toBe(true);
+      const readCompositionState = (): Record<string, unknown> => ({
+        viewport: renderer.getViewport(new Vector4()).toArray(),
+        scissor: renderer.getScissor(new Vector4()).toArray(),
+        scissorTest: renderer.getScissorTest(),
+        clear: [renderer.autoClear, renderer.autoClearColor, renderer.autoClearDepth, renderer.autoClearStencil],
+        color: renderer.getClearColor(new Color()).toArray(),
+        alpha: renderer.getClearAlpha(),
+        toneMapping: renderer.toneMapping,
+        exposure: renderer.toneMappingExposure,
+        colorSpace: renderer.outputColorSpace,
+      });
+      const originalClear = renderer.autoClear;
+      const originalDepth = renderer.autoClearDepth;
+      const originalStencil = renderer.autoClearStencil;
+      // A preparation must not reset the live overlay owner's clear policy.
+      renderer.autoClear = false;
+      renderer.autoClearDepth = false;
+      renderer.autoClearStencil = false;
+      const compositionBefore = readCompositionState();
+      try {
+        for (const prepare of referenceMode.preparations) {
+          expect(prepare()).toBe(true);
+        }
+        expect(readCompositionState(), 'Idle preparation must preserve the live composition state').toEqual(
+          compositionBefore,
+        );
+      } finally {
+        renderer.autoClear = originalClear;
+        renderer.autoClearDepth = originalDepth;
+        renderer.autoClearStencil = originalStencil;
       }
       expect(renderer.getRenderTarget()).toBe(targetBefore);
       expect(renderer.info.memory.textures).toBe(texturesBefore);
