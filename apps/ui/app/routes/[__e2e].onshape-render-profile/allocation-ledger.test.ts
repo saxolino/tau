@@ -90,6 +90,8 @@ describe('allocation ledger retirement', () => {
     async (backend) => {
       let retireDevice: (value: { reason: string }) => void = vi.fn();
       let contextLost = false;
+      const events = new EventTarget();
+      const detach = vi.spyOn(events, 'removeEventListener');
       const renderer = {
         coordinateSystem: backend === 'webgl2-node' ? WebGLCoordinateSystem : 2001,
         info: {
@@ -99,6 +101,8 @@ describe('allocation ledger retirement', () => {
         },
         backend: {
           device: {
+            addEventListener: events.addEventListener.bind(events),
+            removeEventListener: events.removeEventListener.bind(events),
             lost: new Promise<{ reason: string }>((resolve) => {
               retireDevice = resolve;
             }),
@@ -129,6 +133,22 @@ describe('allocation ledger retirement', () => {
         ]),
       );
       if (backend === 'webgpu') {
+        const emit = (message: string): void => {
+          const event = new Event('uncapturederror');
+          Object.defineProperty(event, 'error', { value: { message } });
+          events.dispatchEvent(event);
+        };
+        emit('invalid depth view');
+        emit('invalid depth view');
+        expect((readAllocationLedgers() as unknown[]).at(-1)).toMatchObject({
+          validationErrors: ['invalid depth view'],
+        });
+        for (let index = 0; index < 30; index++) {
+          emit(`failure ${index}`);
+        }
+        expect(
+          (readAllocationLedgers() as Array<{ validationErrors: string[] }>).at(-1)?.validationErrors,
+        ).toHaveLength(20);
         retireDevice({ reason: 'destroyed' });
         await Promise.resolve();
         const lost = readAllocationLedgers() as unknown[];
@@ -139,6 +159,12 @@ describe('allocation ledger retirement', () => {
         });
       }
       renderer.dispose();
+      const afterDisposal = new Event('uncapturederror');
+      Object.defineProperty(afterDisposal, 'error', { value: { message: 'after disposal' } });
+      events.dispatchEvent(afterDisposal);
+      if (backend === 'webgpu') {
+        expect(detach).toHaveBeenCalledWith('uncapturederror', expect.any(Function));
+      }
       await Promise.resolve();
       const receipts = readAllocationLedgers() as unknown[];
       expect(receipts.at(-1)).toMatchObject({

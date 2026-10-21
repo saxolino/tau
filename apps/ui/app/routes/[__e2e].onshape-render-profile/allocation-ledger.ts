@@ -49,6 +49,7 @@ type Ledger = {
   revision: string;
   backend: 'webgpu' | 'webgl2-node';
   costStatus?: Record<string, unknown>;
+  validationErrors: string[];
   records: Map<string, TextureRecord>;
   events: Array<{ event: string; id: string; at: number; bytes: number }>;
   passes: Map<string, unknown>;
@@ -121,6 +122,7 @@ export function readAllocationLedgers(): unknown {
     revision: ledger.revision,
     backend: ledger.backend,
     costStatus: ledger.costStatus,
+    validationErrors: ledger.validationErrors,
     // The backendLive field is the last per-texture event, not proof of surviving a destroyed device/context.
     textures: [...ledger.records.values()].map((record) => ({
       ...record,
@@ -154,6 +156,7 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
   const ledger: Ledger = {
     revision: REVISION,
     backend: renderer.coordinateSystem === WebGLCoordinateSystem ? 'webgl2-node' : 'webgpu',
+    validationErrors: [],
     records: new Map(),
     events: [],
     passes: new Map(),
@@ -164,9 +167,24 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
   };
   ledgers.push(ledger);
   const backend = renderer.backend as ObservedBackend;
+  let removeValidationListener: (() => void) | undefined;
   if (ledger.backend === 'webgpu' && 'device' in backend && backend.device) {
-    const device = backend.device as { lost: Promise<{ reason: string }> };
+    const device = backend.device as {
+      lost: Promise<{ reason: string }>;
+      addEventListener: (type: 'uncapturederror', listener: (event: GPUUncapturedErrorEvent) => void) => void;
+      removeEventListener: (type: 'uncapturederror', listener: (event: GPUUncapturedErrorEvent) => void) => void;
+    };
     ledger.retirementObservation = observeDeviceRetirement(device.lost, ledger);
+    const onValidationError = (error: GPUUncapturedErrorEvent): void => {
+      const { message } = error.error;
+      if (ledger.validationErrors.length < 20 && !ledger.validationErrors.includes(message)) {
+        ledger.validationErrors.push(message);
+      }
+    };
+    device.addEventListener('uncapturederror', onValidationError);
+    removeValidationListener = () => {
+      device.removeEventListener('uncapturederror', onValidationError);
+    };
   }
   const { info } = renderer;
   const started = performance.now();
@@ -389,6 +407,7 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
   const dispose = renderer.dispose.bind(renderer);
   renderer.dispose = () => {
     timer?.dispose();
+    removeValidationListener?.();
     dispose();
     ledger.disposed = true;
     ledger.disposedAt = performance.now() - started;
