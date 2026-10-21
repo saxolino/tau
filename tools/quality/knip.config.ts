@@ -44,6 +44,12 @@ const config: KnipConfig = {
     'spctl',
     'textutil',
     'xcrun',
+    // Desktop installer tools provisioned by the native OS/CI fixtures, not npm packages.
+    '7z',
+    'dpkg',
+    'dpkg-deb',
+    'du',
+    'gpg',
     // POSIX/Windows process and file utilities.
     'cmp',
     'make',

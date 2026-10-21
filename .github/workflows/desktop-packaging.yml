@@ -72,9 +72,9 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          for fixture in linux-apt-repository desktop-apt-publication renew-desktop-apt; do
-            pnpm exec esbuild "apps/desktop/scripts/$fixture.test.mts" --bundle --platform=node --format=esm --outfile="out/research/desktop-packaging-ci/$fixture.mjs"
-          done
+          pnpm exec esbuild apps/desktop/scripts/linux-apt-repository.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/linux-apt-repository.mjs
+          pnpm exec esbuild apps/desktop/scripts/desktop-apt-publication.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/desktop-apt-publication.mjs
+          pnpm exec esbuild apps/desktop/scripts/renew-desktop-apt.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/renew-desktop-apt.mjs
           docker run --rm -e TAU_APT_DISPOSABLE_CONTAINER=1 --mount type=bind,source="$PWD/out/research/desktop-packaging-ci",target=/fixtures,readonly node:24.20.0-bookworm-slim bash -c 'apt-get update -qq && apt-get install -y -qq gnupg && node /fixtures/linux-apt-repository.mjs && node /fixtures/desktop-apt-publication.mjs && node /fixtures/renew-desktop-apt.mjs'
       - name: Keep assembly distinct from installed qualification
         shell: bash
