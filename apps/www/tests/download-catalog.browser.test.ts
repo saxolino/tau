@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
 import { content as download } from '#app/routes/download.js';
-import { chromium } from 'playwright';
+import { loadPlaywright } from '#tools/tooling.js';
 import { describe, expect, it } from 'vitest';
 import { projection } from '#www/download-catalog.fixture.js';
 
@@ -19,6 +19,7 @@ describe('shipping installer catalog browser behavior', () => {
       globalName: 'TauDownloads',
       platform: 'browser',
     });
+    const { chromium } = await loadPlaywright();
     const browser = await chromium.launch({ headless: true });
     try {
       const page = await browser.newPage();
