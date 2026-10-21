@@ -790,11 +790,20 @@ it.each([1, 1.5, 2].flatMap((dpr) => [0x00_00_00, 0xff_d5_4a].map((color) => ({ 
 
 it.each(
   ['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) =>
-    [1, -1].flatMap((side) => (['none', 'neutral'] as const).map((toneMapping) => ({ execution, side, toneMapping }))),
+    [1, -1].flatMap((side) =>
+      (['none', 'neutral'] as const).flatMap((toneMapping) =>
+        (execution === 'webgl' ? [128] : [128, 5120]).map((width) => ({ execution, side, toneMapping, width })),
+      ),
+    ),
   ),
 )(
-  'should occlude grid and hidden outlines through actual stencil caps: $execution side $side tone $toneMapping',
-  async ({ execution, side, toneMapping }) => {
+  'should occlude grid and hidden outlines through actual stencil caps: $execution side $side tone $toneMapping width $width',
+  async ({ execution, side, toneMapping, width }) => {
+    const height = width === 5120 ? 2880 : 128;
+    // Keep world-space probes at the same camera-relative positions when the
+    // 5K buffer changes aspect. The independent color overlay fills clip space.
+    const offsetAt = (x: number, y: number): number =>
+      (Math.floor((y / 128) * height) * width + Math.floor(width / 2 + ((x - 64) / 128) * height)) * 4;
     vi.stubGlobal('devicePixelRatio', 1);
     await page.viewport(400, 400);
     referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
@@ -843,7 +852,7 @@ it.each(
           sources: [{ key: 'box', ownerKey: 'box', meshes: [surface], tintHex: 0xff_00_00, edgeHex: 0xff_ff_00 }],
           stripes: { stripeFrequency: 1e6, stripeWidth: 0 },
           outlineWidthPixels: 1.5,
-          viewportHeightPixels: 128,
+          viewportHeightPixels: height,
         });
       }, 1.2);
       return undefined;
@@ -937,7 +946,7 @@ it.each(
     };
     try {
       render(
-        <div style={{ width: 128, height: 128 }}>
+        <div style={{ width, height }}>
           <GraphicsProvider
             graphicsRef={actor}
             seed={{
@@ -998,6 +1007,7 @@ it.each(
       );
       retired = true;
       await pending;
+      expect([state!.gl.domElement.width, state!.gl.domElement.height]).toEqual([width, height]);
       if (isViewportWebGpu(state!.gl)) {
         expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
       }
@@ -1008,13 +1018,14 @@ it.each(
           [16, [128, 128, 128]],
           [112, [205, 92, 92]],
         ] as const) {
-          const actual = pixels!.subarray((16 * 128 + x) * 4, (16 * 128 + x) * 4 + 3);
+          const offset = (Math.floor(height / 8) * width + Math.floor((x / 128) * width)) * 4;
+          const actual = pixels!.subarray(offset, offset + 3);
           for (const [channel, value] of expected.entries()) {
             expect(Math.abs(actual[channel]! - value)).toBeLessThanOrEqual(2);
           }
         }
       }
-      const occluderColor = [...beforeCaps!.subarray((64 * 128 + 64) * 4, (64 * 128 + 64) * 4 + 3)];
+      const occluderColor = [...beforeCaps!.subarray(offsetAt(64, 64), offsetAt(64, 64) + 3)];
       if (side === -1) {
         expect(occluderColor[0]! - occluderColor[1]!).toBeGreaterThan(100);
         expect(occluderColor[2]! - occluderColor[1]!).toBeGreaterThan(100);
@@ -1025,7 +1036,7 @@ it.each(
       // before/after adding the grid so the existing striped tint is preserved.
       for (let y = 38; y < 90; y++) {
         for (let x = 48; x < 80; x++) {
-          const offset = (y * 128 + x) * 4;
+          const offset = offsetAt(x, y);
           const actual = [...pixels!.subarray(offset, offset + 3)];
           expect(actual, `${execution}, side ${side}, ${x},${y}`).toEqual([
             ...beforeGrid!.subarray(offset, offset + 3),
@@ -1042,7 +1053,7 @@ it.each(
         const isOccluderInterior = (x: number, y: number): boolean =>
           [-2, 0, 2].every((dy) =>
             [-2, 0, 2].every((dx) => {
-              const offset = ((y + dy) * 128 + x + dx) * 4;
+              const offset = offsetAt(x + dx, y + dy);
               return occluderColor.every((value, channel) => beforeCaps![offset + channel] === value);
             }),
           );
@@ -1052,14 +1063,14 @@ it.each(
             if (!isOccluderInterior(x, y)) {
               continue;
             }
-            const offset = (y * 128 + x) * 4;
+            const offset = offsetAt(x, y);
             expect([...beforeGrid!.subarray(offset, offset + 3)], `hidden outline at ${x},${y}`).toEqual(occluderColor);
             checked++;
           }
         }
         expect(checked).toBeGreaterThan(1000);
       }
-      expect([...pixels!.subarray((64 * 128 + 20) * 4, (64 * 128 + 20) * 4 + 3)]).toEqual([0, 255, 0]);
+      expect([...pixels!.subarray(offsetAt(20, 64), offsetAt(20, 64) + 3)]).toEqual([0, 255, 0]);
     } finally {
       retired = true;
       await pending;
@@ -1301,9 +1312,12 @@ it.each([false, true])(
   },
 );
 
-it.each(['webgpu', 'node-webgl2'] as const)(
-  'should retain transmissive composition and bounded resources across camera switches: %s',
-  async (execution) => {
+it.each(
+  (['webgpu', 'node-webgl2'] as const).flatMap((execution) => [384, 5120].map((width) => ({ execution, width }))),
+)(
+  'should retain transmissive composition and bounded resources across camera switches: $execution width $width',
+  async ({ execution, width }) => {
+    const height = width === 5120 ? 2880 : 256;
     referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
     await page.viewport(600, 500);
     const actor = createActor(
@@ -1356,10 +1370,11 @@ it.each(['webgpu', 'node-webgl2'] as const)(
         throw captureError;
       }
       expect(pixels).toBeDefined();
+      expect([state!.gl.domElement.width, state!.gl.domElement.height]).toEqual([width, height]);
       return new Uint8ClampedArray(pixels!);
     };
     const fixture = (fov: number): ReactNode => (
-      <div key={fov} style={{ width: 384, height: 256 }}>
+      <div key={fov} style={{ width, height }}>
         <GraphicsProvider
           graphicsRef={actor}
           seed={{
