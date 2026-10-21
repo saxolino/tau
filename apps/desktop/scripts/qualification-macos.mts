@@ -100,11 +100,13 @@ const metadataSchema = z.object({
   version: z.string(),
   tauDesktop: z.object({
     sourceCommit: z.string(),
-    channel: z.string().optional(),
+    channel: z.enum(['production', 'staging']).default('production'),
     releaseTag: z.string(),
-    environmentOverrides: z.literal(false),
+    environmentOverrides: z.literal(false).optional(),
   }),
 });
+/** Admission mirrors desktopManifestFields: production and disabled overrides are omitted. */
+export const macosQualificationPackageSchema = metadataSchema;
 
 /** Initial installation only; later observations never replace the installed application. */
 export const createMacosQualificationDriver = (
@@ -169,7 +171,7 @@ export const createMacosQualificationDriver = (
       metadata.version !== manifest.version ||
       metadata.tauDesktop.sourceCommit !== manifest.sourceCommit ||
       metadata.tauDesktop.releaseTag !== manifest.tag ||
-      (metadata.tauDesktop.channel ?? 'production') !== manifest.channel
+      metadata.tauDesktop.channel !== manifest.channel
     ) {
       throw new Error('Installed Mac source/version/channel differs from the candidate');
     }

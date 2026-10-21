@@ -10,6 +10,7 @@ import { createPackage } from '@electron/asar';
 import { desktopArtifactName, parseDesktopArtifactManifest } from '#shared/desktop-release.js';
 /* oxlint-disable no-restricted-imports -- Exercise real driver filesystem behavior with explicit diagnostic trust. */
 import {
+  linuxQualificationPackageSchema,
   aptQualificationPayloadHashes,
   createLinuxAppImageQualificationDriver,
   waitForScheduledAptCompletion,
@@ -17,6 +18,32 @@ import {
 import { QualificationUnavailable } from './qualification-platform-types.mjs';
 /* oxlint-enable no-restricted-imports */
 const main = async (): Promise<void> => {
+  // Exact desktopManifestFields production contract omits channel and false environmentOverrides.
+  const packageMetadata = {
+    version: '1.0.1',
+    tauDesktop: { sourceCommit: 'a'.repeat(40), releaseTag: 'desktop@0.1.0' },
+  };
+  assert.equal(linuxQualificationPackageSchema.parse(packageMetadata).tauDesktop.channel, 'production');
+  assert.equal(
+    linuxQualificationPackageSchema.parse({
+      ...packageMetadata,
+      tauDesktop: { ...packageMetadata.tauDesktop, channel: 'staging' },
+    }).tauDesktop.channel,
+    'staging',
+  );
+  assert.throws(() => {
+    linuxQualificationPackageSchema.parse({
+      ...packageMetadata,
+      tauDesktop: { ...packageMetadata.tauDesktop, environmentOverrides: true },
+    });
+  });
+  assert.throws(() => {
+    linuxQualificationPackageSchema.parse({
+      ...packageMetadata,
+      tauDesktop: { ...packageMetadata.tauDesktop, channel: 'unknown' },
+    });
+  });
+
   const root = await realpath(await mkdtemp(join(tmpdir(), 'tau-linux-driver-')));
   const originalGuard = process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'];
   delete process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'];
@@ -54,7 +81,7 @@ const main = async (): Promise<void> => {
       join(source, 'package.json'),
       JSON.stringify({
         version: identity.version,
-        tauDesktop: { channel: identity.channel, sourceCommit: identity.sourceCommit, environmentOverrides: false },
+        tauDesktop: { channel: identity.channel, sourceCommit: identity.sourceCommit },
       }),
     );
     await createPackage(source, join(image, 'resources/app.asar'));

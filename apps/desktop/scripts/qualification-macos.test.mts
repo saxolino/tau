@@ -7,10 +7,40 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseDesktopArtifactManifest } from '#shared/desktop-release.js';
 /* oxlint-disable no-restricted-imports -- Native driver tests use the actual byte-admission API. */
-import { createMacosQualificationDriver, verifyMacosQualificationArtifact } from './qualification-macos.mjs';
+import {
+  macosQualificationPackageSchema,
+  createMacosQualificationDriver,
+  verifyMacosQualificationArtifact,
+} from './qualification-macos.mjs';
 import { QualificationUnavailable } from './qualification-platform-types.mjs';
 /* oxlint-enable no-restricted-imports */
 const main = async (): Promise<void> => {
+  // Exact desktopManifestFields production contract omits channel and false environmentOverrides.
+  const packageMetadata = {
+    version: '1.0.1',
+    tauDesktop: { sourceCommit: 'a'.repeat(40), releaseTag: 'desktop@0.1.0' },
+  };
+  assert.equal(macosQualificationPackageSchema.parse(packageMetadata).tauDesktop.channel, 'production');
+  assert.equal(
+    macosQualificationPackageSchema.parse({
+      ...packageMetadata,
+      tauDesktop: { ...packageMetadata.tauDesktop, channel: 'staging' },
+    }).tauDesktop.channel,
+    'staging',
+  );
+  assert.throws(() => {
+    macosQualificationPackageSchema.parse({
+      ...packageMetadata,
+      tauDesktop: { ...packageMetadata.tauDesktop, environmentOverrides: true },
+    });
+  });
+  assert.throws(() => {
+    macosQualificationPackageSchema.parse({
+      ...packageMetadata,
+      tauDesktop: { ...packageMetadata.tauDesktop, channel: 'unknown' },
+    });
+  });
+
   const root = await realpath(await mkdtemp(join(tmpdir(), 'tau-mac-admission-')));
   const originalGuard = process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'];
   delete process.env['TAU_QUALIFICATION_DISPOSABLE_HOST'];

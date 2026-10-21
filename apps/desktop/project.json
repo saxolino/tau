@@ -583,6 +583,13 @@
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-macos.test.mts"
       }
     },
+    "test-qualification-metadata": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-metadata.test.mts"
+      }
+    },
     "test-qualification-evidence": {
       "executor": "nx:run-commands",
       "options": {

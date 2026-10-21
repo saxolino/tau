@@ -74,8 +74,14 @@ const executeInstaller = (path: string, args: string[]): void => {
 };
 const packageSchema = z.object({
   version: z.string(),
-  tauDesktop: z.object({ channel: z.string(), sourceCommit: z.string(), environmentOverrides: z.literal(false) }),
+  tauDesktop: z.object({
+    channel: z.enum(['production', 'staging']).default('production'),
+    sourceCommit: z.string(),
+    environmentOverrides: z.literal(false).optional(),
+  }),
 });
+/** Admission mirrors desktopManifestFields: production and disabled overrides are omitted. */
+export const windowsQualificationPackageSchema = packageSchema;
 
 /** Check exact installer bytes before granting the native installer any execution authority. */
 export const verifyWindowsQualificationArtifact = async (candidate: QualificationCandidate): Promise<string> => {

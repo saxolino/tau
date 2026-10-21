@@ -54,8 +54,15 @@ const hashFile = async (path: string): Promise<string> => {
 };
 const packageSchema = z.object({
   version: z.string(),
-  tauDesktop: z.object({ channel: z.string(), sourceCommit: z.string(), environmentOverrides: z.literal(false) }),
+  tauDesktop: z.object({
+    channel: z.enum(['production', 'staging']).default('production'),
+    sourceCommit: z.string(),
+    environmentOverrides: z.literal(false).optional(),
+  }),
 });
+/** Admission mirrors desktopManifestFields: production and disabled overrides are omitted. */
+export const linuxQualificationPackageSchema = packageSchema;
+
 const installedIdentity = async (
   candidate: QualificationCandidate,
   root: string,
@@ -334,25 +341,61 @@ const processStartTime = async (pid: number): Promise<string> => {
   const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
   return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]!;
 };
-const readUnattendedPackageLog = async (
-  unattendedLog: string,
+const unattendedLogSnapshot = (): { ino: number; size: number } | undefined => {
+  const value: unknown = JSON.parse(
+    command('sudo', [
+      '-n',
+      'python3',
+      '-c',
+      `
+import json, os, stat
+path = '/var/log/unattended-upgrades/unattended-upgrades-dpkg.log'
+try:
+    info = os.lstat(path)
+except FileNotFoundError:
+    print('null')
+else:
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError('Unattended log is not a regular file')
+    print(json.dumps({'ino': info.st_ino, 'size': info.st_size}))
+`,
+    ]),
+  );
+  return (
+    z.object({ ino: z.number().int().nonnegative(), size: z.number().int().nonnegative() }).nullable().parse(value) ??
+    undefined
+  );
+};
+const readUnattendedPackageLog = (
   before: { ino: number; size: number } | undefined,
   candidate: QualificationCandidate,
-): Promise<string> => {
-  const logAfter = await lstat(unattendedLog);
-  const logOffset = before?.ino === logAfter.ino ? before.size : 0;
-  const logSize = logAfter.size - logOffset;
-  if (!logAfter.isFile() || logSize <= 0 || logSize > 8 * 1024 * 1024) {
-    throw new QualificationUnavailable('Bounded new unattended package log unavailable');
-  }
+): string => {
+  // The known log directory can be root-only. Limit elevated access to this one path and bounded new bytes.
   const packageLog = command('sudo', [
     '-n',
-    'dd',
-    `if=${unattendedLog}`,
-    'iflag=skip_bytes,count_bytes',
-    `skip=${logOffset}`,
-    `count=${logSize}`,
-    'status=none',
+    'python3',
+    '-c',
+    `
+import json, os, stat, sys
+path = '/var/log/unattended-upgrades/unattended-upgrades-dpkg.log'
+before = json.loads(sys.argv[1])
+fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    info = os.fstat(fd)
+    offset = before['size'] if before and before['ino'] == info.st_ino else 0
+    size = info.st_size - offset
+    if not stat.S_ISREG(info.st_mode) or size <= 0 or size > 8 * 1024 * 1024:
+        raise RuntimeError('Bounded new unattended package log unavailable')
+    os.lseek(fd, offset, os.SEEK_SET)
+    with os.fdopen(fd, 'rb', closefd=False) as stream:
+        data = stream.read(size)
+    if len(data) != size:
+        raise RuntimeError('Unattended log changed during read')
+    sys.stdout.buffer.write(data)
+finally:
+    os.close(fd)
+`,
+    JSON.stringify(before ?? null),
   ]);
   const packageName = candidate.manifest.channel === 'staging' ? 'tau-staging' : 'tau';
   if (
@@ -543,8 +586,7 @@ export const createLinuxAptQualificationDriver = (
         '--property=InvocationID',
         '--value',
       ]);
-      const unattendedLog = '/var/log/unattended-upgrades/unattended-upgrades-dpkg.log';
-      const logBefore = await lstat(unattendedLog).catch(() => undefined);
+      const logBefore = unattendedLogSnapshot();
       const since = new Date().toISOString();
       await request.publishSnapshot();
       await waitForScheduledAptCompletion(async () => {
@@ -572,7 +614,7 @@ export const createLinuxAptQualificationDriver = (
         '--no-pager',
         '--output=json',
       ]);
-      const packageLog = await readUnattendedPackageLog(unattendedLog, logBefore, candidate);
+      const packageLog = readUnattendedPackageLog(logBefore, candidate);
       if (!invocation || invocation === beforeInvocation || result !== 'success' || !journal.includes(invocation)) {
         throw new QualificationUnavailable('No new successful real unattended scheduler invocation observed');
       }
@@ -601,6 +643,28 @@ export const createLinuxAptQualificationDriver = (
         '--yes',
         current.manifest.channel === 'staging' ? 'tau-staging' : 'tau',
       ]);
+      const selector = current.manifest.channel === 'staging' ? 'tau-staging' : 'tau';
+      const remaining = command('dpkg-query', [
+        '-W',
+        // oxlint-disable-next-line no-template-curly-in-string -- dpkg-query owns this format.
+        '-f=${binary:Package} ${db:Status-Status}\n',
+      ]);
+      if (remaining.split('\n').some((line) => line === `${selector} installed`)) {
+        throw new Error('APT selector remains installed after removal');
+      }
+      await Promise.all(
+        [`/usr/bin/${selector}`, `/usr/share/applications/${selector}.desktop`].map(async (path) => {
+          const info = await lstat(path).catch((error: unknown) => {
+            if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+              return undefined;
+            }
+            throw error;
+          });
+          if (info) {
+            throw new Error('APT selector launcher or desktop entry remains after removal');
+          }
+        }),
+      );
       await preserve(files);
     },
   };

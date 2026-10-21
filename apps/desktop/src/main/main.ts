@@ -110,6 +110,7 @@ import { readGeneratedImage } from '#main/generated-image.js';
 import { createBambuStudioService } from '#main/bambu-studio-service.js';
 import { readWindowState, writeWindowState } from '#main/window-state.js';
 import { prepareOtaProbe } from '#main/ota-probe.js';
+import { initializeDesktopErrorReporting } from '#main/error-reporting.js';
 import { prepareRouteQualificationProbe } from '#main/route-qualification-probe.js';
 import { parseDesktopInstallation } from '#main/update-identity.js';
 import { z } from 'zod';
@@ -234,6 +235,8 @@ if (routeQualification) {
   app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
   app.commandLine.appendSwitch('remote-debugging-port', '0');
 }
+// Crashpad may create profile files, so initialize only after the pristine probe admission above.
+initializeDesktopErrorReporting();
 const isDevelopment = process.env.ELECTRON_RENDERER_URL !== undefined;
 const hideTestWindow = process.env['TAU_E2E_HIDE_WINDOW'] === '1';
 /* Packaged executable launches skip Playwright's readiness loader. Hold window
