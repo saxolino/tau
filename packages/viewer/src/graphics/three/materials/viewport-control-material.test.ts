@@ -6,14 +6,17 @@ import {
 } from '#graphics/three/materials/viewport-control-material.js';
 
 describe('viewport-control-material', () => {
-  it('should create transparent depth-disabled basic material for overlay labels', () => {
-    const material = createViewportControlLabelMaterial({ map: new Texture() });
+  it.each(['webgl', 'webgpu'] as const)(
+    'should create transparent depth-disabled %s material for overlay labels',
+    (backend) => {
+      const material = createViewportControlLabelMaterial({ map: new Texture(), backend });
 
-    expect(material.transparent).toBe(true);
-    expect(material.depthTest).toBe(false);
-    expect(material.depthWrite).toBe(false);
-    expect(material.toneMapped).toBe(false);
-  });
+      expect(material.transparent).toBe(true);
+      expect(material.depthTest).toBe(false);
+      expect(material.depthWrite).toBe(false);
+      expect(material.toneMapped).toBe(false);
+    },
+  );
 
   it('should create blended depth-compatible basic material for selector labels', () => {
     const material = createViewportControlSelectorLabelMaterial({ map: new Texture() });

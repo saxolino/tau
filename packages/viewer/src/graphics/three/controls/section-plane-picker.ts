@@ -135,7 +135,7 @@ const labelDistance = tileDistance + 0.06;
 export const createSectionPlanePicker = (backend: ResolvedGraphicsBackend = 'webgl'): SectionPlanePicker => {
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1.05, 1.05, 1.05, -1.05, 0.1, 20);
-  const labelMaterial = createViewportControlLabelMaterial({ map: getSelectorLabelAtlasTexture() });
+  const labelMaterial = createViewportControlLabelMaterial({ map: getSelectorLabelAtlasTexture(), backend });
   const tiles = planes.map((plane) => {
     const axis = sectionPlaneAxes[plane];
     const color = sectionAxisColors[axis];
