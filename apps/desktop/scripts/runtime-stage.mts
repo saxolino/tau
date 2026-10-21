@@ -187,6 +187,7 @@ export const resolveRuntimePackages = async (
     [
       '@gltf-transform/core',
       '@gltf-transform/functions',
+      'electron-updater',
       'fflate',
       'uint8array-extras',
       'xstate',

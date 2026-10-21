@@ -423,6 +423,63 @@
         "cwd": ".",
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/macos-dmg.test.mts"
       }
+    },
+    "test-appimage-transaction": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/appimage-transaction.test.mts"
+      }
+    },
+    "make-windows-installer": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-windows.mts"
+      }
+    },
+    "make-linux-deb": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-linux-deb.mts"
+      }
+    },
+    "make-appimage": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/package-appimage.mts"
+      }
+    },
+    "test-linux-apt-package": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/linux-apt-package.test.mts"
+      }
+    },
+    "test-appimage-package": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/appimage-package.test.mts"
+      }
+    },
+    "test-windows-package": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/windows-package.test.mts"
+      }
+    },
+    "test-apt-enrollment": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/configure-linux-apt.test.mts"
+      }
     }
   }
 }

@@ -25,6 +25,8 @@ allowBuilds:
   canvas: false
   core-js: true
   electron: true
+  # NSIS uses builder directly; its optional Squirrel.Windows maker is not used.
+  electron-winstaller: false
   esbuild: true
   less: false
   netlify-cli: false
@@ -341,6 +343,8 @@ catalog:
   '@napi-rs/keyring': 2.1.2
   proper-lockfile: 4.1.2
   '@types/proper-lockfile': 4.1.4
+  electron-updater: 6.8.11
+  electron-builder: 26.18.0
 catalogs:
   electron-vite7:
     electron-vite: 5.0.0
@@ -426,6 +430,12 @@ minimumReleaseAgeExclude:
   - '@agentclientprotocol/sdk@1.4.0'
   - '@agentclientprotocol/claude-agent-acp@0.70.0'
   - '@agentclientprotocol/codex-acp@1.7.0'
+  - electron-updater@6.8.11
+  - app-builder-lib@26.18.0
+  - dmg-builder@26.18.0
+  - electron-builder-squirrel-windows@26.18.0
+  - electron-builder@26.18.0
+  - electron-publish@26.18.0
 peerDependencyRules:
   allowedVersions:
     fumadocs-mdx>vite: ^8.0.0
