@@ -4,6 +4,7 @@ import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
 import { reversedDepthTransparentSort } from '#graphics/three/reversed-depth-transparent-sort.js';
 import { syncGltfSurfaceDepthBias } from '#graphics/three/materials/gltf-surface-depth-bias.js';
 import { installWebGpuDepthSampling } from '#graphics/three/webgpu-depth-sampling.js';
+import { installWebGpuStencilState } from '#graphics/three/webgpu-stencil-state.js';
 import { WebGpuInitializationError } from '#graphics/three/webgpu-initialization-error.js';
 
 /**
@@ -75,6 +76,7 @@ const isShowcaseTarget = (surface: HTMLCanvasElement | OffscreenCanvas | Rendere
 async function initWebGpuIfNeeded(renderer: WebGpuRenderer): Promise<void> {
   await renderer.init();
   installWebGpuDepthSampling(renderer);
+  installWebGpuStencilState(renderer);
 }
 
 const destroyAllocatedDevice = (backend: WebGpuRenderer['backend']): void => {
