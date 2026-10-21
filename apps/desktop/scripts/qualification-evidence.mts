@@ -86,6 +86,14 @@ export type QualificationEvidence = {
       after: QualificationInstallation;
       exitedPid: number;
     };
+    reinstall: {
+      installed: QualificationInstallation;
+      files: readonly QualificationPreservedFile[];
+      mainPid: number;
+      projectPath: string;
+      projectSha256: string;
+      exportSha256: string;
+    };
     uninstall: {
       before: readonly QualificationPreservedFile[];
       after: readonly QualificationPreservedFile[];
@@ -93,7 +101,11 @@ export type QualificationEvidence = {
       existsAfter: boolean;
     };
   };
-  scheduler?: ReadonlyArray<Awaited<ReturnType<LinuxAptQualificationDriver['waitForScheduledUpgrade']>>>;
+  scheduler?: ReadonlyArray<
+    Awaited<ReturnType<LinuxAptQualificationDriver['waitForScheduledUpgrade']>> & {
+      activeSession: { pid: number; projectSha256: string; exportSha256: string; vertices: number };
+    }
+  >;
   mirrorRequests: ReadonlyArray<{ path: string; status: number; at: number }>;
   logs: string;
   suite: string;
@@ -384,9 +396,25 @@ export const collectQualificationReceipt = (input: QualificationEvidence): Deskt
   const removedEntry =
     input.route === 'linux-apt'
       ? `/usr/bin/tau${c.candidate.channel === 'staging' ? '-staging' : ''}`
-      : input.route.startsWith('macos-')
-        ? dirname(dirname(dirname(c.installed.installationPath)))
-        : c.installed.installationPath;
+      : input.route === 'windows-nsis'
+        ? c.installed.executablePath
+        : input.route.startsWith('macos-')
+          ? dirname(dirname(dirname(c.installed.installationPath)))
+          : c.installed.installationPath;
+  const reinstalled = input.lifecycle.reinstall;
+  requireEvidence(
+    equalInstallation(reinstalled.installed, c.installed) &&
+      reinstalled.mainPid !== c.probe.pid &&
+      Number.isSafeInteger(reinstalled.mainPid) &&
+      reinstalled.mainPid > 0 &&
+      reinstalled.projectPath === c.renderer.projectPath &&
+      reinstalled.projectSha256 === c.renderer.projectSha256 &&
+      /^[a-f\d]{64}$/u.test(reinstalled.exportSha256) &&
+      removed.before.every((file) =>
+        reinstalled.files.some((after) => after.path === file.path && after.sha256 === file.sha256),
+      ),
+    'reinstall did not preserve the authenticated candidate and saved project',
+  );
   const sentinelHash = createHash('sha256').update(c.probe.profileSentinel).digest('hex');
   requireEvidence(
     removed.removedInstallationPath === removedEntry,
@@ -417,6 +445,10 @@ export const collectQualificationReceipt = (input: QualificationEvidence): Deskt
       const after = input.stages[index + 1]!;
       requireEvidence(
         event.retained.pid === before.probe.pid &&
+          event.activeSession.pid === before.probe.pid &&
+          event.activeSession.projectSha256 === before.renderer.projectSha256 &&
+          /^[a-f\d]{64}$/u.test(event.activeSession.exportSha256) &&
+          event.activeSession.vertices >= 3 &&
           event.retained.resourceSha256.length === 64 &&
           equalInstallation(event.installation, after.installed) &&
           event.retained.executable === before.installed.executablePath &&

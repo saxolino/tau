@@ -576,11 +576,67 @@
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/renew-desktop-apt.test.mts"
       }
     },
+    "qualify-installed-route": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualify-desktop-route.mts"
+      }
+    },
+    "collect-qualification-rows": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/collect-qualification-rows.mts"
+      }
+    },
+    "cleanup-qualification-trust": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/cleanup-qualification-trust.mts"
+      }
+    },
+    "test-qualification-tls": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-tls.test.mts"
+      }
+    },
+    "test-qualification-probe-process": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-probe-process.test.mts"
+      }
+    },
+    "test-qualification-mirror": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register --test apps/desktop/scripts/qualification-mirror.test.mts"
+      }
+    },
     "test-qualification-macos": {
       "executor": "nx:run-commands",
       "options": {
         "cwd": ".",
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-macos.test.mts"
+      }
+    },
+    "test-collect-qualification-rows": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/collect-qualification-rows.test.mts"
+      }
+    },
+    "test-qualification-apt-mirror": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-apt-mirror.test.mts"
       }
     },
     "test-qualification-metadata": {

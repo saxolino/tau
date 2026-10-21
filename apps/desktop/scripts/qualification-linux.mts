@@ -12,7 +12,7 @@ import { parseDesktopInstallation } from '#main/update-identity.js';
 import { parseDesktopArtifactManifest } from '#shared/desktop-release.js';
 /* oxlint-disable no-restricted-imports -- Adjacent qualification and APT snapshot owners provide shared contracts. */
 import { readDesktopAptSnapshot } from './desktop-apt-publication.mjs';
-import { QualificationUnavailable } from './qualification-platform-types.mjs';
+import { createQualificationReinstallGuard, QualificationUnavailable } from './qualification-platform-types.mjs';
 import type {
   QualificationCandidate,
   QualificationDriverOptions,
@@ -221,6 +221,7 @@ export const createLinuxAppImageQualificationDriver = (
   if (!isAbsolute(options.installationPath)) {
     throw new Error('AppImage qualification requires absolute stable outer path');
   }
+  const lifecycle = createQualificationReinstallGuard();
   let installed = false;
   const observe: QualificationPlatformDriver['observe'] = async (candidate) => {
     host();
@@ -245,6 +246,7 @@ export const createLinuxAppImageQualificationDriver = (
         throw new QualificationUnavailable(`AppImage extraction failed: ${extracted.stderr}`);
       }
       const identity = await installedIdentity(candidate, join(scratch, 'squashfs-root'), options.mode);
+      lifecycle.observed(candidate);
       return {
         ...identity,
         executablePath: options.installationPath,
@@ -276,15 +278,29 @@ export const createLinuxAppImageQualificationDriver = (
       await copyFile(path, options.installationPath, constants.COPYFILE_EXCL);
       await chmod(options.installationPath, 0o755);
       installed = true;
+      lifecycle.installed();
       return observe(candidate);
+    },
+    async reinstall(candidate, files) {
+      host();
+      lifecycle.admit(candidate, files);
+      await preserve(files);
+      const path = await verifyArtifact(candidate, 'linux-appimage');
+      await copyFile(path, options.installationPath, constants.COPYFILE_EXCL);
+      await chmod(options.installationPath, 0o755);
+      const observation = await observe(candidate);
+      await preserve(files);
+      return observation;
     },
     observe,
     measureSecurity,
     async remove(files) {
+      lifecycle.assertRemoval();
       host();
       await preserve(files);
       await rm(options.installationPath);
       await preserve(files);
+      lifecycle.removed(files);
     },
   };
 };
@@ -419,8 +435,10 @@ export const createLinuxAptQualificationDriver = (
     throw new QualificationUnavailable('APT qualification application runner must be an ordinary user');
   }
   command('sudo', ['-n', 'true']);
+  const lifecycle = createQualificationReinstallGuard();
   let installed = false;
   let current: QualificationCandidate | undefined;
+  let currentRepository = options.repository;
   const authenticate = async (
     candidate: QualificationCandidate,
     repository: AptQualificationRepository,
@@ -488,6 +506,7 @@ export const createLinuxAptQualificationDriver = (
       throw new Error('Installed APT payload differs from authenticated runtime package');
     }
     current = candidate;
+    lifecycle.observed(candidate);
     return {
       ...identity,
       measurements: {
@@ -552,11 +571,24 @@ export const createLinuxAptQualificationDriver = (
       );
       command('sudo', ['-n', 'apt-get', 'install', '--yes', '--no-install-recommends', ...paths]);
       installed = true;
+      lifecycle.installed();
       return observe(candidate);
     },
     observe,
     measureSecurity,
     captureActiveRuntime,
+    async reinstall(candidate, files) {
+      lifecycle.admit(candidate, files);
+      await preserve(files);
+      await authenticate(candidate, currentRepository);
+      const paths = await Promise.all(
+        ['linux-deb-runtime', 'linux-deb-selector'].map(async (kind) => verifyArtifact(candidate, kind)),
+      );
+      command('sudo', ['-n', 'apt-get', 'install', '--yes', '--no-install-recommends', ...paths]);
+      const observation = await observe(candidate);
+      await preserve(files);
+      return observation;
+    },
     async waitForScheduledUpgrade(request) {
       const { candidate, repository, baseline, upgradeTimeout } = request;
       validateUpgradeTimeout(upgradeTimeout);
@@ -598,6 +630,7 @@ export const createLinuxAptQualificationDriver = (
         };
       }, upgradeTimeout);
       const installation = await observe(candidate);
+      currentRepository = repository;
       const invocation = command('systemctl', [
         'show',
         'apt-daily-upgrade.service',
@@ -632,6 +665,7 @@ export const createLinuxAptQualificationDriver = (
       };
     },
     async remove(files) {
+      lifecycle.assertRemoval();
       if (!current) {
         throw new Error('No APT installation observed');
       }
@@ -666,6 +700,7 @@ export const createLinuxAptQualificationDriver = (
         }),
       );
       await preserve(files);
+      lifecycle.removed(files);
     },
   };
 };

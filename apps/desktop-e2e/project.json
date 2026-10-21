@@ -10,6 +10,13 @@
     "test": {
       "executor": "nx:noop"
     },
+    "test:qualification-quit": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register apps/desktop-e2e/scripts/qualification-quit.test.mts"
+      }
+    },
     "test:harness": {
       "executor": "nx:run-commands",
       "options": {

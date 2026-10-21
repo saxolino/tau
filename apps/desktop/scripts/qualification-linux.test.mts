@@ -142,9 +142,18 @@ const main = async (): Promise<void> => {
     await writeFile(installed, data);
     const profile = join(root, 'project.json');
     await writeFile(profile, 'preserved');
-    await driver.remove([{ path: profile, sha256: createHash('sha256').update('preserved').digest('hex') }]);
+    const retained = [{ path: profile, sha256: createHash('sha256').update('preserved').digest('hex') }];
+    await assert.rejects(driver.reinstall(candidate, retained), /own completed removal/u);
+    await driver.remove(retained);
     assert.equal(await readFile(profile, 'utf8'), 'preserved');
     await assert.rejects(readFile(installed), { code: 'ENOENT' });
+    await assert.rejects(
+      driver.reinstall({ ...candidate, manifest: { ...manifest, sourceCommit: 'b'.repeat(40) } }, retained),
+      /exact last observed candidate/u,
+    );
+    assert.deepEqual(await driver.reinstall(candidate, retained), observed);
+    assert.equal(await readFile(profile, 'utf8'), 'preserved');
+    await driver.remove(retained);
     const stage = join(root, 'deb-stage');
     await mkdir(join(stage, 'DEBIAN'), { recursive: true });
     await writeFile(

@@ -119,6 +119,14 @@ const fixture = (): QualificationEvidence => {
     target: 'win32-x64',
     stages: [a, b, c],
     lifecycle: {
+      reinstall: {
+        installed: c.installed,
+        files: preserved,
+        mainPid: 999,
+        projectPath: c.renderer.projectPath,
+        projectSha256: c.renderer.projectSha256,
+        exportSha256: hash(80),
+      },
       ordinaryQuit: {
         probe: { ...a.probe, pid: 50, rendererPid: 51, action: 'observe', observedAt: 500 },
         before: { ...a.installed },
@@ -128,7 +136,7 @@ const fixture = (): QualificationEvidence => {
       uninstall: {
         before: preserved,
         after: [...preserved],
-        removedInstallationPath: '/installed',
+        removedInstallationPath: '/installed/Tau.exe',
         existsAfter: false,
       },
     },
@@ -141,6 +149,7 @@ const fixture = (): QualificationEvidence => {
 const platformFixture = (route: 'macos-zip' | 'macos-dmg' | 'linux-appimage' | 'linux-apt'): QualificationEvidence => {
   const input = fixture();
   const mac = route.startsWith('macos-');
+  input.lifecycle.uninstall.removedInstallationPath = '/installed';
   input.route = route;
   input.target = mac ? 'darwin-x64' : 'linux-x64';
   for (const stage of input.stages) {
@@ -234,6 +243,12 @@ const platformFixture = (route: 'macos-zip' | 'macos-dmg' | 'linux-appimage' | '
   if (route === 'linux-apt') {
     input.scheduler = [0, 1].map((index) => ({
       installation: input.stages[index + 1]!.installed,
+      activeSession: {
+        pid: input.stages[index]!.probe.pid,
+        projectSha256: input.stages[index]!.renderer.projectSha256,
+        exportSha256: hash(81),
+        vertices: 48,
+      },
       retained: {
         pid: input.stages[index]!.probe.pid,
         startTime: '12345',
@@ -254,6 +269,9 @@ const platformFixture = (route: 'macos-zip' | 'macos-dmg' | 'linux-appimage' | '
   return input;
 };
 const main = (): void => {
+  const missingReinstall = fixture();
+  missingReinstall.lifecycle.reinstall.projectSha256 = hash(100);
+  assert.throws(() => collectQualificationReceipt(missingReinstall), /reinstall/u);
   const admitted = collectQualificationReceipt(fixture());
   assert.equal(admitted.version, '1.0.3');
   assert.equal(admitted.environment.kind, 'ci');
