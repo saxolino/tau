@@ -1,4 +1,5 @@
-import { uint8ArrayToBase64 } from 'uint8array-extras';
+import { base64ToUint8Array, uint8ArrayToBase64 } from 'uint8array-extras';
+import { downloadBlob } from '@taucad/utils/file';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useActorRef, useSelector } from '@xstate/react';
 import type { ActorRefFrom } from 'xstate';
@@ -25,6 +26,7 @@ import { defaultGraphicsSettings } from '@taucad/viewer/graphics/graphics-settin
 import {
   GraphicsProvider,
   useCameraRig,
+  useGraphics,
   useGraphicsSelector,
   useKinematicsRef,
   useRenderFrame,
@@ -208,6 +210,7 @@ function CalibrationProbe({
   const { gl, scene, invalidate, size, setDpr } = useThree();
   const gpuTimer = useRef<FrameGpuTimer | undefined>(undefined);
   const rig = useCameraRig();
+  const graphics = useGraphics();
   const kinematicsRef = useKinematicsRef();
   const viewerBounds = useMemo(
     () => applyCanonicalGltfBounds(new Box3(new Vector3(...fixture.bounds.min), new Vector3(...fixture.bounds.max))),
@@ -216,6 +219,8 @@ function CalibrationProbe({
   const renderFrame = useRenderFrame();
   const presented = useGraphicsSelector((state) => state.context.gltfPresentation.presentedRevision);
   const requested = useGraphicsSelector((state) => state.context.gltfPresentation.requestedRevision);
+  const sectionCuts = useGraphicsSelector((snapshot) => snapshot.context.sectionCuts);
+  const committedSectionCuts = useGraphicsSelector((snapshot) => snapshot.context.committedSectionCuts);
   /* What the probe is asked to measure. The frame loop restarts when this changes. */
   const measurement = useMemo(
     () => ({
@@ -225,11 +230,25 @@ function CalibrationProbe({
       metadata,
       pixelRatio,
       presented,
+      sectionCuts,
+      committedSectionCuts,
       measurementMode,
       width: size.width,
       height: size.height,
     }),
-    [benchmark, cameraSettings, capture, metadata, pixelRatio, presented, measurementMode, size.width, size.height],
+    [
+      benchmark,
+      cameraSettings,
+      capture,
+      metadata,
+      pixelRatio,
+      presented,
+      sectionCuts,
+      committedSectionCuts,
+      measurementMode,
+      size.width,
+      size.height,
+    ],
   );
   const state = useRef({
     measurement,
@@ -259,6 +278,16 @@ function CalibrationProbe({
     unfocusedFrames: 0,
   });
   const report = useCallback((): Record<string, unknown> => {
+    const section = graphics.getSnapshot().context;
+    const sectionReady =
+      !section.isSectionViewActive ||
+      JSON.stringify(section.sectionCuts) === JSON.stringify(section.committedSectionCuts);
+    const capCompleteness: unknown[] = [];
+    scene.traverse((object) => {
+      if (object.userData['sectionCapCompleteness']) {
+        capCompleteness.push(object.userData['sectionCapCompleteness']);
+      }
+    });
     const context = gl instanceof WebGLRenderer ? gl.getContext() : undefined;
     const debug = context?.getExtension('WEBGL_debug_renderer_info');
     const nodeRenderer = gl instanceof WebGPURenderer ? gl : undefined;
@@ -270,10 +299,18 @@ function CalibrationProbe({
     return {
       ...metadata,
       geometryHash: fixture.sha256,
+      section: {
+        active: section.isSectionViewActive,
+        requested: section.sectionCuts,
+        committed: section.committedSectionCuts,
+        ready: sectionReady,
+        caps: capCompleteness,
+      },
       ready:
         state.current.appliedCamera === cameraSettings.revision &&
         requested === presented &&
-        gl.getPixelRatio() === pixelRatio,
+        gl.getPixelRatio() === pixelRatio &&
+        sectionReady,
       fixture: { id: fixture.id, sha256: fixture.sha256, stats: fixture.stats },
       threeRevision: REVISION,
       buildId: typeof tauBuildId === 'number' ? String(tauBuildId) : undefined,
@@ -332,6 +369,8 @@ function CalibrationProbe({
     fixture,
     gl,
     metadata,
+    graphics,
+    scene,
     measurementMode,
     pixelRatio,
     presented,
@@ -644,6 +683,14 @@ function CalibrationProbe({
     }
     current.previous = current.start;
     if (capture.sequence !== current.capture && current.frame > 8 && requested === presented) {
+      const section = graphics.getSnapshot().context;
+      if (
+        section.isSectionViewActive &&
+        JSON.stringify(section.sectionCuts) !== JSON.stringify(section.committedSectionCuts)
+      ) {
+        invalidate();
+        return;
+      }
       current.capture = capture.sequence;
       const captureMetadata = report();
       const saveCapture = async (): Promise<void> => {
@@ -654,6 +701,16 @@ function CalibrationProbe({
             capture.name === 'lighting-assets' && gl instanceof WebGLRenderer
               ? await captureEnvironment(gl, scene)
               : undefined;
+          if (globalThis.location.protocol === 'app:') {
+            // The packaged app has no calibration HTTP server. Use the same
+            // local download owner as ordinary exports; no data leaves the app.
+            const bytes = base64ToUint8Array(image.split(',')[1]!);
+            downloadBlob(new Blob([bytes], { type: 'image/png' }), `${capture.name}.png`);
+            current.saved = { downloadRequested: capture.name };
+            current.completedCapture = capture.sequence;
+            onReport({ ...captureMetadata, saved: current.saved, completedCaptureSequence: capture.sequence });
+            return;
+          }
           const response = await fetch('/calibration-capture', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -777,8 +834,11 @@ const CalibrationCanvas = memo(function CalibrationCanvas({
 });
 
 export function RenderingProfile(): React.JSX.Element {
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- SSR has no location despite the DOM declaration.
+  const packagedCapture = globalThis.location?.protocol === 'app:';
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [fixtureId, setFixtureId] = useState('f6-authored-planetary');
+  const [viewerRevision, setViewerRevision] = useState(0);
   const [geometry, setGeometry] = useState<Geometry>();
   const [showMaterials, setShowMaterials] = useState(false);
   const componentManifest = useMemo(
@@ -900,6 +960,59 @@ export function RenderingProfile(): React.JSX.Element {
       <main className='fixed inset-0 overflow-auto bg-background text-foreground'>
         <aside className='absolute top-0 left-0 h-screen w-[440px] space-y-3 overflow-auto bg-muted p-4 text-sm [&_button]:rounded [&_button]:border [&_button]:bg-background [&_button]:px-2 [&_button]:py-1 [&_input]:w-24 [&_input]:border [&_input]:bg-background [&_select]:border [&_select]:bg-background'>
           <h1 className='text-lg font-semibold'>PBR rendering calibration</h1>
+          <p aria-label='Initialized renderer summary'>
+            {JSON.stringify({
+              backend: report['effectiveBackend'],
+              buffer: report['drawingBuffer'],
+              ready: report['ready'],
+            })}
+          </p>
+          <button
+            type='button'
+            onClick={() => {
+              setViewerRevision((value) => value + 1);
+            }}
+          >
+            Remount viewer
+          </button>
+          <button
+            type='button'
+            onClick={() => {
+              downloadBlob(
+                new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }),
+                'renderer-report.json',
+              );
+            }}
+          >
+            Download report
+          </button>
+          <div>
+            {(['off', 'xz', 'xz+yz'] as const).map((cut) => (
+              <button
+                key={cut}
+                type='button'
+                onClick={() => {
+                  graphicsRef.send({
+                    type: 'adoptSectionView',
+                    section: {
+                      active: cut !== 'off',
+                      cuts:
+                        cut === 'off'
+                          ? []
+                          : [
+                              { kind: 'plane', plane: 'xz', offset: 0.01, isFlipped: false },
+                              ...(cut === 'xz+yz'
+                                ? [{ kind: 'plane', plane: 'yz', offset: 0, isFlipped: false } as const]
+                                : []),
+                            ],
+                    },
+                  });
+                }}
+              >
+                Section {cut}
+              </button>
+            ))}
+          </div>
           <fieldset disabled={isBenchmarking || isCapturing} className='contents'>
             <label className='block'>
               Measurement mode{' '}
@@ -1396,7 +1509,7 @@ export function RenderingProfile(): React.JSX.Element {
                   }));
                 }}
               >
-                Save PNG + metadata
+                {packagedCapture ? 'Save PNG (report separately)' : 'Save PNG + metadata'}
               </button>
               <button
                 type='button'
@@ -1439,6 +1552,7 @@ export function RenderingProfile(): React.JSX.Element {
         >
           {fixture && geometry?.hash === fixture.sha256 ? (
             <CalibrationCanvas
+              key={viewerRevision}
               geometry={geometry}
               fixture={fixture}
               graphicsRef={graphicsRef}
