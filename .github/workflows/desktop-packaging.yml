@@ -65,6 +65,17 @@ jobs:
         shell: bash
         run: |
           docker run --rm -e TAU_APT_DISPOSABLE_CONTAINER=1 -e TAU_APT_ENROLLMENT_SCRIPT=/configure-linux-apt.sh --mount type=bind,source="$PWD/apps/desktop/scripts/configure-linux-apt.test.mts",target=/test.mts,readonly --mount type=bind,source="$PWD/apps/desktop/scripts/configure-linux-apt.sh",target=/configure-linux-apt.sh,readonly node:24.20.0-bookworm-slim bash -c 'apt-get update -qq && apt-get install -y -qq gnupg && node /test.mts'
+      - name: Route contracts, protected publication and first-download verification
+        if: runner.os == 'Linux'
+        run: pnpm nx run-many -p desktop -t test-route-publication test-route-transport test-publication-authority test-receipt-provenance test-first-download test-installer-candidate
+      - name: Signed APT publication, interruption and metadata renewal
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for fixture in linux-apt-repository desktop-apt-publication renew-desktop-apt; do
+            pnpm exec esbuild "apps/desktop/scripts/$fixture.test.mts" --bundle --platform=node --format=esm --outfile="out/research/desktop-packaging-ci/$fixture.mjs"
+          done
+          docker run --rm -e TAU_APT_DISPOSABLE_CONTAINER=1 --mount type=bind,source="$PWD/out/research/desktop-packaging-ci",target=/fixtures,readonly node:24.20.0-bookworm-slim bash -c 'apt-get update -qq && apt-get install -y -qq gnupg && node /fixtures/linux-apt-repository.mjs && node /fixtures/desktop-apt-publication.mjs && node /fixtures/renew-desktop-apt.mjs'
       - name: Keep assembly distinct from installed qualification
         shell: bash
         run: |

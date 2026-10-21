@@ -466,11 +466,82 @@
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/appimage-package.test.mts"
       }
     },
+    "test-route-publication": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-route-publication.test.mts"
+      }
+    },
     "test-windows-package": {
       "executor": "nx:run-commands",
       "options": {
         "cwd": ".",
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/windows-package.test.mts"
+      }
+    },
+    "installer-candidate": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-installer-candidate.mts"
+      }
+    },
+    "test-installer-candidate": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-installer-candidate.test.mts"
+      }
+    },
+    "test-route-transport": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/publish-desktop-routes.test.mts"
+      }
+    },
+    "test-publication-authority": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-publication-authority.test.mts"
+      }
+    },
+    "test-receipt-provenance": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-receipt-provenance.test.mts"
+      }
+    },
+    "test-first-download": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/verify-appimage-download.test.mts"
+      }
+    },
+    "test-linux-apt-repository": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/linux-apt-repository.test.mts"
+      }
+    },
+    "test-apt-publication": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-apt-publication.test.mts"
       }
     },
     "test-apt-enrollment": {
@@ -479,6 +550,30 @@
       "options": {
         "cwd": ".",
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/configure-linux-apt.test.mts"
+      }
+    },
+    "fetch-installer-candidate": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/fetch-desktop-installer-candidate.mts"
+      }
+    },
+    "route-workflow": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/desktop-route-workflow.mts"
+      }
+    },
+    "test-apt-renewal": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/renew-desktop-apt.test.mts"
       }
     }
   }
