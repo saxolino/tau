@@ -3,7 +3,7 @@ title: 'Graphics Backend Policy'
 description: 'Dual WebGL/WebGPU Three.js rendering, portable shaders, resource ownership, interaction, backend evidence, and kernel mesh resolution'
 status: active
 created: '2026-05-07'
-updated: '2026-10-21'
+updated: '2026-10-22'
 related:
   - docs/policy/compatibility-policy.md
   - docs/research/viewer-webgpu-selector-removal.md
@@ -81,7 +81,7 @@ Draw section caps with the stencil buffer (`graphics/three/utils/section-stencil
 - **Per loop**: any other source (an open or non-manifold surface, or one shown in part). A worker slices its shown triangles when a face's plane changes, and fans over the closed loops it finds count into the stencil **even-odd**; the same cap polygon, stripes, overlap and outline then draw. Open chains are outlined in `sectionCapOpenChainColor` (`--destructive`) at the outline's width, open regions stay unfilled, and the source's materials draw both sides while it is cut, so its inside shows through them. The last landed slice stays drawn until the next lands. Overlapping shells inside one such source cancel, as even-odd does.
 - **Pending**: a source whose census has not landed is cut and outlined, uncapped, until it does.
 
-The grade is diagnostics, never interface text: it is published on the section helper's `userData`, in Tau debug, and as `renderer.section-cap-graded` spans. A census above `maxSynchronousBvhTriangles` runs in the section worker and never falls back to the main thread; a worker failure caps that source per loop. Stencil operations live only in the cap owners that `section-view-cleanup.ratchet.test.ts` names. The node scene pass carries no stencil; caps draw into the post owner’s linear frame depth/stencil target after its composite installs scene depth. Classic caps draw on the canvas after its depth bridge. Caps are not tone-mapped or ambient-occluded. Later grid/highlight draws retain cap depth, and node output encoding occurs only after all overlays.
+The grade is diagnostics, never interface text: it is published on the section helper's `userData`, in Tau debug, and as `renderer.section-cap-graded` spans. A census above `maxSynchronousBvhTriangles` runs in the section worker and never falls back to the main thread; a worker failure caps that source per loop. Stencil operations live only in the cap owners that `section-view-cleanup.ratchet.test.ts` names. On node WebGL2, the post owner shares one D24S8 attachment between the scene and composed frame; initialize or resize both targets before the authoritative scene write, clear depth/stencil for that write, and preserve them during the color-only composite. Native WebGPU retains separate scene depth and frame depth/stencil with composite depth installation. The owner retires both targets together; no independent consumer owns the shared attachment. Caps draw into the composed frame after its scene color/depth are ready. Classic caps draw on the canvas after its depth bridge. Caps are not tone-mapped or ambient-occluded. Later grid/highlight draws retain cap depth, and node output encoding occurs only after all overlays.
 
 ### 7. Preserve one viewport lifecycle
 
