@@ -34,6 +34,7 @@ export default defineConfig({
   test: {
     provide: { webGpuProfile },
     include: [
+      'src/graphics/three/shader-cache.browser.test.ts',
       'src/graphics/three/empty-viewer.browser.test.tsx',
       'src/graphics/three/node-frame-reference.browser.test.ts',
       'src/graphics/three/webgpu-depth-sampling.browser.test.ts',

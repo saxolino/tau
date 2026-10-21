@@ -91,10 +91,11 @@ export const shaderSites = [
   },
   {
     id: 'section-clip',
+    helpers: ['packages/viewer/src/graphics/three/materials/named-uniform-array.ts'],
     modules: ['packages/viewer/src/graphics/three/materials/section-clip.ts'],
     authoring: ['on-before-compile', 'tsl'],
     backends: ['webgl', 'webgpu'],
-    risks: ['camera', 'spatial-frame', 'clipping', 'lifecycle', 'hot-path', 'upstream-drift'],
+    risks: ['camera', 'spatial-frame', 'clipping', 'lifecycle', 'hot-path', 'upstream-drift', 'private-api'],
   },
   {
     id: 'fat-lines',
@@ -126,6 +127,7 @@ export const shaderSites = [
     // Internal graph and lifecycle helpers share this site's contract.
     helpers: [
       'packages/viewer/src/graphics/three/ao-normal.ts',
+      'packages/viewer/src/graphics/three/camera-preparation.ts',
       'packages/viewer/src/graphics/three/transmission-retirement.ts',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.ts',
       'packages/viewer/src/graphics/three/webgpu-stencil-state.ts',
@@ -371,16 +373,21 @@ export const shaderEvidence = {
       `${sectionClipUnit}::should take the fat-line position from the trimmed view-space segment end`,
     ],
     'generated-source': [
+      'packages/viewer/src/graphics/three/materials/named-uniform-array.test.ts::should pin the upstream uniform declaration and binding contract',
+      'packages/viewer/src/graphics/three/shader-cache.browser.test.ts::should reuse section shader source across independent owners on node %s',
       `${sectionClipUnit}::should compile the clip into the`,
       `${sectionClipUnit}::should fail compilation when a clipping chunk is`,
     ],
     'real-compile': [
+      'packages/viewer/src/graphics/three/shader-cache.browser.test.ts::should reuse section shader source across independent owners on node %s',
       `${graphicsBackendEndToEnd}::no WebGPU validation errors emit during a Birdhouse preview render`,
       `${sectionClipBrowser}::should compile and draw the clip without a shader or pipeline error`,
     ],
     pixels: [`${sectionClipBrowser}::should draw exactly what the cut model keeps, away from each boundary`],
     'depth-clipping': [`${sectionClipBrowser}::should let the backdrop show through every removed part of a surface`],
     lifecycle: [
+      'packages/viewer/src/graphics/three/materials/named-uniform-array.test.ts::should restore the builder after failed generation without sharing owner data',
+      'packages/viewer/src/graphics/three/shader-cache.browser.test.ts::should reuse section shader source across independent owners on node %s',
       `${sectionClipUnit}::should keep the clip when the surface depth bias composed under it turns off`,
       `${sectionClipUnit}::should give each viewer its own clip and refuse to share a material between them`,
       `${sectionClippingGroupUnit}::should compile the clip into every model surface, line and point on`,
@@ -497,6 +504,8 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],
     lifecycle: [
+      'packages/viewer/src/graphics/three/camera-preparation.test.ts::should cancel on input, hidden document and disposal, allowing a later eligible frame',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should prepare offscreen once and restore camera and state after failure=%s',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should preserve sampled depth and attachment stencil through resize/recreation',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should restore repeated stencil references across passes and framebuffer copies',
       'packages/viewer/src/graphics/three/transmission-retirement.test.ts::should retire only the viewport copy belonging to the disposed scene pass',

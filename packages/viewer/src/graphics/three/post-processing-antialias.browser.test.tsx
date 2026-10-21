@@ -38,6 +38,7 @@ import { measureEmphasisPixels } from '#graphics/three/materials/model-emphasis-
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 import { createSectionStencilCaps } from '#graphics/three/utils/section-stencil-caps.js';
 import type * as rendererModule from '#graphics/three/renderer.js';
+import type * as preparationModule from '#graphics/three/camera-preparation.js';
 import {
   captureRendererOutput as captureInstalledRendererOutput,
   disposeRendererOutput as disposeInstalledRendererOutput,
@@ -45,10 +46,32 @@ import {
 } from '@taucad/runtime-testing/browser/three-renderer-output';
 
 const referenceMode = vi.hoisted(() => ({
+  manualPreparation: false,
+  preparations: new Set<() => boolean>(),
   forceNodeWebGl2: false,
   validationErrors: [] as string[],
   removeObservers: [] as Array<() => void>,
 }));
+
+// Control only scheduling; preparation still executes the actual production graph.
+vi.mock('#graphics/three/camera-preparation.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof preparationModule>();
+  return {
+    ...actual,
+    scheduleCameraPreparation: (...args: Parameters<typeof actual.scheduleCameraPreparation>) => {
+      if (!referenceMode.manualPreparation) {
+        return actual.scheduleCameraPreparation(...args);
+      }
+      referenceMode.preparations.add(args[1]);
+      return {
+        onFrame: () => undefined,
+        dispose: () => {
+          referenceMode.preparations.delete(args[1]);
+        },
+      };
+    },
+  };
+});
 
 const captureRendererOutput = async (renderer: rendererModule.RendererInstance): Promise<Uint8ClampedArray> => {
   if (isViewportWebGpu(renderer) && renderer.backend instanceof WebGLBackend) {
@@ -1313,10 +1336,13 @@ it.each([false, true])(
 );
 
 it.each(
-  (['webgpu', 'node-webgl2'] as const).flatMap((execution) => [384, 5120].map((width) => ({ execution, width }))),
+  (['webgpu', 'node-webgl2'] as const).flatMap((execution) =>
+    [384, 5120].flatMap((width) => [0, 1].map((transmission) => ({ execution, width, transmission }))),
+  ),
 )(
-  'should retain transmissive composition and bounded resources across camera switches: $execution width $width',
-  async ({ execution, width }) => {
+  'should retain transmissive composition and bounded resources across camera switches: $execution width $width transmission $transmission',
+  async ({ execution, width, transmission }) => {
+    referenceMode.manualPreparation = true;
     const height = width === 5120 ? 2880 : 256;
     referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
     await page.viewport(600, 500);
@@ -1399,7 +1425,7 @@ it.each(
             </mesh>
             <mesh>
               <boxGeometry args={[1.5, 1.5, 0.5]} />
-              <meshPhysicalMaterial transmission={1} thickness={0.5} roughness={0.2} side={DoubleSide} />
+              <meshPhysicalMaterial transmission={transmission} thickness={0.5} roughness={0.2} side={DoubleSide} />
             </mesh>
             <mesh position={[0.7, -0.4, 0.5]}>
               <boxGeometry args={[0.5, 0.5, 0.5]} />
@@ -1425,6 +1451,30 @@ it.each(
         throw new Error('Expected initialized node renderer');
       }
       expect(renderer.backend instanceof WebGLBackend).toBe(execution === 'node-webgl2');
+      const initial = await capture();
+      retired = true;
+      await pending;
+      const targetBefore = renderer.getRenderTarget();
+      const texturesBefore = renderer.info.memory.textures;
+      const callsBefore = renderer.info.render.calls;
+      expect(referenceMode.preparations.size).toBe(1);
+      for (const prepare of referenceMode.preparations) {
+        expect(prepare()).toBe(true);
+      }
+      expect(renderer.getRenderTarget()).toBe(targetBefore);
+      expect(renderer.info.memory.textures).toBe(texturesBefore);
+      expect(renderer.info.render.calls > callsBefore).toBe(transmission === 0);
+      const untouchedCanvas = await captureRendererOutput(renderer);
+      const changedChannels = (image: Uint8ClampedArray): number => {
+        let changed = 0;
+        for (const [index, value] of image.entries()) {
+          changed += Number(value !== initial[index]);
+        }
+        return changed;
+      };
+      expect(changedChannels(untouchedCanvas), 'Preparation must not draw to the visible canvas').toBe(0);
+      retired = false;
+      expect(changedChannels(await capture()), 'The following live frame must restore the active camera').toBe(0);
       const expected = new Map<number, Uint8ClampedArray>();
       let warmedTextures = 0;
       for (const [index, fov] of [0, 45, 0, 45, 0, 45].entries()) {
@@ -1485,6 +1535,8 @@ it.each(
       }
       cleanup();
       actor.stop();
+      referenceMode.manualPreparation = false;
+      expect(referenceMode.preparations.size).toBe(0);
     }
   },
 );

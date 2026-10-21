@@ -1,20 +1,9 @@
 /* oxlint-disable new-cap -- three/tsl `Fn`/`If`/`Loop`/`Break` are shader graph factories */
+import { namedUniformArray } from '#graphics/three/materials/named-uniform-array.js';
 import { Vector2, Vector4 } from 'three';
 import type { Material, Object3D, WebGLProgramParametersWithUniforms, WebGLRenderer } from 'three';
 import type { Node } from 'three/webgpu';
-import {
-  bool,
-  Break,
-  cameraWorldMatrix,
-  float,
-  Fn,
-  If,
-  Loop,
-  positionView,
-  uniform,
-  uniformArray,
-  vec4,
-} from 'three/tsl';
+import { bool, Break, cameraWorldMatrix, float, Fn, If, Loop, positionView, uniform, vec4 } from 'three/tsl';
 import { maxSectionPieces } from '#graphics/section-cuts.js';
 import type { SectionPiece } from '#graphics/section-cuts.js';
 import type { ResolvedGraphicsBackend } from '#graphics/graphics-settings.js';
@@ -98,8 +87,8 @@ const appendAfterChunk = (source: string, anchor: string, addition: string): str
 const createSectionClipMask = ({ settings, first, second }: SectionClipStorage): Node<'bool'> => {
   const clip = uniform(settings);
   // The arrays are read by reference each frame, so writing their vectors in place is the whole update.
-  const firstHalfSpaces = uniformArray<'vec4'>(first as Vector4[], 'vec4');
-  const secondHalfSpaces = uniformArray<'vec4'>(second as Vector4[], 'vec4');
+  const firstHalfSpaces = namedUniformArray(first as Vector4[], 'tauSectionFirst');
+  const secondHalfSpaces = namedUniformArray(second as Vector4[], 'tauSectionSecond');
   return Fn(() => {
     const point = cameraWorldMatrix.mul(vec4(positionView, 1)).xyz;
     const isKept = bool(true).toVar();

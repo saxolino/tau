@@ -1,6 +1,7 @@
+import { scheduleCameraPreparation } from '#graphics/three/camera-preparation.js';
 import type { ReactNode } from 'react';
 import { useCallback, useLayoutEffect, useRef } from 'react';
-import { NodeMaterial, QuadMesh, RenderTarget, UnsignedByteType } from 'three/webgpu';
+import { NodeMaterial, QuadMesh, RenderTarget, RendererUtils, UnsignedByteType } from 'three/webgpu';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
   colorToDirection,
@@ -25,6 +26,7 @@ import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { encodeAoNormal, sampleAoNormal } from '#graphics/three/ao-normal.js';
 import { createAoDenoise } from '#graphics/three/ao-denoise.js';
 import {
+  Mesh,
   AlwaysDepth,
   WebGLCoordinateSystem,
   HalfFloatType,
@@ -449,6 +451,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
   const targetRef = useRef(new Vector3());
   const frameRef = useRef<LinearFrame | undefined>(undefined);
   const drawingSize = useRef(new Vector2());
+  const preparationRef = useRef<ReturnType<typeof scheduleCameraPreparation> | undefined>(undefined);
   const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao';
 
   // Only the current endpoint is needed now. The other projection is created on its first frame.
@@ -515,6 +518,66 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
     }
     invalidate();
   }, [invalidate, updateAoSettings]);
+
+  useLayoutEffect(() => {
+    const renderer = gl as unknown as WebGPURenderer;
+    if (!(renderer.domElement instanceof HTMLCanvasElement)) {
+      return;
+    }
+    const preparation = scheduleCameraPreparation(renderer.domElement, () => {
+      const selected = resourcesRef.current.get(selectedCameraRef.current);
+      if (!selected || selected.frame.pending) {
+        return false;
+      }
+      // Bound speculative work to a small opaque scene. Transmission can retain
+      // per-camera resources; it remains demand-only until separately qualified.
+      const eligibility = { surfaces: 0, transmission: false };
+      scene.traverseVisible((object) => {
+        if (object instanceof Mesh && !(object instanceof QuadMesh)) {
+          eligibility.surfaces++;
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          eligibility.transmission ||= materials.some(
+            (material) => 'transmission' in material && Number(material.transmission) > 0,
+          );
+        }
+      });
+      if (eligibility.surfaces === 0) {
+        return false;
+      }
+      if (eligibility.surfaces > 128 || eligibility.transmission) {
+        return true;
+      }
+      const active = selected.camera;
+      const alternate =
+        active === cameraRig.orthographicCamera ? cameraRig.perspectiveCamera : cameraRig.orthographicCamera;
+      const saved = RendererUtils.saveRendererState(renderer);
+      const clearDepth = renderer.autoClearDepth;
+      const clearStencil = renderer.autoClearStencil;
+      const clearColor = renderer.autoClearColor;
+      try {
+        selected.setCamera(alternate);
+        selected.updateAoCamera?.(alternate);
+        renderer.setRenderTarget(selected.frame.target);
+        renderer.autoClear = true;
+        // Exact live pass context, with no second graph or final canvas draw.
+        selected.outputQuad.render(renderer);
+      } finally {
+        selected.setCamera(active);
+        selected.updateAoCamera?.(active);
+        RendererUtils.restoreRendererState(renderer, saved);
+        renderer.autoClearDepth = clearDepth;
+        renderer.autoClearStencil = clearStencil;
+        renderer.autoClearColor = clearColor;
+        invalidate();
+      }
+      return true;
+    });
+    preparationRef.current = preparation;
+    return () => {
+      preparation.dispose();
+      preparationRef.current = undefined;
+    };
+  }, [cameraRig, gl, invalidate, scene, toneMapping, withAo]);
 
   const retarget = useCallback(
     (camera: ThreeCamera, snapshot: CameraDriverSnapshot): void => {
@@ -651,6 +714,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       renderer.autoClear = previousAutoClear;
       frame.pending = false;
     }
+    preparationRef.current?.onFrame();
   }, 3.5);
   return null;
 }

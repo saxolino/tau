@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- three/tsl `Fn`/`If`/`Loop`/`Break` are shader graph factories */
+import { namedUniformArray } from '#graphics/three/materials/named-uniform-array.js';
 import { Color, DoubleSide, WebGPUCoordinateSystem } from 'three';
 import type { PerspectiveCamera, Vector4 } from 'three';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
@@ -23,7 +24,6 @@ import {
   positionWorld,
   select,
   uniform,
-  uniformArray,
   vec2,
   vec4,
   viewZToLogarithmicDepth,
@@ -48,8 +48,8 @@ const outlineNodes = (faces: SectionCapOutlineFaces): SectionCapOutlineNodes => 
   const settings = uniform(faces.settings);
   const eye = uniform(faces.eye);
   const forward = uniform(faces.forward);
-  const planes = uniformArray<'vec4'>(faces.planes as Vector4[], 'vec4');
-  const bounds = uniformArray<'vec4'>(faces.bounds as Vector4[], 'vec4');
+  const planes = namedUniformArray(faces.planes as Vector4[], 'tauCapPlanes');
+  const bounds = namedUniformArray(faces.bounds as Vector4[], 'tauCapBounds');
   // Mirrors `section-cap-outline.material.ts`: the derivatives are taken once, before any branch.
   // `x` is the coverage, `y` how far back along the view ray the nearest crossing of a face's plane lies, or 0.
   const outline = Fn(() => {

@@ -13,6 +13,7 @@ import {
   NoToneMapping,
   SRGBColorSpace,
   RenderTarget,
+  Mesh,
 } from 'three';
 import type { ToneMapping, Vector2 } from 'three';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
@@ -41,7 +42,7 @@ const mocks = vi.hoisted(() => {
     kind: 'orthographic',
     isOrthographicCamera: true,
   };
-  const scene = { isScene: true };
+  const scene = { isScene: true, traverseVisible: vi.fn<(visit: (object: Mesh) => void) => void>() };
   const invalidate = vi.fn();
   const glRender = vi.fn();
   const clearDepth = vi.fn();
@@ -65,6 +66,8 @@ const mocks = vi.hoisted(() => {
     rendererState.mrt = value;
   });
   const gl = {
+    domElement: undefined as HTMLCanvasElement | undefined,
+    autoClearColor: true,
     coordinateSystem: 2001,
     autoClear: true,
     autoClearDepth: true,
@@ -409,7 +412,27 @@ vi.mock('three/webgpu', () => {
     }
   }
 
-  return { NodeMaterial, QuadMesh, RenderTarget, UnsignedByteType: 1009 };
+  return {
+    NodeMaterial,
+    QuadMesh,
+    RenderTarget,
+    UnsignedByteType: 1009,
+    RendererUtils: {
+      saveRendererState: (renderer: typeof mocks.gl) => ({
+        target: renderer.getRenderTarget(),
+        mrt: renderer.getMRT(),
+        autoClear: renderer.autoClear,
+      }),
+      restoreRendererState: (
+        renderer: typeof mocks.gl,
+        saved: { target: unknown; mrt: unknown; autoClear: boolean },
+      ) => {
+        renderer.setRenderTarget(saved.target);
+        renderer.setMRT(saved.mrt);
+        renderer.autoClear = saved.autoClear;
+      },
+    },
+  };
 });
 
 const endpointProperties = { aoAllowed: true, toneMapping: NeutralToneMapping } as const;
@@ -482,6 +505,63 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.setRestoreDepth(undefined);
     mocks.setRenderTarget.mockClear();
   });
+
+  it.each([false, true])(
+    'should prepare offscreen once and restore camera and state after failure=%s',
+    async (fails) => {
+      vi.useFakeTimers();
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mocks.gl.domElement = document.createElement('canvas');
+      const surface = new Mesh();
+      mocks.scene.traverseVisible.mockImplementation((visit) => {
+        visit(surface);
+      });
+      const mounted = await mount();
+      try {
+        const destination = mocks.gl.getRenderTarget();
+        mocks.getFrame()?.(mocks.state, 0);
+        const target = mocks.gl.getRenderTarget();
+        mocks.getFinalFrame()?.(mocks.state, 0);
+        const before = mocks.glRender.mock.calls.length;
+        mocks.glRender.mockImplementationOnce(() => {
+          expect(mocks.gl.getRenderTarget()).toBe(target);
+          expect(mocks.scenePasses[0]!.camera).toBe(mocks.orthographicCamera);
+          mocks.gl.autoClearColor = false;
+          mocks.gl.autoClearDepth = false;
+          mocks.gl.autoClearStencil = false;
+          mocks.gl.setMRT({ temporary: true });
+          if (fails) {
+            throw new Error('speculative draw failed');
+          }
+        });
+        await act(() => vi.advanceTimersByTime(750));
+        expect(mocks.glRender.mock.calls.length).toBe(before + 1);
+        expect(mocks.scenePasses[0]!.camera).toBe(mocks.perspectiveCamera);
+        expect(mocks.gl.getRenderTarget()).toBe(destination);
+        expect(mocks.gl.getMRT()).toBeNull();
+        expect(mocks.gl.autoClearColor).toBe(true);
+        expect(mocks.gl.autoClearDepth).toBe(true);
+        expect(mocks.gl.autoClearStencil).toBe(true);
+        expect(mocks.compileAsync).not.toHaveBeenCalled();
+        mocks.getFrame()?.(mocks.state, 0);
+        mocks.getFinalFrame()?.(mocks.state, 0);
+        const after = mocks.glRender.mock.calls.length;
+        await act(() => vi.advanceTimersByTime(1000));
+        expect(mocks.glRender.mock.calls.length).toBe(after);
+        expect(mocks.scenePasses).toHaveLength(1);
+        expect(mocks.aoNodes).toHaveLength(1);
+        expect(warning).toHaveBeenCalledTimes(fails ? 1 : 0);
+      } finally {
+        mounted.unmount();
+        mocks.gl.domElement = undefined;
+        mocks.scene.traverseVisible.mockReset();
+        visibility.mockRestore();
+        warning.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('should halve display-frame color storage while retaining depth precision', async () => {
     const mounted = await mount();
