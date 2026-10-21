@@ -36,62 +36,73 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 afterEach(() => vi.clearAllMocks());
 describe('platform update transport and launch', () => {
-  it('observes installed APT generations even when app-owned updates are disabled', async () => {
-    const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
-    Object.defineProperty(process, 'resourcesPath', { value: '/resources', configurable: true });
-    const marker = {
-      schemaVersion: 1,
-      route: 'linux-apt',
-      tag: 'desktop@0.1.0',
-      channel: 'production',
-      version: '0.1.0',
-      sourceCommit: 'a'.repeat(40),
-      arch: 'x64',
-      trust: 'release',
-      cache: 'tau-updater',
-    };
-    const reader = vi
-      .spyOn(files, 'readFile')
-      .mockImplementation(async (path) =>
-        JSON.stringify(
-          path === '/app/package.json'
-            ? { version: marker.version, tauDesktop: { sourceCommit: marker.sourceCommit } }
-            : typeof path === 'string' && path.startsWith('/opt/')
-              ? { ...marker, tag: 'desktop@0.2.0', version: '0.2.0' }
-              : marker,
-        ),
-      );
-    const resolver = vi.spyOn(files, 'realpath').mockResolvedValue('/opt/tau/releases/0.2.0');
-    try {
-      const updater = await startPlatformUpdater({
-        platform: 'linux',
+  it.each([false, true])(
+    'observes APT generations with app updates disabled and rejects wrong qualification source=%s',
+    async (wrongSource) => {
+      const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+      Object.defineProperty(process, 'resourcesPath', { value: '/resources', configurable: true });
+      const marker = {
+        schemaVersion: 1,
+        route: 'linux-apt',
+        tag: 'desktop@0.1.0',
+        channel: 'production',
+        version: '0.1.0',
+        sourceCommit: 'a'.repeat(40),
         arch: 'x64',
-        currentVersion: '0.1.0',
-        packaged: true,
-        // eslint-disable-next-line @typescript-eslint/naming-convention -- These are the managed environment variable names.
-        environment: { TAU_DESKTOP_UPDATES: 'off', TAU_ACQUISITION: 'locked' },
-        autoUpdater: { on: vi.fn(), setFeedURL: vi.fn(), checkForUpdates: vi.fn(), quitAndInstall: vi.fn() },
-        fetchJson: vi.fn(),
-        prepareToRestart: vi.fn(),
-        prepareToInstall: vi.fn(),
-        openExternal: vi.fn(),
-        log: vi.fn(),
-        schedule: vi.fn(),
-      });
-      await updater!.check();
-      expect(updater!.snapshot()).toMatchObject({ phase: 'ready', version: '0.2.0', installOnQuit: false });
-      expect(updater!.status()).toContain('APT installed');
-      expect(mocks.fetch).not.toHaveBeenCalled();
-    } finally {
-      reader.mockRestore();
-      resolver.mockRestore();
-      if (original) {
-        Object.defineProperty(process, 'resourcesPath', original);
-      } else {
-        Reflect.deleteProperty(process, 'resourcesPath');
+        trust: 'release',
+        cache: 'tau-updater',
+      };
+      const reader = vi
+        .spyOn(files, 'readFile')
+        .mockImplementation(async (path) =>
+          JSON.stringify(
+            path === '/app/package.json'
+              ? { version: marker.version, tauDesktop: { sourceCommit: marker.sourceCommit } }
+              : typeof path === 'string' && path.startsWith('/opt/')
+                ? { ...marker, tag: 'desktop@0.2.0', version: '0.2.0' }
+                : marker,
+          ),
+        );
+      const resolver = vi.spyOn(files, 'realpath').mockResolvedValue('/opt/tau/releases/0.2.0');
+      try {
+        const updater = await startPlatformUpdater({
+          platform: 'linux',
+          arch: 'x64',
+          currentVersion: '0.1.0',
+          packaged: true,
+          ...(wrongSource
+            ? { expectedUpdate: { tag: 'desktop@0.2.0', version: '0.2.0', sourceCommit: 'b'.repeat(40) } }
+            : {}),
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- These are the managed environment variable names.
+          environment: { TAU_DESKTOP_UPDATES: 'off', TAU_ACQUISITION: 'locked' },
+          autoUpdater: { on: vi.fn(), setFeedURL: vi.fn(), checkForUpdates: vi.fn(), quitAndInstall: vi.fn() },
+          fetchJson: vi.fn(),
+          prepareToRestart: vi.fn(),
+          prepareToInstall: vi.fn(),
+          openExternal: vi.fn(),
+          log: vi.fn(),
+          schedule: vi.fn(),
+        });
+        await updater!.check();
+        if (wrongSource) {
+          expect(updater!.snapshot().phase).toBe('error');
+          expect(updater!.status()).toContain('expected release source');
+        } else {
+          expect(updater!.snapshot()).toMatchObject({ phase: 'ready', version: '0.2.0', installOnQuit: false });
+          expect(updater!.status()).toContain('APT installed');
+        }
+        expect(mocks.fetch).not.toHaveBeenCalled();
+      } finally {
+        reader.mockRestore();
+        resolver.mockRestore();
+        if (original) {
+          Object.defineProperty(process, 'resourcesPath', original);
+        } else {
+          Reflect.deleteProperty(process, 'resourcesPath');
+        }
       }
-    }
-  });
+    },
+  );
   it('retries a failed running-image lookup on the same backend before acknowledging health', async () => {
     const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
     Object.defineProperty(process, 'resourcesPath', { value: '/resources', configurable: true });

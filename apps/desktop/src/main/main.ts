@@ -16,7 +16,7 @@ import { installBrowserHost } from '#main/browser-host.js';
  * work — kernels, disk, the agent host — lives in the utilities.
  */
 
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -110,6 +110,9 @@ import { readGeneratedImage } from '#main/generated-image.js';
 import { createBambuStudioService } from '#main/bambu-studio-service.js';
 import { readWindowState, writeWindowState } from '#main/window-state.js';
 import { prepareOtaProbe } from '#main/ota-probe.js';
+import { prepareRouteQualificationProbe } from '#main/route-qualification-probe.js';
+import { parseDesktopInstallation } from '#main/update-identity.js';
+import { z } from 'zod';
 import type { DesktopUpdater, DesktopUpdaterOptions } from '#main/updater.js';
 import { startDesktopUpdater } from '#main/updater.js';
 import { preparableNativeDeployments } from '#tau/desktop-native-deployments.js';
@@ -171,6 +174,66 @@ const otaProbe = prepareOtaProbe({
   channel: desktopChannel,
   packaged: app.isPackaged,
 });
+const routeQualification = (() => {
+  if (
+    !process.argv.some((value) => value.startsWith('--tau-route-qualification=')) &&
+    !existsSync(join(app.getPath('userData'), 'route-qualification.state.json'))
+  ) {
+    return undefined;
+  }
+  if (otaProbe) {
+    throw new Error('Only one installed update probe may run at a time');
+  }
+  const metadata = z
+    .object({ version: z.string(), tauDesktop: z.object({ sourceCommit: z.string() }) })
+    .parse(JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')));
+  const installation =
+    process.platform === 'darwin'
+      ? undefined
+      : parseDesktopInstallation(
+          JSON.parse(readFileSync(join(process.resourcesPath, 'desktop-installation.json'), 'utf8')),
+          { platform: process.platform, arch: process.arch, channel: desktopChannel, version: app.getVersion() },
+        );
+  if (
+    metadata.version !== app.getVersion() ||
+    (installation && installation.sourceCommit !== metadata.tauDesktop.sourceCommit)
+  ) {
+    throw new Error('Qualification package and installed marker source differ');
+  }
+  const route = installation?.route ?? 'macos-zip';
+  const installedPath =
+    route === 'linux-appimage'
+      ? process.env['APPIMAGE']
+      : route === 'linux-apt'
+        ? desktopChannel === 'staging'
+          ? '/usr/bin/tau-staging'
+          : '/usr/bin/tau'
+        : process.platform === 'darwin'
+          ? app.getAppPath()
+          : process.execPath;
+  if (!installedPath) {
+    throw new Error('Qualification AppImage outer executable is missing');
+  }
+  return prepareRouteQualificationProbe({
+    arguments: process.argv,
+    profile: app.getPath('userData'),
+    defaultProfile: join(app.getPath('appData'), app.getName()),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    channel: desktopChannel,
+    version: app.getVersion(),
+    sourceCommit: metadata.tauDesktop.sourceCommit,
+    route,
+    installedPath,
+    mirrorOrigin: process.env['TAU_DESKTOP_UPDATE_FEED'],
+  });
+})();
+if (routeQualification) {
+  process.env['TAU_DESKTOP_UPDATE_FEED'] = routeQualification.mirrorOrigin;
+  app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+  app.commandLine.appendSwitch('remote-debugging-port', '0');
+}
 const isDevelopment = process.env.ELECTRON_RENDERER_URL !== undefined;
 const hideTestWindow = process.env['TAU_E2E_HIDE_WINDOW'] === '1';
 /* Packaged executable launches skip Playwright's readiness loader. Hold window
@@ -1957,7 +2020,8 @@ const bootstrapElectronApp = async (): Promise<void> => {
     event.preventDefault();
     pendingQuit ??= quitWhenReady();
   });
-  if (otaProbe) {
+  let qualificationInstall = false;
+  if (otaProbe !== undefined || routeQualification !== undefined) {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) {
       throw new Error('OTA probe has no renderer window');
@@ -1979,7 +2043,14 @@ const bootstrapElectronApp = async (): Promise<void> => {
     if (!ready) {
       throw new Error('OTA renderer did not become ready with its save handler');
     }
-    otaProbe.complete();
+    otaProbe?.complete();
+    if (routeQualification) {
+      const command = await routeQualification.complete(() => ({
+        rendererPid: window.webContents.getOSProcessId(),
+        children: app.getAppMetrics().map((metric) => ({ pid: metric.pid, type: metric.type })),
+      }));
+      qualificationInstall = command.installForProbe;
+    }
   }
   /* Start only once the shared shutdown owner and normal application startup are ready. */
   const prepareToInstall = async (commit: () => void | Promise<void>): Promise<boolean> => {
@@ -2010,6 +2081,8 @@ const bootstrapElectronApp = async (): Promise<void> => {
     autoUpdater,
     prepareToRestart: async () => prepareToQuit('restart'),
     ...(otaProbe ? { candidateTag: otaProbe.candidateTag } : {}),
+    ...(routeQualification?.candidateTag ? { candidateTag: routeQualification.candidateTag } : {}),
+    ...(routeQualification?.expectedUpdate ? { expectedUpdate: routeQualification.expectedUpdate } : {}),
     fetchJson: async (url) => {
       const response = await net.fetch(url);
       if (!response.ok) {
@@ -2017,7 +2090,7 @@ const bootstrapElectronApp = async (): Promise<void> => {
       }
       return response.json() as Promise<unknown>;
     },
-    installForProbe: otaProbe !== undefined,
+    installForProbe: otaProbe !== undefined || qualificationInstall,
     onState: (snapshot) => {
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed() && trusted(window.webContents.mainFrame)) {

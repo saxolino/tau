@@ -36,6 +36,37 @@ const setup = () => {
   return { backend, options, commit, release };
 };
 describe('platform update consent', () => {
+  it('installs a normal-feed qualification candidate only after exact expected identity', async () => {
+    const { backend, options, commit } = setup();
+    const updater = startPlatformUpdateController(
+      {
+        ...options,
+        installForProbe: true,
+        expectedUpdate: { tag: 'desktop@0.2.0', version: '0.2.0', sourceCommit: 'a'.repeat(40) },
+      },
+      backend,
+    );
+    await updater.check();
+    await vi.waitFor(() => {
+      expect(backend.finish).toHaveBeenCalledOnce();
+    });
+    expect(commit).toHaveBeenCalledOnce();
+  });
+  it('refuses a normal-feed version different from the qualification target before download', async () => {
+    const { backend, options, commit } = setup();
+    const updater = startPlatformUpdateController(
+      {
+        ...options,
+        installForProbe: true,
+        expectedUpdate: { tag: 'desktop@0.3.0', version: '0.3.0', sourceCommit: 'a'.repeat(40) },
+      },
+      backend,
+    );
+    await updater.check();
+    expect(updater.snapshot().phase).toBe('error');
+    expect(backend.download).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
   it('downloads automatically but installs only after explicit consent and save admission', async () => {
     const { backend, options, commit, release } = setup();
     const updater = startPlatformUpdateController(options, backend);

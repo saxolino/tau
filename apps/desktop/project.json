@@ -575,6 +575,48 @@
         "cwd": ".",
         "command": "node --import @oxc-node/core/register apps/desktop/scripts/renew-desktop-apt.test.mts"
       }
+    },
+    "test-qualification-macos": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-macos.test.mts"
+      }
+    },
+    "test-qualification-evidence": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-evidence.test.mts"
+      }
+    },
+    "test-qualification-apt-snapshot": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-apt-snapshot.test.mts"
+      }
+    },
+    "qualification-apt-snapshot": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-apt-snapshot.mts"
+      }
+    },
+    "test-qualification-windows": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-windows.test.mts"
+      }
+    },
+    "test-qualification-linux": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": ".",
+        "command": "node --import @oxc-node/core/register apps/desktop/scripts/qualification-linux.test.mts"
+      }
     }
   }
 }

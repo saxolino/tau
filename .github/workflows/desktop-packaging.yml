@@ -76,6 +76,21 @@ jobs:
           pnpm exec esbuild apps/desktop/scripts/desktop-apt-publication.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/desktop-apt-publication.mjs
           pnpm exec esbuild apps/desktop/scripts/renew-desktop-apt.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/renew-desktop-apt.mjs
           docker run --rm -e TAU_APT_DISPOSABLE_CONTAINER=1 --mount type=bind,source="$PWD/out/research/desktop-packaging-ci",target=/fixtures,readonly node:24.20.0-bookworm-slim bash -c 'apt-get update -qq && apt-get install -y -qq gnupg && node /fixtures/linux-apt-repository.mjs && node /fixtures/desktop-apt-publication.mjs && node /fixtures/renew-desktop-apt.mjs'
+      - name: Qualification evidence refuses incomplete and synthetic acceptance
+        run: pnpm nx run desktop:test-qualification-evidence
+      - name: Windows qualification artifact admission
+        if: runner.os == 'Windows'
+        run: pnpm nx run desktop:test-qualification-windows
+      - name: Mac qualification artifact admission
+        if: runner.os == 'macOS'
+        run: pnpm nx run desktop:test-qualification-macos
+      - name: Linux qualification drivers and public-only signed snapshot preparation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          pnpm exec esbuild apps/desktop/scripts/qualification-linux.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/qualification-linux.mjs
+          pnpm exec esbuild apps/desktop/scripts/qualification-apt-snapshot.test.mts --bundle --platform=node --format=esm --outfile=out/research/desktop-packaging-ci/qualification-apt-snapshot.mjs
+          docker run --rm --mount type=bind,source="$PWD/out/research/desktop-packaging-ci",target=/fixtures,readonly node:24.20.0-bookworm-slim bash -c 'apt-get update -qq && apt-get install -y -qq gnupg python3 && node /fixtures/qualification-linux.mjs && node /fixtures/qualification-apt-snapshot.mjs'
       - name: Keep assembly distinct from installed qualification
         shell: bash
         run: |
