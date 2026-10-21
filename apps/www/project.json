@@ -20,6 +20,9 @@
         },
         {
           "env": "WWW_ANALYTICS_ENDPOINT"
+        },
+        {
+          "env": "WWW_INSTALLER_CATALOG"
         }
       ],
       "outputs": ["{projectRoot}/build", "{projectRoot}/.netlify"],
