@@ -15,8 +15,8 @@ export function transformRenderingAblation(source: string, id: string): string |
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
-    // Coupled-depth candidate remains opt-in until lifecycle, pixels and cost gates pass.
-    code = "import { FloatType } from 'three';\nconst tauDepthPrepared = new WeakSet<RenderTarget>();\n" + code;
+    // Native sharing remains experimental; node WebGL2 shares by default.
+    code = "import { FloatType } from 'three';\n" + code;
     replace(
       `          // Keep the complete live graph: no target disposal or second
           // 5K endpoint. AO reads stable matrices updated from this scene camera.
@@ -33,58 +33,18 @@ export function transformRenderingAblation(source: string, id: string): string |
             resourcesRef.current.set(camera, previous);
           }`,
     );
-    replace('if (depthMaterial) {', "if (depthMaterial && tauAblation.get('depthOwnership') !== 'shared') {");
     replace(
-      "const scenePassColor = scenePass.getTextureNode('output');",
-      `if (['shared', 'format'].includes(tauAblation.get('depthOwnership') ?? '')) {
-      if (gpuRenderer.coordinateSystem !== WebGLCoordinateSystem && !gpuRenderer.hasFeature('depth32float-stencil8')) throw new Error('Shared depth requires float32 stencil support');
-      scenePass.renderTarget.stencilBuffer = true;
-      scenePass.getTexture('depth').format = DepthStencilFormat;
-      scenePass.getTexture('depth').type = gpuRenderer.coordinateSystem === WebGLCoordinateSystem ? UnsignedInt248Type : FloatType;
-      const acquire = scenePass.updateBefore.bind(scenePass);
-      scenePass.updateBefore = (frame) => {
-        const depth = gpuRenderer.autoClearDepth;
-        const stencil = gpuRenderer.autoClearStencil;
-        gpuRenderer.autoClearDepth = true;
-        gpuRenderer.autoClearStencil = true;
-        try { return acquire(frame); } finally { gpuRenderer.autoClearDepth = depth; gpuRenderer.autoClearStencil = stencil; }
-      };
-    }
-    const scenePassColor = scenePass.getTextureNode('output');`,
+      'frame.sharedDepth = gpuRenderer.coordinateSystem === WebGLCoordinateSystem;',
+      `frame.sharedDepth = tauAblation.has('depthOwnership')
+        ? tauAblation.get('depthOwnership') === 'shared'
+        : gpuRenderer.coordinateSystem === WebGLCoordinateSystem;
+      if (frame.sharedDepth && gpuRenderer.coordinateSystem !== WebGLCoordinateSystem && !gpuRenderer.hasFeature('depth32float-stencil8')) {
+        throw new Error('Shared depth requires float32 stencil support');
+      }`,
     );
     replace(
-      "const scenePassDepth = scenePass.getTextureNode('depth');",
-      `const scenePassDepth = scenePass.getTextureNode('depth');
-    if (tauAblation.get('depthOwnership') === 'shared') {
-      frame.target.depthTexture = scenePass.getTexture('depth');
-      (frame.depth.material as NodeMaterial).depthNode = texture(frame.target.depthTexture, screenUV);
-    }`,
-    );
-    replace(
-      'frame.target.setSize(drawingSize.current.x, drawingSize.current.y);',
-      `if (tauAblation.get('depthOwnership') === 'shared') {
-      if (!tauDepthPrepared.has(frame.target) || frame.target.width !== drawingSize.current.x || frame.target.height !== drawingSize.current.y) {
-        // Retire both users before either re-creates the shared attachment.
-        selected.scenePass.renderTarget.setSize(drawingSize.current.x, drawingSize.current.y);
-        frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
-        // r184 dirties depth on each target's first initialization. Complete both
-        // before scene rendering; never re-initialize a populated shared attachment.
-        renderer.initRenderTarget(selected.scenePass.renderTarget);
-        renderer.initRenderTarget(frame.target);
-        tauDepthPrepared.add(frame.target);
-      }
-    } else frame.target.setSize(drawingSize.current.x, drawingSize.current.y);`,
-    );
-    replace(
-      'selected.outputQuad.render(renderer);',
-      `const depth = renderer.autoClearDepth;
-      const stencil = renderer.autoClearStencil;
-      if (tauAblation.get('depthOwnership') === 'shared') {
-        renderer.autoClearDepth = false;
-        renderer.autoClearStencil = false;
-      }
-      try { selected.outputQuad.render(renderer); }
-      finally { renderer.autoClearDepth = depth; renderer.autoClearStencil = stencil; }`,
+      'depth.type = UnsignedInt248Type;',
+      'depth.type = gpuRenderer.coordinateSystem === WebGLCoordinateSystem ? UnsignedInt248Type : FloatType;',
     );
 
     replace(

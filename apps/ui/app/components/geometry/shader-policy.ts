@@ -489,6 +489,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/canvas-three-gl.test.ts::should configure both native camera projections before the first WebGPU scene pass',
     ],
     'structural-perf': [
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should share D24S8 only on node WebGL2 and prepare both users before drawing',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should halve display-frame color storage while retaining depth precision',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should occlude grid and hidden outlines through actual stencil caps',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should retain one linear stencil frame through overlays and encode only at frame completion',

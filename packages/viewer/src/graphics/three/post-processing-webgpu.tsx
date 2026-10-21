@@ -77,6 +77,8 @@ type LinearFrame = {
   depth: QuadMesh;
   previousTarget: ReturnType<WebGPURenderer['getRenderTarget']>;
   pending: boolean;
+  sharedDepth: boolean;
+  depthPrepared: boolean;
 };
 
 // Preserve the tuned GTAO depth acceptance while making both values derive from one screen-space contract.
@@ -193,6 +195,8 @@ const createLinearFrame = (renderer: WebGPURenderer, toneMapping: ToneMapping): 
     depth: new QuadMesh(depthMaterial),
     previousTarget: null,
     pending: false,
+    sharedDepth: false,
+    depthPrepared: false,
   };
   return frame;
 };
@@ -256,6 +260,31 @@ const createPipelineResources = ({
     };
     setCamera(camera);
 
+    // Qualified only for node WebGL2: retain its D24S8 attachment across the
+    // scene and composed frame. Native's float32/stencil cost has no proven saving.
+    frame.sharedDepth = gpuRenderer.coordinateSystem === WebGLCoordinateSystem;
+    if (frame.sharedDepth) {
+      scenePass.renderTarget.stencilBuffer = true;
+      const depth = scenePass.getTexture('depth');
+      depth.format = DepthStencilFormat;
+      depth.type = UnsignedInt248Type;
+      frame.target.depthTexture = depth as DepthTexture;
+      (frame.depth.material as NodeMaterial).depthNode = texture(depth, screenUV);
+      const acquire = scenePass.updateBefore.bind(scenePass);
+      scenePass.updateBefore = (nodeFrame) => {
+        const previousDepth = gpuRenderer.autoClearDepth;
+        const previousStencil = gpuRenderer.autoClearStencil;
+        gpuRenderer.autoClearDepth = true;
+        gpuRenderer.autoClearStencil = true;
+        try {
+          return acquire(nodeFrame);
+        } finally {
+          gpuRenderer.autoClearDepth = previousDepth;
+          gpuRenderer.autoClearStencil = previousStencil;
+        }
+      };
+    }
+
     const scenePassColor = scenePass.getTextureNode('output');
     const scenePassDepth = scenePass.getTextureNode('depth');
 
@@ -276,7 +305,7 @@ const createPipelineResources = ({
     if (!withAo) {
       outputQuad = createOutputQuad(
         renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace),
-        depthRestoreMaterial,
+        frame.sharedDepth ? undefined : depthRestoreMaterial,
       );
       return {
         get camera() {
@@ -352,7 +381,7 @@ const createPipelineResources = ({
       select<'float'>(displayMode.equal(1), float(1), float(0)),
     );
     // Compose directly: avoid a full-resolution HDR intermediate and its FXAA draw.
-    outputQuad = createOutputQuad(composite, depthRestoreMaterial);
+    outputQuad = createOutputQuad(composite, frame.sharedDepth ? undefined : depthRestoreMaterial);
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
@@ -558,11 +587,34 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
     }
     frame.previousTarget = renderer.getRenderTarget();
     renderer.getDrawingBufferSize(drawingSize.current);
-    frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
+    if (frame.sharedDepth) {
+      if (
+        !frame.depthPrepared ||
+        frame.target.width !== drawingSize.current.x ||
+        frame.target.height !== drawingSize.current.y
+      ) {
+        // Both targets belong to this graph. Retire both before reinitializing
+        // either: r184 initialization dirties depth, so it must precede scene writes.
+        selected.scenePass.renderTarget.setSize(drawingSize.current.x, drawingSize.current.y);
+        frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
+        renderer.initRenderTarget(selected.scenePass.renderTarget);
+        renderer.initRenderTarget(frame.target);
+        frame.depthPrepared = true;
+      }
+    } else {
+      frame.target.setSize(drawingSize.current.x, drawingSize.current.y);
+    }
     frame.pending = true;
     renderer.setRenderTarget(frame.target);
     const previousAutoClear = renderer.autoClear;
     renderer.autoClear = true;
+    const previousAutoClearDepth = renderer.autoClearDepth;
+    const previousAutoClearStencil = renderer.autoClearStencil;
+    if (frame.sharedDepth) {
+      // The scene clears its authoritative attachment; composition preserves it.
+      renderer.autoClearDepth = false;
+      renderer.autoClearStencil = false;
+    }
     try {
       selected.outputQuad.render(renderer);
     } catch (error) {
@@ -571,6 +623,8 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       throw error;
     } finally {
       renderer.autoClear = previousAutoClear;
+      renderer.autoClearDepth = previousAutoClearDepth;
+      renderer.autoClearStencil = previousAutoClearStencil;
     }
   }, 1);
 

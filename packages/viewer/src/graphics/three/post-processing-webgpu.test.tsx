@@ -67,6 +67,9 @@ const mocks = vi.hoisted(() => {
   const gl = {
     coordinateSystem: 2001,
     autoClear: true,
+    autoClearDepth: true,
+    autoClearStencil: true,
+    initRenderTarget: vi.fn(),
     outputColorSpace: 'srgb',
     toneMapping: 0,
     getDrawingBufferSize: (target: Vector2) => target.set(3000, 2000),
@@ -120,10 +123,10 @@ const mocks = vi.hoisted(() => {
   let constructionCamera: unknown;
   const scenePasses: Array<{
     camera: unknown;
-    renderTarget: { camera: unknown };
+    renderTarget: { camera: unknown; stencilBuffer: boolean; setSize: ReturnType<typeof vi.fn> };
     compileAsync: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
-    getTexture: ReturnType<typeof vi.fn>;
+    getTexture: (name: string) => { type: number; format: number };
     getTextureNode: ReturnType<typeof vi.fn>;
     setMRT: ReturnType<typeof vi.fn>;
     setup: ReturnType<typeof vi.fn>;
@@ -131,7 +134,7 @@ const mocks = vi.hoisted(() => {
   }> = [];
   const outputQuads: Array<{
     endpointCamera: unknown;
-    material: { fragmentNode?: unknown };
+    material: { fragmentNode?: unknown; depthWrite?: boolean };
     render: ReturnType<typeof vi.fn>;
   }> = [];
   const aoNodes: MockAoNode[] = [];
@@ -159,9 +162,10 @@ const mocks = vi.hoisted(() => {
 
   const pass = vi.fn((_scene: unknown, camera: unknown) => {
     constructionCamera = camera;
+    const depthTexture = { type: 0, format: 0 };
     const scenePass = {
       camera,
-      renderTarget: { camera },
+      renderTarget: { camera, stencilBuffer: false, setSize: vi.fn() },
       compileAsync: vi.fn(async () => {
         const previousMrt = rendererState.mrt;
         const previousTarget = rendererState.target;
@@ -186,7 +190,7 @@ const mocks = vi.hoisted(() => {
       dispose: vi.fn(),
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Three.js API method.
       setMRT: vi.fn(),
-      getTexture: vi.fn(() => normalTexture),
+      getTexture: vi.fn((name: string) => (name === 'depth' ? depthTexture : normalTexture)),
       getTextureNode: vi.fn((name: string) => {
         if (name === 'depth') {
           return depthNode;
@@ -445,6 +449,9 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.glRender.mockReset();
     mocks.gl.isWebGPURenderer = true;
     mocks.gl.autoClear = true;
+    mocks.gl.autoClearDepth = true;
+    mocks.gl.autoClearStencil = true;
+    mocks.gl.initRenderTarget.mockClear();
     mocks.gl.coordinateSystem = 2001;
     mocks.getCurrentViewport.mockClear();
     mocks.invalidate.mockClear();
@@ -753,6 +760,45 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     );
   });
 
+  it('should share D24S8 only on node WebGL2 and prepare both users before drawing', async () => {
+    mocks.gl.coordinateSystem = 2000;
+    const mounted = await mount();
+    const scenePass = mocks.scenePasses[0]!;
+    mocks.prewarm.mockImplementation(() => {
+      expect(mocks.gl.autoClearDepth).toBe(true);
+      expect(mocks.gl.autoClearStencil).toBe(true);
+    });
+    mocks.glRender.mockImplementation(() => {
+      expect(mocks.gl.autoClearDepth).toBe(false);
+      expect(mocks.gl.autoClearStencil).toBe(false);
+    });
+    mocks.getFrame()?.(mocks.state, 0);
+    const target = mocks.gl.getRenderTarget() as RenderTarget;
+    expect(target.depthTexture).toBe(scenePass.getTexture('depth'));
+    expect(target.depthTexture).toMatchObject({ type: UnsignedInt248Type, format: DepthStencilFormat });
+    expect(scenePass.renderTarget.stencilBuffer).toBe(true);
+    expect(mocks.outputQuads[0]!.material.depthWrite).toBe(false);
+    expect(mocks.gl.initRenderTarget.mock.calls).toEqual([[scenePass.renderTarget], [target]]);
+    expect(scenePass.renderTarget.setSize).toHaveBeenCalledWith(3000, 2000);
+    expect(mocks.gl.autoClearDepth).toBe(true);
+    expect(mocks.gl.autoClearStencil).toBe(true);
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.gl.initRenderTarget).toHaveBeenCalledTimes(2);
+    const dimensions = vi.spyOn(mocks.gl, 'getDrawingBufferSize').mockImplementation((size) => size.set(5120, 2880));
+    mocks.getFrame()?.(mocks.state, 0);
+    expect(mocks.gl.initRenderTarget).toHaveBeenCalledTimes(4);
+    expect(scenePass.renderTarget.setSize).toHaveBeenLastCalledWith(5120, 2880);
+    expect(target.depthTexture).toBe(scenePass.getTexture('depth'));
+    dimensions.mockRestore();
+    mocks.glRender.mockImplementationOnce(() => {
+      throw new Error('composite failed');
+    });
+    expect(() => mocks.getFrame()?.(mocks.state, 0)).toThrow('composite failed');
+    expect(mocks.gl.autoClearDepth).toBe(true);
+    expect(mocks.gl.autoClearStencil).toBe(true);
+    mounted.unmount();
+  });
+
   it('should retain one linear stencil frame through overlays and encode only at frame completion', async () => {
     const mounted = await mount();
     const destination = mocks.gl.getRenderTarget();
@@ -810,6 +856,18 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
 
   it('should guard the upstream implementations whose owned resources require explicit disposal', () => {
     const require = createRequire(import.meta.url);
+    // Shared targets must be initialized together before the first scene write.
+    // Requalify the adaptation if Three changes initialization, clearing or retirement.
+    for (const [file, digest] of [
+      ['three/src/renderers/common/Textures.js', 'f254ca8221e17bf58a2aad3e99735bc6b5b183331dc9aeafd530d73bf2b3347c'],
+      ['three/src/nodes/display/PassNode.js', 'e4547bb6d360cc7b2459bdfa1d1ca53a2f43f47538b37607d19d32c45a7526e5'],
+    ]) {
+      expect(
+        createHash('sha256')
+          .update(readFileSync(require.resolve(file!)))
+          .digest('hex'),
+      ).toBe(digest);
+    }
     const source = readFileSync(require.resolve('three/src/nodes/utils/RTTNode.js'), 'utf8');
     expect(createHash('sha256').update(source).digest('hex')).toBe(
       'f87704938524dc419b91d9dd29c89d53272c78819d17537780a1c3b7e42c921b',
