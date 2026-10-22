@@ -25,6 +25,8 @@ allowBuilds:
   canvas: false
   core-js: true
   electron: true
+  # NSIS uses builder directly; its optional Squirrel.Windows maker is not used.
+  electron-winstaller: false
   esbuild: true
   less: false
   netlify-cli: false
@@ -38,6 +40,7 @@ allowBuilds:
   '@google/genai': false
   # Downloads the platform vale binary at install time; required for prose linting.
   '@vvago/vale': true
+  '@sentry/cli': true
 catalog:
   # Error tracking (launch gate OBS-7). Exact pins, one @sentry/core across the
   # API, UI and desktop: @sentry/electron 7.20.0 bundles @sentry/node 10.75.0.
@@ -217,7 +220,7 @@ catalog:
   fastify: ^5.12.5
   geist: ^1.7.2
   # GeoSpec engine from taucad/geospec, exact `next` pin; bump through a version PR.
-  geospec-engine: 0.2.1
+  geospec-engine: 0.3.1
   gray-matter: ^4.0.3
   hast-util-sanitize: ^5.0.2
   husky: ^9.1.7
@@ -338,6 +341,12 @@ catalog:
   '@better-auth-ui/react': 1.7.29
   smol-toml: 1.9.1
   nanoraster-darwin-arm64: 0.7.1
+  '@napi-rs/keyring': 2.1.2
+  proper-lockfile: 4.1.2
+  '@types/proper-lockfile': 4.1.4
+  electron-updater: 6.8.11
+  electron-builder: 26.18.0
+  '@sentry/cli': 3.8.0
 catalogs:
   electron-vite7:
     electron-vite: 5.0.0
@@ -423,6 +432,12 @@ minimumReleaseAgeExclude:
   - '@agentclientprotocol/sdk@1.4.0'
   - '@agentclientprotocol/claude-agent-acp@0.70.0'
   - '@agentclientprotocol/codex-acp@1.7.0'
+  - electron-updater@6.8.11
+  - app-builder-lib@26.18.0
+  - dmg-builder@26.18.0
+  - electron-builder-squirrel-windows@26.18.0
+  - electron-builder@26.18.0
+  - electron-publish@26.18.0
 peerDependencyRules:
   allowedVersions:
     fumadocs-mdx>vite: ^8.0.0

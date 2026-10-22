@@ -47,8 +47,8 @@ export type TauExporterOptions = {
  */
 export const tauExporter = async (options: TauExporterOptions = {}): Promise<GeoSpecModelExporter> => {
   const projectPath = options.projectPath ?? process.cwd();
-  // The runtime runs in this thread, so its Zoo proxy upgrades carry this process's `TAU_API_TOKEN`, as `tau export`'s do.
-  authorizeCliZooProxy(process.env);
+  // The runtime runs in this thread, so its Zoo proxy upgrades carry this process's Tau credentials, as `tau export`'s do.
+  await authorizeCliZooProxy(process.env);
   const runtime = await loadCliRuntime({
     projectRoot: options.pluginRoot ?? process.cwd(),
     plugin: [...(options.plugins ?? [])],

@@ -1,4 +1,5 @@
 import { detectDesktopPlatform, desktopDownloads, desktopDownloadHref, desktopDownloadLabel } from '#www/downloads.js';
+import { initializeInstallerCatalog } from '#www/download-catalog.client.js';
 import type * as Live from '#www/live.js';
 import { readStoryProgress } from '#www/story-progress.js';
 import { randomUuid } from '@taucad/utils/id';
@@ -81,6 +82,8 @@ export function initializePage(signal: AbortSignal): () => void {
     }
   }
 
+  // async-iife: bootstrap -- The page signal owns the bounded optional catalog enhancement.
+  void initializeInstallerCatalog(signal);
   cleanups.push(initializeCopyPrompt(signal));
 
   const mobileMenu = document.querySelector('.mobile-menu');

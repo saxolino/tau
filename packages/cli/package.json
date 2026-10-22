@@ -74,6 +74,7 @@
     "#*": "./src/*"
   },
   "dependencies": {
+    "@napi-rs/keyring": "catalog:",
     "@parcel/watcher": "catalog:",
     "@taucad/agent-host": "workspace:*",
     "@taucad/assimp": "workspace:*",
@@ -110,6 +111,7 @@
     "geospec": "workspace:*",
     "geospec-engine": "catalog:",
     "ink": "catalog:",
+    "proper-lockfile": "catalog:",
     "react": "catalog:",
     "semver": "catalog:",
     "ws": "catalog:",
@@ -124,6 +126,7 @@
     "@taucad/runtime-testing": "workspace:*",
     "@taucad/types": "workspace:*",
     "@taucad/utils": "workspace:*",
+    "@types/proper-lockfile": "catalog:",
     "@types/react": "catalog:",
     "@types/semver": "catalog:",
     "@types/ws": "^8.18.1"
