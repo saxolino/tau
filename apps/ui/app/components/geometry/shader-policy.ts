@@ -414,11 +414,13 @@ export const shaderEvidence = {
     ),
     reference: [
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should preserve native reversed depth without a fragment-depth rewrite',
+      'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should establish hardware blending before a cached shader can bypass setup',
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::emits geometric viewZToLogarithmicDepth',
     ],
     pixels: [
       `${graphicsBackendEndToEnd}::grid, axes and model shading display the same`,
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should preserve nominal unlit stroke coverage across phases',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should preserve opaque planetary pixels beneath workspace axes at 5K',
       'packages/viewer/src/graphics/three/utils/gltf-edge-batches.browser.test.ts::should match canonical pixels when shared, mirrored and singleton edges move together',
     ],
     'structural-perf': [

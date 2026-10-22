@@ -177,6 +177,10 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
 
   public constructor(parameters?: ThreeLine2NodeMaterialParameters) {
     super(parameters);
+    // A node-builder cache hit skips setup on equivalent material instances.
+    // Establish fixed-function state here, before any shader lookup: upstream
+    // Line2NodeMaterial defaults to NoBlending even for transparent materials.
+    this.blending = NormalBlending;
   }
 
   /**
@@ -502,8 +506,8 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
         } else {
           alpha.assign(halfWidthPx.add(0.5).sub(distancePx).clamp(0.0, 1.0));
         }
-        // The composite replaces the target (`NoBlending`) from a viewport copy shared by every
-        // overlay line and taken before the first draws, so an uncovered fragment would paint
+        // The optional appearance-reference composite replaces the target (`NoBlending`) from a
+        // viewport copy shared by the lines. An uncovered fragment would paint
         // that stale copy over any line drawn earlier — it erased most of the x axis.
         alpha.lessThanEqual(0.0).discard();
       } else if (useAlphaToCoverage && renderer.currentSamples > 0) {
@@ -561,8 +565,6 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
       // tint × opacity mix against transparent black into a dark opaque line.
       self.outputNode = compositeOverViewportSrgb(self.colorNode.rgb, opacityNode, viewportColor);
       self.blending = NoBlending;
-    } else if (self.transparent) {
-      self.blending = NormalBlending;
     }
 
     generatedLineNodes.set(

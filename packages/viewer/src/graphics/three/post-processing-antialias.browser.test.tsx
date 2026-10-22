@@ -1,4 +1,6 @@
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
+import { AxesHelper } from '#graphics/three/react/axes-helper.jsx';
+import type { Group } from 'three';
 import { GltfMesh } from '#graphics/three/react/gltf-mesh.jsx';
 import '#test/browser.css';
 import { cleanup, render } from '@testing-library/react';
@@ -2120,6 +2122,135 @@ it.each(['webgpu', 'node-webgl2'] as const)(
       }
       referenceMode.manualPreparation = false;
       expect(referenceMode.preparations.size).toBe(0);
+    }
+  },
+);
+
+it.each((['webgpu', 'node-webgl2'] as const).flatMap((execution) => [0, 35].map((fov) => ({ execution, fov }))))(
+  'should preserve opaque planetary pixels beneath workspace axes at 5K on $execution FOV $fov',
+  async ({ execution, fov }) => {
+    referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+    vi.stubGlobal('devicePixelRatio', 2);
+    await page.viewport(600, 500);
+    const response = await fetch(new URL('fixtures/planetary.glb', import.meta.url));
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const actor = createActor(
+      graphicsMachine.provide({
+        actors: { probeWebGpu: createAsyncLogic({ run: async () => true }) },
+      }),
+      { input: { enablePostProcessing: true } },
+    ).start();
+    let state: RootState | undefined;
+    let axes: Group | undefined;
+    let rig: ReturnType<typeof useCameraRig> | undefined;
+    const Probe = (): undefined => {
+      state = useThree();
+      rig = useCameraRig();
+      return undefined;
+    };
+    const capture = async (): Promise<Uint8ClampedArray> => {
+      // PassNode updates once per animation frame; reuse retires its scene color.
+      // Do not manufacture a second composed frame under the same frame identity.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+      state!.advance(performance.now(), true);
+      return captureRendererOutput(state!.gl);
+    };
+    try {
+      render(
+        <KeyboardProvider>
+          <div style={{ width: 2560, height: 1440 }}>
+            <GraphicsProvider graphicsRef={actor} initialVerticalFieldOfView={0}>
+              <ThreeCanvasInstance
+                graphicsBackend='webgpu'
+                upDirection='z'
+                postProcessingSettings={{ aoEnabled: true, toneMapping: 'neutral' }}
+                onRetry={() => undefined}
+              >
+                <ambientLight intensity={2} />
+                <GltfMesh gltfFile={bytes} enableLines enableSurfaces enableMatcap={false} />
+                <SceneOverlay overlayActive>
+                  <group
+                    visible={false}
+                    ref={(value) => {
+                      axes = value ?? undefined;
+                    }}
+                  >
+                    <AxesHelper />
+                  </group>
+                </SceneOverlay>
+                <Probe />
+              </ThreeCanvasInstance>
+            </GraphicsProvider>
+          </div>
+        </KeyboardProvider>,
+      );
+      await vi.waitFor(
+        () => {
+          expect(state).toBeDefined();
+          expect(state!.scene.getObjectByName('Internal_Ring_Gear')).toBeDefined();
+        },
+        { timeout: 45_000 },
+      );
+      rig!.actorRef.send({ type: 'setVerticalFieldOfView', verticalFieldOfView: fov });
+      rig!.actorRef.send({
+        type: 'setView',
+        target: [0.00003115460276603699, 0, 0.0059999991208314896],
+        direction: [1, 1, 1],
+        up: [0, 0, 1],
+        verticalSpan: 0.22615948766469957,
+      });
+      for (let frame = 0; frame < 4; frame++) {
+        // oxlint-disable-next-line no-await-in-loop -- Distinct rendered frames must settle in sequence.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+        state!.advance(performance.now(), true);
+      }
+      expect(state!.gl.domElement.width).toBe(5120);
+      expect(state!.gl.domElement.height).toBe(2880);
+      expect(isViewportWebGpu(state!.gl)).toBe(true);
+      if (isViewportWebGpu(state!.gl)) {
+        expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+      }
+      state!.setFrameloop('never');
+      const withoutAxes = await capture();
+      const repeated = await capture();
+      let unchangedDifferences = 0;
+      for (const [index, value] of withoutAxes.entries()) {
+        unchangedDifferences += Number(value !== repeated[index]);
+      }
+      expect(unchangedDifferences, 'Unchanged A/A capture must be exact before testing overlays').toBe(0);
+      axes!.visible = true;
+      const pixels = await capture();
+      let erasedOpaquePixels = 0;
+
+      let changedPixels = 0;
+      for (let i = 0; i < withoutAxes.length; i += 4) {
+        if (withoutAxes[i + 3] === 255 && pixels[i + 3]! < 255) {
+          erasedOpaquePixels++;
+        }
+        if (
+          withoutAxes[i] !== pixels[i] ||
+          withoutAxes[i + 1] !== pixels[i + 1] ||
+          withoutAxes[i + 2] !== pixels[i + 2]
+        ) {
+          changedPixels++;
+        }
+      }
+      expect(changedPixels, 'Axes must actually draw').toBeGreaterThan(100);
+      expect(erasedOpaquePixels, 'Transparent axes must preserve opaque assembly coverage').toBe(0);
+    } finally {
+      if (state) {
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
+      actor.stop();
     }
   },
 );

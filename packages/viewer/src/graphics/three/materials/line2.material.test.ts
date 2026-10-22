@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NoBlending, REVISION } from 'three';
+import { NoBlending, NormalBlending, REVISION } from 'three';
 import {
   cameraFar,
   cameraNear,
@@ -245,6 +245,19 @@ describe('Line2NodeMaterial.outputNode (gamma-space blend regression guard)', ()
    * and the upstream `NodeMaterial.setupOutput` chain. The smoking-gun guard ensures the
    * transparent-only branch never leaks into opaque consumers.
    */
+  it('should establish hardware blending before a cached shader can bypass setup', () => {
+    const transparent = new Line2NodeMaterial({ transparent: true });
+    const deferred = new Line2NodeMaterial();
+    try {
+      deferred.transparent = true;
+      expect(transparent.blending).toBe(NormalBlending);
+      expect(deferred.blending).toBe(NormalBlending);
+    } finally {
+      transparent.dispose();
+      deferred.dispose();
+    }
+  });
+
   it('should leave transparent overlays on hardware blending without a viewport copy by default', () => {
     const material = new Line2NodeMaterial({ transparent: true, opacity: 0.6 });
     try {
