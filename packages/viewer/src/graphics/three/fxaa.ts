@@ -64,11 +64,16 @@ import type { TextureNode, Node } from 'three/webgpu';
  * Adapted from pmndrs/postprocessing src/effects/glsl/fxaa.frag (Zlib license).
  * Owns no resources; the caller owns the single-sample input target.
  * @internal
+ * @param input - Texture supplying the native output dimensions and default samples.
+ * @param sampleColor - Optional composition at a UV, avoiding a separate color intermediate.
+ * @returns Filtered surface color. Draw analytically covered CAD lines after this filter.
  */
-export function createViewportFxaa(input: TextureNode): Node<'vec4'> {
+export function createViewportFxaa(input: TextureNode, sampleColor?: (uv: Node<'vec2'>) => Node<'vec4'>): Node<'vec4'> {
   const texel = vec2(1).div(convert(textureSize(input), 'vec2') as Node<'vec2'>);
   // TextureNode.sample keeps the texture fluent API at runtime, omitted by Three's declarations.
-  const sample = (uv: Node<'vec2'>): Node<'vec4'> => (input.sample(uv) as TextureNode).level(float(0)) as Node<'vec4'>;
+  const sample =
+    sampleColor ??
+    ((uv: Node<'vec2'>): Node<'vec4'> => (input.sample(uv) as TextureNode).level(float(0)) as Node<'vec4'>);
   const luminance = (uv: Node<'vec2'>): Node<'float'> => dot(sample(uv).rgb, vec3(0.2126, 0.7152, 0.0722));
   // oxlint-disable-next-line eslint/new-cap -- Three TSL shader-function factory.
   return Fn(() => {

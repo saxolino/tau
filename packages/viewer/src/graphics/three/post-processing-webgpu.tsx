@@ -1,9 +1,10 @@
+import { Line2NodeMaterial } from '#graphics/three/materials/line2.material.js';
 import { createViewportFxaa } from '#graphics/three/fxaa.js';
 import { scheduleCameraPreparation } from '#graphics/three/camera-preparation.js';
 import type { ReactNode } from 'react';
 import { useCallback, useLayoutEffect, useRef } from 'react';
 import { NodeMaterial, QuadMesh, RenderTarget, RendererUtils, UnsignedByteType } from 'three/webgpu';
-import type { WebGPURenderer } from 'three/webgpu';
+import type { Node, WebGPURenderer } from 'three/webgpu';
 import {
   colorToDirection,
   directionToColor,
@@ -44,7 +45,7 @@ import {
   Vector2,
   Vector3,
 } from 'three';
-import type { Camera, Texture, ToneMapping, WebGLRenderTarget } from 'three';
+import type { Camera, Texture, ToneMapping, WebGLRenderTarget, Scene } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { CameraDriverSnapshot } from '@taucad/camera/machine';
 import type { ThreeCamera } from '@taucad/three/camera';
@@ -62,6 +63,7 @@ type PostProcessingPipelineResources = Readonly<{
   setCamera: (camera: ThreeCamera) => void;
   frame: LinearFrame;
   outputQuad: QuadMesh;
+  renderEdges: () => void;
   aoNode?: ReturnType<typeof ao>;
   denoiseNode?: ReturnType<typeof createAoDenoise>;
   denoiseInput?: ReturnType<typeof rtt>;
@@ -184,9 +186,7 @@ const createLinearFrame = (renderer: WebGPURenderer, toneMapping: ToneMapping): 
   target.texture.name = 'Tau linear frame';
   target.depthTexture = new DepthTexture(1, 1, UnsignedInt248Type);
   target.depthTexture.format = DepthStencilFormat;
-  const finalOutput = createOutputQuad(
-    renderOutput(createViewportFxaa(texture(target.texture)), NoToneMapping, renderer.outputColorSpace),
-  );
+  const finalOutput = createOutputQuad(renderOutput(texture(target.texture), NoToneMapping, renderer.outputColorSpace));
   finalOutput.name = 'Tau final output';
   const depthMaterial = new NodeMaterial();
   depthMaterial.colorWrite = false;
@@ -225,7 +225,7 @@ const createPipelineResources = ({
 }: {
   readonly camera: ThreeCamera;
   readonly gpuRenderer: WebGPURenderer;
-  readonly scene: Parameters<typeof pass>[0];
+  readonly scene: Scene;
   readonly toneMapping: ToneMapping;
   readonly withAo: boolean;
 }): PostProcessingPipelineResources => {
@@ -233,6 +233,79 @@ const createPipelineResources = ({
   // hardware filtering on node WebGL2 in the matched 5K comparison.
   const compactNormals = gpuRenderer.coordinateSystem !== WebGLCoordinateSystem;
   const scenePass = pass(scene, camera, { samples: 0 });
+  // One scene, two draw phases: CAD coverage is not input to AO or surface AA.
+  // Preserve the renderer owner's depth-bias hook and restore it even after errors.
+  let delegate: ReturnType<WebGPURenderer['getRenderObjectFunction']> = null;
+  // oxlint-disable-next-line max-params -- Three's supported draw callback, without per-draw rest-array allocations.
+  const surfaces: NonNullable<ReturnType<WebGPURenderer['getRenderObjectFunction']>> = (
+    object,
+    root,
+    view,
+    geometry,
+    material,
+    group,
+    lights,
+    clipping,
+    passId,
+  ) => {
+    if (!(material instanceof Line2NodeMaterial)) {
+      if (delegate) {
+        delegate(object, root, view, geometry, material, group, lights, clipping, passId);
+      } else {
+        gpuRenderer.renderObject(object, root, view, geometry, material, group, lights, clipping, passId);
+      }
+    }
+  };
+  // oxlint-disable-next-line max-params -- Three's supported draw callback, without per-draw rest-array allocations.
+  const edges: NonNullable<ReturnType<WebGPURenderer['getRenderObjectFunction']>> = (
+    object,
+    root,
+    view,
+    geometry,
+    material,
+    group,
+    lights,
+    clipping,
+    passId,
+  ) => {
+    if (material instanceof Line2NodeMaterial) {
+      if (delegate) {
+        delegate(object, root, view, geometry, material, group, lights, clipping, passId);
+      } else {
+        gpuRenderer.renderObject(object, root, view, geometry, material, group, lights, clipping, passId);
+      }
+    }
+  };
+  const acquireSurfaces = scenePass.updateBefore.bind(scenePass);
+  scenePass.updateBefore = (nodeFrame) => {
+    delegate = gpuRenderer.getRenderObjectFunction();
+    gpuRenderer.setRenderObjectFunction(surfaces);
+    try {
+      return acquireSurfaces(nodeFrame);
+    } finally {
+      gpuRenderer.setRenderObjectFunction(delegate);
+      delegate = null;
+    }
+  };
+  const renderEdges = (): void => {
+    delegate = gpuRenderer.getRenderObjectFunction();
+    const { background } = scene;
+    const { autoClear } = gpuRenderer;
+    const mapping = gpuRenderer.toneMapping;
+    scene.background = null;
+    gpuRenderer.autoClear = false;
+    gpuRenderer.toneMapping = NoToneMapping;
+    gpuRenderer.setRenderObjectFunction(edges);
+    try {
+      gpuRenderer.render(scene, scenePass.camera);
+    } finally {
+      gpuRenderer.setRenderObjectFunction(delegate);
+      delegate = null;
+      scene.background = background;
+      gpuRenderer.autoClear = autoClear;
+      gpuRenderer.toneMapping = mapping;
+    }
+  };
   let frame: LinearFrame | undefined;
   let aoNode: ReturnType<typeof ao> | undefined;
   let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
@@ -309,7 +382,10 @@ const createPipelineResources = ({
     const compositeStage = uniform(0);
     if (!withAo) {
       outputQuad = createOutputQuad(
-        renderOutput(scenePassColor, toneMapping, LinearSRGBColorSpace),
+        createViewportFxaa(
+          scenePassColor,
+          (uv) => renderOutput(scenePassColor.sample(uv), toneMapping, LinearSRGBColorSpace) as Node<'vec4'>,
+        ),
         frame.sharedDepth ? undefined : depthRestoreMaterial,
       );
       return {
@@ -319,6 +395,7 @@ const createPipelineResources = ({
         setCamera,
         frame,
         outputQuad,
+        renderEdges,
         depthRestore,
         depthRestoreMaterial,
         scenePass,
@@ -369,24 +446,23 @@ const createPipelineResources = ({
     denoiseInput = rtt(denoiseNode.visibility(screenUV), 1, 1, denoiseTargetOptions);
     // Performance candidate: filter at the AO budget, then bilinearly reconstruct.
     // This avoids native-resolution depth/normal gathers; boundary halos remain a visual gate.
-    const aoFactor = select<'float'>(aoNode.scale.greaterThan(0), denoiseInput.sample(screenUV).r, float(1));
-    const visibility = select<'float'>(displayMode.equal(2), float(1), aoFactor);
-    const beforeTone = select<'float'>(compositeStage.equal(0), visibility, float(1));
-    const afterTone = select<'float'>(compositeStage.equal(1), visibility, float(1));
-    // Traverse beauty before AO: GTAONode resets clear alpha while rendering its
-    // dependencies. Scheduling the scene from that branch would make its MRT opaque.
-    // AO visualization also preserves the scene's coverage instead of filling its background.
-    const beauty = renderOutput(scenePassColor.mul(vec4(vec3(beforeTone), 1)), toneMapping, LinearSRGBColorSpace).mul(
-      vec4(vec3(afterTone), 1),
+    const composedSample = (uv: Node<'vec2'>): Node<'vec4'> => {
+      // Sample the same tone-mapped surface/AO contract at the AA search position.
+      // No intermediate color target, and no CAD line color enters this filter.
+      const color = scenePassColor.sample(uv);
+      const aoFactor = select<'float'>(aoNode!.scale.greaterThan(0), denoiseInput!.sample(uv).r, float(1));
+      const visibility = select<'float'>(displayMode.equal(2), float(1), aoFactor);
+      const beforeTone = select<'float'>(compositeStage.equal(0), visibility, float(1));
+      const afterTone = select<'float'>(compositeStage.equal(1), visibility, float(1));
+      const beauty = renderOutput(color.mul(vec4(vec3(beforeTone), 1)), toneMapping, LinearSRGBColorSpace).mul(
+        vec4(vec3(afterTone), 1),
+      );
+      return mix(beauty, vec4(vec3(aoFactor), color.a), select<'float'>(displayMode.equal(1), float(1), float(0)));
+    };
+    outputQuad = createOutputQuad(
+      createViewportFxaa(scenePassColor, composedSample),
+      frame.sharedDepth ? undefined : depthRestoreMaterial,
     );
-    // Tone-map once, on the chosen side of AO; the AO-only diagnostic keeps its linear visibility.
-    const composite = mix(
-      beauty,
-      vec4(vec3(aoFactor), scenePassColor.a),
-      select<'float'>(displayMode.equal(1), float(1), float(0)),
-    );
-    // Compose directly: avoid a full-resolution HDR intermediate and its FXAA draw.
-    outputQuad = createOutputQuad(composite, frame.sharedDepth ? undefined : depthRestoreMaterial);
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
@@ -396,6 +472,7 @@ const createPipelineResources = ({
       setCamera,
       frame,
       outputQuad,
+      renderEdges,
       aoNode,
       denoiseNode,
       denoiseInput,
@@ -706,7 +783,16 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
     }
   }, 1);
 
-  // Caps (1.2), emphasis (1.4/1.5), grid (2), handles (2.5), and gizmo (3) share this frame.
+  // Caps write depth at 1.2. Analytic CAD edges consume that depth after surface AO/AA,
+  // before emphasis at 1.4/1.5. All still blend in the one linear frame target.
+  useFrame(() => {
+    const selected = resourcesRef.current.get(selectedCameraRef.current);
+    if (selected?.frame.pending) {
+      selected.renderEdges();
+    }
+  }, 1.3);
+
+  // Emphasis, grid, handles and gizmo also avoid the surface AA filter.
   useFrame(() => {
     const frame = frameRef.current;
     if (!frame?.pending) {

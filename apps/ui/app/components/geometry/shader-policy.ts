@@ -417,7 +417,7 @@ export const shaderEvidence = {
     ],
     pixels: [
       `${graphicsBackendEndToEnd}::grid, axes and model shading display the same`,
-      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should match final edge contrast across subpixel phases',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should preserve nominal unlit stroke coverage across phases',
       'packages/viewer/src/graphics/three/utils/gltf-edge-batches.browser.test.ts::should match canonical pixels when shared, mirrored and singleton edges move together',
     ],
     'structural-perf': [
@@ -473,6 +473,7 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.test.ts::should require requalification when Three sampled-view caching or texture lifetime changes',
       'packages/viewer/src/graphics/three/ao-denoise.test.ts::should preserve the deterministic depth and normal %s graph',
       'packages/viewer/src/graphics/three/fxaa.test.ts::should preserve the resource-free FXAA graph for a caller-owned color input',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should retain the continuous unlit planetary rim through production composition at 5K',
       'packages/viewer/src/graphics/three/fxaa.test.ts::should guard the exact classic FXAA source and quality contract paired with the node port',
       'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with native validation and an invalid-shader control',
       'packages/viewer/src/graphics/three/ao-denoise.browser.test.ts::should compile viewport %s with WebGL2 validation and an invalid-shader control',
@@ -511,6 +512,7 @@ export const shaderEvidence = {
     lifecycle: [
       'packages/viewer/src/graphics/three/camera-preparation.test.ts::should cancel on input, hidden document and disposal, allowing a later eligible frame',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should prepare offscreen once and restore camera and state after failure=%s',
+      'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should isolate CAD draws and restore renderer state after failure=%s',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should preserve sampled depth and attachment stencil through resize/recreation',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should restore repeated stencil references across passes and framebuffer copies',
       'packages/viewer/src/graphics/three/transmission-retirement.test.ts::should retire only the viewport copy belonging to the disposed scene pass',

@@ -16,6 +16,7 @@ import {
   Mesh,
 } from 'three';
 import type { ToneMapping, Vector2 } from 'three';
+import type { WebGPURenderer } from 'three/webgpu';
 import type { PostProcessingSettings } from '#graphics/three/post-processing-settings.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,7 +43,11 @@ const mocks = vi.hoisted(() => {
     kind: 'orthographic',
     isOrthographicCamera: true,
   };
-  const scene = { isScene: true, traverseVisible: vi.fn<(visit: (object: Mesh) => void) => void>() };
+  const scene = {
+    background: { kind: 'background' } as unknown,
+    isScene: true,
+    traverseVisible: vi.fn<(visit: (object: Mesh) => void) => void>(),
+  };
   const invalidate = vi.fn();
   const glRender = vi.fn();
   const clearDepth = vi.fn();
@@ -56,7 +61,11 @@ const mocks = vi.hoisted(() => {
         compileSettlers.push({ resolve, reject });
       }),
   );
-  const rendererState = { target: { kind: 'prior-target' } as unknown, mrt: null as unknown };
+  const rendererState = {
+    target: { kind: 'prior-target' } as unknown,
+    mrt: null as unknown,
+    draw: null as ReturnType<WebGPURenderer['getRenderObjectFunction']>,
+  };
   const getRenderTarget = vi.fn(() => rendererState.target);
   const setRenderTarget = vi.fn((target: unknown) => {
     rendererState.target = target;
@@ -84,6 +93,11 @@ const mocks = vi.hoisted(() => {
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Three.js API property.
     isWebGPURenderer: true,
     render: glRender,
+    renderObject: vi.fn<NonNullable<ReturnType<WebGPURenderer['getRenderObjectFunction']>>>(),
+    getRenderObjectFunction: () => rendererState.draw,
+    setRenderObjectFunction: (draw: typeof rendererState.draw) => {
+      rendererState.draw = draw;
+    },
     reversedDepthBuffer: true,
     // eslint-disable-next-line @typescript-eslint/naming-convention -- Three.js API property.
     setMRT: setMrt,
@@ -121,6 +135,7 @@ const mocks = vi.hoisted(() => {
       ) => void)
     | undefined;
   let finalFrame: typeof frame;
+  let edgeFrame: typeof frame;
   let retarget: ((camera: typeof perspectiveCamera, snapshot: MockCameraSnapshot) => void) | undefined;
   let restoreDepth: ((target?: unknown) => void) | undefined;
   let constructionCamera: unknown;
@@ -150,7 +165,11 @@ const mocks = vi.hoisted(() => {
 
   const depthNode = { kind: 'depth', sample: vi.fn(() => ({ kind: 'sampled-depth' })) };
   const normalNode = { sample: vi.fn(() => ({ kind: 'normal-sample' })) };
-  const colorNode = { a: { kind: 'scene-alpha' }, mul: vi.fn(() => ({ kind: 'composed-color' })) };
+  const colorNode = {
+    sample: vi.fn((): unknown => colorNode),
+    a: { kind: 'scene-alpha' },
+    mul: vi.fn(() => ({ kind: 'composed-color' })),
+  };
   const renderOutput = vi.fn((color: unknown, toneMapping: unknown, colorSpace: unknown) => ({
     color,
     toneMapping,
@@ -248,6 +267,10 @@ const mocks = vi.hoisted(() => {
     mix: vi.fn((beauty: unknown, aoOnly: unknown, factor: unknown) => ({ beauty, aoOnly, factor })),
     getFrame: () => frame,
     getFinalFrame: () => finalFrame,
+    getEdgeFrame: () => edgeFrame,
+    setEdgeFrame: (callback: typeof frame) => {
+      edgeFrame = callback;
+    },
     setFinalFrame: (callback: typeof frame) => {
       finalFrame = callback;
     },
@@ -296,10 +319,22 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@react-three/fiber', () => ({
   useFrame: (callback: Parameters<typeof mocks.setFrame>[0], priority: number) => {
-    if (priority === 1) {
-      mocks.setFrame(callback);
-    } else if (priority === 3.5) {
-      mocks.setFinalFrame(callback);
+    switch (priority) {
+      case 1: {
+        mocks.setFrame(callback);
+        break;
+      }
+      case 1.3: {
+        mocks.setEdgeFrame(callback);
+        break;
+      }
+      case 3.5: {
+        mocks.setFinalFrame(callback);
+        break;
+      }
+      default: {
+        break;
+      }
     }
   },
   useThree: () => mocks.state,
@@ -322,6 +357,7 @@ vi.mock('#graphics/three/scene-overlay.jsx', () => ({
 }));
 
 vi.mock('#graphics/three/transmission-retirement.js', () => ({ retireTransmissionCopy: mocks.retireTransmissionCopy }));
+vi.mock('#graphics/three/materials/line2.material.js', () => ({ Line2NodeMaterial: vi.fn() }));
 vi.mock('#graphics/three/fxaa.js', () => ({ createViewportFxaa: mocks.fxaa }));
 vi.mock('three/addons/tsl/display/GTAONode.js', () => ({ ao: mocks.ao }));
 vi.mock('#graphics/three/ao-normal.js', () => ({
@@ -455,7 +491,11 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
   beforeEach(() => {
     mocks.ao.mockClear();
     mocks.denoise.mockClear();
-    mocks.fxaa.mockReset();
+    mocks.fxaa
+      .mockReset()
+      .mockImplementation((value: unknown, sample?: (uv: unknown) => unknown) =>
+        sample ? sample({ kind: 'screen-uv' }) : value,
+      );
     mocks.mix.mockClear();
     mocks.denoiseSize.mockClear();
     mocks.aoDispose.mockClear();
@@ -486,6 +526,8 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.prewarm.mockReset();
     mocks.updateAoCamera.mockClear();
     mocks.rendererState.mrt = null;
+    mocks.rendererState.draw = null;
+    mocks.gl.renderObject.mockReset();
     mocks.renderOutput.mockClear();
     mocks.rendererState.target = { kind: 'prior-target' };
     mocks.postDispose.mockClear();
@@ -501,6 +543,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     mocks.scenePasses.length = 0;
     mocks.setFrame(undefined);
     mocks.setFinalFrame(undefined);
+    mocks.setEdgeFrame(undefined);
     mocks.setRetarget(undefined);
     mocks.setRestoreDepth(undefined);
     mocks.setRenderTarget.mockClear();
@@ -563,6 +606,41 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     },
   );
 
+  it.each([false, true])('should isolate CAD draws and restore renderer state after failure=%s', async (fails) => {
+    const ownerDraw = vi.fn<NonNullable<ReturnType<WebGPURenderer['getRenderObjectFunction']>>>();
+    mocks.gl.setRenderObjectFunction(ownerDraw);
+    const mounted = await mount({ aoAllowed: false });
+    const { background } = mocks.scene;
+    mocks.getFrame()?.(mocks.state, 0);
+    const target = mocks.gl.getRenderTarget();
+    mocks.glRender.mockImplementationOnce(() => {
+      expect(mocks.gl.getRenderTarget()).toBe(target);
+      expect(mocks.gl.getRenderObjectFunction()).not.toBe(ownerDraw);
+      expect(mocks.scene.background).toBeNull();
+      expect(mocks.gl.autoClear).toBe(false);
+      expect(mocks.gl.toneMapping).toBe(NoToneMapping);
+      if (fails) {
+        throw new Error('edge draw failed');
+      }
+    });
+    const drawEdges = (): void => {
+      mocks.getEdgeFrame()?.(mocks.state, 0);
+    };
+    if (fails) {
+      expect(drawEdges).toThrow('edge draw failed');
+    } else {
+      drawEdges();
+    }
+    expect(mocks.gl.getRenderObjectFunction()).toBe(ownerDraw);
+    expect(mocks.scene.background).toBe(background);
+    expect(mocks.gl.getRenderTarget()).toBe(target);
+    mocks.getFinalFrame()?.(mocks.state, 0);
+    mocks.glRender.mockClear();
+    drawEdges();
+    expect(mocks.glRender).not.toHaveBeenCalled();
+    mounted.unmount();
+  });
+
   it('should halve display-frame color storage while retaining depth precision', async () => {
     const mounted = await mount();
     mocks.getFrame()?.(mocks.state, 0);
@@ -613,7 +691,7 @@ describe('PostProcessingWebGPU active endpoint pipeline', () => {
     const mounted = await mount();
     expect(mocks.pass).toHaveBeenCalledWith(mocks.scene, mocks.perspectiveCamera, { samples: 0 });
     expect(mocks.antialiasTargetOptions).toHaveBeenCalledTimes(1);
-    expect(mocks.fxaa).not.toHaveBeenCalled();
+    expect(mocks.fxaa).toHaveBeenCalledOnce();
     expect(mocks.denoise.mock.results[0]!.value.upsample).not.toHaveBeenCalled();
     expect(mocks.aoNodes[0]!.scale.value).toBeGreaterThan(0);
     mocks.getFrame()?.(mocks.state, 1 / 60);

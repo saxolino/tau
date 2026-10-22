@@ -318,6 +318,8 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
 
       dir.x.assign(dir.x.mul(aspect));
       dir.assign(dir.normalize());
+      // The square pixel projects to |nx| + |ny| along a line's normal.
+      const coverageDiameter = useAnalyticCoverage && self.analyticButtCaps ? dir.x.abs().add(dir.y.abs()) : float(1.0);
 
       const clip = vec4().toVar();
 
@@ -366,9 +368,9 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
           offset.assign(offset.add(dir));
         });
 
-        // Analytic coverage needs the quad half a device pixel wider on each side to fade into.
+        // Conservatively cover the square pixel footprint, including diagonal strokes.
         offset.assign(
-          offset.mul(useAnalyticCoverage ? materialLineWidth.add(screenDPR.reciprocal()) : materialLineWidth),
+          offset.mul(useAnalyticCoverage ? materialLineWidth.add(coverageDiameter.div(screenDPR)) : materialLineWidth),
         );
 
         offset.assign(offset.div(viewport.w.div(screenDPR)));
@@ -477,7 +479,29 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
         if (self.analyticButtCaps) {
           beyond.greaterThan(0).discard();
         }
-        alpha.assign(halfWidthPx.add(0.5).sub(distancePx).clamp(0.0, 1.0));
+        if (self.analyticButtCaps) {
+          // Exact square-pixel overlap with the infinite strip. The old 1D ramp
+          // overestimated 45-degree, one-pixel strokes and modulated their weight.
+          const a = screenLine.z.abs().max(screenLine.w.abs());
+          const b = screenLine.z.abs().min(screenLine.w.abs());
+          const support = a.add(b).mul(0.5);
+          const shoulder = a.sub(b).mul(0.5);
+          const cdf = (position) => {
+            const t = position.abs();
+            const tail = support.sub(t).max(0.0);
+            const outer = float(1.0).sub(tail.mul(tail).div(a.mul(b.max(1e-6)).mul(2.0)));
+            const inner = float(0.5).add(t.div(a));
+            const positive = t.lessThanEqual(shoulder).select(inner, outer);
+            return position.lessThan(0.0).select(positive.oneMinus(), positive).clamp(0.0, 1.0);
+          };
+          alpha.assign(
+            cdf(halfWidthPx.sub(across))
+              .sub(cdf(halfWidthPx.negate().sub(across)))
+              .clamp(0.0, 1.0),
+          );
+        } else {
+          alpha.assign(halfWidthPx.add(0.5).sub(distancePx).clamp(0.0, 1.0));
+        }
         // The composite replaces the target (`NoBlending`) from a viewport copy shared by every
         // overlay line and taken before the first draws, so an uncovered fragment would paint
         // that stale copy over any line drawn earlier — it erased most of the x axis.

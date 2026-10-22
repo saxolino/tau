@@ -16,8 +16,8 @@ export function transformRenderingAblation(source: string, id: string): string |
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
     replace(
-      'renderOutput(createViewportFxaa(texture(target.texture)), NoToneMapping, renderer.outputColorSpace)',
-      "renderOutput(tauAblation.get('finalAa') === 'off' ? texture(target.texture) : createViewportFxaa(texture(target.texture)), NoToneMapping, renderer.outputColorSpace)",
+      "import { createViewportFxaa } from '#graphics/three/fxaa.js';",
+      "import { createViewportFxaa as tauSurfaceFxaa } from '#graphics/three/fxaa.js';\nconst createViewportFxaa: typeof tauSurfaceFxaa = (input, sampleColor) => tauAblation.get('surfaceAa') === 'off' && sampleColor ? sampleColor(screenUV) : tauSurfaceFxaa(input, sampleColor);",
     );
     replace(
       '    const preparation = scheduleCameraPreparation(renderer.domElement, () => {',
@@ -92,10 +92,10 @@ export function transformRenderingAblation(source: string, id: string): string |
       if (tauAblation.get('abl') === 'mrt') scenePass.getTexture('normal').type = UnsignedByteType;`,
     );
     replace(
-      'denoiseInput.sample(screenUV).r,',
-      `tauAblation.get('abl') === 'raw-ao' ? aoTexture.sample(screenUV).r
-        : tauAblation.get('abl') === 'bilateral-ao' ? denoiseNode.upsample(denoiseInput, screenUV)
-        : denoiseInput.sample(screenUV).r,`,
+      'denoiseInput!.sample(uv).r, float(1)',
+      `tauAblation.get('abl') === 'raw-ao' ? aoTexture.sample(uv).r
+        : tauAblation.get('abl') === 'bilateral-ao' ? denoiseNode.upsample(denoiseInput, uv)
+        : denoiseInput!.sample(uv).r, float(1)`,
     );
     replace(
       "const withAo = aoAllowed && aoEnabled && displayMode !== 'no-ao';",

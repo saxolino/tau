@@ -1,3 +1,5 @@
+// oxlint-disable-next-line eslint/no-restricted-imports, import/no-empty-named-blocks -- Type-only augmentation import for config consumers before aliases are installed.
+import type {} from '../../test/webgpu-profile.test-utils.js';
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
@@ -6,6 +8,11 @@ import { defineConfig } from 'vitest/config';
 const webGpuProfile = process.env['TAU_E2E_WEBGPU_PROFILE'] ?? 'hardware';
 if (webGpuProfile !== 'hardware' && webGpuProfile !== 'software') {
   throw new TypeError(`Unsupported TAU_E2E_WEBGPU_PROFILE: ${webGpuProfile}`);
+}
+
+const surfaceAa = process.env['TAU_E2E_SURFACE_AA'] ?? 'on';
+if (surfaceAa !== 'on' && surfaceAa !== 'off') {
+  throw new TypeError(`Unsupported TAU_E2E_SURFACE_AA: ${surfaceAa}`);
 }
 
 export default defineConfig({
@@ -32,7 +39,7 @@ export default defineConfig({
     },
   },
   test: {
-    provide: { webGpuProfile },
+    provide: { webGpuProfile, surfaceAa },
     include: [
       'src/graphics/three/shader-cache.browser.test.ts',
       'src/graphics/three/empty-viewer.browser.test.tsx',

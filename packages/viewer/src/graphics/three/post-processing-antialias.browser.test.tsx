@@ -1,3 +1,5 @@
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
+import { GltfMesh } from '#graphics/three/react/gltf-mesh.jsx';
 import '#test/browser.css';
 import { cleanup, render } from '@testing-library/react';
 import { useMemo } from 'react';
@@ -18,6 +20,8 @@ import {
   Vector4,
 } from 'three';
 import { WebGPUBackend, WebGLBackend, WebGPURenderer } from 'three/webgpu';
+import { screenUV } from 'three/tsl';
+import type * as fxaaModule from '#graphics/three/fxaa.js';
 import { createActor, createAsyncLogic } from 'xstate';
 import { afterEach, expect, inject, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
@@ -56,6 +60,16 @@ const referenceMode = vi.hoisted(() => ({
   validationErrors: [] as string[],
   removeObservers: [] as Array<() => void>,
 }));
+
+// The alternative skips surface AA only; actual line/material and overlay paths are unchanged.
+vi.mock('#graphics/three/fxaa.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof fxaaModule>();
+  return {
+    ...actual,
+    createViewportFxaa: (...args: Parameters<typeof actual.createViewportFxaa>) =>
+      inject('surfaceAa') === 'off' && args[1] ? args[1](screenUV) : actual.createViewportFxaa(...args),
+  };
+});
 
 // Control only scheduling; preparation still executes the actual production graph.
 vi.mock('#graphics/three/camera-preparation.js', async (importOriginal) => {
@@ -283,19 +297,23 @@ it.each(
       if (isViewportWebGpu(state!.gl)) {
         expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
       }
-      // Quality is a pixel contract, not a requirement to retain MSAA attachments.
-      expect(
+      // This discontinuous shader texture is the negative control for surface-AA-off,
+      // not a CAD-line coverage test. Preserve its failure as an explicit tradeoff.
+      const diagnostic = JSON.stringify({
+        execution,
+        width,
+        height,
+        dpr,
         smoothed,
-        JSON.stringify({
-          execution,
-          width,
-          height,
-          dpr,
-          smoothed,
-          dark,
-          bright,
-        }),
-      ).toBeGreaterThan(32);
+        dark,
+        bright,
+        surfaceAa: inject('surfaceAa'),
+      });
+      if (execution !== 'webgl' && inject('surfaceAa') === 'off') {
+        expect(smoothed, diagnostic).toBe(0);
+      } else {
+        expect(smoothed, diagnostic).toBeGreaterThan(32);
+      }
       expect(dark).toBeGreaterThan(1000);
       expect(bright).toBeGreaterThan(1000);
     } finally {
@@ -678,6 +696,13 @@ it.each((['webgl', 'webgpu'] as const).flatMap((backend) => ['front', 'behind'].
   },
 );
 
+// Decode display bytes before integrating coverage: encoded 188 is ~0.5 linear,
+// not 74% uncovered area. Keep perceived core contrast as a separate real-rim gate.
+const linearChannel = Array.from({ length: 256 }, (_, value) => {
+  const encoded = value / 255;
+  return encoded <= 0.04045 ? encoded / 12.92 : ((encoded + 0.055) / 1.055) ** 2.4;
+});
+
 // Diagnostic qualification: accepted WebGL is the reference. Integrate contrast
 // around isolated strokes so subpixel placement cannot hide width differences.
 it.each(
@@ -696,7 +721,7 @@ it.each(
     ),
   ),
 )(
-  'should match final edge contrast across subpixel phases at DPR $dpr color $color width $width line $lineWidth',
+  'should preserve nominal unlit stroke coverage across phases at DPR $dpr color $color width $width line $lineWidth',
   async ({ dpr, color, width, height, lineWidth }) => {
     vi.stubGlobal('devicePixelRatio', dpr);
     await page.viewport(600, 500);
@@ -858,15 +883,17 @@ it.each(
         if (isViewportWebGpu(state!.gl)) {
           expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
         }
-        const background = pixels![2]!;
-        expect(background).toBeGreaterThan(200);
+        expect(pixels![2]!).toBeGreaterThan(200);
+        const background = linearChannel[pixels![2]!]!;
         const widths = centers.map(({ x, y }) => {
           const pixelX = x + width / 2 - 128;
           const pixelY = y + height / 2 - 128;
           let contrast = 0;
           for (let row = Math.floor((pixelY - 26) * dpr); row < Math.ceil((pixelY + 26) * dpr); row++) {
             for (let column = Math.floor((pixelX - 26) * dpr); column < Math.ceil((pixelX + 26) * dpr); column++) {
-              contrast += 1 - pixels![(row * width * dpr + column) * 4 + 2]! / background;
+              contrast +=
+                (background - linearChannel[pixels![(row * width * dpr + column) * 4 + 2]!]!) /
+                (background - linearChannel[color % 256]!);
             }
           }
           return contrast / (40 * dpr * dpr);
@@ -898,7 +925,9 @@ it.each(
             let ink = 0;
             for (let row = Math.floor((cy - 26) * dpr); row < Math.ceil((cy + 26) * dpr); row++) {
               for (let column = Math.floor((cx - 26) * dpr); column < Math.ceil((cx + 26) * dpr); column++) {
-                ink += 1 - pixels![(row * width * dpr + column) * 4 + 2]! / background;
+                ink +=
+                  (background - linearChannel[pixels![(row * width * dpr + column) * 4 + 2]!]!) /
+                  (background - linearChannel[color % 256]!);
               }
             }
             energy.push(ink / (40 * dpr * dpr));
@@ -911,7 +940,10 @@ it.each(
               let coverage = 0;
               for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
-                  coverage = Math.max(coverage, 1 - pixels![((py + dy) * width * dpr + px + dx) * 4 + 2]! / background);
+                  coverage = Math.max(
+                    coverage,
+                    1 - linearChannel[pixels![((py + dy) * width * dpr + px + dx) * 4 + 2]!]! / background,
+                  );
                 }
               }
               minimumCoverage = Math.min(minimumCoverage, coverage);
@@ -989,7 +1021,17 @@ it.each(
     );
     expect(Math.min(...results.flat()), JSON.stringify(results)).toBeGreaterThan(0.05);
     // Real rendered half/double-error controls must fail; the accepted reference is unchanged.
-    expect(accepted, JSON.stringify({ dpr, width, height, lineWidth, comparisons })).toBe(lineWidth === 1);
+    // Classic remains an unchanged visual comparison, but its FXAA can remove
+    // thin-stroke energy. Nominal CSS width, not that loss, owns the coverage oracle.
+    const nominal = results.slice(1).every((values) => values.every((value) => Math.abs(value - 1) <= 0.08));
+    expect(nominal, JSON.stringify({ dpr, width, height, lineWidth, results, classicParity: accepted })).toBe(
+      lineWidth === 1,
+    );
+    for (let i = 0; i < results[1]!.length; i++) {
+      // Two finite endpoints may differ by one raster column between APIs.
+      // Bound their area by two physical pixels / stroke length, plus 8-bit rounding.
+      expect(Math.abs(results[1]![i]! - results[2]![i]!)).toBeLessThan(2 / (40 * dpr) + 0.005);
+    }
   },
 );
 
@@ -1794,6 +1836,143 @@ it.each(
       actor.stop();
       referenceMode.manualPreparation = false;
       expect(referenceMode.preparations.size).toBe(0);
+    }
+  },
+);
+
+it.each(
+  (['webgpu', 'node-webgl2'] as const).flatMap((execution) =>
+    [false, true].map((aoEnabled) => ({ execution, aoEnabled })),
+  ),
+)(
+  'should retain the continuous unlit planetary rim through production composition at 5K on $execution AO $aoEnabled',
+  async ({ execution, aoEnabled }) => {
+    referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+    vi.stubGlobal('devicePixelRatio', 2);
+    await page.viewport(600, 500);
+    const response = await fetch(new URL('fixtures/planetary.glb', import.meta.url));
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const actor = createActor(
+      graphicsMachine.provide({
+        actors: { probeWebGpu: createAsyncLogic({ run: async () => true }) },
+      }),
+      { input: { enablePostProcessing: true } },
+    ).start();
+    let state: RootState | undefined;
+    let rig: ReturnType<typeof useCameraRig> | undefined;
+    let pixels: Uint8ClampedArray | undefined;
+    let pending: Promise<void> | undefined;
+    let captureError: Error | undefined;
+    let retired = false;
+    const measure = async (current: RootState): Promise<void> => {
+      try {
+        pixels = await captureRendererOutput(current.gl);
+      } catch (error) {
+        captureError = error instanceof Error ? error : new Error(String(error));
+      } finally {
+        pending = undefined;
+      }
+    };
+    const Probe = (): undefined => {
+      state = useThree();
+      rig = useCameraRig();
+      useFrame((current) => {
+        if (!pending && !retired) {
+          pending = measure(current);
+        }
+      }, 4);
+      return undefined;
+    };
+    try {
+      render(
+        <KeyboardProvider>
+          <div style={{ width: 2560, height: 1440 }}>
+            <GraphicsProvider graphicsRef={actor} initialVerticalFieldOfView={0}>
+              <ThreeCanvasInstance
+                graphicsBackend='webgpu'
+                upDirection='z'
+                postProcessingSettings={{ aoEnabled, toneMapping: 'neutral' }}
+                onRetry={() => undefined}
+              >
+                <ambientLight intensity={2} />
+                <GltfMesh gltfFile={bytes} enableLines enableSurfaces enableMatcap={false} />
+                <Probe />
+              </ThreeCanvasInstance>
+            </GraphicsProvider>
+          </div>
+        </KeyboardProvider>,
+      );
+      await vi.waitFor(
+        () => {
+          if (captureError) {
+            throw captureError;
+          }
+          expect(state).toBeDefined();
+          expect(state!.scene.getObjectByName('Internal_Ring_Gear')).toBeDefined();
+        },
+        { timeout: 45_000 },
+      );
+      rig!.actorRef.send({ type: 'setVerticalFieldOfView', verticalFieldOfView: 0 });
+      rig!.actorRef.send({
+        type: 'setView',
+        target: [0.00003115460276603699, 0, 0.0059999991208314896],
+        direction: [1, -1, 1],
+        up: [0, 0, 1],
+        verticalSpan: 0.22615948766469957,
+      });
+      for (let frame = 0; frame < 4; frame++) {
+        // oxlint-disable-next-line no-await-in-loop -- Distinct rendered frames must settle in sequence.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+        state!.advance(performance.now(), true);
+        // oxlint-disable-next-line no-await-in-loop -- Drain this frame before advancing the next.
+        await pending;
+      }
+      if (captureError) {
+        throw captureError;
+      }
+      expect(state!.gl.domElement.width).toBe(5120);
+      expect(state!.gl.domElement.height).toBe(2880);
+      expect(isViewportWebGpu(state!.gl)).toBe(true);
+      if (isViewportWebGpu(state!.gl)) {
+        expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+      }
+      expect(pixels).toBeDefined();
+      // This 400px run of the front rim is fully visible and two physical pixels wide.
+      // An analytic stroke has a black core; filtering it into a varying grey core is a regression.
+      const contrasts: number[] = [];
+      for (let x = 2300; x < 2700; x++) {
+        let minimum = 255;
+        let maximum = 0;
+        for (let y = 1900; y < 2010; y++) {
+          const value = pixels![(y * 5120 + x) * 4]!;
+          minimum = Math.min(minimum, value);
+          maximum = Math.max(maximum, value);
+        }
+        expect(maximum, 'Rim ROI must contain a lit, opaque surface').toBeGreaterThan(100);
+        contrasts.push(1 - minimum / maximum);
+      }
+      const mean = contrasts.reduce((a, b) => a + b) / contrasts.length;
+      const variation = Math.sqrt(
+        contrasts
+          .slice(1, -1)
+          .reduce((sum, value, i) => sum + (contrasts[i]! - 2 * value + contrasts[i + 2]!) ** 2, 0) /
+          (contrasts.length - 2),
+      );
+      const receipt = JSON.stringify({ execution, aoEnabled, mean, variation });
+      expect(mean, receipt).toBeGreaterThanOrEqual(0.9);
+      expect(variation, receipt).toBeLessThanOrEqual(0.025);
+    } finally {
+      retired = true;
+      await pending;
+      if (state) {
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
+      actor.stop();
     }
   },
 );
