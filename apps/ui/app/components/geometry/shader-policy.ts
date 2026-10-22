@@ -486,6 +486,7 @@ export const shaderEvidence = {
     ],
     pixels: [
       'packages/viewer/src/graphics/three/fxaa.browser.test.ts::should retain surface boundary quality with bounded FXAA on %s',
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should retain planetary surface boundaries and motion with six-step filtering at 5K on %s',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should preserve sampled depth and attachment stencil through resize/recreation',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.browser.test.ts::should restore repeated stencil references across passes and framebuffer copies',
       'packages/viewer/src/graphics/three/node-frame-reference.browser.test.ts::should preserve display ramps, alpha and linear overlay blends in compact frame storage',

@@ -22,7 +22,7 @@ import {
   Vector4,
 } from 'three';
 import { WebGPUBackend, WebGLBackend, WebGPURenderer } from 'three/webgpu';
-import { screenUV } from 'three/tsl';
+import { screenUV, select, uniform } from 'three/tsl';
 import type * as fxaaModule from '#graphics/three/fxaa.js';
 import { createActor, createAsyncLogic } from 'xstate';
 import { afterEach, expect, inject, it, vi } from 'vitest';
@@ -57,6 +57,8 @@ import {
 
 const referenceMode = vi.hoisted(() => ({
   manualPreparation: false,
+  compareSurfaceFiltering: false,
+  surfaceQuality: undefined as { value: number } | undefined,
   preparations: new Set<() => boolean>(),
   forceNodeWebGl2: false,
   validationErrors: [] as string[],
@@ -68,8 +70,23 @@ vi.mock('#graphics/three/fxaa.js', async (importOriginal) => {
   const actual = await importOriginal<typeof fxaaModule>();
   return {
     ...actual,
-    createViewportFxaa: (...args: Parameters<typeof actual.createViewportFxaa>) =>
-      inject('surfaceAa') === 'off' && args[1] ? args[1](screenUV) : actual.createViewportFxaa(...args),
+    createViewportFxaa: (...args: Parameters<typeof actual.createViewportFxaa>) => {
+      if (referenceMode.compareSurfaceFiltering) {
+        const quality = uniform(6);
+        referenceMode.surfaceQuality = quality;
+        const unfiltered = args[1] ? args[1](screenUV) : args[0].sample(screenUV);
+        return select<'vec4'>(
+          quality.equal(0),
+          unfiltered,
+          select<'vec4'>(
+            quality.equal(12),
+            actual.createViewportFxaa(args[0], args[1], 12),
+            actual.createViewportFxaa(args[0], args[1], 6),
+          ),
+        );
+      }
+      return inject('surfaceAa') === 'off' && args[1] ? args[1](screenUV) : actual.createViewportFxaa(...args);
+    },
   };
 });
 
@@ -160,6 +177,9 @@ vi.mock('#graphics/three/renderer.js', async (importOriginal) => {
 afterEach(() => {
   cleanup();
   referenceMode.forceNodeWebGl2 = false;
+  referenceMode.compareSurfaceFiltering = false;
+  referenceMode.surfaceQuality = undefined;
+  referenceMode.manualPreparation = false;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const remove of referenceMode.removeObservers.splice(0)) {
@@ -2283,4 +2303,204 @@ it.each((['webgpu', 'node-webgl2'] as const).flatMap((execution) => [0, 35].map(
       actor.stop();
     }
   },
+);
+
+it.each(['webgpu', 'node-webgl2'] as const)(
+  'should retain planetary surface boundaries and motion with six-step filtering at 5K on %s',
+  async (execution) => {
+    referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+    referenceMode.manualPreparation = true;
+    referenceMode.compareSurfaceFiltering = true;
+    vi.stubGlobal('devicePixelRatio', 2);
+    await page.viewport(600, 500);
+    const response = await fetch(new URL('fixtures/planetary.glb', import.meta.url));
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const actor = createActor(
+      graphicsMachine.provide({
+        actors: { probeWebGpu: createAsyncLogic({ run: async () => true }) },
+      }),
+      { input: { enablePostProcessing: true } },
+    ).start();
+    let state: RootState | undefined;
+    let rig: ReturnType<typeof useCameraRig> | undefined;
+    const Probe = (): undefined => {
+      state = useThree();
+      rig = useCameraRig();
+      return undefined;
+    };
+    // Crop only empty margins after a complete native 5K render/readback.
+    const width = 2560;
+    const height = 2160;
+    const capture = async (quality: number): Promise<Uint8ClampedArray> => {
+      referenceMode.surfaceQuality!.value = quality;
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+      state!.advance(performance.now(), true);
+      const full = await captureRendererOutput(state!.gl);
+      const cropped = new Uint8ClampedArray(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        const from = ((y + 540) * 5120 + 1280) * 4;
+        cropped.set(full.subarray(from, from + width * 4), y * width * 4);
+      }
+      return cropped;
+    };
+    try {
+      render(
+        <KeyboardProvider>
+          <div style={{ width: 2560, height: 1440 }}>
+            <GraphicsProvider graphicsRef={actor} initialVerticalFieldOfView={0}>
+              <ThreeCanvasInstance
+                graphicsBackend='webgpu'
+                upDirection='z'
+                postProcessingSettings={{ aoEnabled: true, toneMapping: 'neutral' }}
+                onRetry={() => undefined}
+              >
+                <ambientLight intensity={2} />
+                <GltfMesh gltfFile={bytes} enableLines={false} enableSurfaces enableMatcap={false} />
+                <Probe />
+              </ThreeCanvasInstance>
+            </GraphicsProvider>
+          </div>
+        </KeyboardProvider>,
+      );
+      await vi.waitFor(
+        () => {
+          expect(state?.scene.getObjectByName('Internal_Ring_Gear')).toBeDefined();
+          expect(referenceMode.surfaceQuality).toBeDefined();
+        },
+        { timeout: 45_000 },
+      );
+      expect(state!.gl.domElement.width).toBe(5120);
+      expect(state!.gl.domElement.height).toBe(2880);
+      expect(isViewportWebGpu(state!.gl)).toBe(true);
+      if (isViewportWebGpu(state!.gl)) {
+        expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+      }
+      const gear = state!.scene.getObjectByName('Internal_Ring_Gear')!;
+      const originalRotation = gear.rotation.z;
+      let previous: { reference: Uint8ClampedArray; candidate: Uint8ClampedArray } | undefined;
+      let initial: Uint8ClampedArray | undefined;
+      let completedPhases = 0;
+      for (const phase of [0, 0.25, 0.5, 0.75, 0]) {
+        gear.rotation.z = originalRotation + phase * 0.002;
+        rig!.actorRef.send({
+          type: 'setView',
+          target: [0.00003115460276603699 + (phase * 0.22615948766469957) / 2880, 0, 0.0059999991208314896],
+          direction: [1, -1, 1],
+          up: [0, 0, 1],
+          verticalSpan: 0.22615948766469957,
+        });
+        for (let settle = 0; settle < 4; settle++) {
+          // eslint-disable-next-line no-await-in-loop -- Let camera/loader subscriptions settle before comparing a pose.
+          await capture(6);
+        }
+        const cameraPose = [...state!.camera.matrixWorld.elements, ...state!.camera.projectionMatrix.elements];
+        // Ordered samples share a pose and the same live composition/attachments.
+        // eslint-disable-next-line no-await-in-loop -- Drain each GPU capture before changing the quality uniform.
+        const raw = await capture(0);
+        // eslint-disable-next-line no-await-in-loop -- Reference must see the identical pose.
+        const reference = await capture(12);
+        // eslint-disable-next-line no-await-in-loop -- Candidate must see the identical pose.
+        const candidate = await capture(6);
+        expect([...state!.camera.matrixWorld.elements, ...state!.camera.projectionMatrix.elements]).toEqual(cameraPose);
+        let smoothed = 0;
+        let lost = 0;
+        let count = 0;
+        let error = 0;
+        let large = 0;
+        let shiftedError = 0;
+        let temporalError = 0;
+        let returnDifferences = 0;
+        let movedChannels = 0;
+        // Visible RGB on both backgrounds; transparent RGB alone is not appearance.
+        const displayed = (pixels: Uint8ClampedArray, i: number, background: number): number =>
+          (pixels[i]! * pixels[i - (i % 4) + 3]! + background * (255 - pixels[i - (i % 4) + 3]!)) / 255;
+        for (let i = 4; i < reference.length; i += 4) {
+          let filtering = 0;
+          let candidateFiltering = 0;
+          for (const background of [0, 255]) {
+            for (let c = 0; c < 3; c++) {
+              filtering = Math.max(
+                filtering,
+                Math.abs(displayed(reference, i + c, background) - displayed(raw, i + c, background)),
+              );
+              candidateFiltering = Math.max(
+                candidateFiltering,
+                Math.abs(displayed(candidate, i + c, background) - displayed(raw, i + c, background)),
+              );
+            }
+          }
+          if (filtering > 8) {
+            smoothed++;
+            lost += Number(candidateFiltering < 2);
+            for (const background of [0, 255]) {
+              for (let c = 0; c < 3; c++) {
+                const residual = displayed(candidate, i + c, background) - displayed(reference, i + c, background);
+                error += Math.abs(residual) / 255;
+                large += Number(Math.abs(residual) / 255 > 0.125);
+                shiftedError +=
+                  Math.abs(displayed(reference, i + c - 4, background) - displayed(reference, i + c, background)) / 255;
+                if (previous) {
+                  const oldResidual =
+                    displayed(previous.candidate, i + c, background) - displayed(previous.reference, i + c, background);
+                  temporalError += Math.abs(residual - oldResidual) / 255;
+                }
+                count++;
+              }
+            }
+          }
+          if (initial) {
+            for (let c = 0; c < 4; c++) {
+              movedChannels += Number(candidate[i + c] !== initial[i + c]);
+            }
+          }
+          if (initial && phase === 0) {
+            for (let c = 0; c < 4; c++) {
+              returnDifferences += Number(candidate[i + c] !== initial[i + c]);
+            }
+          }
+        }
+        const receipt = {
+          execution,
+          phase,
+          smoothed,
+          mean: error / count,
+          large: large / count,
+          lost: lost / smoothed,
+          shifted: shiftedError / count,
+          temporal: temporalError / count,
+          returnDifferences,
+          movedChannels,
+        };
+        console.info('Surface motion receipt', JSON.stringify(receipt));
+        expect(smoothed, JSON.stringify(receipt)).toBeGreaterThan(1000);
+        expect(error / count, JSON.stringify(receipt)).toBeLessThanOrEqual(0.025);
+        expect(large / count, JSON.stringify(receipt)).toBeLessThanOrEqual(0.05);
+        expect(lost / smoothed, JSON.stringify(receipt)).toBeLessThanOrEqual(0.05);
+        expect(temporalError / count, JSON.stringify(receipt)).toBeLessThanOrEqual(0.025);
+        // AA-off would lose every smoothed pixel; a one-pixel shift must also fail.
+        expect(shiftedError / count, 'Boundary gate must reject a one-pixel output displacement').toBeGreaterThan(
+          0.025,
+        );
+        expect(returnDifferences, 'Returning to the same pose must restore every captured channel').toBe(0);
+        if (phase > 0) {
+          expect(movedChannels, 'Motion fixture must change the actual displayed assembly').toBeGreaterThan(0);
+        }
+        completedPhases++;
+        initial ??= candidate;
+        previous = { reference, candidate };
+      }
+      expect(completedPhases).toBe(5);
+    } finally {
+      if (state) {
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
+      actor.stop();
+    }
+  },
+  120_000,
 );
