@@ -246,7 +246,8 @@ it.each(['webgpu', 'webgl2-node'] as const)(
     if (backend === 'webgl2-node') {
       renderer.backend = new WebGLBackend();
     }
-    const observed = renderer.backend as {
+    // Three omits these backend hooks from its declarations; source guards above pin the inspected implementations.
+    const observed = renderer.backend as WebGPURenderer['backend'] & {
       get: (texture: Texture) => Record<string, unknown>;
       createTexture: (texture: Texture, options: Record<string, number>) => void;
       destroyTexture: (texture: Texture) => void;
