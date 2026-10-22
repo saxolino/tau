@@ -29,11 +29,11 @@ import {
   modelViewMatrix,
   positionGeometry,
   screenCoordinate,
-  screenDPR,
   screenUV,
   smoothstep,
   sRGBTransferEOTF,
   sRGBTransferOETF,
+  uniform,
   uv,
   vec2,
   vec3,
@@ -248,6 +248,11 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
     const useWorldUnits = self._useWorldUnits as boolean;
     const useEdgePresentationCoverage = self.edgePresentationCoverage === true;
     const useAnalyticCoverage = self.usesAnalyticCoverage === true;
+    // Three r184 ScreenNode(DPR).setup replaces its singleton _output for every
+    // builder. Preparing another graph before rendering leaves earlier uniforms
+    // at their initial DPR=1. Own the scalar in this graph; cached builders share
+    // it safely and update it for the renderer actually executing each draw.
+    const lineDpr = uniform(1).onRenderUpdate(({ renderer }) => renderer.getPixelRatio());
 
     const trimSegment = Fn(({ start, end }: { readonly start: any; readonly end: any }) => {
       const nearEstimate = cameraNear.negate();
@@ -385,10 +390,10 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
 
         // Conservatively cover the square pixel footprint, including diagonal strokes.
         offset.assign(
-          offset.mul(useAnalyticCoverage ? materialLineWidth.add(coverageDiameter.div(screenDPR)) : materialLineWidth),
+          offset.mul(useAnalyticCoverage ? materialLineWidth.add(coverageDiameter.div(lineDpr)) : materialLineWidth),
         );
 
-        offset.assign(offset.div(viewport.w.div(screenDPR)));
+        offset.assign(offset.div(viewport.w.div(lineDpr)));
 
         clip.assign(positionGeometry.y.lessThan(0.5).select(clipStart, clipEnd));
 
@@ -483,7 +488,7 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
         // comes from the fragment position, not the interpolated across-line `uv`: a segment
         // clipped far off screen has vertices so distant that its interpolants lose precision.
         // Distance to the segment (round caps included) from the fragment position alone.
-        const halfWidthPx = materialLineWidth.mul(screenDPR).mul(0.5);
+        const halfWidthPx = materialLineWidth.mul(lineDpr).mul(0.5);
         const screenLine = varyingProperty('vec4', 'tauLineScreenPx');
         const extent = varyingProperty('vec2', 'tauLineExtentPx');
         const relative = screenCoordinate.sub(screenLine.xy);

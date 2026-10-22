@@ -1,3 +1,6 @@
+import { Line2NodeMaterial } from '#graphics/three/materials/line2.material.js';
+import { Line2 } from 'three/addons/lines/webgpu/Line2.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import {
@@ -16,6 +19,7 @@ import {
   MeshStandardMaterial,
   NoToneMapping,
   OrthographicCamera,
+  PerspectiveCamera,
   PlaneGeometry,
   Scene,
   SRGBColorSpace,
@@ -288,6 +292,151 @@ it.each(['webgpu', 'webgl'] as const)(
       reference.dispose();
       compact.dispose();
       negative.dispose();
+      destination.dispose();
+      renderer.dispose();
+    }
+  },
+);
+
+it.each(
+  (['webgpu', 'webgl'] as const).flatMap((backend) =>
+    [false, true].flatMap((prepared) => [false, true].map((perspective) => ({ backend, prepared, perspective }))),
+  ),
+)(
+  'should preserve long-axis coverage across cached materials and frame formats at 5K on $backend preparation=$prepared perspective=$perspective',
+  async ({ backend, prepared, perspective }) => {
+    const { texture, renderOutput } = await import('three/tsl');
+    const canvas = document.createElement('canvas');
+    const renderer = await createRenderer('showcase', backend, canvas);
+    const width = 5120;
+    const height = 2880;
+    const compact = new RenderTarget(width, height, { type: UnsignedByteType });
+    compact.texture.colorSpace = SRGBColorSpace;
+    const half = new RenderTarget(width, height, { type: HalfFloatType });
+    half.texture.colorSpace = LinearSRGBColorSpace;
+    const destination = new RenderTarget(width, height, { depthBuffer: false });
+    const scene = new Scene();
+    const camera = perspective
+      ? new PerspectiveCamera(35, width / height, 0.1, 100_000)
+      : new OrthographicCamera(-200, 200, 112.5, -112.5, 0.1, 100_000);
+    camera.up.set(0, 0, 1);
+    camera.position.set(150, 150, 150);
+    camera.lookAt(0, 0, 0);
+    const materials = [0, 1].map(
+      () =>
+        new Line2NodeMaterial({
+          color: 0xe0_30_28,
+          linewidth: 1.25,
+          opacity: 0.6,
+          transparent: true,
+          depthWrite: false,
+          worldUnits: false,
+        }),
+    );
+    const geometries = [500, 50_000].map((length) => new LineGeometry().setPositions([0, 0, 0, length, 0, 0]));
+    const line = new Line2(geometries[0], materials[0]);
+    scene.add(line);
+    const outputs = [compact, half].map((target) => {
+      const material = new NodeMaterial();
+      material.fragmentNode = renderOutput(texture(target.texture), NoToneMapping, SRGBColorSpace);
+      material.depthTest = false;
+      material.depthWrite = false;
+      return new QuadMesh(material);
+    });
+    const images: Array<Uint8Array<ArrayBuffer>> = [];
+    const preparedMaterial = new Line2NodeMaterial({ transparent: true, linewidth: 1.25, depthWrite: false });
+    preparedMaterial.analyticButtCaps = true;
+    const preparedLine = new Line2(geometries[0], preparedMaterial);
+    try {
+      expect(renderer.backend).toBeInstanceOf(backend === 'webgpu' ? WebGPUBackend : WebGLBackend);
+      renderer.setPixelRatio(2);
+      renderer.setSize(width / 2, height / 2);
+      renderer.outputColorSpace = LinearSRGBColorSpace;
+      renderer.toneMapping = NoToneMapping;
+      renderer.setClearColor(0, 0);
+      renderer.setRenderTarget(compact);
+      if (prepared) {
+        scene.add(preparedLine);
+        await renderer.compileAsync(scene, camera);
+        scene.remove(preparedLine);
+      }
+      for (const [targetIndex, target] of [compact, half].entries()) {
+        for (const geometry of geometries) {
+          for (const material of materials) {
+            line.geometry = geometry;
+            line.material = material;
+            renderer.setRenderTarget(target);
+            renderer.render(scene, camera);
+            renderer.setRenderTarget(destination);
+            outputs[targetIndex]!.render(renderer);
+            // oxlint-disable-next-line no-await-in-loop -- Capture each warmed context before the next draw.
+            const bytes = await renderer.readRenderTargetPixelsAsync(destination, 0, 0, width, height);
+            images.push(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).slice());
+          }
+        }
+      }
+      const differences = images.map((image) => {
+        let maximum = 0;
+        let aboveThree = 0;
+        let ink = 0;
+        for (let offset = 0; offset < image.length; offset += 4) {
+          let pixelError = 0;
+          for (let channel = 0; channel < 4; channel++) {
+            pixelError = Math.max(pixelError, Math.abs(image[offset + channel]! - images[0]![offset + channel]!));
+          }
+          maximum = Math.max(maximum, pixelError);
+          aboveThree += Number(pixelError > 3);
+          ink += image[offset + 3]!;
+        }
+        return { maximum, aboveThree, ink };
+      });
+      // First and second materials share a builder. Both lengths extend offscreen;
+      // the 100x farther endpoint must not alter the visible stroke. Format changes
+      // allow three output levels of quantization; cached instances must be exact.
+      expect(differences[1]!.maximum).toBe(0);
+      expect(differences[0]!.ink).toBeGreaterThan(1_000_000);
+      expect(differences[0]!.ink).toBeLessThan(1_200_000);
+      expect(
+        differences.every(({ aboveThree }) => aboveThree === 0),
+        JSON.stringify(differences),
+      ).toBe(true);
+      // A retained graph must follow a later DPR change, not its preparation DPR.
+      for (const dpr of [1, 2]) {
+        renderer.setPixelRatio(dpr);
+        renderer.setRenderTarget(compact);
+        renderer.render(scene, camera);
+        renderer.setRenderTarget(destination);
+        outputs[0]!.render(renderer);
+        // oxlint-disable-next-line no-await-in-loop -- Observe each change before restoring DPR.
+        const bytes = await renderer.readRenderTargetPixelsAsync(destination, 0, 0, width, height);
+        const pixels = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let ink = 0;
+        let maximum = 0;
+        for (let offset = 0; offset < pixels.length; offset++) {
+          if (offset % 4 === 3) {
+            ink += pixels[offset]!;
+          }
+          maximum = Math.max(maximum, Math.abs(pixels[offset]! - images[3]![offset]!));
+        }
+        expect(ink / differences[3]!.ink).toBeCloseTo(dpr / 2, 2);
+        if (dpr === 2) {
+          expect(maximum, 'DPR round trip must restore the retained graph exactly').toBe(0);
+        }
+      }
+    } finally {
+      renderer.setRenderTarget(null);
+      preparedMaterial.dispose();
+      for (const material of materials) {
+        material.dispose();
+      }
+      for (const geometry of geometries) {
+        geometry.dispose();
+      }
+      for (const output of outputs) {
+        (output.material as NodeMaterial).dispose();
+      }
+      compact.dispose();
+      half.dispose();
       destination.dispose();
       renderer.dispose();
     }

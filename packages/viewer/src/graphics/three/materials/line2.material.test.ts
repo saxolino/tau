@@ -43,6 +43,14 @@ const upstreamSetupBody = (): string => {
 };
 
 describe('Line2NodeMaterial upstream contract', () => {
+  it('should require review when the upstream DPR singleton ownership changes', () => {
+    const moduleDirectory = dirname(fileURLToPath(import.meta.resolve('three')));
+    const source = readFileSync(join(moduleDirectory, '..', 'src', 'nodes', 'display', 'ScreenNode.js'), 'utf8');
+    expect(createHash('sha256').update(source).digest('hex')).toBe(
+      '350ff3e72871d50fccb4d66e4b287287ac7501e49025ea02d18b631a1d4f94a6',
+    );
+  });
+
   it('fails deterministically when the exact Three revision or copied setup body drifts', () => {
     const setup = upstreamSetupBody();
     expect(REVISION).toBe('184');

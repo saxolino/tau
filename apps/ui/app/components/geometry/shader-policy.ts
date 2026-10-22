@@ -413,11 +413,13 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::matches stable stripped WebGPU line2 node material JSON snapshot',
     ),
     reference: [
+      'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should require review when the upstream DPR singleton ownership changes',
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should preserve native reversed depth without a fragment-depth rewrite',
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should establish hardware blending before a cached shader can bypass setup',
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::emits geometric viewZToLogarithmicDepth',
     ],
     pixels: [
+      'packages/viewer/src/graphics/three/node-frame-reference.browser.test.ts::should preserve long-axis coverage across cached materials and frame formats at 5K',
       `${graphicsBackendEndToEnd}::grid, axes and model shading display the same`,
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should preserve nominal unlit stroke coverage across phases',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should preserve opaque planetary pixels beneath workspace axes at 5K',
