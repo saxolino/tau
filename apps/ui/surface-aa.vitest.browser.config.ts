@@ -5,7 +5,7 @@ import viewer from '../../packages/viewer/src/graphics/three/viewer-resize.vites
 import { transformRenderingAblation } from './app/routes/[__e2e].onshape-render-profile/ablation-transform.js';
 
 const surfaceFilter = process.env['TAU_E2E_SURFACE_FILTER'] ?? 'short';
-if (!['short', 'reference', 'composed'].includes(surfaceFilter)) {
+if (!['short', 'reference', 'composed', 'reuse'].includes(surfaceFilter)) {
   throw new Error('Unknown surface filter experiment');
 }
 

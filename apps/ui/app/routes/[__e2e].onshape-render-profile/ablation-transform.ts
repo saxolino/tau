@@ -62,6 +62,89 @@ export function transformRenderingAblation(source: string, id: string): string |
         selected.outputQuad.render(renderer);
         scene.userData.calibrationPreparation = { milliseconds: performance.now() - preparationStart, at: performance.now() };`,
     );
+    // Reuse only within this endpoint: HDR scene color dies after composition.
+    // A framebuffer view borrows that color plus the existing frame depth. All
+    // three targets retire/initialize together, before any authoritative write.
+    replace(
+      '  renderEdges: () => void;',
+      '  renderEdges: () => void;\n  prepareSurfaceReuse?: (width: number, height: number) => void;\n  disposeSurfaceReuse?: () => void;',
+    );
+    replace(
+      '  let outputQuad: QuadMesh | undefined;',
+      '  let outputQuad: QuadMesh | undefined;\n  let disposeSurfaceReuse: (() => void) | undefined;\n  let prepareSurfaceReuse: ((width: number, height: number) => void) | undefined;',
+    );
+    replace(
+      "      tauAblation.get('surfaceFilter') === 'composed'",
+      "      tauAblation.get('surfaceFilter') === 'reuse' ? composedSample(screenUV) : tauAblation.get('surfaceFilter') === 'composed'",
+    );
+    replace(
+      '    /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */',
+      `    if (tauAblation.get('surfaceFilter') === 'reuse') {
+      const composedTarget = frame.target;
+      const reuseTarget = new RenderTarget(1, 1, { samples: 0, stencilBuffer: true });
+      reuseTarget.texture = scenePass.getTexture('output');
+      reuseTarget.depthTexture = composedTarget.depthTexture;
+      frame.target = reuseTarget;
+      (frame.output.material as NodeMaterial).fragmentNode = renderOutput(texture(reuseTarget.texture), NoToneMapping, gpuRenderer.outputColorSpace);
+      const filtered = createOutputQuad(createViewportFxaa(texture(composedTarget.texture)));
+      filtered.name = 'Tau reused surface FXAA';
+      const compose = outputQuad.render.bind(outputQuad);
+      outputQuad.render = (renderer) => {
+        const destination = renderer.getRenderTarget();
+        const clearDepth = renderer.autoClearDepth;
+        const clearStencil = renderer.autoClearStencil;
+        try {
+          renderer.setRenderTarget(composedTarget);
+          compose(renderer);
+          renderer.setRenderTarget(reuseTarget);
+          renderer.autoClearDepth = false;
+          renderer.autoClearStencil = false;
+          filtered.render(renderer);
+        } finally {
+          renderer.setRenderTarget(destination);
+          renderer.autoClearDepth = clearDepth;
+          renderer.autoClearStencil = clearStencil;
+        }
+      };
+      let preparedWidth = 0;
+      let preparedHeight = 0;
+      prepareSurfaceReuse = (width, height) => {
+        if (width === preparedWidth && height === preparedHeight) return;
+        // setSize disposes shared attachments in r184. Finish every retirement
+        // before initializing any view, and initialize before scene depth writes.
+        scenePass.renderTarget.setSize(width, height);
+        composedTarget.setSize(width, height);
+        reuseTarget.setSize(width, height);
+        gpuRenderer.initRenderTarget(scenePass.renderTarget);
+        gpuRenderer.initRenderTarget(composedTarget);
+        gpuRenderer.initRenderTarget(reuseTarget);
+        preparedWidth = width;
+        preparedHeight = height;
+        frame!.depthPrepared = true;
+      };
+      disposeSurfaceReuse = () => {
+        composedTarget.dispose();
+        (filtered.material as NodeMaterial).dispose();
+      };
+    }
+    /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */`,
+    );
+    replace(
+      '      updateAoCamera: aoCamera.update,',
+      '      updateAoCamera: aoCamera.update,\n      prepareSurfaceReuse,\n      disposeSurfaceReuse,',
+    );
+    replace(
+      '    depthRestoreMaterial?.dispose();',
+      '    disposeSurfaceReuse?.();\n    depthRestoreMaterial?.dispose();',
+    );
+    replace(
+      '    disposeLinearFrame(resource.frame, renderer);',
+      '    disposeLinearFrame(resource.frame, renderer);\n    resource.disposeSurfaceReuse?.();',
+    );
+    replace(
+      '    renderer.getDrawingBufferSize(drawingSize.current);',
+      '    renderer.getDrawingBufferSize(drawingSize.current);\n    selected.prepareSurfaceReuse?.(drawingSize.current.x, drawingSize.current.y);',
+    );
     // Native sharing remains experimental; node WebGL2 shares by default.
     code = "import { FloatType } from 'three';\n" + code;
     replace(

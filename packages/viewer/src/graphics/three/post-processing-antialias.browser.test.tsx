@@ -1615,6 +1615,8 @@ it.each(
   async ({ execution, width, transmission }) => {
     referenceMode.manualPreparation = true;
     const height = width === 5120 ? 2880 : 256;
+    let renderWidth = width;
+    let renderHeight = height;
     referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
     await page.viewport(600, 500);
     const actor = createActor(
@@ -1667,11 +1669,11 @@ it.each(
         throw captureError;
       }
       expect(pixels).toBeDefined();
-      expect([state!.gl.domElement.width, state!.gl.domElement.height]).toEqual([width, height]);
+      expect([state!.gl.domElement.width, state!.gl.domElement.height]).toEqual([renderWidth, renderHeight]);
       return new Uint8ClampedArray(pixels!);
     };
     const fixture = (fov: number): ReactNode => (
-      <div key={fov} style={{ width, height }}>
+      <div key={fov} style={{ width: renderWidth, height: renderHeight }}>
         <GraphicsProvider
           graphicsRef={actor}
           seed={{
@@ -1826,6 +1828,31 @@ it.each(
         freshDifferences += Number(value !== switched[pixel]);
       }
       expect(freshDifferences, 'Switched perspective must match a fresh perspective graph').toBe(0);
+      if (width === 5120) {
+        const fullAllocation = state!.gl.info.memory.textures;
+        const expectBufferSize = (): void => {
+          expect([state!.gl.domElement.width, state!.gl.domElement.height]).toEqual([renderWidth, renderHeight]);
+        };
+        for (const scale of [0.5, 1]) {
+          renderWidth = width * scale;
+          renderHeight = height * scale;
+          mounted.rerender(fixture(45));
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Resize observer commits each requested buffer before its draw.
+          await vi.waitFor(expectBufferSize);
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Validate resized attachments before retiring them again.
+          const resized = await capture();
+          expect(state!.gl.info.memory.textures, 'Resize must not retain another set of attachments').toBe(
+            fullAllocation,
+          );
+          if (scale === 1) {
+            let resizeDifferences = 0;
+            for (const [pixel, value] of resized.entries()) {
+              resizeDifferences += Number(value !== fresh[pixel]);
+            }
+            expect(resizeDifferences, 'Returning to 5K must restore exact color and depth composition').toBe(0);
+          }
+        }
+      }
     } finally {
       retired = true;
       await pending;
