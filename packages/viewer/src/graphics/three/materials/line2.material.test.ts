@@ -252,6 +252,10 @@ describe('Line2NodeMaterial.outputNode (gamma-space blend regression guard)', ()
       deferred.transparent = true;
       expect(transparent.blending).toBe(NormalBlending);
       expect(deferred.blending).toBe(NormalBlending);
+      transparent.useViewportSrgbBlend = true;
+      expect(transparent.blending).toBe(NoBlending);
+      transparent.useViewportSrgbBlend = false;
+      expect(transparent.blending).toBe(NormalBlending);
     } finally {
       transparent.dispose();
       deferred.dispose();

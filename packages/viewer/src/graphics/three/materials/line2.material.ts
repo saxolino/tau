@@ -170,10 +170,21 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
    * Explicit appearance-reference opt-in. Ordinary overlays use hardware linear blending
    * without copying the framebuffer; gamma-space matching is not part of the lean path.
    */
-  public useViewportSrgbBlend = false;
+  public get useViewportSrgbBlend(): boolean {
+    return this.viewportSrgbBlendEnabled;
+  }
+
+  public set useViewportSrgbBlend(enabled: boolean) {
+    this.viewportSrgbBlendEnabled = enabled;
+    // Reference composition already includes its destination. A cached builder
+    // must receive this state without relying on setup, just like normal blending.
+    this.blending = enabled ? NoBlending : NormalBlending;
+  }
 
   /** CAD tessellation joins omit overlapping round caps; standalone overlays retain them. */
   public analyticButtCaps = false;
+
+  private viewportSrgbBlendEnabled = false;
 
   public constructor(parameters?: ThreeLine2NodeMaterialParameters) {
     super(parameters);
@@ -564,7 +575,6 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
       // alpha. Blending it again forced opaque alpha over the transparent canvas, turning the
       // tint × opacity mix against transparent black into a dark opaque line.
       self.outputNode = compositeOverViewportSrgb(self.colorNode.rgb, opacityNode, viewportColor);
-      self.blending = NoBlending;
     }
 
     generatedLineNodes.set(
