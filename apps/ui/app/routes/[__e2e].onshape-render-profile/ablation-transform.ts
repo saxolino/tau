@@ -14,7 +14,9 @@ export function transformRenderingAblation(source: string, id: string): string |
   };
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
-    code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
+    code =
+      "import { createSurfaceReuse } from '#graphics/three/surface-reuse.js';\nimport { ivec2, screenCoordinate } from 'three/tsl';\n" +
+      code;
     replace(
       "import { createViewportFxaa } from '#graphics/three/fxaa.js';",
       "import { createViewportFxaa as tauSurfaceFxaa } from '#graphics/three/fxaa.js';\nconst createViewportFxaa: typeof tauSurfaceFxaa = (input, sampleColor) => tauAblation.get('surfaceAa') === 'off' && sampleColor ? sampleColor(screenUV) : tauSurfaceFxaa(input, sampleColor, tauAblation.get('surfaceFilter') === 'reference' ? 12 : 6);",
@@ -86,45 +88,16 @@ export function transformRenderingAblation(source: string, id: string): string |
     if (tauAblation.get('surfaceFilter') === 'reuse') {
       const composedTarget = frame.target;
       composedTarget.texture.name = 'Tau composed surface';
-      const reuseTarget = new RenderTarget(1, 1, { samples: 0, stencilBuffer: true });
-      reuseTarget.texture = scenePass.getTexture('output');
-      reuseTarget.depthTexture = composedTarget.depthTexture;
+      const reuse = createSurfaceReuse({ renderer: gpuRenderer, scene: scenePass.renderTarget, composed: composedTarget });
+      const reuseTarget = reuse.target;
       frame.target = reuseTarget;
       (frame.output.material as NodeMaterial).fragmentNode = renderOutput(texture(reuseTarget.texture), NoToneMapping, gpuRenderer.outputColorSpace);
       const filtered = createOutputQuad(createViewportFxaa(texture(composedTarget.texture)));
       filtered.name = 'Tau reused surface FXAA';
       const compose = outputQuad.render.bind(outputQuad);
-      outputQuad.render = (renderer) => {
-        const destination = renderer.getRenderTarget();
-        const clearDepth = renderer.autoClearDepth;
-        const clearStencil = renderer.autoClearStencil;
-        try {
-          renderer.setRenderTarget(composedTarget);
-          compose(renderer);
-          renderer.setRenderTarget(reuseTarget);
-          renderer.autoClearDepth = false;
-          renderer.autoClearStencil = false;
-          filtered.render(renderer);
-        } finally {
-          renderer.setRenderTarget(destination);
-          renderer.autoClearDepth = clearDepth;
-          renderer.autoClearStencil = clearStencil;
-        }
-      };
-      let preparedWidth = 0;
-      let preparedHeight = 0;
+      outputQuad.render = (renderer) => reuse.render(() => compose(renderer), () => filtered.render(renderer));
       prepareSurfaceReuse = (width, height) => {
-        if (width === preparedWidth && height === preparedHeight) return;
-        // setSize disposes shared attachments in r184. Finish every retirement
-        // before initializing any view, and initialize before scene depth writes.
-        scenePass.renderTarget.setSize(width, height);
-        composedTarget.setSize(width, height);
-        reuseTarget.setSize(width, height);
-        gpuRenderer.initRenderTarget(scenePass.renderTarget);
-        gpuRenderer.initRenderTarget(composedTarget);
-        gpuRenderer.initRenderTarget(reuseTarget);
-        preparedWidth = width;
-        preparedHeight = height;
+        reuse.prepare(width, height);
         frame!.depthPrepared = true;
       };
       disposeSurfaceReuse = () => {

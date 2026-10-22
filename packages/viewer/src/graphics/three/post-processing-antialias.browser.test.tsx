@@ -2003,3 +2003,123 @@ it.each(
     }
   },
 );
+
+it.each(['webgpu', 'node-webgl2'] as const)(
+  'should isolate two 5K node views through sibling resize and remount on %s',
+  async (execution) => {
+    referenceMode.forceNodeWebGl2 = execution === 'node-webgl2';
+    referenceMode.manualPreparation = true;
+    await page.viewport(600, 500);
+    const actors = [0, 1].map(() =>
+      createActor(
+        graphicsMachine.provide({
+          actors: { probeWebGpu: createAsyncLogic({ run: async () => true }) },
+        }),
+        { input: { enablePostProcessing: true } },
+      ).start(),
+    );
+    const states = new Map<number, RootState>();
+    const Probe = ({ index }: { readonly index: number }): undefined => {
+      states.set(index, useThree());
+      return undefined;
+    };
+    const fixture = (index: number, width: number, generation: number): ReactNode => (
+      <div key={generation} style={{ width, height: (width * 2880) / 5120 }}>
+        <GraphicsProvider
+          graphicsRef={actors[index]!}
+          seed={{
+            camera: {
+              cameraFovAngle: 35,
+              cameraView: {
+                frameId: 'tau:root',
+                target: [0, 0, 0],
+                direction: [0.3, 0.2, 1],
+                up: [0, 1, 0],
+                verticalSpan: 4,
+                perspectiveZoom: 1,
+              },
+            },
+          }}
+        >
+          <ThreeCanvasInstance graphicsBackend='webgpu' upDirection='y' onRetry={() => undefined}>
+            <ambientLight intensity={2} />
+            <mesh position={[0, 0, -0.7]}>
+              <planeGeometry args={[4, 4]} />
+              <meshStandardMaterial color={index ? '#2040c0' : '#c03030'} />
+            </mesh>
+            <mesh>
+              <boxGeometry args={[1.5, 1.5, 0.5]} />
+              <meshStandardMaterial color='#aaaaaa' />
+            </mesh>
+            <Probe index={index} />
+          </ThreeCanvasInstance>
+        </GraphicsProvider>
+      </div>
+    );
+    const capture = async (index: number, width = 5120): Promise<Uint8ClampedArray> => {
+      await vi.waitFor(() => {
+        expect(states.get(index)?.gl.domElement.width).toBe(width);
+      });
+      for (let frame = 0; frame < 4; frame++) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each frame settles the current resized graph.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+        states.get(index)!.advance(performance.now(), true);
+      }
+      const renderer = states.get(index)!.gl;
+      expect(isViewportWebGpu(renderer)).toBe(true);
+      if (!isViewportWebGpu(renderer)) {
+        throw new Error('Expected initialized node renderer');
+      }
+      expect(renderer.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
+      expect(renderer.domElement.height).toBe((width * 2880) / 5120);
+      return captureRendererOutput(renderer);
+    };
+    const differences = (actual: Uint8ClampedArray, expected: Uint8ClampedArray): number => {
+      expect(actual.length).toBe(expected.length);
+      let changed = 0;
+      for (const [index, value] of actual.entries()) {
+        changed += Number(value !== expected[index]);
+      }
+      return changed;
+    };
+    try {
+      const first = render(fixture(0, 5120, 0));
+      const firstPixels = await capture(0);
+      render(fixture(1, 5120, 0));
+      const secondPixels = await capture(1);
+      const secondRenderer = states.get(1)!.gl;
+      const secondTextures = secondRenderer.info.memory.textures;
+      expect(states.get(0)!.gl).not.toBe(secondRenderer);
+      expect(differences(secondPixels, firstPixels)).toBeGreaterThan(1000);
+      first.rerender(fixture(0, 2560, 0));
+      await capture(0, 2560);
+      expect(differences(await capture(1), secondPixels), 'Sibling resize must preserve every output pixel').toBe(0);
+      first.rerender(fixture(0, 5120, 0));
+      expect(differences(await capture(0), firstPixels), 'Resize back to 5K must restore exact composition').toBe(0);
+      await disposeRendererOutput(states.get(0)!.gl);
+      first.unmount();
+      expect(differences(await capture(1), secondPixels), 'Sibling teardown must preserve every output pixel').toBe(0);
+      expect(secondRenderer.info.memory.textures).toBe(secondTextures);
+      states.delete(0);
+      render(fixture(0, 5120, 1));
+      expect(differences(await capture(0), firstPixels), 'New renderer must recover exact composition').toBe(0);
+      expect(differences(await capture(1), secondPixels)).toBe(0);
+      expect(states.get(1)!.gl).toBe(secondRenderer);
+    } finally {
+      for (const state of states.values()) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Release each renderer's output observer before owner teardown.
+        await disposeRendererOutput(state.gl);
+      }
+      cleanup();
+      for (const actor of actors) {
+        actor.stop();
+      }
+      referenceMode.manualPreparation = false;
+      expect(referenceMode.preparations.size).toBe(0);
+    }
+  },
+);

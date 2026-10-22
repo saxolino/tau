@@ -128,6 +128,7 @@ export const shaderSites = [
     // Internal graph and lifecycle helpers share this site's contract.
     helpers: [
       'packages/viewer/src/graphics/three/ao-normal.ts',
+      'packages/viewer/src/graphics/three/surface-reuse.ts',
       'packages/viewer/src/graphics/three/camera-preparation.ts',
       'packages/viewer/src/graphics/three/transmission-retirement.ts',
       'packages/viewer/src/graphics/three/webgpu-depth-sampling.ts',
@@ -511,6 +512,10 @@ export const shaderEvidence = {
       'packages/viewer/src/graphics/three/post-processing.test.tsx::should resolve viewport AO radius from the CSS diagonal independently of DPR above the physical minimum',
     ],
     lifecycle: [
+      'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should isolate two 5K node views through sibling resize and remount on %s',
+      'packages/viewer/src/graphics/three/surface-reuse.test.ts::should retire every attachment user before initialization and retry a failed preparation',
+      'packages/viewer/src/graphics/three/surface-reuse.test.ts::should restore target and depth clear state after %s fails',
+      'packages/viewer/src/graphics/three/surface-reuse.test.ts::should isolate simultaneous owners and release only the retiring framebuffer view',
       'packages/viewer/src/graphics/three/camera-preparation.test.ts::should cancel on input, hidden document and disposal, allowing a later eligible frame',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should prepare offscreen once and restore camera and state after failure=%s',
       'packages/viewer/src/graphics/three/post-processing-webgpu.test.tsx::should isolate CAD draws and restore renderer state after failure=%s',
