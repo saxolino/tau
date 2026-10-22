@@ -1083,6 +1083,8 @@ it.each(
     const caps = createSectionStencilCaps(backend);
     let state: RootState | undefined;
     let outputTransforms = 0;
+    let surfaceDraws = 0;
+    let reusedSurface = false;
     let measuredOutputTransforms = 0;
     let observedRenderer: RootState['gl'] | undefined;
     let pending: Promise<void> | undefined;
@@ -1190,6 +1192,12 @@ it.each(
         const renderer = current.gl;
         const previous = renderer.getRenderObjectFunction();
         renderer.setRenderObjectFunction((...draw) => {
+          if (draw[0] === surface) {
+            surfaceDraws++;
+          }
+          if (draw[0].name === 'Tau reused surface FXAA') {
+            reusedSurface = true;
+          }
           if (draw[0].name === 'Output Color Transform' || draw[0].name === 'Tau final output') {
             outputTransforms++;
           }
@@ -1202,9 +1210,14 @@ it.each(
       }
       useFrame(() => {
         outputTransforms = 0;
+        surfaceDraws = 0;
+        reusedSurface = false;
       }, 0.9);
       useFrame((current) => {
         measuredOutputTransforms = outputTransforms;
+        if (reusedSurface) {
+          expect(surfaceDraws, 'One scene acquisition per composition, including nested AO/filter draws').toBe(1);
+        }
         frame++;
         if (!pending && !retired) {
           pending = measure(current);
@@ -1279,6 +1292,11 @@ it.each(
       );
       retired = true;
       await pending;
+      // Two compositions can share Three's animation frame (explicit redraw or
+      // preparation). Reused scene color must be freshly acquired on each one.
+      state!.advance(performance.now(), true);
+      state!.advance(performance.now(), true);
+      pixels = await captureRendererOutput(state!.gl);
       expect([state!.gl.domElement.width, state!.gl.domElement.height]).toEqual([width, height]);
       if (isViewportWebGpu(state!.gl)) {
         expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
@@ -1291,7 +1309,7 @@ it.each(
           [112, [205, 92, 92]],
         ] as const) {
           const offset = (Math.floor(height / 8) * width + Math.floor((x / 128) * width)) * 4;
-          const actual = pixels!.subarray(offset, offset + 3);
+          const actual = pixels.subarray(offset, offset + 3);
           for (const [channel, value] of expected.entries()) {
             expect(Math.abs(actual[channel]! - value)).toBeLessThanOrEqual(2);
           }
@@ -1309,7 +1327,7 @@ it.each(
       for (let y = 38; y < 90; y++) {
         for (let x = 48; x < 80; x++) {
           const offset = offsetAt(x, y);
-          const actual = [...pixels!.subarray(offset, offset + 3)];
+          const actual = [...pixels.subarray(offset, offset + 3)];
           expect(actual, `${execution}, side ${side}, ${x},${y}`).toEqual([
             ...beforeGrid!.subarray(offset, offset + 3),
           ]);
@@ -1354,7 +1372,7 @@ it.each(
         }
         expect(checked).toBeGreaterThan(1000);
       }
-      expect([...pixels!.subarray(offsetAt(20, 64), offsetAt(20, 64) + 3)]).toEqual([0, 255, 0]);
+      expect([...pixels.subarray(offsetAt(20, 64), offsetAt(20, 64) + 3)]).toEqual([0, 255, 0]);
     } finally {
       retired = true;
       await pending;

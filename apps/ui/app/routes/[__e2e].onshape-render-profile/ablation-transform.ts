@@ -15,7 +15,7 @@ export function transformRenderingAblation(source: string, id: string): string |
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     code =
-      "import { createSurfaceReuse } from '#graphics/three/surface-reuse.js';\nimport { ivec2, screenCoordinate } from 'three/tsl';\n" +
+      "import { createSurfaceReuse } from '#graphics/three/surface-reuse.js';\nimport { ivec2, screenCoordinate } from 'three/tsl';\nimport { NodeUpdateType } from 'three/webgpu';\n" +
       code;
     replace(
       "import { createViewportFxaa } from '#graphics/three/fxaa.js';",
@@ -95,7 +95,30 @@ export function transformRenderingAblation(source: string, id: string): string |
       const filtered = createOutputQuad(createViewportFxaa(texture(composedTarget.texture)));
       filtered.name = 'Tau reused surface FXAA';
       const compose = outputQuad.render.bind(outputQuad);
-      outputQuad.render = (renderer) => reuse.render(() => compose(renderer), () => filtered.render(renderer));
+      // Reuse destroys cached scene color. Three's animation frame can contain
+      // multiple compositions, so acquire scene/AO once per composition instead.
+      // Nested AO/filter draws still share that acquisition; no scene replay.
+      let composition = 0;
+      for (const node of [scenePass, aoNode]) {
+        const update = node.updateBefore.bind(node);
+        let acquired = -1;
+        node.updateBeforeType = NodeUpdateType.OBJECT;
+        node.updateBefore = (frame) => {
+          if (acquired === composition) return;
+          const previous = acquired;
+          acquired = composition;
+          try {
+            return update(frame);
+          } catch (error) {
+            acquired = previous;
+            throw error;
+          }
+        };
+      }
+      outputQuad.render = (renderer) => {
+        composition++;
+        reuse.render(() => compose(renderer), () => filtered.render(renderer));
+      };
       prepareSurfaceReuse = (width, height) => {
         reuse.prepare(width, height);
         frame!.depthPrepared = true;
