@@ -14,9 +14,7 @@ export function transformRenderingAblation(source: string, id: string): string |
   };
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
-    code =
-      "import { createSurfaceReuse } from '#graphics/three/surface-reuse.js';\nimport { ivec2, screenCoordinate } from 'three/tsl';\nimport { NodeUpdateType } from 'three/webgpu';\n" +
-      code;
+    code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
     replace(
       "import { createViewportFxaa } from '#graphics/three/fxaa.js';",
       "import { createViewportFxaa as tauSurfaceFxaa } from '#graphics/three/fxaa.js';\nconst createViewportFxaa: typeof tauSurfaceFxaa = (input, sampleColor) => tauAblation.get('surfaceAa') === 'off' && sampleColor ? sampleColor(screenUV) : tauSurfaceFxaa(input, sampleColor, tauAblation.get('surfaceFilter') === 'reference' ? 12 : 6);",
@@ -32,8 +30,8 @@ export function transformRenderingAblation(source: string, id: string): string |
       '  let denoiseInput: ReturnType<typeof rtt> | undefined;\n  let surfaceInput: ReturnType<typeof rtt> | undefined;',
     );
     replace(
-      '      createViewportFxaa(scenePassColor, composedSample),',
-      `      tauAblation.get('surfaceFilter') === 'composed'
+      '      surfaceFiltering.reuseTarget ? composedSample(screenUV) : createViewportFxaa(scenePassColor, composedSample),',
+      `      surfaceFiltering.reuseTarget ? composedSample(screenUV) : tauAblation.get('surfaceFilter') === 'composed'
         ? createViewportFxaa(surfaceInput = rtt(composedSample(screenUV), null, null, {
             type: UnsignedByteType, colorSpace: SRGBColorSpace, depthBuffer: false, stencilBuffer: false, samples: 0,
           }))
@@ -64,87 +62,9 @@ export function transformRenderingAblation(source: string, id: string): string |
         selected.outputQuad.render(renderer);
         scene.userData.calibrationPreparation = { milliseconds: performance.now() - preparationStart, at: performance.now() };`,
     );
-    // Reuse only within this endpoint: HDR scene color dies after composition.
-    // A framebuffer view borrows that color plus the existing frame depth. All
-    // three targets retire/initialize together, before any authoritative write.
     replace(
-      '  renderEdges: () => void;',
-      '  renderEdges: () => void;\n  prepareSurfaceReuse?: (width: number, height: number) => void;\n  disposeSurfaceReuse?: () => void;',
-    );
-    replace(
-      '  let outputQuad: QuadMesh | undefined;',
-      '  let outputQuad: QuadMesh | undefined;\n  let disposeSurfaceReuse: (() => void) | undefined;\n  let prepareSurfaceReuse: ((width: number, height: number) => void) | undefined;',
-    );
-    replace(
-      "      tauAblation.get('surfaceFilter') === 'composed'",
-      "      tauAblation.get('surfaceFilter') === 'reuse' ? composedSample(screenUV) : tauAblation.get('surfaceFilter') === 'composed'",
-    );
-    replace(
-      '    /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */',
-      `    if (surfaceInput) {
-      surfaceInput.value.name = 'Tau composed surface';
-      frame.target.texture.name = 'Tau surface filter frame';
-    }
-    if (tauAblation.get('surfaceFilter') === 'reuse') {
-      const composedTarget = frame.target;
-      composedTarget.texture.name = 'Tau composed surface';
-      const reuse = createSurfaceReuse({ renderer: gpuRenderer, scene: scenePass.renderTarget, composed: composedTarget });
-      const reuseTarget = reuse.target;
-      frame.target = reuseTarget;
-      (frame.output.material as NodeMaterial).fragmentNode = renderOutput(texture(reuseTarget.texture), NoToneMapping, gpuRenderer.outputColorSpace);
-      const filtered = createOutputQuad(createViewportFxaa(texture(composedTarget.texture)));
-      filtered.name = 'Tau reused surface FXAA';
-      const compose = outputQuad.render.bind(outputQuad);
-      // Reuse destroys cached scene color. Three's animation frame can contain
-      // multiple compositions, so acquire scene/AO once per composition instead.
-      // Nested AO/filter draws still share that acquisition; no scene replay.
-      let composition = 0;
-      for (const node of [scenePass, aoNode]) {
-        const update = node.updateBefore.bind(node);
-        let acquired = -1;
-        node.updateBeforeType = NodeUpdateType.OBJECT;
-        node.updateBefore = (frame) => {
-          if (acquired === composition) return;
-          const previous = acquired;
-          acquired = composition;
-          try {
-            return update(frame);
-          } catch (error) {
-            acquired = previous;
-            throw error;
-          }
-        };
-      }
-      outputQuad.render = (renderer) => {
-        composition++;
-        reuse.render(() => compose(renderer), () => filtered.render(renderer));
-      };
-      prepareSurfaceReuse = (width, height) => {
-        reuse.prepare(width, height);
-        frame!.depthPrepared = true;
-      };
-      disposeSurfaceReuse = () => {
-        composedTarget.dispose();
-        (filtered.material as NodeMaterial).dispose();
-      };
-    }
-    /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */`,
-    );
-    replace(
-      '      updateAoCamera: aoCamera.update,',
-      '      updateAoCamera: aoCamera.update,\n      prepareSurfaceReuse,\n      disposeSurfaceReuse,',
-    );
-    replace(
-      '    depthRestoreMaterial?.dispose();',
-      '    disposeSurfaceReuse?.();\n    depthRestoreMaterial?.dispose();',
-    );
-    replace(
-      '    disposeLinearFrame(resource.frame, renderer);',
-      '    disposeLinearFrame(resource.frame, renderer);\n    resource.disposeSurfaceReuse?.();',
-    );
-    replace(
-      '    renderer.getDrawingBufferSize(drawingSize.current);',
-      '    renderer.getDrawingBufferSize(drawingSize.current);\n    selected.prepareSurfaceReuse?.(drawingSize.current.x, drawingSize.current.y);',
+      'const surfaceFiltering = { reuseTarget: false };',
+      "const surfaceFiltering = { reuseTarget: tauAblation.get('surfaceFilter') === 'reuse' };",
     );
     // Native sharing remains experimental; node WebGL2 shares by default.
     code = "import { FloatType } from 'three';\n" + code;

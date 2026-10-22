@@ -1,9 +1,10 @@
 import { Line2NodeMaterial } from '#graphics/three/materials/line2.material.js';
+import { createSurfaceReuse } from '#graphics/three/surface-reuse.js';
 import { createViewportFxaa } from '#graphics/three/fxaa.js';
 import { scheduleCameraPreparation } from '#graphics/three/camera-preparation.js';
 import type { ReactNode } from 'react';
 import { useCallback, useLayoutEffect, useRef } from 'react';
-import { NodeMaterial, QuadMesh, RenderTarget, RendererUtils, UnsignedByteType } from 'three/webgpu';
+import { NodeMaterial, QuadMesh, RenderTarget, RendererUtils, UnsignedByteType, NodeUpdateType } from 'three/webgpu';
 import type { Node, WebGPURenderer } from 'three/webgpu';
 import {
   colorToDirection,
@@ -64,6 +65,8 @@ type PostProcessingPipelineResources = Readonly<{
   frame: LinearFrame;
   outputQuad: QuadMesh;
   renderEdges: () => void;
+  prepareSurfaceReuse?: (width: number, height: number) => void;
+  disposeSurfaceReuse?: () => void;
   aoNode?: ReturnType<typeof ao>;
   denoiseNode?: ReturnType<typeof createAoDenoise>;
   denoiseInput?: ReturnType<typeof rtt>;
@@ -85,6 +88,9 @@ type LinearFrame = {
   sharedDepth: boolean;
   depthPrepared: boolean;
 };
+
+// Qualification selector; calibration builds opt in without duplicating the owner.
+const surfaceFiltering = { reuseTarget: false };
 
 // Preserve the tuned GTAO depth acceptance while making both values derive from one screen-space contract.
 const gtaoThicknessToRadiusRatio = 1 / 0.09;
@@ -311,6 +317,8 @@ const createPipelineResources = ({
   let denoiseNode: ReturnType<typeof createAoDenoise> | undefined;
   let denoiseInput: ReturnType<typeof rtt> | undefined;
   let outputQuad: QuadMesh | undefined;
+  let disposeSurfaceReuse: (() => void) | undefined;
+  let prepareSurfaceReuse: ((width: number, height: number) => void) | undefined;
   let depthRestoreMaterial: NodeMaterial | undefined;
   try {
     frame = createLinearFrame(gpuRenderer, toneMapping);
@@ -460,9 +468,69 @@ const createPipelineResources = ({
       return mix(beauty, vec4(vec3(aoFactor), color.a), select<'float'>(displayMode.equal(1), float(1), float(0)));
     };
     outputQuad = createOutputQuad(
-      createViewportFxaa(scenePassColor, composedSample),
+      surfaceFiltering.reuseTarget ? composedSample(screenUV) : createViewportFxaa(scenePassColor, composedSample),
       frame.sharedDepth ? undefined : depthRestoreMaterial,
     );
+    if (surfaceFiltering.reuseTarget) {
+      const composedTarget = frame.target;
+      composedTarget.texture.name = 'Tau composed surface';
+      const reuse = createSurfaceReuse({
+        renderer: gpuRenderer,
+        scene: scenePass.renderTarget,
+        composed: composedTarget,
+      });
+      const reuseTarget = reuse.target;
+      frame.target = reuseTarget;
+      (frame.output.material as NodeMaterial).fragmentNode = renderOutput(
+        texture(reuseTarget.texture),
+        NoToneMapping,
+        gpuRenderer.outputColorSpace,
+      );
+      const filtered = createOutputQuad(createViewportFxaa(texture(composedTarget.texture)));
+      filtered.name = 'Tau reused surface FXAA';
+      const compose = outputQuad.render.bind(outputQuad);
+      // Reuse destroys cached scene color. Three's animation frame can contain
+      // multiple compositions, so acquire scene/AO once per composition instead.
+      // Nested AO/filter draws still share that acquisition; no scene replay.
+      const composition = { value: 0 };
+      for (const node of [scenePass, aoNode]) {
+        const update = node.updateBefore.bind(node);
+        let acquired = -1;
+        node.updateBeforeType = NodeUpdateType.OBJECT;
+        node.updateBefore = (frame) => {
+          if (acquired === composition.value) {
+            return;
+          }
+          const previous = acquired;
+          acquired = composition.value;
+          try {
+            return update(frame);
+          } catch (error) {
+            acquired = previous;
+            throw error;
+          }
+        };
+      }
+      outputQuad.render = (renderer) => {
+        composition.value++;
+        reuse.render(
+          () => {
+            compose(renderer);
+          },
+          () => {
+            filtered.render(renderer);
+          },
+        );
+      };
+      prepareSurfaceReuse = (width, height) => {
+        reuse.prepare(width, height);
+        frame!.depthPrepared = true;
+      };
+      disposeSurfaceReuse = () => {
+        composedTarget.dispose();
+        (filtered.material as NodeMaterial).dispose();
+      };
+    }
     /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
 
     return {
@@ -482,11 +550,14 @@ const createPipelineResources = ({
       displayMode,
       compositeStage,
       updateAoCamera: aoCamera.update,
+      prepareSurfaceReuse,
+      disposeSurfaceReuse,
     };
   } catch (error) {
     if (frame) {
       disposeLinearFrame(frame, gpuRenderer);
     }
+    disposeSurfaceReuse?.();
     depthRestoreMaterial?.dispose();
     (outputQuad?.material as NodeMaterial | undefined)?.dispose();
     disposeOwnedRtt(denoiseInput);
@@ -503,6 +574,7 @@ const disposePipelineResources = (
 ): void => {
   for (const resource of resources) {
     disposeLinearFrame(resource.frame, renderer);
+    resource.disposeSurfaceReuse?.();
     (resource.outputQuad.material as NodeMaterial).dispose();
     disposeOwnedRtt(resource.denoiseInput);
     disposeAoNode(resource.aoNode);
@@ -742,6 +814,7 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
     }
     frame.previousTarget = renderer.getRenderTarget();
     renderer.getDrawingBufferSize(drawingSize.current);
+    selected.prepareSurfaceReuse?.(drawingSize.current.x, drawingSize.current.y);
     if (frame.sharedDepth) {
       if (
         !frame.depthPrepared ||
