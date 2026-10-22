@@ -1317,7 +1317,19 @@ it.each(
             expect(actual[0]! - actual[1]!).toBeGreaterThan(100);
             expect(Math.abs(actual[1]! - actual[2]!)).toBeLessThanOrEqual(1);
           } else {
-            expect(actual).toEqual(occluderColor);
+            expect(
+              actual,
+              JSON.stringify({
+                execution,
+                width,
+                toneMapping,
+                probe: [x, y],
+                beforeCaps: [...beforeCaps!.subarray(offset, offset + 3)],
+                beforeGrid: [...beforeGrid!.subarray(offset, offset + 3)],
+                occluderCenter: occluderColor,
+                captured,
+              }),
+            ).toEqual(occluderColor);
           }
         }
       }
