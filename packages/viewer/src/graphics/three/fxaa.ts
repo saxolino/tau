@@ -57,18 +57,23 @@ import type { TextureNode, Node } from 'three/webgpu';
 
 /**
  * The viewport's WebGL FXAA contract expressed in TSL: linear, tone-mapped input,
- * Rec.709 luminance, 12 search steps and 0.75 subpixel quality. Keep this paired
- * with postprocessing's FXAAEffect; Three's display FXAA uses different settings
- * and chooses the opposite side when gradients tie, changing thin CAD strokes.
+ * Rec.709 luminance and 0.75 subpixel quality. The default bounds the search to
+ * 6 steps; 12 preserves the original FXAAEffect comparison. Three's display FXAA
+ * uses different settings and chooses the opposite side when gradients tie.
  *
  * Adapted from pmndrs/postprocessing src/effects/glsl/fxaa.frag (Zlib license).
  * Owns no resources; the caller owns the single-sample input target.
  * @internal
  * @param input - Texture supplying the native output dimensions and default samples.
  * @param sampleColor - Optional composition at a UV, avoiding a separate color intermediate.
+ * @param searchSteps - Bounded surface search; 12 retains the original comparison reference.
  * @returns Filtered surface color. Draw analytically covered CAD lines after this filter.
  */
-export function createViewportFxaa(input: TextureNode, sampleColor?: (uv: Node<'vec2'>) => Node<'vec4'>): Node<'vec4'> {
+export function createViewportFxaa(
+  input: TextureNode,
+  sampleColor?: (uv: Node<'vec2'>) => Node<'vec4'>,
+  searchSteps: 6 | 12 = 6,
+): Node<'vec4'> {
   const texel = vec2(1).div(convert(textureSize(input), 'vec2') as Node<'vec2'>);
   // TextureNode.sample keeps the texture fluent API at runtime, omitted by Three's declarations.
   const sample =
@@ -79,7 +84,8 @@ export function createViewportFxaa(input: TextureNode, sampleColor?: (uv: Node<'
   return Fn(() => {
     const uv = screenUV;
     const color = sample(uv).toVar();
-    const center = luminance(uv).toVar();
+    // Keep the 12-step graph as the unchanged measurement reference.
+    const center = searchSteps === 12 ? luminance(uv).toVar() : dot(color.rgb, vec3(0.2126, 0.7152, 0.0722)).toVar();
     const down = luminance(uv.add(texel.mul(vec2(0, -1)))).toVar();
     const up = luminance(uv.add(texel.mul(vec2(0, 1)))).toVar();
     const left = luminance(uv.add(texel.mul(vec2(-1, 0)))).toVar();
@@ -130,8 +136,8 @@ export function createViewportFxaa(input: TextureNode, sampleColor?: (uv: Node<'
       If(reached2.not(), () => {
         uv2.addAssign(along);
       });
-      // oxlint-disable-next-line eslint/new-cap -- Bounded shader search matching FXAAEffect.
-      Loop({ start: 2, end: 12 }, ({ i }) => {
+      // oxlint-disable-next-line eslint/new-cap -- Bounded surface search; the 12-step reference matches FXAAEffect.
+      Loop({ start: 2, end: searchSteps }, ({ i }) => {
         // oxlint-disable-next-line eslint/new-cap -- Three TSL branch.
         If(reached1.and(reached2), () => {
           // oxlint-disable-next-line eslint/new-cap -- Three TSL loop control.
@@ -147,11 +153,10 @@ export function createViewportFxaa(input: TextureNode, sampleColor?: (uv: Node<'
         });
         reached1.assign(abs(end1).greaterThanEqual(threshold));
         reached2.assign(abs(end2).greaterThanEqual(threshold));
-        const quality = select(
-          i.lessThan(5),
-          1,
-          select(i.equal(5), 1.5, select(i.lessThan(10), 2, select(i.equal(10), 4, 8))),
-        );
+        const quality =
+          searchSteps === 6
+            ? select(i.equal(2), 1.5, select(i.equal(3), 2, select(i.equal(4), 4, 8)))
+            : select(i.lessThan(5), 1, select(i.equal(5), 1.5, select(i.lessThan(10), 2, select(i.equal(10), 4, 8))));
         // oxlint-disable-next-line eslint/new-cap -- Three TSL branch.
         If(reached1.not(), () => {
           uv1.subAssign(along.mul(quality));

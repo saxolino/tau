@@ -17,7 +17,34 @@ export function transformRenderingAblation(source: string, id: string): string |
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
     replace(
       "import { createViewportFxaa } from '#graphics/three/fxaa.js';",
-      "import { createViewportFxaa as tauSurfaceFxaa } from '#graphics/three/fxaa.js';\nconst createViewportFxaa: typeof tauSurfaceFxaa = (input, sampleColor) => tauAblation.get('surfaceAa') === 'off' && sampleColor ? sampleColor(screenUV) : tauSurfaceFxaa(input, sampleColor);",
+      "import { createViewportFxaa as tauSurfaceFxaa } from '#graphics/three/fxaa.js';\nconst createViewportFxaa: typeof tauSurfaceFxaa = (input, sampleColor) => tauAblation.get('surfaceAa') === 'off' && sampleColor ? sampleColor(screenUV) : tauSurfaceFxaa(input, sampleColor, tauAblation.get('surfaceFilter') === 'reference' ? 12 : 6);",
+    );
+    // Compose-once experiment uses the same filter and linear-light input contract.
+    // Its one sRGB color attachment is owned/disposed with the active endpoint.
+    replace(
+      '  denoiseInput?: ReturnType<typeof rtt>;',
+      '  denoiseInput?: ReturnType<typeof rtt>;\n  surfaceInput?: ReturnType<typeof rtt>;',
+    );
+    replace(
+      '  let denoiseInput: ReturnType<typeof rtt> | undefined;',
+      '  let denoiseInput: ReturnType<typeof rtt> | undefined;\n  let surfaceInput: ReturnType<typeof rtt> | undefined;',
+    );
+    replace(
+      '      createViewportFxaa(scenePassColor, composedSample),',
+      `      tauAblation.get('surfaceFilter') === 'composed'
+        ? createViewportFxaa(surfaceInput = rtt(composedSample(screenUV), null, null, {
+            type: UnsignedByteType, colorSpace: SRGBColorSpace, depthBuffer: false, stencilBuffer: false, samples: 0,
+          }))
+        : createViewportFxaa(scenePassColor, composedSample),`,
+    );
+    replace('      denoiseInput,', '      denoiseInput,\n      surfaceInput,');
+    replace(
+      '    disposeOwnedRtt(denoiseInput);',
+      '    disposeOwnedRtt(denoiseInput);\n    disposeOwnedRtt(surfaceInput);',
+    );
+    replace(
+      '    disposeOwnedRtt(resource.denoiseInput);',
+      '    disposeOwnedRtt(resource.denoiseInput);\n    disposeOwnedRtt(resource.surfaceInput);',
     );
     replace(
       '    const preparation = scheduleCameraPreparation(renderer.domElement, () => {',

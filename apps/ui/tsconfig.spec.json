@@ -16,6 +16,7 @@
     "vite.config.ts",
     "depth-ownership.browser.test.ts",
     "depth-ownership.vitest.browser.config.ts",
+    "surface-aa.vitest.browser.config.ts",
     "vitest.config.ts",
     "chat-revision-marker.vitest.browser.config.ts",
     "vitest.setup.ts",
