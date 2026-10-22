@@ -129,6 +129,22 @@ describe('useChatInterfaceState mobile drawer', () => {
     expect(result.current.activeSnapPoint).toBe(result.current.snapPoints[0]);
   });
 
+  it('reopens the drawer at its first snap point after an external action returns to the Viewer', () => {
+    state.activeTab = 'parameters';
+    const { result, rerender } = renderHook(() => useChatInterfaceState());
+
+    act(() => {
+      result.current.handleSnapChange(result.current.snapPoints.at(-1)!);
+    });
+    state.activeTab = 'viewer';
+    rerender();
+    state.activeTab = 'converter';
+    rerender();
+
+    expect(result.current.drawerOpen).toBe(true);
+    expect(result.current.activeSnapPoint).toBe(result.current.snapPoints[0]);
+  });
+
   it('reopens the drawer at its first snap point after it is dismissed', () => {
     state.activeTab = 'parameters';
     const { result, rerender } = renderHook(() => useChatInterfaceState());

@@ -55,32 +55,31 @@ export function useChatInterfaceState(): ChatInterfaceState {
   const drawerOpen = activeTab !== 'viewer';
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- Vaul API
   const [snapPoint, setSnapPoint] = useState<number | string | null>(mobileDrawerSnapPoints[0]!);
+  const [wasDrawerOpen, setWasDrawerOpen] = useState(drawerOpen);
 
-  // Every collapse returns the drawer to its first snap point, so the next panel never reopens over the whole viewer.
-  const collapseToViewer = useCallback((): void => {
-    setActiveTab('viewer');
-    setSnapPoint(mobileDrawerSnapPoints[0]!);
-  }, [setActiveTab]);
+  // Every collapse, whichever action caused it, returns the drawer to its first snap point, so the next
+  // panel never reopens over the whole viewer.
+  if (wasDrawerOpen !== drawerOpen) {
+    setWasDrawerOpen(drawerOpen);
+    if (!drawerOpen) {
+      setSnapPoint(mobileDrawerSnapPoints[0]!);
+    }
+  }
 
   const handleDrawerChange = useCallback(
     (value: boolean): void => {
       if (!value) {
-        collapseToViewer();
+        setActiveTab('viewer');
       }
     },
-    [collapseToViewer],
+    [setActiveTab],
   );
 
   const handleTabChange = useCallback(
     (value: string): void => {
-      if (value === 'viewer') {
-        collapseToViewer();
-        return;
-      }
-
       setActiveTab(value as (typeof chatTabs)[number]['id']);
     },
-    [collapseToViewer, setActiveTab],
+    [setActiveTab],
   );
 
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- Vaul API
