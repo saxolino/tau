@@ -36,6 +36,7 @@ import { exposeElectronRuntime, relayElectronPorts } from '@taucad/runtime/elect
 import {
   appIconThemeChannel,
   openDirectoryChannel,
+  directoryGrantChannels,
   revealPathChannel,
   agentHostSessionChannels,
   externalAgentsChannel,
@@ -217,6 +218,20 @@ contextBridge.exposeInMainWorld('tau', {
     },
   },
   directories: {
+    list: async (): Promise<string[]> => (await ipcRenderer.invoke(directoryGrantChannels.list)) as string[],
+    disconnect: async (path: string): Promise<void> => {
+      const refusal: unknown = await ipcRenderer.invoke(directoryGrantChannels.disconnect, path);
+      if (typeof refusal === 'string') {
+        // oxlint-disable-next-line unicorn/prefer-type-error -- A valid response carries a user-facing refusal, not a type failure.
+        throw new Error(refusal);
+      }
+    },
+    onChange: (listener: () => void): (() => void) => {
+      ipcRenderer.on(directoryGrantChannels.changed, listener);
+      return () => {
+        ipcRenderer.off(directoryGrantChannels.changed, listener);
+      };
+    },
     openIcon: process.platform === 'darwin' ? 'finder' : process.platform === 'win32' ? 'file-explorer' : 'folder',
     openLabel:
       process.platform === 'darwin'

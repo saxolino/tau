@@ -34,6 +34,7 @@ import {
   createNodeWorkspace,
   getWorkspaceMetadata,
   isNodeWorkspace,
+  isNodeWorkspaceConnected,
   setProjectFileSystemConfig,
   getProjectFileSystemConfig,
   getHomeStorageBackend,
@@ -1471,8 +1472,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       if (location.kind === 'workspace') {
         const picked = await getWorkspaceMetadata(location.workspaceId);
         if (picked && isNodeWorkspace(picked)) {
-          // A node workspace is a directory on disk: nothing to grant, nothing
-          // to reconnect. Its row existing is the whole admission check.
+          if (!(await isNodeWorkspaceConnected(picked))) {
+            throw new WorkspaceDirectoryRequiredError('disconnected', { workspaceId: picked.workspaceId });
+          }
           storageRoot = { backend: 'node', path: picked.path };
           workspaceSlug = picked.slug;
         } else {
@@ -2684,9 +2686,8 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         return undefined;
       }
     }
-    const completion = waitForWorkspaceConnection(current.operationId);
     workspaceConnectionRef.send({ type: 'retry' });
-    return completion;
+    return waitForWorkspaceConnection(current.operationId);
   }, [connectWorkspace, waitForWorkspaceConnection, workspaceConnectionRef]);
 
   const getProjects = useCallback(
@@ -2806,7 +2807,13 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
   const assertWorkspaceMutationAllowed = useCallback(
     async (workspaceId: string): Promise<void> => {
       const worker = await getReadiedWorker();
-      if (await worker.hasPendingProjectOperationForWorkspace(workspaceId)) {
+      const workspace = await getWorkspaceMetadata(workspaceId);
+      const operations = workspace?.path === undefined ? [] : await worker.getPendingProjectOperations();
+      const pendingNative = operations.some((operation) => {
+        const storage = operation.kind === 'permanent-delete' ? operation.storage : operation;
+        return storage.backend === 'node' && storage.path === workspace?.path;
+      });
+      if (pendingNative || (await worker.hasPendingProjectOperationForWorkspace(workspaceId))) {
         throw new Error('This workspace is required to recover an unfinished project operation');
       }
     },

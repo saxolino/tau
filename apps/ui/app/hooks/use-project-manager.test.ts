@@ -303,6 +303,7 @@ const mockCreateNodeWorkspace = vi.fn(async (path: string) => ({
   path,
   minted: true,
 }));
+const mockIsNodeWorkspaceConnected = vi.fn(async () => true);
 const mockGetWorkspaceMetadata = vi.fn(async (_workspaceId: string) => undefined as unknown);
 const mockRepairWorkspaceBindings = vi.fn(async () => ({
   repairedProjectCount: 1,
@@ -316,6 +317,7 @@ vi.mock('#filesystem/handle-store.js', () => ({
   createWorkspace: mockCreateWorkspaceConnection,
   createNodeWorkspace: mockCreateNodeWorkspace,
   getWorkspaceMetadata: mockGetWorkspaceMetadata,
+  isNodeWorkspaceConnected: mockIsNodeWorkspaceConnected,
   isNodeWorkspace: (workspace: { path?: string }) => workspace.path !== undefined,
   listWorkspaces: mockListWorkspaces,
   setProjectFileSystemConfig: mockSetProjectFileSystemConfig,
@@ -639,6 +641,7 @@ describe('useProjectManager.createProject', () => {
     mockIsFileSystemAccessSupported = false;
     mockPickerBackend = 'webaccess';
     mockGetWorkspaceMetadata.mockResolvedValue(undefined);
+    mockIsNodeWorkspaceConnected.mockResolvedValue(true);
     mockBuildSuperseded = false;
     mockGetProjectFileSystemConfig.mockResolvedValue(undefined);
     mockGetPendingProjectOperations.mockResolvedValue([]);
@@ -803,6 +806,30 @@ describe('useProjectManager.createProject', () => {
       }),
     ]);
     expect(result.current.workspaceConnection).toMatchObject({ phase: 'ready', projectCount: 1 });
+  });
+
+  it('should resolve a resumed workspace connection instead of replaying its previous failure', async () => {
+    mockIsFileSystemAccessSupported = true;
+    mockPickerBackend = 'node';
+    mockListWorkspaces.mockResolvedValue([
+      { workspaceId: 'wsp_node', name: 'Workshop', slug: 'workshop', path: nodeWorkspacePath },
+    ]);
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+    mockSyncProjectRoots.mockRejectedValueOnce(new Error('Workspace mounting failed.'));
+
+    await act(async () => {
+      await expect(result.current.connectWorkspace()).rejects.toThrow('Workspace mounting failed.');
+    });
+    expect(result.current.workspaceConnection).toMatchObject({ phase: 'failed', retry: 'resume' });
+
+    let connected: ConnectedWorkspace | undefined;
+    await act(async () => {
+      connected = await result.current.retryWorkspaceConnection();
+    });
+
+    expect(connected).toMatchObject({ workspace: { workspaceId: 'wsp_node', path: nodeWorkspacePath } });
+    expect(result.current.workspaceConnection.phase).toBe('ready');
+    expect(mockCreateNodeWorkspace).toHaveBeenCalledOnce();
   });
 
   it('connects a folder picked as an absolute host path', async () => {
@@ -3694,6 +3721,28 @@ describe('useProjectManager.createProject', () => {
       kind: 'workspace',
       workspaceId: 'wsp_default',
     });
+  });
+
+  it('refuses creation in a revoked native workspace before writing any files', async () => {
+    mockGetWorkspaceMetadata.mockResolvedValue({
+      workspaceId: 'wsp_node',
+      name: 'Workshop',
+      slug: 'workshop',
+      path: nodeWorkspacePath,
+    });
+    mockIsNodeWorkspaceConnected.mockResolvedValue(false);
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+    await act(async () => {
+      await expect(
+        result.current.createProject({
+          project: { name: fakeProject.name, description: '', tags: [], assets: { main: { entryPath: 'main.ts' } } },
+          files: {},
+          location: { kind: 'workspace', workspaceId: 'wsp_node' },
+        }),
+      ).rejects.toMatchObject({ code: 'disconnected' });
+    });
+    expect(mockPrepareProjectCreation).not.toHaveBeenCalled();
+    expect(mockCommitPendingProjectDirectory).not.toHaveBeenCalled();
   });
 
   it('roots a project created in a picked node folder at that folder', async () => {
