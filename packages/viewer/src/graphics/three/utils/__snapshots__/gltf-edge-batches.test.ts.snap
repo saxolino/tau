@@ -7,6 +7,7 @@ exports[`edge occurrence semantics > should retain the stripped occurrence endpo
   "color": 0,
   "dashSize": 3,
   "depthWrite": false,
+  "forceSinglePass": true,
   "gapSize": 1,
   "inputNodes": {
     "edgeEndNode": "<nodeRef>",
@@ -142,6 +143,8 @@ exports[`edge occurrence semantics > should retain the stripped occurrence endpo
     }
   ],
   "scale": 1,
+  "side": 2,
+  "transparent": true,
   "type": "Line2NodeMaterial"
 }
 "

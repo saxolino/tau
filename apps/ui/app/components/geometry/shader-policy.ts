@@ -418,6 +418,7 @@ export const shaderEvidence = {
     pixels: [
       `${graphicsBackendEndToEnd}::grid, axes and model shading display the same`,
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should match final edge contrast across subpixel phases',
+      'packages/viewer/src/graphics/three/utils/gltf-edge-batches.browser.test.ts::should match canonical pixels when shared, mirrored and singleton edges move together',
     ],
     'structural-perf': [
       'packages/viewer/src/graphics/three/materials/line2.material.test.ts::should keep its semantic cache key stable across setup and equivalent materials',
@@ -555,10 +556,12 @@ export const shaderEvidence = {
     pixels: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::preserves fractional and occluded highlights with node WebGL2',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should clear persistent emphasis through the production node frame',
+      'packages/viewer/src/graphics/three/materials/model-emphasis-pixels.test.ts::should judge displayed alpha boundaries while rejecting missing, shifted and occluded strokes on both themes',
     ],
     'backend-differential': [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.browser.test.ts::preserves fractional and occluded highlights with node WebGL2',
       'packages/viewer/src/graphics/three/post-processing-antialias.browser.test.tsx::should clear persistent emphasis through the production node frame',
+      'packages/viewer/src/graphics/three/materials/model-emphasis-pixels.test.ts::should judge displayed alpha boundaries while rejecting missing, shifted and occluded strokes on both themes',
     ],
     lifecycle: [
       'packages/viewer/src/graphics/three/react/model-emphasis-overlay.test.ts::packs one node emphasis state without reducing coverage samples or depth precision',

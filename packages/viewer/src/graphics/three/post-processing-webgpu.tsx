@@ -1,3 +1,4 @@
+import { createViewportFxaa } from '#graphics/three/fxaa.js';
 import { scheduleCameraPreparation } from '#graphics/three/camera-preparation.js';
 import type { ReactNode } from 'react';
 import { useCallback, useLayoutEffect, useRef } from 'react';
@@ -183,7 +184,9 @@ const createLinearFrame = (renderer: WebGPURenderer, toneMapping: ToneMapping): 
   target.texture.name = 'Tau linear frame';
   target.depthTexture = new DepthTexture(1, 1, UnsignedInt248Type);
   target.depthTexture.format = DepthStencilFormat;
-  const finalOutput = createOutputQuad(renderOutput(texture(target.texture), NoToneMapping, renderer.outputColorSpace));
+  const finalOutput = createOutputQuad(
+    renderOutput(createViewportFxaa(texture(target.texture)), NoToneMapping, renderer.outputColorSpace),
+  );
   finalOutput.name = 'Tau final output';
   const depthMaterial = new NodeMaterial();
   depthMaterial.colorWrite = false;
@@ -462,7 +465,13 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
       const camera = selectedCameraRef.current;
       resources.set(
         camera,
-        createPipelineResources({ camera, gpuRenderer: gl as unknown as WebGPURenderer, scene, toneMapping, withAo }),
+        createPipelineResources({
+          camera,
+          gpuRenderer: gl as unknown as WebGPURenderer,
+          scene,
+          toneMapping,
+          withAo,
+        }),
       );
       invalidate();
     } catch (error) {
@@ -504,7 +513,10 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
         resources: [selected],
         size,
         viewport,
-        radiusCssPixels: resolveAoRadiusCssPixels(radiusCssPixels, { ...size, dpr: viewport.dpr }),
+        radiusCssPixels: resolveAoRadiusCssPixels(radiusCssPixels, {
+          ...size,
+          dpr: viewport.dpr,
+        }),
       });
       selected.updateAoCamera?.(selected.camera);
     },
@@ -592,7 +604,10 @@ function PostProcessingWebGpuActive({ settings, aoAllowed, toneMapping }: PostPr
         }
       }
       selectedCameraRef.current = camera;
-      const target = toThreeRenderPoint({ renderFrame: cameraRig.renderFrame, pointMeters: snapshot.view.target });
+      const target = toThreeRenderPoint({
+        renderFrame: cameraRig.renderFrame,
+        pointMeters: snapshot.view.target,
+      });
       targetRef.current.set(target.x, target.y, target.z);
       invalidate();
     },

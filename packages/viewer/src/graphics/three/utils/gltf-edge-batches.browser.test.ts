@@ -22,7 +22,7 @@ import {
 } from 'three';
 import type { Object3D, Material } from 'three';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { WebGPUBackend } from 'three/webgpu';
+import { WebGPUBackend, WebGLBackend, WebGPURenderer } from 'three/webgpu';
 import type { RendererInstance } from '#graphics/three/renderer.js';
 import { Line2NodeMaterial } from '#graphics/three/materials/line2.material.js';
 import type { GltfFatLineMaterial } from '#graphics/three/materials/gltf-edges.js';
@@ -61,10 +61,17 @@ import {
 type NativeGpuDevice = {
   queue: { onSubmittedWorkDone: () => Promise<void> };
   createBuffer: (
-    descriptor: Readonly<{ label?: string; size: number; usage: number; mappedAtCreation?: boolean }>,
+    descriptor: Readonly<{
+      label?: string;
+      size: number;
+      usage: number;
+      mappedAtCreation?: boolean;
+    }>,
   ) => GPUBuffer;
   createShaderModule: (descriptor: Readonly<{ code: string }>) => {
-    getCompilationInfo: () => Promise<{ messages: ReadonlyArray<{ type: 'error' | 'warning' | 'info' }> }>;
+    getCompilationInfo: () => Promise<{
+      messages: ReadonlyArray<{ type: 'error' | 'warning' | 'info' }>;
+    }>;
   };
   pushErrorScope: (filter: 'validation') => void;
   popErrorScope: () => Promise<unknown>;
@@ -128,12 +135,39 @@ afterEach(async () => {
   }
 });
 
-describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (backend) => {
-  it('should match canonical pixels when shared, mirrored and singleton edges move together', async () => {
-    const renderer = await createRenderer('viewport', backend, document.createElement('canvas'));
+it.each(['webgl', 'webgpu', 'nodegl'].flatMap((execution) => [128, 5120].map((width) => ({ execution, width }))))(
+  'should match canonical pixels when shared, mirrored and singleton edges move together: $execution $width',
+  async ({ execution, width }) => {
+    const backend = execution === 'webgl' ? 'webgl' : 'webgpu';
+    const renderer =
+      execution === 'nodegl'
+        ? new WebGPURenderer({
+            // eslint-disable-next-line @typescript-eslint/naming-convention -- Three constructor option.
+            forceWebGL: true,
+            antialias: true,
+          })
+        : await createRenderer('viewport', backend, document.createElement('canvas'));
+    if (renderer instanceof WebGPURenderer) {
+      await renderer.init();
+      expect(renderer.backend).toBeInstanceOf(execution === 'nodegl' ? WebGLBackend : WebGPUBackend);
+    }
+    const height = width === 5120 ? 2880 : 128;
+    const capture = async () => {
+      if (execution !== 'nodegl') {
+        return captureRendererOutput(renderer);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(renderer.domElement, 0, 0);
+      return context.getImageData(0, 0, width, height).data;
+    };
     renderers.push(renderer);
-    renderer.setSize(128, 128, false);
-    installRendererOutput(renderer, webGpuProfile);
+    renderer.setSize(width, height, false);
+    if (execution !== 'nodegl') {
+      installRendererOutput(renderer, webGpuProfile);
+    }
     const scene = new Scene();
     scene.background = new Color(0xff_ff_ff);
     const root = new Group();
@@ -151,7 +185,7 @@ describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (bac
       root.add(line);
       return line;
     });
-    const resolution = new Vector2(128, 128);
+    const resolution = new Vector2(width, height);
     applyFatLineSegments({ scene: root }, { backend, resolution, preserveSourceNodes: true });
     const sources: Array<Mesh<BufferGeometry, GltfFatLineMaterial>> = [];
     root.traverse((object) => {
@@ -176,11 +210,18 @@ describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (bac
       }
       owner.syncMatrices(parents);
       renderer.render(scene, camera);
-      const posed = await captureRendererOutput(renderer);
-      expect(posed.some((value, index) => index % 4 !== 3 && value < 128)).toBe(true);
+      const posed = await capture();
+      expect(posed.some((value, index) => index % 4 !== 3 && value < 240)).toBe(true);
       owner.dispose();
       renderer.render(scene, camera);
-      expect(await captureRendererOutput(renderer)).toEqual(posed);
+      const canonical = await capture();
+      let changed = 0;
+      for (const [index, value] of canonical.entries()) {
+        if (value !== posed[index]) {
+          changed++;
+        }
+      }
+      expect(changed).toBe(0);
     } finally {
       await disposeRendererOutput(renderer);
       owner.dispose();
@@ -194,8 +235,10 @@ describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (bac
       singleton.dispose();
       material.dispose();
     }
-  });
+  },
+);
 
+describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (backend) => {
   it('should replace the initial lines-off owner once and reuse off/on cohorts', async () => {
     const renderer = await createRenderer('viewport', backend, document.createElement('canvas'));
     renderers.push(renderer);
@@ -431,12 +474,13 @@ describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (bac
       expect(edgeGroup.children.length).toBe(3);
       expect(sources.map((s) => s.name)).toEqual(Array.from({ length: 100 }, (_, i) => `occurrence-${i}`));
       const base = sources[0]!.material;
+      const wasTransparent = base.transparent;
       base.transparent = true;
       base.opacity = 0.5;
       owner.sync();
       expect(first.visible).toBe(false);
       expect(sources.every((s) => s.layers.mask === layers.get(s))).toBe(true);
-      base.transparent = false;
+      base.transparent = wasTransparent;
       base.opacity = 1;
       owner.sync();
       updateLineMaterialResolution(root, new Vector2(256, 128));
@@ -462,7 +506,8 @@ describe.each(['webgl', 'webgpu'] as const)('edge prototype occurrence %s', (bac
       }
       owner.dispose();
       if (backend === 'webgpu') {
-        expect(lifetime()).toEqual({ allocated: 36, destroyed: 36 });
+        // Four cohorts, eight consumed buffers each; analytic coverage no longer uploads UV.
+        expect(lifetime()).toEqual({ allocated: 32, destroyed: 32 });
       }
       owner.dispose();
       expect(sources.every((s) => s.layers.mask === layers.get(s))).toBe(true);

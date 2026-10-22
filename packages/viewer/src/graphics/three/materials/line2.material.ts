@@ -172,6 +172,9 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
    */
   public useViewportSrgbBlend = false;
 
+  /** CAD tessellation joins omit overlapping round caps; standalone overlays retain them. */
+  public analyticButtCaps = false;
+
   public constructor(parameters?: ThreeLine2NodeMaterialParameters) {
     super(parameters);
   }
@@ -210,6 +213,7 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
       this.alphaToCoverage,
       this.edgePresentationCoverage,
       this.usesAnalyticCoverage,
+      this.analyticButtCaps,
       this.edgePresentationCoverage ? this.edgePresentationLineWidth : undefined,
       this.useViewportSrgbBlend,
       inputs,
@@ -469,7 +473,10 @@ export class Line2NodeMaterial extends ThreeLine2NodeMaterial {
         const across = relative.x.mul(screenLine.w).sub(relative.y.mul(screenLine.z));
         const along = relative.dot(screenLine.zw);
         const beyond = extent.x.sub(along).max(along.sub(extent.y)).max(0.0);
-        const distancePx = vec2(across, beyond).length();
+        const distancePx = self.analyticButtCaps ? across.abs() : vec2(across, beyond).length();
+        if (self.analyticButtCaps) {
+          beyond.greaterThan(0).discard();
+        }
         alpha.assign(halfWidthPx.add(0.5).sub(distancePx).clamp(0.0, 1.0));
         // The composite replaces the target (`NoBlending`) from a viewport copy shared by every
         // overlay line and taken before the first draws, so an uncovered fragment would paint

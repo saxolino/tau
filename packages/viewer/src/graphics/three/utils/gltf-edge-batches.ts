@@ -375,7 +375,16 @@ export function createGltfEdgeBatches(
         !known.includes(material as GltfFatLineMaterial) ||
         !visible(source) ||
         !material.visible ||
-        material.transparent ||
+        // Fractional geometric coverage is not translucent material opacity.
+        // Same-material edge cohorts blend the same color without depth writes,
+        // so analytic coverage remains order independent within the cohort.
+        (material.transparent &&
+          !(
+            material instanceof Line2NodeMaterial &&
+            material.usesAnalyticCoverage &&
+            !material.depthWrite &&
+            !material.useViewportSrgbBlend
+          )) ||
         material.opacity < 1
       ) {
         continue;

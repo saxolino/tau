@@ -1,5 +1,5 @@
 import type { Group, LineSegments, Object3D, Vector2 } from 'three';
-import { InterleavedBufferAttribute } from 'three';
+import { DoubleSide, InterleavedBufferAttribute } from 'three';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
@@ -189,6 +189,9 @@ export function createWebGlGltfFatLineMaterial(
     color: edgeColor,
     linewidth: gltfEdgeLineWidth,
     worldUnits: false,
+    // Screen-expanded winding does not inherit a mirrored source transform.
+    side: DoubleSide,
+    forceSinglePass: true,
     resolution: resolution.clone(),
   });
 }
@@ -197,15 +200,10 @@ export function createWebGlGltfFatLineMaterial(
  * WebGPU fat-line material paired with {@link LineSegmentsGeometry} via
  * `three/addons/lines/webgpu/LineSegments2`.
  *
- * **`alphaToCoverage = false`** — opts the WebGPU material out of upstream
- * `Line2NodeMaterial`'s default `_useAlphaToCoverage = true` so the screen-space rounded
- * endcap branch falls through to the deterministic `discard` path. Upstream WebGL
- * `LineMaterial` already takes that path by default (`USE_ALPHA_TO_COVERAGE` define
- * absent) and produces the crisp 5-level MSAA coverage Tau ships today; mirroring the
- * WebGPU side closes the screenshot crispness gap because the WebGPU spec leaves the
- * alpha→sample-mask conversion vendor-defined (e.g. Qualcomm's documented 4×4
- * area-dither LUT, gpuweb/gpuweb#4867) which surfaces as visible graininess on
- * dithered drivers. See `docs/research/webgpu-edge-line-crispness-gap.md`.
+ * Single-sample node frames use analytic transverse coverage and omit overlapping
+ * round caps at CAD tessellation joins. Preserve geometric depth; do not convert
+ * alpha into a vendor-dependent sample mask. Both quad faces are equivalent,
+ * including under mirrored canonical parents, so render them in a single pass.
  *
  * @param edgeColor - sRGB hex edge tint (defaults to {@link gltfEdgeColorLightMode}).
  */
@@ -214,11 +212,15 @@ export function createWebGpuGltfFatLineMaterial(edgeColor: number = gltfEdgeColo
     color: edgeColor,
     linewidth: gltfEdgeLineWidth,
     worldUnits: false,
+    // Screen-expanded winding does not inherit a mirrored source transform.
+    side: DoubleSide,
+    forceSinglePass: true,
   });
 
   material.alphaToCoverage = false;
   material.depthWrite = false;
-  material.transparent = false;
+  material.transparent = true;
+  material.analyticButtCaps = true;
   material.edgePresentationCoverage = false;
   material.edgePresentationLineWidth = gltfEdgeLineWidth;
   material.useViewportSrgbBlend = false;

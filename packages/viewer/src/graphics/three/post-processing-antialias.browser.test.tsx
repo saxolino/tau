@@ -35,7 +35,10 @@ import {
   syncModelEmphasisFrame,
   syncModelEmphasisProxies,
 } from '#graphics/three/react/model-emphasis-overlay.jsx';
-import { measureEmphasisPixels } from '#graphics/three/materials/model-emphasis-pixels.test-utils.js';
+import {
+  compositeEmphasisPixels,
+  measureEmphasisPixels,
+} from '#graphics/three/materials/model-emphasis-pixels.test-utils.js';
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 import { createSectionStencilCaps } from '#graphics/three/utils/section-stencil-caps.js';
 import type * as rendererModule from '#graphics/three/renderer.js';
@@ -281,7 +284,18 @@ it.each(
         expect(state!.gl.backend).toBeInstanceOf(execution === 'node-webgl2' ? WebGLBackend : WebGPUBackend);
       }
       // Quality is a pixel contract, not a requirement to retain MSAA attachments.
-      expect(smoothed, JSON.stringify({ execution, width, height, dpr, smoothed, dark, bright })).toBeGreaterThan(32);
+      expect(
+        smoothed,
+        JSON.stringify({
+          execution,
+          width,
+          height,
+          dpr,
+          smoothed,
+          dark,
+          bright,
+        }),
+      ).toBeGreaterThan(32);
       expect(dark).toBeGreaterThan(1000);
       expect(bright).toBeGreaterThan(1000);
     } finally {
@@ -531,7 +545,9 @@ it.each((['webgl', 'webgpu'] as const).flatMap((backend) => ['front', 'behind'].
     const actor = createActor(
       graphicsMachine.provide({
         actors: {
-          probeWebGpu: createAsyncLogic({ run: async () => backend === 'webgpu' }),
+          probeWebGpu: createAsyncLogic({
+            run: async () => backend === 'webgpu',
+          }),
         },
       }),
       { input: { enablePostProcessing: true } },
@@ -608,7 +624,11 @@ it.each((['webgl', 'webgpu'] as const).flatMap((backend) => ['front', 'behind'].
               graphicsBackend={backend}
               upDirection='y'
               onRetry={() => undefined}
-              postProcessingSettings={{ intensity: 0, gtaoIntensity: 0, toneMapping: 'none' }}
+              postProcessingSettings={{
+                intensity: 0,
+                gtaoIntensity: 0,
+                toneMapping: 'none',
+              }}
             >
               <mesh>
                 <planeGeometry args={[4, 4]} />
@@ -666,10 +686,18 @@ it.each(
     { dpr: 1.5, width: 256, height: 256 },
     { dpr: 2, width: 256, height: 256 },
     { dpr: 2, width: 2560, height: 1440 },
-  ].flatMap((viewport) => [0x00_00_00, 0xff_d5_4a].map((color) => ({ ...viewport, color }))),
+  ].flatMap((viewport) =>
+    [0x00_00_00, 0xff_d5_4a].flatMap((color) =>
+      (viewport.dpr === 1 ? [1, 0.5, 1.5] : [1]).map((lineWidth) => ({
+        ...viewport,
+        color,
+        lineWidth,
+      })),
+    ),
+  ),
 )(
-  'should match final edge contrast across subpixel phases at DPR $dpr color $color width $width',
-  async ({ dpr, color, width, height }) => {
+  'should match final edge contrast across subpixel phases at DPR $dpr color $color width $width line $lineWidth',
+  async ({ dpr, color, width, height, lineWidth }) => {
     vi.stubGlobal('devicePixelRatio', dpr);
     await page.viewport(600, 500);
     const { Vector2 } = await import('three');
@@ -706,13 +734,26 @@ it.each(
       const actor = createActor(
         graphicsMachine.provide({
           actors: {
-            probeWebGpu: createAsyncLogic({ run: async () => backend === 'webgpu' }),
+            probeWebGpu: createAsyncLogic({
+              run: async () => backend === 'webgpu',
+            }),
           },
         }),
         { input: { enablePostProcessing: true } },
       ).start();
-      const material = createGltfFatLineMaterial({ backend, resolution: new Vector2(width, height), edgeColor: color });
-      const lines = createGltfFatLineSegmentsFromPositions({ backend, positions, material });
+      const material = createGltfFatLineMaterial({
+        backend,
+        resolution: new Vector2(width, height),
+        edgeColor: color,
+      });
+      if (backend === 'webgpu') {
+        material.linewidth = lineWidth;
+      }
+      const lines = createGltfFatLineSegmentsFromPositions({
+        backend,
+        positions,
+        material,
+      });
       if (!lines) {
         throw new Error('Expected non-empty edge fixture');
       }
@@ -797,6 +838,21 @@ it.each(
         retired = true;
         // oxlint-disable-next-line no-await-in-loop -- drain the final readback before measurement.
         await pending;
+        // Synchronous advances share Three's NodeFrame and can capture a cached pass
+        // after a preceding case. Qualify only distinct displayed animation frames.
+        for (let warm = 0; warm < 3; warm++) {
+          // oxlint-disable-next-line no-await-in-loop -- distinct frame identity is the oracle.
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => {
+              resolve();
+            });
+          });
+          retired = false;
+          state!.advance(performance.now(), true);
+          // oxlint-disable-next-line no-await-in-loop -- read the submitted frame before advancing.
+          await pending;
+          retired = true;
+        }
         expect(state!.camera.type).toBe('OrthographicCamera');
         expect(isViewportWebGpu(state!.gl)).toBe(backend === 'webgpu');
         if (isViewportWebGpu(state!.gl)) {
@@ -879,7 +935,17 @@ it.each(
     }
     if (motionResults.length > 0) {
       const variation = motionResults.map(({ energy }) => Math.max(...energy) - Math.min(...energy));
-      console.info('line-motion', JSON.stringify({ dpr, width, color, motionResults, variation, results }));
+      console.info(
+        'line-motion',
+        JSON.stringify({
+          dpr,
+          width,
+          color,
+          motionResults,
+          variation,
+          results,
+        }),
+      );
       expect(Math.min(...motionResults.map(({ minimumCoverage }) => minimumCoverage))).toBeGreaterThan(0.05);
       for (const candidate of variation.slice(1)) {
         expect(candidate).toBeLessThanOrEqual(variation[0]! + 0.08);
@@ -888,10 +954,42 @@ it.each(
     const differences = results
       .slice(1)
       .flatMap((candidate) => results[0]!.map((value, index) => Math.abs(value - candidate[index]!)));
-    expect(Math.min(...results.flat()), JSON.stringify(results)).toBeGreaterThan(0.05);
-    expect(Math.max(...differences), JSON.stringify({ dpr, width, height, results, differences })).toBeLessThanOrEqual(
-      0.1,
+    // Continuous coverage must match reference weight and stability, not reproduce
+    // the reference's discrete MSAA phase jumps. Keep each phase inside the reference
+    // envelope, and separately bound mean weight and variation for every orientation.
+    const comparisons = results.slice(1).flatMap((candidate) =>
+      [0, 1, 2, 3].map((orientation) => {
+        const reference = results[0]!.filter((_, index) => index % 4 === orientation);
+        const values = candidate.filter((_, index) => index % 4 === orientation);
+        const mean = (entries: number[]) => entries.reduce((sum, value) => sum + value, 0) / entries.length;
+        const low = Math.min(...reference);
+        const high = Math.max(...reference);
+        return {
+          orientation,
+          meanDifference: Math.abs(mean(values) - mean(reference)),
+          envelopeExcess: Math.max(0, ...values.map((value) => Math.max(low - value, value - high))),
+          extraVariation: Math.max(...values) - Math.min(...values) - (high - low),
+        };
+      }),
     );
+    const accepted = comparisons.every(
+      (value) => value.meanDifference <= 0.1 && value.envelopeExcess <= 0.1 && value.extraVariation <= 0.08,
+    );
+    console.info(
+      'line-phase-evidence',
+      JSON.stringify({
+        dpr,
+        color,
+        width,
+        lineWidth,
+        results,
+        comparisons,
+        maxPhaseDifference: Math.max(...differences),
+      }),
+    );
+    expect(Math.min(...results.flat()), JSON.stringify(results)).toBeGreaterThan(0.05);
+    // Real rendered half/double-error controls must fail; the accepted reference is unchanged.
+    expect(accepted, JSON.stringify({ dpr, width, height, lineWidth, comparisons })).toBe(lineWidth === 1);
   },
 );
 
@@ -899,7 +997,12 @@ it.each(
   ['webgl', 'webgpu', 'node-webgl2'].flatMap((execution) =>
     [1, -1].flatMap((side) =>
       (['none', 'neutral'] as const).flatMap((toneMapping) =>
-        (execution === 'webgl' ? [128] : [128, 5120]).map((width) => ({ execution, side, toneMapping, width })),
+        (execution === 'webgl' ? [128] : [128, 5120]).map((width) => ({
+          execution,
+          side,
+          toneMapping,
+          width,
+        })),
       ),
     ),
   ),
@@ -918,13 +1021,19 @@ it.each(
     const actor = createActor(
       graphicsMachine.provide({
         actors: {
-          probeWebGpu: createAsyncLogic({ run: async () => backend === 'webgpu' }),
+          probeWebGpu: createAsyncLogic({
+            run: async () => backend === 'webgpu',
+          }),
         },
       }),
       { input: { enablePostProcessing: true } },
     ).start();
     const geometry = new BoxGeometry(2, 2, 2);
-    const material = new MeshBasicMaterial({ color: 'blue', side: DoubleSide, toneMapped: false });
+    const material = new MeshBasicMaterial({
+      color: 'blue',
+      side: DoubleSide,
+      toneMapped: false,
+    });
     const surface = new Mesh(geometry, material);
     const pieces = resolveSectionPieces([{ id: 'cut', kind: 'plane', plane: 'xy', offset: 0, isFlipped: false }]);
     const caps = createSectionStencilCaps(backend);
@@ -956,7 +1065,15 @@ it.each(
         caps.render(gl, {
           camera,
           pieces,
-          sources: [{ key: 'box', ownerKey: 'box', meshes: [surface], tintHex: 0xff_00_00, edgeHex: 0xff_ff_00 }],
+          sources: [
+            {
+              key: 'box',
+              ownerKey: 'box',
+              meshes: [surface],
+              tintHex: 0xff_00_00,
+              edgeHex: 0xff_ff_00,
+            },
+          ],
           stripes: { stripeFrequency: 1e6, stripeWidth: 0 },
           outlineWidthPixels: 1.5,
           viewportHeightPixels: height,
@@ -1074,7 +1191,11 @@ it.each(
               graphicsBackend={backend}
               upDirection='y'
               onRetry={() => undefined}
-              postProcessingSettings={{ intensity: 0, gtaoIntensity: 0, toneMapping }}
+              postProcessingSettings={{
+                intensity: 0,
+                gtaoIntensity: 0,
+                toneMapping,
+              }}
             >
               <primitive object={surface} />
               <mesh visible={side === -1} position={[0, 0, -1.5]}>
@@ -1235,7 +1356,11 @@ it.each([false, true].flatMap((forceNodeWebGl2) => [256, 2560].map((width) => ({
         if (!source) {
           return;
         }
-        owned.setMaskSize({ width: gl.domElement.width, height: gl.domElement.height, pixelRatio: gl.getPixelRatio() });
+        owned.setMaskSize({
+          width: gl.domElement.width,
+          height: gl.domElement.height,
+          pixelRatio: gl.getPixelRatio(),
+        });
         syncModelEmphasisFrame(owned);
         const selected = separate ? { ...owned, setFrameDepth: () => false } : owned;
         renderModelEmphasisMask(selected, {
@@ -1324,26 +1449,31 @@ it.each([false, true].flatMap((forceNodeWebGl2) => [256, 2560].map((width) => ({
       );
       const capture = async (): Promise<Uint8ClampedArray> => {
         await pending;
-        const start = frames;
-        await vi.waitFor(
-          () => {
-            if (!pending) {
-              state!.advance(performance.now(), true);
-            }
-            if (captureError) {
-              throw captureError;
-            }
-            expect(captured).toBeGreaterThan(start + 2);
-          },
-          { timeout: 30_000 },
-        );
-        await pending;
+        const start = captured;
+        for (let frame = 0; frame < 3; frame++) {
+          // oxlint-disable-next-line no-await-in-loop -- separate Three NodeFrame cache identities.
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => {
+              resolve();
+            });
+          });
+          state!.advance(performance.now(), true);
+          // oxlint-disable-next-line no-await-in-loop -- finish each readback before the next draw.
+          await pending;
+        }
+        if (captureError) {
+          throw captureError;
+        }
+        expect(captured).toBeGreaterThan(start);
         return new Uint8ClampedArray(pixels!);
       };
       for (const [index, x] of [-0.6, 0.6, 0, -0.3, 0.25, -0.5, 0, 0.5].entries()) {
         source!.position.x = x;
         if (index === 2 || index === 5) {
-          cameraRig!.actorRef.send({ type: 'setVerticalFieldOfView', verticalFieldOfView: index === 2 ? 40 : 0 });
+          cameraRig!.actorRef.send({
+            type: 'setVerticalFieldOfView',
+            verticalFieldOfView: index === 2 ? 40 : 0,
+          });
         }
         if (index === 4) {
           syncModelEmphasisProxies(resources!, { hover: [], selected: [] });
@@ -1401,7 +1531,20 @@ it.each([false, true].flatMap((forceNodeWebGl2) => [256, 2560].map((width) => ({
         comparisons.push({ index, result });
         // Gate revision 2: boundary-local screen, with negative controls in model-emphasis-pixels.test.ts.
         expect(result.interiorChanges, JSON.stringify({ forceNodeWebGl2, index, result })).toBe(0);
-        expect(result.maxLocalMean, JSON.stringify({ forceNodeWebGl2, index, result })).toBeLessThanOrEqual(16);
+        // Canvas captures contain straight alpha. Judge visible boundary error over
+        // both extreme backgrounds, not unstable RGB recovered near zero alpha.
+        for (const background of [0, 255]) {
+          const displayed = measureEmphasisPixels(
+            compositeEmphasisPixels(candidate, background),
+            compositeEmphasisPixels(reference, background),
+            state!.gl.domElement.width,
+          );
+          expect(displayed.interiorChanges, JSON.stringify({ forceNodeWebGl2, index, background, displayed })).toBe(0);
+          expect(
+            displayed.maxLocalMean,
+            JSON.stringify({ forceNodeWebGl2, index, background, displayed }),
+          ).toBeLessThanOrEqual(16);
+        }
       }
       console.info('Mask crop pixel evidence', JSON.stringify({ forceNodeWebGl2, comparisons }));
       expect(isViewportWebGpu(state!.gl)).toBe(true);

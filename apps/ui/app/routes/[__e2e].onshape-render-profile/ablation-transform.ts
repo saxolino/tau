@@ -15,10 +15,9 @@ export function transformRenderingAblation(source: string, id: string): string |
   const prelude = `const tauAblation = new URLSearchParams(globalThis.location.search);\n`;
   if (file.endsWith('/graphics/three/post-processing-webgpu.tsx')) {
     code = "import { ivec2, screenCoordinate } from 'three/tsl';\n" + code;
-    code = "import { createViewportFxaa } from '#graphics/three/fxaa.js';\n" + code;
     replace(
-      'renderOutput(texture(target.texture), NoToneMapping, renderer.outputColorSpace)',
-      "renderOutput(tauAblation.get('finalAa') === 'fxaa' ? createViewportFxaa(texture(target.texture)) : texture(target.texture), NoToneMapping, renderer.outputColorSpace)",
+      'renderOutput(createViewportFxaa(texture(target.texture)), NoToneMapping, renderer.outputColorSpace)',
+      "renderOutput(tauAblation.get('finalAa') === 'off' ? texture(target.texture) : createViewportFxaa(texture(target.texture)), NoToneMapping, renderer.outputColorSpace)",
     );
     replace(
       '    const preparation = scheduleCameraPreparation(renderer.domElement, () => {',
@@ -104,24 +103,10 @@ export function transformRenderingAblation(source: string, id: string): string |
         && !['beauty', 'mrt'].includes(tauAblation.get('abl') ?? '');`,
     );
   } else if (file.endsWith('/graphics/three/materials/gltf-edges.ts')) {
+    replace('  material.transparent = true;', "  material.transparent = tauAblation.get('lineCoverage') !== 'opaque';");
     replace(
-      '  material.transparent = false;',
-      "  material.transparent = tauAblation.get('lineCoverage') === 'analytic';\n  material.analyticButtCaps = tauAblation.get('lineCaps') === 'butt';",
-    );
-  } else if (file.endsWith('/graphics/three/materials/line2.material.ts')) {
-    replace(
-      '  public useViewportSrgbBlend = false;',
-      '  public useViewportSrgbBlend = false;\n  public analyticButtCaps = false;',
-    );
-    replace('      this.usesAnalyticCoverage,', '      this.usesAnalyticCoverage,\n      this.analyticButtCaps,');
-    replace(
-      '        const distancePx = vec2(across, beyond).length();',
-      '        const distancePx = self.analyticButtCaps ? across.abs() : vec2(across, beyond).length();\n        if (self.analyticButtCaps) beyond.greaterThan(0).discard();',
-    );
-  } else if (file.endsWith('/graphics/three/utils/gltf-edge-batches.ts')) {
-    replace(
-      '        material.transparent ||',
-      '        (material.transparent && !(material instanceof Line2NodeMaterial && material.usesAnalyticCoverage && !material.depthWrite && !material.useViewportSrgbBlend)) ||',
+      '  material.analyticButtCaps = true;',
+      "  material.analyticButtCaps = tauAblation.get('lineCaps') !== 'round';",
     );
   } else if (file.endsWith('/graphics/three/materials/named-uniform-array.ts')) {
     replace(

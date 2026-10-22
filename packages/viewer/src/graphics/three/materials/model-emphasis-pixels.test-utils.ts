@@ -61,3 +61,17 @@ export function measureEmphasisPixels(
   }
   return { changedChannels, maxDelta, interiorChanges, maxLocalMean };
 }
+
+/** Composite straight-alpha capture pixels onto an opaque display background. */
+export function compositeEmphasisPixels(source: Uint8ClampedArray, background: number): Uint8ClampedArray {
+  const result = new Uint8ClampedArray(source.length);
+  for (let index = 0; index < source.length; index += 4) {
+    const alpha = source[index + 3]! / 255;
+    const backdrop = background * (1 - alpha);
+    result[index] = source[index]! * alpha + backdrop;
+    result[index + 1] = source[index + 1]! * alpha + backdrop;
+    result[index + 2] = source[index + 2]! * alpha + backdrop;
+    result[index + 3] = 255;
+  }
+  return result;
+}
