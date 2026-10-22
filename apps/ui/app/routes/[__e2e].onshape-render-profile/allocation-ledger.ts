@@ -14,6 +14,8 @@ type TextureRecord = {
   format: number;
   mipmaps: boolean;
   trackedBytes: number;
+  /** Exact logical RGBA16F cube storage from the allocated descriptor, not physical VRAM. */
+  cubeDescriptorBytes?: number;
   live: boolean;
   backendLive: boolean;
   descriptor?: unknown;
@@ -144,28 +146,38 @@ function readMaskRenderbuffers(
 
 /** Snapshot historical allocations without retaining renderer, texture or backend objects. */
 export function readAllocationLedgers(): unknown {
-  return ledgers.map((ledger) => ({
-    revision: ledger.revision,
-    backend: ledger.backend,
-    costStatus: ledger.costStatus,
-    validationErrors: ledger.validationErrors,
-    // The backendLive field is the last per-texture event, not proof of surviving a destroyed device/context.
-    textures: [...ledger.records.values()].map((record) => ({
-      ...record,
-      activeBackendAllocation: !ledger.disposed && ledger.retirement === undefined && record.backendLive,
-    })),
-    canvasDepth: ledger.canvasDepth,
-    disposedAt: ledger.disposedAt,
-    retirement: ledger.retirement,
-    events: ledger.events,
-    passes: [...ledger.passes.values()],
-    costs: ledger.costs,
-    trackedLive: [...ledger.records.values()]
+  return ledgers.map((ledger) => {
+    const trackedLive = [...ledger.records.values()]
       .filter((record) => record.live)
-      .reduce((sum, record) => sum + record.trackedBytes, 0),
-    peak: ledger.peak,
-    disposed: ledger.disposed,
-  }));
+      .reduce((sum, record) => sum + record.trackedBytes, 0);
+    // Preserve Three's counter as historical evidence; expose this independently
+    // verified omission separately rather than relabelling the counter as VRAM.
+    const cubeTrackingAdjustment = [...ledger.records.values()]
+      .filter((record) => record.live && record.backendLive && record.cubeDescriptorBytes !== undefined)
+      .reduce((sum, record) => sum + record.cubeDescriptorBytes! - record.trackedBytes, 0);
+    return {
+      revision: ledger.revision,
+      backend: ledger.backend,
+      costStatus: ledger.costStatus,
+      validationErrors: ledger.validationErrors,
+      // The backendLive field is the last per-texture event, not proof of surviving a destroyed device/context.
+      textures: [...ledger.records.values()].map((record) => ({
+        ...record,
+        activeBackendAllocation: !ledger.disposed && ledger.retirement === undefined && record.backendLive,
+      })),
+      canvasDepth: ledger.canvasDepth,
+      disposedAt: ledger.disposedAt,
+      retirement: ledger.retirement,
+      events: ledger.events,
+      passes: [...ledger.passes.values()],
+      costs: ledger.costs,
+      trackedLive,
+      cubeTrackingAdjustment,
+      trackedWithCubeCorrection: trackedLive + cubeTrackingAdjustment,
+      peak: ledger.peak,
+      disposed: ledger.disposed,
+    };
+  });
 }
 
 /** Track device retirement without treating historical texture events as live allocations. */
@@ -286,6 +298,29 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
       type: data.glType,
       format: data.glFormat,
     };
+    // Three r184 Info reads dimensions from the cube's image array (undefined),
+    // while Textures allocates using its first face. Reconcile the observed
+    // RGBA16F environment only; unknown formats remain explicitly uncorrected.
+    record.cubeDescriptorBytes = undefined;
+    const descriptor = data.textureDescriptorGPU as { format?: string } | undefined;
+    if (texture instanceof CubeTexture && (descriptor?.format === 'rgba16float' || data.glInternalFormat === 34_842)) {
+      const width = Number(options?.['width']);
+      const height = Number(options?.['height']);
+      const layers = Number(options?.['depth']);
+      const levels = Number(options?.['levels'] ?? 1);
+      const samples = Number(options?.['sampleCount'] ?? 1);
+      if (
+        [width, height, levels].every((value) => Number.isInteger(value) && value > 0) &&
+        layers === 6 &&
+        samples === 1
+      ) {
+        let bytes = 0;
+        for (let level = 0; level < levels; level++) {
+          bytes += Math.max(1, Math.floor(width / 2 ** level)) * Math.max(1, Math.floor(height / 2 ** level)) * 6 * 8;
+        }
+        record.cubeDescriptorBytes = bytes;
+      }
+    }
     if (data.msaaTexture) {
       const msaa = data.msaaTexture;
       record.multisample = {

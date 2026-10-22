@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { mock } from 'vitest-mock-extended';
 import { describe, expect, it, vi } from 'vitest';
-import { DataTexture, HalfFloatType, RGBAFormat, RGFormat, Texture, WebGLCoordinateSystem } from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import { CubeTexture, DataTexture, HalfFloatType, RGBAFormat, RGFormat, Texture, WebGLCoordinateSystem } from 'three';
+import { WebGLBackend, WebGPURenderer } from 'three/webgpu';
 import {
   installAllocationLedger,
   readAllocationLedgers,
@@ -238,3 +238,59 @@ it('should attribute reused color by pass role rather than the shared texture na
     color.dispose();
   }
 });
+
+it.each(['webgpu', 'webgl2-node'] as const)(
+  'should reconcile the cube face-array tracking omission on %s without rewriting Three counters',
+  (backend) => {
+    const renderer = new WebGPURenderer();
+    if (backend === 'webgl2-node') {
+      renderer.backend = new WebGLBackend();
+    }
+    const observed = renderer.backend as {
+      get: (texture: Texture) => Record<string, unknown>;
+      createTexture: (texture: Texture, options: Record<string, number>) => void;
+      destroyTexture: (texture: Texture) => void;
+    };
+    vi.spyOn(observed, 'createTexture').mockImplementation(() => undefined);
+    vi.spyOn(observed, 'destroyTexture').mockImplementation(() => undefined);
+    const texture = new CubeTexture(Array.from({ length: 6 }, () => ({ width: 512, height: 512 })));
+    texture.type = HalfFloatType;
+    texture.generateMipmaps = false;
+    Object.assign(
+      observed.get(texture),
+      backend === 'webgpu'
+        ? {
+            // eslint-disable-next-line @typescript-eslint/naming-convention -- Three's backend descriptor uses this exact property name.
+            textureDescriptorGPU: {
+              size: { width: 512, height: 512, depthOrArrayLayers: 6 },
+              format: 'rgba16float',
+              mipLevelCount: 1,
+              sampleCount: 1,
+            },
+          }
+        : { glInternalFormat: 34_842 },
+    );
+    installAllocationLedger(renderer);
+    try {
+      observed.createTexture(texture, { width: 512, height: 512, depth: 6, levels: 1 });
+      renderer.info.createTexture(texture);
+      expect(renderer.info.memory.texturesSize).toBe(48);
+      expect((readAllocationLedgers() as unknown[]).at(-1)).toMatchObject({
+        trackedLive: 48,
+        cubeTrackingAdjustment: 12_582_864,
+        trackedWithCubeCorrection: 12_582_912,
+        textures: [{ cubeDescriptorBytes: 12_582_912 }],
+      });
+      observed.destroyTexture(texture);
+      renderer.info.destroyTexture(texture);
+      expect((readAllocationLedgers() as unknown[]).at(-1)).toMatchObject({
+        trackedLive: 0,
+        cubeTrackingAdjustment: 0,
+        trackedWithCubeCorrection: 0,
+      });
+    } finally {
+      texture.dispose();
+      vi.restoreAllMocks();
+    }
+  },
+);
