@@ -412,11 +412,11 @@ it.each(
         const pixels = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         let ink = 0;
         let maximum = 0;
-        for (let offset = 0; offset < pixels.length; offset++) {
+        for (const [offset, value] of pixels.entries()) {
           if (offset % 4 === 3) {
-            ink += pixels[offset]!;
+            ink += value;
           }
-          maximum = Math.max(maximum, Math.abs(pixels[offset]! - images[3]![offset]!));
+          maximum = Math.max(maximum, Math.abs(value - images[3]![offset]!));
         }
         expect(ink / differences[3]!.ink).toBeCloseTo(dpr / 2, 2);
         if (dpr === 2) {
