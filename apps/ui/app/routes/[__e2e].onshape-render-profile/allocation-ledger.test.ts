@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { mock } from 'vitest-mock-extended';
 import { describe, expect, it, vi } from 'vitest';
 import { DataTexture, HalfFloatType, RGBAFormat, RGFormat, Texture, WebGLCoordinateSystem } from 'three';
 import { WebGPURenderer } from 'three/webgpu';
@@ -175,4 +176,65 @@ describe('allocation ledger retirement', () => {
       });
     },
   );
+});
+
+it('should attribute reused color by pass role rather than the shared texture name', () => {
+  const backend = mock<
+    WebGPURenderer['backend'] & {
+      beginRender: (context: unknown) => void;
+      finishRender: (context: unknown) => void;
+      draw: () => void;
+      createTexture: () => void;
+      destroyTexture: () => void;
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Match the upstream method.
+      getTimestampUID: () => string;
+    }
+  >({
+    beginRender: vi.fn(),
+    finishRender: vi.fn(),
+    draw: vi.fn(),
+    createTexture: vi.fn(),
+    destroyTexture: vi.fn(),
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Match the upstream method.
+    getTimestampUID: vi.fn(() => 'pass'),
+  });
+  const renderer = mock<WebGPURenderer>({
+    coordinateSystem: WebGLCoordinateSystem,
+    info: mock<WebGPURenderer['info']>({
+      memory: { geometries: 0, textures: 0, texturesSize: 0 },
+      createTexture: vi.fn(),
+      destroyTexture: vi.fn(),
+    }),
+  });
+  renderer.backend = backend;
+  installAllocationLedger(renderer);
+  const color = new Texture();
+  try {
+    color.name = 'output';
+    const context = {
+      textures: [color],
+      width: 5120,
+      height: 2880,
+      sampleCount: 1,
+      depth: true,
+      stencil: true,
+      clearColor: true,
+      clearDepth: true,
+      clearStencil: true,
+    };
+    backend.beginRender(context);
+    backend.beginRender({ ...context, clearDepth: false, clearStencil: false });
+    backend.beginRender({
+      ...context,
+      clearColor: false,
+      clearDepth: false,
+      clearStencil: false,
+    });
+    const receipts = readAllocationLedgers() as Array<{
+      passes: Array<{ name: string }>;
+    }>;
+    expect(receipts.at(-1)?.passes.map((pass) => pass.name)).toEqual(['scene', 'surface-filter', 'overlay']);
+  } finally {
+    color.dispose();
+  }
 });

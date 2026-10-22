@@ -35,6 +35,32 @@ type PassContext = {
   clearDepth: boolean;
   clearStencil: boolean;
 };
+/** A borrowed color keeps its original name; clears/MRT identify subsequent uses. */
+function identifyPass(context: PassContext, names: ReadonlySet<string>): string {
+  if (context.textures === null) {
+    return 'output';
+  }
+  if (names.has('output')) {
+    if (context.clearDepth || context.textures.length > 1) {
+      return 'scene';
+    }
+    return context.clearColor ? 'surface-filter' : 'overlay';
+  }
+  if (names.has('GTAONode.AO')) {
+    return 'ao';
+  }
+  if (names.has('Tau composed surface')) {
+    return 'materialize';
+  }
+  if (names.has('Tau surface filter frame')) {
+    return context.clearColor ? 'surface-filter' : 'overlay';
+  }
+  if (names.has('Tau linear frame')) {
+    return context.clearColor ? 'compose' : 'overlay';
+  }
+  return context.width === 1280 && context.height === 720 ? 'filter' : 'other';
+}
+
 type ObservedBackend = WebGPURenderer['backend'] & {
   createTexture: (texture: Texture, options?: Record<string, unknown>) => void;
   destroyTexture: (texture: Texture, isDefaultTexture?: boolean) => void;
@@ -281,38 +307,23 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
     event('release', record);
   };
   const timer = passCost ? createNodeFrameGpuTimer(renderer) : undefined;
+  const costScope =
+    passCost === 'empty'
+      ? 'WebGL empty end-of-frame query control; no draw commands'
+      : 'Instrumented pass interval; not additive or exclusive GPU utilization';
   if (passCost) {
-    ledger.costStatus = { stage: passCost, support: timer?.support ?? 'unavailable' };
+    ledger.costStatus = { stage: passCost, scope: costScope, support: timer?.support ?? 'unavailable' };
   }
   const glBackend = renderer.coordinateSystem === WebGLCoordinateSystem;
   const passNames = new WeakMap<PassContext, string>();
   const inspectedBuffers = new WeakSet<WebGLRenderbuffer>();
   let timedContext: PassContext | undefined;
   let timedUid = '';
-  let frame = -1;
-  let composites = 0;
   const begin = backend.beginRender.bind(backend);
   backend.beginRender = (context) => {
     const textures = context.textures ?? [];
     const names = new Set(textures.map((texture) => texture.name));
-    if (frame !== info.frame) {
-      frame = info.frame;
-      composites = 0;
-    }
-    const name =
-      context.textures === null
-        ? 'output'
-        : names.has('output')
-          ? 'scene'
-          : names.has('GTAONode.AO')
-            ? 'ao'
-            : names.has('Tau linear frame')
-              ? ++composites === 1
-                ? 'compose'
-                : 'overlay'
-              : context.width === 1280 && context.height === 720
-                ? 'filter'
-                : 'other';
+    const name = identifyPass(context, names);
     passNames.set(context, name);
     const uid = backend.getTimestampUID(context);
     ledger.passes.set(`${name}:${textures.map((texture) => texture.uuid).join(',')}`, {
@@ -333,6 +344,7 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
       const completed = timer.poll();
       ledger.costStatus = {
         stage: passCost,
+        scope: costScope,
         support: timer.support,
         pending: completed.pending,
         failedSamples: completed.failedSamples,
@@ -399,6 +411,11 @@ export function installAllocationLedger(renderer: WebGPURenderer, passCost?: str
   const finish = backend.finishRender.bind(backend);
   backend.finishRender = (context) => {
     finish(context);
+    // Empty end-of-frame control: a nonzero result exposes timer scope/driver batching,
+    // not shader work. Never flush or wait to manufacture an isolated pass measurement.
+    if (glBackend && ledger.timingEnabled && passCost === 'empty' && context.textures === null && timer?.begin()) {
+      timer.end();
+    }
     if (context === timedContext) {
       timer?.end();
       timedContext = undefined;

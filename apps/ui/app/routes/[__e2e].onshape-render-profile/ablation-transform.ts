@@ -79,8 +79,13 @@ export function transformRenderingAblation(source: string, id: string): string |
     );
     replace(
       '    /* oxlint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */',
-      `    if (tauAblation.get('surfaceFilter') === 'reuse') {
+      `    if (surfaceInput) {
+      surfaceInput.value.name = 'Tau composed surface';
+      frame.target.texture.name = 'Tau surface filter frame';
+    }
+    if (tauAblation.get('surfaceFilter') === 'reuse') {
       const composedTarget = frame.target;
+      composedTarget.texture.name = 'Tau composed surface';
       const reuseTarget = new RenderTarget(1, 1, { samples: 0, stencilBuffer: true });
       reuseTarget.texture = scenePass.getTexture('output');
       reuseTarget.depthTexture = composedTarget.depthTexture;

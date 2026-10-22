@@ -9,10 +9,17 @@ if (!['short', 'reference', 'composed', 'reuse'].includes(surfaceFilter)) {
   throw new Error('Unknown surface filter experiment');
 }
 
+const frameStorage = process.env['TAU_E2E_FRAME_STORAGE'] ?? 'compact';
+if (!['compact', 'half'].includes(frameStorage)) {
+  throw new Error('Unknown frame storage experiment');
+}
+
 export default mergeConfig(
   { ...viewer, test: { ...viewer.test, include: [] } },
   {
-    test: { include: ['src/graphics/three/post-processing-antialias.browser.test.tsx'] },
+    test: {
+      include: ['src/graphics/three/post-processing-antialias.browser.test.tsx'],
+    },
     plugins: [
       {
         name: 'surface-aa-experiment',
@@ -23,7 +30,7 @@ export default mergeConfig(
           }
           return transformRenderingAblation(source, id)?.replace(
             'new URLSearchParams(globalThis.location.search)',
-            `new URLSearchParams('surfaceFilter=${surfaceFilter}')`,
+            `new URLSearchParams('surfaceFilter=${surfaceFilter}&frameStorage=${frameStorage}')`,
           );
         },
       },
