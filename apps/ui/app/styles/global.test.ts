@@ -77,10 +77,8 @@ const darkOverride = {
   ...readRuleTokens(tokenStyles.indexOf(":root[class~='dark']"), tokenStyles),
   ...readRuleTokens(appStyles.indexOf(":root[class~='dark']"), appStyles),
 };
-const blackOverride = {
-  ...readRuleTokens(tokenStyles.indexOf(":root[class~='black']"), tokenStyles),
-  ...readRuleTokens(appStyles.indexOf(":root[class~='black']"), appStyles),
-};
+// SinopiaCAD: Nero needs no app-specific overrides; diagrams keep Dark's values.
+const blackOverride = readRuleTokens(tokenStyles.indexOf(":root[class~='black']"), tokenStyles);
 const highContrastOverride = {
   ...readRuleTokens(tokenStyles.indexOf(":root[class~='high-contrast']"), tokenStyles),
   ...readRuleTokens(appStyles.indexOf(":root[class~='high-contrast']"), appStyles),
@@ -98,17 +96,9 @@ const contrastDarkOverride = {
   ...readRuleTokens(tokenStyles.indexOf(":root[class~='dark']", tokenContrastStart), tokenStyles),
   ...readRuleTokens(appStyles.indexOf(":root[class~='dark']", appContrastStart), appStyles),
 };
-const contrastBlackOverride = {
-  ...readRuleTokens(tokenStyles.indexOf(":root[class~='black']", tokenContrastStart), tokenStyles),
-};
 const contrastLightTokens = { ...lightTokens, ...contrastLightOverride };
 const contrastDarkTokens = { ...darkTokens, ...contrastLightOverride, ...contrastDarkOverride };
-const contrastBlackTokens = {
-  ...blackTokens,
-  ...contrastLightOverride,
-  ...contrastDarkOverride,
-  ...contrastBlackOverride,
-};
+const contrastBlackTokens = { ...blackTokens, ...contrastLightOverride, ...contrastDarkOverride };
 const cornerShapeSupports = '@supports (corner-shape: superellipse(1.5))';
 const enhancedRadiusSupports = globalStyles.indexOf(cornerShapeSupports);
 const enhancedRadiusRoot = globalStyles.indexOf(':root', enhancedRadiusSupports);
@@ -163,6 +153,7 @@ describe('global structural color tokens', () => {
   it.each([
     ['light', lightTokens],
     ['dark', darkTokens],
+    ['black', blackTokens],
   ])('keeps every %s structural token on the fixed paper hue at near-zero chroma', (_mode, tokens) => {
     for (const name of structuralTokens) {
       const color = parseToken(name, tokens);
@@ -173,10 +164,7 @@ describe('global structural color tokens', () => {
     }
   });
 
-  it.each([
-    ['black', blackTokens],
-    ['high contrast', highContrastTokens],
-  ])('keeps every %s structural token achromatic', (_mode, tokens) => {
+  it.each([['high contrast', highContrastTokens]])('keeps every %s structural token achromatic', (_mode, tokens) => {
     for (const name of structuralTokens) {
       expect(parseToken(name, tokens).c, name).toBe(0);
     }
@@ -235,6 +223,14 @@ describe('global structural color tokens', () => {
     ['high contrast', highContrastTokens],
   ])('uses a light foreground on primary actions in %s mode', (_mode, tokens) => {
     expect(parseToken('--primary-foreground', tokens).l).toBeGreaterThanOrEqual(0.95);
+  });
+
+  /* SinopiaCAD: the theme menu offers Chiaro and Nero; Nero is Sinopia's warm charcoal, not Tau's pure black. */
+  it('makes Nero the warm charcoal Dark already draws', () => {
+    expect(resolveToken('--background', blackTokens)).toBe('oklch(0.171 0.006 78deg)');
+    for (const name of structuralTokens) {
+      expect(resolveToken(name, blackTokens), name).toBe(resolveToken(name, darkTokens));
+    }
   });
 
   it('maps the structural accent foreground into Tailwind', () => {
@@ -345,13 +341,46 @@ describe('action cursor contract', () => {
   });
 });
 
-describe('increased contrast palettes', () => {
+describe('increased contrast', () => {
   const contrastThemes = [
-    ['explicit dark', highContrastTokens],
     ['preferred light', contrastLightTokens],
     ['preferred dark', contrastDarkTokens],
     ['preferred black', contrastBlackTokens],
   ] as const;
+  const contrastBlock = (styles: string, start: number): string => {
+    let depth = 0;
+    const open = styles.indexOf('{', start);
+    for (let index = open; index < styles.length; index += 1) {
+      if (styles[index] === '{') {
+        depth += 1;
+      } else if (styles[index] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return styles.slice(open, index + 1);
+        }
+      }
+    }
+    return '';
+  };
+
+  /* SinopiaCAD (UI-UX-SinopiaCAD §1.2): more contrast keeps the current theme, with no third palette. */
+  it('keeps the theme’s own surfaces and text when contrast is preferred', () => {
+    const block = contrastBlock(tokenStyles, tokenContrastStart);
+    for (const token of ['--background', '--foreground', '--muted', '--muted-foreground', '--card', '--popover']) {
+      expect(block, token).not.toContain(`${token}:`);
+    }
+    expect(block).not.toContain('--c-paper:');
+    expect(block).not.toContain("class~='black'");
+    expect(resolveToken('--background', contrastBlackTokens)).toBe('oklch(0.171 0.006 78deg)');
+  });
+
+  it('thickens hairlines from 1 to 2 px and the focus outline from 2 to 3 px', () => {
+    expect(lightTokens['--hairline-width']).toBe('1px');
+    expect(contrastLightTokens['--hairline-width']).toBe('2px');
+    expect(lightTokens['--focus-outline-width']).toBe('2px');
+    expect(contrastLightTokens['--focus-outline-width']).toBe('3px');
+    expect(tokenStyles).toContain('--default-border-width: var(--hairline-width);');
+  });
 
   it.each(contrastThemes)('keeps primary and muted text highly readable in %s mode', (_mode, tokens) => {
     expect(wcagContrast(parseToken('--foreground', tokens), parseToken('--background', tokens))).toBeGreaterThanOrEqual(
@@ -379,15 +408,12 @@ describe('increased contrast palettes', () => {
     }
   });
 
-  it.each(contrastThemes)('keeps primary actions and focus rings visible for every hue in %s mode', (_mode, tokens) => {
+  it.each(contrastThemes)('keeps primary actions and focus rings visible in %s mode', (_mode, tokens) => {
+    expect(
+      wcagContrast(parseToken('--primary', tokens), parseToken('--primary-foreground', tokens)),
+    ).toBeGreaterThanOrEqual(4.5);
     for (let hue = 0; hue < 360; hue += 5) {
       const hueTokens = { ...tokens, '--hue-primary': `${hue.toString()}deg` };
-
-      expect(
-        wcagContrast(parseToken('--primary', hueTokens), parseToken('--primary-foreground', hueTokens)),
-        `primary at ${hue.toString()}deg`,
-      ).toBeGreaterThanOrEqual(4.5);
-
       for (const surface of ['--background', '--sidebar-background', '--muted'] as const) {
         expect(
           wcagContrast(parseToken('--ring', hueTokens), parseToken(surface, hueTokens)),
@@ -409,9 +435,13 @@ describe('increased contrast palettes', () => {
       ).toBeGreaterThanOrEqual(3);
     }
   });
+});
 
-  it('preserves the pure-black canvas when contrast is preferred', () => {
-    expect(resolveToken('--background', contrastBlackTokens)).toBe('oklch(0 0 none)');
+describe('viewer tab bar', () => {
+  it('hides the viewer’s tab bar over Dockview’s unlayered styles', () => {
+    expect(appStyles).toContain(
+      "[data-viewer-tab-bar='hidden'] .dv-tabs-and-actions-container {\n    display: none !important;",
+    );
   });
 });
 

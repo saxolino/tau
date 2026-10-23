@@ -51,11 +51,26 @@ describe('checkSinopiaAccess', () => {
   describe('accounts sinopialab.com lets in', () => {
     it.each<{ name: string; account: SinopiaTestAccount }>([
       { name: 'a complete designer in the beta', account: {} },
-      { name: 'a designer from before the beta door', account: { beta: 'not_applicable' } },
-      { name: 'a supplier, whose beta status does not count', account: { role: 'supplier', beta: 'needs_profile' } },
-      { name: 'a superadmin', account: { role: 'superadmin', beta: 'not_applicable' } },
-      { name: 'a Google designer the beta door has taken', account: { needsProfession: true, beta: 'active' } },
-      { name: 'an account that accepted later Terms', account: { terms: '2026-11-02' } },
+      {
+        name: 'a designer from before the beta door',
+        account: { beta: 'not_applicable' },
+      },
+      {
+        name: 'a supplier, whose beta status does not count',
+        account: { role: 'supplier', beta: 'needs_profile' },
+      },
+      {
+        name: 'a superadmin',
+        account: { role: 'superadmin', beta: 'not_applicable' },
+      },
+      {
+        name: 'a Google designer the beta door has taken',
+        account: { needsProfession: true, beta: 'active' },
+      },
+      {
+        name: 'an account that accepted later Terms',
+        account: { terms: '2026-11-02' },
+      },
       {
         name: 'a designer with Terms on file whose beta status cannot be read',
         account: { failing: ['beta'], terms: '2026-08-17' },
@@ -67,24 +82,51 @@ describe('checkSinopiaAccess', () => {
 
   describe('accounts sinopialab.com keeps out', () => {
     it.each<{ name: string; account: SinopiaTestAccount; reason: string }>([
-      { name: 'no profile row', account: { withoutProfile: true }, reason: 'no-profile' },
-      { name: 'a role that is not an account role', account: { role: 'lookbook_guest' }, reason: 'no-profile' },
-      { name: 'a beta profile still to complete', account: { beta: 'needs_profile' }, reason: 'beta-profile' },
+      {
+        name: 'no profile row',
+        account: { withoutProfile: true },
+        reason: 'no-profile',
+      },
+      {
+        name: 'a role that is not an account role',
+        account: { role: 'lookbook_guest' },
+        reason: 'no-profile',
+      },
+      {
+        name: 'a beta profile still to complete',
+        account: { beta: 'needs_profile' },
+        reason: 'beta-profile',
+      },
       {
         name: 'a legacy designer role still to join',
         account: { role: 'pro', beta: 'needs_profile' },
         reason: 'beta-profile',
       },
-      { name: 'a place on the waiting list', account: { beta: 'waitlisted' }, reason: 'waitlisted' },
+      {
+        name: 'a place on the waiting list',
+        account: { beta: 'waitlisted' },
+        reason: 'waitlisted',
+      },
       {
         name: 'a profession still to choose outside the beta',
         account: { needsProfession: true, beta: 'not_applicable' },
         reason: 'profession',
       },
-      { name: 'Terms never accepted', account: { withoutTerms: true }, reason: 'terms' },
-      { name: 'Terms older than the current ones', account: { terms: '2026-07-01' }, reason: 'terms' },
+      {
+        name: 'Terms never accepted',
+        account: { withoutTerms: true },
+        reason: 'terms',
+      },
+      {
+        name: 'Terms older than the current ones',
+        account: { terms: '2026-07-01' },
+        reason: 'terms',
+      },
     ])('should keep out $name', async ({ account, reason }) => {
-      await expect(check(account)).resolves.toEqual({ verdict: 'refused', reason });
+      await expect(check(account)).resolves.toEqual({
+        verdict: 'refused',
+        reason,
+      });
     });
   });
 
@@ -97,9 +139,14 @@ describe('checkSinopiaAccess', () => {
         name: 'the beta status of a designer without Terms on file',
         account: { failing: ['beta'], withoutTerms: true },
       },
-      { name: 'both the beta status and the Terms consent', account: { failing: ['beta', 'terms'] } },
+      {
+        name: 'both the beta status and the Terms consent',
+        account: { failing: ['beta', 'terms'] },
+      },
     ])('should answer unverified, never refused, when $name cannot be read', async ({ account }) => {
-      await expect(check(account)).resolves.toEqual({ verdict: 'unverified' });
+      await expect(check(account)).resolves.toEqual({
+        verdict: 'unverified',
+      });
       expect(console.error).toHaveBeenCalledWith(
         expect.stringMatching(/^\[sinopia] could not read /),
         expect.anything(),
@@ -130,8 +177,8 @@ describe('checkSinopiaAccess', () => {
 describe('sinopiaRefusalNotice', () => {
   it('should send every refusal to sign in on sinopialab.com, where Sinopia takes the account to its next step', () => {
     expect(sinopiaRefusalNotice('profession')).toEqual({
-      message: 'Prima di usare SinopiaCAD scegli la tua professione su sinopialab.com, poi torna qui.',
-      link: { href: 'https://sinopialab.com/auth', label: 'Vai a sinopialab.com' },
+      code: 'profession',
+      link: { href: 'https://sinopialab.com/auth' },
     });
   });
 });

@@ -37,7 +37,6 @@ import { DockviewEmptyAction, DockviewEmptyCloseAction } from '#components/panes
 import { getViewerTabIcon, ViewerDockviewTab } from '#components/panes/viewer-tab-context-menu.js';
 import { DockviewLeftActions, DockviewFileActionProvider } from '#components/panes/dockview-open-file-action.js';
 import { ProjectWorkspaceActions } from '#routes/w.$workspace.$project/project-workspace-actions.js';
-import { ViewerWorkbenchLaneToggle } from '#routes/w.$workspace.$project/workbench-toggle.js';
 import { selectCadEvaluation } from '#machines/cad.machine.js';
 import type { cadMachine } from '#machines/cad.machine.js';
 import type { ActorRefFrom } from 'xstate';
@@ -1039,7 +1038,6 @@ export const ViewerDockview = memo(function ({
           tabLeadingIcon='viewer'
           watermarkComponent={ViewerWatermark}
           leftHeaderActionsComponent={ViewerLeftActions}
-          prefixHeaderActionsComponent={profile === 'editor' ? ViewerWorkbenchLaneToggle : undefined}
           rightHeaderActionsComponent={profile === 'editor' ? ViewerRightActions : undefined}
           onReady={onReady}
           onDidDrop={onDidDrop}

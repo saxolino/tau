@@ -120,7 +120,7 @@ describe('ChatTitleBar', () => {
       render(withChatLane(<ChatTitleBar closeButton={<button type='button'>Close chat</button>} />));
 
       const buttons = screen.getAllByRole('button');
-      expect(buttons[0]).toHaveAccessibleName('New chat');
+      expect(buttons[0]).toHaveAccessibleName('New conversation');
       expect(buttons.at(-1)).toHaveAccessibleName('Agente');
       expect(screen.queryByRole('button', { name: 'Close chat' })).not.toBeInTheDocument();
     });
@@ -156,7 +156,7 @@ describe('ChatTitleBar', () => {
 
       await user.dblClick(screen.getByText('Bracket design'));
 
-      const field = screen.getByRole('textbox', { name: 'Chat name' });
+      const field = screen.getByRole('textbox', { name: 'Conversation name' });
       expect(field).toHaveValue('Bracket design');
       expect(screen.queryByText('Bracket design')).not.toBeInTheDocument();
       // The field takes the row (the sidebar's editor preset hides the Save button), and it is
@@ -173,7 +173,7 @@ describe('ChatTitleBar', () => {
       await waitFor(() => {
         expect(updateChatName).toHaveBeenCalledWith('chat_active', 'Gear housing');
       });
-      expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument();
       expect(screen.getByText('Bracket design')).toBeInTheDocument();
     });
 
@@ -182,10 +182,10 @@ describe('ChatTitleBar', () => {
       render(<ChatTitleBar />);
 
       await user.dblClick(screen.getByText('Bracket design'));
-      await user.type(screen.getByRole('textbox', { name: 'Chat name' }), 'x{Escape}');
+      await user.type(screen.getByRole('textbox', { name: 'Conversation name' }), 'x{Escape}');
 
       expect(updateChatName).not.toHaveBeenCalled();
-      expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument();
       expect(screen.getByText('Bracket design')).toBeInTheDocument();
     });
 
@@ -194,12 +194,12 @@ describe('ChatTitleBar', () => {
       render(<ChatTitleBar />);
 
       await user.dblClick(screen.getByText('Bracket design'));
-      const field = screen.getByRole('textbox', { name: 'Chat name' });
+      const field = screen.getByRole('textbox', { name: 'Conversation name' });
       await user.clear(field);
       await user.type(field, '   {Enter}');
 
       expect(updateChatName).not.toHaveBeenCalled();
-      expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument();
     });
 
     it('should open the same editor from the menu', async () => {
@@ -208,7 +208,7 @@ describe('ChatTitleBar', () => {
 
       await user.click(screen.getByRole('button', { name: 'Rename' }));
 
-      expect(screen.getByRole('textbox', { name: 'Chat name' })).toHaveValue('Bracket design');
+      expect(screen.getByRole('textbox', { name: 'Conversation name' })).toHaveValue('Bracket design');
     });
   });
 
@@ -227,7 +227,7 @@ describe('ChatTitleBar', () => {
       sidebar.open = false;
       const { container, rerender } = render(<ChatTitleBar />);
 
-      fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+      fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
       await waitFor(() => {
         expect(navigate).toHaveBeenCalledWith('/w/home/bracket?chat=chat_new', {
           state: { focusChatComposer: true },
@@ -240,12 +240,12 @@ describe('ChatTitleBar', () => {
 
       sidebar.open = true;
       rerender(<ChatTitleBar />);
-      expect(screen.queryByRole('button', { name: 'New chat' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
 
       sidebar.open = false;
       sidebar.isMobile = true;
       rerender(<ChatTitleBar />);
-      expect(screen.queryByRole('button', { name: 'New chat' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
     });
   });
 });

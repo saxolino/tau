@@ -1,0 +1,113 @@
+import { defineMessages } from '#i18n/define-messages.js';
+
+/** The home (UI-UX-SinopiaCAD §2): from an image to the CAD, your projects, the agent beside them. */
+export const homeMessages = defineMessages({
+  it: {
+    title: 'Dall’immagine al CAD',
+    subtitle:
+      'Porta la foto o il disegno di un gioiello o di un accessorio, aggiungi due parole scritte o dettate: l’agente costruisce il CAD in pezzi, ognuno con il suo nome.',
+    dropZone: {
+      drop: 'Lascia qui l’immagine',
+      dragHere: 'Trascina qui la foto o il disegno',
+      pasteHint: 'oppure incollala con {shortcut} · {limits}',
+      limits: 'JPG, PNG, WebP o GIF, fino a 20 MB',
+      choose: 'Scegli un’immagine',
+      imagesForAgent: 'Immagini per l’agente',
+      attachedImage: 'Immagine allegata',
+      fromCreator: 'Vanno bene anche le immagini salvate dal Creator di Sinopia.',
+    },
+    intake: {
+      announceOne: 'Immagine allegata al messaggio per l’agente.',
+      announceMany: '{count} immagini allegate al messaggio per l’agente.',
+      messageForAgent: 'Messaggio per l’agente',
+      fromWebPage: 'Questa immagine arriva da una pagina web',
+      fromWebPageHint: 'Salvala sul computer, poi trascinala qui o sceglila.',
+      cannotReadImages: 'L’agente non può leggere immagini con il modello scelto',
+      cannotReadImagesHint: 'Scegli un modello che legge le immagini, oppure descrivi il pezzo a parole.',
+      wrongFormat: '{name} non è in un formato che l’agente sa leggere',
+      wrongFormatHint: 'Usa {limits}.',
+      tooBig: '{name} supera i 20 MB',
+      tooBigHint: 'Esporta una versione più leggera e riprova.',
+      readFailed: 'Non riesco a leggere {name}. Riprova.',
+      thePicture: 'l’immagine',
+      thePictureCapital: 'L’immagine',
+    },
+    agentLane: {
+      label: 'Agente',
+      header: 'Nuovo progetto',
+      emptyTitle: 'Cosa costruiamo?',
+      emptyDescription:
+        'Allega la foto o il disegno del pezzo e aggiungi due parole, scritte o dettate. Il primo messaggio crea il progetto.',
+    },
+    composerPlaceholder: 'Scrivi o detta…',
+    composer: {
+      createFailed: 'Non riesco a creare il progetto. Riprova.',
+    },
+    recent: {
+      title: 'I tuoi progetti',
+      all: 'Tutti i progetti',
+      open: 'Apri {name}',
+      edited: 'Modificato {when}',
+      loadFailed: 'Non riesco a caricare i progetti.',
+      retry: 'Riprova',
+      loading: 'Caricamento dei progetti',
+      emptyTitle: 'Nessun progetto ancora',
+      emptyDescription: 'Il primo nasce dalla prima immagine o dal primo messaggio che mandi all’agente.',
+      now: 'adesso',
+    },
+  },
+  en: {
+    title: 'From image to CAD',
+    subtitle:
+      'Bring a photo or a drawing of a jewel or an accessory, add a few words typed or dictated: the agent builds the CAD in pieces, each with its own name.',
+    dropZone: {
+      drop: 'Drop the image here',
+      dragHere: 'Drag the photo or drawing here',
+      pasteHint: 'or paste it with {shortcut} · {limits}',
+      limits: 'JPG, PNG, WebP or GIF, up to 20 MB',
+      choose: 'Choose an image',
+      imagesForAgent: 'Images for the agent',
+      attachedImage: 'Attached image',
+      fromCreator: 'Images saved from the Sinopia Creator work too.',
+    },
+    intake: {
+      announceOne: 'Image attached to the message for the agent.',
+      announceMany: '{count} images attached to the message for the agent.',
+      messageForAgent: 'Message for the agent',
+      fromWebPage: 'This image comes from a web page',
+      fromWebPageHint: 'Save it on your computer, then drag it here or choose it.',
+      cannotReadImages: 'The agent can’t read images with the chosen model',
+      cannotReadImagesHint: 'Choose a model that reads images, or describe the piece in words.',
+      wrongFormat: '{name} is not in a format the agent can read',
+      wrongFormatHint: 'Use {limits}.',
+      tooBig: '{name} is over 20 MB',
+      tooBigHint: 'Export a lighter version and try again.',
+      readFailed: 'I can’t read {name}. Try again.',
+      thePicture: 'the image',
+      thePictureCapital: 'The image',
+    },
+    agentLane: {
+      label: 'Agent',
+      header: 'New project',
+      emptyTitle: 'What shall we build?',
+      emptyDescription:
+        'Attach the photo or drawing of the piece and add a few words, typed or dictated. The first message creates the project.',
+    },
+    composerPlaceholder: 'Type or dictate…',
+    composer: {
+      createFailed: 'I can’t create the project. Try again.',
+    },
+    recent: {
+      title: 'Your projects',
+      all: 'All projects',
+      open: 'Open {name}',
+      edited: 'Edited {when}',
+      loadFailed: 'I can’t load your projects.',
+      retry: 'Try again',
+      loading: 'Loading your projects',
+      emptyTitle: 'No projects yet',
+      emptyDescription: 'The first one starts from your first image or the first message you send to the agent.',
+      now: 'now',
+    },
+  },
+});

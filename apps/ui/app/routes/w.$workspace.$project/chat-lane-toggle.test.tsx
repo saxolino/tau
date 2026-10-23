@@ -1,7 +1,8 @@
 import { StrictMode } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type * as SidebarStatus from '#hooks/use-sidebar-status.js';
 import type { ChatSidebarStatus } from '#hooks/use-sidebar-status.js';
@@ -61,14 +62,44 @@ describe('ChatLaneToggle', () => {
   beforeEach(() => {
     state.status = undefined;
     vi.clearAllMocks();
+    // The Italian name; the English one is checked below.
+    setLanguage('it');
+  });
+
+  afterEach(() => {
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
+  });
+
+  it.each([
+    ['it', 'Agente', 'Mostra l’agente'],
+    ['en', 'Agent', 'Show the agent'],
+  ] as const)('names the agent in %s', async (language, name, tooltip) => {
+    setLanguage(language);
+    const user = userEvent.setup();
+    renderWithLanes(<ChatLaneToggle place='viewer' />, false);
+
+    const toggle = screen.getByRole('button', { name });
+    expect(toggle).toHaveTextContent(name);
+    await user.hover(toggle);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(tooltip);
+  });
+
+  it('stays in the top bar while the lane shows, pressed and without a mark (R3)', () => {
+    state.status = approval;
+    const { container } = renderWithLanes(<ChatLaneToggle place='viewer' />, true);
+
+    expect(screen.getByRole('button', { name: 'Agente' })).toHaveAttribute('aria-pressed', 'true');
+    expect(container.querySelector('[data-slot="chat-toggle-mark"]')).toBeNull();
   });
 
   it('is pressed in the agent pane header, advertises ⌃C, and closes the lane', async () => {
     const user = userEvent.setup();
     renderWithLanes(<ChatLaneToggle place='lane' />, true);
 
-    const toggle = screen.getByRole('button', { name: 'Agente' });
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // The lane's own button only hides it: named for that, no pressed state (the top bar's toggle carries it).
+    const toggle = screen.getByRole('button', { name: 'Nascondi l’agente' });
+    expect(toggle).not.toHaveAttribute('aria-pressed');
     expect(toggle).toHaveAttribute('aria-keyshortcuts', 'Control+C');
     // The open pane names itself: the header carries the icon alone, a 28 px pane button.
     expect(toggle).toHaveClass('size-7');
@@ -78,7 +109,7 @@ describe('ChatLaneToggle', () => {
     expect(setChatOpen).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it('names the hidden agent in the viewer’s cluster, folding to its glyph with Share and Export', async () => {
+  it('names the hidden agent, folding to its glyph by default with the viewer', async () => {
     const user = userEvent.setup();
     renderWithLanes(<ChatLaneToggle place='viewer' />, false);
 
@@ -96,7 +127,7 @@ describe('ChatLaneToggle', () => {
     const { container } = renderWithLanes(<ChatLaneToggle place='lane' />, true);
 
     expect(container.querySelector('[data-slot="chat-toggle-mark"]')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Agente' })).not.toHaveAccessibleDescription();
+    expect(screen.getByRole('button', { name: 'Nascondi l’agente' })).not.toHaveAccessibleDescription();
   });
 
   it('carries the sidebar mark and its sentence while the lane is hidden, without the count', () => {
@@ -129,7 +160,7 @@ describe('ChatLaneToggle', () => {
     rerender(withLanes(<ChatLaneToggle place='lane' />, true));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Agente' })).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Nascondi l’agente' })).toHaveFocus();
     });
   });
 });

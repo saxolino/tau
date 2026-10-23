@@ -30,6 +30,7 @@ const sectionMaxBytes = new Map([
   ['workbench', 800],
   ['plan_mode', 1800],
   ['kernel_skill', 500],
+  ['reply_language', 200],
   ['transcript_path', 500],
   ['environment', 600],
   ['dynamic_behavior', 1400],
@@ -73,6 +74,7 @@ const expectedSectionNames = (options: { mode: 'agent' | 'plan'; supportsImageIn
   'task_tracking',
   ...(options.mode === 'plan' ? ['plan_mode'] : []),
   'kernel_skill',
+  'reply_language',
   'transcript_path',
   'environment',
   'dynamic_behavior',
@@ -188,7 +190,7 @@ describe('getCadSystemPrompt progressive-disclosure contract', () => {
 });
 
 describe('SinopiaCAD persona', () => {
-  it('speaks as the SinopiaCAD agent to jewelry designers and pattern makers, in simple Italian', () => {
+  it('speaks as the SinopiaCAD agent to jewelry designers and pattern makers, simply', () => {
     const prompt = renderDefaultPrompt('smlib');
     const role = /<role>\n([\s\S]*?)\n<\/role>/u.exec(prompt.static)?.[1];
     const tone = /<tone>\n([\s\S]*?)\n<\/tone>/u.exec(prompt.static)?.[1];
@@ -196,11 +198,32 @@ describe('SinopiaCAD persona', () => {
     expect(role).toContain('You are the SinopiaCAD agent');
     expect(role).toContain('Jewelry and accessory designers and pattern makers');
     expect(role).toContain('dimensionally faithful, fully detailed, manufacturable as-is');
-    expect(tone).toContain('in simple, short Italian about pieces, millimetres and materials');
+    expect(tone).toContain('simply, in the reply language, about');
+    expect(tone).toContain('about pieces, millimetres and materials');
+    expect(tone).not.toContain('Italian');
     expect(tone).toContain('no code, file, engine or tool names');
     expect(tone).toContain('never LaTeX');
     expect(prompt.static).not.toContain('You are Tau');
     expect(prompt.dynamic).not.toContain('file paths, line numbers');
+  });
+});
+
+// SinopiaCAD: the agent replies in the interface language (UI-UX-SinopiaCAD §1.1).
+describe('reply language', () => {
+  it.each([
+    ['it', 'Reply language: Italian', 'simple, short Italian'],
+    ['en', 'Reply language: English', 'simple, short English'],
+  ] as const)('names %s in the dynamic tail and leaves Block 1 unchanged', (language, line, words) => {
+    const prompt = getCadSystemPrompt('smlib', 'agent', true, { chatId: 'reply-language-test', language });
+
+    expect(prompt.dynamic).toContain(line);
+    expect(prompt.dynamic).toContain(words);
+    expect(prompt.static).toBe(getCadSystemPrompt('smlib', 'agent', true, { chatId: 'reply-language-test' }).static);
+  });
+
+  it('replies in Italian when the config names no language', () => {
+    expect(renderDefaultPrompt('smlib').dynamic).toContain('Reply language: Italian');
+    expect(renderDefaultPrompt('smlib').dynamic).not.toContain('Reply language: English');
   });
 });
 

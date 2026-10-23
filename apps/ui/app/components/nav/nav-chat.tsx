@@ -5,11 +5,13 @@ import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { Loader } from '@taucad/ui/components/loader';
 import { cn } from '@taucad/ui/utils/cn';
+import { useTranslation } from '#i18n/translate.js';
 
 /** Starts a project from the Home chat composer; "Build from code" there opens `/projects/new`. */
 const newProjectState = { focusChatComposer: true } as const;
 
 export function NavChat({ isCompact = false }: { readonly isCompact?: boolean }): React.JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const isMatch = useMatch('/');
   const { formattedKeyCombination } = useKeybinding(
@@ -33,7 +35,8 @@ export function NavChat({ isCompact = false }: { readonly isCompact?: boolean })
             tooltip={{
               children: (
                 <>
-                  New Project{` `}
+                  {t('shell.sidebar.newProject')}
+                  {` `}
                   <KeyShortcut variant='tooltip' className='ml-1'>
                     {formattedKeyCombination}
                   </KeyShortcut>
@@ -44,7 +47,7 @@ export function NavChat({ isCompact = false }: { readonly isCompact?: boolean })
           >
             <span>
               {isPending ? <Loader /> : <PackagePlus className='size-4 shrink-0' />}
-              <span className='flex-1 whitespace-nowrap'>New Project</span>
+              <span className='flex-1 whitespace-nowrap'>{t('shell.sidebar.newProject')}</span>
               <KeyShortcut className='ml-2 shrink-0'>{formattedKeyCombination}</KeyShortcut>
             </span>
           </SidebarMenuButton>

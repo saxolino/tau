@@ -26,8 +26,14 @@ import {
 } from '@taucad/ui/components/alert-dialog';
 import { useProjects } from '#hooks/use-projects.js';
 import { useLiveProjectIds, useSessions } from '#hooks/use-sessions.js';
-import { pluralize, useProjectSidebarRow, useSidebarCommands } from '#hooks/use-sidebar-status.js';
+import { useProjectSidebarRow, useSidebarCommands } from '#hooks/use-sidebar-status.js';
+import { useTranslation } from '#i18n/translate.js';
+import type { Translate } from '#i18n/translate.js';
 import type { ProjectSidebarRow } from '#hooks/use-sidebar-status.js';
+
+/** "3 runs", in the language of the interface. */
+const runCount = (t: Translate, count: number): string =>
+  t(count === 1 ? 'shell.closeDialog.runOne' : 'shell.closeDialog.runOther', { count });
 
 /** The close action's known effects; an aggregate sidebar row cannot classify runs. */
 type ClosePlan = Readonly<{
@@ -60,6 +66,7 @@ export function CloseProjectDialog({
   readonly onOpenChange: (next: boolean) => void;
   readonly onConfirm?: () => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const { closeProject } = useSidebarCommands();
   const stopsRuns = closePlan !== undefined && closePlan.stoppableRunCount > 0;
   return (
@@ -68,30 +75,34 @@ export function CloseProjectDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>
             {stopsRuns
-              ? `Stop ${pluralize(closePlan.stoppableRunCount, 'run')} and close ${name}${isBeforeDelete ? ' before deleting' : ''}?`
-              : `Close ${name}${isBeforeDelete ? ' before deleting' : ''}?`}
+              ? t(isBeforeDelete ? 'shell.closeDialog.titleStopRunsBeforeDelete' : 'shell.closeDialog.titleStopRuns', {
+                  runs: runCount(t, closePlan.stoppableRunCount),
+                  name,
+                })
+              : t(isBeforeDelete ? 'shell.closeDialog.titleBeforeDelete' : 'shell.closeDialog.title', { name })}
           </AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div>
               {closePlan === undefined ? (
-                <p>
-                  Closing this project asks reachable runs to stop. Runs in another version of Tau or a background
-                  window may continue.
-                </p>
+                <p>{t('shell.closeDialog.intro')}</p>
               ) : (
                 <>
-                  {stopsRuns && <p>{`This window will stop ${pluralize(closePlan.stoppableRunCount, 'run')}.`}</p>}
+                  {stopsRuns && (
+                    <p>{t('shell.closeDialog.willStop', { runs: runCount(t, closePlan.stoppableRunCount) })}</p>
+                  )}
                   {closePlan.continuingRuns.length > 0 && (
                     <>
                       <p>
-                        {closePlan.continuingRuns.length === 1
-                          ? 'This one keeps running, because this window can’t stop it:'
-                          : 'These keep running, because this window can’t stop them:'}
+                        {t(
+                          closePlan.continuingRuns.length === 1
+                            ? 'shell.closeDialog.keepsRunningOne'
+                            : 'shell.closeDialog.keepsRunningOther',
+                        )}
                       </p>
                       <ul className='list-disc pl-5'>
                         {closePlan.continuingRuns.map((run) => (
                           <li key={run.id}>
-                            {`${run.label} — ${run.reason === 'other-build' ? 'another version of Tau is running it' : 'its window is in the background'}`}
+                            {`${run.label} — ${t(run.reason === 'other-build' ? 'shell.closeDialog.otherBuild' : 'shell.closeDialog.backgroundWindow')}`}
                           </li>
                         ))}
                       </ul>
@@ -99,16 +110,13 @@ export function CloseProjectDialog({
                   )}
                 </>
               )}
-              <p>
-                Work already saved as revisions stays on this device. If backup is unavailable, those revisions stay
-                queued for the next connection. You can reopen the project any time.
-              </p>
-              {isBeforeDelete && <p>This does not delete the project. Choose Delete again after its work has ended.</p>}
+              <p>{t('shell.closeDialog.saved')}</p>
+              {isBeforeDelete && <p>{t('shell.closeDialog.notDeleted')}</p>}
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t('shell.closeDialog.cancel')}</AlertDialogCancel>
           <AlertDialogAction
             onClick={() => {
               if (onConfirm === undefined) {
@@ -118,7 +126,7 @@ export function CloseProjectDialog({
               }
             }}
           >
-            {stopsRuns ? 'Stop and close' : 'Close'}
+            {stopsRuns ? t('shell.closeDialog.stopAndClose') : t('shell.closeDialog.close')}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -136,10 +144,16 @@ function BudgetCandidate({
   readonly name: string;
   readonly onChoose: (projectId: string) => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const row = useProjectSidebarRow(projectId);
   /* Only the two things a person weighs: somebody is waiting on them, or
    * runs are working. A live project with neither is idle. */
-  const doing = row.attention > 0 ? 'needs you' : row.runs > 0 ? pluralize(row.runs, 'run') : 'idle';
+  const doing =
+    row.attention > 0
+      ? t('shell.closeDialog.needsYou')
+      : row.runs > 0
+        ? runCount(t, row.runs)
+        : t('shell.closeDialog.idle');
   return (
     <button
       type='button'
@@ -148,7 +162,7 @@ function BudgetCandidate({
         onChoose(projectId);
       }}
     >
-      <span className='truncate'>{`Close ${name} and open`}</span>
+      <span className='truncate'>{t('shell.closeDialog.closeAndOpen', { name })}</span>
       <span className='shrink-0 text-xs text-muted-foreground'>{doing}</span>
     </button>
   );
@@ -164,17 +178,18 @@ function BudgetRefusedBody({
   readonly candidates: readonly string[];
   readonly onChosen: () => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const { projects } = useProjects();
   const liveProjectIds = useLiveProjectIds();
   const { closeProject } = useSidebarCommands();
   const nameOf = (projectId: string): string =>
-    projects.find((entry) => entry.id === projectId)?.name ?? 'that project';
+    projects.find((entry) => entry.id === projectId)?.name ?? t('shell.closeDialog.thatProject');
   return (
     <AlertDialogContent>
       <AlertDialogHeader>
-        <AlertDialogTitle>{`Close a project to open ${nameOf(refusedProjectId)}`}</AlertDialogTitle>
+        <AlertDialogTitle>{t('shell.closeDialog.budgetTitle', { name: nameOf(refusedProjectId) })}</AlertDialogTitle>
         <AlertDialogDescription>
-          {`${pluralize(liveProjectIds.length, 'project')} are live and none is idle. Pick one to close:`}
+          {t('shell.closeDialog.budgetDescription', { count: liveProjectIds.length })}
         </AlertDialogDescription>
       </AlertDialogHeader>
       <div className='flex flex-col gap-1.5'>
@@ -194,7 +209,7 @@ function BudgetRefusedBody({
         ))}
       </div>
       <AlertDialogFooter>
-        <AlertDialogCancel>Not now</AlertDialogCancel>
+        <AlertDialogCancel>{t('shell.closeDialog.notNow')}</AlertDialogCancel>
       </AlertDialogFooter>
     </AlertDialogContent>
   );

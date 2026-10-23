@@ -1,3 +1,4 @@
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { createProjectFixture } from '#lib/project.fixture.js';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -608,5 +609,18 @@ describe('ProjectChatList', () => {
     mockUseChatRecords.mockReturnValue({ ...defaultChatsResult, chats: [{ ...chat(1), recencyAt: now }] });
     render(<ProjectChatList project={project} isProjectActive />);
     expect(screen.queryAllByText('Earlier')).toHaveLength(1);
+  });
+
+  it.each([
+    ['it', 'Ancora nessuna chat'],
+    ['en', 'No chats yet'],
+  ] as const)('says there are no chats in %s', (language, empty) => {
+    setLanguage(language);
+    mockUseChatRecords.mockReturnValue({ ...defaultChatsResult, chats: [], isLoading: false });
+    render(<ProjectChatList project={project} isProjectActive />);
+
+    expect(screen.getByText(empty)).toBeInTheDocument();
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 });

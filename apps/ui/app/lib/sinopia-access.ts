@@ -32,8 +32,31 @@ export type SinopiaAccess =
 /** Why sinopialab.com would keep the account out of its app. */
 export type SinopiaRefusal = 'no-profile' | 'beta-profile' | 'waitlisted' | 'profession' | 'terms';
 
-/** A message for the sign-in screen, in Italian, with where to go to put things right. */
-export type SinopiaNotice = Readonly<{ message: string; link?: Readonly<{ href: string; label: string }> }>;
+/**
+ * Every sentence the sign-in screens can show for a failure or a refusal, as a stable code: the screen writes it in the
+ * language of the moment (`auth.messages.<code>`), so a language switch re-renders it.
+ */
+export type SinopiaMessageCode =
+  | SinopiaRefusalMessage
+  | 'unreachable'
+  | 'tooMany'
+  | 'invalidCredentials'
+  | 'emailNotConfirmed'
+  | 'banned'
+  | 'signInFailed'
+  | 'googleDisabled'
+  | 'googleFailed'
+  | 'secondFactorMissing'
+  | 'secondFactorInvalid';
+
+/** The codes of the messages that turn an account away. */
+export type SinopiaRefusalMessage = 'noProfile' | 'betaProfile' | 'waitlisted' | 'profession' | 'terms';
+
+/** A message for the sign-in screen, as a code, with where to go to put things right (the screen words the link). */
+export type SinopiaNotice = Readonly<{
+  code: SinopiaMessageCode;
+  link?: Readonly<{ href: string }>;
+}>;
 
 /** Sinopia's sign-in page: once signed in there, Sinopia takes the account to whatever step it still owes. */
 export const sinopiaAccessUrl = 'https://sinopialab.com/auth';
@@ -71,7 +94,10 @@ type Read<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false }>;
 
 const allowed: SinopiaAccess = { verdict: 'allowed' };
 const unverified: SinopiaAccess = { verdict: 'unverified' };
-const refused = (reason: SinopiaRefusal): SinopiaAccess => ({ verdict: 'refused', reason });
+const refused = (reason: SinopiaRefusal): SinopiaAccess => ({
+  verdict: 'refused',
+  reason,
+});
 
 const fieldOf = (value: unknown, key: string): unknown =>
   typeof value === 'object' && value !== null ? (value as Readonly<Record<string, unknown>>)[key] : undefined;
@@ -216,13 +242,12 @@ export const checkSinopiaAccess = async (supabase: SupabaseClient, userId: strin
   return allowed;
 };
 
-const refusalMessages: Readonly<Record<SinopiaRefusal, string>> = {
-  'no-profile':
-    'Questo account non ha ancora un profilo Sinopia. Completa la registrazione su sinopialab.com, poi torna qui.',
-  'beta-profile': 'Prima di usare SinopiaCAD completa l’iscrizione alla beta su sinopialab.com, poi torna qui.',
-  waitlisted: 'Sei in lista d’attesa per la beta di Sinopia: SinopiaCAD si apre quando il tuo posto è attivo.',
-  profession: 'Prima di usare SinopiaCAD scegli la tua professione su sinopialab.com, poi torna qui.',
-  terms: 'Prima di usare SinopiaCAD accetta i Termini di servizio su sinopialab.com, poi torna qui.',
+const refusalMessages: Readonly<Record<SinopiaRefusal, SinopiaRefusalMessage>> = {
+  'no-profile': 'noProfile',
+  'beta-profile': 'betaProfile',
+  waitlisted: 'waitlisted',
+  profession: 'profession',
+  terms: 'terms',
 };
 
 /**
@@ -232,6 +257,6 @@ const refusalMessages: Readonly<Record<SinopiaRefusal, string>> = {
  * @returns The notice.
  */
 export const sinopiaRefusalNotice = (reason: SinopiaRefusal): SinopiaNotice => ({
-  message: refusalMessages[reason],
-  link: { href: sinopiaAccessUrl, label: 'Vai a sinopialab.com' },
+  code: refusalMessages[reason],
+  link: { href: sinopiaAccessUrl },
 });

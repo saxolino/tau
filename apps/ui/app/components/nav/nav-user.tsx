@@ -20,6 +20,7 @@ import { isDesktopTarget } from '#lib/build-target.js';
 import { CookiePreferencesDialog, CookiePreferencesMenuItem } from '#components/cookie-preferences.js';
 import { AboutDialog, AboutMenuItem } from '#components/nav/about-sinopiacad.js';
 import { NavBillingItem, NavCreditsMeter } from '#cloud/nav-billing.js';
+import { useTranslation } from '#i18n/translate.js';
 
 /** Sinopia's own site, the Help menu's one link out besides the legal pages. */
 const sinopiaWebsiteUrl = 'https://sinopialab.com';
@@ -33,6 +34,7 @@ const sinopiaWebsiteUrl = 'https://sinopialab.com';
  * dialog instead (Tau's settings live in a modal, not a dedicated route).
  */
 export function NavUser(): React.JSX.Element {
+  const { t } = useTranslation();
   const isOnline = useNetworkConnectivity();
   const { open: openSettings } = useSettingsDialog();
   const [isCookiePreferencesOpen, setIsCookiePreferencesOpen] = useState(false);
@@ -46,20 +48,20 @@ export function NavUser(): React.JSX.Element {
           <DropdownMenuItem key='website' asChild>
             <a href={sinopiaWebsiteUrl} target='_blank' rel='noopener noreferrer'>
               <Globe />
-              Sito di Sinopia
+              {t('shell.user.website')}
             </a>
           </DropdownMenuItem>,
         ]),
     <DropdownMenuItem key='privacy' asChild>
       <a href={legalUrl('privacy')} target='_blank' rel='noopener noreferrer'>
         <Shield />
-        Privacy
+        {t('shell.user.privacy')}
       </a>
     </DropdownMenuItem>,
     <DropdownMenuItem key='terms' asChild>
       <a href={legalUrl('terms')} target='_blank' rel='noopener noreferrer'>
         <FileText />
-        Terms
+        {t('shell.user.terms')}
       </a>
     </DropdownMenuItem>,
     <AboutMenuItem
@@ -71,7 +73,7 @@ export function NavUser(): React.JSX.Element {
     <DropdownMenuItem key='open-source' asChild>
       <a href={legalUrl('open-source')} target='_blank' rel='noopener noreferrer'>
         <Scale />
-        Open-source notices
+        {t('shell.user.openSource')}
       </a>
     </DropdownMenuItem>,
     <CookiePreferencesMenuItem
@@ -101,11 +103,11 @@ export function NavUser(): React.JSX.Element {
                 : [
                     <DropdownMenuItem key='offline' disabled>
                       <WifiOff />
-                      Offline — online features unavailable
+                      {t('shell.user.offlineItem')}
                     </DropdownMenuItem>,
                   ]),
               <NavBillingItem key='billing' />,
-              { label: 'Files', href: '/files', icon: <Files /> },
+              { label: t('shell.user.files'), href: '/files', icon: <Files /> },
               <DropdownMenuItem
                 key='settings'
                 onSelect={() => {
@@ -113,7 +115,7 @@ export function NavUser(): React.JSX.Element {
                 }}
               >
                 <Settings />
-                Settings
+                {t('shell.user.settings')}
               </DropdownMenuItem>,
             ]}
           />
@@ -122,18 +124,18 @@ export function NavUser(): React.JSX.Element {
               <TooltipTrigger asChild>
                 <span
                   role='status'
-                  aria-label='Offline'
+                  aria-label={t('shell.user.offline')}
                   className='absolute top-1 left-5 size-1.5 rounded-full border border-sidebar bg-feature'
                 />
               </TooltipTrigger>
-              <TooltipContent side='top'>Offline — reconnect to access online features</TooltipContent>
+              <TooltipContent side='top'>{t('shell.user.offlineTooltip')}</TooltipContent>
             </Tooltip>
           )}
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
-              aria-label='Help'
+              aria-label={t('shell.user.help')}
               variant='ghost'
               size='icon-sm'
               className='size-7 text-muted-foreground data-[state=open]:bg-accent/50'
@@ -145,7 +147,7 @@ export function NavUser(): React.JSX.Element {
             {helpItems}
             <DropdownMenuSeparator />
             <DropdownMenuLabel className='font-normal text-muted-foreground'>
-              SinopiaCAD v{metaConfig.version}
+              {t('shell.user.version', { version: metaConfig.version })}
             </DropdownMenuLabel>
           </DropdownMenuContent>
         </DropdownMenu>

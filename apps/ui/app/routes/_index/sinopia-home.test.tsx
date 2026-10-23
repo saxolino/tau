@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { useImperativeHandle } from 'react';
 import { MemoryRouter } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
@@ -25,14 +26,18 @@ const addDraftAttachment = vi.hoisted(() => vi.fn());
 const focusComposer = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
 
-vi.mock('@taucad/ui/hooks/use-mobile', () => ({ useIsMobile: () => state.isMobile }));
+vi.mock('@taucad/ui/hooks/use-mobile', () => ({
+  useIsMobile: () => state.isMobile,
+}));
 vi.mock('#components/ui/sonner.js', () => ({ toast: { error: toastError } }));
 vi.mock('#hooks/active-chat-provider.js', () => ({
   HomeNewProjectComposerProvider: ({ children }: { readonly children: React.ReactNode }) => (
     <div data-testid='home-composer-provider'>{children}</div>
   ),
   useChatComposer: () => ({
-    model: { model: { name: 'Modello di prova', model: { support: state.support } } },
+    model: {
+      model: { name: 'Modello di prova', model: { support: state.support } },
+    },
     execution: { execution: { kind: 'tau', model: 'modello-di-prova' } },
   }),
 }));
@@ -103,11 +108,61 @@ describe('SinopiaHome', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     globalThis.localStorage.clear();
+    setLanguage('it');
     // Reset the shared preference cache as well as its storage.
     rememberAgentLaneOpen(true);
     state.isMobile = false;
-    state.support = { modalities: { input: ['text', 'image'], output: ['text'] } };
+    state.support = {
+      modalities: { input: ['text', 'image'], output: ['text'] },
+    };
     state.attachments = [];
+  });
+
+  afterEach(() => {
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
+  });
+
+  it.each([
+    {
+      language: 'it',
+      title: 'Dall’immagine al CAD',
+      choose: 'Scegli un’immagine',
+      hint: /incollala con .+ · JPG, PNG, WebP o GIF, fino a 20 MB/u,
+      dragHere: 'Trascina qui la foto o il disegno',
+      lane: 'Agente',
+    },
+    {
+      language: 'en',
+      title: 'From image to CAD',
+      choose: 'Choose an image',
+      hint: /paste it with .+ · JPG, PNG, WebP or GIF, up to 20 MB/u,
+      dragHere: 'Drag the photo or drawing here',
+      lane: 'Agent',
+    },
+  ] as const)('writes the hero and the drop zone in $language', ({ language, title, choose, hint, dragHere, lane }) => {
+    setLanguage(language);
+    renderHome();
+
+    expect(screen.getByRole('heading', { level: 1, name: title })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: choose })).toHaveAccessibleDescription(hint);
+    expect(screen.getByText(dragHere)).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: lane })).toBeInTheDocument();
+  });
+
+  it('refuses a file that is not a picture in English, naming it with straight quotes', async () => {
+    setLanguage('en');
+    renderHome();
+
+    fireEvent.change(pickerInput(), {
+      target: { files: [picture('drawing.pdf', 'application/pdf')] },
+    });
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith('"drawing.pdf" is not in a format the agent can read', {
+        description: 'Use JPG, PNG, WebP or GIF, up to 20 MB.',
+      });
+    });
   });
 
   it('shows the Italian hero, the drop zone, the projects and the agent lane with the home composer', () => {
@@ -119,10 +174,17 @@ describe('SinopiaHome', () => {
     );
     expect(pickerInput()).toHaveAttribute('accept', 'image/jpeg,image/png,image/webp,image/gif');
     expect(screen.getByRole('heading', { level: 2, name: 'I tuoi progetti' })).toBeInTheDocument();
-    // The lane: the same toggle as the project page, pressed, and the one composer, inside the home draft's provider.
+    // The lane: the same hide button as the project page's agent lane, and the one composer, inside the home draft's provider.
     const lane = agentLane();
-    expect(within(lane).getByRole('button', { name: 'Agente' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(lane).getByRole('textbox', { name: 'Descrivi cosa costruire o cosa cambiare…' })).toBeInTheDocument();
+    expect(within(lane).getByRole('button', { name: 'Nascondi l’agente' })).toHaveAttribute(
+      'aria-keyshortcuts',
+      'Control+C',
+    );
+    expect(
+      within(lane).getByRole('textbox', {
+        name: 'Descrivi cosa costruire o cosa cambiare…',
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('home-composer-provider')).toContainElement(lane);
     expect(screen.getAllByRole('textbox')).toHaveLength(1);
   });
@@ -141,7 +203,9 @@ describe('SinopiaHome', () => {
   it('puts a chosen picture into the agent composer’s draft and focuses the composer', async () => {
     renderHome();
 
-    fireEvent.change(pickerInput(), { target: { files: [picture('anello.png')] } });
+    fireEvent.change(pickerInput(), {
+      target: { files: [picture('anello.png')] },
+    });
 
     await waitFor(() => {
       expect(addDraftAttachment).toHaveBeenCalledOnce();
@@ -160,9 +224,16 @@ describe('SinopiaHome', () => {
     renderHome();
     const heading = screen.getByRole('heading', { level: 1 });
 
-    fireEvent.dragEnter(heading, { dataTransfer: { types: ['Files'], files: [] } });
+    fireEvent.dragEnter(heading, {
+      dataTransfer: { types: ['Files'], files: [] },
+    });
     expect(screen.getByText('Lascia qui l’immagine')).toBeInTheDocument();
-    fireEvent.drop(heading, { dataTransfer: { types: ['Files'], files: [picture('spilla.webp', 'image/webp')] } });
+    fireEvent.drop(heading, {
+      dataTransfer: {
+        types: ['Files'],
+        files: [picture('spilla.webp', 'image/webp')],
+      },
+    });
 
     await waitFor(() => {
       expect(addDraftAttachment).toHaveBeenCalledWith(expect.stringMatching(/^data:image\/webp;base64,/u), {
@@ -177,7 +248,9 @@ describe('SinopiaHome', () => {
     composer.addEventListener('drop', (event) => {
       event.preventDefault();
     });
-    fireEvent.drop(composer, { dataTransfer: { types: ['Files'], files: [picture()] } });
+    fireEvent.drop(composer, {
+      dataTransfer: { types: ['Files'], files: [picture()] },
+    });
     await Promise.resolve();
     expect(addDraftAttachment).not.toHaveBeenCalled();
   });
@@ -271,7 +344,7 @@ describe('SinopiaHome', () => {
     const user = userEvent.setup();
     renderHome();
 
-    await user.click(within(agentLane()).getByRole('button', { name: 'Agente' }));
+    await user.click(within(agentLane()).getByRole('button', { name: 'Nascondi l’agente' }));
 
     expect(screen.queryByRole('complementary', { name: 'Agente' })).not.toBeInTheDocument();
     const closedToggle = screen.getByRole('button', { name: 'Agente' });

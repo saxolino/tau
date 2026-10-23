@@ -154,6 +154,8 @@ export type ChatTextareaProperties = {
   /** Blocks every submit path while external prerequisites are unresolved. */
   readonly isSubmitDisabled?: boolean;
   readonly mode?: 'main' | 'edit';
+  /** The empty box's prompt; the project composer's own by default («Scrivi o detta una modifica…»). */
+  readonly placeholder?: string;
   /**
    * Below the `md` breakpoint, rest as one row — +, the editor, dictation and
    * Send — until the composer is focused or holds a draft; the rest of the bar

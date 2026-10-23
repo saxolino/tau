@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { cadAgentConfigSchema } from '@taucad/chat';
 import type { ChatSnapshot, ContextPayload } from '@taucad/chat';
 import type { KernelId } from '@taucad/types/constants';
@@ -18,6 +18,7 @@ import { useCookie } from '#hooks/use-cookie.js';
 import { useChatSnapshot } from '#hooks/use-chat-snapshot.js';
 import { useContextPayload } from '#hooks/use-context-payload.js';
 import { probeBrowserAgentHostCapability } from '#services/agent-host-client.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const capabilityHarness = vi.hoisted(() => ({ readError: undefined as Error | undefined, supported: true }));
 const durabilityHarness = vi.hoisted(() => ({ value: 'transactional-rewrite' }) as const);
@@ -243,12 +244,32 @@ describe('useCadAgentConfig', () => {
       profile: 'cad',
       execution: { kind: 'tau', model: 'openai-gpt-5.5' },
       kernel: 'replicad',
+      // The jsdom browser speaks English.
+      language: 'en',
       mode: 'agent',
       toolChoice: 'auto',
       testingEnabled: true,
       snapshot: undefined,
       contextPayload: undefined,
     });
+  });
+
+  // SinopiaCAD: the agent replies in the interface language (UI-UX-SinopiaCAD §1.1).
+  it('should carry the interface language and follow a switch', () => {
+    act(() => {
+      setLanguage('it');
+    });
+    const { result } = renderHook(() => useCadAgentConfig());
+    expect(result.current.language).toBe('it');
+    expect(cadAgentConfigSchema.parse(result.current).language).toBe('it');
+
+    act(() => {
+      setLanguage('en');
+    });
+
+    expect(result.current.language).toBe('en');
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 
   it('never downgrades the execution — the browser host is the only Tau placement', async () => {

@@ -1,3 +1,4 @@
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
@@ -175,5 +176,20 @@ describe('AppSidebar', () => {
     expect(container.querySelector('[data-slot=sidebar-header]')).not.toHaveClass('h-18', 'pt-9');
     expect(screen.queryByRole('link', { name: 'Home' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['it', { projects: 'Progetti', more: 'Altro', convert: 'Converti', label: 'Barra laterale dell’applicazione' }],
+    ['en', { projects: 'Projects', more: 'More', convert: 'Convert', label: 'Application sidebar' }],
+  ] as const)('should write the navigation in %s', async (language, { projects, more, convert, label }) => {
+    setLanguage(language);
+    renderSidebar();
+
+    expect(screen.getByRole('complementary', { name: label })).toBeInTheDocument();
+    expect(getNavLink(projects)).toHaveAttribute('href', '/projects');
+    await userEvent.click(screen.getByRole('button', { name: more }));
+    expect(await screen.findByRole('menuitem', { name: convert })).toHaveAttribute('href', '/convert');
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 });

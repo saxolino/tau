@@ -33,6 +33,7 @@ import { withPointerValue } from '#services/parameter-set-service.js';
 import { usePaneviewPersistence } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { ProjectWorkbenchPanesHost } from '#routes/w.$workspace.$project/workbench-panes-host.js';
+import { useTranslation } from '#i18n/translate.js';
 import type { parameterSetMachine } from '@taucad/parameters/set-machine';
 
 const toggleParametersKeyCombination = projectWorkspaceKeyCombinations.parameters;
@@ -315,9 +316,18 @@ function useProjectParametersSource(): ParametersSource {
     createParameterGroup,
     deleteParameterGroup,
     renameParameterGroup,
+    mainEntryPath,
   } = useProject();
+  const { t } = useTranslation();
   return useMemo(
     (): ParametersSource => ({
+      // SinopiaCAD: no file names in the Misure (UI-UX-SinopiaCAD §3.2): the main entry is «Modello», any other one
+      // its name without the extension.
+      entryTitle: (entryPath) =>
+        entryPath === mainEntryPath
+          ? t('project.measures.model')
+          : (entryPath.split('/').pop() ?? entryPath).replace(/\.[^.]+$/u, ''),
+      filterLabels: { label: t('project.measures.filter'), placeholder: t('project.measures.filterPlaceholder') },
       useEntryPaths: useProjectParameterEntryPaths,
       useEntry: useProjectParameterEntry,
       target: (entryPath) => parameterService.target(entryPath),
@@ -370,11 +380,13 @@ function useProjectParametersSource(): ParametersSource {
     [
       createParameterGroup,
       deleteParameterGroup,
+      mainEntryPath,
       parameterService,
       projectRef,
       renameParameterGroup,
       setGeometryUnitParameters,
       switchParameterGroup,
+      t,
     ],
   );
 }

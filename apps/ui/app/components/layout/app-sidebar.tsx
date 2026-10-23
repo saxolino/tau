@@ -21,8 +21,10 @@ import { NavUser } from '#components/nav/nav-user.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { billingNavRoutes } from '#cloud/nav-billing.js';
+import { useTranslation } from '#i18n/translate.js';
 
 export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sidebar>): React.JSX.Element {
+  const { t } = useTranslation();
   const { state, isMobile } = useSidebar();
   const flags = useFeatureFlags();
   const desktopTarget = isDesktopTarget();
@@ -41,7 +43,7 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
       {...properties}
       id={isMobile ? undefined : 'app-sidebar'}
       role={isMobile ? undefined : 'complementary'}
-      aria-label={isMobile ? undefined : 'Application sidebar'}
+      aria-label={isMobile ? undefined : t('shell.sidebar.label')}
       aria-hidden={isNonMobileCollapsed || undefined}
       inert={isNonMobileCollapsed || undefined}
       variant='sidebar'
@@ -64,12 +66,12 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
         {isMobile ? (
           <SidebarMenuButton
             asChild
-            tooltip='Home'
+            tooltip={t('shell.sidebar.home')}
             className='min-w-0 flex-1 gap-0 p-1! group-data-[collapsible=icon]:p-0!'
           >
             <Link to='/'>
               <SinopiaCadWordmark size='md' />
-              <span className='sr-only'>Home</span>
+              <span className='sr-only'>{t('shell.sidebar.home')}</span>
             </Link>
           </SidebarMenuButton>
         ) : null}

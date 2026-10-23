@@ -10,10 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSinopiaSession,
   createSinopiaSupabaseClient,
-  sinopiaGoogleErrorMessage,
-  sinopiaSignInErrorMessage,
+  sinopiaGoogleErrorCode,
+  sinopiaSignInErrorCode,
   sinopiaStorageKey,
 } from '#lib/sinopia-session.js';
+import type { SinopiaMessageCode } from '#lib/sinopia-access.js';
 import type { SinopiaSession } from '#lib/sinopia-session.js';
 import { rememberSinopiaReturn } from '#lib/sinopia-oauth-return.js';
 import {
@@ -25,7 +26,10 @@ import {
 } from '#lib/testing/sinopia-backend.js';
 import type { SinopiaTestAccount, SinopiaTestCall } from '#lib/testing/sinopia-backend.js';
 
-const signedInState = { status: 'signed-in', user: { id: 'user-sinopia', email: 'pilota@sinopialab.com' } };
+const signedInState = {
+  status: 'signed-in',
+  user: { id: 'user-sinopia', email: 'pilota@sinopialab.com' },
+};
 
 /** Auth's calls only, as `path` and `grant`. */
 const authCalls = (calls: readonly SinopiaTestCall[]) =>
@@ -142,9 +146,12 @@ describe('createSinopiaSession', () => {
     expect(authCalls(calls)).toEqual([{ path: '/auth/v1/token', grant: 'password' }]);
   });
 
-  it('should answer a refused sign-in with an Italian message and stay signed out', async () => {
+  it('should answer a refused sign-in with a message code and stay signed out', async () => {
     scriptSinopiaBackend({
-      password: { code: 'invalid_credentials', message: 'Invalid login credentials' },
+      password: {
+        code: 'invalid_credentials',
+        message: 'Invalid login credentials',
+      },
       passwordStatus: 400,
     });
     const session = open();
@@ -152,15 +159,21 @@ describe('createSinopiaSession', () => {
 
     await expect(session.signIn('pilota@sinopialab.com', 'sbagliata')).resolves.toEqual({
       ok: false,
-      message: 'Email o password non corretti.',
+      code: 'invalidCredentials',
     });
     expect(session.getState()).toEqual({ status: 'signed-out' });
   });
 
   it('should refresh the token itself before it lapses in a hidden tab, and hand listeners the new one', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: Date.now() });
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      now: Date.now(),
+    });
     /* The supabase-js client stops its own refresh ticker while the tab is hidden; an agent run in the worker goes on. */
-    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
     const refreshed = tokenResponse('refreshed');
     const { calls } = scriptSinopiaBackend({ refresh: refreshed });
     /* Outside supabase-js's 90-second margin, so opening the session refreshes nothing. */
@@ -220,27 +233,26 @@ describe('createSinopiaSession', () => {
 });
 
 describe('createSinopiaSession entry criteria', () => {
-  it.each<{ account: SinopiaTestAccount; message: string }>([
+  it.each<{ account: SinopiaTestAccount; code: SinopiaMessageCode }>([
     {
       account: { withoutProfile: true },
-      message:
-        'Questo account non ha ancora un profilo Sinopia. Completa la registrazione su sinopialab.com, poi torna qui.',
+      code: 'noProfile',
     },
     {
       account: { withoutTerms: true },
-      message: 'Prima di usare SinopiaCAD accetta i Termini di servizio su sinopialab.com, poi torna qui.',
+      code: 'terms',
     },
     {
       account: { needsProfession: true, beta: 'needs_profile' },
-      message: 'Prima di usare SinopiaCAD completa l’iscrizione alla beta su sinopialab.com, poi torna qui.',
+      code: 'betaProfile',
     },
     {
       account: { beta: 'waitlisted' },
-      message: 'Sei in lista d’attesa per la beta di Sinopia: SinopiaCAD si apre quando il tuo posto è attivo.',
+      code: 'waitlisted',
     },
   ])(
     'should sign out an account sinopialab.com keeps out ($account) and say where to complete it',
-    async ({ account, message }) => {
+    async ({ account, code }) => {
       const signedIn = tokenResponse('signed-in');
       const { calls } = scriptSinopiaBackend({ password: signedIn }, account);
       const session = open();
@@ -257,7 +269,7 @@ describe('createSinopiaSession entry criteria', () => {
       await vi.waitFor(() => {
         expect(session.getState()).toEqual({
           status: 'signed-out',
-          notice: { message, link: { href: 'https://sinopialab.com/auth', label: 'Vai a sinopialab.com' } },
+          notice: { code, link: { href: 'https://sinopialab.com/auth' } },
         });
       });
       expect(tokens).toEqual([]);
@@ -294,7 +306,10 @@ describe('createSinopiaSession entry criteria', () => {
     session.subscribe(() => undefined);
 
     await vi.waitFor(() => {
-      expect(session.getState()).toEqual({ ...signedInState, status: 'unverified' });
+      expect(session.getState()).toEqual({
+        ...signedInState,
+        status: 'unverified',
+      });
     });
     expect(localStorage.getItem(sinopiaKey)).not.toBeNull();
     await expect(session.accessToken()).resolves.toBeUndefined();
@@ -314,13 +329,21 @@ describe('createSinopiaSession entry criteria', () => {
     const { calls } = scriptSinopiaBackend();
     localStorage.setItem(
       sinopiaKey,
-      JSON.stringify(tokenResponse('stored', 3600, { factors: [sinopiaTestFactor], aal: 'aal1' })),
+      JSON.stringify(
+        tokenResponse('stored', 3600, {
+          factors: [sinopiaTestFactor],
+          aal: 'aal1',
+        }),
+      ),
     );
     const session = open();
     session.subscribe(() => undefined);
 
     await vi.waitFor(() => {
-      expect(session.getState()).toEqual({ ...signedInState, status: 'second-factor' });
+      expect(session.getState()).toEqual({
+        ...signedInState,
+        status: 'second-factor',
+      });
     });
     expect(calls).toEqual([]);
     await expect(session.accessToken()).resolves.toBeUndefined();
@@ -332,29 +355,38 @@ describe('createSinopiaSession with Google', () => {
     scriptSinopiaBackend();
     globalThis.history.replaceState(null, '', '/w/studio/scarpa?chat=uno#vista');
     const { session, openGoogle } = openWithGoogleSpy();
-    openGoogle.mockResolvedValue({ data: { provider: 'google', url: 'https://accounts.example/' }, error: null });
+    openGoogle.mockResolvedValue({
+      data: { provider: 'google', url: 'https://accounts.example/' },
+      error: null,
+    });
 
     await expect(session.signInWithGoogle()).resolves.toEqual({ ok: true });
 
     expect(openGoogle).toHaveBeenCalledWith({
       provider: 'google',
-      options: { redirectTo: 'http://localhost:3000/w/studio/scarpa', queryParams: { prompt: 'select_account' } },
+      options: {
+        redirectTo: 'http://localhost:3000/w/studio/scarpa',
+        queryParams: { prompt: 'select_account' },
+      },
     });
     expect(JSON.parse(sessionStorage.getItem('sinopiacad:auth-return') ?? '{}')).toMatchObject({
       path: '/w/studio/scarpa?chat=uno#vista',
     });
   });
 
-  it('should explain in Italian when Google is not enabled, with the raw message in the console only', async () => {
+  it('should name the cause when Google is not enabled, with the raw message in the console only', async () => {
     scriptSinopiaBackend();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { session, openGoogle } = openWithGoogleSpy();
     const error = new AuthError('Unsupported provider: provider is not enabled', 400, 'validation_failed');
-    openGoogle.mockResolvedValue({ data: { provider: 'google', url: null }, error });
+    openGoogle.mockResolvedValue({
+      data: { provider: 'google', url: null },
+      error,
+    });
 
     await expect(session.signInWithGoogle()).resolves.toEqual({
       ok: false,
-      message: 'L’accesso con Google non è ancora attivo: entra con email e password.',
+      code: 'googleDisabled',
     });
     expect(consoleError).toHaveBeenCalledWith('[sinopia] the Google sign-in did not start', error);
   });
@@ -362,7 +394,11 @@ describe('createSinopiaSession with Google', () => {
   it('should exchange the code on the way back, take it out of the address and return where the person was', async () => {
     const returned = tokenResponse('google');
     const { calls } = scriptSinopiaBackend({ pkce: returned });
-    rememberSinopiaReturn({ pathname: '/w/studio/scarpa', search: '?chat=uno', hash: '#vista' });
+    rememberSinopiaReturn({
+      pathname: '/w/studio/scarpa',
+      search: '?chat=uno',
+      hash: '#vista',
+    });
     localStorage.setItem(`${sinopiaKey}-code-verifier`, JSON.stringify('verifier-sinopia'));
     globalThis.history.replaceState(null, '', '/w/studio/scarpa?code=codice-google');
     const session = open();
@@ -411,7 +447,11 @@ describe('createSinopiaSession with Google', () => {
   it('should explain a failed way back in Italian and still clean the address', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     scriptSinopiaBackend();
-    rememberSinopiaReturn({ pathname: '/w/studio/scarpa', search: '', hash: '' });
+    rememberSinopiaReturn({
+      pathname: '/w/studio/scarpa',
+      search: '',
+      hash: '',
+    });
     globalThis.history.replaceState(
       null,
       '',
@@ -423,7 +463,7 @@ describe('createSinopiaSession with Google', () => {
     await vi.waitFor(() => {
       expect(session.getState()).toEqual({
         status: 'signed-out',
-        notice: { message: 'Accesso con Google non riuscito. Riprova.' },
+        notice: { code: 'googleFailed' },
       });
       expect(session.getPendingReturn()).toBe('/w/studio/scarpa');
     });
@@ -431,37 +471,60 @@ describe('createSinopiaSession with Google', () => {
   });
 });
 
-describe('sinopiaSignInErrorMessage', () => {
-  it('should explain each refusal in Italian', () => {
-    expect(sinopiaSignInErrorMessage({ name: 'AuthApiError', status: 400, code: 'email_not_confirmed' })).toBe(
-      'Conferma prima la tua email: apri il messaggio che ti ha mandato Sinopia.',
-    );
-    expect(sinopiaSignInErrorMessage({ name: 'AuthApiError', status: 429, code: 'over_request_rate_limit' })).toBe(
-      'Troppi tentativi. Riprova tra qualche minuto.',
-    );
-    expect(sinopiaSignInErrorMessage({ name: 'AuthRetryableFetchError', status: 0, code: undefined })).toBe(
-      'Non riesco a raggiungere Sinopia. Controlla la connessione e riprova.',
-    );
-    expect(sinopiaSignInErrorMessage({ name: 'AuthApiError', status: 500, code: 'unexpected_failure' })).toBe(
-      'Accesso non riuscito. Riprova.',
-    );
+describe('sinopiaSignInErrorCode', () => {
+  it('should name each refusal by a code the screen words', () => {
+    expect(
+      sinopiaSignInErrorCode({
+        name: 'AuthApiError',
+        status: 400,
+        code: 'email_not_confirmed',
+      }),
+    ).toBe('emailNotConfirmed');
+    expect(
+      sinopiaSignInErrorCode({
+        name: 'AuthApiError',
+        status: 429,
+        code: 'over_request_rate_limit',
+      }),
+    ).toBe('tooMany');
+    expect(
+      sinopiaSignInErrorCode({
+        name: 'AuthRetryableFetchError',
+        status: 0,
+        code: undefined,
+      }),
+    ).toBe('unreachable');
+    expect(
+      sinopiaSignInErrorCode({
+        name: 'AuthApiError',
+        status: 500,
+        code: 'unexpected_failure',
+      }),
+    ).toBe('signInFailed');
   });
 });
 
-describe('sinopiaGoogleErrorMessage', () => {
-  it('should explain each Google failure in Italian, never with the raw message', () => {
-    expect(sinopiaGoogleErrorMessage({ message: 'Unsupported provider: provider is not enabled', status: 400 })).toBe(
-      'L’accesso con Google non è ancora attivo: entra con email e password.',
-    );
-    expect(sinopiaGoogleErrorMessage(new TypeError('Failed to fetch'))).toBe(
-      'Non riesco a raggiungere Sinopia. Controlla la connessione e riprova.',
-    );
-    expect(sinopiaGoogleErrorMessage({ message: 'Request rate limit reached', status: 429 })).toBe(
-      'Troppi tentativi. Riprova tra qualche minuto.',
-    );
-    expect(sinopiaGoogleErrorMessage({ message: 'Unable to exchange external code: 4/0AQ', status: 500 })).toBe(
-      'Accesso con Google non riuscito. Riprova.',
-    );
-    expect(sinopiaGoogleErrorMessage('boom')).toBe('Accesso con Google non riuscito. Riprova.');
+describe('sinopiaGoogleErrorCode', () => {
+  it('should name each Google failure by a code, never with the raw message', () => {
+    expect(
+      sinopiaGoogleErrorCode({
+        message: 'Unsupported provider: provider is not enabled',
+        status: 400,
+      }),
+    ).toBe('googleDisabled');
+    expect(sinopiaGoogleErrorCode(new TypeError('Failed to fetch'))).toBe('unreachable');
+    expect(
+      sinopiaGoogleErrorCode({
+        message: 'Request rate limit reached',
+        status: 429,
+      }),
+    ).toBe('tooMany');
+    expect(
+      sinopiaGoogleErrorCode({
+        message: 'Unable to exchange external code: 4/0AQ',
+        status: 500,
+      }),
+    ).toBe('googleFailed');
+    expect(sinopiaGoogleErrorCode('boom')).toBe('googleFailed');
   });
 });

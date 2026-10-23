@@ -12,6 +12,8 @@ export type DockviewTabProps = IDockviewPanelHeaderProps & {
   readonly leadingIcon?: 'extension' | 'viewer';
   /** Concrete icon for utility tabs. Editor and viewer defaults remain unchanged. */
   readonly icon?: React.ReactNode;
+  /** The title to show instead of the panel's stored one, as a pane's name in the interface language. */
+  readonly displayTitle?: string;
 };
 
 export type DockviewTabIconSource = Pick<IDockviewPanelHeaderProps, 'api' | 'params'>;
@@ -69,8 +71,9 @@ export function DockviewTabIcon({
  * advertises with `aria-keyshortcuts`, and through the tab's context menu.
  */
 export function DockviewTab(properties: DockviewTabProps): React.JSX.Element {
-  const { api, icon, leadingIcon = 'extension' } = properties;
-  const [title, setTitle] = useState(api.title ?? '');
+  const { api, icon, leadingIcon = 'extension', displayTitle } = properties;
+  const [storedTitle, setTitle] = useState(api.title ?? '');
+  const title = displayTitle ?? storedTitle;
   const closeRef = useRef<HTMLSpanElement>(null);
   const fullTitle = resolveFullTitle(properties, title);
 

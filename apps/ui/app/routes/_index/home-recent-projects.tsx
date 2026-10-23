@@ -5,6 +5,9 @@ import { Button } from '@taucad/ui/components/button';
 import { Card, CardHeader } from '@taucad/ui/components/card';
 import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
 import { Skeleton } from '@taucad/ui/components/skeleton';
+import { languageLocales } from '#i18n/language.js';
+import type { Language } from '#i18n/language.js';
+import { translate, useTranslation } from '#i18n/translate.js';
 import { ProjectCard } from '#components/project-card.js';
 import { projectGridClassName } from '#components/project-grid-layout.js';
 import { useProjects } from '#hooks/use-projects.js';
@@ -15,24 +18,41 @@ import { projectUrlOr } from '#utils/project-url.utils.js';
 /** Two rows at the widest grid. */
 export const homeRecentProjectLimit = 10;
 
-const relativeTime = new Intl.RelativeTimeFormat('it', { numeric: 'auto' });
-const absoluteDate = new Intl.DateTimeFormat('it', { day: 'numeric', month: 'long', year: 'numeric' });
+const relativeTimes: Readonly<Record<Language, Intl.RelativeTimeFormat>> = {
+  it: new Intl.RelativeTimeFormat(languageLocales.it, { numeric: 'auto' }),
+  en: new Intl.RelativeTimeFormat(languageLocales.en, { numeric: 'auto' }),
+};
+const absoluteDates: Readonly<Record<Language, Intl.DateTimeFormat>> = {
+  it: new Intl.DateTimeFormat(languageLocales.it, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }),
+  en: new Intl.DateTimeFormat(languageLocales.en, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }),
+};
 
 const minute = 60_000;
 const hour = 60 * minute;
 const day = 24 * hour;
 
 /**
- * When a project was last worked on, in Italian: «adesso», «5 minuti fa», «ieri», then the date after a week.
+ * When a project was last worked on, in the language given: IT «adesso», «5 minuti fa», «ieri», EN "now", "5 minutes
+ * ago", "yesterday"; then the date after a week.
  *
  * @param timestamp - The project's last activity.
+ * @param language - The language to write it in.
  * @param now - The current time.
  * @returns The phrase.
  */
-export const formatLastActivity = (timestamp: number, now: number = Date.now()): string => {
+export const formatLastActivity = (timestamp: number, language: Language, now: number = Date.now()): string => {
+  const relativeTime = relativeTimes[language];
   const elapsed = Math.max(0, now - timestamp);
   if (elapsed < minute) {
-    return 'adesso';
+    return translate(language, 'home.recent.now');
   }
   if (elapsed < hour) {
     return relativeTime.format(-Math.floor(elapsed / minute), 'minute');
@@ -43,13 +63,18 @@ export const formatLastActivity = (timestamp: number, now: number = Date.now()):
   if (elapsed < 7 * day) {
     return relativeTime.format(-Math.floor(elapsed / day), 'day');
   }
-  return absoluteDate.format(timestamp);
+  return absoluteDates[language].format(timestamp);
 };
 
 function HomeProjectCard({ project }: { readonly project: ProjectListItem }): React.JSX.Element {
+  const { t, language } = useTranslation();
   const thumbnail = useProjectThumbnail(project.id);
   return (
-    <ProjectCard to={projectUrlOr(project.slugs)} linkLabel={`Apri ${project.name}`} className='flex flex-col'>
+    <ProjectCard
+      to={projectUrlOr(project.slugs)}
+      linkLabel={t('home.recent.open', { name: project.name })}
+      className='flex flex-col'
+    >
       {/* The card link names the card, so the picture is decorative. */}
       <div className='relative aspect-4/3 w-full overflow-hidden bg-muted'>
         {thumbnail.url === undefined ? (
@@ -62,7 +87,11 @@ function HomeProjectCard({ project }: { readonly project: ProjectListItem }): Re
       </div>
       <CardHeader className='gap-1'>
         <h3 className='line-clamp-1 text-base font-semibold'>{project.name}</h3>
-        <p className='text-sm text-muted-foreground'>Modificato {formatLastActivity(project.lastActivityAt)}</p>
+        <p className='text-sm text-muted-foreground'>
+          {t('home.recent.edited', {
+            when: formatLastActivity(project.lastActivityAt, language),
+          })}
+        </p>
       </CardHeader>
     </ProjectCard>
   );
@@ -75,6 +104,7 @@ function HomeProjectCard({ project }: { readonly project: ProjectListItem }): Re
  * @returns The section.
  */
 export function HomeRecentProjects(): React.JSX.Element {
+  const { t } = useTranslation();
   const headingId = useId();
   const { projects, isLoading, error, retry } = useProjects();
   const recent = useMemo(
@@ -88,17 +118,17 @@ export function HomeRecentProjects(): React.JSX.Element {
     <section aria-labelledby={headingId} className='mx-auto w-full max-w-7xl pt-12 pb-10'>
       <div className='mb-4 flex flex-wrap items-center justify-between gap-4'>
         <h2 id={headingId} className='text-2xl font-semibold tracking-tight'>
-          I tuoi progetti
+          {t('home.recent.title')}
         </h2>
         {recent.length > 0 ? (
           <Button asChild variant='link'>
-            <Link to='/projects'>Tutti i progetti</Link>
+            <Link to='/projects'>{t('home.recent.all')}</Link>
           </Button>
         ) : null}
       </div>
       {error !== undefined && projects.length === 0 ? (
         <div role='alert' className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-4'>
-          <span className='text-sm'>Non è stato possibile caricare i progetti.</span>
+          <span className='text-sm'>{t('home.recent.loadFailed')}</span>
           <Button
             variant='outline'
             size='sm'
@@ -106,11 +136,11 @@ export function HomeRecentProjects(): React.JSX.Element {
               void retry();
             }}
           >
-            Riprova
+            {t('home.recent.retry')}
           </Button>
         </div>
       ) : isLoading && projects.length === 0 ? (
-        <div role='status' aria-busy='true' aria-label='Caricamento dei progetti' className={projectGridClassName}>
+        <div role='status' aria-busy='true' aria-label={t('home.recent.loading')} className={projectGridClassName}>
           {Array.from({ length: 4 }, (_, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- a fixed set of placeholders
             <Card key={index} className='overflow-hidden pt-0'>
@@ -125,8 +155,8 @@ export function HomeRecentProjects(): React.JSX.Element {
       ) : recent.length === 0 ? (
         <PanelEmptyState
           icon={FolderOpen}
-          title='Ancora nessun progetto'
-          description='Il primo nasce dalla prima immagine o dal primo messaggio che mandi all’agente.'
+          title={t('home.recent.emptyTitle')}
+          description={t('home.recent.emptyDescription')}
           className='h-48'
         />
       ) : (

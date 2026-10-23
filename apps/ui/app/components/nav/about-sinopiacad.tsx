@@ -12,6 +12,8 @@ import {
 import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { metaConfig } from '#constants/meta.constants.js';
 import { sinopiaLegalUrls } from '#lib/legal-url.js';
+import { useTranslation } from '#i18n/translate.js';
+import type { MessageKey } from '#i18n/translate.js';
 
 /** The Apache License 2.0 text Tau and SinopiaCAD are distributed under. */
 export const apacheLicenseUrl = 'https://www.apache.org/licenses/LICENSE-2.0';
@@ -20,18 +22,19 @@ export const apacheLicenseUrl = 'https://www.apache.org/licenses/LICENSE-2.0';
 export const tauSourceUrl = 'https://github.com/taucad/tau';
 
 const links = [
-  { label: 'Licenza Apache-2.0', href: apacheLicenseUrl },
-  { label: 'Codice sorgente di Tau', href: tauSourceUrl },
-  { label: 'Informativa privacy', href: sinopiaLegalUrls.privacy },
-  { label: 'Condizioni d’uso', href: sinopiaLegalUrls.terms },
-] as const;
+  { label: 'shell.about.license', href: apacheLicenseUrl },
+  { label: 'shell.about.source', href: tauSourceUrl },
+  { label: 'shell.about.privacy', href: sinopiaLegalUrls.privacy },
+  { label: 'shell.about.terms', href: sinopiaLegalUrls.terms },
+] as const satisfies ReadonlyArray<{ label: MessageKey; href: string }>;
 
 /** Help-menu entry that opens the credits dialog. */
 export function AboutMenuItem({ onSelect }: { readonly onSelect: () => void }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <DropdownMenuItem onSelect={onSelect}>
       <Info />
-      Informazioni
+      {t('shell.about.title')}
     </DropdownMenuItem>
   );
 }
@@ -47,30 +50,29 @@ export function AboutDialog({
   readonly isOpen: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent className='sm:max-w-md'>
         <DialogHeader>
           <SinopiaCadWordmark size='lg' className='mb-2' />
-          <DialogTitle>Informazioni</DialogTitle>
-          <DialogDescription>SinopiaCAD — basato su Tau (taucad/tau), licenza Apache-2.0.</DialogDescription>
+          <DialogTitle>{t('shell.about.title')}</DialogTitle>
+          <DialogDescription>{t('shell.about.description')}</DialogDescription>
         </DialogHeader>
         <div className='flex flex-col gap-3 text-sm'>
-          <p>
-            SinopiaCAD è una versione modificata di Tau, realizzata da Sinopia (sinopialab.com). Il codice di Tau resta
-            dei suoi autori e conserva la sua licenza; le modifiche di Sinopia sono elencate nel file
-            MODIFICHE-SINOPIA.md del codice sorgente.
-          </p>
+          <p>{t('shell.about.body')}</p>
           <ul className='flex flex-col gap-1'>
             {links.map((link) => (
               <li key={link.href}>
                 <a href={link.href} target='_blank' rel='noopener noreferrer' className='underline'>
-                  {link.label}
+                  {t(link.label)}
                 </a>
               </li>
             ))}
           </ul>
-          <p className='text-muted-foreground tabular-nums'>Versione {metaConfig.version}</p>
+          <p className='text-muted-foreground tabular-nums'>
+            {t('shell.about.version', { version: metaConfig.version })}
+          </p>
         </div>
         <DialogFooter>
           <Button
@@ -79,7 +81,7 @@ export function AboutDialog({
               onOpenChange(false);
             }}
           >
-            Chiudi
+            {t('shell.about.close')}
           </Button>
         </DialogFooter>
       </DialogContent>

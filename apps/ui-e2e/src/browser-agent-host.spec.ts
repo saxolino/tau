@@ -46,8 +46,8 @@ const ensureChatOpen = async (): Promise<void> => {
   } catch {
     // Lane genuinely closed (e.g. the seed's chatOpen: false) — open it.
   }
-  await target.expectVisible(selectors.getByCss('[aria-label="Agente"]'), 60_000);
-  await target.click(selectors.getByCss('[aria-label="Agente"]'));
+  await target.expectVisible(selectors.getByCss('[aria-label="Agent"]'), 60_000);
+  await target.click(selectors.getByCss('[aria-label="Agent"]'));
   await target.expectVisible(selectors.getByCss(composer), 60_000);
 };
 

@@ -353,6 +353,24 @@ describe('ParametersPane', () => {
     }
   });
 
+  it('names sections and the filter in the host’s words, keeping file names out of sight', () => {
+    renderPane(
+      {
+        entryTitle: (entryPath) => (entryPath === 'main.ts' ? 'Modello' : entryPath),
+        filterLabels: { label: 'Cerca una misura', placeholder: 'Cerca una misura o un pezzo' },
+      },
+      twoUnits,
+    );
+
+    expect(screen.getByRole('searchbox', { name: 'Cerca una misura' })).toHaveAttribute(
+      'placeholder',
+      'Cerca una misura o un pezzo',
+    );
+    expect(screen.getByTestId('param-pane-main.ts')).toHaveTextContent('Modello');
+    expect(screen.getByTestId('param-pane-main.ts')).not.toHaveTextContent('main.ts');
+    expect(screen.getByTestId('param-pane-helper.ts')).toHaveTextContent('helper.ts');
+  });
+
   it('keeps the filter and sidebar surface visible without entries', () => {
     const { container } = renderPane({}, []);
 

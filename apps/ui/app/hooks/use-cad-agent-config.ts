@@ -25,6 +25,7 @@ import {
 } from '#lib/agent-host-placement.js';
 import type { AgentHostPlacementTarget } from '#lib/agent-host-placement.js';
 import { withoutHiddenExternalAgents } from '#lib/sinopia-agents.js';
+import { useLanguage } from '#i18n/language.js';
 import { unknownIconId } from '#components/icons/svg-icon.js';
 
 /**
@@ -366,12 +367,15 @@ export const useCadAgentConfig = (): CadAgentConfigInput => {
   const [testingEnabled] = useCookie(cookieName.chatTestingEnabled, true);
   const snapshot = useChatSnapshot();
   const contextPayload = useContextPayload();
+  // SinopiaCAD: the agent replies in the interface language the person reads.
+  const language = useLanguage();
 
   return {
     profile: 'cad',
     execution,
     // Absent when the chat pins no engine: the agent chooses one (`create-model`).
     ...(kernelId === undefined ? {} : { kernel: kernelId }),
+    language,
     mode,
     toolChoice,
     testingEnabled,

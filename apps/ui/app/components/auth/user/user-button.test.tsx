@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { SinopiaSessionState } from '#lib/sinopia-session.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const session = vi.hoisted(() => ({ data: undefined as unknown, isPending: true }));
 /* SinopiaCAD: the Sinopia session that replaces Tau's account chrome when it exists. */
@@ -33,6 +34,8 @@ const { UserButton } = await import('#components/auth/user/user-button.js');
 afterEach(() => {
   sinopia.state = { status: 'disabled' };
   sinopia.signOut.mockReset();
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
 });
 
 describe('UserButton', () => {
@@ -42,7 +45,11 @@ describe('UserButton', () => {
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
   });
 
-  it('should name the Sinopia account and sign out of Sinopia with «Esci»', async () => {
+  it.each([
+    ['it', 'Esci'],
+    ['en', 'Sign out'],
+  ] as const)('should name the Sinopia account and sign out of Sinopia in %s', async (language, signOut) => {
+    setLanguage(language);
     sinopia.state = { status: 'signed-in', user: { id: 'user-sinopia', email: 'pilota@sinopialab.com' } };
     sinopia.signOut.mockResolvedValue(undefined);
     const user = userEvent.setup();
@@ -52,8 +59,9 @@ describe('UserButton', () => {
 
     expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('href', '/files');
     expect(screen.queryByRole('menuitem', { name: 'Log in' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('menuitem', { name: 'Sign out' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('menuitem', { name: 'Esci' }));
+    // One sign-out entry: Sinopia's, never Tau's beside it.
+    expect(screen.getAllByRole('menuitem', { name: signOut })).toHaveLength(1);
+    await user.click(screen.getByRole('menuitem', { name: signOut }));
     expect(sinopia.signOut).toHaveBeenCalledTimes(1);
   });
 });

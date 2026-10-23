@@ -12,8 +12,8 @@ import { toggleWorkbenchKeyCombination } from '#routes/w.$workspace.$project/wor
 import { ProjectUnavailableOverlay } from '#routes/w.$workspace.$project/project-unavailable-overlay.js';
 import { ProjectManifestIssueBanner } from '#routes/w.$workspace.$project/project-manifest-issue-banner.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
+import { ProjectTopBar } from '#routes/w.$workspace.$project/project-top-bar.js';
 import { ChatContextInsertionProvider } from '#components/chat/chat-context-insertion.js';
-import { useSidebar } from '#components/ui/sidebar.js';
 import { useProject } from '#hooks/use-project.js';
 import {
   resolveCompactAuxiliary,
@@ -21,7 +21,6 @@ import {
   WorkspaceLanesContext,
 } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { panelMinSizeChat, panelMinSizeViewer, panelMinSizeWorkbench } from '#constants/editor.constants.js';
-import { cn } from '@taucad/ui/utils/cn';
 
 /**
  * Below this workspace width only one side lane shows beside the viewer: Misure (280 px) and the agent (320 px) by
@@ -29,27 +28,8 @@ import { cn } from '@taucad/ui/utils/cn';
  */
 export const compactWorkspaceWidth = 1024;
 
-/**
- * Reserve the titlebar-controls width in front of the leftmost lane's top-left
- * group's tab bar only: a group inside any non-first `.dv-view` sits below or
- * right of another one. A `::before` flex item rather than padding so the tab
- * bar's bottom border, which the children draw, continues under the controls.
- *
- * The inset stops one spacing step short because the Misure lane toggle leads
- * that tab bar with `pl-1`, in the Misure lane and in the viewer alike, so the
- * toggle keeps its pixel when the lane opens or closes.
- */
-const topLeftTabBarInset = [
-  "[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:content-['']",
-  '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:w-[calc(var(--titlebar-controls-width)-var(--spacing))]',
-  '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:shrink-0',
-  '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:border-b',
-  '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:border-b-border',
-].join(' ');
-
 export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
   const { editorRef } = useProject();
-  const { open: sidebarOpen } = useSidebar();
   const { setChatOpen, setWorkbenchOpen } = useProjectWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isCompact, setIsCompact] = useState<boolean>();
@@ -120,74 +100,74 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
   return (
     <ChatContextInsertionProvider>
       <WorkspaceLanesContext.Provider value={lanes}>
-        <div
-          ref={containerRef}
-          className='relative size-full overflow-hidden bg-background'
-          data-project-workspace
-          data-compact={isCompact}
-        >
-          {/* Until the editor state has loaded and the focused chat exists, the
+        <div className='flex size-full flex-col overflow-hidden bg-background'>
+          {/* SinopiaCAD: one bar across Misure, the model and the agent (UI-UX-SinopiaCAD §3.1). */}
+          <ProjectTopBar />
+          <div
+            ref={containerRef}
+            className='relative min-h-0 flex-1 overflow-hidden'
+            data-project-workspace
+            data-compact={isCompact}
+          >
+            {/* Until the editor state has loaded and the focused chat exists, the
               lanes stand in at their default widths rather than a blank page. */}
-          <ChatInterfaceSessionGate fallback={<WorkspaceSkeleton />}>
-            {isClient && isEditorReady ? (
-              /* SinopiaCAD: Misure on the left, the model in the middle, the agent on the right. Each side lane's
+            <ChatInterfaceSessionGate fallback={<WorkspaceSkeleton />}>
+              {isClient && isEditorReady ? (
+                /* SinopiaCAD: Misure on the left, the model in the middle, the agent on the right. Each side lane's
                  toggle heads its own header while it shows and the viewer's while it does not. */
-              <Allotment
-                paneLabels={['Workbench', 'Viewer', 'Chat']}
-                separator={false}
-                proportionalLayout={false}
-                /* The lanes land rather than snap in: the skeleton they replace holds the same
+                <Allotment
+                  paneLabels={['Workbench', 'Viewer', 'Chat']}
+                  separator={false}
+                  proportionalLayout={false}
+                  /* The lanes land rather than snap in: the skeleton they replace holds the same
                    background, so a short fade reads as the workspace resolving (soft land). */
-                className='size-full animate-in duration-200 fade-in-50 motion-reduce:animate-none [&_.split-view-view:not(:last-child)]:border-r [&_.split-view-view:not(:last-child)]:border-border'
-                onDragEnd={persistWidths}
-              >
-                <Allotment.Pane
-                  key='workbench'
-                  minSize={panelMinSizeWorkbench}
-                  preferredSize={desktopLayout.workbenchWidth}
-                  priority={LayoutPriority.Low}
-                  visible={workbenchVisible}
+                  className='size-full animate-in duration-200 fade-in-50 motion-reduce:animate-none [&_.split-view-view:not(:last-child)]:border-r [&_.split-view-view:not(:last-child)]:border-border'
+                  onDragEnd={persistWidths}
                 >
-                  {/* The leftmost lane makes room for the window's own controls while the sidebar is closed. */}
-                  <div className={cn('size-full', !sidebarOpen && workbenchVisible && topLeftTabBarInset)}>
-                    <WorkbenchDockview />
-                  </div>
-                </Allotment.Pane>
-
-                <Allotment.Pane key='viewer' minSize={panelMinSizeViewer} priority={LayoutPriority.High}>
-                  <div
-                    className={cn(
-                      '@container/viewer relative size-full overflow-hidden',
-                      !sidebarOpen && !workbenchVisible && topLeftTabBarInset,
-                    )}
+                  <Allotment.Pane
+                    key='workbench'
+                    minSize={panelMinSizeWorkbench}
+                    preferredSize={desktopLayout.workbenchWidth}
+                    priority={LayoutPriority.Low}
+                    visible={workbenchVisible}
                   >
-                    <ViewerDockview />
-                    <ProjectManifestIssueBanner />
-                    <ProjectUnavailableOverlay />
-                  </div>
-                </Allotment.Pane>
+                    <div className='size-full'>
+                      <WorkbenchDockview />
+                    </div>
+                  </Allotment.Pane>
 
-                <Allotment.Pane
-                  key='chat'
-                  minSize={panelMinSizeChat}
-                  preferredSize={desktopLayout.chatWidth}
-                  priority={LayoutPriority.Low}
-                  visible={chatVisible}
-                >
-                  <ChatHistoryGate>
-                    <ChatHistory
-                      isExpanded={desktopLayout.chatOpen}
-                      setIsExpanded={(value) => {
-                        setChatOpen(typeof value === 'function' ? value(desktopLayout.chatOpen) : value);
-                      }}
-                    />
-                  </ChatHistoryGate>
-                </Allotment.Pane>
-              </Allotment>
-            ) : (
-              <WorkspaceSkeleton />
-            )}
-          </ChatInterfaceSessionGate>
+                  <Allotment.Pane key='viewer' minSize={panelMinSizeViewer} priority={LayoutPriority.High}>
+                    {/* SinopiaCAD: no file tabs over the model (UI-UX-SinopiaCAD §3.3). The viewer keeps one invisible
+                      tab; `global.css` hides its tab bar (file names, split, «+»), and the top bar holds its actions. */}
+                    <div data-viewer-tab-bar='hidden' className='@container/viewer relative size-full overflow-hidden'>
+                      <ViewerDockview />
+                      <ProjectManifestIssueBanner />
+                      <ProjectUnavailableOverlay />
+                    </div>
+                  </Allotment.Pane>
+
+                  <Allotment.Pane
+                    key='chat'
+                    minSize={panelMinSizeChat}
+                    preferredSize={desktopLayout.chatWidth}
+                    priority={LayoutPriority.Low}
+                    visible={chatVisible}
+                  >
+                    <ChatHistoryGate>
+                      <ChatHistory
+                        isExpanded={desktopLayout.chatOpen}
+                        setIsExpanded={(value) => {
+                          setChatOpen(typeof value === 'function' ? value(desktopLayout.chatOpen) : value);
+                        }}
+                      />
+                    </ChatHistoryGate>
+                  </Allotment.Pane>
+                </Allotment>
+              ) : (
+                <WorkspaceSkeleton />
+              )}
+            </ChatInterfaceSessionGate>
+          </div>
         </div>
       </WorkspaceLanesContext.Provider>
     </ChatContextInsertionProvider>

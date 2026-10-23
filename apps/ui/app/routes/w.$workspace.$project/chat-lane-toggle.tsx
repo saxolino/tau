@@ -8,21 +8,30 @@ import type { LaneTogglePlace } from '#routes/w.$workspace.$project/lane-toggle-
 
 /**
  * The one control for the agent's lane (the chat lane, on the right): pressed at the end of the agent pane's header
- * while the lane is open, and at the end of the viewer's top-right cluster, labelled "Agente" and carrying the focused
- * chat's status mark, while it is not (R3: a visible lane owns its own state, so the open mount never shows a mark).
- * Both mounts sit in the window's top-right corner, so opening and closing the agent happen in one place.
+ * while the lane is open, and at the end of the project's top bar, labelled «Agente» and carrying the focused chat's
+ * status mark (R3: the lane's own mount never shows a mark). Both mounts sit in the window's top-right corner, so
+ * opening and closing the agent happen in one place.
  *
  * @param props - Which of the two mounts this is.
  * @returns The toggle.
  */
-export function ChatLaneToggle({ place }: { readonly place: LaneTogglePlace }): React.JSX.Element {
+export function ChatLaneToggle({
+  place,
+  fold,
+}: {
+  readonly place: LaneTogglePlace;
+  readonly fold?: Readonly<{ className: string; labelClassName: string }>;
+}): React.JSX.Element {
   const { setChatOpen } = useProjectWorkspace();
   const { chat: isOpen } = useWorkspaceLanes();
   const { editorRef, projectId } = useProject();
   const focusedChatId = useSelector(editorRef, (state) => state.context.focusedChatId);
   const status = useChatSidebarStatus(projectId, focusedChatId ?? '');
+  // The top bar's mount is always on screen; it marks the chat only while the lane is hidden (R3).
   const facts: SidebarFacts =
-    place === 'viewer' && status !== undefined ? selectChatFacts(status) : { mark: 'none', sentence: undefined };
+    place === 'viewer' && !isOpen && status !== undefined
+      ? selectChatFacts(status)
+      : { mark: 'none', sentence: undefined };
 
-  return <AgentLaneToggleButton place={place} isOpen={isOpen} facts={facts} onOpenChange={setChatOpen} />;
+  return <AgentLaneToggleButton place={place} isOpen={isOpen} facts={facts} fold={fold} onOpenChange={setChatOpen} />;
 }

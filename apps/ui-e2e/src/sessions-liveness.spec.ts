@@ -312,7 +312,7 @@ const expectProjectClosed = async (path: string): Promise<void> => {
 /** Start a real browser-host run against the already-installed gateway. */
 const startAgent = async (projectMarker: string): Promise<void> => {
   if (!(await target.isVisible(selectors.getByCss(composer)))) {
-    await target.click(selectors.getByCss('[aria-label="Agente"]'));
+    await target.click(selectors.getByCss('[aria-label="Agent"]'));
   }
   await target.expectVisible(selectors.getByCss(composer), 60_000);
   await target.type(composer, `Keep ${projectMarker} live while I inspect another project.`);

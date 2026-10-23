@@ -19,6 +19,7 @@ import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { useSidebar } from '#components/ui/sidebar.js';
 import { ChatLaneToggle } from '#routes/w.$workspace.$project/chat-lane-toggle.js';
 import { useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { useTranslation } from '#i18n/translate.js';
 
 const newChatKeyCombination = {
   key: 'c',
@@ -36,6 +37,7 @@ const newChatKeyCombination = {
  * the row.
  */
 export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode }): React.JSX.Element {
+  const { t } = useTranslation();
   const { isMobile, open: isSidebarOpen } = useSidebar();
   // One toggle in the document at a time: the viewer's tab bar holds it while the lane is hidden.
   const { chat: isChatVisible } = useWorkspaceLanes();
@@ -55,7 +57,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
     applyGeneratedChatName,
   });
   const [isRenaming, setIsRenaming] = useState(false);
-  const name = activeChat?.name ?? 'Chat';
+  const name = activeChat?.name ?? t('project.agent.chatFallback');
 
   const createAndOpenChat = async (): Promise<void> => openNewChat();
 
@@ -70,7 +72,12 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
   return (
     <>
       {!isMobile && !isSidebarOpen ? (
-        <PaneButton aria-label='New chat' disabled={!canOpenNewChat} tooltip='New chat' onClick={createAndOpenChat}>
+        <PaneButton
+          aria-label={t('project.agent.newChat')}
+          disabled={!canOpenNewChat}
+          tooltip={t('project.agent.newChat')}
+          onClick={createAndOpenChat}
+        >
           <SquarePen aria-hidden className='size-3.5 translate-y-[0.5px]' />
         </PaneButton>
       ) : null}
@@ -86,7 +93,8 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
             value={activeChat.name}
             variant='ghost'
             shouldStartEditing
-            ariaLabel='Chat name'
+            ariaLabel={t('project.agent.chatName')}
+            saveLabel={t('common.save')}
             // A field inside the desktop drag region cannot be typed into or selected.
             className={cn(sidebarRowEditorClass, '[app-region:no-drag]')}
             onSave={async (next) => {

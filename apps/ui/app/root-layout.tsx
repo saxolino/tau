@@ -35,6 +35,7 @@ import { HeadlessImageProvider } from '#providers/headless-image-provider.js';
 import { authErrorMessage, betterFetchErrorBodyMessage } from '#utils/auth-error.utils.js';
 import { CloudRootBoundary, useCloudPaymentActionReturn } from '#cloud/root-billing.js';
 import { SinopiaSessionGate } from '#components/auth/sinopia/sinopia-session-gate.js';
+import { useLanguage } from '#i18n/language.js';
 
 export type RootLoaderData = {
   readonly env: ClientEnvironment;
@@ -205,15 +206,17 @@ function LayoutDocument({
   // system preference before the page renders (prevents light mode flash on dark systems).
   const { ssrTheme: resolvedTheme } = useTheme();
   const color = useColor();
+  // SinopiaCAD: the document speaks the interface language (Italian on the server, the browser's right after).
+  const language = useLanguage();
   // SinopiaCAD: the favicon is Sinopia's fixed mark (`root.tsx` links), not recoloured with the accent.
   const [usePointerCursors] = useCookie(cookieName.pointerCursors, false);
 
   return (
     <html
-      lang='en'
+      lang={language}
       /* Browser page translation rewrites React-owned text nodes, and React's next
        * update then fails with `insertBefore`/`removeChild` NotFoundError. The UI
-       * is English-only and re-renders continuously (chat stream, editor, viewer). */
+       * speaks Italian and English itself and re-renders continuously (chat stream, editor, viewer). */
       translate='no'
       className={cn(
         '[--spacing:0.275rem] md:[--spacing:0.25rem]',

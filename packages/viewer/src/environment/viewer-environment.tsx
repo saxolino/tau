@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import type { GraphicsBackendPreference } from '#graphics/graphics-settings.js';
 
@@ -14,6 +14,89 @@ export type ViewerFeatures = {
   readonly webGpuInspector: boolean;
   /** Capture shader compilation stacks on WebGPU canvases. */
   readonly webGpuShaderStacks: boolean;
+};
+
+/**
+ * The words of the viewer's bar, so an embedder can show them in its own language. Each defaults to English
+ * ({@link defaultViewerLabels}); an embedder overrides any of them through {@link ViewerEnvironment.labels}.
+ *
+ * @public
+ */
+export type ViewerLabels = {
+  /** The bar's controls group. */
+  readonly viewerControls: string;
+  /** Why a tool waits: there is no model on screen yet. */
+  readonly unavailableWithoutModel: string;
+  /** Fit view's name and tooltip. */
+  readonly fitView: string;
+  /** Fit view's visible label, shown from 520 px of viewer width. */
+  readonly fitViewLabel: string;
+  /** The tooltip right after fitting. */
+  readonly viewFitted: string;
+  /** Section's name. */
+  readonly sectionView: string;
+  /** Section's visible label. */
+  readonly sectionLabel: string;
+  /** Section's tooltip while it runs. */
+  readonly stopSection: string;
+  /** Measure's name. */
+  readonly measure: string;
+  /** Measure's visible label. */
+  readonly measureLabel: string;
+  /** Measure's tooltip while it runs. */
+  readonly stopMeasure: string;
+  /** The measuring row's name while Measure runs. */
+  readonly measuring: string;
+  /** A running tool's row name, from the tool's name. */
+  readonly toolOptions: (toolName: string) => string;
+  /** The button that ends a running tool. */
+  readonly done: string;
+  /** Its accessible name, from the tool's name. */
+  readonly doneWith: (toolName: string) => string;
+  /** Viewer settings' name and tooltip. */
+  readonly viewerSettings: string;
+  /** The grid readout's accessible name, from its size (`1 mm`). */
+  readonly gridReadout: (size: string) => string;
+  /** The grid readout's tooltip. */
+  readonly gridTooltip: string;
+  /** The grid menu's unit heading. */
+  readonly unit: string;
+  /** The grid menu's grid heading. */
+  readonly grid: string;
+  /** The grid menu's lock switch, from the grid size (`1 mm`). */
+  readonly lockGridSize: (size: string) => string;
+  /** The grid menu's hint. */
+  readonly gridZoomHint: string;
+};
+
+/**
+ * The viewer's own English words, used for any label an embedder leaves out.
+ *
+ * @public
+ */
+export const defaultViewerLabels: ViewerLabels = {
+  viewerControls: 'Viewer controls',
+  unavailableWithoutModel: 'Available when a model is displayed',
+  fitView: 'Fit view',
+  fitViewLabel: 'Fit',
+  viewFitted: 'View fitted',
+  sectionView: 'Section view',
+  sectionLabel: 'Section',
+  stopSection: 'Stop section',
+  measure: 'Measure',
+  measureLabel: 'Measure',
+  stopMeasure: 'Stop measure',
+  measuring: 'Measuring',
+  toolOptions: (toolName) => `${toolName} options`,
+  done: 'Done',
+  doneWith: (toolName) => `Done with ${toolName.toLowerCase()}`,
+  viewerSettings: 'Viewer settings',
+  gridReadout: (size) => `Grid ${size}, units and grid`,
+  gridTooltip: 'Change unit settings',
+  unit: 'Unit',
+  grid: 'Grid',
+  lockGridSize: (size) => `Lock Grid Size (${size})`,
+  gridZoomHint: 'Adjust grid size by changing zoom level',
 };
 
 /**
@@ -46,6 +129,13 @@ export type ViewerEnvironment = {
    * Off by default: keeping the buffer costs a copy per frame.
    */
   readonly readableCanvas?: boolean | undefined;
+  /** The bar's words in the embedder's language; any left out stay in English. */
+  readonly labels?: Partial<ViewerLabels> | undefined;
+  /**
+   * Whether the bar offers its Fullscreen button; on unless an embedder that
+   * leaves fullscreen to the browser and the keyboard turns it off.
+   */
+  readonly showFullscreenControl?: boolean | undefined;
   /**
    * Debug-only component mounted inside the stage while `features.tauDebug` is
    * on; an application test bridge uses it to drive and observe the section view.
@@ -107,6 +197,18 @@ export function ViewerEnvironmentProvider({
  */
 export function useViewerEnvironment(): ViewerEnvironment {
   return useContext(ViewerEnvironmentContext);
+}
+
+/**
+ * Read the viewer bar's words: the embedder's, with English for any it leaves out.
+ *
+ * @returns Every word of the bar, in the embedder's language where it gave one.
+ *
+ * @public
+ */
+export function useViewerLabels(): ViewerLabels {
+  const { labels } = useContext(ViewerEnvironmentContext);
+  return useMemo(() => (labels === undefined ? defaultViewerLabels : { ...defaultViewerLabels, ...labels }), [labels]);
 }
 
 /**

@@ -8,6 +8,8 @@ import { NavUser } from '#components/nav/nav-user.js';
 import * as Cookies from 'es-cookie';
 import { metaConfig } from '#constants/meta.constants.js';
 
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
+
 const clientEnvironment = globalThis.window.ENV;
 const useNetworkConnectivityMock = vi.hoisted(() => vi.fn(() => true));
 const useEntitlementsMock = vi.hoisted(() => vi.fn(() => ({ tier: 'free', isResolved: true })));
@@ -118,7 +120,7 @@ describe('NavUser', () => {
     expect(screen.getByRole('button', { name: 'Help' })).toBeInTheDocument();
     // SinopiaCAD: Tau's documentation, bug tracker and community links are gone; the site link is Sinopia's.
     expect(screen.queryByRole('link', { name: 'Documentation' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Sito di Sinopia' })).toHaveAttribute('href', 'https://sinopialab.com');
+    expect(screen.getByRole('link', { name: 'Sinopia website' })).toHaveAttribute('href', 'https://sinopialab.com');
     // SinopiaCAD: privacy and terms are Sinopia's own documents; the open-source notices stay upstream.
     expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
       'href',
@@ -136,7 +138,7 @@ describe('NavUser', () => {
     expect(screen.queryByText('Report a bug')).not.toBeInTheDocument();
     expect(screen.queryByText('GitHub')).not.toBeInTheDocument();
     expect(screen.queryByText('Community Discord')).not.toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Informazioni' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'About' })).toBeInTheDocument();
     expect(screen.getByText(`SinopiaCAD v${metaConfig.version}`)).toBeInTheDocument();
     expect(screen.queryByText('About Tau')).not.toBeInTheDocument();
   });
@@ -171,7 +173,26 @@ describe('NavUser', () => {
     render(<NavUser />, { wrapper: MemoryRouter });
 
     expect(screen.getByRole('status', { name: 'Offline' })).toBeInTheDocument();
-    expect(screen.getByText('Offline — online features unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Offline: online features unavailable')).toBeInTheDocument();
+  });
+});
+
+describe('NavUser language', () => {
+  afterEach(() => {
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
+  });
+
+  it.each([
+    ['it', { help: 'Aiuto', website: 'Sito di Sinopia', cookies: 'Preferenze sui cookie' }],
+    ['en', { help: 'Help', website: 'Sinopia website', cookies: 'Cookie preferences' }],
+  ] as const)('should write the help menu in %s', (language, { help, website, cookies }) => {
+    setLanguage(language);
+    render(<NavUser />, { wrapper: MemoryRouter });
+
+    expect(screen.getByRole('button', { name: help })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: website })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: cookies })).toBeInTheDocument();
   });
 });
 
@@ -195,7 +216,7 @@ describe('Sinopia website link', () => {
     // On the origin that serves Tau's website, the old link switched the start page; Sinopia's never does.
     vi.stubGlobal('location', { protocol: 'http:', origin: 'https://tau.new', assign });
     render(<NavUser />, { wrapper: MemoryRouter });
-    const link = screen.getByRole('link', { name: 'Sito di Sinopia' });
+    const link = screen.getByRole('link', { name: 'Sinopia website' });
     expect(link).toHaveAttribute('href', 'https://sinopialab.com');
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
@@ -207,6 +228,6 @@ describe('Sinopia website link', () => {
   it('should omit the web-only link in desktop', () => {
     vi.stubEnv('TAU_TARGET', 'desktop');
     render(<NavUser />, { wrapper: MemoryRouter });
-    expect(screen.queryByRole('link', { name: 'Sito di Sinopia' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sinopia website' })).not.toBeInTheDocument();
   });
 });

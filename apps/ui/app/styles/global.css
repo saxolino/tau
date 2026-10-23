@@ -145,6 +145,14 @@
   }
 }
 
+/* SinopiaCAD: no file tabs over the model (UI-UX-SinopiaCAD §3.3); the project's top bar holds the viewer's actions.
+   Dockview's styles are unlayered, so the declaration needs `!important`. */
+@layer base {
+  [data-viewer-tab-bar='hidden'] .dv-tabs-and-actions-container {
+    display: none !important;
+  }
+}
+
 /* Typography is provided by fumadocs-ui/css/preset.css (forked @tailwindcss/typography with fd-* color support) */
 
 :root {
@@ -204,16 +212,6 @@
   --diagram-note: oklch(0.26 0.015 calc(var(--hue-primary) + 60deg));
   --diagram-note-border: oklch(0.38 0.025 calc(var(--hue-primary) + 60deg));
   --viewer-tool-active: oklch(0.75 0.1 var(--hue-primary));
-}
-
-.black,
-:root[class~='black'] {
-  --diagram-node: oklch(0.13 0.012 var(--hue-primary));
-  --diagram-node-border: oklch(0.27 0.025 var(--hue-primary));
-  --diagram-cluster: oklch(0.055 0.006 var(--hue-primary));
-  --diagram-cluster-border: oklch(0.2 0.015 var(--hue-primary));
-  --diagram-note: oklch(0.11 0.01 calc(var(--hue-primary) + 60deg));
-  --diagram-note-border: oklch(0.25 0.02 calc(var(--hue-primary) + 60deg));
 }
 
 .high-contrast,

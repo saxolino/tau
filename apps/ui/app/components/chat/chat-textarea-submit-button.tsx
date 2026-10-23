@@ -6,6 +6,7 @@ import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { cancelChatStreamKeyCombination } from '#components/chat/chat-textarea-types.js';
 import { ariaKeyShortcuts, formatKeyCombination } from '@taucad/ui/utils/keys';
 import { Loader } from '@taucad/ui/components/loader';
+import { useTranslation } from '#i18n/translate.js';
 import { cn } from '@taucad/ui/utils/cn';
 
 /** Monochrome action treatment shared by the composer and question replies. */
@@ -22,6 +23,7 @@ const ChatStreamingStopButton = memo(function ({
   formattedCancelKeyCombination,
   onCancel,
 }: ChatStreamingStopButtonProperties): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -29,7 +31,7 @@ const ChatStreamingStopButton = memo(function ({
           type='button'
           variant='ghost'
           size='icon'
-          aria-label='Stop'
+          aria-label={t('project.agent.stop')}
           aria-keyshortcuts={ariaKeyShortcuts(cancelChatStreamKeyCombination)}
           className={cn(chatComposerActionButtonClassName, 'size-7')}
           onClick={(event) => {
@@ -41,7 +43,7 @@ const ChatStreamingStopButton = memo(function ({
         </Button>
       </TooltipTrigger>
       <TooltipContent className='flex items-center gap-2 align-baseline'>
-        Stop <KeyShortcut variant='tooltip'>{formattedCancelKeyCombination}</KeyShortcut>
+        {t('project.agent.stop')} <KeyShortcut variant='tooltip'>{formattedCancelKeyCombination}</KeyShortcut>
       </TooltipContent>
     </Tooltip>
   );
@@ -76,13 +78,14 @@ export const ChatTextareaSubmitButton = memo(function ({
   onSubmit,
   onCancel,
 }: ChatTextareaSubmitButtonProperties): React.JSX.Element {
+  const { t } = useTranslation();
   if (['streaming', 'submitted'].includes(status)) {
     return (
       <ChatStreamingStopButton formattedCancelKeyCombination={formattedCancelKeyCombination} onCancel={onCancel} />
     );
   }
 
-  const label = canResume ? 'Resume' : 'Send';
+  const label = canResume ? t('project.agent.resume') : t('project.agent.send');
   const icon = canResume ? (
     <Play aria-hidden='true' className='fill-current' />
   ) : (

@@ -5,6 +5,8 @@ import { useDraftActions } from '#hooks/use-chat.js';
 import { attachmentModelForExecution } from '#utils/chat.utils.js';
 import { readFileAsDataUrl } from '#components/chat/chat-paste-handler.js';
 import { toast } from '#components/ui/sonner.js';
+import type { Language } from '#i18n/language.js';
+import { useTranslation } from '#i18n/translate.js';
 
 /** The pictures the home takes: what the attachment store keeps as images. */
 export const homeImageMediaTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
@@ -18,31 +20,35 @@ export const homeImageAccept = homeImageMediaTypes.join(',');
  */
 export const homeImageMaxBytes = 20 * 1024 * 1024;
 
-/** How the limits read on the home. */
-export const homeImageLimitsLabel = 'JPG, PNG, WebP o GIF, fino a 20 MB';
-
 const isHomeImage = (file: File): boolean => (homeImageMediaTypes as readonly string[]).includes(file.type);
 
-/** The picture's name in a sentence; a pasted picture has none. */
-const fileLabel = (file: File, article: 'L’immagine' | 'l’immagine'): string =>
-  file.name === '' ? article : `«${file.name}»`;
+/** The picture's name in a sentence, in the language's quotes; a pasted picture has none and `fallback` stands in. */
+const fileLabel = (file: File, fallback: string, language: Language): string => {
+  if (file.name === '') {
+    return fallback;
+  }
+  return language === 'it' ? `«${file.name}»` : `"${file.name}"`;
+};
 
 /**
  * Puts pictures dropped, pasted or chosen on the home into the agent composer's draft: the same draft the composer
  * sends, through its own `addDraftAttachment`, so the draft machine resizes and stores them as it does for the
  * composer's own drops. Only images within {@link homeImageMaxBytes} are taken, and only when the agent's model reads
- * images; every refusal says why in Italian.
+ * images; every refusal says why, in the language of the interface.
  *
  * Call inside the home's composer provider.
  *
  * @returns `addImages`, which resolves to how many pictures went into the draft.
  */
-export function useHomeImageIntake(): { readonly addImages: (files: Iterable<File>) => Promise<number> } {
+export function useHomeImageIntake(): {
+  readonly addImages: (files: Iterable<File>) => Promise<number>;
+} {
   const {
     model: { model: selectedModel },
     execution: { execution },
   } = useChatComposer();
   const { addDraftAttachment } = useDraftActions();
+  const { t, language } = useTranslation();
   const attachmentModel = useMemo(
     () => attachmentModelForExecution(execution, selectedModel),
     [execution, selectedModel],
@@ -56,23 +62,35 @@ export function useHomeImageIntake(): { readonly addImages: (files: Iterable<Fil
         return 0;
       }
       if (!canReadImages) {
-        toast.error('L’agente non può leggere immagini con il modello scelto', {
-          description: 'Scegli un modello che legge le immagini, oppure descrivi il pezzo a parole.',
+        toast.error(t('home.intake.cannotReadImages'), {
+          description: t('home.intake.cannotReadImagesHint'),
         });
         return 0;
       }
       let added = 0;
       for (const file of list) {
         if (!isHomeImage(file)) {
-          toast.error(`${fileLabel(file, 'L’immagine')} non è in un formato che l’agente sa leggere`, {
-            description: `Usa ${homeImageLimitsLabel}.`,
-          });
+          toast.error(
+            t('home.intake.wrongFormat', {
+              name: fileLabel(file, t('home.intake.thePictureCapital'), language),
+            }),
+            {
+              description: t('home.intake.wrongFormatHint', {
+                limits: t('home.dropZone.limits'),
+              }),
+            },
+          );
           continue;
         }
         if (file.size > homeImageMaxBytes) {
-          toast.error(`${fileLabel(file, 'L’immagine')} supera i 20 MB`, {
-            description: 'Esporta una versione più leggera e riprova.',
-          });
+          toast.error(
+            t('home.intake.tooBig', {
+              name: fileLabel(file, t('home.intake.thePictureCapital'), language),
+            }),
+            {
+              description: t('home.intake.tooBigHint'),
+            },
+          );
           continue;
         }
         try {
@@ -84,12 +102,16 @@ export function useHomeImageIntake(): { readonly addImages: (files: Iterable<Fil
           });
           added += 1;
         } catch {
-          toast.error(`Non è stato possibile leggere ${fileLabel(file, 'l’immagine')}`);
+          toast.error(
+            t('home.intake.readFailed', {
+              name: fileLabel(file, t('home.intake.thePicture'), language),
+            }),
+          );
         }
       }
       return added;
     },
-    [addDraftAttachment, attachmentModel, canReadImages],
+    [addDraftAttachment, attachmentModel, canReadImages, language, t],
   );
 
   return { addImages };

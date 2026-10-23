@@ -196,7 +196,7 @@ describe('ChatTextareaBar', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add' }));
     const attach = screen.getByRole('menuitem', { name: /Attach image or PDF/u });
     expect(attach).toHaveAttribute('aria-disabled', 'true');
-    expect(attach).toHaveTextContent("This model can't read images or PDFs");
+    expect(attach).toHaveTextContent('This agent can’t read images or PDFs');
     expect(screen.queryByRole('menuitem', { name: /Add context/u })).toBeNull();
   });
 

@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildClientThemeCode, Theme, ThemeProvider, useTheme } from '#hooks/use-theme.js';
 import type { ThemeWithSystem } from '#hooks/use-theme.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const setDesktopAppIconTheme = vi.hoisted(() => vi.fn());
 vi.mock('#filesystem/desktop-bridge.js', () => ({ setDesktopAppIconTheme }));
@@ -68,6 +69,9 @@ const createWrapper =
 describe('useTheme', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', localStorageStub);
+    // The jsdom browser speaks English; a language a test chose must not leak into the next one.
+    localThemeStore.delete('sinopiacad-language');
+    resetLanguageForTests();
     mediaQueries = {
       [prefersLightMediaQuery]: createMediaQuery(true),
       [prefersMoreContrastMediaQuery]: createMediaQuery(false),
@@ -95,14 +99,15 @@ describe('useTheme', () => {
     }).toThrow('Theme changes require a ThemeProvider');
   });
 
+  // SinopiaCAD: Tau's Dark and High Contrast stay reachable through the API but show as Nero ("Black" in English).
   it.each([
     { specifiedTheme: Theme.LIGHT, expectedResolvedTheme: Theme.LIGHT, expectedName: 'Light' },
-    { specifiedTheme: Theme.DARK, expectedResolvedTheme: Theme.DARK, expectedName: 'Dark' },
+    { specifiedTheme: Theme.DARK, expectedResolvedTheme: Theme.DARK, expectedName: 'Black' },
     { specifiedTheme: Theme.BLACK, expectedResolvedTheme: Theme.DARK, expectedName: 'Black' },
     {
       specifiedTheme: Theme.HIGH_CONTRAST,
       expectedResolvedTheme: Theme.DARK,
-      expectedName: 'High Contrast',
+      expectedName: 'Black',
     },
   ])(
     'should report $expectedName as a user-defined theme',
@@ -128,23 +133,30 @@ describe('useTheme', () => {
     expect(result.current.isHighContrast).toBe(false);
   });
 
-  it('should cycle through Light, Dark, Black, High Contrast, and System', () => {
+  it('should cycle through Chiaro, Nero and System only', () => {
     const { result } = renderHook(() => useTheme(), { wrapper: createWrapper(Theme.LIGHT) });
 
-    for (const expectedTheme of [
-      Theme.DARK,
-      Theme.BLACK,
-      Theme.HIGH_CONTRAST,
-      null,
-      Theme.LIGHT,
-    ] satisfies ThemeWithSystem[]) {
+    for (const expectedTheme of [Theme.BLACK, null, Theme.LIGHT] satisfies ThemeWithSystem[]) {
       act(() => {
         result.current.cycleTheme();
       });
       expect(result.current.themeWithSystem).toBe(expectedTheme);
     }
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ['it', ['Chiaro', 'Nero', 'Sistema']],
+    ['en', ['Light', 'Black', 'System']],
+  ] as const)('should offer two themes and the system in %s', (language, names) => {
+    act(() => {
+      setLanguage(language);
+    });
+    const { result } = renderHook(() => useTheme(), { wrapper: createWrapper(Theme.LIGHT) });
+
+    expect(result.current.options.map((option) => option.id)).toEqual([Theme.LIGHT, Theme.BLACK, null]);
+    expect(result.current.options.map((option) => option.name)).toEqual(names);
   });
 
   it('should persist High Contrast through the theme action without persisting the media preference', () => {

@@ -47,13 +47,8 @@ import { CloseProjectDialog } from '#components/nav/project-close-dialogs.js';
 import { useLiveProjectIds } from '#hooks/use-sessions.js';
 import { useChatSessionStore } from '#hooks/chat-session-store-provider.js';
 import type { ProjectClosePlan } from '#services/chat-session-store.js';
-import {
-  pluralize,
-  selectProjectFacts,
-  useLiveNow,
-  useProjectSidebarRow,
-  useSidebarCommands,
-} from '#hooks/use-sidebar-status.js';
+import { useTranslation } from '#i18n/translate.js';
+import { selectProjectFacts, useLiveNow, useProjectSidebarRow, useSidebarCommands } from '#hooks/use-sidebar-status.js';
 
 import { NativeFileManagerIcon, useOpenProjectInFileManager } from '#hooks/use-native-file-manager.js';
 
@@ -63,6 +58,7 @@ export const sortProjectsByActivity = (projects: readonly ProjectListItem[]): Pr
   [...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.id.localeCompare(right.id));
 
 export function ProjectNavigation({ className }: { readonly className?: string }): React.JSX.Element {
+  const { t } = useTranslation();
   const { projects, isLoading, error, deleteProject, duplicateProject, updateName } = useProjects();
   const { createChat } = useProjectManager();
   const { isProjectExpanded, setProjectDisclosure } = useAppUiPreferences();
@@ -96,7 +92,7 @@ export function ProjectNavigation({ className }: { readonly className?: string }
     if (!project.slugs) {
       return;
     }
-    const chat = await createChat(project.id, { name: 'New chat', messages: [] });
+    const chat = await createChat(project.id, { name: t('shell.projects.newChat'), messages: [] });
     void queryClient.invalidateQueries({ queryKey: ['chats', project.id] });
     await navigate(projectChatUrl(project.slugs, chat.id, isActive ? location.search : undefined), {
       state: { focusChatComposer: true },
@@ -105,9 +101,9 @@ export function ProjectNavigation({ className }: { readonly className?: string }
 
   const handleDuplicate = async (project: ProjectListItem): Promise<void> => {
     const duplicate = await duplicateProject(project.id);
-    toast.success(`Duplicated ${project.name}`, {
+    toast.success(t('shell.projects.duplicated', { name: project.name }), {
       action: {
-        label: 'Open',
+        label: t('shell.projects.open'),
         onClick() {
           void navigate(projectUrl(duplicate.slugs));
         },
@@ -141,7 +137,7 @@ export function ProjectNavigation({ className }: { readonly className?: string }
           ) : null}
           {!isLoading && !error && projects.length === 0 && liveProjectIds.length === 0 ? (
             <SidebarMenuItem>
-              <div className='flex h-7 items-center px-2 text-xs text-muted-foreground'>No projects yet</div>
+              <div className='flex h-7 items-center px-2 text-xs text-muted-foreground'>{t('shell.projects.none')}</div>
             </SidebarMenuItem>
           ) : null}
           {visibleProjects.map((project) => {
@@ -152,7 +148,9 @@ export function ProjectNavigation({ className }: { readonly className?: string }
               <Fragment key={project.id}>
                 {earlierFromId === project.id ? (
                   <SidebarMenuItem>
-                    <div className='flex h-6 items-center px-1.5 text-xs text-muted-foreground/70'>Earlier</div>
+                    <div className='flex h-6 items-center px-1.5 text-xs text-muted-foreground/70'>
+                      {t('shell.projects.earlier')}
+                    </div>
                   </SidebarMenuItem>
                 ) : null}
                 <ProjectNavigationItem
@@ -192,12 +190,12 @@ export function ProjectNavigation({ className }: { readonly className?: string }
                     try {
                       const trashed = await deleteProject(project.id);
                       if (trashed) {
-                        toast.success(`Moved ${project.name} to Trash`);
+                        toast.success(t('shell.projects.trashed', { name: project.name }));
                       } else {
-                        toast.error(`Could not move ${project.name} to Trash`);
+                        toast.error(t('shell.projects.trashFailed', { name: project.name }));
                       }
                     } catch (error) {
-                      toast.error(`Could not move ${project.name} to Trash`);
+                      toast.error(t('shell.projects.trashFailed', { name: project.name }));
                       console.error('Error trashing project:', error);
                     }
                   }}
@@ -210,12 +208,12 @@ export function ProjectNavigation({ className }: { readonly className?: string }
               <SidebarMenuButton
                 type='button'
                 className={sidebarDisclosureButtonClass}
-                aria-label='Show more projects'
+                aria-label={t('shell.projects.showMore')}
                 onClick={() => {
                   setVisibleCount((count) => count + projectsPerPage);
                 }}
               >
-                Show more projects
+                {t('shell.projects.showMore')}
               </SidebarMenuButton>
             </SidebarMenuItem>
           ) : null}
@@ -256,6 +254,7 @@ function ProjectNavigationItem({
   readonly onShare: () => void;
   readonly onDelete: () => Promise<void>;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const { isMobile } = useSidebar();
   const openInFileManager = useOpenProjectInFileManager(project);
   const navigate = useNavigate();
@@ -291,7 +290,7 @@ function ProjectNavigationItem({
       setClosePlan(plan);
       if (deleting) {
         if (plan.continuingRuns.length > 0) {
-          toast.error(`Can’t delete ${project.name} while work continues in another window or build.`);
+          toast.error(t('shell.projects.cannotDelete', { name: project.name }));
           return;
         }
         if (plan.liveChatIds.length === 0) {
@@ -303,7 +302,7 @@ function ProjectNavigationItem({
         setAskingToClose(true);
       }
     } catch {
-      toast.error(`Couldn’t check running work in ${project.name}. Try closing it again.`);
+      toast.error(t('shell.projects.cannotCheck', { name: project.name }));
     }
   };
 
@@ -318,7 +317,7 @@ function ProjectNavigationItem({
         }}
       >
         <SquarePen aria-hidden />
-        New chat
+        {t('shell.projects.newChat')}
       </Item>
       {openInFileManager ? (
         <Item
@@ -335,7 +334,7 @@ function ProjectNavigationItem({
       <Separator />
       <Item onSelect={onRename}>
         <Pencil aria-hidden />
-        Rename
+        {t('shell.projects.rename')}
       </Item>
       <Item
         onSelect={() => {
@@ -343,20 +342,20 @@ function ProjectNavigationItem({
         }}
       >
         <Copy aria-hidden />
-        Duplicate
+        {t('shell.projects.duplicate')}
       </Item>
       <Item disabled={!project.slugs} onSelect={onShare}>
         <Forward aria-hidden />
-        Share project
+        {t('shell.projects.share')}
       </Item>
       <Item disabled={!project.slugs} onSelect={openSyncDetails}>
         <Cloud aria-hidden />
-        View sync status
+        {t('shell.projects.syncStatus')}
       </Item>
       <Separator />
       {row.glyph === 'none' ? null : (
         <Item
-          aria-label={`Close ${project.name}`}
+          aria-label={t('shell.projects.closeNamed', { name: project.name })}
           onSelect={() => {
             if (row.runs > 0) {
               void askToClose(false);
@@ -366,7 +365,7 @@ function ProjectNavigationItem({
           }}
         >
           <X aria-hidden />
-          Close
+          {t('shell.projects.close')}
         </Item>
       )}
       <Item
@@ -376,7 +375,7 @@ function ProjectNavigationItem({
         }}
       >
         <Trash2 aria-hidden />
-        Move to Trash
+        {t('shell.projects.moveToTrash')}
       </Item>
     </>
   );
@@ -395,7 +394,7 @@ function ProjectNavigationItem({
             variant='ghost'
             size='icon'
             className={sidebarRowButtonClass}
-            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${project.name}`}
+            aria-label={t(isExpanded ? 'shell.projects.collapse' : 'shell.projects.expand', { name: project.name })}
             aria-expanded={isExpanded}
             aria-controls={chatsId}
             onClick={() => {
@@ -469,7 +468,7 @@ function ProjectNavigationItem({
                       variant='ghost'
                       size='icon'
                       className={sidebarRowButtonClass}
-                      aria-label={`New chat in ${project.name}`}
+                      aria-label={t('shell.projects.newChatIn', { name: project.name })}
                       aria-disabled={!canCreateChat}
                       onClick={() => {
                         if (canCreateChat) {
@@ -482,10 +481,10 @@ function ProjectNavigationItem({
                   </TooltipTrigger>
                   <TooltipContent side='bottom'>
                     {isCloudPending
-                      ? 'New chat — Wait for project files to be ready.'
+                      ? t('shell.projects.newChatWaiting')
                       : project.slugs
-                        ? 'New chat'
-                        : 'New chat — Project address is not ready.'}
+                        ? t('shell.projects.newChat')
+                        : t('shell.projects.newChatNoAddress')}
                   </TooltipContent>
                 </Tooltip>
               </span>
@@ -526,13 +525,16 @@ function ProjectNavigationItem({
  * @returns The label.
  */
 function ProjectsLabel(): React.JSX.Element {
+  const { t } = useTranslation();
   const { projects, idleProjectIds } = useLiveNow();
   const { closeProject } = useSidebarCommands();
   return (
     <div className='group/label flex h-7 items-center gap-1 pr-0.5'>
       <SidebarGroupLabel className='min-w-0 flex-1'>
-        Projects
-        {projects > 0 ? <span className='ml-1.5 font-normal tabular-nums'>{`${String(projects)} live`}</span> : null}
+        {t('shell.projects.recent')}
+        {projects > 0 ? (
+          <span className='ml-1.5 font-normal tabular-nums'>{t('shell.projects.live', { count: projects })}</span>
+        ) : null}
       </SidebarGroupLabel>
       {idleProjectIds.length > 0 ? (
         <span className='hidden group-focus-within/label:flex group-hover/label:flex has-[[aria-haspopup=menu][data-state=open]]:flex pointer-coarse:flex'>
@@ -543,7 +545,7 @@ function ProjectsLabel(): React.JSX.Element {
                 variant='ghost'
                 size='icon'
                 className={sidebarRowButtonClass}
-                aria-label='More actions for projects'
+                aria-label={t('shell.projects.moreActionsForProjects')}
               >
                 <EllipsisVertical aria-hidden className='size-3.5' />
               </Button>
@@ -557,7 +559,9 @@ function ProjectsLabel(): React.JSX.Element {
                 }}
               >
                 <X aria-hidden />
-                {`Close ${pluralize(idleProjectIds.length, 'idle project')}`}
+                {t(idleProjectIds.length === 1 ? 'shell.projects.closeIdleOne' : 'shell.projects.closeIdleOther', {
+                  count: idleProjectIds.length,
+                })}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

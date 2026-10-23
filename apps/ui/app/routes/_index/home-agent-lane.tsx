@@ -1,5 +1,6 @@
 import { MessageSquare } from 'lucide-react';
 import { PanelEmptyState } from '@taucad/ui/components/panel-empty-state';
+import { useTranslation } from '#i18n/translate.js';
 import { NewProjectChatComposer } from '#components/chat/new-project-chat-composer.js';
 import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
 import { FloatingPanel, FloatingPanelContent, FloatingPanelContentHeader } from '#components/ui/floating-panel.js';
@@ -23,24 +24,25 @@ type HomeAgentLaneProps = {
  * @returns The lane.
  */
 export function HomeAgentLane({ composerRef, onOpenChange }: HomeAgentLaneProps): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <FloatingPanel isOpen side='right' onOpenChange={onOpenChange}>
       <FloatingPanelContent className='min-h-0 overflow-hidden'>
         <FloatingPanelContentHeader className='gap-1'>
-          <span className='fade-label flex-1 text-sm font-medium text-foreground'>Nuovo progetto</span>
+          <span className='fade-label flex-1 text-sm font-medium text-foreground'>{t('home.agentLane.header')}</span>
           <AgentLaneToggleButton place='lane' isOpen onOpenChange={onOpenChange} />
         </FloatingPanelContentHeader>
         <div className='mx-auto flex min-h-0 w-[calc(100%_-_1rem)] max-w-xl flex-1 overflow-y-auto px-3 py-6'>
           <PanelEmptyState
             icon={MessageSquare}
-            title='Cosa costruiamo?'
-            description='Allega la foto o il disegno del pezzo e aggiungi due parole, scritte o dettate. Il primo messaggio crea il progetto.'
+            title={t('home.agentLane.emptyTitle')}
+            description={t('home.agentLane.emptyDescription')}
             className='m-auto h-auto max-w-xs py-6'
           />
         </div>
         <div
           role='region'
-          aria-label='Messaggio per l’agente'
+          aria-label={t('home.intake.messageForAgent')}
           className='relative mx-auto mb-2 w-[calc(100%_-_1rem)] max-w-xl shrink-0'
         >
           <NewProjectChatComposer ref={composerRef} enableLocationPicker={false} />

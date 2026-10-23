@@ -1,4 +1,4 @@
-import { useCallback, useId, useState } from 'react';
+import { Fragment, useCallback, useId, useState } from 'react';
 import type { SyntheticEvent } from 'react';
 import { Button } from '@taucad/ui/components/button';
 import { Field, FieldGroup, FieldSeparator } from '@taucad/ui/components/field';
@@ -7,8 +7,49 @@ import { Label } from '@taucad/ui/components/label';
 import { Spinner } from '#components/ui/spinner.js';
 import { SinopiaAuthFrame } from '#components/auth/sinopia/sinopia-auth-frame.js';
 import { SinopiaGoogleButton } from '#components/auth/sinopia/sinopia-google-button.js';
-import type { SinopiaNotice } from '#lib/sinopia-access.js';
+import type { SinopiaMessageCode, SinopiaNotice } from '#lib/sinopia-access.js';
+import { useLanguage, setLanguage, languages } from '#i18n/language.js';
+import type { Language } from '#i18n/language.js';
+import { useTranslation } from '#i18n/translate.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
+
+const languageNames: Readonly<Record<Language, 'auth.language.italian' | 'auth.language.english'>> = {
+  it: 'auth.language.italian',
+  en: 'auth.language.english',
+};
+
+/**
+ * The small «Italiano · English» switch under the sign-in card (UI-UX-SinopiaCAD §6.1): there is no account menu yet,
+ * so this is the one place outside it where the language is chosen. Each language is written in its own tongue.
+ *
+ * @returns The two buttons, the current language marked.
+ */
+function SinopiaLanguageSwitch(): React.JSX.Element {
+  const { t } = useTranslation();
+  const current = useLanguage();
+  return (
+    <div role='group' aria-label={t('auth.language.label')} className='flex items-center gap-1 text-xs'>
+      {languages.map((language, index) => (
+        <Fragment key={language}>
+          {index === 0 ? null : <span aria-hidden>·</span>}
+          <Button
+            type='button'
+            variant='link'
+            size='sm'
+            className={current === language ? 'font-semibold text-foreground' : 'text-muted-foreground'}
+            aria-pressed={current === language}
+            lang={language}
+            onClick={() => {
+              setLanguage(language);
+            }}
+          >
+            {t(languageNames[language])}
+          </Button>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
 
 /**
  * SinopiaCAD's sign-in screen, with the same ways in as sinopialab.com's: «Continua con Google» first, then the Sinopia
@@ -21,15 +62,16 @@ import { sinopiaSession } from '#lib/sinopia-session.js';
 export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): React.JSX.Element {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [googleError, setGoogleError] = useState<string | undefined>(undefined);
+  const { t } = useTranslation();
+  const [error, setError] = useState<SinopiaMessageCode | undefined>(undefined);
+  const [googleError, setGoogleError] = useState<SinopiaMessageCode | undefined>(undefined);
   const [isPending, setIsPending] = useState(false);
   const titleId = useId();
   const emailId = useId();
   const passwordId = useId();
   const errorId = useId();
   /* This screen's own Google failure first; otherwise what the session has to say. */
-  const banner = googleError === undefined ? notice : { message: googleError };
+  const banner = googleError === undefined ? notice : { code: googleError };
 
   const handleSubmit = useCallback(
     async (event: SyntheticEvent<HTMLFormElement>): Promise<void> => {
@@ -40,7 +82,7 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
       const result = await sinopiaSession().signIn(email.trim(), password);
       /* Signed in, the gate swaps this screen for the access check as the session announces itself. */
       if (!result.ok) {
-        setError(result.message);
+        setError(result.code);
         setPassword('');
         setIsPending(false);
       }
@@ -56,23 +98,24 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
   return (
     <SinopiaAuthFrame
       titleId={titleId}
-      title='Accedi con il tuo account Sinopia'
-      description='Entra con Google o con email e password, come su sinopialab.com.'
+      title={t('auth.signIn.title')}
+      description={t('auth.signIn.description')}
+      footer={<SinopiaLanguageSwitch />}
     >
       <div className='flex flex-col gap-6'>
         {banner === undefined ? null : (
           <div role='alert' className='flex flex-col gap-2 rounded-md border border-destructive/30 p-3 text-sm'>
-            <p>{banner.message}</p>
+            <p>{t(`auth.messages.${banner.code}`)}</p>
             {banner.link === undefined ? null : (
               <a href={banner.link.href} className='font-medium text-foreground underline underline-offset-4'>
-                {banner.link.label}
+                {t('auth.goToSinopia')}
               </a>
             )}
           </div>
         )}
         <SinopiaGoogleButton isDisabled={isPending} onStart={handleGoogleStart} onError={setGoogleError} />
         <FieldSeparator className='m-0 flex items-center text-xs *:data-[slot=field-separator-content]:bg-card'>
-          oppure con email e password
+          {t('auth.signIn.separator')}
         </FieldSeparator>
         <form
           aria-labelledby={titleId}
@@ -82,7 +125,7 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
         >
           <FieldGroup>
             <Field data-invalid={error === undefined ? undefined : true}>
-              <Label htmlFor={emailId}>Email</Label>
+              <Label htmlFor={emailId}>{t('auth.signIn.email')}</Label>
               <Input
                 id={emailId}
                 name='email'
@@ -99,7 +142,7 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
               />
             </Field>
             <Field data-invalid={error === undefined ? undefined : true}>
-              <Label htmlFor={passwordId}>Password</Label>
+              <Label htmlFor={passwordId}>{t('auth.signIn.password')}</Label>
               <Input
                 id={passwordId}
                 name='password'
@@ -117,12 +160,12 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
             </Field>
             {error === undefined ? null : (
               <p id={errorId} role='alert' className='text-sm text-destructive'>
-                {error}
+                {t(`auth.messages.${error}`)}
               </p>
             )}
             <Button type='submit' disabled={isPending}>
-              {isPending ? <Spinner aria-label='Accesso in corso' /> : null}
-              Accedi
+              {isPending ? <Spinner aria-label={t('auth.signIn.pending')} /> : null}
+              {t('auth.signIn.submit')}
             </Button>
           </FieldGroup>
         </form>

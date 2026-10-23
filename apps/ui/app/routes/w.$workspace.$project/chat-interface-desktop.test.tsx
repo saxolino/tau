@@ -56,6 +56,10 @@ vi.mock('#routes/w.$workspace.$project/project-unavailable-overlay.js', () => ({
   ProjectUnavailableOverlay: () => null,
 }));
 vi.mock('#components/ui/sidebar.js', () => ({ useSidebar: () => sidebar }));
+/* The bar has its own suite (`project-top-bar.test.tsx`); here it only has to head the workspace. */
+vi.mock('#routes/w.$workspace.$project/project-top-bar.js', () => ({
+  ProjectTopBar: () => <section aria-label='Project bar' data-testid='top-bar' />,
+}));
 vi.mock('#components/chat/chat-context-insertion.js', () => ({
   ChatContextInsertionProvider: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
 }));
@@ -246,27 +250,26 @@ describe('ChatInterfaceDesktop', () => {
     clock.mockRestore();
   });
 
-  const titlebarInset =
-    '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:w-[calc(var(--titlebar-controls-width)-var(--spacing))]';
-
-  it('reserves fixed-control space inside the Misure lane header while it leads the workspace', async () => {
+  /* SinopiaCAD (UI-UX-SinopiaCAD §3.1, §3.3): one bar across the three lanes, and no file tabs over the model. */
+  it('heads the three lanes with the project’s top bar, which leaves room for the window’s own controls', async () => {
     sidebar.open = false;
     renderDesktop();
-    // One spacing step short: the Misure toggle leads the tab bar with `pl-1`.
-    const workbench = await screen.findByTestId('workbench-lane');
-    expect(workbench.parentElement).toHaveClass(titlebarInset);
-    expect(screen.getByTestId('viewer-lane').parentElement).not.toHaveClass(titlebarInset);
-    // The agent lane is on the right, clear of the window's own controls.
-    expect(screen.getByTestId('chat-lane')).not.toHaveAttribute('class');
+    await screen.findByTestId('viewer-lane');
+
+    const bar = screen.getByTestId('top-bar');
+    expect(bar.nextElementSibling).toContainElement(screen.getByTestId('allotment'));
+    // The lanes' own headers reserve nothing: the bar takes the inset the leftmost header used to.
+    expect(screen.getByTestId('workbench-lane').parentElement).not.toHaveClass(/titlebar-controls-width/u);
+    expect(screen.getByTestId('viewer-lane').parentElement?.className).not.toMatch(/titlebar-controls-width/u);
   });
 
-  it('reserves fixed-control space inside the viewer header while Misure is hidden', async () => {
-    desktopLayout.workbenchOpen = false;
-    sidebar.open = false;
+  it('hides the viewer’s tab bar, so no file name or split control shows over the model', async () => {
     renderDesktop();
     const viewer = await screen.findByTestId('viewer-lane');
-    expect(viewer.parentElement).toHaveClass(titlebarInset);
-    expect(screen.getByTestId('workbench-lane').parentElement).not.toHaveClass(titlebarInset);
+
+    // `global.css` hides the tab bar under this attribute (Dockview's own styles are unlayered).
+    expect(viewer.parentElement).toHaveAttribute('data-viewer-tab-bar', 'hidden');
+    expect(screen.getByTestId('workbench-lane').parentElement).not.toHaveAttribute('data-viewer-tab-bar');
   });
 
   it('keeps the Viewer mounted when both auxiliary lanes are closed', async () => {
@@ -296,7 +299,7 @@ describe('ChatInterfaceDesktop', () => {
     expect(setWorkbenchOpen).toHaveBeenLastCalledWith(true);
   });
 
-  it('leaves the lane toggles to the lane and viewer headers, with nothing floating over them', async () => {
+  it('leaves the lane toggles to the top bar and the lane headers, with nothing floating over them', async () => {
     renderDesktop();
     await screen.findByTestId('viewer-lane');
 

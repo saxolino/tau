@@ -8,6 +8,7 @@ import { useChatComposer } from '#hooks/active-chat-provider.js';
 import { useProjectCreationLocation } from '#hooks/use-project-creation-location.js';
 import { useProjectCreationLocationError } from '#hooks/use-project-creation-location-error.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
+import { useTranslation } from '#i18n/translate.js';
 import { projectUrl } from '#utils/project-url.utils.js';
 import { sinopiaStarterKernelId } from '#lib/sinopia-engines.js';
 import { homeProjectCreationLocation } from '#types/project-creation-location.types.js';
@@ -31,6 +32,7 @@ export function NewProjectChatComposer({
   enableLocationPicker = true,
   className,
 }: NewProjectChatComposerProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const projectManager = useProjectManager();
   const location = useProjectCreationLocation();
@@ -57,7 +59,10 @@ export function NewProjectChatComposer({
 
   /* Mount autofocus alone misses a return to an already-mounted Home, so honour a
    * navigation that asks for focus (`state.focusChatComposer`) too. */
-  const { key: locationKey, state: locationState } = useLocation() as { key: string; state: unknown };
+  const { key: locationKey, state: locationState } = useLocation() as {
+    key: string;
+    state: unknown;
+  };
   // Each navigation that asks for focus is its own request, identified by its location key.
   const focusRequestKey =
     (locationState as { focusChatComposer?: unknown } | undefined)?.focusChatComposer === true
@@ -121,9 +126,16 @@ export function NewProjectChatComposer({
            * daemon. Both providers keep this execution's Tau model in step with
            * the model chip, so there is nothing left to override here. */
           activeExecution: execution,
-          initialMessage: { content, attachments, ...(attachmentSource === undefined ? {} : { attachmentSource }) },
+          initialMessage: {
+            content,
+            attachments,
+            ...(attachmentSource === undefined ? {} : { attachmentSource }),
+          },
           editorState: {
-            panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' }, mobileActiveTab: 'chat' },
+            panelState: {
+              desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' },
+              mobileActiveTab: 'chat',
+            },
           },
           location: creationLocation,
         });
@@ -137,7 +149,7 @@ export function NewProjectChatComposer({
           return;
         }
         console.error('Failed to create project:', error);
-        toast.error('Non è stato possibile creare il progetto. Riprova.');
+        toast.error(t('home.composer.createFailed'));
       }
     },
     [
@@ -150,6 +162,7 @@ export function NewProjectChatComposer({
       navigate,
       presentLocationError,
       projectManager,
+      t,
     ],
   );
 
@@ -161,6 +174,8 @@ export function NewProjectChatComposer({
         enableContextActions={false}
         creationLocationControl={creationLocationControl}
         isSubmitDisabled={!canCreate}
+        // SinopiaCAD: the home's prompt (UI-UX-SinopiaCAD §2.4); the project's asks for a change.
+        placeholder={t('home.composerPlaceholder')}
         className={className}
         onSubmit={onSubmit}
       />

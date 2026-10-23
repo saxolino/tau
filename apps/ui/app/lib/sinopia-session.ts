@@ -22,7 +22,7 @@ import { Topic } from '@taucad/events';
 import { ENV } from '#environment.config.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { checkSinopiaAccess, sinopiaRefusalNotice } from '#lib/sinopia-access.js';
-import type { SinopiaNotice } from '#lib/sinopia-access.js';
+import type { SinopiaMessageCode, SinopiaNotice } from '#lib/sinopia-access.js';
 import { isSinopiaAuthReturn, rememberSinopiaReturn, takeSinopiaReturn } from '#lib/sinopia-oauth-return.js';
 
 /** Sinopia's Supabase project as the host injects it. */
@@ -46,8 +46,8 @@ export type SinopiaSessionState =
   | Readonly<{ status: 'unverified'; user: SinopiaUser }>
   | Readonly<{ status: 'signed-in'; user: SinopiaUser }>;
 
-/** The outcome of a sign-in step, with a sentence in Italian for the person when it failed. */
-export type SinopiaSignInResult = Readonly<{ ok: true }> | Readonly<{ ok: false; message: string }>;
+/** The outcome of a sign-in step, with the code of the sentence for the person when it failed. */
+export type SinopiaSignInResult = Readonly<{ ok: true }> | Readonly<{ ok: false; code: SinopiaMessageCode }>;
 
 /** The one Supabase client factory SinopiaCAD uses; a seam for tests. */
 export type SinopiaClientFactory = (config: SinopiaConfig, storageKey: string) => Promise<SupabaseClient>;
@@ -101,68 +101,63 @@ export const sinopiaStorageKey = (supabaseUrl: string): string =>
  */
 const refreshLead = 60_000;
 
-const unreachableMessage = 'Non riesco a raggiungere Sinopia. Controlla la connessione e riprova.';
-const tooManyMessage = 'Troppi tentativi. Riprova tra qualche minuto.';
-
 const isUnreachable = (error: Partial<Pick<AuthError, 'status' | 'name' | 'message'>>): boolean =>
   error.name === 'AuthRetryableFetchError' ||
   error.status === 0 ||
   (error.message ?? '').toLowerCase().includes('failed to fetch');
 
 /**
- * The sentence a failed sign-in shows, in Italian.
+ * The message a failed sign-in shows, as a code the screen words in the person's language.
  *
  * @param error - The error supabase-js answered with.
- * @returns The message.
+ * @returns The message code.
  */
-export const sinopiaSignInErrorMessage = (error: Pick<AuthError, 'code' | 'status' | 'name'>): string => {
+export const sinopiaSignInErrorCode = (error: Pick<AuthError, 'code' | 'status' | 'name'>): SinopiaMessageCode => {
   if (isUnreachable(error)) {
-    return unreachableMessage;
+    return 'unreachable';
   }
   switch (error.code) {
     case 'invalid_credentials': {
-      return 'Email o password non corretti.';
+      return 'invalidCredentials';
     }
     case 'email_not_confirmed': {
-      return 'Conferma prima la tua email: apri il messaggio che ti ha mandato Sinopia.';
+      return 'emailNotConfirmed';
     }
     case 'user_banned': {
-      return 'Questo account Sinopia è sospeso.';
+      return 'banned';
     }
     case 'over_request_rate_limit':
     case 'over_email_send_rate_limit': {
-      return tooManyMessage;
+      return 'tooMany';
     }
     default: {
-      return error.status === 429 ? tooManyMessage : 'Accesso non riuscito. Riprova.';
+      return error.status === 429 ? 'tooMany' : 'signInFailed';
     }
   }
 };
 
 /**
- * The sentence a failed Google sign-in shows, in Italian; the raw message goes to the console only. As on
+ * The message a failed Google sign-in shows, as a code; the raw message goes to the console only. As on
  * sinopialab.com (`handleGoogleAuth`), a message naming the provider means Google is not switched on in Supabase Auth.
  *
  * @param error - What supabase-js answered or threw, on the way out or on the way back.
- * @returns The message.
+ * @returns The message code.
  */
-export const sinopiaGoogleErrorMessage = (error: unknown): string => {
+export const sinopiaGoogleErrorCode = (error: unknown): SinopiaMessageCode => {
   const details: Partial<Pick<AuthError, 'status' | 'name' | 'message' | 'code'>> =
     typeof error === 'object' && error !== null ? error : {};
   const message = (details.message ?? '').toLowerCase();
   if (message.includes('provider')) {
-    return 'L’accesso con Google non è ancora attivo: entra con email e password.';
+    return 'googleDisabled';
   }
   if (isUnreachable(details)) {
-    return unreachableMessage;
+    return 'unreachable';
   }
   if (details.status === 429 || message.includes('rate limit') || message.includes('too many requests')) {
-    return tooManyMessage;
+    return 'tooMany';
   }
-  return 'Accesso con Google non riuscito. Riprova.';
+  return 'googleFailed';
 };
-
-const secondFactorMessage = 'Codice non valido o scaduto. Riprova con il codice attuale dell’app.';
 
 /**
  * Creates SinopiaCAD's supabase-js client: Sinopia's storage key, PKCE as on sinopialab.com, and the code on the way
@@ -195,7 +190,10 @@ const sameState = (left: SinopiaSessionState, right: SinopiaSessionState): boole
   return left.status === right.status;
 };
 
-const userOf = (session: Session): SinopiaUser => ({ id: session.user.id, email: session.user.email });
+const userOf = (session: Session): SinopiaUser => ({
+  id: session.user.id,
+  email: session.user.email,
+});
 
 /**
  * Create a Sinopia session over one Supabase client. Nothing runs until something subscribes or asks for a token, and
@@ -225,7 +223,9 @@ export const createSinopiaSession = (
   let revision = 0;
   let pendingReturn: string | undefined;
   const stateTopic = new Topic<undefined>({ name: 'SinopiaSession.state' });
-  const tokenTopic = new Topic<string | undefined>({ name: 'SinopiaSession.token' });
+  const tokenTopic = new Topic<string | undefined>({
+    name: 'SinopiaSession.token',
+  });
 
   const setState = (next: SinopiaSessionState): void => {
     if (!sameState(state, next)) {
@@ -390,7 +390,7 @@ export const createSinopiaSession = (
           const { error } = await supabase.auth.initialize();
           if (error !== null) {
             console.error('[sinopia] the Google sign-in did not complete', error);
-            setNotice({ message: sinopiaGoogleErrorMessage(error) });
+            setNotice({ code: sinopiaGoogleErrorCode(error) });
           }
           pendingReturn = takeSinopiaReturn(new URL(globalThis.location.href));
           stateTopic.emit(undefined);
@@ -451,10 +451,13 @@ export const createSinopiaSession = (
       setNotice(undefined);
       try {
         const supabase = await clientOf();
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        return error === null ? { ok: true } : { ok: false, message: sinopiaSignInErrorMessage(error) };
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        return error === null ? { ok: true } : { ok: false, code: sinopiaSignInErrorCode(error) };
       } catch {
-        return { ok: false, message: unreachableMessage };
+        return { ok: false, code: 'unreachable' };
       }
     },
     signInWithGoogle: async () => {
@@ -474,12 +477,12 @@ export const createSinopiaSession = (
         });
         if (error !== null) {
           console.error('[sinopia] the Google sign-in did not start', error);
-          return { ok: false, message: sinopiaGoogleErrorMessage(error) };
+          return { ok: false, code: sinopiaGoogleErrorCode(error) };
         }
         return { ok: true };
       } catch (error) {
         console.error('[sinopia] the Google sign-in did not start', error);
-        return { ok: false, message: sinopiaGoogleErrorMessage(error) };
+        return { ok: false, code: sinopiaGoogleErrorCode(error) };
       }
     },
     verifySecondFactor: async (code) => {
@@ -498,18 +501,24 @@ export const createSinopiaSession = (
           factorId = factors.data.totp[0]?.id;
         }
         if (factorId === undefined) {
-          return { ok: false, message: 'Non trovo il metodo di verifica di questo account. Accedi da sinopialab.com.' };
+          return { ok: false, code: 'secondFactorMissing' };
         }
-        const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
+        const { error } = await supabase.auth.mfa.challengeAndVerify({
+          factorId,
+          code,
+        });
         if (error !== null) {
           console.error('[sinopia] the second factor was not confirmed', error);
-          return { ok: false, message: isUnreachable(error) ? unreachableMessage : secondFactorMessage };
+          return {
+            ok: false,
+            code: isUnreachable(error) ? 'unreachable' : 'secondFactorInvalid',
+          };
         }
         /* MFA_CHALLENGE_VERIFIED follows, and the access check runs again on the aal2 session. */
         return { ok: true };
       } catch (error) {
         console.error('[sinopia] the second factor was not confirmed', error);
-        return { ok: false, message: unreachableMessage };
+        return { ok: false, code: 'unreachable' };
       }
     },
     retryAccess: () => {

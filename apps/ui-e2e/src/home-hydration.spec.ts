@@ -37,8 +37,8 @@ test('should retain the app home after a confirmed anonymous session', async () 
     };
   });
   await target.navigate('/');
-  await target.expectVisible(selectors.getByRole('heading', { name: 'Dall’immagine al CAD' }), 30_000);
-  await target.expectVisible(selectors.getByRole('heading', { name: 'I tuoi progetti', level: 2 }));
+  await target.expectVisible(selectors.getByRole('heading', { name: 'From image to CAD' }), 30_000);
+  await target.expectVisible(selectors.getByRole('heading', { name: 'Your projects', level: 2 }));
 });
 
 test('keeps a Home draft with an image and a PDF across a reload and hands both to the new project', async () => {

@@ -1,3 +1,4 @@
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopBridge } from '#filesystem/desktop-bridge.js';
@@ -276,7 +277,7 @@ describe('ProjectNavigation', () => {
   it('renders one Projects group with every project in deterministic activity order', () => {
     render(<ProjectNavigation />);
 
-    expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Recent projects' })).toBeInTheDocument();
     expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual(['Two', 'One']);
     expect(screen.queryByRole('button', { name: 'Show more projects' })).not.toBeInTheDocument();
   });
@@ -440,7 +441,7 @@ describe('ProjectNavigation', () => {
     mockLiveNow.mockReturnValue({ projects: 2, idleProjectIds: ['proj_two'] });
     render(<ProjectNavigation />);
 
-    expect(screen.getByRole('heading', { name: 'Projects 2 live' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Recent projects 2 live' })).toBeInTheDocument();
     expect(screen.queryByText('Live now')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'More actions for projects' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close 1 idle project' }));
@@ -459,14 +460,14 @@ describe('ProjectNavigation', () => {
     render(<ProjectNavigation />);
 
     expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Projects 1 live' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Recent projects 1 live' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'More actions for projects' })).not.toBeInTheDocument();
     expect(screen.queryAllByRole('link')).toHaveLength(0);
   });
 
   it('says nothing about liveness on the label while nothing is live', () => {
     render(<ProjectNavigation />);
-    expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Recent projects' })).toBeInTheDocument();
   });
 
   /* D6, D18: no Retry anywhere; a failed refresh keeps the last good list. */
@@ -586,7 +587,7 @@ describe('ProjectNavigation', () => {
     render(<ProjectNavigation />);
     fireEvent.click(screen.getByRole('button', { name: 'Close Two' }));
     expect(await screen.findByRole('heading', { name: 'Stop 1 run and close Two?' })).toBeInTheDocument();
-    expect(screen.getByText(/Foreign chat.*another version of Tau/)).toBeInTheDocument();
+    expect(screen.getByText(/Foreign chat.*another version/)).toBeInTheDocument();
     expect(screen.getByText(/Background chat.*background/)).toBeInTheDocument();
     expect(mockGetProjectClosePlan).toHaveBeenCalledWith('proj_two');
     fireEvent.click(screen.getByRole('button', { name: 'Stop and close' }));
@@ -659,5 +660,18 @@ describe('ProjectNavigation', () => {
     render(<ProjectNavigation />);
     expect(screen.getByText('Earlier')).toBeInTheDocument();
     expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual(['Two', 'One']);
+  });
+
+  it.each([
+    ['it', 'Progetti recenti', 'Nuova chat in Two'],
+    ['en', 'Recent projects', 'New chat in Two'],
+  ] as const)('writes the group label and row actions in %s', (language, heading, newChat) => {
+    setLanguage(language);
+    render(<ProjectNavigation />);
+
+    expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: newChat })).toBeInTheDocument();
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 });

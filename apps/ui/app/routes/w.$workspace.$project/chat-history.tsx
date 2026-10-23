@@ -43,6 +43,7 @@ import { useSkillsCatalog } from '#hooks/use-skills-catalog.js';
 import { useSearchParameter } from '#hooks/use-search-parameter.js';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { flagParameter } from '#utils/search-parameter.codecs.js';
+import { useTranslation } from '#i18n/translate.js';
 import { ArchivedChats } from '#routes/w.$workspace.$project/archived-chats.js';
 
 // One conversational turn per virtual row, sized only by its content.
@@ -80,12 +81,13 @@ const TurnGroup = memo(function ({
 // — Virtuoso also forwards `className` at runtime (so consumers can style via
 // `<Virtuoso className=...>`), but the public type omits it. We widen here.
 const ChatScroller = forwardRef<HTMLDivElement, ScrollerProps & { className?: string }>(function (props, ref) {
+  const { t } = useTranslation();
   return (
     <div
       {...props}
       ref={ref}
       role='region'
-      aria-label='Chat history'
+      aria-label={t('project.agent.history')}
       className={cn('[scrollbar-gutter:stable]', props.className)}
     />
   );
@@ -142,6 +144,7 @@ const ExpandedChatHistory = memo(function ({
   setIsExpanded,
   formattedKeyCombination,
 }: ChatHistoryProps & { readonly formattedKeyCombination: string }) {
+  const { t } = useTranslation();
   const messageIds = useChatSelector((state) => state.messageOrder);
   const cadChat = useCadChatClient();
   const { treeService } = useFileManager();
@@ -251,8 +254,8 @@ const ExpandedChatHistory = memo(function ({
             errorFallback={(errorProps) => (
               <FloatingPanelErrorContent
                 {...errorProps}
-                title='Chat Unavailable'
-                description='Something went wrong while loading the chat.'
+                title={t('project.agent.unavailableTitle')}
+                description={t('project.agent.unavailableText')}
               />
             )}
           >
@@ -305,7 +308,7 @@ const ExpandedChatHistory = memo(function ({
               its fold never carries across chats (D8, agent questions D8). */}
             <div
               role='region'
-              aria-label='Chat composer'
+              aria-label={t('project.agent.composer')}
               className='relative mx-auto mb-2 w-[calc(100%_-_1rem)] max-w-xl shrink-0'
             >
               <ScrollDownButton

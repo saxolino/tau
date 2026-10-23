@@ -81,6 +81,18 @@ export const cadAgentExecutionSchema = z
   .meta({ id: 'CadAgentExecution' });
 
 /**
+ * The languages the CAD agent replies in: SinopiaCAD's two interface languages.
+ * @public
+ */
+export const agentReplyLanguages = ['it', 'en'] as const;
+
+/**
+ * One of {@link agentReplyLanguages}.
+ * @public
+ */
+export type AgentReplyLanguage = (typeof agentReplyLanguages)[number];
+
+/**
  * Per-request configuration for the CAD agent profile.
  *
  * This is the single source of truth for "what does the CAD agent need to know
@@ -102,6 +114,11 @@ export const cadAgentConfigSchema = z
     execution: cadAgentExecutionSchema,
     /** The chat's pinned kernel. Absent, nothing is pinned and the agent chooses one with the `create-model` skill. */
     kernel: z.enum(kernelProviders).optional(),
+    /**
+     * The language the person reads the interface in; the agent writes its replies in it. Absent, the agent writes
+     * in Italian, SinopiaCAD's default.
+     */
+    language: z.enum(agentReplyLanguages).optional(),
     mode: z.enum(chatModes),
     toolChoice: toolChoiceSchema,
     testingEnabled: z.boolean(),

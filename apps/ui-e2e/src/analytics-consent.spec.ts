@@ -196,7 +196,7 @@ test('blocks replay from mounted editor, chat and file surfaces', async () => {
     await target.click(selectors.getByText('Open files', { exact: true }));
   }
   await target.expectVisible(filesPane(), 60_000);
-  const chatToggle = selectors.getByRole('button', { name: 'Agente' });
+  const chatToggle = selectors.getByRole('button', { name: 'Agent' });
   if ((await target.getAttribute(chatToggle, 'aria-pressed')) === 'false') {
     await target.click(chatToggle);
   }

@@ -45,6 +45,7 @@ export const ChatTextarea = memo(function ({
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
+  placeholder,
   enableMobileCollapse = false,
 }: ChatTextareaProperties): React.JSX.Element {
   // Mutable refs populated by ChatTextareaDesktop so that drops anywhere on the
@@ -333,6 +334,7 @@ export const ChatTextarea = memo(function ({
         creationLocationControl={creationLocationControl}
         isSubmitDisabled={logic.isSubmitDisabled}
         mode={mode}
+        placeholder={placeholder}
         enableMobileCollapse={enableMobileCollapse}
         isFocused={isFocused}
         // State

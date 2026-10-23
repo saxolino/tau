@@ -73,7 +73,7 @@ const openChat = async (): Promise<string> => {
   try {
     await target.expectVisible(selectors.getByCss(composer), 10_000);
   } catch {
-    await target.click(selectors.getByCss('[aria-label="Agente"]'));
+    await target.click(selectors.getByCss('[aria-label="Agent"]'));
     await target.expectVisible(selectors.getByCss(composer), 60_000);
   }
   await target.click(selectors.getByRole('button', { name: /^decline$/iu }), { timeout: 5000 }).catch(() => undefined);

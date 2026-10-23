@@ -1,11 +1,12 @@
 import { useId } from 'react';
 import { SettingsItem, SettingsSectionCard } from '#components/settings/settings-item.js';
 import { legalUrl } from '#lib/legal-url.js';
-import { AlertCircle, Check, ChevronDown, Circle, Contrast, Laptop, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Laptop, Moon, ShieldCheck, Sun } from 'lucide-react';
 import { Loader } from '@taucad/ui/components/loader';
 import { usePrivacyPreferences } from '#hooks/use-privacy-preferences.js';
 import { useCommercialFeatures } from '#cloud/commercial-features.js';
-import { Theme, useTheme, themeOptions } from '#hooks/use-theme.js';
+import { Theme, selectableTheme, useTheme } from '#hooks/use-theme.js';
+import { useTranslation } from '#i18n/translate.js';
 import type { ThemeWithSystem } from '#hooks/use-theme.js';
 import { useColor } from '#hooks/use-color.js';
 import { useCookie } from '#hooks/use-cookie.js';
@@ -36,21 +37,14 @@ const privacyModes: PrivacyMode[] = [
 ];
 
 function getThemeIcon(themeId: ThemeWithSystem): React.JSX.Element {
-  switch (themeId) {
+  // SinopiaCAD: Chiaro, Nero (Tau's hidden Dark and High Contrast read as Nero) and the system.
+  switch (selectableTheme(themeId)) {
     case Theme.LIGHT: {
       return <Sun className='size-4' />;
     }
 
-    case Theme.DARK: {
-      return <Moon className='size-4' />;
-    }
-
     case Theme.BLACK: {
-      return <Circle className='size-4 fill-black' />;
-    }
-
-    case Theme.HIGH_CONTRAST: {
-      return <Contrast className='size-4' />;
+      return <Moon className='size-4' />;
     }
 
     default: {
@@ -68,7 +62,8 @@ export function GeneralSettings(): React.JSX.Element {
   // projection forces `trainingConsent: false`, so no toggle is rendered.
   const { hasNoTrainGuarantee } = useCommercialFeatures();
   const usageMetricsDescriptionId = useId();
-  const { themeWithSystem, setTheme, currentOption } = useTheme();
+  const { themeWithSystem, setTheme, currentOption, options: themeOptions } = useTheme();
+  const { t } = useTranslation();
   const { hue, setHue, resetHue } = useColor();
   const [areCodeInlayHintsEnabled, setCodeInlayHintsEnabled] = useCookie(cookieName.codeInlayHints, false);
   const [usePointerCursors, setUsePointerCursors] = useCookie(cookieName.pointerCursors, false);
@@ -97,13 +92,12 @@ export function GeneralSettings(): React.JSX.Element {
           <SettingsItem settingId='theme'>
             <div className='flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center'>
               <div className='flex flex-col gap-1'>
-                <span className='font-medium'>Theme</span>
-                <span className='text-sm text-muted-foreground'>Select your preferred color scheme</span>
+                <span className='font-medium'>{t('account.theme.label')}</span>
               </div>
               <ComboBoxResponsive
-                title='Theme'
-                description='Select your preferred color scheme'
-                groupedItems={[{ name: 'Theme', items: themeOptions }]}
+                title={t('account.theme.label')}
+                description={t('account.theme.choose')}
+                groupedItems={[{ name: t('account.theme.label'), items: themeOptions }]}
                 getValue={(item) => String(item.id)}
                 value={currentOption}
                 isSearchEnabled={false}

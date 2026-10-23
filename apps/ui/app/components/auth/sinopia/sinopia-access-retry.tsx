@@ -1,6 +1,7 @@
 import { useId } from 'react';
 import { Button } from '@taucad/ui/components/button';
 import { SinopiaAuthFrame } from '#components/auth/sinopia/sinopia-auth-frame.js';
+import { useTranslation } from '#i18n/translate.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
 import type { SinopiaUser } from '#lib/sinopia-session.js';
 
@@ -12,13 +13,16 @@ import type { SinopiaUser } from '#lib/sinopia-session.js';
  * @returns The screen.
  */
 export function SinopiaAccessRetry({ user }: { readonly user: SinopiaUser }): React.JSX.Element {
+  const { t } = useTranslation();
   const titleId = useId();
 
   return (
     <SinopiaAuthFrame
       titleId={titleId}
-      title='Non riesco a verificare l’accesso'
-      description={`Sinopia non ha risposto mentre controllavo l’account ${user.email ?? 'Sinopia'}. Controlla la connessione e riprova.`}
+      title={t('auth.retry.title')}
+      description={t('auth.retry.description', {
+        email: user.email ?? t('auth.secondFactor.accountFallback'),
+      })}
     >
       <div className='flex flex-col gap-3'>
         <Button
@@ -27,7 +31,7 @@ export function SinopiaAccessRetry({ user }: { readonly user: SinopiaUser }): Re
             sinopiaSession().retryAccess();
           }}
         >
-          Riprova
+          {t('auth.retry.retry')}
         </Button>
         <Button
           type='button'
@@ -43,7 +47,7 @@ export function SinopiaAccessRetry({ user }: { readonly user: SinopiaUser }): Re
             })();
           }}
         >
-          Esci
+          {t('auth.retry.signOut')}
         </Button>
       </div>
     </SinopiaAuthFrame>

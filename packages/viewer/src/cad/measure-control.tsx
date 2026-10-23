@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { Ruler } from 'lucide-react';
 import { ToolToggle } from '#cad/section-view-control.jsx';
 import { useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
+import { useViewerLabels } from '#environment/viewer-environment.jsx';
 
 type MeasureControlProps = Readonly<{
   /** The formatted shortcut the tooltip shows. */
@@ -19,6 +20,7 @@ type MeasureControlProps = Readonly<{
 export function MeasureControl({ shortcut, onStart }: MeasureControlProps): React.JSX.Element {
   const graphicsRef = useGraphics();
   const isMeasureActive = useGraphicsSelector((state) => state.context.isMeasureActive);
+  const labels = useViewerLabels();
 
   const handleToggle = useCallback(() => {
     // Synchronous, so the measuring row exists when `onStart` moves focus into it.
@@ -33,8 +35,9 @@ export function MeasureControl({ shortcut, onStart }: MeasureControlProps): Reac
   return (
     <ToolToggle
       tool='measure'
-      name='Measure'
-      label='Measure'
+      name={labels.measure}
+      label={labels.measureLabel}
+      stopLabel={labels.stopMeasure}
       icon={<Ruler className='size-4 -rotate-45' />}
       isActive={isMeasureActive}
       shortcut={shortcut}

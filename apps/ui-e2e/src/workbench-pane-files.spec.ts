@@ -207,7 +207,7 @@ test('should share modern command search chrome across command, model, kernel, a
 
   const chatComposer = selectors.getByCss('[class*="group/chat-textarea"]');
   if (!(await target.isVisible(chatComposer))) {
-    await target.click(selectors.getByRole('button', { name: 'Agente' }));
+    await target.click(selectors.getByRole('button', { name: 'Agent' }));
   }
   await target.expectVisible(chatComposer);
   const chatControlButtons = chatComposer.getByCss('button');
@@ -218,7 +218,7 @@ test('should share modern command search chrome across command, model, kernel, a
   await target.press(modelFilter, 'Escape');
 
   await target.setViewport({ width: 390, height: 844 });
-  const chatToggle = selectors.getByRole('button', { name: 'Agente' });
+  const chatToggle = selectors.getByRole('button', { name: 'Agent' });
   const agentTrigger = selectors.getByRole('button', { name: /^Agent and model: /u });
   if (!(await target.isVisible(agentTrigger))) {
     await target.click(chatToggle);

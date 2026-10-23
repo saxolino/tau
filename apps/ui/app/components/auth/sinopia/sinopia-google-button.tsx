@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@taucad/ui/components/button';
 import { Spinner } from '#components/ui/spinner.js';
+import { useTranslation } from '#i18n/translate.js';
+import type { SinopiaMessageCode } from '#lib/sinopia-access.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
 
 /* oxlint-disable tau-lint/no-hardcoded-color -- Google's trademark colours, fixed by its brand guidelines like a photograph's. */
-const googleColors = { red: '#EA4335', blue: '#4285F4', yellow: '#FBBC05', green: '#34A853' } as const;
+const googleColors = {
+  red: '#EA4335',
+  blue: '#4285F4',
+  yellow: '#FBBC05',
+  green: '#34A853',
+} as const;
 /* oxlint-enable tau-lint/no-hardcoded-color */
 
 /**
@@ -51,8 +58,9 @@ export function SinopiaGoogleButton({
 }: {
   readonly isDisabled?: boolean;
   readonly onStart: () => void;
-  readonly onError: (message: string) => void;
+  readonly onError: (code: SinopiaMessageCode) => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const [isOpening, setIsOpening] = useState(false);
 
   useEffect(() => {
@@ -73,7 +81,7 @@ export function SinopiaGoogleButton({
     const result = await sinopiaSession().signInWithGoogle();
     /* On its way, the browser leaves this page: nothing to reset. */
     if (!result.ok) {
-      onError(result.message);
+      onError(result.code);
       setIsOpening(false);
     }
   }, [onError, onStart]);
@@ -90,7 +98,7 @@ export function SinopiaGoogleButton({
       }}
     >
       {isOpening ? <Spinner aria-hidden /> : <GoogleMark />}
-      {isOpening ? 'Reindirizzamento a Google…' : 'Continua con Google'}
+      {isOpening ? t('auth.signIn.googleOpening') : t('auth.signIn.google')}
     </Button>
   );
 }

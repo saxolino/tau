@@ -5,6 +5,7 @@ import { NewProjectChatComposer } from '#components/chat/new-project-chat-compos
 import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
 import { getClipboardImageFiles } from '#components/chat/chat-paste-handler.js';
 import { toast } from '#components/ui/sonner.js';
+import { useTranslation } from '#i18n/translate.js';
 import { HomeNewProjectComposerProvider } from '#hooks/active-chat-provider.js';
 import { useAgentLaneOpen } from '#hooks/use-agent-lane-open.js';
 import {
@@ -23,11 +24,6 @@ const isEditableTarget = (target: unknown): boolean =>
   target instanceof Element &&
   target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null;
 
-const announcementFor = (count: number): string =>
-  count === 1
-    ? 'Immagine allegata al messaggio per l’agente.'
-    : `${count} immagini allegate al messaggio per l’agente.`;
-
 /**
  * The home inside its composer provider: the main area (the «Dall'immagine al CAD» drop zone and «I tuoi progetti»)
  * beside the agent lane. Pictures dropped anywhere on the page, pasted with nothing editable focused, or chosen with
@@ -36,6 +32,7 @@ const announcementFor = (count: number): string =>
  * @returns The home.
  */
 function HomeSurface(): React.JSX.Element {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [isLaneOpen, setLaneOpen] = useAgentLaneOpen();
   const isLaneShown = isLaneOpen && !isMobile;
@@ -57,14 +54,14 @@ function HomeSurface(): React.JSX.Element {
       if (added === 0) {
         return;
       }
-      setAnnouncement(announcementFor(added));
+      setAnnouncement(added === 1 ? t('home.intake.announceOne') : t('home.intake.announceMany', { count: added }));
       setLaneOpen(true);
       // A lane that was closed mounts its composer with autofocus; an open one is focused here.
       requestAnimationFrame(() => {
         composerRef.current?.focus();
       });
     },
-    [addImages, setLaneOpen],
+    [addImages, setLaneOpen, t],
   );
 
   useEffect(() => {
@@ -120,12 +117,12 @@ function HomeSurface(): React.JSX.Element {
       if (files.length > 0) {
         void takeImages(files);
       } else if (event.dataTransfer.types.includes('text/uri-list')) {
-        toast.error('Questa immagine arriva da una pagina web', {
-          description: 'Salvala sul computer, poi trascinala qui o sceglila.',
+        toast.error(t('home.intake.fromWebPage'), {
+          description: t('home.intake.fromWebPageHint'),
         });
       }
     },
-    [takeImages],
+    [t, takeImages],
   );
 
   return (
@@ -152,7 +149,7 @@ function HomeSurface(): React.JSX.Element {
             }}
           />
           {isMobile ? (
-            <div role='region' aria-label='Messaggio per l’agente' className='mx-auto mt-6 w-full max-w-3xl'>
+            <div role='region' aria-label={t('home.intake.messageForAgent')} className='mx-auto mt-6 w-full max-w-3xl'>
               <NewProjectChatComposer ref={composerRef} enableAutoFocus={false} enableLocationPicker={false} />
             </div>
           ) : null}
@@ -160,7 +157,7 @@ function HomeSurface(): React.JSX.Element {
         </div>
       </div>
       {isLaneShown ? (
-        <aside aria-label='Agente' className='w-80 shrink-0 border-l border-border'>
+        <aside aria-label={t('home.agentLane.label')} className='w-80 shrink-0 border-l border-border'>
           <HomeAgentLane composerRef={composerRef} onOpenChange={setLaneOpen} />
         </aside>
       ) : null}

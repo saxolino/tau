@@ -113,7 +113,7 @@ describe('project creation locations', () => {
     const eventBaseline = await target.events();
     await target.press(editorFor(), 'Enter');
     await target.expectUrl(/\/w\/[^/]+\/[^/]+$/u, 60_000);
-    await target.expectVisible(selectors.getByRole('button', { name: 'Misure' }).first(), 60_000);
+    await target.expectVisible(selectors.getByRole('button', { name: 'Measures' }).first(), 60_000);
     const events = await target.events();
     const projectProviderErrors = [
       ...events.pageErrors.slice(eventBaseline.pageErrors.length),

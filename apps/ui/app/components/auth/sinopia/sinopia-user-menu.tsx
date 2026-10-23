@@ -13,9 +13,8 @@ import {
 import { cn } from '@taucad/ui/utils/cn';
 import { sinopiaSession } from '#lib/sinopia-session.js';
 import type { SinopiaUser } from '#lib/sinopia-session.js';
-
-/** What the menu names the account by when the session carries no email. */
-const accountLabel = 'Account Sinopia';
+import { AccountPreferences } from '#components/auth/sinopia/account-preferences.js';
+import { useTranslation } from '#i18n/translate.js';
 
 function SinopiaAvatar({ user, className }: { readonly user: SinopiaUser; readonly className?: string }): ReactNode {
   return (
@@ -26,9 +25,9 @@ function SinopiaAvatar({ user, className }: { readonly user: SinopiaUser; readon
 }
 
 /**
- * SinopiaCAD's account menu: the signed-in Sinopia account, the app's own entries, then «Esci», which signs out of
- * Sinopia on this browser (online, Sinopia shares the session, so it signs out there too). It replaces Tau's account
- * chrome inside `UserButton` while a Sinopia session exists.
+ * SinopiaCAD's account menu: the signed-in Sinopia account, the theme and the language, the app's own entries, then
+ * «Esci», which signs out of Sinopia on this browser (online, Sinopia shares the session, so it signs out there too).
+ * It replaces Tau's account chrome inside `UserButton` while a Sinopia session exists.
  *
  * @param properties - The account, the trigger's look and placement, and the entries to list.
  * @returns The account menu.
@@ -54,6 +53,9 @@ export function SinopiaUserMenu({
   readonly links?: ReactNode;
   readonly header?: ReactNode;
 }): React.JSX.Element {
+  const { t } = useTranslation();
+  // What the menu names the account by when the session carries no email.
+  const accountLabel = t('account.sinopiaAccount');
   const name = user.email ?? accountLabel;
   const isCompact = size === 'sm';
 
@@ -104,6 +106,11 @@ export function SinopiaUserMenu({
 
         <DropdownMenuSeparator />
 
+        {/* SinopiaCAD: theme and language sit in the account menu, never in the top bar (UI-UX-SinopiaCAD §1.1). */}
+        <AccountPreferences />
+
+        <DropdownMenuSeparator />
+
         {links}
 
         <DropdownMenuSeparator />
@@ -121,7 +128,7 @@ export function SinopiaUserMenu({
           }}
         >
           <LogOut className='text-muted-foreground' />
-          Esci
+          {t('account.signOut')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

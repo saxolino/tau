@@ -33,6 +33,7 @@ import {
   preventMenuSliderEscapeDismissal,
 } from '@taucad/ui/components/menu-slider-item';
 import { useCameraRig, useCameraSelector, useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
+import { useViewerLabels } from '#environment/viewer-environment.jsx';
 import { clamp } from '@taucad/ui/utils/number';
 
 // Up direction options
@@ -178,6 +179,7 @@ export function ViewerSettings({
   operationTimeout,
 }: ViewerSettingsProps): React.ReactNode {
   const graphicsRef = useGraphics();
+  const { viewerSettings } = useViewerLabels();
 
   const [isOpen, setIsOpen] = useState(false);
   // A press outside leaves focus with the pointer; a keyboard close returns it to the trigger.
@@ -276,12 +278,12 @@ export function ViewerSettings({
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
-            <Button variant='overlay' size='icon' aria-label='Viewer settings' className={cn(className)}>
+            <Button variant='overlay' size='icon' aria-label={viewerSettings} className={cn(className)}>
               <Settings />
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent side='top'>Viewer settings</TooltipContent>
+        <TooltipContent side='top'>{viewerSettings}</TooltipContent>
       </Tooltip>
       <DropdownMenuContent
         align={align}

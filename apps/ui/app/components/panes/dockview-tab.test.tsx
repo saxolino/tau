@@ -128,4 +128,15 @@ describe('DockviewTab', () => {
     fireEvent.click(close);
     expect(properties.api.close).toHaveBeenCalledOnce();
   });
+
+  it('shows the title its dock gives it, as a pane named in the interface language', () => {
+    render(
+      <TooltipProvider>
+        <DockviewTab {...createProperties('Revisions', {})} displayTitle='Versioni' />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByText('Versioni')).toBeInTheDocument();
+    expect(screen.queryByText('Revisions')).not.toBeInTheDocument();
+  });
 });

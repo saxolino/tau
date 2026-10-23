@@ -20,10 +20,13 @@ import {
   useSidebar,
 } from '#components/ui/sidebar.js';
 import { Loader } from '@taucad/ui/components/loader';
+import { useTranslation } from '#i18n/translate.js';
+import type { PlainMessageKey } from '#i18n/translate.js';
 import { cn } from '@taucad/ui/utils/cn';
 
 type NavMoreItem = {
   title: string;
+  titleKey?: PlainMessageKey;
   url: string;
   icon?: LucideIcon;
   action?: () => void;
@@ -31,6 +34,7 @@ type NavMoreItem = {
 
 /** The "More" row: secondary destinations in a menu beside the sidebar. */
 function NavMore({ items }: { readonly items: readonly NavMoreItem[] }): React.JSX.Element {
+  const { t } = useTranslation();
   const { isMobile } = useSidebar();
   const { pathname } = useLocation();
   const isActive = items.some((item) => matchPath({ path: item.url, end: false }, pathname) !== null);
@@ -41,7 +45,7 @@ function NavMore({ items }: { readonly items: readonly NavMoreItem[] }): React.J
         <DropdownMenuTrigger asChild>
           <SidebarMenuButton isActive={isActive}>
             <Ellipsis className='size-4 shrink-0' />
-            <span className='flex-1 truncate'>More</span>
+            <span className='flex-1 truncate'>{t('shell.nav.more')}</span>
           </SidebarMenuButton>
         </DropdownMenuTrigger>
         <DropdownMenuContent side={isMobile ? 'bottom' : 'right'} align='start' className='min-w-48'>
@@ -49,15 +53,15 @@ function NavMore({ items }: { readonly items: readonly NavMoreItem[] }): React.J
             const content = (
               <>
                 {item.icon ? <item.icon className='size-4 shrink-0' /> : null}
-                <span className='flex-1 truncate'>{item.title}</span>
+                <span className='flex-1 truncate'>{item.titleKey ? t(item.titleKey) : item.title}</span>
               </>
             );
             return item.action ? (
-              <DropdownMenuItem key={item.title} onSelect={item.action}>
+              <DropdownMenuItem key={item.url} onSelect={item.action}>
                 {content}
               </DropdownMenuItem>
             ) : (
-              <DropdownMenuItem key={item.title} asChild>
+              <DropdownMenuItem key={item.url} asChild>
                 <Link to={item.url}>{content}</Link>
               </DropdownMenuItem>
             );
@@ -76,6 +80,7 @@ export function NavMain({
 }: {
   readonly items: Array<{
     title: string;
+    titleKey?: PlainMessageKey;
     url: string;
     icon?: LucideIcon;
     isActive?: boolean;
@@ -90,6 +95,7 @@ export function NavMain({
   readonly groupLabel?: string;
   readonly className?: string;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <SidebarGroup className={cn('px-2', className)}>
       {groupLabel ? <SidebarGroupLabel>{groupLabel}</SidebarGroupLabel> : null}
@@ -100,17 +106,17 @@ export function NavMain({
           // Items with an action callback render a button instead of a NavLink
           if (item.action) {
             return (
-              <SidebarMenuItem key={item.title}>
+              <SidebarMenuItem key={item.url}>
                 <SidebarMenuButton onClick={item.action}>
                   {item.icon ? <item.icon className='size-4 shrink-0' /> : null}
-                  <span className='flex-1 truncate'>{item.title}</span>
+                  <span className='flex-1 truncate'>{item.titleKey ? t(item.titleKey) : item.title}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             );
           }
 
           return (
-            <Collapsible key={item.title} asChild defaultOpen={item.isActive} className='group/collapsible'>
+            <Collapsible key={item.url} asChild defaultOpen={item.isActive} className='group/collapsible'>
               <SidebarMenuItem>
                 <NavLink to={item.url}>
                   {({ isActive, isPending }) => {
@@ -118,7 +124,7 @@ export function NavMain({
                       <SidebarMenuButton asChild isActive={isActive}>
                         <span>
                           {isPending ? <Loader /> : item.icon ? <item.icon className='size-4 shrink-0' /> : null}
-                          <span className='flex-1 truncate'>{item.title}</span>
+                          <span className='flex-1 truncate'>{item.titleKey ? t(item.titleKey) : item.title}</span>
                           {hasItems ? (
                             <ChevronRight className='ml-2 shrink-0 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90' />
                           ) : null}

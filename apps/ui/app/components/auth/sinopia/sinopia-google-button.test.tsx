@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
+import type { SinopiaMessageCode } from '#lib/sinopia-access.js';
 import type { SinopiaSignInResult } from '#lib/sinopia-session.js';
 import { SinopiaGoogleButton } from '#components/auth/sinopia/sinopia-google-button.js';
 
 const signInWithGoogle = vi.hoisted(() => vi.fn<() => Promise<SinopiaSignInResult>>());
-vi.mock('#lib/sinopia-session.js', () => ({ sinopiaSession: () => ({ signInWithGoogle }) }));
+vi.mock('#lib/sinopia-session.js', () => ({
+  sinopiaSession: () => ({ signInWithGoogle }),
+}));
 
 const onStart = vi.fn<() => void>();
-const onError = vi.fn<(message: string) => void>();
+const onError = vi.fn<(code: SinopiaMessageCode) => void>();
 
 const pageShow = (persisted: boolean): void => {
   act(() => {
@@ -21,6 +25,12 @@ beforeEach(() => {
   signInWithGoogle.mockReset();
   onStart.mockReset();
   onError.mockReset();
+  setLanguage('it');
+});
+
+afterEach(() => {
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
 });
 
 describe('SinopiaGoogleButton', () => {
@@ -33,20 +43,22 @@ describe('SinopiaGoogleButton', () => {
 
     expect(signInWithGoogle).toHaveBeenCalledOnce();
     expect(onStart).toHaveBeenCalledOnce();
-    const button = screen.getByRole('button', { name: 'Reindirizzamento a Google…' });
+    const button = screen.getByRole('button', {
+      name: 'Reindirizzamento a Google…',
+    });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute('aria-busy', 'true');
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('should hand the Italian message on and free the button when Google cannot start', async () => {
-    signInWithGoogle.mockResolvedValue({ ok: false, message: 'Accesso con Google non riuscito. Riprova.' });
+  it('should hand the message code on and free the button when Google cannot start', async () => {
+    signInWithGoogle.mockResolvedValue({ ok: false, code: 'googleFailed' });
     const user = userEvent.setup();
     render(<SinopiaGoogleButton onStart={onStart} onError={onError} />);
 
     await user.click(screen.getByRole('button', { name: 'Continua con Google' }));
 
-    expect(onError).toHaveBeenCalledWith('Accesso con Google non riuscito. Riprova.');
+    expect(onError).toHaveBeenCalledWith('googleFailed');
     expect(screen.getByRole('button', { name: 'Continua con Google' })).toBeEnabled();
   });
 
@@ -69,5 +81,29 @@ describe('SinopiaGoogleButton', () => {
     render(<SinopiaGoogleButton isDisabled onStart={onStart} onError={onError} />);
 
     expect(screen.getByRole('button', { name: 'Continua con Google' })).toBeDisabled();
+  });
+});
+
+describe.each([
+  {
+    language: 'it',
+    idle: 'Continua con Google',
+    busy: 'Reindirizzamento a Google…',
+  },
+  {
+    language: 'en',
+    idle: 'Continue with Google',
+    busy: 'Redirecting to Google…',
+  },
+] as const)('SinopiaGoogleButton in $language', ({ language, idle, busy }) => {
+  it('should write its label in the language of the screen', async () => {
+    setLanguage(language);
+    signInWithGoogle.mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+    render(<SinopiaGoogleButton onStart={onStart} onError={onError} />);
+
+    await user.click(screen.getByRole('button', { name: idle }));
+
+    expect(screen.getByRole('button', { name: busy })).toBeDisabled();
   });
 });

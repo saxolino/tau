@@ -5,6 +5,7 @@ import { defaultPanelState } from '#constants/editor.constants.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { useCookie } from '#hooks/use-cookie.js';
 import { sidebarDefaultOpen, sidebarPreferredWidth } from '#constants/sidebar.constants.js';
+import { useTranslation } from '#i18n/translate.js';
 import { ChatPaneSkeleton } from '#routes/w.$workspace.$project/chat-pane-skeleton.js';
 
 const { chatWidth, workbenchWidth } = defaultPanelState.desktopLayout;
@@ -59,6 +60,7 @@ export function WorkspaceSkeleton({
 }: {
   readonly withShellFrame?: boolean;
 } = {}): React.JSX.Element {
+  const { t } = useTranslation();
   /* The shell's own source for the sidebar's resting state, so a collapsed sidebar gets no stand-in. */
   const [isSidebarOpen] = useCookie(cookieName.sidebarOp, sidebarDefaultOpen);
   const isDelayed = useSyncExternalStore(subscribeToNothing, isWithinRevealDelay, holdOnServer);
@@ -67,7 +69,7 @@ export function WorkspaceSkeleton({
     <div
       role='status'
       aria-busy='true'
-      aria-label='Opening project'
+      aria-label={t('project.opening')}
       data-testid='workspace-skeleton'
       className={cn(
         '@container bg-background max-md:absolute max-md:inset-0',

@@ -97,6 +97,9 @@
   --focus-outline-width: 2px;
   --focus-outline-offset: calc(-1 * var(--focus-outline-width));
   --focus-outline-offset-outside: var(--focus-outline-width);
+  /* SinopiaCAD: the width of every 1px hairline (`border`, `divide-*`). `prefers-contrast: more` doubles it below,
+     inside the current theme, instead of switching to another palette (UI-UX-SinopiaCAD §1.2). */
+  --hairline-width: 1px;
   /* FADE LABEL — one-line labels that use their whole row.
      A name column that stops short of the trailing controls wastes the width it reserves, and an
      ellipsis cuts the name at a hard edge. Instead the label runs to the row's edge and dissolves,
@@ -196,34 +199,11 @@
 
 .black,
 :root[class~='black'] {
-  --c-paper: 0;
-  --l-base: 0;
-  --l-surface: 0.075;
-  /* Luminance is cubic in OKLCH lightness, so a delta that separates an edge or a
-     hover fill on the dark surface (0.19) collapses on pure black: the old values
-     left every edge and hover between 1.03 and 1.08 against the background, where
-     dark sits at 1.14-1.43. These are solved to reproduce dark's own ratios over a
-     0 background, so black keeps its surfaces and regains its affordances. */
-  --l-subtle: 0.278;
-  --l-element: 0.2;
-  --l-medium: 0.5;
-  --l-emphasized: 0.65;
-  --l-high: 0.82;
-  --l-sidebar-foreground: 0.82;
-  --l-intense: 0.95;
-  --l-deepest: 0.95;
-  --background: oklch(0 0 none);
-  --muted: oklch(var(--l-surface) 0 none);
-  --input: oklch(var(--l-subtle) 0 none);
-  --border: oklch(var(--l-subtle) 0 none);
-  --accent: oklch(0.261 0 none);
-  --secondary: oklch(0.19 0 none);
-  --neutral: oklch(0.44 0 none);
-  --sidebar-background: oklch(0.035 0 none);
-  --sidebar-border: oklch(0.257 0 none);
-  --sidebar-accent: oklch(0.232 0 none);
-  --card: oklch(var(--l-base) 0 none);
-  --popover: oklch(var(--l-base) 0 none);
+  /* SinopiaCAD: Nero is Sinopia's warm charcoal (#11100F), not Tau's pure black. Black always sits on Dark, so it
+     keeps Dark's Sinopia scale and paper tint; these restate its anchors so the class reads as the Nero theme. */
+  --c-paper: 0.006;
+  --l-base: 0.171;
+  --background: oklch(var(--l-base) var(--c-paper) var(--hue-paper));
 }
 
 .high-contrast,
@@ -266,88 +246,24 @@
   --chart-5: oklch(0.8 0.16 30deg);
 }
 
+/* SinopiaCAD: Chiaro and Nero each pass WCAG AA on their own. More contrast from the operating system keeps the
+   current theme and its colours, and only thickens hairlines (1 px to 2 px) and the focus outline (2 px to 3 px), with
+   hairlines dark or light enough to read at 3:1 (UI-UX-SinopiaCAD §1.2). Tau's `high-contrast` class stays above,
+   unreachable from the interface. */
 @media (prefers-contrast: more) {
   :root {
-    --c-paper: 0;
-    --l-base: 1;
-    --l-surface: 0.94;
-    --l-subtle: 0.58;
-    --l-element: 0.82;
-    --l-medium: 0.42;
-    --l-emphasized: 0.4;
-    --l-high: 0.14;
-    --l-sidebar-foreground: 0.14;
-    --l-intense: 0.08;
-    --l-deepest: 0.08;
-    --l-primary: 0.4;
-    --background: oklch(var(--l-base) 0 none);
-    --muted: oklch(var(--l-surface) 0 none);
-    --input: oklch(var(--l-subtle) 0 none);
-    --border: oklch(var(--l-subtle) 0 none);
-    --accent: oklch(var(--l-element) 0 none);
-    --neutral: oklch(var(--l-medium) 0 none);
-    --popover: oklch(0.96 0 none);
-    --card: oklch(0.96 0 none);
-    --menu-ring: color-mix(in oklch, black 55%, var(--popover));
-    --menu-highlight: color-mix(in oklch, black 14%, var(--popover));
-    --destructive-surface: color-mix(in oklch, var(--destructive) 25%, var(--popover));
-    --destructive-foreground: color-mix(in oklch, var(--foreground) 5%, var(--destructive));
-    --sidebar-background: oklch(0.96 0 none);
-    --sidebar-border: oklch(var(--l-subtle) 0 none);
-    --sidebar-accent: oklch(0.82 0 none);
-    --chart-1: oklch(0.42 0.16 250deg);
-    --chart-2: oklch(0.42 0.16 290deg);
-    --chart-3: oklch(0.42 0.14 180deg);
-    --chart-4: oklch(0.42 0.16 150deg);
-    --chart-5: oklch(0.42 0.18 30deg);
+    --hairline-width: 2px;
+    --focus-outline-width: 3px;
+    --border: oklch(0.6 var(--c-paper) var(--hue-paper));
+    --input: oklch(0.6 var(--c-paper) var(--hue-paper));
+    --sidebar-border: oklch(0.6 var(--c-paper) var(--hue-paper));
   }
 
   .dark,
   :root[class~='dark'] {
-    --c-paper: 0;
-    --l-base: 0.06;
-    --l-surface: 0.15;
-    --l-subtle: 0.55;
-    --l-element: 0.3;
-    --l-medium: 0.72;
-    --l-emphasized: 0.82;
-    --l-high: 0.95;
-    --l-sidebar-foreground: 0.95;
-    --l-intense: 1;
-    --l-deepest: 1;
-    --l-primary: 0.4;
-    --l-highlighter: 0.78;
-    --background: oklch(var(--l-base) 0 none);
-    --muted: oklch(var(--l-surface) 0 none);
-    --input: oklch(var(--l-subtle) 0 none);
-    --border: oklch(var(--l-subtle) 0 none);
-    --accent: oklch(var(--l-element) 0 none);
-    --neutral: oklch(var(--l-medium) 0 none);
-    --popover: oklch(0.12 0 none);
-    --card: oklch(0.12 0 none);
-    --menu-ring: color-mix(in oklch, white 70%, var(--popover));
-    --menu-highlight: color-mix(in oklch, white 20%, var(--popover));
-    --destructive-surface: color-mix(in oklch, var(--destructive) 35%, var(--popover));
-    --destructive-foreground: color-mix(in oklch, var(--foreground) 50%, var(--destructive));
-    --sidebar-background: oklch(0.1 0 none);
-    --sidebar-border: oklch(var(--l-subtle) 0 none);
-    --sidebar-accent: oklch(0.28 0 none);
-    --sidebar-primary-foreground: oklch(var(--l-base) 0 none);
-    --chart-1: oklch(0.8 0.14 250deg);
-    --chart-2: oklch(0.8 0.14 290deg);
-    --chart-3: oklch(0.8 0.12 180deg);
-    --chart-4: oklch(0.8 0.14 150deg);
-    --chart-5: oklch(0.8 0.16 30deg);
-  }
-
-  .black,
-  :root[class~='black'] {
-    --l-base: 0;
-    --background: oklch(0 0 none);
-    --muted: oklch(0.12 0 none);
-    --popover: oklch(0.09 0 none);
-    --card: oklch(0.09 0 none);
-    --sidebar-background: oklch(0.035 0 none);
+    --border: oklch(0.52 var(--c-paper) var(--hue-paper));
+    --input: oklch(0.52 var(--c-paper) var(--hue-paper));
+    --sidebar-border: oklch(0.52 var(--c-paper) var(--hue-paper));
   }
 }
 
@@ -578,6 +494,8 @@
   --shadow-menu: 0 0 0 1px var(--menu-ring), 0 6px 20px -4px rgba(0, 0, 0, 0.25);
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Every bare `border`/`divide-*` hairline follows `--hairline-width`, so more contrast can thicken them all. */
+  --default-border-width: var(--hairline-width);
   --color-*: initial;
   --color-black: black;
   --color-white: white;

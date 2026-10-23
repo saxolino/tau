@@ -14,6 +14,7 @@ import { toast } from '#components/ui/sonner.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
 import { captureCadImages, captureFilesToDataUrls, omittedSectionCutsNotice } from '#services/headless-capture.js';
 import { recordHeadlessImageTiming } from '#services/headless-image-debug.js';
+import { useTranslation } from '#i18n/translate.js';
 import { attachmentModelForExecution } from '#utils/chat.utils.js';
 
 const useCaptureCurrentViewToChat = (
@@ -95,6 +96,7 @@ export function CaptureViewControl({
 }: {
   readonly captureRendering?: () => Promise<Rendering>;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const { ticked, trigger } = useTickAnimation();
   const handleCapture = useCaptureCurrentViewToChat(trigger, captureRendering);
   const canCapture = useGraphicsSelector((state) => state.context.artifact !== undefined);
@@ -105,15 +107,22 @@ export function CaptureViewControl({
         <Button
           variant='ghost'
           size='icon-sm'
-          aria-label='Capture view to chat'
+          aria-label={t('viewer.snapshotName')}
           aria-disabled={!canCapture}
+          // SinopiaCAD: labelled «Foto» from 520 px of viewer width, as the bar's other tools are.
+          className='gap-1 text-xs @min-[520px]/viewer:w-auto @min-[520px]/viewer:px-2'
           onClick={canCapture ? handleCapture : undefined}
         >
           {ticked ? <Check className='size-4 text-success' /> : <Camera className='size-4' />}
+          <span className='hidden @min-[520px]/viewer:inline'>{t('viewer.snapshot')}</span>
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        {canCapture ? (ticked ? 'Added to chat' : 'Capture view to chat') : 'Available when a model is displayed'}
+        {canCapture
+          ? ticked
+            ? t('viewer.snapshotAdded')
+            : t('viewer.snapshotTooltip')
+          : t('viewer.unavailableWithoutModel')}
       </TooltipContent>
     </Tooltip>
   );

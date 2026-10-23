@@ -137,6 +137,13 @@ export type ParametersSource = Readonly<{
   closeEntry?: (entryPath: string) => void;
   /** The body of an entry's "Quick export" submenu. Absent, the menu has no "Quick export". */
   QuickExport?: ComponentType<Readonly<{ entryPath: string }>>;
+  /**
+   * The name a section shows for its entry, as a host that keeps file names out of sight names it ("Model"). Absent,
+   * the entry's path.
+   */
+  entryTitle?: (entryPath: string) => string;
+  /** The filter's words in the host's language. Absent, "Filter parameters". */
+  filterLabels?: Readonly<{ label: string; placeholder: string }>;
   /** Keeps section expansion and size. A hook: it is called during render. Absent, nothing is kept. */
   usePaneviewPersistence?: () => ParametersPaneviewPersistence;
 }>;

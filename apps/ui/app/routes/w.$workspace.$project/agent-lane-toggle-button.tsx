@@ -9,6 +9,7 @@ import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import type { KeyCombination } from '@taucad/ui/utils/keys';
 import { useLaneToggleFocus } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
 import type { LaneTogglePlace } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
+import { useTranslation } from '#i18n/translate.js';
 
 type Place = LaneTogglePlace;
 
@@ -67,14 +68,25 @@ type AgentLaneToggleButtonProps = {
   readonly onOpenChange: (isOpen: boolean) => void;
   /** The focused chat's sidebar facts, shown on the hidden lane's mount; none on the home, which has no chat yet. */
   readonly facts?: SidebarFacts;
+  /**
+   * How the labelled mount folds to its glyph: below the `viewer` container's `@xl` width by default; the project's
+   * top bar passes its own container's classes.
+   */
+  readonly fold?: Readonly<{ className: string; labelClassName: string }>;
 };
+
+/** The default fold: the label gives way to the glyph where the viewer's header actions do. */
+const viewerFold = {
+  className: '@max-xl/viewer:w-7 @max-xl/viewer:px-0',
+  labelClassName: 'hidden @xl/viewer:inline',
+} as const;
 
 const noFacts: SidebarFacts = { mark: 'none', sentence: undefined };
 
 /**
  * The agent lane's toggle as the project page and the home both draw it: pressed at the end of the lane's header
- * while the lane is open, and labelled "Agente" at the end of the cluster beside it while it is not. The label folds to
- * its glyph below the `viewer` container's `@xl` width.
+ * while the lane is open, and labelled «Agente» · "Agent" elsewhere (the project's top bar, the home's header). The
+ * label folds to its glyph below its container's width (`fold`).
  *
  * @param props - The mount, the lane's state and how to change it.
  * @returns The toggle.
@@ -84,7 +96,9 @@ export function AgentLaneToggleButton({
   isOpen,
   onOpenChange,
   facts = noFacts,
+  fold = viewerFold,
 }: AgentLaneToggleButtonProps): React.JSX.Element {
+  const { t } = useTranslation();
   const sentenceId = useId();
   const { ref, claimFocus } = useLaneToggleFocus('chat', place, isOpen);
   const shownFacts = place === 'viewer' ? facts : noFacts;
@@ -96,16 +110,16 @@ export function AgentLaneToggleButton({
       data-slot='chat-lane-toggle'
       data-place={place}
       size={isInLane ? 'icon' : 'label'}
-      aria-label='Agente'
-      aria-pressed={isOpen}
+      // The lane's own button only hides it, so it says so; the labelled mount is the toggle and carries the state.
+      aria-label={isInLane ? t('project.lanes.hideAgent') : t('project.lanes.agent')}
+      aria-pressed={isInLane ? undefined : isOpen}
       aria-keyshortcuts='Control+C'
       aria-describedby={shownFacts.sentence === undefined ? undefined : sentenceId}
-      // The label folds to its glyph where Share and Export do, below the viewer's `@xl` width.
-      className={cn('aria-pressed:text-foreground', !isInLane && '@max-xl/viewer:w-7 @max-xl/viewer:px-0')}
+      className={cn('aria-pressed:text-foreground', !isInLane && fold.className)}
       tooltipSide={isInLane ? 'left' : 'bottom'}
       tooltip={
         <span className='flex items-center gap-2'>
-          {isOpen ? "Nascondi l'agente" : "Mostra l'agente"}
+          {isOpen ? t('project.lanes.hideAgent') : t('project.lanes.showAgent')}
           <KeyShortcut variant='tooltip'>{formatKeyCombination(toggleChatKeyCombination)}</KeyShortcut>
           {shownFacts.sentence === undefined ? undefined : <span className='opacity-70'>· {shownFacts.sentence}</span>}
         </span>
@@ -123,7 +137,7 @@ export function AgentLaneToggleButton({
             <MessageCircle aria-hidden className='size-3.5' />
             <LaneMark facts={shownFacts} />
           </span>
-          <span className='hidden @xl/viewer:inline'>Agente</span>
+          <span className={fold.labelClassName}>{t('project.lanes.agent')}</span>
         </>
       )}
       {/* Inside the button: `sr-only` is absolutely positioned, and a sibling

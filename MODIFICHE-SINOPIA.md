@@ -344,3 +344,96 @@ La pagina e i suoi dati restano nel codice, per il ridisegno; nessuno la vede n�
   `apps/ui/app/components/share/publication-topbar.test.tsx`, `apps/ui/app/components/layout/app-sidebar.test.tsx`,
   `apps/ui-e2e/src/home-hydration.spec.ts` (titoli della home).
 - Rimosso: `apps/ui/app/routes/_index/new-project-chat-composer-surfaces.test.tsx` (provava il vecchio titolo).
+
+## 23 ottobre 2026 — passo 1 del design: pagina progetto pulita, italiano e inglese, due temi
+
+Primo passo di `UI-UX-SinopiaCAD.md` (§11, punto 1). Tutta l'app parla italiano e inglese; la lingua si sceglie così:
+scelta salvata su questo dispositivo, poi la lingua del browser (`it*` italiano, ogni altra inglese), poi italiano. Si
+cambia dal menu account (e dalla schermata di accesso), si applica subito in tutte le schede, e l'agente risponde nella
+stessa lingua. I temi sono due, Chiaro e Nero (il carbone caldo di Sinopia), più «Sistema»; Scuro e Alto contrasto di
+Tau restano nel codice ma non si scelgono. Con «più contrasto» del sistema operativo il tema non cambia: filettature da
+1 a 2 px, contorno di fuoco da 2 a 3 px, filettature a 3:1. La pagina progetto ha una sola barra in alto: Misure,
+«Progetti › nome» (il nome si rinomina lì), lo stato del salvataggio in parole, Versioni, Esporta, «Invia a Sinopia»
+(presente ma in attesa del passo 6, con il perché nel suggerimento) e Agente. Via il ramo «main», Condividi, le schede
+dei file sopra il modello e «main.ts» in testa alle Misure; la barra della vista dice Adatta, Sezione, Misura, Foto e la
+griglia in mm, senza Schermo intero.
+
+### Lingua (nuovo, dizionario tipizzato senza dipendenze)
+
+- `apps/ui/app/i18n/language.ts` — lingua, ordine di scelta, memoria sul dispositivo, `lang` del documento, sincronia
+  fra schede (`Topic` di `@taucad/events`), `useLanguage`.
+- `apps/ui/app/i18n/translate.ts`, `define-messages.ts`, `catalog.ts` — `useTranslation()`/`t('area.chiave')` con
+  segnaposto `{nome}` tipizzati, `translate()` fuori da React, numeri e ore nel formato della lingua.
+- `apps/ui/app/i18n/messages/` `account.ts`, `auth.ts`, `common.ts`, `home.ts`, `project.ts`, `shell.ts`, `viewer.ts` —
+  i testi IT/EN, un file per area; TypeScript rifiuta un inglese con chiavi mancanti o in più.
+- `apps/ui/app/root-layout.tsx` — `<html lang>` segue la lingua.
+
+### Menu account, temi
+
+- `apps/ui/app/components/auth/sinopia/account-preferences.tsx` (nuovo), `sinopia-user-menu.tsx` — Tema «Chiaro · Nero ·
+  Sistema» e Lingua «Italiano · English» nel menu account, applicati subito.
+- `apps/ui/app/hooks/use-theme.tsx` — scelte Chiaro, Nero, Sistema (Scuro e Alto contrasto si leggono come Nero),
+  nomi tradotti, ciclo a tre.
+- `apps/ui/app/components/settings/general-settings.tsx` — il selettore del tema offre solo quelle tre.
+- `packages/ui/src/styles/tokens.css` — `black` ridefinito come Nero di Sinopia (la scala di Dark, tinta carta);
+  `--hairline-width` e `--default-border-width`; `prefers-contrast: more` senza terza palette.
+- `apps/ui/app/styles/global.css` — via i diagrammi «nero puro»; la barra delle schede del modello nascosta.
+- `docs/policy/color-policy.md` — annotata l'eccezione Nero e «più contrasto».
+
+### Pagina progetto
+
+- `apps/ui/app/routes/w.$workspace.$project/project-top-bar.tsx`, `project-save-status.tsx` (nuovi),
+  `chat-interface-desktop.tsx` — la barra unica in alto e lo stato del salvataggio a frase; la vista senza schede.
+- `project-workspace-actions.tsx`, `project-export-action.tsx`, `chat-viewer-dockview.tsx`, `workbench-toggle.tsx`,
+  `agent-lane-toggle-button.tsx`, `chat-lane-toggle.tsx` — niente ramo, Condividi o interruttori nella barra della vista;
+  gli interruttori Misure e Agente stanno nella barra in alto, il pulsante nella testata della corsia la chiude
+  («Nascondi l'agente», «Nascondi le misure»).
+- `chat-title-bar.tsx`, `chat-history-settings.tsx`, `chat-history.tsx`, `chat-history-empty.tsx`,
+  `workspace-skeleton.tsx`, `project-not-found.tsx`, `chat-viewer-projection-picker.tsx`, `chat-parameters.tsx`,
+  `chat-workbench-dockview.tsx` — testi IT/EN; il menu della conversazione non mostra più modello e crediti; le Misure
+  chiamano la sezione principale «Modello» invece del nome del file.
+- `apps/ui/app/workbench-records/pane-titles.ts`, `apps/ui/app/components/panes/dockview-tab.tsx`,
+  `with-tab-context-menu.tsx` — le schede Misure, Versioni, Esporta nella lingua scelta.
+- `apps/ui/app/components/chat/` `chat-textarea-desktop.tsx`, `chat-textarea-submit-button.tsx`, `chat-textarea.tsx`,
+  `chat-textarea-types.ts`, `tiptap/use-chat-editor.ts`, `new-project-chat-composer.tsx` — casella «Scrivi o detta una
+  modifica…» (home: «Scrivi o detta…»), +, Invia, Ferma in IT/EN.
+- `apps/ui/app/components/geometry/app-viewer-environment.tsx`, `cad/capture-view-control.tsx` — parole della barra della
+  vista e «Foto».
+- `packages/viewer/src/environment/viewer-environment.tsx` e `src/cad/` `fit-view-control.tsx`, `section-view-control.tsx`,
+  `measure-control.tsx`, `grid-control.tsx`, `viewer-settings.tsx`, `viewer-controls.tsx` — `labels` e
+  `showFullscreenControl` per chi incorpora la vista; «Adatta» con etichetta.
+- `packages/workbench-panes/src/parameters/parameters-source.ts`, `parameters-pane.tsx` — `entryTitle` e `filterLabels`.
+
+### Agente nella lingua dell'interfaccia
+
+- `libs/chat/src/schemas/agent-config.schema.ts` — `language: it|en` facoltativo (assente = italiano).
+- `libs/chat/src/prompts/cad-agent.prompt.ts` — il tono non nomina più l'italiano; sezione dinamica `reply_language`
+  (Block 1 resta in cache). Annotata `EVAL(reply-language)`.
+- `apps/ui/app/hooks/use-cad-agent-config.ts`, `apps/ui/app/chat-clients/_internal/turn-body.ts` — la lingua arriva
+  nel prompt.
+
+### Shell, accesso, home (testi IT/EN)
+
+- `apps/ui/app/components/layout/app-sidebar.tsx`, `command-palette.tsx`, `apps/ui/app/root-command-items.tsx`,
+  `apps/ui/app/constants/route.constants.ts`, `apps/ui/app/components/nav/` `nav-chat.tsx`, `nav-main.tsx`,
+  `nav-user.tsx`, `project-navigation.tsx`, `project-chat-list.tsx`, `project-close-dialogs.tsx`,
+  `about-sinopiacad.tsx`, `desktop-update.tsx`, `apps/ui/app/components/cookie-preferences.tsx`.
+- `apps/ui/app/components/auth/sinopia/` `sinopia-login.tsx` (con «Italiano · English» in basso),
+  `sinopia-google-button.tsx`, `sinopia-second-factor.tsx`, `sinopia-access-retry.tsx`, `sinopia-auth-frame.tsx`,
+  `apps/ui/app/lib/sinopia-access.ts`, `sinopia-session.ts` (i messaggi diventano codici tradotti a video).
+- `apps/ui/app/routes/_index/` `sinopia-home.tsx`, `home-image-drop-zone.tsx`, `use-home-image-intake.ts`,
+  `home-agent-lane.tsx`, `home-recent-projects.tsx`.
+
+### Test
+
+- Nuovi: `apps/ui/app/i18n/language.test.ts`, `translate.test.ts`, `apps/ui/app/components/auth/sinopia/`
+  `account-preferences.test.tsx`, `sinopia-access-retry.test.tsx`,
+  `apps/ui/app/components/layout/command-palette.language.test.tsx`,
+  `apps/ui/app/chat-clients/_internal/turn-body.test.ts`, `apps/ui/app/workbench-records/pane-titles.test.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/project-top-bar.test.tsx`, `project-save-status.test.ts`.
+- Aggiornati (testi nelle due lingue, temi, barra): i test accanto a ogni file qui sopra, `apps/ui/app/styles/global.test.ts`,
+  `apps/ui/app/hooks/use-theme.test.tsx`, `libs/chat` (prompt e schema), `packages/viewer/src/cad/fit-view-control.test.tsx`,
+  `packages/workbench-panes/src/parameters/parameters-pane.test.tsx`,
+  `apps/api/app/api/chat/chat.controller.json-schema.test.ts` (istantanea dello schema: `language`, `kernel` facoltativo).
+- `apps/ui-e2e/src/*.spec.ts` (16 file) — nomi accessibili in inglese, la lingua del browser dei test: «Agente» →
+  "Agent", «Misure» → "Measures", titoli della home.

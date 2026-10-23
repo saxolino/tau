@@ -106,8 +106,8 @@ const openSeededChat = async (summary: string): Promise<void> => {
   await target.setViewport({ width: 1440, height: 900 });
   await target.navigate(seedRoute);
   await target.expectUrl(/\/w\/[^/]+\/[^/]+/u, 60_000);
-  await target.expectVisible(selectors.getByCss('[aria-label="Agente"]'), 60_000);
-  await target.click(selectors.getByCss('[aria-label="Agente"]'));
+  await target.expectVisible(selectors.getByCss('[aria-label="Agent"]'), 60_000);
+  await target.click(selectors.getByCss('[aria-label="Agent"]'));
   await target.expectVisible(selectors.getByCss(composer), 60_000);
   await target.click(selectors.getByRole('button', { name: /^decline$/iu }), { timeout: 5000 }).catch(() => undefined);
 };

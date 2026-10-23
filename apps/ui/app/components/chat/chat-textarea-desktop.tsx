@@ -44,6 +44,7 @@ import { createScreenshotContextHandler } from '#components/chat/screenshot-acti
 import { buildPastedContent, commandInvocation } from '#utils/at-reference.utils.js';
 import { skillMetadataToSlashCommand, useSkillsCatalogState } from '#hooks/use-skills-catalog.js';
 import type { ChatContextReference } from '#components/chat/chat-context-insertion.js';
+import { useTranslation } from '#i18n/translate.js';
 
 const dragOverlayCopy: Record<ChatTextareaDragKind, string> = {
   image: 'Add files',
@@ -53,6 +54,8 @@ const dragOverlayCopy: Record<ChatTextareaDragKind, string> = {
 
 type ChatTextareaDesktopProperties = {
   readonly className?: string;
+  /** The empty box's prompt; the project composer's own by default. */
+  readonly placeholder?: string;
   readonly enableAutoFocus?: boolean;
   readonly enableContextActions?: boolean;
   readonly creationLocationControl?: React.ReactNode;
@@ -202,6 +205,7 @@ export const ChatTextareaDesktop = memo(function ({
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
+  placeholder,
   enableMobileCollapse,
   isFocused,
 
@@ -250,6 +254,7 @@ export const ChatTextareaDesktop = memo(function ({
   handleTextareaBlur,
   removeAttachment,
 }: ChatTextareaDesktopProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const catalog = useSkillsCatalogState();
   const skillsCatalog = catalog.status === 'closed' || catalog.status === 'error' ? [] : catalog.commands;
 
@@ -339,7 +344,7 @@ export const ChatTextareaDesktop = memo(function ({
     chats,
     actionItems,
     slashCommandItems,
-    placeholder: mode === 'edit' ? 'Edit your message' : undefined,
+    placeholder: mode === 'edit' ? t('project.agent.editPlaceholder') : placeholder,
     handleImagePaste: handlePaste,
     onContextAction: createScreenshotContextHandler({
       handleAddImage,
@@ -904,6 +909,7 @@ function ChatAddMenu({
   readonly handleFileSelect: () => void;
   readonly focusEditor: () => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const choseItem = useRef(false);
   return (
     <DropdownMenu modal={false}>
@@ -914,14 +920,16 @@ function ChatAddMenu({
               variant='ghost'
               size='sm'
               data-chat-textarea-focustrap
-              aria-label='Add'
+              aria-label={t('project.agent.add')}
               className={cn(ghostPillClass, 'w-7 shrink-0 px-0')}
             >
               <Plus className='size-4' aria-hidden='true' />
             </Button>
           </TooltipTrigger>
         </DropdownMenuTrigger>
-        <TooltipContent>{enableContextActions ? 'Attach a file or add context' : 'Attach a file'}</TooltipContent>
+        <TooltipContent>
+          {enableContextActions ? t('project.agent.addTooltipWithContext') : t('project.agent.addTooltip')}
+        </TooltipContent>
       </Tooltip>
       <DropdownMenuContent
         align='start'
@@ -946,9 +954,9 @@ function ChatAddMenu({
         >
           <Paperclip aria-hidden='true' className='mt-0.5' />
           <span className='flex flex-col'>
-            Attach image or PDF
+            {t('project.agent.attachImage')}
             {isAttachmentSupported ? null : (
-              <span className='text-xs text-muted-foreground'>This model can&apos;t read images or PDFs</span>
+              <span className='text-xs text-muted-foreground'>{t('project.agent.attachUnsupported')}</span>
             )}
           </span>
         </DropdownMenuItem>
@@ -960,7 +968,7 @@ function ChatAddMenu({
             }}
           >
             <AtSign aria-hidden='true' />
-            Add context
+            {t('project.agent.addContext')}
             <DropdownMenuShortcut>@</DropdownMenuShortcut>
           </DropdownMenuItem>
         ) : null}

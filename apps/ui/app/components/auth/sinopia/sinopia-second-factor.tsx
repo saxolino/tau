@@ -6,7 +6,9 @@ import { Input } from '@taucad/ui/components/input';
 import { Label } from '@taucad/ui/components/label';
 import { Spinner } from '#components/ui/spinner.js';
 import { SinopiaAuthFrame } from '#components/auth/sinopia/sinopia-auth-frame.js';
+import { useTranslation } from '#i18n/translate.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
+import type { SinopiaMessageCode } from '#lib/sinopia-access.js';
 import type { SinopiaUser } from '#lib/sinopia-session.js';
 
 const codeLength = 6;
@@ -16,14 +18,15 @@ const normaliseCode = (input: string): string => input.replaceAll(/\D/g, '').sli
 
 /**
  * SinopiaCAD's second-factor step, as sinopialab.com's `MfaChallengeGate`: an account with an authenticator confirms
- * this session with the app's current code before anything of Sinopia's is read for it. «Esci» leaves instead.
+ * this session with the app's current code before anything of Sinopia's is read for it. The sign-out button leaves instead.
  *
  * @param properties - The signed-in account.
  * @returns The second-factor screen.
  */
 export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): React.JSX.Element {
   const [code, setCode] = useState('');
-  const [error, setError] = useState<string | undefined>(undefined);
+  const { t } = useTranslation();
+  const [error, setError] = useState<SinopiaMessageCode | undefined>(undefined);
   const [isPending, setIsPending] = useState(false);
   const titleId = useId();
   const codeId = useId();
@@ -37,7 +40,7 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
       const result = await sinopiaSession().verifySecondFactor(code);
       /* Confirmed, the gate swaps this screen for the access check as the session announces itself. */
       if (!result.ok) {
-        setError(result.message);
+        setError(result.code);
         setCode('');
         setIsPending(false);
       }
@@ -48,8 +51,10 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
   return (
     <SinopiaAuthFrame
       titleId={titleId}
-      title='Conferma la tua identità'
-      description={`L’account ${user.email ?? 'Sinopia'} è protetto da un secondo fattore. Inserisci il codice dell’app di autenticazione per continuare.`}
+      title={t('auth.secondFactor.title')}
+      description={t('auth.secondFactor.description', {
+        email: user.email ?? t('auth.secondFactor.accountFallback'),
+      })}
     >
       <form
         aria-labelledby={titleId}
@@ -59,13 +64,13 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
       >
         <FieldGroup>
           <Field data-invalid={error === undefined ? undefined : true}>
-            <Label htmlFor={codeId}>Codice di verifica</Label>
+            <Label htmlFor={codeId}>{t('auth.secondFactor.codeLabel')}</Label>
             <Input
               id={codeId}
               name='code'
               inputMode='numeric'
               autoComplete='one-time-code'
-              placeholder='Codice a 6 cifre'
+              placeholder={t('auth.secondFactor.codePlaceholder')}
               className='text-center font-mono tabular-nums'
               value={code}
               disabled={isPending}
@@ -78,12 +83,12 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
           </Field>
           {error === undefined ? null : (
             <p id={errorId} role='alert' className='text-sm text-destructive'>
-              {error}
+              {t(`auth.messages.${error}`)}
             </p>
           )}
           <Button type='submit' disabled={isPending || code.length !== codeLength}>
-            {isPending ? <Spinner aria-label='Verifica in corso' /> : null}
-            Continua
+            {isPending ? <Spinner aria-label={t('auth.secondFactor.pending')} /> : null}
+            {t('auth.secondFactor.submit')}
           </Button>
           <Button
             type='button'
@@ -100,7 +105,7 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
               })();
             }}
           >
-            Esci e accedi con un altro account
+            {t('auth.secondFactor.signOut')}
           </Button>
         </FieldGroup>
       </form>

@@ -11,6 +11,15 @@ import { useIsTopLeftGroup } from '#components/panes/use-is-top-right-group.js';
 import { useLaneToggleFocus } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
 import type { LaneTogglePlace } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
 import { useProjectWorkspace, useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { useTranslation } from '#i18n/translate.js';
+
+/** How a labelled mount folds to its glyph; the viewer's header actions' width by default. */
+type ToggleFold = Readonly<{ className: string; labelClassName: string }>;
+
+const viewerFold: ToggleFold = {
+  className: '@max-xl/viewer:w-7 @max-xl/viewer:px-0',
+  labelClassName: 'hidden @xl/viewer:inline',
+};
 
 /** ⌃W toggles the Misure lane; `ChatInterfaceDesktop` binds it, the lane toggle advertises it. */
 export const toggleWorkbenchKeyCombination = {
@@ -20,13 +29,20 @@ export const toggleWorkbenchKeyCombination = {
 
 /**
  * The one control for the Misure lane (the workbench lane, on the left): pressed at the head of the lane's own tab
- * bar while it shows, and at the head of the viewer's tab bar, labelled "Misure", while it does not — so a designer
- * who closed it sees by name where to get it back.
+ * bar while it shows, and at the start of the project's top bar, labelled «Misure» · "Measures", always — so a
+ * designer who closed it sees by name where to get it back.
  *
  * @param props - Which of the two mounts this is.
  * @returns The toggle.
  */
-export function WorkbenchLaneToggle({ place }: { readonly place: LaneTogglePlace }): React.JSX.Element {
+export function WorkbenchLaneToggle({
+  place,
+  fold = viewerFold,
+}: {
+  readonly place: LaneTogglePlace;
+  readonly fold?: ToggleFold;
+}): React.JSX.Element {
+  const { t } = useTranslation();
   const { setWorkbenchOpen } = useProjectWorkspace();
   const { workbench: isOpen } = useWorkspaceLanes();
   const { ref, claimFocus } = useLaneToggleFocus('workbench', place, isOpen);
@@ -38,14 +54,14 @@ export function WorkbenchLaneToggle({ place }: { readonly place: LaneTogglePlace
       data-slot='workbench-lane-toggle'
       data-place={place}
       size={isInLane ? 'icon' : 'label'}
-      aria-label='Misure'
-      aria-pressed={isOpen}
+      // The lane's own button only hides it, so it says so; the labelled mount is the toggle and carries the state.
+      aria-label={isInLane ? t('project.lanes.hideMeasures') : t('project.lanes.measures')}
+      aria-pressed={isInLane ? undefined : isOpen}
       aria-keyshortcuts='Control+W'
-      // The label folds to its glyph where Share and Export do, below the viewer's `@xl` width.
-      className={cn('aria-pressed:text-foreground', !isInLane && '@max-xl/viewer:w-7 @max-xl/viewer:px-0')}
+      className={cn('aria-pressed:text-foreground', !isInLane && fold.className)}
       tooltip={
         <span className='flex items-center gap-2'>
-          {isOpen ? 'Nascondi le misure' : 'Mostra le misure'}
+          {isOpen ? t('project.lanes.hideMeasures') : t('project.lanes.showMeasures')}
           <KeyShortcut variant='tooltip'>{formatKeyCombination(toggleWorkbenchKeyCombination)}</KeyShortcut>
         </span>
       }
@@ -59,7 +75,7 @@ export function WorkbenchLaneToggle({ place }: { readonly place: LaneTogglePlace
       ) : (
         <>
           <SlidersHorizontal aria-hidden className='size-3.5' />
-          <span className='hidden @xl/viewer:inline'>Misure</span>
+          <span className={fold.labelClassName}>{t('project.lanes.measures')}</span>
         </>
       )}
     </PaneButton>
@@ -74,23 +90,6 @@ const LaneTogglePrefix = ({ place }: { readonly place: LaneTogglePlace }): React
     <Separator orientation='vertical' className='data-[orientation=vertical]:h-4' />
   </div>
 );
-
-/**
- * The viewer's tab-bar prefix: the Misure toggle at the head of the top-left group, on desktop, while the Misure
- * lane is hidden.
- *
- * @param properties - Dockview's header-action props for the group.
- * @returns The toggle, or nothing in every other group and state.
- */
-export function ViewerWorkbenchLaneToggle(properties: IDockviewHeaderActionsProps): React.JSX.Element | undefined {
-  const isTopLeft = useIsTopLeftGroup(properties.group, properties.containerApi);
-  const { workbench: isWorkbenchVisible } = useWorkspaceLanes();
-  const { isMobile } = useSidebar();
-  if (!isTopLeft || isWorkbenchVisible || isMobile) {
-    return undefined;
-  }
-  return <LaneTogglePrefix place='viewer' />;
-}
 
 /**
  * The Misure lane's own tab-bar prefix: the toggle at the head of its top-left group while the lane shows.

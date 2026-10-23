@@ -237,6 +237,13 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
               ],
               "type": "string",
             },
+            "language": {
+              "enum": [
+                "it",
+                "en",
+              ],
+              "type": "string",
+            },
             "mode": {
               "enum": [
                 "agent",
@@ -1062,7 +1069,6 @@ describe('chatTurnRequestSchema JSON Schema contract (R13)', () => {
           "required": [
             "profile",
             "execution",
-            "kernel",
             "mode",
             "toolChoice",
             "testingEnabled",

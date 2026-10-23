@@ -11,7 +11,7 @@ import {
 import { useChatContext, useChatSelector } from '#hooks/use-chat.js';
 import { useChatRecords } from '#hooks/use-chat-records.js';
 import { useProject } from '#hooks/use-project.js';
-import { ChatOptionsMeta } from '#routes/w.$workspace.$project/chat-options-meta.js';
+import { useTranslation } from '#i18n/translate.js';
 import { downloadBlob } from '@taucad/utils/file';
 import { serializeTranscript } from '#utils/chat.utils.js';
 import { toSnakeCase } from '#utils/string.utils.js';
@@ -34,7 +34,8 @@ export function ChatHistorySettings({ onRename }: { readonly onRename: () => voi
     history: 'push',
   });
   const { chats } = useChatRecords(projectId);
-  const chatName = chats.find((c) => c.id === activeChatId)?.name ?? 'Chat Transcript';
+  const { t } = useTranslation();
+  const chatName = chats.find((c) => c.id === activeChatId)?.name ?? t('project.agent.chatFallback');
 
   const handleExport = useCallback(() => {
     if (!chat) {
@@ -51,7 +52,11 @@ export function ChatHistorySettings({ onRename }: { readonly onRename: () => voi
 
   return (
     <DropdownMenu modal={false}>
-      <FloatingPanelMenuButton asChild tooltip='Chat options' aria-label='Chat options'>
+      <FloatingPanelMenuButton
+        asChild
+        tooltip={t('project.agent.chatOptions')}
+        aria-label={t('project.agent.chatOptions')}
+      >
         <DropdownMenuTrigger>
           <EllipsisVertical className='size-4' />
         </DropdownMenuTrigger>
@@ -66,11 +71,11 @@ export function ChatHistorySettings({ onRename }: { readonly onRename: () => voi
       >
         <DropdownMenuItem onSelect={onRename}>
           <Pencil />
-          Rename
+          {t('project.agent.rename')}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!chat || messages.length === 0} onSelect={handleExport}>
           <Download />
-          Export transcript
+          {t('project.agent.exportTranscript')}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -79,9 +84,9 @@ export function ChatHistorySettings({ onRename }: { readonly onRename: () => voi
           }}
         >
           <Archive />
-          Archived chats
+          {t('project.agent.archivedChats')}
         </DropdownMenuItem>
-        <ChatOptionsMeta />
+        {/* SinopiaCAD: no model name and no credits here (UI-UX-SinopiaCAD §1.3; credits wait for pricing). */}
       </DropdownMenuContent>
     </DropdownMenu>
   );

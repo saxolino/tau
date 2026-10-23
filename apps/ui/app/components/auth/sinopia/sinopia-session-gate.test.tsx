@@ -2,7 +2,8 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import type { SinopiaSessionState } from '#lib/sinopia-session.js';
 import { SinopiaSessionGate } from '#components/auth/sinopia/sinopia-session-gate.js';
 
@@ -37,7 +38,13 @@ const renderGate = (address = '/') =>
     </MemoryRouter>,
   );
 
+beforeEach(() => {
+  setLanguage('it');
+});
+
 afterEach(() => {
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
   sinopia.state = { status: 'checking' };
   sinopia.returnTo = undefined;
   session.settleReturn.mockReset();
@@ -50,7 +57,12 @@ describe('SinopiaSessionGate', () => {
 
     renderGate();
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Accedi con il tuo account Sinopia' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: 'Accedi con il tuo account Sinopia',
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continua con Google' })).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toHaveAttribute('type', 'email');
     expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password');
@@ -58,11 +70,11 @@ describe('SinopiaSessionGate', () => {
   });
 
   it('should hand the sign-in screen why the last account was signed out', () => {
-    sinopia.state = { status: 'signed-out', notice: { message: 'Sei in lista d’attesa per la beta di Sinopia.' } };
+    sinopia.state = { status: 'signed-out', notice: { code: 'waitlisted' } };
 
     renderGate();
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Sei in lista d’attesa per la beta di Sinopia.');
+    expect(screen.getByRole('alert')).toHaveTextContent('Sei in lista d’attesa su Sinopia.');
   });
 
   it('should open the workspace when signed in', () => {
@@ -71,7 +83,11 @@ describe('SinopiaSessionGate', () => {
     renderGate();
 
     expect(screen.getByText('Workspace')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Accedi con il tuo account Sinopia' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        name: 'Accedi con il tuo account Sinopia',
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("should show the caller's placeholder while the stored session is read or the account checked", () => {
@@ -79,7 +95,11 @@ describe('SinopiaSessionGate', () => {
 
     expect(screen.getByText('Caricamento del progetto')).toBeInTheDocument();
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Accedi con il tuo account Sinopia' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        name: 'Accedi con il tuo account Sinopia',
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it('should ask for the second factor before opening the workspace', () => {
@@ -87,7 +107,12 @@ describe('SinopiaSessionGate', () => {
 
     renderGate();
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Conferma la tua identità' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: 'Conferma la tua identità',
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Codice di verifica')).toHaveAttribute('autocomplete', 'one-time-code');
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
@@ -99,7 +124,12 @@ describe('SinopiaSessionGate', () => {
 
     await user.click(screen.getByRole('button', { name: 'Riprova' }));
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Non riesco a verificare l’accesso' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: 'Non riesco a controllare il tuo account',
+      }),
+    ).toBeInTheDocument();
     expect(session.retryAccess).toHaveBeenCalledOnce();
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
@@ -118,6 +148,21 @@ describe('SinopiaSessionGate', () => {
     await vi.waitFor(() => {
       expect(session.settleReturn).toHaveBeenCalledWith('/w/studio/scarpa?chat=uno#vista');
     });
+  });
+
+  it('should show the sign-in screen and the notice in English when that is the language', () => {
+    setLanguage('en');
+    sinopia.state = { status: 'signed-out', notice: { code: 'waitlisted' } };
+
+    renderGate();
+
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: 'Sign in with your Sinopia account',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('You’re on the Sinopia waiting list.');
   });
 
   it('should gate nothing without a Sinopia project', () => {

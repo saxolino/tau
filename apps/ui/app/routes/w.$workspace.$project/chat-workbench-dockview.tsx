@@ -56,7 +56,7 @@ import { toast } from 'sonner';
 import { generatePrefixedId } from '@taucad/utils/id';
 import type { WorkbenchLaneNode } from '@taucad/workbench';
 import { fromDockview, toDockview } from '#workbench-records/converters.js';
-import { paneTitle } from '#workbench-records/pane-titles.js';
+import { paneTabTitle, paneTitle } from '#workbench-records/pane-titles.js';
 import {
   languageFromExtension,
   tauFileDragMime,
@@ -884,6 +884,8 @@ export const getWorkbenchTabIcon: DockviewTabIconRenderer = (properties) => {
 
 export const WorkbenchDockviewTab = withTabContextMenu(WorkbenchTabContextMenu, {
   getIcon: getWorkbenchTabIcon,
+  // SinopiaCAD: Misure, Versioni, Esporta… in the interface language, whatever title the layout stored.
+  getTitle: (properties, language) => paneTabTitle(properties.api.component, language),
 });
 
 const tabComponents = { editor: WorkbenchDockviewTab };

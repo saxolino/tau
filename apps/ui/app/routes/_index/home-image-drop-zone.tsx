@@ -6,7 +6,8 @@ import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import { AttachmentImage, homeComposerAttachmentDirectory } from '#components/chat/attachment-preview.js';
 import { useDraftSelector } from '#hooks/use-chat.js';
 import { attachmentUrl } from '#utils/attachment.utils.js';
-import { homeImageAccept, homeImageLimitsLabel } from '#routes/_index/use-home-image-intake.js';
+import { useTranslation } from '#i18n/translate.js';
+import { homeImageAccept } from '#routes/_index/use-home-image-intake.js';
 
 const pasteKeyCombination = { key: 'v', modKey: true } as const;
 
@@ -26,6 +27,7 @@ type HomeImageDropZoneProps = {
  * @returns The hero.
  */
 export function HomeImageDropZone({ isDragging, onChooseFiles }: HomeImageDropZoneProps): React.JSX.Element {
+  const { t } = useTranslation();
   const headingId = useId();
   const hintId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -45,12 +47,9 @@ export function HomeImageDropZone({ isDragging, onChooseFiles }: HomeImageDropZo
   return (
     <section aria-labelledby={headingId} className='mx-auto w-full max-w-3xl pt-8 md:pt-16'>
       <h1 id={headingId} className='text-4xl leading-[1.1] font-medium tracking-tight text-balance'>
-        Dall’immagine al CAD
+        {t('home.title')}
       </h1>
-      <p className='mt-3 max-w-prose text-base text-muted-foreground'>
-        Porta la foto o il disegno di un gioiello o di un accessorio, aggiungi due parole scritte o dettate: l’agente
-        costruisce il CAD in pezzi, ognuno con il suo nome.
-      </p>
+      <p className='mt-3 max-w-prose text-base text-muted-foreground'>{t('home.subtitle')}</p>
       <div
         data-slot='home-drop-zone'
         data-dragging={isDragging}
@@ -61,11 +60,12 @@ export function HomeImageDropZone({ isDragging, onChooseFiles }: HomeImageDropZo
       >
         <ImageUp aria-hidden className='size-8 text-muted-foreground' />
         <div className='space-y-1'>
-          <p className='text-base font-medium'>
-            {isDragging ? 'Lascia qui l’immagine' : 'Trascina qui la foto o il disegno'}
-          </p>
+          <p className='text-base font-medium'>{isDragging ? t('home.dropZone.drop') : t('home.dropZone.dragHere')}</p>
           <p id={hintId} className='text-sm text-muted-foreground'>
-            oppure incollala con {formatKeyCombination(pasteKeyCombination)} · {homeImageLimitsLabel}
+            {t('home.dropZone.pasteHint', {
+              shortcut: formatKeyCombination(pasteKeyCombination),
+              limits: t('home.dropZone.limits'),
+            })}
           </p>
         </div>
         <Button
@@ -75,7 +75,7 @@ export function HomeImageDropZone({ isDragging, onChooseFiles }: HomeImageDropZo
           }}
         >
           <ImagePlus aria-hidden />
-          Scegli un’immagine
+          {t('home.dropZone.choose')}
         </Button>
         <input
           ref={inputRef}
@@ -95,13 +95,16 @@ export function HomeImageDropZone({ isDragging, onChooseFiles }: HomeImageDropZo
           }}
         />
         {images.length > 0 ? (
-          <ul aria-label='Immagini per l’agente' className='flex flex-wrap justify-center gap-2'>
+          <ul aria-label={t('home.dropZone.imagesForAgent')} className='flex flex-wrap justify-center gap-2'>
             {images.map((image) => (
               <li key={image.hash} className='size-16 overflow-hidden rounded-md border'>
                 <AttachmentImage
                   directory={homeComposerAttachmentDirectory}
-                  part={{ url: attachmentUrl(image), mediaType: image.mediaType }}
-                  alt={image.filename ?? 'Immagine allegata'}
+                  part={{
+                    url: attachmentUrl(image),
+                    mediaType: image.mediaType,
+                  }}
+                  alt={image.filename ?? t('home.dropZone.attachedImage')}
                   className='size-full object-cover'
                 />
               </li>
@@ -109,7 +112,7 @@ export function HomeImageDropZone({ isDragging, onChooseFiles }: HomeImageDropZo
           </ul>
         ) : null}
       </div>
-      <p className='mt-3 text-sm text-muted-foreground'>Vanno bene anche le immagini salvate dal Creator di Sinopia.</p>
+      <p className='mt-3 text-sm text-muted-foreground'>{t('home.dropZone.fromCreator')}</p>
     </section>
   );
 }

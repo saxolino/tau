@@ -21,6 +21,7 @@ import type { cadMachine } from '#machines/cad.machine.js';
 import { setLocalInstanceChoice, useLocalInstanceChoice } from '#workbench-records/local-instance.js';
 import { newViewRecord } from '#workbench-records/projection.js';
 import { useWorkbenchViewCommands } from '#workbench-records/view-actions.js';
+import { useTranslation } from '#i18n/translate.js';
 
 type ViewOffer = Extract<Evaluation, { success: true }>['views'][number];
 
@@ -142,11 +143,17 @@ function ViewMenu({
   readonly boundary: HTMLElement | undefined;
   readonly onChoose: (id: string) => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const isUnavailable = selected !== undefined && !views.some((view) => view.id === selected);
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <Button variant='ghost' size='icon-sm' aria-label={`View: ${title}`} className={menuTriggerClassName}>
+        <Button
+          variant='ghost'
+          size='icon-sm'
+          aria-label={t('viewer.viewMenu', { title })}
+          className={menuTriggerClassName}
+        >
           <Box aria-hidden='true' className='size-4 shrink-0' />
           <span className='truncate'>{title}</span>
           <ChevronDown aria-hidden='true' className='size-3 shrink-0' />
@@ -160,7 +167,7 @@ function ViewMenu({
         collisionBoundary={boundary}
         aria-label='Pane view'
       >
-        <DropdownMenuLabel>View</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('viewer.view')}</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={selected ?? views[0]?.id ?? ''} onValueChange={onChoose}>
           {isUnavailable ? (
             <DropdownMenuRadioItem disabled value={selected}>
