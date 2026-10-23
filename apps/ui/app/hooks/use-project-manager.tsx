@@ -99,6 +99,16 @@ import { selectWorkspaceConnectionState, workspaceConnectionMachine } from '#hoo
 import { useWorkspaceTelemetry } from '#utils/workspace-telemetry.utils.js';
 import { tauCloudIntent, withNamedLock } from '#hooks/use-cloud-projects.js';
 import { getChatRecencyAt } from '#utils/chat-recency.utils.js';
+import { sinopiaSession } from '#lib/sinopia-session.js';
+import { canReadSinopiaCadProject, sinopiaProjectListingKey } from '#services/sinopia-cad-access.js';
+import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
+import {
+  createSinopiaCadLink,
+  readSinopiaCadLink,
+  sinopiaCadLinkPath,
+  sinopiaCadLinkSchema,
+  sinopiaCadLocalId,
+} from '#services/sinopia-cad.js';
 import type {
   PreparedWorkspaceCatalog,
   RegisteredWorkspace,
@@ -124,6 +134,8 @@ const attachmentSourceOf = (options: CreateProjectChatOptions): { attachmentSour
  * with `Chat.startupRequest`; plain pending messages are display state only.
  */
 type CreateProjectChatOptions = {
+  /** The owned Sinopia project selected with the reference images. */
+  sinopiaProjectId?: string;
   /** If provided, add to chat and seed a one-shot startup request. */
   initialMessage?: {
     content: string;
@@ -183,6 +195,8 @@ type CreateProjectChatOptions = {
 type CreateProjectFromKernel = CreateProjectChatOptions & {
   /** The kernel whose empty starter file and manifest the new project gets; it does not pin the chat's engine. */
   kernel: KernelProvider;
+  /** Additional reference images, combined with the generated starter files. */
+  files?: Record<string, { content: Uint8Array<ArrayBuffer>; mode?: '100644' | '100755' }>;
   /** Override default project name */
   projectName?: string;
 };
@@ -750,7 +764,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       createChatFileStore({
         client: fileManager.recordFiles,
         projectIds: async () =>
-          (queryClient.getQueryData<ProjectListing>(['projects'])?.projects ?? []).map((entry) => entry.projectId),
+          (queryClient.getQueryData<ProjectListing>(sinopiaProjectListingKey())?.projects ?? []).map(
+            (entry) => entry.projectId,
+          ),
       }),
     [fileManager.recordFiles, queryClient],
   );
@@ -1071,9 +1087,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           }
         };
         const home = channel.watchReady({ paths: [''], recursive: true }, onEvent);
-        let listing = queryClient.getQueryData<ProjectListing>(['projects']);
+        let listing = queryClient.getQueryData<ProjectListing>(sinopiaProjectListingKey());
         const synchronize = (): void => {
-          const next = queryClient.getQueryData<ProjectListing>(['projects']);
+          const next = queryClient.getQueryData<ProjectListing>(sinopiaProjectListingKey());
           if (next === listing) {
             return;
           }
@@ -1082,7 +1098,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           invalidate();
         };
         const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-          if (event.query.queryKey.length === 1 && event.query.queryKey[0] === 'projects') {
+          const scopeKey = sinopiaProjectListingKey();
+          if (
+            event.query.queryKey.length === scopeKey.length &&
+            scopeKey.every((part, index) => part === event.query.queryKey[index])
+          ) {
             synchronize();
           }
         });
@@ -1112,7 +1132,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       },
       read: async (read) => {
         const { isCurrent } = read;
-        const listing = queryClient.getQueryData<ProjectListing>(['projects']);
+        const listing = queryClient.getQueryData<ProjectListing>(sinopiaProjectListingKey());
         const ids = new Set(listing ? listing.projects.map(({ projectId }) => projectId) : resources.keys());
         for (const id of resources.keys()) {
           if (!ids.has(id)) {
@@ -1442,6 +1462,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const createProjectOnce = useCallback(
     async (options: CreateProjectOptions): Promise<CreatedProject> => {
+      const creatingAccount = sinopiaSession().getState();
       /* The id is a directory here and a repository name on the Tau Hosted
          Remote, so a supplied one is checked against the same rule a minted one
          satisfies — before anything is readied, allocated or written (W18 DEF-2). */
@@ -1526,11 +1547,28 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           template: await getKernelProjectTemplate(options.kernel),
         });
         projectData = result.projectData;
-        files = result.files;
+        files = { ...result.files, ...options.files };
       } else {
         // CreateProjectFromData: Use provided project data and files
         projectData = options.project;
         files = options.files;
+      }
+
+      if (creatingAccount.status === 'signed-in') {
+        await requireSinopiaUser(creatingAccount.user.id);
+      }
+      const account = sinopiaSession().getState();
+      const importedLink = files[sinopiaCadLinkPath];
+      if (account.status === 'signed-in') {
+        const link =
+          importedLink === undefined
+            ? await createSinopiaCadLink(projectData.name, options.sinopiaProjectId)
+            : sinopiaCadLinkSchema.parse(JSON.parse(new TextDecoder().decode(importedLink.content)));
+        if (link.userId !== account.user.id) {
+          throw new Error('SINOPIA_OWNER_MISMATCH');
+        }
+        files = { ...files, [sinopiaCadLinkPath]: { content: new TextEncoder().encode(JSON.stringify(link)) } };
+        sinopiaCadLocalId.set(link.userId, link.modelId, projectId);
       }
 
       const manifest = projectToManifest(projectData);
@@ -1594,7 +1632,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
          supplies the id is adopting an identity that has a remote of its own (a
          Tau Cloud open, a materialized project, a linked GitHub import), so it
          is left alone. The session decides once it knows the account (W11). */
-      if (options.id === undefined) {
+      if (options.id === undefined && account.status === 'disabled') {
         tauCloudIntent.set(projectId, 'default');
       }
       /* Route callers navigate with the returned slugs immediately. Publish
@@ -2019,10 +2057,18 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const getProject = useCallback(
     async (projectId: string): Promise<Project | undefined> => {
+      const account = sinopiaSession().getState();
+      const expectedUserId = account.status === 'signed-in' ? account.user.id : undefined;
+      if (!(await canReadSinopiaCadProject(fileManager.recordFiles, projectId, expectedUserId))) {
+        return undefined;
+      }
       const read = await readProjectManifest(projectId);
+      if (expectedUserId !== undefined) {
+        await requireSinopiaUser(expectedUserId);
+      }
       return read === undefined ? undefined : { ...read.data, id: projectId };
     },
-    [readProjectManifest],
+    [readProjectManifest, fileManager.recordFiles],
   );
 
   /**
@@ -2088,8 +2134,16 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const getProjectRouteAccess = useCallback(
     async (projectId: string): Promise<ProjectRouteAccess> => {
+      const routeAccount = sinopiaSession().getState();
+      const expectedUserId = routeAccount.status === 'signed-in' ? routeAccount.user.id : undefined;
       await ensureDiscoveryReady();
+      if (!(await canReadSinopiaCadProject(fileManager.recordFiles, projectId, expectedUserId))) {
+        return { status: 'unavailable' };
+      }
       const worker = await getReadiedWorker();
+      if (expectedUserId !== undefined) {
+        await requireSinopiaUser(expectedUserId);
+      }
       // A manifest/root event can supersede a shared pass while it is in flight.
       /* oxlint-disable no-await-in-loop -- A route must retry sequentially until its discovery epoch is current. */
       for (;;) {
@@ -2121,6 +2175,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           const library = await ensureProjectLibraryState(worker, projectId);
           if (epoch !== discoveryEpochRef.current) {
             continue;
+          }
+          if (!(await canReadSinopiaCadProject(fileManager.recordFiles, projectId, expectedUserId))) {
+            return { status: 'unavailable' };
           }
           return library.deletedAt === undefined
             ? { status: 'ready', project: { ...valid.manifest, id: valid.projectId } }
@@ -2162,7 +2219,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       }
       /* oxlint-enable no-await-in-loop */
     },
-    [discoverProjects, ensureDiscoveryReady, ensureProjectLibraryState, getReadiedWorker],
+    [discoverProjects, ensureDiscoveryReady, ensureProjectLibraryState, getReadiedWorker, fileManager.recordFiles],
   );
 
   const updateProject = useCallback(
@@ -2235,6 +2292,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const duplicateProject = useCallback(
     async (projectId: string): Promise<CreatedProject> => {
+      const duplicatingAccount = sinopiaSession().getState();
       await ensureDiscoveryReady();
       const worker = await getReadiedWorker();
       const sourceProject = await getProject(projectId);
@@ -2278,6 +2336,19 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           .filter(([path]) => path !== 'tau.json')
           .map(([path, content]) => [path, { content }]),
       );
+      if (duplicatingAccount.status === 'signed-in') {
+        await requireSinopiaUser(duplicatingAccount.user.id);
+      }
+      const account = sinopiaSession().getState();
+      if (account.status === 'signed-in') {
+        const origin = await readSinopiaCadLink(fileManager.recordFiles, `/projects/${projectId}`);
+        if (origin !== undefined && origin.userId !== account.user.id) {
+          throw new Error('SINOPIA_OWNER_MISMATCH');
+        }
+        const link = await createSinopiaCadLink(targetManifest.name, origin?.projectId);
+        sourceFiles[sinopiaCadLinkPath] = { content: new TextEncoder().encode(JSON.stringify(link)) };
+        sinopiaCadLocalId.set(link.userId, link.modelId, targetId);
+      }
       const operation = await worker.prepareProjectDuplicate({
         sourceProjectId: projectId,
         targetProjectId: targetId,
@@ -2288,7 +2359,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       });
       await resumePendingProjectOperation(operation, worker);
       /* D19: a copy has no remote of its own, so it backs up by default too. */
-      tauCloudIntent.set(targetId, 'default');
+      if (account.status === 'disabled') {
+        tauCloudIntent.set(targetId, 'default');
+      }
       return {
         ...operation.manifest,
         id: operation.projectId,
@@ -2369,6 +2442,11 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const buildProjectListing = useCallback(
     async (discovery: ProjectDiscoveryResult): Promise<ProjectListing> => {
+      const listingAccount = sinopiaSession().getState();
+      if (listingAccount.status !== 'disabled' && listingAccount.status !== 'signed-in') {
+        return { projects: [], conflicts: [], recoveries: [], workspaceBindingRepairs: [] };
+      }
+      const expectedUserId = listingAccount.status === 'signed-in' ? listingAccount.user.id : undefined;
       const worker = await getReadiedWorker();
       const validEntries = discovery.entries.filter(
         (entry): entry is Extract<ProjectDiscoveryEntry, { status: 'valid' }> => entry.status === 'valid',
@@ -2404,20 +2482,48 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       const conflicts: ProjectDiscoveryConflict[] = discovery.entries.filter(
         (entry): entry is Exclude<ProjectDiscoveryEntry, { status: 'valid' }> => entry.status !== 'valid',
       );
+      const session = listingAccount;
+      const candidates =
+        session.status === 'disabled'
+          ? projects
+          : await Promise.all(
+              projects.map(async (entry) => {
+                const allowed = await canReadSinopiaCadProject(
+                  fileManager.recordFiles,
+                  entry.projectId,
+                  expectedUserId,
+                );
+                return allowed ? entry : undefined;
+              }),
+            );
+      const admitted = candidates.filter((entry) => entry !== undefined);
+      if (expectedUserId !== undefined) {
+        await requireSinopiaUser(expectedUserId);
+      }
+      const ids = new Set(admitted.map((entry) => entry.projectId));
       return {
-        projects,
-        conflicts,
-        recoveries: [...recoveriesRef.current.values()],
+        projects: admitted,
+        conflicts:
+          session.status === 'disabled'
+            ? conflicts
+            : conflicts.filter((entry) => 'projectId' in entry && ids.has(entry.projectId)),
+        recoveries: [...recoveriesRef.current.values()].filter(
+          (entry) => session.status === 'disabled' || ids.has(entry.projectId),
+        ),
         workspaceBindingRepairs: workspaceBindingRepairs.map(({ repairs: _repairs, ...group }) => group),
       };
     },
-    [deriveWorkspaceBindingRepairs, ensureProjectLibraryStates, getReadiedWorker],
+    [deriveWorkspaceBindingRepairs, ensureProjectLibraryStates, getReadiedWorker, fileManager.recordFiles],
   );
 
   const getProjectListing = useCallback(
     async (options?: { includeDeleted?: boolean }): Promise<ProjectListing> => {
+      const requestAccount = sinopiaSession().getState();
       await ensureDiscoveryReady();
       const listing = await buildProjectListing(await discoverProjects());
+      if (requestAccount.status === 'signed-in') {
+        await requireSinopiaUser(requestAccount.user.id);
+      }
       return options?.includeDeleted
         ? listing
         : {
@@ -2430,6 +2536,8 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
   const prepareCurrentWorkspaceCatalog = useCallback(
     async (selected?: Workspace, signal?: AbortSignal): Promise<PreparedWorkspaceCatalog> => {
+      const catalogAccount = sinopiaSession().getState();
+      const listingKey = sinopiaProjectListingKey();
       const previous = discoveryPassRef.current;
       if (previous) {
         await previous.catch(() => undefined);
@@ -2437,6 +2545,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       signal?.throwIfAborted();
       await retryFailedRecoveries();
       const listing = await buildProjectListing(await discoverProjects());
+      if (catalogAccount.status === 'signed-in') {
+        await requireSinopiaUser(catalogAccount.user.id);
+      }
       signal?.throwIfAborted();
       // A node workspace is addressed by its absolute host path — the same
       // physical identity `resolveStorageRootKey` derives — where a webaccess
@@ -2456,7 +2567,10 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
         candidateCount: selectedProjects.length + selectedConflicts.length,
         conflictCount: selectedConflicts.length,
         publish: async () => {
-          queryClient.setQueryData(['projects'], listing);
+          if (catalogAccount.status === 'signed-in') {
+            await requireSinopiaUser(catalogAccount.user.id);
+          }
+          queryClient.setQueryData(listingKey, listing);
         },
       };
     },

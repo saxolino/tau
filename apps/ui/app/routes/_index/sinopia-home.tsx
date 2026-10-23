@@ -23,6 +23,9 @@ import { HomeImageDropZone } from '#routes/_index/home-image-drop-zone.js';
 import { HomeRecentProjects } from '#routes/_index/home-recent-projects.js';
 import { useHomeImageIntake } from '#routes/_index/use-home-image-intake.js';
 
+import { SinopiaProjectStrip } from '#routes/_index/sinopia-project-strip.js';
+import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
+
 const hasFiles = (dataTransfer: DataTransfer): boolean => dataTransfer.types.includes('Files');
 
 /** A paste into a field belongs to that field (the composer reads its own pictures). */
@@ -44,7 +47,9 @@ function HomeSurface(): React.JSX.Element {
   const [isLaneOpen, setLaneOpen] = useAgentLaneOpen();
   const isLaneShown = isLaneOpen && (!isMobile || isTablet);
   const [measure, setMeasure] = useState('');
-  const { onSubmit, isSubmitting } = useNewProjectSubmit(false);
+  const [references, setReferences] = useState<SinopiaReferenceSelection>();
+  const [isSinopiaPickerOpen, setSinopiaPickerOpen] = useState(false);
+  const { onSubmit, isSubmitting, rememberReferences } = useNewProjectSubmit(false, references);
   const {
     model: { model },
     execution: { execution },
@@ -111,6 +116,26 @@ function HomeSurface(): React.JSX.Element {
       });
     },
     [addImages, isSubmitting, setLaneOpen, t],
+  );
+
+  const takeSinopiaImages = useCallback(
+    async (selection: SinopiaReferenceSelection): Promise<void> => {
+      if (isSubmitting) {
+        return;
+      }
+      const added = await addImages(selection.files);
+      if (added === 0) {
+        throw new Error('No reference images accepted');
+      }
+      const merged = await rememberReferences(selection);
+      setReferences(merged);
+      setLaneOpen(true);
+      setAnnouncement(t('home.intake.announceMany', { count: added }));
+      requestAnimationFrame(() => {
+        composerRef.current?.focus();
+      });
+    },
+    [addImages, isSubmitting, rememberReferences, setLaneOpen, t],
   );
 
   useEffect(() => {
@@ -195,6 +220,9 @@ function HomeSurface(): React.JSX.Element {
         )}
         <div className='mx-auto flex w-full max-w-6xl flex-col px-6 pb-6 lg:px-8'>
           <HomeImageDropZone
+            onChooseSinopia={() => {
+              setSinopiaPickerOpen(true);
+            }}
             isDragging={isDragging}
             measure={measure}
             onMeasureChange={setMeasure}
@@ -217,7 +245,11 @@ function HomeSurface(): React.JSX.Element {
             </div>
           ) : null}
           <HomeRecentProjects />
-          {/* Sinopia's project strip mounts here when the real data integration is available. */}
+          <SinopiaProjectStrip
+            onChoose={takeSinopiaImages}
+            isPickerOpen={isSinopiaPickerOpen}
+            onPickerOpenChange={setSinopiaPickerOpen}
+          />
         </div>
       </div>
       {isLaneShown && !isTablet ? (

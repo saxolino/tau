@@ -16,6 +16,7 @@ import type { editorMachine } from '#machines/editor.machine.js';
 import { holdEditorConflictRecord } from '#lib/monaco-model-service.js';
 import type * as AgentHostClientModule from '#services/agent-host-client.js';
 import type * as HandleStoreModule from '#filesystem/handle-store.js';
+import type { SinopiaSessionState } from '#lib/sinopia-session.js';
 
 /** The registry these rows share, composed as the app's root composes its own (MC-R4). */
 const sessionsActor = createSessionsActor().start();
@@ -25,6 +26,8 @@ const projectB = 'proj_bbbbbbbbbbbbbbbbbbbbb';
 const projectC = 'proj_ccccccccccccccccccccc';
 
 let currentProjectId = projectA;
+let sinopiaState: SinopiaSessionState = { status: 'disabled' };
+vi.mock('#hooks/use-sinopia-session.js', () => ({ useSinopiaSession: () => sinopiaState }));
 const getProjectRouteAccess = vi.fn<(projectId: string) => Promise<ProjectRouteAccess>>();
 const restoreProject = vi.fn<(projectId: string) => Promise<void>>();
 /* W2: a trash or restore publishes a new manager value carrying the next
@@ -421,6 +424,7 @@ const renderRouteProvider = ({
 beforeEach(() => {
   tauCloudIntent.set(projectA, undefined);
   currentProjectId = projectA;
+  sinopiaState = { status: 'disabled' };
   getProjectRouteAccess.mockReset();
   restoreProject.mockReset();
   projectManager.libraryRevision = 0;
@@ -489,6 +493,109 @@ afterEach(async () => {
   });
   /* The drain is the guard, so prove it drained rather than hoping. */
   expect(Object.keys(sessionsActor.getSnapshot().context.refs)).toEqual([]);
+});
+
+describe('Sinopia project route ownership', () => {
+  it('does not mount a foreign local project reached by direct URL', async () => {
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-b', email: undefined } };
+    getProjectRouteAccess.mockResolvedValue({ status: 'missing' });
+    renderRouteProvider();
+    await screen.findByText('Notice: missing');
+    expect(sessionIds()).toEqual([]);
+    expect(mounts).toEqual([]);
+  });
+
+  it('masks every retained project during account change and restores the original owner later', async () => {
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-a', email: undefined } };
+    getProjectRouteAccess.mockImplementation(async (id) => ready(id));
+    const { Provider, view } = renderRouteProvider();
+    await waitFor(() => {
+      expect(focusedSessionId()).toBe(projectA);
+    });
+    currentProjectId = projectB;
+    view.rerender(<Provider>content</Provider>);
+    await waitFor(() => {
+      expect(focusedSessionId()).toBe(projectB);
+      expect(sessionIds()).toContain(projectA);
+    });
+
+    const nextOwnerAccess = deferred<ProjectRouteAccess>();
+    getProjectRouteAccess.mockImplementation(async () => nextOwnerAccess.promise);
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-b', email: undefined } };
+    view.rerender(<Provider>content</Provider>);
+    expect(sessionIds()).toEqual([]);
+    expect(focusedSessionId()).toBeUndefined();
+    await act(async () => {
+      nextOwnerAccess.resolve({ status: 'missing' });
+    });
+    await screen.findByText('Notice: missing');
+    expect(sessionIds()).toEqual([]);
+
+    getProjectRouteAccess.mockImplementation(async (id) => ready(id));
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-a', email: undefined } };
+    view.rerender(<Provider>content</Provider>);
+    await waitFor(() => {
+      expect(focusedSessionId()).toBe(projectB);
+      expect(sessionIds()).toContain(projectA);
+    });
+  });
+
+  it('ignores an old account admission that completes after the new account is denied', async () => {
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-a', email: undefined } };
+    const oldOwnerAccess = deferred<ProjectRouteAccess>();
+    getProjectRouteAccess.mockImplementation(async () => oldOwnerAccess.promise);
+    const { Provider, view } = renderRouteProvider();
+    getProjectRouteAccess.mockResolvedValue({ status: 'missing' });
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-b', email: undefined } };
+    view.rerender(<Provider>content</Provider>);
+    await screen.findByText('Notice: missing');
+    await act(async () => {
+      oldOwnerAccess.resolve(ready(projectA));
+    });
+    expect(sessionIds()).toEqual([]);
+    expect(mounts).toEqual([]);
+    expect(screen.getByText('Notice: missing')).toBeInTheDocument();
+  });
+
+  it('retains an admitted running project while checking a second project for the same owner', async () => {
+    sinopiaState = { status: 'signed-in', user: { id: 'owner-a', email: undefined } };
+    getProjectRouteAccess.mockImplementation(async (id) => ready(id));
+    const { Provider, view } = renderRouteProvider();
+    await waitFor(() => {
+      expect(focusedSessionId()).toBe(projectA);
+    });
+    const session = sessionsActor.getSnapshot().context.refs[projectA];
+    act(() => {
+      session?.send({ type: 'projectedRunsChanged', runs: ['chat-running'], stoppableRuns: ['chat-running'] });
+    });
+    const retainedAccess = deferred<ProjectRouteAccess>();
+    const newAccess = deferred<ProjectRouteAccess>();
+    let newProjectReads = 0;
+    getProjectRouteAccess.mockImplementation(async (id) => {
+      if (id === projectA) {
+        return retainedAccess.promise;
+      }
+      newProjectReads += 1;
+      return newProjectReads === 1 ? ready(projectB) : newAccess.promise;
+    });
+    currentProjectId = projectB;
+    view.rerender(<Provider>content</Provider>);
+    await waitFor(() => {
+      expect(newProjectReads).toBeGreaterThan(1);
+    });
+    expect(sessionIds()).toContain(projectA);
+    expect(unmounts).not.toContain(projectA);
+    expect(sessionsActor.getSnapshot().context.refs[projectA]).toBe(session);
+    await act(async () => {
+      retainedAccess.resolve(ready(projectA));
+      newAccess.resolve(ready(projectB));
+    });
+    await waitFor(() => {
+      expect(focusedSessionId()).toBe(projectB);
+    });
+    expect(unmounts).not.toContain(projectA);
+    expect(cancelProjectedRun).not.toHaveBeenCalled();
+  });
 });
 
 describe('project route session identity', () => {

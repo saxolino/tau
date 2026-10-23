@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { memo, useId, useMemo } from 'react';
+import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { Box, FolderOpen, ChevronDown } from 'lucide-react';
 import { Link } from 'react-router';
 import { Button } from '@taucad/ui/components/button';
@@ -23,6 +23,12 @@ import { ProjectCard } from '#components/project-card.js';
 import { useProjects } from '#hooks/use-projects.js';
 import { useProjectThumbnail } from '#hooks/use-project-thumbnail.js';
 import type { ProjectListItem } from '#types/project-library.types.js';
+import { useCloudProjects } from '#hooks/use-cloud-projects.js';
+import type { CloudProject } from '#hooks/use-cloud-projects.js';
+import { useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
+import { isCloudOnly, toLibraryRows } from '#routes/projects_/cloud-projects.js';
+import { SinopiaReferenceThumbnail } from '#routes/_index/sinopia-project-strip.js';
+import { toast } from '#components/ui/sonner.js';
 import { projectUrlOr } from '#utils/project-url.utils.js';
 
 /** A bounded home preview; the full collection stays in Projects. */
@@ -119,6 +125,61 @@ const HomeProjectCard = memo(function HomeProjectCard({
   );
 });
 
+const HomeRemoteProjectCard = memo(function HomeRemoteProjectCard({
+  project,
+  onOpen,
+}: Readonly<{
+  project: CloudProject;
+  onOpen: (project: CloudProject) => Promise<void>;
+}>): React.JSX.Element {
+  const { t, language } = useTranslation();
+  const [isOpening, setIsOpening] = useState(false);
+  const location = useMemo(
+    () =>
+      project.sinopia?.thumbnail_path ? { bucket: 'creator-private', path: project.sinopia.thumbnail_path } : undefined,
+    [project.sinopia],
+  );
+  const open = useCallback(async (): Promise<void> => {
+    setIsOpening(true);
+    try {
+      await onOpen(project);
+    } catch {
+      toast.error(t('sinopiaImages.openError'));
+    } finally {
+      setIsOpening(false);
+    }
+  }, [onOpen, project, t]);
+  return (
+    <ProjectCard
+      onOpen={open}
+      isOpening={isOpening}
+      linkLabel={t(isOpening ? 'sinopiaImages.opening' : 'home.recent.open', { name: project.name })}
+    >
+      {project.sinopia ? (
+        <SinopiaReferenceThumbnail
+          userId={project.sinopia.user_id}
+          projectId={project.sinopia.project_id}
+          className='aspect-8/5'
+          location={location}
+          alt=''
+        />
+      ) : (
+        <div className='flex aspect-8/5 items-center justify-center bg-muted'>
+          <Box aria-hidden className='size-8 text-muted-foreground' />
+        </div>
+      )}
+      <CardHeader className='gap-1'>
+        <h3 className='line-clamp-1 text-base font-semibold'>{project.name}</h3>
+        {project.updatedAt === undefined ? null : (
+          <p className='text-sm text-muted-foreground'>
+            {t('home.recent.edited', { when: formatLastActivity(project.updatedAt, language) })}
+          </p>
+        )}
+      </CardHeader>
+    </ProjectCard>
+  );
+});
+
 /**
  * «I tuoi progetti» on the home: the most recently worked-on projects as model thumbnails, on the library's grid and
  * card anatomy, with the way to the whole library. Renaming, trash and folders stay in the library.
@@ -134,7 +195,19 @@ export function HomeRecentProjects({
   const { t, language } = useTranslation();
   const headingId = useId();
   const [sort, setSort] = useSearchParameter(searchParameterName.sort, sortParameter);
-  const { projects, isLoading, error, retry } = useProjects();
+  const { projects: held, isLoading, error, retry } = useProjects({ includeDeleted: true });
+  const cloud = useCloudProjects();
+  const openCloudProject = useOpenCloudProject();
+  const projects = useMemo(
+    () =>
+      toLibraryRows({
+        projects: held.filter((item) => item.deletedAt === undefined),
+        held,
+        cloud: cloud.projects,
+        includeCloudOnly: true,
+      }),
+    [cloud.projects, held],
+  );
   const recent = useMemo(
     () =>
       // The listing leaves trashed projects out.
@@ -181,6 +254,14 @@ export function HomeRecentProjects({
           </Button>
         ) : null}
       </div>
+      {cloud.isFailed ? (
+        <div role='alert' className='mb-4 flex items-center justify-between gap-3 rounded-md border p-4'>
+          <p className='text-sm'>{t('sinopiaImages.cadError')}</p>
+          <Button variant='outline' size='sm' onClick={cloud.retry}>
+            {t('sinopiaImages.retry')}
+          </Button>
+        </div>
+      ) : null}
       {error !== undefined && projects.length === 0 ? (
         <div role='alert' className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-4'>
           <span className='text-sm'>{t('home.recent.loadFailed')}</span>
@@ -194,7 +275,7 @@ export function HomeRecentProjects({
             {t('home.recent.retry')}
           </Button>
         </div>
-      ) : isLoading && projects.length === 0 ? (
+      ) : (isLoading || (cloud.isFetching && !cloud.isSettled)) && projects.length === 0 ? (
         <div role='status' aria-busy='true' aria-label={t('home.recent.loading')} className={homeProjectGridClassName}>
           {Array.from({ length: 4 }, (_, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- a fixed set of placeholders
@@ -218,7 +299,11 @@ export function HomeRecentProjects({
         <ul role='list' className={homeProjectGridClassName}>
           {recent.map((project) => (
             <li key={project.id}>
-              <HomeProjectCard project={project} pieceCount={pieceCounts?.get(project.id)} />
+              {isCloudOnly(project) ? (
+                <HomeRemoteProjectCard project={project} onOpen={openCloudProject} />
+              ) : (
+                <HomeProjectCard project={project} pieceCount={pieceCounts?.get(project.id)} />
+              )}
             </li>
           ))}
         </ul>

@@ -9,6 +9,8 @@ import type { ReactNode } from 'react';
 import type * as AiSdk from 'ai';
 import type { Chat, MyUIMessage } from '@taucad/chat';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
+import type { SinopiaSessionState } from '#lib/sinopia-session.js';
+import { homeComposerScope } from '#db/home-composer-scope.js';
 import type { DraftAttachmentModel } from '#hooks/draft.machine.js';
 import { lifecycleRow, logRow, publishLogRows, runningRows } from '#machines/chat-projection.fixture.js';
 
@@ -29,6 +31,9 @@ type FakeChat = {
   emitStatusChange: () => void;
   emitErrorChange: () => void;
 };
+
+const sinopiaHarness = vi.hoisted((): { state: SinopiaSessionState } => ({ state: { status: 'disabled' } }));
+vi.mock('#hooks/use-sinopia-session.js', () => ({ useSinopiaSession: () => sinopiaHarness.state }));
 
 const harness = vi.hoisted(() => ({
   created: [] as FakeChat[],
@@ -304,6 +309,7 @@ function createHomeWrapper() {
 }
 
 beforeEach(() => {
+  sinopiaHarness.state = { status: 'disabled' };
   harness.created = [];
   harness.patchChat.mockReset().mockResolvedValue(undefined);
   harness.touchChatRecency.mockReset().mockResolvedValue(undefined);
@@ -592,6 +598,97 @@ function HomeProbe({ onRender }: { readonly onRender: (draftText: string) => voi
 }
 
 describe('HomeNewProjectComposerProvider', () => {
+  it('should isolate private draft text and image bytes across A → B → A without deleting either account', async () => {
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-a', email: undefined } };
+    const accountA = homeComposerScope('user-a');
+    const accountB = homeComposerScope('user-b');
+    writeRecord({ version: 1, draft: textDraft('legacy private draft') });
+    const { result, rerender } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(accountA.recordPath);
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(result.current.attachmentSource).toBe(accountA.attachmentDirectory);
+    const actorA = result.current.draftActorRef;
+    act(() => {
+      actorA.send({ type: 'setDraftText', text: 'private necklace A' });
+      actorA.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(actorA.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    act(() => {
+      actorA.send({ type: 'flushNow' });
+    });
+    await waitFor(() => {
+      expect(JSON.stringify(readRecord(accountA.recordPath))).toContain('private necklace A');
+    });
+    const attachmentA = actorA.getSnapshot().context.draftAttachments[0]!;
+    const bytesPathA = `${accountA.attachmentDirectory}/${attachmentA.hash}.png`;
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-b', email: undefined } };
+    rerender();
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(accountB.recordPath);
+    });
+    expect(result.current.draftActorRef).not.toBe(actorA);
+    expect(result.current.attachmentSource).toBe(accountB.attachmentDirectory);
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toEqual([]);
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+    act(() => {
+      result.current.draftActorRef.send({ type: 'setDraftText', text: 'private buckle B' });
+      result.current.draftActorRef.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    await act(async () => result.current.consumeDraft());
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-a', email: undefined } };
+    rerender();
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('private necklace A');
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toEqual([
+      { hash: attachmentA.hash, mediaType: attachmentA.mediaType },
+    ]);
+    expect(result.current.attachmentSource).toBe(accountA.attachmentDirectory);
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+    expect(readRecord()).toMatchObject({ draft: { parts: [{ type: 'text', text: 'legacy private draft' }] } });
+  });
+
+  it('should remove all draft preview descendants while account admission is unresolved', async () => {
+    function DraftPreview(): React.JSX.Element {
+      const composer = useChatComposer();
+      const text = useSelector(composer.draftActorRef, (snapshot) => snapshot.context.draftText);
+      return <p role='status'>{text || 'Empty account draft'}</p>;
+    }
+    const surface = (): React.JSX.Element => (
+      <UnloadProvider>
+        <HomeNewProjectComposerProvider>
+          <DraftPreview />
+        </HomeNewProjectComposerProvider>
+      </UnloadProvider>
+    );
+    const accountA = homeComposerScope('user-a');
+    writeRecord({ version: 1, draft: textDraft('private preview A') }, accountA.recordPath);
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-a', email: undefined } };
+    const view = render(surface());
+    await waitFor(() => {
+      expect(view.getByRole('status')).toHaveTextContent('private preview A');
+    });
+    sinopiaHarness.state = { status: 'checking' };
+    view.rerender(surface());
+    expect(view.queryByRole('status')).not.toBeInTheDocument();
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-b', email: undefined } };
+    view.rerender(surface());
+    expect(view.getByRole('status')).toHaveTextContent('Empty account draft');
+    expect(view.queryByText('private preview A')).not.toBeInTheDocument();
+  });
+
   it('mounts an empty selectable composer without acquiring a chat when the file is absent', async () => {
     const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
     await waitFor(() => {

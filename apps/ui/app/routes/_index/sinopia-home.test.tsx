@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useImperativeHandle } from 'react';
@@ -6,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
+import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
 import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
 import type { ModelSupport } from '@taucad/chat';
 
 type HomeTestState = {
   isMobile: boolean;
+  isSinopiaSignedIn: boolean;
   draftText: string;
   attachingMain: boolean;
   editorCanSubmit: boolean;
@@ -21,6 +24,7 @@ type HomeTestState = {
 const state = vi.hoisted(
   (): HomeTestState => ({
     isMobile: false,
+    isSinopiaSignedIn: false,
     draftText: '',
     attachingMain: false,
     editorCanSubmit: false,
@@ -30,15 +34,37 @@ const state = vi.hoisted(
 );
 const viewport = vi.hoisted(() => ({ mode: 'desktop' }));
 vi.mock('#hooks/use-cad-viewport.js', () => ({ useCadViewport: () => viewport.mode }));
+vi.mock('#hooks/use-sinopia-session.js', () => ({
+  useSinopiaSession: () =>
+    state.isSinopiaSignedIn ? { status: 'signed-in', user: { id: 'user-a' } } : { status: 'disabled' },
+}));
+const sinopiaProjects = vi.hoisted(() => vi.fn());
+const sinopiaImages = vi.hoisted(() => vi.fn());
+const sinopiaDownload = vi.hoisted(() => vi.fn());
+const rememberReferences = vi.hoisted(() =>
+  vi.fn<(selection: SinopiaReferenceSelection) => Promise<SinopiaReferenceSelection>>(async (selection) => selection),
+);
+vi.mock('#services/sinopia-references.js', () => ({
+  listSinopiaReferenceProjects: sinopiaProjects,
+  listSinopiaReferenceImages: sinopiaImages,
+  downloadSinopiaReferenceImage: sinopiaDownload,
+}));
+
 const submitEditor = vi.hoisted(() => vi.fn(async () => undefined));
 const submitProject = vi.hoisted(() => vi.fn(async () => undefined));
 const removeDraftAttachment = vi.hoisted(() => vi.fn());
 const setDraftText = vi.hoisted(() => vi.fn());
 vi.mock('#components/chat/use-new-project-submit.js', () => ({
-  useNewProjectSubmit: () => ({ onSubmit: submitProject, isSubmitting: false }),
+  useNewProjectSubmit: () => ({
+    onSubmit: submitProject,
+    isSubmitting: false,
+    rememberReferences,
+  }),
 }));
 
-const addDraftAttachment = vi.hoisted(() => vi.fn());
+const addDraftAttachment = vi.hoisted(() =>
+  vi.fn<(dataUrl: string, options: Readonly<{ model: unknown; filename?: string }>) => void>(),
+);
 const focusComposer = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
 
@@ -100,13 +126,15 @@ const { rememberAgentLaneOpen } = await import('#hooks/use-agent-lane-open.js');
 
 const renderHome = (): ReturnType<typeof render> =>
   render(
-    <KeyboardProvider>
-      <TooltipProvider>
-        <MemoryRouter>
-          <SinopiaHome />
-        </MemoryRouter>
-      </TooltipProvider>
-    </KeyboardProvider>,
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <KeyboardProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <SinopiaHome />
+          </MemoryRouter>
+        </TooltipProvider>
+      </KeyboardProvider>
+    </QueryClientProvider>,
   );
 
 const picture = (name = 'anello.png', type = 'image/png', size = 1024): File => {
@@ -149,6 +177,9 @@ describe('SinopiaHome', () => {
     rememberAgentLaneOpen(true);
     state.isMobile = false;
     viewport.mode = 'desktop';
+    state.isSinopiaSignedIn = false;
+    sinopiaProjects.mockResolvedValue([]);
+    sinopiaImages.mockResolvedValue([]);
     state.support = {
       modalities: { input: ['text', 'image'], output: ['text'] },
     };
@@ -427,26 +458,56 @@ describe('SinopiaHome', () => {
       screen.getByRole('textbox'),
     );
   });
-  it.each(['it', 'en'] as const)(
-    'should explain the upcoming Sinopia connection in %s without fake projects',
-    async (language) => {
-      setLanguage(language);
-      renderHome();
-      await userEvent.click(
-        screen.getByRole('button', { name: language === 'it' ? 'Da un progetto Sinopia' : 'From a Sinopia project' }),
-      );
-      const sheet = screen.getByRole('dialog');
-      expect(sheet).toHaveAccessibleName(language === 'it' ? 'Immagini da Sinopia' : 'Images from Sinopia');
-      expect(sheet).toHaveTextContent(
-        language === 'it'
-          ? 'Per ora scegli un’immagine dal dispositivo.'
-          : 'For now, choose an image from your device.',
-      );
-      expect(within(sheet).queryByRole('list')).not.toBeInTheDocument();
-      await userEvent.keyboard('{Escape}');
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    },
-  );
+  it.each(['it', 'en'] as const)('should open the shared real Sinopia project picker in %s', async (language) => {
+    setLanguage(language);
+    state.isSinopiaSignedIn = true;
+    renderHome();
+    await userEvent.click(
+      screen.getByRole('button', { name: language === 'it' ? 'Da un progetto Sinopia' : 'From a Sinopia project' }),
+    );
+    const sheet = screen.getByRole('dialog');
+    expect(sheet).toHaveAccessibleName(language === 'it' ? 'Da Sinopia' : 'From Sinopia');
+    expect(sheet).toHaveTextContent(
+      language === 'it'
+        ? 'Scegli un progetto qui sotto per vedere le sue immagini.'
+        : 'Choose a project below to see its images.',
+    );
+    expect(within(sheet).queryByRole('list')).not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('should pass chosen Sinopia images through the existing draft attachment intake and remember their project', async () => {
+    state.isSinopiaSignedIn = true;
+    sinopiaProjects.mockResolvedValue([
+      { id: 'project-a', userId: 'user-a', name: 'Spring necklace', updatedAt: null, thumbnail: undefined },
+    ]);
+    sinopiaImages.mockResolvedValue([
+      {
+        id: 'image-a',
+        userId: 'user-a',
+        projectId: 'project-a',
+        kind: 'render',
+        name: undefined,
+        location: { bucket: 'creator-private', path: 'projects/project-a/image.png' },
+      },
+    ]);
+    sinopiaDownload.mockResolvedValue(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }));
+    renderHome();
+    await userEvent.click(await screen.findByRole('button', { name: 'Spring necklace' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Seleziona tutte' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Usa 1 immagini' }));
+    await waitFor(() => {
+      expect(addDraftAttachment).toHaveBeenCalledOnce();
+    });
+    expect(addDraftAttachment.mock.calls[0]![0]).toMatch(/^data:image\/png;base64,/);
+    expect(addDraftAttachment.mock.calls[0]![1].filename).toMatch(/^sinopia-/);
+    const selection = rememberReferences.mock.calls[0]![0];
+    expect(selection.userId).toBe('user-a');
+    expect(selection.projectId).toBe('project-a');
+    expect(selection.files).toHaveLength(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
 
   it('should build with the draft words and known size even when the agent lane is closed', async () => {
     rememberAgentLaneOpen(false);

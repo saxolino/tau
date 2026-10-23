@@ -3,13 +3,31 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
+import type * as CloudProjectsModule from '#hooks/use-cloud-projects.js';
+import type { CloudProject } from '#hooks/use-cloud-projects.js';
 import type { ProjectListItem } from '#types/project-library.types.js';
 
 const state = vi.hoisted(() => ({
   projects: [] as ProjectListItem[],
+  cloudProjects: [] as CloudProject[],
   isLoading: false,
   error: undefined as Error | undefined,
 }));
+
+const openCloud = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('#hooks/use-cloud-projects.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof CloudProjectsModule>()),
+  useCloudProjects: () => ({
+    projects: state.cloudProjects,
+    isSettled: true,
+    isFailed: false,
+    isFetching: false,
+    retry: vi.fn(),
+  }),
+}));
+vi.mock('#hooks/use-open-cloud-project.js', () => ({ useOpenCloudProject: () => openCloud }));
+vi.mock('#routes/_index/sinopia-project-strip.js', () => ({ SinopiaReferenceThumbnail: () => <div /> }));
+
 const retry = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('#hooks/use-projects.js', () => ({
@@ -56,6 +74,7 @@ describe('HomeRecentProjects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.projects = [];
+    state.cloudProjects = [];
     state.isLoading = false;
     state.error = undefined;
     setLanguage('it');
@@ -115,6 +134,22 @@ describe('HomeRecentProjects', () => {
     expect(cards[0]!.querySelector('img')).toHaveAttribute('src', 'blob:anello');
     expect(cards[0]!.querySelector('img')).toHaveAttribute('alt', '');
     expect(screen.getByRole('link', { name: 'Tutti i progetti' })).toHaveAttribute('href', '/projects');
+  });
+
+  it('should merge remote models without duplicate held cards and open remote-only models through the import owner', async () => {
+    state.projects = [project('held', 'Local necklace', now)];
+    state.cloudProjects = [
+      { id: 'held', name: 'Remote copy', role: 'owner', updatedAt: now },
+      { id: 'remote', name: 'Remote bracelet', role: 'owner', updatedAt: now + 1 },
+    ];
+    renderSection();
+    expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      'Remote bracelet',
+      'Local necklace',
+    ]);
+    expect(screen.queryByRole('heading', { name: 'Remote copy' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Apri Remote bracelet' }));
+    expect(openCloud).toHaveBeenCalledWith(expect.objectContaining(state.cloudProjects[1]!));
   });
 
   it('keeps to two rows of the widest grid', () => {

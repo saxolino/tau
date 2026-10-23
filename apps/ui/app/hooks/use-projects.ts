@@ -7,11 +7,15 @@ import type { CreatedProject } from '#hooks/use-project-manager.js';
 import { projectLibraryEntryToListItem } from '#types/project-library.types.js';
 import { useSessions } from '#hooks/use-sessions.js';
 import { useChatSessionStore } from '#hooks/chat-session-store-provider.js';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
+import { sinopiaProjectListingKey } from '#services/sinopia-cad-access.js';
 import { selectCaughtUp } from '#machines/chat-projection.logic.js';
 
 // oxlint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- let types be inferred
 export function useProjects(options?: { includeDeleted?: boolean }) {
   const queryClient = useQueryClient();
+  const sinopia = useSinopiaSession();
   const sessions = useSessions();
   const chatSessions = useChatSessionStore();
   const includeDeleted = options?.includeDeleted ?? false;
@@ -40,13 +44,19 @@ export function useProjects(options?: { includeDeleted?: boolean }) {
   } = useQuery({
     // One key for one whole-workspace discovery pass per navigation: the deleted rows are
     // filtered below rather than scanned again under a second key (W21).
-    queryKey: ['projects'],
+    queryKey: sinopiaProjectListingKey(),
     async queryFn({ signal }) {
+      if (sinopia.status === 'signed-in') {
+        await requireSinopiaUser(sinopia.user.id);
+      }
       const listing = await getProjectListing({ includeDeleted: true });
       signal.throwIfAborted();
+      if (sinopia.status === 'signed-in') {
+        await requireSinopiaUser(sinopia.user.id);
+      }
       return listing;
     },
-    enabled: !isWorkerLoading,
+    enabled: !isWorkerLoading && (sinopia.status === 'disabled' || sinopia.status === 'signed-in'),
     // No poll: worker filesystem events and cross-tab root broadcasts already
     // invalidate this key (coalesced in ProjectManagerProvider), and the
     // default window-focus refetch covers a tab returning from the background.

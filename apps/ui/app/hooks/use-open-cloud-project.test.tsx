@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/naming-convention -- Fake Supabase HTTP rows retain their wire column names. */
+import type * as SinopiaCadModule from '#services/sinopia-cad.js';
 // @vitest-environment jsdom
 import { createProjectFixture } from '#lib/project.fixture.js';
 import { act, renderHook } from '@testing-library/react';
@@ -53,6 +55,19 @@ vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({ createProject: mockCreateProject, getProjects: async () => [] }),
 }));
 
+const remoteTransport = vi.hoisted(() => ({
+  download: vi.fn(),
+  readLink: vi.fn(),
+  admit: vi.fn(async () => undefined),
+}));
+vi.mock('#hooks/use-file-manager.js', () => ({ useFileManager: () => ({ recordFiles: {} }) }));
+vi.mock('#lib/sinopia-data-client.js', () => ({ requireSinopiaUser: remoteTransport.admit }));
+vi.mock('#services/sinopia-cad.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof SinopiaCadModule>()),
+  importSinopiaCadModel: remoteTransport.download,
+  readSinopiaCadLink: remoteTransport.readLink,
+}));
+
 const { cloudProjectStub, useOpenCloudProject } = await import('#hooks/use-open-cloud-project.js');
 
 const wrapper = ({ children }: { readonly children: ReactNode }): React.JSX.Element => (
@@ -64,6 +79,10 @@ const renderOpen = () => renderHook(() => ({ open: useOpenCloudProject(), locati
 describe('useOpenCloudProject', () => {
   beforeEach(() => {
     mockCreateProject.mockReset();
+    remoteTransport.download.mockReset();
+    remoteTransport.readLink.mockReset();
+    remoteTransport.admit.mockReset();
+    remoteTransport.admit.mockResolvedValue(undefined);
     mockGetConfig.mockReset();
     mockToastInfo.mockReset();
     mockCreateProject.mockResolvedValue({
@@ -109,6 +128,63 @@ describe('useOpenCloudProject', () => {
 
     expect(mockCreateProject).not.toHaveBeenCalled();
     expect(result.current.location.pathname).toBe('/w/home/gearbox-alpha');
+  });
+
+  it('downloads a Sinopia model before creating its OPFS project, retaining its exact entry and baseline', async () => {
+    const sinopia: SinopiaCadModule.SinopiaCadModel = {
+      id: '00000000-0000-4000-8000-000000000001',
+      project_id: '00000000-0000-4000-8000-000000000002',
+      user_id: '00000000-0000-4000-8000-000000000003',
+      name: 'Ring',
+      engine: 'smlib',
+      head_revision_id: 'a'.repeat(40),
+      snapshot_path: 'immutable',
+      thumbnail_path: null,
+      snapshot_bytes: 1,
+      updated_at: '2026-10-23T10:00:00Z',
+    };
+    const imported = {
+      project: { name: 'Ring', description: '', tags: [], assets: { main: { entryPath: 'ring.ts' } } },
+      files: { 'ring.ts': { content: new Uint8Array([1]) }, '.tau/sinopia.json': { content: new Uint8Array([2]) } },
+    };
+    remoteTransport.download.mockResolvedValue(imported);
+    const entry: CloudProject = { id: 'proj_ddddddddddddddddddddd', name: 'Ring', role: 'owner', sinopia };
+    const { result } = renderOpen();
+    await act(async () => result.current.open(entry));
+    expect(remoteTransport.download).toHaveBeenCalledWith(sinopia);
+    expect(mockCreateProject).toHaveBeenCalledWith({
+      id: entry.id,
+      chat: false,
+      project: imported.project,
+      files: imported.files,
+      location: { kind: 'home' },
+    });
+    expect(tauCloudIntent.get(entry.id)).toBeUndefined();
+  });
+
+  it('refuses a held project whose local record names another remote identity', async () => {
+    const sinopia: SinopiaCadModule.SinopiaCadModel = {
+      id: '00000000-0000-4000-8000-000000000001',
+      project_id: '00000000-0000-4000-8000-000000000002',
+      user_id: '00000000-0000-4000-8000-000000000003',
+      name: 'Ring',
+      engine: 'smlib',
+      head_revision_id: 'a'.repeat(40),
+      snapshot_path: 'immutable',
+      thumbnail_path: null,
+      snapshot_bytes: 1,
+      updated_at: '2026-10-23T10:00:00Z',
+    };
+    remoteTransport.readLink.mockResolvedValue({ modelId: 'another', userId: sinopia.user_id });
+    const { result } = renderOpen();
+    await act(async () => {
+      await expect(result.current.open({ id: held.id, name: 'Ring', role: 'owner', sinopia })).rejects.toThrow(
+        'SINOPIA_MODEL_IDENTITY_MISMATCH',
+      );
+    });
+    expect(mockCreateProject).not.toHaveBeenCalled();
+    expect(remoteTransport.download).not.toHaveBeenCalled();
+    expect(result.current.location.pathname).toBe('/projects');
   });
 
   it('should say a project in this device’s Trash is there, offering the Trash, rather than failing', async () => {

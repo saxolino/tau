@@ -20,7 +20,14 @@ import {
   Terminal,
   Undo2,
 } from 'lucide-react';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { sinopiaSession } from '#lib/sinopia-session.js';
+import {
+  persistSinopiaCadThumbnail,
+  sameSinopiaCapture,
+  sinopiaCadThumbnailRequested,
+} from '#services/sinopia-cad-thumbnail.js';
+import type { SinopiaCadCaptureStamp } from '#services/sinopia-cad-thumbnail.js';
 import { useSelector } from '@xstate/react';
 import type { UIMatch } from 'react-router';
 import { useProject, useMainGraphics } from '#hooks/use-project.js';
@@ -33,7 +40,12 @@ import { useFileManager } from '#hooks/use-file-manager.js';
 import { useFileTreeMap } from '#hooks/use-file-tree.js';
 import { useProjectAvailability } from '#hooks/use-project-availability.js';
 import { useThumbnailGenerator } from '#hooks/use-thumbnail-generator.js';
-import { useProjectRole, useRevisionCommands, useRevisionStatus } from '#hooks/use-revision-status.js';
+import {
+  useProjectRole,
+  useRevisionCommands,
+  useRevisionStatus,
+  useRevisionClient,
+} from '#hooks/use-revision-status.js';
 import { isSyncReadOnly } from '#hooks/use-cloud-projects.js';
 import { useSaveRevisionRequest } from '#routes/w.$workspace.$project/revision-save-shortcut.js';
 import { selectStripVerbs, useRevisionFacts } from '#routes/w.$workspace.$project/revision-vocabulary.js';
@@ -91,7 +103,58 @@ function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch })
     backfill: false,
     enabled: canPublishCapture && revisionStatus.sync.state === 'backedUp',
   });
-  const { regenerate: regenerateThumbnail } = useThumbnailGenerator({ onStored: publishCapture });
+  const revisionClient = useRevisionClient();
+  const captureStamp = useCallback((): SinopiaCadCaptureStamp | undefined => {
+    const account = sinopiaSession().getState();
+    const current = revisionClient?.status();
+    if (
+      account.status !== 'signed-in' ||
+      current?.headRevisionId === undefined ||
+      current.checkoutId === undefined ||
+      current.checkoutRoot === undefined ||
+      current.dirty ||
+      current.minting ||
+      current.restore.busy
+    ) {
+      return undefined;
+    }
+    return {
+      userId: account.user.id,
+      projectId,
+      revisionId: current.headRevisionId,
+      checkoutId: current.checkoutId,
+      checkoutRoot: current.checkoutRoot,
+    };
+  }, [projectId, revisionClient]);
+  const onThumbnailStored = useCallback(
+    async (bytes: Uint8Array<ArrayBuffer>, stamp?: SinopiaCadCaptureStamp): Promise<void> => {
+      publishCapture(bytes);
+      if (stamp !== undefined && sameSinopiaCapture(stamp, captureStamp())) {
+        await persistSinopiaCadThumbnail(fileManager.recordFiles, stamp, bytes);
+      }
+    },
+    [captureStamp, fileManager.recordFiles, publishCapture],
+  );
+  const { regenerate: regenerateThumbnail } = useThumbnailGenerator({ onStored: onThumbnailStored, captureStamp });
+  const capturing = useRef(false);
+  useEffect(
+    () =>
+      sinopiaCadThumbnailRequested.subscribe((stamp) => {
+        if (capturing.current || !sameSinopiaCapture(stamp, captureStamp())) {
+          return;
+        }
+        capturing.current = true;
+        const render = async (): Promise<void> => {
+          try {
+            await regenerateThumbnail();
+          } finally {
+            capturing.current = false;
+          }
+        };
+        void render();
+      }),
+    [captureStamp, regenerateThumbnail],
+  );
   /* F1: the palette offers exactly what the Sync region offers. `fetchOnly`
      alone left an enabled *Sync now* for a read collaborator, whose push the
      API refuses — one shared predicate rather than two conditions. */

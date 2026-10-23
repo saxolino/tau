@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/naming-convention -- Fake Supabase HTTP rows retain their wire column names. */
+import type { SinopiaCadModel } from '#services/sinopia-cad.js';
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -5,16 +7,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchCloudProjectPreview, useCloudProjectPreview } from '#hooks/use-cloud-project-preview.js';
 
-const session = vi.hoisted(() => ({ id: 'account-one' as string | undefined }));
+const session = vi.hoisted(() => ({ id: 'account-one' as string | undefined, sinopia: false, download: vi.fn() }));
+vi.mock('#hooks/use-sinopia-session.js', () => ({
+  useSinopiaSession: () =>
+    session.sinopia ? { status: 'signed-in', user: { id: session.id } } : { status: 'disabled' },
+}));
+vi.mock('#services/sinopia-cad.js', () => ({ downloadSinopiaCadObject: session.download }));
 vi.mock('#lib/revision-actor.js', () => ({
   useRevisionSessionUser: () => (session.id ? { id: session.id } : undefined),
 }));
-/* eslint-disable-next-line @typescript-eslint/naming-convention -- Runtime environment names. */
 vi.mock('#environment.config.js', () => ({ ENV: { TAU_API_URL: 'https://api.test/' } }));
 const imageResponse = () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/webp' } });
 
 beforeEach(() => {
   session.id = 'account-one';
+  session.sinopia = false;
+  session.download.mockReset();
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => imageResponse()),
@@ -68,6 +76,41 @@ describe('cloud saved previews', () => {
     }
     const settled = await outcomes;
     expect(settled[4]?.status).toBe('rejected');
+  });
+
+  it('loads Sinopia previews only from private storage and drops them on account changes', async () => {
+    session.sinopia = true;
+    session.download.mockResolvedValue(new Blob(['preview'], { type: 'image/webp' }));
+    const model: SinopiaCadModel = {
+      id: 'model',
+      project_id: 'project',
+      user_id: 'account-one',
+      name: 'Ring',
+      engine: 'smlib',
+      head_revision_id: null,
+      snapshot_path: null,
+      thumbnail_path: 'private-preview',
+      snapshot_bytes: null,
+      updated_at: '2026-10-23T10:00:00Z',
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const view = renderHook(() => useCloudProjectPreview('local-id', true, model), { wrapper });
+    await waitFor(() => {
+      expect(view.result.current.url).toBe('blob:saved-preview');
+    });
+    expect(session.download).toHaveBeenCalledWith(model, 'private-preview');
+    expect(fetch).not.toHaveBeenCalled();
+    session.id = 'account-two';
+    act(() => {
+      view.rerender();
+    });
+    expect(view.result.current.url).toBeUndefined();
+    expect(session.download).toHaveBeenCalledOnce();
+    view.unmount();
+    client.clear();
   });
 
   it('should expose retry progress and recover from a transient preview failure', async () => {

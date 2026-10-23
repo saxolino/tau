@@ -10,11 +10,23 @@ import { useProjectManager } from '#hooks/use-project-manager.js';
 import { useTranslation } from '#i18n/translate.js';
 import { projectUrl } from '#utils/project-url.utils.js';
 import { sinopiaStarterKernelId } from '#lib/sinopia-engines.js';
+import {
+  mergeSinopiaReferenceSelections,
+  prepareSinopiaReferenceSelection,
+  rememberSinopiaReferenceOrigin,
+  restoreSinopiaReferenceSelection,
+} from '#services/sinopia-references.js';
+import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
+import { useFileManager } from '#hooks/use-file-manager.js';
 import { homeProjectCreationLocation } from '#types/project-creation-location.types.js';
 
 /** The home hero and composer create through the same attachment-preserving first-turn flow. */
-export function useNewProjectSubmit(enableLocationPicker: boolean): {
+export function useNewProjectSubmit(
+  enableLocationPicker: boolean,
+  references?: SinopiaReferenceSelection,
+): {
   readonly onSubmit: ChatTextareaProperties['onSubmit'];
+  readonly rememberReferences: (selection: SinopiaReferenceSelection) => Promise<SinopiaReferenceSelection>;
   readonly isSubmitting: boolean;
   readonly location: ProjectCreationLocationState;
   readonly canCreate: boolean;
@@ -24,6 +36,7 @@ export function useNewProjectSubmit(enableLocationPicker: boolean): {
   const pending = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const projectManager = useProjectManager();
+  const { recordFiles } = useFileManager();
   const location = useProjectCreationLocation();
   const presentLocationError = useProjectCreationLocationError();
   const {
@@ -32,6 +45,18 @@ export function useNewProjectSubmit(enableLocationPicker: boolean): {
     execution: { execution },
     consumeDraft,
   } = useChatComposer();
+
+  const rememberReferences = useCallback(
+    async (selection: SinopiaReferenceSelection): Promise<SinopiaReferenceSelection> => {
+      const attachments = draftActorRef.getSnapshot().context.draftAttachments;
+      const previous =
+        references ?? (await restoreSinopiaReferenceSelection(recordFiles, attachments, attachmentSource));
+      const merged = mergeSinopiaReferenceSelections(previous, selection, attachments);
+      await rememberSinopiaReferenceOrigin(recordFiles, merged, attachmentSource);
+      return merged;
+    },
+    [attachmentSource, draftActorRef, recordFiles, references],
+  );
 
   /* Without the picker the project goes to Home; the location hook still runs, so the hooks keep their order. */
   const creationLocation = enableLocationPicker
@@ -54,7 +79,11 @@ export function useNewProjectSubmit(enableLocationPicker: boolean): {
         .getSnapshot()
         .context.draftAttachments.map(({ byteLength: _byteLength, ...stored }) => stored);
       try {
+        const selection =
+          references ?? (await restoreSinopiaReferenceSelection(recordFiles, attachments, attachmentSource));
+        const referenceOptions = await prepareSinopiaReferenceSelection(selection, attachments);
         const created = await projectManager.createProject({
+          ...referenceOptions,
           /* The empty starter file only: the chat pins no engine, and the agent chooses one for the job. */
           kernel: sinopiaStarterKernelId,
           /* The chip's value verbatim — not a Tau execution rebuilt from the
@@ -103,9 +132,11 @@ export function useNewProjectSubmit(enableLocationPicker: boolean): {
       navigate,
       presentLocationError,
       projectManager,
+      references,
+      recordFiles,
       t,
     ],
   );
 
-  return { onSubmit, isSubmitting, location, canCreate };
+  return { onSubmit, rememberReferences, isSubmitting, location, canCreate };
 }

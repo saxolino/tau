@@ -17,6 +17,7 @@ const sourceEntryPath = 'src/main.ts';
 const geometryContent = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
 let geometryFormat: 'gltf' | 'svg' = 'gltf';
 let snapshotEntryPath: string | undefined = sourceEntryPath;
+let currentEvaluation: { success: boolean; id: string; views: unknown[] } | undefined;
 const getSnapshot = vi.fn(() => ({
   context: {
     entryPath: snapshotEntryPath,
@@ -34,7 +35,8 @@ const getSnapshot = vi.fn(() => ({
       hash: 'geometry-hash',
       issues: [],
     },
-    evaluation: undefined,
+    evaluation: currentEvaluation,
+    latestRenderingOutcome: 'success',
   },
   matches: () => false,
 }));
@@ -88,6 +90,8 @@ vi.mock('#filesystem/handle-store.js', () => ({
   getProjectFileSystemConfig,
 }));
 
+vi.mock('#machines/await-fresh-render.js', () => ({ awaitFreshRender: async () => getSnapshot() }));
+
 const { useThumbnailGenerator } = await import('#hooks/use-thumbnail-generator.js');
 
 const locator = (providerBasePath: string) =>
@@ -117,6 +121,7 @@ describe('useThumbnailGenerator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     thumbnailInput = undefined;
+    currentEvaluation = undefined;
     renderingListener = undefined;
     snapshotEntryPath = sourceEntryPath;
     geometryFormat = 'gltf';
@@ -358,6 +363,59 @@ describe('useThumbnailGenerator', () => {
       kind: 'manual-thumbnail',
       error: { name: 'AbortError' },
     });
+  });
+
+  it('binds a revision stamp only to a matching successful current evaluation', async () => {
+    currentEvaluation = { success: true, id: 'evaluation-1', views: [{}] };
+    const stamp = {
+      userId: 'one',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
+      revisionId: 'a'.repeat(40),
+      checkoutId: 'live',
+      checkoutRoot: '/projects/one',
+    };
+    const onStored = vi.fn();
+    const hook = renderHook(() => useThumbnailGenerator({ onStored, captureStamp: () => stamp }));
+    const artifact = await renderArtifact();
+    await thumbnailInput!.store(artifact);
+    expect(onStored).toHaveBeenCalledWith(webpBytes(1), stamp);
+    hook.unmount();
+  });
+
+  it('refuses to stamp an old successful rendering after the current evaluation failed', async () => {
+    currentEvaluation = { success: false, id: 'failed-now', views: [] };
+    const stamp = {
+      userId: 'one',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
+      revisionId: 'a'.repeat(40),
+      checkoutId: 'live',
+      checkoutRoot: '/projects/one',
+    };
+    const hook = renderHook(() => useThumbnailGenerator({ captureStamp: () => stamp }));
+    await expect(renderArtifact()).rejects.toThrow('current evaluation');
+    expect(writeFile).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('never stamps a capture when the head changes during image export', async () => {
+    currentEvaluation = { success: true, id: 'evaluation-1', views: [{}] };
+    let stamp = {
+      userId: 'one',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaa',
+      revisionId: 'a'.repeat(40),
+      checkoutId: 'live',
+      checkoutRoot: '/projects/one',
+    };
+    exportImage.mockImplementationOnce(async () => {
+      stamp = { ...stamp, revisionId: 'b'.repeat(40) };
+      return webpFile(1);
+    });
+    const onStored = vi.fn();
+    const hook = renderHook(() => useThumbnailGenerator({ onStored, captureStamp: () => stamp }));
+    const artifact = await renderArtifact();
+    await thumbnailInput!.store(artifact);
+    expect(onStored).toHaveBeenCalledWith(webpBytes(1));
+    hook.unmount();
   });
 
   it('should recheck generation after an awaited locator lookup before writing', async () => {

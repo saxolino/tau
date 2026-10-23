@@ -208,7 +208,7 @@ function CloudOnlyWhere({ entry }: { readonly entry: CloudProject }): React.JSX.
 export function CloudProjectNameCell({ entry }: { readonly entry: CloudProject }): React.JSX.Element {
   return (
     <div className='flex items-center gap-3 pr-2'>
-      <CloudProjectPreview isCompact projectId={entry.id} name={entry.name} />
+      <CloudProjectPreview isCompact projectId={entry.id} name={entry.name} sinopia={entry.sinopia} />
       <div className='min-w-0 pl-2'>
         <div className='truncate font-medium'>{entry.name}</div>
         <CloudOnlyWhere entry={entry} />
@@ -247,7 +247,7 @@ export function CloudProjectCard({
         }
       }}
     >
-      <CloudProjectPreview projectId={entry.id} name={entry.name} />
+      <CloudProjectPreview projectId={entry.id} name={entry.name} sinopia={entry.sinopia} />
       <CardHeader>
         <div className='flex min-w-0 flex-col gap-1 py-1'>
           <span className='truncate text-base font-semibold'>{entry.name}</span>
@@ -320,7 +320,10 @@ export const useMaterializeCloudProjects = ({
       .join(' ');
     const wanted = cloud.filter(
       (entry) =>
-        !heldIds.has(entry.id) && asked.current.get(entry.id) !== listing && !materializedCloudProjects.has(entry.id),
+        entry.sinopia === undefined &&
+        !heldIds.has(entry.id) &&
+        asked.current.get(entry.id) !== listing &&
+        !materializedCloudProjects.has(entry.id),
     );
     if (wanted.length === 0) {
       return;
