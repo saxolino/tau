@@ -349,6 +349,7 @@ const unrecordingCommands: ReadonlySet<string> = new Set([
   'divergence',
   'diff',
   'compare',
+  'snapshot',
 ]);
 
 /* A cookie's name is a staged temporary sibling, so a capture that meets one leaves it out. */
@@ -1389,6 +1390,20 @@ export const createProjectRevisions = (options: ProjectRevisionsOptions): Projec
       case 'deleteTag':
         await port.deleteTag(text('name'));
         return null;
+      case 'snapshot': {
+        const tree = await port.readTree(revisionId(text('revisionId')));
+        if (tree === undefined) {
+          throw new Error('The selected revision is unavailable.');
+        }
+        if (tree.byteLength > 64 * 1024 * 1024) {
+          throw new Error('The revision is too large to preview.');
+        }
+        return revisionJson(
+          Object.fromEntries(
+            tree.entries().map(({ path, content }) => [path, Buffer.from(content).toString('base64')]),
+          ),
+        );
+      }
       case 'compare': {
         const requestedRevision = text('revisionId');
         const path = text('path');

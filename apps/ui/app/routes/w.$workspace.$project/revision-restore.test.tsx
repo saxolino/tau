@@ -1,3 +1,4 @@
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 /**
  * The restore dialog renders the plan the worker computed — it does not have one
  * (S19, PC9).
@@ -8,8 +9,8 @@
  * that plan found; a safe restore applies with no question at all.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import { RevisionRestore } from '#routes/w.$workspace.$project/revision-restore.js';
 import { revisionStatusHarness } from '#hooks/use-revision-status.test-harness.js';
 
@@ -38,6 +39,7 @@ const plan = (over: Partial<(typeof revisionStatusHarness)['status']['restore']>
 };
 
 beforeEach(() => {
+  setLanguage('en');
   revisionStatusHarness.reset();
   toastSuccess.mockReset();
   toastError.mockReset();
@@ -47,7 +49,25 @@ beforeEach(() => {
   raiseHeldSave.mockReset();
 });
 
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  resetLanguageForTests();
+});
+
 describe('RevisionRestore', () => {
+  it('should translate the restore refusal and its recovery in Italian', () => {
+    setLanguage('it');
+    render(<RevisionRestore />);
+    for (const listener of revisionStatusHarness.toasts) {
+      listener({ type: 'error', subject: 'restore', code: 'LEASE_UNAVAILABLE', message: 'technical-checkout-name' });
+    }
+    expect(toastError.mock.calls[0]).toEqual([
+      'Non riesco a ripristinare questa versione',
+      { description: 'Riprova. Se l’agente sta lavorando, attendi che finisca.' },
+    ]);
+  });
+
   it('should name a connection failure as history attachment without claiming a failed save', () => {
     render(<RevisionRestore />);
     for (const listener of revisionStatusHarness.toasts) {
@@ -69,14 +89,14 @@ describe('RevisionRestore', () => {
     expect(toastSuccess).not.toHaveBeenCalled();
   });
 
-  it('names the deletions the plan found, not a page-side guess', () => {
+  it('should explain that later versions remain without exposing file changes', () => {
     plan({ asking: true, removedPathCount: 2 });
 
     render(<RevisionRestore />);
 
-    expect(screen.getByText(/2 files added since will be removed\./)).toBeInTheDocument();
+    expect(screen.queryByText(/files added since/u)).not.toBeInTheDocument();
     /* D1: the dialog says the restore is a new revision, so History loses nothing. */
-    expect(screen.getByText(/as a new revision, so nothing in History is lost\./)).toBeInTheDocument();
+    expect(screen.getByText(/all versions after Rev 3 stay in Versions/u)).toBeInTheDocument();
   });
 
   it('asks about unsaved editor changes without inventing a deletion', () => {
@@ -85,7 +105,7 @@ describe('RevisionRestore', () => {
     render(<RevisionRestore />);
 
     /* D1: dirty work is minted before the restore touches it, so nothing is overwritten. */
-    expect(screen.getByText(/Your unsaved edits are saved first\./)).toBeInTheDocument();
+    expect(screen.getByText(/Your ongoing changes are saved first\./u)).toBeInTheDocument();
     expect(screen.queryByText(/will be removed/)).not.toBeInTheDocument();
   });
 
@@ -103,8 +123,8 @@ describe('RevisionRestore', () => {
 
     render(<RevisionRestore />);
     /* The verb keeps its object through the confirmation (DESIGN: controls name their effect). */
-    expect(screen.getByText('Restore Rev 3?')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Restore Rev 3' }));
+    expect(screen.getByText('Go back to Rev 3?')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to Rev 3' }));
     expect(revisionStatusHarness.commands.confirm).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -205,14 +225,14 @@ describe('RevisionRestore', () => {
     }
 
     expect(toastWarning.mock.calls[0]).toEqual([
-      'Files restored',
+      'Model restored',
       {
         description:
-          'The earlier files are back, but something else changed this project at the same time, so this restore is not in History as its own revision. Your files are kept.',
+          'The model has its earlier measures again. Your changes stay in the project: wait for the automatic save.',
       },
     ]);
     expect(toastWarning.mock.calls[1]?.[1]).toEqual({
-      description: 'That restore was made on another branch. Open it there to undo it.',
+      description: 'Choose a version in the list to go back to it.',
     });
     expect(toastError).not.toHaveBeenCalled();
   });
@@ -259,7 +279,7 @@ describe('RevisionRestore', () => {
       listener({ type: 'restored', revisionNumber: undefined });
     }
 
-    expect(toastSuccess.mock.calls[0]?.[0]).toBe('Restored an earlier revision');
+    expect(toastSuccess.mock.calls[0]?.[0]).toBe('Restored an earlier version');
   });
 
   /* The refusal crosses the boundary as a code; the page owns the words (P4).

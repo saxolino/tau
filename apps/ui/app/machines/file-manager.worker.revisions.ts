@@ -1,3 +1,4 @@
+import { uint8ArrayToBase64 } from 'uint8array-extras';
 /**
  * The browser's revision root (architecture A38).
  *
@@ -257,6 +258,7 @@ export type WorkerRevisionCommand =
   | Readonly<{ command: 'log'; branch?: string; limit?: number; from?: string }>
   | Readonly<{ command: 'divergence'; head: string; base: string }>
   | Readonly<{ command: 'diff'; revisionId: string; from?: string; against?: 'checkout' }>
+  | Readonly<{ command: 'snapshot'; revisionId: string }>
   | Readonly<{ command: 'compare'; revisionId: string; path: string; from?: string; against?: 'checkout' }>
   /** Both sides of one conflicted revision as text, for the agent's `revisions` tool (rule 8). */
   | Readonly<{ command: 'readConflict'; revisionId: string }>;
@@ -454,6 +456,8 @@ export type WorkerProjectRevisions = Readonly<{
     from?: string,
     options?: Readonly<{ against?: 'checkout' }>,
   ) => Promise<readonly RevisionDiffEntry[]>;
+  /** Immutable authored bytes for an isolated read-only preview; never cuts or applies a tree. */
+  snapshot: (revision: string) => Promise<Readonly<Record<string, string>>>;
   /** One file's text before and after a revision, for *Compare* (S38). */
   compare: (
     revision: string,
@@ -1458,6 +1462,7 @@ export const createWorkerProjectRevisions = (options: WorkerProjectRevisionsOpti
         case 'log':
         case 'divergence':
         case 'diff':
+        case 'snapshot':
         case 'compare':
         case 'readConflict':
         case 'recordEditorConflict': {
@@ -1503,6 +1508,16 @@ export const createWorkerProjectRevisions = (options: WorkerProjectRevisionsOpti
        * dirty checkout was minted between placement and settlement. */
       const record = await options.port.readRevision(revisionId(revision));
       return readRevisionDiff(options.port, from ?? record?.parents[0], revision);
+    },
+    snapshot: async (revision) => {
+      const tree = await options.port.readTree(revisionId(revision));
+      if (tree === undefined) {
+        throw new Error('The selected revision is unavailable.');
+      }
+      if (tree.byteLength > 64 * 1024 * 1024) {
+        throw new Error('The revision is too large to preview.');
+      }
+      return Object.fromEntries(tree.entries().map(({ path, content }) => [path, uint8ArrayToBase64(content)]));
     },
     compare: async (revision, path, compareOptions) => {
       /* S38's second half: the right-hand side is the working copy rather than
@@ -1674,6 +1689,7 @@ export type WorkerRevisionResult =
   | Readonly<{ kind: 'log'; rows: readonly RevisionRow[] }>
   | Readonly<{ kind: 'divergence'; divergence: RevisionDivergence }>
   | Readonly<{ kind: 'diff'; entries: readonly RevisionDiffEntry[] }>
+  | Readonly<{ kind: 'snapshot'; files: Readonly<Record<string, string>> }>
   | Readonly<{ kind: 'comparison'; comparison: RevisionFileComparison }>
   | Readonly<{ kind: 'conflict'; conflict: RevisionConflictRead }>
   | Readonly<{ kind: 'geoSpecCandidates'; candidates: ReadonlyArray<Uint8Array<ArrayBuffer>> }>
@@ -1883,6 +1899,9 @@ const answerOf = (
     }
     case 'deleteTag': {
       return tree.deleteTag(request.name).then(() => ({ kind: 'tag', tag: undefined }) as const);
+    }
+    case 'snapshot': {
+      return tree.snapshot(request.revisionId).then((files) => ({ kind: 'snapshot', files }) as const);
     }
     case 'compare': {
       return tree

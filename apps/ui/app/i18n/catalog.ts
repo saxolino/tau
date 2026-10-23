@@ -5,6 +5,7 @@ import { homeMessages } from '#i18n/messages/home.js';
 import { projectMessages } from '#i18n/messages/project.js';
 import { shellMessages } from '#i18n/messages/shell.js';
 import { viewerMessages } from '#i18n/messages/viewer.js';
+import { versionsMessages } from '#i18n/messages/versions.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -18,6 +19,7 @@ export const areas = {
   project: projectMessages,
   shell: shellMessages,
   viewer: viewerMessages,
+  versions: versionsMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

@@ -123,13 +123,13 @@ describe('ProjectTopBar', () => {
     expect(bar).not.toHaveTextContent(/share|condividi|main\.ts|save revision|github|backup/iu);
   });
 
-  it('opens Versions and Export in the Misure lane', async () => {
-    setLanguage('it');
+  it.each(['it', 'en'] as const)('opens Versions and Export in the Misure lane in %s', async (language) => {
+    setLanguage(language);
     const user = userEvent.setup();
     renderBar();
 
-    await user.click(screen.getByRole('button', { name: 'Versioni' }));
-    await user.click(screen.getByRole('button', { name: 'Esporta' }));
+    await user.click(screen.getByRole('button', { name: words[language].versions }));
+    await user.click(screen.getByRole('button', { name: words[language].export }));
 
     expect(openPanel.mock.calls).toEqual([['revisions'], ['export']]);
   });

@@ -437,3 +437,40 @@ griglia in mm, senza Schermo intero.
   `apps/api/app/api/chat/chat.controller.json-schema.test.ts` (istantanea dello schema: `language`, `kernel` facoltativo).
 - `apps/ui-e2e/src/*.spec.ts` (16 file) — nomi accessibili in inglese, la lingua del browser dei test: «Agente» →
   "Agent", «Misure» → "Measures", titoli della home.
+
+## 2026-10-23 — Versioni leggibili (passo 5)
+
+- `apps/ui/app/routes/w.$workspace.$project/chat-revisions.tsx` e test: la scheda sinistra riusa il grafo di
+  `useRevisions`, mantiene i numeri delle revisioni, divide l'elenco per giorno, mostra Tu/Agente e l'ora.
+  Rami, backup, GitHub, salvataggio manuale, dettagli tecnici e collaboratori escono da questo pannello.
+  Le azioni sono raggiungibili anche da tastiera e su schermi touch. Previsto il tipo di evento di invio
+  (`VersionEvent`); nessun evento di invio viene inventato. Il pulsante Versioni della barra era già collegato
+  a `openPanel('revisions')`, verificato dal test esistente della barra.
+- `apps/ui/app/hooks/use-revisions.ts` e test: la provenienza strutturata distingue anche il salvataggio delle
+  modifiche dell’utente prima di un turno dalla revisione del turno dell’agente; nessuna attribuzione dai nomi dei modelli.
+- `revision-history.ts` e test: frasi dai valori e dalle unità dei record `.tau/parameters/`, ammissione con il
+  parser canonico, date locali (anche al cambio dell'ora), riassunti registrati e ripristini nominati dal grafo.
+  In assenza di informazioni affidabili si legge «Modifiche al modello»; percorsi e nomi tecnici non sono mostrati.
+- `revision-preview.tsx` e test: Guarda apre un modello isolato con `CadPreviewProvider`, su una copia in memoria
+  dell'albero storico, compresi gli allegati binari, e mostra le misure senza controlli di modifica. La banda
+  «Stai guardando la Rev N» offre «Torna all'ultima». Chiudere non ripristina né salva il progetto corrente.
+- `apps/ui/app/hooks/use-revision-status.ts`, `apps/ui/app/machines/file-manager.worker.revisions.ts` e test,
+  `packages/host/src/revisions.ts` e test: lettura `snapshot` sul canale esistente, sia browser sia host nativo,
+  senza comandi di scrittura, applicazione o cambio di ramo. Anteprime limitate a 64 MiB; un errore offre come
+  rimediare senza esporre diagnostica o nomi di file.
+- `revision-restore.tsx` e test: conferma e risultato del ripristino tradotti. Si continua a usare la macchina
+  esistente, che salva prima le modifiche in corso e crea una nuova revisione, lasciando lo storico raggiungibile.
+- `apps/ui/app/i18n/messages/versions.ts`, `apps/ui/app/i18n/catalog.ts`: testi tipizzati IT/EN del pannello,
+  dell'anteprima, delle conferme e delle righe evento future. Nessuna pubblicazione o collegamento a Supabase.
+
+### Verifiche e limiti della consegna
+
+- Test mirati UI: 120 passati in 7 file, inclusa l’apertura di Versioni nelle due lingue e l’attribuzione del
+  salvataggio precedente a un turno. Test di integrazione dell’host: 25 passati, 32 saltati dal gating dei
+  prerequisiti Git; sul Mac manca `git-lfs`. La prova dello snapshot sul canale host passa sul percorso disponibile.
+- Typecheck Nx `ui` e `host`: superati, sia configurazione applicativa/libreria sia configurazione dei test.
+- Lint mirato oxlint + ESLint: nessun errore; 12 avvisi di complessità, lunghezza dei file e JSDoc nei file coinvolti.
+- Dopo l’interruzione per memoria, controlli pesanti eseguiti uno alla volta, test con `--maxWorkers=2` e limite
+  Node di 4096 MiB. Nessun server di sviluppo avviato.
+- Resta al coordinatore il collaudo visivo e interattivo dopo l’unione. Gli eventi reali di invio a Sinopia sono
+  intenzionalmente demandati al passo 6; questo passo prepara il tipo e la presentazione.
