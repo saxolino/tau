@@ -548,6 +548,11 @@ for (const row of ports) {
       ).rejects.toMatchObject({ code: 'INVALID_REVISION_REQUEST' });
       const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...original]);
       await writeFile(join(held.workspaceRoot, 'main.ts'), bom);
+      const snapshotHead = held.revisions.status().headRevisionId;
+      const snapshot = await held.revisions.channel.request({ command: 'snapshot', revisionId: settlement.revisionId });
+      expect(snapshot.result).toMatchObject({ 'main.ts': Buffer.from(original).toString('base64') });
+      expect(await readFile(join(held.workspaceRoot, 'main.ts'))).toEqual(Buffer.from(bom));
+      expect(held.revisions.status().headRevisionId).toBe(snapshotHead);
       const request = { command: 'compare', revisionId: settlement.revisionId, path: 'main.ts', against: 'checkout' };
       const comparison = await held.revisions.channel.request(request);
       expect(comparison.result).toEqual({

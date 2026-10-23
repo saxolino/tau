@@ -90,6 +90,8 @@ export type RevisionClient = Readonly<{
     from?: string,
     options?: Readonly<{ against?: 'checkout' }>,
   ) => Promise<readonly RevisionDiffEntry[]>;
+  /** Read immutable authored bytes for a memory-only preview, encoded as base64 on both hosts. */
+  snapshot: (revisionId: string) => Promise<Readonly<Record<string, string>>>;
   /** Name one revision, or re-point an existing name (S31). */
   tag: (input: Readonly<{ name: string; revisionId: string; note?: string }>) => Promise<RevisionTag | undefined>;
   /** Remove one name. The revision it named stays. */
@@ -503,6 +505,18 @@ export const createHostRevisionClient = (input: {
         ...(options?.against === undefined ? {} : { against: options.against }),
         ...(from === undefined ? {} : { from }),
       })) as unknown as readonly RevisionDiffEntry[],
+    snapshot: async (revisionId) => {
+      const files: unknown = await ask({ command: 'snapshot', revisionId });
+      if (
+        files === null ||
+        typeof files !== 'object' ||
+        Array.isArray(files) ||
+        !Object.values(files).every((value) => typeof value === 'string')
+      ) {
+        throw new Error('Invalid revision snapshot response.');
+      }
+      return Object.fromEntries(Object.entries(files).map(([path, content]) => [path, String(content)]));
+    },
     tag: async (tagInput) => (await ask({ command: 'tag', ...tagInput })) as unknown as RevisionTag | undefined,
     deleteTag: async (name) => {
       await ask({ command: 'deleteTag', name });
@@ -1146,6 +1160,13 @@ export const getRevisionClient = (input: { readonly projectId: string; readonly 
         ...(from === undefined ? {} : { from }),
       });
       return result.kind === 'diff' ? result.entries : [];
+    },
+    snapshot: async (revisionId) => {
+      const result = await ask({ command: 'snapshot', revisionId });
+      if (result.kind !== 'snapshot') {
+        throw new Error('Invalid revision snapshot response.');
+      }
+      return result.files;
     },
     tag: async (input) => {
       const result = await ask({ command: 'tag', ...input });

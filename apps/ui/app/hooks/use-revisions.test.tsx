@@ -317,7 +317,7 @@ describe('useRevisions', () => {
        it ran — on a new project, the scaffold. */
     revisionStatusHarness.rows = [
       row({ revisionId: 'rev-2', revisionNumber: 2, turnId: 'u1', createdAt: 1_788_220_900_000 }),
-      row({ revisionId: 'rev-1', revisionNumber: 1, turnId: 'u1', createdAt: 1_788_220_800_000 }),
+      row({ revisionId: 'rev-1', revisionNumber: 1, turnId: 'u1', createdAt: 1_788_220_800_000, source: 'user' }),
     ];
     revisionStatusHarness.status = {
       ...revisionStatusHarness.status,
@@ -331,6 +331,7 @@ describe('useRevisions', () => {
       expect(result.current.revisions).toHaveLength(2);
     });
     expect(result.current.byTurnId.get('u1')?.revisionId).toBe('rev-2');
+    expect(result.current.revisions.map((revision) => revision.source)).toEqual(['agent', 'user']);
   });
 
   it('keeps the row the settlement names when the base mint shares its turn id', async () => {

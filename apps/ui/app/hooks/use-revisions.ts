@@ -41,6 +41,8 @@ export type RevisionCard = {
   readonly createdAt: number;
   readonly summary: string;
   readonly actor: string;
+  /** Structured authorship; a dirty base can share a turn id while remaining a user change. */
+  readonly source?: RevisionRow['source'];
   /** Object id of the tree it carries; absent on a remote settlement's card. */
   readonly treeId?: string;
   /** The turn this revision recorded, when a turn did. */
@@ -200,6 +202,7 @@ const cardOf = (row: RevisionRow, session: RevisionSessionUser | undefined): Rev
   createdAt: row.createdAt,
   summary: titleOf(row),
   actor: actorOf(row, session),
+  source: row.source,
   treeId: row.treeId,
   turnId: row.turnId,
   conflicted: row.conflicted,
@@ -312,6 +315,7 @@ const useHostFinalizedTurns = (projectId: string): readonly FinalizedRevision[] 
                           createdAt: 0,
                           summary: '',
                           actor: '',
+                          source: 'agent',
                           turnId: event.turnId,
                           conflicted: false,
                           tags: [],
