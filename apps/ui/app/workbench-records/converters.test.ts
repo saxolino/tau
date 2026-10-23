@@ -94,7 +94,7 @@ describe('workbench Dockview converters', () => {
 
     expect(mount(layout).panels).toMatchObject({
       'workbench:model': { title: 'Model' },
-      'workbench:parameters': { title: 'Parameters' },
+      'workbench:parameters': { title: 'Misure' },
       'workbench:kernel': { title: 'Telemetry' },
       'pane-main': { title: 'MainPart.ts' },
     });

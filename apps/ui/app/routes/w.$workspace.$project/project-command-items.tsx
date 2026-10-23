@@ -6,6 +6,7 @@ import {
   CloudOff,
   Download,
   FileBox,
+  FileCode,
   Files,
   GalleryThumbnails,
   History,
@@ -50,7 +51,7 @@ export function ProjectCommandPaletteItems({ match }: { readonly match: UIMatch 
 }
 
 function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch }): undefined {
-  const { projectId, projectRef, geometryUnits, mainEntryPath } = useProject();
+  const { projectId, projectRef, editorRef, geometryUnits, mainEntryPath } = useProject();
   const { openPanel } = useProjectWorkspace();
   const isTauDebugEnabled = useFeature('tauDebug');
   const mainGraphicsRef = useMainGraphics();
@@ -305,7 +306,7 @@ function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch })
       },
       {
         id: 'open-parameters',
-        label: 'Open parameters',
+        label: 'Apri le misure',
         group: 'Workbench',
         icon: <SlidersHorizontal />,
         action: () => {
@@ -328,6 +329,17 @@ function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch })
         icon: <Files />,
         action: () => {
           openPanel('files');
+        },
+      },
+      /* SinopiaCAD keeps code out of the workspace; developers reach the model's source here. */
+      {
+        id: 'open-code',
+        label: 'Apri il codice del modello',
+        detail: mainEntryPath,
+        group: 'Workbench',
+        icon: <FileCode />,
+        action: () => {
+          editorRef.send({ type: 'openFile', path: mainEntryPath, source: 'user' });
         },
       },
       {
@@ -421,6 +433,8 @@ function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch })
     [
       handleUpdateThumbnail,
       openPanel,
+      editorRef,
+      mainEntryPath,
       isTauDebugEnabled,
       mainCadRef,
       canCapturePng,

@@ -20,8 +20,10 @@ describe('editor device defaults', () => {
       chatOpen: true,
       workbenchOpen: true,
       chatWidth: 320,
-      workbenchWidth: 420,
+      // SinopiaCAD: Misure on the left, narrow enough that a 1280 px window keeps all three lanes.
+      workbenchWidth: 280,
       compactAuxiliary: 'chat',
+      layoutRevision: 1,
     });
     // A phone opens on the model alone, with the drawer collapsed, until the person picks a panel.
     expect(defaultPanelState.mobileActiveTab).toBe('viewer');

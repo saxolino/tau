@@ -1030,48 +1030,20 @@ describe('ParametersPanelHeader context menu', () => {
     expect(mockProjectSend).toHaveBeenCalledWith(expect.objectContaining({ type: 'openInViewer' }));
   });
 
-  it('renders an "Open in editor" item in both menus', async () => {
+  // SinopiaCAD: Misure never leads to the code; developers open it from the command palette.
+  it('offers no "Open in editor" item in either menu and never opens the source', async () => {
     mockGeometryUnits.set('main.ts', mockCadRef);
     mockGeometryUnits.set('helper.ts', mockCadRef2);
 
     render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
 
-    const dropdownEditorItems = screen
-      .getAllByTestId('dropdown-menu-item')
-      .filter((node) => String(node.textContent).includes('Open in editor'));
-    expect(dropdownEditorItems.length).toBeGreaterThan(0);
-
-    const contextEditorItems = screen
-      .getAllByTestId('context-menu-item')
-      .filter((node) => String(node.textContent).includes('Open in editor'));
-    expect(contextEditorItems.length).toBeGreaterThan(0);
-  });
-
-  it('dispatches openFile on editorRef when "Open in editor" is selected from the dropdown', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const editorItem = screen
-      .getAllByTestId('dropdown-menu-item')
-      .find((node) => String(node.textContent).includes('Open in editor'));
-    expect(editorItem).toBeDefined();
-    fireEvent.click(editorItem!);
-
-    expect(mockEditorSend).toHaveBeenCalledWith({ type: 'openFile', path: 'main.ts', source: 'user' });
-  });
-
-  it('dispatches openFile on editorRef when "Open in editor" is selected from the context menu', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const editorItem = screen
-      .getAllByTestId('context-menu-item')
-      .find((node) => String(node.textContent).includes('Open in editor'));
-    expect(editorItem).toBeDefined();
-    fireEvent.click(editorItem!);
-
-    expect(mockEditorSend).toHaveBeenCalledWith({ type: 'openFile', path: 'main.ts', source: 'user' });
+    const editorItems = [
+      ...screen.getAllByTestId('dropdown-menu-item'),
+      ...screen.getAllByTestId('context-menu-item'),
+    ].filter((node) => String(node.textContent).includes('Open in editor'));
+    expect(editorItems).toEqual([]);
+    // The rest of the entry menu stays.
+    expect(screen.getAllByText('Close renderer').length).toBeGreaterThan(0);
+    expect(mockEditorSend).not.toHaveBeenCalled();
   });
 });

@@ -310,7 +310,6 @@ function useProjectParametersSource(): ParametersSource {
   const {
     parameterService,
     projectRef,
-    editorRef,
     setGeometryUnitParameters,
     switchParameterGroup,
     createParameterGroup,
@@ -361,9 +360,7 @@ function useProjectParametersSource(): ParametersSource {
       openInViewer: (entryPath) => {
         projectRef.send({ type: 'openInViewer', entryPath });
       },
-      openInEditor: (entryPath) => {
-        editorRef.send({ type: 'openFile', path: entryPath, source: 'user' });
-      },
+      // SinopiaCAD: no "Open in editor" here; the code stays behind the command palette, for developers.
       closeEntry: (entryPath) => {
         projectRef.send({ type: 'destroyGeometryUnit', entryPath });
       },
@@ -373,7 +370,6 @@ function useProjectParametersSource(): ParametersSource {
     [
       createParameterGroup,
       deleteParameterGroup,
-      editorRef,
       parameterService,
       projectRef,
       renameParameterGroup,

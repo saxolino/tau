@@ -8,11 +8,8 @@ import { useIsTopRightGroup } from '#components/panes/use-is-top-right-group.js'
 import { useProject } from '#hooks/use-project.js';
 import { RevisionStatusAction } from '#routes/w.$workspace.$project/revision-status-action.js';
 import { RecordIssuesAction } from '#routes/w.$workspace.$project/record-issues-action.js';
+import { ChatLaneToggle } from '#routes/w.$workspace.$project/chat-lane-toggle.js';
 import { useProjectWorkspace, useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
-
-export const WorkbenchToggleSlot = (): React.JSX.Element => (
-  <span aria-hidden className='size-7 shrink-0' data-testid='workbench-toggle-slot' />
-);
 
 // The variant, not `h-4`: the separator's own `data-[orientation=vertical]:h-full` outranks a bare height.
 const GroupSeparator = (): React.JSX.Element => (
@@ -22,10 +19,10 @@ const GroupSeparator = (): React.JSX.Element => (
 /**
  * The viewer's top-right cluster, the shared `ViewerHeaderActions`: the project group — the revision trigger,
  * the settings-records trigger when a record needs a person, Share and Export (folding to icons below `@xl/viewer`) —
- * and, while the workbench lane is hidden, the slot its floating toggle lands in. One geometry (`PaneButton`, 28 px) and a hairline
- * before every group, the first included, so the cluster reads apart from the
- * tabs on its left. The chat lane's toggle is not here: it heads the chat pane
- * header, or the viewer's tab bar while the lane is closed.
+ * and, while the agent's lane is hidden, the "Agente" toggle that opens it, in the corner the agent pane's header
+ * holds it while open. One geometry (`PaneButton`, 28 px) and a hairline before every group, the first included, so
+ * the cluster reads apart from the tabs on its left. The Misure lane's toggle is not here: it heads the Misure lane's
+ * tab bar, or the viewer's while that lane is closed.
  *
  * @param properties - Dockview's header-action props for the group.
  * @returns The cluster in the top-right group, nothing in every other.
@@ -34,7 +31,7 @@ export function ProjectWorkspaceActions(properties: IDockviewHeaderActionsProps)
   const { openPanel, registerRecordRecoveryFocus, restoreRecordRecoveryFocus } = useProjectWorkspace();
   const isTopRight = useIsTopRightGroup(properties.group, properties.containerApi);
   const { projectRef } = useProject();
-  const { workbench: workbenchVisible } = useWorkspaceLanes();
+  const { chat: chatVisible } = useWorkspaceLanes();
   const { isMobile, openMobile } = useSidebar();
   const projectName = useSelector(projectRef, (snapshot) => snapshot.context.project?.name) ?? 'Project';
 
@@ -63,7 +60,7 @@ export function ProjectWorkspaceActions(properties: IDockviewHeaderActionsProps)
           <RecordIssuesAction fallbackFocus={restoreRecordRecoveryFocus} />
         </>
       }
-      trailing={!isMobile && !workbenchVisible ? <WorkbenchToggleSlot /> : undefined}
+      trailing={!isMobile && !chatVisible ? <ChatLaneToggle place='viewer' /> : undefined}
     />
   );
 }

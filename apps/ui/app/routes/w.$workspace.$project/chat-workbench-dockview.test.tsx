@@ -354,7 +354,6 @@ const {
   WorkbenchLeftActions,
   getWorkbenchTabIcon,
   WorkbenchPlaceholderPanel,
-  WorkbenchRightHeaderActions,
   workbenchSurfaces,
   workbenchPanels,
   PrintWorkbenchPanel,
@@ -469,38 +468,6 @@ describe('getWorkbenchTabIcon', () => {
     }
     expect(icon('file-2', { filePath: 'main.scad' })).toBeUndefined();
     expect(icon('file-3', { filePath: 'exports/main.3mf' })).toBeUndefined();
-  });
-});
-
-describe('WorkbenchRightHeaderActions', () => {
-  beforeEach(() => {
-    mobileState.value = false;
-  });
-
-  it('keeps an exact slot for the persistent toggle', () => {
-    const properties = { group: {}, containerApi: {} } as unknown as IDockviewHeaderActionsProps;
-    render(<WorkbenchRightHeaderActions {...properties} />);
-
-    const slot = screen.getByTestId('workbench-toggle-slot');
-    expect(slot).toHaveClass('size-7');
-    expect(screen.queryByRole('button', { name: /Split/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Toggle Workbench lane' })).not.toBeInTheDocument();
-  });
-
-  it('does not reserve the desktop toggle slot in the mobile workbench', () => {
-    mobileState.value = true;
-    const properties = { group: {}, containerApi: {} } as unknown as IDockviewHeaderActionsProps;
-    render(<WorkbenchRightHeaderActions {...properties} />);
-
-    expect(screen.queryByRole('button', { name: /Split/ })).not.toBeInTheDocument();
-    expect(screen.queryByTestId('workbench-toggle-slot')).not.toBeInTheDocument();
-  });
-
-  it('keeps the reserved top-right rail above the body-scoped Files sidecar', () => {
-    const properties = { group: {}, containerApi: {} } as unknown as IDockviewHeaderActionsProps;
-    render(<WorkbenchRightHeaderActions {...properties} />);
-
-    expect(screen.getByTestId('workbench-toggle-slot')).toBeInTheDocument();
   });
 });
 
@@ -1423,24 +1390,29 @@ describe('Workbench file reconciliation', () => {
     expect(placements.size).toBe(0);
   });
 
-  it('seeds exactly one guided New tab launcher', () => {
+  it('seeds exactly one Misure pane, not the guided New tab launcher, in its group', () => {
     const dockview = createTestDockview();
 
     seedFreshWorkbench({ api: dockview.api });
 
-    expect(dockview.addPanel).toHaveBeenCalledOnce();
-    expect(dockview.addPanel).toHaveBeenCalledWith(
-      expect.objectContaining({ component: 'newTab', title: 'New tab', params: { mode: 'launcher' } }),
+    expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        id: 'workbench:parameters',
+        component: 'parameters',
+        title: 'Misure',
+        position: { direction: 'within', referenceGroup: dockview.group },
+      }),
     );
+    expect(dockview.addPanel).not.toHaveBeenCalledWith(expect.objectContaining({ component: 'newTab' }));
   });
 
-  it('seeds the shared profile directly into Parameters', () => {
+  it('seeds the shared profile directly into Misure', () => {
     const dockview = createTestDockview();
 
     seedFreshWorkbench({ api: dockview.api, profile: 'shared' });
 
     expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ id: 'workbench:parameters', component: 'parameters', title: 'Parameters' }),
+      expect.objectContaining({ id: 'workbench:parameters', component: 'parameters', title: 'Misure' }),
     );
   });
 
@@ -1460,14 +1432,11 @@ describe('Workbench file reconciliation', () => {
       />,
     );
 
-    const parametersButton = screen.getByRole('button', { name: /Parameters/ });
-    expect(parametersButton).toHaveClass('h-7', 'text-[13px]');
-    expect(parametersButton.parentElement).toHaveAttribute('aria-label', 'Design');
-    expect(parametersButton.parentElement?.parentElement).toHaveClass('mx-auto', 'py-6');
-    expect(parametersButton.parentElement?.parentElement?.parentElement).toHaveClass(
-      'scroll-shadows-y',
-      'overflow-y-auto',
-    );
+    const misureButton = screen.getByRole('button', { name: /Misure/ });
+    expect(misureButton).toHaveClass('h-7', 'text-[13px]');
+    expect(misureButton.parentElement).toHaveAttribute('aria-label', 'Design');
+    expect(misureButton.parentElement?.parentElement).toHaveClass('mx-auto', 'py-6');
+    expect(misureButton.parentElement?.parentElement?.parentElement).toHaveClass('scroll-shadows-y', 'overflow-y-auto');
     expect(screen.getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual([
       'Design',
       'Activity',
@@ -1488,12 +1457,13 @@ describe('Workbench file reconciliation', () => {
     expect(
       within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: /Details/ }),
     ).toBeVisible();
-    expect(within(screen.getByRole('group', { name: 'Project' })).getByRole('button', { name: /Files/ })).toBeVisible();
+    // SinopiaCAD: the file tree, and the code it opens, is the command palette's alone.
+    expect(screen.queryByRole('button', { name: /Files/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Diagnostics' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('separator')).toHaveLength(3);
     expect(screen.getByRole('button', { name: 'Close tab' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Telemetry' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /Parameters/ }));
+    await user.click(screen.getByRole('button', { name: /Misure/ }));
     expect(dockview.addPanel).toHaveBeenCalledWith(
       expect.objectContaining({
         id: workbenchPanels.parameters.id,
@@ -1642,15 +1612,14 @@ describe('Workbench file reconciliation', () => {
     expect(
       within(screen.getByRole('group', { name: 'Project' })).getByRole('menuitem', { name: /Details/ }),
     ).toBeVisible();
-    expect(
-      within(screen.getByRole('group', { name: 'Project' })).getByRole('menuitem', { name: /Files/ }),
-    ).toBeVisible();
+    // SinopiaCAD: the file tree, and the code it opens, is the command palette's alone.
+    expect(screen.queryByRole('menuitem', { name: /Files/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Diagnostics' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('separator')).toHaveLength(2);
-    expect(screen.getByRole('menuitem', { name: /Parameters/ })).toHaveClass('py-1', 'text-[13px]');
+    expect(screen.getByRole('menuitem', { name: /Misure/ })).toHaveClass('py-1', 'text-[13px]');
     expect(screen.queryByRole('menuitem', { name: /Close tab/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /Telemetry/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('menuitem', { name: /Parameters/ }));
+    await user.click(screen.getByRole('menuitem', { name: /Misure/ }));
     expect(dockview.addPanel).toHaveBeenCalledWith(
       expect.objectContaining({
         id: workbenchPanels.parameters.id,
@@ -1726,10 +1695,10 @@ describe('Workbench file reconciliation', () => {
 
     render(<WorkbenchEmptyGroupWatermark containerApi={dockview.api} group={group} />);
 
-    expect(screen.getByRole('button', { name: /Parameters/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Misure/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Share/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close split' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /Parameters/ }));
+    await user.click(screen.getByRole('button', { name: /Misure/ }));
     expect(dockview.addPanel).toHaveBeenCalledWith(
       expect.objectContaining({
         id: workbenchPanels.parameters.id,
@@ -1979,7 +1948,7 @@ describe('Workbench file reconciliation', () => {
     const dockview = createTestDockview();
     openWorkbenchUtility(dockview.api, 'parameters');
     expect(dockview.addPanel).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'workbench:parameters', component: 'parameters', title: 'Parameters' }),
+      expect.objectContaining({ id: 'workbench:parameters', component: 'parameters', title: 'Misure' }),
     );
 
     const existing = dockview.panels[0]!;

@@ -77,7 +77,6 @@ import { isPrinterFileName } from '#components/printer/printer-file.js';
 import { WorkbenchTabContextMenu } from '#components/panes/editor-tab-context-menu.js';
 import { withTabContextMenu } from '#components/panes/with-tab-context-menu.js';
 import { DockviewFileActionProvider } from '#components/panes/dockview-open-file-action.js';
-import { useIsTopRightGroup } from '#components/panes/use-is-top-right-group.js';
 import { getFileExtension, encodeTextFile } from '#utils/filesystem.utils.js';
 import { ChatEditorTooLargeWarning } from '#routes/w.$workspace.$project/chat-editor-too-large-warning.js';
 import { ChatEditorErrorPlaceholder } from '#routes/w.$workspace.$project/chat-editor-error-placeholder.js';
@@ -108,7 +107,8 @@ import { DetailsPanelBody } from '#routes/w.$workspace.$project/chat-details.js'
 import { TelemetryPanelContent } from '#routes/w.$workspace.$project/chat-kernel.js';
 import { ChatConsole } from '#routes/w.$workspace.$project/chat-console.js';
 import { ProjectShareWorkbenchPanel } from '#routes/w.$workspace.$project/project-share-action.js';
-import { WorkbenchToggleSlot } from '#routes/w.$workspace.$project/project-workspace-actions.js';
+import { WorkbenchLaneHead } from '#routes/w.$workspace.$project/workbench-toggle.js';
+import { presentWorkbenchNode } from '#routes/w.$workspace.$project/workbench-lane-presentation.js';
 import {
   projectWorkspaceKeyCombinations,
   useProjectWorkspace,
@@ -511,13 +511,22 @@ const sharedWorkbenchSurfaceIds = new Set<WorkbenchPanelId>([
 export const isWorkbenchSurfaceAllowed = (id: WorkbenchPanelId, profile: WorkbenchProfile): boolean =>
   (id !== 'print' || isFeatureEnabled('machines')) && (profile === 'editor' || sharedWorkbenchSurfaceIds.has(id));
 
+/**
+ * Surfaces the + menu and the New tab launcher leave out. SinopiaCAD's users design pieces, not code: the file tree
+ * (and the code it opens) stays reachable from the command palette's Open files, for developers.
+ */
+const paletteOnlySurfaceIds: ReadonlySet<WorkbenchPanelId> = new Set(['files']);
+
 const visibleWorkbenchSurfaceGroups = (
   isTauDebugEnabled: boolean,
   profile: WorkbenchProfile = 'editor',
 ): readonly WorkbenchSurfaceGroup[] =>
   workbenchSurfaceGroups.flatMap((group) => {
     const surfaces = group.surfaces.filter(
-      (surface) => isWorkbenchSurfaceAllowed(surface.id, profile) && (!surface.debugOnly || isTauDebugEnabled),
+      (surface) =>
+        !paletteOnlySurfaceIds.has(surface.id) &&
+        isWorkbenchSurfaceAllowed(surface.id, profile) &&
+        (!surface.debugOnly || isTauDebugEnabled),
     );
     return surfaces.length === 0 ? [] : [{ ...group, surfaces }];
   });
@@ -915,11 +924,12 @@ export function seedFreshWorkbench({
   if (api.panels.length > 0) {
     return;
   }
-  if (profile === 'shared') {
-    api.addPanel(workbenchPanels.parameters);
-    return;
-  }
-  createWorkbenchNewTab({ api, group: api.activeGroup ?? api.groups[0] });
+  // SinopiaCAD: an empty workbench opens on Misure in every profile, not on Tau's guided New tab launcher.
+  const group = profile === 'editor' ? (api.activeGroup ?? api.groups[0]) : undefined;
+  api.addPanel({
+    ...workbenchPanels.parameters,
+    ...(group ? { position: { direction: 'within', referenceGroup: group } } : {}),
+  });
 }
 
 export function restoreWorkbenchLayout({
@@ -1686,25 +1696,6 @@ function FilePaneFilesSidecar({
 }
 
 /**
- * Right-side header actions for Workbench Dockview groups.
- *
- * Reserves the workspace-owned Workbench toggle's exact slot in the group
- * occupying the desktop Workbench's top-right corner.
- */
-
-export function WorkbenchRightHeaderActions(properties: IDockviewHeaderActionsProps): React.JSX.Element {
-  const isTopRight = useIsTopRightGroup(properties.group, properties.containerApi);
-  const isMobile = useIsMobile();
-  const profile = useContext(WorkbenchProfileContext);
-
-  return (
-    <div className='flex h-full items-center'>
-      {profile === 'editor' && isTopRight && !isMobile ? <WorkbenchToggleSlot /> : undefined}
-    </div>
-  );
-}
-
-/**
  * WorkbenchDockview
  *
  * DockviewReact wrapper for the mixed Code-CAD workbench. Provides:
@@ -1716,11 +1707,8 @@ export function WorkbenchRightHeaderActions(properties: IDockviewHeaderActionsPr
  */
 export const WorkbenchDockview = memo(function ({
   profile = 'editor',
-  onApiChange,
 }: {
   readonly profile?: WorkbenchProfile;
-  /** Reports the Dockview once ready, and `undefined` on unmount, for the workspace's Workbench toggle. */
-  readonly onApiChange?: (api: DockviewApi | undefined) => void;
 } = {}): React.JSX.Element {
   const { editorRef } = useProject();
   const { connectWorkbench, setWorkbenchOpen, layoutController } = useProjectWorkspace();
@@ -1746,12 +1734,6 @@ export const WorkbenchDockview = memo(function ({
     });
   }, [api, profile]);
 
-  useEffect(() => {
-    onApiChange?.(api);
-    return () => {
-      onApiChange?.(undefined);
-    };
-  }, [api, onApiChange]);
   const adoptedProjectionRef = useRef<string | undefined>(undefined);
   const pendingUserFilePathRef = useRef<string | undefined>(undefined);
   const pendingFilePlacementRef = useRef(new Map<string, PendingFilePlacement>());
@@ -1793,13 +1775,15 @@ export const WorkbenchDockview = memo(function ({
 
   const pendingRecordAppliedRef = useRef<(() => void) | undefined>(undefined);
   const applyRecordNode = useCallback(
-    (node: WorkbenchLaneNode, applied?: () => void) => {
+    (recordNode: WorkbenchLaneNode, applied?: () => void) => {
       if (!api || profile === 'shared') {
         return;
       }
+      const device = editorRef.getSnapshot().context;
+      // A file tab shows only once the person opened that file here; the record alone never brings code back.
+      const node = presentWorkbenchNode(recordNode, new Set(device.openFiles.map((file) => file.path)));
       pendingRecordNodeRef.current = node;
       pendingRecordAppliedRef.current = applied ?? pendingRecordAppliedRef.current;
-      const device = editorRef.getSnapshot().context;
       const files = Object.fromEntries(
         device.openFiles.map((file) => [
           file.path,
@@ -2172,7 +2156,7 @@ export const WorkbenchDockview = memo(function ({
             defaultTabComponent={WorkbenchDockviewTab}
             getTabIcon={getWorkbenchTabIcon}
             leftHeaderActionsComponent={WorkbenchLeftActions}
-            rightHeaderActionsComponent={WorkbenchRightHeaderActions}
+            prefixHeaderActionsComponent={profile === 'editor' ? WorkbenchLaneHead : undefined}
             onReady={onReady}
             onDidDrop={onDidDrop}
           />

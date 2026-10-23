@@ -387,7 +387,8 @@ describe('useCadAgentConfig', () => {
         label: 'This computer',
         workspaceRoot: '',
         online: true,
-        externalAgents: [{ id: 'codex' }],
+        // Claude Code: SinopiaCAD's pickers leave Codex out (see the next test).
+        externalAgents: [{ id: 'claude' }],
       },
     ];
     directoryHarness.listings = [[], recovered];
@@ -404,6 +405,37 @@ describe('useCadAgentConfig', () => {
       expect(result.current.targets).toEqual(recovered);
     });
     expect(directoryHarness.calls).toBe(2);
+  });
+
+  it('offers SinopiaCAD’s pickers Claude Code but not Codex or Grok Build', async () => {
+    directoryHarness.listings = [
+      [
+        {
+          hostId: 'desktop',
+          rung: 'in-process',
+          label: 'This computer',
+          workspaceRoot: '',
+          online: true,
+          externalAgents: [{ id: 'claude' }, { id: 'codex' }, { id: 'grok' }],
+        },
+      ],
+    ];
+
+    const { result } = renderHook(() => useAgentHostPlacements());
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.targets).toEqual([
+      {
+        hostId: 'desktop',
+        rung: 'in-process',
+        label: 'This computer',
+        workspaceRoot: '',
+        online: true,
+        externalAgents: [{ id: 'claude' }],
+      },
+    ]);
   });
 
   it('bounds the dispatch wait rather than hanging a turn forever', async () => {

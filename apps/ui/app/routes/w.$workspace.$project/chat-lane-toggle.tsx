@@ -1,50 +1,40 @@
-import { useEffect, useId, useRef } from 'react';
-import type { IDockviewHeaderActionsProps } from 'dockview-react';
-import { MessageCircle } from 'lucide-react';
+import { useId } from 'react';
+import { MessageCircle, PanelRightClose } from 'lucide-react';
 import { useSelector } from '@xstate/react';
-import { Separator } from '@taucad/ui/components/separator';
 import { cn } from '@taucad/ui/utils/cn';
 import { StatusMark } from '#components/nav/status-mark.js';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
-import { useSidebar } from '#components/ui/sidebar.js';
-import { useIsTopLeftGroup } from '#components/panes/use-is-top-right-group.js';
 import { selectChatFacts, useChatSidebarStatus } from '#hooks/use-sidebar-status.js';
 import type { SidebarFacts } from '#hooks/use-sidebar-status.js';
 import { useProject } from '#hooks/use-project.js';
 import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import type { KeyCombination } from '@taucad/ui/utils/keys';
 import { useProjectWorkspace, useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { useLaneToggleFocus } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
+import type { LaneTogglePlace } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
 
-type Place = 'lane' | 'viewer';
+type Place = LaneTogglePlace;
 
-/** ⌃C toggles the chat lane; `ChatHistory` binds it, this control advertises it. */
+/** ⌃C toggles the agent's lane; `ChatHistory` binds it, this control advertises it. */
 export const toggleChatKeyCombination = {
   key: 'c',
   ctrlKey: true,
 } satisfies KeyCombination;
 
 /**
- * Which mount takes focus next (B-2). The toggle lives in two places — the
- * chat pane header while the lane is open, the viewer's tab bar while it is
- * not — so a keyboard click on one hands focus to the other rather than
- * dropping it on `body`.
- */
-let focusClaim: Place | undefined;
-
-/**
  * Where the mark's centre sits: on the bubble's outline, 30° above its
  * right-hand edge. `MessageCircle` draws its bubble as a radius-9 circle on
- * lucide's 24-unit grid, centred in the 14 px icon, centred in the 28 px
- * button; the mark's 24 px slot is centred on that point.
+ * lucide's 24-unit grid, centred in the 14 px icon the mark is placed in; the
+ * mark's 24 px slot is centred on that point, whether the label shows or not.
  */
 const markPosition = (() => {
-  const button = 28;
-  const radius = (9 / 24) * 14;
+  const icon = 14;
+  const radius = (9 / 24) * icon;
   const angle = Math.PI / 6;
   return {
-    left: button / 2 + radius * Math.cos(angle) - 12,
-    top: button / 2 - radius * Math.sin(angle) - 12,
+    left: icon / 2 + radius * Math.cos(angle) - 12,
+    top: icon / 2 - radius * Math.sin(angle) - 12,
   };
 })();
 
@@ -73,66 +63,62 @@ const LaneMark = ({ facts }: { readonly facts: SidebarFacts }): React.ReactNode 
   );
 
 /**
- * The one control for the chat lane: pressed at the head of the chat pane
- * header while the lane is open, and at the head of the viewer's tab bar,
- * carrying the focused chat's status mark, while it is not (R3: a visible
- * lane owns its own state, so the open mount never shows a mark).
+ * The one control for the agent's lane (the chat lane, on the right): pressed at the end of the agent pane's header
+ * while the lane is open, and at the end of the viewer's top-right cluster, labelled "Agente" and carrying the focused
+ * chat's status mark, while it is not (R3: a visible lane owns its own state, so the open mount never shows a mark).
+ * Both mounts sit in the window's top-right corner, so opening and closing the agent happen in one place.
  *
  * @param props - Which of the two mounts this is.
  * @returns The toggle.
  */
 export function ChatLaneToggle({ place }: { readonly place: Place }): React.JSX.Element {
-  const ref = useRef<HTMLButtonElement>(null);
   const sentenceId = useId();
   const { setChatOpen } = useProjectWorkspace();
   const { chat: isOpen } = useWorkspaceLanes();
+  const { ref, claimFocus } = useLaneToggleFocus('chat', place, isOpen);
   const { editorRef, projectId } = useProject();
   const focusedChatId = useSelector(editorRef, (state) => state.context.focusedChatId);
   const status = useChatSidebarStatus(projectId, focusedChatId ?? '');
   const facts: SidebarFacts =
     place === 'viewer' && status !== undefined ? selectChatFacts(status) : { mark: 'none', sentence: undefined };
-
-  useEffect(() => {
-    if (focusClaim !== place || isOpen !== (place === 'lane')) {
-      return;
-    }
-    // The lane's pane turns visible in Allotment's own layout pass. The claim is spent in the
-    // frame, not here, so a cancelled run (StrictMode's double effect) leaves it for the re-run.
-    const frame = requestAnimationFrame(() => {
-      focusClaim = undefined;
-      ref.current?.focus();
-    });
-    return () => {
-      cancelAnimationFrame(frame);
-    };
-  }, [isOpen, place]);
+  const isInLane = place === 'lane';
 
   return (
     <PaneButton
       ref={ref}
       data-slot='chat-lane-toggle'
       data-place={place}
-      aria-label='Toggle Chat lane'
+      size={isInLane ? 'icon' : 'label'}
+      aria-label='Agente'
       aria-pressed={isOpen}
       aria-keyshortcuts='Control+C'
       aria-describedby={facts.sentence === undefined ? undefined : sentenceId}
-      className='relative aria-pressed:text-foreground'
+      // The label folds to its glyph where Share and Export do, below the viewer's `@xl` width.
+      className={cn('aria-pressed:text-foreground', !isInLane && '@max-xl/viewer:w-7 @max-xl/viewer:px-0')}
+      tooltipSide={isInLane ? 'left' : 'bottom'}
       tooltip={
         <span className='flex items-center gap-2'>
-          Toggle Chat
+          {isOpen ? "Nascondi l'agente" : "Mostra l'agente"}
           <KeyShortcut variant='tooltip'>{formatKeyCombination(toggleChatKeyCombination)}</KeyShortcut>
           {facts.sentence === undefined ? undefined : <span className='opacity-70'>· {facts.sentence}</span>}
         </span>
       }
       onClick={(event) => {
-        if (document.activeElement === event.currentTarget) {
-          focusClaim = place === 'lane' ? 'viewer' : 'lane';
-        }
+        claimFocus(event.currentTarget);
         setChatOpen(!isOpen);
       }}
     >
-      <MessageCircle aria-hidden className='size-3.5' />
-      <LaneMark facts={facts} />
+      {isInLane ? (
+        <PanelRightClose aria-hidden className='size-3.5' />
+      ) : (
+        <>
+          <span className='relative flex size-3.5'>
+            <MessageCircle aria-hidden className='size-3.5' />
+            <LaneMark facts={facts} />
+          </span>
+          <span className='hidden @xl/viewer:inline'>Agente</span>
+        </>
+      )}
       {/* Inside the button: `sr-only` is absolutely positioned, and a sibling
           would escape the tab bar's overflow clip. */}
       {facts.sentence === undefined ? undefined : (
@@ -141,29 +127,5 @@ export function ChatLaneToggle({ place }: { readonly place: Place }): React.JSX.
         </span>
       )}
     </PaneButton>
-  );
-}
-
-/**
- * The viewer's tab-bar prefix: the chat lane toggle at the head of the
- * top-left group's tabs, on desktop, while the chat lane is hidden, with the
- * same hairline that sets the top-right cluster apart from the tabs.
- *
- * @param properties - Dockview's header-action props for the group.
- * @returns The toggle, or nothing in every other group and state.
- */
-export function ViewerChatLaneToggle(properties: IDockviewHeaderActionsProps): React.JSX.Element | undefined {
-  const isTopLeft = useIsTopLeftGroup(properties.group, properties.containerApi);
-  const { chat: isChatVisible } = useWorkspaceLanes();
-  const { isMobile } = useSidebar();
-  if (!isTopLeft || isChatVisible || isMobile) {
-    return undefined;
-  }
-  return (
-    <div className='flex h-full items-center gap-1 pl-1'>
-      <ChatLaneToggle place='viewer' />
-      {/* The variant, not `h-4`: the separator's own `data-[orientation=vertical]:h-full` outranks a bare height. */}
-      <Separator orientation='vertical' className='data-[orientation=vertical]:h-4' />
-    </div>
   );
 }

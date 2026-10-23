@@ -8,8 +8,8 @@ const seededProjectName = 'Project Navigation A';
 const widths = [1024, 1280, 1440, 1920] as const;
 const themes = ['light', 'dark'] as const;
 
-const chatToggle = (): Locator => selectors.getByRole('button', { name: 'Toggle Chat lane' });
-const workbenchToggle = (): Locator => selectors.getByRole('button', { name: 'Toggle Workbench lane' });
+const chatToggle = (): Locator => selectors.getByRole('button', { name: 'Agente' });
+const workbenchToggle = (): Locator => selectors.getByRole('button', { name: 'Misure' });
 const composer = (): Locator => selectors.getByCss('.tiptap[contenteditable="true"]').first();
 const parametersTab = (): Locator => selectors.getByCss('.dv-tab[aria-label="Parameters"]');
 

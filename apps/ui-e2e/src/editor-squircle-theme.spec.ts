@@ -21,7 +21,7 @@ const openSeededProject = async (): Promise<void> => {
   /* The seed opens with the chat lane closed. */
   const composer = selectors.getByCss('[aria-label="Ask Tau to build anything..."]');
   if (!(await target.isVisible(composer))) {
-    await target.click(selectors.getByCss('[aria-label="Toggle Chat lane"]'));
+    await target.click(selectors.getByCss('[aria-label="Agente"]'));
   }
   await target.expectVisible(composer, 60_000);
   await target.click(selectors.getByRole('button', { name: /^decline$/iu }), { timeout: 5000 }).catch(() => undefined);

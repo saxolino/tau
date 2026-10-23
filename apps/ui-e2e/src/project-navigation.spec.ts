@@ -505,7 +505,7 @@ test('sidebar chat opens its pane after the pane is closed', async () => {
   await target.expectUrl(/\/w\/[^/]+\/[^/]+$/u, 60_000);
 
   const chat = selectors.getByRole('link', { name: 'Initial chat', exact: true });
-  const toggle = selectors.getByRole('button', { name: 'Toggle Chat lane' });
+  const toggle = selectors.getByRole('button', { name: 'Agente' });
   const isChatLanePressed = async (): Promise<string | undefined> => {
     const result = await target.read(toggle, { attributes: ['aria-pressed'] });
     return result.attributes['aria-pressed'] ?? undefined;

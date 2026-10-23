@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
@@ -13,8 +13,9 @@ const desktopLayout = {
   chatOpen: true,
   workbenchOpen: true,
   chatWidth: 320,
-  workbenchWidth: 420,
+  workbenchWidth: 280,
   compactAuxiliary: 'chat' as 'chat' | 'workbench',
+  layoutRevision: 1,
 };
 const editorState = { isReady: true };
 const snapshot = {
@@ -50,7 +51,6 @@ vi.mock('#routes/w.$workspace.$project/chat-viewer-dockview.js', () => ({
 }));
 vi.mock('#routes/w.$workspace.$project/chat-workbench-dockview.js', () => ({
   WorkbenchDockview: () => <div data-testid='workbench-lane' />,
-  getWorkbenchTabIcon: () => undefined,
 }));
 vi.mock('#routes/w.$workspace.$project/project-unavailable-overlay.js', () => ({
   ProjectUnavailableOverlay: () => null,
@@ -142,16 +142,31 @@ describe('ChatInterfaceDesktop', () => {
     vi.restoreAllMocks();
   });
 
+  const paneOf = (testId: string): Element | undefined =>
+    screen.getByTestId(testId).closest('[data-pane]') ?? undefined;
+
+  it('places Misure on the left, the model in the middle and the agent on the right', async () => {
+    renderDesktop();
+    await screen.findByTestId('viewer-lane');
+
+    const panes = [...document.querySelectorAll('[data-pane]')];
+    expect(panes).toHaveLength(3);
+    expect(panes[0]).toContainElement(screen.getByTestId('workbench-lane'));
+    expect(panes[1]).toContainElement(screen.getByTestId('viewer-lane'));
+    expect(panes[2]).toContainElement(screen.getByTestId('chat-lane'));
+  });
+
   it('should initialize the compact lanes before displaying the workspace', () => {
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect({ width: 1119.5 }));
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect({ width: 1023.5 }));
     renderDesktop();
 
-    expect(screen.getByRole('button', { name: 'Toggle Workbench lane' })).toHaveAttribute('aria-pressed', 'false');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'false');
+    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'true');
   });
 
   it('should rerender the workspace only when resizing crosses the compact boundary', async () => {
     renderDesktop();
-    await screen.findByRole('button', { name: 'Toggle Workbench lane' });
+    await screen.findByTestId('viewer-lane');
     resizeTo(1400);
     renderViewer.mockClear();
 
@@ -162,24 +177,28 @@ describe('ChatInterfaceDesktop', () => {
 
     resizeTo(compactWorkspaceWidth - 1);
     expect(renderViewer).toHaveBeenCalledOnce();
-    expect(screen.getByRole('button', { name: 'Toggle Workbench lane' })).toHaveAttribute('aria-pressed', 'false');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'false');
     renderViewer.mockClear();
     resizeTo(900);
     expect(renderViewer).not.toHaveBeenCalled();
   });
 
-  it('uses the 1119/1120 workspace boundary and keeps all three pane children stable', async () => {
+  /* A 1280 px window with the 224 px sidebar leaves a 1056 px workspace: Misure (280), the viewer and the agent (320)
+   * all fit, the viewer above its 416 px minimum. */
+  it('uses the 1023/1024 workspace boundary and keeps all three pane children stable', async () => {
     renderDesktop();
     const viewer = await screen.findByTestId('viewer-lane');
+    expect(compactWorkspaceWidth).toBe(1024);
+    expect(compactWorkspaceWidth).toBeLessThanOrEqual(1280 - 224);
 
     resizeTo(compactWorkspaceWidth - 1);
-    expect(screen.getByTestId('chat-lane').closest('[data-pane]')).toHaveAttribute('data-visible', 'true');
-    expect(screen.getByTestId('workbench-lane').closest('[data-pane]')).toHaveAttribute('data-visible', 'false');
+    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'true');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'false');
     expect(screen.getByTestId('viewer-lane')).toBe(viewer);
 
     resizeTo(compactWorkspaceWidth);
-    expect(screen.getByTestId('chat-lane').closest('[data-pane]')).toHaveAttribute('data-visible', 'true');
-    expect(screen.getByTestId('workbench-lane').closest('[data-pane]')).toHaveAttribute('data-visible', 'true');
+    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'true');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'true');
     expect(screen.getByTestId('viewer-lane')).toBe(viewer);
     expect(document.querySelectorAll('[data-pane]')).toHaveLength(3);
   });
@@ -196,11 +215,13 @@ describe('ChatInterfaceDesktop', () => {
     expect(skeleton).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByTestId('chat-skeleton')).toBeInTheDocument();
     expect(screen.queryByTestId('allotment')).not.toBeInTheDocument();
-    /* The workbench lane drops at the compact width through the skeleton's own container query,
+    /* The Misure lane drops at the compact width through the skeleton's own container query,
      * which jsdom does not evaluate: the class is the assertion, the width is checked in a browser. */
-    const workbenchLane = skeleton.querySelector('.border-l');
-    expect(workbenchLane).toHaveClass('@min-[1120px]:flex');
-    expect(compactWorkspaceWidth).toBe(1120);
+    const workbenchLane = skeleton.querySelector('[data-slot="workspace-skeleton-workbench"]');
+    expect(workbenchLane).toHaveClass('@min-[1024px]:flex', 'border-r');
+    expect(compactWorkspaceWidth).toBe(1024);
+    // The agent stands in on the right, after the viewer.
+    expect(workbenchLane?.nextElementSibling?.nextElementSibling).toContainElement(screen.getByTestId('chat-skeleton'));
     /* The frame paints at once; its lanes wait out a blink, so a warm load never flashes them. */
     expect(skeleton).toHaveClass('bg-background');
     expect(skeleton.querySelector('[data-slot="workspace-skeleton-lanes"]')).toHaveClass(
@@ -225,24 +246,27 @@ describe('ChatInterfaceDesktop', () => {
     clock.mockRestore();
   });
 
-  it('reserves fixed-control space inside the chat header without shifting its border', async () => {
+  const titlebarInset =
+    '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:w-[calc(var(--titlebar-controls-width)-var(--spacing))]';
+
+  it('reserves fixed-control space inside the Misure lane header while it leads the workspace', async () => {
     sidebar.open = false;
     renderDesktop();
-    expect(await screen.findByTestId('chat-lane')).toHaveClass(
-      '[&>[data-slot=floating-panel-content]>[data-slot=floating-panel-content-header]]:pl-(--titlebar-controls-width)',
-      '[&>[data-slot=floating-panel-content]>[data-slot=floating-panel-content-header]]:[app-region:no-drag]',
-    );
+    // One spacing step short: the Misure toggle leads the tab bar with `pl-1`.
+    const workbench = await screen.findByTestId('workbench-lane');
+    expect(workbench.parentElement).toHaveClass(titlebarInset);
+    expect(screen.getByTestId('viewer-lane').parentElement).not.toHaveClass(titlebarInset);
+    // The agent lane is on the right, clear of the window's own controls.
+    expect(screen.getByTestId('chat-lane')).not.toHaveAttribute('class');
   });
 
-  it('reserves fixed-control space inside the viewer header without shifting its border', async () => {
-    desktopLayout.chatOpen = false;
+  it('reserves fixed-control space inside the viewer header while Misure is hidden', async () => {
+    desktopLayout.workbenchOpen = false;
     sidebar.open = false;
     renderDesktop();
     const viewer = await screen.findByTestId('viewer-lane');
-    // One spacing step short: the chat lane toggle leads the tab bar with `pl-1`.
-    expect(viewer.parentElement).toHaveClass(
-      '[&_.dv-tabs-and-actions-container:not(.dv-view:not(:first-child)_*)]:before:w-[calc(var(--titlebar-controls-width)-var(--spacing))]',
-    );
+    expect(viewer.parentElement).toHaveClass(titlebarInset);
+    expect(screen.getByTestId('workbench-lane').parentElement).not.toHaveClass(titlebarInset);
   });
 
   it('keeps the Viewer mounted when both auxiliary lanes are closed', async () => {
@@ -258,37 +282,31 @@ describe('ChatInterfaceDesktop', () => {
     expect(document.querySelectorAll('[data-pane]')).toHaveLength(3);
   });
 
-  it('keeps one workbench toggle mounted at the workspace top-right across state changes', async () => {
+  it('shows and hides Misure with ⌃W, by what is on screen', async () => {
     const user = userEvent.setup();
     renderDesktop();
-    const toggle = await screen.findByRole('button', { name: 'Toggle Workbench lane' });
+    await screen.findByTestId('viewer-lane');
 
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    // The shared 28 px PaneButton; its data-slot names the popover trigger it also is.
-    expect(toggle).toHaveClass('size-7');
-    expect(toggle.parentElement).toHaveClass('absolute', 'top-1', 'right-1', 'z-10');
-    expect(document.querySelector('[data-project-workspace]')).toHaveClass('relative');
-
-    await user.click(toggle);
+    await user.keyboard('{Control>}w{/Control}');
     expect(setWorkbenchOpen).toHaveBeenCalledExactlyOnceWith(false);
 
-    desktopLayout.workbenchOpen = false;
+    // Under the compact width Misure gives way to the agent, so ⌃W brings it back.
     resizeTo(compactWorkspaceWidth - 1);
-
-    const closedToggle = screen.getByRole('button', { name: 'Toggle Workbench lane' });
-    expect(closedToggle).toBe(toggle);
-    await waitFor(() => {
-      expect(closedToggle).toHaveAttribute('aria-pressed', 'false');
-    });
-
-    await user.click(closedToggle);
+    await user.keyboard('{Control>}w{/Control}');
     expect(setWorkbenchOpen).toHaveBeenLastCalledWith(true);
+  });
+
+  it('leaves the lane toggles to the lane and viewer headers, with nothing floating over them', async () => {
+    renderDesktop();
+    await screen.findByTestId('viewer-lane');
+
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('does not render a workspace-global Files toggle', async () => {
     renderDesktop();
 
-    await screen.findByRole('button', { name: 'Toggle Workbench lane' });
+    await screen.findByTestId('viewer-lane');
     expect(screen.queryByRole('button', { name: /files pane/i })).not.toBeInTheDocument();
   });
 });

@@ -698,8 +698,9 @@ describe('resolveCompactAuxiliary', () => {
     chatOpen: true,
     workbenchOpen: true,
     chatWidth: 320,
-    workbenchWidth: 420,
+    workbenchWidth: 280,
     compactAuxiliary: 'chat',
+    layoutRevision: 1,
   };
 
   it('uses the recorded open lane and falls back without rewriting state', () => {

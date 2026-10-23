@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookOpen, Bug, CircleHelp, Files, FileText, Scale, Settings, Shield, WifiOff } from 'lucide-react';
+import { CircleHelp, Files, FileText, Globe, Scale, Settings, Shield, WifiOff } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
@@ -16,13 +16,13 @@ import { useNetworkConnectivity } from '#hooks/use-network-connectivity.js';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { metaConfig } from '#constants/meta.constants.js';
 import { legalUrl } from '#lib/legal-url.js';
-import { SvgIcon } from '#components/icons/svg-icon.js';
 import { isDesktopTarget } from '#lib/build-target.js';
-import { setEntryPreference } from '#lib/entry-preference.js';
-import { websiteOrigin } from '#lib/website-origin.js';
 import { CookiePreferencesDialog, CookiePreferencesMenuItem } from '#components/cookie-preferences.js';
 import { AboutDialog, AboutMenuItem } from '#components/nav/about-sinopiacad.js';
 import { NavBillingItem, NavCreditsMeter } from '#cloud/nav-billing.js';
+
+/** Sinopia's own site, the Help menu's one link out besides the legal pages. */
+const sinopiaWebsiteUrl = 'https://sinopialab.com';
 
 /**
  * Nav user button: delegates avatar, sign-in/up/out chrome to the registry
@@ -37,44 +37,19 @@ export function NavUser(): React.JSX.Element {
   const { open: openSettings } = useSettingsDialog();
   const [isCookiePreferencesOpen, setIsCookiePreferencesOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
-  const website = websiteOrigin();
-  // The edge serves the website on this hostname, so the entry preference selects it at `/`.
-  const isWebsiteHere = !isDesktopTarget() && website === globalThis.location.origin;
   const helpItems = [
+    /* SinopiaCAD: one external link to Sinopia's site. It never sets the entry preference that chooses the start
+     * page at `/`, so the app keeps opening on the workspace. */
     ...(isDesktopTarget()
       ? []
       : [
           <DropdownMenuItem key='website' asChild>
-            <a
-              href={isWebsiteHere ? '/?website=1' : `${website}/`}
-              target={isWebsiteHere ? undefined : '_blank'}
-              rel={isWebsiteHere ? undefined : 'noopener noreferrer'}
-              onClick={(event) => {
-                if (
-                  isWebsiteHere &&
-                  event.button === 0 &&
-                  !event.metaKey &&
-                  !event.ctrlKey &&
-                  !event.shiftKey &&
-                  !event.altKey &&
-                  setEntryPreference('website')
-                ) {
-                  event.preventDefault();
-                  globalThis.location.assign('/');
-                }
-              }}
-            >
-              <BookOpen />
-              Visit website
+            <a href={sinopiaWebsiteUrl} target='_blank' rel='noopener noreferrer'>
+              <Globe />
+              Sito di Sinopia
             </a>
           </DropdownMenuItem>,
         ]),
-    <DropdownMenuItem key='documentation' asChild>
-      <a href='https://docs.tau.new' target='_blank' rel='noopener noreferrer'>
-        <BookOpen />
-        Documentation
-      </a>
-    </DropdownMenuItem>,
     <DropdownMenuItem key='privacy' asChild>
       <a href={legalUrl('privacy')} target='_blank' rel='noopener noreferrer'>
         <Shield />
@@ -105,24 +80,6 @@ export function NavUser(): React.JSX.Element {
         setIsCookiePreferencesOpen(true);
       }}
     />,
-    <DropdownMenuItem key='bug' asChild>
-      <a href={`${metaConfig.githubUrl}/issues/new?labels=bug`} target='_blank' rel='noopener noreferrer'>
-        <Bug />
-        Report a bug
-      </a>
-    </DropdownMenuItem>,
-    <DropdownMenuItem key='github' asChild>
-      <a href={metaConfig.githubUrl} target='_blank' rel='noopener noreferrer'>
-        <SvgIcon id='github' />
-        GitHub
-      </a>
-    </DropdownMenuItem>,
-    <DropdownMenuItem key='discord' asChild>
-      <a href={metaConfig.discordUrl} target='_blank' rel='noopener noreferrer'>
-        <CircleHelp />
-        Community Discord
-      </a>
-    </DropdownMenuItem>,
   ];
 
   return (

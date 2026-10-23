@@ -24,6 +24,7 @@ import {
   onLoopbackAgentHostsChanged,
 } from '#lib/agent-host-placement.js';
 import type { AgentHostPlacementTarget } from '#lib/agent-host-placement.js';
+import { withoutHiddenExternalAgents } from '#lib/sinopia-agents.js';
 import { unknownIconId } from '#components/icons/svg-icon.js';
 
 /**
@@ -305,7 +306,8 @@ export const useAgentHostPlacements = (): {
         }
       }
       if (active) {
-        setState({ targets, loading: false });
+        // SinopiaCAD's pickers offer its own agent and Claude Code; the hosts still list every agent they found.
+        setState({ targets: targets.map((target) => withoutHiddenExternalAgents(target)), loading: false });
       }
     };
     void discover();

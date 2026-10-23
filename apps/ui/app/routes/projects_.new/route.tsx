@@ -115,11 +115,10 @@ function useProjectCreation() {
           },
           chatName: 'Initial design',
           location: projectData.location,
-          // Start in the code-oriented Workbench lane.
+          // SinopiaCAD: start on the model, with Misure and the agent beside it; never on the code.
           editorState: {
             panelState: {
-              desktopLayout: { workbenchOpen: true, compactAuxiliary: 'workbench' },
-              mobileActiveTab: 'editor',
+              desktopLayout: { chatOpen: true, workbenchOpen: true, compactAuxiliary: 'chat' },
             },
           },
         });

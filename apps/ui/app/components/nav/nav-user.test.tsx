@@ -116,7 +116,9 @@ describe('NavUser', () => {
     render(<NavUser />, { wrapper: MemoryRouter });
 
     expect(screen.getByRole('button', { name: 'Help' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute('href', 'https://docs.tau.new');
+    // SinopiaCAD: Tau's documentation, bug tracker and community links are gone; the site link is Sinopia's.
+    expect(screen.queryByRole('link', { name: 'Documentation' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sito di Sinopia' })).toHaveAttribute('href', 'https://sinopialab.com');
     // SinopiaCAD: privacy and terms are Sinopia's own documents; the open-source notices stay upstream.
     expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
       'href',
@@ -131,9 +133,9 @@ describe('NavUser', () => {
       'https://tau.new/legal/open-source',
     );
     expect(screen.getByRole('menuitem', { name: 'Cookie preferences' })).toBeInTheDocument();
-    expect(screen.getByText('Report a bug')).toBeInTheDocument();
-    expect(screen.getByText('GitHub')).toBeInTheDocument();
-    expect(screen.getByText('Community Discord')).toBeInTheDocument();
+    expect(screen.queryByText('Report a bug')).not.toBeInTheDocument();
+    expect(screen.queryByText('GitHub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Community Discord')).not.toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Informazioni' })).toBeInTheDocument();
     expect(screen.getByText(`SinopiaCAD v${metaConfig.version}`)).toBeInTheDocument();
     expect(screen.queryByText('About Tau')).not.toBeInTheDocument();
@@ -173,7 +175,7 @@ describe('NavUser', () => {
   });
 });
 
-describe('Website preference navigation', () => {
+describe('Sinopia website link', () => {
   beforeEach(() => {
     globalThis.window.ENV = {
       ...clientEnvironment,
@@ -188,36 +190,23 @@ describe('Website preference navigation', () => {
     vi.restoreAllMocks();
     Cookies.remove('tau-entry', { path: '/' });
   });
-  it('should select the website and navigate to the bare URL', () => {
+  it('should open sinopialab.com in a new tab without choosing the start page', () => {
     const assign = vi.fn();
-    // The test document is plain http, where a Secure cookie would not stick; only the origin matters here.
+    // On the origin that serves Tau's website, the old link switched the start page; Sinopia's never does.
     vi.stubGlobal('location', { protocol: 'http:', origin: 'https://tau.new', assign });
     render(<NavUser />, { wrapper: MemoryRouter });
-    fireEvent.click(screen.getByRole('link', { name: 'Visit website' }));
-    expect(Cookies.get('tau-entry')).toBe('website');
-    expect(assign).toHaveBeenCalledWith('/');
-  });
-  it('should keep the explicit website link usable when cookies are blocked', () => {
-    const assign = vi.fn();
-    // The test document is plain http, where a Secure cookie would not stick; only the origin matters here.
-    vi.stubGlobal('location', { protocol: 'http:', origin: 'https://tau.new', assign });
-    vi.spyOn(document, 'cookie', 'set').mockImplementation(() => undefined);
-    render(<NavUser />, { wrapper: MemoryRouter });
-    const link = screen.getByRole('link', { name: 'Visit website' });
-    expect(link).toHaveAttribute('href', '/?website=1');
-    fireEvent.click(link);
-    expect(assign).not.toHaveBeenCalled();
-  });
-  it('should open the public website from a build that runs none', () => {
-    globalThis.window.ENV = clientEnvironment;
-    render(<NavUser />, { wrapper: MemoryRouter });
-    const link = screen.getByRole('link', { name: 'Visit website' });
-    expect(link).toHaveAttribute('href', 'https://tau.new/');
+    const link = screen.getByRole('link', { name: 'Sito di Sinopia' });
+    expect(link).toHaveAttribute('href', 'https://sinopialab.com');
     expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(link);
+    expect(Cookies.get('tau-entry')).toBeUndefined();
+    expect(assign).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Visit website' })).not.toBeInTheDocument();
   });
-  it('should omit the web-only switch in desktop', () => {
+  it('should omit the web-only link in desktop', () => {
     vi.stubEnv('TAU_TARGET', 'desktop');
     render(<NavUser />, { wrapper: MemoryRouter });
-    expect(screen.queryByRole('link', { name: 'Visit website' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sito di Sinopia' })).not.toBeInTheDocument();
   });
 });

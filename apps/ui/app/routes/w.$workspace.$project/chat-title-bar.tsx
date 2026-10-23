@@ -28,11 +28,12 @@ const newChatKeyCombination = {
 
 /**
  * The chat pane's one header row: the active chat's name, renamed in place the
- * way a sidebar row is, with the chat menu at the end. On desktop the row opens
- * with the chat lane toggle, on the pixel it holds in the viewer's tab bar
- * while the lane is closed, so it replaces a generic close control; mobile has
- * no lanes and keeps `closeButton`. Chat collection navigation lives in the
- * sidebar; with the sidebar collapsed "New chat" follows the toggle.
+ * way a sidebar row is, with the chat menu after it. On desktop the row ends
+ * with the agent lane toggle, in the window's top-right corner where the
+ * viewer's cluster holds it while the lane is closed, so it replaces a generic
+ * close control; mobile has no lanes and keeps `closeButton`. Chat collection
+ * navigation lives in the sidebar; with the sidebar collapsed "New chat" leads
+ * the row.
  */
 export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode }): React.JSX.Element {
   const { isMobile, open: isSidebarOpen } = useSidebar();
@@ -68,7 +69,6 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
 
   return (
     <>
-      {!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null}
       {!isMobile && !isSidebarOpen ? (
         <PaneButton aria-label='New chat' disabled={!canOpenNewChat} tooltip='New chat' onClick={createAndOpenChat}>
           <SquarePen aria-hidden className='size-3.5 translate-y-[0.5px]' />
@@ -119,6 +119,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
           {isMobile ? closeButton : null}
         </FloatingPanelContentHeaderActions>
       </div>
+      {!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null}
     </>
   );
 }

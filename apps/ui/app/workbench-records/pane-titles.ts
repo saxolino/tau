@@ -4,7 +4,8 @@ type PaneId = Extract<WorkbenchLaneTab, { kind: 'pane' }>['pane'];
 
 const titles = {
   browser: 'Browser',
-  parameters: 'Parameters',
+  // SinopiaCAD: the parameters a designer adjusts are the piece's measurements.
+  parameters: 'Misure',
   model: 'Model',
   print: 'Print',
   kinematics: 'Kinematics',
