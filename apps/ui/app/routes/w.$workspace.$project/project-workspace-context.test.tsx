@@ -37,6 +37,10 @@ const editorRef = {
   }),
 };
 
+vi.mock('#routes/w.$workspace.$project/project-export-dialog.js', () => ({
+  ProjectExportDialog: () => <div role='dialog' aria-label='Export checks' />,
+}));
+
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({ editorRef, mainEntryPath: 'main.ts' }),
 }));
@@ -166,7 +170,23 @@ describe('ProjectWorkspaceProvider', () => {
       nextContainer.remove();
     },
   );
-  it('opens a Preview drawer and delivers Export once its workbench mounts on mobile', () => {
+  it('should open export checks as a dialog without opening a technical pane', async () => {
+    const open = vi.fn();
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    act(() => {
+      workspace.connectWorkbench(open);
+      workspace.openPanel('export');
+    });
+    expect(await screen.findByRole('dialog', { name: 'Export checks' })).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('opens a Preview drawer and delivers Print once its workbench mounts on mobile', () => {
     state.isMobile = true;
     const reveal = vi.fn();
     const open = vi.fn();
@@ -176,14 +196,14 @@ describe('ProjectWorkspaceProvider', () => {
       </ProjectWorkspaceProvider>,
     );
     act(() => {
-      workspace.openPanel('export');
+      workspace.openPanel('print');
     });
     expect(reveal).toHaveBeenCalledOnce();
     expect(send).not.toHaveBeenCalled();
     act(() => {
       workspace.connectWorkbench(open);
     });
-    expect(open).toHaveBeenCalledExactlyOnceWith('export');
+    expect(open).toHaveBeenCalledExactlyOnceWith('print');
     act(() => {
       workspace.connectWorkbench(open);
     });
@@ -202,7 +222,7 @@ describe('ProjectWorkspaceProvider', () => {
       </ProjectWorkspaceProvider>,
     );
     act(() => {
-      workspace.openPanel('export');
+      workspace.openPanel('print');
     });
     route.key = 'another-preview';
     view.rerender(
@@ -567,12 +587,12 @@ describe('ProjectWorkspaceProvider', () => {
     );
 
     act(() => {
-      workspace.openPanel('export');
+      workspace.openPanel('parameters');
     });
 
     expect(send).toHaveBeenCalledExactlyOnceWith({
       type: 'setPanelState',
-      panelState: { mobileActiveTab: 'converter' },
+      panelState: { mobileActiveTab: 'parameters' },
     });
 
     act(() => {

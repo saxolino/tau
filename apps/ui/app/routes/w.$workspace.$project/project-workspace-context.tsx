@@ -1,4 +1,15 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useLayoutEffect,
+  lazy,
+  Suspense,
+} from 'react';
 import { useProject } from '#hooks/use-project.js';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import type { MobilePanelId } from '#constants/editor.constants.js';
@@ -12,14 +23,19 @@ import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { flagParameter } from '#utils/search-parameter.codecs.js';
 import { rememberAgentLaneOpen } from '#hooks/use-agent-lane-open.js';
 
+const ProjectExportDialog = lazy(async () => {
+  const module = await import('#routes/w.$workspace.$project/project-export-dialog.js');
+  return { default: module.ProjectExportDialog };
+});
+
 export const projectWorkspaceKeyCombinations = {
   files: { key: 'f', ctrlKey: true },
   model: { key: 'a', ctrlKey: true },
   parameters: { key: 'x', ctrlKey: true },
   kinematics: { key: 'm', ctrlKey: true },
-  editor: { key: 'e', ctrlKey: true },
+  editor: { key: 'e', ctrlKey: true, shiftKey: true },
   details: { key: 'i', ctrlKey: true },
-  export: { key: 'd', ctrlKey: true },
+  export: { key: 'e', modKey: true },
 } as const;
 
 export type WorkbenchPanelId =
@@ -161,6 +177,7 @@ export function ProjectWorkspaceProvider({
   readonly onWorkbenchOpen?: () => void;
 }): React.JSX.Element {
   const { editorRef, mainEntryPath } = useProject();
+  const [exportOpen, setExportOpen] = useState(false);
   const providerActiveRef = useRef(true);
   const recordRecoveryFocusRef = useRef<HTMLButtonElement>(null);
   const pendingRecordRecoveryFocus = useRef(false);
@@ -322,6 +339,10 @@ export function ProjectWorkspaceProvider({
 
   const openPanel = useCallback(
     (panelId: WorkbenchPanelId) => {
+      if (panelId === 'export') {
+        setExportOpen(true);
+        return;
+      }
       pendingFilesRef.current = undefined;
       if (workbenchMode === 'pane') {
         onWorkbenchOpen?.();
@@ -505,6 +526,16 @@ export function ProjectWorkspaceProvider({
   return (
     <ProjectWorkspaceContext.Provider value={value}>
       <FileReturnContext.Provider value={fileReturn}>{children}</FileReturnContext.Provider>
+      {exportOpen ? (
+        <Suspense fallback={null}>
+          <ProjectExportDialog
+            onOpenChange={setExportOpen}
+            onShowAgent={() => {
+              setChatOpen(true);
+            }}
+          />
+        </Suspense>
+      ) : null}
     </ProjectWorkspaceContext.Provider>
   );
 }

@@ -451,3 +451,37 @@ griglia in mm, senza Schermo intero.
 Verifica locale: 146 test nei 7 file toccati (19 UI, 55 viewer, 72 SMLib), typecheck dei tre moduli, lint sui 28 file TypeScript senza errori (restano avvisi) e build di viewer/SMLib. Dopo l'interruzione per memoria, controlli eseguiti in sequenza, Vitest con `--maxWorkers=2`, lint/typecheck con `NODE_OPTIONS=--max-old-space-size=4096`.
 
 La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; questa copia non avvia server e non pubblica modifiche.
+## 2026-10-23 — Passo 7: Esporta con controlli per formato
+
+- `apps/ui/app/routes/w.$workspace.$project/project-export-dialog*.tsx`: finestra con STEP, STL, GLB e foto,
+  stati indipendenti, recupero degli errori, selezione di un pezzo o di tutti i pezzi. Per gli STL aperti,
+  «Scarica comunque» e richiesta di chiusura aggiunta alla bozza dell'agente senza inviarla né cancellare la bozza precedente.
+  Stati annunciati alle tecnologie assistive e pulsanti con bersagli di almeno 44 px sui dispositivi touch.
+- `project-workspace-context.tsx`, `project-export-launcher.tsx`, `chat-workbench-dockview.tsx`,
+  `chat-interface-mobile.tsx`: l'azione Esporta e le vecchie schede salvate convergono sulla finestra;
+  nascosti provider e opzioni tecniche. Scorciatoia Cmd/Ctrl+E; il vecchio editor usa Ctrl+Shift+E per evitare conflitti.
+- `apps/ui/app/hooks/use-project-export.ts`, `services/project-export.ts`: riuso di `awaitFreshRender`, delle
+  claim del progetto, di `exportDocumentWithValidatedInput`, degli export del kernel e della cattura PNG esistente.
+  Risultati invalidati quando cambia il modello o la selezione; nessun salvataggio di opzioni automatico.
+  `prepareSinopiaFiles` prepara STEP, GLB e foto senza download, upload o persistenza, per il passo 6.
+  «Invia a Sinopia» resta disabilitato.
+- `services/project-export-step.ts`, `workers/project-export*`: lettura STEP tramite OpenCascade WASM in un
+  worker separato, confronto dei nomi e del numero di solidi, `BRepCheck_Analyzer` su ogni pezzo.
+  Il file di una selezione viene scritto e riletto prima di assegnare «Verificato».
+  Un modello prodotto direttamente da OpenCascade non riceve il bollino indipendente dallo stesso motore.
+- `services/project-export-mesh.ts`: controllo dei bordi degli STL effettivamente prodotti (due triangoli
+  incidenti per bordo dopo saldatura delle coordinate), corrispondenza file/pezzo per nome; selezione GLB
+  con trasformazioni e materiali conservati, senza metadati della vecchia geometria rimossa.
+- `apps/ui/app/i18n/messages/export.ts`, `i18n/catalog.ts`: testi ed errori IT/EN, senza nomi di motori o file a video.
+- Test accanto ai moduli: round trip reale Replicad → OpenCascade, STEP corrotto, nomi mancanti/duplicati,
+  selezione STEP/STL/GLB e posizione GLB, stati e azioni IT/EN, cancellazione e timeout del worker.
+- `apps/ui/project-export.vitest.browser.config.ts` e `workers/project-export.browser.test.ts`: tre prove
+  del worker nel browser pronte per il coordinatore. Il sandbox locale vieta `listen` (`EPERM`), quindi
+  queste prove e il collaudo visivo autenticato restano da eseguire dopo l'unione. Nessun server sulla porta 4310.
+  Configurazione inclusa in `apps/ui/tsconfig.spec.json`; fixture locale
+  `workers/fixtures/project-export-assembly.step`, copiata dalla fixture a due cubi di `apps/desktop-e2e`.
+- Verifiche locali: `nx typecheck ui` superato su app e test (0 errori); lint mirato sui 21 file TS/TSX
+  superato (0 errori, 4 avvisi preesistenti in `chat-workbench-dockview.tsx`). Vitest: 50 test su 4 file
+  superati; dopo gli ultimi aggiustamenti, rieseguiti i 14 test dei 2 file interessati, tutti superati.
+  `git diff --check` superato. Controlli eseguiti uno alla volta, Vitest con `--maxWorkers=2`,
+  typecheck/lint con `NODE_OPTIONS=--max-old-space-size=4096`; nessun server di sviluppo avviato nella ripresa.
