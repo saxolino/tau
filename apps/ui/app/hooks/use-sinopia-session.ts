@@ -12,3 +12,16 @@ export const useSinopiaSession = (): SinopiaSessionState => {
   const session = sinopiaSession();
   return useSyncExternalStore(session.subscribe, session.getState, session.getInitialState);
 };
+
+const noReturn = (): undefined => undefined;
+
+/**
+ * SinopiaCAD: after the Google round trip, the address to go back to until the router has gone there. The server and
+ * hydration never have one.
+ *
+ * @returns The same-origin path, or `undefined`.
+ */
+export const useSinopiaReturn = (): string | undefined => {
+  const session = sinopiaSession();
+  return useSyncExternalStore(session.subscribe, session.getPendingReturn, noReturn);
+};

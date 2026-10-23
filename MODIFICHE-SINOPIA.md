@@ -237,3 +237,49 @@ presenta come agente di SinopiaCAD, risponde in italiano semplice e ha una skill
 - `apps/ui-e2e/src/chat-edit-controls.spec.ts`, `workbench-pane-files.spec.ts` — tolti i passi sul selettore del motore.
 - `apps/ui/specs/message-queue/MessageQueue.tla`, `MessageQueue/drift.json` — annotato che togliere il selettore
   del motore cambia solo i comandi della chat; aggiornate le impronte di `chat-textarea.tsx` e della specifica.
+
+## 23 ottobre 2026 — «Continua con Google» e stessi criteri d'ingresso di sinopialab.com
+
+Sulla schermata di accesso c'è anche Google, come su sinopialab.com (PKCE, scelta dell'account ogni volta). Dopo
+qualunque accesso (Google o password) SinopiaCAD lascia entrare solo un account che sinopialab.com farebbe entrare
+nella sua app: un account nuovo creato da Google, in lista d'attesa o senza Termini accettati viene disconnesso su
+questo browser e la schermata dice dove completarlo (link a `https://sinopialab.com/auth`).
+
+### Criteri (gli stessi controlli di Sinopia, nello stesso ordine)
+
+1. Secondo fattore (`MfaChallengeGate`): un account con un'app di autenticazione conferma il codice prima di tutto.
+2. Profilo (`authStore.fetchUserProfile`): `profiles.role` è un ruolo d'account (`normalizePersistedRole`).
+3. Porta beta (`BetaGate`, RPC `get_my_beta_status`, solo designer): `needs_profile` e `waitlisted` restano fuori.
+4. Professione (`ProtectedRoute`, RPC `needs_profession_selection`): da scegliere fuori dalla beta → fuori.
+5. Termini (`TermsGate`, `user_consents` chiave `terms`): versione accettata almeno `2026-08-17`.
+
+Una lettura fallita non chiude fuori nessuno e non lo disconnette: compare «Riprova» (come `sessionError` e
+`BetaGateRetry` di Sinopia); se manca solo lo stato beta e i Termini sono in archivio, si entra (come `BetaGate`).
+
+### File
+
+- `apps/ui/app/lib/sinopia-access.ts` (nuovo) — i criteri d'ingresso e i messaggi in italiano.
+- `apps/ui/app/lib/sinopia-oauth-return.ts` (nuovo) — ricorda l'indirizzo prima di Google (10 minuti, questa scheda) e
+  al ritorno lo ripristina senza `?code=`.
+- `apps/ui/app/lib/sinopia-session.ts` — client con `flowType: 'pkce'` e `detectSessionInUrl: true`; accesso con
+  Google; controllo d'ingresso dopo ogni accesso; nessun token alla funzione prima dell'ingresso; secondo fattore;
+  «Riprova».
+- `apps/ui/app/hooks/use-sinopia-session.ts` — `useSinopiaReturn`.
+- `apps/ui/app/components/auth/sinopia/sinopia-google-button.tsx` (nuovo) — «Continua con Google» con la G ufficiale
+  a quattro colori, stato «Reindirizzamento a Google…», sblocco al ritorno col tasto indietro (`pageshow`).
+- `apps/ui/app/components/auth/sinopia/sinopia-login.tsx` — Google sopra, «oppure con email e password», avvisi.
+- `apps/ui/app/components/auth/sinopia/sinopia-auth-frame.tsx`, `sinopia-second-factor.tsx`, `sinopia-access-retry.tsx`
+  (nuovi) — cornice comune, codice del secondo fattore, «Riprova».
+- `apps/ui/app/components/auth/sinopia/sinopia-session-gate.tsx` — nuovi stati e ritorno all'indirizzo di partenza
+  prima che il lavoro si apra.
+
+### Test
+
+- Nuovi: `apps/ui/app/lib/sinopia-access.test.ts`, `sinopia-oauth-return.test.ts`,
+  `apps/ui/app/lib/testing/sinopia-backend.ts` (progetto Supabase finto), `sinopia-google-button.test.tsx`,
+  `sinopia-second-factor.test.tsx`.
+- Aggiornati: `apps/ui/app/lib/sinopia-session.test.ts`, `sinopia-login.test.tsx`, `sinopia-session-gate.test.tsx`.
+
+### Da fare in Supabase Auth (URL di reindirizzamento ammessi)
+
+`http://127.0.0.1:4310/**`, `https://sinopiacad.vercel.app/**`, `https://cad.sinopialab.com/**`.

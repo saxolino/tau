@@ -1,21 +1,47 @@
 // @vitest-environment jsdom
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SinopiaSessionState } from '#lib/sinopia-session.js';
 import { SinopiaSessionGate } from '#components/auth/sinopia/sinopia-session-gate.js';
 
-const sinopia = vi.hoisted((): { state: SinopiaSessionState } => ({ state: { status: 'checking' } }));
-vi.mock('#hooks/use-sinopia-session.js', () => ({ useSinopiaSession: () => sinopia.state }));
+const sinopia = vi.hoisted((): { state: SinopiaSessionState; returnTo: string | undefined } => ({
+  state: { status: 'checking' },
+  returnTo: undefined,
+}));
+const session = vi.hoisted(() => ({
+  settleReturn: vi.fn<(target: string) => void>(),
+  retryAccess: vi.fn<() => void>(),
+}));
+vi.mock('#hooks/use-sinopia-session.js', () => ({
+  useSinopiaSession: () => sinopia.state,
+  useSinopiaReturn: () => sinopia.returnTo,
+}));
+vi.mock('#lib/sinopia-session.js', () => ({ sinopiaSession: () => session }));
 
-const renderGate = () =>
+const account = { id: 'user-sinopia', email: 'pilota@sinopialab.com' };
+
+function Address(): React.JSX.Element {
+  const { pathname, search, hash } = useLocation();
+  return <output aria-label='Indirizzo'>{`${pathname}${search}${hash}`}</output>;
+}
+
+const renderGate = (address = '/') =>
   render(
-    <SinopiaSessionGate placeholder={<p>Caricamento del progetto</p>}>
-      <p>Workspace</p>
-    </SinopiaSessionGate>,
+    <MemoryRouter initialEntries={[address]}>
+      <Address />
+      <SinopiaSessionGate placeholder={<p>Caricamento del progetto</p>}>
+        <p>Workspace</p>
+      </SinopiaSessionGate>
+    </MemoryRouter>,
   );
 
 afterEach(() => {
   sinopia.state = { status: 'checking' };
+  sinopia.returnTo = undefined;
+  session.settleReturn.mockReset();
+  session.retryAccess.mockReset();
 });
 
 describe('SinopiaSessionGate', () => {
@@ -25,13 +51,22 @@ describe('SinopiaSessionGate', () => {
     renderGate();
 
     expect(screen.getByRole('heading', { level: 1, name: 'Accedi con il tuo account Sinopia' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continua con Google' })).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toHaveAttribute('type', 'email');
     expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password');
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
 
+  it('should hand the sign-in screen why the last account was signed out', () => {
+    sinopia.state = { status: 'signed-out', notice: { message: 'Sei in lista d’attesa per la beta di Sinopia.' } };
+
+    renderGate();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Sei in lista d’attesa per la beta di Sinopia.');
+  });
+
   it('should open the workspace when signed in', () => {
-    sinopia.state = { status: 'signed-in', user: { id: 'user-sinopia', email: 'pilota@sinopialab.com' } };
+    sinopia.state = { status: 'signed-in', user: account };
 
     renderGate();
 
@@ -39,12 +74,50 @@ describe('SinopiaSessionGate', () => {
     expect(screen.queryByRole('heading', { name: 'Accedi con il tuo account Sinopia' })).not.toBeInTheDocument();
   });
 
-  it("should show the caller's placeholder while the stored session is read", () => {
+  it("should show the caller's placeholder while the stored session is read or the account checked", () => {
     renderGate();
 
     expect(screen.getByText('Caricamento del progetto')).toBeInTheDocument();
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Accedi con il tuo account Sinopia' })).not.toBeInTheDocument();
+  });
+
+  it('should ask for the second factor before opening the workspace', () => {
+    sinopia.state = { status: 'second-factor', user: account };
+
+    renderGate();
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Conferma la tua identità' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Codice di verifica')).toHaveAttribute('autocomplete', 'one-time-code');
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+
+  it('should offer «Riprova» when the access check could not be read', async () => {
+    sinopia.state = { status: 'unverified', user: account };
+    const user = userEvent.setup();
+    renderGate();
+
+    await user.click(screen.getByRole('button', { name: 'Riprova' }));
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Non riesco a verificare l’accesso' })).toBeInTheDocument();
+    expect(session.retryAccess).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+
+  it('should go back where the person was after Google before anything of the workspace renders', async () => {
+    sinopia.state = { status: 'signed-in', user: account };
+    sinopia.returnTo = '/w/studio/scarpa?chat=uno#vista';
+
+    renderGate('/w/studio/scarpa?code=codice-google');
+
+    expect(screen.getByText('Caricamento del progetto')).toBeInTheDocument();
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+    expect(await screen.findByRole('status', { name: 'Indirizzo' })).toHaveTextContent(
+      '/w/studio/scarpa?chat=uno#vista',
+    );
+    await vi.waitFor(() => {
+      expect(session.settleReturn).toHaveBeenCalledWith('/w/studio/scarpa?chat=uno#vista');
+    });
   });
 
   it('should gate nothing without a Sinopia project', () => {
