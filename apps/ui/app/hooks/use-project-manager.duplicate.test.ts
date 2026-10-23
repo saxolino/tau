@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Test fixtures use React component names and literal workspace file paths. */
+import type { SinopiaSessionState } from '#lib/sinopia-session.js';
+import type * as SinopiaCadModule from '#services/sinopia-cad.js';
 import { createProjectFixture } from '#lib/project.fixture.js';
 import { renderHook, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -9,6 +11,25 @@ import { consumableBytes } from '@taucad/fs-bridge';
 import { projectToManifest, serializeProjectManifest } from '@taucad/types';
 import type { Project, ProjectManifest } from '@taucad/types';
 import type { PendingProjectOperation, PendingProjectStorage } from '#types/pending-project-operation.types.js';
+
+const ownership = vi.hoisted(() => {
+  let state: SinopiaSessionState = { status: 'disabled' };
+  return {
+    state: () => state,
+    change: (next: SinopiaSessionState) => {
+      state = next;
+    },
+    createLink: vi.fn(),
+    readLink: vi.fn(),
+  };
+});
+vi.mock('#lib/sinopia-session.js', () => ({ sinopiaSession: () => ({ getState: ownership.state }) }));
+vi.mock('#lib/sinopia-data-client.js', () => ({ requireSinopiaUser: async () => undefined }));
+vi.mock('#services/sinopia-cad.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof SinopiaCadModule>()),
+  createSinopiaCadLink: ownership.createLink,
+  readSinopiaCadLink: ownership.readLink,
+}));
 
 const sourceProject: Project = createProjectFixture({
   id: 'proj_bbbbbbbbbbbbbbbbbbbbb',
@@ -192,6 +213,9 @@ const createWrapper = () => {
 
 describe('useProjectManager.duplicateProject', () => {
   beforeEach(() => {
+    ownership.change({ status: 'disabled' });
+    ownership.createLink.mockReset();
+    ownership.readLink.mockReset();
     vi.clearAllMocks();
     const storage = new Map<string, string>();
     vi.stubGlobal('localStorage', {
@@ -237,6 +261,25 @@ describe('useProjectManager.duplicateProject', () => {
     });
     expect(phases).toEqual(['pending', 'commit', 'locator', 'roots', 'resources', 'complete']);
     expect(mockReadDuplicateProjectFiles).toHaveBeenCalledWith(`/projects/${sourceProject.id}`);
+  });
+
+  it('journals a fresh Sinopia identity for an explicit duplicate without reusing the source model', async () => {
+    const original: SinopiaCadModule.SinopiaCadLink = {
+      userId: '00000000-0000-4000-8000-000000000001',
+      projectId: '00000000-0000-4000-8000-000000000002',
+      modelId: '00000000-0000-4000-8000-000000000003',
+      baseRevisionId: null,
+    };
+    const created = { ...original, modelId: '00000000-0000-4000-8000-000000000004' };
+    ownership.change({ status: 'signed-in', user: { id: original.userId, email: undefined } });
+    ownership.readLink.mockResolvedValue(original);
+    ownership.createLink.mockResolvedValue(created);
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+    await act(async () => result.current.duplicateProject(sourceProject.id));
+    expect(ownership.createLink).toHaveBeenCalledWith('Source (Copy)', original.projectId);
+    const linkFile = mockDuplicate.mock.calls[0]?.[0].files['.tau/sinopia.json'];
+    expect(linkFile).toBeDefined();
+    expect(JSON.parse(new TextDecoder().decode(linkFile?.content))).toEqual(created);
   });
 
   /* D19 (W11 a2): a copy has no remote of its own, so it backs up by default. */

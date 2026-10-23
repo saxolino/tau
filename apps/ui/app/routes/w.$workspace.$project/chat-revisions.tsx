@@ -32,6 +32,8 @@ import {
   versionSummary,
 } from '#routes/w.$workspace.$project/revision-history.js';
 import type { VersionEvent } from '#routes/w.$workspace.$project/revision-history.js';
+import { useSinopiaSendEvents } from '#hooks/use-sinopia-send-events.js';
+import { SinopiaConflictVersions } from '#hooks/use-sinopia-cad-conflicts.js';
 import { consumeRevisionReveal, useRevisionReveal } from '#routes/w.$workspace.$project/revision-reveal.js';
 import { toast } from '#components/ui/sonner.js';
 
@@ -168,6 +170,7 @@ function VersionRow({
 export function RevisionsPanelBody({ events = [] }: { readonly events?: readonly VersionEvent[] }): React.JSX.Element {
   const { t, language } = useTranslation();
   const { projectId } = useProject();
+  const deliveries = useSinopiaSendEvents(projectId);
   const { revisions, headRevisionId, isDirty, isLoading, hasOlder, loadOlder } = useRevisions();
   const role = useProjectRole();
   const { restore, isBusy } = useRestoreToPoint();
@@ -220,9 +223,10 @@ export function RevisionsPanelBody({ events = [] }: { readonly events?: readonly
               revision,
             }) as const,
         ),
-        ...events,
+        ...deliveries.events,
+        ...events.filter((event) => !deliveries.events.some((saved) => saved.id === event.id)),
       ].sort((a, b) => b.createdAt - a.createdAt),
-    [rows, events],
+    [rows, events, deliveries.events],
   );
   const days = groupVersionDays(timeline, language);
   const targetName =
@@ -243,6 +247,12 @@ export function RevisionsPanelBody({ events = [] }: { readonly events?: readonly
   return (
     <div data-slot='revisions-panel-body' className='flex size-full min-h-0 flex-col bg-sidebar'>
       <div data-testid='versions-list' className='min-h-0 flex-1 [scrollbar-width:thin] overflow-y-auto px-2 py-3'>
+        {deliveries.error ? (
+          <p role='alert' className='px-2 text-sm'>
+            {t('versions.historyError')}
+          </p>
+        ) : null}
+        <SinopiaConflictVersions />
         {isLoading && rows.length === 0 ? (
           <p role='status' className='px-2 text-sm text-muted-foreground'>
             {t('versions.loading')}

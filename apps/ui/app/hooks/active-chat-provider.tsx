@@ -79,6 +79,8 @@ import type { AttachmentStore } from '#db/attachment-store.js';
 import { attachmentUrl } from '#utils/attachment.utils.js';
 import type { ChatMode, ReasoningLevel } from '@taucad/chat/constants';
 import { effectiveEffort } from '#utils/model-reasoning.js';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { homeComposerScope } from '#db/home-composer-scope.js';
 import { useComposerRecordToasts } from '#hooks/use-composer-record-toasts.js';
 
 type ChatInstance = Chat<MyUIMessage>;
@@ -316,9 +318,36 @@ export function HomeNewProjectComposerProvider({
   children,
 }: {
   readonly children: React.ReactNode;
-}): React.JSX.Element {
+}): React.JSX.Element | undefined {
+  const session = useSinopiaSession();
+  if (session.status !== 'disabled' && session.status !== 'signed-in') {
+    return undefined;
+  }
+  const userId = session.status === 'signed-in' ? session.user.id : undefined;
+  const scope = homeComposerScope(userId);
+  return (
+    <HomeScopedNewProjectComposerProvider
+      key={scope.recordPath}
+      recordPath={scope.recordPath}
+      attachmentDirectory={userId === undefined ? undefined : scope.attachmentDirectory}
+    >
+      {children}
+    </HomeScopedNewProjectComposerProvider>
+  );
+}
+
+/** Remounting this owner on account changes fences both actors and every descendant preview. */
+function HomeScopedNewProjectComposerProvider({
+  children,
+  recordPath,
+  attachmentDirectory,
+}: Readonly<{
+  children: React.ReactNode;
+  recordPath: string;
+  attachmentDirectory: string | undefined;
+}>): React.JSX.Element {
   const { recordFiles } = useFileManager();
-  const store = useMemo(() => createComposerRecordStore(recordFiles, composerRecordPaths.newProject), [recordFiles]);
+  const store = useMemo(() => createComposerRecordStore(recordFiles, recordPath), [recordFiles, recordPath]);
   /* Declared before both actors: effect cleanups run in declaration order, so the debounced keystroke
    * reaches the record while the draft and the record are still running (R9). */
   const flushDraftOnUnmount = useRef<() => void>(undefined);
@@ -377,10 +406,10 @@ export function HomeNewProjectComposerProvider({
       contextUsage: undefined,
       session: undefined,
       canSelectExecution: true,
-      attachmentSource: undefined,
+      attachmentSource: attachmentDirectory,
       consumeDraft,
     }),
-    [consumeDraft, draftActorRef, execution, model],
+    [attachmentDirectory, consumeDraft, draftActorRef, execution, model],
   );
   return <ChatComposerContext.Provider value={value}>{children}</ChatComposerContext.Provider>;
 }

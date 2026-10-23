@@ -1,3 +1,7 @@
+import { useEffect, useState } from 'react';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { useSinopiaCadSync } from '#hooks/use-sinopia-cad-sync.js';
+import { SinopiaConflictDialog } from '#routes/w.$workspace.$project/sinopia-conflict-dialog.js';
 import type { RevisionStatusProjection } from '@taucad/revisions';
 import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { cn } from '@taucad/ui/utils/cn';
@@ -105,7 +109,7 @@ const dotTone: Readonly<Record<SaveStatus['kind'], string>> = {
  *
  * @returns The status.
  */
-export function ProjectSaveStatus(): React.JSX.Element {
+function LocalProjectSaveStatus(): React.JSX.Element {
   const { t, language } = useTranslation();
   const { openPanel } = useProjectWorkspace();
   const { where, head, status } = useRevisionFacts();
@@ -139,5 +143,71 @@ export function ProjectSaveStatus(): React.JSX.Element {
       {dot}
       <span className='truncate'>{sentence}</span>
     </span>
+  );
+}
+
+/** Use the acknowledged Sinopia copy in configured builds; retain the local revision owner in standalone builds. */
+export function ProjectSaveStatus(): React.JSX.Element {
+  const session = useSinopiaSession();
+  return session.status === 'disabled' ? <LocalProjectSaveStatus /> : <SinopiaProjectSaveStatus />;
+}
+
+function SinopiaProjectSaveStatus(): React.JSX.Element {
+  const { t, language } = useTranslation();
+  const { state, retry, resolve } = useSinopiaCadSync();
+  const [isConflictOpen, setConflictOpen] = useState(false);
+  useEffect(() => {
+    if (state.kind === 'conflict') {
+      // oxlint-disable-next-line react/set-state-in-effect -- A newly observed remote conflict opens its decision surface.
+      setConflictOpen(true);
+    }
+  }, [state.kind, state.remote?.head_revision_id]);
+  const sentence =
+    state.kind === 'saved' && state.at !== undefined
+      ? t('sinopiaSync.savedAt', { time: formatTime(state.at, language) })
+      : t(`sinopiaSync.${state.kind}`);
+  const tone =
+    state.kind === 'saved'
+      ? 'bg-success'
+      : state.kind === 'failed' || state.kind === 'conflict'
+        ? 'bg-warning'
+        : 'bg-muted-foreground';
+  return (
+    <>
+      <span
+        role='status'
+        data-slot='save-status'
+        aria-busy={state.kind === 'saving' || state.kind === 'loading'}
+        className='flex min-w-0 items-center gap-2 px-2 text-xs text-muted-foreground tabular-nums'
+      >
+        <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', tone)} />
+        {state.kind === 'conflict' ? (
+          <PaneButton
+            size='label'
+            onClick={() => {
+              setConflictOpen(true);
+            }}
+          >
+            {sentence}
+          </PaneButton>
+        ) : (
+          <span className='max-w-72 truncate' title={sentence}>
+            {sentence}
+          </span>
+        )}
+        {state.kind === 'failed' ? (
+          <PaneButton size='label' onClick={retry}>
+            {t('sinopiaSync.retry')}
+          </PaneButton>
+        ) : null}
+      </span>
+      <SinopiaConflictDialog
+        remote={state.remote}
+        isOpen={isConflictOpen && (state.kind === 'conflict' || state.kind === 'saving')}
+        isBusy={state.kind === 'saving'}
+        onOpenChange={setConflictOpen}
+        resolve={resolve}
+      />
+    </>
   );
 }

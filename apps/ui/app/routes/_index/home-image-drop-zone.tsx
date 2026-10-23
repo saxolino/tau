@@ -1,19 +1,12 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef } from 'react';
 import { ImagePlus, ImageUp, Plus, X } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Input } from '@taucad/ui/components/input';
 import { Label } from '@taucad/ui/components/label';
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-  SheetClose,
-} from '@taucad/ui/components/sheet';
 import { cn } from '@taucad/ui/utils/cn';
 import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import { AttachmentImage, homeComposerAttachmentDirectory } from '#components/chat/attachment-preview.js';
+import { useChatComposer } from '#hooks/active-chat-provider.js';
 import { useDraftActions, useDraftSelector } from '#hooks/use-chat.js';
 import { attachmentUrl } from '#utils/attachment.utils.js';
 import { useTranslation } from '#i18n/translate.js';
@@ -23,6 +16,7 @@ const pasteKeyCombination = { key: 'v', modKey: true } as const;
 
 type HomeImageDropZoneProps = {
   readonly isDragging: boolean;
+  readonly onChooseSinopia: () => void;
   readonly onChooseFiles: (files: File[]) => void;
   readonly measure: string;
   readonly onMeasureChange: (measure: string) => void;
@@ -35,6 +29,7 @@ type HomeImageDropZoneProps = {
 export function HomeImageDropZone({
   isDragging,
   onChooseFiles,
+  onChooseSinopia,
   measure,
   onMeasureChange,
   onBuild,
@@ -42,12 +37,12 @@ export function HomeImageDropZone({
   submitError,
 }: HomeImageDropZoneProps): React.JSX.Element {
   const { t } = useTranslation();
+  const { attachmentSource } = useChatComposer();
   const headingId = useId();
   const hintId = useId();
   const measureId = useId();
   const chooseButtonRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [isSinopiaOpen, setIsSinopiaOpen] = useState(false);
   const attachments = useDraftSelector((state) => state.draftAttachments);
   const isAttaching = useDraftSelector((state) => state.attachingMain);
   const { removeDraftAttachment } = useDraftActions();
@@ -96,7 +91,7 @@ export function HomeImageDropZone({
               {images.map((image) => (
                 <li key={image.hash} className='relative h-20 w-28 overflow-hidden rounded-lg border bg-muted'>
                   <AttachmentImage
-                    directory={homeComposerAttachmentDirectory}
+                    directory={attachmentSource ?? homeComposerAttachmentDirectory}
                     part={{ url: attachmentUrl(image), mediaType: image.mediaType }}
                     alt={t('home.dropZone.attachedImage')}
                     className='size-full object-cover'
@@ -185,14 +180,8 @@ export function HomeImageDropZone({
                 <ImagePlus aria-hidden />
                 {t('home.dropZone.choose')}
               </Button>
-              <Button
-                type='button'
-                variant='outline'
-                onClick={() => {
-                  setIsSinopiaOpen(true);
-                }}
-              >
-                {t('home.dropZone.fromSinopia')}
+              <Button type='button' variant='outline' onClick={onChooseSinopia} disabled={isSubmitting}>
+                {t('sinopiaImages.fromProject')}
               </Button>
             </div>
             <div id={hintId} className='space-y-1 text-sm text-muted-foreground'>
@@ -223,20 +212,6 @@ export function HomeImageDropZone({
           }}
         />
       </div>
-      {/* Step 6 connects this sheet to real Sinopia images, through onChooseFiles and the same draft. */}
-      <Sheet open={isSinopiaOpen} onOpenChange={setIsSinopiaOpen}>
-        <SheetContent side='right' className='sm:max-w-lg'>
-          <SheetHeader>
-            <SheetTitle>{t('home.dropZone.sinopiaTitle')}</SheetTitle>
-            <SheetDescription>{t('home.dropZone.sinopiaDescription')}</SheetDescription>
-          </SheetHeader>
-          <SheetClose asChild>
-            <Button variant='outline' className='mx-4'>
-              {t('home.dropZone.close')}
-            </Button>
-          </SheetClose>
-        </SheetContent>
-      </Sheet>
     </section>
   );
 }

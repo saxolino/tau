@@ -451,6 +451,7 @@ griglia in mm, senza Schermo intero.
 Verifica locale: 146 test nei 7 file toccati (19 UI, 55 viewer, 72 SMLib), typecheck dei tre moduli, lint sui 28 file TypeScript senza errori (restano avvisi) e build di viewer/SMLib. Dopo l'interruzione per memoria, controlli eseguiti in sequenza, Vitest con `--maxWorkers=2`, lint/typecheck con `NODE_OPTIONS=--max-old-space-size=4096`.
 
 La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; questa copia non avvia server e non pubblica modifiche.
+
 ## 2026-10-23 — Passo 7: Esporta con controlli per formato
 
 - `apps/ui/app/routes/w.$workspace.$project/project-export-dialog*.tsx`: finestra con STEP, STL, GLB e foto,
@@ -485,6 +486,7 @@ La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; q
   superati; dopo gli ultimi aggiustamenti, rieseguiti i 14 test dei 2 file interessati, tutti superati.
   `git diff --check` superato. Controlli eseguiti uno alla volta, Vitest con `--maxWorkers=2`,
   typecheck/lint con `NODE_OPTIONS=--max-old-space-size=4096`; nessun server di sviluppo avviato nella ripresa.
+
 ## 23 ottobre 2026 — Home secondo il design Fable (passo 4)
 
 - `apps/ui/app/routes/_index/sinopia-home.tsx`, `home-image-drop-zone.tsx` — titolo e sottotitolo del design;
@@ -526,6 +528,7 @@ Controlli finali (dopo la ripresa, eseguiti uno alla volta):
 - Typecheck e lint con `NODE_OPTIONS=--max-old-space-size=4096`; cache e dati Nx confinati al worktree tramite
   `NX_WORKSPACE_DATA_DIRECTORY` e `NX_CACHE_DIRECTORY`. Nessun server di sviluppo.
 - Revisione indipendente completata: corretti invio durante la dettatura e modifica della bozza durante creazione.
+
 ## 2026-10-23 — Versioni leggibili (passo 5)
 
 - `apps/ui/app/routes/w.$workspace.$project/chat-revisions.tsx` e test: la scheda sinistra riusa il grafo di
@@ -562,3 +565,92 @@ Controlli finali (dopo la ripresa, eseguiti uno alla volta):
   Node di 4096 MiB. Nessun server di sviluppo avviato.
 - Resta al coordinatore il collaudo visivo e interattivo dopo l’unione. Gli eventi reali di invio a Sinopia sono
   intenzionalmente demandati al passo 6; questo passo prepara il tipo e la presentazione.
+
+## 23 ottobre 2026 — collegamento ai progetti e alle immagini di Sinopia
+
+I modelli CAD si collegano ai progetti Sinopia tramite un record locale non autore.
+Le revisioni vengono archiviate nello storage privato dell'utente; salvataggi concorrenti
+richiedono una scelta e conservano la versione alternativa. La home legge i modelli remoti
+e i progetti del Creator; le immagini selezionate diventano allegati dell'agente e riferimenti
+nel modello. «Invia a Sinopia» prepara STEP, GLB e foto, crea una versione marcata AI e registra
+l'invio nelle Versioni. Elenchi, accesso ai modelli e draft della home rispettano il cambio account,
+preservando i dati del proprietario. I duplicati ricevono una nuova identità.
+
+Il backup dei file autore continua anche se non è disponibile un'anteprima. Una cattura tardiva
+aggiorna soltanto la stessa revisione, verificando account, checkout e geometria effettivamente renderizzata.
+La migrazione SQL vive nel repository Sinopia e va applicata separatamente dal fondatore.
+
+File aggiunti o modificati:
+
+- `apps/ui/app/components/chat/new-project-chat-composer.test.tsx`
+- `apps/ui/app/components/chat/use-new-project-submit.ts`
+- `apps/ui/app/components/machines/machine-project-link.tsx`
+- `apps/ui/app/components/project-library/cloud-project-preview.tsx`
+- `apps/ui/app/db/home-composer-scope.ts`
+- `apps/ui/app/hooks/active-chat-provider.test.tsx`
+- `apps/ui/app/hooks/active-chat-provider.tsx`
+- `apps/ui/app/hooks/use-cloud-project-preview.test.tsx`
+- `apps/ui/app/hooks/use-cloud-project-preview.ts`
+- `apps/ui/app/hooks/use-cloud-projects.ts`
+- `apps/ui/app/hooks/use-open-cloud-project.test.tsx`
+- `apps/ui/app/hooks/use-open-cloud-project.ts`
+- `apps/ui/app/hooks/use-project-export.ts`
+- `apps/ui/app/hooks/use-project-manager.duplicate.test.ts`
+- `apps/ui/app/hooks/use-project-manager.tsx`
+- `apps/ui/app/hooks/use-projects.ts`
+- `apps/ui/app/hooks/use-sinopia-cad-conflicts.tsx`
+- `apps/ui/app/hooks/use-sinopia-cad-sync.test.tsx`
+- `apps/ui/app/hooks/use-sinopia-cad-sync.ts`
+- `apps/ui/app/hooks/use-sinopia-send-events.test.ts`
+- `apps/ui/app/hooks/use-sinopia-send-events.ts`
+- `apps/ui/app/hooks/use-thumbnail-generator.test.ts`
+- `apps/ui/app/hooks/use-thumbnail-generator.ts`
+- `apps/ui/app/i18n/catalog.ts`
+- `apps/ui/app/i18n/messages/sinopia-images.ts`
+- `apps/ui/app/i18n/messages/sinopia-send.ts`
+- `apps/ui/app/i18n/messages/sinopia-sync.ts`
+- `apps/ui/app/lib/sinopia-data-client.test.ts`
+- `apps/ui/app/lib/sinopia-data-client.ts`
+- `apps/ui/app/routes/_index/home-image-drop-zone.tsx`
+- `apps/ui/app/routes/_index/home-recent-projects.test.tsx`
+- `apps/ui/app/routes/_index/home-recent-projects.tsx`
+- `apps/ui/app/routes/_index/sinopia-home.test.tsx`
+- `apps/ui/app/routes/_index/sinopia-home.tsx`
+- `apps/ui/app/routes/_index/sinopia-project-strip.test.tsx`
+- `apps/ui/app/routes/_index/sinopia-project-strip.tsx`
+- `apps/ui/app/routes/projects_/cloud-projects.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/chat-revisions.test.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/chat-revisions.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/project-command-items.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/project-route.test.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/project-route.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/project-save-status.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/project-top-bar.test.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/project-top-bar.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/send-to-sinopia-dialog.test.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/send-to-sinopia-dialog.tsx`
+- `apps/ui/app/routes/w.$workspace.$project/sinopia-conflict-dialog.tsx`
+- `apps/ui/app/services/sinopia-cad-access.test.ts`
+- `apps/ui/app/services/sinopia-cad-access.ts`
+- `apps/ui/app/services/sinopia-cad-conflicts.ts`
+- `apps/ui/app/services/sinopia-cad-restore.test.ts`
+- `apps/ui/app/services/sinopia-cad-restore.ts`
+- `apps/ui/app/services/sinopia-cad-sync.test.ts`
+- `apps/ui/app/services/sinopia-cad-sync.ts`
+- `apps/ui/app/services/sinopia-cad-thumbnail.test.ts`
+- `apps/ui/app/services/sinopia-cad-thumbnail.ts`
+- `apps/ui/app/services/sinopia-cad.test.ts`
+- `apps/ui/app/services/sinopia-cad.ts`
+- `apps/ui/app/services/sinopia-references.test.ts`
+- `apps/ui/app/services/sinopia-references.ts`
+- `apps/ui/app/services/sinopia-send.test.ts`
+- `apps/ui/app/services/sinopia-send.ts`
+
+Controlli finali dell'incarico: typecheck UI (app e spec) superato; lint sui 63 file TS/TSX
+superato con 0 errori e 17 avvisi; 26 suite integrate, 455 test superati. Dopo l'ultima
+rinomina locale dell'alias ZIP, ripassati anche i 21 test del servizio di persistenza/importazione.
+Revisione indipendente senza rilievi materiali aperti. Tutti i controlli sono stati seriali,
+con 4096 MiB di heap e al massimo 2 worker nei test. Nessun server di sviluppo avviato.
+Il collaudo SQL non è eseguito: il sandbox impedisce l'avvio del PostgreSQL temporaneo.
+La verifica autenticata e visiva resta al coordinatore dopo l'unione; nessuna migrazione
+è stata applicata e nessun accesso al database remoto è stato effettuato.

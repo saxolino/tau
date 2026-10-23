@@ -1,6 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import type { MachineJob } from '@taucad/runtime/machine';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
+import { sinopiaProjectListingKey } from '#services/sinopia-cad-access.js';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import { machineJobProjectUrl } from '#utils/machine-url.utils.js';
 
@@ -13,14 +16,21 @@ export function MachineProjectLink({
   readonly hostId: string;
 }): React.JSX.Element {
   const { getProjectListing, isLoading } = useProjectManager();
+  const sinopia = useSinopiaSession();
   const listing = useQuery({
-    queryKey: ['projects'],
+    queryKey: sinopiaProjectListingKey(),
     queryFn: async ({ signal }) => {
+      if (sinopia.status === 'signed-in') {
+        await requireSinopiaUser(sinopia.user.id);
+      }
       const value = await getProjectListing({ includeDeleted: true });
       signal.throwIfAborted();
+      if (sinopia.status === 'signed-in') {
+        await requireSinopiaUser(sinopia.user.id);
+      }
       return value;
     },
-    enabled: !isLoading,
+    enabled: !isLoading && (sinopia.status === 'disabled' || sinopia.status === 'signed-in'),
     staleTime: 3000,
   });
   const project = listing.data?.projects.find((candidate) => candidate.projectId === job.artifact.projectId);

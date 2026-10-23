@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createRef, useImperativeHandle } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CadAgentExecution } from '@taucad/chat';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
+import type { RecordFilesClient } from '#hooks/use-file-manager.js';
 import type { ProjectCreationLocationState } from '#hooks/use-project-creation-location.js';
 
 const mockNavigate = vi.fn(async () => undefined);
@@ -52,6 +53,11 @@ vi.mock('#components/filesystem/workspace-selector.js', () => ({
     </div>
   ),
 }));
+vi.mock('#hooks/use-file-manager.js', async () => {
+  const { mock } = await import('vitest-mock-extended');
+  const recordFiles = mock<RecordFilesClient>({ exists: async () => false });
+  return { useFileManager: () => ({ recordFiles }) };
+});
 vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({ createProject: mockCreateProject }),
 }));
@@ -313,7 +319,9 @@ describe('NewProjectChatComposer', () => {
     await act(async () => {
       const first = capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
       await capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
-      expect(mockCreateProject).toHaveBeenCalledOnce();
+      await waitFor(() => {
+        expect(mockCreateProject).toHaveBeenCalledOnce();
+      });
       finish?.({ slugs: { workspaceSlug: 'home', projectSlug: 'anello' } });
       await first;
     });

@@ -1,10 +1,10 @@
 import { Link } from 'react-router';
+import { useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { ChevronRight, Download, History, Send } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { Separator } from '@taucad/ui/components/separator';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { InlineTextEditor } from '#components/inline-text-editor.js';
@@ -19,6 +19,8 @@ import {
 } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { RecordIssuesAction } from '#routes/w.$workspace.$project/record-issues-action.js';
 import { WorkbenchLaneToggle } from '#routes/w.$workspace.$project/workbench-toggle.js';
+import { SendToSinopiaDialog } from '#routes/w.$workspace.$project/send-to-sinopia-dialog.js';
+import { useSinopiaCadLink } from '#hooks/use-sinopia-cad-sync.js';
 
 /** Labels in the top bar give way to their glyphs when the bar is narrower than `@4xl` (56 rem). */
 const topBarFold = {
@@ -57,13 +59,15 @@ function ProjectName(): React.JSX.Element {
  * The project page's one top bar (UI-UX-SinopiaCAD §3.1), across Misure, the model and the agent: on the left the
  * Misure toggle and the path «Progetti › name» (the name renames in place), on the right the save status in words,
  * «Versioni», «Esporta», «Invia a Sinopia» and the «Agente» toggle. No branch, no Share, no file names: those are
- * Tau's and stay out of a designer's way. «Invia a Sinopia» is there and says why it waits until step 6 wires it.
+ * Tau's and stay out of a designer's way. «Invia a Sinopia» opens the version handoff for the linked project.
  *
  * @returns The bar.
  */
 export function ProjectTopBar(): React.JSX.Element {
   const { t } = useTranslation();
   const { openPanel, registerRecordRecoveryFocus, restoreRecordRecoveryFocus } = useProjectWorkspace();
+  const [isSendOpen, setSendOpen] = useState(false);
+  const link = useSinopiaCadLink();
 
   return (
     // A named region, not a `header`: inside the page's `main` a header has no landmark role to carry the name.
@@ -136,24 +140,17 @@ export function ProjectTopBar(): React.JSX.Element {
           <Download aria-hidden className='size-3.5' />
           <span className={topBarFold.labelClassName}>{t('project.topBar.export')}</span>
         </PaneButton>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            {/* Present, not hidden, until step 6 sends to Sinopia: `aria-disabled` keeps it focusable so the reason
-                is reachable by keyboard and pointer alike. */}
-            <Button
-              size='xs'
-              className='h-7 aria-disabled:opacity-60'
-              aria-disabled='true'
-              aria-label={t('project.topBar.sendToSinopia')}
-            >
-              <Send aria-hidden className='size-3.5' />
-              <span className={topBarFold.labelClassName}>{t('project.topBar.sendToSinopia')}</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side='bottom' className='max-w-72'>
-            {t('project.topBar.sendToSinopiaSoon')}
-          </TooltipContent>
-        </Tooltip>
+        <Button
+          size='xs'
+          aria-label={t('project.topBar.sendToSinopia')}
+          onClick={() => {
+            setSendOpen(true);
+          }}
+        >
+          <Send aria-hidden className='size-3.5' />
+          <span className={topBarFold.labelClassName}>{t('project.topBar.sendToSinopia')}</span>
+        </Button>
+        {isSendOpen ? <SendToSinopiaDialog isOpen={isSendOpen} onOpenChange={setSendOpen} link={link} /> : null}
         <Separator orientation='vertical' className='mx-1 data-[orientation=vertical]:h-4' />
         <ChatLaneToggle place='viewer' fold={topBarFold} />
       </div>

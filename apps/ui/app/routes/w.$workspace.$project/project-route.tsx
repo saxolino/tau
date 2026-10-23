@@ -1,3 +1,4 @@
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { tauCloudIntent } from '#hooks/use-cloud-projects.js';
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useLocation, useMatch, useNavigate } from 'react-router';
@@ -49,6 +50,7 @@ const cloudOpenParameter = stringParameter();
 
 type ResolvedProjectRouteAccess = {
   readonly projectId: string;
+  readonly userScope: string;
   readonly access: ProjectRouteAccess;
   readonly requestedChatId: string | undefined;
 };
@@ -102,7 +104,43 @@ export function ProjectRouteGate({
   const projectManager = useProjectManager();
   const sessions = useSessions();
   const [isConstrainedDevice] = useState(isMemoryConstrainedDevice);
-  const liveProjectIds = useLiveProjectIds();
+  const sinopia = useSinopiaSession();
+  const userScope = sinopia.status === 'signed-in' ? sinopia.user.id : sinopia.status;
+  const rawLiveProjectIds = useLiveProjectIds();
+  const liveSignature = rawLiveProjectIds.join('|');
+  const [admittedLive, setAdmittedLive] = useState<{ scope: string; signature: string; ids: string[] }>();
+  useEffect(() => {
+    if (sinopia.status !== 'signed-in') {
+      return;
+    }
+    let cancelled = false;
+    const admit = async (): Promise<void> => {
+      const ids = liveSignature === '' ? [] : liveSignature.split('|');
+      const checked = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const access = await projectManager.getProjectRouteAccess(id);
+            return access.status === 'ready' ? id : undefined;
+          } catch {
+            return undefined;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setAdmittedLive({ scope: userScope, signature: liveSignature, ids: checked.filter((id) => id !== undefined) });
+      }
+    };
+    void admit();
+    return () => {
+      cancelled = true;
+    };
+  }, [liveSignature, projectManager, sinopia.status, userScope]);
+  const liveProjectIds =
+    sinopia.status === 'disabled'
+      ? rawLiveProjectIds
+      : admittedLive?.scope === userScope
+        ? admittedLive.ids.filter((id) => rawLiveProjectIds.includes(id))
+        : [];
   const closedReason = useSelector(sessions, (state) =>
     requestedProjectId === undefined ? undefined : state.context.closed[requestedProjectId]?.reason,
   );
@@ -117,7 +155,8 @@ export function ProjectRouteGate({
   const latestRequestedProjectIdRef = useRef(requestedProjectId);
   const latestRequestedChatIdRef = useRef(requestedChatId);
   const activeSessionFlushRef = useRef<ProjectSessionFlushRegistration | undefined>(undefined);
-  const [resolved, setResolved] = useState<ResolvedProjectRouteAccess>();
+  const [loadedAccess, setResolved] = useState<ResolvedProjectRouteAccess>();
+  const resolved = loadedAccess?.userScope === userScope ? loadedAccess : undefined;
   const [routeError, setRouteError] = useState<ProjectRouteError>();
   const [loadAttempt, setLoadAttempt] = useState(0);
   useEffect(() => {
@@ -194,6 +233,7 @@ export function ProjectRouteGate({
           );
         }
         setResolved({
+          userScope,
           projectId: requestedProjectId,
           access,
           requestedChatId: latestRequestedChatIdRef.current,
@@ -219,7 +259,7 @@ export function ProjectRouteGate({
      * Finding 2). The manager's value carries `libraryRevision`, so it moves
      * with the library and `projectManager` alone re-runs this effect (P66).
      */
-  }, [requestedProjectId, projectManager, loadAttempt]);
+  }, [requestedProjectId, projectManager, loadAttempt, userScope]);
 
   /*
    * Liveness is orthogonal to navigation (A35, I22).

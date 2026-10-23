@@ -5,7 +5,10 @@ import { asKnownArtifact } from '@taucad/runtime';
 import { useProject } from '#hooks/use-project.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { thumbnailMachine } from '#machines/thumbnail.machine.js';
-import type { ThumbnailResult } from '#machines/thumbnail.machine.js';
+import { awaitFreshRender } from '#machines/await-fresh-render.js';
+import { sameSinopiaCapture } from '#services/sinopia-cad-thumbnail.js';
+import type { SinopiaCadCaptureStamp } from '#services/sinopia-cad-thumbnail.js';
+import type { ThumbnailResult, ThumbnailArtifact } from '#machines/thumbnail.machine.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
 import { getProjectFileSystemConfig } from '#filesystem/handle-store.js';
 import type { ProjectFileSystemConfig } from '#filesystem/handle-store.js';
@@ -65,7 +68,10 @@ const locatorIdentity = (config: ProjectFileSystemConfig | undefined): string =>
  * @returns `regenerate` — force a thumbnail render now (manual command),
  *   bypassing the geometry-hash dedupe.
  */
-export function useThumbnailGenerator(options?: { onStored?: (bytes: Uint8Array<ArrayBuffer>) => void }): {
+export function useThumbnailGenerator(options?: {
+  onStored?: (bytes: Uint8Array<ArrayBuffer>, stamp?: SinopiaCadCaptureStamp) => void | Promise<void>;
+  captureStamp?: () => SinopiaCadCaptureStamp | undefined;
+}): {
   regenerate: () => Promise<ThumbnailResult>;
 } {
   const { geometryUnits, mainEntryPath, projectId } = useProject();
@@ -80,20 +86,28 @@ export function useThumbnailGenerator(options?: { onStored?: (bytes: Uint8Array<
   const writeFileRef = useRef(writeFile);
   const deleteFileRef = useRef(deleteFile);
   const onStoredRef = useRef(options?.onStored);
+  const captureStampRef = useRef(options?.captureStamp);
+  const captureStampsRef = useRef(new WeakMap<ThumbnailArtifact, SinopiaCadCaptureStamp>());
 
   useEffect(() => {
     cadActorRef.current = mainCadActor;
     writeFileRef.current = writeFile;
     deleteFileRef.current = deleteFile;
     onStoredRef.current = options?.onStored;
-  }, [mainCadActor, writeFile, deleteFile, options?.onStored]);
+    captureStampRef.current = options?.captureStamp;
+  }, [mainCadActor, writeFile, deleteFile, options?.onStored, options?.captureStamp]);
   const generationRef = useRef(0);
   const identityRef = useRef(`${projectId}:unsettled`);
   const manualResultResolversRef = useRef<Array<(result: ThumbnailResult) => void>>([]);
   const thumbnailActor = useActorRef(thumbnailMachine, {
     input: {
       render: async (request) => {
-        const snapshot = cadActorRef.current?.getSnapshot();
+        const stamp = captureStampRef.current?.();
+        const actor = cadActorRef.current;
+        const snapshot =
+          stamp !== undefined && actor !== undefined
+            ? await awaitFreshRender(actor, { signal: request.signal })
+            : actor?.getSnapshot();
         const rendering = snapshot?.context.rendering;
         const artifact = rendering?.success ? asKnownArtifact(rendering.artifact) : undefined;
         const identity = request.identity ?? identityRef.current;
@@ -106,6 +120,14 @@ export function useThumbnailGenerator(options?: { onStored?: (bytes: Uint8Array<
           (artifact.mimeType === 'model/gltf-binary' && isEmptyGlb(artifact.content))
         ) {
           throw new Error('source-unavailable: committed rendering not ready');
+        }
+        if (
+          stamp !== undefined &&
+          (snapshot.context.evaluation?.success !== true ||
+            snapshot.context.evaluation.id !== rendering.evaluationId ||
+            snapshot.context.latestRenderingOutcome !== 'success')
+        ) {
+          throw new Error('source-unavailable: current evaluation has no matching successful rendering');
         }
         const generation = generationRef.current;
         if (request.kind === 'automatic-thumbnail' && artifact.mimeType === 'model/gltf-binary') {
@@ -165,7 +187,11 @@ export function useThumbnailGenerator(options?: { onStored?: (bytes: Uint8Array<
           );
         }
         await validateThumbnailWebp(file.bytes);
-        return { bytes: file.bytes, identity, generation, locatorIdentity: renderedLocatorIdentity };
+        const result = { bytes: file.bytes, identity, generation, locatorIdentity: renderedLocatorIdentity };
+        if (stamp !== undefined && sameSinopiaCapture(stamp, captureStampRef.current?.())) {
+          captureStampsRef.current.set(result, stamp);
+        }
+        return result;
       },
       store: async (artifact) => {
         if (artifact.generation !== generationRef.current || artifact.identity !== identityRef.current) {
@@ -191,7 +217,14 @@ export function useThumbnailGenerator(options?: { onStored?: (bytes: Uint8Array<
         }
         // Only a fresh locally rendered capture may replace a cloud preview. Saved-image backfill is create-only.
         if (artifact.generation === generationRef.current && artifact.identity === identityRef.current) {
-          onStoredRef.current?.(artifact.bytes);
+          const stamp = captureStampsRef.current.get(artifact);
+          if (captureStampRef.current === undefined) {
+            await onStoredRef.current?.(artifact.bytes);
+          } else if (sameSinopiaCapture(stamp, captureStampRef.current())) {
+            await onStoredRef.current?.(artifact.bytes, stamp);
+          } else {
+            await onStoredRef.current?.(artifact.bytes);
+          }
         }
         return { status: 'stored' };
       },

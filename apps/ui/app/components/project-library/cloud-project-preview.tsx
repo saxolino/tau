@@ -5,20 +5,23 @@ import { Skeleton } from '@taucad/ui/components/skeleton';
 import { Button } from '@taucad/ui/components/button';
 import { cn } from '@taucad/ui/utils/cn';
 import { useCloudProjectPreview } from '#hooks/use-cloud-project-preview.js';
+import type { SinopiaCadModel } from '#services/sinopia-cad.js';
 
 export function CloudProjectPreview({
   projectId,
   name,
   isCompact = false,
+  sinopia,
 }: {
   readonly projectId: string;
   readonly name: string;
   readonly isCompact?: boolean;
+  readonly sinopia?: SinopiaCadModel;
 }): React.JSX.Element {
   const target = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [failedUrl, setFailedUrl] = useState<string>();
-  const preview = useCloudProjectPreview(projectId, isVisible);
+  const preview = useCloudProjectPreview(projectId, isVisible, sinopia);
   useEffect(() => {
     const element = target.current;
     if (!element) {

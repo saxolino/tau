@@ -4,11 +4,15 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import type { RevisionCard } from '#hooks/use-revisions.js';
+import type { VersionEvent } from '#routes/w.$workspace.$project/revision-history.js';
 import { RevisionsPanelBody } from '#routes/w.$workspace.$project/chat-revisions.js';
 
 const state = vi.hoisted(() => ({ revisions: [] as RevisionCard[], role: 'owner', dirty: false }));
 const commands = vi.hoisted(() => ({ restore: vi.fn(), undo: vi.fn() }));
 const client = vi.hoisted(() => ({ diff: vi.fn(async () => []), compare: vi.fn(), snapshot: vi.fn() }));
+const deliveries = vi.hoisted(() => ({ events: [] as VersionEvent[], error: undefined as string | undefined }));
+vi.mock('#hooks/use-sinopia-send-events.js', () => ({ useSinopiaSendEvents: () => deliveries }));
+vi.mock('#hooks/use-sinopia-cad-conflicts.js', () => ({ SinopiaConflictVersions: () => null }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'p' }) }));
 vi.mock('#hooks/use-revisions.js', () => ({
   useRevisions: () => ({ revisions: state.revisions, headRevisionId: 'current', hasOlder: false, isLoading: false }),
@@ -72,6 +76,8 @@ beforeEach(() => {
   ];
   state.role = 'owner';
   state.dirty = false;
+  deliveries.events = [];
+  deliveries.error = undefined;
   setLanguage('it');
 });
 afterEach(() => {
@@ -81,6 +87,16 @@ afterEach(() => {
 });
 
 describe('Sinopia versions', () => {
+  it('should project a persisted delivery alongside actual revisions without giving it restore actions', async () => {
+    deliveries.events = [{ kind: 'sent', id: 'delivery', createdAt: Date.now(), versionNumber: 7 }];
+    await renderPanel();
+    expect(screen.getByText('Inviata a Sinopia come versione 7')).toBeInTheDocument();
+    const delivery = screen
+      .getAllByRole('listitem')
+      .find((item) => within(item).queryByText('Inviata a Sinopia come versione 7') !== null);
+    expect(delivery).toBeDefined();
+    expect(within(delivery!).queryByRole('button')).not.toBeInTheDocument();
+  });
   it.each(['it', 'en'] as const)(
     'should show the graph numbers and authors, and hide technical controls in %s',
     async (language) => {
