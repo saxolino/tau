@@ -28,6 +28,8 @@ const state = vi.hoisted(
     attachments: [],
   }),
 );
+const viewport = vi.hoisted(() => ({ mode: 'desktop' }));
+vi.mock('#hooks/use-cad-viewport.js', () => ({ useCadViewport: () => viewport.mode }));
 const submitEditor = vi.hoisted(() => vi.fn(async () => undefined));
 const submitProject = vi.hoisted(() => vi.fn(async () => undefined));
 const removeDraftAttachment = vi.hoisted(() => vi.fn());
@@ -124,6 +126,21 @@ const pickerInput = (): HTMLInputElement => {
 const agentLane = (): HTMLElement => screen.getByRole('complementary', { name: 'Agente' });
 
 describe('SinopiaHome', () => {
+  it('should open the agent in a right sheet on a tablet while keeping the image intake visible', () => {
+    viewport.mode = 'tablet';
+    renderHome();
+    expect(screen.getByRole('dialog', { name: 'Agente' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Dall’immagine al CAD' })).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Agente' })).not.toBeInTheDocument();
+  });
+
+  it('should replace the home and composer with the supported-device message on a phone', () => {
+    viewport.mode = 'phone';
+    renderHome();
+    expect(screen.getByRole('link', { name: 'Apri Sinopia' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     globalThis.localStorage.clear();
@@ -131,6 +148,7 @@ describe('SinopiaHome', () => {
     // Reset the shared preference cache as well as its storage.
     rememberAgentLaneOpen(true);
     state.isMobile = false;
+    viewport.mode = 'desktop';
     state.support = {
       modalities: { input: ['text', 'image'], output: ['text'] },
     };

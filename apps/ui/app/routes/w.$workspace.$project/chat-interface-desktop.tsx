@@ -1,3 +1,6 @@
+import { useCadViewport } from '#hooks/use-cad-viewport.js';
+import { TabletLane } from '#components/layout/tablet-lane.js';
+import { useTranslation } from '#i18n/translate.js';
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { LayoutPriority } from 'allotment';
@@ -30,15 +33,18 @@ export const compactWorkspaceWidth = 1024;
 
 export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
   const { editorRef } = useProject();
+  const { t } = useTranslation();
+  const isTablet = useCadViewport() === 'tablet';
   const { setChatOpen, setWorkbenchOpen } = useProjectWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isCompact, setIsCompact] = useState<boolean>();
   const isClient = isCompact !== undefined;
   const isEditorReady = useSelector(editorRef, (state) => state.matches('ready'));
   const desktopLayout = useSelector(editorRef, (state) => state.context.panelState.desktopLayout);
-  const compactAuxiliary = isCompact ? resolveCompactAuxiliary(desktopLayout) : undefined;
-  const chatVisible = desktopLayout.chatOpen && (!isCompact || compactAuxiliary === 'chat');
-  const workbenchVisible = desktopLayout.workbenchOpen && (!isCompact || compactAuxiliary === 'workbench');
+  const singleLane = isTablet || (isCompact ?? false);
+  const compactAuxiliary = singleLane ? resolveCompactAuxiliary(desktopLayout) : undefined;
+  const chatVisible = desktopLayout.chatOpen && (!singleLane || compactAuxiliary === 'chat');
+  const workbenchVisible = desktopLayout.workbenchOpen && (!singleLane || compactAuxiliary === 'workbench');
   const lanes = useMemo(() => ({ chat: chatVisible, workbench: workbenchVisible }), [chatVisible, workbenchVisible]);
 
   // ⌃W shows or hides Misure; its two-place toggle advertises the binding (`WorkbenchLaneToggle`).
@@ -115,54 +121,76 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
               {isClient && isEditorReady ? (
                 /* SinopiaCAD: Misure on the left, the model in the middle, the agent on the right. Each side lane's
                  toggle heads its own header while it shows and the viewer's while it does not. */
-                <Allotment
-                  paneLabels={['Workbench', 'Viewer', 'Chat']}
-                  separator={false}
-                  proportionalLayout={false}
-                  /* The lanes land rather than snap in: the skeleton they replace holds the same
+                <>
+                  <Allotment
+                    paneLabels={['Workbench', 'Viewer', 'Chat']}
+                    separator={false}
+                    proportionalLayout={false}
+                    /* The lanes land rather than snap in: the skeleton they replace holds the same
                    background, so a short fade reads as the workspace resolving (soft land). */
-                  className='size-full animate-in duration-200 fade-in-50 motion-reduce:animate-none [&_.split-view-view:not(:last-child)]:border-r [&_.split-view-view:not(:last-child)]:border-border'
-                  onDragEnd={persistWidths}
-                >
-                  <Allotment.Pane
-                    key='workbench'
-                    minSize={panelMinSizeWorkbench}
-                    preferredSize={desktopLayout.workbenchWidth}
-                    priority={LayoutPriority.Low}
-                    visible={workbenchVisible}
+                    className='size-full animate-in duration-200 fade-in-50 motion-reduce:animate-none [&_.split-view-view:not(:last-child)]:border-r [&_.split-view-view:not(:last-child)]:border-border'
+                    onDragEnd={persistWidths}
                   >
-                    <div className='size-full'>
-                      <WorkbenchDockview />
-                    </div>
-                  </Allotment.Pane>
+                    <Allotment.Pane
+                      key='workbench'
+                      minSize={panelMinSizeWorkbench}
+                      preferredSize={desktopLayout.workbenchWidth}
+                      priority={LayoutPriority.Low}
+                      visible={workbenchVisible && !isTablet}
+                    >
+                      <div className='size-full'>{isTablet ? null : <WorkbenchDockview />}</div>
+                    </Allotment.Pane>
 
-                  <Allotment.Pane key='viewer' minSize={panelMinSizeViewer} priority={LayoutPriority.High}>
-                    {/* SinopiaCAD: no file tabs over the model (UI-UX-SinopiaCAD §3.3). The viewer keeps one invisible
+                    <Allotment.Pane key='viewer' minSize={panelMinSizeViewer} priority={LayoutPriority.High}>
+                      {/* SinopiaCAD: no file tabs over the model (UI-UX-SinopiaCAD §3.3). The viewer keeps one invisible
                       tab; `global.css` hides its tab bar (file names, split, «+»), and the top bar holds its actions. */}
-                    <div data-viewer-tab-bar='hidden' className='@container/viewer relative size-full overflow-hidden'>
-                      <ViewerDockview />
-                      <ProjectManifestIssueBanner />
-                      <ProjectUnavailableOverlay />
-                    </div>
-                  </Allotment.Pane>
+                      <div
+                        data-viewer-tab-bar='hidden'
+                        className='@container/viewer relative size-full overflow-hidden'
+                      >
+                        <ViewerDockview />
+                        <ProjectManifestIssueBanner />
+                        <ProjectUnavailableOverlay />
+                      </div>
+                    </Allotment.Pane>
 
-                  <Allotment.Pane
-                    key='chat'
-                    minSize={panelMinSizeChat}
-                    preferredSize={desktopLayout.chatWidth}
-                    priority={LayoutPriority.Low}
-                    visible={chatVisible}
-                  >
-                    <ChatHistoryGate>
-                      <ChatHistory
-                        isExpanded={desktopLayout.chatOpen}
-                        setIsExpanded={(value) => {
-                          setChatOpen(typeof value === 'function' ? value(desktopLayout.chatOpen) : value);
-                        }}
-                      />
-                    </ChatHistoryGate>
-                  </Allotment.Pane>
-                </Allotment>
+                    <Allotment.Pane
+                      key='chat'
+                      minSize={panelMinSizeChat}
+                      preferredSize={desktopLayout.chatWidth}
+                      priority={LayoutPriority.Low}
+                      visible={chatVisible && !isTablet}
+                    >
+                      {isTablet ? null : (
+                        <ChatHistoryGate>
+                          <ChatHistory
+                            isExpanded={desktopLayout.chatOpen}
+                            setIsExpanded={(value) => {
+                              setChatOpen(typeof value === 'function' ? value(desktopLayout.chatOpen) : value);
+                            }}
+                          />
+                        </ChatHistoryGate>
+                      )}
+                    </Allotment.Pane>
+                  </Allotment>
+                  {isTablet && compactAuxiliary !== undefined ? (
+                    <TabletLane
+                      label={t(chatVisible ? 'home.agentLane.label' : 'project.lanes.measures')}
+                      side={chatVisible ? 'right' : 'left'}
+                      onClose={() => {
+                        (chatVisible ? setChatOpen : setWorkbenchOpen)(false);
+                      }}
+                    >
+                      {chatVisible ? (
+                        <ChatHistoryGate>
+                          <ChatHistory />
+                        </ChatHistoryGate>
+                      ) : (
+                        <WorkbenchDockview />
+                      )}
+                    </TabletLane>
+                  ) : null}
+                </>
               ) : (
                 <WorkspaceSkeleton />
               )}

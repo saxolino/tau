@@ -1,3 +1,4 @@
+import { setLanguage } from '#i18n/language.js';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -5,6 +6,8 @@ import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/project-workspace-context.js';
 
+const viewport = vi.hoisted(() => ({ mode: 'desktop' }));
+vi.mock('#hooks/use-cad-viewport.js', () => ({ useCadViewport: () => viewport.mode }));
 const send = vi.fn();
 const setWorkbenchOpen = vi.hoisted(() => vi.fn());
 const sidebar = vi.hoisted(() => ({ open: true }));
@@ -130,6 +133,8 @@ const resizeTo = (width: number): void => {
 
 describe('ChatInterfaceDesktop', () => {
   beforeEach(() => {
+    setLanguage('en');
+    viewport.mode = 'desktop';
     resizeCallbacks.clear();
     desktopLayout.chatOpen = true;
     desktopLayout.workbenchOpen = true;
@@ -148,6 +153,22 @@ describe('ChatInterfaceDesktop', () => {
 
   const paneOf = (testId: string): Element | undefined =>
     screen.getByTestId(testId).closest('[data-pane]') ?? undefined;
+
+  it('should show one tablet sheet over the same viewer when switching lanes', () => {
+    setLanguage('it');
+    viewport.mode = 'tablet';
+    renderDesktop();
+    const viewer = screen.getByTestId('viewer-lane');
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Agente' })).toContainElement(screen.getByTestId('chat-lane'));
+    expect(screen.queryByTestId('workbench-lane')).not.toBeInTheDocument();
+    desktopLayout.compactAuxiliary = 'workbench';
+    resizeTo(compactWorkspaceWidth - 1);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Misure' })).toContainElement(screen.getByTestId('workbench-lane'));
+    expect(screen.queryByTestId('chat-lane')).not.toBeInTheDocument();
+    expect(screen.getByTestId('viewer-lane')).toBe(viewer);
+  });
 
   it('places Misure on the left, the model in the middle and the agent on the right', async () => {
     renderDesktop();
