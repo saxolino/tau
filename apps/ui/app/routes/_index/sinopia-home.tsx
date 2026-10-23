@@ -2,17 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import { NewProjectChatComposer } from '#components/chat/new-project-chat-composer.js';
-import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
+import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
 import { getClipboardImageFiles } from '#components/chat/chat-paste-handler.js';
 import { toast } from '#components/ui/sonner.js';
 import { useTranslation } from '#i18n/translate.js';
-import { HomeNewProjectComposerProvider } from '#hooks/active-chat-provider.js';
+import { attachmentModelForExecution, attachmentSendBlockReason } from '#utils/chat.utils.js';
+import { HomeNewProjectComposerProvider, useChatComposer } from '#hooks/active-chat-provider.js';
 import { useAgentLaneOpen } from '#hooks/use-agent-lane-open.js';
 import {
   AgentLaneToggleButton,
   toggleChatKeyCombination,
 } from '#routes/w.$workspace.$project/agent-lane-toggle-button.js';
 import { HomeAgentLane } from '#routes/_index/home-agent-lane.js';
+import { useNewProjectSubmit } from '#components/chat/use-new-project-submit.js';
+import { useDraftSelector } from '#hooks/use-chat.js';
 import { HomeImageDropZone } from '#routes/_index/home-image-drop-zone.js';
 import { HomeRecentProjects } from '#routes/_index/home-recent-projects.js';
 import { useHomeImageIntake } from '#routes/_index/use-home-image-intake.js';
@@ -36,6 +39,45 @@ function HomeSurface(): React.JSX.Element {
   const isMobile = useIsMobile();
   const [isLaneOpen, setLaneOpen] = useAgentLaneOpen();
   const isLaneShown = isLaneOpen && !isMobile;
+  const [measure, setMeasure] = useState('');
+  const { onSubmit, isSubmitting } = useNewProjectSubmit(false);
+  const {
+    model: { model },
+    execution: { execution },
+  } = useChatComposer();
+  const draftAttachments = useDraftSelector((state) => state.draftAttachments);
+  const isAttaching = useDraftSelector((state) => state.attachingMain);
+  const sendBlockReason = attachmentSendBlockReason(draftAttachments, attachmentModelForExecution(execution, model));
+  const draftText = useDraftSelector((state) => state.draftText);
+  const hasImages = useDraftSelector((state) =>
+    state.draftAttachments.some((attachment) => attachment.mediaType.startsWith('image/')),
+  );
+  const submitHome: ChatTextareaProperties['onSubmit'] = useCallback(
+    async (payload) => {
+      const content = [
+        payload.content.trim() || (hasImages ? t('home.dropZone.buildPrompt') : ''),
+        hasImages && measure.trim() ? t('home.dropZone.knownMeasure', { measure: measure.trim() }) : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      await onSubmit({ ...payload, content });
+    },
+    [hasImages, measure, onSubmit, t],
+  );
+  if (!hasImages && measure !== '') {
+    setMeasure('');
+  }
+  const build = (): void => {
+    if (!hasImages || isAttaching || sendBlockReason !== undefined) {
+      return;
+    }
+    const editorSubmission = composerRef.current?.submit?.();
+    if (editorSubmission !== undefined) {
+      void editorSubmission;
+      return;
+    }
+    void submitHome({ content: draftText.trim() || t('home.dropZone.buildPrompt'), attachments: [] });
+  };
   const composerRef = useRef<ChatTextareaHandle>(null);
   const { addImages } = useHomeImageIntake();
   const [isDragging, setIsDragging] = useState(false);
@@ -50,6 +92,9 @@ function HomeSurface(): React.JSX.Element {
 
   const takeImages = useCallback(
     async (files: Iterable<File>): Promise<void> => {
+      if (isSubmitting) {
+        return;
+      }
       const added = await addImages(files);
       if (added === 0) {
         return;
@@ -61,7 +106,7 @@ function HomeSurface(): React.JSX.Element {
         composerRef.current?.focus();
       });
     },
-    [addImages, setLaneOpen, t],
+    [addImages, isSubmitting, setLaneOpen, t],
   );
 
   useEffect(() => {
@@ -141,24 +186,41 @@ function HomeSurface(): React.JSX.Element {
             {isLaneShown ? null : <AgentLaneToggleButton place='viewer' isOpen={false} onOpenChange={setLaneOpen} />}
           </div>
         )}
-        <div className='container mx-auto flex flex-col px-4'>
+        <div className='mx-auto flex w-full max-w-6xl flex-col px-6 pb-6 lg:px-8'>
           <HomeImageDropZone
             isDragging={isDragging}
+            measure={measure}
+            onMeasureChange={setMeasure}
+            onBuild={build}
+            isSubmitting={isSubmitting}
+            submitError={sendBlockReason === undefined ? undefined : t('home.composer.attachmentsBlocked')}
             onChooseFiles={(files) => {
               void takeImages(files);
             }}
           />
           {isMobile ? (
             <div role='region' aria-label={t('home.intake.messageForAgent')} className='mx-auto mt-6 w-full max-w-3xl'>
-              <NewProjectChatComposer ref={composerRef} enableAutoFocus={false} enableLocationPicker={false} />
+              <NewProjectChatComposer
+                ref={composerRef}
+                enableAutoFocus={false}
+                enableLocationPicker={false}
+                onSubmit={submitHome}
+                isSubmitDisabled={isSubmitting}
+              />
             </div>
           ) : null}
           <HomeRecentProjects />
+          {/* Sinopia's project strip mounts here when the real data integration is available. */}
         </div>
       </div>
       {isLaneShown ? (
-        <aside aria-label={t('home.agentLane.label')} className='w-80 shrink-0 border-l border-border'>
-          <HomeAgentLane composerRef={composerRef} onOpenChange={setLaneOpen} />
+        <aside aria-label={t('home.agentLane.label')} className='w-80 shrink-0 border-l border-border xl:w-90'>
+          <HomeAgentLane
+            composerRef={composerRef}
+            onOpenChange={setLaneOpen}
+            onSubmit={submitHome}
+            isSubmitting={isSubmitting}
+          />
         </aside>
       ) : null}
       <p role='status' aria-live='polite' className='sr-only'>

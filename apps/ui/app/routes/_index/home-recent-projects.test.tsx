@@ -45,10 +45,10 @@ const project = (id: string, name: string, lastActivityAt: number): ProjectListI
     slugs: { workspaceSlug: 'home', projectSlug: id.replace('proj_', '') },
   }) as unknown as ProjectListItem;
 
-const renderSection = (): ReturnType<typeof render> =>
+const renderSection = (pieceCounts?: ReadonlyMap<string, number>, path = '/'): ReturnType<typeof render> =>
   render(
-    <MemoryRouter>
-      <HomeRecentProjects />
+    <MemoryRouter initialEntries={[path]}>
+      <HomeRecentProjects pieceCounts={pieceCounts} />
     </MemoryRouter>,
   );
 
@@ -147,6 +147,27 @@ describe('HomeRecentProjects', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Non riesco a caricare i progetti.');
     await userEvent.click(screen.getByRole('button', { name: 'Riprova' }));
     expect(retry).toHaveBeenCalledOnce();
+  });
+  it('should sort by name through the selected menu and retain the choice in the URL', async () => {
+    state.projects = [project('proj_spilla', 'Spilla', now), project('proj_anello', 'Anello', now - 60_000)];
+    const view = renderSection();
+    await userEvent.click(screen.getByRole('button', { name: 'Ordina i progetti' }));
+    expect(screen.getByRole('menuitemradio', { name: 'Ultimi modificati' })).toHaveAttribute('aria-checked', 'true');
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Nome' }));
+    expect(screen.getAllByRole('heading', { level: 3 }).map((item) => item.textContent)).toEqual(['Anello', 'Spilla']);
+    expect(screen.getByRole('button', { name: 'Ordina i progetti' })).toHaveTextContent('Nome');
+    view.unmount();
+    renderSection(undefined, '/?sort=name');
+    expect(screen.getAllByRole('heading', { level: 3 }).map((item) => item.textContent)).toEqual(['Anello', 'Spilla']);
+  });
+
+  it.each(['it', 'en'] as const)('should show only known piece counts in %s', (language) => {
+    setLanguage(language);
+    state.projects = [project('proj_anello', 'Anello', Date.now()), project('proj_spilla', 'Spilla', Date.now())];
+    renderSection(new Map([['proj_anello', 9]]));
+    const cards = screen.getAllByRole('listitem');
+    expect(cards[0]).toHaveTextContent(language === 'it' ? '· 9 pezzi' : '· 9 pieces');
+    expect(cards[1]).not.toHaveTextContent(/pezzi|pieces/u);
   });
 });
 

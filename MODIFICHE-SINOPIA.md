@@ -485,3 +485,44 @@ La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; q
   superati; dopo gli ultimi aggiustamenti, rieseguiti i 14 test dei 2 file interessati, tutti superati.
   `git diff --check` superato. Controlli eseguiti uno alla volta, Vitest con `--maxWorkers=2`,
   typecheck/lint con `NODE_OPTIONS=--max-old-space-size=4096`; nessun server di sviluppo avviato nella ripresa.
+## 23 ottobre 2026 — Home secondo il design Fable (passo 4)
+
+- `apps/ui/app/routes/_index/sinopia-home.tsx`, `home-image-drop-zone.tsx` — titolo e sottotitolo del design;
+  riquadro con scelta immagini e ingresso «Da un progetto Sinopia»; stato pronto con miniature rimovibili,
+  «Aggiungi vista», misura facoltativa, «Costruisci il CAD» e «Annulla». Il foglio Sinopia spiega il futuro
+  collegamento, senza dati finti. La striscia «Da Sinopia» resta nascosta, con punto d'aggancio nel layout.
+- `apps/ui/app/components/chat/use-new-project-submit.ts` (nuovo), `new-project-chat-composer.tsx` — stesso
+  trasferimento degli allegati della bozza, esecuzione scelta e primo turno nel progetto; invio condiviso dalla
+  home, protezione dai doppi clic e bozza conservata se la creazione fallisce. La misura entra nel primo messaggio.
+- `apps/ui/app/components/chat/chat-textarea-types.ts`, `chat-textarea.tsx`, `chat-textarea-desktop.tsx` — la hero
+  inoltra l'invio al composer montato, attendendo anche la dettatura. Durante la creazione la bozza è inerte,
+  compresa l'aggiunta di allegati, anche riaprendo il pannello. Sulla home i controlli modello/agente/modalità
+  vengono smontati insieme alle relative scorciatoie; gli errori non mostrano il nome del modello.
+- `apps/ui/app/routes/_index/home-agent-lane.tsx`, `apps/ui/app/i18n/messages/home.ts` — intestazione «Agente»,
+  «Dimmi cosa vuoi fare», descrizione e tre suggerimenti del design che compilano la bozza senza inviarla;
+  tutti i nuovi testi in IT/EN. I formati dichiarati restano quelli realmente supportati (JPG, PNG, WebP, GIF,
+  massimo 20 MB): HEIC richiede una conversione futura.
+- `apps/ui/app/routes/_index/home-recent-projects.tsx` — anteprime 16:10, griglia a 2/3/4 colonne, ordinamento
+  Ultimi modificati/Nome nel parametro URL `sort`, collegamento alla raccolta completa. Il numero dei pezzi
+  compare solo quando fornito da metadati reali (`pieceCounts`); la lista attuale non lo conosce e non conta file.
+- `apps/ui/app/components/layout/app-sidebar.tsx`, `apps/ui/app/components/nav/home-recent-navigation.tsx` (nuovo)
+  — sulla home: Cerca, Inizio, Progetti, al massimo otto progetti recenti e account in basso; niente Nuovo progetto
+  né Altro. Le altre pagine mantengono la navigazione esistente.
+- Test aggiornati senza cancellazioni: `routes/_index/sinopia-home.test.tsx`, `home-recent-projects.test.tsx`,
+  `components/chat/new-project-chat-composer.test.tsx`, `chat-textarea-desktop.test.tsx`,
+  `components/layout/app-sidebar.test.tsx`; aggiunto `components/nav/home-recent-navigation.test.tsx`.
+  `apps/ui-e2e/src/home-hydration.spec.ts` imposta la preferenza del modello nella fixture e verifica l'assenza
+  del selettore nella UI della home, conservando il controllo del trasferimento immagine + PDF.
+
+Verifica dal vivo ed esecuzione e2e della home riservate al coordinatore dopo l'unione, come da incarico.
+Nessun server sulla porta 4310, pubblicazione, push o intervento su Supabase.
+
+Controlli finali (dopo la ripresa, eseguiti uno alla volta):
+
+- Vitest sui sei file di test toccati: **96/96 passati**, `--maxWorkers=2`.
+- Nx typecheck `ui` e `ui-e2e`, `--parallel=1`: **0 errori**, tre configurazioni TypeScript.
+- Nx lint mirato: **19 file**, oxlint + ESLint; **0 errori, 5 warning** (complessità e override delle dimensioni
+  di pulsanti nel composer). Il file e2e passa senza warning di codice.
+- Typecheck e lint con `NODE_OPTIONS=--max-old-space-size=4096`; cache e dati Nx confinati al worktree tramite
+  `NX_WORKSPACE_DATA_DIRECTORY` e `NX_CACHE_DIRECTORY`. Nessun server di sviluppo.
+- Revisione indipendente completata: corretti invio durante la dettatura e modifica della bozza durante creazione.

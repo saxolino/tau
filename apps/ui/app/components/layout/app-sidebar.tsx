@@ -1,5 +1,7 @@
 import * as React from 'react';
-import { Link } from 'react-router';
+import { Link, useMatch } from 'react-router';
+import { Home } from 'lucide-react';
+import { HomeRecentNavigation } from '#components/nav/home-recent-navigation.js';
 import { ProjectNavigation } from '#components/nav/project-navigation.js';
 import { NavMain } from '#components/nav/nav-main.js';
 import {
@@ -25,6 +27,7 @@ import { useTranslation } from '#i18n/translate.js';
 
 export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sidebar>): React.JSX.Element {
   const { t } = useTranslation();
+  const isHome = useMatch('/') !== null;
   const { state, isMobile } = useSidebar();
   const flags = useFeatureFlags();
   const desktopTarget = isDesktopTarget();
@@ -80,12 +83,25 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
         <div className='sticky top-0 z-10 space-y-1 bg-sidebar px-2 pb-1'>
           {/* Global search entries register when search opens. */}
           <Commands />
-          <NavChat isCompact={isCompact} />
+          {isHome ? (
+            <SidebarMenuButton asChild isActive>
+              <Link to='/' aria-current='page'>
+                <Home aria-hidden />
+                <span>{t('shell.sidebar.home')}</span>
+              </Link>
+            </SidebarMenuButton>
+          ) : (
+            <NavChat isCompact={isCompact} />
+          )}
         </div>
         <div className='flex-1 overflow-y-auto'>
           <div className='flex flex-col justify-between'>
-            <NavMain items={navRoutes.navMain} moreItems={navMoreItems} className={isCompact ? 'py-1' : undefined} />
-            <ProjectNavigation className={isCompact ? 'py-1' : undefined} />
+            <NavMain
+              items={navRoutes.navMain}
+              moreItems={isHome ? undefined : navMoreItems}
+              className={isCompact ? 'py-1' : undefined}
+            />
+            {isHome ? <HomeRecentNavigation /> : <ProjectNavigation className={isCompact ? 'py-1' : undefined} />}
           </div>
         </div>
       </SidebarContent>

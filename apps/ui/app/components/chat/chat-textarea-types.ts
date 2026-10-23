@@ -139,6 +139,8 @@ const parseFileDragPaths = (raw: string): string[] => {
 
 export type ChatTextareaHandle = {
   focus: () => void;
+  /** Submit through the editor, including dictation; undefined until the editor mounts. */
+  submit?: () => Promise<void> | undefined;
 };
 
 export type ChatTextareaProperties = {
@@ -149,6 +151,8 @@ export type ChatTextareaProperties = {
   readonly enableAutoFocus?: boolean;
   readonly className?: string;
   readonly enableContextActions?: boolean;
+  /** Show technical agent configuration controls; the image-first home hides them. */
+  readonly enableAgentControls?: boolean;
   /** Where a project created from this draft goes: Home's location control, in the bar. */
   readonly creationLocationControl?: React.ReactNode;
   /** Blocks every submit path while external prerequisites are unresolved. */

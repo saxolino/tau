@@ -58,6 +58,7 @@ type ChatTextareaDesktopProperties = {
   readonly placeholder?: string;
   readonly enableAutoFocus?: boolean;
   readonly enableContextActions?: boolean;
+  readonly enableAgentControls?: boolean;
   readonly creationLocationControl?: React.ReactNode;
   readonly isSubmitDisabled?: boolean;
   /** Which composer this is: the edit box speaks as one and owns shortcuts only while focused (F6, F19). */
@@ -96,6 +97,8 @@ type ChatTextareaDesktopProperties = {
   readonly containerReference: React.RefObject<HTMLDivElement | null>;
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object for imperative focus
   readonly focusEditorRef: React.RefObject<(() => void) | undefined>;
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- imperative editor submission for the image hero
+  readonly submitEditorRef?: React.RefObject<(() => Promise<void>) | undefined>;
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object populated by this component for parent-driven chip insertion
   readonly addContextChipsRef: React.RefObject<((paths: string[]) => void) | undefined>;
   readonly addContextReferencesRef: React.RefObject<((references: ChatContextReference[]) => void) | undefined>;
@@ -202,6 +205,7 @@ export const ChatTextareaDesktop = memo(function ({
   className,
   enableAutoFocus = true,
   enableContextActions = true,
+  enableAgentControls = true,
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
@@ -235,6 +239,7 @@ export const ChatTextareaDesktop = memo(function ({
   fileInputReference,
   containerReference,
   focusEditorRef,
+  submitEditorRef,
   addContextChipsRef,
   addContextReferencesRef,
 
@@ -328,6 +333,15 @@ export const ChatTextareaDesktop = memo(function ({
         : [],
     );
   }, [dictation.phase, dictation.stop, draftActorRef, submitWithReferences]);
+  useLayoutEffect(() => {
+    if (!submitEditorRef) {
+      return undefined;
+    }
+    submitEditorRef.current = submitWithDictation;
+    return () => {
+      submitEditorRef.current = undefined;
+    };
+  }, [submitEditorRef, submitWithDictation]);
   const escapeWithDictation = useCallback((): void => {
     if (dictation.phase === 'idle') {
       onEscapePressed?.();
@@ -618,6 +632,7 @@ export const ChatTextareaDesktop = memo(function ({
           composerMode={mode}
           containerReference={containerReference}
           enableContextActions={enableContextActions}
+          enableAgentControls={enableAgentControls}
           creationLocationControl={creationLocationControl}
           acpSessionData={acpSessionData}
           status={status}
@@ -758,6 +773,7 @@ export const ChatTextareaBar = memo(function ({
   composerMode,
   containerReference,
   enableContextActions,
+  enableAgentControls = true,
   creationLocationControl,
   acpSessionData,
   status,
@@ -782,6 +798,7 @@ export const ChatTextareaBar = memo(function ({
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
   readonly containerReference: React.RefObject<HTMLDivElement | null>;
   readonly enableContextActions: boolean;
+  readonly enableAgentControls?: boolean;
   readonly creationLocationControl?: React.ReactNode;
   readonly acpSessionData?: AcpSessionData;
   readonly status: string;
@@ -846,7 +863,13 @@ export const ChatTextareaBar = memo(function ({
             focusEditor={focusEditor}
           />
           <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-0.5')}>
-            <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
+            {enableAgentControls ? (
+              <ChatAgentModeControl
+                agentConfig={agentConfig}
+                focusEditor={focusEditor}
+                enableShortcut={ownsShortcuts}
+              />
+            ) : null}
             {creationLocationControl}
           </div>
           <input
@@ -864,7 +887,7 @@ export const ChatTextareaBar = memo(function ({
         </div>
       )}
       <div data-slot='composer-right' className='pointer-events-auto flex min-w-0 flex-row items-center gap-1'>
-        {dictationRecording === undefined ? (
+        {dictationRecording === undefined && enableAgentControls ? (
           <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-1')}>
             <ChatContextIndicator />
             <ChatAgentSheet

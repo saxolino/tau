@@ -11,6 +11,9 @@ import type { ModelSupport } from '@taucad/chat';
 
 type HomeTestState = {
   isMobile: boolean;
+  draftText: string;
+  attachingMain: boolean;
+  editorCanSubmit: boolean;
   support: ModelSupport | undefined;
   attachments: Array<{ hash: string; mediaType: string; filename?: string }>;
 };
@@ -18,10 +21,21 @@ type HomeTestState = {
 const state = vi.hoisted(
   (): HomeTestState => ({
     isMobile: false,
+    draftText: '',
+    attachingMain: false,
+    editorCanSubmit: false,
     support: { modalities: { input: ['text', 'image'], output: ['text'] } },
     attachments: [],
   }),
 );
+const submitEditor = vi.hoisted(() => vi.fn(async () => undefined));
+const submitProject = vi.hoisted(() => vi.fn(async () => undefined));
+const removeDraftAttachment = vi.hoisted(() => vi.fn());
+const setDraftText = vi.hoisted(() => vi.fn());
+vi.mock('#components/chat/use-new-project-submit.js', () => ({
+  useNewProjectSubmit: () => ({ onSubmit: submitProject, isSubmitting: false }),
+}));
+
 const addDraftAttachment = vi.hoisted(() => vi.fn());
 const focusComposer = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
@@ -42,9 +56,11 @@ vi.mock('#hooks/active-chat-provider.js', () => ({
   }),
 }));
 vi.mock('#hooks/use-chat.js', () => ({
-  useDraftActions: () => ({ addDraftAttachment }),
-  useDraftSelector: <T,>(selector: (draft: { draftAttachments: typeof state.attachments }) => T): T =>
-    selector({ draftAttachments: state.attachments }),
+  useDraftActions: () => ({ addDraftAttachment, removeDraftAttachment, setDraftText }),
+  useDraftSelector: <T,>(
+    selector: (draft: { draftAttachments: typeof state.attachments; draftText: string; attachingMain: boolean }) => T,
+  ): T =>
+    selector({ draftAttachments: state.attachments, draftText: state.draftText, attachingMain: state.attachingMain }),
 }));
 vi.mock('#components/chat/attachment-preview.js', () => ({
   homeComposerAttachmentDirectory: '/records/new-project/attachments',
@@ -58,7 +74,10 @@ vi.mock('#components/chat/new-project-chat-composer.js', () => ({
     readonly ref?: React.Ref<ChatTextareaHandle>;
     readonly enableLocationPicker?: boolean;
   }) => {
-    useImperativeHandle(ref, () => ({ focus: focusComposer }));
+    useImperativeHandle(ref, () => ({
+      focus: focusComposer,
+      submit: state.editorCanSubmit ? submitEditor : undefined,
+    }));
     return (
       <div role='textbox' aria-label='Descrivi cosa costruire o cosa cambiare…'>
         {enableLocationPicker ? 'Location picker' : undefined}
@@ -116,6 +135,9 @@ describe('SinopiaHome', () => {
       modalities: { input: ['text', 'image'], output: ['text'] },
     };
     state.attachments = [];
+    state.draftText = '';
+    state.attachingMain = false;
+    state.editorCanSubmit = false;
   });
 
   afterEach(() => {
@@ -316,15 +338,12 @@ describe('SinopiaHome', () => {
     fireEvent.change(pickerInput(), { target: { files: [picture()] } });
 
     await waitFor(() => {
-      expect(toastError).toHaveBeenCalledWith(
-        'L’agente non può leggere immagini con il modello scelto',
-        expect.anything(),
-      );
+      expect(toastError).toHaveBeenCalledWith('L’agente non può leggere immagini in questo momento', expect.anything());
     });
     expect(addDraftAttachment).not.toHaveBeenCalled();
   });
 
-  it('shows the pictures already in the draft, named by their file', () => {
+  it('shows one thumbnail per image without exposing filenames', () => {
     state.attachments = [
       { hash: 'a'.repeat(64), mediaType: 'image/png', filename: 'anello.png' },
       { hash: 'a'.repeat(64), mediaType: 'image/png', filename: 'anello.png' },
@@ -337,7 +356,7 @@ describe('SinopiaHome', () => {
       within(list)
         .getAllByRole('img')
         .map((image) => image.getAttribute('alt')),
-    ).toEqual(['anello.png', 'Immagine allegata']);
+    ).toEqual(['Immagine allegata', 'Immagine allegata']);
   });
 
   it('hides and shows the lane with its toggle and ⌃C, remembering the choice', async () => {
@@ -390,4 +409,102 @@ describe('SinopiaHome', () => {
       screen.getByRole('textbox'),
     );
   });
+  it.each(['it', 'en'] as const)(
+    'should explain the upcoming Sinopia connection in %s without fake projects',
+    async (language) => {
+      setLanguage(language);
+      renderHome();
+      await userEvent.click(
+        screen.getByRole('button', { name: language === 'it' ? 'Da un progetto Sinopia' : 'From a Sinopia project' }),
+      );
+      const sheet = screen.getByRole('dialog');
+      expect(sheet).toHaveAccessibleName(language === 'it' ? 'Immagini da Sinopia' : 'Images from Sinopia');
+      expect(sheet).toHaveTextContent(
+        language === 'it'
+          ? 'Per ora scegli un’immagine dal dispositivo.'
+          : 'For now, choose an image from your device.',
+      );
+      expect(within(sheet).queryByRole('list')).not.toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    },
+  );
+
+  it('should build with the draft words and known size even when the agent lane is closed', async () => {
+    rememberAgentLaneOpen(false);
+    state.attachments = [{ hash: 'a'.repeat(64), mediaType: 'image/png' }];
+    state.draftText = 'Una collana in oro';
+    renderHome();
+    const measure = screen.getByRole('textbox', { name: 'Una misura che conosci (facoltativa)' });
+    fireEvent.change(measure, { target: { value: 'marquise 10 × 4 mm' } });
+    expect(measure).toHaveValue('marquise 10 × 4 mm');
+    await userEvent.click(screen.getByRole('button', { name: 'Costruisci il CAD' }));
+    expect(submitProject).toHaveBeenCalledOnce();
+    expect(submitProject).toHaveBeenCalledWith({
+      content: 'Una collana in oro\n\nUna misura che conosco: marquise 10 × 4 mm',
+      attachments: [],
+    });
+    expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
+  });
+
+  it('should use an image request in English and wait for attachments to settle', async () => {
+    setLanguage('en');
+    state.attachments = [{ hash: 'a'.repeat(64), mediaType: 'image/png' }];
+    state.attachingMain = true;
+    const view = renderHome();
+    expect(screen.getByRole('button', { name: 'Build the CAD' })).toBeDisabled();
+    state.attachingMain = false;
+    view.rerender(
+      <KeyboardProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <SinopiaHome />
+          </MemoryRouter>
+        </TooltipProvider>
+      </KeyboardProvider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Build the CAD' }));
+    expect(submitProject).toHaveBeenCalledWith({
+      content: 'Build the CAD from the attached images, in named pieces.',
+      attachments: [],
+    });
+  });
+
+  it('should ask a mounted composer to finish dictation and send before using a direct image request', async () => {
+    state.editorCanSubmit = true;
+    state.attachments = [{ hash: 'a'.repeat(64), mediaType: 'image/png' }];
+    renderHome();
+    await userEvent.click(screen.getByRole('button', { name: 'Costruisci il CAD' }));
+    expect(submitEditor).toHaveBeenCalledOnce();
+    expect(submitProject).not.toHaveBeenCalled();
+  });
+
+  it('should remove images by their draft indices and cancel images without deleting typed words or documents', async () => {
+    state.attachments = [
+      { hash: 'd'.repeat(64), mediaType: 'application/pdf' },
+      { hash: 'a'.repeat(64), mediaType: 'image/png' },
+      { hash: 'b'.repeat(64), mediaType: 'image/jpeg' },
+      { hash: 'a'.repeat(64), mediaType: 'image/png' },
+    ];
+    renderHome();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Togli Immagine allegata' })[0]!);
+    expect(removeDraftAttachment.mock.calls).toEqual([[3], [1]]);
+    removeDraftAttachment.mockClear();
+    await userEvent.click(screen.getByRole('button', { name: 'Annulla' }));
+    expect(removeDraftAttachment.mock.calls).toEqual([[3], [2], [1]]);
+    expect(setDraftText).not.toHaveBeenCalled();
+    expect(submitProject).not.toHaveBeenCalled();
+  });
+
+  it.each(['Un anello con solitario da 6 mm', 'Una fibbia 30 mm per cinturino', 'Un ciondolo goccia con castone'])(
+    'should put the suggestion %s into the draft without sending it',
+    async (name) => {
+      renderHome();
+      expect(screen.getByRole('heading', { name: 'Dimmi cosa vuoi fare' })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name }));
+      expect(setDraftText).toHaveBeenLastCalledWith(name);
+      expect(focusComposer).toHaveBeenCalledOnce();
+      expect(submitProject).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -51,9 +51,13 @@ vi.mock('#components/icons/tau-wordmark.js', () => ({
   TauWordmark: ({ className }: { readonly className?: string }) => <svg aria-hidden className={className} />,
 }));
 
-function renderSidebar(): ReturnType<typeof render> {
+vi.mock('#components/nav/home-recent-navigation.js', () => ({
+  HomeRecentNavigation: () => <div>Recent projects</div>,
+}));
+
+function renderSidebar(path = '/projects'): ReturnType<typeof render> {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <KeyboardProvider>
         <TooltipProvider>
           <SidebarProvider>
@@ -85,6 +89,16 @@ describe('AppSidebar', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('should show the home navigation without new-project or More controls', () => {
+    renderSidebar('/');
+    expect(screen.getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects');
+    expect(screen.getByText('Recent projects')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
+    expect(screen.queryByText('New project')).not.toBeInTheDocument();
   });
 
   it('should place Projects directly in the sidebar and secondary destinations under More', async () => {
