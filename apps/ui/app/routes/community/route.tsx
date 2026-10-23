@@ -46,11 +46,6 @@ export function clientLoader(): Response {
 }
 clientLoader.hydrate = true;
 
-/** Nothing to show while the redirect resolves. */
-export function HydrateFallback(): undefined {
-  return undefined;
-}
-
 export const meta: MetaFunction = () => [
   { title: 'Community · SinopiaCAD' },
   {
