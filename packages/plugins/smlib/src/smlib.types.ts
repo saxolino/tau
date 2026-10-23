@@ -6,6 +6,8 @@ import type { GlbMaterial } from '@taucad/geometry-core';
  */
 export type GeometrySmlib = {
   format: 'smlib';
+  /** Exact solid volume (mm³) and authored density (g/cm³), never mesh-derived estimates. */
+  physical?: { volumeMm3: number; density: number; massGrams: number };
   faces: {
     triangles: number[];
     vertices: number[];

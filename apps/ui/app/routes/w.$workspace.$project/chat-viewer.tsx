@@ -1,3 +1,4 @@
+import { SelectedPieceChip } from '#components/chat/selected-piece-chip.js';
 import { useProjectAvailability } from '#hooks/use-project-availability.js';
 import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
 import { interactiveViewContent } from '#lib/interactive-view-content.js';
@@ -888,6 +889,7 @@ const ViewerContent = memo(function ({
         </>
       }
     >
+      <SelectedPieceChip entryPath={entryPath} location='viewer' />
       {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
       {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
       {isGeometryUnitClosed && (

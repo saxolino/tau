@@ -1,3 +1,4 @@
+import { annotateParameterAssumptions } from '#parameter-assumptions.js';
 /**
  * SMLib Kernel Module
  *
@@ -321,7 +322,7 @@ export const smlibKernel = defineKernel({
       errorContext.entryUrl = executeResult.entryUrl;
 
       const defaultParameters = extractDefaultParameters(executeResult.value);
-      const jsonSchema = await jsonSchemaFromJson(defaultParameters);
+      const jsonSchema = annotateParameterAssumptions(await jsonSchemaFromJson(defaultParameters), executeResult.value);
       return createKernelSuccess({
         parameters: createKernelParameterDeclaration(defaultParameters, jsonSchema, {
           id: 'urn:taucad:smlib:parameters',
