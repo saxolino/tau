@@ -14,7 +14,7 @@ import {
   safeReturnPath,
 } from '#lib/github-connections.js';
 
-export const meta: MetaFunction = () => [{ title: 'GitHub connection · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'GitHub connection · SinopiaCAD' }];
 export const handle: Handle = { enableOverflowY: true };
 
 /** What the page says; `code` is the refusal's, when it named one. */

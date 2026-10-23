@@ -148,7 +148,7 @@ export function ProjectRouteGate({
               kind: 'flush',
               projectId: '',
               loadAttempt,
-              error: new Error('Tau could not save the current project view. Try again before leaving.'),
+              error: new Error('SinopiaCAD could not save the current project view. Try again before leaving.'),
             });
           }
         }
@@ -163,7 +163,7 @@ export function ProjectRouteGate({
             kind: 'access',
             projectId: requestedProjectId,
             loadAttempt,
-            error: new Error('Tau could not check this project. Try again.'),
+            error: new Error('SinopiaCAD could not check this project. Try again.'),
           });
         }
         return;
@@ -204,7 +204,7 @@ export function ProjectRouteGate({
             kind: 'flush',
             projectId: requestedProjectId,
             loadAttempt,
-            error: new Error('Tau could not save the current project view. Try again before leaving.'),
+            error: new Error('SinopiaCAD could not save the current project view. Try again before leaving.'),
           });
         }
       }

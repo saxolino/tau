@@ -33,7 +33,7 @@ export const handle: Handle = {
 };
 
 export const meta: MetaFunction = () => [
-  { title: 'Community · Tau' },
+  { title: 'Community · SinopiaCAD' },
   {
     name: 'description',
     content: 'Open, preview and remix curated CAD examples built with Tau, filtered by kernel.',

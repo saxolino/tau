@@ -40,7 +40,7 @@ import type { ConverterExportFormat, ConverterImportFormat, ConverterRuntimeClie
 import { createConverterClient } from '#runtime/converter-client-options.js';
 import { beginConverterOperation, createActiveConverterClient } from '#routes/convert/converter-client-lifecycle.js';
 
-export const meta: MetaFunction = () => [{ title: 'Convert · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'Convert · SinopiaCAD' }];
 
 type UploadedFileInfo = {
   name: string;

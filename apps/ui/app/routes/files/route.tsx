@@ -42,7 +42,7 @@ import type { FileTreeNode, WorkspaceScope } from '@taucad/filesystem';
 import type { WorkspaceConnectionState } from '#hooks/workspace-connection.machine.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 
-export const meta: MetaFunction = () => [{ title: 'Files · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'Files · SinopiaCAD' }];
 
 /**
  * One product-level Home column. Its physical engine is resolved per profile.

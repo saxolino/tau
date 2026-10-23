@@ -33,7 +33,7 @@ import { isDesktopTarget } from '#lib/build-target.js';
 
 const homeLocationLabel = projectLocationFullLabel(projectLocationDescriptor({ kind: 'home' }));
 
-export const meta: MetaFunction = () => [{ title: 'New project · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'New project · SinopiaCAD' }];
 
 export const handle: Handle = {
   // Mobile: section scrolls as one page. Desktop: route uses h-full flex + inner list scroll (see layout).

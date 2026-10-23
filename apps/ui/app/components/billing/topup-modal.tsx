@@ -553,7 +553,7 @@ export function TopupModal({ isOpen, onOpenChange, defaultAmountCents = 2500 }: 
             </Button>
           ) : undefined}
           <p className='text-xs text-muted-foreground'>
-            Credits are spent on AI and kernel usage and never expire. By continuing you agree to Tau’s{' '}
+            Credits are spent on AI and kernel usage and never expire. By continuing you agree to SinopiaCAD’s{' '}
             <a href={legalUrl('terms')} target='_blank' rel='noopener noreferrer' className='underline'>
               Terms
             </a>

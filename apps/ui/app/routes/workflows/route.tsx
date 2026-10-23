@@ -3,7 +3,7 @@ import { PageContent } from '#components/layout/page-content.js';
 import { PageHeader } from '#components/layout/page-header.js';
 import type { Handle } from '#types/matches.types.js';
 
-export const meta: MetaFunction = () => [{ title: 'Workflows · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'Workflows · SinopiaCAD' }];
 export const handle: Handle = { enableOverflowY: true };
 
 export default function Workflows(): React.JSX.Element {

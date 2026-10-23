@@ -68,7 +68,7 @@ const settingsCatalog = [
       {
         id: 'privacy',
         label: 'Privacy',
-        description: 'Choose how your data and usage metrics are used to improve Tau',
+        description: 'Choose how your data and usage metrics are used to improve SinopiaCAD',
         keywords: ['training', 'sharing', 'no train', 'telemetry', 'usage', 'metrics', 'anonymous'],
       },
     ],

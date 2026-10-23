@@ -58,7 +58,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
     expect(await screen.findByRole('option', { name: /Tau Host · studio-mini/u })).toBeInTheDocument();
     expect(screen.getByText('/Users/x/tau-workspace/lamp')).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
     expect(await screen.findByRole('option', { name: /Tau Host · Tau Cloud/u })).toBeInTheDocument();
     expect(screen.queryByText(/keeps working when you close the tab/u)).not.toBeInTheDocument();
     expect(screen.getAllByRole('option')).toHaveLength(2);
@@ -104,19 +104,19 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
     expect(await screen.findByText('Agents')).toBeInTheDocument();
   });
 
   /* Q12.6: one agent is not a choice — the composer drops the control. */
   it('is not offered when Tau is the only agent, and is offered once a host appears', () => {
     const { unmount } = render(<OfferedProbe />);
-    expect(screen.getByText('hidden:Tau')).toBeInTheDocument();
+    expect(screen.getByText('hidden:SinopiaCAD')).toBeInTheDocument();
     unmount();
 
     hostPlacements = [{ hostId: 'origin', rung: 1, label: 'studio-mini', workspaceRoot: '/srv/tau', online: true }];
     render(<OfferedProbe />);
-    expect(screen.getByText('offered:Tau')).toBeInTheDocument();
+    expect(screen.getByText('offered:SinopiaCAD')).toBeInTheDocument();
   });
 
   it('should offer a switch to Tau when the saved Codex host is absent from discovery', async () => {
@@ -133,7 +133,7 @@ describe('ChatExecutionSelector', () => {
     expect(screen.getByText('offered:codex')).toBeInTheDocument();
     expect(setActiveExecution).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Select agent: codex' }));
-    await userEvent.click(screen.getByRole('option', { name: /^Tau/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^SinopiaCAD/u }));
 
     expect(setActiveExecution).toHaveBeenCalledExactlyOnceWith({ kind: 'tau', model: 'gpt-test' });
   });
@@ -142,7 +142,7 @@ describe('ChatExecutionSelector', () => {
     activeExecution = { kind: 'tau', hostId: 'desktop', model: 'gpt-test' };
     render(<OfferedProbe />);
 
-    expect(screen.getByText('offered:Tau')).toBeInTheDocument();
+    expect(screen.getByText('offered:SinopiaCAD')).toBeInTheDocument();
     expect(setActiveExecution).not.toHaveBeenCalled();
   });
 
@@ -184,7 +184,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
     expect(await screen.findByRole('option', { name: /^Claude Code/u })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /^Codex/u })).toBeInTheDocument();
@@ -223,7 +223,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
     const row = await screen.findByRole('option', { name: /^Codex/u });
     expect(row).toHaveTextContent('CLI_TOO_OLD');
 
@@ -253,7 +253,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
     await user.click(await screen.findByRole('option', { name: /Tau Host · workshop/u }));
 
     expect(setActiveExecution).not.toHaveBeenCalled();
@@ -270,8 +270,8 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
-    expect(await screen.findByRole('option', { name: 'Select agent: Tau' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
+    expect(await screen.findByRole('option', { name: 'Select agent: SinopiaCAD' })).toBeInTheDocument();
   });
 
   it('offers no browser row on the desktop build', async () => {
@@ -287,8 +287,8 @@ describe('ChatExecutionSelector', () => {
     );
 
     await user.click(screen.getByRole('button', { name: /^Select agent: /u }));
-    expect(await screen.findByRole('option', { name: 'Select agent: Tau' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: 'Tau' })).toBeNull();
+    expect(await screen.findByRole('option', { name: 'Select agent: SinopiaCAD' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'SinopiaCAD' })).toBeNull();
     vi.unstubAllEnvs();
   });
 
@@ -307,7 +307,7 @@ describe('ChatExecutionSelector', () => {
     // The trigger names the daemon, never a bare "Tau" for a turn this browser
     // will not run.
     await user.click(screen.getByRole('button', { name: 'Select agent: Tau Host · studio-mini' }));
-    await user.click(await screen.findByRole('option', { name: /^Tau$/u }));
+    await user.click(await screen.findByRole('option', { name: /^SinopiaCAD$/u }));
 
     expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: 'gpt-test' });
   });
@@ -320,10 +320,10 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
     expect(screen.queryByText('Tau (Browser)')).not.toBeInTheDocument();
-    await user.click(await screen.findByRole('option', { name: /^Tau$/u }));
+    await user.click(await screen.findByRole('option', { name: /^SinopiaCAD$/u }));
     expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: 'gpt-test' });
   });
 
@@ -341,7 +341,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
     expect(await screen.findByText('This project’s storage cannot hold a durable agent log.')).toBeInTheDocument();
   });
@@ -355,9 +355,9 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
-    expect(await screen.findByRole('option', { name: /^Tau$/u })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /^SinopiaCAD$/u })).toBeInTheDocument();
     expect(document.querySelector('[data-slot="chat-execution-tau-note"]')).toBeNull();
   });
 
@@ -374,7 +374,7 @@ describe('ChatExecutionSelector', () => {
       </ChatExecutionSelector>,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
     expect(await screen.findByText('Non-recoverable after this browser session ends')).toBeInTheDocument();
   });
 

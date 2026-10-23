@@ -52,7 +52,7 @@ const isModelResolved = (providerKind: string): boolean => providerKind !== unkn
 /* eslint-disable @typescript-eslint/naming-convention -- the keys are the host's own capability-probe codes. */
 /** Capability-probe codes rendered as the reason the user reads. */
 const capabilityReasons = {
-  WORKER_UNAVAILABLE: 'This browser cannot start the worker Tau runs the agent in.',
+  WORKER_UNAVAILABLE: 'This browser cannot start the worker SinopiaCAD runs the agent in.',
   WEB_LOCKS_UNAVAILABLE: 'This browser does not provide the Web Locks the agent log needs.',
   BROADCAST_CHANNEL_UNAVAILABLE: 'This browser cannot coordinate tabs for the agent log.',
   STORAGE_NOT_WRITABLE: 'This project’s storage cannot hold a durable agent log.',
@@ -254,7 +254,7 @@ export const useBrowserAgentHostProjectAvailability = (providerKind: string): Br
     ? project
     : {
         status: 'unavailable',
-        reason: `Tau cannot run the ${providerKind} provider wire in your browser. Pick a different model.`,
+        reason: `SinopiaCAD cannot run the ${providerKind} provider wire in your browser. Pick a different model.`,
       };
 };
 

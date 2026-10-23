@@ -92,7 +92,8 @@ describe('DesktopTitlebarControls', () => {
     );
     const home = screen.getByRole('link', { name: 'Home' });
     expect(home).toHaveAttribute('href', '/');
-    expect(home.querySelector('svg')).toHaveAttribute('viewBox', '917.24 -700 1404 710');
+    expect(home.querySelector('img')).toHaveAttribute('src', '/brand/sinopia-mark.png');
+    expect(home).toHaveTextContent('SinopiaCAD');
     expect(home.previousElementSibling).toBe(screen.getByRole('button', { name: 'Toggle Sidebar' }));
     expect(home.nextElementSibling).toBe(screen.getByRole('button', { name: 'Back' }));
     view.rerender(

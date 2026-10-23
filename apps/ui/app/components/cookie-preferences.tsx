@@ -44,7 +44,7 @@ function CookiePreferencesContent({
       <DialogHeader>
         <DialogTitle>Cookie preferences</DialogTitle>
         <DialogDescription>
-          Tau uses optional analytics only after you allow it. Your choice also applies to the Tau website.{' '}
+          SinopiaCAD uses optional analytics only after you allow it.{' '}
           <a href={legalUrl('cookies')} target='_blank' rel='noopener noreferrer' className='underline'>
             Learn more
           </a>
@@ -79,7 +79,7 @@ function CookiePreferencesContent({
               Product analytics
             </Label>
             <p className='text-sm text-muted-foreground'>
-              Helps improve Tau through PostHog, including session recording.
+              Helps improve SinopiaCAD through PostHog, including session recording.
             </p>
             {globalPrivacyControl ? (
               <p className='text-sm text-muted-foreground'>

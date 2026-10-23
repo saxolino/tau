@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { Link, useParams } from 'react-router';
 import { Download, LayoutGrid, Link2 } from 'lucide-react';
-import { TauWordmark } from '#components/icons/tau-wordmark.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { ForkAction } from '#components/share/fork-action.js';
@@ -87,7 +87,7 @@ export function PublicationTopbar({
         <Tooltip>
           <TooltipTrigger asChild className='flex items-center gap-2 font-medium'>
             <Link to='/' aria-label='Go home' className={cn(desktopTarget && 'h-7')}>
-              <TauWordmark className={cn('h-6 text-primary', desktopTarget && 'h-5')} />
+              <SinopiaCadWordmark size={desktopTarget ? 'sm' : 'md'} />
             </Link>
           </TooltipTrigger>
           <TooltipContent side='right'>Go home</TooltipContent>

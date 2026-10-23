@@ -256,15 +256,15 @@ describe('TopupModal', () => {
     expect(client.followPaymentRedirect).not.toHaveBeenCalled();
   });
 
-  it('should link Terms to the public website from a build that runs none', async () => {
+  it('should link Terms to Sinopia’s conditions from a build that runs no website', async () => {
     renderModal();
 
     const terms = await screen.findByRole('link', { name: 'Terms' });
-    expect(terms).toHaveAttribute('href', 'https://tau.new/legal/terms');
+    expect(terms).toHaveAttribute('href', 'https://sinopialab.com/beta/condizioni');
     expect(terms).toHaveAttribute('target', '_blank');
   });
 
-  it('should link Terms to the website of the deployment the app is bound to', async () => {
+  it('should link Terms to Sinopia’s conditions whatever deployment the app is bound to', async () => {
     vi.stubEnv('TAU_TARGET', 'desktop');
     globalThis.window.ENV = {
       ...clientEnvironment,
@@ -275,7 +275,7 @@ describe('TopupModal', () => {
     renderModal();
 
     const terms = await screen.findByRole('link', { name: 'Terms' });
-    expect(terms).toHaveAttribute('href', 'https://taucad.dev/legal/terms');
+    expect(terms).toHaveAttribute('href', 'https://sinopialab.com/beta/condizioni');
   });
 
   it('prepares a frozen quote before confirmation', async () => {

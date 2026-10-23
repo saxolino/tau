@@ -93,7 +93,7 @@ const linkedSetupBranch = (repositoryName: string): string => {
 export function meta({ params, location }: Route.MetaArgs): MetaDescriptor[] {
   const target = resolveGitHubImportTarget(readSplatPath(params), location.search);
   if (!target?.owner) {
-    return [{ title: 'Import · Tau' }];
+    return [{ title: 'Import · SinopiaCAD' }];
   }
 
   const { title, description } = describeGitHubImport(target);

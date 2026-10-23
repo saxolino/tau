@@ -223,7 +223,7 @@ export function useChatEditor({
   slashCommandItems,
   onSlashCommand,
   onContextAction,
-  placeholder = 'Ask Tau to build anything...',
+  placeholder = 'Ask SinopiaCAD to build anything...',
 }: UseChatEditorOptions): UseChatEditorReturn {
   'use no memo';
 

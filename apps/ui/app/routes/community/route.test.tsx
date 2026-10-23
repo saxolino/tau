@@ -80,7 +80,7 @@ describe('Community route', () => {
   it('should name the document and describe the gallery', () => {
     const tags = meta({} as Parameters<typeof meta>[0]);
 
-    expect(tags).toContainEqual({ title: 'Community · Tau' });
+    expect(tags).toContainEqual({ title: 'Community · SinopiaCAD' });
     expect(tags).toContainEqual(expect.objectContaining({ name: 'description' }));
   });
 

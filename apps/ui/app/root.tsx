@@ -42,14 +42,14 @@ export const meta: MetaFunction = () => [
   { title: metaConfig.name },
   { name: 'description', content: metaConfig.description },
   // oxlint-disable-next-line tau-lint/no-hardcoded-color -- browser meta tag
-  { name: 'theme-color', content: '#ffffff' },
+  { name: 'theme-color', content: '#f5f3ef' },
   { name: 'apple-mobile-web-app-title', content: metaConfig.name },
   { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' },
   { name: 'apple-mobile-web-app-capable', content: 'yes' },
   { name: 'mobile-web-app-capable', content: 'yes' },
   { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
   { rel: 'icon', href: '/favicon.ico', sizes: 'any' },
-  { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+  { rel: 'icon', href: '/favicon-96x96.png', type: 'image/png', sizes: '96x96' },
 ];
 
 // oxlint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- loaders require type inference

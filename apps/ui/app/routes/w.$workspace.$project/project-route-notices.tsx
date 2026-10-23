@@ -97,25 +97,26 @@ const recoveryFailure: Record<
   'workspace-unavailable': {
     icon: Unplug,
     title: 'Setup paused',
-    description: 'The project workspace is disconnected. Reconnect it and try again so Tau can finish setup.',
+    description: 'The project workspace is disconnected. Reconnect it and try again so SinopiaCAD can finish setup.',
     actions: [retryAction, projectsAction],
   },
   'identity-conflict': {
     icon: Files,
     title: 'Folder belongs to another project',
-    description: 'The directory holds different or unidentifiable content, so Tau did not finish this project.',
+    description: 'The directory holds different or unidentifiable content, so SinopiaCAD did not finish this project.',
     actions: [{ ...libraryAction, isPrimary: true }, backAction],
   },
   'local-state-error': {
     icon: DatabaseZap,
     title: 'Local state could not be restored',
-    description: "The project files were written, but Tau's local record of the project could not be restored.",
+    description: "The project files were written, but SinopiaCAD's local record of the project could not be restored.",
     actions: [retryAction, libraryAction],
   },
   'filesystem-error': {
     icon: TriangleAlert,
     title: 'Setup did not finish',
-    description: 'Tau could not finish writing the project files. Try again, or remove it from the project library.',
+    description:
+      'SinopiaCAD could not finish writing the project files. Try again, or remove it from the project library.',
     actions: [retryAction, libraryAction],
   },
 };
@@ -198,7 +199,7 @@ export const describeProjectRouteNotice = (
         tone: 'neutral',
         live: 'status',
         title: 'Finishing setup',
-        description: "Tau is still writing this project's files. The editor opens when it is done.",
+        description: "SinopiaCAD is still writing this project's files. The editor opens when it is done.",
         actions: [],
       };
     }
@@ -224,7 +225,7 @@ export const describeProjectRouteNotice = (
         tone: 'soft-error',
         live: 'alert',
         title: "Couldn't check this project",
-        description: 'Tau could not read the project library. Try again.',
+        description: 'SinopiaCAD could not read the project library. Try again.',
         actions: [retryAction, backAction],
         details: state.error.message,
       };

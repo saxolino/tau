@@ -132,7 +132,7 @@ const requesterName = (agentId: string | undefined, execution: CadAgentExecution
       return externalAgentDisplayName(execution.agentId);
     }
     case 'tau': {
-      return 'Tau';
+      return 'SinopiaCAD';
     }
     default: {
       return 'The agent';
@@ -235,7 +235,7 @@ export function ChatApprovalBanner(): React.JSX.Element | undefined {
     return undefined;
   }
 
-  const name = approval.tauTool ? 'Tau' : requesterName(approval.agentId, activeExecution);
+  const name = approval.tauTool ? 'SinopiaCAD' : requesterName(approval.agentId, activeExecution);
   return (
     <ChatPermissionRequest
       key={approval.approvalId}

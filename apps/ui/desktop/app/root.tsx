@@ -19,7 +19,7 @@ export const meta: MetaFunction = () => [
   { title: metaConfig.name },
   { name: 'description', content: metaConfig.description },
   { rel: 'icon', href: '/favicon.ico', sizes: 'any' },
-  { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+  { rel: 'icon', href: '/favicon-96x96.png', type: 'image/png', sizes: '96x96' },
 ];
 
 export function Layout({ children }: { readonly children: ReactNode }): React.JSX.Element {

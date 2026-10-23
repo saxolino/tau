@@ -21,6 +21,7 @@ import { isDesktopTarget } from '#lib/build-target.js';
 import { setEntryPreference } from '#lib/entry-preference.js';
 import { websiteOrigin } from '#lib/website-origin.js';
 import { CookiePreferencesDialog, CookiePreferencesMenuItem } from '#components/cookie-preferences.js';
+import { AboutDialog, AboutMenuItem } from '#components/nav/about-sinopiacad.js';
 import { NavBillingItem, NavCreditsMeter } from '#cloud/nav-billing.js';
 
 /**
@@ -35,6 +36,7 @@ export function NavUser(): React.JSX.Element {
   const isOnline = useNetworkConnectivity();
   const { open: openSettings } = useSettingsDialog();
   const [isCookiePreferencesOpen, setIsCookiePreferencesOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
   const website = websiteOrigin();
   // The edge serves the website on this hostname, so the entry preference selects it at `/`.
   const isWebsiteHere = !isDesktopTarget() && website === globalThis.location.origin;
@@ -85,6 +87,12 @@ export function NavUser(): React.JSX.Element {
         Terms
       </a>
     </DropdownMenuItem>,
+    <AboutMenuItem
+      key='about'
+      onSelect={() => {
+        setIsAboutOpen(true);
+      }}
+    />,
     <DropdownMenuItem key='open-source' asChild>
       <a href={legalUrl('open-source')} target='_blank' rel='noopener noreferrer'>
         <Scale />
@@ -180,11 +188,12 @@ export function NavUser(): React.JSX.Element {
             {helpItems}
             <DropdownMenuSeparator />
             <DropdownMenuLabel className='font-normal text-muted-foreground'>
-              Tau v{metaConfig.version}
+              SinopiaCAD v{metaConfig.version}
             </DropdownMenuLabel>
           </DropdownMenuContent>
         </DropdownMenu>
         <CookiePreferencesDialog isOpen={isCookiePreferencesOpen} onOpenChange={setIsCookiePreferencesOpen} />
+        <AboutDialog isOpen={isAboutOpen} onOpenChange={setIsAboutOpen} />
       </div>
     </ClientOnly>
   );

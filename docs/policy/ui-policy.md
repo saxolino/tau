@@ -3,7 +3,7 @@ title: 'UI Policy'
 description: 'Design system entry point: principles, token architecture, typography, spacing, motion, and component composition for all Tau UI surfaces.'
 status: active
 created: '2026-03-14'
-updated: '2026-09-28'
+updated: '2026-10-23'
 related:
   - docs/policy/color-policy.md
   - docs/policy/diagram-policy.md
@@ -77,6 +77,8 @@ Tailwind v4 `@theme inline` in the shared stylesheet maps semantic tokens to uti
 ## 3. Typography
 
 Geist Sans for UI text. Geist Mono for code, terminals, and numeric data.
+
+SinopiaCAD replaces both with Sinopia's faces through the same `--font-sans` and `--font-mono` tokens: Inter for UI text and JetBrains Mono for code and data, self-hosted latin and latin-ext variable subsets under `apps/ui/public/fonts` (SIL OFL 1.1).
 
 | Element           | Size               | Weight  | Line-height | Letter-spacing    |
 | ----------------- | ------------------ | ------- | ----------- | ----------------- |

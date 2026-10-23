@@ -117,9 +117,15 @@ describe('NavUser', () => {
 
     expect(screen.getByRole('button', { name: 'Help' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute('href', 'https://docs.tau.new');
-    // A local build runs no website, so the legal pages open on the public site rather than 404.
-    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', 'https://tau.new/legal/privacy');
-    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute('href', 'https://tau.new/legal/terms');
+    // SinopiaCAD: privacy and terms are Sinopia's own documents; the open-source notices stay upstream.
+    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/privacy-policy',
+    );
+    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/beta/condizioni',
+    );
     expect(screen.getByRole('link', { name: 'Open-source notices' })).toHaveAttribute(
       'href',
       'https://tau.new/legal/open-source',
@@ -128,11 +134,12 @@ describe('NavUser', () => {
     expect(screen.getByText('Report a bug')).toBeInTheDocument();
     expect(screen.getByText('GitHub')).toBeInTheDocument();
     expect(screen.getByText('Community Discord')).toBeInTheDocument();
-    expect(screen.getByText(`Tau v${metaConfig.version}`)).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Informazioni' })).toBeInTheDocument();
+    expect(screen.getByText(`SinopiaCAD v${metaConfig.version}`)).toBeInTheDocument();
     expect(screen.queryByText('About Tau')).not.toBeInTheDocument();
   });
 
-  it('should link the legal pages to the web deployment the desktop shell is bound to', () => {
+  it('should keep Sinopia’s legal pages and the upstream notices on the deployment the desktop shell is bound to', () => {
     vi.stubEnv('TAU_TARGET', 'desktop');
     globalThis.window.ENV = {
       ...clientEnvironment,
@@ -142,8 +149,14 @@ describe('NavUser', () => {
 
     render(<NavUser />, { wrapper: MemoryRouter });
 
-    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', 'https://taucad.dev/legal/privacy');
-    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute('href', 'https://taucad.dev/legal/terms');
+    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/privacy-policy',
+    );
+    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/beta/condizioni',
+    );
     expect(screen.getByRole('link', { name: 'Open-source notices' })).toHaveAttribute(
       'href',
       'https://taucad.dev/legal/open-source',

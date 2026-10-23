@@ -17,7 +17,6 @@ import { cn } from '@taucad/ui/utils/cn';
 import { Toaster } from '#components/ui/sonner.js';
 import { ColorProvider, useColor } from '#hooks/use-color.js';
 import { AppViewerEnvironment } from '#components/geometry/app-viewer-environment.js';
-import { useFavicon } from '#hooks/use-favicon.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { ErrorPage } from '#components/error-page.js';
 import { ProjectManagerProvider } from '#hooks/use-project-manager.js';
@@ -208,12 +207,8 @@ function LayoutDocument({
   // system preference before the page renders (prevents light mode flash on dark systems).
   const { ssrTheme: resolvedTheme } = useTheme();
   const color = useColor();
-  const { setFaviconColor } = useFavicon();
+  // SinopiaCAD: the favicon is Sinopia's fixed mark (`root.tsx` links), not recoloured with the accent.
   const [usePointerCursors] = useCookie(cookieName.pointerCursors, false);
-
-  useEffect(() => {
-    setFaviconColor(color.serialized.hex);
-  }, [setFaviconColor, color]);
 
   return (
     <html

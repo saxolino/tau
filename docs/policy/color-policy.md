@@ -3,7 +3,7 @@ title: 'Color Policy'
 description: 'OKLCH color system rules: hue architecture, lightness levels, chroma ranges, semantic tokens, contrast requirements, colorblind safety, dark mode, and anti-patterns for all Tau UI surfaces.'
 status: active
 created: '2026-03-14'
-updated: '2026-10-04'
+updated: '2026-10-23'
 related:
   - docs/policy/ui-policy.md
   - docs/policy/diagram-policy.md
@@ -68,6 +68,8 @@ Do not define a neutral hue. Achromatic colors have no meaningful hue, and every
 The following tokens must use chroma `0` in light and dark mode and must remain byte-for-byte independent of `--hue-primary`: `background`, `foreground`, `muted`, `muted-foreground`, `secondary`, `secondary-foreground`, `neutral`, `neutral-foreground`, `accent`, `accent-foreground`, `border`, `input`, `popover`, `popover-foreground`, `card`, `card-foreground`, and all sidebar surface, foreground, border, and selected-state tokens.
 
 Primary actions, `ring`, semantic statuses, charts, diagrams, highlighters, and geometry-specific selection may remain chromatic when color carries meaning. Ordinary active tabs, project rows, hover states, and layout chrome are structural neutrals, not brand accents.
+
+**SinopiaCAD brand exception.** This fork carries Sinopia's palette. The default `--hue-primary` is Sinopia red (`33deg`, `--l-primary` 0.545, `--c-primary` 0.157), and filled primary actions use it with an ivory foreground. In light and dark themes the structural neutrals above carry Sinopia's warm paper tint: one fixed `--hue-paper` (`78deg`) at a near-zero `--c-paper` (0.008 light, 0.006 dark). That tint is a brand constant, never derived from `--hue-primary`, so the accent choice still cannot recolor chrome. Black, high-contrast and `prefers-contrast: more` set `--c-paper: 0` and stay achromatic. `apps/ui/app/styles/global.test.ts` enforces this exception instead of chroma `0` for light and dark.
 
 ## 3. Lightness Levels
 

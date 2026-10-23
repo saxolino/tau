@@ -288,12 +288,12 @@ describe('ChatAgentSheet', () => {
     ];
     renderSheet();
     await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
-    const agentRow = screen.getByRole('button', { name: 'Agent: Tau. Change' });
+    const agentRow = screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' });
     await userEvent.click(agentRow);
 
     expect(screen.getByPlaceholderText('Search agents…')).toHaveFocus();
     expect(screen.getAllByRole('option').map((option) => option.getAttribute('aria-label'))).toEqual([
-      'Tau, in use',
+      'SinopiaCAD, in use',
       'Codex · This Mac',
       'Codex · studio, unavailable',
     ]);
@@ -304,10 +304,12 @@ describe('ChatAgentSheet', () => {
     expect(within(screen.getByRole('group', { name: 'On studio' })).getByRole('option')).toHaveTextContent(
       "CodexCan't start",
     );
-    expect(within(screen.getByRole('option', { name: 'Tau, in use' })).getByText('Fable 5.1')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('option', { name: 'SinopiaCAD, in use' })).getByText('Fable 5.1'),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to settings' }));
-    expect(screen.getByRole('button', { name: 'Agent: Tau. Change' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' })).toHaveFocus();
   });
 
   it('leaves the keyboard down when a phone opens the model and agent lists', async () => {
@@ -321,7 +323,7 @@ describe('ChatAgentSheet', () => {
       expect(screen.getByPlaceholderText('Search models…')).not.toHaveFocus();
 
       fireEvent.click(screen.getByRole('button', { name: 'Back to settings' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
       expect(screen.getByPlaceholderText('Search agents…')).not.toHaveFocus();
     } finally {
       viewport.isMobile = false;
@@ -332,7 +334,7 @@ describe('ChatAgentSheet', () => {
     state.placements = [codex()];
     renderSheet();
     await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
-    await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
     await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
     /* Browsing an agent changes nothing, and the way back is to the agents. */
     expect(setActiveExecution).not.toHaveBeenCalled();
@@ -356,7 +358,7 @@ describe('ChatAgentSheet', () => {
     renderSheet();
     await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
     await userEvent.click(screen.getByRole('button', { name: /^Agent: Codex/u }));
-    await userEvent.click(screen.getByRole('option', { name: /^Tau/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^SinopiaCAD/u }));
     await userEvent.click(screen.getByRole('option', { name: /^Haiku 5\.5/u }));
 
     expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: haiku.id, effort: 'low' });
@@ -369,7 +371,7 @@ describe('ChatAgentSheet', () => {
 
     expect(setActiveExecution).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: /^Agent: codex/u }));
-    await userEvent.click(screen.getByRole('option', { name: /^Tau/u }));
+    await userEvent.click(screen.getByRole('option', { name: /^SinopiaCAD/u }));
     await userEvent.click(screen.getByRole('option', { name: /^Haiku 5\.5/u }));
 
     expect(setActiveExecution).toHaveBeenCalledExactlyOnceWith({ kind: 'tau', model: haiku.id, effort: 'low' });
@@ -398,7 +400,7 @@ describe('ChatAgentSheet', () => {
     state.placements = [{ ...placement, externalAgents: [{ id: 'codex', displayName: 'Codex', models: [] }] }];
     renderSheet();
     await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
-    await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
     await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
     await userEvent.click(screen.getByRole('option', { name: 'Default model' }));
 
@@ -409,7 +411,7 @@ describe('ChatAgentSheet', () => {
     state.placements = [codex('EXTERNAL_AGENT_AUTH_REQUIRED')];
     renderSheet();
     await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
-    await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
     await userEvent.click(screen.getByRole('option', { name: 'Codex, unavailable' }));
 
     expect(screen.getByText("Codex can't start on this computer")).toBeInTheDocument();
@@ -435,7 +437,7 @@ describe('ChatAgentSheet', () => {
     ];
     renderSheet();
     await userEvent.click(screen.getByRole('button', { name: /^Agent and model/u }));
-    await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
     await userEvent.click(screen.getByRole('option', { name: 'Claude Code, unavailable' }));
 
     expect(screen.getByText(command)).toBeInTheDocument();
@@ -741,7 +743,7 @@ describe('ChatAgentSheet', () => {
     state.placements = [codex()];
     renderSheet();
     await openSheet();
-    await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
     await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
 
     expect(screen.getByPlaceholderText('Search Codex models…')).toBeInTheDocument();
@@ -788,7 +790,7 @@ describe('ChatAgentSheet', () => {
       state.placements = [codex()];
       renderSheet();
       await openSheet();
-      await userEvent.click(screen.getByRole('button', { name: 'Agent: Tau. Change' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Agent: SinopiaCAD. Change' }));
       await userEvent.click(screen.getByRole('option', { name: 'Codex' }));
 
       expect(screen.getByRole('option', { name: 'GPT-5.6-Sol' })).toBeInTheDocument();

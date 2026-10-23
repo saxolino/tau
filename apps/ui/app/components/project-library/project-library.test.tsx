@@ -512,7 +512,7 @@ describe('ProjectLibrary', () => {
       </TestRouter>,
     );
 
-    expect(screen.getByText('Tau is finishing this project.')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD is finishing this project.')).toBeInTheDocument();
     expect(screen.getByText('Gearbox Alpha')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Adopt' })).not.toBeInTheDocument();
   });

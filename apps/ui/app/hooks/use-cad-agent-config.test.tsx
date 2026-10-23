@@ -293,7 +293,7 @@ describe('useCadAgentConfig', () => {
     await waitFor(() => {
       expect(result.current).toEqual({
         status: 'unavailable',
-        reason: 'Tau cannot run the ollama provider wire in your browser. Pick a different model.',
+        reason: 'SinopiaCAD cannot run the ollama provider wire in your browser. Pick a different model.',
       });
     });
   });

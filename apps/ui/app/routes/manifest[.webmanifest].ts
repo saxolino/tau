@@ -14,8 +14,9 @@ export const loader: LoaderFunction = () => {
       display: 'standalone',
       // @see https://developer.mozilla.org/en-US/docs/Web/Manifest/Reference/display_override
       display_override: ['fullscreen', 'minimal-ui'],
-      background_color: '#ffffff',
-      theme_color: '#ffffff',
+      // SinopiaCAD: Sinopia's ivory page (`--background` in light mode).
+      background_color: '#f5f3ef',
+      theme_color: '#f5f3ef',
       icons: [
         {
           src: '/android-chrome-192x192.png',

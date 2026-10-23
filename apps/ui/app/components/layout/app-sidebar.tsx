@@ -11,7 +11,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from '#components/ui/sidebar.js';
-import { TauTextWordmark } from '#components/icons/tau-text-wordmark.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { NavChat } from '#components/nav/nav-chat.js';
 import { navRoutes } from '#constants/route.constants.js';
 import { useFeatureFlags } from '#flags/use-feature.js';
@@ -65,10 +65,10 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
           <SidebarMenuButton
             asChild
             tooltip='Home'
-            className='min-w-0 flex-1 gap-0 p-1! group-data-[collapsible=icon]:p-0! [&>svg]:h-7 [&>svg]:w-auto'
+            className='min-w-0 flex-1 gap-0 p-1! group-data-[collapsible=icon]:p-0!'
           >
             <Link to='/'>
-              <TauTextWordmark className='py-1 text-primary' />
+              <SinopiaCadWordmark size='md' />
               <span className='sr-only'>Home</span>
             </Link>
           </SidebarMenuButton>

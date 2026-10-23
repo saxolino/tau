@@ -153,14 +153,27 @@ const parseToken = (name: TokenName, tokens: TokenMap) => {
 };
 
 describe('global structural color tokens', () => {
-  it('uses the neutral Codex-matched light sidebar surface', () => {
-    expect(resolveToken('--sidebar-background', lightTokens)).toBe('oklch(0.99 0 none)');
-    expect(resolveToken('--sidebar-foreground', lightTokens)).toBe('oklch(0.43 0 none)');
+  it('uses the Sinopia paper light sidebar surface', () => {
+    expect(resolveToken('--sidebar-background', lightTokens)).toBe('oklch(0.973 0.008 78deg)');
+    expect(resolveToken('--sidebar-foreground', lightTokens)).toBe('oklch(0.396 0.008 78deg)');
   });
 
+  /* SinopiaCAD: light and dark chrome carry Sinopia's warm paper tint, one fixed hue at a
+     near-zero chroma (recorded exception in docs/policy/color-policy.md). */
   it.each([
     ['light', lightTokens],
     ['dark', darkTokens],
+  ])('keeps every %s structural token on the fixed paper hue at near-zero chroma', (_mode, tokens) => {
+    for (const name of structuralTokens) {
+      const color = parseToken(name, tokens);
+
+      expect(color.c, name).toBeGreaterThan(0);
+      expect(color.c, name).toBeLessThanOrEqual(0.012);
+      expect(color.h, name).toBeCloseTo(78, 6);
+    }
+  });
+
+  it.each([
     ['black', blackTokens],
     ['high contrast', highContrastTokens],
   ])('keeps every %s structural token achromatic', (_mode, tokens) => {
@@ -419,7 +432,7 @@ describe('global corner shape', () => {
 
   it('keeps the established radius hierarchy', () => {
     expect(lightTokens).toMatchObject({
-      '--radius-xs': '0.4375rem',
+      '--radius-xs': '0.25rem',
       '--radius-sm': 'calc(var(--radius-xs) + 0.125rem)',
       '--radius-md': 'calc(var(--radius-sm) + 0.125rem)',
       '--radius-lg': 'calc(var(--radius-md) + 0.125rem)',
@@ -436,14 +449,14 @@ describe('global corner shape', () => {
     expect(enhancedRadiusRoot).toBeGreaterThan(enhancedRadiusSupports);
     expect(enhancedRadiusRoot).toBeLessThan(firstBaseLayer);
     expect(readRuleTokens(enhancedRadiusRoot)).toMatchObject({
-      '--radius-xs': '0.59375rem',
-      '--radius-sm': '0.75rem',
-      '--radius-md': '0.9375rem',
-      '--radius-lg': '1.09375rem',
-      '--radius-xl': '1.4375rem',
-      '--radius-2xl': '1.78125rem',
-      '--radius-3xl': '2.4375rem',
-      '--radius-4xl': '3.125rem',
+      '--radius-xs': '0.34375rem',
+      '--radius-sm': '0.5rem',
+      '--radius-md': '0.6875rem',
+      '--radius-lg': '0.84375rem',
+      '--radius-xl': '1.1875rem',
+      '--radius-2xl': '1.5rem',
+      '--radius-3xl': '2.1875rem',
+      '--radius-4xl': '2.875rem',
     });
   });
 });

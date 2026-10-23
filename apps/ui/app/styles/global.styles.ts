@@ -31,7 +31,7 @@ const appStylesheetPrecedence = 'default';
 const fonts: LinkDescriptor[] = [
   {
     rel: 'preload',
-    href: '/fonts/Geist-Variable.woff2',
+    href: '/fonts/Inter-Latin-Variable.woff2',
     as: 'font',
     type: 'font/woff2',
     crossOrigin: 'anonymous',

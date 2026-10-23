@@ -437,7 +437,7 @@ describe('ChatError', () => {
     const card = screen.getByRole('alert');
     expect(card).toHaveTextContent('This model is paused');
     expect(
-      screen.getByText("Tau's operators have paused this model. Switch to another model to continue."),
+      screen.getByText("SinopiaCAD's operators have paused this model. Switch to another model to continue."),
     ).toBeInTheDocument();
     expect(card).not.toHaveTextContent(gatewaySentence);
     expect(card).not.toHaveTextContent('Service Temporarily Unavailable');
@@ -644,7 +644,7 @@ describe('ChatError', () => {
 
     render(<ChatErrorBanner />);
 
-    expect(screen.getByText('Tau could not start this turn')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD could not start this turn')).toBeInTheDocument();
     expect(
       screen.getByText('This chat is still holding a workspace from an earlier run. Reload the page to release it.'),
     ).toBeInTheDocument();
@@ -719,7 +719,7 @@ describe('ChatError', () => {
 
     render(<ChatErrorBanner />);
 
-    expect(screen.getByText('Tau closed while the agent waited for your approval')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD closed while the agent waited for your approval')).toBeInTheDocument();
     expect(screen.getByText(/Resume and the agent asks for it again\./u)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Resume' }));
     expect(continueChat).toHaveBeenCalledTimes(1);
@@ -727,10 +727,10 @@ describe('ChatError', () => {
   });
 
   it.each([
-    ['LEADER_VERSION_MISMATCH', 'Another version of Tau is running this chat'],
-    ['RUN_UNREADABLE', 'This chat was continued in a newer version of Tau'],
-    ['HISTORY_INVALID', "Tau can't read this chat's history"],
-    ['EXTERNAL_AGENT_RECOVERY_UNKNOWN', "Tau couldn't reopen the agent's session"],
+    ['LEADER_VERSION_MISMATCH', 'Another version of SinopiaCAD is running this chat'],
+    ['RUN_UNREADABLE', 'This chat was continued in a newer version of SinopiaCAD'],
+    ['HISTORY_INVALID', "SinopiaCAD can't read this chat's history"],
+    ['EXTERNAL_AGENT_RECOVERY_UNKNOWN', "SinopiaCAD couldn't reopen the agent's session"],
   ] as const)('shows the approved recovery card for %s', (code, title) => {
     persisted({ category: errorCategory.generic, title: 'Error', message: 'A coded refusal', code });
 
@@ -781,8 +781,8 @@ describe('ChatError', () => {
 
     render(<ChatErrorBanner />);
 
-    expect(screen.getByText('Tau stopped responding')).toBeInTheDocument();
-    expect(screen.getByText('Tau cannot tell whether this turn started.')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD stopped responding')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD cannot tell whether this turn started.')).toBeInTheDocument();
     expect(screen.queryByText('Tau paused this turn')).not.toBeInTheDocument();
     expect(screen.queryByText('Everything up to here is saved.')).not.toBeInTheDocument();
 
@@ -803,9 +803,11 @@ describe('ChatError', () => {
 
     render(<ChatErrorBanner />);
 
-    expect(screen.getByText('Update Tau on this host')).toBeInTheDocument();
+    expect(screen.getByText('Update SinopiaCAD on this host')).toBeInTheDocument();
     expect(
-      screen.getByText('This host runs a version of Tau this page cannot talk to. Update Tau there, then try again.'),
+      screen.getByText(
+        'This host runs a version of SinopiaCAD this page cannot talk to. Update SinopiaCAD there, then try again.',
+      ),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
