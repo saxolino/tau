@@ -102,7 +102,7 @@ import { RevisionsPanelBody } from '#routes/w.$workspace.$project/chat-revisions
 import { AgentsPanelBody } from '#routes/w.$workspace.$project/chat-agents.js';
 import { JobsPanelBody } from '#routes/w.$workspace.$project/chat-jobs.js';
 import { PrintPanelBody } from '#routes/w.$workspace.$project/chat-print.js';
-import { ConverterPanelBody } from '#routes/w.$workspace.$project/chat-converter.js';
+import { ProjectExportLauncher } from '#routes/w.$workspace.$project/project-export-launcher.js';
 import { DetailsPanelBody } from '#routes/w.$workspace.$project/chat-details.js';
 import { TelemetryPanelContent } from '#routes/w.$workspace.$project/chat-kernel.js';
 import { ChatConsole } from '#routes/w.$workspace.$project/chat-console.js';
@@ -329,10 +329,8 @@ export function PrintWorkbenchPanel({ api }: IDockviewPanelProps): React.JSX.Ele
   return <PrintPanelBody isShown={isShown} />;
 }
 
-export function ExportWorkbenchPanel({ api }: IDockviewPanelProps): React.JSX.Element {
-  const profile = useContext(WorkbenchProfileContext);
-  const isShown = useWorkbenchPanelShown(api);
-  return <ConverterPanelBody downloadOnly={profile === 'shared'} isShown={isShown} />;
+export function ExportWorkbenchPanel(_props: IDockviewPanelProps): React.JSX.Element {
+  return <ProjectExportLauncher />;
 }
 
 function ShareWorkbenchPanel(): React.JSX.Element {

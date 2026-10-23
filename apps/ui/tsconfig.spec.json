@@ -16,6 +16,7 @@
     "vite.config.ts",
     "vitest.config.ts",
     "chat-revision-marker.vitest.browser.config.ts",
+    "project-export.vitest.browser.config.ts",
     "vitest.setup.ts",
     "react-router.config.ts",
     "./.react-router/types/**/*",

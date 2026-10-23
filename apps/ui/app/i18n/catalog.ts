@@ -5,6 +5,7 @@ import { homeMessages } from '#i18n/messages/home.js';
 import { projectMessages } from '#i18n/messages/project.js';
 import { shellMessages } from '#i18n/messages/shell.js';
 import { viewerMessages } from '#i18n/messages/viewer.js';
+import { exportMessages } from '#i18n/messages/export.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -14,6 +15,7 @@ export const areas = {
   account: accountMessages,
   auth: authMessages,
   common: commonMessages,
+  export: exportMessages,
   home: homeMessages,
   project: projectMessages,
   shell: shellMessages,
