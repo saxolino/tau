@@ -7,7 +7,6 @@ import { page } from 'vitest/browser';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { Button } from '@taucad/ui/components/button';
 import type { Ask } from '@taucad/chat';
-import { kernelConfigurations } from '@taucad/types/constants';
 import { storedRef } from '#utils/attachment.test-utils.js';
 
 let dictationAvailable = false;
@@ -29,7 +28,7 @@ vi.doMock('#components/dictation/dictation-capture.js', () => ({
 vi.doMock('#hooks/active-chat-provider.js', () => ({
   useActiveChatSession: () => undefined,
   useChatComposer: () => ({
-    kernel: { kernel: kernelConfigurations.find((kernel) => kernel.id === 'manifold') },
+    kernel: { kernelId: undefined },
     execution: { execution: { kind: 'tau', model: 'm' } },
     contextUsage: undefined,
   }),
@@ -58,13 +57,6 @@ vi.doMock('#components/chat/chat-agent-sheet.js', () => ({
       </span>
     </Button>
   ),
-}));
-vi.doMock('#components/chat/chat-kernel-selector.js', () => ({
-  ChatKernelSelector: ({
-    children,
-  }: {
-    readonly children: (props: { selectedKernel: (typeof kernelConfigurations)[number] }) => React.ReactNode;
-  }): React.ReactNode => children({ selectedKernel: kernelConfigurations.find((kernel) => kernel.id === 'manifold')! }),
 }));
 vi.doMock('#components/icons/svg-icon.js', () => ({ SvgIcon: () => <span className='size-4' /> }));
 vi.doMock('#components/files/file-link.js', () => ({
@@ -111,7 +103,7 @@ const scenarios = [
   { name: 'image drag', props: { dragKind: 'image' } },
   { name: 'viewer drag', props: { dragKind: 'viewer' } },
   { name: 'reference drag', props: { dragKind: 'reference' } },
-  { name: 'new project', props: { enableContextActions: false, enableKernelSelector: false } },
+  { name: 'new project', props: { enableContextActions: false } },
 ] satisfies Array<{ name: string; props: Partial<ComposerProps> }>;
 
 const renderComposer = (props: Partial<ComposerProps>) => {
@@ -244,7 +236,7 @@ describe('composer bar resize geometry', () => {
     try {
       const loaded = font.load();
       expect(document.fonts.status).toBe('loading');
-      const { container } = renderComposer({ enableKernelSelector: true });
+      const { container } = renderComposer({});
       await loaded;
       await document.fonts.ready;
       await Promise.resolve();
@@ -261,7 +253,7 @@ describe('composer bar resize geometry', () => {
 
   it('does not refit unchanged geometry for fonts already loaded before mounting', async () => {
     await page.viewport(800, 720);
-    const warm = renderComposer({ enableKernelSelector: true });
+    const warm = renderComposer({});
     await document.fonts.ready;
     warm.unmount();
     await document.fonts.ready;
@@ -284,7 +276,7 @@ describe('composer bar resize geometry', () => {
       return width;
     });
     try {
-      const { container } = renderComposer({ enableKernelSelector: true });
+      const { container } = renderComposer({});
       const model = container.querySelector<HTMLElement>('[data-slot=trigger-model]')!;
       const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
       const initial = { text: model.textContent, width: bar.getBoundingClientRect().width };
@@ -304,9 +296,9 @@ describe('composer bar resize geometry', () => {
     }
   });
 
-  it('restores kernel text when widened and refits changed model text at the same width', async () => {
+  it('restores the first collapsed step when widened and refits changed model text at the same width', async () => {
     await page.viewport(320, 720);
-    const { container } = renderComposer({ enableKernelSelector: true });
+    const { container } = renderComposer({});
     const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]');
     const model = container.querySelector<HTMLElement>('[data-slot=trigger-model]');
     if (!bar || !model) {

@@ -38,9 +38,6 @@ vi.mock('#components/chat/chat-textarea.js', () => ({
     );
   },
 }));
-vi.mock('#components/chat/kernel-selector.js', () => ({
-  KernelSelector: () => <div>Kernel selector</div>,
-}));
 vi.mock('#components/filesystem/workspace-selector.js', () => ({
   WorkspaceSelector: ({
     variant,
@@ -54,7 +51,6 @@ vi.mock('#components/filesystem/workspace-selector.js', () => ({
     </div>
   ),
 }));
-vi.mock('#hooks/use-kernel.js', () => ({ useKernel: () => ({ kernel: 'openscad', setKernel: vi.fn() }) }));
 vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({ createProject: mockCreateProject }),
 }));
@@ -137,13 +133,14 @@ describe('NewProjectChatComposer', () => {
 
   // Rewritten (W6): the startup message references the draft's stored
   // attachments; the textarea's data URLs are no longer the source.
-  it('passes exact product selection and the stored draft attachments, then consumes before navigation', async () => {
+  it('starts from the empty SMLib starter with no pinned engine, no kernel picker and the stored draft attachments, then consumes before navigation', async () => {
     const hash = 'a'.repeat(64);
     draftAttachments = [
       { hash, mediaType: 'image/png', byteLength: 3 },
       { hash: 'b'.repeat(64), mediaType: 'application/pdf', byteLength: 9, filename: 'spec.pdf' },
     ];
     render(<NewProjectChatComposer />);
+    expect(screen.queryByText(/kernel/iu)).toBeNull();
     expect(capturedTextarea?.creationLocationControl).toBeDefined();
     expect(capturedTextarea?.isSubmitDisabled).toBe(false);
     expect(screen.getByTestId('location-toolbar')).toHaveAttribute('data-is-inside-focus-trap', 'true');
@@ -153,7 +150,7 @@ describe('NewProjectChatComposer', () => {
     });
 
     expect(mockCreateProject).toHaveBeenCalledWith({
-      kernel: 'openscad',
+      kernel: 'smlib',
       activeExecution: { kind: 'tau', model: 'gpt-test' },
       initialMessage: {
         content: 'Build a bracket',

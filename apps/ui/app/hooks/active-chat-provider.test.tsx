@@ -8,7 +8,6 @@ import { useSelector } from '@xstate/react';
 import type { ReactNode } from 'react';
 import type * as AiSdk from 'ai';
 import type { Chat, MyUIMessage } from '@taucad/chat';
-import { resolveKernel } from '@taucad/types/constants';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
 import type { DraftAttachmentModel } from '#hooks/draft.machine.js';
 import { lifecycleRow, logRow, publishLogRows, runningRows } from '#machines/chat-projection.fixture.js';
@@ -43,8 +42,6 @@ const harness = vi.hoisted(() => ({
   setSelectedModelId: vi.fn(),
   selectedModelId: 'cookie-model',
   selectedModelName: 'Cookie Model',
-  setKernel: vi.fn(),
-  cookieKernel: 'openscad' as 'openscad' | 'manifold' | 'replicad',
   homeFiles: new Map<string, Uint8Array<ArrayBuffer>>(),
   homeReadFile: vi.fn<(path: string) => Promise<Uint8Array<ArrayBuffer>>>(),
   homeWriteFile: vi.fn<(path: string, bytes: Uint8Array<ArrayBuffer>) => Promise<void>>(),
@@ -209,14 +206,6 @@ vi.mock('#hooks/use-models.js', () => ({
   useModels: () => getStableUseModelsReturn(),
 }));
 
-vi.mock('#hooks/use-kernel.js', () => ({
-  useKernel: () => ({
-    kernel: harness.cookieKernel,
-    setKernel: harness.setKernel,
-    selectedKernel: resolveKernel(harness.cookieKernel),
-  }),
-}));
-
 vi.mock('#hooks/use-file-manager.js', () => {
   /*
    * An in-memory Home workspace: the composer record and its attachment
@@ -326,8 +315,6 @@ beforeEach(() => {
   harness.setSelectedModelId.mockReset();
   harness.selectedModelId = 'cookie-model';
   harness.selectedModelName = 'Cookie Model';
-  harness.setKernel.mockReset();
-  harness.cookieKernel = 'openscad';
   harness.homeFiles.clear();
   harness.homeReadFile.mockReset().mockImplementation(async (path: string) => {
     const bytes = harness.homeFiles.get(path);
@@ -433,13 +420,12 @@ describe('ChatComposerProvider', () => {
     expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'new-model' });
   });
 
-  it('should expose the cookie-resolved kernel', () => {
+  it('should pin no kernel: the agent chooses the engine for the job', () => {
     const { result } = renderHook(() => useChatComposer(), {
       wrapper: createComposerWrapper(),
     });
 
-    expect(result.current.kernel.kernelId).toBe('openscad');
-    expect(result.current.kernel.kernel.id).toBe('openscad');
+    expect(result.current.kernel).toEqual({ kernelId: undefined });
   });
 
   it('should write only the cookie when setActiveModel is called (no chat row to patch)', () => {
@@ -452,19 +438,6 @@ describe('ChatComposerProvider', () => {
     });
 
     expect(harness.setSelectedModelId).toHaveBeenCalledWith('new-model');
-    expect(harness.patchChat).not.toHaveBeenCalled();
-  });
-
-  it('should write only the cookie when setActiveKernel is called', () => {
-    const { result } = renderHook(() => useChatComposer(), {
-      wrapper: createComposerWrapper(),
-    });
-
-    act(() => {
-      result.current.kernel.setActiveKernel('manifold');
-    });
-
-    expect(harness.setKernel).toHaveBeenCalledWith('manifold');
     expect(harness.patchChat).not.toHaveBeenCalled();
   });
 
@@ -1190,10 +1163,9 @@ describe('ActiveChatProvider', () => {
       await waitFor(() => {
         expect(result.current.kernel.kernelId).toBe('manifold');
       });
-      expect(result.current.kernel.kernel.id).toBe('manifold');
     });
 
-    it('should fall back to the cookie when Chat.activeKernel is undefined', async () => {
+    it('should pin no kernel when Chat.activeKernel is undefined', async () => {
       harness.getChat.mockResolvedValue(makeChat({ id: 'chat_no_kernel' }));
 
       const { result } = renderHook(() => useChatComposer(), {
@@ -1203,41 +1175,20 @@ describe('ActiveChatProvider', () => {
       await waitFor(() => {
         expect(harness.getChat).toHaveBeenCalledWith('chat_no_kernel', 'home');
       });
-      expect(result.current.kernel.kernelId).toBe('openscad');
+      expect(result.current.kernel.kernelId).toBeUndefined();
     });
 
-    it('should heal a retired openscad chat value through the cookie fallback', async () => {
-      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_retired_kernel', activeKernel: 'openscad' }));
+    it('should pin no kernel for a chat value SinopiaCAD does not offer', async () => {
+      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_unoffered_kernel', activeKernel: 'openscad' }));
 
       const { result } = renderHook(() => useChatComposer(), {
-        wrapper: createSessionWrapper('chat_retired_kernel'),
+        wrapper: createSessionWrapper('chat_unoffered_kernel'),
       });
 
       await waitFor(() => {
-        expect(result.current.kernel.kernelId).toBe('openscad');
+        expect(result.current.session?.persistenceActorRef.getSnapshot().context.activeKernel).toBe('openscad');
       });
-      expect(result.current.kernel.kernel.id).toBe('openscad');
-    });
-
-    it('should dual-write (chat row + cookie) when setActiveKernel is called', async () => {
-      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_kernel_dual_write' }));
-
-      const { result } = renderHook(() => useChatComposer(), {
-        wrapper: createSessionWrapper('chat_kernel_dual_write'),
-      });
-
-      await waitFor(() => {
-        expect(result.current.kernel.kernelId).toBe('openscad');
-      });
-
-      act(() => {
-        result.current.kernel.setActiveKernel('manifold');
-      });
-
-      await waitFor(() => {
-        expect(harness.patchChat).toHaveBeenCalledWith('chat_kernel_dual_write', 'activeKernel', 'manifold');
-      });
-      expect(harness.setKernel).toHaveBeenCalledWith('manifold');
+      expect(result.current.kernel.kernelId).toBeUndefined();
     });
   });
 

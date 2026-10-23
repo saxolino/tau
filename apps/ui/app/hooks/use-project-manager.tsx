@@ -169,8 +169,9 @@ type CreateProjectChatOptions = {
    */
   activeExecution?: CadAgentExecution;
   /**
-   * Seed `Chat.activeKernel`. Defaults to the project's `kernel` field when
-   * the project is created from a kernel template, otherwise undefined.
+   * Seed `Chat.activeKernel`, pinning the chat's engine. Omitted, the chat
+   * pins none, even for a project created from a kernel template: SinopiaCAD's
+   * agent chooses the engine for the job and may replace the starter file.
    */
   activeKernel?: KernelProvider;
 };
@@ -180,7 +181,7 @@ type CreateProjectChatOptions = {
  * Use this when starting a fresh project from scratch.
  */
 type CreateProjectFromKernel = CreateProjectChatOptions & {
-  /** The kernel/language to use for the new project */
+  /** The kernel whose empty starter file and manifest the new project gets; it does not pin the chat's engine. */
   kernel: KernelProvider;
   /** Override default project name */
   projectName?: string;
@@ -1495,11 +1496,9 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       // Determine project data and files based on pattern
       let projectData: Omit<ProjectManifest, '$schema'>;
       let files: Record<string, { content: Uint8Array<ArrayBuffer>; mode?: '100644' | '100755' }>;
-      let kernel: KernelProvider | undefined;
 
       if ('kernel' in options) {
         // CreateProjectFromKernel: Generate from kernel template
-        kernel = options.kernel;
         const { projectName: requestedProjectName } = options;
         let projectName = requestedProjectName;
         if (!projectName && options.initialMessage) {
@@ -1561,12 +1560,12 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
 
       const chatName = options.chatName ?? (options.initialMessage ? 'Initial design' : 'Initial chat');
 
-      // Seed the chat row with chat-scoped active model + kernel so a
-      // cookie change in another tab does not mutate the active selection
-      // for this freshly-created chat. Defaults to the kernel chosen by
-      // the creation flow when not explicitly supplied.
+      // Seed the chat row with chat-scoped active model so a cookie change in
+      // another tab does not mutate the active selection for this
+      // freshly-created chat. The kernel is seeded only when the caller pins
+      // one: otherwise the agent chooses the engine for the job.
       const seededActiveExecution = options.activeExecution;
-      const seededActiveKernel = options.activeKernel ?? kernel;
+      const seededActiveKernel = options.activeKernel;
 
       // Single atomic call to create project + chat + Editor state
       const operation = await worker.prepareProjectCreation({

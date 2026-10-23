@@ -783,8 +783,11 @@ export const createAgentSessionTracker = (report: AgentTelemetryReport = default
   };
 };
 
-/** What the admitting surface knows about consent and the kernel the turn runs on. @public */
-export type AgentTurnConsent = Readonly<{ kernelId: string; allowsUsageMetrics: boolean }>;
+/**
+ * What the admitting surface knows about consent and the kernel the turn runs on; no kernel when the chat pins none
+ * and the agent chooses. @public
+ */
+export type AgentTurnConsent = Readonly<{ kernelId: string | undefined; allowsUsageMetrics: boolean }>;
 
 /** One admission's telemetry: report it admitted under its run, or refused. @public */
 export type AgentTurnTelemetry = Readonly<{
@@ -813,7 +816,7 @@ export const createAgentUsageTelemetry = (
     begin(execution, consent) {
       const admittedAt = performance.now();
       const usageMetrics: AgentTurnUsageMetrics | undefined =
-        consent.allowsUsageMetrics && knownKernels.has(consent.kernelId)
+        consent.allowsUsageMetrics && consent.kernelId !== undefined && knownKernels.has(consent.kernelId)
           ? { kernelId: consent.kernelId as AgentTurnUsageMetrics['kernelId'] }
           : undefined;
       let identity: AgentIdentity | undefined;

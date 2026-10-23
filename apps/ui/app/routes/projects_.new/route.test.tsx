@@ -12,9 +12,6 @@ let locationState: ProjectCreationLocationState;
 vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({ createProject: mockCreateProject }),
 }));
-vi.mock('#hooks/use-kernel.js', () => ({
-  useKernel: () => ({ kernel: 'openscad', setKernel: vi.fn() }),
-}));
 vi.mock('@taucad/ui/components/keyboard', () => ({
   useKeybinding: () => ({ formattedKeyCombination: '↵' }),
 }));
@@ -108,18 +105,28 @@ describe('/projects/new creation location', () => {
   });
 });
 
-describe('/projects/new kernel list', () => {
+describe('/projects/new engine', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     locationState = homeOnlyState();
+    mockCreateProject.mockResolvedValue({ slugs: { workspaceSlug: 'home', projectSlug: 'bracket' } });
   });
 
-  it('keeps kernel ids free for the icon sprite so every kernel icon resolves', async () => {
-    const { availableKernelConfigurations } = await import('#constants/available-kernel-configurations.js');
+  it('offers no kernel choice and starts from the empty SMLib starter without pinning an engine', async () => {
     renderRoute();
 
-    // `<SvgIcon id='replicad'>` renders `<use href='#replicad'>`; a page element with that id shadows the sprite symbol.
-    for (const option of availableKernelConfigurations()) {
-      expect(document.querySelector(`[id="${option.id}"]`)).toBeNull();
-    }
+    expect(screen.queryByText(/kernel/iu)).toBeNull();
+    expect(screen.queryByRole('radio')).toBeNull();
+    await userEvent.type(screen.getByLabelText('Project Name *'), 'Anello');
+    await userEvent.click(screen.getByRole('button', { name: /Create Project/ }));
+
+    const options = mockCreateProject.mock.calls[0]?.[0] as {
+      readonly project: { readonly assets: { readonly main: { readonly entryPath: string } } };
+      readonly files: Record<string, { readonly content: Uint8Array<ArrayBuffer> }>;
+      readonly activeKernel?: string;
+    };
+    expect(options.project.assets.main.entryPath).toBe('main.ts');
+    expect(new TextDecoder().decode(options.files['main.ts']?.content)).toContain("from '@classcad/smlibwasm'");
+    expect(options).not.toHaveProperty('activeKernel');
   });
 });

@@ -20,6 +20,8 @@
 \* it reads the projection only and leaves admission, delivery and the queue alone.
 \* Chat message-change wakes are throttled for React readers only; status wakes
 \* stay immediate, and admission, delivery and the queue never read either.
+\* Removing the composer's kernel selector changes only composer controls; submit,
+\* admission and queue delivery keep the same paths.
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS Messages, Tabs, Durable, QuietSubmit, StableIdentity,
           ObserveBarrier, TargetedCancel, TerminalBeforeSend,

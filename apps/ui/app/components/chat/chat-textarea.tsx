@@ -42,7 +42,6 @@ export const ChatTextarea = memo(function ({
   onBlur,
   className,
   enableContextActions = true,
-  enableKernelSelector = true,
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
@@ -331,7 +330,6 @@ export const ChatTextarea = memo(function ({
         className={className}
         enableAutoFocus={enableAutoFocus}
         enableContextActions={enableContextActions}
-        enableKernelSelector={enableKernelSelector}
         creationLocationControl={creationLocationControl}
         isSubmitDisabled={logic.isSubmitDisabled}
         mode={mode}

@@ -12,7 +12,6 @@ import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
 import { ChatAgentSheet, ghostPillClass } from '#components/chat/chat-agent-sheet.js';
 import { ChatAgentModeControl } from '#components/chat/chat-mode-selector.js';
 import { useAgentConfig } from '#components/chat/use-agent-config.js';
-import { ChatKernelSelector } from '#components/chat/chat-kernel-selector.js';
 import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
@@ -22,7 +21,6 @@ import {
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { SvgIcon } from '#components/icons/svg-icon.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { ChatContextIndicator } from '#components/chat/chat-context-indicator.js';
 import { ChatTextareaBorderBeam } from '#components/chat/chat-textarea-border-beam.js';
@@ -57,7 +55,6 @@ type ChatTextareaDesktopProperties = {
   readonly className?: string;
   readonly enableAutoFocus?: boolean;
   readonly enableContextActions?: boolean;
-  readonly enableKernelSelector?: boolean;
   readonly creationLocationControl?: React.ReactNode;
   readonly isSubmitDisabled?: boolean;
   /** Which composer this is: the edit box speaks as one and owns shortcuts only while focused (F6, F19). */
@@ -202,7 +199,6 @@ export const ChatTextareaDesktop = memo(function ({
   className,
   enableAutoFocus = true,
   enableContextActions = true,
-  enableKernelSelector = true,
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
@@ -617,7 +613,6 @@ export const ChatTextareaDesktop = memo(function ({
           composerMode={mode}
           containerReference={containerReference}
           enableContextActions={enableContextActions}
-          enableKernelSelector={enableKernelSelector}
           creationLocationControl={creationLocationControl}
           acpSessionData={acpSessionData}
           status={status}
@@ -693,7 +688,7 @@ const collapseSteps = ['data-hide-kernel', 'data-hide-mode', 'data-hide-level'] 
 
 /**
  * The measured collapse. Before paint, and on every resize or label change,
- * labels leave in a fixed order — the kernel's (or the location's), the mode's,
+ * labels leave in a fixed order — the location's, the mode's,
  * then the level — until the model's name is whole; only then is it cut.
  */
 // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
@@ -743,8 +738,8 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
 
 /**
  * The composer's one bar (D6): `justify-between`, so the two clusters can
- * never overlap (F4). Left: +, the external agent's mode, the kernel (the
- * location on Home). Right: the context meter, the agent-and-model trigger,
+ * never overlap (F4). Left: +, the external agent's mode, the location on
+ * Home. No kernel: the agent chooses the engine for the job. Right: the context meter, the agent-and-model trigger,
  * Send. Every control is ghost; Send alone keeps its fill.
  *
  * Memo'd to isolate Radix `TooltipTrigger asChild` composeRefs loops: every
@@ -758,7 +753,6 @@ export const ChatTextareaBar = memo(function ({
   composerMode,
   containerReference,
   enableContextActions,
-  enableKernelSelector,
   creationLocationControl,
   acpSessionData,
   status,
@@ -783,7 +777,6 @@ export const ChatTextareaBar = memo(function ({
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
   readonly containerReference: React.RefObject<HTMLDivElement | null>;
   readonly enableContextActions: boolean;
-  readonly enableKernelSelector: boolean;
   readonly creationLocationControl?: React.ReactNode;
   readonly acpSessionData?: AcpSessionData;
   readonly status: string;
@@ -850,7 +843,6 @@ export const ChatTextareaBar = memo(function ({
           <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-0.5')}>
             <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
             {creationLocationControl}
-            {enableKernelSelector ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
           </div>
           <input
             ref={fileInputReference}
@@ -893,41 +885,6 @@ export const ChatTextareaBar = memo(function ({
     </div>
   );
 });
-
-/** The kernel, ghost and glyph first; its label is the first to leave when the bar needs the room. */
-function ChatTextareaKernelControl({ focusEditor }: { readonly focusEditor: () => void }): React.JSX.Element {
-  const {
-    kernel: { kernel: selectedKernel },
-  } = useChatComposer();
-  return (
-    <Tooltip>
-      <ChatKernelSelector
-        data-chat-textarea-focustrap
-        popoverProperties={{ align: 'start' }}
-        onSelect={focusEditor}
-        onClose={focusEditor}
-      >
-        {({ selectedKernel: kernel }) => (
-          <TooltipTrigger asChild>
-            <Button
-              variant='ghost'
-              size='sm'
-              aria-label={`Select kernel (${kernel.name})`}
-              className={cn(
-                ghostPillClass,
-                'min-w-0 gap-1.5 group-data-[hide-kernel]/bar:w-7 group-data-[hide-kernel]/bar:px-0',
-              )}
-            >
-              <SvgIcon id={kernel.id} className='size-4 shrink-0 grayscale' />
-              <span className='truncate text-xs group-data-[hide-kernel]/bar:hidden'>{kernel.name}</span>
-            </Button>
-          </TooltipTrigger>
-        )}
-      </ChatKernelSelector>
-      <TooltipContent>Select kernel ({selectedKernel.name})</TooltipContent>
-    </Tooltip>
-  );
-}
 
 /**
  * One + for everything a turn can carry (F10): attach a file, or — outside

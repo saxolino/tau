@@ -34,7 +34,8 @@ type FormatErrorPromptOptions = {
   errors: readonly KernelIssue[];
   filePath: string;
   code: string;
-  kernel: KernelProvider;
+  /** Absent when the chat pins no kernel. */
+  kernel: KernelProvider | undefined;
 };
 
 function formatIssue(error: KernelIssue): string {
@@ -80,7 +81,7 @@ function formatErrorPrompt({ errors, filePath, code, kernel }: FormatErrorPrompt
 
   const subject = errors.length > 1 ? `${errors.length} issues` : 'an error';
 
-  return `I'm getting ${subject} in my ${kernel} code and need help fixing ${errors.length > 1 ? 'them' : 'it'}.
+  return `I'm getting ${subject} in my ${kernel === undefined ? '' : `${kernel} `}code and need help fixing ${errors.length > 1 ? 'them' : 'it'}.
 
 **File:** ${filePath}
 
@@ -98,7 +99,7 @@ ${codeContext}
 ${
   code
     ? `**Full Code:**
-\`\`\`${languageFromKernel[kernel]}
+\`\`\`${kernel === undefined ? '' : languageFromKernel[kernel]}
 ${code}
 \`\`\`
 `

@@ -3018,6 +3018,34 @@ describe('useProjectManager.createProject', () => {
     expect(phaseOrder.indexOf('name')).toBeLessThan(phaseOrder.indexOf('pending'));
   });
 
+  it('creates from the empty SMLib starter without pinning the chat engine', async () => {
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+
+    await act(async () =>
+      result.current.createProject({ kernel: 'smlib', projectName: 'Anello', location: { kind: 'home' } }),
+    );
+
+    const prepared = mockPrepareProjectCreation.mock.calls.at(-1)?.[0];
+    expect(new TextDecoder().decode(prepared?.files['main.ts']?.content)).toContain("from '@classcad/smlibwasm'");
+    expect(prepared?.chat).toBeDefined();
+    expect(prepared?.chat.activeKernel).toBeUndefined();
+  });
+
+  it('pins the chat engine only when the caller names one', async () => {
+    const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
+
+    await act(async () =>
+      result.current.createProject({
+        kernel: 'smlib',
+        projectName: 'Fibbia',
+        activeKernel: 'replicad',
+        location: { kind: 'home' },
+      }),
+    );
+
+    expect(mockPrepareProjectCreation.mock.calls.at(-1)?.[0].chat.activeKernel).toBe('replicad');
+  });
+
   describe('Home draft attachment promotion', () => {
     const chatAttachments = `/projects/${fakeProject.id}/.tau/chats/cht_create/attachments`;
 

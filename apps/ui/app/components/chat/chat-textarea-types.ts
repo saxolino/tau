@@ -149,7 +149,6 @@ export type ChatTextareaProperties = {
   readonly enableAutoFocus?: boolean;
   readonly className?: string;
   readonly enableContextActions?: boolean;
-  readonly enableKernelSelector?: boolean;
   /** Where a project created from this draft goes: Home's location control, in the bar. */
   readonly creationLocationControl?: React.ReactNode;
   /** Blocks every submit path while external prerequisites are unresolved. */

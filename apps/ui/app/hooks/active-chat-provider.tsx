@@ -7,7 +7,7 @@
  * the runtime branch collapses to the two provider constructors.
  *
  * - **`<ChatComposerProvider surface>`** — composer-only (the
- *   library empty state). Cookie-only model/kernel; `status: 'ready'`; `stop`
+ *   library empty state). Cookie-only model, no pinned kernel; `status: 'ready'`; `stop`
  *   is a no-op; `contextUsage` and `session` are `undefined`. Its draft keeps
  *   no record, but stores attachments in the surface's own directory.
  *
@@ -16,9 +16,9 @@
  *   the record hydrates whatever the user has not touched.
  *
  * - **`<ActiveChatProvider chatId>`** — session-backed (project route).
- *   Chat-row-preferred model/kernel with cookie fallback and dual-write on
- *   set; live `status` from the AI SDK `Chat`; `stop` sends a keyed host cancel;
- *   `contextUsage` is the most-recent `data-context-usage`
+ *   Chat-row-preferred model with cookie fallback and dual-write on set, the
+ *   chat row's kernel if it pins one; live `status` from the AI SDK `Chat`;
+ *   `stop` sends a keyed host cancel; `contextUsage` is the most-recent `data-context-usage`
  *   part on any message; `session` carries the live triple.
  *
  * `useActiveChatSession()` remains the strict entry point for genuine
@@ -47,8 +47,8 @@ import { createAsyncLogic } from 'xstate';
 import { waitUnlessGone } from '#lib/xstate.lib.js';
 import type { ActorRefFrom } from 'xstate';
 import type { CadAgentExecution, ContextUsageData, MyUIMessage } from '@taucad/chat';
-import type { KernelEntry, KernelId } from '@taucad/types/constants';
-import { isKernelId, resolveKernel } from '@taucad/types/constants';
+import type { KernelId } from '@taucad/types/constants';
+import { isKernelId } from '@taucad/types/constants';
 import { isKernelAvailable } from '#constants/available-kernel-configurations.js';
 import { draftMachine } from '#hooks/draft.machine.js';
 import { resizeImageActor } from '#hooks/resize-image.actor.js';
@@ -62,7 +62,6 @@ import { selectCaughtUp, selectCurrentRun } from '#machines/chat-projection.logi
 import type { chatPersistenceMachine } from '#hooks/chat-persistence.machine.js';
 import { useModels } from '#hooks/use-models.js';
 import type { ResolvedModel } from '#hooks/use-models.js';
-import { useKernel } from '#hooks/use-kernel.js';
 import { withTauExecutionModel } from '#utils/chat-execution.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { composerRecordPaths, createComposerRecordStore } from '#db/composer-record-store.js';
@@ -127,17 +126,17 @@ export type ActiveChatExecution = {
 export type ChatAgentActivity = 'ready' | 'working' | 'approval-required' | 'stopping';
 
 /**
- * Resolved chat-scoped CAD kernel state. Same dual-strategy shape as
- * {@link ActiveChatModel}. `kernel` is non-nullable because every
- * boundary that produces `kernelId` is guarded by `isKernelId` (cookie
- * read in `useKernel`, chat-row hydration in `useSessionKernel`) before
- * the resolver runs.
+ * The chat's pinned CAD kernel, if any. SinopiaCAD offers no kernel picker:
+ * the agent chooses the engine per job (`create-model`), so `kernelId` is
+ * defined only when the chat row already pins an engine SinopiaCAD offers
+ * (chats created before the agent chose). Undefined pins nothing.
  */
 export type ActiveChatKernel = {
-  kernelId: KernelId;
-  kernel: KernelEntry;
-  setActiveKernel: (kernelId: KernelId) => void;
+  readonly kernelId: KernelId | undefined;
 };
+
+/** A composer with no chat pins no kernel: the agent chooses the engine for the job. */
+const unpinnedKernel: ActiveChatKernel = { kernelId: undefined };
 
 /**
  * Live session triple. Exposed via `ChatComposerContextValue.session` so
@@ -166,7 +165,7 @@ export type ChatComposerContextValue = {
   model: ActiveChatModel;
   /** Chat-scoped execution target. */
   execution: ActiveChatExecution;
-  /** Chat-scoped kernel resolver (composer-cookie vs session dual-write). */
+  /** The chat's pinned kernel: none under the composer providers, the chat row's under the session provider. */
   kernel: ActiveChatKernel;
   /**
    * Live chat status. `'ready'` under the composer provider (no session to
@@ -281,7 +280,6 @@ export function ChatComposerProvider({
 
   const execution = useCookieExecution();
   const model = useExecutionModel(execution);
-  const kernel = useCookieKernel();
   const owner = useMemo(() => ({ attachments }), [attachments]);
   const consumeDraft = useConsumeDraft(draftActorRef, owner);
 
@@ -290,7 +288,7 @@ export function ChatComposerProvider({
       draftActorRef,
       model,
       execution,
-      kernel,
+      kernel: unpinnedKernel,
       status: 'ready',
       agentActivity: 'ready',
       stop: noopStop,
@@ -301,7 +299,7 @@ export function ChatComposerProvider({
       attachmentSource: directory,
       consumeDraft,
     }),
-    [draftActorRef, model, execution, kernel, directory, consumeDraft],
+    [draftActorRef, model, execution, directory, consumeDraft],
   );
 
   return <ChatComposerContext.Provider value={value}>{children}</ChatComposerContext.Provider>;
@@ -364,7 +362,6 @@ export function HomeNewProjectComposerProvider({
 
   const execution = useHomeExecution(recordRef);
   const model = useExecutionModel(execution);
-  const kernel = useCookieKernel();
   const owner = useMemo(() => ({ recordRef, attachments: store.attachments }), [recordRef, store]);
   const consumeDraft = useConsumeDraft(draftActorRef, owner);
   const value = useMemo<ChatComposerContextValue>(
@@ -372,7 +369,7 @@ export function HomeNewProjectComposerProvider({
       draftActorRef,
       model,
       execution,
-      kernel,
+      kernel: unpinnedKernel,
       status: 'ready',
       agentActivity: 'ready',
       stop: noopStop,
@@ -383,7 +380,7 @@ export function HomeNewProjectComposerProvider({
       attachmentSource: undefined,
       consumeDraft,
     }),
-    [consumeDraft, draftActorRef, execution, kernel, model],
+    [consumeDraft, draftActorRef, execution, model],
   );
   return <ChatComposerContext.Provider value={value}>{children}</ChatComposerContext.Provider>;
 }
@@ -545,25 +542,6 @@ function useCookieExecution(): ActiveChatExecution {
   );
 }
 
-/**
- * Cookie-only kernel resolver. Same role as {@link useCookieExecution} for the
- * CAD kernel. The cookie boundary is already healed by `useKernel` itself,
- * so the resolved `kernel` is a definite `KernelConfiguration`.
- */
-function useCookieKernel(): ActiveChatKernel {
-  const { kernel: cookieKernel, setKernel: setCookieKernel, selectedKernel: kernel } = useKernel();
-  const setActiveKernel = useCallback(
-    (next: KernelId) => {
-      setCookieKernel(next);
-    },
-    [setCookieKernel],
-  );
-  return useMemo<ActiveChatKernel>(
-    () => ({ kernelId: cookieKernel, kernel, setActiveKernel }),
-    [cookieKernel, kernel, setActiveKernel],
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Strategy helpers — session-backed branch
 // ---------------------------------------------------------------------------
@@ -672,27 +650,15 @@ function useSessionExecution(session: ChatSession): ActiveChatExecution {
 }
 
 /**
- * Session-backed kernel resolver. Same shape as {@link useSessionModel}.
- * The chat-row id is re-validated via {@link isKernelId} so a stale id
- * (e.g. a kernel that was retired from `kernelConfigurations` after the
- * row was persisted) heals to the cookie default instead of resurrecting
- * into the UI.
+ * Session-backed kernel resolver. The chat row pins a kernel only when its id
+ * is still a catalog id SinopiaCAD offers ({@link isKernelId},
+ * {@link isKernelAvailable}); anything else, or nothing, pins none, so the
+ * agent keeps the engine the main file is written in or chooses one.
  */
 function useSessionKernel(session: ChatSession): ActiveChatKernel {
   const chatActiveKernel = useSelector(session.persistenceActorRef, (state) => state.context.activeKernel);
-  const { kernel: cookieKernel, setKernel: setCookieKernel } = useKernel();
-  const sessionKernel =
-    isKernelId(chatActiveKernel) && isKernelAvailable(chatActiveKernel) ? chatActiveKernel : undefined;
-  const kernelId: KernelId = sessionKernel ?? cookieKernel;
-  const kernel = resolveKernel(kernelId);
-  const setActiveKernel = useCallback(
-    (next: KernelId) => {
-      setCookieKernel(next);
-      session.persistenceActorRef.send({ type: 'setActiveKernel', kernel: next });
-    },
-    [session.persistenceActorRef, setCookieKernel],
-  );
-  return useMemo<ActiveChatKernel>(() => ({ kernelId, kernel, setActiveKernel }), [kernelId, kernel, setActiveKernel]);
+  const kernelId = isKernelId(chatActiveKernel) && isKernelAvailable(chatActiveKernel) ? chatActiveKernel : undefined;
+  return useMemo<ActiveChatKernel>(() => ({ kernelId }), [kernelId]);
 }
 
 /**

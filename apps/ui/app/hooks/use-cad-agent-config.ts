@@ -370,7 +370,8 @@ export const useCadAgentConfig = (): CadAgentConfigInput => {
   return {
     profile: 'cad',
     execution,
-    kernel: kernelId,
+    // Absent when the chat pins no engine: the agent chooses one (`create-model`).
+    ...(kernelId === undefined ? {} : { kernel: kernelId }),
     mode,
     toolChoice,
     testingEnabled,

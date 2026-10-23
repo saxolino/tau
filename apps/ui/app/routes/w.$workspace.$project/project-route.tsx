@@ -18,7 +18,7 @@ import {
 import type { ProjectRouteSlugs } from '#routes/w.$workspace.$project/project-route-state.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
 import type { ProjectSessionFlushRegistration } from '#routes/w.$workspace.$project/project-live-sessions.js';
-import { isKernelAvailable, nativeKernelRequirementForEntryPath } from '#constants/available-kernel-configurations.js';
+import { isKernelExecutable, nativeKernelRequirementForEntryPath } from '#constants/available-kernel-configurations.js';
 import { useLiveProjectIds, useSessions } from '#hooks/use-sessions.js';
 import { useMemoryRelease } from '#hooks/use-memory-release.js';
 import { isMemoryConstrainedDevice } from '#lib/device-memory-class.js';
@@ -302,7 +302,7 @@ export function ProjectRouteGate({
       kernelName: nativeRequirement.configuration.name,
       runtimeKernelId: nativeRequirement.configuration.id,
     },
-    isKernelAvailable,
+    isKernelAvailable: isKernelExecutable,
   });
 
   /*

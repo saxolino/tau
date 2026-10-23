@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
+import { cadAgentConfigSchema } from '@taucad/chat';
 import type { ChatSnapshot, ContextPayload } from '@taucad/chat';
 import type { KernelId } from '@taucad/types/constants';
-import { resolveKernel } from '@taucad/types/constants';
 import {
   awaitAgentHostAvailability,
   awaitBrowserAgentHostAvailability,
@@ -135,9 +135,11 @@ const buildComposer = (overrides: {
   modelId?: string;
   providerKind?: 'anthropic' | 'ollama' | 'openai';
   kernelId?: KernelId;
+  /** Build a chat that pins no kernel. */
+  unpinned?: true;
   execution?: ChatComposerContextValue['execution']['execution'];
 }): ChatComposerContextValue => {
-  const kernelId: KernelId = overrides.kernelId ?? 'replicad';
+  const kernelId = overrides.unpinned ? undefined : (overrides.kernelId ?? 'replicad');
   const modelId = overrides.modelId ?? 'openai-gpt-5.5';
   const providerKind = overrides.providerKind ?? 'openai';
   return {
@@ -156,7 +158,7 @@ const buildComposer = (overrides: {
       execution: overrides.execution ?? { kind: 'tau', model: modelId },
       setActiveExecution: noop,
     },
-    kernel: { kernelId, kernel: resolveKernel(kernelId), setActiveKernel: noop },
+    kernel: { kernelId },
     status: 'ready',
     agentActivity: 'ready',
     stop: noop,
@@ -453,6 +455,15 @@ describe('useCadAgentConfig', () => {
     const { result } = renderHook(() => useCadAgentConfig());
 
     expect(result.current.kernel).toBe('openscad');
+  });
+
+  it('should leave `kernel` out when the chat pins none, so the agent chooses the engine', () => {
+    useChatComposerMock.mockReturnValue(buildComposer({ unpinned: true }));
+
+    const { result } = renderHook(() => useCadAgentConfig());
+
+    expect(result.current).not.toHaveProperty('kernel');
+    expect(cadAgentConfigSchema.safeParse(result.current).success).toBe(true);
   });
 
   it('should source `mode` and `toolChoice` from the chat draft selector', () => {

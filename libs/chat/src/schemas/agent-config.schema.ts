@@ -100,7 +100,8 @@ export const cadAgentConfigSchema = z
   .object({
     profile: z.literal('cad'),
     execution: cadAgentExecutionSchema,
-    kernel: z.enum(kernelProviders),
+    /** The chat's pinned kernel. Absent, nothing is pinned and the agent chooses one with the `create-model` skill. */
+    kernel: z.enum(kernelProviders).optional(),
     mode: z.enum(chatModes),
     toolChoice: toolChoiceSchema,
     testingEnabled: z.boolean(),

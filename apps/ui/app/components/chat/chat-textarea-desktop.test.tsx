@@ -5,7 +5,6 @@ import userEvent from '@testing-library/user-event';
 import type { captureDictation } from '#components/dictation/dictation-capture.js';
 import type { transcribeDictation } from '#components/dictation/dictation-client.js';
 import type { AcpSessionData } from '@taucad/chat';
-import { kernelConfigurations } from '@taucad/types/constants';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { ChatComposerContextValue } from '#hooks/active-chat-provider.js';
 import type { AgentHostPlacementTarget } from '#lib/agent-host-placement.js';
@@ -26,7 +25,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const manifoldKernel = kernelConfigurations.find((k) => k.id === 'manifold')!;
 const execution: { current: ChatComposerContextValue['execution']['execution'] } = {
   current: { kind: 'tau', model: 'm' },
 };
@@ -35,7 +33,7 @@ const placements: { current: readonly AgentHostPlacementTarget[] } = { current: 
 
 vi.mock('#hooks/active-chat-provider.js', () => ({
   useChatComposer: () => ({
-    kernel: { kernelId: manifoldKernel.id, kernel: manifoldKernel, setActiveKernel: vi.fn() },
+    kernel: { kernelId: undefined },
     execution: { execution: execution.current, setActiveExecution },
     contextUsage: undefined,
   }),
@@ -69,14 +67,6 @@ vi.mock('#components/chat/chat-agent-sheet.js', async (importOriginal) => ({
       <span data-slot='trigger-model'>Agent and model</span>
     </button>
   ),
-}));
-
-vi.mock('#components/chat/chat-kernel-selector.js', () => ({
-  ChatKernelSelector: ({
-    children,
-  }: {
-    readonly children: (props: { selectedKernel: typeof manifoldKernel }) => React.ReactNode;
-  }) => <div>{children({ selectedKernel: manifoldKernel })}</div>,
 }));
 
 vi.mock('#components/icons/svg-icon.js', () => ({
@@ -137,7 +127,6 @@ const renderBar = (
         composerMode='main'
         containerReference={{ current: null }}
         enableContextActions={options.enableContextActions ?? true}
-        enableKernelSelector
         acpSessionData={options.acpSessionData}
         status='ready'
         focusEditor={noop}
@@ -165,15 +154,12 @@ describe('ChatTextareaBar', () => {
     placements.current = [];
   });
 
-  it('lays out +, the kernel, the agent trigger and Send — no branch, balance or Tau mode (D6, Q11, Q16)', () => {
+  it('lays out +, the agent trigger and Send — no kernel, branch, balance or Tau mode (D6, Q11, Q16)', () => {
     const { container } = renderBar();
 
     const left = container.querySelector('[data-slot=composer-left]')!;
     const right = container.querySelector('[data-slot=composer-right]')!;
-    expect([...left.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Add',
-      'Select kernel (Manifold)',
-    ]);
+    expect([...left.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Add']);
     expect([...right.querySelectorAll('button')].map((button) => button.textContent || button.ariaLabel)).toEqual([
       'Agent and model',
       'Send',
@@ -183,11 +169,11 @@ describe('ChatTextareaBar', () => {
     expect(screen.queryByRole('button', { name: /^Mode/u })).toBeNull();
   });
 
-  it('lets the kernel label leave first when the bar needs the room', () => {
+  it('offers no kernel choice: the agent chooses the engine for the job', () => {
     renderBar();
 
-    const kernel = screen.getByRole('button', { name: 'Select kernel (Manifold)' });
-    expect(kernel.querySelector('span:not([data-testid])')!.className).toContain('group-data-[hide-kernel]/bar:hidden');
+    expect(screen.queryByRole('button', { name: /kernel/iu })).toBeNull();
+    expect(screen.queryByText(/SMLib|PicoVoxel|Replicad|Manifold/u)).toBeNull();
   });
 
   it('offers attaching and adding context from one + (F10)', async () => {
@@ -745,7 +731,7 @@ describe('composer bar measurement lifecycle', () => {
     expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
   });
 
-  it.each(['model', 'kernel', 'mode'])('should refit a changed %s label without a resize', async (label) => {
+  it.each(['model', 'mode'])('should refit a changed %s label without a resize', async (label) => {
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
     const { container } = renderBar({ acpSessionData: codexSession });
     const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
@@ -757,9 +743,7 @@ describe('composer bar measurement lifecycle', () => {
     const target =
       label === 'model'
         ? bar.querySelector('[data-slot=trigger-model]')
-        : label === 'kernel'
-          ? screen.getByRole('button', { name: 'Select kernel (Manifold)' })
-          : screen.getByRole('button', { name: 'Mode: Ask for approval' });
+        : screen.getByRole('button', { name: 'Mode: Ask for approval' });
     if (!target) {
       throw new Error('The actual composer label is missing.');
     }

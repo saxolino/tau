@@ -187,6 +187,50 @@ describe('getCadSystemPrompt progressive-disclosure contract', () => {
   );
 });
 
+describe('SinopiaCAD persona', () => {
+  it('speaks as the SinopiaCAD agent to jewelry designers and pattern makers, in simple Italian', () => {
+    const prompt = renderDefaultPrompt('smlib');
+    const role = /<role>\n([\s\S]*?)\n<\/role>/u.exec(prompt.static)?.[1];
+    const tone = /<tone>\n([\s\S]*?)\n<\/tone>/u.exec(prompt.static)?.[1];
+
+    expect(role).toContain('You are the SinopiaCAD agent');
+    expect(role).toContain('Jewelry and accessory designers and pattern makers');
+    expect(role).toContain('dimensionally faithful, fully detailed, manufacturable as-is');
+    expect(tone).toContain('in simple, short Italian about pieces, millimetres and materials');
+    expect(tone).toContain('no code, file, engine or tool names');
+    expect(tone).toContain('never LaTeX');
+    expect(prompt.static).not.toContain('You are Tau');
+    expect(prompt.dynamic).not.toContain('file paths, line numbers');
+  });
+});
+
+describe('engine choice', () => {
+  it('points an unpinned project at create-model and keeps Block 1 byte-identical', () => {
+    const sections: ResolvedSection[] = [];
+    const unpinned = getCadSystemPrompt(undefined, 'agent', true, {
+      chatId: 'prompt-budget-test',
+      modelId: 'prompt-budget-model',
+      contextWindow: 200_000,
+      knowledgeCutoff: '2026-01',
+      supportsImageInput: true,
+      onSectionResolved: (section) => sections.push(section),
+    });
+    const kernelSkill = sections.find(({ name }) => name === 'kernel_skill');
+
+    expect(unpinned.static).toBe(renderDefaultPrompt('smlib').static);
+    expect(unpinned.dynamic).toContain('No engine is pinned for this project: activate the create-model skill');
+    expect(unpinned.dynamic).toContain('keep its engine');
+    expect(unpinned.dynamic).not.toContain('This project uses');
+    expect(kernelSkill?.byteSize).toBeLessThanOrEqual(sectionMaxBytes.get('kernel_skill') ?? 0);
+  });
+
+  it('keeps a pinned project on its engine', () => {
+    expect(renderDefaultPrompt('picovoxel').dynamic).toContain(
+      'This project uses PicoVoxel; activate the cad-picovoxel skill.',
+    );
+  });
+});
+
 describe('workbench prompt', () => {
   it('teaches the tool and digest without exceeding its section budget', () => {
     const prompt = renderDefaultPrompt('openscad');

@@ -181,3 +181,59 @@ sessione di Sinopia è già quella giusta: SinopiaCAD legge la stessa chiave di 
   `apps/ui/app/services/agent-host-client.test.ts`, `apps/ui/app/workers/agent-host.impl.test.ts`,
   `apps/ui/app/components/auth/user/user-button.test.tsx`, `apps/ui/app/lib/auth-client.test.ts`,
   `apps/ui/app/environment.config.test.ts`.
+
+## 23 ottobre 2026 — l'agente sceglie il motore, parla da SinopiaCAD e sa passare dall'immagine al CAD
+
+Nessuno sceglie più il motore geometrico a mano: l'agente lo sceglie per ogni lavoro fra i quattro che SinopiaCAD usa
+(SMLib, predefinito, per i pezzi di precisione; PicoVoxel per le forme scolpite; Replicad come ripiego esatto di
+OpenCascade; Manifold per il lavoro sulle mesh). Un progetto già scritto per un motore lo tiene. L'agente integrato si
+presenta come agente di SinopiaCAD, risponde in italiano semplice e ha una skill per costruire un gioiello da immagini.
+
+### Motori offerti
+
+- `apps/ui/app/lib/sinopia-engines.ts` (nuovo) — i quattro motori, SMLib per primo e come file di partenza.
+- `apps/ui/app/constants/available-kernel-configurations.ts` — offre solo quei quattro; `isKernelExecutable` dice se
+  il runtime esegue comunque un motore non offerto, così un progetto scritto per un altro motore si apre ancora.
+- `apps/ui/app/routes/w.$workspace.$project/project-route.tsx` — l'apertura di un progetto usa `isKernelExecutable`.
+- `apps/ui/app/lib/system-skills-catalog.ts` — tolte le skill `cad-*` dei motori non offerti; registrata la skill
+  `sinopia-immagine-cad`.
+- `apps/ui/app/lib/create-model-skill.ts` — `create-model` riscritta per gioielli e accessori: tabella dei quattro
+  motori, regole per lavoro («SMLib salvo forme scolpite»), pezzi misti in parti separate con l'avviso che unirli in un
+  solo STEP esatto non è ancora provato.
+
+### Niente scelta del motore per la persona
+
+- `apps/ui/app/components/chat/chat-kernel-selector.tsx`, `kernel-selector.tsx` — rimossi (e il test del primo).
+- `apps/ui/app/components/chat/chat-textarea-desktop.tsx`, `chat-textarea.tsx`, `chat-textarea-types.ts` — tolto il
+  selettore del motore dalla barra della chat (`enableKernelSelector`).
+- `apps/ui/app/components/chat/new-project-chat-composer.tsx`, `apps/ui/app/routes/projects_.new/route.tsx` — un
+  progetto nuovo parte dal file vuoto di SMLib senza fissare il motore; via la scheda «Choose CAD Kernel».
+- `apps/ui/app/hooks/use-project-manager.tsx` — la chat di un progetto nuovo fissa un motore solo se chi crea lo chiede.
+- `apps/ui/app/hooks/active-chat-provider.tsx`, `use-cad-agent-config.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/project-live-sessions.tsx` — il motore della chat è quello salvato nella
+  chat se SinopiaCAD lo offre, altrimenti nessuno (niente più ripiego sul cookie).
+- `apps/ui/app/chat-clients/_internal/agent-usage-telemetry.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/chat-stack-trace.tsx` — accettano una chat senza motore.
+
+### Agente: motore libero e persona
+
+- `libs/chat/src/schemas/agent-config.schema.ts` — `kernel` facoltativo: assente, l'agente sceglie.
+- `libs/chat/src/prompts/cad-agent.prompt.ts` — senza motore fissato il prompt indica `create-model` (o di tenere il
+  motore di un modello già costruito); identità e pubblico di SinopiaCAD (designer di gioielli e accessori,
+  modellisti), italiano semplice e corto, niente codice, nomi di file, motori o strumenti nelle risposte, misure in
+  testo semplice; resta il rigore da produzione. Annotate le voci `EVAL(sinopia-persona)` e `EVAL(unpinned-engine)`.
+- `apps/ui/app/lib/sinopia-immagine-cad-skill.ts` (nuovo) — skill `sinopia-immagine-cad`: scomposizione in pezzi,
+  scala dalle misure standard, viste nascoste, pezzi con nomi italiani, al massimo 3 giri di controllo con le viste,
+  misure raggruppate per pezzo in `defaultParams`, colori, densità 15,5 per l'oro 18 kt, trappole di SMLib.
+
+### Test
+
+- Nuovi: `apps/ui/app/lib/sinopia-engines.test.ts`.
+- Aggiornati: `libs/chat/src/prompts/cad-agent.prompt.test.ts`, `libs/chat/src/schemas/agent-config.schema.test.ts`,
+  `apps/ui/app/lib/system-skills-catalog.test.ts`, `system-skills-budget.test.ts`,
+  `apps/ui/app/hooks/active-chat-provider.test.tsx`, `use-cad-agent-config.test.tsx`, `use-project-manager.test.ts`,
+  `apps/ui/app/components/chat/chat-textarea-desktop.test.tsx`, `chat-textarea.browser.test.tsx`,
+  `new-project-chat-composer.test.tsx`, `apps/ui/app/routes/projects_.new/route.test.tsx`.
+- `apps/ui-e2e/src/chat-edit-controls.spec.ts`, `workbench-pane-files.spec.ts` — tolti i passi sul selettore del motore.
+- `apps/ui/specs/message-queue/MessageQueue.tla`, `MessageQueue/drift.json` — annotato che togliere il selettore
+  del motore cambia solo i comandi della chat; aggiornate le impronte di `chat-textarea.tsx` e della specifica.
