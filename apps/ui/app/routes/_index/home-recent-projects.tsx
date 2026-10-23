@@ -28,7 +28,7 @@ import { projectUrlOr } from '#utils/project-url.utils.js';
 /** A bounded home preview; the full collection stays in Projects. */
 export const homeRecentProjectLimit = 10;
 
-const homeProjectGridClassName = 'grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-4';
+const homeProjectGridClassName = 'grid grid-cols-2 gap-4 min-[1367px]:grid-cols-4';
 const sortParameter = enumParameter(z.enum(['modified', 'name']), 'modified');
 
 const relativeTimes: Readonly<Record<Language, Intl.RelativeTimeFormat>> = {

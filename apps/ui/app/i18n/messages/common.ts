@@ -3,6 +3,8 @@ import { defineMessages } from '#i18n/define-messages.js';
 /** Words every area uses: the verbs of dialogs and recoveries. */
 export const commonMessages = defineMessages({
   it: {
+    supportedDevices: 'SinopiaCAD lavora su computer e tablet da 7 pollici in su.',
+    openSinopia: 'Apri Sinopia',
     cancel: 'Annulla',
     close: 'Chiudi',
     retry: 'Riprova',
@@ -16,6 +18,8 @@ export const commonMessages = defineMessages({
     reload: 'Ricarica la pagina',
   },
   en: {
+    supportedDevices: 'SinopiaCAD works on computers and tablets from 7 inches up.',
+    openSinopia: 'Open Sinopia',
     cancel: 'Cancel',
     close: 'Close',
     retry: 'Try again',

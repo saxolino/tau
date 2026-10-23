@@ -11,7 +11,7 @@ import {
   Suspense,
 } from 'react';
 import { useProject } from '#hooks/use-project.js';
-import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
+import { useCadViewport } from '#hooks/use-cad-viewport.js';
 import type { MobilePanelId } from '#constants/editor.constants.js';
 import type { PanelState } from '#types/editor.types.js';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
@@ -222,7 +222,9 @@ export function ProjectWorkspaceProvider({
   }, []);
   const location = useLocation();
   const routeKey = location.key;
-  const isMobile = useIsMobile();
+  const viewport = useCadViewport();
+  const isMobile = viewport === 'phone';
+  const isTablet = viewport === 'tablet';
   const isEditorReady = useSelector(editorRef, (snapshot) => snapshot.matches('ready'));
   const openerRef = useRef<((panelId: WorkbenchPanelId) => void) | undefined>(undefined);
   const pendingFilesRef = useRef<string | undefined>(undefined);
@@ -293,13 +295,19 @@ export function ProjectWorkspaceProvider({
       rememberAgentLaneOpen(open);
       editorRef.send({
         type: 'setPanelState',
-        panelState: { desktopLayout: { chatOpen: open, ...(open ? { compactAuxiliary: 'chat' } : {}) } },
+        panelState: {
+          desktopLayout: {
+            chatOpen: open,
+            ...(isTablet ? { workbenchOpen: false } : {}),
+            ...(open ? { compactAuxiliary: 'chat' } : {}),
+          },
+        },
       });
       if (isMobile && open) {
         editorRef.send({ type: 'setPanelState', panelState: { mobileActiveTab: 'chat' } });
       }
     },
-    [editorRef, isMobile],
+    [editorRef, isMobile, isTablet],
   );
 
   const shouldOpenChat = location.state?.openChat === true || location.state?.focusChatComposer === true;
@@ -330,11 +338,15 @@ export function ProjectWorkspaceProvider({
       editorRef.send({
         type: 'setPanelState',
         panelState: {
-          desktopLayout: { workbenchOpen: open, ...(open ? { compactAuxiliary: 'workbench' } : {}) },
+          desktopLayout: {
+            workbenchOpen: open,
+            ...(isTablet ? { chatOpen: false } : {}),
+            ...(open ? { compactAuxiliary: 'workbench' } : {}),
+          },
         },
       });
     },
-    [editorRef],
+    [editorRef, isTablet],
   );
 
   const openPanel = useCallback(

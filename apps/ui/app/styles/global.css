@@ -10,6 +10,7 @@
 @import '@taucad/workbench-panes/styles/panes.css';
 @import '../components/layout/application-shell.css';
 @import './scroll-shadows.css';
+@import './cad-tablet.css';
 @import './shiny-text.css';
 
 /*

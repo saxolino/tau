@@ -688,3 +688,39 @@ File modificati o aggiunti (compresi i controlli mirati):
 - `apps/ui/app/i18n/messages/auth.ts`
 - `apps/ui/app/i18n/messages/common.ts`
 - `apps/ui/app/routes/w.$workspace.$project/project-not-found.tsx`
+
+## Passo 8 — Tablet (744–1366 px)
+
+La home e la pagina progetto distinguono telefoni (<744 px), tablet (744–1366 px)
+e computer. Il progetto riusa il visore desktop senza rimontarlo al cambio corsia;
+Misure e Agente sono fogli laterali esclusivi, con velo leggero, chiusura da tastiera
+e barra superiore raggiungibile. La home conserva la hero a tutta larghezza, due
+colonne di progetti e l’agente in un foglio da destra. Sotto 744 px compare l’avviso
+IT/EN con «Apri Sinopia», senza montare il workspace o il composer della home.
+
+I fogli seguono resize e scroll di `visualViewport`, riducendo l’altezza disponibile
+quando si apre la tastiera. Il CSS tablet porta i comandi principali e i campi Misure
+ad almeno 44 px e mantiene il testo del composer a 16 px per evitare lo zoom al focus.
+Il visore seleziona il pezzo al `contextmenu` nativo del tocco lungo; un eventuale clic
+touch successivo seleziona lo stesso pezzo senza deselezionarlo. Picker, controlli
+camera, gesti a due dita e relativi blocchi di selezione rimangono i proprietari esistenti.
+
+File principali:
+
+- `apps/ui/app/hooks/use-cad-viewport.ts` e relativo test dei confini e della rotazione.
+- `apps/ui/app/components/layout/{tablet-lane,cad-phone-notice}.tsx` e test del foglio.
+- `apps/ui/app/routes/w.$workspace.$project/{chat-interface,chat-interface-desktop,project-workspace-context}.tsx` e test dei moduli modificati.
+- `apps/ui/app/routes/_index/{sinopia-home,home-recent-projects}.tsx` e test della home.
+- `apps/ui/app/i18n/messages/common.ts` (messaggio telefoni IT/EN).
+- `apps/ui/app/styles/{global,cad-tablet}.css`.
+- `packages/viewer/src/graphics/three/react/gltf-mesh.tsx` e test `gltf-mesh.camera-lifecycle.test.tsx`.
+- `apps/ui/app/styles/cad-tablet-targets.browser.test.ts` e `apps/ui/app/styles/cad-tablet-targets.vitest.browser.config.ts`.
+
+La suite separata dei bersagli avvia Chromium direttamente, senza server:
+`cd apps/ui && ../../node_modules/.bin/vitest run --config app/styles/cad-tablet-targets.vitest.browser.config.ts --maxWorkers=2`.
+Si può indicare un Chromium già installato con `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`.
+Nel sandbox corrente il browser termina all’avvio con `bootstrap_check_in: Permission denied`:
+i cinque casi dimensionali non sono stati eseguiti. La verifica dell’interfaccia autenticata,
+delle dimensioni effettive dopo l’unione e di Safari/tastiera/gesti su iPad vero resta
+al coordinatore, come previsto dall’incarico. Non sono stati avviati server né fatte
+operazioni Supabase, pubblicazioni o push.

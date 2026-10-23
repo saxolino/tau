@@ -2636,6 +2636,21 @@ export function GltfMesh({
       }
 
       event.stopPropagation();
+      // A touch selects rather than toggles: the click some browsers emit after a
+      // native long press must not undo the selection made by the context event.
+      if (
+        clickAction.type === 'toggleComponentSelection' &&
+        'pointerType' in event.nativeEvent &&
+        event.nativeEvent.pointerType === 'touch'
+      ) {
+        graphicsActor.send({
+          type: 'selectModelComponent',
+          unitId,
+          componentId: clickAction.componentId,
+          source: 'viewer',
+        });
+        return;
+      }
       for (const dispatchEvent of resolveModelPointerClickDispatches({
         clickAction,
         unitId,
@@ -2657,6 +2672,23 @@ export function GltfMesh({
       });
     },
     [graphicsActor],
+  );
+
+  const handleContextMenu = useCallback(
+    (event: ThreeEvent<MouseEvent>) => {
+      if (isPendingModelPick(event)) {
+        return;
+      }
+      const action = resolveContextMenuActionFromEvent(event);
+      if (action.type !== 'openComponentMenu') {
+        return;
+      }
+      // Native contextmenu also represents a stationary touch hold. Camera drags,
+      // pinch and tool overlays are rejected by the same guard as a regular click.
+      event.nativeEvent.preventDefault();
+      graphicsActor.send({ type: 'selectModelComponent', unitId, componentId: action.componentId, source: 'viewer' });
+    },
+    [graphicsActor, resolveContextMenuActionFromEvent, unitId],
   );
 
   const publishSecondaryPointerAction = useCallback(
@@ -2755,6 +2787,7 @@ export function GltfMesh({
         onPointerDown={handlePointerDown}
         onPointerOut={handlePointerOut}
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
         onPointerMissed={handlePointerMissed}
       />
     </group>

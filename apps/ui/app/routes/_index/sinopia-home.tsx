@@ -1,3 +1,6 @@
+import { useCadViewport } from '#hooks/use-cad-viewport.js';
+import { CadPhoneNotice } from '#components/layout/cad-phone-notice.js';
+import { TabletLane } from '#components/layout/tablet-lane.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
@@ -37,8 +40,9 @@ const isEditableTarget = (target: unknown): boolean =>
 function HomeSurface(): React.JSX.Element {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const isTablet = useCadViewport() === 'tablet';
   const [isLaneOpen, setLaneOpen] = useAgentLaneOpen();
-  const isLaneShown = isLaneOpen && !isMobile;
+  const isLaneShown = isLaneOpen && (!isMobile || isTablet);
   const [measure, setMeasure] = useState('');
   const { onSubmit, isSubmitting } = useNewProjectSubmit(false);
   const {
@@ -173,7 +177,8 @@ function HomeSurface(): React.JSX.Element {
   return (
     // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- drag and drop has keyboard equivalents: the picker button and ⌘V
     <div
-      className='flex size-full min-h-0'
+      className='relative flex size-full min-h-0 overflow-hidden'
+      data-cad-home
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -181,9 +186,11 @@ function HomeSurface(): React.JSX.Element {
     >
       {/* The main area plays the viewer's part beside the lane, so the closed lane's toggle folds the same way. */}
       <div className='@container/viewer relative flex min-w-0 flex-1 flex-col overflow-y-auto'>
-        {isMobile ? null : (
-          <div className='sticky top-0 z-10 flex h-9 shrink-0 items-center justify-end px-1'>
-            {isLaneShown ? null : <AgentLaneToggleButton place='viewer' isOpen={false} onOpenChange={setLaneOpen} />}
+        {isMobile && !isTablet ? null : (
+          <div className='sticky top-0 z-10 flex h-12 shrink-0 items-center justify-end px-1'>
+            {isLaneShown && !isTablet ? null : (
+              <AgentLaneToggleButton place='viewer' isOpen={false} onOpenChange={setLaneOpen} />
+            )}
           </div>
         )}
         <div className='mx-auto flex w-full max-w-6xl flex-col px-6 pb-6 lg:px-8'>
@@ -198,7 +205,7 @@ function HomeSurface(): React.JSX.Element {
               void takeImages(files);
             }}
           />
-          {isMobile ? (
+          {isMobile && !isTablet ? (
             <div role='region' aria-label={t('home.intake.messageForAgent')} className='mx-auto mt-6 w-full max-w-3xl'>
               <NewProjectChatComposer
                 ref={composerRef}
@@ -213,7 +220,7 @@ function HomeSurface(): React.JSX.Element {
           {/* Sinopia's project strip mounts here when the real data integration is available. */}
         </div>
       </div>
-      {isLaneShown ? (
+      {isLaneShown && !isTablet ? (
         <aside aria-label={t('home.agentLane.label')} className='w-80 shrink-0 border-l border-border xl:w-90'>
           <HomeAgentLane
             composerRef={composerRef}
@@ -222,6 +229,22 @@ function HomeSurface(): React.JSX.Element {
             isSubmitting={isSubmitting}
           />
         </aside>
+      ) : null}
+      {isTablet && isLaneShown ? (
+        <TabletLane
+          label={t('home.agentLane.label')}
+          side='right'
+          onClose={() => {
+            setLaneOpen(false);
+          }}
+        >
+          <HomeAgentLane
+            composerRef={composerRef}
+            onOpenChange={setLaneOpen}
+            onSubmit={submitHome}
+            isSubmitting={isSubmitting}
+          />
+        </TabletLane>
       ) : null}
       <p role='status' aria-live='polite' className='sr-only'>
         {announcement}
@@ -238,6 +261,10 @@ function HomeSurface(): React.JSX.Element {
  * @returns The home.
  */
 export function SinopiaHome(): React.JSX.Element {
+  const viewport = useCadViewport();
+  if (viewport === 'phone') {
+    return <CadPhoneNotice />;
+  }
   return (
     <HomeNewProjectComposerProvider>
       <HomeSurface />

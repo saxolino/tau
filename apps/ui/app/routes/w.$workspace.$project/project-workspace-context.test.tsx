@@ -6,7 +6,7 @@ import type { WorkbenchLaneNode, WorkbenchLayout } from '@taucad/workbench';
 import type * as KeyboardModule from '@taucad/ui/components/keyboard';
 import type { WorkbenchLayoutController } from '#routes/w.$workspace.$project/workbench-layout-controller.js';
 
-const state = vi.hoisted(() => ({ isMobile: false, isEditorReady: true }));
+const state = vi.hoisted(() => ({ isMobile: false, isTablet: false, isEditorReady: true }));
 const route = vi.hoisted<{
   key: string;
   search: string;
@@ -44,7 +44,9 @@ vi.mock('#routes/w.$workspace.$project/project-export-dialog.js', () => ({
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({ editorRef, mainEntryPath: 'main.ts' }),
 }));
-vi.mock('@taucad/ui/hooks/use-mobile', () => ({ useIsMobile: () => state.isMobile }));
+vi.mock('#hooks/use-cad-viewport.js', () => ({
+  useCadViewport: () => (state.isMobile ? 'phone' : state.isTablet ? 'tablet' : 'desktop'),
+}));
 vi.mock('react-router', () => ({ useLocation: () => route }));
 vi.mock('@xstate/react', () => ({
   useSelector: (_actor: unknown, selector: (snapshot: { matches: () => boolean }) => unknown) =>
@@ -74,6 +76,7 @@ function Probe(): React.JSX.Element {
 describe('ProjectWorkspaceProvider', () => {
   beforeEach(() => {
     state.isMobile = false;
+    state.isTablet = false;
     state.isEditorReady = true;
     route.key = 'initial';
     route.search = '';
@@ -457,6 +460,36 @@ describe('ProjectWorkspaceProvider', () => {
     expect(send).toHaveBeenCalledExactlyOnceWith({
       type: 'setPanelState',
       panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' } },
+    });
+  });
+
+  it('should replace or close the active tablet sheet without revealing the other lane', () => {
+    state.isTablet = true;
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    act(() => {
+      workspace.setChatOpen(true);
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { chatOpen: true, workbenchOpen: false, compactAuxiliary: 'chat' } },
+    });
+    act(() => {
+      workspace.setWorkbenchOpen(true);
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { workbenchOpen: true, chatOpen: false, compactAuxiliary: 'workbench' } },
+    });
+    act(() => {
+      workspace.setWorkbenchOpen(false);
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { workbenchOpen: false, chatOpen: false } },
     });
   });
 

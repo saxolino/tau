@@ -1,0 +1,41 @@
+/* SinopiaCAD's supported tablet widths, including landscape iPad Pro. */
+@media (min-width: 744px) and (max-width: 1366px) {
+  [data-slot='project-top-bar'] {
+    height: calc(var(--spacing) * 12);
+  }
+
+  [data-slot='project-top-bar'] :is(button, a, input),
+  [data-cad-home] button,
+  [data-slot='tablet-lane'] :is(button, input, [role='slider']),
+  [data-slot='viewer-controls'] button,
+  [data-chat-composer] button {
+    min-width: calc(var(--spacing) * 11);
+    min-height: calc(var(--spacing) * 11);
+  }
+
+  [data-chat-composer] [contenteditable='true'] {
+    min-height: calc(var(--spacing) * 11);
+    /* Prevent WebKit's focus zoom from displacing the composer. */
+    font-size: var(--text-base);
+  }
+
+  [data-slot='viewer-controls'] {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  [data-slot='viewer-controls'] div:has(> button),
+  [data-slot='composer-bar'],
+  [data-slot='floating-panel-content-header'] {
+    height: auto;
+    min-height: calc(var(--spacing) * 12);
+  }
+
+  [data-slot='viewer-controls'] div:has(> button) {
+    flex-wrap: wrap;
+  }
+
+  [data-slot='parameter-field'] {
+    min-height: calc(var(--spacing) * 11);
+  }
+}
