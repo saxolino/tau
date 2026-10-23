@@ -60,6 +60,7 @@ function SinopiaLanguageSwitch(): React.JSX.Element {
  * @returns The sign-in screen.
  */
 export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): React.JSX.Element {
+  const [dismissedNotice, setDismissedNotice] = useState<SinopiaNotice>();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const { t } = useTranslation();
@@ -71,7 +72,7 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
   const passwordId = useId();
   const errorId = useId();
   /* This screen's own Google failure first; otherwise what the session has to say. */
-  const banner = googleError === undefined ? notice : { code: googleError };
+  const banner = googleError === undefined ? (notice === dismissedNotice ? undefined : notice) : { code: googleError };
 
   const handleSubmit = useCallback(
     async (event: SyntheticEvent<HTMLFormElement>): Promise<void> => {
@@ -95,6 +96,31 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
     setGoogleError(undefined);
   }, []);
 
+  if (banner?.link !== undefined) {
+    return (
+      <SinopiaAuthFrame
+        titleId={titleId}
+        title={t('auth.refused')}
+        description={<span role='alert'>{t(`auth.messages.${banner.code}`)}</span>}
+        footer={<SinopiaLanguageSwitch />}
+      >
+        <div className='flex flex-col gap-3'>
+          <a href={banner.link.href} className='text-center font-medium underline underline-offset-4'>
+            {t('auth.goToSinopia')}
+          </a>
+          <Button
+            variant='ghost'
+            onClick={() => {
+              setDismissedNotice(notice);
+            }}
+          >
+            {t('auth.signOut')}
+          </Button>
+        </div>
+      </SinopiaAuthFrame>
+    );
+  }
+
   return (
     <SinopiaAuthFrame
       titleId={titleId}
@@ -106,11 +132,6 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
         {banner === undefined ? null : (
           <div role='alert' className='flex flex-col gap-2 rounded-md border border-destructive/30 p-3 text-sm'>
             <p>{t(`auth.messages.${banner.code}`)}</p>
-            {banner.link === undefined ? null : (
-              <a href={banner.link.href} className='font-medium text-foreground underline underline-offset-4'>
-                {t('auth.goToSinopia')}
-              </a>
-            )}
           </div>
         )}
         <SinopiaGoogleButton isDisabled={isPending} onStart={handleGoogleStart} onError={setGoogleError} />
@@ -119,6 +140,7 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
         </FieldSeparator>
         <form
           aria-labelledby={titleId}
+          aria-busy={isPending}
           onSubmit={(event) => {
             void handleSubmit(event);
           }}
@@ -164,11 +186,21 @@ export function SinopiaLogin({ notice }: { readonly notice?: SinopiaNotice }): R
               </p>
             )}
             <Button type='submit' disabled={isPending}>
-              {isPending ? <Spinner aria-label={t('auth.signIn.pending')} /> : null}
-              {t('auth.signIn.submit')}
+              {isPending ? <Spinner aria-hidden /> : null}
+              <span role={isPending ? 'status' : undefined}>
+                {isPending ? t('auth.signIn.pending') : t('auth.signIn.submit')}
+              </span>
             </Button>
           </FieldGroup>
         </form>
+        <a
+          href='https://sinopialab.com/auth'
+          target='_blank'
+          rel='noopener noreferrer'
+          className='text-center text-sm underline underline-offset-4'
+        >
+          {t('auth.signIn.register')}
+        </a>
       </div>
     </SinopiaAuthFrame>
   );

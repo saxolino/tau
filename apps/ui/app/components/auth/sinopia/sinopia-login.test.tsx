@@ -55,7 +55,7 @@ describe('SinopiaLogin', () => {
     expect(screen.getByRole('button', { name: 'Accedi' })).toBeEnabled();
   });
 
-  it('should offer Google first, then the Sinopia password, and no sign-up', () => {
+  it('should offer Google first, then the Sinopia password, and link registration to Sinopia', () => {
     render(<SinopiaLogin />);
 
     expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
@@ -65,7 +65,10 @@ describe('SinopiaLogin', () => {
       'English',
     ]);
     expect(screen.getByText('oppure con email e password')).toBeInTheDocument();
-    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Non hai un account? Registrati su sinopialab.com' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/auth',
+    );
   });
 
   it('should leave for Google from the button', async () => {
@@ -138,21 +141,23 @@ describe.each([
   });
 
   it('should write the whole screen in the language', () => {
-    render(
-      <SinopiaLogin
-        notice={{
-          code: 'terms',
-          link: { href: 'https://sinopialab.com/auth' },
-        }}
-      />,
-    );
-
+    render(<SinopiaLogin />);
     expect(screen.getByRole('heading', { level: 1, name: title })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: google })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: submit })).toBeInTheDocument();
     expect(screen.getByText(separator)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: link })).toBeInTheDocument();
     expect(document.querySelector('main')).toHaveAttribute('lang', language);
+  });
+
+  it('should offer the reason and a remedy on a dedicated refusal card', async () => {
+    const user = userEvent.setup();
+    render(<SinopiaLogin notice={{ code: 'terms', link: { href: 'https://sinopialab.com/auth' } }} />);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: link })).toHaveAttribute('href', 'https://sinopialab.com/auth');
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: language === 'it' ? 'Esci' : 'Sign out' }));
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toBeInTheDocument();
   });
 
   it('should write a refused sign-in in the language', async () => {

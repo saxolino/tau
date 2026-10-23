@@ -119,8 +119,6 @@ export function UserButton({
         sideOffset={sideOffset}
         size={size}
         variant={variant}
-        links={userLinks}
-        header={header}
       />
     );
   }

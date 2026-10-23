@@ -271,8 +271,8 @@ describe('GeneralSettings', () => {
 
   // SinopiaCAD: two themes and the system's choice between them (UI-UX-SinopiaCAD §1.2).
   it.each([
-    ['it', ['Chiaro', 'Nero', 'Sistema'], 'Nero'],
-    ['en', ['Light', 'Black', 'System'], 'Black'],
+    ['it', ['Chiaro', 'Nero', 'Segui il Mac'], 'Nero'],
+    ['en', ['Light', 'Black', 'Follow the Mac'], 'Black'],
   ] as const)('should offer only the two themes and the system in %s', async (language, names, black) => {
     setLanguage(language);
     const user = userEvent.setup();

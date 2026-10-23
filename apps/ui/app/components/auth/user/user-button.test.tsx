@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { MemoryRouter } from 'react-router';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -53,11 +54,21 @@ describe('UserButton', () => {
     sinopia.state = { status: 'signed-in', user: { id: 'user-sinopia', email: 'pilota@sinopialab.com' } };
     sinopia.signOut.mockResolvedValue(undefined);
     const user = userEvent.setup();
-    render(<UserButton size='sm' links={[{ label: 'Files', href: '/files' }]} />);
+    render(
+      <MemoryRouter>
+        <UserButton size='sm' links={[{ label: 'Files', href: '/files' }]} header={<span>Tau credits</span>} />
+      </MemoryRouter>,
+    );
 
     await user.click(screen.getByRole('button', { name: /pilota@sinopialab\.com/u }));
 
-    expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('href', '/files');
+    expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Tau credits')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: language === 'it' ? 'Apri sinopialab.com' : 'Open sinopialab.com' }),
+    ).toHaveAttribute('href', 'https://sinopialab.com');
+    expect(screen.getByRole('menuitem', { name: language === 'it' ? 'Impostazioni' : 'Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: language === 'it' ? 'Informazioni' : 'About' })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: 'Log in' })).not.toBeInTheDocument();
     // One sign-out entry: Sinopia's, never Tau's beside it.
     expect(screen.getAllByRole('menuitem', { name: signOut })).toHaveLength(1);

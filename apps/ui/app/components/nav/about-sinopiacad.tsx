@@ -53,7 +53,7 @@ export function AboutDialog({
   const { t } = useTranslation();
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className='sm:max-w-md'>
+      <DialogContent className='sm:max-w-md [&>button[data-slot=dialog-close]]:hidden'>
         <DialogHeader>
           <SinopiaCadWordmark size='lg' className='mb-2' />
           <DialogTitle>{t('shell.about.title')}</DialogTitle>

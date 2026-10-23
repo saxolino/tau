@@ -24,7 +24,7 @@ export function ProjectNotFound({ className }: ProjectNotFoundProperties): React
   };
 
   return (
-    <div className={cn('absolute inset-0 z-20', className)}>
+    <div role='alert' className={cn('absolute inset-0 z-20', className)}>
       <FloatingPanel isOpen side='right' align='start'>
         <FloatingPanelContent>
           <FloatingPanelContentHeader>

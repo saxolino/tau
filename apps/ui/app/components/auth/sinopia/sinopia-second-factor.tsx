@@ -58,6 +58,7 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
     >
       <form
         aria-labelledby={titleId}
+        aria-busy={isPending}
         onSubmit={(event) => {
           void handleSubmit(event);
         }}
@@ -69,6 +70,7 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
               id={codeId}
               name='code'
               inputMode='numeric'
+              required
               autoComplete='one-time-code'
               placeholder={t('auth.secondFactor.codePlaceholder')}
               className='text-center font-mono tabular-nums'
@@ -87,8 +89,10 @@ export function SinopiaSecondFactor({ user }: { readonly user: SinopiaUser }): R
             </p>
           )}
           <Button type='submit' disabled={isPending || code.length !== codeLength}>
-            {isPending ? <Spinner aria-label={t('auth.secondFactor.pending')} /> : null}
-            {t('auth.secondFactor.submit')}
+            {isPending ? <Spinner aria-hidden /> : null}
+            <span role={isPending ? 'status' : undefined}>
+              {isPending ? t('auth.secondFactor.pending') : t('auth.secondFactor.submit')}
+            </span>
           </Button>
           <Button
             type='button'

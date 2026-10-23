@@ -98,7 +98,9 @@ export function SinopiaGoogleButton({
       }}
     >
       {isOpening ? <Spinner aria-hidden /> : <GoogleMark />}
-      {isOpening ? t('auth.signIn.googleOpening') : t('auth.signIn.google')}
+      <span role={isOpening ? 'status' : undefined}>
+        {isOpening ? t('auth.signIn.googleOpening') : t('auth.signIn.google')}
+      </span>
     </Button>
   );
 }
