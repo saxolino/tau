@@ -105,8 +105,8 @@ describe('useModels', () => {
       expect(result.current.defaultExecution).toEqual({ kind: 'tau', model: 'anthropic-claude-opus-4.8' });
     });
 
-    it('should keep the last Tau choice for switching back from an external agent', () => {
-      respond([]);
+    it('should retain developer preferences while automatically choosing the recommended model', async () => {
+      respond([catalogRow('anthropic-claude-haiku-5.5'), catalogRow('gpt-6-astra', true)]);
       const { result } = renderHook(() => useModels(), { wrapper });
       const tau: TauAgentExecution = { kind: 'tau', model: 'anthropic-claude-haiku-5.5', effort: 'low' };
       act(() => {
@@ -114,7 +114,9 @@ describe('useModels', () => {
         result.current.rememberExecution(codex);
       });
       expect(result.current.lastTauExecution).toEqual(tau);
-      expect(result.current.defaultExecution).toEqual(tau);
+      await waitFor(() => {
+        expect(result.current.defaultExecution).toEqual({ kind: 'tau', model: 'gpt-6-astra' });
+      });
     });
 
     it("should start a first chat on the catalog's recommended model", async () => {
@@ -142,7 +144,6 @@ describe('useModels', () => {
         expect(result.current.defaultExecution).toEqual({
           kind: 'tau',
           model: 'anthropic-claude-opus-4.9',
-          effort: 'high',
         });
       });
     });

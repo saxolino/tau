@@ -27,7 +27,7 @@ export function ChatTurnHost(): ReactNode {
   const { activeChatId } = useActiveChatSession();
   const chat = useActiveChatInstance();
   const store = useChatSessionStore();
-  const { resolveModel } = useModels();
+  const { resolveModel, ensureModelCatalog } = useModels();
   const {
     execution: { setActiveExecution },
   } = useChatComposer();
@@ -38,6 +38,7 @@ export function ChatTurnHost(): ReactNode {
   const allowsUsageMetricsRef = useRef(allowsUsageMetrics);
   const agentRef = useRef(agent);
   const resolveModelRef = useRef(resolveModel);
+  const ensureModelCatalogRef = useRef(ensureModelCatalog);
   const setActiveExecutionRef = useRef(setActiveExecution);
   /* Every agent's turn is admitted here once, in the tab that admits it (W36-C). */
   const telemetry = useMemo(
@@ -52,8 +53,9 @@ export function ChatTurnHost(): ReactNode {
     agentRef.current = agent;
     allowsUsageMetricsRef.current = allowsUsageMetrics;
     resolveModelRef.current = resolveModel;
+    ensureModelCatalogRef.current = ensureModelCatalog;
     setActiveExecutionRef.current = setActiveExecution;
-  }, [agent, allowsUsageMetrics, resolveModel, setActiveExecution]);
+  }, [agent, allowsUsageMetrics, ensureModelCatalog, resolveModel, setActiveExecution]);
 
   const admit = useCallback(
     async (gesture: ChatTurnGesture): Promise<ChatTurn> => {
@@ -65,10 +67,21 @@ export function ChatTurnHost(): ReactNode {
         };
       }
       const liveAgent = agentRef.current;
-      const execution =
+      const requestedExecution =
         (gesture.kind === 'regenerate' || gesture.kind === 'send') && gesture.execution
           ? gesture.execution
           : liveAgent.execution;
+      // A first send can arrive before the catalog's initial fetch. Resolve the recommendation here,
+      // before admission freezes it, while durable commands and resumed runs keep their accepted execution.
+      const freshRequest =
+        gesture.kind === 'send' || (gesture.kind === 'regenerate' && gesture.requestId !== undefined);
+      const catalog =
+        freshRequest && requestedExecution.kind === 'tau' ? await ensureModelCatalogRef.current() : undefined;
+      const recommended =
+        catalog?.status === 'loaded'
+          ? (catalog.models.find((row) => row.recommended === true) ?? catalog.models[0])
+          : undefined;
+      const execution = recommended ? { ...requestedExecution, model: recommended.id } : requestedExecution;
       const turnAgent = execution === liveAgent.execution ? liveAgent : { ...liveAgent, execution };
       const projection = store.getProjection(activeChatId);
       const projectedRun =

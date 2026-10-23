@@ -9,9 +9,7 @@ import type { AcpSessionData } from '@taucad/chat';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import type { FileEntry } from '@taucad/types';
 import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
-import { ChatAgentSheet, ghostPillClass } from '#components/chat/chat-agent-sheet.js';
-import { ChatAgentModeControl } from '#components/chat/chat-mode-selector.js';
-import { useAgentConfig } from '#components/chat/use-agent-config.js';
+import { ghostPillClass } from '#components/chat/chat-agent-sheet.js';
 import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
@@ -22,14 +20,12 @@ import {
 } from '@taucad/ui/components/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { cn } from '@taucad/ui/utils/cn';
-import { ChatContextIndicator } from '#components/chat/chat-context-indicator.js';
 import { ChatTextareaBorderBeam } from '#components/chat/chat-textarea-border-beam.js';
 import { ChatTextareaAttachmentRail } from '#components/chat/chat-textarea-image-strip.js';
 import { ChatTextareaSubmitButton } from '#components/chat/chat-textarea-submit-button.js';
 import type { ChatAttachmentAddOptions, ChatTextareaDragKind } from '#components/chat/chat-textarea-types.js';
 import type { DraftAttachment } from '#hooks/draft.machine.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { useAgentHostPlacements } from '#hooks/use-cad-agent-config.js';
 import { ChatEditor } from '#components/chat/tiptap/chat-editor.js';
 import type { CadReference } from '@taucad/chat/references';
 import {
@@ -514,7 +510,7 @@ export const ChatTextareaDesktop = memo(function ({
   const dictationActive = dictation.phase !== 'idle';
   const dictationPending = dictationActive && dictation.phase !== 'recording';
   const sendRefusal = dictationPending
-    ? 'Wait for dictation to finish'
+    ? t('agent.dictationWait')
     : sendRefusalOf({
         sendBlockReason,
         isSubmitting,
@@ -770,12 +766,8 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
 export const ChatTextareaBar = memo(function ({
   dictationButton,
   dictationRecording,
-  composerMode,
-  containerReference,
   enableContextActions,
-  enableAgentControls = true,
   creationLocationControl,
-  acpSessionData,
   status,
   focusEditor,
   handleAtButtonClick,
@@ -820,33 +812,6 @@ export const ChatTextareaBar = memo(function ({
 }): React.JSX.Element {
   const barRef = useRef<HTMLDivElement>(null);
   useBarCollapse(barRef);
-  const { targets: placements } = useAgentHostPlacements();
-  const { execution } = useChatComposer().execution;
-  const discoveredAgent =
-    execution.kind === 'acp'
-      ? placements
-          .find((placement) => placement.hostId === execution.hostId)
-          ?.externalAgents?.find((agent) => agent.id === execution.agentId)
-      : undefined;
-  const selectedModel = execution.kind === 'acp' ? (execution.model ?? discoveredAgent?.defaultModel) : undefined;
-  const discoveredThoughtLevel =
-    selectedModel === undefined
-      ? discoveredAgent?.thoughtLevel
-      : discoveredAgent?.models.find((model) => model.id === selectedModel)?.thoughtLevel;
-  const agentConfig = useAgentConfig(acpSessionData, status, [
-    ...(discoveredAgent?.configOptions ?? []),
-    ...(discoveredThoughtLevel ? [discoveredThoughtLevel] : []),
-  ]);
-  /* F6: only the composer being typed in owns ⌘/ and ⌘. — the edit box while
-   * focus is inside it, the main composer otherwise. */
-  const ownsShortcuts = useCallback(
-    () =>
-      composerMode === 'edit'
-        ? containerReference.current?.contains(document.activeElement) === true
-        : !document.activeElement?.closest('[data-chat-composer=edit]'),
-    [composerMode, containerReference],
-  );
-
   return (
     <div
       ref={barRef}
@@ -863,13 +828,6 @@ export const ChatTextareaBar = memo(function ({
             focusEditor={focusEditor}
           />
           <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-0.5')}>
-            {enableAgentControls ? (
-              <ChatAgentModeControl
-                agentConfig={agentConfig}
-                focusEditor={focusEditor}
-                enableShortcut={ownsShortcuts}
-              />
-            ) : null}
             {creationLocationControl}
           </div>
           <input
@@ -887,17 +845,6 @@ export const ChatTextareaBar = memo(function ({
         </div>
       )}
       <div data-slot='composer-right' className='pointer-events-auto flex min-w-0 flex-row items-center gap-1'>
-        {dictationRecording === undefined && enableAgentControls ? (
-          <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-1')}>
-            <ChatContextIndicator />
-            <ChatAgentSheet
-              agentConfig={agentConfig}
-              placements={placements}
-              focusEditor={focusEditor}
-              enableShortcut={ownsShortcuts}
-            />
-          </div>
-        ) : null}
         {dictationButton}
         <ChatTextareaSubmitButton
           status={status}

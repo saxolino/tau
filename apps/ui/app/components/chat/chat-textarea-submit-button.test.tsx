@@ -69,14 +69,13 @@ describe('ChatTextareaSubmitButton', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it.each(['submitted', 'streaming'])('should be named Stop, with its shortcut, while %s (F1)', async (status) => {
+  it.each(['submitted', 'streaming'])('should send into the queue while %s', async (status) => {
+    const onSubmit = vi.fn();
     const onCancel = vi.fn();
-    renderButton({ status, canResume: true, onCancel });
-
-    const stop = screen.getByRole('button', { name: 'Stop' });
-    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
-    expect(stop).toHaveAttribute('aria-keyshortcuts', 'Shift+Meta+Backspace');
-    await userEvent.click(stop);
-    expect(onCancel).toHaveBeenCalledOnce();
+    renderButton({ status, canResume: true, onSubmit, onCancel });
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onCancel).not.toHaveBeenCalled();
   });
 });

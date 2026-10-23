@@ -1,3 +1,4 @@
+import { agentMessages } from '#i18n/messages/agent.js';
 import { measuresMessages } from '#i18n/messages/measures.js';
 import { accountMessages } from '#i18n/messages/account.js';
 import { authMessages } from '#i18n/messages/auth.js';
@@ -14,6 +15,7 @@ import { versionsMessages } from '#i18n/messages/versions.js';
  * `messages/`, so two people translating different areas never edit the same file.
  */
 export const areas = {
+  agent: agentMessages,
   measures: measuresMessages,
   account: accountMessages,
   auth: authMessages,

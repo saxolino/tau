@@ -163,14 +163,13 @@ describe('ChatTextareaBar', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
   });
 
-  it('lays out +, the agent trigger and Send — no kernel, branch, balance or Tau mode (D6, Q11, Q16)', () => {
+  it('should lay out attachment and send controls without model, engine, credit or mode names', () => {
     const { container } = renderBar();
 
     const left = container.querySelector('[data-slot=composer-left]')!;
     const right = container.querySelector('[data-slot=composer-right]')!;
     expect([...left.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Add']);
     expect([...right.querySelectorAll('button')].map((button) => button.textContent || button.ariaLabel)).toEqual([
-      'Agent and model',
       'Send',
     ]);
     expect(screen.queryByRole('button', { name: /branch/iu })).toBeNull();
@@ -215,26 +214,15 @@ describe('ChatTextareaBar', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('shows an external agent’s permission mode, named, and steps it with ⌘. (C5)', () => {
+  it('should hide legacy external-agent modes and their composer shortcut', () => {
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
     renderBar({ acpSessionData: codexSession });
-
-    expect(screen.getByRole('button', { name: 'Mode: Ask for approval' })).toBeInTheDocument();
-    act(() => {
-      const binding = keybindings.get('.');
-      if (binding?.enabled()) {
-        binding.callback();
-      }
-    });
-    expect(setActiveExecution).toHaveBeenLastCalledWith({
-      kind: 'acp',
-      hostId: 'desktop',
-      agentId: 'codex',
-      config: { mode: 'agent' },
-    });
+    expect(screen.queryByRole('button', { name: /Mode:/u })).not.toBeInTheDocument();
+    expect(keybindings.get('.')).toBeUndefined();
+    expect(setActiveExecution).not.toHaveBeenCalled();
   });
 
-  it('should offer discovered Grok permissions before the first turn and store the selected execution', async () => {
+  it('should keep discovered developer permissions out of the composer', async () => {
     // JSDOM omits the browser scrolling primitive used by the real command menu.
     globalThis.HTMLElement.prototype.scrollIntoView = vi.fn();
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'grok' };
@@ -268,17 +256,12 @@ describe('ChatTextareaBar', () => {
       },
     ];
     renderBar();
-    await userEvent.click(screen.getByRole('button', { name: 'Mode: Ask' }));
-    await userEvent.click(screen.getByRole('option', { name: 'Always approve' }));
-    expect(setActiveExecution).toHaveBeenLastCalledWith({
-      kind: 'acp',
-      hostId: 'desktop',
-      agentId: 'grok',
-      config: { 'tau.grok.permissions': 'always-approve' },
-    });
+    expect(screen.queryByRole('button', { name: /Mode:/u })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Agent and model/u })).not.toBeInTheDocument();
+    expect(setActiveExecution).not.toHaveBeenCalled();
   });
 
-  it('passes the host-discovered reasoning option to the pre-project agent control', () => {
+  it('should keep model reasoning choices out of the pre-project composer', () => {
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-astra' };
     placements.current = [
       {
@@ -315,7 +298,8 @@ describe('ChatTextareaBar', () => {
       },
     ];
     renderBar();
-    expect(screen.getByRole('button', { name: 'Agent and model' })).toHaveAttribute('data-reasoning', 'medium');
+    expect(screen.queryByRole('button', { name: 'Agent and model' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Astra|medium/u)).not.toBeInTheDocument();
   });
 
   it('leaves ⌘. and ⌘/ to an edit box that has focus (F6)', () => {
@@ -328,7 +312,7 @@ describe('ChatTextareaBar', () => {
     document.body.append(edit);
     input.focus();
 
-    expect(keybindings.get('.')?.enabled()).toBe(false);
+    expect(keybindings.get('.')).toBeUndefined();
     edit.remove();
   });
 });
@@ -350,6 +334,7 @@ describe('ACP slash commands', () => {
 
 describe('ChatTextareaDesktop draft rehydration', () => {
   beforeEach(() => {
+    HTMLElement.prototype.setPointerCapture = vi.fn();
     dictationDependencies.available = false;
     catalogHealth.status = 'ready';
     catalogHealth.retry.mockClear();
@@ -557,8 +542,9 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       });
       expect(submit).not.toHaveBeenCalled();
       expect(cancelChat).not.toHaveBeenCalled();
-      await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
-      expect(cancelChat).toHaveBeenCalledOnce();
+      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+      expect(cancelChat).not.toHaveBeenCalled();
     },
   );
 
@@ -721,7 +707,8 @@ describe('composer bar measurement lifecycle', () => {
   it('should fit labels in order and restore them when widened', () => {
     const { container } = renderBar();
     const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
-    expect(reads.slice(0, 3)).toEqual(['', 'kernel', 'kernel,mode']);
+    expect(reads).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Agent and model' })).not.toBeInTheDocument();
     act(() => {
       notify(bar);
     });
@@ -745,15 +732,15 @@ describe('composer bar measurement lifecycle', () => {
     act(() => {
       notify(bar);
     });
-    expect(reads.length).toBeGreaterThan(0);
+    expect(reads).toHaveLength(0);
     reads = [];
     requiredWidth = 290;
     await act(async () => {
       fonts.resolve(document.fonts);
       await fonts.promise;
     });
-    expect(reads).toEqual(['', 'kernel', 'kernel,mode', 'kernel,mode,level']);
-    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
+    expect(reads).toHaveLength(0);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(false);
   });
 
   it.each(['model', 'mode'])('should refit a changed %s label without a resize', async (label) => {
@@ -766,17 +753,12 @@ describe('composer bar measurement lifecycle', () => {
     reads = [];
     requiredWidth = 290;
     const target =
-      label === 'model'
-        ? bar.querySelector('[data-slot=trigger-model]')
-        : screen.getByRole('button', { name: 'Mode: Ask for approval' });
-    if (!target) {
-      throw new Error('The actual composer label is missing.');
-    }
+      label === 'model' ? screen.getByRole('button', { name: 'Send' }) : screen.getByRole('button', { name: 'Add' });
     await act(async () => {
       target.append(document.createTextNode(' changed label'));
     });
-    expect(reads.length).toBeGreaterThan(0);
-    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
+    expect(reads).toHaveLength(0);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(false);
   });
 
   it('should ignore late font completion after the actual bar unmounts', async () => {

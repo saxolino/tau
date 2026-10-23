@@ -1,3 +1,6 @@
+import { useAgentTechnicalDetails } from '#hooks/use-agent-technical-details.js';
+import { ChatMessageDataUsage } from '#routes/w.$workspace.$project/chat-message-data-usage.js';
+import { isDesignerMessagePart } from '#utils/designer-message-part.js';
 import {
   BookOpen,
   Box,
@@ -14,7 +17,7 @@ import type { LucideIcon } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { messageRole, toolName } from '@taucad/chat/constants';
 import { providerPermissionResolutionSchema } from '@taucad/agent-host/wire';
-import type { MyMessagePart, ToolInvocation, UsageData } from '@taucad/chat';
+import type { MyMessagePart, ToolInvocation } from '@taucad/chat';
 import type { DynamicToolUIPart } from 'ai';
 import { useChatActions, useChatSelector } from '#hooks/use-chat.js';
 import { useCadChatClient } from '#chat-clients/use-cad-chat-client.js';
@@ -35,7 +38,6 @@ import { externalAgentDisplayName } from '#lib/agent-host-placement.js';
 import { ChatActivityGroup } from '#components/chat/chat-activity-group.js';
 import { agentApprovalToolName, parseAgentHostApproval } from '#services/agent-host-event-projection.js';
 import { ChatMessageReasoning } from '#routes/w.$workspace.$project/chat-message-reasoning.js';
-import { ChatMessageDataUsage } from '#routes/w.$workspace.$project/chat-message-data-usage.js';
 import { ChatMessageContextCompaction } from '#routes/w.$workspace.$project/chat-message-context-compaction.js';
 import { ChatMessageToolUseSkill } from '#routes/w.$workspace.$project/chat-message-tool-use-skill.js';
 import { ChatMessageText } from '#routes/w.$workspace.$project/chat-message-text.js';
@@ -699,8 +701,13 @@ function AssistantParts({
   readonly parts: readonly MyMessagePart[];
   readonly messageId: string;
 }): React.JSX.Element {
-  const groups = useMemo(() => groupAssistantParts(parts), [parts]);
-  const lastMeaningfulIndex = useMemo(() => findLastMeaningfulPartIndex(parts), [parts]);
+  const technical = useAgentTechnicalDetails();
+  const visibleParts = useMemo(
+    () => (technical ? parts : parts.filter((part) => isDesignerMessagePart(part))),
+    [parts, technical],
+  );
+  const groups = useMemo(() => groupAssistantParts(visibleParts), [visibleParts]);
+  const lastMeaningfulIndex = useMemo(() => findLastMeaningfulPartIndex(visibleParts), [visibleParts]);
   const lastGroupIndex = groups.length - 1;
   const isMessageActive = useChatSelector(
     (state) => state.messageOrder.at(-1) === messageId && state.status === 'streaming',
@@ -769,6 +776,7 @@ export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProp
   const userMessageCollapseCharacterThreshold = 900;
   const userMessagePreviewCharacterLimit = 220 * (userMessageCollapseRowThreshold + 1);
 
+  const technical = useAgentTechnicalDetails();
   const message = useChatSelector((state) => state.messagesById.get(messageId));
   const displayMessage = useChatSelector((state) => state.messageEdits[messageId] ?? state.messagesById.get(messageId));
   const attachmentDirectories = useChatAttachmentDirectories();
@@ -776,25 +784,23 @@ export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProp
     const message_ = state.messagesById.get(messageId);
     return message_?.role === 'user' ? message_.parts.filter((part) => part.type === 'file') : [];
   });
-  const usageParts = useChatSelector((state) => {
-    const message_ = state.messageEdits[messageId] ?? state.messagesById.get(messageId);
-    if (!message_) {
-      return [];
-    }
-
-    const usageDataParts: UsageData[] = [];
-    for (const part of message_.parts) {
-      if (part.type === 'data-usage') {
-        usageDataParts.push(part.data);
-      }
-    }
-
-    return usageDataParts;
-  });
+  const usageParts = useChatSelector(
+    (state) =>
+      state.messagesById
+        .get(messageId)
+        ?.parts.filter((part) => part.type === 'data-usage')
+        .map((part) => part.data) ?? [],
+  );
   // An answer with nothing visible yet (only `step-start`, empty text) has nothing to copy or date.
   const hasVisibleContent = useChatSelector((state) => {
     const message_ = state.messageEdits[messageId] ?? state.messagesById.get(messageId);
-    return message_?.role === messageRole.user || findLastMeaningfulPartIndex(message_?.parts ?? []) >= 0;
+    return (
+      message_?.role === messageRole.user ||
+      (technical && findLastMeaningfulPartIndex(message_?.parts ?? []) >= 0) ||
+      (message_?.parts ?? []).some(
+        (part) => isDesignerMessagePart(part) && part.type === 'text' && part.text.trim() !== '',
+      )
+    );
   });
   const { startEditingMessage, exitEditMode } = useChatActions();
   const cadChat = useCadChatClient();
@@ -1028,7 +1034,7 @@ export const ChatMessage = memo(function ({ messageId, footer }: ChatMessageProp
               getText={() => serializeMessage(displayMessage)}
               tooltip='Copy message'
             />
-            {usageParts.length > 0 ? <ChatMessageDataUsage usageParts={usageParts} /> : null}
+            {technical && usageParts.length > 0 ? <ChatMessageDataUsage usageParts={usageParts} /> : null}
             <ChatMessageTimestamp createdAt={message.metadata?.createdAt} />
           </div>
         </When>
