@@ -126,6 +126,11 @@ export type AgentHostProjectProvide = {
   readonly testingEnabled?: boolean | undefined;
   /** The signed-in account the session cookie funds, which the host checks an attempt against (W11 GI-Q6). */
   readonly principal?: string | undefined;
+  /**
+   * SinopiaCAD: the Sinopia session's access token at provide time, the gateway's bearer credential. It is the
+   * worker's, not this host's: every host in the worker reads the latest one, which `accessToken` keeps current.
+   */
+  readonly accessToken?: string | undefined;
 };
 
 /**
@@ -243,6 +248,15 @@ export type AgentHostWorkerProtocol = {
     /** The page's visibility: a hidden page never queues for a chat's lock (RH-R16). */
     readonly visibility: {
       readonly args: { readonly visible: boolean };
+      readonly result: undefined;
+      readonly wireResult: unknown;
+    };
+    /**
+     * SinopiaCAD: the Sinopia session's access token changed (signed in, refreshed hourly, signed out). The gateway
+     * reads the latest one on every request; absent means no bearer header.
+     */
+    readonly accessToken: {
+      readonly args: { readonly token?: string | undefined };
       readonly result: undefined;
       readonly wireResult: unknown;
     };
@@ -396,6 +410,7 @@ const provideSchema = z.strictObject({
   }),
   testingEnabled: z.boolean().optional(),
   principal: nonEmptyString.optional(),
+  accessToken: nonEmptyString.optional(),
 });
 const durabilitySchema = z.enum(['exclusive-append', 'stream-append', 'transactional-rewrite', 'ephemeral']);
 
@@ -436,6 +451,7 @@ export const agentHostWorkerProtocolSchemas = {
       result: z.enum(['stoppable', 'other-build', 'background-window']),
     },
     visibility: { args: z.strictObject({ visible: z.boolean() }), result: z.unknown() },
+    accessToken: { args: z.strictObject({ token: nonEmptyString.optional() }), result: z.unknown() },
   },
   notifies: { rebridgeRequested: z.strictObject({ projectId: nonEmptyString, hostId: nonEmptyString }) },
   listens: {},

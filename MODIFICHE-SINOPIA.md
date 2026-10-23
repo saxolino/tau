@@ -134,3 +134,50 @@ codice in vista. Il codice resta raggiungibile dalla palette dei comandi (⌘K),
   `workbench-toggle.test.tsx` (riscritto per il nuovo interruttore).
 - `apps/ui-e2e/src/*.spec.ts` (15 file) — solo i nomi accessibili: «Toggle Chat lane» → «Agente», «Toggle Workbench
   lane» → «Misure».
+
+## 23 ottobre 2026 — accesso con l'account Sinopia e funzione «sinopiacad»
+
+SinopiaCAD entra con l'account Sinopia (Supabase Auth del progetto di Sinopia) e parla solo con la funzione
+`sinopiacad` di Sinopia, che fa da catalogo modelli, proxy LLM e dettatura. Online, a `sinopialab.com/cad`, la
+sessione di Sinopia è già quella giusta: SinopiaCAD legge la stessa chiave di localStorage
+(`sb-<progetto>-auth-token`). Il login di Tau (Better Auth) resta nel codice ma è spento.
+
+### Sessione e accesso
+
+- `pnpm-workspace.yaml`, `apps/ui/package.json`, `pnpm-lock.yaml` — dipendenza `@supabase/supabase-js` 2.117.3
+  (versione esatta nel catalogo).
+- `apps/ui/app/lib/sinopia-session.ts` (nuovo) — la sessione Sinopia: stessa chiave di sinopialab.com, token sempre
+  aggiornato (lo rinnova da sé un minuto prima della scadenza, anche a scheda nascosta), accesso con email e password,
+  «Esci» solo su questo browser; supabase-js si carica solo nel browser, al primo uso.
+- `apps/ui/app/hooks/use-sinopia-session.ts` (nuovo) — lo stato della sessione per React.
+- `apps/ui/app/components/auth/sinopia/sinopia-login.tsx` (nuovo) — schermata «Accedi con il tuo account Sinopia»
+  (email e password, errori in italiano, niente registrazione né accesso social).
+- `apps/ui/app/components/auth/sinopia/sinopia-session-gate.tsx` (nuovo), `apps/ui/app/root-layout.tsx` — senza
+  sessione Sinopia il lavoro non parte: si vede la schermata di accesso.
+- `apps/ui/app/components/auth/sinopia/sinopia-user-menu.tsx` (nuovo), `apps/ui/app/components/auth/user/user-button.tsx`
+  — il menu dell'account mostra l'account Sinopia e la voce «Esci».
+- `apps/ui/app/lib/auth-client.ts` — con Sinopia configurato, Better Auth non manda più richieste (resta inerte).
+- `apps/ui/app/environment.config.ts` — nuove variabili pubbliche `SINOPIA_SUPABASE_URL` e
+  `SINOPIA_SUPABASE_PUBLISHABLE_KEY`.
+- `scripts/sinopiacad-dev.sh` (nuovo nel repository) — avvio locale con `TAU_API_URL` = funzione `sinopiacad` e il
+  progetto Supabase di Sinopia.
+
+### Token verso la funzione
+
+- `apps/ui/app/hooks/use-models.tsx` — il catalogo modelli porta `Authorization: Bearer <token>`; una chat nuova parte
+  sempre con l'agente SinopiaCAD (mai con un agente esterno usato prima) e sul modello consigliato dal catalogo.
+- `apps/ui/app/components/dictation/dictation-client.ts` — stato e trascrizione della dettatura con il token.
+- `apps/ui/app/workers/agent-host.contract.ts`, `agent-host.worker.ts`, `agent-host.impl.ts`,
+  `apps/ui/app/services/agent-host-client.ts` — il worker dell'agente riceve il token con `provide` e a ogni rinnovo
+  (nuova chiamata `accessToken`); il gateway dei modelli legge il token corrente a ogni richiesta.
+- `apps/ui/app/runtime/observability/report-to-api.ts` — la telemetria non invia più nulla (la funzione non la riceve).
+
+### Test
+
+- Nuovi: `apps/ui/app/lib/sinopia-session.test.ts`, `apps/ui/app/components/auth/sinopia/sinopia-login.test.tsx`,
+  `sinopia-session-gate.test.tsx`, `apps/ui/app/workers/agent-host.worker.test.ts`,
+  `apps/ui/app/runtime/observability/report-to-api.test.ts`.
+- Aggiornati: `apps/ui/app/hooks/use-models.test.tsx`, `apps/ui/app/components/dictation/dictation-client.test.ts`,
+  `apps/ui/app/services/agent-host-client.test.ts`, `apps/ui/app/workers/agent-host.impl.test.ts`,
+  `apps/ui/app/components/auth/user/user-button.test.tsx`, `apps/ui/app/lib/auth-client.test.ts`,
+  `apps/ui/app/environment.config.test.ts`.

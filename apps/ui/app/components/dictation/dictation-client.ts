@@ -1,12 +1,20 @@
 import { dictationEventSchema, dictationStatusSchema } from '@taucad/chat/schemas';
 import type { DictationStatus } from '@taucad/chat/schemas';
 import { ENV } from '#environment.config.js';
+import { sinopiaAuthorization } from '#lib/sinopia-session.js';
 
 const unavailable: DictationStatus = { available: false };
 
-/** Whether the signed-in user's Tau API can transcribe; signed-out and older APIs read as unavailable. */
+/**
+ * Whether the signed-in user's Tau API can transcribe; signed-out and older APIs read as unavailable. SinopiaCAD:
+ * Sinopia's function answers for the Sinopia session, sent as a bearer token.
+ */
 export async function fetchDictationStatus(signal?: AbortSignal): Promise<DictationStatus> {
-  const response = await fetch(`${ENV.TAU_API_URL}/v1/voice/status`, { credentials: 'include', signal });
+  const response = await fetch(`${ENV.TAU_API_URL}/v1/voice/status`, {
+    credentials: 'include',
+    headers: await sinopiaAuthorization(),
+    signal,
+  });
   if (!response.ok) {
     return unavailable;
   }
@@ -37,7 +45,7 @@ export async function transcribeDictation(
 ): Promise<string> {
   const response = await fetch(`${ENV.TAU_API_URL}/v1/voice/transcriptions`, {
     method: 'POST',
-    headers: { 'content-type': 'audio/wav' },
+    headers: { 'content-type': 'audio/wav', ...(await sinopiaAuthorization()) },
     credentials: 'include',
     body: wav,
     signal: options.signal,

@@ -8,6 +8,7 @@ import { cadAgentExecutionSchema } from '@taucad/chat/schemas';
 import type { Model as ApiModel } from '../../../api/app/api/models/model.schema.js';
 /* oxlint-enable import/extensions -- Re-enable project import checks. */
 import { ENV } from '#environment.config.js';
+import { sinopiaAuthorization } from '#lib/sinopia-session.js';
 import { useCookie } from '#hooks/use-cookie.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { defaultChatModel } from '#constants/chat.constants.js';
@@ -43,13 +44,15 @@ const buildResolved = (id: string, model?: Model): ResolvedModel => ({
 
 /**
  * The model catalog. An unreachable API, an error status and a body that is not a list all reject, so a failed
- * catalog is never mistaken for an empty one.
+ * catalog is never mistaken for an empty one. SinopiaCAD: Sinopia's function answers it for a signed-in pilot account,
+ * so the request carries the session's bearer token.
  *
  * @returns The catalog rows.
  */
 export const getModels = async (): Promise<Model[]> => {
   const response = await fetch(`${ENV.TAU_API_URL}/v1/models`, {
     credentials: 'include',
+    headers: await sinopiaAuthorization(),
   });
   if (!response.ok) {
     throw new Error(`The model catalog answered ${response.status}.`);
@@ -130,11 +133,18 @@ export const useModels = () => {
   });
   const catalog = useMemo(() => catalogOf(data, isError), [data, isError]);
 
-  /** The execution a chat with none of its own starts on: the last one used, of any agent. */
-  const defaultExecution = useMemo<CadAgentExecution>(
-    () => resolveNewChatExecution({ last: parseStoredExecution(storedExecution), lastTau: lastTauExecution, catalog }),
-    [storedExecution, lastTauExecution, catalog],
-  );
+  /*
+   * The execution a chat with none of its own starts on. SinopiaCAD: always its own agent, on the last model chosen —
+   * or the catalog's recommended one when that model is not offered — never an external agent used last time.
+   */
+  const defaultExecution = useMemo<CadAgentExecution>(() => {
+    const stored = parseStoredExecution(storedExecution);
+    return resolveNewChatExecution({
+      last: stored?.kind === 'tau' ? stored : undefined,
+      lastTau: lastTauExecution,
+      catalog,
+    });
+  }, [storedExecution, lastTauExecution, catalog]);
 
   /** Remember the execution a chat chose or ran on as the next new chat's, whatever its agent. */
   const rememberExecution = useCallback(

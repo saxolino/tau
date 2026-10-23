@@ -3,6 +3,10 @@ import { fetchDictationStatus, transcribeDictation } from '#components/dictation
 
 // eslint-disable-next-line @typescript-eslint/naming-convention -- environment module shape
 vi.mock('#environment.config.js', () => ({ ENV: { TAU_API_URL: 'https://api.test' } }));
+/* SinopiaCAD: Sinopia's function authorises dictation with the session's bearer token. */
+vi.mock('#lib/sinopia-session.js', () => ({
+  sinopiaAuthorization: async () => ({ authorization: 'Bearer sinopia-access-token' }),
+}));
 
 const ndjson = (...chunks: string[]) =>
   new Response(
@@ -25,7 +29,7 @@ afterEach(() => {
 });
 
 describe('fetchDictationStatus', () => {
-  it('should read availability and treat refusals as unavailable', async () => {
+  it('should read availability with the Sinopia bearer token and treat refusals as unavailable', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ available: true, provider: 'openai' }))
@@ -36,13 +40,13 @@ describe('fetchDictationStatus', () => {
     await expect(fetchDictationStatus()).resolves.toEqual({ available: false });
     expect(fetchMock.mock.calls[0]).toEqual([
       'https://api.test/v1/voice/status',
-      { credentials: 'include', signal: undefined },
+      { credentials: 'include', headers: { authorization: 'Bearer sinopia-access-token' }, signal: undefined },
     ]);
   });
 });
 
 describe('transcribeDictation', () => {
-  it('should post the WAV, preview accumulated deltas across split lines and return the final text', async () => {
+  it('should post the WAV with the Sinopia bearer token, preview accumulated deltas across split lines and return the final text', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(
@@ -64,7 +68,7 @@ describe('transcribeDictation', () => {
       method: 'POST',
       credentials: 'include',
       body: wav,
-      headers: { 'content-type': 'audio/wav' },
+      headers: { 'content-type': 'audio/wav', authorization: 'Bearer sinopia-access-token' },
     });
   });
 

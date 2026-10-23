@@ -35,6 +35,7 @@ import { SvgSpriteMount } from '#components/icons/svg-sprite-mount.js';
 import { HeadlessImageProvider } from '#providers/headless-image-provider.js';
 import { authErrorMessage, betterFetchErrorBodyMessage } from '#utils/auth-error.utils.js';
 import { CloudRootBoundary, useCloudPaymentActionReturn } from '#cloud/root-billing.js';
+import { SinopiaSessionGate } from '#components/auth/sinopia/sinopia-session-gate.js';
 
 export type RootLoaderData = {
   readonly env: ClientEnvironment;
@@ -179,7 +180,8 @@ export function RootLayout({
             <ColorProvider>
               <AppViewerEnvironment>
                 <LayoutDocument env={data?.env ?? {}} ssrTheme={ssrTheme} documentChrome={documentChrome}>
-                  {application}
+                  {/* SinopiaCAD: nothing of the workspace starts before a Sinopia session exists. */}
+                  <SinopiaSessionGate placeholder={gatePlaceholder}>{application}</SinopiaSessionGate>
                 </LayoutDocument>
               </AppViewerEnvironment>
             </ColorProvider>
