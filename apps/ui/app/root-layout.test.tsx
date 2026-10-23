@@ -18,10 +18,11 @@ const renderAt = (pathname: string): void => {
 };
 
 describe('useRootGatePlaceholder', () => {
-  it('should give the gallery its own skeleton while Home starts', () => {
+  it('should give hidden Community no skeleton, since it redirects home', () => {
     renderAt('/community');
 
-    expect(screen.getByRole('status', { name: 'Opening examples' })).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Opening examples' })).not.toBeInTheDocument();
+    expect(screen.getByText('No route placeholder')).toBeInTheDocument();
   });
 
   it('should keep the workspace skeleton on a project URL', () => {

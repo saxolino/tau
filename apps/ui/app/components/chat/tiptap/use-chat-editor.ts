@@ -223,7 +223,7 @@ export function useChatEditor({
   slashCommandItems,
   onSlashCommand,
   onContextAction,
-  placeholder = 'Ask SinopiaCAD to build anything...',
+  placeholder = 'Descrivi cosa costruire o cosa cambiare…',
 }: UseChatEditorOptions): UseChatEditorReturn {
   'use no memo';
 

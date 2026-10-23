@@ -28,6 +28,8 @@ export const cookieName = {
   chatInterfaceFullHeight: 'chat-interface-full-height',
   // Whether the chat interface is transparent.
   chatInterfaceTransparent: 'chat-interface-transparent',
+  // Whether the agent lane is open: the home follows it, and every project page's toggle records it.
+  chatOpLane: 'chat-op-lane',
 
   /* CAD */
   // The last selected kernel.

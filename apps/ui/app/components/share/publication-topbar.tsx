@@ -62,12 +62,13 @@ export function PublicationTopbar({
       toast.error('Could not copy link');
     }
   }, [shareUrl]);
-  /* A builtin example leads back to its card in the gallery; other shares have no gallery. */
+  /* A warehouse part leads back to its card in Parts. SinopiaCAD hides Tau's examples gallery (Community), so a
+   * builtin example, like any other share, has no gallery to go back to. */
   const { slug } = useParams();
   const builtinLocator = slug?.startsWith(builtinSlugPrefix) ? slug.slice(builtinSlugPrefix.length) : undefined;
   const isWarehousePart = builtinLocator?.startsWith('warehouse.') ?? false;
-  const galleryLabel = isWarehousePart ? 'Parts' : 'Examples';
-  const examplesHref = builtinLocator ? `${isWarehousePart ? '/parts' : '/community'}#${builtinLocator}` : undefined;
+  const galleryLabel = 'Parts';
+  const examplesHref = builtinLocator && isWarehousePart ? `/parts#${builtinLocator}` : undefined;
 
   return (
     <header

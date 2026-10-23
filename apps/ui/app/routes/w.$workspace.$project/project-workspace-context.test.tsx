@@ -440,6 +440,25 @@ describe('ProjectWorkspaceProvider', () => {
     });
   });
 
+  it('records the agent lane choice for the home as it opens or closes the lane', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+
+    act(() => {
+      workspace.setChatOpen(false);
+    });
+    expect(globalThis.localStorage.getItem('tau-chat-op-lane')).toBe('false');
+    expect(send).toHaveBeenCalledWith({ type: 'setPanelState', panelState: { desktopLayout: { chatOpen: false } } });
+
+    act(() => {
+      workspace.setChatOpen(true);
+    });
+    expect(globalThis.localStorage.getItem('tau-chat-op-lane')).toBe('true');
+  });
+
   it('should wait for the destination project editor before opening its chat pane', () => {
     state.isEditorReady = false;
     route.state = { openChat: true };

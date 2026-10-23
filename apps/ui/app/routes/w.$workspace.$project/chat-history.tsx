@@ -22,7 +22,7 @@ import { ChatQuestionsProvider } from '#components/chat/chat-questions-context.j
 import { useChatContext, useChatSelector } from '#hooks/use-chat.js';
 import { useCadChatClient } from '#chat-clients/use-cad-chat-client.js';
 import { ChatTitleBar } from '#routes/w.$workspace.$project/chat-title-bar.js';
-import { toggleChatKeyCombination } from '#routes/w.$workspace.$project/chat-lane-toggle.js';
+import { toggleChatKeyCombination } from '#routes/w.$workspace.$project/agent-lane-toggle-button.js';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import {
   FloatingPanel,

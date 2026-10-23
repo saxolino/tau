@@ -96,8 +96,9 @@ describe('AppSidebar', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
 
-    expect(await screen.findByRole('menuitem', { name: 'Community' })).toHaveAttribute('href', '/community');
-    expect(screen.getByRole('menuitem', { name: 'Convert' })).toHaveAttribute('href', '/convert');
+    expect(await screen.findByRole('menuitem', { name: 'Convert' })).toHaveAttribute('href', '/convert');
+    // SinopiaCAD hides Tau's Community gallery.
+    expect(screen.queryByRole('menuitem', { name: 'Community' })).not.toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Import' })).toHaveAttribute('href', '/import');
     expect(screen.getByRole('menuitem', { name: 'Usage' })).toHaveAttribute('href', '/usage');
   });

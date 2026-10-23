@@ -10,6 +10,7 @@ import type { WorkbenchLayoutController } from '#routes/w.$workspace.$project/wo
 import type { WorkbenchLaneNode } from '@taucad/workbench';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { flagParameter } from '#utils/search-parameter.codecs.js';
+import { rememberAgentLaneOpen } from '#hooks/use-agent-lane-open.js';
 
 export const projectWorkspaceKeyCombinations = {
   files: { key: 'f', ctrlKey: true },
@@ -271,6 +272,8 @@ export function ProjectWorkspaceProvider({
 
   const setChatOpen = useCallback(
     (open: boolean) => {
+      // The home's agent lane follows the last choice made on any project page.
+      rememberAgentLaneOpen(open);
       editorRef.send({
         type: 'setPanelState',
         panelState: { desktopLayout: { chatOpen: open, ...(open ? { compactAuxiliary: 'chat' } : {}) } },

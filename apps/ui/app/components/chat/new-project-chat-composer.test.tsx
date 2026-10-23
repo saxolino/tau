@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { useImperativeHandle } from 'react';
+import { createRef, useImperativeHandle } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CadAgentExecution } from '@taucad/chat';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
@@ -256,5 +256,44 @@ describe('NewProjectChatComposer', () => {
     render(<NewProjectChatComposer />);
     expect(capturedTextarea?.creationLocationControl).toBeUndefined();
     expect(screen.queryByText(/Location/)).not.toBeInTheDocument();
+  });
+
+  it('creates in Home without a location control when the picker is off, even before locations load', async () => {
+    locationState = {
+      phase: 'loading',
+      hasWebAccessCapability: true,
+      shouldShowPicker: true,
+      options: [],
+      canCreate: false,
+    };
+    render(<NewProjectChatComposer enableLocationPicker={false} />);
+
+    expect(capturedTextarea?.creationLocationControl).toBeUndefined();
+    expect(capturedTextarea?.isSubmitDisabled).toBe(false);
+    await act(async () => {
+      await capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
+    });
+
+    // The first message becomes the new project's first turn, and its page opens with the agent lane showing.
+    expect(mockCreateProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        location: { kind: 'home' },
+        initialMessage: expect.objectContaining({ content: 'Un anello', attachments: [] }) as unknown,
+        editorState: {
+          panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' }, mobileActiveTab: 'chat' },
+        },
+      }),
+    );
+    expect(mockConsumeDraft).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith('/w/workshop/bracket');
+  });
+
+  it('lets its host focus the composer', () => {
+    const handle = createRef<ChatTextareaHandle>();
+    render(<NewProjectChatComposer ref={handle} enableAutoFocus={false} />);
+
+    handle.current?.focus();
+
+    expect(mockFocus).toHaveBeenCalledOnce();
   });
 });

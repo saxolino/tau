@@ -283,3 +283,64 @@ Una lettura fallita non chiude fuori nessuno e non lo disconnette: compare «Rip
 ### Da fare in Supabase Auth (URL di reindirizzamento ammessi)
 
 `http://127.0.0.1:4310/**`, `https://sinopiacad.vercel.app/**`, `https://cad.sinopialab.com/**`.
+
+## 23 ottobre 2026 — la home di SinopiaCAD: dall'immagine al CAD, con l'agente accanto
+
+La home non è più quella di Tau. Al centro c'è una sola azione, «Dall'immagine al CAD»: si trascina, si incolla (⌘V) o
+si sceglie la foto o il disegno del pezzo, anche un'immagine salvata dal Creator di Sinopia. Sotto, «I tuoi progetti» con
+le miniature dei modelli. A destra c'è l'agente come nella pagina del progetto: stessa corsia, stesso interruttore
+«Agente» (⌃C), stato ricordato. Le immagini lasciate nella pagina diventano allegati del messaggio per l'agente (un solo
+posto per scrivere, dettare e mandare); il primo messaggio crea il progetto e lo apre con quella stessa conversazione
+(il flusso del primo turno di Tau, `Chat.startupRequest`). Tolti dalla home: «Build from code», la scelta del posto
+(«Home»/cartella: il progetto nasce in Home), il titolo inglese e la vetrina «Built with Tau». La parte visiva resta
+semplice: la rifinisce il passaggio di design.
+
+### Home
+
+- `apps/ui/app/routes/_index/sinopia-home.tsx` (nuovo) — la home: area principale accanto alla corsia dell'agente;
+  trascinamento ovunque nella pagina, incolla quando non si scrive in un campo, ⌃C, annuncio per i lettori di schermo;
+  al telefono il messaggio sta sotto la zona immagini, senza corsia.
+- `apps/ui/app/routes/_index/home-image-drop-zone.tsx` (nuovo) — titolo, zona di rilascio, «Scegli un'immagine», limiti
+  e miniature delle immagini già allegate (testo alternativo = nome del file).
+- `apps/ui/app/routes/_index/use-home-image-intake.ts` (nuovo) — le immagini entrano nella bozza del compositore
+  (`addDraftAttachment`, che le riduce e le salva come per il compositore stesso): solo JPG, PNG, WebP o GIF fino a
+  20 MB, solo se il modello dell'agente legge immagini; ogni rifiuto spiega il perché in italiano.
+- `apps/ui/app/routes/_index/home-agent-lane.tsx` (nuovo) — la corsia dell'agente della home: intestazione con
+  l'interruttore, «Cosa costruiamo?», il compositore del nuovo progetto.
+- `apps/ui/app/routes/_index/home-recent-projects.tsx` (nuovo) — «I tuoi progetti»: gli ultimi dieci, sulla griglia e
+  la scheda della libreria, con «Tutti i progetti».
+- `apps/ui/app/routes/_index/route.tsx`, `home-surface.desktop.tsx` — web e desktop mostrano la stessa home.
+- `apps/ui/app/routes/_index/homepage-chat-hero.tsx` — rimosso (titolo inglese e «Build from code»).
+
+### Agente e compositore condivisi con la pagina del progetto
+
+- `apps/ui/app/routes/w.$workspace.$project/agent-lane-toggle-button.tsx` (nuovo), `chat-lane-toggle.tsx`,
+  `chat-history.tsx` — l'interruttore «Agente» separato dal progetto, così la home usa lo stesso.
+- `apps/ui/app/hooks/use-agent-lane-open.ts` (nuovo), `apps/ui/app/constants/cookie.constants.ts` (`chat-op-lane`),
+  `apps/ui/app/routes/w.$workspace.$project/project-workspace-context.tsx` — l'ultima scelta (aperta o chiusa) fatta
+  nella home o in un progetto vale per la home; ogni progetto tiene anche la sua.
+- `apps/ui/app/components/chat/new-project-chat-composer.tsx` — `enableLocationPicker` (la home lo spegne e crea in
+  Home), `ref` per dare il fuoco al compositore, errore in italiano.
+- `apps/ui/app/components/chat/tiptap/use-chat-editor.ts` — invito del compositore in italiano: «Descrivi cosa costruire
+  o cosa cambiare…».
+
+### Community nascosta
+
+La pagina e i suoi dati restano nel codice, per il ridisegno; nessuno la vede né la raggiunge.
+
+- `apps/ui/app/constants/route.constants.ts` — tolta la voce «Community» dal menu «More».
+- `apps/ui/app/routes/community/route.tsx` — `/community` porta alla home (`clientLoader`, anche nel desktop).
+- `apps/ui/app/root-layout.tsx` — niente più scheletro «Opening examples» per `/community`.
+- `apps/ui/app/root.tsx` — la palette dei comandi non elenca più «Browse examples» né gli esempi di Tau.
+- `apps/ui/app/components/share/publication-topbar.tsx` — un esempio condiviso non rimanda più alla galleria.
+
+### Test
+
+- Nuovi: `apps/ui/app/routes/_index/sinopia-home.test.tsx`, `home-recent-projects.test.tsx`.
+- Aggiornati: `apps/ui/app/routes/_index/route.test.tsx` (titolo «SinopiaCAD»), `home-surface.desktop.test.tsx`,
+  `apps/ui/app/components/chat/new-project-chat-composer.test.tsx`,
+  `apps/ui/app/routes/w.$workspace.$project/project-workspace-context.test.tsx`,
+  `apps/ui/app/routes/community/route.test.tsx`, `apps/ui/app/root-layout.test.tsx`,
+  `apps/ui/app/components/share/publication-topbar.test.tsx`, `apps/ui/app/components/layout/app-sidebar.test.tsx`,
+  `apps/ui-e2e/src/home-hydration.spec.ts` (titoli della home).
+- Rimosso: `apps/ui/app/routes/_index/new-project-chat-composer-surfaces.test.tsx` (provava il vecchio titolo).

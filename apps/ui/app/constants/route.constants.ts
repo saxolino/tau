@@ -1,4 +1,4 @@
-import { Hammer, Printer, Import, Plug, Shuffle, UsersRound } from 'lucide-react';
+import { Hammer, Printer, Import, Plug, Shuffle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FeatureFlagName } from '#flags/flag.constants.js';
 import { PartsIcon } from '#components/icons/parts.js';
@@ -46,11 +46,7 @@ export const navRoutes: {
       url: '/machines',
       icon: Printer,
     },
-    {
-      title: 'Community',
-      url: '/community',
-      icon: UsersRound,
-    },
+    // SinopiaCAD: Tau's Community gallery is hidden until Sinopia redesigns it; `/community` redirects home.
     {
       title: 'Parts',
       url: '/parts',

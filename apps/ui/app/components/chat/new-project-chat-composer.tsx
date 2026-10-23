@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { ChatTextarea } from '#components/chat/chat-textarea.js';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
@@ -10,15 +10,25 @@ import { useProjectCreationLocationError } from '#hooks/use-project-creation-loc
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import { projectUrl } from '#utils/project-url.utils.js';
 import { sinopiaStarterKernelId } from '#lib/sinopia-engines.js';
+import { homeProjectCreationLocation } from '#types/project-creation-location.types.js';
 
 type NewProjectChatComposerProperties = {
+  /** Focuses the composer from outside, as the home does after an image lands in the draft. */
+  readonly ref?: React.Ref<ChatTextareaHandle>;
   readonly enableAutoFocus?: boolean;
+  /**
+   * Offer the creation-location control (Home or a connected folder). Without it the project is created in Home, as
+   * SinopiaCAD's home does.
+   */
+  readonly enableLocationPicker?: boolean;
   readonly className?: string;
 };
 
 /** Shared direct-create composer rendered inside an existing chat provider. */
 export function NewProjectChatComposer({
+  ref,
   enableAutoFocus = true,
+  enableLocationPicker = true,
   className,
 }: NewProjectChatComposerProperties): React.JSX.Element {
   const navigate = useNavigate();
@@ -36,6 +46,14 @@ export function NewProjectChatComposer({
   const focusComposer = useCallback((): void => {
     textareaRef.current?.focus();
   }, []);
+  useImperativeHandle(ref, () => ({ focus: focusComposer }), [focusComposer]);
+  /* Without the picker the project goes to Home; the location hook still runs, so the hooks keep their order. */
+  const creationLocation = enableLocationPicker
+    ? location.phase === 'ready'
+      ? location.value
+      : undefined
+    : homeProjectCreationLocation;
+  const canCreate = enableLocationPicker ? location.canCreate : true;
 
   /* Mount autofocus alone misses a return to an already-mounted Home, so honour a
    * navigation that asks for focus (`state.focusChatComposer`) too. */
@@ -70,7 +88,7 @@ export function NewProjectChatComposer({
 
   const creationLocationControl = useMemo(
     () =>
-      location.shouldShowPicker ? (
+      enableLocationPicker && location.shouldShowPicker ? (
         <WorkspaceSelector
           data-chat-textarea-focustrap
           state={location}
@@ -79,12 +97,12 @@ export function NewProjectChatComposer({
           onRequestFocus={focusComposer}
         />
       ) : undefined,
-    [focusComposer, location],
+    [enableLocationPicker, focusComposer, location],
   );
 
   const onSubmit: ChatTextareaProperties['onSubmit'] = useCallback(
     async ({ content }) => {
-      if (location.phase !== 'ready') {
+      if (creationLocation === undefined) {
         return;
       }
       // The stored draft is the source of truth for attachments: the new
@@ -107,24 +125,25 @@ export function NewProjectChatComposer({
           editorState: {
             panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' }, mobileActiveTab: 'chat' },
           },
-          location: location.value,
+          location: creationLocation,
         });
         await consumeDraft();
         await navigate(projectUrl(created.slugs));
       } catch (error) {
         if (presentLocationError(error)) {
-          if (location.hasWebAccessCapability) {
+          if (location.phase === 'ready' && location.hasWebAccessCapability) {
             await location.refresh();
           }
           return;
         }
         console.error('Failed to create project:', error);
-        toast.error('Failed to create project');
+        toast.error('Non è stato possibile creare il progetto. Riprova.');
       }
     },
     [
       attachmentSource,
       consumeDraft,
+      creationLocation,
       draftActorRef,
       execution,
       location,
@@ -141,7 +160,7 @@ export function NewProjectChatComposer({
         enableAutoFocus={enableAutoFocus}
         enableContextActions={false}
         creationLocationControl={creationLocationControl}
-        isSubmitDisabled={!location.canCreate}
+        isSubmitDisabled={!canCreate}
         className={className}
         onSubmit={onSubmit}
       />

@@ -1,5 +1,4 @@
 import type { LinksFunction, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from 'react-router';
-import { lazy, Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { throwRedirectIfSubdomain } from '#lib/react-router.lib.js';
 import { readThemeCookie } from '#theme-cookie.js';
@@ -16,23 +15,11 @@ import { ProductApp, RootErrorBoundary, RootLayout } from '#root-layout.js';
 import { RootCommandPaletteItems } from '#root-command-items.js';
 import type { Handle } from '#types/matches.types.js';
 
-// Every route mounts the palette items, so the example catalog loads on its own
-// chunk instead of joining each route's entry.
-const ExampleCommandPaletteItems = lazy(async () => {
-  const m = await import('#components/nav/example-command-items.js');
-  return { default: m.ExampleCommandPaletteItems };
-});
-
+/* SinopiaCAD: Tau's examples gallery (`ExampleCommandPaletteItems`, «Browse examples» to `/community`) is hidden
+ * with Community until Sinopia redesigns it. */
 export const handle: Handle = {
   commandPalette(match) {
-    return (
-      <>
-        <RootCommandPaletteItems match={match} />
-        <Suspense fallback={null}>
-          <ExampleCommandPaletteItems />
-        </Suspense>
-      </>
-    );
+    return <RootCommandPaletteItems match={match} />;
   },
 };
 

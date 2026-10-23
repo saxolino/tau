@@ -28,7 +28,6 @@ import { ChatSessionStoreProvider } from '#hooks/chat-session-store-provider.js'
 import { SessionsProvider } from '#hooks/use-sessions.js';
 import { ProjectSessionsHost, projectRoutePath } from '#routes/w.$workspace.$project/project-route.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
-import { CommunityPageSkeleton } from '#routes/_index/community-page-skeleton.js';
 import { GlobalChatFlushGuard } from '#components/global-chat-flush-guard.js';
 import { DocumentMemoryKillReporter } from '#components/memory-kill-reporter.js';
 import { SvgSpriteMount } from '#components/icons/svg-sprite-mount.js';
@@ -83,11 +82,8 @@ export function configureSessionQueryDefaults(client: QueryClient): void {
  */
 export function useRootGatePlaceholder(): ReactNode {
   const isProjectRoute = useMatch({ path: projectRoutePath, end: true }) !== null;
-  const isCommunityRoute = useMatch({ path: '/community', end: true }) !== null;
-  if (isProjectRoute) {
-    return <WorkspaceSkeleton withShellFrame />;
-  }
-  return isCommunityRoute ? <CommunityPageSkeleton /> : undefined;
+  // SinopiaCAD hides Community: `/community` redirects home, so it has no skeleton of its own.
+  return isProjectRoute ? <WorkspaceSkeleton withShellFrame /> : undefined;
 }
 
 export function RootLayout({
