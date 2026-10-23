@@ -1,3 +1,4 @@
+import { useTranslation } from '#i18n/translate.js';
 import { useRef, useState } from 'react';
 import { CornerDownRight, GripVertical, ListEnd, MoreVertical, Paperclip, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
@@ -32,6 +33,7 @@ export function ChatMessageQueueView({
   onMove,
   onRetry,
 }: ChatMessageQueueProps): React.JSX.Element | undefined {
+  const { t } = useTranslation();
   const rows = useRef(new Map<string, HTMLLIElement>());
   const pointer = useRef<{ id: string; startY: number; beforeId?: string; moved: boolean } | undefined>(undefined);
   const [drag, setDrag] = useState<{ id: string; beforeId?: string }>();
@@ -69,9 +71,10 @@ export function ChatMessageQueueView({
   };
   return (
     <section
-      aria-label='Queued messages'
+      aria-label={t('agent.queue.title')}
       className='@container/message-queue max-h-64 min-w-0 overflow-y-auto overscroll-contain'
     >
+      <p className='px-2 py-1 text-xs text-muted-foreground'>{t('agent.queued')}</p>
       <ul className='m-0 list-none divide-y divide-border/50 p-0'>
         {items.map((item, index) => {
           const content = item.message.parts
@@ -81,9 +84,9 @@ export function ChatMessageQueueView({
           const attachments = item.message.parts.filter((part) => part.type === 'file').length;
           const busy =
             sendingId === item.id || pending?.id === item.id || (item.steer !== undefined && error === undefined);
-          const busyLabel = pending?.id === item.id ? pending.label : 'Sending…';
+          const busyLabel = pending?.id === item.id ? pending.label : t('agent.queue.sending');
           const statusLabel =
-            item.steer !== undefined && error !== undefined ? 'Send failed' : busy ? busyLabel : undefined;
+            item.steer !== undefined && error !== undefined ? t('agent.queue.failed') : busy ? busyLabel : undefined;
           const locked = busy || pending !== undefined || item.command !== undefined || item.steer !== undefined;
           return (
             <li
@@ -116,8 +119,8 @@ export function ChatMessageQueueView({
                     'group/handle cursor-grab touch-none text-muted-foreground/90 active:cursor-grabbing',
                     drag?.id === item.id && 'cursor-grabbing bg-accent/50 text-accent-foreground',
                   )}
-                  aria-label={`Reorder queued message ${String(index + 1)}`}
-                  title='Drag to reorder, or use the up and down arrow keys'
+                  aria-label={t('agent.queue.reorder', { n: index + 1 })}
+                  title={t('agent.queue.drag')}
                   disabled={locked || reorderLocked || items.length < 2}
                   onPointerDown={(event) => {
                     if (event.button !== 0) {
@@ -179,7 +182,7 @@ export function ChatMessageQueueView({
                       !reorderLocked &&
                       current.beforeId !== items[index + 1]?.id
                     ) {
-                      act(item.id, 'Moving…', async () => onMove(item.id, current.beforeId));
+                      act(item.id, t('agent.queue.moving'), async () => onMove(item.id, current.beforeId));
                     }
                   }}
                   onPointerCancel={() => {
@@ -200,10 +203,10 @@ export function ChatMessageQueueView({
                     }
                     if (event.key === 'ArrowUp' && index > 0) {
                       event.preventDefault();
-                      act(item.id, 'Moving…', async () => onMove(item.id, items[index - 1]?.id));
+                      act(item.id, t('agent.queue.moving'), async () => onMove(item.id, items[index - 1]?.id));
                     } else if (event.key === 'ArrowDown' && index < items.length - 1) {
                       event.preventDefault();
-                      act(item.id, 'Moving…', async () => onMove(item.id, items[index + 2]?.id));
+                      act(item.id, t('agent.queue.moving'), async () => onMove(item.id, items[index + 2]?.id));
                     }
                   }}
                 >
@@ -229,11 +232,11 @@ export function ChatMessageQueueView({
                   )}
                 </Button>
                 <span className='min-w-0 flex-1 truncate text-xs' title={content}>
-                  {content || 'Attached files'}
+                  {content || t('agent.queue.attachments')}
                 </span>
                 {attachments > 0 ? (
                   <span
-                    aria-label={`${String(attachments)} attachments`}
+                    aria-label={t('agent.queue.count', { count: attachments })}
                     className='flex shrink-0 items-center gap-1 text-xs text-muted-foreground'
                   >
                     <Paperclip aria-hidden='true' className='size-3.5' />
@@ -248,17 +251,17 @@ export function ChatMessageQueueView({
                       'gap-1 px-1 font-normal has-[>svg]:px-1',
                       statusLabel !== undefined && 'disabled:opacity-100',
                     )}
-                    aria-label='Send now'
+                    aria-label={t('agent.queue.send')}
                     disabled={locked}
-                    title='Interrupt the current turn and send this message'
+                    title={t('agent.queue.interrupt')}
                     onClick={() => {
-                      act(item.id, 'Sending…', async () => onSteer(item.id));
+                      act(item.id, t('agent.queue.sending'), async () => onSteer(item.id));
                     }}
                   >
                     {statusLabel === undefined ? (
                       <>
                         <CornerDownRight aria-hidden='true' className='size-3.5' />
-                        Send now
+                        {t('agent.queue.send')}
                       </>
                     ) : (
                       <span role='status'>{statusLabel}</span>
@@ -267,10 +270,10 @@ export function ChatMessageQueueView({
                   <Button
                     variant='ghost'
                     size='icon-xs'
-                    aria-label={`Delete queued message ${String(index + 1)}`}
+                    aria-label={t('agent.queue.delete', { n: index + 1 })}
                     disabled={locked}
                     onClick={() => {
-                      act(item.id, 'Removing…', async () => onEdit(item.id, undefined));
+                      act(item.id, t('agent.queue.removing'), async () => onEdit(item.id, undefined));
                     }}
                   >
                     <Trash2 className='size-3.5' />
@@ -280,7 +283,7 @@ export function ChatMessageQueueView({
                       <Button
                         variant='ghost'
                         size='icon-xs'
-                        aria-label={`Options for queued message ${String(index + 1)}`}
+                        aria-label={t('agent.queue.options', { n: index + 1 })}
                         disabled={locked}
                       >
                         <MoreVertical className='size-3.5' />
@@ -294,26 +297,26 @@ export function ChatMessageQueueView({
                         }}
                       >
                         <Pencil className='size-3.5' />
-                        Edit message
+                        {t('agent.queue.edit')}
                       </DropdownMenuItem>
                       {index > 0 ? (
                         <DropdownMenuItem
                           disabled={reorderLocked}
                           onSelect={() => {
-                            act(item.id, 'Moving…', async () => onMove(item.id, items[index - 1]?.id));
+                            act(item.id, t('agent.queue.moving'), async () => onMove(item.id, items[index - 1]?.id));
                           }}
                         >
-                          Move up
+                          {t('agent.queue.up')}
                         </DropdownMenuItem>
                       ) : null}
                       {index < items.length - 1 ? (
                         <DropdownMenuItem
                           disabled={reorderLocked}
                           onSelect={() => {
-                            act(item.id, 'Moving…', async () => onMove(item.id, items[index + 2]?.id));
+                            act(item.id, t('agent.queue.moving'), async () => onMove(item.id, items[index + 2]?.id));
                           }}
                         >
-                          Move down
+                          {t('agent.queue.down')}
                         </DropdownMenuItem>
                       ) : null}
                     </DropdownMenuContent>
@@ -325,11 +328,11 @@ export function ChatMessageQueueView({
                   className='mt-2 space-y-2'
                   onSubmit={(event) => {
                     event.preventDefault();
-                    act(item.id, 'Saving…', async () => onEdit(item.id, text));
+                    act(item.id, t('agent.queue.saving'), async () => onEdit(item.id, text));
                   }}
                 >
                   <Textarea
-                    aria-label='Edit queued message'
+                    aria-label={t('agent.queue.editLabel')}
                     value={text}
                     disabled={busy}
                     onChange={(event) => {
@@ -351,10 +354,10 @@ export function ChatMessageQueueView({
                         setEditing(undefined);
                       }}
                     >
-                      Cancel
+                      {t('agent.queue.cancel')}
                     </Button>
                     <Button type='submit' size='sm' disabled={busy || (text.trim() === '' && attachments === 0)}>
-                      Save
+                      {t('agent.queue.save')}
                     </Button>
                   </div>
                 </form>
@@ -377,7 +380,7 @@ export function ChatMessageQueueView({
               }
             }}
           >
-            Retry
+            {t('agent.queue.retry')}
           </Button>
         </div>
       ) : null}

@@ -107,11 +107,11 @@ describe('useDictation', () => {
     const { result, onTranscript } = await begin();
 
     await act(async () => result.current.stop());
-    expect(result.current.error).toBe('The dictation service is unavailable. Try again shortly.');
+    expect(result.current.error).toBe('Dictation failed. Check your microphone and try again');
     await act(async () => result.current.start());
     await act(async () => result.current.stop());
 
-    expect(result.current.error).toBe('No speech was recognized. Check your microphone and try again.');
+    expect(result.current.error).toBe('No speech was recognized. Check your microphone and try again');
     expect(onTranscript).not.toHaveBeenCalled();
   });
 
@@ -159,7 +159,7 @@ describe('useDictation', () => {
     });
     await act(async () => denied.result.current.start());
 
-    expect(denied.result.current.error).toMatch(/Microphone access was denied/u);
+    expect(denied.result.current.error).toMatch(/The microphone is blocked/u);
     await expect(denied.result.current.stop()).resolves.toBe(false);
   });
   it('should keep one destination active and release it for another input', async () => {
@@ -169,7 +169,7 @@ describe('useDictation', () => {
       expect(second.result.current.available).toBe(true);
     });
     await act(async () => second.result.current.start());
-    expect(second.result.current.error).toBe('Finish or cancel dictation in the other input first.');
+    expect(second.result.current.error).toBe('Finish or cancel dictation in the other input first');
     expect(dependencies.capture).toHaveBeenCalledOnce();
     act(() => {
       first.result.current.cancel();

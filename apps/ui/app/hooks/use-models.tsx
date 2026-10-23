@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 import type { CadAgentExecution, ModelFamily, ModelProvider, TauAgentExecution } from '@taucad/chat';
 import { reasoningLevels } from '@taucad/chat/constants';
-import { cadAgentExecutionSchema } from '@taucad/chat/schemas';
 /* oxlint-disable import/extensions -- TypeScript ESM resolves the authoritative source through its emitted .js path. */
 // eslint-disable-next-line @nx/enforce-module-boundaries -- Type-only reuse keeps the API's Zod-inferred response authoritative.
 import type { Model as ApiModel } from '../../../api/app/api/models/model.schema.js';
@@ -13,7 +12,6 @@ import { useCookie } from '#hooks/use-cookie.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { defaultChatModel } from '#constants/chat.constants.js';
 import { unknownIconId } from '#components/icons/svg-icon.js';
-import { resolveNewChatExecution } from '#utils/new-chat-execution.js';
 import type { ModelCatalog } from '#utils/new-chat-execution.js';
 
 export type Model = ApiModel;
@@ -87,12 +85,6 @@ const catalogWaitTimeout = 10_000;
 const catalogOf = (data: Model[] | undefined, isError: boolean): ModelCatalog =>
   data === undefined ? { status: isError ? 'unavailable' : 'loading' } : { status: 'loaded', models: data };
 
-/** A stored execution is untrusted: one that fails the wire schema would fail the turn. */
-const parseStoredExecution = (value: unknown): CadAgentExecution | undefined => {
-  const parsed = cadAgentExecutionSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-};
-
 /** No overrides: every model follows its `recommended` flag. */
 const noOverrides: Readonly<Record<string, boolean>> = {};
 
@@ -106,7 +98,7 @@ const parsePinned = (value: unknown): readonly string[] =>
 // oxlint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- intentionally allowing inference
 export const useModels = () => {
   const queryClient = useQueryClient();
-  const [storedExecution, setStoredExecution] = useCookie<unknown>(cookieName.chatExecution, undefined);
+  const [, setStoredExecution] = useCookie<unknown>(cookieName.chatExecution, undefined);
   const [selectedModelId, setSelectedModelId] = useCookie(cookieName.chatModel, defaultChatModel);
   const [overrides, setOverrides, resetOverrides] = useCookie<Readonly<Record<string, boolean>>>(
     cookieName.chatModelOverrides,
@@ -133,20 +125,13 @@ export const useModels = () => {
   });
   const catalog = useMemo(() => catalogOf(data, isError), [data, isError]);
 
-  /*
-   * The execution a chat with none of its own starts on. SinopiaCAD: always its own agent, on the last model chosen —
-   * or the catalog's recommended one when that model is not offered — never an external agent used last time.
-   */
+  /* Every fresh request follows the catalog recommendation; remembered developer choices do not select it. */
   const defaultExecution = useMemo<CadAgentExecution>(() => {
-    const stored = parseStoredExecution(storedExecution);
-    return resolveNewChatExecution({
-      last: stored?.kind === 'tau' ? stored : undefined,
-      lastTau: lastTauExecution,
-      catalog,
-    });
-  }, [storedExecution, lastTauExecution, catalog]);
+    const recommended = data?.find((row) => row.recommended === true) ?? data?.[0];
+    return { kind: 'tau', model: recommended?.id ?? defaultChatModel };
+  }, [data]);
 
-  /** Remember the execution a chat chose or ran on as the next new chat's, whatever its agent. */
+  /** Retain execution preferences for inspection; they do not override the automatic recommendation. */
   const rememberExecution = useCallback(
     (execution: CadAgentExecution): void => {
       setStoredExecution(execution);

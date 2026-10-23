@@ -1,3 +1,4 @@
+import { useTranslation } from '#i18n/translate.js';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { dictationMaxAudioBytes } from '@taucad/chat/schemas';
 import { captureDictation } from '#components/dictation/dictation-capture.js';
@@ -5,14 +6,6 @@ import type { DictationCapture } from '#components/dictation/dictation-capture.j
 import { fetchDictationStatus, transcribeDictation } from '#components/dictation/dictation-client.js';
 
 export type DictationPhase = 'idle' | 'requesting' | 'recording' | 'stopping' | 'transcribing';
-
-export const dictationLabels: Record<DictationPhase, string> = {
-  idle: 'Dictate',
-  requesting: 'Requesting microphone…',
-  recording: 'Recording…',
-  stopping: 'Stopping dictation…',
-  transcribing: 'Transcribing',
-};
 
 /** Samples the API accepts: 24 kHz mono PCM16 after the 44-byte WAV header (about 8.6 minutes). */
 const maxDictationSamples = Math.floor((dictationMaxAudioBytes - 44) / 2);
@@ -61,6 +54,7 @@ export type Dictation = {
  * Keep the owner stable across edits and change it when the destination changes.
  */
 export function useDictation(onTranscript: (text: string) => void, draftOwner: unknown): Dictation {
+  const { t } = useTranslation();
   const [available, setAvailable] = useState<boolean>();
   const [phase, setPhase] = useState<DictationPhase>('idle');
   const [error, setError] = useState<string>();
@@ -145,22 +139,18 @@ export function useDictation(onTranscript: (text: string) => void, draftOwner: u
           return;
         }
         if (text === '') {
-          reset(session, false, 'No speech was recognized. Check your microphone and try again.');
+          reset(session, false, t('agent.noSpeech'));
           return;
         }
         receiveTranscript.current(text);
         reset(session, true);
-      } catch (stopError) {
+      } catch {
         if (!session.abort.signal.aborted) {
-          reset(
-            session,
-            false,
-            stopError instanceof Error ? stopError.message : 'Could not finish dictation. Try again.',
-          );
+          reset(session, false, t('agent.dictationFailed'));
         }
       }
     },
-    [reset],
+    [reset, t],
   );
 
   const stop = useCallback(async (): Promise<boolean> => {
@@ -181,7 +171,7 @@ export function useDictation(onTranscript: (text: string) => void, draftOwner: u
       return;
     }
     if (activeSession !== undefined) {
-      setError('Finish or cancel dictation in the other input first.');
+      setError(t('agent.otherDictation'));
       return;
     }
     let settle: (success: boolean) => void = () => undefined;
@@ -210,8 +200,8 @@ export function useDictation(onTranscript: (text: string) => void, draftOwner: u
         onLimit: () => {
           void stop();
         },
-        onError: (captureError) => {
-          reset(session, false, captureError.message);
+        onError: () => {
+          reset(session, false, t('agent.dictationFailed'));
         },
       });
       if (current.current !== session) {
@@ -223,13 +213,11 @@ export function useDictation(onTranscript: (text: string) => void, draftOwner: u
     } catch (captureError) {
       const message =
         captureError instanceof DOMException && captureError.name === 'NotAllowedError'
-          ? 'Microphone access was denied. Allow microphone access in system settings and try again.'
-          : captureError instanceof Error
-            ? captureError.message
-            : 'Could not start dictation. Check your microphone and try again.';
+          ? t('agent.microphoneDenied')
+          : t('agent.dictationFailed');
       reset(session, false, message);
     }
-  }, [available, draftOwner, reset, stop]);
+  }, [available, draftOwner, reset, stop, t]);
 
   return { available, phase, error, transcript, waveform, start, stop, cancel };
 }

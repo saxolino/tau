@@ -113,9 +113,10 @@ vi.mock('#hooks/active-chat-provider.js', () => ({
 vi.mock('#hooks/chat-session-store-provider.js', () => ({
   useChatSessionStore: vi.fn(),
 }));
+const automaticCatalog = vi.hoisted((): { models: Array<{ id: string; recommended?: boolean }> } => ({ models: [] }));
 vi.mock('#hooks/use-models.js', () => ({
   useModels: () => ({
-    ensureModelCatalog: async () => ({ status: 'loaded', models: [] }),
+    ensureModelCatalog: async () => ({ status: 'loaded', models: automaticCatalog.models }),
     defaultExecution: { kind: 'tau', model: 'openai-gpt-5.5' },
     resolveModel: (id: string) => {
       /* What the real hook answers while the catalog cannot load: no row, so no provider. */
@@ -397,6 +398,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetChatTurnServices();
   admittedTurns.length = 0;
+  automaticCatalog.models = [];
   browserHostHarness.run = undefined;
   browserHostHarness.placed = false;
   browserHostHarness.resumable = false;
@@ -417,6 +419,19 @@ beforeEach(() => {
 });
 
 describe('useCadChatClient', () => {
+  it('should resolve the recommended model before freezing a first send', async () => {
+    automaticCatalog.models = [{ id: 'openai-gpt-5.5' }, { id: 'openai-gpt-retry', recommended: true }];
+    useActiveChatInstanceMock.mockReturnValue(mock<Chat<MyUIMessage>>());
+    installActions(buildActions());
+    const view = renderClient();
+    await act(async () => view.result.current.submit({ text: 'Make a ring' }));
+    const request = await admittedRequest();
+    expect(request['command']).toMatchObject({
+      type: 'start',
+      payload: { config: { model: { id: 'openai-gpt-retry' } } },
+    });
+  });
+
   it('should register no agent host, however many views mount it', async () => {
     /* The hook is mounted by the history, the examples, the stack trace, the
      * approval banner and once *per transcript message*. Every instance used
@@ -507,7 +522,8 @@ describe('useCadChatClient', () => {
     expect(admittedTurns).toHaveLength(0);
   });
 
-  it('uses the startup request id as the seeded first turn’s host command id', async () => {
+  it('uses the startup request id and the recommended model for a seeded first turn', async () => {
+    automaticCatalog.models = [{ id: 'openai-gpt-retry', recommended: true }];
     const chat = mock<Chat<MyUIMessage>>();
     Object.defineProperty(chat, 'messages', {
       get: () => [{ id: 'seed-user', role: 'user', parts: [{ type: 'text', text: 'Build it.' }] }],
@@ -519,6 +535,7 @@ describe('useCadChatClient', () => {
     const turn = await composeTurn({ kind: 'regenerate', requestId: 'req_startup-1' });
 
     expect(turn.runId).toBe('req_startup-1');
+    expect(turn.request.command).toMatchObject({ payload: { config: { model: { id: 'openai-gpt-retry' } } } });
     expect(turn.request.command).toMatchObject({
       type: 'start',
       commandId: 'req_startup-1',

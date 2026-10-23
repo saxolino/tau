@@ -31,16 +31,7 @@
  */
 
 import { useActorRef, useSelector } from '@xstate/react';
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Chat } from '@ai-sdk/react';
 import { isResumableRun } from '@taucad/agent-host';
 import { createAsyncLogic } from 'xstate';
@@ -547,14 +538,8 @@ function useCookieExecution(): ActiveChatExecution {
 // ---------------------------------------------------------------------------
 
 /**
- * Session-backed model resolver. Prefers the Tau model in `Chat.activeExecution` from the
- * persistence machine; falls back to the cookie default. `setActiveModel`
- * dual-writes (cookie + chat row) so reload preserves the chat-local
- * value and future new chats inherit the most recent choice.
- *
- * Mirrors the contract of the previous `useActiveChatModel` hook (now
- * deleted) but is provider-internal: external consumers read
- * `useChatComposer().model` instead.
+ * Display and attachment capabilities follow the automatically selected execution.
+ * Developer setters retain the existing durable write path; fresh designer requests use the catalog recommendation.
  */
 function useExecutionModel(activeExecution: ActiveChatExecution): ActiveChatModel {
   const { selectedModelId, selectedModel, resolveModel } = useModels();
@@ -588,18 +573,12 @@ function useExecutionModel(activeExecution: ActiveChatExecution): ActiveChatMode
   );
 }
 
-/**
- * Home execution: the user's choice this mount, else the record's as read,
- * else the cookie model. A late read never replaces a choice already made.
- */
+/** Home requests use the catalog recommendation while retaining the durable composer record. */
 function useHomeExecution(recordRef: ComposerRecordRef): ActiveChatExecution {
   const { defaultExecution, rememberExecution } = useModels();
-  const stored = useSelector(recordRef, (snapshot) => snapshot.context.record?.execution);
-  const [chosen, setChosen] = useState<CadAgentExecution>();
-  const execution = chosen ?? stored ?? defaultExecution;
+  const execution = defaultExecution;
   const setActiveExecution = useCallback(
     (next: CadAgentExecution) => {
-      setChosen(next);
       rememberExecution(next);
       recordRef.send({ type: 'patch', fields: { execution: next } });
     },
@@ -636,9 +615,8 @@ function useConsumeDraft(
 }
 
 function useSessionExecution(session: ChatSession): ActiveChatExecution {
-  const persisted = useSelector(session.persistenceActorRef, (state) => state.context.activeExecution);
   const { defaultExecution, rememberExecution } = useModels();
-  const execution = persisted ?? defaultExecution;
+  const execution = defaultExecution;
   const setActiveExecution = useCallback(
     (next: CadAgentExecution) => {
       rememberExecution(next);

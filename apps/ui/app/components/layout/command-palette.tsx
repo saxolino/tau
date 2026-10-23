@@ -1,4 +1,5 @@
-import { Menu, Search } from 'lucide-react';
+import { setAgentTechnicalDetails, useAgentTechnicalDetails } from '#hooks/use-agent-technical-details.js';
+import { Menu, Search, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext } from 'react';
 import { defaultFilter } from 'cmdk';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -381,6 +382,27 @@ function CommandPaletteMobile({ items }: CommandPaletteMobileProperties): React.
   );
 }
 
+function AgentDiagnosticsCommand(): undefined {
+  const { t } = useTranslation();
+  const technical = useAgentTechnicalDetails();
+  useCommandPaletteItems(
+    'agent-diagnostics',
+    () => [
+      {
+        id: 'agent-technical-details',
+        label: t(technical ? 'agent.hideTechnical' : 'agent.showTechnical'),
+        group: t('agent.development'),
+        icon: <Wrench className='size-4' />,
+        action: () => {
+          setAgentTechnicalDetails(!technical);
+        },
+      },
+    ],
+    [t, technical],
+  );
+  return undefined;
+}
+
 /**
  * Owns the palette registry for the whole page.
  *
@@ -427,7 +449,10 @@ export function CommandPaletteProvider({ children }: { readonly children: React.
 
   return (
     <CommandPaletteContext.Provider value={contextValue}>
-      <CommandPaletteItemsContext.Provider value={allItems}>{children}</CommandPaletteItemsContext.Provider>
+      <CommandPaletteItemsContext.Provider value={allItems}>
+        <AgentDiagnosticsCommand />
+        {children}
+      </CommandPaletteItemsContext.Provider>
     </CommandPaletteContext.Provider>
   );
 }

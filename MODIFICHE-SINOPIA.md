@@ -451,6 +451,7 @@ griglia in mm, senza Schermo intero.
 Verifica locale: 146 test nei 7 file toccati (19 UI, 55 viewer, 72 SMLib), typecheck dei tre moduli, lint sui 28 file TypeScript senza errori (restano avvisi) e build di viewer/SMLib. Dopo l'interruzione per memoria, controlli eseguiti in sequenza, Vitest con `--maxWorkers=2`, lint/typecheck con `NODE_OPTIONS=--max-old-space-size=4096`.
 
 La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; questa copia non avvia server e non pubblica modifiche.
+
 ## 2026-10-23 — Passo 7: Esporta con controlli per formato
 
 - `apps/ui/app/routes/w.$workspace.$project/project-export-dialog*.tsx`: finestra con STEP, STL, GLB e foto,
@@ -485,6 +486,7 @@ La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; q
   superati; dopo gli ultimi aggiustamenti, rieseguiti i 14 test dei 2 file interessati, tutti superati.
   `git diff --check` superato. Controlli eseguiti uno alla volta, Vitest con `--maxWorkers=2`,
   typecheck/lint con `NODE_OPTIONS=--max-old-space-size=4096`; nessun server di sviluppo avviato nella ripresa.
+
 ## 23 ottobre 2026 — Home secondo il design Fable (passo 4)
 
 - `apps/ui/app/routes/_index/sinopia-home.tsx`, `home-image-drop-zone.tsx` — titolo e sottotitolo del design;
@@ -526,3 +528,75 @@ Controlli finali (dopo la ripresa, eseguiti uno alla volta):
 - Typecheck e lint con `NODE_OPTIONS=--max-old-space-size=4096`; cache e dati Nx confinati al worktree tramite
   `NX_WORKSPACE_DATA_DIRECTORY` e `NX_CACHE_DIRECTORY`. Nessun server di sviluppo.
 - Revisione indipendente completata: corretti invio durante la dettatura e modifica della bozza durante creazione.
+
+## 23 ottobre 2026 — passo 3, agente modellista
+
+Il pannello Agente mostra uno stato IT/EN ricavato dagli eventi reali e il pulsante Ferma.
+Gli strumenti, il ragionamento tecnico e i consumi sono nascosti nel flusso ordinario;
+si possono ispezionare da ⌘K con «Mostra i dettagli tecnici dell’agente».
+Il composer mantiene Invio durante il turno, riusando la coda durevole esistente.
+I suggerimenti inviano messaggi con il riferimento strutturato del pezzo selezionato.
+Il microfono resta accanto a Invio: tocco, pressione mantenuta e ⌘⇧M.
+Le nuove richieste seguono la riga raccomandata del catalogo anche quando la prima
+richiesta arriva prima della risposta del catalogo; i comandi già ammessi e la ripresa
+mantengono l’esecuzione congelata dal registro dell’host.
+
+«Cosa ho cambiato · Rev N» legge revisioni confermate e confronta i record parametri
+immutabili tramite il client revisioni esistente, senza creare un secondo registro.
+I pezzi sono collegati solo con corrispondenza esplicita nel manifesto corrente;
+il clic seleziona il pezzo nel modello sorgente esatto, anche con ID ripetuti.
+Quando mancano differenze misurabili o il modello storico non è disponibile,
+compare «Modifiche al modello»: non si inventano misure, unità o revisioni.
+Il lucchetto «tuo valore» richiede la prova di una modifica manuale nella revisione
+immediatamente precedente; la sola presenza di un override non prova chi l’ha scritto.
+
+### File modificati o aggiunti
+
+- `apps/ui/app/chat-clients/chat-turn-host.tsx`.
+- `apps/ui/app/chat-clients/use-cad-chat-client.test.tsx`.
+- `apps/ui/app/components/chat/chat-activity-status.tsx`.
+- `apps/ui/app/components/chat/chat-message-queue-view.tsx`.
+- `apps/ui/app/components/chat/chat-textarea-desktop.test.tsx`.
+- `apps/ui/app/components/chat/chat-textarea-desktop.tsx`.
+- `apps/ui/app/components/chat/chat-textarea-submit-button.test.tsx`.
+- `apps/ui/app/components/chat/chat-textarea-submit-button.tsx`.
+- `apps/ui/app/components/chat/chat-textarea.browser.test.tsx`.
+- `apps/ui/app/components/dictation/dictation-controls.tsx`.
+- `apps/ui/app/components/dictation/use-dictation.test.ts`.
+- `apps/ui/app/components/dictation/use-dictation.ts`.
+- `apps/ui/app/components/layout/command-palette.tsx`.
+- `apps/ui/app/hooks/active-chat-provider.test.tsx`.
+- `apps/ui/app/hooks/active-chat-provider.tsx`.
+- `apps/ui/app/hooks/use-models.test.tsx`.
+- `apps/ui/app/hooks/use-models.tsx`.
+- `apps/ui/app/i18n/catalog.ts`.
+- `apps/ui/app/routes/w.$workspace.$project/chat-history.test.tsx`.
+- `apps/ui/app/routes/w.$workspace.$project/chat-history.tsx`.
+- `apps/ui/app/routes/w.$workspace.$project/chat-message-planning-indicator.test.tsx`.
+- `apps/ui/app/routes/w.$workspace.$project/chat-message-planning.tsx`.
+- `apps/ui/app/routes/w.$workspace.$project/chat-message.test.tsx`.
+- `apps/ui/app/routes/w.$workspace.$project/chat-message.tsx`.
+- `apps/ui/app/components/chat/agent-suggestions.test.tsx`.
+- `apps/ui/app/components/chat/agent-suggestions.tsx`.
+- `apps/ui/app/components/chat/chat-activity-status.test.tsx`.
+- `apps/ui/app/components/chat/turn-model-summary.test.tsx`.
+- `apps/ui/app/components/chat/turn-summary-card.test.tsx`.
+- `apps/ui/app/components/chat/turn-summary-card.tsx`.
+- `apps/ui/app/components/dictation/dictation-controls.test.tsx`.
+- `apps/ui/app/hooks/use-agent-technical-details.ts`.
+- `apps/ui/app/i18n/messages/agent.ts`.
+- `apps/ui/app/lib/turn-model-changes.test.ts`.
+- `apps/ui/app/lib/turn-model-changes.ts`.
+- `apps/ui/app/utils/designer-message-part.ts`.
+- `apps/ui/app/utils/modelling-activity.test.ts`.
+- `apps/ui/app/utils/modelling-activity.ts`.
+
+### Verifiche locali del passo 3
+
+- `nx typecheck ui`: entrambe le configurazioni (`tsconfig.app.json` e `tsconfig.spec.json`), zero errori.
+- `nx lint ui --files=…`: 38 file, uscita 0, sei avvisi di complessità/stile. ESLint segnala inoltre
+  `tsconfig.base.json` assente nella configurazione Nx del checkout; non è una verifica completa
+  di quella parte della configurazione delle dipendenze.
+- Vitest mirato: 251 test passati in 18 file, `--maxWorkers=2`.
+- Test browser del composer aggiornati; browser/e2e dal vivo lasciati al coordinatore come da incarico.
+- Nessun server, chiamata di generazione a pagamento, push o modifica a Supabase.

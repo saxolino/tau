@@ -147,15 +147,12 @@ vi.mock('#routes/w.$workspace.$project/chat-message.js', () => ({
   ),
 }));
 
-vi.mock('#routes/w.$workspace.$project/chat-revision-marker.js', () => ({
-  ChatRevisionMarker: ({
-    userMessageId,
-    isLatestTurn,
-  }: {
-    readonly userMessageId: string;
-    readonly isLatestTurn: boolean;
-  }) => <div data-testid='turn-revision' data-user-message-id={userMessageId} data-latest={String(isLatestTurn)} />,
+vi.mock('#components/chat/turn-summary-card.js', () => ({
+  TurnModelSummary: ({ turnId }: { readonly turnId: string }) => (
+    <div data-testid='turn-revision' data-user-message-id={turnId} />
+  ),
 }));
+vi.mock('#components/chat/agent-suggestions.js', () => ({ AgentSuggestions: () => null }));
 
 vi.mock('#routes/w.$workspace.$project/scroll-down-button.js', () => ({
   ScrollDownButton: () => <button type='button' aria-label='Scroll to bottom' />,
@@ -414,7 +411,7 @@ describe('ChatHistory — turn group rendering', () => {
     expect([...lastGroupMessages].map((node) => node.dataset['messageId'])).toEqual(['u2', 'a2', 'a3']);
   });
 
-  it('should attach one revision summary to each request, before its replies', () => {
+  it('should show one change summary after all replies in each turn', () => {
     setMockMessages([
       message('u1', 'user'),
       message('a1', 'assistant'),
@@ -435,17 +432,17 @@ describe('ChatHistory — turn group rendering', () => {
     const summaryOf = (group: HTMLElement | undefined): HTMLElement | undefined =>
       group?.querySelector<HTMLElement>('[data-testid="turn-revision"]') ?? undefined;
 
-    /* The card is the request's own footer (R11), so replies can never land between them. */
-    const footerOf = (group: HTMLElement | undefined, id: string): string[] =>
-      order(group?.querySelector<HTMLElement>(`[data-message-id="${id}"]`) ?? undefined);
-    expect(order(firstGroup)).toEqual(['chat-message:u1', 'chat-message:a1']);
-    expect(footerOf(firstGroup, 'u1')).toEqual(['turn-revision:u1']);
-    expect(footerOf(firstGroup, 'a1')).toEqual([]);
-    expect(order(lastGroup).slice(0, 3)).toEqual(['chat-message:u2', 'chat-message:a2', 'chat-message:a3']);
-    expect(footerOf(lastGroup, 'u2')).toEqual(['turn-revision:u2']);
+    expect(order(firstGroup)).toEqual(['chat-message:u1', 'chat-message:a1', 'turn-revision:u1']);
+    expect(order(lastGroup).slice(0, 4)).toEqual([
+      'chat-message:u2',
+      'chat-message:a2',
+      'chat-message:a3',
+      'turn-revision:u2',
+    ]);
+    expect(firstGroup?.querySelectorAll('[data-testid="turn-revision"]')).toHaveLength(1);
     expect(lastGroup?.querySelectorAll('[data-testid="turn-revision"]')).toHaveLength(1);
-    expect(summaryOf(firstGroup)?.dataset['latest']).toBe('false');
-    expect(summaryOf(lastGroup)?.dataset['latest']).toBe('true');
+    expect(summaryOf(firstGroup)?.dataset['userMessageId']).toBe('u1');
+    expect(summaryOf(lastGroup)?.dataset['userMessageId']).toBe('u2');
   });
 
   it('should render a leading assistant message in its own group when no user message precedes it', () => {

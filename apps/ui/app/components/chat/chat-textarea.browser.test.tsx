@@ -364,11 +364,11 @@ describe('dictation recording and transcription', () => {
         path: `../../../../../out/test-results/composer/dictation-${width}-${theme}-${status}.png`,
       });
       await page.getByRole('button', { name: 'Stop dictation', exact: true }).click();
-      await expect.element(page.getByRole('status', { name: 'Transcribing', exact: true })).toBeVisible();
+      await expect.element(page.getByRole('status', { name: 'Transcribing…', exact: true })).toBeVisible();
       expect(screen.queryByRole('img', { name: 'Microphone waveform' })).toBeNull();
       await expect.element(page.getByRole('button', { name: 'Cancel dictation' })).toBeEnabled();
       await expect
-        .element(page.getByRole('button', { name: 'Transcribing', exact: true }))
+        .element(page.getByRole('button', { name: 'Transcribing…', exact: true }))
         .toHaveAttribute('aria-busy', 'true');
       await page.getByRole('textbox').click();
       await page.screenshot({
@@ -384,8 +384,10 @@ describe('dictation recording and transcription', () => {
       expect(submit).not.toHaveBeenCalled();
       expect(cancelChat).not.toHaveBeenCalled();
       if (status === 'streaming') {
-        await page.getByRole('button', { name: 'Stop', exact: true }).click();
-        expect(cancelChat).toHaveBeenCalledOnce();
+        await expect.element(page.getByRole('button', { name: 'Stop', exact: true })).not.toBeInTheDocument();
+        await page.getByRole('button', { name: 'Send', exact: true }).click();
+        expect(submit).toHaveBeenCalledOnce();
+        expect(cancelChat).not.toHaveBeenCalled();
       }
     },
   );
@@ -578,7 +580,7 @@ describe('question dictation', () => {
         path: `../../../../../out/test-results/composer/question-recording-${width}-${theme}-${variant}.png`,
       });
       await page.getByRole('button', { name: sendWhileRecording ? 'Send answer' : 'Stop dictation' }).click();
-      await expect.element(page.getByRole('status', { name: 'Transcribing', exact: true })).toBeVisible();
+      await expect.element(page.getByRole('status', { name: 'Transcribing…', exact: true })).toBeVisible();
       expect(reply.getBoundingClientRect().height).toBe(idleHeight);
       await page.screenshot({
         element: region,

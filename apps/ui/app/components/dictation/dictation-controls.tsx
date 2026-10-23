@@ -1,11 +1,15 @@
-import { memo, useCallback } from 'react';
+import { useTranslation } from '#i18n/translate.js';
+import { useKeybinding } from '@taucad/ui/components/keyboard';
+import { ariaKeyShortcuts } from '@taucad/ui/utils/keys';
+import { memo, useCallback, useRef } from 'react';
 import { Mic, Square, X } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { Loader } from '@taucad/ui/components/loader';
 import { cn } from '@taucad/ui/utils/cn';
-import { dictationLabels } from '#components/dictation/use-dictation.js';
 import type { DictationPhase, DictationWaveform } from '#components/dictation/use-dictation.js';
+
+const dictationKeyCombination = { key: 'm', modKey: true, shiftKey: true };
 
 type DictationControls = {
   readonly phase: DictationPhase;
@@ -14,9 +18,13 @@ type DictationControls = {
 };
 
 export const DictationButton = memo(function ({ phase, onStart, onStop }: DictationControls): React.JSX.Element {
+  const { t } = useTranslation();
+  const pressed = useRef<number | undefined>(undefined);
+  const suppressClick = useRef(false);
+  const startPending = useRef<Promise<void> | undefined>(undefined);
   const recording = phase === 'recording';
   const busy = phase !== 'idle' && !recording;
-  const label = recording ? 'Stop dictation' : busy ? dictationLabels[phase] : 'Dictate';
+  const label = recording ? t('agent.stopDictation') : t(`agent.${phase === 'idle' ? 'dictate' : phase}`);
   const handleClick = useCallback(() => {
     if (busy) {
       return;
@@ -27,6 +35,7 @@ export const DictationButton = memo(function ({ phase, onStart, onStop }: Dictat
       void onStart();
     }
   }, [busy, onStart, onStop, recording]);
+  const { formattedKeyCombination } = useKeybinding(dictationKeyCombination, handleClick);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -38,7 +47,39 @@ export const DictationButton = memo(function ({ phase, onStart, onStop }: Dictat
           aria-disabled={busy}
           aria-busy={busy}
           className={cn('shrink-0 rounded-full', phase !== 'idle' && 'bg-muted')}
-          onClick={handleClick}
+          aria-keyshortcuts={ariaKeyShortcuts(dictationKeyCombination)}
+          onPointerDown={(event) => {
+            if (event.button !== 0 || busy || recording) {
+              return;
+            }
+            pressed.current = Date.now();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            startPending.current = onStart();
+          }}
+          onPointerUp={async () => {
+            if (pressed.current === undefined) {
+              return;
+            }
+            const held = Date.now() - pressed.current >= 300;
+            pressed.current = undefined;
+            suppressClick.current = true;
+            if (held) {
+              await startPending.current;
+              await onStop();
+            }
+          }}
+          onPointerCancel={async () => {
+            pressed.current = undefined;
+            await startPending.current;
+            await onStop();
+          }}
+          onClick={() => {
+            if (suppressClick.current) {
+              suppressClick.current = false;
+              return;
+            }
+            handleClick();
+          }}
         >
           {busy ? (
             <Loader className='size-4' />
@@ -49,7 +90,9 @@ export const DictationButton = memo(function ({ phase, onStart, onStop }: Dictat
           )}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>
+        {label} · {formattedKeyCombination}
+      </TooltipContent>
     </Tooltip>
   );
 });
@@ -63,6 +106,7 @@ export const DictationRecording = memo(function ({
   readonly waveform: DictationWaveform;
   readonly onCancel: () => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <>
       <Tooltip>
@@ -71,19 +115,19 @@ export const DictationRecording = memo(function ({
             type='button'
             variant='ghost'
             size='icon-sm'
-            aria-label='Cancel dictation'
+            aria-label={t('agent.cancelDictation')}
             className='shrink-0 rounded-full bg-muted'
             onClick={onCancel}
           >
             <X aria-hidden='true' className='size-4' />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Cancel dictation</TooltipContent>
+        <TooltipContent>{t('agent.cancelDictation')}</TooltipContent>
       </Tooltip>
       {phase === 'recording' ? (
         <div
           role='img'
-          aria-label='Microphone waveform'
+          aria-label={t('agent.waveform')}
           data-slot='dictation-waveform'
           data-level={levels.at(-1) ?? 0}
           className='flex h-7 min-w-0 flex-1 items-center justify-end overflow-hidden mask-x-from-[calc(100%-var(--spacing)*4)] mask-x-to-100% text-muted-foreground/70 motion-reduce:hidden'
@@ -111,7 +155,7 @@ export const DictationRecording = memo(function ({
       ) : null}
       <span
         role='status'
-        aria-label={dictationLabels[phase]}
+        aria-label={t(`agent.${phase === 'idle' ? 'dictate' : phase}`)}
         aria-busy={phase !== 'recording'}
         className={
           phase === 'recording'
@@ -119,7 +163,7 @@ export const DictationRecording = memo(function ({
             : 'flex h-7 min-w-0 flex-1 items-center justify-center text-sm text-muted-foreground'
         }
       >
-        <span className='truncate'>{dictationLabels[phase]}</span>
+        <span className='truncate'>{t(`agent.${phase === 'idle' ? 'dictate' : phase}`)}</span>
       </span>
     </>
   );
@@ -133,6 +177,7 @@ export function DictationFeedback({
   readonly transcript: string;
   readonly error: string | undefined;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <>
       {transcript === '' ? null : (
@@ -141,7 +186,7 @@ export function DictationFeedback({
         </p>
       )}
       {error === undefined ? null : (
-        <p role='alert' aria-label='Dictation error' className='px-3 py-1 text-xs text-muted-foreground'>
+        <p role='alert' aria-label={t('agent.dictationError')} className='px-3 py-1 text-xs text-muted-foreground'>
           {error}
         </p>
       )}

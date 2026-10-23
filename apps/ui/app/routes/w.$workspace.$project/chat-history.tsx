@@ -6,7 +6,8 @@ import { useLocation } from 'react-router';
 import { XIcon } from 'lucide-react';
 import { ChatMessagePlanning } from '#routes/w.$workspace.$project/chat-message-planning.js';
 import { ChatMessage } from '#routes/w.$workspace.$project/chat-message.js';
-import { ChatRevisionMarker } from '#routes/w.$workspace.$project/chat-revision-marker.js';
+import { TurnModelSummary } from '#components/chat/turn-summary-card.js';
+import { AgentSuggestions } from '#components/chat/agent-suggestions.js';
 import type { TurnGroup as TurnGroupData } from '#routes/w.$workspace.$project/chat-turn-groups.js';
 import { ScrollDownButton } from '#routes/w.$workspace.$project/scroll-down-button.js';
 import {
@@ -16,7 +17,6 @@ import {
 import { ChatError } from '#routes/w.$workspace.$project/chat-error.js';
 import type { ChatTextareaProperties, ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
 import { ChatTextarea } from '#components/chat/chat-textarea.js';
-import { ChatTodoList } from '#components/chat/chat-todo-list.js';
 import { ChatQuestionQueue } from '#components/chat/chat-question-queue.js';
 import { ChatQuestionsProvider } from '#components/chat/chat-questions-context.js';
 import { useChatContext, useChatSelector } from '#hooks/use-chat.js';
@@ -56,15 +56,11 @@ const TurnGroup = memo(function ({
 }) {
   return (
     <div className='mx-auto flex w-[calc(100%_-_1rem)] max-w-xl flex-col gap-1 py-1'>
-      {messageIds.map((id, index) => (
-        <ChatMessage
-          key={id}
-          messageId={id}
-          // The request's revision summary is a card attached under the user
-          // message, so appending assistant messages never moves it.
-          footer={index === 0 ? <ChatRevisionMarker userMessageId={id} isLatestTurn={isLast} /> : undefined}
-        />
+      {messageIds.map((id) => (
+        <ChatMessage key={id} messageId={id} />
       ))}
+      {messageIds[0] ? <TurnModelSummary turnId={messageIds[0]} /> : null}
+      {isLast ? <AgentSuggestions /> : null}
       {isLast ? <ChatError className='mx-4' /> : null}
     </div>
   );
@@ -318,7 +314,6 @@ const ExpandedChatHistory = memo(function ({
               />
               <ChatMessagePlanning key={activeChatId} className='mb-3 px-3' />
               <div className='mx-2 -mb-3 flex flex-col rounded-t-2xl border border-b-0 border-border/60 bg-muted/20 pb-3 empty:hidden'>
-                <ChatTodoList key={activeChatId} />
                 <ChatMessageQueue key={`${activeChatId}:messages`} />
                 <ChatQuestionQueue key={`${activeChatId}:questions`} onDismissFocus={focusComposer} />
               </div>

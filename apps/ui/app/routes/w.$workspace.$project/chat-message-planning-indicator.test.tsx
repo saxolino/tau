@@ -1,3 +1,4 @@
+import { setLanguage } from '#i18n/language.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { messageRole } from '@taucad/chat/constants';
@@ -21,6 +22,7 @@ vi.mock('#hooks/use-chat.js', () => ({
     return selector(mockSelectorState);
   },
 }));
+vi.mock('#hooks/active-chat-provider.js', () => ({ useChatComposer: () => ({ stop: vi.fn() }) }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project-1' }) }));
 vi.mock('#hooks/use-sidebar-status.js', () => ({ useChatSidebarStatus: vi.fn() }));
 /* The row warms and lazily loads the liquid-metal spinner, whose renderer imports the graphics backend. Left
@@ -71,6 +73,7 @@ const tool = (state: string, extra: Record<string, unknown> = {}): Record<string
 const indicator = () => screen.queryByRole('status');
 
 beforeEach(() => {
+  setLanguage('en');
   setRun('working');
 });
 
@@ -78,7 +81,7 @@ describe('ChatMessagePlanning', () => {
   it('should stay visible while response text streams', () => {
     setChat('streaming', [user('u1'), assistant('a1', [{ type: 'text', text: 'Drafting', state: 'streaming' }])]);
     render(<ChatMessagePlanning />);
-    expect(indicator()).toHaveTextContent('Writing response…');
+    expect(indicator()).toHaveTextContent('Preparing the answer…');
   });
 
   it('should keep elapsed time across activity changes and remounts, then clean up on completion', () => {
@@ -133,7 +136,7 @@ describe('ChatMessagePlanning', () => {
     setChat('streaming', [user('u1'), assistant('a1', [tool('approval-requested')])]);
     setRun('approval');
     const view = render(<ChatMessagePlanning />);
-    expect(indicator()).toHaveTextContent('Waiting for approval');
+    expect(indicator()).toHaveTextContent('Waiting for your confirmation');
     expect(screen.getByRole('timer')).toBeVisible();
     setRun('reconnecting');
     view.rerender(<ChatMessagePlanning />);
@@ -155,10 +158,10 @@ it('should show explicitly tagged progress, then clear it for a new request and 
     ]),
   ]);
   const view = render(<ChatMessagePlanning />);
-  expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent(text);
+  expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('Preparing the answer…');
   setChat('submitted', [...mockSelectorState.messages, user('u2')]);
   view.rerender(<ChatMessagePlanning />);
-  expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('Planning next moves…');
+  expect(screen.getByRole('status', { name: 'Current activity' })).toHaveTextContent('Working on the model…');
   setRun('stopped');
   setChat('ready', mockSelectorState.messages);
   view.rerender(<ChatMessagePlanning />);

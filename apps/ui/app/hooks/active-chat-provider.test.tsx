@@ -632,7 +632,7 @@ describe('HomeNewProjectComposerProvider', () => {
     expect(view.container.textContent).toBe('ready');
   });
 
-  it('hydrates the draft and ACP execution from the exact Home record', async () => {
+  it('should hydrate the exact Home draft and keep automatic execution', async () => {
     writeRecord({
       version: 1,
       draft: textDraft('restored from Home'),
@@ -642,7 +642,7 @@ describe('HomeNewProjectComposerProvider', () => {
     await waitFor(() => {
       expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('restored from Home');
     });
-    expect(result.current.execution.execution).toEqual({ kind: 'acp', hostId: 'origin', agentId: 'codex' });
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
     expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
   });
 
@@ -731,7 +731,7 @@ describe('HomeNewProjectComposerProvider', () => {
       });
     });
     expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('typed first');
-    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'picked-model' });
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
   });
 
   // Rewritten (W6): the shared record toast replaces the provider's own console.error + toast; still exactly one.
@@ -760,7 +760,8 @@ describe('HomeNewProjectComposerProvider', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
     await waitFor(() => {
-      expect(result.current.execution.execution).toMatchObject({ hostId: 'desktop' });
+      expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
+      expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
     });
     act(() => {
       result.current.draftActorRef.send({ type: 'setDraftText', text: 'persist me' });
@@ -1033,7 +1034,7 @@ describe('ActiveChatProvider', () => {
   // ── Session-backed model resolver (chat row preferred, cookie fallback,
   // dual-write on set) ──
   describe('model resolver', () => {
-    it('should prefer a Tau Chat.activeExecution when present', async () => {
+    it('should use automatic execution for new requests even when a chat remembers another model', async () => {
       harness.getChat.mockResolvedValue(
         makeChat({
           id: 'chat_with_model',
@@ -1046,9 +1047,9 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(result.current.model.modelId).toBe('chat-local-model');
+        expect(result.current.model.modelId).toBe('cookie-model');
       });
-      expect(result.current.model.model.id).toBe('chat-local-model');
+      expect(result.current.model.model.id).toBe('cookie-model');
     });
 
     it('should fall back to the cookie when Chat.activeExecution is undefined', async () => {
@@ -1098,7 +1099,7 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(result.current.model.modelId).toBe('old-model');
+        expect(result.current.model.modelId).toBe('cookie-model');
       });
 
       act(() => {
@@ -1108,8 +1109,7 @@ describe('ActiveChatProvider', () => {
       await waitFor(() => {
         expect(harness.patchChat).toHaveBeenCalledWith('chat_effort', 'activeExecution', {
           kind: 'tau',
-          model: 'old-model',
-          hostId: 'origin',
+          model: 'cookie-model',
           effort: 'low',
         });
       });
@@ -1129,7 +1129,7 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(result.current.model.modelId).toBe('old-model');
+        expect(result.current.model.modelId).toBe('cookie-model');
       });
       act(() => {
         result.current.model.setActiveModel('new-model');
