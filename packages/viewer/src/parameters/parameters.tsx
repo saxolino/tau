@@ -7,7 +7,7 @@ import { SearchInput } from '@taucad/ui/components/search-input';
 import { cn } from '@taucad/ui/utils/cn';
 import { templates, uiSchema, widgets } from '#parameters/rjsf-theme.jsx';
 import { rjsfFields } from '#parameters/rjsf-field-path.jsx';
-import type { ParameterEdit, RJSFContext, Units } from '#parameters/rjsf-context.js';
+import type { ParameterEdit, ParameterPresentation, RJSFContext, Units } from '#parameters/rjsf-context.js';
 import {
   mergeFormDefaults,
   normalizeRjsfFormData,
@@ -41,6 +41,7 @@ type ParametersProperties = {
   readonly parameterEdit: ParameterEdit;
   /** Render the root rows without the standalone catalog card. */
   readonly presentation?: 'catalog' | 'embedded';
+  readonly presentationOptions?: ParameterPresentation;
 };
 
 /* oxlint-disable react/set-state-in-effect -- The `use no memo` boundary preserves the existing controlled search reset and focus timing. */
@@ -69,6 +70,7 @@ export function Parameters({
   parameterGroup,
   parameterEdit,
   presentation = 'catalog',
+  presentationOptions,
 }: ParametersProperties): React.JSX.Element {
   'use no memo';
 
@@ -161,7 +163,7 @@ export function Parameters({
       parameterManifest,
       parameterGroup,
       parameterEdit,
-      presentation,
+      presentationOptions,
     }),
     [
       allExpanded,
@@ -173,6 +175,8 @@ export function Parameters({
       parameterManifest,
       parameterGroup,
       parameterEdit,
+      presentation,
+      presentationOptions,
     ],
   );
 

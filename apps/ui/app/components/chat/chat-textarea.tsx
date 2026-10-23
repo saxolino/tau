@@ -1,3 +1,4 @@
+import { SelectedPieceChip } from '#components/chat/selected-piece-chip.js';
 import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { waitFor } from 'xstate';
@@ -327,6 +328,7 @@ export const ChatTextarea = memo(function ({
   return (
     <ClientOnly fallback={skeleton}>
       {approvalBanner}
+      {projectContext && mode === 'main' ? <SelectedPieceChip location='composer' /> : null}
       <ChatTextareaDesktop
         className={className}
         enableAutoFocus={enableAutoFocus}

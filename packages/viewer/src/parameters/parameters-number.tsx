@@ -46,7 +46,12 @@ const displayStep = (value: number, binding: ParameterFieldBinding, displayUnit?
     displayUnit,
   );
 
-const formatDisplayValue = (value: number, binding: ParameterFieldBinding, displayUnit?: string): string => {
+const formatDisplayValue = (
+  value: number,
+  binding: ParameterFieldBinding,
+  options: { displayUnit?: string; locale?: string },
+): string => {
+  const { displayUnit, locale } = options;
   const quantity = createQuantity({
     value,
     representation: 'binary64',
@@ -57,12 +62,13 @@ const formatDisplayValue = (value: number, binding: ParameterFieldBinding, displ
   });
   const formatted =
     quantity.status === 'success'
-      ? formatQuantity({ quantity: quantity.value, locale: globalThis.navigator.language })
+      ? formatQuantity({ quantity: quantity.value, locale: locale ?? globalThis.navigator.language })
       : quantity;
   return formatted.status === 'success' ? formatted.value.parts.map(({ value: part }) => part).join('') : String(value);
 };
 
 type ParametersNumberProps = {
+  readonly locale?: string;
   readonly value: number;
   readonly defaultValue: number;
   readonly fieldProjection: ParameterFieldProjection;
@@ -143,6 +149,7 @@ type EditBase = Readonly<{ value: number; binding: ParameterFieldBinding; author
 export const ParametersNumber = React.memo(function ParametersNumber({
   value,
   defaultValue,
+  locale,
   fieldProjection,
   sourceUnit,
   edit,
@@ -279,7 +286,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
     currentSubmission.current = submission;
     const isFinal = pressure === 'final';
     const submittedText =
-      retainedText ?? formatDisplayValue(displayValue(native, binding, displayUnit), binding, displayUnit);
+      retainedText ?? formatDisplayValue(displayValue(native, binding, displayUnit), binding, { displayUnit, locale });
     if (isFinal) {
       setPendingFinals((count) => count + 1);
       globalThis.performance.mark('tau:parameter-edit', { detail: { pointer: instancePointer } });
@@ -365,7 +372,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
     const text = retry ? recovery.text : draftRef.current;
     const parsed = parseInput({
       text,
-      locale: globalThis.navigator.language,
+      locale: locale ?? globalThis.navigator.language,
       inputUnit: displayUnit ?? '1',
       expectedUnit: binding.nativeUnit ?? '1',
       ...(binding.quantityKind === undefined ? {} : { kind: binding.quantityKind }),
@@ -436,7 +443,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
   const formattedValue = formatDisplayValue(
     isApproximation ? roundedDisplayValue : Number(draftValue.toPrecision(12)),
     binding,
-    displayUnit,
+    { displayUnit, locale },
   );
 
   return (
@@ -451,7 +458,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
         inputDiagnostic ??
         (retainedDraft?.final?.status === 'refused' ? retainedDraft.final.message : undefined) ??
         (hasConflict
-          ? `This field changed to ${formatDisplayValue(committedDisplayValue, binding, displayUnit)} elsewhere. Enter to overwrite it, Escape to keep it.`
+          ? `This field changed to ${formatDisplayValue(committedDisplayValue, binding, { displayUnit, locale })} elsewhere. Enter to overwrite it, Escape to keep it.`
           : undefined)
       }
       rangeMin={rangeMin}
@@ -511,7 +518,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
           text === '' ||
             parseInput({
               text,
-              locale: globalThis.navigator.language,
+              locale: locale ?? globalThis.navigator.language,
               inputUnit: displayUnit ?? '1',
               expectedUnit: binding.nativeUnit ?? '1',
               ...(binding.quantityKind === undefined ? {} : { kind: binding.quantityKind }),

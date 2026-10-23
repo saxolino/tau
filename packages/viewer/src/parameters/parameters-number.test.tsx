@@ -186,6 +186,17 @@ function TestWrapper({ children }: { readonly children: React.ReactNode }): Reac
 }
 
 describe('ParametersNumber', () => {
+  it.each([
+    ['it-IT', '1,4'],
+    ['en-US', '1.4'],
+  ] as const)('should use the host locale %s instead of the browser language', (locale, expected) => {
+    render(
+      <TestWrapper>
+        <ParametersNumber value={1.4} defaultValue={1.4} locale={locale} onChange={vi.fn()} />
+      </TestWrapper>,
+    );
+    expect(screen.getByRole('spinbutton')).toHaveValue(expected);
+  });
   describe('Basic Rendering', () => {
     it('should render with default mm unit for length', () => {
       const mockOnChange = vi.fn();

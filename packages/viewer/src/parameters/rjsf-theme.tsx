@@ -231,8 +231,12 @@ function FieldTemplate(props: FieldTemplateProps<Record<string, unknown>, RJSFSc
   }
 
   // Always call hooks at the very top level
-  const prettyLabel = formatFieldLabel(label, schema.title);
-  const descriptionText = typeof schema.description === 'string' ? schema.description : '';
+  const prettyLabel =
+    formContext.presentationOptions?.fieldLabel?.(fieldPath ?? [], formatFieldLabel(label, schema.title)) ??
+    formatFieldLabel(label, schema.title);
+  const authoredDescription = typeof schema.description === 'string' ? schema.description : '';
+  const descriptionText =
+    formContext.presentationOptions?.fieldDescription?.(fieldPath ?? [], authoredDescription) ?? authoredDescription;
 
   // Check if we need to filter this field
   if (formContext.searchTerm) {
@@ -323,11 +327,12 @@ function FieldTemplate(props: FieldTemplateProps<Record<string, unknown>, RJSFSc
           <FieldLabelContext.Provider value={prettyLabel}>{children}</FieldLabelContext.Provider>
         </div>
       </div>
+      {formContext.presentationOptions?.fieldNote?.(fieldPath ?? [])}
       {descriptionText ? (
         <div className='text-xs text-muted-foreground/70'>
           <HighlightText text={descriptionText} searchTerm={formContext.searchTerm} />
         </div>
-      ) : (
+      ) : formContext.presentationOptions?.fieldDescription ? null : (
         description
       )}
       {help}
@@ -378,7 +383,7 @@ function ObjectFieldTemplate(
     }
   }, [formContext.searchTerm, shouldShowGroup]);
 
-  if (isRoot) {
+  if (isRoot || (formContext.presentationOptions?.embedFirstLevel && groupPath?.length === 1)) {
     if (formContext.rootPresentation === 'embedded') {
       return (
         <div data-slot='embedded-form-root' className='properties empty:hidden'>

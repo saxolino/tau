@@ -289,7 +289,12 @@ function buildNodeFromSmlibGeometry({
       selector,
       faceGroups,
       edgeGroups,
-      sourceRefs: { kernelId: 'smlib', faceGroupUnit: 'indices-v1', edgeGroupUnit: 'xyz-scalars-v1' },
+      sourceRefs: {
+        kernelId: 'smlib',
+        faceGroupUnit: 'indices-v1',
+        edgeGroupUnit: 'xyz-scalars-v1',
+        ...geometry.physical,
+      },
       capabilities: {
         exports: [
           { fidelity: 'mesh', formats: ['glb', 'stl'], available: true },

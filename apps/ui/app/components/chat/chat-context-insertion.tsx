@@ -24,17 +24,26 @@ export function geometryReferenceToToken(reference: GeometryComponentReference):
 }
 
 export function ChatContextInsertionProvider({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
+  const pendingRef = useRef<ChatContextReference[]>([]);
   const inserterRef = useRef<((references: ChatContextReference[]) => void) | undefined>(undefined);
 
   const registerContextReferenceInserter = useCallback(
     (inserter: ((references: ChatContextReference[]) => void) | undefined) => {
       inserterRef.current = inserter;
+      if (inserter && pendingRef.current.length > 0) {
+        inserter(pendingRef.current);
+        pendingRef.current = [];
+      }
     },
     [],
   );
 
   const addContextReferences = useCallback((references: ChatContextReference[]) => {
-    inserterRef.current?.(references);
+    if (inserterRef.current) {
+      inserterRef.current(references);
+    } else {
+      pendingRef.current = references;
+    }
   }, []);
 
   const value = useMemo(

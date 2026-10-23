@@ -437,3 +437,17 @@ griglia in mm, senza Schermo intero.
   `apps/api/app/api/chat/chat.controller.json-schema.test.ts` (istantanea dello schema: `language`, `kernel` facoltativo).
 - `apps/ui-e2e/src/*.spec.ts` (16 file) — nomi accessibili in inglese, la lingua del browser dei test: «Agente» →
   "Agent", «Misure» → "Measures", titoli della home.
+
+## 23 ottobre 2026 — Misure per pezzo e selezione collegata
+
+- `apps/ui/app/routes/w.$workspace.$project/{chat-parameters,piece-measures-pane,chat-viewer}.tsx`: lista dei pezzi con ricerca, selezione condivisa, apertura e scorrimento del gruppo, visibilità e riepilogo; conservata l'autorità dei parametri e il controllo numerico di Tau.
+- `apps/ui/app/lib/piece-measures.ts`, `hooks/use-selected-piece.ts`, `components/chat/{selected-piece-chip,chat-textarea,chat-context-insertion}.tsx`: nomi leggibili IT/EN, chip in vista e sopra il messaggio, riferimento CAD strutturato; il riferimento attende il montaggio del composer quando l'agente è chiuso.
+- `apps/ui/app/i18n/{catalog.ts,messages/measures.ts}`: testi bilingui. `packages/viewer/src/parameters/{parameters,parameters-widget,parameters-number,rjsf-theme}.tsx` e `rjsf-context.ts`: presentazione opzionale dei campi, provenienza e formato numerico nella lingua scelta.
+- `packages/plugins/smlib/src/{parameter-assumptions,smlib.kernel,smlib.types}.ts` e `utils/{render-output,smlib-to-gltf}.ts`: ipotesi e proprietà fisiche dal modello fino ai metadati del visore. Massa in grammi = volume esatto in mm³ × densità in g/cm³ / 1000; totale «oro 18 kt» solo se tutti i pezzi metallici hanno massa valida e densità dichiarata 15,5. Altrimenti si mostrano i conteggi.
+- `apps/ui/app/lib/sinopia-immagine-cad-skill.ts`: convenzione SMLib `export const ipotesi = { 'stelo.spessore': 'Motivo nella lingua del progetto' }`, oppure elenco di percorsi. Accettati anche puntatori JSON (`/stelo/spessore`). Il kernel trasporta queste annotazioni nelle descrizioni con `[sinopia:assumed]`; il marcatore tecnico non viene mostrato. Non sono parametri né metadati aggiunti al record `.tau/parameters/`.
+- Il lucchetto deriva dalla presenza di un valore nel gruppo attivo del record, anche se uguale al valore iniziale; tale scelta prevale sull'avviso di ipotesi. Il record non contiene l'identità dell'autore: la skill prescrive di mantenere le scelte esplicite e di cambiare i valori iniziali per le ipotesi autonome.
+- Test aggiunti in `piece-measures.test.ts`, `piece-measures-pane.test.tsx`, `selected-piece-chip.test.tsx`, `parameter-assumptions.test.ts`; estesi `parameters-number.test.tsx`, `smlib.kernel.test.ts` e `physical-materials.test.ts`.
+
+Verifica locale: 146 test nei 7 file toccati (19 UI, 55 viewer, 72 SMLib), typecheck dei tre moduli, lint sui 28 file TypeScript senza errori (restano avvisi) e build di viewer/SMLib. Dopo l'interruzione per memoria, controlli eseguiti in sequenza, Vitest con `--maxWorkers=2`, lint/typecheck con `NODE_OPTIONS=--max-old-space-size=4096`.
+
+La verifica dal vivo autenticata resta al coordinatore dopo l'unione dei rami; questa copia non avvia server e non pubblica modifiche.

@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react';
+import type { ReactNode } from 'react';
 import type { LengthSymbol } from '#constants/length-units.js';
 import type { JSONValue, ParameterGroup } from '@taucad/types';
 import type {
@@ -69,12 +70,25 @@ export type ParameterEdit =
   | Readonly<{ kind: 'transient' }>
   | Readonly<{ kind: 'authoritative'; commit: ParameterCommit }>;
 
+/** Optional host presentation of the same authoritative parameter fields. @public */
+export type ParameterPresentation = Readonly<{
+  locale?: string;
+  /** A host with piece headers can render first-level objects without a second header. */
+  embedFirstLevel?: boolean;
+  fieldLabel?: (path: readonly string[], fallback: string) => string;
+  fieldNote?: (path: readonly string[]) => ReactNode;
+  /** Translate or replace a field description; an empty string hides it. */
+  fieldDescription?: (path: readonly string[], description: string) => string;
+}>;
+
 /**
  * The form context every parameter field and template receives from RJSF.
  * @public
  */
 // eslint-disable-next-line @typescript-eslint/naming-convention -- RJSF uses this format for formContext
 export type RJSFContext = {
+  /** Host-owned field labels, provenance and locale; no parameter values are changed. */
+  presentationOptions?: ParameterPresentation;
   idPrefix: string;
   rootPresentation: 'catalog' | 'embedded';
   searchTerm: string;
