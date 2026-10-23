@@ -50,7 +50,7 @@ describe('AccountPreferences', () => {
     expect(screen.getAllByRole('menuitemradio').map((item) => item.textContent)).toEqual([
       'Chiaro',
       'Nero',
-      'Sistema',
+      'Segui il Mac',
       'Italiano',
       'English',
     ]);

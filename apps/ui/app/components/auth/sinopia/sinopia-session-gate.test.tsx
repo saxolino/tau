@@ -110,7 +110,7 @@ describe('SinopiaSessionGate', () => {
     expect(
       screen.getByRole('heading', {
         level: 1,
-        name: 'Conferma la tua identità',
+        name: 'Inserisci il codice dell’app di autenticazione',
       }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Codice di verifica')).toHaveAttribute('autocomplete', 'one-time-code');

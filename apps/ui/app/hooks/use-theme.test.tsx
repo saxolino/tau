@@ -129,7 +129,7 @@ describe('useTheme', () => {
     expect(result.current.theme).toBe(Theme.DARK);
     expect(result.current.ssrTheme).toBe(Theme.DARK);
     expect(result.current.themeWithSystem).toBeNull();
-    expect(result.current.currentOption.name).toBe('System');
+    expect(result.current.currentOption.name).toBe('Follow the Mac');
     expect(result.current.isHighContrast).toBe(false);
   });
 
@@ -147,8 +147,8 @@ describe('useTheme', () => {
   });
 
   it.each([
-    ['it', ['Chiaro', 'Nero', 'Sistema']],
-    ['en', ['Light', 'Black', 'System']],
+    ['it', ['Chiaro', 'Nero', 'Segui il Mac']],
+    ['en', ['Light', 'Black', 'Follow the Mac']],
   ] as const)('should offer two themes and the system in %s', (language, names) => {
     act(() => {
       setLanguage(language);

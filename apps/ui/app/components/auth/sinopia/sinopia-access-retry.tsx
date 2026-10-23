@@ -20,9 +20,13 @@ export function SinopiaAccessRetry({ user }: { readonly user: SinopiaUser }): Re
     <SinopiaAuthFrame
       titleId={titleId}
       title={t('auth.retry.title')}
-      description={t('auth.retry.description', {
-        email: user.email ?? t('auth.secondFactor.accountFallback'),
-      })}
+      description={
+        <span role='alert'>
+          {t('auth.retry.description', {
+            email: user.email ?? t('auth.secondFactor.accountFallback'),
+          })}
+        </span>
+      }
     >
       <div className='flex flex-col gap-3'>
         <Button

@@ -528,6 +528,7 @@ Controlli finali (dopo la ripresa, eseguiti uno alla volta):
 - Typecheck e lint con `NODE_OPTIONS=--max-old-space-size=4096`; cache e dati Nx confinati al worktree tramite
   `NX_WORKSPACE_DATA_DIRECTORY` e `NX_CACHE_DIRECTORY`. Nessun server di sviluppo.
 - Revisione indipendente completata: corretti invio durante la dettatura e modifica della bozza durante creazione.
+
 ## 2026-10-23 — Versioni leggibili (passo 5)
 
 - `apps/ui/app/routes/w.$workspace.$project/chat-revisions.tsx` e test: la scheda sinistra riusa il grafo di
@@ -636,3 +637,54 @@ immediatamente precedente; la sola presenza di un override non prova chi l’ha 
 - Vitest mirato: 251 test passati in 18 file, `--maxWorkers=2`.
 - Test browser del composer aggiornati; browser/e2e dal vivo lasciati al coordinatore come da incarico.
 - Nessun server, chiamata di generazione a pagamento, push o modifica a Supabase.
+
+## 23 ottobre 2026 — accesso, account e impostazioni (incarico 09)
+
+Il menu dell’account Sinopia mostra email, lingua, tema, sito Sinopia, impostazioni,
+informazioni ed uscita; non monta più le aggiunte Files e crediti Tau. I temi visibili
+sono Chiaro, Nero e «Segui il Mac», mantenendo il comportamento Sistema previsto dal design.
+Le impostazioni mostrano Aspetto (tema, lingua, cursori) e Modello (mm fissi).
+Le sezioni tecniche e il loro codice Tau restano conservati, ma non sono raggiungibili
+dalla navigazione, dalla ricerca né dai collegamenti diretti del dialogo.
+
+Accesso, secondo fattore e rifiuto sono in italiano e inglese; il rifiuto ha una card
+con motivo e rimedio, la registrazione rimanda a Sinopia, gli stati di attesa sono
+annunciati. Le pagine non trovate e gli errori dell’app offrono azioni di recupero:
+indirizzi, messaggi delle eccezioni e stack non sono più mostrati al designer.
+
+Limiti di integrazione conservati: la lingua è ricordata sul dispositivo, non scritta
+sull’account Sinopia; la sessione espone l’email, non il nome del profilo. Questo incarico
+non modifica il controllo dei ruoli esistente (quindi non introduce il caso «ruolo non
+ammesso» del design), né esegue operazioni Supabase. Le preferenze Agente e quelle del
+modello ancora prive di un proprietario operativo non sono esposte come controlli fittizi.
+La verifica visiva autenticata dopo l’unione spetta al coordinatore, come da incarico comune.
+
+File modificati o aggiunti (compresi i controlli mirati):
+
+- `apps/ui/app/components/auth/sinopia/account-preferences.test.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-access-retry.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-google-button.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-login.test.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-login.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-second-factor.test.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-second-factor.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-session-gate.test.tsx`
+- `apps/ui/app/components/auth/sinopia/sinopia-user-menu.tsx`
+- `apps/ui/app/components/auth/user/user-button.test.tsx`
+- `apps/ui/app/components/auth/user/user-button.tsx`
+- `apps/ui/app/components/error-page.test.tsx`
+- `apps/ui/app/components/error-page.tsx`
+- `apps/ui/app/components/nav/about-sinopiacad.tsx`
+- `apps/ui/app/components/page-not-found.tsx`
+- `apps/ui/app/components/settings/general-settings.test.tsx`
+- `apps/ui/app/components/settings/settings-dialog.test.tsx`
+- `apps/ui/app/components/settings/settings-dialog.tsx`
+- `apps/ui/app/components/settings/settings-item.tsx`
+- `apps/ui/app/components/settings/settings-registry.test.ts`
+- `apps/ui/app/components/settings/settings-registry.ts`
+- `apps/ui/app/components/settings/sinopia-settings.tsx`
+- `apps/ui/app/hooks/use-theme.test.tsx`
+- `apps/ui/app/i18n/messages/account.ts`
+- `apps/ui/app/i18n/messages/auth.ts`
+- `apps/ui/app/i18n/messages/common.ts`
+- `apps/ui/app/routes/w.$workspace.$project/project-not-found.tsx`

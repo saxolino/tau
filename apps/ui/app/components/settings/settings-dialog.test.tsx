@@ -7,6 +7,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SidebarProvider } from '@taucad/ui/components/sidebar';
+import type * as UseTheme from '#hooks/use-theme.js';
+import { useTranslation } from '#i18n/translate.js';
+import { setLanguage } from '#i18n/language.js';
 import { SettingsDialog } from '#components/settings/settings-dialog.js';
 
 const renderSecuritySettings = vi.hoisted(() => vi.fn(() => <div>Mounted security settings</div>));
@@ -77,112 +80,73 @@ function SettingsTestSurface({ url = '/home/project?settings=general' }: { reado
   );
 }
 
-describe('SettingsDialog', () => {
+const setTheme = vi.hoisted(() => vi.fn());
+const setPointer = vi.hoisted(() => vi.fn());
+vi.mock('#hooks/use-cookie.js', () => ({ useCookie: () => [false, setPointer] }));
+vi.mock('#hooks/use-theme.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UseTheme>();
+  return {
+    ...actual,
+    useTheme: () => {
+      const { t } = useTranslation();
+      return { themeWithSystem: actual.Theme.LIGHT, setTheme, options: actual.buildThemeOptions(t) };
+    },
+  };
+});
+
+describe('Sinopia SettingsDialog', () => {
   beforeAll(() => {
     HTMLElement.prototype.scrollTo = vi.fn();
     HTMLElement.prototype.scrollIntoView = vi.fn();
   });
-
   beforeEach(() => {
-    renderSecuritySettings.mockClear();
-    deferredBillingState.showTarget = false;
+    setLanguage('en');
+    vi.clearAllMocks();
   });
-
   afterAll(() => {
     HTMLElement.prototype.scrollTo = scrollTo;
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
   });
 
-  it('should mount Security only after its tab is selected', async () => {
-    render(<SettingsTestSurface />);
+  it.each(['billing', 'security', 'agents', 'filesystem', 'machines', 'repositories', 'compute', 'experimental'])(
+    'should redirect a hidden %s deep link to appearance without mounting Tau content',
+    (section) => {
+      render(<SettingsTestSurface url={`/?settings=${section}`} />);
+      expect(screen.getByRole('heading', { name: 'Appearance' })).toBeInTheDocument();
+      expect(screen.queryByText(/Mounted/u)).not.toBeInTheDocument();
+      expect(renderSecuritySettings).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Billing' })).not.toBeInTheDocument();
+    },
+  );
 
-    expect(screen.getByText('Mounted general settings')).toBeInTheDocument();
-    expect(screen.queryByText('Mounted security settings')).not.toBeInTheDocument();
-    expect(renderSecuritySettings).not.toHaveBeenCalled();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Security' }));
-
-    expect(await screen.findByText('Mounted security settings')).toBeInTheDocument();
-    expect(renderSecuritySettings).toHaveBeenCalledOnce();
-  });
-
-  it('should close settings when Back to app is selected', async () => {
-    render(<SettingsTestSurface />);
-
-    await userEvent.click(screen.getByRole('button', { name: 'Back to app' }));
-
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('should find and focus a setting selected from search results', async () => {
+  it('should use the account theme and language owners and persist cursor preferences', async () => {
     const user = userEvent.setup();
     render(<SettingsTestSurface />);
-
-    await user.type(screen.getByRole('searchbox', { name: 'Search settings' }), 'theme');
-    await user.click(screen.getByRole('button', { name: 'Theme' }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('region', { name: 'Theme' })).toHaveFocus();
-    });
-    expect(screen.getByRole('searchbox', { name: 'Search settings' })).toHaveValue('theme');
+    await user.click(screen.getByRole('button', { name: 'Black' }));
+    expect(setTheme).toHaveBeenCalledWith('black');
+    await user.click(screen.getByRole('switch', { name: 'Cursors' }));
+    expect(setPointer).toHaveBeenCalledWith(true);
+    await user.click(screen.getByRole('button', { name: 'Italiano' }));
+    expect(screen.getByRole('heading', { name: 'Aspetto' })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Cerca nelle impostazioni' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Segui il Mac' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Modello' }));
+    expect(screen.getByText('mm')).toBeInTheDocument();
+    expect(screen.getByText('Tutte le misure del modello sono in millimetri.')).toBeInTheDocument();
   });
 
-  it('should open the first ranked setting when search is submitted', async () => {
+  it('should search and focus a translated control without exposing technical sections', async () => {
     const user = userEvent.setup();
     render(<SettingsTestSurface />);
-
-    await user.type(screen.getByRole('searchbox', { name: 'Search settings' }), 'filesystem{Enter}');
-
-    expect(await screen.findByText('Mounted agents')).toBeInTheDocument();
+    const search = screen.getByRole('searchbox', { name: 'Search settings' });
+    await user.type(search, 'units{Enter}');
     await waitFor(() => {
-      expect(screen.getByRole('region', { name: 'Filesystem' })).toHaveFocus();
+      expect(document.querySelector('#settings-units')).toHaveFocus();
     });
-  });
-
-  it('should focus a setting that mounts after its section opens', async () => {
-    const user = userEvent.setup();
-    const view = render(<SettingsTestSurface />);
-
-    await user.type(screen.getByRole('searchbox', { name: 'Search settings' }), 'credit balance');
-    await user.click(screen.getByRole('button', { name: 'Purchased credits' }));
-    await waitFor(() => {
-      expect(screen.getByRole('region', { name: 'Billing settings' })).toHaveFocus();
-    });
-
-    deferredBillingState.showTarget = true;
-    view.rerender(<SettingsTestSurface />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('region', { name: 'Purchased credits' })).toHaveFocus();
-    });
-  });
-
-  it('should reveal the setting a deep link names once its section has loaded', async () => {
-    const url = '/home/project?settings=billing&setting=credit-balance';
-    const view = render(<SettingsTestSurface url={url} />);
-
-    expect(screen.getByText('Mounted billing')).toBeInTheDocument();
-    deferredBillingState.showTarget = true;
-    view.rerender(<SettingsTestSurface url={url} />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('region', { name: 'Purchased credits' })).toHaveFocus();
-    });
-  });
-
-  it('should show an empty state and restore navigation when search is cleared', async () => {
-    const user = userEvent.setup();
-    render(<SettingsTestSurface />);
-    const searchbox = screen.getByRole('searchbox', { name: 'Search settings' });
-
-    await user.type(searchbox, 'no such setting');
-
+    await user.clear(search);
+    await user.type(search, 'telemetry');
     expect(screen.getByText('No settings found')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Clear search' }));
-
-    expect(searchbox).toHaveValue('');
-    expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
-    expect(screen.queryByText('No settings found')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Back to the model' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

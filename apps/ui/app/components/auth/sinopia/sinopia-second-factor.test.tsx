@@ -21,14 +21,14 @@ const words = {
     code: 'Codice di verifica',
     wrong: 'Codice non valido o scaduto. Riprova con il codice attuale dell’app.',
     signOut: 'Esci e accedi con un altro account',
-    title: 'Conferma la tua identità',
+    title: 'Inserisci il codice dell’app di autenticazione',
   },
   en: {
     confirm: 'Confirm',
     code: 'Verification code',
     wrong: 'Invalid or expired code. Try again with the app’s current code.',
     signOut: 'Sign out and use another account',
-    title: 'Confirm it’s you',
+    title: 'Enter the code from your authenticator app',
   },
 } as const satisfies Record<Language, Record<string, string>>;
 

@@ -13,6 +13,7 @@ export const authMessages = defineMessages({
       password: 'Password',
       submit: 'Accedi',
       pending: 'Accesso in corso…',
+      register: 'Non hai un account? Registrati su sinopialab.com',
     },
     language: {
       label: 'Lingua',
@@ -20,7 +21,7 @@ export const authMessages = defineMessages({
       english: 'English',
     },
     secondFactor: {
-      title: 'Conferma la tua identità',
+      title: 'Inserisci il codice dell’app di autenticazione',
       description:
         'L’account {email} è protetto da un secondo fattore. Inserisci il codice dell’app di autenticazione.',
       accountFallback: 'Sinopia',
@@ -37,6 +38,8 @@ export const authMessages = defineMessages({
       signOut: 'Esci',
     },
     goToSinopia: 'Vai a sinopialab.com',
+    refused: 'Accesso a SinopiaCAD',
+    signOut: 'Esci',
     messages: {
       unreachable: 'Non riesco a raggiungere Sinopia. Controlla la connessione e riprova.',
       tooMany: 'Troppi tentativi. Riprova tra qualche minuto.',
@@ -67,6 +70,7 @@ export const authMessages = defineMessages({
       password: 'Password',
       submit: 'Sign in',
       pending: 'Signing in…',
+      register: 'No account? Sign up on sinopialab.com',
     },
     language: {
       label: 'Language',
@@ -74,7 +78,7 @@ export const authMessages = defineMessages({
       english: 'English',
     },
     secondFactor: {
-      title: 'Confirm it’s you',
+      title: 'Enter the code from your authenticator app',
       description: 'The account {email} is protected by a second factor. Enter the code from your authenticator app.',
       accountFallback: 'Sinopia',
       codeLabel: 'Verification code',
@@ -91,6 +95,8 @@ export const authMessages = defineMessages({
       signOut: 'Sign out',
     },
     goToSinopia: 'Go to sinopialab.com',
+    refused: 'SinopiaCAD access',
+    signOut: 'Sign out',
     messages: {
       unreachable: 'I can’t reach Sinopia. Check your connection and try again.',
       tooMany: 'Too many attempts. Try again in a few minutes.',
