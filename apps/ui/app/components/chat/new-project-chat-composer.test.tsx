@@ -11,6 +11,7 @@ const mockConsumeDraft = vi.fn(async () => undefined);
 const mockPresentLocationError = vi.fn(() => false);
 const mockRefresh = vi.fn(async () => undefined);
 const mockFocus = vi.fn();
+const mockEditorSubmit = vi.fn(async () => undefined);
 let routerLocationState: unknown;
 let locationKey = 0;
 let capturedTextarea: ChatTextareaProperties | undefined;
@@ -28,7 +29,7 @@ vi.mock('#components/chat/chat-textarea.js', () => ({
     ref,
     ...properties
   }: ChatTextareaProperties & { readonly ref?: React.Ref<Partial<ChatTextareaHandle>> }) => {
-    useImperativeHandle(ref, () => ({ focus: mockFocus }));
+    useImperativeHandle(ref, () => ({ focus: mockFocus, submit: mockEditorSubmit }));
     capturedTextarea = properties;
     return (
       <>
@@ -295,5 +296,40 @@ describe('NewProjectChatComposer', () => {
     handle.current?.focus();
 
     expect(mockFocus).toHaveBeenCalledOnce();
+  });
+  it('should hide technical configuration on the home composer', () => {
+    render(<NewProjectChatComposer enableLocationPicker={false} />);
+    expect(capturedTextarea?.enableAgentControls).toBe(false);
+  });
+
+  it('should admit only one project creation while the first creation is pending', async () => {
+    let finish: ((value: { slugs: { workspaceSlug: string; projectSlug: string } }) => void) | undefined;
+    mockCreateProject.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<NewProjectChatComposer enableLocationPicker={false} />);
+    await act(async () => {
+      const first = capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
+      await capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
+      expect(mockCreateProject).toHaveBeenCalledOnce();
+      finish?.({ slugs: { workspaceSlug: 'home', projectSlug: 'anello' } });
+      await first;
+    });
+    expect(mockConsumeDraft).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith('/w/home/anello');
+  });
+  it('should prevent draft editing and attachment gestures during a shared home creation', () => {
+    const view = render(<NewProjectChatComposer enableLocationPicker={false} isSubmitDisabled />);
+    expect(view.container.firstElementChild).toHaveAttribute('inert');
+    expect(view.container.firstElementChild).toHaveAttribute('aria-busy', 'true');
+  });
+  it('should forward the home build gesture through the editor submission handle', async () => {
+    const handle = createRef<ChatTextareaHandle>();
+    render(<NewProjectChatComposer ref={handle} enableLocationPicker={false} />);
+    await handle.current?.submit?.();
+    expect(mockEditorSubmit).toHaveBeenCalledOnce();
+    expect(mockCreateProject).not.toHaveBeenCalled();
   });
 });

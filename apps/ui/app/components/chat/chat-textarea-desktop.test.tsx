@@ -115,6 +115,7 @@ const renderBar = (
   options: {
     readonly acpSessionData?: AcpSessionData;
     readonly enableContextActions?: boolean;
+    readonly enableAgentControls?: boolean;
     readonly attachmentInputSupported?: boolean;
     readonly sendRefusal?: string;
     readonly handleFileSelect?: () => void;
@@ -127,6 +128,7 @@ const renderBar = (
         composerMode='main'
         containerReference={{ current: null }}
         enableContextActions={options.enableContextActions ?? true}
+        enableAgentControls={options.enableAgentControls}
         acpSessionData={options.acpSessionData}
         status='ready'
         focusEditor={noop}
@@ -152,6 +154,13 @@ describe('ChatTextareaBar', () => {
     keybindings.clear();
     execution.current = { kind: 'tau', model: 'm' };
     placements.current = [];
+  });
+
+  it('should hide agent and model configuration on the home while keeping attachment and send actions', () => {
+    renderBar({ enableAgentControls: false, enableContextActions: false });
+    expect(screen.queryByRole('button', { name: 'Agent and model' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
   });
 
   it('lays out +, the agent trigger and Send — no kernel, branch, balance or Tau mode (D6, Q11, Q16)', () => {
@@ -359,6 +368,8 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       enableAutoFocus?: boolean;
       enableMobileCollapse?: boolean;
       isFocused?: boolean;
+      // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- mutable editor handle under test
+      submitEditorRef?: React.RefObject<(() => Promise<void>) | undefined>;
     } = {},
   ) => {
     const { canResume = false, handleSubmit = asyncNoop } = options;
@@ -366,6 +377,7 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       <TooltipProvider>
         <ChatTextareaDesktop
           enableAutoFocus={options.enableAutoFocus ?? false}
+          submitEditorRef={options.submitEditorRef}
           mode={options.mode}
           enableMobileCollapse={options.enableMobileCollapse}
           isFocused={options.isFocused}
@@ -550,61 +562,74 @@ describe('ChatTextareaDesktop draft rehydration', () => {
     },
   );
 
-  it('should place the microphone beside Send and send the final transcript exactly once after recording', async () => {
-    const createRange = document.createRange.bind(document);
-    vi.spyOn(document, 'createRange').mockImplementation(() =>
-      Object.assign(createRange(), {
-        getClientRects: () => [],
-        getBoundingClientRect: () => new DOMRect(),
-      }),
-    );
-    const microphone = Promise.withResolvers<{ finish: () => Promise<Blob>; cancel: () => void }>();
-    const transcription = Promise.withResolvers<string>();
-    let preview: ((text: string) => void) | undefined;
-    dictationDependencies.available = true;
-    dictationDependencies.capture.mockReturnValue(microphone.promise);
-    dictationDependencies.transcribe.mockImplementation(async (_wav, options) => {
-      preview = options.onPreview;
-      return transcription.promise;
-    });
-    const submit = vi.fn().mockResolvedValue(undefined);
-    const view = renderComposer('Existing draft.', codexSession, { handleSubmit: submit });
-    const dictate = await screen.findByRole('button', { name: 'Dictate' });
-    expect(
-      [...view.container.querySelectorAll('[data-slot=composer-right] button')]
-        .slice(-2)
-        .map((button) => button.ariaLabel),
-    ).toEqual(['Dictate', 'Send']);
-    await userEvent.click(dictate);
-    await screen.findByRole('button', { name: 'Requesting microphone…' });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
-    act(() => {
-      screen.getByRole('textbox').focus();
-    });
-    await userEvent.keyboard('{Enter}');
-    expect(submit).not.toHaveBeenCalled();
-    await act(async () => {
-      microphone.resolve({ finish: async () => new Blob([], { type: 'audio/wav' }), cancel: noop });
-      await microphone.promise;
-    });
-    await screen.findByRole('button', { name: 'Stop dictation' });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await waitFor(() => {
-      expect(preview).toBeDefined();
-    });
-    act(() => {
-      preview?.('Build a');
-    });
-    expect(view.container.querySelector('[data-slot=dictation-transcript]')).toHaveTextContent('Build a');
-    expect(submit).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
-    await act(async () => {
-      transcription.resolve('Build a bracket.');
-    });
-    await waitFor(() => {
-      expect(submit).toHaveBeenCalledExactlyOnceWith('Existing draft. Build a bracket.');
-    });
-  });
+  it.each(['composer', 'home'] as const)(
+    'should send the final transcript exactly once through %s after recording',
+    async (surface) => {
+      const createRange = document.createRange.bind(document);
+      vi.spyOn(document, 'createRange').mockImplementation(() =>
+        Object.assign(createRange(), {
+          getClientRects: () => [],
+          getBoundingClientRect: () => new DOMRect(),
+        }),
+      );
+      const microphone = Promise.withResolvers<{ finish: () => Promise<Blob>; cancel: () => void }>();
+      const transcription = Promise.withResolvers<string>();
+      let preview: ((text: string) => void) | undefined;
+      dictationDependencies.available = true;
+      dictationDependencies.capture.mockReturnValue(microphone.promise);
+      dictationDependencies.transcribe.mockImplementation(async (_wav, options) => {
+        preview = options.onPreview;
+        return transcription.promise;
+      });
+      const submit = vi.fn().mockResolvedValue(undefined);
+      const submitEditorRef: { current: (() => Promise<void>) | undefined } = { current: undefined };
+      const view = renderComposer('Existing draft.', codexSession, { handleSubmit: submit, submitEditorRef });
+      const send = async (): Promise<void> => {
+        if (surface === 'home') {
+          act(() => {
+            void submitEditorRef.current?.();
+          });
+        } else {
+          await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+        }
+      };
+      const dictate = await screen.findByRole('button', { name: 'Dictate' });
+      expect(
+        [...view.container.querySelectorAll('[data-slot=composer-right] button')]
+          .slice(-2)
+          .map((button) => button.ariaLabel),
+      ).toEqual(['Dictate', 'Send']);
+      await userEvent.click(dictate);
+      await screen.findByRole('button', { name: 'Requesting microphone…' });
+      await send();
+      act(() => {
+        screen.getByRole('textbox').focus();
+      });
+      await userEvent.keyboard('{Enter}');
+      expect(submit).not.toHaveBeenCalled();
+      await act(async () => {
+        microphone.resolve({ finish: async () => new Blob([], { type: 'audio/wav' }), cancel: noop });
+        await microphone.promise;
+      });
+      await screen.findByRole('button', { name: 'Stop dictation' });
+      await send();
+      await waitFor(() => {
+        expect(preview).toBeDefined();
+      });
+      act(() => {
+        preview?.('Build a');
+      });
+      expect(view.container.querySelector('[data-slot=dictation-transcript]')).toHaveTextContent('Build a');
+      expect(submit).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
+      await act(async () => {
+        transcription.resolve('Build a bracket.');
+      });
+      await waitFor(() => {
+        expect(submit).toHaveBeenCalledExactlyOnceWith('Existing draft. Build a bracket.');
+      });
+    },
+  );
 });
 
 describe('composer bar measurement lifecycle', () => {
