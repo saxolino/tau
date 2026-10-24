@@ -19,6 +19,7 @@ import type { modelInteractionMachine } from '@taucad/viewer/machines/model-inte
 import type { GraphicsRef } from '#host/workbench-host.jsx';
 import { useWorkbenchPanesHost } from '#host/workbench-host.jsx';
 import type { ModelComponentTarget, ModelThumbnailRequest, ModelThumbnails } from '#model/model-source.js';
+import { useModelPaneLabels } from '#model/model-labels.js';
 import { ComponentRow } from '#model/component-row.jsx';
 import { getVisibleModelComponents } from '#model/visible-components.js';
 import {
@@ -44,6 +45,10 @@ export type ModelComponentRevealTarget = ModelComponentTarget & { readonly reque
  */
 export type ModelPaneviewPanelParams = {
   entryPath: string;
+  /** The entry's name as the host shows it: its path unless the host names it. */
+  title: string;
+  /** The lone entry of a host that lists it without a section header. */
+  isHeaderHidden?: boolean;
   graphicsRef?: GraphicsRef;
   query: string;
   revealTarget?: ModelComponentRevealTarget;
@@ -65,7 +70,7 @@ export type ModelPaneviewPanelParams = {
  * @internal
  */
 export type ModelPropertiesPanelParams = {
-  selected?: { readonly node: GeometryComponentNode; readonly entryPath: string };
+  selected?: { readonly node: GeometryComponentNode; readonly entryPath: string; readonly entryTitle?: string };
   preview?: PartThumbnailState;
   onOpenPreview?: (origin: HTMLElement) => void;
   onRetryPreview?: () => void;
@@ -111,7 +116,7 @@ function useModelUnitId(entryPath: string, graphicsRef: GraphicsRef): string {
  */
 export function ModelPaneviewPanel({ params }: { readonly params: ModelPaneviewPanelParams }): React.JSX.Element {
   if (!params.graphicsRef) {
-    return <ModelPaneviewPanelSurface />;
+    return <ModelPaneviewPanelSurface isHeaderHidden={params.isHeaderHidden} />;
   }
 
   return <LiveModelPaneviewPanel params={params} graphicsRef={params.graphicsRef} />;
@@ -130,7 +135,7 @@ function LiveModelPaneviewPanel({
   );
 
   if (!modelRef) {
-    return <ModelPaneviewPanelSurface />;
+    return <ModelPaneviewPanelSurface isHeaderHidden={params.isHeaderHidden} />;
   }
 
   return <LiveComponentTree params={params} graphicsRef={graphicsRef} modelRef={modelRef} />;
@@ -146,6 +151,8 @@ function LiveComponentTree({
   readonly modelRef: ModelInteractionRef;
 }): React.JSX.Element {
   const source = useWorkbenchPanesHost().model;
+  const labels = useModelPaneLabels();
+  const componentName = source?.componentName;
   const [scroller, setScroller] = useState<HTMLDivElement>();
   // oxlint-disable-next-line typescript/no-restricted-types -- React passes null when a callback ref detaches.
   const attachScroller = useCallback((element: HTMLDivElement | null) => {
@@ -166,8 +173,8 @@ function LiveComponentTree({
   const childCount = root?.childIds.length ?? 0;
   const normalizedQuery = params.query.trim().toLowerCase();
   const visibleNodes = useMemo(
-    () => (manifest ? getVisibleModelComponents(manifest, normalizedQuery) : []),
-    [manifest, normalizedQuery],
+    () => (manifest ? getVisibleModelComponents(manifest, normalizedQuery, componentName) : []),
+    [componentName, manifest, normalizedQuery],
   );
   const [visiblePreviewIds, setVisiblePreviewIds] = useState<readonly string[]>([]);
   const leafPartIds = useMemo(
@@ -321,41 +328,29 @@ function LiveComponentTree({
   }, [currentSelection, failDecode, markDecoded, params.onPreviewChange, retryPreview, selectedPreview, unitId]);
 
   if (!manifest || !root || childCount === 0) {
-    return <ModelPaneviewPanelSurface />;
+    return <ModelPaneviewPanelSurface isHeaderHidden={params.isHeaderHidden} />;
   }
 
   return (
     <ModelPaneviewPanelSurface
       contentRef={attachScroller}
+      isHeaderHidden={params.isHeaderHidden}
       footer={
-        <Collapsible>
-          <div className='flex min-w-0 items-center justify-between gap-2 border-t px-2 py-1 text-xs text-muted-foreground'>
-            <span className='truncate'>Weight · 0 of {leafPartIds.length} parts known</span>
-            <span className='shrink-0 font-mono'>Unknown</span>
-            {leafPartIds.length > 0 ? (
-              <CollapsibleTrigger className='shrink-0 rounded-sm underline-offset-2 hover:underline focus-visible:focus-outline'>
-                Missing
-              </CollapsibleTrigger>
-            ) : undefined}
-          </div>
-          <CollapsibleContent className='border-t p-1'>
-            <MissingPartList
-              manifest={manifest}
-              ids={leafPartIds}
-              graphicsRef={graphicsRef}
-              unitId={unitId}
-              entryPath={params.entryPath}
-              onReveal={params.onReveal}
-            />
-          </CollapsibleContent>
-        </Collapsible>
+        <ModelUnitFooter
+          manifest={manifest}
+          leafPartIds={leafPartIds}
+          graphicsRef={graphicsRef}
+          unitId={unitId}
+          entryPath={params.entryPath}
+          onReveal={params.onReveal}
+        />
       }
     >
       {normalizedQuery && visibleNodes.length === 0 ? (
         <ExplorerNoMatchesState />
       ) : (
         <ComponentRows
-          ariaLabel={`Model components for ${params.entryPath}`}
+          ariaLabel={labels.components(params.title)}
           manifest={manifest}
           nodes={visibleNodes}
           query={params.query}
@@ -379,27 +374,97 @@ function LiveComponentTree({
   );
 }
 
+/**
+ * The line under an entry's components: the host's weight line, nothing while the host does not know the weight, or
+ * the pane's own count of parts with a known weight and the list of the others.
+ *
+ * @returns The footer, if any.
+ */
+function ModelUnitFooter({
+  manifest,
+  leafPartIds,
+  graphicsRef,
+  unitId,
+  entryPath,
+  onReveal,
+}: {
+  readonly manifest: GeometryComponentManifest;
+  readonly leafPartIds: readonly string[];
+  readonly graphicsRef: GraphicsRef;
+  readonly unitId: string;
+  readonly entryPath: string;
+  readonly onReveal: ((target: ModelComponentTarget) => void) | undefined;
+}): React.JSX.Element | undefined {
+  const weightSummary = useWorkbenchPanesHost().model?.weightSummary;
+  if (weightSummary) {
+    const text = weightSummary(manifest);
+    return text ? (
+      <p
+        data-slot='model-weight-summary'
+        className='truncate border-t px-2 py-1 text-xs text-muted-foreground tabular-nums'
+      >
+        {text}
+      </p>
+    ) : undefined;
+  }
+  return (
+    <Collapsible>
+      <div className='flex min-w-0 items-center justify-between gap-2 border-t px-2 py-1 text-xs text-muted-foreground'>
+        <span className='truncate'>Weight · 0 of {leafPartIds.length} parts known</span>
+        <span className='shrink-0 font-mono'>Unknown</span>
+        {leafPartIds.length > 0 ? (
+          <CollapsibleTrigger className='shrink-0 rounded-sm underline-offset-2 hover:underline focus-visible:focus-outline'>
+            Missing
+          </CollapsibleTrigger>
+        ) : undefined}
+      </div>
+      <CollapsibleContent className='border-t p-1'>
+        <MissingPartList
+          manifest={manifest}
+          ids={leafPartIds}
+          graphicsRef={graphicsRef}
+          unitId={unitId}
+          entryPath={entryPath}
+          onReveal={onReveal}
+        />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function ModelPaneviewPanelSurface({
   children,
   footer,
   contentRef,
+  isHeaderHidden = false,
 }: {
   readonly children?: React.ReactNode;
   readonly footer?: React.ReactNode;
   readonly contentRef?: React.Ref<HTMLDivElement>;
+  readonly isHeaderHidden?: boolean;
 }): React.JSX.Element {
-  return (
-    <div data-slot='model-unit-surface' className={cn('flex h-full flex-col', paneviewAttachedBodyClassName)}>
+  const surface = (
+    <div
+      data-slot='model-unit-surface'
+      className={cn(
+        'flex h-full flex-col',
+        // Without a header above it, the card closes on every side.
+        isHeaderHidden ? 'overflow-hidden rounded-xl border border-border bg-card' : paneviewAttachedBodyClassName,
+      )}
+    >
       <div ref={contentRef} data-slot='model-unit-scroller' className='min-h-0 flex-1 overflow-hidden p-2'>
         {children ?? <ExplorerUnavailableState />}
       </div>
       {footer}
     </div>
   );
+  // The gap a header would keep from the filter.
+  return isHeaderHidden ? <div className='h-full pt-(--pane-unit-gap)'>{surface}</div> : surface;
 }
 
 /**
- * One entry's section header: the entry path, its component count and a show-hidden action.
+ * One entry's section header: the entry's title, its component count and a show-hidden action; nothing for a lone
+ * entry the host lists without a header.
  *
  * @internal
  * @returns The Paneview header element.
@@ -410,21 +475,34 @@ export function ModelPaneviewHeader({
 }: {
   readonly api: PaneviewPanelApi;
   readonly params: ModelPaneviewPanelParams;
-}): React.JSX.Element {
-  if (!params.graphicsRef) {
-    return <ModelPaneviewHeaderSurface api={api} entryPath={params.entryPath} />;
+}): React.JSX.Element | undefined {
+  if (params.isHeaderHidden) {
+    return undefined;
   }
 
-  return <LiveModelPaneviewHeader api={api} entryPath={params.entryPath} graphicsRef={params.graphicsRef} />;
+  if (!params.graphicsRef) {
+    return <ModelPaneviewHeaderSurface api={api} title={params.title} />;
+  }
+
+  return (
+    <LiveModelPaneviewHeader
+      api={api}
+      entryPath={params.entryPath}
+      title={params.title}
+      graphicsRef={params.graphicsRef}
+    />
+  );
 }
 
 function LiveModelPaneviewHeader({
   api,
   entryPath,
+  title,
   graphicsRef,
 }: {
   readonly api: PaneviewPanelApi;
   readonly entryPath: string;
+  readonly title: string;
   readonly graphicsRef: GraphicsRef;
 }): React.JSX.Element {
   const modelRef = useSelector(
@@ -433,20 +511,30 @@ function LiveModelPaneviewHeader({
   );
 
   if (!modelRef) {
-    return <ModelPaneviewHeaderSurface api={api} entryPath={entryPath} />;
+    return <ModelPaneviewHeaderSurface api={api} title={title} />;
   }
 
-  return <LiveModelPaneviewHeaderState api={api} entryPath={entryPath} graphicsRef={graphicsRef} modelRef={modelRef} />;
+  return (
+    <LiveModelPaneviewHeaderState
+      api={api}
+      entryPath={entryPath}
+      title={title}
+      graphicsRef={graphicsRef}
+      modelRef={modelRef}
+    />
+  );
 }
 
 function LiveModelPaneviewHeaderState({
   api,
   entryPath,
+  title,
   graphicsRef,
   modelRef,
 }: {
   readonly api: PaneviewPanelApi;
   readonly entryPath: string;
+  readonly title: string;
   readonly graphicsRef: GraphicsRef;
   readonly modelRef: ModelInteractionRef;
 }): React.JSX.Element {
@@ -457,7 +545,7 @@ function LiveModelPaneviewHeaderState({
   return (
     <ModelPaneviewHeaderSurface
       api={api}
-      entryPath={entryPath}
+      title={title}
       count={root?.childIds.length ?? 0}
       hiddenComponentCount={unitState.hiddenComponentIds.length}
       onShowHiddenComponents={() => {
@@ -469,25 +557,26 @@ function LiveModelPaneviewHeaderState({
 
 function ModelPaneviewHeaderSurface({
   api,
-  entryPath,
+  title,
   count = 0,
   hiddenComponentCount = 0,
   onShowHiddenComponents,
 }: {
   readonly api: PaneviewPanelApi;
-  readonly entryPath: string;
+  readonly title: string;
   readonly count?: number;
   readonly hiddenComponentCount?: number;
   readonly onShowHiddenComponents?: () => void;
 }): React.JSX.Element {
+  const labels = useModelPaneLabels();
   return (
-    <PaneviewHeader api={api} title={entryPath}>
+    <PaneviewHeader api={api} title={title}>
       <PaneviewHeaderControls>
         <span className='shrink-0 text-xs text-muted-foreground/60'>({count})</span>
         {hiddenComponentCount > 0 ? (
           <PaneviewHeaderAction
-            aria-label={`Show hidden components in ${entryPath}`}
-            tooltip='Show hidden components'
+            aria-label={labels.showHiddenComponentsIn(title)}
+            tooltip={labels.showHiddenComponents}
             onClick={onShowHiddenComponents}
           >
             <Eye />
@@ -509,11 +598,17 @@ export function ModelPropertiesPaneviewPanel({
 }: {
   readonly params: ModelPropertiesPanelParams;
 }): React.JSX.Element {
+  const source = useWorkbenchPanesHost().model;
+  const labels = useModelPaneLabels();
+  const node = params.selected?.node;
   return (
     <div className={cn('h-full overflow-y-auto! scroll-shadows-y', paneviewAttachedBodyClassName)}>
       <PartPropertiesPanel
-        node={params.selected?.node}
+        node={node}
+        name={node && source?.componentName ? source.componentName(node) : undefined}
         entryPath={params.selected?.entryPath}
+        entryTitle={params.selected?.entryTitle}
+        labels={labels.part}
         preview={params.preview}
         onOpenPreview={params.onOpenPreview}
         onRetryPreview={params.onRetryPreview}
@@ -531,11 +626,16 @@ export function ModelPropertiesPaneviewPanel({
  * @returns The Paneview header element.
  */
 export function ModelPropertiesPaneviewHeader({ api }: { readonly api: PaneviewPanelApi }): React.JSX.Element {
-  return <PaneviewHeader api={api} title='Properties' />;
+  const labels = useModelPaneLabels();
+  return <PaneviewHeader api={api} title={labels.properties} />;
 }
 
 const componentKey = (node: GeometryComponentNode): string => node.id;
 const partKey = (id: string): string => id;
+const nameOf = (
+  node: GeometryComponentNode | undefined,
+  componentName: ((node: GeometryComponentNode) => string) | undefined,
+): string | undefined => (node && componentName ? componentName(node) : node?.name);
 
 function MissingPartList({
   manifest,
@@ -552,6 +652,7 @@ function MissingPartList({
   readonly entryPath: string;
   readonly onReveal: ((target: ModelComponentTarget) => void) | undefined;
 }): React.JSX.Element {
+  const componentName = useWorkbenchPanesHost().model?.componentName;
   const renderItem = useCallback(
     (_index: number, id: string) => (
       <button
@@ -562,10 +663,10 @@ function MissingPartList({
           onReveal?.({ entryPath, unitId, componentId: id });
         }}
       >
-        {manifest.nodesById[id]?.name ?? id}
+        {nameOf(manifest.nodesById[id], componentName) ?? id}
       </button>
     ),
-    [entryPath, graphicsRef, manifest, onReveal, unitId],
+    [componentName, entryPath, graphicsRef, manifest, onReveal, unitId],
   );
   return (
     <PaneVirtualList
@@ -689,17 +790,20 @@ function ComponentRows({
  * @returns A bordered panel empty state.
  */
 export function ExplorerEmptyState(): React.JSX.Element {
+  const labels = useModelPaneLabels();
   return (
     <div className='size-full p-2'>
-      <PanelEmptyState icon={Box} title='No model components available' className='rounded-xl border bg-card' />
+      <PanelEmptyState icon={Box} title={labels.noComponents} className='rounded-xl border bg-card' />
     </div>
   );
 }
 
 function ExplorerUnavailableState(): React.JSX.Element {
-  return <PanelEmptyState icon={Box} title='Open renderer to inspect components' className='min-h-16 break-all' />;
+  const labels = useModelPaneLabels();
+  return <PanelEmptyState icon={Box} title={labels.rendererClosed} className='min-h-16 break-all' />;
 }
 
 function ExplorerNoMatchesState(): React.JSX.Element {
-  return <PanelEmptyState icon={Box} title='No matching parts' className='min-h-16 break-all' />;
+  const labels = useModelPaneLabels();
+  return <PanelEmptyState icon={Box} title={labels.noMatches} className='min-h-16 break-all' />;
 }

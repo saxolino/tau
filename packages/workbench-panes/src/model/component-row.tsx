@@ -11,6 +11,8 @@ import { PartPreviewFrame } from '@taucad/viewer/cad/part-preview-image';
 import type { PartThumbnailState } from '@taucad/viewer/cad/part-thumbnail-state';
 import type { GraphicsRef } from '#host/workbench-host.jsx';
 import { useWorkbenchPanesHost } from '#host/workbench-host.jsx';
+import { useModelPaneLabels } from '#model/model-labels.js';
+import type { ModelPaneLabels } from '#model/model-source.js';
 import { isPreviewablePart } from '#model/visible-components.js';
 
 /**
@@ -34,26 +36,28 @@ function getVisibilityAction({
   nodeName,
   unitId,
   componentId,
+  labels,
 }: {
   readonly isHidden: boolean;
   readonly nodeName: string;
   readonly unitId: string;
   readonly componentId: string;
+  readonly labels: ModelPaneLabels;
 }) {
   if (isHidden) {
     return {
       Icon: EyeOff,
-      ariaLabel: `Show ${nodeName}`,
+      ariaLabel: labels.show(nodeName),
       event: { type: 'showModelComponent', unitId, componentId, source: 'explorer' } as const,
-      tooltip: 'Show part',
+      tooltip: labels.showPart,
     };
   }
 
   return {
     Icon: Eye,
-    ariaLabel: `Hide ${nodeName}`,
+    ariaLabel: labels.hide(nodeName),
     event: { type: 'hideModelComponent', unitId, componentId, source: 'explorer' } as const,
-    tooltip: 'Hide part',
+    tooltip: labels.hidePart,
   };
 }
 
@@ -62,29 +66,53 @@ function getIsolationAction({
   nodeName,
   unitId,
   componentId,
+  labels,
 }: {
   readonly isIsolated: boolean;
   readonly nodeName: string;
   readonly unitId: string;
   readonly componentId: string;
+  readonly labels: ModelPaneLabels;
 }) {
   if (isIsolated) {
     return {
-      ariaLabel: `Remove isolation for ${nodeName}`,
+      ariaLabel: labels.removeIsolationFor(nodeName),
       className: 'bg-muted-foreground/15 text-foreground',
       event: { type: 'clearModelComponentIsolation', unitId, source: 'explorer' } as const,
       pressed: true,
-      tooltip: 'Remove isolation',
+      tooltip: labels.removeIsolation,
     };
   }
 
   return {
-    ariaLabel: `Isolate ${nodeName}`,
+    ariaLabel: labels.isolate(nodeName),
     className: undefined,
     event: { type: 'isolateModelComponent', unitId, componentId, source: 'explorer' } as const,
     pressed: false,
-    tooltip: 'Isolate part',
+    tooltip: labels.isolatePart,
   };
+}
+
+/**
+ * A row's actions: inline on a compact row; stacked beside a preview row's 80 px thumbnail, so its name keeps the
+ * width to read in full.
+ *
+ * @returns The actions, wrapped in a column on a preview row.
+ */
+function RowActions({
+  isStacked,
+  children,
+}: {
+  readonly isStacked: boolean;
+  readonly children: React.ReactNode;
+}): React.ReactNode {
+  return isStacked ? (
+    <div data-slot='model-row-actions' className='flex shrink-0 flex-col items-center gap-0.5'>
+      {children}
+    </div>
+  ) : (
+    children
+  );
 }
 
 /**
@@ -137,16 +165,21 @@ export const ComponentRow = memo(function ComponentRow({
   readonly onPreviewDecoded?: (id: string, bytes: Uint8Array<ArrayBuffer>) => void;
 }): React.JSX.Element {
   const source = useWorkbenchPanesHost().model;
+  const labels = useModelPaneLabels();
+  /* The name the host shows; the filter matches it and the manifest's name alike. */
+  const name = source?.componentName?.(node) ?? node.name;
   const isHovered = hoveredComponentId === node.id;
   const normalizedQuery = query.trim().toLowerCase();
   const materialMatchName =
-    normalizedQuery && !node.name.toLowerCase().includes(normalizedQuery)
+    normalizedQuery &&
+    !node.name.toLowerCase().includes(normalizedQuery) &&
+    !name.toLowerCase().includes(normalizedQuery)
       ? node.appearance?.materials?.find(
           (material) => typeof material.name === 'string' && material.name.toLowerCase().includes(normalizedQuery),
         )?.name
       : undefined;
-  const visibilityAction = getVisibilityAction({ isHidden, nodeName: node.name, unitId, componentId: node.id });
-  const isolationAction = getIsolationAction({ isIsolated, nodeName: node.name, unitId, componentId: node.id });
+  const visibilityAction = getVisibilityAction({ isHidden, nodeName: name, unitId, componentId: node.id, labels });
+  const isolationAction = getIsolationAction({ isIsolated, nodeName: name, unitId, componentId: node.id, labels });
   const VisibilityIcon = visibilityAction.Icon;
   /* The sidebar row's action: 24 px with the nested-action tone (nested-action surfaces R5). */
   const actionButtonClassName = nestedActionVariants({
@@ -245,7 +278,8 @@ export const ComponentRow = memo(function ComponentRow({
       ))}
       {isPreviewRow ? (
         <PartPreviewFrame
-          name={node.name}
+          name={name}
+          label={labels.preview(name)}
           preview={preview}
           className='size-20'
           fallback={swatch}
@@ -266,8 +300,12 @@ export const ComponentRow = memo(function ComponentRow({
         data-model-part-button=''
         data-model-component-id={node.id}
         tabIndex={activeRowId === undefined || activeRowId === node.id ? 0 : -1}
-        className='flex h-full min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:focus-outline'
-        aria-label={node.name}
+        className={cn(
+          'flex h-full min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:focus-outline',
+          // A preview row's name wraps beside its thumbnail, any material match under it.
+          isPreviewRow ? 'flex-col justify-center gap-0.5' : 'items-center gap-2',
+        )}
+        aria-label={name}
         aria-pressed={isSelected}
         aria-busy={preview?.status === 'pending' || undefined}
         onClick={toggleSelection}
@@ -293,50 +331,54 @@ export const ComponentRow = memo(function ComponentRow({
         }}
       >
         {isPreviewRow ? undefined : swatch}
-        <span className='truncate'>
-          <HighlightText text={node.name} searchTerm={query} />
+        <span className={isPreviewRow ? 'line-clamp-2 wrap-break-word' : 'truncate'}>
+          <HighlightText text={name} searchTerm={query} />
         </span>
         {preview?.status === 'pending' || preview?.status === 'failed' ? (
-          <span className='sr-only'>Preview {preview.status === 'pending' ? 'loading' : 'unavailable'}</span>
+          <span className='sr-only'>
+            {preview.status === 'pending' ? labels.previewLoading : labels.previewUnavailable}
+          </span>
         ) : undefined}
         {materialMatchName ? (
-          <span className='truncate text-xs text-muted-foreground'>· {materialMatchName}</span>
+          <span className='max-w-full truncate text-xs text-muted-foreground'>· {materialMatchName}</span>
         ) : undefined}
       </button>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type='button'
-            tabIndex={-1}
-            className={actionButtonClassName}
-            aria-label={visibilityAction.ariaLabel}
-            onClick={() => {
-              graphicsRef.send(visibilityAction.event);
-            }}
-          >
-            <VisibilityIcon className='size-3.5' />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{visibilityAction.tooltip}</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type='button'
-            tabIndex={-1}
-            className={cn(actionButtonClassName, isolationAction.className)}
-            aria-label={isolationAction.ariaLabel}
-            aria-pressed={isolationAction.pressed}
-            onClick={() => {
-              graphicsRef.send(isolationAction.event);
-            }}
-          >
-            <Target className='size-3.5' />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{isolationAction.tooltip}</TooltipContent>
-      </Tooltip>
-      {actions ? <actions.Dropdown {...menuProps} actionButtonClassName={actionButtonClassName} /> : undefined}
+      <RowActions isStacked={isPreviewRow}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type='button'
+              tabIndex={-1}
+              className={actionButtonClassName}
+              aria-label={visibilityAction.ariaLabel}
+              onClick={() => {
+                graphicsRef.send(visibilityAction.event);
+              }}
+            >
+              <VisibilityIcon className='size-3.5' />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{visibilityAction.tooltip}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type='button'
+              tabIndex={-1}
+              className={cn(actionButtonClassName, isolationAction.className)}
+              aria-label={isolationAction.ariaLabel}
+              aria-pressed={isolationAction.pressed}
+              onClick={() => {
+                graphicsRef.send(isolationAction.event);
+              }}
+            >
+              <Target className='size-3.5' />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{isolationAction.tooltip}</TooltipContent>
+        </Tooltip>
+        {actions ? <actions.Dropdown {...menuProps} actionButtonClassName={actionButtonClassName} /> : undefined}
+      </RowActions>
     </div>
   );
 

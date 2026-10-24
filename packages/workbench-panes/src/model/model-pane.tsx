@@ -5,7 +5,8 @@ import { SearchInput } from '@taucad/ui/components/search-input';
 import type { PartThumbnailState } from '@taucad/viewer/cad/part-thumbnail-state';
 import type { WorkbenchUnit } from '#host/workbench-host.jsx';
 import { useWorkbenchPanesHost } from '#host/workbench-host.jsx';
-import type { ModelComponentTarget, ModelPanelLayout } from '#model/model-source.js';
+import type { ModelComponentTarget, ModelPanelLayout, ModelSource } from '#model/model-source.js';
+import { useModelPaneLabels } from '#model/model-labels.js';
 import type {
   ModelComponentRevealTarget,
   ModelPaneviewPanelParams,
@@ -43,6 +44,18 @@ function getInitialPanelOptions(
 }
 
 /**
+ * The name each entry shows, by its path: the host's title, else the path itself.
+ *
+ * @param source - The host's Model source.
+ * @param entryPaths - Every listed entry, main first.
+ * @returns The title of an entry.
+ */
+function entryTitles(source: ModelSource | undefined, entryPaths: readonly string[]): (entryPath: string) => string {
+  const entryTitle = source?.entryTitle;
+  return entryTitle ? (entryPath) => entryTitle(entryPath, entryPaths) : (entryPath) => entryPath;
+}
+
+/**
  * The Model pane body: one filter over a section per geometry entry (its component tree) and a Properties section
  * for the selected part. Units come from the host's `useUnits`, everything else from its {@link ModelSource}.
  *
@@ -54,6 +67,7 @@ export function ModelPane({ onRequestOpen }: { readonly onRequestOpen?: () => vo
   const host = useWorkbenchPanesHost();
   const units = host.useUnits();
   const reveal = host.model?.reveal;
+  const labels = useModelPaneLabels();
   const [query, setQuery] = useState('');
   const [revealTarget, setRevealTarget] = useState<ModelComponentRevealTarget>();
   const revealComponent = useCallback(
@@ -75,8 +89,8 @@ export function ModelPane({ onRequestOpen }: { readonly onRequestOpen?: () => vo
     <div data-slot='model-panel-body' className='flex size-full min-h-0 flex-col overflow-hidden bg-sidebar text-sm'>
       <div data-slot='model-filter' className='shrink-0 bg-sidebar px-2 pt-2'>
         <SearchInput
-          aria-label='Filter parts'
-          placeholder='Filter parts…'
+          aria-label={labels.filter}
+          placeholder={labels.filterPlaceholder}
           value={query}
           className='h-7 min-w-0 bg-background'
           onChange={(event) => {
@@ -118,7 +132,12 @@ function ModelPaneview({
   const usePanelLayout = source?.usePanelLayout ?? useDefaultLayout;
   const { savedState, connectApi } = usePanelLayout();
   const paneviewApiRef = useRef<PaneviewApi | undefined>(undefined);
-  const paneviewKey = useMemo(() => units.map(({ entryPath }) => entryPath).join('\0'), [units]);
+  const entryPaths = useMemo(() => units.map(({ entryPath }) => entryPath), [units]);
+  const paneviewKey = entryPaths.join('\0');
+  const titleOf = useMemo(() => entryTitles(source, entryPaths), [entryPaths, source]);
+  /* One model, one list: a lone entry the host names itself needs no section header. */
+  const isHeaderHidden = source?.hideLoneEntryHeader === true && units.length === 1;
+  const propertiesTitle = useModelPaneLabels().properties;
   const [selected, setSelected] = useState<ModelPropertiesPanelParams['selected'] & { readonly unitId: string }>();
   const [preview, setPreview] = useState<{
     readonly unitId: string;
@@ -186,17 +205,21 @@ function ModelPaneview({
 
       for (const { entryPath, graphicsRef } of units) {
         const initial = getInitialPanelOptions(savedState, entryPath, { isExpanded: true, size: 200 });
+        const title = titleOf(entryPath);
         api.addPanel({
           id: entryPath,
-          title: entryPath,
+          title,
           component: 'modelPanel',
           headerComponent: 'modelHeader',
-          headerSize: paneviewHeaderSize,
-          isExpanded: initial.isExpanded,
+          // A headerless section cannot be collapsed, so it always opens.
+          headerSize: isHeaderHidden ? 0 : paneviewHeaderSize,
+          isExpanded: isHeaderHidden || initial.isExpanded,
           minimumBodySize: 144,
           size: initial.size,
           params: {
             entryPath,
+            title,
+            isHeaderHidden,
             graphicsRef,
             query,
             revealTarget,
@@ -209,7 +232,7 @@ function ModelPaneview({
       const initial = getInitialPanelOptions(savedState, 'properties', { isExpanded: true, size: 392 });
       api.addPanel({
         id: 'properties',
-        title: 'Properties',
+        title: propertiesTitle,
         component: 'propertiesPanel',
         headerComponent: 'propertiesHeader',
         headerSize: paneviewHeaderSize,
@@ -217,7 +240,7 @@ function ModelPaneview({
         minimumBodySize: 160,
         size: initial.size,
         params: {
-          selected: visibleSelection,
+          selected: visibleSelection && { ...visibleSelection, entryTitle: titleOf(visibleSelection.entryPath) },
           preview: selectedPreview?.state,
           onOpenPreview,
           onRetryPreview: selectedPreview?.retry,
@@ -229,6 +252,9 @@ function ModelPaneview({
     [
       connectApi,
       units,
+      isHeaderHidden,
+      propertiesTitle,
+      titleOf,
       onOpenPreview,
       onPreviewChange,
       onReveal,
@@ -250,6 +276,8 @@ function ModelPaneview({
     for (const { entryPath, graphicsRef } of units) {
       api.getPanel(entryPath)?.api.updateParameters({
         entryPath,
+        title: titleOf(entryPath),
+        isHeaderHidden,
         graphicsRef,
         query,
         revealTarget: revealTarget?.entryPath === entryPath ? revealTarget : undefined,
@@ -258,18 +286,18 @@ function ModelPaneview({
         onPreviewChange,
       });
     }
-  }, [units, onPreviewChange, onReveal, onSelectionChange, query, revealTarget]);
+  }, [units, isHeaderHidden, onPreviewChange, onReveal, onSelectionChange, query, revealTarget, titleOf]);
 
   useEffect(() => {
     paneviewApiRef.current?.getPanel('properties')?.api.updateParameters({
-      selected: visibleSelection,
+      selected: visibleSelection && { ...visibleSelection, entryTitle: titleOf(visibleSelection.entryPath) },
       preview: selectedPreview?.state,
       onOpenPreview,
       onRetryPreview: selectedPreview?.retry,
       onPreviewDecodeError: selectedPreview?.decodeError,
       onPreviewDecoded: selectedPreview?.decoded,
     });
-  }, [onOpenPreview, selectedPreview, visibleSelection]);
+  }, [onOpenPreview, selectedPreview, titleOf, visibleSelection]);
 
   useEffect(() => {
     if (!revealTarget) {

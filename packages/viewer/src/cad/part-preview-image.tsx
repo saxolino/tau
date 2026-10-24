@@ -49,6 +49,7 @@ export function PartPreviewImage({
  */
 export function PartPreviewFrame({
   name,
+  label = `Preview ${name}`,
   preview,
   className,
   fallback,
@@ -58,6 +59,8 @@ export function PartPreviewFrame({
   onDecoded,
 }: {
   readonly name: string;
+  /** The open button's accessible name, in the host's language. Absent, "Preview" and the name. */
+  readonly label?: string;
   readonly preview?: Readonly<{ status: 'pending' | 'ready' | 'failed'; bytes?: Uint8Array<ArrayBuffer> }>;
   readonly className: string;
   readonly fallback: React.ReactNode;
@@ -96,7 +99,7 @@ export function PartPreviewFrame({
     <button
       type='button'
       tabIndex={tabIndex}
-      aria-label={`Preview ${name}`}
+      aria-label={label}
       aria-busy={preview.status === 'pending' || undefined}
       className={cn(frameClassName, 'group/preview focus-visible:focus-outline')}
       onClick={(event) => {

@@ -4,7 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { createSourceModelInteractionUnitId } from '@taucad/viewer/machines/model-interaction.machine';
 import type { WorkbenchUnit } from '#host/workbench-host.jsx';
 import { ModelPane } from '#model/model-pane.jsx';
+import { englishPartPropertiesLabels } from '@taucad/viewer/cad/part-properties-panel';
 import type { ModelComponentTarget, ModelSource } from '#model/model-source.js';
+import { englishModelPaneLabels } from '#model/model-source.js';
 import { createGraphicsRefForUnit, createNode, ModelHost } from '#model/model.test-utils.jsx';
 
 const mocks = vi.hoisted(() => ({
@@ -33,6 +35,7 @@ vi.mock('dockview-react', () => ({
       id: string;
       component: string;
       headerComponent: string;
+      headerSize: number;
       isExpanded: boolean;
       minimumBodySize: number;
       size: number;
@@ -70,6 +73,7 @@ vi.mock('dockview-react', () => ({
               key={panel.id}
               data-testid={`model-pane-${panel.id}`}
               data-expanded={String(panel.isExpanded)}
+              data-header-size={panel.headerSize}
               data-minimum-body-size={panel.minimumBodySize}
               data-size={panel.size}
             >
@@ -428,5 +432,108 @@ describe('ModelPane', () => {
     renderPane({ units: [{ entryPath: 'model.glb', graphicsRef }] });
 
     expect(screen.queryByRole('button', { name: 'glb_part' })).not.toBeInTheDocument();
+  });
+  describe('a host that speaks its own language and names its pieces', () => {
+    const readable = (node: { readonly name: string }): string =>
+      node.name.replaceAll(/([a-z])([A-Z])/gu, '$1 $2').replace(/^./u, (letter) => letter.toUpperCase());
+    const italian: ModelSource = {
+      labels: {
+        ...englishModelPaneLabels,
+        filter: 'Cerca un pezzo',
+        filterPlaceholder: 'Cerca un pezzo',
+        properties: 'Proprietà',
+        components: (title) => `Pezzi di ${title}`,
+        part: {
+          ...englishPartPropertiesLabels,
+          noPartSelected: 'Nessun pezzo selezionato',
+          kind: (kind) => (kind === 'part' ? 'Pezzo' : 'Gruppo'),
+          physicalFacts: 'Dati fisici',
+        },
+      },
+      componentName: readable,
+      entryTitle: (entryPath, entryPaths) => (entryPath === entryPaths[0] ? 'Modello' : 'Altro modello'),
+      hideLoneEntryHeader: true,
+      weightSummary: (manifest) => (manifest.nodeOrder.length > 2 ? 'oro 18 kt ≈ 4,24 g' : undefined),
+    };
+
+    it('lists a lone entry without a section header, by readable names, in its words', async () => {
+      const user = userEvent.setup();
+      renderPane({
+        units: [
+          {
+            entryPath: 'src/main.ts',
+            graphicsRef: createGraphicsRefForUnit('src/main.ts', [
+              createNode(firstComponentId, 'castoneMarquise'),
+              createNode(secondComponentId, 'stelo'),
+            ]),
+          },
+        ],
+        source: italian,
+      });
+
+      expect(screen.getByRole('searchbox', { name: 'Cerca un pezzo' })).toHaveAttribute(
+        'placeholder',
+        'Cerca un pezzo',
+      );
+      expect(screen.getByTestId('model-pane-src/main.ts')).toHaveAttribute('data-header-size', '0');
+      expect(screen.getByTestId('model-pane-src/main.ts')).toHaveAttribute('data-expanded', 'true');
+      expect(screen.queryByText(/main\.ts/u)).not.toBeInTheDocument();
+      expect(screen.getByRole('list', { name: 'Pezzi di Modello' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Castone Marquise' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Stelo' })).toBeInTheDocument();
+      expect(screen.getByText('oro 18 kt ≈ 4,24 g')).toBeVisible();
+      expect(screen.queryByText(/parts known/u)).not.toBeInTheDocument();
+      expect(screen.getByText('Proprietà')).toBeInTheDocument();
+      expect(screen.getByText('Nessun pezzo selezionato')).toBeVisible();
+
+      // The filter matches the name the designer reads, spaces included.
+      await user.type(screen.getByRole('searchbox', { name: 'Cerca un pezzo' }), 'castone mar');
+      expect(screen.getByRole('button', { name: 'Castone Marquise' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Stelo' })).not.toBeInTheDocument();
+    });
+
+    it('shows no weight line while the weight is not known', () => {
+      renderPane({
+        units: [
+          {
+            entryPath: 'src/main.ts',
+            graphicsRef: createGraphicsRefForUnit('src/main.ts', [createNode(firstComponentId, 'stelo')]),
+          },
+        ],
+        source: italian,
+      });
+
+      expect(screen.queryByText(/Weight|Unknown|Missing|oro/u)).not.toBeInTheDocument();
+      expect(document.querySelector('[data-slot="model-weight-summary"]')).toBeNull();
+    });
+
+    it('names several entries by their titles, never their paths, and the selected piece in Properties', async () => {
+      renderPane({
+        units: [
+          {
+            entryPath: 'src/main.ts',
+            graphicsRef: createGraphicsRefForUnit('src/main.ts', [createNode(firstComponentId, 'castoneMarquise')], {
+              selectedComponentIds: [firstComponentId],
+            }),
+          },
+          {
+            entryPath: 'src/helper.ts',
+            graphicsRef: createGraphicsRefForUnit('src/helper.ts', [createNode(secondComponentId, 'stelo')]),
+          },
+        ],
+        source: italian,
+      });
+
+      expect(screen.getByTestId('model-pane-src/main.ts')).toHaveAttribute('data-header-size', '40');
+      expect(screen.getByRole('button', { name: /^Modello/u })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Altro modello/u })).toBeInTheDocument();
+      expect(screen.queryByText(/src\//u)).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByRole('region', { name: 'Dati fisici' })).toBeVisible();
+      });
+      const properties = screen.getByTestId('model-pane-properties');
+      expect(within(properties).getByText('Castone Marquise')).toBeVisible();
+      expect(within(properties).getByText('Pezzo · Modello')).toBeVisible();
+    });
   });
 });

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { VirtuosoMockContext } from 'react-virtuoso';
 import { mock } from 'vitest-mock-extended';
 import type { GeometryComponentNode } from '@taucad/types';
-import { PartPropertiesPanel } from '#cad/part-properties-panel.jsx';
+import { englishPartPropertiesLabels, PartPropertiesPanel } from '#cad/part-properties-panel.jsx';
 
 const mockViewport = { viewportHeight: 180, itemHeight: 30 };
 
@@ -101,5 +101,25 @@ describe('PartPropertiesPanel', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Retry preview' }));
     expect(retry).toHaveBeenCalledOnce();
     expect(screen.getByText('Housing')).toBeVisible();
+  });
+  it("speaks the host's language: its words, the part's shown name, the entry's title and number format", () => {
+    const node: GeometryComponentNode = { ...mock<GeometryComponentNode>(), name: 'castoneMarquise', kind: 'part' };
+    render(
+      <PartPropertiesPanel
+        node={node}
+        name='Castone marquise'
+        entryPath='src/main.ts'
+        entryTitle='Modello'
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Unit-bearing API field uses cm³ notation.
+        quantity={{ volumeCm3: 12.48, densityGPerCm3: 1.55 }}
+        labels={{ ...englishPartPropertiesLabels, locale: 'it-IT', kind: () => 'Pezzo', weight: 'Peso' }}
+      />,
+    );
+    expect(screen.getByText('Castone marquise')).toBeVisible();
+    expect(screen.getByText('Pezzo · Modello')).toBeVisible();
+    expect(screen.queryByText(/main\.ts|castoneMarquise/u)).not.toBeInTheDocument();
+    expect(screen.getByText('Peso')).toBeVisible();
+    expect(screen.getByText('19,34 g')).toBeVisible();
+    expect(screen.getByText('12,48 cm³')).toBeVisible();
   });
 });

@@ -17,6 +17,7 @@ import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { PartThumbnailService } from '#services/part-thumbnail.service.js';
 import * as partThumbnailVisual from '#services/part-thumbnail-visual.js';
 import { ChatExplorerTree } from '#routes/w.$workspace.$project/chat-explorer.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const mocks = vi.hoisted(() => ({
   addContextReferences: vi.fn(),
@@ -319,6 +320,8 @@ function renderExplorerTree({
 }
 
 beforeEach(() => {
+  // The pane speaks the interface language; these tests read it in English.
+  setLanguage('en');
   mocks.addContextReferences.mockReset();
   mocks.paneApis.clear();
   mocks.useProject.mockReset();
@@ -327,6 +330,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   for (const [name, original] of [
@@ -485,7 +490,7 @@ describe('ChatExplorerTree', () => {
       .getByTestId('model-pane-src/main.ts')
       .querySelector<HTMLElement>('[data-slot="model-unit-scroller"]')!;
     scroller.scrollTop = 27;
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter parts' }), { target: { value: 'Part 1' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Find a piece' }), { target: { value: 'Part 1' } });
     expect(screen.getByTestId('model-pane-src/main.ts').querySelector('[data-slot="model-unit-scroller"]')).toBe(
       scroller,
     );
@@ -574,13 +579,13 @@ describe('ChatExplorerTree', () => {
     });
     for (const count of [1, 2]) {
       // oxlint-disable-next-line no-await-in-loop -- Each failed retry must settle before the next click.
-      fireEvent.click(await within(properties).findByRole('button', { name: 'Retry preview' }));
+      fireEvent.click(await within(properties).findByRole('button', { name: 'Try again' }));
       // oxlint-disable-next-line no-await-in-loop -- Each failed retry must settle before the next click.
       await waitFor(() => {
         expect(exportImage.mock.calls.filter(([job]) => job.kind === 'manual-thumbnail')).toHaveLength(count);
       });
     }
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter parts' }), { target: { value: 'Retry' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Find a piece' }), { target: { value: 'Retry' } });
     expect(exportImage.mock.calls.filter(([job]) => job.kind === 'manual-thumbnail')).toHaveLength(2);
   });
 
@@ -626,7 +631,7 @@ describe('ChatExplorerTree', () => {
     const prepare = vi
       .spyOn(partThumbnailVisual, 'canonicalPartPreviews')
       .mockImplementation(async () => pending.promise);
-    fireEvent.click(await within(properties).findByRole('button', { name: 'Retry preview' }));
+    fireEvent.click(await within(properties).findByRole('button', { name: 'Try again' }));
     await waitFor(() => {
       expect(prepare).toHaveBeenCalled();
     });
@@ -644,7 +649,7 @@ describe('ChatExplorerTree', () => {
     });
     expect(requests.mock.calls.filter((call) => call[3]?.manualPartId === firstComponentId)).toHaveLength(0);
     pending.resolve({ visualKey: 'old', previews: [{ key: 'old' }] });
-    fireEvent.click(await within(properties).findByRole('button', { name: 'Retry preview' }));
+    fireEvent.click(await within(properties).findByRole('button', { name: 'Try again' }));
     await waitFor(() => {
       expect(requests.mock.calls.filter((call) => call[3]?.manualPartId === firstComponentId)).toHaveLength(1);
     });
@@ -696,7 +701,7 @@ describe('ChatExplorerTree', () => {
       expect(exportImage).toHaveBeenCalledTimes(2);
     });
     const properties = screen.getByTestId('model-pane-properties');
-    expect(properties).toHaveTextContent('helper_part');
+    expect(properties).toHaveTextContent('Helper part');
     await act(async () => {
       second.resolve([{ name: 'render-part-0.webp', mimeType: 'image/webp', bytes: new Uint8Array([2]) }]);
     });
@@ -726,7 +731,9 @@ describe('ChatExplorerTree', () => {
 
     renderExplorerTree();
 
-    expect(screen.getByRole('button', { name: 'src/hidden.ts' })).toBeInTheDocument();
+    // The second model is named, never by its file.
+    expect(screen.getByRole('button', { name: 'Model 2' })).toBeInTheDocument();
+    expect(screen.queryByText(/hidden\.ts/u)).not.toBeInTheDocument();
     expect(screen.getByTestId('model-pane-src/hidden.ts')).toBeInTheDocument();
   });
 
@@ -735,8 +742,10 @@ describe('ChatExplorerTree', () => {
 
     renderExplorerTree();
 
-    expect(screen.getByRole('searchbox', { name: 'Filter parts' })).toHaveAttribute('placeholder', 'Filter parts…');
-    expect(screen.getByText('No model components available').closest('[data-slot="panel-empty-state"]')).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: 'Find a piece' })).toHaveAttribute('placeholder', 'Find a piece');
+    expect(
+      screen.getByText('Pieces appear as soon as there’s a model.').closest('[data-slot="panel-empty-state"]'),
+    ).toBeTruthy();
   });
 
   it('should reveal requested model component rows', async () => {
@@ -778,7 +787,7 @@ describe('ChatExplorerTree', () => {
 
       renderExplorerTree({ setIsExpanded });
 
-      await user.type(screen.getByRole('searchbox', { name: 'Filter parts' }), 'main');
+      await user.type(screen.getByRole('searchbox', { name: 'Find a piece' }), 'main');
 
       act(() => {
         editorRef.emit('modelComponentRevealRequested', {
@@ -790,12 +799,12 @@ describe('ChatExplorerTree', () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'helper_part' })).toHaveFocus();
+        expect(screen.getByRole('button', { name: 'Helper part' })).toHaveFocus();
       });
       expect(setIsExpanded).toHaveBeenCalledWith(true);
-      expect(screen.getByRole('searchbox', { name: 'Filter parts' })).toHaveValue('');
+      expect(screen.getByRole('searchbox', { name: 'Find a piece' })).toHaveValue('');
       expect(mocks.paneApis.get('src/helper.ts')?.setExpanded).toHaveBeenCalledWith(true);
-      const rowButton = screen.getByRole('button', { name: 'helper_part' });
+      const rowButton = screen.getByRole('button', { name: 'Helper part' });
       const row = rowButton.parentElement;
       expect(rowButton).toHaveAttribute('aria-pressed', 'true');
       expect(rowButton.tabIndex).toBe(0);
@@ -842,7 +851,7 @@ describe('ChatExplorerTree', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('Open renderer to inspect components')).toBeInTheDocument();
+      expect(screen.getByText('Open the model in the view to see its pieces.')).toBeInTheDocument();
     });
     expect(setIsExpanded).toHaveBeenCalledWith(true);
     expect(mocks.paneApis.get('src/unopened.ts')?.setExpanded).toHaveBeenCalledWith(true);
@@ -886,7 +895,7 @@ describe('Model pane adapter capabilities', () => {
     });
     renderExplorerTree();
 
-    const preview = await screen.findByRole('button', { name: 'Preview planetary_housing' });
+    const preview = await screen.findByRole('button', { name: 'Open the preview of Planetary housing' });
     expect(preview.parentElement).toHaveClass('h-22');
     await userEvent.setup().click(preview);
     expect(mocks.openPartGallery).toHaveBeenCalledWith({
@@ -945,7 +954,7 @@ describe('Model pane adapter capabilities', () => {
     const graphicsRef = mockSinglePartProject(createNode(firstComponentId, 'planetary_housing'));
     renderExplorerTree();
 
-    const row = screen.getByRole('button', { name: 'planetary_housing' }).parentElement;
+    const row = screen.getByRole('button', { name: 'Planetary housing' }).parentElement;
     fireEvent.contextMenu(row!);
 
     expect(await screen.findByText('Focus on part')).toBeInTheDocument();
@@ -992,4 +1001,101 @@ describe('shared preview model binding', () => {
     renderExplorerTree();
     expect(screen.getByText('Preview part')).toBeInTheDocument();
   });
+});
+
+describe('the «Pezzi» panel', () => {
+  const gold = (id: string, name: string, massGrams: number): GeometryComponentNode => ({
+    ...createNode(id, name),
+    extras: { density: 15.5, massGrams },
+  });
+
+  it('lists one model as one list, by the names Misure gives its pieces, with the gold weight Misure shows', () => {
+    setLanguage('it');
+    mockProjectForExplorer({
+      mainEntryPath: 'src/main.ts',
+      geometryUnitFiles: ['src/main.ts'],
+      viewSettings: { mainView: { entryPath: 'src/main.ts' } },
+      viewGraphics: new Map([
+        [
+          'mainView',
+          createGraphicsRefForUnit('src/main.ts', [
+            gold(firstComponentId, 'castoneMarquise', 1.2),
+            gold(secondComponentId, 'rametto_sx', 3.04),
+          ]),
+        ],
+      ]),
+    });
+
+    renderExplorerTree();
+
+    expect(screen.getByRole('searchbox', { name: 'Cerca un pezzo' })).toHaveAttribute('placeholder', 'Cerca un pezzo');
+    expect(screen.getByTestId('model-pane-src/main.ts')).toHaveAttribute('data-header-size', '0');
+    expect(screen.getByRole('list', { name: 'Pezzi di Modello' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Castone Marquise' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rametto sinistro' })).toBeInTheDocument();
+    expect(screen.getByText('oro 18 kt ≈ 4,24 g')).toBeVisible();
+    expect(screen.getByText('Proprietà')).toBeInTheDocument();
+    expect(screen.getByText('Nessun pezzo selezionato')).toBeVisible();
+    expect(screen.queryByText(/main\.ts|Weight|Unknown|Missing|Properties/u)).not.toBeInTheDocument();
+  });
+
+  it('shows no weight line while a piece lacks mass or density', () => {
+    setLanguage('it');
+    mockSingleMainProject([gold(firstComponentId, 'stelo', 1.2), createNode(secondComponentId, 'gambo')]);
+
+    renderExplorerTree();
+
+    expect(screen.getByRole('button', { name: 'Stelo' })).toBeInTheDocument();
+    expect(document.querySelector('[data-slot="model-weight-summary"]')).toBeNull();
+    expect(screen.queryByText(/oro|parts known|Unknown|Missing/u)).not.toBeInTheDocument();
+  });
+
+  it('names the selected piece and its model in Properties, in plain words', async () => {
+    setLanguage('it');
+    mockProjectForExplorer({
+      mainEntryPath: 'src/main.ts',
+      geometryUnitFiles: ['src/main.ts'],
+      viewSettings: { mainView: { entryPath: 'src/main.ts' } },
+      viewGraphics: new Map([
+        [
+          'mainView',
+          createGraphicsRefForUnit('src/main.ts', [gold(firstComponentId, 'rametto_sx', 3.04)], {
+            selectedComponentIds: [firstComponentId],
+          }),
+        ],
+      ]),
+    });
+
+    renderExplorerTree();
+
+    const properties = screen.getByTestId('model-pane-properties');
+    await waitFor(() => {
+      expect(within(properties).getByRole('region', { name: 'Dati fisici' })).toBeVisible();
+    });
+    expect(within(properties).getByText('Rametto sinistro')).toBeVisible();
+    expect(within(properties).getByText('Pezzo · Modello')).toBeVisible();
+    expect(within(properties).getByText('Volume non ancora misurato.')).toBeVisible();
+    expect(within(properties).getByRole('button', { name: /Dettagli/u })).toBeInTheDocument();
+  });
+
+  it('speaks English when the interface does', () => {
+    setLanguage('en');
+    mockSingleMainProject([gold(firstComponentId, 'castoneMarquise', 1.2), gold(secondComponentId, 'rametto_sx', 3)]);
+
+    renderExplorerTree();
+
+    expect(screen.getByRole('searchbox', { name: 'Find a piece' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rametto left' })).toBeInTheDocument();
+    expect(screen.getByText('18 kt gold ≈ 4.2 g')).toBeVisible();
+    expect(screen.getByText('No piece selected')).toBeVisible();
+  });
+
+  function mockSingleMainProject(nodes: GeometryComponentNode[]): void {
+    mockProjectForExplorer({
+      mainEntryPath: 'src/main.ts',
+      geometryUnitFiles: ['src/main.ts'],
+      viewSettings: { mainView: { entryPath: 'src/main.ts' } },
+      viewGraphics: new Map([['mainView', createGraphicsRefForUnit('src/main.ts', nodes)]]),
+    });
+  }
 });
