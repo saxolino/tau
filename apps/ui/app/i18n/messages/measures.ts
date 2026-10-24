@@ -2,7 +2,7 @@ import { defineMessages } from '#i18n/define-messages.js';
 
 export const measuresMessages = defineMessages({
   it: {
-    general: 'Generali',
+    general: 'Misure comuni',
     search: 'Cerca una misura o un pezzo',
     empty: 'Le misure compaiono appena c’è un pezzo.',
     noMatches: 'Nessun pezzo o misura corrisponde alla ricerca.',
@@ -26,7 +26,7 @@ export const measuresMessages = defineMessages({
     close: 'Chiudi le misure',
   },
   en: {
-    general: 'General',
+    general: 'Shared measures',
     search: 'Find a measure or a piece',
     empty: 'Measures appear as soon as there’s a piece.',
     noMatches: 'No pieces or measures match your search.',

@@ -17,6 +17,7 @@ import { useProject } from '#hooks/use-project.js';
 import { formatNumber, useTranslation } from '#i18n/translate.js';
 import { languageLocales } from '#i18n/language.js';
 import {
+  flatMeasurePiece,
   groupPieceMeasures,
   modelMeasureSummary,
   modelPieces,
@@ -114,23 +115,29 @@ const PieceGroup = memo(function PieceGroup({
       locale: languageLocales[language],
       embedFirstLevel: true,
       fieldDescription: (_path, description) => (description.startsWith('[sinopia:assumed]') ? '' : description),
-      fieldLabel: (path, fallback) => readablePieceName(path.at(-1) ?? fallback, language),
+      // A flat measure inside its piece drops the piece's name: «Larghezza» under Marquise, not «Marquise larghezza».
+      fieldLabel: (path, fallback) => {
+        const key = path.at(-1) ?? fallback;
+        const measure = group.node && path.length === 1 ? flatMeasurePiece(key, [group.node])?.measure : undefined;
+        return readablePieceName(measure ?? key, language);
+      },
       fieldNote: (path) => {
         const locked = valueAtPath(values, path) !== undefined;
         const assumption = parameterAssumption(schema, path);
         return locked ? (
-          <span className='text-micro flex items-center gap-1 text-primary'>
-            <LockKeyhole aria-hidden='true' className='size-3' />
+          // A note, not an alarm: small, neutral, the lock in the selection's titanium (UI-UX-SinopiaCAD §3.2).
+          <span className='flex items-center gap-1 text-[11px] leading-[15px] text-muted-foreground'>
+            <LockKeyhole aria-hidden='true' className='size-3 text-accent-foreground' />
             {t('measures.locked')}
           </span>
         ) : assumption === undefined ? null : (
-          <span title={assumption || undefined} className='text-micro text-muted-foreground'>
+          <span title={assumption || undefined} className='text-[11px] leading-[15px] text-muted-foreground'>
             {t('measures.assumed')}
           </span>
         );
       },
     }),
-    [language, schema, t, values],
+    [group.node, language, schema, t, values],
   );
   const changeParameters = useCallback(
     (next: Record<string, unknown>) => {
@@ -208,7 +215,7 @@ const PieceGroup = memo(function PieceGroup({
           <span className='min-w-0 flex-1 truncate text-left text-xs' title={name}>
             {name}
           </span>
-          <span className='text-micro shrink-0 font-mono tabular-nums'>
+          <span className='shrink-0 font-mono text-[11px] leading-[15px] tabular-nums'>
             {pieceKeyValue({ group, defaults, values, language })}
           </span>
         </Button>

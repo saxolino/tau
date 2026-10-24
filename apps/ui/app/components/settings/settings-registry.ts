@@ -1,4 +1,6 @@
 import { bindTranslate } from '#i18n/translate.js';
+import { sinopiaTools } from '#hooks/use-sinopia-tools.js';
+import type { SinopiaToolId } from '#hooks/use-sinopia-tools.js';
 import type { Translate } from '#i18n/translate.js';
 import {
   Bot,
@@ -12,7 +14,10 @@ import {
   Settings2,
   Globe,
   FolderGit2,
+  Palette,
+  Ruler,
   User,
+  Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { SettingsSection } from '#hooks/use-settings-dialog.js';
@@ -347,7 +352,11 @@ const settingsCatalog = [
   },
 ] as const satisfies readonly SettingsSectionDefinition[];
 
-export type SettingId = (typeof settingsCatalog)[number]['entries'][number]['id'] | 'language' | 'units';
+export type SettingId =
+  | (typeof settingsCatalog)[number]['entries'][number]['id']
+  | 'language'
+  | 'units'
+  | `tool-${SinopiaToolId}`;
 const cloudSections: readonly SettingsSectionDefinition[] = tauCloudEnabled
   ? settingsCatalog
   : settingsCatalog
@@ -381,7 +390,7 @@ export function getSettingsSections(t: Translate): readonly SettingsSectionDefin
     {
       id: 'general',
       label: t('account.settings.appearance'),
-      icon: Settings2,
+      icon: Palette,
       group: t('account.settings.title'),
       entries: [
         { id: 'theme', label: t('account.theme.label'), description: t('account.theme.choose') },
@@ -396,7 +405,7 @@ export function getSettingsSections(t: Translate): readonly SettingsSectionDefin
     {
       id: 'models',
       label: t('account.settings.model'),
-      icon: Settings2,
+      icon: Ruler,
       group: t('account.settings.title'),
       entries: [
         {
@@ -406,6 +415,17 @@ export function getSettingsSections(t: Translate): readonly SettingsSectionDefin
           keywords: ['mm'],
         },
       ],
+    },
+    {
+      id: 'tools',
+      label: t('tools.title'),
+      icon: Wrench,
+      group: t('account.settings.title'),
+      entries: sinopiaTools().map((tool) => ({
+        id: `tool-${tool.id}` as const,
+        label: t(`tools.${tool.id}.label`),
+        description: t(`tools.${tool.id}.description`),
+      })),
     },
   ];
 }

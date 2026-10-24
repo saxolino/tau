@@ -48,6 +48,7 @@ vi.mock('@taucad/ui/components/keyboard', () => ({
 }));
 vi.mock('#components/ui/sidebar.js', () => ({ useSidebar: () => sidebar }));
 vi.mock('react-router', () => ({ useNavigate: () => navigate, Link: () => null }));
+vi.mock('#routes/w.$workspace.$project/chat-switcher.js', () => ({ ChatSwitcher: () => null }));
 vi.mock('#routes/w.$workspace.$project/chat-history-settings.js', () => ({
   ChatHistorySettings: ({ onRename }: { readonly onRename: () => void }) => (
     <>
@@ -223,7 +224,7 @@ describe('ChatTitleBar', () => {
       });
     });
 
-    it('shows a working new-chat button only with the desktop sidebar collapsed, with no separator', async () => {
+    it('shows a working new-chat button on desktop whether or not the sidebar is open, with no separator', async () => {
       sidebar.open = false;
       const { container, rerender } = render(<ChatTitleBar />);
 
@@ -238,9 +239,10 @@ describe('ChatTitleBar', () => {
       // so a separator would only break the row it now belongs to.
       expect(container.querySelector('[data-slot=separator-root]')).toBeNull();
 
+      // SinopiaCAD's sidebar lists projects only: the header is where a new conversation starts.
       sidebar.open = true;
       rerender(<ChatTitleBar />);
-      expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
 
       sidebar.open = false;
       sidebar.isMobile = true;

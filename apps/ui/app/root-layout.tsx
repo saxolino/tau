@@ -28,6 +28,7 @@ import { ChatSessionStoreProvider } from '#hooks/chat-session-store-provider.js'
 import { SessionsProvider } from '#hooks/use-sessions.js';
 import { ProjectSessionsHost, projectRoutePath } from '#routes/w.$workspace.$project/project-route.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { GlobalChatFlushGuard } from '#components/global-chat-flush-guard.js';
 import { DocumentMemoryKillReporter } from '#components/memory-kill-reporter.js';
 import { SvgSpriteMount } from '#components/icons/svg-sprite-mount.js';
@@ -84,7 +85,27 @@ export function configureSessionQueryDefaults(client: QueryClient): void {
 export function useRootGatePlaceholder(): ReactNode {
   const isProjectRoute = useMatch({ path: projectRoutePath, end: true }) !== null;
   // SinopiaCAD hides Community: `/community` redirects home, so it has no skeleton of its own.
-  return isProjectRoute ? <WorkspaceSkeleton withShellFrame /> : undefined;
+  return isProjectRoute ? <WorkspaceSkeleton withShellFrame /> : <AppSplash />;
+}
+
+/**
+ * Every other page's first paint while the Sinopia session and the workspace open: Sinopia's mark on the theme's
+ * ground, still, so the wait reads as the app arriving rather than a blank page. No words: the language is not known
+ * yet on the server render.
+ *
+ * @returns The splash.
+ */
+function AppSplash(): React.JSX.Element {
+  return (
+    <div
+      role='status'
+      aria-busy='true'
+      aria-label='SinopiaCAD'
+      className='flex min-h-dvh items-center justify-center bg-background'
+    >
+      <SinopiaCadWordmark size='lg' className='opacity-80' />
+    </div>
+  );
 }
 
 export function RootLayout({

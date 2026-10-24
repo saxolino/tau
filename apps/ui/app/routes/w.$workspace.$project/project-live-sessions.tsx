@@ -43,6 +43,7 @@ import {
 } from '#services/agent-host-client.js';
 import { createDaemonAgentHostTransport } from '#services/daemon-agent-host-client.js';
 import { daemonPlacementOf } from '#lib/agent-host-placement.js';
+import { designerExecution } from '#lib/sinopia-agent-execution.js';
 import { dialAgentHost, agentHostClientConfig } from '#chat-clients/_internal/turn-body.js';
 import { getProjectFileSystemConfig } from '#filesystem/handle-store.js';
 import { useComputeReuseMode } from '#lib/compute-reuse-preference.js';
@@ -223,7 +224,7 @@ function ProjectSessionBinding({
         computeMode: reuse,
         resolveModel: resolve,
       } = choices.current;
-      const execution = stored?.activeExecution ?? fallback;
+      const execution = designerExecution(stored?.activeExecution, fallback);
       const daemonHostId = daemonPlacementOf(execution);
       if (daemonHostId !== undefined) {
         return createAgentHostClient(
@@ -312,7 +313,7 @@ function ProjectSessionBinding({
     };
     const unpublish = chatSessions.publishProjectHostConnector(projectId, connect, async (chatId) => {
       const stored = await chatSessions.getChatHostSettings(chatId);
-      const execution = stored?.activeExecution ?? choices.current.defaultExecution;
+      const execution = designerExecution(stored?.activeExecution, choices.current.defaultExecution);
       const daemonHostId = daemonPlacementOf(execution);
       if (daemonHostId !== undefined) {
         try {

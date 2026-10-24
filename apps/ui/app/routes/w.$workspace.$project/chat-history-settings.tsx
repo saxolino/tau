@@ -1,27 +1,23 @@
 import { useCallback } from 'react';
-import { Archive, Download, EllipsisVertical, Pencil } from 'lucide-react';
+import { Download, EllipsisVertical, Pencil } from 'lucide-react';
 import { FloatingPanelMenuButton } from '#components/ui/floating-panel.js';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
 import { useChatContext, useChatSelector } from '#hooks/use-chat.js';
 import { useChatRecords } from '#hooks/use-chat-records.js';
 import { useProject } from '#hooks/use-project.js';
 import { useTranslation } from '#i18n/translate.js';
+import { displayChatName } from '#routes/w.$workspace.$project/chat-display-name.js';
 import { downloadBlob } from '@taucad/utils/file';
 import { serializeTranscript } from '#utils/chat.utils.js';
 import { toSnakeCase } from '#utils/string.utils.js';
-import { useSearchParameter } from '#hooks/use-search-parameter.js';
-import { searchParameterName } from '#constants/search-parameter.constants.js';
-import { flagParameter } from '#utils/search-parameter.codecs.js';
 
 /**
- * The chat menu: rename, export, then the chat's activity, model and credits as
- * a read-only block.
+ * The chat menu: rename and export. Switching and archived conversations live in `ChatSwitcher`.
  *
  * @param props - `onRename` opens the header's inline editor.
  * @returns The ⋯ trigger and its menu.
@@ -30,12 +26,9 @@ export function ChatHistorySettings({ onRename }: { readonly onRename: () => voi
   const { chat, activeChatId } = useChatContext();
   const messages = useChatSelector((state) => state.messages);
   const { projectId } = useProject();
-  const [, setArchivedChats] = useSearchParameter(searchParameterName.archivedChats, flagParameter, {
-    history: 'push',
-  });
   const { chats } = useChatRecords(projectId);
   const { t } = useTranslation();
-  const chatName = chats.find((c) => c.id === activeChatId)?.name ?? t('project.agent.chatFallback');
+  const chatName = displayChatName(chats.find((c) => c.id === activeChatId)?.name, t);
 
   const handleExport = useCallback(() => {
     if (!chat) {
@@ -76,15 +69,6 @@ export function ChatHistorySettings({ onRename }: { readonly onRename: () => voi
         <DropdownMenuItem disabled={!chat || messages.length === 0} onSelect={handleExport}>
           <Download />
           {t('project.agent.exportTranscript')}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => {
-            setArchivedChats(true);
-          }}
-        >
-          <Archive />
-          {t('project.agent.archivedChats')}
         </DropdownMenuItem>
         {/* SinopiaCAD: no model name and no credits here (UI-UX-SinopiaCAD §1.3; credits wait for pricing). */}
       </DropdownMenuContent>

@@ -10,6 +10,8 @@ export type WithTabContextMenuOptions = {
   readonly getIcon?: DockviewTabIconRenderer;
   /** The tab's title in the interface language, when the dock names its panes itself; the stored title otherwise. */
   readonly getTitle?: (properties: IDockviewPanelHeaderProps, language: Language) => string | undefined;
+  /** Whether the tab may be closed; every tab may when omitted. */
+  readonly isClosable?: (properties: IDockviewPanelHeaderProps) => boolean;
 };
 
 /**
@@ -37,6 +39,7 @@ export function withTabContextMenu(
             leadingIcon={leadingIcon}
             icon={options?.getIcon?.(properties)}
             displayTitle={options?.getTitle?.(properties, language)}
+            isClosable={options?.isClosable?.(properties)}
           />
         </ContextMenuTrigger>
         <ContextMenuContent>

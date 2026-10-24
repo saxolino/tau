@@ -42,7 +42,40 @@ export const modelPieces = (manifest: GeometryComponentManifest | undefined): Ge
     return node?.kind === 'part' ? [node] : [];
   }) ?? [];
 
-/** Group exact matching parameter objects with their physical pieces, retaining pieces without parameters. */
+/** A parameter key's words: `marquiseLarghezza`, `marquise_larghezza` and `marquise-larghezza` all give two. */
+const keyWords = (key: string): string[] =>
+  key
+    .replaceAll(/([a-z\d])([A-Z])/g, '$1 $2')
+    .split(/[\s_-]+/)
+    .filter((word) => word.length > 0);
+
+/**
+ * The single piece a flat measure is named after, by its leading words (`steloDiametro` → Stelo), and the words left
+ * for the measure. Models written before measures were nested per piece keep flat keys; a prefix shared by several
+ * pieces (`castoneParete` with three bezels) belongs to none of them.
+ */
+export const flatMeasurePiece = (
+  key: string,
+  pieces: readonly GeometryComponentNode[],
+): { node: GeometryComponentNode; measure: string } | undefined => {
+  const words = keyWords(key);
+  for (let count = words.length - 1; count >= 1; count -= 1) {
+    const prefix = pieceNameKey(words.slice(0, count).join(' '));
+    const matches = pieces.filter((node) => pieceNameKey(node.name) === prefix);
+    if (matches.length === 1 && matches[0]) {
+      return { node: matches[0], measure: words.slice(count).join(' ') };
+    }
+  }
+  return undefined;
+};
+
+const isFlatValue = (value: unknown): boolean =>
+  typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean';
+
+/**
+ * Group parameter objects named after a piece, and flat measures led by one piece's name, with their physical pieces;
+ * pieces without parameters stay, and what belongs to no single piece is shared.
+ */
 export const groupPieceMeasures = (
   manifest: GeometryComponentManifest | undefined,
   defaults: Record<string, unknown>,
@@ -50,7 +83,11 @@ export const groupPieceMeasures = (
   const pieces = modelPieces(manifest);
   const remaining = new Set(Object.keys(defaults));
   const groups = pieces.map((node) => {
-    const matching = [...remaining].filter((key) => pieceNameKey(key) === pieceNameKey(node.name));
+    const matching = [...remaining].filter(
+      (key) =>
+        pieceNameKey(key) === pieceNameKey(node.name) ||
+        (isFlatValue(defaults[key]) && flatMeasurePiece(key, pieces)?.node.id === node.id),
+    );
     for (const key of matching) {
       remaining.delete(key);
     }
@@ -87,9 +124,22 @@ export const pieceKeyValue = ({
   if (!key) {
     return '';
   }
+  const pieces = group.node ? [group.node] : [];
+  // A nested piece object reads its fields; flat measures read the key whose remaining words are the field.
+  const pathTo = (name: string): readonly string[] | undefined => {
+    if (!isFlatValue(defaults[key])) {
+      return [key, name];
+    }
+    const flat = group.keys.find((candidate) => {
+      const measure = flatMeasurePiece(candidate, pieces)?.measure;
+      return measure !== undefined && pieceNameKey(measure) === pieceNameKey(name);
+    });
+    return flat === undefined ? undefined : [flat];
+  };
   const read = (names: readonly string[]): number | undefined => {
     for (const name of names) {
-      const value = valueAtPath(values, [key, name]) ?? valueAtPath(defaults, [key, name]);
+      const path = pathTo(name);
+      const value = path === undefined ? undefined : (valueAtPath(values, path) ?? valueAtPath(defaults, path));
       if (typeof value === 'number' && Number.isFinite(value)) {
         return value;
       }

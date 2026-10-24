@@ -33,11 +33,15 @@ import {
   Plus,
   Printer,
   Rotate3d,
+  Settings2,
   Share2,
   SlidersHorizontal,
   Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useSettingsDialog } from '#hooks/use-settings-dialog.js';
+import { useSinopiaTools } from '#hooks/use-sinopia-tools.js';
+import { useTranslation } from '#i18n/translate.js';
 import type * as Monaco from 'monaco-editor';
 import type {
   DockviewApi,
@@ -128,6 +132,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
@@ -820,6 +825,61 @@ export function WorkbenchLeftActions(properties: IDockviewHeaderActionsProps): R
   );
 }
 
+/**
+ * SinopiaCAD's «+» beside «Misure» and «Versioni»: the panels the designer switched on in Impostazioni › Strumenti,
+ * and the way there. No split and no Tau surfaces a designer did not ask for.
+ */
+export function SinopiaLaneAddMenu(properties: IDockviewHeaderActionsProps): React.JSX.Element {
+  const { t } = useTranslation();
+  const { open: openSettings } = useSettingsDialog();
+  const { enabled } = useSinopiaTools();
+  const panels = enabled.flatMap((tool) => (tool.kind === 'panel' ? [tool] : []));
+
+  return (
+    <div className='flex h-full items-center gap-1'>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <DockviewPaneAction aria-label={t('tools.addPanel')}>
+            <Plus className='size-3.5' />
+          </DockviewPaneAction>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align='start' side='bottom' sideOffset={4} className='w-60'>
+          {panels.length === 0 ? (
+            <DropdownMenuLabel className='text-xs font-normal text-muted-foreground'>
+              {t('tools.noPanels')}
+            </DropdownMenuLabel>
+          ) : (
+            panels.map((tool) => (
+              <DropdownMenuItem
+                key={tool.id}
+                onSelect={() => {
+                  if (tool.panelId === 'files') {
+                    openWorkbenchFiles({ api: properties.containerApi, group: properties.group });
+                    return;
+                  }
+                  openWorkbenchUtility(properties.containerApi, tool.panelId, properties.group);
+                }}
+              >
+                <tool.icon aria-hidden />
+                <span>{t(`tools.${tool.id}.label`)}</span>
+              </DropdownMenuItem>
+            ))
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              openSettings('tools');
+            }}
+          >
+            <Settings2 aria-hidden />
+            <span>{t('tools.choose')}</span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 const components = {
   browser: BrowserWorkbenchPanel,
   editor: EditorPanel,
@@ -880,8 +940,15 @@ export const getWorkbenchTabIcon: DockviewTabIconRenderer = (properties) => {
   return Icon ? <Icon aria-hidden className='size-3 shrink-0' /> : undefined;
 };
 
+/** SinopiaCAD's left lane is two fixed tabs, «Misure» and «Versioni» (UI-UX-SinopiaCAD §3.2): neither closes. */
+export const pinnedWorkbenchComponents: ReadonlySet<string> = new Set([
+  workbenchPanels.parameters.component,
+  workbenchPanels.revisions.component,
+]);
+
 export const WorkbenchDockviewTab = withTabContextMenu(WorkbenchTabContextMenu, {
   getIcon: getWorkbenchTabIcon,
+  isClosable: (properties) => !pinnedWorkbenchComponents.has(properties.api.component),
   // SinopiaCAD: Misure, Versioni, Esporta… in the interface language, whatever title the layout stored.
   getTitle: (properties, language) => paneTabTitle(properties.api.component, language),
 });
@@ -930,6 +997,31 @@ export function seedFreshWorkbench({
     ...workbenchPanels.parameters,
     ...(group ? { position: { direction: 'within', referenceGroup: group } } : {}),
   });
+  ensurePinnedWorkbenchTabs(api);
+}
+
+/**
+ * Puts back whichever of «Misure» and «Versioni» a layout lacks, beside the other and without taking focus, so the
+ * lane always offers both (layouts saved before SinopiaCAD pinned them may hold only one, or neither).
+ *
+ * @param api - The workbench dock.
+ */
+export function ensurePinnedWorkbenchTabs(api: DockviewApi): void {
+  const pinned = [workbenchPanels.parameters, workbenchPanels.revisions];
+  const present = pinned.find((definition) => api.panels.some((panel) => panel.id === definition.id));
+  const referenceGroup = present
+    ? api.panels.find((panel) => panel.id === present.id)?.group
+    : (api.activeGroup ?? api.groups[0]);
+  for (const definition of pinned) {
+    if (api.panels.some((panel) => panel.id === definition.id)) {
+      continue;
+    }
+    api.addPanel({
+      ...definition,
+      inactive: api.panels.length > 0,
+      ...(referenceGroup ? { position: { direction: 'within', referenceGroup } } : {}),
+    });
+  }
 }
 
 export function restoreWorkbenchLayout({
@@ -966,6 +1058,10 @@ export function restoreWorkbenchLayout({
       }
     }
 
+    // A restored lane always holds «Misure» and «Versioni»; Tau's guided launchers then have nothing left to offer.
+    if (api.panels.length > 0) {
+      ensurePinnedWorkbenchTabs(api);
+    }
     const launchers = api.panels.filter((panel) => getPlaceholderParameters(panel)?.mode === 'launcher');
     const substantivePanels = api.panels.filter((panel) => getPlaceholderParameters(panel)?.mode !== 'launcher');
     for (const launcher of substantivePanels.length > 0 ? launchers : launchers.slice(1)) {
@@ -1714,6 +1810,7 @@ export const WorkbenchDockview = memo(function ({
   const { connectWorkbench, setWorkbenchOpen, layoutController } = useProjectWorkspace();
   const isMobile = useIsMobile();
   const isTauDebugEnabled = useFeature('tauDebug');
+  const { language } = useTranslation();
   /* Only jump-to-line reads it, and only after an editor pane has configured Monaco (B-16). */
   const monaco = useMonacoIfConfigured();
   const [api, setApi] = useState<DockviewApi>();
@@ -2074,11 +2171,15 @@ export const WorkbenchDockview = memo(function ({
       return;
     }
 
+    /* Built-in panes carry their name in the interface language, which screen readers hear when a tab opens. A layout
+     * saved while the retired *viewing an older revision* marker showed (RS5, RA4) still carries it; this renames it. */
     const updateTitle = (): void => {
-      const revisionsPanel = api.panels.find((panel) => panel.id === workbenchPanels.revisions.id);
-      /* A layout saved while the retired *viewing an older revision* marker
-       * showed (RS5, RA4) still carries it; the tab is always *Revisions*. */
-      revisionsPanel?.api.setTitle('Revisions');
+      for (const panel of api.panels) {
+        const title = paneTabTitle(panel.api.component, language);
+        if (title !== undefined && panel.api.title !== title) {
+          panel.api.setTitle(title);
+        }
+      }
     };
 
     updateTitle();
@@ -2086,7 +2187,7 @@ export const WorkbenchDockview = memo(function ({
     return () => {
       disposable.dispose();
     };
-  }, [api]);
+  }, [api, language]);
 
   useEffect(() => {
     if (!api) {
@@ -2149,13 +2250,17 @@ export const WorkbenchDockview = memo(function ({
       <WorkbenchOpenPlaceholderFileContext.Provider value={handlePlaceholderOpenFile}>
         <DockviewFileActionProvider value={handleOpenFile}>
           <Dockview
+            // The lane's few short tabs («Misure», «Versioni», a tool) take their words' width, so all of them fit.
+            className='[&_.dv-tabs-container:not(.dv-tabs-container-vertical)_>_.dv-tab]:!w-auto [&_.dv-tabs-container:not(.dv-tabs-container-vertical)_>_.dv-tab]:!min-w-max'
             components={components}
             tabComponents={tabComponents}
             watermarkComponent={WorkbenchEmptyGroupWatermark}
             noPanelsOverlay='emptyGroup'
             defaultTabComponent={WorkbenchDockviewTab}
             getTabIcon={getWorkbenchTabIcon}
-            leftHeaderActionsComponent={WorkbenchLeftActions}
+            // A designer's lane: two fixed tabs and the tools they switched on; Tau's picker and split stay for debugging.
+            leftHeaderActionsComponent={isTauDebugEnabled ? WorkbenchLeftActions : SinopiaLaneAddMenu}
+            hasTabOverflowPicker={isTauDebugEnabled}
             prefixHeaderActionsComponent={profile === 'editor' ? WorkbenchLaneHead : undefined}
             onReady={onReady}
             onDidDrop={onDidDrop}

@@ -1,11 +1,15 @@
 import { agentMessages } from '#i18n/messages/agent.js';
 import { measuresMessages } from '#i18n/messages/measures.js';
+import { piecesMessages } from '#i18n/messages/pieces.js';
 import { accountMessages } from '#i18n/messages/account.js';
 import { authMessages } from '#i18n/messages/auth.js';
 import { commonMessages } from '#i18n/messages/common.js';
+import { convertMessages } from '#i18n/messages/convert.js';
+import { importMessages } from '#i18n/messages/import.js';
 import { homeMessages } from '#i18n/messages/home.js';
 import { projectMessages } from '#i18n/messages/project.js';
 import { shellMessages } from '#i18n/messages/shell.js';
+import { toolsMessages } from '#i18n/messages/tools.js';
 import { viewerMessages } from '#i18n/messages/viewer.js';
 import { exportMessages } from '#i18n/messages/export.js';
 import { versionsMessages } from '#i18n/messages/versions.js';
@@ -20,13 +24,17 @@ import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
 export const areas = {
   agent: agentMessages,
   measures: measuresMessages,
+  pieces: piecesMessages,
   account: accountMessages,
   auth: authMessages,
   common: commonMessages,
+  convert: convertMessages,
+  import: importMessages,
   export: exportMessages,
   home: homeMessages,
   project: projectMessages,
   shell: shellMessages,
+  tools: toolsMessages,
   viewer: viewerMessages,
   versions: versionsMessages,
   sinopiaImages: sinopiaImagesMessages,

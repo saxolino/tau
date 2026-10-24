@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import { Box } from 'lucide-react';
 import { WorkbenchTab } from '@taucad/workbench-panes/components/workbench-tab';
+import { cn } from '@taucad/ui/utils/cn';
 import { FileExtensionIcon } from '#components/icons/file-extension-icon.js';
 
 export type DockviewTabProps = IDockviewPanelHeaderProps & {
@@ -14,6 +15,8 @@ export type DockviewTabProps = IDockviewPanelHeaderProps & {
   readonly icon?: React.ReactNode;
   /** The title to show instead of the panel's stored one, as a pane's name in the interface language. */
   readonly displayTitle?: string;
+  /** `false` for a tab that always stays in its dock: no close glyph and no Delete shortcut. */
+  readonly isClosable?: boolean;
 };
 
 export type DockviewTabIconSource = Pick<IDockviewPanelHeaderProps, 'api' | 'params'>;
@@ -71,7 +74,7 @@ export function DockviewTabIcon({
  * advertises with `aria-keyshortcuts`, and through the tab's context menu.
  */
 export function DockviewTab(properties: DockviewTabProps): React.JSX.Element {
-  const { api, icon, leadingIcon = 'extension', displayTitle } = properties;
+  const { api, icon, leadingIcon = 'extension', displayTitle, isClosable = true } = properties;
   const [storedTitle, setTitle] = useState(api.title ?? '');
   const title = displayTitle ?? storedTitle;
   const closeRef = useRef<HTMLSpanElement>(null);
@@ -96,14 +99,18 @@ export function DockviewTab(properties: DockviewTabProps): React.JSX.Element {
     }
 
     tab.setAttribute('aria-label', fullTitle);
-    tab.setAttribute('aria-keyshortcuts', 'Delete');
+    if (isClosable) {
+      tab.setAttribute('aria-keyshortcuts', 'Delete');
+    } else {
+      tab.removeAttribute('aria-keyshortcuts');
+    }
 
     return () => {
       if (tab.getAttribute('aria-label') === fullTitle) {
         tab.removeAttribute('aria-label');
       }
     };
-  }, [fullTitle]);
+  }, [fullTitle, isClosable]);
 
   /*
    * Dockview listens natively on `.dv-tab`, which sits between this portal and
@@ -113,7 +120,7 @@ export function DockviewTab(properties: DockviewTabProps): React.JSX.Element {
    */
   useEffect(() => {
     const close = closeRef.current;
-    if (!close) {
+    if (!close || !isClosable) {
       return;
     }
 
@@ -137,7 +144,7 @@ export function DockviewTab(properties: DockviewTabProps): React.JSX.Element {
       close.removeEventListener('pointerdown', handlePointerDown);
       close.removeEventListener('click', handleClick);
     };
-  }, [api]);
+  }, [api, isClosable]);
 
   return (
     <WorkbenchTab
@@ -148,8 +155,13 @@ export function DockviewTab(properties: DockviewTabProps): React.JSX.Element {
       closeRef={closeRef}
       className='dv-default-tab'
       contentClassName='dv-default-tab-content mr-0!'
-      titleClassName='dockview-tab-title'
-      closeClassName='dv-default-tab-action size-4.5! rounded-[calc(var(--dv-tab-border-radius)-0.25rem)]! bg-transparent p-0! hover:bg-nested-action-hover!'
+      // A pinned tab is as wide as its words, so its title never dissolves.
+      titleClassName={cn('dockview-tab-title', !isClosable && '[--fade-label-size:0px]')}
+      // A pinned tab keeps the glyph's node (it anchors the tab's accessible name) but never shows it.
+      closeClassName={cn(
+        'dv-default-tab-action size-4.5! rounded-[calc(var(--dv-tab-border-radius)-0.25rem)]! bg-transparent p-0! hover:bg-nested-action-hover!',
+        !isClosable && 'hidden!',
+      )}
     />
   );
 }

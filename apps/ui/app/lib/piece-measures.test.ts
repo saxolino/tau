@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RJSFSchema } from '@rjsf/utils';
 import type { GeometryComponentManifest, GeometryComponentNode } from '@taucad/types';
 import {
+  flatMeasurePiece,
   groupPieceMeasures,
   isStonePiece,
   modelMeasureSummary,
@@ -120,5 +121,44 @@ describe('piece measures', () => {
     expect(projected?.required).toEqual(['stelo']);
     expect(parameterAssumption(projected, ['stelo', 'spessore'])).toBe('Hidden in the image');
     expect(parameterAssumption(projected, ['stelo', 'other'])).toBeUndefined();
+  });
+});
+
+describe('flat measures written before measures were nested per piece', () => {
+  const piece = (id: string, name: string): GeometryComponentNode =>
+    ({ id, name, kind: 'part', capabilities: {} }) as unknown as GeometryComponentNode;
+  const pieces = [
+    piece('a', 'Marquise'),
+    piece('b', 'Castone marquise'),
+    piece('c', 'Stelo'),
+    piece('d', 'Castone sinistro'),
+    piece('e', 'Castone destro'),
+  ];
+  const manifest = {
+    nodeOrder: pieces.map((node) => node.id),
+    nodesById: Object.fromEntries(pieces.map((node) => [node.id, node])),
+  } as unknown as GeometryComponentManifest;
+
+  it('joins a flat measure to the one piece its leading words name', () => {
+    expect(flatMeasurePiece('marquiseLarghezza', pieces)).toEqual({ node: pieces[0], measure: 'Larghezza' });
+    expect(flatMeasurePiece('steloDiametro', pieces)?.node.name).toBe('Stelo');
+  });
+
+  it('keeps a prefix shared by several pieces, or by none, out of every piece', () => {
+    expect(flatMeasurePiece('castoneParete', pieces)).toBeUndefined();
+    expect(flatMeasurePiece('granulatura', pieces)).toBeUndefined();
+  });
+
+  it('groups flat measures with their piece and reads the key value from them', () => {
+    const defaults = { marquiseLunghezza: 10, marquiseLarghezza: 4, steloDiametro: 1.4, castoneParete: 0.4 };
+    const groups = groupPieceMeasures(manifest, defaults);
+    expect(groups.find((group) => group.id === 'a')?.keys).toEqual(['marquiseLunghezza', 'marquiseLarghezza']);
+    expect(groups.find((group) => group.id === 'general')?.keys).toEqual(['castoneParete']);
+    const marquise = groups.find((group) => group.id === 'a')!;
+    expect(pieceKeyValue({ group: marquise, defaults, values: { marquiseLunghezza: 12 }, language: 'it' })).toBe(
+      '12 × 4 mm',
+    );
+    const stelo = groups.find((group) => group.id === 'c')!;
+    expect(pieceKeyValue({ group: stelo, defaults, values: {}, language: 'it' })).toBe('⌀ 1,4 mm');
   });
 });

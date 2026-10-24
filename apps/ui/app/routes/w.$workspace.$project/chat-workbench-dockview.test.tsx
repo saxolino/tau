@@ -357,7 +357,6 @@ const {
   workbenchSurfaces,
   workbenchPanels,
   PrintWorkbenchPanel,
-  ExportWorkbenchPanel,
 } = await import('#routes/w.$workspace.$project/chat-workbench-dockview.js');
 
 const actualWorkspace = await vi.importActual<typeof ProjectWorkspaceContext>(
@@ -365,29 +364,30 @@ const actualWorkspace = await vi.importActual<typeof ProjectWorkspaceContext>(
 );
 
 describe('hidden workbench operation panels', () => {
-  it.each([
-    ['Print', PrintWorkbenchPanel, mockPrintBody],
-    ['Export', ExportWorkbenchPanel, mockExportBody],
-  ] as const)('passes hidden visibility to mounted %s body and wakes it on reveal', (_name, Panel, body) => {
-    let onVisibilityChange: (() => void) | undefined;
-    const api = {
-      isVisible: false,
-      onDidVisibilityChange: (listener: () => void) => {
-        onVisibilityChange = listener;
-        return { dispose: vi.fn() };
-      },
-    } as unknown as IDockviewPanelProps['api'];
-    const properties = { api } as IDockviewPanelProps;
+  // Export is a launcher for SinopiaCAD's dialog (it does no work while hidden), so only Print still has a body to wake.
+  it.each([['Print', PrintWorkbenchPanel, mockPrintBody]] as const)(
+    'passes hidden visibility to mounted %s body and wakes it on reveal',
+    (_name, Panel, body) => {
+      let onVisibilityChange: (() => void) | undefined;
+      const api = {
+        isVisible: false,
+        onDidVisibilityChange: (listener: () => void) => {
+          onVisibilityChange = listener;
+          return { dispose: vi.fn() };
+        },
+      } as unknown as IDockviewPanelProps['api'];
+      const properties = { api } as IDockviewPanelProps;
 
-    render(<Panel {...properties} />);
-    expect(body).toHaveBeenLastCalledWith(false);
+      render(<Panel {...properties} />);
+      expect(body).toHaveBeenLastCalledWith(false);
 
-    act(() => {
-      Object.assign(api, { isVisible: true });
-      onVisibilityChange?.();
-    });
-    expect(body).toHaveBeenLastCalledWith(true);
-  });
+      act(() => {
+        Object.assign(api, { isVisible: true });
+        onVisibilityChange?.();
+      });
+      expect(body).toHaveBeenLastCalledWith(true);
+    },
+  );
 });
 
 const createTabProperties = ({
@@ -1390,12 +1390,14 @@ describe('Workbench file reconciliation', () => {
     expect(placements.size).toBe(0);
   });
 
-  it('seeds exactly one Misure pane, not the guided New tab launcher, in its group', () => {
+  it('seeds Misure, then Versioni behind it, not the guided New tab launcher, in one group', () => {
     const dockview = createTestDockview();
 
     seedFreshWorkbench({ api: dockview.api });
 
-    expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
+    expect(dockview.addPanel).toHaveBeenCalledTimes(2);
+    expect(dockview.addPanel).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
         id: 'workbench:parameters',
         component: 'parameters',
@@ -1403,16 +1405,25 @@ describe('Workbench file reconciliation', () => {
         position: { direction: 'within', referenceGroup: dockview.group },
       }),
     );
+    expect(dockview.addPanel).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: workbenchPanels.revisions.id, component: 'revisions', inactive: true }),
+    );
     expect(dockview.addPanel).not.toHaveBeenCalledWith(expect.objectContaining({ component: 'newTab' }));
   });
 
-  it('seeds the shared profile directly into Misure', () => {
+  it('seeds the shared profile directly into Misure, with Versioni beside it', () => {
     const dockview = createTestDockview();
 
     seedFreshWorkbench({ api: dockview.api, profile: 'shared' });
 
-    expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
+    expect(dockview.addPanel).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({ id: 'workbench:parameters', component: 'parameters', title: 'Misure' }),
+    );
+    expect(dockview.addPanel).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: workbenchPanels.revisions.id, inactive: true }),
     );
   });
 
@@ -1810,11 +1821,15 @@ describe('Workbench file reconciliation', () => {
 
     restoreWorkbenchLayout({ api: dockview.api, layout: {} as SerializedDockview, isTauDebugEnabled: true });
 
-    expect(dockview.addPanel).toHaveBeenCalledExactlyOnceWith(
+    expect(dockview.addPanel).toHaveBeenCalledWith(
       expect.objectContaining({ id: workbenchPanels.print.id, component: 'print', title: 'Print' }),
     );
     expect(dockview.removePanel).toHaveBeenCalledExactlyOnceWith(legacyMachines);
-    expect(dockview.panels.map(({ id }) => id)).toEqual([workbenchPanels.print.id]);
+    expect(dockview.panels.map(({ id }) => id)).toEqual([
+      workbenchPanels.print.id,
+      workbenchPanels.parameters.id,
+      workbenchPanels.revisions.id,
+    ]);
   });
 
   it('keeps Share in a restored editor layout', () => {
@@ -1837,15 +1852,16 @@ describe('Workbench file reconciliation', () => {
     expect(dockview.removePanel).toHaveBeenCalledExactlyOnceWith(launcher);
   });
 
-  it('keeps only the first launcher in an otherwise empty restored layout', () => {
+  it('replaces the launchers of an otherwise empty restored layout with Misure and Versioni', () => {
     const first = panel('workbench-tab-first', { mode: 'launcher' });
     const second = panel('workbench-tab-second', { mode: 'launcher' });
     const dockview = createTestDockview([first, second]);
 
     restoreWorkbenchLayout({ api: dockview.api, layout: {} as SerializedDockview, isTauDebugEnabled: true });
 
-    expect(dockview.removePanel).toHaveBeenCalledExactlyOnceWith(second);
-    expect(dockview.panels).toEqual([first]);
+    expect(dockview.removePanel).toHaveBeenCalledWith(first);
+    expect(dockview.removePanel).toHaveBeenCalledWith(second);
+    expect(dockview.panels.map(({ id }) => id)).toEqual([workbenchPanels.parameters.id, workbenchPanels.revisions.id]);
   });
 
   it('reconciles only file panels and leaves utilities under Dockview control', () => {

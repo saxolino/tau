@@ -18,6 +18,8 @@ export const cookieName = {
   codeInlayHints: 'code-inlay-hints',
   // Whether actions use pointer cursors instead of the platform default.
   pointerCursors: 'pointer-cursors',
+  // SinopiaCAD's optional tools the designer switched on or off: only explicit choices, absence follows the default.
+  sinopiaTools: 'sinopia-tools',
 
   /* Layout */
   // Whether the sidebar is open.

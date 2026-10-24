@@ -2,8 +2,8 @@ import * as React from 'react';
 import { Link, useMatch } from 'react-router';
 import { Home } from 'lucide-react';
 import { HomeRecentNavigation } from '#components/nav/home-recent-navigation.js';
-import { ProjectNavigation } from '#components/nav/project-navigation.js';
 import { NavMain } from '#components/nav/nav-main.js';
+import { SinopiaToolsNavigation } from '#components/nav/sinopia-tools-navigation.js';
 import {
   Sidebar,
   SidebarContent,
@@ -14,32 +14,21 @@ import {
   useSidebar,
 } from '#components/ui/sidebar.js';
 import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
-import { NavChat } from '#components/nav/nav-chat.js';
 import { navRoutes } from '#constants/route.constants.js';
-import { useFeatureFlags } from '#flags/use-feature.js';
 import { Commands } from '#components/layout/command-palette.js';
 import { DesktopUpdate } from '#components/nav/desktop-update.js';
 import { NavUser } from '#components/nav/nav-user.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { cn } from '@taucad/ui/utils/cn';
-import { billingNavRoutes } from '#cloud/nav-billing.js';
 import { useTranslation } from '#i18n/translate.js';
 
 export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sidebar>): React.JSX.Element {
   const { t } = useTranslation();
   const isHome = useMatch('/') !== null;
   const { state, isMobile } = useSidebar();
-  const flags = useFeatureFlags();
   const desktopTarget = isDesktopTarget();
   const isCompact = desktopTarget && !isMobile;
   const isNonMobileCollapsed = !isMobile && state === 'collapsed';
-  const navMoreItems = React.useMemo(
-    () =>
-      [...navRoutes.navMore, ...billingNavRoutes].filter(
-        (item) => item.featureFlag === undefined || flags[item.featureFlag],
-      ),
-    [flags],
-  );
 
   return (
     <Sidebar
@@ -83,25 +72,19 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
         <div className='sticky top-0 z-10 space-y-1 bg-sidebar px-2 pb-1'>
           {/* Global search entries register when search opens. */}
           <Commands />
-          {isHome ? (
-            <SidebarMenuButton asChild isActive>
-              <Link to='/' aria-current='page'>
-                <Home aria-hidden />
-                <span>{t('shell.sidebar.home')}</span>
-              </Link>
-            </SidebarMenuButton>
-          ) : (
-            <NavChat isCompact={isCompact} />
-          )}
+          {/* One frame on every page (UI-UX-SinopiaCAD §1.4): no «New project», no «More», no chat tree. */}
+          <SidebarMenuButton asChild isActive={isHome}>
+            <Link to='/' aria-current={isHome ? 'page' : undefined}>
+              <Home aria-hidden />
+              <span>{t('shell.sidebar.home')}</span>
+            </Link>
+          </SidebarMenuButton>
         </div>
         <div className='flex-1 overflow-y-auto'>
           <div className='flex flex-col justify-between'>
-            <NavMain
-              items={navRoutes.navMain}
-              moreItems={isHome ? undefined : navMoreItems}
-              className={isCompact ? 'py-1' : undefined}
-            />
-            {isHome ? <HomeRecentNavigation /> : <ProjectNavigation className={isCompact ? 'py-1' : undefined} />}
+            <NavMain items={navRoutes.navMain} className={isCompact ? 'py-1' : undefined} />
+            <HomeRecentNavigation />
+            <SinopiaToolsNavigation />
           </div>
         </div>
       </SidebarContent>

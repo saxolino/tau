@@ -72,10 +72,10 @@ describe('ChatHistorySettings', () => {
 
   // SinopiaCAD: no model name and no credits in the menu (UI-UX-SinopiaCAD §1.3).
   it.each([
-    ['it', 'Opzioni della conversazione', ['Rinomina', 'Scarica la conversazione', 'Conversazioni precedenti']],
-    ['en', 'Conversation options', ['Rename', 'Download the conversation', 'Earlier conversations']],
+    ['it', 'Opzioni della conversazione', ['Rinomina', 'Scarica la conversazione']],
+    ['en', 'Conversation options', ['Rename', 'Download the conversation']],
   ] as const)(
-    'should open a menu of Rename, Download and earlier conversations in %s, and nothing else',
+    'should open a menu of Rename and Download in %s, and nothing else (conversations live in the switcher)',
     async (language, trigger, names) => {
       setLanguage(language);
       const user = userEvent.setup();
@@ -87,19 +87,6 @@ describe('ChatHistorySettings', () => {
       expect(screen.getByRole('menu')).not.toHaveTextContent(/credit|crediti|runs on|model/iu);
     },
   );
-
-  it('opens the project archive while preserving the current chat and other query state', async () => {
-    const user = userEvent.setup();
-    renderMenu();
-    await user.click(screen.getByRole('button', { name: 'Conversation options' }));
-    const menu = screen.getByRole('menu');
-    expect(menu.querySelector('[role=separator]')).toBeInTheDocument();
-    await user.click(screen.getByRole('menuitem', { name: 'Earlier conversations' }));
-    expect(screen.getByRole('status', { name: 'Current URL' })).toHaveTextContent(
-      'chat=chat_active&workbench=share&archivedChats=1',
-    );
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-  });
 
   it('should hand Rename to the header and keep Export disabled with no messages', async () => {
     const user = userEvent.setup();

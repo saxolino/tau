@@ -4,6 +4,8 @@ import { SquarePen } from 'lucide-react';
 import { useSelector } from '@xstate/react';
 import { cn } from '@taucad/ui/utils/cn';
 import { ChatHistorySettings } from '#routes/w.$workspace.$project/chat-history-settings.js';
+import { ChatSwitcher } from '#routes/w.$workspace.$project/chat-switcher.js';
+import { displayChatName } from '#routes/w.$workspace.$project/chat-display-name.js';
 import { useActiveChatNaming } from '#routes/w.$workspace.$project/use-active-chat-naming.js';
 import { useOpenNewChat } from '#routes/w.$workspace.$project/use-open-new-chat.js';
 import { useChats } from '#hooks/use-chats.js';
@@ -38,7 +40,7 @@ const newChatKeyCombination = {
  */
 export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode }): React.JSX.Element {
   const { t } = useTranslation();
-  const { isMobile, open: isSidebarOpen } = useSidebar();
+  const { isMobile } = useSidebar();
   // One toggle in the document at a time: the viewer's tab bar holds it while the lane is hidden.
   const { chat: isChatVisible } = useWorkspaceLanes();
   const { openNewChat, isReady: canOpenNewChat } = useOpenNewChat();
@@ -57,7 +59,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
     applyGeneratedChatName,
   });
   const [isRenaming, setIsRenaming] = useState(false);
-  const name = activeChat?.name ?? t('project.agent.chatFallback');
+  const name = displayChatName(activeChat?.name, t);
 
   const createAndOpenChat = async (): Promise<void> => openNewChat();
 
@@ -71,7 +73,8 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
 
   return (
     <>
-      {!isMobile && !isSidebarOpen ? (
+      {/* SinopiaCAD's sidebar lists projects only, so a new conversation always starts here. */}
+      {isMobile ? null : (
         <PaneButton
           aria-label={t('project.agent.newChat')}
           disabled={!canOpenNewChat}
@@ -80,7 +83,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
         >
           <SquarePen aria-hidden className='size-3.5 translate-y-[0.5px]' />
         </PaneButton>
-      ) : null}
+      )}
       <div
         className={cn(
           'relative flex min-w-0 flex-1 items-center self-stretch',
@@ -122,6 +125,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
         )}
         <FloatingPanelContentHeaderActions className={cn(!isRenaming && 'md:absolute md:inset-y-0 md:right-0')}>
           <FloatingPanelButtonGroup>
+            <ChatSwitcher />
             <ChatHistorySettings onRename={startRename} />
           </FloatingPanelButtonGroup>
           {isMobile ? closeButton : null}

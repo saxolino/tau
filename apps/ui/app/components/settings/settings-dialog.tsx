@@ -10,7 +10,11 @@ import { useSettingsDialog } from '#hooks/use-settings-dialog.js';
 import type { SettingsSection } from '#hooks/use-settings-dialog.js';
 import { CloudBillingSettings } from '#cloud/settings-billing.js';
 import { FileSystemSettings } from '#components/settings/filesystem-settings.js';
-import { SinopiaAppearanceSettings, SinopiaModelSettings } from '#components/settings/sinopia-settings.js';
+import {
+  SinopiaAppearanceSettings,
+  SinopiaModelSettings,
+  SinopiaToolsSettings,
+} from '#components/settings/sinopia-settings.js';
 import { useTranslation } from '#i18n/translate.js';
 import { ExperimentalSettings } from '#components/settings/experimental-settings.js';
 import { AgentSettings } from '#components/settings/agent-settings.js';
@@ -101,6 +105,9 @@ function SettingsContent({ section }: { readonly section: SettingsSection }): Re
     }
     case 'models': {
       return <SinopiaModelSettings />;
+    }
+    case 'tools': {
+      return <SinopiaToolsSettings />;
     }
     case 'agents': {
       return <AgentSettings />;

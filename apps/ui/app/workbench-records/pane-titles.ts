@@ -28,6 +28,10 @@ const translatedPanes = {
   revisions: 'project.panes.revisions',
   export: 'project.panes.export',
   share: 'project.panes.share',
+  // The optional tools a designer can switch on (Impostazioni › Strumenti).
+  kinematics: 'project.panes.kinematics',
+  details: 'project.panes.details',
+  print: 'project.panes.print',
 } as const satisfies Partial<Record<PaneId, string>>;
 
 const isTranslatedPane = (pane: string): pane is keyof typeof translatedPanes => Object.hasOwn(translatedPanes, pane);

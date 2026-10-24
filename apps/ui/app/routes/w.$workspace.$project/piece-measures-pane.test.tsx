@@ -131,7 +131,7 @@ describe('piece measures interactions', () => {
     setup();
     const user = userEvent.setup();
     expect(screen.getByText('2 pezzi · 1 pietra')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Generali' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Misure comuni' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Nascondi Stelo' }));
     expect(project.modelInteractionRef?.getSnapshot().context.unitsById['file:main.ts']?.hiddenComponentIds).toContain(
       stelo.id,

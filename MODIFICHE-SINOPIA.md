@@ -724,6 +724,7 @@ i cinque casi dimensionali non sono stati eseguiti. La verifica dell’interfacc
 delle dimensioni effettive dopo l’unione e di Safari/tastiera/gesti su iPad vero resta
 al coordinatore, come previsto dall’incarico. Non sono stati avviati server né fatte
 operazioni Supabase, pubblicazioni o push.
+
 ## 23 ottobre 2026 — collegamento ai progetti e alle immagini di Sinopia
 
 I modelli CAD si collegano ai progetti Sinopia tramite un record locale non autore.
@@ -812,3 +813,32 @@ con 4096 MiB di heap e al massimo 2 worker nei test. Nessun server di sviluppo a
 Il collaudo SQL non è eseguito: il sandbox impedisce l'avvio del PostgreSQL temporaneo.
 La verifica autenticata e visiva resta al coordinatore dopo l'unione; nessuna migrazione
 è stata applicata e nessun accesso al database remoto è stato effettuato.
+
+## 24 ottobre 2026 — rifinitura: Sinopia, non Tau
+
+Dopo la prova dal vivo del fondatore («sembra ancora un innesto»; «le funzioni di Tau che servono tienile e
+rendile personalizzabili»), modifiche a file di Tau (Apache-2.0 §4(b)):
+
+- **Cornice unica.** `app-sidebar.tsx` mostra su ogni pagina Cerca, Inizio, Progetti, Progetti recenti
+  (`home-recent-navigation.tsx`, con il progetto aperto evidenziato) e Strumenti; via «Nuovo progetto»,
+  «Altro» e l'albero delle chat. Avvio con il marchio al posto della pagina bianca (`root-layout.tsx`).
+- **Strumenti personalizzabili.** Nuovo `use-sinopia-tools.ts` + Impostazioni › Strumenti
+  (`settings-registry.ts`, `settings-dialog.tsx`, `sinopia-settings.tsx`): Converti e Importa nella barra,
+  Pezzi, Movimento, Dettagli, Stampa 3D (con il flag machines) e Codice del modello con «+» accanto alle Misure.
+- **Corsia sinistra.** `chat-workbench-dockview.tsx`, `dockview.tsx`, `dockview-tab.tsx`,
+  `with-tab-context-menu.tsx`: schede fisse «Misure» e «Versioni» larghe quanto il testo, senza divisione né
+  elenco delle schede; titoli dei pannelli nella lingua dell'interfaccia (`pane-titles.ts`).
+- **Agente.** Intestazione «Agente» con nuova conversazione e «Conversazioni precedenti» (`chat-title-bar.tsx`,
+  `chat-switcher.tsx`, `chat-display-name.ts`); un'esecuzione salvata su un daemon o un altro agente non è più
+  seguita (`sinopia-agent-execution.ts`, `chat-session-store.ts`, `project-live-sessions.tsx`).
+- **Misure.** Misure piatte dei modelli vecchi raggruppate per pezzo (`piece-measures.ts`); nota «Tuo valore»
+  sobria. Cubo di vista in italiano (`viewport-gizmo-cube-surface.ts`).
+- **Pezzi.** Pannello e proprietà in italiano e inglese con nomi leggibili, senza nomi di file
+  (`packages/workbench-panes/src/model/*`, `packages/viewer/src/cad/part-*`, `chat-explorer.tsx`).
+- **Converti / Importa** in italiano e inglese nella cornice della home; Importa senza GitHub né esempi di codice
+  e con i modelli 3D tra i file accettati (`routes/convert/*`, `routes/import.$/*`, `components/geometry/converter/*`).
+- **Esporta.** STEP letto per solido e con nomi accentati (`project-export-step.ts`, `smlib.kernel.ts`);
+  «Verificato» solo con controllo OCCT standard superato e scarti ≤ 1 µm; Foto pronta subito, catturata al clic.
+- **Sinopia.** Modelli senza progetto collegati da soli e una volta sola (`sinopia-cad.ts`,
+  `use-sinopia-cad-sync.ts`, `send-to-sinopia-dialog.tsx`, `project-save-status.tsx`); copertine «Da Sinopia»
+  (`sinopia-references.ts`); il progetto Sinopia del modello prende l'anteprima come copertina se non ne ha una.
