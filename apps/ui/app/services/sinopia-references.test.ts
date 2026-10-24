@@ -83,7 +83,7 @@ describe('Sinopia reference intake', () => {
         name: 'Necklace',
         updatedAt: '2026-10-23',
         imageCount: 0,
-        thumbnail: { bucket: 'creator-private', path: 'projects/project-a/cover.png' },
+        thumbnail: { bucket: 'creator-private', path: 'projects/project-a/cover.png', projectId: 'project-a' },
       },
     ]);
     const query = requests[0]!.searchParams;
@@ -94,6 +94,79 @@ describe('Sinopia reference intake', () => {
     expect(query.get('order')).toBe('updated_at.desc,id.asc');
     expect(query.get('limit')).toBe('500');
     expect(JSON.stringify(await listSinopiaReferenceProjects())).not.toContain('secret');
+  });
+
+  it('should show the covers Sinopia names by public assets URLs, read from the owned private folders', async () => {
+    // Shapes from Sinopia's own writers: `persistGenerationAsset` uploads to `creator-private` and stores
+    // `storage.from('assets').getPublicUrl(path)`; `canvas_thumbnail_url` is that URL on the canvas Output node;
+    // `get_my_project_thumbnails()` falls back to the newest approved/render asset's `public_url`.
+    const owner = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
+    const stranger = '0b9c8d7e-6f5a-4b3c-8d2e-1f0a9b8c7d6e';
+    const necklace = '7f3c1a2e-9b44-4c51-8f0d-2a6e5b1c9d33';
+    const duplicate = '2c4e6a8b-1d3f-4a5b-9c7d-8e0f1a2b3c4d';
+    const sketch = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+    const legacy = '3d5f7b9c-2e4a-4c6e-8a0b-2c4e6a8b0d1f';
+    const foreign = '4e6a8c0d-3f5b-4d7f-9b1c-3d5f7b9c1e2a';
+    const assets = `${base}/storage/v1/object/public/assets`;
+    const generated = `projects/${necklace}/canvas-gen/5b0e2f4a-8c1d-4e3f-9a6b-7c8d9e0f1a2b-generate.png`;
+    const render = `projects/${sketch}/renders/1729700000000-render.jpg`;
+    const ownerRender = `users/${owner}/temp-renders/1729700000000-edit-v2.png`;
+    admission.userId = owner;
+    const row = { ...project, user_id: owner };
+    data.set('/rest/v1/projects', [
+      { ...row, id: necklace, canvas_thumbnail_url: `${assets}/${generated}` },
+      // A Sinopia duplicate shares its original's storage references.
+      { ...row, id: duplicate, canvas_thumbnail_url: `${assets}/${generated}` },
+      { ...row, id: sketch },
+      // A pre-persistence canvas URL from a provider CDN falls back to the stored owned thumbnail.
+      {
+        ...row,
+        id: legacy,
+        canvas_thumbnail_url: 'https://v3.fal.media/files/koala/cover.png',
+        thumbnail_url: `${assets}/${ownerRender}`,
+      },
+      { ...row, id: foreign, canvas_thumbnail_url: `${assets}/projects/${stranger}/canvas/cover.png` },
+    ]);
+    data.set('/rest/v1/rpc/get_my_project_thumbnails', [
+      { project_id: necklace, thumbnail_url: `${assets}/${generated}` },
+      { project_id: duplicate, thumbnail_url: `${assets}/${generated}` },
+      { project_id: sketch, thumbnail_url: `${assets}/${render}` },
+      { project_id: legacy, thumbnail_url: 'https://v3.fal.media/files/koala/cover.png' },
+      { project_id: foreign, thumbnail_url: `${assets}/users/${stranger}/temp-renders/cover.png` },
+    ]);
+    const listed = await listSinopiaReferenceProjects();
+    expect(Object.fromEntries(listed.map((item) => [item.id, item.thumbnail]))).toEqual({
+      [necklace]: { bucket: 'creator-private', path: generated, projectId: necklace },
+      [duplicate]: { bucket: 'creator-private', path: generated, projectId: necklace },
+      [sketch]: { bucket: 'creator-private', path: render, projectId: sketch },
+      [legacy]: { bucket: 'creator-private', path: ownerRender, projectId: legacy },
+      [foreign]: undefined,
+    });
+    requests.length = 0;
+    for (const item of listed) {
+      if (item.thumbnail) {
+        // oxlint-disable-next-line no-await-in-loop -- one cover at a time, as the strip loads them
+        await downloadSinopiaReferenceImage({
+          userId: owner,
+          projectId: item.thumbnail.projectId,
+          location: item.thumbnail,
+        });
+      }
+    }
+    expect(requests.map((url) => decodeURIComponent(url.pathname))).toEqual([
+      `/storage/v1/object/creator-private/${generated}`,
+      `/storage/v1/object/creator-private/${generated}`,
+      `/storage/v1/object/creator-private/${render}`,
+      `/storage/v1/object/creator-private/${ownerRender}`,
+    ]);
+    await expect(
+      downloadSinopiaReferenceImage({
+        userId: owner,
+        projectId: necklace,
+        location: { bucket: 'creator-private', path: `users/${stranger}/temp-renders/cover.png` },
+      }),
+    ).rejects.toThrow('Sinopia image unavailable');
+    expect(requests).toHaveLength(4);
   });
 
   it('should keep only owned active project images and owned library pieces with dimensions', async () => {
@@ -166,6 +239,14 @@ describe('Sinopia reference intake', () => {
     expect(
       sinopiaImageLocation(`${base}/storage/v1/object/sign/creator-private/projects/p/a.png?token=private`),
     ).toEqual({ bucket: 'creator-private', path: 'projects/p/a.png' });
+    expect(sinopiaImageLocation(`${base}/storage/v1/object/public/assets/projects/p/canvas-gen/a.png`)).toEqual({
+      bucket: 'creator-private',
+      path: 'projects/p/canvas-gen/a.png',
+    });
+    expect(sinopiaImageLocation(`${base}/storage/v1/object/public/assets/demo/a.png`)).toEqual({
+      bucket: 'assets',
+      path: 'demo/a.png',
+    });
   });
 
   it('should download with the user JWT and reject a changed account before fetching', async () => {

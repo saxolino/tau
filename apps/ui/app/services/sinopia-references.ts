@@ -77,7 +77,8 @@ export type SinopiaReferenceProject = Readonly<{
   name: string;
   updatedAt: string | undefined;
   imageCount?: number;
-  thumbnail: SinopiaImageLocation | undefined;
+  /** The cover and the owned project whose folder holds it: a Sinopia duplicate shares its original's media. */
+  thumbnail: (SinopiaImageLocation & Readonly<{ projectId: string }>) | undefined;
 }>;
 /** One image the designer can copy into the CAD's first message. */
 export type SinopiaReferenceImage = Readonly<{
@@ -105,6 +106,22 @@ export type SinopiaReferenceSelection = Readonly<{
   >;
 }>;
 
+/**
+ * Sinopia keeps the public `assets` URL as the durable name of private media: the bytes of these namespaces moved to
+ * `creator-private` under the same path (`requestFileReference` in Sinopia's `supabase/functions/_shared`).
+ */
+const privateMediaNamespace = /^(?:projects|users|meshy-uploads|models-3d|videos|components)\//u;
+/** Owner-keyed namespaces of `creator-private`, as Sinopia's `requestSourceLocationOwned` admits them. */
+const ownerNamespaces = new Set([
+  'users',
+  'meshy-uploads',
+  'models-3d',
+  'videos',
+  'components',
+  'legacy-inspiration',
+  'legacy-library-components',
+]);
+
 /** Accept only this Supabase project's Storage URLs; tokens and URL query strings never propagate. */
 export function sinopiaImageLocation(url: string | undefined): SinopiaImageLocation | undefined {
   const base = ENV.SINOPIA_SUPABASE_URL;
@@ -124,16 +141,24 @@ export function sinopiaImageLocation(url: string | undefined): SinopiaImageLocat
     if (path.split('/').some((part) => part === '..' || part === '.' || part === '')) {
       return undefined;
     }
-    return { bucket: decodeURIComponent(match[1]), path };
+    const bucket = decodeURIComponent(match[1]);
+    return { bucket: bucket === 'assets' && privateMediaNamespace.test(path) ? 'creator-private' : bucket, path };
   } catch {
     return undefined;
   }
 }
 
-const isProjectImage = (location: SinopiaImageLocation, projectId: string): boolean =>
-  location.bucket === 'creator-private' &&
-  location.path.startsWith(`projects/${projectId}/`) &&
-  !location.path.split('/').some((part) => part === '..' || part === '.' || part === '');
+/** The account's own private media: this project's folder or one of the owner's folders, never another account's. */
+const isProjectImage = (location: SinopiaImageLocation, projectId: string, userId: string): boolean => {
+  const parts = location.path.split('/');
+  return (
+    location.bucket === 'creator-private' &&
+    parts.length > 2 &&
+    !/[\\%]/u.test(location.path) &&
+    !parts.some((part) => part === '..' || part === '.' || part === '') &&
+    ((parts[0] === 'projects' && parts[1] === projectId) || (ownerNamespaces.has(parts[0]!) && parts[1] === userId))
+  );
+};
 
 /** Same owner/deletion/Learn/Network filters and stable pagination as Sinopia's dashboard, across verticals. */
 export async function listSinopiaReferenceProjects(signal?: AbortSignal): Promise<SinopiaReferenceProject[]> {
@@ -213,15 +238,28 @@ export async function listSinopiaReferenceProjects(signal?: AbortSignal): Promis
       }
     }
   }
+  const owned = new Set(projects.map((row) => row.id));
+  const cover = (url: string | undefined, projectId: string): SinopiaReferenceProject['thumbnail'] => {
+    const location = sinopiaImageLocation(url);
+    if (location === undefined) {
+      return undefined;
+    }
+    const folder = location.path.startsWith('projects/') ? location.path.split('/')[1] : undefined;
+    const holder = folder !== undefined && owned.has(folder) ? folder : projectId;
+    return isProjectImage(location, holder, userId) ? { ...location, projectId: holder } : undefined;
+  };
   return [...new Map(projects.map((row) => [row.id, row])).values()].map((row) => {
-    const location = sinopiaImageLocation(row.canvas_thumbnail_url ?? byId.get(row.id) ?? row.thumbnail_url);
+    // The dashboard's order (canvas, then the server's pick, then the stored one); the first private owned cover wins.
+    const thumbnail = [row.canvas_thumbnail_url, byId.get(row.id), row.thumbnail_url]
+      .map((url) => cover(url, row.id))
+      .find((location) => location !== undefined);
     return {
       id: row.id,
       userId,
       name: row.name,
       updatedAt: row.updated_at,
       ...(countsAvailable ? { imageCount: counts.get(row.id) ?? 0 } : {}),
-      thumbnail: location && isProjectImage(location, row.id) ? location : undefined,
+      thumbnail,
     };
   });
 }
@@ -276,7 +314,12 @@ export async function listSinopiaReferenceImages(
         row.storage_bucket && row.storage_path
           ? { bucket: row.storage_bucket, path: row.storage_path }
           : sinopiaImageLocation(row.public_url);
-      if (row.user_id === userId && row.project_id === projectId && location && isProjectImage(location, projectId)) {
+      if (
+        row.user_id === userId &&
+        row.project_id === projectId &&
+        location &&
+        isProjectImage(location, projectId, userId)
+      ) {
         images.push({
           id: row.id,
           userId,
@@ -318,7 +361,7 @@ export async function listSinopiaReferenceImages(
       const isOwnedLocation =
         location &&
         ((location.bucket === 'library-components' && location.path.startsWith(`${userId}/`)) ||
-          isProjectImage(location, projectId));
+          isProjectImage(location, projectId, userId));
       if (row.user_id === userId && location && isOwnedLocation) {
         images.push({
           id: `library-${row.id}`,
@@ -351,7 +394,7 @@ export async function downloadSinopiaReferenceImage(
     image.location.bucket === 'library-components' &&
     image.location.path.startsWith(`${userId}/`) &&
     !image.location.path.split('/').some((part) => part === '..' || part === '.' || part === '');
-  if (!isOwnLibrary && !isProjectImage(image.location, image.projectId)) {
+  if (!isOwnLibrary && !isProjectImage(image.location, image.projectId, userId)) {
     throw new Error('Sinopia image unavailable');
   }
   const { data, error } = await client.storage.from(image.location.bucket).download(image.location.path);

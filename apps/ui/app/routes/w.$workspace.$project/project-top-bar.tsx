@@ -20,7 +20,7 @@ import {
 import { RecordIssuesAction } from '#routes/w.$workspace.$project/record-issues-action.js';
 import { WorkbenchLaneToggle } from '#routes/w.$workspace.$project/workbench-toggle.js';
 import { SendToSinopiaDialog } from '#routes/w.$workspace.$project/send-to-sinopia-dialog.js';
-import { useSinopiaCadLink } from '#hooks/use-sinopia-cad-sync.js';
+import { useSinopiaCadLink, useSinopiaCadLinking } from '#hooks/use-sinopia-cad-sync.js';
 
 /** Labels in the top bar give way to their glyphs when the bar is narrower than `@4xl` (56 rem). */
 const topBarFold = {
@@ -68,6 +68,7 @@ export function ProjectTopBar(): React.JSX.Element {
   const { openPanel, registerRecordRecoveryFocus, restoreRecordRecoveryFocus } = useProjectWorkspace();
   const [isSendOpen, setSendOpen] = useState(false);
   const link = useSinopiaCadLink();
+  const linking = useSinopiaCadLinking();
 
   return (
     // A named region, not a `header`: inside the page's `main` a header has no landmark role to carry the name.
@@ -150,7 +151,9 @@ export function ProjectTopBar(): React.JSX.Element {
           <Send aria-hidden className='size-3.5' />
           <span className={topBarFold.labelClassName}>{t('project.topBar.sendToSinopia')}</span>
         </Button>
-        {isSendOpen ? <SendToSinopiaDialog isOpen={isSendOpen} onOpenChange={setSendOpen} link={link} /> : null}
+        {isSendOpen ? (
+          <SendToSinopiaDialog isOpen={isSendOpen} onOpenChange={setSendOpen} link={link} linking={linking} />
+        ) : null}
         <Separator orientation='vertical' className='mx-1 data-[orientation=vertical]:h-4' />
         <ChatLaneToggle place='viewer' fold={topBarFold} />
       </div>

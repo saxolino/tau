@@ -11,7 +11,9 @@ import {
   patchSinopiaCadThumbnail,
   createSinopiaCadLink,
   inferSinopiaCadEngine,
+  linkSinopiaCadModel,
   listSinopiaCadModels,
+  sinopiaCadLinkIds,
   saveSinopiaCadRevision,
   sinopiaModelLocalProjectId,
   importSinopiaCadModel,
@@ -97,6 +99,89 @@ describe('Sinopia CAD persistence', () => {
     expect(requests()[0]?.url).toContain(`user_id=eq.${userId}`);
     expect(requests()[0]?.method).toBe('GET');
   });
+  it('names one project and one model per account and local project, as RFC 9562 UUIDs', async () => {
+    const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
+    expect(await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK')).toEqual(ids);
+    expect(z.uuid().parse(ids.projectId)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(z.uuid().parse(ids.modelId)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(ids.modelId).not.toBe(ids.projectId);
+    expect(sinopiaModelLocalProjectId(ids.modelId)).toMatch(/^proj_[0-9A-Za-z]{21}$/u);
+    const other = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJL');
+    expect(other.projectId).not.toBe(ids.projectId);
+    const otherAccount = await sinopiaCadLinkIds('00000000-0000-4000-8000-000000000009', 'proj_0123456789ABCDEFGHIJK');
+    expect(otherAccount.projectId).not.toBe(ids.projectId);
+  });
+  it('verifies an earlier attempt’s named project instead of inserting a second one', async () => {
+    const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
+    transport.fetch
+      .mockResolvedValueOnce(json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409))
+      .mockResolvedValueOnce(json({ id: ids.projectId }));
+    const created = await createSinopiaCadLink('Collana col ramo', undefined, ids);
+    expect(created).toEqual({ ...ids, userId, baseRevisionId: null });
+    expect(requests().map((request) => request.method)).toEqual(['POST', 'GET']);
+    expect(requests()[0]?.body).toMatchObject({ id: ids.projectId, name: 'Collana col ramo', vertical: 'accessories' });
+    expect(requests()[1]?.url).toContain(`id=eq.${ids.projectId}`);
+    expect(requests()[1]?.url).toContain(`user_id=eq.${userId}`);
+    expect(requests()[1]?.url).toContain('deleted_at=is.null');
+  });
+  it('fails without a link when the named project is not this account’s', async () => {
+    const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
+    transport.fetch
+      .mockResolvedValueOnce(json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409))
+      .mockResolvedValueOnce(json({ code: 'PGRST116', message: 'no rows' }, 406));
+    await expect(createSinopiaCadLink('Collana', undefined, ids)).rejects.toMatchObject({
+      code: 'PGRST116',
+    });
+  });
+  it('links a model made before the link existed once, through the new-model creation path', async () => {
+    const stored = new Map<string, Uint8Array<ArrayBuffer>>();
+    const files = {
+      exists: vi.fn(async (path: string) => stored.has(path)),
+      readFile: vi.fn(async (path: string) => stored.get(path)!),
+      writeFile: vi.fn(async (path: string, content: string | Uint8Array<ArrayBuffer>) => {
+        stored.set(path, typeof content === 'string' ? bytes(content) : content);
+      }),
+    };
+    const localProjectId = 'proj_0123456789ABCDEFGHIJK';
+    const ids = await sinopiaCadLinkIds(userId, localProjectId);
+    let inserts = 0;
+    transport.fetch.mockImplementation(async (_url, init) => {
+      inserts += init?.method === 'POST' ? 1 : 0;
+      // A slow insert lets the second caller reach the lock while the first is still creating.
+      await new Promise((resolve) => {
+        setTimeout(resolve, 5);
+      });
+      return json(null, 201);
+    });
+    const input = { files, localProjectId, userId, name: 'Collana col ramo' };
+    const [first, again] = await Promise.all([linkSinopiaCadModel(input), linkSinopiaCadModel(input)]);
+    expect(first).toEqual({ ...ids, userId, baseRevisionId: null });
+    expect(again).toEqual(first);
+    expect(inserts).toBe(1);
+    expect(requests()[0]?.body).toMatchObject({
+      id: ids.projectId,
+      user_id: userId,
+      name: 'Collana col ramo',
+      vertical: 'accessories',
+    });
+    expect(files.writeFile).toHaveBeenCalledOnce();
+    expect(files.writeFile.mock.calls[0]?.[0]).toBe(`/projects/${localProjectId}/.tau/sinopia.json`);
+    // A later open (a remount, a retry, another tab) reads the persisted link and creates nothing.
+    transport.fetch.mockClear();
+    await expect(linkSinopiaCadModel(input)).resolves.toEqual(first);
+    expect(transport.fetch).not.toHaveBeenCalled();
+    // Another account's link is never replaced by a new identity.
+    stored.set(
+      `/projects/${localProjectId}/.tau/sinopia.json`,
+      bytes(JSON.stringify({ ...first, userId: '00000000-0000-4000-8000-000000000009' })),
+    );
+    await expect(linkSinopiaCadModel(input)).rejects.toThrow('SINOPIA_OWNER_MISMATCH');
+    expect(transport.fetch).not.toHaveBeenCalled();
+  });
   it('lists owner-only active models without creating anything', async () => {
     transport.fetch.mockResolvedValueOnce(json([model]));
     expect(await listSinopiaCadModels()).toEqual([model]);
@@ -161,6 +246,46 @@ describe('Sinopia CAD persistence', () => {
     const previewUpdate = z.object({ thumbnail_path: z.string() }).strict().parse(update?.body);
     expect(previewUpdate.thumbnail_path).toContain('/thumbnail.webp');
     expect(requests().some((request) => request.url.endsWith('/model.zip'))).toBe(false);
+  });
+
+  it('gives a project the CAD made its model’s preview as cover, never replacing a cover of its own', async () => {
+    transport.fetch
+      .mockResolvedValueOnce(json({ ...model, head_revision_id: first }))
+      .mockResolvedValueOnce(json({ Key: 'image' }))
+      .mockResolvedValueOnce(json([{ id: model.id }]))
+      .mockResolvedValueOnce(json([{ id: link.projectId }]));
+    await patchSinopiaCadThumbnail({
+      link: { ...link, baseRevisionId: first },
+      revisionId: first,
+      thumbnail: new Uint8Array([1]),
+      isCurrent: () => true,
+    });
+    const cover = requests().find((request) => request.method === 'PATCH' && request.url.includes('/rest/v1/projects'));
+    // Sinopia's own convention: a public «assets» address its dashboard maps to the private bucket.
+    expect(z.object({ thumbnail_url: z.string() }).strict().parse(cover?.body).thumbnail_url).toMatch(
+      new RegExp(
+        `/storage/v1/object/public/assets/projects/${link.projectId}/cad/${link.modelId}/saves/.+/thumbnail\\.webp$`,
+        'u',
+      ),
+    );
+    expect(decodeURIComponent(cover?.url ?? '')).toContain(`id=eq.${link.projectId}`);
+    expect(decodeURIComponent(cover?.url ?? '')).toContain(`user_id=eq.${userId}`);
+    expect(decodeURIComponent(cover?.url ?? '')).toContain('or=(thumbnail_url.is.null,thumbnail_url.like.*/cad/*)');
+  });
+
+  it('keeps the saved preview when the project cover cannot be written', async () => {
+    transport.fetch
+      .mockResolvedValueOnce(json({ ...model, head_revision_id: first }))
+      .mockResolvedValueOnce(json({ Key: 'image' }))
+      .mockResolvedValueOnce(json([{ id: model.id }]))
+      .mockResolvedValueOnce(json({ message: 'denied' }, 403));
+    const result = await patchSinopiaCadThumbnail({
+      link: { ...link, baseRevisionId: first },
+      revisionId: first,
+      thumbnail: new Uint8Array([1]),
+      isCurrent: () => true,
+    });
+    expect(result.kind).toBe('saved');
   });
 
   it('does not upload or patch a late preview after the remote head moved', async () => {

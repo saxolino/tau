@@ -2,6 +2,8 @@ import { base64ToUint8Array } from 'uint8array-extras';
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useSelector } from '@xstate/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
+import { Topic } from '@taucad/events';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
 import { useRevisionClient, useRevisionStatus } from '#hooks/use-revision-status.js';
@@ -11,13 +13,15 @@ import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import {
   archiveSinopiaRevision,
   getSinopiaCadModel,
+  linkSinopiaCadModel,
   readSinopiaCadLink,
   saveSinopiaCadRevision,
+  sinopiaCadLocalId,
   writeSinopiaCadLink,
   inferSinopiaCadEngine,
   patchSinopiaCadThumbnail,
 } from '#services/sinopia-cad.js';
-import type { SinopiaCadEngine, SinopiaCadLink } from '#services/sinopia-cad.js';
+import type { SinopiaCadEngine, SinopiaCadLink, SinopiaCadRecordFiles } from '#services/sinopia-cad.js';
 import { createSinopiaCadSync } from '#services/sinopia-cad-sync.js';
 import type { SinopiaCadSyncState } from '#services/sinopia-cad-sync.js';
 import { preserveSinopiaConflict } from '#services/sinopia-cad-conflicts.js';
@@ -35,8 +39,56 @@ const linkKey = (userId: string | undefined, projectId: string): readonly unknow
 ];
 const idleState: SinopiaCadSyncState = { kind: 'idle' };
 const failedState: SinopiaCadSyncState = { kind: 'failed' };
+const linkingState: SinopiaCadStatus = { kind: 'linking' };
+const linkFailedState: SinopiaCadStatus = { kind: 'linkFailed' };
 const noSubscribe = (): (() => void) => () => undefined;
 const idle = (): SinopiaCadSyncState => idleState;
+
+/** The save status in the top bar: the acknowledged Sinopia copy, or the link a model made before it still needs. */
+export type SinopiaCadStatus = Omit<SinopiaCadSyncState, 'kind'> &
+  Readonly<{ kind: SinopiaCadSyncState['kind'] | 'linking' | 'linkFailed' }>;
+/** A link creation in flight or failed, per account and local project; absent once the link is persisted. */
+export type SinopiaCadLinking = 'linking' | 'failed';
+
+/* One creation per account and local project in this document, shared by the status and the send dialog, so a
+   re-render, a StrictMode replay or a second gesture joins the attempt in flight instead of starting another. */
+const linkings = new Map<string, SinopiaCadLinking>();
+const linkingChanged = new Topic<void>({ name: 'SinopiaCadSync.linking' });
+const linkingKey = (userId: string | undefined, projectId: string): string => `${userId ?? ''}:${projectId}`;
+const subscribeLinking = (listener: () => void): (() => void) => linkingChanged.subscribe(listener);
+
+async function startLinking(input: {
+  userId: string;
+  projectId: string;
+  name: string;
+  files: Pick<SinopiaCadRecordFiles, 'readFile' | 'exists' | 'writeFile'>;
+  queryClient: QueryClient;
+}): Promise<void> {
+  const key = linkingKey(input.userId, input.projectId);
+  if (linkings.get(key) === 'linking') {
+    return;
+  }
+  linkings.set(key, 'linking');
+  linkingChanged.emit();
+  try {
+    const link = await linkSinopiaCadModel({
+      files: input.files,
+      localProjectId: input.projectId,
+      userId: input.userId,
+      name: input.name,
+    });
+    sinopiaCadLocalId.set(link.userId, link.modelId, input.projectId);
+    const current = sinopiaSession().getState();
+    if (current.status === 'signed-in' && current.user.id === link.userId) {
+      input.queryClient.setQueryData(linkKey(link.userId, input.projectId), link);
+    }
+    linkings.delete(key);
+  } catch (error) {
+    console.error('[sinopia] model link failed', error);
+    linkings.set(key, 'failed');
+  }
+  linkingChanged.emit();
+}
 
 function useLinkQuery() {
   const { projectId } = useProject();
@@ -65,10 +117,61 @@ export function useSinopiaCadLink(): SinopiaCadLink | undefined {
   return session.status === 'signed-in' && query.data?.userId === session.user.id ? query.data : undefined;
 }
 
+/**
+ * A model made before the Sinopia link existed (it has no link record) joins Sinopia through the creation path new
+ * models use: a project named after the model, in accessories, and the persisted link. The save status starts it
+ * when the owner opens the model; the send dialog offers it as its gesture while the model is still unlinked.
+ */
+export function useSinopiaCadLinking(): Readonly<{
+  name: string;
+  state: SinopiaCadLinking | undefined;
+  isUnlinked: boolean;
+  start: () => void;
+}> {
+  const { projectId, projectRef } = useProject();
+  const name = useSelector(projectRef, (snapshot) => snapshot.context.project?.name ?? '').trim();
+  const { recordFiles } = useFileManager();
+  const queryClient = useQueryClient();
+  const linkQuery = useLinkQuery();
+  const session = useSinopiaSession();
+  const userId = session.status === 'signed-in' ? session.user.id : undefined;
+  const key = linkingKey(userId, projectId);
+  const state = useSyncExternalStore(
+    subscribeLinking,
+    () => linkings.get(key),
+    () => undefined,
+  );
+  const isUnlinked = userId !== undefined && linkQuery.isSuccess && linkQuery.data === null;
+  const start = useCallback(() => {
+    if (userId !== undefined && name !== '') {
+      void startLinking({ userId, projectId, name, files: recordFiles, queryClient });
+    }
+  }, [name, projectId, queryClient, recordFiles, userId]);
+  return { name, state, isUnlinked, start };
+}
+
+/** The save status's share of linking: it starts once the project's root answers; a failure waits for «Riprova». */
+function useLinkOnOpen(
+  link: SinopiaCadLink | undefined,
+  isReady: boolean,
+): Readonly<{ status: SinopiaCadStatus | undefined; start: () => void }> {
+  const { isUnlinked, state, start } = useSinopiaCadLinking();
+  const shouldLink = isUnlinked && state === undefined && isReady;
+  useEffect(() => {
+    if (shouldLink) {
+      start();
+    }
+  }, [shouldLink, start]);
+  if (link !== undefined || state === undefined) {
+    return { status: undefined, start };
+  }
+  return { status: state === 'linking' ? linkingState : linkFailedState, start };
+}
+
 /** Mount once in the save status. Revisions, account changes and unmount all fence the serialized remote queue. */
 export function useSinopiaCadSync(): {
   link: SinopiaCadLink | undefined;
-  state: SinopiaCadSyncState;
+  state: SinopiaCadStatus;
   retry: () => void;
   resolve: (choice: 'local' | 'remote' | 'defer') => Promise<void>;
 } {
@@ -210,12 +313,16 @@ export function useSinopiaCadSync(): {
     controller?.sync.getState ?? idle,
     idle,
   );
+  // Only once the project's root answers is a missing link record authoritative.
+  const linking = useLinkOnOpen(link, revisionStatus !== undefined);
   return {
     link,
-    state: linkQuery.isError ? failedState : state,
+    state: linkQuery.isError ? failedState : (linking.status ?? state),
     retry: () => {
       if (linkQuery.isError) {
         void linkQuery.refetch();
+      } else if (linking.status === linkFailedState) {
+        linking.start();
       } else {
         controller?.sync.retry();
       }

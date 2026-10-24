@@ -38,6 +38,8 @@ const fake = vi.hoisted(() => {
     },
     revision: { snapshot: vi.fn(async () => ({ 'main.ts': 'c2hhcGU=' })), status: () => status },
     persist: vi.fn(async () => undefined),
+    stored: link as SinopiaCadLink | undefined,
+    linkModel: vi.fn<(input: { localProjectId: string; userId: string; name: string }) => Promise<SinopiaCadLink>>(),
     save: vi.fn(),
     read: vi.fn<() => Promise<SinopiaCadModel | undefined>>(async () => undefined),
   };
@@ -58,8 +60,10 @@ vi.mock('#lib/sinopia-data-client.js', () => ({
   requireSinopiaUser: async () => ({ userId: fake.link.userId, token: 'fake' }),
 }));
 vi.mock('#services/sinopia-cad.js', () => ({
-  readSinopiaCadLink: async () => fake.link,
+  readSinopiaCadLink: async () => fake.stored,
   writeSinopiaCadLink: fake.persist,
+  linkSinopiaCadModel: fake.linkModel,
+  sinopiaCadLocalId: { set: vi.fn() },
   getSinopiaCadModel: fake.read,
   saveSinopiaCadRevision: fake.save,
   patchSinopiaCadThumbnail: fake.save,
@@ -80,6 +84,8 @@ beforeEach(() => {
   fake.read.mockReset();
   fake.read.mockResolvedValue(undefined);
   fake.session.status = 'signed-in';
+  fake.stored = fake.link;
+  fake.linkModel.mockReset();
   fake.link.baseRevisionId = null;
   delete fake.link.localRevisionId;
   fake.save.mockImplementation(async (input: { link: typeof fake.link; revisionId: string }) => ({
@@ -168,6 +174,75 @@ describe('mounted Sinopia autosave lifecycle', () => {
     view.unmount();
     await flush(3000);
     expect(fake.save).not.toHaveBeenCalled();
+    client.clear();
+  });
+});
+
+describe('a model made before the Sinopia link existed', () => {
+  it('is linked once through StrictMode replay and re-renders, then autosaves under that link', async () => {
+    fake.stored = undefined;
+    let finish: (link: SinopiaCadLink) => void = () => undefined;
+    fake.linkModel.mockImplementation(
+      async () =>
+        new Promise<SinopiaCadLink>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode>
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      </StrictMode>
+    );
+    const view = renderHook(() => useSinopiaCadSync(), { wrapper });
+    await flush();
+    await flush();
+    expect(view.result.current.state.kind).toBe('linking');
+    view.rerender();
+    await flush();
+    expect(fake.linkModel).toHaveBeenCalledOnce();
+    expect(fake.linkModel).toHaveBeenCalledWith(
+      expect.objectContaining({ localProjectId: fake.project.projectId, userId: fake.link.userId, name: 'Ring' }),
+    );
+    await act(async () => {
+      finish({ ...fake.link });
+    });
+    await flush();
+    await flush(2000);
+    await flush();
+    expect(view.result.current.link?.modelId).toBe(fake.link.modelId);
+    // The first authored save registers the cad_models row, exactly as for a model created after the link.
+    expect(fake.save).toHaveBeenCalledOnce();
+    expect(view.result.current.state.kind).toBe('saved');
+    expect(fake.linkModel).toHaveBeenCalledOnce();
+    view.unmount();
+    client.clear();
+  });
+
+  it('says in words that the project could not be created and retries only on «Riprova»', async () => {
+    fake.stored = undefined;
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fake.linkModel.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ ...fake.link });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const view = renderHook(() => useSinopiaCadSync(), { wrapper });
+    await flush();
+    await flush();
+    expect(view.result.current.state.kind).toBe('linkFailed');
+    await flush(60_000);
+    expect(fake.linkModel).toHaveBeenCalledOnce();
+    act(() => {
+      view.result.current.retry();
+    });
+    await flush();
+    await flush();
+    expect(fake.linkModel).toHaveBeenCalledTimes(2);
+    expect(view.result.current.link?.modelId).toBe(fake.link.modelId);
+    expect(view.result.current.state.kind).not.toBe('linkFailed');
+    quiet.mockRestore();
+    view.unmount();
     client.clear();
   });
 });

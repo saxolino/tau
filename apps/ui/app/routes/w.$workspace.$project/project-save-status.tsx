@@ -166,10 +166,11 @@ function SinopiaProjectSaveStatus(): React.JSX.Element {
     state.kind === 'saved' && state.at !== undefined
       ? t('sinopiaSync.savedAt', { time: formatTime(state.at, language) })
       : t(`sinopiaSync.${state.kind}`);
+  const isFailed = state.kind === 'failed' || state.kind === 'linkFailed';
   const tone =
     state.kind === 'saved'
       ? 'bg-success'
-      : state.kind === 'failed' || state.kind === 'conflict'
+      : isFailed || state.kind === 'conflict'
         ? 'bg-warning'
         : 'bg-muted-foreground';
   return (
@@ -177,7 +178,7 @@ function SinopiaProjectSaveStatus(): React.JSX.Element {
       <span
         role='status'
         data-slot='save-status'
-        aria-busy={state.kind === 'saving' || state.kind === 'loading'}
+        aria-busy={state.kind === 'saving' || state.kind === 'loading' || state.kind === 'linking'}
         className='flex min-w-0 items-center gap-2 px-2 text-xs text-muted-foreground tabular-nums'
       >
         <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', tone)} />
@@ -195,7 +196,7 @@ function SinopiaProjectSaveStatus(): React.JSX.Element {
             {sentence}
           </span>
         )}
-        {state.kind === 'failed' ? (
+        {isFailed ? (
           <PaneButton size='label' onClick={retry}>
             {t('sinopiaSync.retry')}
           </PaneButton>

@@ -28,6 +28,9 @@ type ImageProperties = Readonly<{
   className?: string;
 }>;
 
+/** Sinopia's own default project name, stored in English: shown in the interface language instead. */
+const isSinopiaPlaceholderName = (name: string): boolean => name.trim().toLowerCase() === 'untitled project';
+
 /** Authenticated thumbnails load only when visible, with document-local object URLs disposed on identity changes. */
 export const SinopiaReferenceThumbnail = memo(function SinopiaReferenceThumbnail({
   userId,
@@ -357,6 +360,8 @@ function OwnedProjectStrip({
     onPickerOpenChange(false);
     setProject(chosen);
   };
+  // Only projects with images to start from: the project a CAD model lives in starts empty and is already a model.
+  const startable = projects.data?.filter((item) => item.imageCount !== 0) ?? [];
   const collection = projects.isPending ? (
     <div role='status' aria-busy='true' aria-label={t('sinopiaImages.loading')} className='flex gap-3'>
       {['a', 'b', 'c', 'd', 'e'].map((key) => (
@@ -375,7 +380,7 @@ function OwnedProjectStrip({
         {t('sinopiaImages.retry')}
       </Button>
     </div>
-  ) : projects.data.length === 0 ? (
+  ) : startable.length === 0 ? (
     <div className='space-y-3 py-4'>
       <p className='text-sm text-muted-foreground'>{t('sinopiaImages.empty')}</p>
       <Button asChild variant='outline'>
@@ -386,7 +391,7 @@ function OwnedProjectStrip({
     </div>
   ) : (
     <ul className='flex gap-3 overflow-x-auto pb-3'>
-      {projects.data.map((item) => (
+      {startable.map((item) => (
         <li key={item.id} className='w-44 shrink-0'>
           <button
             type='button'
@@ -395,11 +400,20 @@ function OwnedProjectStrip({
             }}
             className='w-full overflow-hidden rounded-lg border bg-card text-left hover:bg-muted focus-visible:focus-outline'
           >
-            <SinopiaReferenceThumbnail userId={userId} projectId={item.id} location={item.thumbnail} alt='' />
-            <span className='block truncate px-3 pt-2 text-sm font-medium'>{item.name}</span>
+            <SinopiaReferenceThumbnail
+              userId={userId}
+              projectId={item.thumbnail?.projectId ?? item.id}
+              location={item.thumbnail}
+              alt=''
+            />
+            <span className='block truncate px-3 pt-2 text-sm font-medium'>
+              {isSinopiaPlaceholderName(item.name) ? t('sinopiaImages.untitled') : item.name}
+            </span>
             {item.imageCount === undefined ? null : (
               <span className='block px-3 pt-1 text-xs text-muted-foreground'>
-                {t('sinopiaImages.imageCount', { count: item.imageCount })}
+                {t(item.imageCount === 1 ? 'sinopiaImages.imageCountOne' : 'sinopiaImages.imageCount', {
+                  count: item.imageCount,
+                })}
               </span>
             )}
             {item.updatedAt ? (

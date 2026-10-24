@@ -17,7 +17,10 @@ const linkedModel = vi.hoisted(() => ({
   baseRevisionId: null,
 }));
 
-vi.mock('#hooks/use-sinopia-cad-sync.js', () => ({ useSinopiaCadLink: () => linkedModel }));
+vi.mock('#hooks/use-sinopia-cad-sync.js', () => ({
+  useSinopiaCadLink: () => linkedModel,
+  useSinopiaCadLinking: () => ({ name: 'Ring', state: undefined, isUnlinked: false, start: () => undefined }),
+}));
 vi.mock('#routes/w.$workspace.$project/project-save-status.js', () => ({
   ProjectSaveStatus: () => {
     const { language } = useTranslation();

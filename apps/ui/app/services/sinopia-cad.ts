@@ -5,7 +5,8 @@ import { archive, archiveByteCeiling } from '@taucad/filesystem/content-ops';
 import { MemoryProvider } from '@taucad/filesystem/backend';
 import { readProjectManifestBytes } from '@taucad/types';
 import type { ProjectManifest } from '@taucad/types';
-import { base64ToUint8Array } from 'uint8array-extras';
+import { base64ToUint8Array, uint8ArrayToHex } from 'uint8array-extras';
+import { KeyedMutex } from '#db/keyed-mutex.js';
 import { getSinopiaDataClient, requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import type { RootedContentClient } from '@taucad/fs-client/rooted-content-client';
 import { randomUuid } from '@taucad/utils/id';
@@ -44,6 +45,16 @@ export type SinopiaCadModel = z.infer<typeof sinopiaCadModelSchema>;
 export type SinopiaCadFiles = Record<string, { content: Uint8Array<ArrayBuffer>; mode?: '100644' | '100755' }>;
 const columns =
   'id,project_id,user_id,name,engine,head_revision_id,snapshot_path,thumbnail_path,snapshot_bytes,updated_at';
+/** Postgres `unique_violation`, as PostgREST reports a second insert of the same primary key. */
+const uniqueViolation = '23505';
+const linkLocks = new KeyedMutex<string>();
+
+/** One link creation per local project across this origin's tabs; an in-document queue without the Locks API. */
+async function withLinkLock<T>(localProjectId: string, task: () => Promise<T>): Promise<T> {
+  const name = `sinopia-cad-link:${localProjectId}`;
+  const locks = (globalThis.navigator as Navigator | undefined)?.locks;
+  return locks === undefined ? linkLocks.run(name, task) : locks.request(name, task);
+}
 
 /** Never turn malformed or foreign link bytes into a new model. */
 export async function readSinopiaCadLink(
@@ -88,20 +99,27 @@ export function inferSinopiaCadEngine(source: string): SinopiaCadEngine | undefi
 export async function createSinopiaCadLink(
   name: string,
   originProjectId?: string,
-  modelId = randomUuid(),
+  named?: Readonly<{ projectId: string; modelId: string }>,
 ): Promise<SinopiaCadLink> {
   const { client, userId } = await getSinopiaDataClient();
+  const modelId = named?.modelId ?? randomUuid();
   let projectId = originProjectId;
+  let isExisting = projectId !== undefined;
   if (projectId === undefined) {
-    projectId = randomUuid();
+    projectId = named?.projectId ?? randomUuid();
     const { error } = await client
       .from('projects')
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire columns.
       .insert({ id: projectId, user_id: userId, name, vertical: 'accessories' });
     if (error !== null) {
-      throw error;
+      // A named identity that already exists is an earlier attempt's project: verify it as an owned origin.
+      if (error.code !== uniqueViolation) {
+        throw error;
+      }
+      isExisting = true;
     }
-  } else {
+  }
+  if (isExisting) {
     z.uuid().parse(projectId);
     const { data, error } = await client
       .from('projects')
@@ -117,6 +135,62 @@ export async function createSinopiaCadLink(
   }
   await requireSinopiaUser(userId);
   return { modelId, projectId, userId, baseRevisionId: null };
+}
+
+/**
+ * Name-based RFC 9562 version 8 identities (SHA-256): one Sinopia project and one model per account and local
+ * project, whichever tab, remount or retry asks for them.
+ */
+export async function sinopiaCadLinkIds(
+  userId: string,
+  localProjectId: string,
+): Promise<{ projectId: string; modelId: string }> {
+  const derive = async (kind: 'project' | 'model'): Promise<string> => {
+    const hex = uint8ArrayToHex(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(`sinopiacad:${kind}:${userId}:${localProjectId}`),
+        ),
+      ),
+    );
+    // Version nibble 8; the variant nibble keeps two hash bits under the RFC's leading `10`.
+    const variant = (8 + (Number.parseInt(hex[16]!, 16) % 4)).toString(16);
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  };
+  return { projectId: await derive('project'), modelId: await derive('model') };
+}
+
+/**
+ * Link a model made before the Sinopia link existed through the creation path new models use. Under one lock per
+ * local project the persisted link is read again, so another tab's or an earlier attempt's link always wins; the
+ * named identities make a lost write or a race converge on the same Sinopia project instead of a second one. The
+ * model's `cad_models` row follows on its first authored save, as for a new model.
+ */
+export async function linkSinopiaCadModel(input: {
+  files: Pick<SinopiaCadRecordFiles, 'readFile' | 'exists' | 'writeFile'>;
+  localProjectId: string;
+  userId: string;
+  name: string;
+}): Promise<SinopiaCadLink> {
+  const root = `/projects/${input.localProjectId}`;
+  return withLinkLock(input.localProjectId, async () => {
+    await requireSinopiaUser(input.userId);
+    const existing = await readSinopiaCadLink(input.files, root);
+    if (existing !== undefined) {
+      if (existing.userId !== input.userId) {
+        throw new Error('SINOPIA_OWNER_MISMATCH');
+      }
+      return existing;
+    }
+    const ids = await sinopiaCadLinkIds(input.userId, input.localProjectId);
+    const link = await createSinopiaCadLink(input.name, undefined, ids);
+    if (link.userId !== input.userId) {
+      throw new Error('SINOPIA_OWNER_MISMATCH');
+    }
+    await writeSinopiaCadLink(input.files, root, link);
+    return link;
+  });
 }
 
 /** Owner filters remain explicit even where an admin's database policies permit broader reads. */
@@ -417,6 +491,9 @@ export async function saveSinopiaCadRevision(input: {
     }
     return { kind: 'conflict', remote: latest };
   }
+  if (thumbnailPath !== null) {
+    await adoptCadPreviewAsCover(client, input.link, thumbnailPath);
+  }
   return {
     kind: 'saved',
     link: { ...input.link, baseRevisionId: input.revisionId },
@@ -457,6 +534,32 @@ export function sinopiaModelLocalProjectId(modelId: string): string {
     value /= 62n;
   }
   return `proj_${encoded.padStart(21, '0')}`;
+}
+
+/**
+ * Give the Sinopia project its model's preview as cover when the project has none of its own, so the dashboard never
+ * shows the CAD's project as an empty card. A cover the person chose (or the canvas set) is never replaced; one the CAD
+ * set earlier follows the newest preview. The address is Sinopia's own convention, a public «assets» URL its dashboard
+ * maps to the private bucket. Cosmetic: a failure leaves the saved preview as it is.
+ */
+async function adoptCadPreviewAsCover(
+  client: Awaited<ReturnType<typeof getSinopiaDataClient>>['client'],
+  link: SinopiaCadLink,
+  path: string,
+): Promise<void> {
+  try {
+    const cover = client.storage.from('assets').getPublicUrl(path).data.publicUrl;
+    await client
+      .from('projects')
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire column.
+      .update({ thumbnail_url: cover })
+      .eq('id', link.projectId)
+      .eq('user_id', link.userId)
+      .is('deleted_at', null)
+      .or('thumbnail_url.is.null,thumbnail_url.like.*/cad/*');
+  } catch {
+    // The cover is cosmetic; the preview stays on the CAD model either way.
+  }
 }
 
 /** Add a late preview only to the same still-current source head; it never changes snapshot identity. */
@@ -524,5 +627,6 @@ export async function patchSinopiaCadThumbnail(input: {
     }
     return { kind: 'conflict', remote: latest };
   }
+  await adoptCadPreviewAsCover(client, input.link, path);
   return { kind: 'saved', link: input.link, at: Date.now(), previewPending: false };
 }

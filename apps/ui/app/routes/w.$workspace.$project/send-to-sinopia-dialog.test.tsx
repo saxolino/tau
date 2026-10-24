@@ -107,6 +107,47 @@ afterEach(() => {
 });
 
 describe.each<Language>(['it', 'en'])('Sinopia send dialog in %s', (language) => {
+  it('should offer to create the Sinopia project of an unlinked model instead of a dead end', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    const start = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    clients.push(client);
+    const dialog = (state: 'linking' | 'failed' | undefined, linked?: SinopiaCadLink) => (
+      <QueryClientProvider client={client}>
+        <SendToSinopiaDialog
+          isOpen
+          link={linked}
+          linking={{ name: 'Collana col ramo', state, start }}
+          onOpenChange={vi.fn()}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(dialog(undefined));
+    expect(screen.getByText(t('sinopiaSend.unlinked'))).toBeInTheDocument();
+    expect(screen.queryByText(/Chiudi la finestra|Close this dialog/u)).not.toBeInTheDocument();
+    const create = screen.getByRole('button', { name: t('sinopiaSend.createProject', { name: 'Collana col ramo' }) });
+    expect(create).toHaveTextContent(
+      language === 'it' ? 'Crea il progetto «Collana col ramo» su Sinopia' : 'Collana col ramo',
+    );
+    await user.click(create);
+    expect(start).toHaveBeenCalledOnce();
+    view.rerender(dialog('linking'));
+    expect(screen.getByRole('status')).toHaveTextContent(t('sinopiaSend.creating'));
+    expect(
+      screen.getByRole('button', { name: t('sinopiaSend.createProject', { name: 'Collana col ramo' }) }),
+    ).toBeDisabled();
+    view.rerender(dialog('failed'));
+    expect(screen.getByRole('alert')).toHaveTextContent(t('sinopiaSend.createFailed'));
+    await user.click(
+      screen.getByRole('button', { name: t('sinopiaSend.createProject', { name: 'Collana col ramo' }) }),
+    );
+    expect(start).toHaveBeenCalledTimes(2);
+    view.rerender(dialog(undefined, link));
+    expect(await screen.findByRole('checkbox', { name: t('sinopiaSend.step') })).toBeChecked();
+  });
+
   it('should offer checked formats, own destination changes and a note, then record the actual delivered version', async () => {
     setLanguage(language);
     const t = bindTranslate(language);

@@ -26,42 +26,29 @@ import type {
   PendingSinopiaDelivery,
 } from '#services/sinopia-send.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
+import type { SinopiaCadLinking } from '#hooks/use-sinopia-cad-sync.js';
 import { toast } from '#components/ui/sonner.js';
 
 const formats: SinopiaSendFormat[] = ['step', 'glb', 'photo'];
 const isAborted = (signal: AbortSignal): boolean => signal.aborted;
 
+/** The unlinked model's way in: the same project creation the save status starts when the model opens. */
+type Linking = Readonly<{ name: string; state: SinopiaCadLinking | undefined; start: () => void }>;
+
 type Props = {
   readonly isOpen: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly link: SinopiaCadLink | undefined;
+  readonly linking?: Linking;
 };
 
 /** One explicit handoff, with a destination owned by the admitted account and actual prepared formats. */
-export function SendToSinopiaDialog({ isOpen, onOpenChange, link }: Props): React.JSX.Element | undefined {
-  const { t } = useTranslation();
+export function SendToSinopiaDialog({ isOpen, onOpenChange, link, linking }: Props): React.JSX.Element | undefined {
   if (!isOpen) {
     return undefined;
   }
   if (!link) {
-    return (
-      <Dialog open onOpenChange={onOpenChange}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('sinopiaSend.title')}</DialogTitle>
-            <DialogDescription>{t('sinopiaSend.empty')}</DialogDescription>
-          </DialogHeader>
-          <Button
-            variant='outline'
-            onClick={() => {
-              onOpenChange(false);
-            }}
-          >
-            {t('common.close')}
-          </Button>
-        </DialogContent>
-      </Dialog>
-    );
+    return <UnlinkedSendDialog linking={linking} onOpenChange={onOpenChange} />;
   }
   return (
     <LinkedSendDialog
@@ -69,6 +56,58 @@ export function SendToSinopiaDialog({ isOpen, onOpenChange, link }: Props): Reac
       link={link}
       onOpenChange={onOpenChange}
     />
+  );
+}
+
+/** Never a dead end: a model still without its Sinopia project offers to create it, then the send form follows. */
+function UnlinkedSendDialog({
+  linking,
+  onOpenChange,
+}: {
+  readonly linking: Linking | undefined;
+  readonly onOpenChange: (open: boolean) => void;
+}): React.JSX.Element {
+  const { t } = useTranslation();
+  const isCreating = linking?.state === 'linking';
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('sinopiaSend.title')}</DialogTitle>
+          <DialogDescription>{t('sinopiaSend.unlinked')}</DialogDescription>
+        </DialogHeader>
+        {linking?.state === 'failed' ? (
+          <p role='alert' className='text-sm'>
+            {t('sinopiaSend.createFailed')}
+          </p>
+        ) : null}
+        {isCreating ? (
+          <p role='status' aria-busy className='text-sm'>
+            {t('sinopiaSend.creating')}
+          </p>
+        ) : null}
+        <div className='flex flex-wrap justify-end gap-2 border-t pt-4'>
+          <Button
+            variant='outline'
+            onClick={() => {
+              onOpenChange(false);
+            }}
+          >
+            {t('sinopiaSend.cancel')}
+          </Button>
+          <Button
+            className='h-auto min-h-8 whitespace-normal'
+            disabled={isCreating || !linking?.name}
+            aria-busy={isCreating}
+            onClick={() => {
+              linking?.start();
+            }}
+          >
+            {t('sinopiaSend.createProject', { name: linking?.name ?? '' })}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
