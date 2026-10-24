@@ -599,10 +599,10 @@ export const smlibKernel = defineKernel({
                     if (!(placed instanceof library.Part || placed instanceof library.Shell)) {
                       return [];
                     }
-                    const labelled = placed.named(name);
+                    const labelled = placed.named(toStepName(name));
                     return [color ? labelled.colored(color) : labelled];
                   }),
-                  { name: bodies.length === 1 ? bodies[0]!.name : 'assembly' },
+                  { name: bodies.length === 1 ? toStepName(bodies[0]!.name) : 'assembly' },
                 ),
               );
             } catch (error) {
@@ -687,6 +687,28 @@ export const smlibKernel = defineKernel({
 });
 
 type ExportCoordinateSystem = 'y-up' | 'z-up' | undefined;
+
+/**
+ * A name as STEP text: smlibwasm writes ASCII only and turns any other character into `?`, so other characters
+ * become ISO 10303-21 `\X2\`/`\X4\` directives and a backslash is doubled. Readers decode the original name.
+ * @param name - The authored name.
+ * @returns ASCII text that reads back as `name`.
+ */
+const toStepName = (name: string): string => {
+  let text = '';
+  for (const character of name) {
+    const code = character.codePointAt(0)!;
+    if (character === '\\') {
+      text += String.raw`\\`;
+    } else if (code < 0x80) {
+      text += character;
+    } else {
+      const hex = code.toString(16).toUpperCase();
+      text += code > 0xff_ff ? `\\X4\\${hex.padStart(8, '0')}\\X0\\` : `\\X2\\${hex.padStart(4, '0')}\\X0\\`;
+    }
+  }
+  return text;
+};
 
 /**
  * A body to export: faces become sheets, and y-up turns the Z-up model about X by −90°.

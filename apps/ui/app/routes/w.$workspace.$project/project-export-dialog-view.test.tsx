@@ -17,13 +17,16 @@ afterEach(() => {
 });
 
 const file = createExportFile('stl', 'Anellino', new Uint8Array([1]));
+const photo = createExportFile('png', 'view', new Uint8Array([137, 80, 78, 71]));
 const pieces = [{ name: 'Anellino' }, { name: 'Rametto' }];
 const results: Record<ProjectExportFormat, PreparedExport> = {
   step: { status: 'verified', files: [file] },
   stl: { status: 'needsFix', problem: 'invalid', pieces: ['Anellino'], files: [file] },
   glb: { status: 'ready', files: [file] },
-  png: { status: 'ready', files: [file] },
+  // The photo check only says a snapshot can be taken; the PNG is taken at the click.
+  png: { status: 'ready', files: [] },
 };
+const capture = vi.fn(async (): Promise<PreparedExport> => ({ status: 'ready', files: [photo] }));
 
 describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
   it('should show independent format states, download anyway and prepare an agent draft', async () => {
@@ -33,7 +36,14 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
     const user = userEvent.setup();
     const prepare = vi.fn(async (format: ProjectExportFormat) => results[format]);
     render(
-      <ExportDialogView name='Collana' pieces={pieces} prepare={prepare} onAskAgent={ask} onOpenChange={vi.fn()} />,
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={ask}
+        onOpenChange={vi.fn()}
+      />,
     );
     expect(screen.getByRole('dialog', { name: t('export.title', { name: 'Collana' }) })).toBeInTheDocument();
     await waitFor(() => {
@@ -59,6 +69,80 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
       expect(prepare).toHaveBeenCalledWith('step', ['Rametto'], expect.any(AbortSignal));
     });
   });
+  it('should offer the photo as soon as it can be taken and capture it at the click', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    const prepare = vi.fn(async (format: ProjectExportFormat) => results[format]);
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const row = within(screen.getByRole('region', { name: t('export.photo') }));
+    expect(await row.findByText(t('export.ready'))).toBeInTheDocument();
+    expect(capture).not.toHaveBeenCalled();
+    await user.click(row.getByRole('button', { name: t('export.downloadPhoto') }));
+    expect(capture).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal));
+    expect(download).toHaveBeenCalledWith([photo], { singleFileName: 'Collana.png', archiveName: 'Collana-png.zip' });
+  });
+  it('should name STEP pieces with surfaces to fix and prepare an agent draft for them', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    const ask = vi.fn();
+    const surfaces = 'Marquise, Rametto sinistro';
+    const prepare = vi.fn(
+      async (format: ProjectExportFormat): Promise<PreparedExport> =>
+        format === 'step'
+          ? { status: 'needsFix', problem: 'invalid', pieces: ['Marquise', 'Rametto sinistro'] }
+          : results[format],
+    );
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={ask}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const row = within(screen.getByRole('region', { name: 'STEP' }));
+    expect(await row.findByText(t('export.surfacePieces', { names: surfaces }))).toBeInTheDocument();
+    expect(row.getByRole('button', { name: t('export.download', { format: 'STEP' }) })).toBeDisabled();
+    await user.click(row.getByRole('button', { name: t('export.askSurfaces') }));
+    expect(ask).toHaveBeenCalledExactlyOnceWith(t('export.surfacePrompt', { names: surfaces }));
+  });
+  it('should name the pieces whose STEP names differ from the model', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const prepare = vi.fn(
+      async (format: ProjectExportFormat): Promise<PreparedExport> =>
+        format === 'step'
+          ? { status: 'needsFix', problem: 'names', pieces: ['Pietrina più', 'assembly'] }
+          : results[format],
+    );
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const row = within(screen.getByRole('region', { name: 'STEP' }));
+    expect(await row.findByText(t('export.differentNames', { names: 'Pietrina più, assembly' }))).toBeInTheDocument();
+    expect(row.queryByRole('button', { name: t('export.ask') })).not.toBeInTheDocument();
+    expect(row.getByRole('button', { name: t('export.download', { format: 'STEP' }) })).toBeDisabled();
+  });
 });
 
 describe('export lifecycle', () => {
@@ -79,7 +163,14 @@ describe('export lifecycle', () => {
             }),
     );
     const view = render(
-      <ExportDialogView name='Collana' pieces={pieces} prepare={prepare} onAskAgent={vi.fn()} onOpenChange={vi.fn()} />,
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
     );
     expect(screen.getByRole('button', { name: 'Download STEP' })).toBeDisabled();
     const firstSignal = prepare.mock.calls[0]?.[2];
@@ -100,7 +191,14 @@ describe('export lifecycle', () => {
         format === 'step' ? { status: 'needsFix', problem: 'solids' } : results[format],
     );
     render(
-      <ExportDialogView name='Collana' pieces={pieces} prepare={prepare} onAskAgent={vi.fn()} onOpenChange={vi.fn()} />,
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
     );
     const row = within(screen.getByRole('region', { name: 'STEP' }));
     expect(await row.findByText(/number of solids doesn’t match/)).toBeInTheDocument();

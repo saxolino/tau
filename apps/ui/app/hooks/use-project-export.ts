@@ -10,7 +10,7 @@ import { useHeadlessImageService } from '#providers/headless-image-provider.js';
 import { awaitFreshRender } from '#machines/await-fresh-render.js';
 import { captureCadImages } from '#services/headless-capture.js';
 import { exportPieces } from '#services/project-export-mesh.js';
-import { prepareProjectExport, prepareSinopiaFiles } from '#services/project-export.js';
+import { captureProjectPhoto, prepareProjectExport, prepareSinopiaFiles } from '#services/project-export.js';
 import type { ProjectExportSource } from '#services/project-export.js';
 import type { PreparedExport, ProjectExportFormat } from '#services/project-export.types.js';
 import { verifyStepInBrowser } from '#workers/project-export.client.js';
@@ -23,6 +23,7 @@ export function useProjectExport(): {
     selectedNames: string[] | undefined,
     signal: AbortSignal,
   ) => Promise<PreparedExport>;
+  capturePhoto: (signal: AbortSignal) => Promise<PreparedExport>;
   prepareSinopia: (signal: AbortSignal) => Promise<Awaited<ReturnType<typeof prepareSinopiaFiles>>>;
 } {
   const { projectRef, geometryUnits, mainEntryPath, entriesRecord } = useProject();
@@ -90,13 +91,20 @@ export function useProjectExport(): {
               current.latestRenderingOutcome === 'success'
             );
           },
-          capture: async () => {
+          // A drawing needs no camera; a model needs the viewer's current one.
+          canCapture: () =>
+            asKnownArtifact(fresh.artifact)?.mimeType === 'image/svg+xml' ||
+            getGraphicsCameraState(graphicsRef) !== undefined,
+          capture: async (captureSignal) => {
             const capture = await captureCadImages({
               cadRef,
               graphicsRef,
               imageService,
               cameraState: getGraphicsCameraState(graphicsRef),
               recipe: { purpose: 'utility', mode: 'current' },
+              // The render settled above and is checked as current after the capture.
+              captureRendering: async () => fresh,
+              signal: captureSignal,
             });
             // Do not describe a capture with omitted sections as the current view.
             if (capture.omittedSectionCutIds.length > 0) {
@@ -123,6 +131,15 @@ export function useProjectExport(): {
       ),
     [withSource],
   );
+  const capturePhoto = useCallback(
+    async (signal: AbortSignal) =>
+      withSource<PreparedExport>(
+        signal,
+        async (source) => captureProjectPhoto({ source, signal }),
+        (problem) => ({ status: 'needsFix', problem }),
+      ),
+    [withSource],
+  );
   const prepareSinopia = useCallback(
     async (signal: AbortSignal) => {
       return withSource(
@@ -136,5 +153,5 @@ export function useProjectExport(): {
     },
     [withSource],
   );
-  return { pieces, prepare, prepareSinopia };
+  return { pieces, prepare, capturePhoto, prepareSinopia };
 }

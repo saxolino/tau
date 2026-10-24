@@ -45,6 +45,8 @@ type CaptureCadImagesOptions = {
   readonly recipe: HeadlessCaptureRecipe;
   /** The active pane owns its view, options, instance and freshness. */
   readonly captureRendering?: () => Promise<Rendering>;
+  /** Cancels the image job, queued or running. */
+  readonly signal?: AbortSignal;
 };
 
 type CaptureSettledCadImagesOptions = Omit<CaptureCadImagesOptions, 'cadRef' | 'graphicsRef' | 'captureRendering'> & {
@@ -220,7 +222,7 @@ const requireImages = (
 
 /** Capture from an already-settled CAD snapshot through the shared image service. */
 export const captureSettledCadImages = async (options: CaptureSettledCadImagesOptions): Promise<ExportFile[]> => {
-  const { cadSnapshot, cameraState, imageService, presentation, recipe } = options;
+  const { cadSnapshot, cameraState, imageService, presentation, recipe, signal } = options;
   const { artifact, rendering, entryPath } = requireSettledArtifact(cadSnapshot, options.rendering);
   const [width, height] = recipeSize(recipe, artifact.mimeType === 'image/svg+xml' ? undefined : cameraState);
   const annotated = recipe.purpose !== 'utility';
@@ -233,6 +235,7 @@ export const captureSettledCadImages = async (options: CaptureSettledCadImagesOp
       sourcePath: entryPath,
       content: artifact.content,
       format: 'png',
+      ...(signal === undefined ? {} : { signal }),
       exportOptions: {
         width,
         height,
@@ -343,6 +346,7 @@ export const captureSettledCadImages = async (options: CaptureSettledCadImagesOp
     geometryHash,
     content: prepared?.content ?? artifact.content,
     exportOptions,
+    ...(signal === undefined ? {} : { signal }),
   } as const;
   const files = await imageService.export(format === 'webp' ? { ...job, format: 'webp' } : { ...job, format: 'png' });
   return requireImages(files, {
@@ -374,6 +378,7 @@ export const captureCadImages = async (options: CaptureCadImagesOptions): Promis
     imageService: options.imageService,
     recipe: options.recipe,
     rendering,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   const omittedSectionCutIds = (presentation?.sectionCuts ?? [])
     .filter((cut) => isOmittedFromCapture(cut))

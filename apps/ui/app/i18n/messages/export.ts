@@ -21,7 +21,13 @@ export const exportMessages = defineMessages({
     pieces: 'Pezzi',
     all: 'Tutti',
     openPieces: '{count} pezzi non chiusi: {names}',
+    differentNames:
+      'Questi nomi non corrispondono tra il file e il modello: {names}. Chiedi all’agente di assegnare un nome diverso a ogni pezzo.',
     ask: 'Chiedi all’agente di chiuderli',
+    surfacePieces: 'Questi pezzi hanno superfici da correggere: {names}',
+    askSurfaces: 'Chiedi all’agente di correggerli',
+    surfacePrompt:
+      'Correggi le superfici di questi pezzi per lo STEP di produzione: {names}. Ogni bordo deve stare sulle sue superfici entro 0,001 mm; mantieni nomi, misure e posizione dei pezzi.',
     prompt:
       'Chiudi questi pezzi per la stampa 3D: {names}. Correggi i bordi aperti e le superfici non valide, mantenendo nomi, misure e posizione dei pezzi.',
     downloaded: '{format} scaricato',
@@ -63,7 +69,13 @@ export const exportMessages = defineMessages({
     pieces: 'Pieces',
     all: 'All',
     openPieces: '{count} pieces not closed: {names}',
+    differentNames:
+      'These names don’t match between the file and the model: {names}. Ask the agent to give each piece a different name.',
     ask: 'Ask the agent to close them',
+    surfacePieces: 'These pieces have surfaces to fix: {names}',
+    askSurfaces: 'Ask the agent to fix them',
+    surfacePrompt:
+      'Fix the surfaces of these pieces for the production STEP: {names}. Every edge must lie on its surfaces within 0.001 mm; keep the names, dimensions and positions of the pieces.',
     prompt:
       'Close these pieces for 3D printing: {names}. Fix open edges and invalid surfaces, preserving the names, dimensions and positions of the pieces.',
     downloaded: '{format} downloaded',

@@ -23,6 +23,34 @@ const isAborted = (signal: AbortSignal): boolean => signal.aborted;
 const filesFor = (result: PreparedExport | undefined): ExportFile[] =>
   result === undefined ? [] : (result.files ?? []);
 
+// The photo is taken at the click, so a ready photo row has no files yet.
+const canDownload = (format: ProjectExportFormat, result: PreparedExport | undefined): boolean =>
+  format === 'png' ? result?.status === 'ready' : filesFor(result).length > 0;
+
+/** The reason a row needs fixing, naming the pieces its check listed. */
+const fixMessage = (
+  t: Translate,
+  format: ProjectExportFormat,
+  result: Extract<PreparedExport, { status: 'needsFix' }>,
+): string => {
+  const names = result.pieces?.join(', ') ?? '';
+  if (result.problem === 'invalid' && result.pieces?.length) {
+    return format === 'step'
+      ? t('export.surfacePieces', { names })
+      : t('export.openPieces', { count: result.pieces.length, names });
+  }
+  if (result.problem === 'names' && result.pieces?.length) {
+    return t('export.differentNames', { names });
+  }
+  return t(`export.errors.${result.problem}`);
+};
+
+// STL pieces are closed for printing; STEP pieces get their surfaces corrected for production.
+const askAgent = (t: Translate, format: ProjectExportFormat, names: string): { label: string; prompt: string } =>
+  format === 'step'
+    ? { label: t('export.askSurfaces'), prompt: t('export.surfacePrompt', { names }) }
+    : { label: t('export.ask'), prompt: t('export.prompt', { names }) };
+
 const downloadLabel = (t: Translate, format: ProjectExportFormat, hasOpenPieces: boolean): string => {
   if (format === 'stl' && hasOpenPieces) {
     return t('export.anyway');
@@ -38,6 +66,7 @@ type ExportDialogProps = {
     selectedNames: string[] | undefined,
     signal: AbortSignal,
   ) => Promise<PreparedExport>;
+  readonly capture: (signal: AbortSignal) => Promise<PreparedExport>;
   readonly onAskAgent: (message: string) => void;
   readonly onOpenChange: (open: boolean) => void;
 };
@@ -47,6 +76,7 @@ export function ExportDialogView({
   name,
   pieces,
   prepare,
+  capture,
   onAskAgent,
   onOpenChange,
 }: ExportDialogProps): React.JSX.Element {
@@ -105,8 +135,8 @@ export function ExportDialogView({
       }
       setDownloading(format);
       try {
-        // Recapture at the gesture so a changed camera is reflected in the PNG.
-        const result = format === 'png' ? await prepare(format, undefined, controller.signal) : rows[format];
+        // Capture at the gesture so the PNG shows the camera as it is now.
+        const result = format === 'png' ? await capture(controller.signal) : rows[format];
         if (isAborted(controller.signal)) {
           return;
         }
@@ -126,7 +156,7 @@ export function ExportDialogView({
         setDownloading(undefined);
       }
     },
-    [name, prepare, rows, t],
+    [capture, name, rows, t],
   );
 
   return (
@@ -140,7 +170,9 @@ export function ExportDialogView({
           {projectExportFormats.map((format) => {
             const result = rows[format];
             const status = result?.status ?? 'checking';
-            const openPieces = result?.status === 'needsFix' ? result.pieces : undefined;
+            const openPieces =
+              result?.status === 'needsFix' && result.problem === 'invalid' ? result.pieces : undefined;
+            const ask = openPieces?.length ? askAgent(t, format, openPieces.join(', ')) : undefined;
             const label = format === 'png' ? t('export.photo') : format.toUpperCase();
             return (
               <section key={format} aria-label={label} className='space-y-2 py-4'>
@@ -160,9 +192,7 @@ export function ExportDialogView({
                 <p className='text-sm text-muted-foreground'>{t(`export.${format}`)}</p>
                 {result?.status === 'needsFix' ? (
                   <p role='alert' aria-label={t('export.needsFix')} className='text-sm'>
-                    {openPieces?.length
-                      ? t('export.openPieces', { count: openPieces.length, names: openPieces.join(', ') })
-                      : t(`export.errors.${result.problem}`)}
+                    {fixMessage(t, format, result)}
                   </p>
                 ) : null}
                 <div className='flex flex-wrap items-center gap-2'>
@@ -171,23 +201,23 @@ export function ExportDialogView({
                     size='sm'
                     aria-busy={downloading === format}
                     className='pointer-coarse:min-h-11'
-                    disabled={filesFor(result).length === 0 || downloading !== undefined}
+                    disabled={!canDownload(format, result) || downloading !== undefined}
                     onClick={() => {
                       void download(format);
                     }}
                   >
                     {downloadLabel(t, format, Boolean(openPieces?.length))}
                   </Button>
-                  {openPieces?.length ? (
+                  {ask ? (
                     <Button
                       variant='link'
                       size='sm'
                       className='max-w-full text-left whitespace-normal pointer-coarse:min-h-11'
                       onClick={() => {
-                        onAskAgent(t('export.prompt', { names: openPieces.join(', ') }));
+                        onAskAgent(ask.prompt);
                       }}
                     >
-                      {t('export.ask')}
+                      {ask.label}
                     </Button>
                   ) : null}
                   {result?.status === 'needsFix' ? (

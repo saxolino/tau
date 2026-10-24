@@ -20,9 +20,14 @@ export type ProjectExportSource = {
   rendering: Extract<Rendering, { success: true }>;
   pieces: GeometryComponentNode[];
   isCurrent: () => boolean;
-  capture: () => Promise<ExportFile[]>;
+  /** Whether the current view can be captured now, without rendering it. */
+  canCapture: () => boolean;
+  capture: (signal: AbortSignal) => Promise<ExportFile[]>;
   verifyStep: (request: StepCheckRequest, signal: AbortSignal) => Promise<StepCheckResult>;
 };
+
+/** Longest wait for one current-view PNG; a headless render that never returns ends as a capture problem. */
+export const photoCaptureTimeout = 60_000;
 
 const selectionMatches = (names: string[], selected: string[]): boolean =>
   names.length > 0 &&
@@ -46,11 +51,9 @@ export async function prepareProjectExport(input: {
     if (!current()) {
       return { status: 'needsFix', problem: 'changed' };
     }
+    // The photo has nothing to verify: it is ready once the view can be captured, and taken at the click.
     if (format === 'png') {
-      const files = await source.capture();
-      return current() && files.length === 1 && files[0]?.mimeType === 'image/png'
-        ? { status: 'ready', files }
-        : { status: 'needsFix', problem: 'capture' };
+      return source.canCapture() ? { status: 'ready', files: [] } : { status: 'needsFix', problem: 'capture' };
     }
     if (!selectionMatches(names, selected)) {
       return { status: 'needsFix', problem: 'selection' };
@@ -123,6 +126,47 @@ async function prepareGeometryFiles({
     : checked;
 }
 
+/** Take the current-view PNG now, within {@link photoCaptureTimeout}; the render is released when it ends. */
+export async function captureProjectPhoto(input: {
+  source: ProjectExportSource;
+  signal: AbortSignal;
+}): Promise<PreparedExport> {
+  const { source, signal } = input;
+  const current = (): boolean => !signal.aborted && source.isCurrent();
+  const capture = new AbortController();
+  const stop = (): void => {
+    capture.abort();
+  };
+  signal.addEventListener('abort', stop, { once: true });
+  const timer = setTimeout(stop, photoCaptureTimeout);
+  try {
+    if (!current() || !source.canCapture()) {
+      return { status: 'needsFix', problem: current() ? 'capture' : 'changed' };
+    }
+    const stopped = new Promise<never>((_resolve, reject) => {
+      capture.signal.addEventListener(
+        'abort',
+        () => {
+          reject(new Error('CAPTURE_STOPPED'));
+        },
+        { once: true },
+      );
+    });
+    const files = await Promise.race([source.capture(capture.signal), stopped]);
+    if (!current()) {
+      return { status: 'needsFix', problem: 'changed' };
+    }
+    return files.length === 1 && files[0]?.mimeType === 'image/png'
+      ? { status: 'ready', files }
+      : { status: 'needsFix', problem: 'capture' };
+  } catch {
+    return { status: 'needsFix', problem: current() ? 'capture' : 'changed' };
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', stop);
+  }
+}
+
 /** Reusable preparation boundary for the future Sinopia handoff. No upload, download or persistence. */
 export async function prepareSinopiaFiles(input: Omit<Parameters<typeof prepareProjectExport>[0], 'format'>): Promise<{
   step: PreparedExport;
@@ -132,7 +176,7 @@ export async function prepareSinopiaFiles(input: Omit<Parameters<typeof prepareP
   // Serialize native exports: their runtime document shares mutable kernel state.
   const step = await prepareProjectExport({ ...input, format: 'step' });
   const glb = await prepareProjectExport({ ...input, format: 'glb' });
-  const photo = await prepareProjectExport({ ...input, format: 'png' });
+  const photo = await captureProjectPhoto(input);
   return { step, glb, photo };
 }
 

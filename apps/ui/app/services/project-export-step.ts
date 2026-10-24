@@ -3,30 +3,70 @@ import type { OpenCascadeInstance, TDF_Label, TopLoc_Location, TopoDS_Shape } fr
 import { createOcScope } from '@taucad/occt-core';
 import type { StepCheckRequest, StepCheckResult, StepInspection } from './project-export.types.js';
 
+/** Edges may sit this far from their faces, in mm: far tighter than casting, CNC or wax printing. */
+export const stepEdgeTolerance = 0.001;
+
 /** Read names and geometry from the actual STEP bytes, in a separate OCCT instance. */
 export function inspectStep(oc: OpenCascadeInstance, bytes: Uint8Array<ArrayBuffer>): StepInspection[] {
-  return withStep(oc, bytes, (pieces) => {
-    const inspections: StepInspection[] = [];
-    for (const { name, shape } of pieces) {
-      const scope = createOcScope();
-      try {
-        const explorer = scope.track(new oc.TopExp_Explorer(shape, oc.TopAbs_ShapeEnum.TopAbs_SOLID));
-        let solids = 0;
-        while (explorer.More()) {
-          solids += 1;
-          explorer.Next();
-        }
-        const analyzer = scope.track(new oc.BRepCheck_Analyzer(shape, true, false, true));
-        inspections.push({ name, solids, valid: !shape.IsNull() && analyzer.IsValid() });
-      } finally {
-        scope.dispose();
-      }
-    }
-    return inspections;
-  });
+  return withStep(oc, bytes, (pieces) =>
+    pieces.map(({ name, shape }) => ({
+      name,
+      solids: countSolids(oc, shape),
+      valid: !shape.IsNull() && isValidShape(oc, shape),
+    })),
+  );
 }
 
 type StepPiece = { name: string; shape: TopoDS_Shape };
+
+/**
+ * OCCT's default check must pass on the file's own tolerances. The exact check also measures every edge against its
+ * faces; a kernel may declare a far tighter tolerance than it keeps, so that check is repeated within
+ * {@link stepEdgeTolerance}.
+ */
+function isValidShape(oc: OpenCascadeInstance, shape: TopoDS_Shape): boolean {
+  const scope = createOcScope();
+  try {
+    // The reader widens tolerances to cover gaps (up to 1 mm), so a wider tolerance is a wider gap.
+    const { TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE } = oc.TopAbs_ShapeEnum;
+    if (
+      [TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE].some(
+        (type) => oc.BRep_Tool.MaxTolerance(shape, type) > stepEdgeTolerance,
+      )
+    ) {
+      return false;
+    }
+    if (!scope.track(new oc.BRepCheck_Analyzer(shape, true, false, false)).IsValid()) {
+      return false;
+    }
+    if (scope.track(new oc.BRepCheck_Analyzer(shape, true, false, true)).IsValid()) {
+      return true;
+    }
+    // A topological copy carries its own tolerances; the geometry is shared and unchanged.
+    const copy = scope.track(scope.track(new oc.BRepBuilderAPI_Copy(shape, false, false)).Shape());
+    scope
+      .track(new oc.ShapeFix_ShapeTolerance())
+      .SetTolerance(copy, stepEdgeTolerance, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    return scope.track(new oc.BRepCheck_Analyzer(copy, true, false, true)).IsValid();
+  } finally {
+    scope.dispose();
+  }
+}
+
+function countSolids(oc: OpenCascadeInstance, shape: TopoDS_Shape): number {
+  const scope = createOcScope();
+  try {
+    const explorer = scope.track(new oc.TopExp_Explorer(shape, oc.TopAbs_ShapeEnum.TopAbs_SOLID));
+    let solids = 0;
+    while (explorer.More()) {
+      solids += 1;
+      explorer.Next();
+    }
+    return solids;
+  } finally {
+    scope.dispose();
+  }
+}
 
 function withStep<T>(oc: OpenCascadeInstance, bytes: Uint8Array<ArrayBuffer>, consume: (pieces: StepPiece[]) => T): T {
   const scope = createOcScope();
@@ -35,6 +75,9 @@ function withStep<T>(oc: OpenCascadeInstance, bytes: Uint8Array<ArrayBuffer>, co
   try {
     const reader = scope.track(new oc.STEPCAFControl_Reader());
     reader.SetNameMode(true);
+    // Some writers (SMLib) name each solid inside one product; read those names as sub-shapes.
+    // The first reader registers this parameter, so it is set once the reader exists.
+    oc.Interface_Static.SetIVal('read.stepcaf.subshapes.name', 1);
     const document = scope.track(new oc.TDocStd_Document(scope.track(new oc.TCollection_ExtendedString())));
     const progress = scope.track(new oc.Message_ProgressRange());
     if (!reader.Perform(path, document, progress)) {
@@ -58,6 +101,39 @@ function withStep<T>(oc: OpenCascadeInstance, bytes: Uint8Array<ArrayBuffer>, co
         attribute[Symbol.dispose]();
       }
     };
+    /** Pieces named on the solids of one product, only when every solid has a name. */
+    const namedSolids = (product: TDF_Label, shape: TopoDS_Shape): Map<string, TopoDS_Shape[]> | undefined => {
+      const labels = scope.track(new oc.NCollection_Sequence_TDF_Label());
+      if (!oc.XCAFDoc_ShapeTool.GetSubShapes(product, labels)) {
+        return undefined;
+      }
+      const groups = new Map<string, TopoDS_Shape[]>();
+      let solids = 0;
+      for (let index = 1; index <= labels.Length(); index += 1) {
+        const sub = scope.track(labels.Value(index));
+        const solid = scope.track(oc.XCAFDoc_ShapeTool.GetShape(sub));
+        const name = nameOf(sub);
+        if (name && solid.ShapeType() === oc.TopAbs_ShapeEnum.TopAbs_SOLID) {
+          solids += 1;
+          groups.set(name, [...(groups.get(name) ?? []), solid]);
+        }
+      }
+      // A single name is the product itself; an unnamed solid would otherwise go unchecked.
+      return groups.size > 1 && solids === countSolids(oc, shape) ? groups : undefined;
+    };
+    // Two solids under one name stay one piece, so the solids check reports them.
+    const compound = (solids: TopoDS_Shape[]): TopoDS_Shape => {
+      if (solids.length === 1) {
+        return solids[0]!;
+      }
+      const builder = scope.track(new oc.BRep_Builder());
+      const result = scope.track(new oc.TopoDS_Compound());
+      builder.MakeCompound(result);
+      for (const solid of solids) {
+        builder.Add(result, solid);
+      }
+      return result;
+    };
     const visit = (label: TDF_Label, parent: TopLoc_Location, depth: number): void => {
       if (depth > 64 || pieces.length > 10_000) {
         throw new Error('STEP_ASSEMBLY_LIMIT');
@@ -73,7 +149,14 @@ function withStep<T>(oc: OpenCascadeInstance, bytes: Uint8Array<ArrayBuffer>, co
         }
       } else {
         const shape = scope.track(oc.XCAFDoc_ShapeTool.GetShape(product));
-        pieces.push({ name: nameOf(label) || nameOf(product), shape: scope.track(shape.Located(location, false)) });
+        const named = namedSolids(product, shape);
+        if (named) {
+          for (const [name, solids] of named) {
+            pieces.push({ name, shape: scope.track(compound(solids).Moved(location, false)) });
+          }
+        } else {
+          pieces.push({ name: nameOf(label) || nameOf(product), shape: scope.track(shape.Located(location, false)) });
+        }
       }
     };
     const identity = scope.track(new oc.TopLoc_Location());
@@ -122,20 +205,25 @@ function writeSelectedStep(
   });
 }
 
-const namesMatch = (pieces: StepInspection[], expected: string[]): boolean =>
-  expected.length > 0 &&
-  new Set(expected).size === expected.length &&
-  pieces.length === expected.length &&
-  pieces.every(({ name }) => expected.includes(name)) &&
-  new Set(pieces.map(({ name }) => name)).size === expected.length;
+/** Model names not found exactly once in the file, then file names the model does not have. */
+const differentNames = (pieces: StepInspection[], expected: string[]): string[] => {
+  const read = pieces.map(({ name }) => name);
+  const count = (names: string[], name: string): number => names.filter((other) => other === name).length;
+  const different = [
+    ...expected.filter((name) => count(read, name) !== 1 || count(expected, name) !== 1),
+    ...read.filter((name) => !expected.includes(name)),
+  ];
+  return [...new Set(different)];
+};
 
 /** Filtering is followed by a second read, so the badge always covers the downloadable bytes. */
 export function checkStepExport(oc: OpenCascadeInstance, request: StepCheckRequest): StepCheckResult {
   try {
     let { bytes } = request;
     let pieces = inspectStep(oc, bytes);
-    if (!namesMatch(pieces, request.expectedNames)) {
-      return { status: 'needsFix', problem: 'names' };
+    let different = differentNames(pieces, request.expectedNames);
+    if (request.expectedNames.length === 0 || different.length > 0) {
+      return { status: 'needsFix', problem: 'names', pieces: different };
     }
     if (request.selectedNames) {
       if (
@@ -146,15 +234,17 @@ export function checkStepExport(oc: OpenCascadeInstance, request: StepCheckReque
       }
       bytes = writeSelectedStep(oc, bytes, request.selectedNames);
       pieces = inspectStep(oc, bytes);
-      if (!namesMatch(pieces, request.selectedNames)) {
-        return { status: 'needsFix', problem: 'names' };
+      different = differentNames(pieces, request.selectedNames);
+      if (different.length > 0) {
+        return { status: 'needsFix', problem: 'names', pieces: different };
       }
     }
     if (pieces.some(({ solids }) => solids !== 1)) {
       return { status: 'needsFix', problem: 'solids' };
     }
-    if (pieces.some(({ valid }) => !valid)) {
-      return { status: 'needsFix', problem: 'invalid' };
+    const invalid = pieces.filter(({ valid }) => !valid).map(({ name }) => name);
+    if (invalid.length > 0) {
+      return { status: 'needsFix', problem: 'invalid', pieces: invalid };
     }
     return { status: 'verified', bytes, pieces };
   } catch {

@@ -12,6 +12,7 @@ export type ExportProblem =
   | 'selection'
   | 'changed'
   | 'capture';
+/** A ready photo has no files yet: the PNG is taken when it is asked for. */
 export type PreparedExport =
   | { status: 'verified' | 'ready'; files: ExportFile[] }
   | { status: 'needsFix'; problem: ExportProblem; files?: ExportFile[]; pieces?: string[] };
@@ -25,4 +26,4 @@ export type StepCheckRequest = {
 };
 export type StepCheckResult =
   | { status: 'verified'; bytes: Uint8Array<ArrayBuffer>; pieces: StepInspection[] }
-  | { status: 'needsFix'; problem: ExportProblem };
+  | { status: 'needsFix'; problem: ExportProblem; pieces?: string[] };

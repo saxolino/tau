@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import initialize from 'libcascade/single/init';
 import type { OpenCascadeInstance } from 'libcascade/init';
 import { replicadKernel } from '@taucad/replicad';
+import { smlibKernel } from '@taucad/smlib';
 import { esbuildBundler } from '@taucad/esbuild';
 import { asKnownArtifact } from '@taucad/runtime';
 import { defineRuntime } from '@taucad/runtime/worker';
@@ -10,9 +11,16 @@ import type { RuntimeDefinition } from '@taucad/runtime/worker';
 import { createTestRuntimeClient } from '@taucad/runtime-testing';
 import { buildGltfComponentManifest } from '@taucad/viewer/graphics/metadata/gltf-component-manifest';
 import { createExportFile } from '@taucad/types/constants';
+import type { ExportFile } from '@taucad/types';
+import { createOcScope } from '@taucad/occt-core';
 import { checkStepExport, inspectStep } from './project-export-step.js';
 import { exportPieces, isClosedStl, prepareStl } from './project-export-mesh.js';
-import { prepareProjectExport, prepareSinopiaFiles } from './project-export.js';
+import {
+  captureProjectPhoto,
+  photoCaptureTimeout,
+  prepareProjectExport,
+  prepareSinopiaFiles,
+} from './project-export.js';
 import type { ProjectExportSource } from './project-export.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -35,10 +43,14 @@ let source: ProjectExportSource;
 let oc: OpenCascadeInstance;
 let step: Uint8Array<ArrayBuffer>;
 
-beforeAll(async () => {
-  oc = await initialize({ print: () => undefined, printErr: () => undefined });
-  await client.connect();
-  const document = client.open({ source: { path: 'main.ts' }, watch: false });
+/** Render the fixture, as the hook does, and keep its STEP bytes. */
+const openSource = async (
+  runtimeClient: typeof client,
+  kernelId: string,
+  path = 'main.ts',
+): Promise<{ source: ProjectExportSource; step: Uint8Array<ArrayBuffer> }> => {
+  await runtimeClient.connect();
+  const document = runtimeClient.open({ source: { path }, watch: false });
   const view = document.view('model');
   const rendered = await view.rendering();
   if (rendered.superseded || !rendered.rendering.success) {
@@ -48,21 +60,29 @@ beforeAll(async () => {
   if (artifact?.mimeType !== 'model/gltf-binary') {
     throw new Error('FIXTURE_GLB_MISSING');
   }
-  source = {
-    document,
-    client,
-    kernelId: 'replicad',
-    rendering: rendered.rendering,
-    pieces: exportPieces(buildGltfComponentManifest(artifact.content)),
-    isCurrent: () => true,
-    capture: async () => [createExportFile('png', 'view', new Uint8Array([137, 80, 78, 71]))],
-    verifyStep: async (request) => checkStepExport(oc, request),
-  };
   const exported = await document.export('step');
   if (!exported.success) {
     throw new Error('FIXTURE_STEP_FAILED');
   }
-  step = exported.files[0].bytes;
+  return {
+    source: {
+      document,
+      client: runtimeClient,
+      kernelId,
+      rendering: rendered.rendering,
+      pieces: exportPieces(buildGltfComponentManifest(artifact.content)),
+      isCurrent: () => true,
+      canCapture: () => true,
+      capture: async () => [createExportFile('png', 'view', new Uint8Array([137, 80, 78, 71]))],
+      verifyStep: async (request) => checkStepExport(oc, request),
+    },
+    step: exported.files[0].bytes,
+  };
+};
+
+beforeAll(async () => {
+  oc = await initialize({ print: () => undefined, printErr: () => undefined });
+  ({ source, step } = await openSource(client, 'replicad'));
 });
 afterAll(() => {
   client.terminate();
@@ -87,7 +107,7 @@ describe('project file preparation with two real engines', () => {
   });
   it('should reject missing, duplicate and wrong piece names', () => {
     for (const names of [['Anello'], ['Anello', 'Anello'], ['Anello', 'Wrong']]) {
-      expect(checkStepExport(oc, { bytes: step, expectedNames: names })).toEqual({
+      expect(checkStepExport(oc, { bytes: step, expectedNames: names })).toMatchObject({
         status: 'needsFix',
         problem: 'names',
       });
@@ -142,6 +162,218 @@ describe('project file preparation with two real engines', () => {
       }),
     ).toEqual({ status: 'needsFix', problem: 'changed' });
     expect(verify).not.toHaveBeenCalled();
+  });
+});
+
+/* oxlint-disable new-cap -- OpenCascade exposes C++ method names. */
+/** OCCT's own analyzer on every solid of a STEP, on the file's tolerances: default and exact. */
+const occtChecks = (bytes: Uint8Array<ArrayBuffer>): Array<{ standard: boolean; exact: boolean }> => {
+  const scope = createOcScope();
+  oc.FS.writeFile('/tmp/occt-checks.step', bytes);
+  try {
+    const reader = scope.track(new oc.STEPControl_Reader());
+    reader.ReadFile('/tmp/occt-checks.step');
+    reader.TransferRoots(scope.track(new oc.Message_ProgressRange()));
+    const explorer = scope.track(
+      new oc.TopExp_Explorer(scope.track(reader.OneShape()), oc.TopAbs_ShapeEnum.TopAbs_SOLID),
+    );
+    const checks: Array<{ standard: boolean; exact: boolean }> = [];
+    while (explorer.More()) {
+      const solid = scope.track(explorer.Current());
+      checks.push({
+        standard: scope.track(new oc.BRepCheck_Analyzer(solid, true, false, false)).IsValid(),
+        exact: scope.track(new oc.BRepCheck_Analyzer(solid, true, false, true)).IsValid(),
+      });
+      explorer.Next();
+    }
+    return checks;
+  } finally {
+    scope.dispose();
+    oc.FS.unlink('/tmp/occt-checks.step');
+  }
+};
+/* oxlint-enable new-cap */
+
+describe('STEP from a kernel that names each solid inside one product', () => {
+  // SMLib writes one PRODUCT and names each MANIFOLD_SOLID_BREP after its piece.
+  const smlibRuntime: RuntimeDefinition = defineRuntime({ kernels: [smlibKernel()], bundlers: [esbuildBundler()] });
+  const smlibClient = createTestRuntimeClient({
+    runtime: smlibRuntime,
+    files: {
+      'main.ts': `
+  import { Box, Pos } from '@classcad/smlibwasm';
+  export default function main() {
+    return [
+      { name: 'Castone marquise', shape: Box(4, 4, 4), color: '#d99a85' },
+      { name: 'Pietrina più', shape: Pos(10, 0, 0).mul(Box(2, 2, 2)), color: '#e3edf2' },
+      { name: "Rametto d'oro", shape: Pos(20, 0, 0).mul(Box(2, 2, 2)), color: '#d99a85' },
+    ];
+  }
+`,
+      // The marquise stone of «Collana col ramo»: its lofts leave edges about 0.56 µm from their faces.
+      'marquise.ts': `
+  import { Pos, Cylinder, Wire, ThreePointArc, makeFace, extrude, loft, fromSmb, toSmb } from '@classcad/smlibwasm';
+  function marquise(L, W, z = 0) {
+    const a = [0, L / 2, z], b = [W / 2, 0, z], c = [0, -L / 2, z], d = [-W / 2, 0, z];
+    return makeFace(new Wire([ThreePointArc(a, b, c), ThreePointArc(c, d, a)]));
+  }
+  function pietraMarquise(L, W) {
+    const g = 0.05;
+    const cintura = Pos(0, 0, -g).mul(extrude(marquise(L, W), 2 * g));
+    const corona = loft([marquise(L, W, g), marquise(L * 0.55, W * 0.55, g + W * 0.15)], { ruled: true });
+    const padiglione = loft([marquise(L, W, -g), marquise(L * 0.03, W * 0.03, -g - W * 0.43)], { ruled: true });
+    return cintura.fuse(corona).fuse(padiglione);
+  }
+  export default function main() {
+    return [
+      { name: 'Marquise', shape: fromSmb(toSmb(Pos(0, -4.6, 0).mul(pietraMarquise(8, 4)))), color: '#e3edf2' },
+      { name: 'Stelo', shape: Pos(0, 2, 0).mul(Cylinder(0.7, 15)), color: '#d99a85' },
+    ];
+  }
+`,
+    },
+  });
+  const names = ['Castone marquise', 'Pietrina più', "Rametto d'oro"];
+  let smlib: Awaited<ReturnType<typeof openSource>>;
+  let marquise: Awaited<ReturnType<typeof openSource>>;
+  beforeAll(async () => {
+    smlib = await openSource(smlibClient, 'smlib');
+    marquise = await openSource(smlibClient, 'smlib', 'marquise.ts');
+  });
+  afterAll(() => {
+    smlibClient.terminate();
+  });
+
+  it('should read every named piece, with accents and apostrophes, and verify the STEP', async () => {
+    expect(smlib.source.pieces.map(({ name }) => name)).toEqual(names);
+    // The browser checks each file in a new worker, so the first read of a new engine must already see the names.
+    const fresh = await initialize({ print: () => undefined, printErr: () => undefined });
+    expect(inspectStep(fresh, smlib.step)).toEqual(names.map((name) => ({ name, solids: 1, valid: true })));
+    expect(
+      await prepareProjectExport({ source: smlib.source, format: 'step', signal: new AbortController().signal }),
+    ).toMatchObject({ status: 'verified' });
+  });
+  it('should verify a single selected piece after writing it on its own', async () => {
+    const result = await prepareProjectExport({
+      source: smlib.source,
+      format: 'step',
+      selectedNames: ['Pietrina più'],
+      signal: new AbortController().signal,
+    });
+    expect(result.status).toBe('verified');
+    expect(inspectStep(oc, result.files![0]!.bytes)).toEqual([{ name: 'Pietrina più', solids: 1, valid: true }]);
+  });
+  it('should name the pieces that really differ between the file and the model', () => {
+    expect(
+      checkStepExport(oc, { bytes: smlib.step, expectedNames: ['Castone marquise', 'Pietrina più', 'Anellino'] }),
+    ).toEqual({ status: 'needsFix', problem: 'names', pieces: ['Anellino', "Rametto d'oro"] });
+  });
+  it('should verify a sub-micron gap that only the exact check reports', () => {
+    expect(occtChecks(marquise.step)).toEqual([
+      { standard: true, exact: false },
+      { standard: true, exact: true },
+    ]);
+    expect(checkStepExport(oc, { bytes: marquise.step, expectedNames: ['Marquise', 'Stelo'] })).toMatchObject({
+      status: 'verified',
+      pieces: [
+        { name: 'Marquise', solids: 1, valid: true },
+        { name: 'Stelo', solids: 1, valid: true },
+      ],
+    });
+  });
+  it('should name a piece whose edges are more than 1 µm from its faces', () => {
+    // The same file in centimetres: the stone is ten times larger, and so is its gap (about 5.6 µm).
+    const text = new TextDecoder().decode(marquise.step);
+    expect(text).toContain('SI_UNIT(.MILLI.,.METRE.)');
+    const larger = new TextEncoder().encode(text.replace('SI_UNIT(.MILLI.,.METRE.)', 'SI_UNIT(.CENTI.,.METRE.)'));
+    expect(occtChecks(larger)).toEqual([
+      { standard: true, exact: false },
+      { standard: true, exact: true },
+    ]);
+    expect(checkStepExport(oc, { bytes: larger, expectedNames: ['Marquise', 'Stelo'] })).toEqual({
+      status: 'needsFix',
+      problem: 'invalid',
+      pieces: ['Marquise'],
+    });
+  });
+  it('should never verify a gap the reader covered by widening a tolerance', () => {
+    // Moving one corner of a box by 0.05 mm still passes OCCT's checks once the reader has widened its tolerance.
+    const text = new TextDecoder().decode(smlib.step);
+    const vertex = /VERTEX_POINT\('[^']*',#(\d+)\)/u.exec(text)?.[1];
+    const point = new RegExp(String.raw`#${vertex}=CARTESIAN_POINT\('[^']*',\(([^,]+),`, 'u').exec(text);
+    expect(point).not.toBeNull();
+    const moved = text.replace(point![0], point![0].replace(`(${point![1]},`, `(${Number(point![1]) + 0.05},`));
+    expect(occtChecks(new TextEncoder().encode(moved))[0]).toEqual({ standard: true, exact: true });
+    expect(checkStepExport(oc, { bytes: new TextEncoder().encode(moved), expectedNames: names })).toEqual({
+      status: 'needsFix',
+      problem: 'invalid',
+      pieces: ['Castone marquise'],
+    });
+  });
+  it('should keep two solids under one name as one piece for the solids check', () => {
+    const text = new TextDecoder()
+      .decode(smlib.step)
+      .replace("'Rametto d''oro'", String.raw`'Pietrina pi\X2\00F9\X0\'`);
+    expect(
+      checkStepExport(oc, {
+        bytes: new TextEncoder().encode(text),
+        expectedNames: ['Castone marquise', 'Pietrina più'],
+      }),
+    ).toEqual({ status: 'needsFix', problem: 'solids' });
+  });
+});
+
+describe('current-view photo', () => {
+  it('should be ready as soon as a snapshot can be taken, without waiting for a render', async () => {
+    // A headless render that never comes back must not keep the row checking.
+    const capture = vi.fn(
+      async (): Promise<ExportFile[]> =>
+        new Promise(() => {
+          // Intentionally unresolved, like a render that never comes back.
+        }),
+    );
+    const checked = prepareProjectExport({
+      source: { ...source, capture },
+      format: 'png',
+      signal: new AbortController().signal,
+    });
+    const stillChecking = new Promise((resolve) => {
+      setTimeout(resolve, 1000, 'still checking');
+    });
+    expect(await Promise.race([checked, stillChecking])).toEqual({ status: 'ready', files: [] });
+    expect(capture).not.toHaveBeenCalled();
+  });
+  it('should not offer a photo while the view cannot be captured', async () => {
+    expect(
+      await prepareProjectExport({
+        source: { ...source, canCapture: () => false },
+        format: 'png',
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ status: 'needsFix', problem: 'capture' });
+  });
+  it('should give up a capture that never returns and cancel its render', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let captureSignal: AbortSignal | undefined;
+      const pending = captureProjectPhoto({
+        source: {
+          ...source,
+          capture: async (signal): Promise<ExportFile[]> => {
+            captureSignal = signal;
+            return new Promise(() => {
+              // Intentionally unresolved, like a render that never comes back.
+            });
+          },
+        },
+        signal: new AbortController().signal,
+      });
+      await vi.advanceTimersByTimeAsync(photoCaptureTimeout);
+      expect(await pending).toEqual({ status: 'needsFix', problem: 'capture' });
+      expect(captureSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

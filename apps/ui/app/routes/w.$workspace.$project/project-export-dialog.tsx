@@ -18,7 +18,7 @@ export function ProjectExportDialog({
   const name = useSelector(projectRef, (state) => state.context.project?.name) ?? '';
   const store = useChatSessionStore();
   const { t } = useTranslation();
-  const { pieces, prepare } = useProjectExport();
+  const { pieces, prepare, capturePhoto } = useProjectExport();
   const askAgent = useCallback(
     (message: string): void => {
       const chatId = editorRef.getSnapshot().context.focusedChatId;
@@ -36,6 +36,13 @@ export function ProjectExportDialog({
     [editorRef, onOpenChange, onShowAgent, store, t],
   );
   return (
-    <ExportDialogView name={name} pieces={pieces} prepare={prepare} onAskAgent={askAgent} onOpenChange={onOpenChange} />
+    <ExportDialogView
+      name={name}
+      pieces={pieces}
+      prepare={prepare}
+      capture={capturePhoto}
+      onAskAgent={askAgent}
+      onOpenChange={onOpenChange}
+    />
   );
 }
