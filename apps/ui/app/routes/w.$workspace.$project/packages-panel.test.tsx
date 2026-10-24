@@ -138,7 +138,7 @@ describe('PackagesPanel', () => {
 
     expect(screen.getByText('npm ci --ignore-scripts')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Run a model outside Tau' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Run a model outside SinopiaCAD' })).toHaveAttribute(
       'href',
       'https://docs.tau.new/editor/packages#run-the-project-outside-tau',
     );

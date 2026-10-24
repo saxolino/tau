@@ -34,7 +34,7 @@ import type { Handle } from '#types/matches.types.js';
 
 export const handle: Handle = { enableOverflowY: true };
 export const meta: MetaFunction = () => [
-  { title: 'Parts · Tau' },
+  { title: 'Parts · SinopiaCAD' },
   { name: 'description', content: 'Browse, preview and remix reusable parametric CAD parts.' },
 ];
 

@@ -15,6 +15,7 @@ import {
 import { formatNumberEngineeringNotation } from '#utils/number.js';
 import { gridUnitOptions, maxGridDigits } from '#cad/grid-unit-options.js';
 import { useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
+import { useViewerLabels } from '#environment/viewer-environment.jsx';
 
 /**
  * A one-line readout of the grid size from the per-view GraphicsMachine via GraphicsProvider, which opens the
@@ -23,6 +24,7 @@ import { useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
  */
 export function GridSizeIndicator(): React.ReactNode {
   const graphicsRef = useGraphics();
+  const labels = useViewerLabels();
   const gridSizes = useGraphicsSelector((state) => state.context.gridSizes);
   const isGridSizeLocked = useGraphicsSelector((state) => state.context.isGridSizeLocked);
   const metersPerDisplayUnit = useGraphicsSelector((state) => state.context.displayUnits.length.metersPerUnit);
@@ -75,7 +77,7 @@ export function GridSizeIndicator(): React.ReactNode {
             <Button
               variant='ghost'
               size='sm'
-              aria-label={`Grid ${gridLabel}, units and grid`}
+              aria-label={labels.gridReadout(gridLabel)}
               className='h-7 gap-1 px-2 font-mono text-xs tabular-nums has-[>svg]:px-2'
             >
               {/* Below 520 px of viewer width the readout keeps its value and drops its glyph. */}
@@ -85,7 +87,7 @@ export function GridSizeIndicator(): React.ReactNode {
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent>Change unit settings</TooltipContent>
+        <TooltipContent>{labels.gridTooltip}</TooltipContent>
       </Tooltip>
       <DropdownMenuContent
         side='top'
@@ -101,7 +103,7 @@ export function GridSizeIndicator(): React.ReactNode {
           isClosingFromPointerRef.current = false;
         }}
       >
-        <DropdownMenuLabel>Unit</DropdownMenuLabel>
+        <DropdownMenuLabel>{labels.unit}</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={unit} onValueChange={handleUnitChange}>
           {gridUnitOptions.map((option) => (
             <DropdownMenuRadioItem
@@ -118,13 +120,13 @@ export function GridSizeIndicator(): React.ReactNode {
           ))}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>Grid</DropdownMenuLabel>
+        <DropdownMenuLabel>{labels.grid}</DropdownMenuLabel>
         <DropdownMenuSwitchItem isChecked={isGridSizeLocked} onIsCheckedChange={handleLockToggle}>
           {isGridSizeLocked ? <Lock /> : <LockOpen />}
-          Lock Grid Size ({localizedSmallGridSize} {unit})
+          {labels.lockGridSize(`${localizedSmallGridSize} ${unit}`)}
         </DropdownMenuSwitchItem>
         <span className='inline-flex items-center gap-1 p-2 text-xs font-medium text-muted-foreground/80'>
-          <Info className='size-3 stroke-2' /> Adjust grid size by changing zoom level
+          <Info className='size-3 stroke-2' /> {labels.gridZoomHint}
         </span>
       </DropdownMenuContent>
     </DropdownMenu>

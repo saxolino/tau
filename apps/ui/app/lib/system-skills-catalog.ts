@@ -4,6 +4,8 @@
  *
  * Package skills come from `@taucad/skills/resources`, the same generated
  * registry used by native desktop. App-only skills remain inline below.
+ * SinopiaCAD drops the `cad-*` skills of engines it does not offer
+ * (`#lib/sinopia-engines.js`) and adds its image-to-CAD skill.
  *
  * Only the T1 bodies come inline. `api-index.md` and the API shards stay files
  * inside each package, fetched when something greps them — the point of the
@@ -17,8 +19,19 @@
  */
 
 import { systemSkillBundles } from '@taucad/skills/resources';
+import { isKernelId } from '@taucad/types/constants';
 
-import { createModelSkillMarkdown } from '#lib/create-model-skill.js';
+import {
+  createModelSkillDescription,
+  createModelSkillMarkdown,
+  createModelSkillWhenToUse,
+} from '#lib/create-model-skill.js';
+import { isSinopiaKernelId } from '#lib/sinopia-engines.js';
+import {
+  sinopiaImmagineCadSkillDescription,
+  sinopiaImmagineCadSkillMarkdown,
+  sinopiaImmagineCadSkillWhenToUse,
+} from '#lib/sinopia-immagine-cad-skill.js';
 
 export type SystemSkill = {
   readonly slug: string;
@@ -33,20 +46,30 @@ export type SystemSkill = {
   readonly files?: ReadonlyArray<{ readonly path: string }>;
 };
 
-/** Every package-owned bundle, flattened: one package may ship more than one. */
-const packageSkills: readonly SystemSkill[] = systemSkillBundles.map(
-  (bundle): SystemSkill => ({
-    slug: bundle.slug,
-    name: bundle.name,
-    description: bundle.description,
-    version: bundle.version,
-    source: 'system',
-    priority: 60,
-    whenToUse: bundle.whenToUse,
-    skillMarkdown: bundle.body,
-    fingerprint: bundle.fingerprint,
-    files: bundle.files,
-  }),
+/** A `cad-<kernel>` authoring skill for an engine SinopiaCAD does not offer: the agent never sees it. */
+const isUnofferedKernelSkill = (slug: string): boolean => {
+  const kernelId = slug.startsWith('cad-') ? slug.slice('cad-'.length) : undefined;
+  return kernelId !== undefined && isKernelId(kernelId) && !isSinopiaKernelId(kernelId);
+};
+
+/** Every package-owned bundle, flattened (one package may ship more than one), without unoffered engines' skills. */
+const packageSkills: readonly SystemSkill[] = systemSkillBundles.flatMap((bundle): SystemSkill[] =>
+  isUnofferedKernelSkill(bundle.slug)
+    ? []
+    : [
+        {
+          slug: bundle.slug,
+          name: bundle.name,
+          description: bundle.description,
+          version: bundle.version,
+          source: 'system',
+          priority: 60,
+          whenToUse: bundle.whenToUse,
+          skillMarkdown: bundle.body,
+          fingerprint: bundle.fingerprint,
+          files: bundle.files,
+        },
+      ],
 );
 
 export const systemSkillsCatalog: readonly SystemSkill[] = [
@@ -193,13 +216,22 @@ If updating an existing artifact, inspect the current file first and preserve us
   {
     slug: 'create-model',
     name: 'Create Model',
-    description:
-      'Selects a Tau CAD kernel and activates its authoring skill. Use when creating a model without a pinned kernel.',
+    description: createModelSkillDescription,
+    version: '2.0.0',
+    source: 'system',
+    priority: 60,
+    whenToUse: createModelSkillWhenToUse,
+    skillMarkdown: createModelSkillMarkdown,
+  },
+  {
+    slug: 'sinopia-immagine-cad',
+    name: 'Sinopia Immagine CAD',
+    description: sinopiaImmagineCadSkillDescription,
     version: '1.0.0',
     source: 'system',
     priority: 60,
-    whenToUse: 'Use when creating a CAD model without a pinned kernel or when kernel choice is ambiguous.',
-    skillMarkdown: createModelSkillMarkdown,
+    whenToUse: sinopiaImmagineCadSkillWhenToUse,
+    skillMarkdown: sinopiaImmagineCadSkillMarkdown,
   },
   ...packageSkills,
 ];

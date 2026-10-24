@@ -110,6 +110,16 @@ const environmentSchema = z.preprocess(
         return trimmed === '' || trimmed === 'open' ? 'open' : 'locked';
       })
       .describe('Managed acquisition profile: open (default) or locked (no CDN type acquisition).'),
+    /**
+     * SinopiaCAD: Sinopia's Supabase project, whose session gates the workspace and authorises every call to
+     * `TAU_API_URL` (Sinopia's `sinopiacad` function). Both public by design; absent, nothing is gated.
+     */
+    SINOPIA_SUPABASE_URL: z.url().optional().describe("Sinopia's Supabase project URL (https://<ref>.supabase.co)."),
+    SINOPIA_SUPABASE_PUBLISHABLE_KEY: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Sinopia's Supabase publishable (anon) key, the one sinopialab.com ships."),
     NODE_ENV: z.enum(['development', 'production', 'test']),
 
     // PostHog Analytics
@@ -160,6 +170,8 @@ const baseClientEnvironmentKeys = [
   'TAU_MACHINES_ENABLED',
   'TAU_GIT_REMOTE_ALLOW_PRIVATE',
   'TAU_ACQUISITION',
+  'SINOPIA_SUPABASE_URL',
+  'SINOPIA_SUPABASE_PUBLISHABLE_KEY',
   'NODE_ENV',
   'POSTHOG_API_HOST',
   'POSTHOG_UI_HOST',

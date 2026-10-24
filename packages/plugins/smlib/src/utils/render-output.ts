@@ -453,9 +453,20 @@ function countOpenEdges(meshes: readonly FaceMesh[]): number {
 }
 
 function emptyGeometry(config: NamedInputShape): GeometrySmlib {
-  const { name, color, opacity, metalness, roughness, material } = config;
+  const { name, color, opacity, metalness, roughness, material, density, shape } = config;
+  const volume = density !== undefined && 'volume' in shape ? shape.volume : undefined;
+  const physical =
+    typeof density === 'number' &&
+    Number.isFinite(density) &&
+    density > 0 &&
+    typeof volume === 'number' &&
+    Number.isFinite(volume) &&
+    volume > 0
+      ? { volumeMm3: volume, density, massGrams: (volume * density) / 1000 }
+      : undefined;
   return {
     format: 'smlib',
+    ...(physical ? { physical } : {}),
     name,
     color,
     opacity,

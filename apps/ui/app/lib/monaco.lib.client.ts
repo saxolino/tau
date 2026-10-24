@@ -192,21 +192,21 @@ const replaceTypescriptWorker = (label: string, worker: Worker): Worker => {
 };
 
 const initializeMonaco = async (): Promise<typeof Monaco> => {
-  // Prime Geist Mono before Monaco's first DomCharWidthReader pass.
+  // Prime the mono face (JetBrains Mono, `--font-mono`) before Monaco's first DomCharWidthReader pass.
   //
   // Monaco caches char-width measurements as "trusted" on the first read
   // (see node_modules/monaco-editor/.../fontMeasurements.js readFontInfo).
   // With `font-display: swap`, a cold load measures the SF Mono fallback
   // and never re-measures, so block decorations (selectionHighlight,
-  // wordHighlight) drift left as columns grow once Geist Mono swaps in.
+  // wordHighlight) drift left as columns grow once the mono face swaps in.
   // Awaiting `document.fonts.load(...)` before measurement guarantees the
-  // first reading uses Geist Mono advances. `.catch` keeps offline users
+  // first reading uses the mono face's advances. `.catch` keeps offline users
   // working with fallback metrics (no worse than today).
   // Sizes mirror code-editor.client.tsx (14 desktop, 16 mobile).
   // `document.fonts` is absent under jsdom, where there is nothing to prime.
   const fontSet = Reflect.get(document, 'fonts') as FontFaceSet | undefined;
   await Promise.all(
-    fontSet === undefined ? [] : [fontSet.load("14px 'Geist Mono'"), fontSet.load("16px 'Geist Mono'")],
+    fontSet === undefined ? [] : [fontSet.load("14px 'JetBrains Mono'"), fontSet.load("16px 'JetBrains Mono'")],
   ).catch(() => undefined);
 
   globalThis.self.MonacoEnvironment = {
@@ -255,8 +255,8 @@ const initializeMonaco = async (): Promise<typeof Monaco> => {
     monaco,
   });
 
-  // Remeasure on every subsequent web-font load. Even after priming Geist
-  // Mono above, additional weights/styles or HMR re-injection can change
+  // Remeasure on every subsequent web-font load. Even after priming the mono face
+  // above, additional weights/styles or HMR re-injection can change
   // the cached advances; `monaco.editor.remeasureFonts()` clears
   // FontMeasurementsImpl._cache and triggers per-editor re-render.
   fontSet?.addEventListener('loadingdone', () => {

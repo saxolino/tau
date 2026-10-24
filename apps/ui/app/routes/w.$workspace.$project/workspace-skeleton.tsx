@@ -5,6 +5,7 @@ import { defaultPanelState } from '#constants/editor.constants.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { useCookie } from '#hooks/use-cookie.js';
 import { sidebarDefaultOpen, sidebarPreferredWidth } from '#constants/sidebar.constants.js';
+import { useTranslation } from '#i18n/translate.js';
 import { ChatPaneSkeleton } from '#routes/w.$workspace.$project/chat-pane-skeleton.js';
 
 const { chatWidth, workbenchWidth } = defaultPanelState.desktopLayout;
@@ -44,7 +45,7 @@ const holdOnServer = (): boolean => true;
  *
  * Which arrangement shows is CSS, not a hook: this renders before hydration,
  * where no measured width exists yet and a JavaScript guess paints the wrong
- * layout first. The workbench lane hides at the width the live layout drops it
+ * layout first. The Misure lane hides at the width the live layout drops it
  * (`compactWorkspaceWidth`) through a container query, so it follows the
  * workspace's own width rather than the window's.
  *
@@ -59,6 +60,7 @@ export function WorkspaceSkeleton({
 }: {
   readonly withShellFrame?: boolean;
 } = {}): React.JSX.Element {
+  const { t } = useTranslation();
   /* The shell's own source for the sidebar's resting state, so a collapsed sidebar gets no stand-in. */
   const [isSidebarOpen] = useCookie(cookieName.sidebarOp, sidebarDefaultOpen);
   const isDelayed = useSyncExternalStore(subscribeToNothing, isWithinRevealDelay, holdOnServer);
@@ -67,7 +69,7 @@ export function WorkspaceSkeleton({
     <div
       role='status'
       aria-busy='true'
-      aria-label='Opening project'
+      aria-label={t('project.opening')}
       data-testid='workspace-skeleton'
       className={cn(
         '@container bg-background max-md:absolute max-md:inset-0',
@@ -90,20 +92,21 @@ export function WorkspaceSkeleton({
             style={{ width: sidebarPreferredWidth }}
           />
         ) : null}
-        <div className='hidden h-full shrink-0 border-r border-border md:block' style={{ width: chatWidth }}>
-          <ChatPaneSkeleton variant='loading' />
-        </div>
-        <div className='h-full min-w-0 flex-1' />
+        {/* SinopiaCAD's lanes: Misure on the left, the model, the agent on the right. */}
         <div
-          /* 1120px is `compactWorkspaceWidth` in `chat-interface-desktop.tsx`; Tailwind needs the literal. */
-          className='hidden h-full shrink-0 flex-col border-l border-border @min-[1120px]:flex'
+          data-slot='workspace-skeleton-workbench'
+          /* 1024px is `compactWorkspaceWidth` in `chat-interface-desktop.tsx`; Tailwind needs the literal. */
+          className='hidden h-full shrink-0 flex-col border-r border-border @min-[1024px]:flex'
           style={{ width: workbenchWidth }}
         >
           <div className='flex h-9 shrink-0 items-center gap-2 px-3'>
             <Skeleton className='h-4 w-20' />
-            <Skeleton className='h-4 w-16' />
           </div>
           <div className='min-h-0 flex-1' />
+        </div>
+        <div className='h-full min-w-0 flex-1' />
+        <div className='hidden h-full shrink-0 border-l border-border md:block' style={{ width: chatWidth }}>
+          <ChatPaneSkeleton variant='loading' />
         </div>
         <div className='fixed right-0 bottom-0 left-0 z-50 flex h-11 items-center gap-1 rounded-t-xl border-t bg-sidebar px-2 md:hidden'>
           {Array.from({ length: 5 }, (_, index) => (

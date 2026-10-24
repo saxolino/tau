@@ -110,7 +110,7 @@ export function ProjectUnavailableOverlay({
       <ProjectUnavailableNotice
         className={className}
         title="Couldn't open this project"
-        description='Tau could not load this project. Try again, or go back and pick another one.'
+        description='SinopiaCAD could not load this project. Try again, or go back and pick another one.'
         error={projectError ?? new Error('Project failed to load.')}
         onRetry={() => {
           projectRef.send({ type: 'reloadProject' });

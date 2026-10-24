@@ -5,6 +5,7 @@ import { userEvent } from '@testing-library/user-event';
 import type { CadAgentExecution } from '@taucad/chat';
 import type { captureCadImages as captureCadImagesType } from '#services/headless-capture.js';
 import { toast } from '#components/ui/sonner.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const mockAddDraftAttachment = vi.fn();
 const selectedModel = {
@@ -130,5 +131,21 @@ describe('CaptureViewControl', () => {
     await userEvent.click(screen.getByTestId('capture-button'));
     expect(mockCaptureCadImages).not.toHaveBeenCalled();
     expect(screen.getByText('Available when a model is displayed')).toBeInTheDocument();
+  });
+
+  // SinopiaCAD: the bar's «Foto» (UI-UX-SinopiaCAD §3.3).
+  it.each([
+    ['it', 'Foto', 'Foto della vista, allegata al messaggio per l’agente'],
+    ['en', 'Snapshot', 'Snapshot of the view, attached to your message for the agent'],
+  ] as const)('should name the capture in %s', (language, label, tooltip) => {
+    setLanguage(language);
+    try {
+      render(<CaptureViewControl />);
+      expect(screen.getByTestId('capture-button')).toHaveTextContent(label);
+      expect(screen.getByText(tooltip)).toBeInTheDocument();
+    } finally {
+      globalThis.localStorage.clear();
+      resetLanguageForTests();
+    }
   });
 });

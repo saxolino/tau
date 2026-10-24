@@ -1,3 +1,7 @@
+import { bindTranslate } from '#i18n/translate.js';
+import { sinopiaTools } from '#hooks/use-sinopia-tools.js';
+import type { SinopiaToolId } from '#hooks/use-sinopia-tools.js';
+import type { Translate } from '#i18n/translate.js';
 import {
   Bot,
   BrainCircuit,
@@ -10,7 +14,10 @@ import {
   Settings2,
   Globe,
   FolderGit2,
+  Palette,
+  Ruler,
   User,
+  Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { SettingsSection } from '#hooks/use-settings-dialog.js';
@@ -68,7 +75,7 @@ const settingsCatalog = [
       {
         id: 'privacy',
         label: 'Privacy',
-        description: 'Choose how your data and usage metrics are used to improve Tau',
+        description: 'Choose how your data and usage metrics are used to improve SinopiaCAD',
         keywords: ['training', 'sharing', 'no train', 'telemetry', 'usage', 'metrics', 'anonymous'],
       },
     ],
@@ -345,7 +352,11 @@ const settingsCatalog = [
   },
 ] as const satisfies readonly SettingsSectionDefinition[];
 
-export type SettingId = (typeof settingsCatalog)[number]['entries'][number]['id'];
+export type SettingId =
+  | (typeof settingsCatalog)[number]['entries'][number]['id']
+  | 'language'
+  | 'units'
+  | `tool-${SinopiaToolId}`;
 const cloudSections: readonly SettingsSectionDefinition[] = tauCloudEnabled
   ? settingsCatalog
   : settingsCatalog
@@ -366,12 +377,61 @@ const platformSections: readonly SettingsSectionDefinition[] = isDesktopTarget()
     )
   : cloudSections.filter((section) => section.id !== 'machines' && section.id !== 'browser');
 
-export const settingsSections: readonly SettingsSectionDefinition[] = platformSections
+export const tauSettingsSections: readonly SettingsSectionDefinition[] = platformSections
   .filter((section) => section.id !== 'machines' || featureFlagDefaults.machines)
   .map((section) => ({
     ...section,
     entries: section.entries.filter((entry) => entry.id !== 'automatic-reload' || featureFlagDefaults.automaticReload),
   }));
+
+/** Sinopia exposes only preferences with an operative designer-facing control. Tau's catalogue stays intact. */
+export function getSettingsSections(t: Translate): readonly SettingsSectionDefinition[] {
+  return [
+    {
+      id: 'general',
+      label: t('account.settings.appearance'),
+      icon: Palette,
+      group: t('account.settings.title'),
+      entries: [
+        { id: 'theme', label: t('account.theme.label'), description: t('account.theme.choose') },
+        { id: 'language', label: t('account.language.label'), description: t('account.language.label') },
+        {
+          id: 'pointer-cursors',
+          label: t('account.settings.cursors'),
+          description: t('account.settings.cursorsDescription'),
+        },
+      ],
+    },
+    {
+      id: 'models',
+      label: t('account.settings.model'),
+      icon: Ruler,
+      group: t('account.settings.title'),
+      entries: [
+        {
+          id: 'units',
+          label: t('account.settings.units'),
+          description: t('account.settings.unitsDescription'),
+          keywords: ['mm'],
+        },
+      ],
+    },
+    {
+      id: 'tools',
+      label: t('tools.title'),
+      icon: Wrench,
+      group: t('account.settings.title'),
+      entries: sinopiaTools().map((tool) => ({
+        id: `tool-${tool.id}` as const,
+        label: t(`tools.${tool.id}.label`),
+        description: t(`tools.${tool.id}.description`),
+      })),
+    },
+  ];
+}
+
+/** Non-react consumers default to the server language; components bind their current translator. */
+export const settingsSections = getSettingsSections(bindTranslate('it'));
 
 function normalizeSearch(value: string): string {
   return value
@@ -385,13 +445,14 @@ function normalizeSearch(value: string): string {
 /** Match every query word, prioritizing setting names over descriptions and aliases. */
 export function searchSettings(
   query: string,
+  sections: readonly SettingsSectionDefinition[] = settingsSections,
 ): Array<{ section: SettingsSectionDefinition; entries: SettingDefinition[] }> {
   const normalized = normalizeSearch(query);
   if (!normalized) {
     return [];
   }
   const tokens = normalized.split(/\s+/);
-  const groups = settingsSections.map((section) => {
+  const groups = sections.map((section) => {
     const ranked = section.entries
       .flatMap((entry) => {
         const label = normalizeSearch(entry.label);

@@ -6,7 +6,7 @@ import type { WorkbenchLaneNode, WorkbenchLayout } from '@taucad/workbench';
 import type * as KeyboardModule from '@taucad/ui/components/keyboard';
 import type { WorkbenchLayoutController } from '#routes/w.$workspace.$project/workbench-layout-controller.js';
 
-const state = vi.hoisted(() => ({ isMobile: false, isEditorReady: true }));
+const state = vi.hoisted(() => ({ isMobile: false, isTablet: false, isEditorReady: true }));
 const route = vi.hoisted<{
   key: string;
   search: string;
@@ -37,10 +37,16 @@ const editorRef = {
   }),
 };
 
+vi.mock('#routes/w.$workspace.$project/project-export-dialog.js', () => ({
+  ProjectExportDialog: () => <div role='dialog' aria-label='Export checks' />,
+}));
+
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({ editorRef, mainEntryPath: 'main.ts' }),
 }));
-vi.mock('@taucad/ui/hooks/use-mobile', () => ({ useIsMobile: () => state.isMobile }));
+vi.mock('#hooks/use-cad-viewport.js', () => ({
+  useCadViewport: () => (state.isMobile ? 'phone' : state.isTablet ? 'tablet' : 'desktop'),
+}));
 vi.mock('react-router', () => ({ useLocation: () => route }));
 vi.mock('@xstate/react', () => ({
   useSelector: (_actor: unknown, selector: (snapshot: { matches: () => boolean }) => unknown) =>
@@ -70,6 +76,7 @@ function Probe(): React.JSX.Element {
 describe('ProjectWorkspaceProvider', () => {
   beforeEach(() => {
     state.isMobile = false;
+    state.isTablet = false;
     state.isEditorReady = true;
     route.key = 'initial';
     route.search = '';
@@ -166,7 +173,23 @@ describe('ProjectWorkspaceProvider', () => {
       nextContainer.remove();
     },
   );
-  it('opens a Preview drawer and delivers Export once its workbench mounts on mobile', () => {
+  it('should open export checks as a dialog without opening a technical pane', async () => {
+    const open = vi.fn();
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    act(() => {
+      workspace.connectWorkbench(open);
+      workspace.openPanel('export');
+    });
+    expect(await screen.findByRole('dialog', { name: 'Export checks' })).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('opens a Preview drawer and delivers Print once its workbench mounts on mobile', () => {
     state.isMobile = true;
     const reveal = vi.fn();
     const open = vi.fn();
@@ -176,14 +199,14 @@ describe('ProjectWorkspaceProvider', () => {
       </ProjectWorkspaceProvider>,
     );
     act(() => {
-      workspace.openPanel('export');
+      workspace.openPanel('print');
     });
     expect(reveal).toHaveBeenCalledOnce();
     expect(send).not.toHaveBeenCalled();
     act(() => {
       workspace.connectWorkbench(open);
     });
-    expect(open).toHaveBeenCalledExactlyOnceWith('export');
+    expect(open).toHaveBeenCalledExactlyOnceWith('print');
     act(() => {
       workspace.connectWorkbench(open);
     });
@@ -202,7 +225,7 @@ describe('ProjectWorkspaceProvider', () => {
       </ProjectWorkspaceProvider>,
     );
     act(() => {
-      workspace.openPanel('export');
+      workspace.openPanel('print');
     });
     route.key = 'another-preview';
     view.rerender(
@@ -440,6 +463,55 @@ describe('ProjectWorkspaceProvider', () => {
     });
   });
 
+  it('should replace or close the active tablet sheet without revealing the other lane', () => {
+    state.isTablet = true;
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    act(() => {
+      workspace.setChatOpen(true);
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { chatOpen: true, workbenchOpen: false, compactAuxiliary: 'chat' } },
+    });
+    act(() => {
+      workspace.setWorkbenchOpen(true);
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { workbenchOpen: true, chatOpen: false, compactAuxiliary: 'workbench' } },
+    });
+    act(() => {
+      workspace.setWorkbenchOpen(false);
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { workbenchOpen: false, chatOpen: false } },
+    });
+  });
+
+  it('records the agent lane choice for the home as it opens or closes the lane', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+
+    act(() => {
+      workspace.setChatOpen(false);
+    });
+    expect(globalThis.localStorage.getItem('tau-chat-op-lane')).toBe('false');
+    expect(send).toHaveBeenCalledWith({ type: 'setPanelState', panelState: { desktopLayout: { chatOpen: false } } });
+
+    act(() => {
+      workspace.setChatOpen(true);
+    });
+    expect(globalThis.localStorage.getItem('tau-chat-op-lane')).toBe('true');
+  });
+
   it('should wait for the destination project editor before opening its chat pane', () => {
     state.isEditorReady = false;
     route.state = { openChat: true };
@@ -548,12 +620,12 @@ describe('ProjectWorkspaceProvider', () => {
     );
 
     act(() => {
-      workspace.openPanel('export');
+      workspace.openPanel('parameters');
     });
 
     expect(send).toHaveBeenCalledExactlyOnceWith({
       type: 'setPanelState',
-      panelState: { mobileActiveTab: 'converter' },
+      panelState: { mobileActiveTab: 'parameters' },
     });
 
     act(() => {
@@ -698,8 +770,9 @@ describe('resolveCompactAuxiliary', () => {
     chatOpen: true,
     workbenchOpen: true,
     chatWidth: 320,
-    workbenchWidth: 420,
+    workbenchWidth: 280,
     compactAuxiliary: 'chat',
+    layoutRevision: 1,
   };
 
   it('uses the recorded open lane and falls back without rewriting state', () => {

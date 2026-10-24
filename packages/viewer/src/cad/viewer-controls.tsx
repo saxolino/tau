@@ -14,6 +14,7 @@ import { ViewerSettings } from '#cad/viewer-settings.jsx';
 import type { ViewerOperationTimeout } from '#cad/viewer-settings.jsx';
 import { useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
 import { useViewerShortcuts } from '#hooks/use-viewer-shortcuts.js';
+import { useViewerEnvironment, useViewerLabels } from '#environment/viewer-environment.jsx';
 
 type Tool = 'section' | 'measure';
 
@@ -101,12 +102,13 @@ type ToolRowProps = Readonly<{
 /** A running tool's row inside the bar: its name, its options, then Done. */
 function ToolRow({ tool, name, icon, above, children, onDone }: ToolRowProps): React.JSX.Element {
   const rowRef = useRef<HTMLDivElement>(null);
+  const labels = useViewerLabels();
   useFocusHandOff(rowRef, resolveToolToggle);
   return (
     <div
       ref={rowRef}
       role='group'
-      aria-label={`${name} options`}
+      aria-label={labels.toolOptions(name)}
       data-tool-bar={tool}
       className='flex max-w-full flex-col gap-1 border-b pb-1'
     >
@@ -119,8 +121,14 @@ function ToolRow({ tool, name, icon, above, children, onDone }: ToolRowProps): R
         </span>
         <Hairline className='mx-1' />
         {children}
-        <Button variant='secondary' size='xs' className='h-7' aria-label={`Done with ${tool}`} onClick={onDone}>
-          Done
+        <Button
+          variant='secondary'
+          size='xs'
+          className='h-7'
+          aria-label={labels.doneWith(tool === 'section' ? labels.sectionLabel : labels.measureLabel)}
+          onClick={onDone}
+        >
+          {labels.done}
         </Button>
       </div>
     </div>
@@ -173,6 +181,8 @@ export function ViewerControls({
   actions,
 }: ViewerControlsProps): React.JSX.Element {
   const graphicsRef = useGraphics();
+  const labels = useViewerLabels();
+  const { showFullscreenControl = true } = useViewerEnvironment();
   const barRef = useRef<HTMLDivElement>(null);
   const leadingRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
@@ -211,7 +221,7 @@ export function ViewerControls({
       {!is2dGeometry && isSectionViewActive ? (
         <ToolRow
           tool='section'
-          name='Section view'
+          name={labels.sectionView}
           icon={<FlipHorizontal className='size-4 text-viewer-tool-active' />}
           above={<SectionEditor />}
           onDone={stopSection}
@@ -222,7 +232,7 @@ export function ViewerControls({
       {!is2dGeometry && isMeasureActive ? (
         <ToolRow
           tool='measure'
-          name='Measuring'
+          name={labels.measuring}
           icon={<Ruler className='size-4 -rotate-45 text-viewer-tool-active' />}
           above={
             measurementsExpanded && measurementCount > 0 ? (
@@ -241,7 +251,7 @@ export function ViewerControls({
       {aboveControls}
       <div
         role='group'
-        aria-label='Viewer controls'
+        aria-label={labels.viewerControls}
         className='flex flex-wrap items-center justify-center gap-1 self-center text-muted-foreground [&_button]:font-normal [&_button:focus-visible]:text-foreground [&_button:hover]:text-foreground [&_button[aria-expanded=true]]:text-foreground [&_button[aria-pressed=true]]:text-foreground [&_button[data-state=open]]:text-foreground'
       >
         {leading === undefined ? null : (
@@ -270,7 +280,7 @@ export function ViewerControls({
             </>
           )}
           <FitViewControl shortcut={keys.fitView} />
-          <FullscreenViewControl />
+          {showFullscreenControl ? <FullscreenViewControl /> : null}
           {capture === undefined ? null : (
             <>
               <Hairline />

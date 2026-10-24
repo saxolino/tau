@@ -5,6 +5,8 @@ import { z } from 'zod';
 // `action` exports), so the preference is stored locally instead.
 import { isDesktopTarget } from '#lib/build-target.js';
 import { setDesktopAppIconTheme } from '#filesystem/desktop-bridge.js';
+import { useTranslation } from '#i18n/translate.js';
+import type { Translate } from '#i18n/translate.js';
 
 /* eslint-disable @typescript-eslint/naming-convention -- Preserve the existing enum-style public API with erasable object syntax. */
 export const Theme = {
@@ -29,33 +31,33 @@ export type ThemeOption = {
   description: string;
 };
 
-export const themeOptions: ThemeOption[] = [
-  {
-    id: Theme.LIGHT,
-    name: 'Light',
-    description: 'A bright, clean look',
-  },
-  {
-    id: Theme.DARK,
-    name: 'Dark',
-    description: 'Easy on the eyes',
-  },
-  {
-    id: Theme.BLACK,
-    name: 'Black',
-    description: 'True black with ultra-dark surfaces',
-  },
-  {
-    id: Theme.HIGH_CONTRAST,
-    name: 'High Contrast',
-    description: 'Stronger text, borders, and focus indicators',
-  },
-  {
-    id: null,
-    name: 'System',
-    description: 'Follow your system preference',
-  },
+/**
+ * SinopiaCAD offers two themes and the system's choice between them (UI-UX-SinopiaCAD §1.2): Chiaro (`light`) and
+ * Nero (`black`, Sinopia's warm charcoal). Tau's `dark` and `high-contrast` stay in the code, unreachable from the
+ * interface; a stored `dark` reads as Nero, which it now looks like.
+ */
+export const selectableThemes = [Theme.LIGHT, Theme.BLACK, null] as const satisfies readonly ThemeWithSystem[];
+
+/**
+ * The theme choices in the interface language.
+ *
+ * @param t - The translator.
+ * @returns Chiaro, Nero and Sistema with their descriptions.
+ */
+export const buildThemeOptions = (t: Translate): ThemeOption[] => [
+  { id: Theme.LIGHT, name: t('account.theme.light'), description: t('account.theme.lightDescription') },
+  { id: Theme.BLACK, name: t('account.theme.black'), description: t('account.theme.blackDescription') },
+  { id: null, name: t('account.theme.system'), description: t('account.theme.systemDescription') },
 ];
+
+/**
+ * The choice a stored preference shows as: Tau's hidden Dark and High Contrast read as Nero.
+ *
+ * @param theme - The stored preference, `null` for the system.
+ * @returns One of {@link selectableThemes}.
+ */
+export const selectableTheme = (theme: ThemeWithSystem): (typeof selectableThemes)[number] =>
+  theme === Theme.DARK || theme === Theme.HIGH_CONTRAST ? Theme.BLACK : theme;
 
 type ThemeMetadata = {
   definedBy: 'USER' | 'SYSTEM';
@@ -236,6 +238,8 @@ type UseThemeReturn = {
   ssrTheme: ThemeWithSystem;
   /** The user's theme preference including the system, Black, and High Contrast options. */
   themeWithSystem: ThemeWithSystem;
+  /** The choices the interface offers, in its language. */
+  options: ThemeOption[];
   /** Whether the explicit theme or operating-system preference requests increased contrast. */
   isHighContrast: boolean;
   setTheme: (theme: ThemeWithSystem) => void;
@@ -251,39 +255,24 @@ export const useTheme = (): UseThemeReturn => {
   const themeWithSystem: ThemeWithSystem = metadata.definedBy === 'SYSTEM' ? null : (appTheme ?? null);
   const isHighContrast = appTheme === Theme.HIGH_CONTRAST || prefersMoreContrast;
 
+  // Chiaro, Nero, Sistema, then Chiaro again.
   const cycleTheme = useCallback(() => {
-    let newTheme: ThemeWithSystem;
-    switch (themeWithSystem) {
-      case Theme.LIGHT: {
-        newTheme = Theme.DARK;
-        break;
-      }
-      case Theme.DARK: {
-        newTheme = Theme.BLACK;
-        break;
-      }
-      case Theme.BLACK: {
-        newTheme = Theme.HIGH_CONTRAST;
-        break;
-      }
-      case Theme.HIGH_CONTRAST: {
-        newTheme = null;
-        break;
-      }
-      default: {
-        newTheme = Theme.LIGHT;
-      }
-    }
-
-    setTheme(newTheme);
+    const current = selectableThemes.indexOf(selectableTheme(themeWithSystem));
+    // `null` is the system's choice, so no `??` fallback here.
+    const next = selectableThemes[(current + 1) % selectableThemes.length];
+    setTheme(next === undefined ? Theme.LIGHT : next);
   }, [themeWithSystem, setTheme]);
 
-  const currentOption = themeOptions.find((option) => option.id === themeWithSystem) ?? themeOptions.at(-1)!;
+  const { t } = useTranslation();
+  const options = useMemo(() => buildThemeOptions(t), [t]);
+  const shownTheme = selectableTheme(themeWithSystem);
+  const currentOption = options.find((option) => option.id === shownTheme) ?? options.at(-1)!;
 
   return {
     theme,
     ssrTheme: appTheme ?? null,
     themeWithSystem,
+    options,
     isHighContrast,
     setTheme,
     cycleTheme,

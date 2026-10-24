@@ -142,7 +142,7 @@ test('the project shell keeps stable controls, split geometry, and focus scroll'
   const composer = selectors.getByCss('.tiptap[contenteditable="true"]').first();
   const home = selectors.getByRole('link', { name: 'Home' }).first();
   const sidebarTrigger = selectors.getByRole('button', { name: 'Toggle Sidebar' }).first();
-  const workbenchTrigger = selectors.getByRole('button', { name: 'Toggle Workbench lane' }).first();
+  const workbenchTrigger = selectors.getByRole('button', { name: 'Measures' }).first();
   const outerSash = selectors.getByCss('#application-allotment > .sash-container > .sash').first();
   const canvas = selectors.getByTestId('cad-viewer-canvas-region').getByCss('canvas').first();
 

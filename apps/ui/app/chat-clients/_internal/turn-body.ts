@@ -106,6 +106,7 @@ const hostPrompt = (
     contextWindow: model?.details.contextWindow,
     knowledgeCutoff: model?.details.knowledgeCutoff,
     supportsImageInput: modelSupportsInput(model?.support, 'image'),
+    ...(agent.language === undefined ? {} : { language: agent.language }),
   });
   return {
     systemPrompt: [prompt.static, prompt.dynamic].join('\n\n'),
@@ -236,7 +237,10 @@ const externalAgentContext = (input: {
   readonly chatId: string;
 }): AgentHostExternalContext => {
   const { agent } = input;
-  const prompt = getCadSystemPrompt(agent.kernel, agent.mode, agent.testingEnabled, { chatId: input.chatId });
+  const prompt = getCadSystemPrompt(agent.kernel, agent.mode, agent.testingEnabled, {
+    chatId: input.chatId,
+    ...(agent.language === undefined ? {} : { language: agent.language }),
+  });
   return {
     systemPrompt: [prompt.static, prompt.dynamic].join('\n\n'),
     ...(agent.snapshot === undefined ? {} : { snapshot: toStrictJson(agent.snapshot) }),

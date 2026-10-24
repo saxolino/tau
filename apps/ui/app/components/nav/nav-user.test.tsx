@@ -8,6 +8,8 @@ import { NavUser } from '#components/nav/nav-user.js';
 import * as Cookies from 'es-cookie';
 import { metaConfig } from '#constants/meta.constants.js';
 
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
+
 const clientEnvironment = globalThis.window.ENV;
 const useNetworkConnectivityMock = vi.hoisted(() => vi.fn(() => true));
 const useEntitlementsMock = vi.hoisted(() => vi.fn(() => ({ tier: 'free', isResolved: true })));
@@ -116,23 +118,32 @@ describe('NavUser', () => {
     render(<NavUser />, { wrapper: MemoryRouter });
 
     expect(screen.getByRole('button', { name: 'Help' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute('href', 'https://docs.tau.new');
-    // A local build runs no website, so the legal pages open on the public site rather than 404.
-    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', 'https://tau.new/legal/privacy');
-    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute('href', 'https://tau.new/legal/terms');
+    // SinopiaCAD: Tau's documentation, bug tracker and community links are gone; the site link is Sinopia's.
+    expect(screen.queryByRole('link', { name: 'Documentation' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sinopia website' })).toHaveAttribute('href', 'https://sinopialab.com');
+    // SinopiaCAD: privacy and terms are Sinopia's own documents; the open-source notices stay upstream.
+    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/privacy-policy',
+    );
+    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/beta/condizioni',
+    );
     expect(screen.getByRole('link', { name: 'Open-source notices' })).toHaveAttribute(
       'href',
       'https://tau.new/legal/open-source',
     );
     expect(screen.getByRole('menuitem', { name: 'Cookie preferences' })).toBeInTheDocument();
-    expect(screen.getByText('Report a bug')).toBeInTheDocument();
-    expect(screen.getByText('GitHub')).toBeInTheDocument();
-    expect(screen.getByText('Community Discord')).toBeInTheDocument();
-    expect(screen.getByText(`Tau v${metaConfig.version}`)).toBeInTheDocument();
+    expect(screen.queryByText('Report a bug')).not.toBeInTheDocument();
+    expect(screen.queryByText('GitHub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Community Discord')).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'About' })).toBeInTheDocument();
+    expect(screen.getByText(`SinopiaCAD v${metaConfig.version}`)).toBeInTheDocument();
     expect(screen.queryByText('About Tau')).not.toBeInTheDocument();
   });
 
-  it('should link the legal pages to the web deployment the desktop shell is bound to', () => {
+  it('should keep Sinopia’s legal pages and the upstream notices on the deployment the desktop shell is bound to', () => {
     vi.stubEnv('TAU_TARGET', 'desktop');
     globalThis.window.ENV = {
       ...clientEnvironment,
@@ -142,8 +153,14 @@ describe('NavUser', () => {
 
     render(<NavUser />, { wrapper: MemoryRouter });
 
-    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', 'https://taucad.dev/legal/privacy');
-    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute('href', 'https://taucad.dev/legal/terms');
+    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/privacy-policy',
+    );
+    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/beta/condizioni',
+    );
     expect(screen.getByRole('link', { name: 'Open-source notices' })).toHaveAttribute(
       'href',
       'https://taucad.dev/legal/open-source',
@@ -156,11 +173,30 @@ describe('NavUser', () => {
     render(<NavUser />, { wrapper: MemoryRouter });
 
     expect(screen.getByRole('status', { name: 'Offline' })).toBeInTheDocument();
-    expect(screen.getByText('Offline — online features unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Offline: online features unavailable')).toBeInTheDocument();
   });
 });
 
-describe('Website preference navigation', () => {
+describe('NavUser language', () => {
+  afterEach(() => {
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
+  });
+
+  it.each([
+    ['it', { help: 'Aiuto', website: 'Sito di Sinopia', cookies: 'Preferenze sui cookie' }],
+    ['en', { help: 'Help', website: 'Sinopia website', cookies: 'Cookie preferences' }],
+  ] as const)('should write the help menu in %s', (language, { help, website, cookies }) => {
+    setLanguage(language);
+    render(<NavUser />, { wrapper: MemoryRouter });
+
+    expect(screen.getByRole('button', { name: help })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: website })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: cookies })).toBeInTheDocument();
+  });
+});
+
+describe('Sinopia website link', () => {
   beforeEach(() => {
     globalThis.window.ENV = {
       ...clientEnvironment,
@@ -175,36 +211,23 @@ describe('Website preference navigation', () => {
     vi.restoreAllMocks();
     Cookies.remove('tau-entry', { path: '/' });
   });
-  it('should select the website and navigate to the bare URL', () => {
+  it('should open sinopialab.com in a new tab without choosing the start page', () => {
     const assign = vi.fn();
-    // The test document is plain http, where a Secure cookie would not stick; only the origin matters here.
+    // On the origin that serves Tau's website, the old link switched the start page; Sinopia's never does.
     vi.stubGlobal('location', { protocol: 'http:', origin: 'https://tau.new', assign });
     render(<NavUser />, { wrapper: MemoryRouter });
-    fireEvent.click(screen.getByRole('link', { name: 'Visit website' }));
-    expect(Cookies.get('tau-entry')).toBe('website');
-    expect(assign).toHaveBeenCalledWith('/');
-  });
-  it('should keep the explicit website link usable when cookies are blocked', () => {
-    const assign = vi.fn();
-    // The test document is plain http, where a Secure cookie would not stick; only the origin matters here.
-    vi.stubGlobal('location', { protocol: 'http:', origin: 'https://tau.new', assign });
-    vi.spyOn(document, 'cookie', 'set').mockImplementation(() => undefined);
-    render(<NavUser />, { wrapper: MemoryRouter });
-    const link = screen.getByRole('link', { name: 'Visit website' });
-    expect(link).toHaveAttribute('href', '/?website=1');
-    fireEvent.click(link);
-    expect(assign).not.toHaveBeenCalled();
-  });
-  it('should open the public website from a build that runs none', () => {
-    globalThis.window.ENV = clientEnvironment;
-    render(<NavUser />, { wrapper: MemoryRouter });
-    const link = screen.getByRole('link', { name: 'Visit website' });
-    expect(link).toHaveAttribute('href', 'https://tau.new/');
+    const link = screen.getByRole('link', { name: 'Sinopia website' });
+    expect(link).toHaveAttribute('href', 'https://sinopialab.com');
     expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(link);
+    expect(Cookies.get('tau-entry')).toBeUndefined();
+    expect(assign).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Visit website' })).not.toBeInTheDocument();
   });
-  it('should omit the web-only switch in desktop', () => {
+  it('should omit the web-only link in desktop', () => {
     vi.stubEnv('TAU_TARGET', 'desktop');
     render(<NavUser />, { wrapper: MemoryRouter });
-    expect(screen.queryByRole('link', { name: 'Visit website' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sinopia website' })).not.toBeInTheDocument();
   });
 });

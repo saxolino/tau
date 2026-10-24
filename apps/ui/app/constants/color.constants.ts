@@ -9,6 +9,7 @@
  * The hue is the hue in the OKLCH space.
  */
 export const hueCssVariable = '--hue-primary';
-export const defaultHue = 180;
-export const defaultLightness = 0.5719;
-export const defaultChroma = 0.1898;
+/** SinopiaCAD: Sinopia red (#B9442C), matching `--hue-primary`, `--l-primary` and `--c-primary` in tokens.css. */
+export const defaultHue = 33;
+export const defaultLightness = 0.545;
+export const defaultChroma = 0.157;

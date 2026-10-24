@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Box } from 'lucide-react';
 import { CadPreviewProvider } from '#hooks/use-cad-preview.js';
 import { CadPreviewViewer } from '#components/cad-preview.js';
+import { useTranslation } from '#i18n/translate.js';
 
 type Files = Map<string, { filename: string; content: Uint8Array<ArrayBuffer> }>;
 
@@ -13,6 +14,7 @@ type ImportViewerProperties = {
 };
 
 export function ImportViewer({ files, mainFile, owner, repo }: ImportViewerProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const projectId = `import-preview-${owner}-${repo}`;
 
   const projectFiles = useMemo(() => {
@@ -33,7 +35,7 @@ export function ImportViewer({ files, mainFile, owner, repo }: ImportViewerPrope
       <div className='flex size-full items-center justify-center'>
         <div className='flex flex-col items-center gap-2 text-muted-foreground'>
           <Box className='size-12 opacity-30' strokeWidth={1} />
-          <span className='text-sm'>Select a file to preview</span>
+          <span className='text-sm'>{t('import.review.previewEmpty')}</span>
         </div>
       </div>
     );

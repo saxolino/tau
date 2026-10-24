@@ -8,6 +8,7 @@
  * registry remembers the refused open and resumes it itself (R8).
  */
 
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
@@ -124,7 +125,7 @@ describe('CloseProjectDialog', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Stop 1 run and close Bracket?' })).toBeInTheDocument();
-    expect(screen.getByText(/Chat A.*another version of Tau is running it/)).toBeInTheDocument();
+    expect(screen.getByText(/Chat A.*another version is running it/)).toBeInTheDocument();
     expect(screen.getByText(/Chat B.*its window is in the background/)).toBeInTheDocument();
     expect(screen.getByText(/These keep running, because this window can’t stop them:/)).toBeInTheDocument();
     expect(screen.queryByText(/all work is saved|their work so far is saved/i)).not.toBeInTheDocument();
@@ -156,7 +157,7 @@ describe('CloseProjectDialog', () => {
     render(<CloseProjectDialog row={runningRow} name='Bracket' isOpen onOpenChange={vi.fn()} />);
 
     expect(screen.getByRole('heading', { name: 'Close Bracket?' })).toBeInTheDocument();
-    expect(screen.getByText(/Runs in another version of Tau or a background window may continue/)).toBeInTheDocument();
+    expect(screen.getByText(/Runs in another version or a background window may continue/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
   });
 });
@@ -212,5 +213,26 @@ describe('BudgetRefusedDialog', () => {
     expect(mockSend).toHaveBeenCalledExactlyOnceWith({ type: 'cancelPendingOpen' });
     expect(mockCloseProject).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['it', 'Fermare 1 esecuzione e chiudere Bracket?', 'Ferma e chiudi'],
+    ['en', 'Stop 1 run and close Bracket?', 'Stop and close'],
+  ] as const)('asks to close in %s', (language, title, action) => {
+    setLanguage(language);
+    render(
+      <CloseProjectDialog
+        row={runningRow}
+        name='Bracket'
+        isOpen
+        onOpenChange={vi.fn()}
+        closePlan={{ stoppableRunCount: 1, continuingRuns: [] }}
+      />,
+    );
+
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: action })).toBeInTheDocument();
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 });

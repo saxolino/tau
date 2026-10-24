@@ -88,9 +88,25 @@ describe('agentConfigSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should reject a cad agent missing kernel with path agent.kernel', () => {
+    it('should accept a cad agent with no pinned kernel, leaving the choice to the agent', () => {
       const { kernel: _kernel, ...withoutKernel } = validCadAgent;
       const result = agentConfigSchema.safeParse(withoutKernel);
+
+      expect(result.success).toBe(true);
+      if (result.success && result.data.profile === 'cad') {
+        expect(result.data.kernel).toBeUndefined();
+      }
+    });
+
+    it('should carry the interface language the agent replies in, and stay valid without one', () => {
+      expect(cadAgentConfigSchema.parse({ ...validCadAgent, language: 'en' }).language).toBe('en');
+      expect(cadAgentConfigSchema.parse({ ...validCadAgent, language: 'it' }).language).toBe('it');
+      expect(cadAgentConfigSchema.parse(validCadAgent).language).toBeUndefined();
+      expect(cadAgentConfigSchema.safeParse({ ...validCadAgent, language: 'fr' }).success).toBe(false);
+    });
+
+    it('should reject an unknown kernel with path agent.kernel', () => {
+      const result = agentConfigSchema.safeParse({ ...validCadAgent, kernel: 'not-a-kernel' });
 
       expect(result.success).toBe(false);
       if (!result.success) {

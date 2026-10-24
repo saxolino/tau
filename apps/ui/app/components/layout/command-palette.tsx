@@ -1,4 +1,5 @@
-import { Menu, Search } from 'lucide-react';
+import { setAgentTechnicalDetails, useAgentTechnicalDetails } from '#hooks/use-agent-technical-details.js';
+import { Menu, Search, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext } from 'react';
 import { defaultFilter } from 'cmdk';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -16,6 +17,7 @@ import { cn } from '@taucad/ui/utils/cn';
 import { useTypedMatches } from '#hooks/use-typed-matches.js';
 import { SidebarMenuButton } from '#components/ui/sidebar.js';
 import { ProjectNavigationCommandItems } from '#components/nav/project-navigation-command-items.js';
+import { useTranslation } from '#i18n/translate.js';
 
 /**
  * Context for command palette item registration
@@ -160,6 +162,7 @@ type CommandPaletteResultsProperties = {
 
 /** Mounted only while the dialog is open, so the query resets on every open. */
 function CommandPaletteResults({ items, onRun }: CommandPaletteResultsProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const [search, setSearch] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const rows = useMemo(() => rankCommandPaletteRows(items, search), [items, search]);
@@ -185,7 +188,7 @@ function CommandPaletteResults({ items, onRun }: CommandPaletteResultsProperties
     <>
       <CommandInput
         className='h-9 border-0 bg-transparent px-3 text-base shadow-none focus-visible:outline-none dark:bg-transparent'
-        placeholder='Search projects, chats, and actions…'
+        placeholder={t('shell.palette.placeholder')}
         value={search}
         onValueChange={(value) => {
           setSearch(value);
@@ -193,7 +196,7 @@ function CommandPaletteResults({ items, onRun }: CommandPaletteResultsProperties
         }}
       />
       <CommandList ref={listRef} className='py-0'>
-        {rows.length === 0 ? <CommandEmpty>No results found.</CommandEmpty> : null}
+        {rows.length === 0 ? <CommandEmpty>{t('shell.palette.empty')}</CommandEmpty> : null}
         <div className='relative w-full' style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const row = rows[virtualRow.index];
@@ -271,6 +274,7 @@ type CommandPaletteTriggerProperties = {
 };
 
 function CommandPaletteTrigger({ items }: CommandPaletteTriggerProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   const { formattedKeyCombination } = useKeybinding(commandKeyCombination, () => {
@@ -282,14 +286,14 @@ function CommandPaletteTrigger({ items }: CommandPaletteTriggerProperties): Reac
       {open ? <ProjectNavigationCommandItems /> : null}
       <SidebarMenuButton
         variant='outline'
-        aria-label='Search'
+        aria-label={t('shell.search')}
         className='text-muted-foreground max-md:hidden'
         onClick={() => {
           setOpen(true);
         }}
       >
         <Search aria-hidden className='size-4 shrink-0' />
-        <span className='flex-1 whitespace-nowrap'>Search</span>
+        <span className='flex-1 whitespace-nowrap'>{t('shell.search')}</span>
         <KeyShortcut className='ml-2 shrink-0'>{formattedKeyCombination}</KeyShortcut>
       </SidebarMenuButton>
       <CommandPalette isOpen={open} items={items} onOpenChange={setOpen} />
@@ -302,6 +306,7 @@ type CommandPaletteMobileProperties = {
 };
 
 function CommandPaletteMobile({ items }: CommandPaletteMobileProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
 
@@ -346,10 +351,10 @@ function CommandPaletteMobile({ items }: CommandPaletteMobileProperties): React.
         getValue={getItemValue}
         isDisabled={isItemDisabled}
         withVirtualization
-        searchPlaceHolder='Search projects, chats, and actions…'
-        placeholder='Actions'
-        title='Search projects, chats, and actions'
-        description='Navigate to any project or chat, or run an available action.'
+        searchPlaceHolder={t('shell.palette.placeholder')}
+        placeholder={t('shell.palette.actions')}
+        title={t('shell.palette.title')}
+        description={t('shell.palette.description')}
         onSelect={(itemValue) => {
           const selectedItem = items.find((item) => getItemValue(item) === itemValue);
           if (selectedItem) {
@@ -362,14 +367,40 @@ function CommandPaletteMobile({ items }: CommandPaletteMobileProperties): React.
         }}
       >
         <TooltipTrigger asChild>
-          <Button variant='overlay' size='icon' className='text-muted-foreground md:hidden'>
+          <Button
+            variant='overlay'
+            size='icon'
+            aria-label={t('shell.palette.moreActions')}
+            className='text-muted-foreground md:hidden'
+          >
             <Menu className='size-4' />
           </Button>
         </TooltipTrigger>
       </ComboBoxResponsive>
-      <TooltipContent>More actions</TooltipContent>
+      <TooltipContent>{t('shell.palette.moreActions')}</TooltipContent>
     </Tooltip>
   );
+}
+
+function AgentDiagnosticsCommand(): undefined {
+  const { t } = useTranslation();
+  const technical = useAgentTechnicalDetails();
+  useCommandPaletteItems(
+    'agent-diagnostics',
+    () => [
+      {
+        id: 'agent-technical-details',
+        label: t(technical ? 'agent.hideTechnical' : 'agent.showTechnical'),
+        group: t('agent.development'),
+        icon: <Wrench className='size-4' />,
+        action: () => {
+          setAgentTechnicalDetails(!technical);
+        },
+      },
+    ],
+    [t, technical],
+  );
+  return undefined;
 }
 
 /**
@@ -418,7 +449,10 @@ export function CommandPaletteProvider({ children }: { readonly children: React.
 
   return (
     <CommandPaletteContext.Provider value={contextValue}>
-      <CommandPaletteItemsContext.Provider value={allItems}>{children}</CommandPaletteItemsContext.Provider>
+      <CommandPaletteItemsContext.Provider value={allItems}>
+        <AgentDiagnosticsCommand />
+        {children}
+      </CommandPaletteItemsContext.Provider>
     </CommandPaletteContext.Provider>
   );
 }

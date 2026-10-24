@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookOpen, Bug, CircleHelp, Files, FileText, Scale, Settings, Shield, WifiOff } from 'lucide-react';
+import { CircleHelp, Files, FileText, Globe, Scale, Settings, Shield, WifiOff } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
@@ -16,12 +16,14 @@ import { useNetworkConnectivity } from '#hooks/use-network-connectivity.js';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { metaConfig } from '#constants/meta.constants.js';
 import { legalUrl } from '#lib/legal-url.js';
-import { SvgIcon } from '#components/icons/svg-icon.js';
 import { isDesktopTarget } from '#lib/build-target.js';
-import { setEntryPreference } from '#lib/entry-preference.js';
-import { websiteOrigin } from '#lib/website-origin.js';
 import { CookiePreferencesDialog, CookiePreferencesMenuItem } from '#components/cookie-preferences.js';
+import { AboutDialog, AboutMenuItem } from '#components/nav/about-sinopiacad.js';
 import { NavBillingItem, NavCreditsMeter } from '#cloud/nav-billing.js';
+import { useTranslation } from '#i18n/translate.js';
+
+/** Sinopia's own site, the Help menu's one link out besides the legal pages. */
+const sinopiaWebsiteUrl = 'https://sinopialab.com';
 
 /**
  * Nav user button: delegates avatar, sign-in/up/out chrome to the registry
@@ -32,63 +34,46 @@ import { NavBillingItem, NavCreditsMeter } from '#cloud/nav-billing.js';
  * dialog instead (Tau's settings live in a modal, not a dedicated route).
  */
 export function NavUser(): React.JSX.Element {
+  const { t } = useTranslation();
   const isOnline = useNetworkConnectivity();
   const { open: openSettings } = useSettingsDialog();
   const [isCookiePreferencesOpen, setIsCookiePreferencesOpen] = useState(false);
-  const website = websiteOrigin();
-  // The edge serves the website on this hostname, so the entry preference selects it at `/`.
-  const isWebsiteHere = !isDesktopTarget() && website === globalThis.location.origin;
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
   const helpItems = [
+    /* SinopiaCAD: one external link to Sinopia's site. It never sets the entry preference that chooses the start
+     * page at `/`, so the app keeps opening on the workspace. */
     ...(isDesktopTarget()
       ? []
       : [
           <DropdownMenuItem key='website' asChild>
-            <a
-              href={isWebsiteHere ? '/?website=1' : `${website}/`}
-              target={isWebsiteHere ? undefined : '_blank'}
-              rel={isWebsiteHere ? undefined : 'noopener noreferrer'}
-              onClick={(event) => {
-                if (
-                  isWebsiteHere &&
-                  event.button === 0 &&
-                  !event.metaKey &&
-                  !event.ctrlKey &&
-                  !event.shiftKey &&
-                  !event.altKey &&
-                  setEntryPreference('website')
-                ) {
-                  event.preventDefault();
-                  globalThis.location.assign('/');
-                }
-              }}
-            >
-              <BookOpen />
-              Visit website
+            <a href={sinopiaWebsiteUrl} target='_blank' rel='noopener noreferrer'>
+              <Globe />
+              {t('shell.user.website')}
             </a>
           </DropdownMenuItem>,
         ]),
-    <DropdownMenuItem key='documentation' asChild>
-      <a href='https://docs.tau.new' target='_blank' rel='noopener noreferrer'>
-        <BookOpen />
-        Documentation
-      </a>
-    </DropdownMenuItem>,
     <DropdownMenuItem key='privacy' asChild>
       <a href={legalUrl('privacy')} target='_blank' rel='noopener noreferrer'>
         <Shield />
-        Privacy
+        {t('shell.user.privacy')}
       </a>
     </DropdownMenuItem>,
     <DropdownMenuItem key='terms' asChild>
       <a href={legalUrl('terms')} target='_blank' rel='noopener noreferrer'>
         <FileText />
-        Terms
+        {t('shell.user.terms')}
       </a>
     </DropdownMenuItem>,
+    <AboutMenuItem
+      key='about'
+      onSelect={() => {
+        setIsAboutOpen(true);
+      }}
+    />,
     <DropdownMenuItem key='open-source' asChild>
       <a href={legalUrl('open-source')} target='_blank' rel='noopener noreferrer'>
         <Scale />
-        Open-source notices
+        {t('shell.user.openSource')}
       </a>
     </DropdownMenuItem>,
     <CookiePreferencesMenuItem
@@ -97,24 +82,6 @@ export function NavUser(): React.JSX.Element {
         setIsCookiePreferencesOpen(true);
       }}
     />,
-    <DropdownMenuItem key='bug' asChild>
-      <a href={`${metaConfig.githubUrl}/issues/new?labels=bug`} target='_blank' rel='noopener noreferrer'>
-        <Bug />
-        Report a bug
-      </a>
-    </DropdownMenuItem>,
-    <DropdownMenuItem key='github' asChild>
-      <a href={metaConfig.githubUrl} target='_blank' rel='noopener noreferrer'>
-        <SvgIcon id='github' />
-        GitHub
-      </a>
-    </DropdownMenuItem>,
-    <DropdownMenuItem key='discord' asChild>
-      <a href={metaConfig.discordUrl} target='_blank' rel='noopener noreferrer'>
-        <CircleHelp />
-        Community Discord
-      </a>
-    </DropdownMenuItem>,
   ];
 
   return (
@@ -136,11 +103,11 @@ export function NavUser(): React.JSX.Element {
                 : [
                     <DropdownMenuItem key='offline' disabled>
                       <WifiOff />
-                      Offline — online features unavailable
+                      {t('shell.user.offlineItem')}
                     </DropdownMenuItem>,
                   ]),
               <NavBillingItem key='billing' />,
-              { label: 'Files', href: '/files', icon: <Files /> },
+              { label: t('shell.user.files'), href: '/files', icon: <Files /> },
               <DropdownMenuItem
                 key='settings'
                 onSelect={() => {
@@ -148,7 +115,7 @@ export function NavUser(): React.JSX.Element {
                 }}
               >
                 <Settings />
-                Settings
+                {t('shell.user.settings')}
               </DropdownMenuItem>,
             ]}
           />
@@ -157,18 +124,18 @@ export function NavUser(): React.JSX.Element {
               <TooltipTrigger asChild>
                 <span
                   role='status'
-                  aria-label='Offline'
+                  aria-label={t('shell.user.offline')}
                   className='absolute top-1 left-5 size-1.5 rounded-full border border-sidebar bg-feature'
                 />
               </TooltipTrigger>
-              <TooltipContent side='top'>Offline — reconnect to access online features</TooltipContent>
+              <TooltipContent side='top'>{t('shell.user.offlineTooltip')}</TooltipContent>
             </Tooltip>
           )}
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
-              aria-label='Help'
+              aria-label={t('shell.user.help')}
               variant='ghost'
               size='icon-sm'
               className='size-7 text-muted-foreground data-[state=open]:bg-accent/50'
@@ -180,11 +147,12 @@ export function NavUser(): React.JSX.Element {
             {helpItems}
             <DropdownMenuSeparator />
             <DropdownMenuLabel className='font-normal text-muted-foreground'>
-              Tau v{metaConfig.version}
+              {t('shell.user.version', { version: metaConfig.version })}
             </DropdownMenuLabel>
           </DropdownMenuContent>
         </DropdownMenu>
         <CookiePreferencesDialog isOpen={isCookiePreferencesOpen} onOpenChange={setIsCookiePreferencesOpen} />
+        <AboutDialog isOpen={isAboutOpen} onOpenChange={setIsAboutOpen} />
       </div>
     </ClientOnly>
   );

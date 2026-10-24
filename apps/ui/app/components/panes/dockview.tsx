@@ -15,6 +15,8 @@ import { dockviewStyleOverrides, tauDockviewTheme } from '@taucad/workbench-pane
 type DockviewProperties = Omit<ComponentProps<typeof DockviewReact>, 'scrollbars' | 'theme'> & {
   readonly getTabIcon?: DockviewTabIconRenderer;
   readonly tabLeadingIcon?: DockviewTabProps['leadingIcon'];
+  /** The searchable «open tabs» list at the end of each tab strip; a dock with a fixed set of tabs leaves it out. */
+  readonly hasTabOverflowPicker?: boolean;
 };
 
 const desktopDockviewStyleOverrides = isDesktopTarget()
@@ -111,6 +113,7 @@ export function Dockview({
   onReady,
   rightHeaderActionsComponent,
   tabLeadingIcon,
+  hasTabOverflowPicker = true,
   ...properties
 }: DockviewProperties): React.JSX.Element {
   const resizeRootRef = useRef<HTMLDivElement>(null);
@@ -124,13 +127,15 @@ export function Dockview({
       useRevealActiveTab(actionProperties.group);
       return (
         <div className='flex h-full items-center gap-1'>
-          <DockviewTabOverflowPicker {...actionProperties} getIcon={getTabIcon} leadingIcon={tabLeadingIcon} />
+          {hasTabOverflowPicker ? (
+            <DockviewTabOverflowPicker {...actionProperties} getIcon={getTabIcon} leadingIcon={tabLeadingIcon} />
+          ) : null}
           {CallerActions ? <CallerActions {...actionProperties} /> : null}
         </div>
       );
     };
     return ComposedRightHeaderActions;
-  }, [getTabIcon, rightHeaderActionsComponent, tabLeadingIcon]);
+  }, [getTabIcon, hasTabOverflowPicker, rightHeaderActionsComponent, tabLeadingIcon]);
 
   const handleReady = useCallback(
     (event: DockviewReadyEvent) => {

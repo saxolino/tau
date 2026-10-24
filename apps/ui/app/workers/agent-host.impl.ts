@@ -32,7 +32,12 @@ import type { FileStat } from '@taucad/types';
 import { randomUuid } from '@taucad/utils/id';
 import { assertRootedPath } from '@taucad/utils/path';
 import { followChat } from '@taucad/agent-host';
-import type { ChatLedger, StorageDurabilityClass, ToolRegistry } from '@taucad/agent-host';
+import type {
+  ChatLedger,
+  GatewayModelTransportOptions,
+  StorageDurabilityClass,
+  ToolRegistry,
+} from '@taucad/agent-host';
 import { connectTurnPlacementChannel } from '@taucad/agent-host/channel-client';
 import type { TurnPlacementChannel, TurnPlacementToolPort } from '@taucad/agent-host/channel-client';
 import { createAgentLauncher, serveAgentChannel } from '@taucad/agent-host/launcher';
@@ -85,7 +90,39 @@ export type ResidentWorkerContext = Readonly<{
   visibility: NonNullable<BrowserChatStoreOptions['visibility']>;
   /** M1's timers; the worker leaves the defaults, and the browser tier shortens idle eviction (RH-A15). */
   delays?: AgentLauncherOptions['delays'];
+  /**
+   * SinopiaCAD: the Sinopia session's current access token, read on every gateway request so an hourly refresh
+   * reaches runs already in flight. Absent or `undefined`, requests go without a bearer header, as in Tau.
+   */
+  accessToken?: () => string | undefined;
 }>;
+
+/** The model gateway's options for one project host; the funded (cloud) build also reads `principal`. */
+export type ProjectGatewayOptions = GatewayModelTransportOptions & {
+  readonly principal: () => string | undefined;
+};
+
+/**
+ * The model gateway's options for one project host.
+ *
+ * @param provide - The page's provide for the host.
+ * @param worker - The resident worker the host runs in.
+ * @returns The options the configured gateway transport is built with.
+ */
+export const projectGatewayOptions = (
+  provide: AgentHostProjectProvide,
+  worker: Pick<ResidentWorkerContext, 'accessToken'>,
+): ProjectGatewayOptions => ({
+  baseUrl: provide.gatewayBaseUrl,
+  /* The project every receipt from this worker attributes to: the id `GET /v1/projects` lists. */
+  projectId: provide.authority.projectId,
+  model: provide.model,
+  /* The funded (cloud) build checks an attempt's account against it (W11 GI-Q6); self-host ignores it. */
+  principal: () => provide.principal,
+  /* SinopiaCAD: Sinopia's function authorises each model call with the session's bearer token, read per request so
+   * an hourly refresh reaches runs already in flight. */
+  auth: () => worker.accessToken?.(),
+});
 
 /** One project host incarnation (RH-R4): its launcher serves every stream of the project. */
 export type BrowserProjectHost = Readonly<{
@@ -747,14 +784,7 @@ const composeProjectHost = async (
     storageBackend === 'opfs' && durability === 'exclusive-append'
       ? await opfsProjectDirectory(provide.projectStorage.providerBasePath)
       : undefined;
-  const gatewayOptions = {
-    baseUrl: provide.gatewayBaseUrl,
-    /* The project every receipt from this worker attributes to: the id `GET /v1/projects` lists. */
-    projectId: provide.authority.projectId,
-    model: provide.model,
-    /* The funded (cloud) build checks an attempt's account against it (W11 GI-Q6); self-host ignores it. */
-    principal: () => provide.principal,
-  };
+  const gatewayOptions = projectGatewayOptions(provide, worker);
   /* T3: set as a release drains. A new start is refused HOST_CLOSED; another tab that forwarded it keeps it for this
    * host's release or a successor (M2, C11). */
   let draining = false;

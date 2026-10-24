@@ -53,7 +53,7 @@ type ChatExecutionSelectorProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'ch
  * between. A project that cannot host the log says so on this row and refuses
  * the turn; it never silently runs somewhere else.
  */
-const tauTarget: TauTarget = { key: 'tau', kind: 'tau', label: 'Tau' };
+const tauTarget: TauTarget = { key: 'tau', kind: 'tau', label: 'SinopiaCAD' };
 const tauHostKey = (hostId: TauAgentHostId): string => `tau-host:${encodeURIComponent(hostId)}`;
 
 /**
@@ -65,7 +65,7 @@ const tauHostKey = (hostId: TauAgentHostId): string => `tau-host:${encodeURIComp
  * two of them apart.
  */
 const tauHostLabel = (placement: AgentHostPlacementTarget): string =>
-  placement.hostId === 'desktop' ? 'Tau' : `Tau Host · ${placement.label}`;
+  placement.hostId === 'desktop' ? 'SinopiaCAD' : `Tau Host · ${placement.label}`;
 
 const tauHostTarget = (placement: AgentHostPlacementTarget): TauHostTarget => ({
   key: tauHostKey(placement.hostId),
@@ -302,7 +302,7 @@ export const ChatExecutionSelector = memo(function ({
       }}
       value={selectedTarget}
       title='Select an agent'
-      description={`Choose Tau ${isDesktopTarget() ? 'on this computer' : 'in this browser'}, or a Tau Host workspace.`}
+      description={`Choose SinopiaCAD ${isDesktopTarget() ? 'on this computer' : 'in this browser'}, or a Tau Host workspace.`}
       searchPlaceHolder='Search agents…'
       emptyListMessage='No agents discovered.'
       onClose={onClose}

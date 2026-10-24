@@ -1,8 +1,9 @@
 import type { ComponentProps, ReactNode } from 'react';
 import { Card } from '@taucad/ui/components/card';
 import { cn } from '@taucad/ui/utils/cn';
+import { useTranslation } from '#i18n/translate.js';
 import type { SettingId } from '#components/settings/settings-registry.js';
-import { settingsSections } from '#components/settings/settings-registry.js';
+import { getSettingsSections, tauSettingsSections } from '#components/settings/settings-registry.js';
 
 type SettingsItemProps = {
   readonly settingId: SettingId;
@@ -13,13 +14,16 @@ type SettingsItemProps = {
 /**
  * An explicit, focusable destination for a registered setting.
  *
- * The registry is the single source of truth for which settings exist in this
- * deployment, so a setting it filters out (Tau Cloud entries in a self-hosted
- * build) renders nothing instead of crashing the panel. Unknown ids are a
+ * Sinopia navigation uses its translated catalogue; retained Tau panels still
+ * resolve their original landmarks without being exposed in the dialog. A setting
+ * absent from both deployment catalogues renders nothing. Unknown ids are a
  * compile error via `SettingId`.
  */
 export function SettingsItem({ settingId, children, className }: SettingsItemProps): React.JSX.Element | undefined {
-  const definition = settingsSections.flatMap((section) => section.entries).find((entry) => entry.id === settingId);
+  const { t } = useTranslation();
+  const definition = [...getSettingsSections(t), ...tauSettingsSections]
+    .flatMap((section) => section.entries)
+    .find((entry) => entry.id === settingId);
   if (!definition) {
     return undefined;
   }

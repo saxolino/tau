@@ -1311,6 +1311,33 @@ describe('the file-manager worker revision root (north star S48 jsdom 1–4)', (
     });
   });
 
+  it('should view an immutable revision with binary inputs without moving or recording the current model', async () => {
+    const fixture = harness(['alpha']);
+    const project = fixture.service.createRootedFileSystem('/projects/alpha');
+    await project.writeFile('main.scad', 'cube(10);');
+    await project.writeFile('input.bin', new Uint8Array([0, 255, 128]));
+    const alpha = await fixture.open('alpha');
+    const root = await fixture.root('alpha');
+    const session = await root.placementSession();
+    await place(session, turnKey(1));
+    await project.writeFile('main.scad', 'cube(20);');
+    await finish(session, turnKey(1));
+    await turnFinalized(alpha, 'turn-1');
+    const before = await root.log();
+    const older = before[1]!;
+    await project.writeFile('main.scad', 'cube(30);');
+    alpha.send({ command: 'snapshot', revisionId: older.revisionId, id: 39 });
+    await vi.waitFor(() => {
+      expect(alpha.frames.find((frame) => frame.type === 'result' && frame.id === 39)).toMatchObject({
+        result: { kind: 'snapshot', files: { 'main.scad': 'Y3ViZSgxMCk7', 'input.bin': 'AP+A' } },
+      });
+    });
+    expect(await project.readFile('main.scad')).toEqual(new TextEncoder().encode('cube(30);'));
+    expect(await root.log()).toEqual(before);
+    expect(root.status().headRevisionId).toBe(before[0]!.revisionId);
+    await expect(root.snapshot('unknown-revision')).rejects.toThrow('unavailable');
+  });
+
   /* W1b: a History row's Publish names the revision it was opened on, not the head. */
   it('should name the revision a Publish was opened on, not the branch head', async () => {
     const fixture = harness(['alpha']);

@@ -108,6 +108,7 @@ import { buildTurnGroups } from '#routes/w.$workspace.$project/chat-turn-groups.
 import { createChatMessageQueueStore, chatMessageQueuePath } from '#db/chat-message-queue-store.js';
 import type { ChatMessageQueueIntent, ChatMessageQueueStore, QueueLock } from '#db/chat-message-queue-store.js';
 import { createChatMessageQueueActor } from '#machines/chat-message-queue.machine.js';
+import { designerStoredExecution } from '#lib/sinopia-agent-execution.js';
 import type { ChatMessageQueueActor, QueueAdvanceResult } from '#machines/chat-message-queue.machine.js';
 import { commandInvocation } from '#utils/at-reference.utils.js';
 
@@ -918,7 +919,7 @@ export class ChatSessionStore {
   public async getChatExecution(chatId: string): Promise<CadAgentExecution | undefined> {
     const projectId = this.#sessions.get(chatId)?.projectId ?? this.#observed.get(chatId)?.projectId;
     const chat = await this.#deps.getChat(chatId, projectId);
-    return chat?.activeExecution;
+    return designerStoredExecution(chat?.activeExecution);
   }
 
   /** Read a listed chat's host bootstrap choices without acquiring an SDK session. @public */
@@ -927,7 +928,9 @@ export class ChatSessionStore {
   ): Promise<Pick<ChatEntity, 'activeExecution' | 'activeKernel'> | undefined> {
     const projectId = this.#sessions.get(chatId)?.projectId ?? this.#observed.get(chatId)?.projectId;
     const chat = await this.#deps.getChat(chatId, projectId);
-    return chat === undefined ? undefined : { activeExecution: chat.activeExecution, activeKernel: chat.activeKernel };
+    return chat === undefined
+      ? undefined
+      : { activeExecution: designerStoredExecution(chat.activeExecution), activeKernel: chat.activeKernel };
   }
 
   /** Cancel the log's current run, including an unopened listed chat; no SDK session is acquired. @public */
@@ -2113,6 +2116,8 @@ export class ChatSessionStore {
       signal.throwIfAborted();
       session.messageQueueRef.send({ type: 'loaded', items: record.items, sendingId: item.id });
       session.dispatchTask = undefined;
+      // A message queued before SinopiaCAD pinned its agent may still name a daemon.
+      const execution = designerStoredExecution(item.execution);
       await this.#requestTurn(
         session,
         {
@@ -2120,7 +2125,7 @@ export class ChatSessionStore {
           message: item.message,
           queueId: item.id,
           requestId: item.requestId,
-          ...(item.execution === undefined ? {} : { execution: item.execution }),
+          ...(execution === undefined ? {} : { execution }),
         },
         false,
       );
@@ -3622,7 +3627,7 @@ export class ChatSessionStore {
                 session.draftActorRef.send({ type: 'initializeFromChat' });
                 const seedGesture: ChatTurnGesture = {
                   kind: 'regenerate',
-                  execution: loadedChat.activeExecution,
+                  execution: designerStoredExecution(loadedChat.activeExecution),
                   requestId: startupRequest.id,
                 };
                 session.pendingSeedGesture = seedGesture;

@@ -50,7 +50,7 @@ import { useIsMobile } from '@taucad/ui/hooks/use-mobile';
 import { cn } from '@taucad/ui/utils/cn';
 import { SvgIcon } from '#components/icons/svg-icon.js';
 import type { IconId } from '#components/icons/svg-icon.js';
-import { Tau } from '#components/icons/tau.js';
+import { SinopiaMark } from '#components/icons/sinopiacad-wordmark.js';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { configOptionOf, configValues } from '#components/chat/use-agent-config.js';
 import type { AgentConfig, AgentConfigOption } from '#components/chat/use-agent-config.js';
@@ -254,7 +254,7 @@ type SheetAgent =
 
 type AcpSheetAgent = Extract<SheetAgent, { readonly kind: 'acp' }>;
 
-const tauAgent: SheetAgent = { kind: 'tau', key: 'tau', name: 'Tau' };
+const tauAgent: SheetAgent = { kind: 'tau', key: 'tau', name: 'SinopiaCAD' };
 
 /** The brand an external agent runs as; an agent Tau has no sprite for falls back to a generic glyph. */
 const agentGlyphs: Readonly<Record<string, IconId>> = { claude: 'claude', codex: 'openai', grok: 'grok' };
@@ -283,7 +283,7 @@ function SheetAgentGlyph({
   readonly className?: string;
 }): React.JSX.Element {
   return agent.kind === 'tau' ? (
-    <Tau className={className} aria-hidden='true' />
+    <SinopiaMark className={className} aria-hidden='true' />
   ) : (
     <AgentGlyph agentId={agent.agentId} className={cn(className, agent.refusal && 'opacity-50')} />
   );

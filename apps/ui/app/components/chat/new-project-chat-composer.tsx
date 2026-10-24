@@ -1,47 +1,54 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { useLocation } from 'react-router';
 import { ChatTextarea } from '#components/chat/chat-textarea.js';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
-import { KernelSelector } from '#components/chat/kernel-selector.js';
 import { WorkspaceSelector } from '#components/filesystem/workspace-selector.js';
-import { toast } from '#components/ui/sonner.js';
-import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { useKernel } from '#hooks/use-kernel.js';
-import { useProjectCreationLocation } from '#hooks/use-project-creation-location.js';
-import { useProjectCreationLocationError } from '#hooks/use-project-creation-location-error.js';
-import { useProjectManager } from '#hooks/use-project-manager.js';
-import { projectUrl } from '#utils/project-url.utils.js';
+import { useTranslation } from '#i18n/translate.js';
+
+import { useNewProjectSubmit } from '#components/chat/use-new-project-submit.js';
 
 type NewProjectChatComposerProperties = {
+  /** Focuses the composer from outside, as the home does after an image lands in the draft. */
+  readonly ref?: React.Ref<ChatTextareaHandle>;
   readonly enableAutoFocus?: boolean;
+  /**
+   * Offer the creation-location control (Home or a connected folder). Without it the project is created in Home, as
+   * SinopiaCAD's home does.
+   */
+  readonly enableLocationPicker?: boolean;
   readonly className?: string;
+  /** A shared home submission, also used by the image hero. */
+  readonly onSubmit?: ChatTextareaProperties['onSubmit'];
+  readonly isSubmitDisabled?: boolean;
 };
 
 /** Shared direct-create composer rendered inside an existing chat provider. */
 export function NewProjectChatComposer({
+  ref,
   enableAutoFocus = true,
+  enableLocationPicker = true,
   className,
+  onSubmit: sharedSubmit,
+  isSubmitDisabled = false,
 }: NewProjectChatComposerProperties): React.JSX.Element {
-  const navigate = useNavigate();
-  const { kernel, setKernel } = useKernel();
-  const projectManager = useProjectManager();
-  const location = useProjectCreationLocation();
-  const presentLocationError = useProjectCreationLocationError();
+  const { t } = useTranslation();
   const textareaRef = useRef<ChatTextareaHandle>(null);
-  const {
-    draftActorRef,
-    attachmentSource,
-    execution: { execution },
-    consumeDraft,
-  } = useChatComposer();
+  const { onSubmit, isSubmitting, location, canCreate } = useNewProjectSubmit(enableLocationPicker);
 
   const focusComposer = useCallback((): void => {
     textareaRef.current?.focus();
   }, []);
-
+  useImperativeHandle(
+    ref,
+    () => ({ focus: focusComposer, submit: (): Promise<void> | undefined => textareaRef.current?.submit?.() }),
+    [focusComposer],
+  );
   /* Mount autofocus alone misses a return to an already-mounted Home, so honour a
    * navigation that asks for focus (`state.focusChatComposer`) too. */
-  const { key: locationKey, state: locationState } = useLocation() as { key: string; state: unknown };
+  const { key: locationKey, state: locationState } = useLocation() as {
+    key: string;
+    state: unknown;
+  };
   // Each navigation that asks for focus is its own request, identified by its location key.
   const focusRequestKey =
     (locationState as { focusChatComposer?: unknown } | undefined)?.focusChatComposer === true
@@ -72,7 +79,7 @@ export function NewProjectChatComposer({
 
   const creationLocationControl = useMemo(
     () =>
-      location.shouldShowPicker ? (
+      enableLocationPicker && location.shouldShowPicker ? (
         <WorkspaceSelector
           data-chat-textarea-focustrap
           state={location}
@@ -81,75 +88,22 @@ export function NewProjectChatComposer({
           onRequestFocus={focusComposer}
         />
       ) : undefined,
-    [focusComposer, location],
-  );
-
-  const onSubmit: ChatTextareaProperties['onSubmit'] = useCallback(
-    async ({ content }) => {
-      if (location.phase !== 'ready') {
-        return;
-      }
-      // The stored draft is the source of truth for attachments: the new
-      // project's chat receives copies of exactly these bytes.
-      const attachments = draftActorRef
-        .getSnapshot()
-        .context.draftAttachments.map(({ byteLength: _byteLength, ...stored }) => stored);
-      try {
-        const created = await projectManager.createProject({
-          kernel,
-          /* The chip's value verbatim — not a Tau execution rebuilt from the
-           * model. Rebuilding dropped `hostId` (and any `acp` choice),
-           * so a project started from a "Tau Host · …" chip ran its first turn
-           * in this browser instead, against a chip that still named the
-           * daemon. Both providers keep this execution's Tau model in step with
-           * the model chip, so there is nothing left to override here. */
-          activeExecution: execution,
-          initialMessage: { content, attachments, ...(attachmentSource === undefined ? {} : { attachmentSource }) },
-          editorState: {
-            panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' }, mobileActiveTab: 'chat' },
-          },
-          location: location.value,
-        });
-        await consumeDraft();
-        await navigate(projectUrl(created.slugs));
-      } catch (error) {
-        if (presentLocationError(error)) {
-          if (location.hasWebAccessCapability) {
-            await location.refresh();
-          }
-          return;
-        }
-        console.error('Failed to create project:', error);
-        toast.error('Failed to create project');
-      }
-    },
-    [
-      attachmentSource,
-      consumeDraft,
-      draftActorRef,
-      execution,
-      kernel,
-      location,
-      navigate,
-      presentLocationError,
-      projectManager,
-    ],
+    [enableLocationPicker, focusComposer, location],
   );
 
   return (
-    <div className='space-y-4'>
-      <div className='flex justify-center'>
-        <KernelSelector selectedKernel={kernel} onKernelChange={setKernel} />
-      </div>
+    <div className='space-y-4' inert={isSubmitDisabled || isSubmitting} aria-busy={isSubmitDisabled || isSubmitting}>
       <ChatTextarea
         ref={textareaRef}
         enableAutoFocus={enableAutoFocus}
         enableContextActions={false}
-        enableKernelSelector={false}
         creationLocationControl={creationLocationControl}
-        isSubmitDisabled={!location.canCreate}
+        isSubmitDisabled={!canCreate || isSubmitting || isSubmitDisabled}
+        enableAgentControls={enableLocationPicker}
+        // SinopiaCAD: the home's prompt (UI-UX-SinopiaCAD §2.4); the project's asks for a change.
+        placeholder={t('home.composerPlaceholder')}
         className={className}
-        onSubmit={onSubmit}
+        onSubmit={sharedSubmit ?? onSubmit}
       />
     </div>
   );

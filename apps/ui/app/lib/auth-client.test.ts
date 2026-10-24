@@ -34,4 +34,20 @@ describe('authClient runtime environment', () => {
 
     expect(fetch).toHaveBeenCalledWith('https://api.host.test/v1/auth/get-session', expect.any(Object));
   });
+
+  /* SinopiaCAD: Sinopia's session signs people in; Better Auth stays wired but sends nothing to Sinopia's function. */
+  it('stays inert, as against an unreachable API, while a Sinopia project is configured', async () => {
+    /* eslint-disable @typescript-eslint/naming-convention -- browser environment keys are uppercase by contract. */
+    globalThis.window.ENV = {
+      TAU_API_URL: 'https://sinopia.test/functions/v1/sinopiacad',
+      SINOPIA_SUPABASE_URL: 'https://sinopia.supabase.test',
+      SINOPIA_SUPABASE_PUBLISHABLE_KEY: 'sinopia-publishable-key',
+    };
+    /* eslint-enable @typescript-eslint/naming-convention -- End environment keys. */
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ user: null, session: null }));
+    const { authClient } = await import('#lib/auth-client.js');
+
+    await expect(authClient.getSession()).rejects.toThrow('SinopiaCAD signs in with Sinopia, not with a Tau account.');
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

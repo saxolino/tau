@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { Link, useParams } from 'react-router';
 import { Download, LayoutGrid, Link2 } from 'lucide-react';
-import { TauWordmark } from '#components/icons/tau-wordmark.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { ForkAction } from '#components/share/fork-action.js';
@@ -62,12 +62,13 @@ export function PublicationTopbar({
       toast.error('Could not copy link');
     }
   }, [shareUrl]);
-  /* A builtin example leads back to its card in the gallery; other shares have no gallery. */
+  /* A warehouse part leads back to its card in Parts. SinopiaCAD hides Tau's examples gallery (Community), so a
+   * builtin example, like any other share, has no gallery to go back to. */
   const { slug } = useParams();
   const builtinLocator = slug?.startsWith(builtinSlugPrefix) ? slug.slice(builtinSlugPrefix.length) : undefined;
   const isWarehousePart = builtinLocator?.startsWith('warehouse.') ?? false;
-  const galleryLabel = isWarehousePart ? 'Parts' : 'Examples';
-  const examplesHref = builtinLocator ? `${isWarehousePart ? '/parts' : '/community'}#${builtinLocator}` : undefined;
+  const galleryLabel = 'Parts';
+  const examplesHref = builtinLocator && isWarehousePart ? `/parts#${builtinLocator}` : undefined;
 
   return (
     <header
@@ -87,7 +88,7 @@ export function PublicationTopbar({
         <Tooltip>
           <TooltipTrigger asChild className='flex items-center gap-2 font-medium'>
             <Link to='/' aria-label='Go home' className={cn(desktopTarget && 'h-7')}>
-              <TauWordmark className={cn('h-6 text-primary', desktopTarget && 'h-5')} />
+              <SinopiaCadWordmark size={desktopTarget ? 'sm' : 'md'} />
             </Link>
           </TooltipTrigger>
           <TooltipContent side='right'>Go home</TooltipContent>

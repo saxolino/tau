@@ -17,7 +17,7 @@ import type { MachineApprovalBridge } from '#hooks/use-machines-approvals.js';
 import { useSettingsDialog } from '#hooks/use-settings-dialog.js';
 import { isMachineRouteIdentity, machineDeepLink, machineUrl } from '#utils/machine-url.utils.js';
 
-export const meta = (): Array<{ title: string }> => [{ title: 'Machine · Tau' }];
+export const meta = (): Array<{ title: string }> => [{ title: 'Machine · SinopiaCAD' }];
 const projectGuidance = (
   <p className='text-xs text-muted-foreground'>
     Open a project’s Print pane to prepare a new job. Machine actions requested by an agent are reviewed in that

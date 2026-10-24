@@ -1,9 +1,10 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { IDockviewHeaderActionsProps } from 'dockview-react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const state = vi.hoisted(() => ({
   isMobile: false,
@@ -23,10 +24,9 @@ vi.mock('#hooks/use-project.js', () => ({
     projectRef: { getSnapshot: () => ({ context: { project: { name: 'Rotor housing' } } }) },
   }),
 }));
-/* The trigger has its own suite (`revision-status-action.test.tsx`); here it
- * only has to lead the project group (S29). */
-vi.mock('#routes/w.$workspace.$project/revision-status-action.js', () => ({
-  RevisionStatusAction: () => <span data-testid='revision-trigger' />,
+/* SinopiaCAD: no branch chip and no agent toggle here; a stand-in proves neither is drawn. */
+vi.mock('#routes/w.$workspace.$project/record-issues-action.js', () => ({
+  RecordIssuesAction: () => <span data-testid='record-issues' />,
 }));
 vi.mock('#components/panes/use-is-top-right-group.js', () => ({
   useIsTopRightGroup: () => state.isTopRight,
@@ -61,70 +61,51 @@ const renderActions = () =>
     </TooltipProvider>,
   );
 
+afterEach(() => {
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
+});
+
 describe('ProjectWorkspaceActions', () => {
   beforeEach(() => {
-    state.isMobile = false;
+    state.isMobile = true;
     state.isTopRight = true;
     state.openMobile = false;
     state.lanes = { chat: true, workbench: true };
     vi.clearAllMocks();
   });
 
-  it('renders the project group only in the top-right viewer group, without a chat control', () => {
-    renderActions();
+  // SinopiaCAD: the desktop's tab bar over the model is hidden; the project's top bar holds these actions.
+  it('draws nothing on the desktop, where the top bar holds the actions', () => {
+    state.isMobile = false;
+    const { container } = renderActions();
+    expect(container).toBeEmptyDOMElement();
+  });
 
-    expect(screen.getByTestId('revision-trigger')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Toggle Chat lane' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Rotor housing/ })).not.toBeInTheDocument();
-
+  it('draws only in the top-right viewer group', () => {
     state.isTopRight = false;
     const { container } = renderActions();
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('sets the cluster apart with a hairline before the project group', () => {
-    const { container } = renderActions();
+  it.each([
+    ['it', 'Esporta'],
+    ['en', 'Export'],
+  ] as const)(
+    'keeps the sidebar, the record issues and %s, without Share, the branch or the agent',
+    async (language, exportName) => {
+      setLanguage(language);
+      const user = userEvent.setup();
+      renderActions();
 
-    const cluster = container.firstElementChild;
-    expect(cluster?.firstElementChild).toHaveAttribute('data-orientation', 'vertical');
-    expect(cluster?.children[1]).toBe(screen.getByTestId('revision-trigger'));
-  });
+      expect(screen.getByRole('button', { name: /Rotor housing/ })).toBeInTheDocument();
+      expect(screen.getByTestId('record-issues')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /share|condividi/iu })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /agente|agent/iu })).not.toBeInTheDocument();
+      expect(screen.queryByText('main')).not.toBeInTheDocument();
 
-  it('reserves the workbench toggle slot behind its own hairline only while that lane is hidden', () => {
-    renderActions();
-    expect(screen.queryByTestId('workbench-toggle-slot')).not.toBeInTheDocument();
-
-    state.lanes = { chat: true, workbench: false };
-    renderActions();
-    const slot = screen.getByTestId('workbench-toggle-slot');
-    expect(slot).toHaveClass('size-7');
-    expect(slot.previousElementSibling).toHaveAttribute('data-orientation', 'vertical');
-  });
-
-  it('opens Share and Export in the workbench, as labelled pane buttons that fold to icons', async () => {
-    const user = userEvent.setup();
-    renderActions();
-
-    const share = screen.getByRole('button', { name: 'Share' });
-    expect(share).toHaveAttribute('data-slot', 'pane-button');
-    expect(share).toHaveClass('@max-xl/viewer:w-7');
-    await user.click(share);
-    await user.click(screen.getByRole('button', { name: 'Export' }));
-
-    expect(openPanel.mock.calls).toEqual([['share'], ['export']]);
-  });
-
-  it('keeps Share, Export, and sidebar recovery on mobile without desktop lane controls', () => {
-    state.isMobile = true;
-    state.lanes = { chat: false, workbench: false };
-    renderActions();
-
-    expect(screen.queryByRole('button', { name: 'Toggle Workbench lane' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Rotor housing/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument();
-    expect(screen.queryByTestId('workbench-toggle-slot')).not.toBeInTheDocument();
-  });
+      await user.click(screen.getByRole('button', { name: exportName }));
+      expect(openPanel).toHaveBeenCalledExactlyOnceWith('export');
+    },
+  );
 });

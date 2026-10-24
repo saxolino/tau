@@ -47,6 +47,10 @@ export const FieldLabelContext = createContext<string | undefined>(undefined);
  */
 export const useFieldLabel = (name: string): string => useContext(FieldLabelContext) ?? formatDisplayLabel(name);
 
+/** Render a field with its admitted units and authoritative edit lane.
+ * @param props - Schema widget data and the host form context.
+ * @returns The control for this schema field.
+ */
 export function ParametersWidget(
   props: WidgetProps<Record<string, unknown>, RJSFSchema, RJSFContext>,
 ): React.JSX.Element {
@@ -98,10 +102,17 @@ export function ParametersWidget(
     return projectParameterField(
       parameterManifest,
       instancePointer,
-      { unit: requestedUnit, locale: globalThis.navigator.language },
+      { unit: requestedUnit, locale: formContext.presentationOptions?.locale ?? globalThis.navigator.language },
       parameterGroup,
     );
-  }, [instancePointer, isNumeric, lengthSymbol, parameterGroup, parameterManifest]);
+  }, [
+    instancePointer,
+    isNumeric,
+    lengthSymbol,
+    parameterGroup,
+    parameterManifest,
+    formContext.presentationOptions?.locale,
+  ]);
   /* An authoritative form commits a non-numeric field on its own: RJSF's whole-group `formData` can
    * still hold a pre-commit value of another field, which a group replacement would write back. */
   const commitField = async (newValue: boolean | string | undefined): Promise<void> => {
@@ -231,6 +242,7 @@ export function ParametersWidget(
 
       return (
         <ParametersNumber
+          locale={formContext.presentationOptions?.locale}
           value={numericValue}
           defaultValue={Number.isFinite(effectiveDefault) ? effectiveDefault : numericValue}
           fieldProjection={fieldProjection}

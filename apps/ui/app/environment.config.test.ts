@@ -292,6 +292,8 @@ describe('getClientEnvironment', () => {
       'POSTHOG_UI_HOST',
       'SENTRY_DSN',
       'SENTRY_ENVIRONMENT',
+      'SINOPIA_SUPABASE_PUBLISHABLE_KEY',
+      'SINOPIA_SUPABASE_URL',
       'TAU_ACQUISITION',
       'TAU_API_URL',
       'TAU_BILLING_ENVIRONMENT',
@@ -340,6 +342,8 @@ describe('window.ENV host contract', () => {
       POSTHOG_CLIENT_KEY: 'phc_host',
       SENTRY_DSN: 'https://public@sentry.host.test/1',
       SENTRY_ENVIRONMENT: 'staging',
+      SINOPIA_SUPABASE_URL: 'https://sinopia.supabase.test',
+      SINOPIA_SUPABASE_PUBLISHABLE_KEY: 'sinopia-publishable-key',
       /* eslint-enable @typescript-eslint/naming-convention -- environment variable keys are uppercase by contract. */
     } as const satisfies ClientEnvironment;
     Object.defineProperty(globalThis, 'window', {

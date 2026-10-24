@@ -71,6 +71,8 @@ export type PanelState = {
     chatWidth: number;
     workbenchWidth: number;
     compactAuxiliary: 'chat' | 'workbench';
+    /** The lane arrangement the widths were measured in; see `desktopLayoutRevision`. */
+    layoutRevision: number;
   };
   /** Mobile active tab ID */
   mobileActiveTab: MobilePanelId;

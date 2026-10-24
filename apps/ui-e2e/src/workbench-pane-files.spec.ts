@@ -207,23 +207,18 @@ test('should share modern command search chrome across command, model, kernel, a
 
   const chatComposer = selectors.getByCss('[class*="group/chat-textarea"]');
   if (!(await target.isVisible(chatComposer))) {
-    await target.click(selectors.getByRole('button', { name: 'Toggle Chat lane' }));
+    await target.click(selectors.getByRole('button', { name: 'Agent' }));
   }
   await target.expectVisible(chatComposer);
   const chatControlButtons = chatComposer.getByCss('button');
   await target.click(chatControlButtons.first());
   const modelFilter = selectors.getByPlaceholder('Search models…');
   await expectModernCommandInput(modelFilter);
+  await target.screenshot(selectors.getByCss('body'), 'workbench-command-search-light.png');
   await target.press(modelFilter, 'Escape');
 
-  await target.click(chatControlButtons.nth(1));
-  const kernelFilter = selectors.getByPlaceholder('Search kernels…');
-  await expectModernCommandInput(kernelFilter);
-  await target.screenshot(selectors.getByCss('body'), 'workbench-command-search-light.png');
-  await target.press(kernelFilter, 'Escape');
-
   await target.setViewport({ width: 390, height: 844 });
-  const chatToggle = selectors.getByRole('button', { name: 'Toggle Chat lane' });
+  const chatToggle = selectors.getByRole('button', { name: 'Agent' });
   const agentTrigger = selectors.getByRole('button', { name: /^Agent and model: /u });
   if (!(await target.isVisible(agentTrigger))) {
     await target.click(chatToggle);
@@ -233,12 +228,7 @@ test('should share modern command search chrome across command, model, kernel, a
   await target.click(selectors.getByRole('button', { name: /^Model: .*\. Change$/u }));
   const mobileModelFilter = selectors.getByPlaceholder('Search models…');
   await expectModernCommandInput(mobileModelFilter);
-  await target.press(mobileModelFilter, 'Escape');
-  await target.expectCount(mobileModelFilter, 0);
-
-  await target.click(selectors.getByRole('button', { name: /^Select kernel/u }));
-  const mobileKernelFilter = selectors.getByPlaceholder('Search kernels…');
-  await expectModernCommandInput(mobileKernelFilter);
+  // SinopiaCAD has no kernel selector: the dark capture keeps the model filter open.
   await target.emulateColorScheme('dark');
   await target.screenshot(selectors.getByCss('body'), 'workbench-command-search-mobile-dark.png');
 });

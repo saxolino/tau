@@ -9,6 +9,10 @@ import { GraphicsProvider } from '@taucad/viewer/hooks/use-graphics';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { graphicsMachine } from '@taucad/viewer/machines/graphics.machine';
 import { ConverterExportPanel, ConverterViewer } from '#routes/convert/route.js';
+import { FormatsList } from '#routes/convert/formats-list.js';
+import { setLanguage } from '#i18n/language.js';
+import type { Language } from '#i18n/language.js';
+import { bindTranslate } from '#i18n/translate.js';
 
 vi.mock('@taucad/viewer/cad/cad-viewer', () => ({
   CadViewer: () => <div role='img' aria-label='Model' />,
@@ -91,8 +95,10 @@ describe('ConverterViewer', () => {
   });
 });
 
-describe('ConverterExportPanel', () => {
-  it('should fold away below md behind an Export toggle, and stay open from md up', async () => {
+describe.each<Language>(['it', 'en'])('ConverterExportPanel in %s', (language) => {
+  it('should fold away below md behind a Formats toggle, and stay open from md up', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
     const user = userEvent.setup();
     render(
       <TooltipProvider>
@@ -101,7 +107,8 @@ describe('ConverterExportPanel', () => {
         </ConverterExportPanel>
       </TooltipProvider>,
     );
-    const toggle = screen.getByRole('button', { name: 'Export' });
+    expect(screen.getByText(t('convert.panel.title'))).toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: t('convert.panel.toggle') });
     const panel = document.querySelector<HTMLElement>(`[id="${toggle.getAttribute('aria-controls')}"]`);
 
     expect(toggle).toHaveClass('md:hidden');
@@ -118,5 +125,21 @@ describe('ConverterExportPanel', () => {
     await user.click(toggle);
 
     expect(panel).toHaveClass('max-md:hidden');
+  });
+});
+
+describe.each<Language>(['it', 'en'])('FormatsList in %s', (language) => {
+  it('should list the formats a designer opens by their codes, searchable in the interface language', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    render(<FormatsList formats={['step', '3dm', 'stl']} isLoading={false} />);
+
+    expect(screen.getByRole('heading', { name: t('convert.inputFormats') })).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual(['STEP', '3DM', 'STL']);
+
+    await user.type(screen.getByRole('searchbox', { name: t('convert.searchFormats') }), 'zzz');
+
+    expect(screen.getByRole('status')).toHaveTextContent(t('convert.noFormat'));
   });
 });

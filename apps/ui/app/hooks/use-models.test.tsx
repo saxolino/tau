@@ -10,6 +10,12 @@ import { store } from '#hooks/use-cookie.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { metaConfig } from '#constants/meta.constants.js';
 
+/* SinopiaCAD: the bearer token the Sinopia session would put on the catalog request. */
+const sinopia = vi.hoisted(() => ({ token: undefined as string | undefined }));
+vi.mock('#lib/sinopia-session.js', () => ({
+  sinopiaAuthorization: async () => (sinopia.token === undefined ? {} : { authorization: `Bearer ${sinopia.token}` }),
+}));
+
 const codex: AcpAgentExecution = {
   kind: 'acp',
   hostId: 'desktop',
@@ -49,6 +55,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  sinopia.token = undefined;
   for (const key of storageKeys) {
     store.remove(key);
   }
@@ -70,18 +77,36 @@ describe('useModels', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('should send the Sinopia session as a bearer token with the catalog request', async () => {
+    sinopia.token = 'sinopia-access-token';
+    respond([catalogRow('gpt-6-astra', true)]);
+    const { result } = renderHook(() => useModels(), { wrapper });
+    await waitFor(() => {
+      expect(result.current.availableModels).toHaveLength(1);
+    });
+
+    expect(fetch).toHaveBeenCalledWith('http://localhost:4000/v1/models', {
+      credentials: 'include',
+      headers: { authorization: 'Bearer sinopia-access-token' },
+    });
+  });
+
   describe('new-chat default execution', () => {
-    it('should start the next chat on the external agent last used, with its model and config', async () => {
+    /* SinopiaCAD: a new chat starts on SinopiaCAD's own agent, never on the external agent used last. */
+    it('should start the next chat on the built-in agent after an external agent was used', async () => {
       respond([catalogRow('anthropic-claude-opus-4.8', true)]);
       const { result } = renderHook(() => useModels(), { wrapper });
       act(() => {
         result.current.rememberExecution(codex);
       });
-      expect(result.current.defaultExecution).toEqual(codex);
+      await waitFor(() => {
+        expect(result.current.catalog.status).toBe('loaded');
+      });
+      expect(result.current.defaultExecution).toEqual({ kind: 'tau', model: 'anthropic-claude-opus-4.8' });
     });
 
-    it('should keep the last Tau choice for switching back from an external agent', () => {
-      respond([]);
+    it('should retain developer preferences while automatically choosing the recommended model', async () => {
+      respond([catalogRow('anthropic-claude-haiku-5.5'), catalogRow('gpt-6-astra', true)]);
       const { result } = renderHook(() => useModels(), { wrapper });
       const tau: TauAgentExecution = { kind: 'tau', model: 'anthropic-claude-haiku-5.5', effort: 'low' };
       act(() => {
@@ -89,7 +114,17 @@ describe('useModels', () => {
         result.current.rememberExecution(codex);
       });
       expect(result.current.lastTauExecution).toEqual(tau);
-      expect(result.current.defaultExecution).toEqual(codex);
+      await waitFor(() => {
+        expect(result.current.defaultExecution).toEqual({ kind: 'tau', model: 'gpt-6-astra' });
+      });
+    });
+
+    it("should start a first chat on the catalog's recommended model", async () => {
+      respond([catalogRow('gpt-5.5'), catalogRow('gpt-6-astra', true)]);
+      const { result } = renderHook(() => useModels(), { wrapper });
+      await waitFor(() => {
+        expect(result.current.defaultExecution).toEqual({ kind: 'tau', model: 'gpt-6-astra' });
+      });
     });
 
     it('should ignore a stored execution that fails the execution schema', () => {
@@ -109,7 +144,6 @@ describe('useModels', () => {
         expect(result.current.defaultExecution).toEqual({
           kind: 'tau',
           model: 'anthropic-claude-opus-4.9',
-          effort: 'high',
         });
       });
     });

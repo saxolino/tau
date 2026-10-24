@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { stringParameter, enumParameter } from '#utils/search-parameter.codecs.js';
 import { machineUrl } from '#utils/machine-url.utils.js';
 
-export const meta = (): Array<{ title: string }> => [{ title: 'Machines · Tau' }];
+export const meta = (): Array<{ title: string }> => [{ title: 'Machines · SinopiaCAD' }];
 const queryCodec = stringParameter();
 const statusCodec = enumParameter(z.enum(['', 'ready', 'active', 'attention']), '');
 const columns: Array<ColumnDef<MachineDirectoryEntry>> = [];

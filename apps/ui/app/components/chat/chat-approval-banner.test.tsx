@@ -153,7 +153,7 @@ describe('ChatApprovalBanner', () => {
 
     render(<ChatApprovalBanner />);
 
-    expect(screen.getByText('Tau · Permission')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD · Permission')).toBeInTheDocument();
     expect(screen.queryByText(/chat's tree/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/does not ask again for each action/u)).not.toBeInTheDocument();
   });
@@ -190,7 +190,7 @@ describe('ChatApprovalBanner', () => {
 
     render(<ChatApprovalBanner />);
 
-    expect(screen.getByText('Tau · Permission')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD · Permission')).toBeInTheDocument();
     expect(screen.queryByText(/codex is waiting/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/chat's tree/u)).not.toBeInTheDocument();
   });

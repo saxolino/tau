@@ -32,6 +32,17 @@ const faceLabels: Record<'x' | 'y' | 'z', Readonly<Record<string, string>>> = {
   z: { x: 'Right', nx: 'Left', y: 'Back', ny: 'Front', z: 'Top', nz: 'Bottom' },
 };
 
+/** The views' names in the page's other language; English stays the source. */
+const translatedFaceLabels: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  it: { Top: 'Sopra', Bottom: 'Sotto', Front: 'Fronte', Back: 'Retro', Right: 'Destra', Left: 'Sinistra' },
+};
+
+/** A face's name in the language of the page that holds the viewer (`<html lang>`), English otherwise. */
+const faceLabel = (label: string): string => {
+  const language = typeof document === 'undefined' ? '' : document.documentElement.lang.slice(0, 2).toLowerCase();
+  return translatedFaceLabels[language]?.[label] ?? label;
+};
+
 /**
  * Partition one closed rounded box into the library's 26 existing pick targets. All parts
  * share the same boundary vertices; independently tessellated cylinders and rotated
@@ -93,6 +104,11 @@ const createFaceTexture = ({
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = new Color(labelColor).getStyle();
     context.font = `500 ${viewportGizmoMetrics.fontSize}px ${font}`;
+    // Longer names («Sinistra») shrink to stay inside the face's flat part instead of running onto the bevel.
+    const fit = (canvas.width * 0.78) / Math.max(context.measureText(label).width, 1);
+    if (fit < 1) {
+      context.font = `500 ${Math.floor(viewportGizmoMetrics.fontSize * fit)}px ${font}`;
+    }
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.fillText(label, canvas.width / 2, canvas.height / 2);
@@ -152,7 +168,7 @@ export const applyViewportGizmoSurface = (gizmo: ViewportGizmo, style: ViewportG
     hover.color.set(style.hover);
 
     if (object.userData['kind'] === 'face') {
-      const label = labels[regionKey(object.position)] ?? '';
+      const label = faceLabel(labels[regionKey(object.position)] ?? '');
       const uvs: number[] = [];
       const positions = geometry.getAttribute('position');
       const faceLength = 2 * (1 - viewportGizmoMetrics.radius);

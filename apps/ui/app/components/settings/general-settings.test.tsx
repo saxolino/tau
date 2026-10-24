@@ -1,10 +1,12 @@
 import { render, screen } from '@testing-library/react';
+import type * as UseTheme from '#hooks/use-theme.js';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { entitlementsFromTier } from '@taucad/billing';
 import { GeneralSettings } from '#components/settings/general-settings.js';
 import type { ThemeOption } from '#hooks/use-theme.js';
+import { setLanguage } from '#i18n/language.js';
 
 const clientEnvironment = globalThis.window.ENV;
 const useEntitlementsMock = vi.hoisted(() => vi.fn());
@@ -44,54 +46,23 @@ vi.mock('#hooks/use-privacy-preferences.js', () => ({
   }),
 }));
 
-vi.mock('#hooks/use-theme.js', () => {
-  /* eslint-disable @typescript-eslint/naming-convention -- Mirrors the production Theme values. */
-  const Theme = {
-    LIGHT: 'light',
-    DARK: 'dark',
-    BLACK: 'black',
-    HIGH_CONTRAST: 'high-contrast',
-  } as const;
-  /* eslint-enable @typescript-eslint/naming-convention -- Re-enable project naming checks. */
-
-  const systemOption = {
-    id: null,
-    name: 'System',
-    description: 'Follow your system preference',
-  };
-
+vi.mock('#hooks/use-theme.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UseTheme>();
+  const { bindTranslate } = await import('#i18n/translate.js');
+  const { getLanguage } = await import('#i18n/language.js');
   return {
-    Theme,
-    themeOptions: [
-      {
-        id: Theme.LIGHT,
-        name: 'Light',
-        description: 'A bright, clean look',
-      },
-      {
-        id: Theme.DARK,
-        name: 'Dark',
-        description: 'Easy on the eyes',
-      },
-      {
-        id: Theme.BLACK,
-        name: 'Black',
-        description: 'True black with ultra-dark surfaces',
-      },
-      {
-        id: Theme.HIGH_CONTRAST,
-        name: 'High Contrast',
-        description: 'Stronger text, borders, and focus indicators',
-      },
-      systemOption,
-    ],
-    useTheme: () => ({
-      themeWithSystem: null,
-      theme: Theme.LIGHT,
-      isHighContrast: false,
-      setTheme: mockSetTheme,
-      currentOption: systemOption,
-    }),
+    ...actual,
+    useTheme: () => {
+      const options = actual.buildThemeOptions(bindTranslate(getLanguage()));
+      return {
+        themeWithSystem: null,
+        theme: actual.Theme.LIGHT,
+        isHighContrast: false,
+        setTheme: mockSetTheme,
+        options,
+        currentOption: options.at(-1),
+      };
+    },
   };
 });
 
@@ -185,7 +156,7 @@ describe('GeneralSettings', () => {
   });
 
   it.each(['free', 'pro'] as const)(
-    'should link privacy details to the public website from a build that runs none (%s)',
+    'should link privacy details to Sinopia’s privacy policy from a build that runs no website (%s)',
     (tier) => {
       useEntitlementsMock.mockReturnValue(entitlementsFromTier(tier));
 
@@ -194,14 +165,14 @@ describe('GeneralSettings', () => {
       const links = screen.getAllByRole('link', { name: 'Learn more' });
       expect(links.length).toBeGreaterThan(0);
       for (const link of links) {
-        expect(link).toHaveAttribute('href', 'https://tau.new/legal/privacy#9.2.1-ai-service-improvement');
+        expect(link).toHaveAttribute('href', 'https://sinopialab.com/privacy-policy');
         expect(link).toHaveAttribute('target', '_blank');
       }
     },
   );
 
   it.each(['free', 'pro'] as const)(
-    'should link privacy details to the website of the deployment the app is bound to (%s)',
+    'should link privacy details to Sinopia’s privacy policy whatever deployment the app is bound to (%s)',
     (tier) => {
       useEntitlementsMock.mockReturnValue(entitlementsFromTier(tier));
       vi.stubEnv('TAU_TARGET', 'desktop');
@@ -216,7 +187,7 @@ describe('GeneralSettings', () => {
       const links = screen.getAllByRole('link', { name: 'Learn more' });
       expect(links.length).toBeGreaterThan(0);
       for (const link of links) {
-        expect(link).toHaveAttribute('href', 'https://taucad.dev/legal/privacy#9.2.1-ai-service-improvement');
+        expect(link).toHaveAttribute('href', 'https://sinopialab.com/privacy-policy');
       }
     },
   );
@@ -298,14 +269,22 @@ describe('GeneralSettings', () => {
     expect(mockSetPointerCursors).toHaveBeenCalledWith(true);
   });
 
-  it('should expose and select the High Contrast theme', async () => {
+  // SinopiaCAD: two themes and the system's choice between them (UI-UX-SinopiaCAD §1.2).
+  it.each([
+    ['it', ['Chiaro', 'Nero', 'Segui il Mac'], 'Nero'],
+    ['en', ['Light', 'Black', 'Follow the Mac'], 'Black'],
+  ] as const)('should offer only the two themes and the system in %s', async (language, names, black) => {
+    setLanguage(language);
     const user = userEvent.setup();
     render(<GeneralSettings />);
 
-    await user.click(
-      screen.getByRole('button', { name: /high contrast stronger text, borders, and focus indicators/i }),
-    );
+    for (const name of names) {
+      expect(screen.getByRole('button', { name: new RegExp(`^${name} `, 'u') })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /high contrast|^dark /iu })).not.toBeInTheDocument();
 
-    expect(mockSetTheme).toHaveBeenCalledWith('high-contrast');
+    await user.click(screen.getByRole('button', { name: new RegExp(`^${black} `, 'u') }));
+
+    expect(mockSetTheme).toHaveBeenCalledWith('black');
   });
 });

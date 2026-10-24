@@ -8,7 +8,7 @@ import type { MetaFunction } from 'react-router';
 import { ProjectLibrary } from '#components/project-library/project-library.js';
 import type { Handle } from '#types/matches.types.js';
 
-export const meta: MetaFunction = () => [{ title: 'Projects · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'Projects · SinopiaCAD' }];
 
 export const handle: Handle = {
   enableOverflowY: true,

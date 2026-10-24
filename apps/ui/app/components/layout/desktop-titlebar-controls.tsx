@@ -4,7 +4,7 @@ import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { SidebarTrigger, useSidebar } from '#components/ui/sidebar.js';
 import { Link } from 'react-router';
-import { TauTextWordmark } from '#components/icons/tau-text-wordmark.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { cn } from '@taucad/ui/utils/cn';
 
 type BrowserNavigation = EventTarget & {
@@ -92,7 +92,7 @@ export const TitlebarNavigation = ({
           aria-label='Home'
           className='flex h-7 shrink-0 items-center rounded-sm outline-none [app-region:no-drag] focus-visible:focus-outline'
         >
-          <TauTextWordmark aria-hidden className='h-5 w-auto text-primary' />
+          <SinopiaCadWordmark />
         </Link>
       ) : null}
       {hasHistory ? (

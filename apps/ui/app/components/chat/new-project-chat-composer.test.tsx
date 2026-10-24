@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
-import { useImperativeHandle } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createRef, useImperativeHandle } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CadAgentExecution } from '@taucad/chat';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
+import type { RecordFilesClient } from '#hooks/use-file-manager.js';
 import type { ProjectCreationLocationState } from '#hooks/use-project-creation-location.js';
 
 const mockNavigate = vi.fn(async () => undefined);
@@ -11,6 +12,7 @@ const mockConsumeDraft = vi.fn(async () => undefined);
 const mockPresentLocationError = vi.fn(() => false);
 const mockRefresh = vi.fn(async () => undefined);
 const mockFocus = vi.fn();
+const mockEditorSubmit = vi.fn(async () => undefined);
 let routerLocationState: unknown;
 let locationKey = 0;
 let capturedTextarea: ChatTextareaProperties | undefined;
@@ -28,7 +30,7 @@ vi.mock('#components/chat/chat-textarea.js', () => ({
     ref,
     ...properties
   }: ChatTextareaProperties & { readonly ref?: React.Ref<Partial<ChatTextareaHandle>> }) => {
-    useImperativeHandle(ref, () => ({ focus: mockFocus }));
+    useImperativeHandle(ref, () => ({ focus: mockFocus, submit: mockEditorSubmit }));
     capturedTextarea = properties;
     return (
       <>
@@ -37,9 +39,6 @@ vi.mock('#components/chat/chat-textarea.js', () => ({
       </>
     );
   },
-}));
-vi.mock('#components/chat/kernel-selector.js', () => ({
-  KernelSelector: () => <div>Kernel selector</div>,
 }));
 vi.mock('#components/filesystem/workspace-selector.js', () => ({
   WorkspaceSelector: ({
@@ -54,7 +53,11 @@ vi.mock('#components/filesystem/workspace-selector.js', () => ({
     </div>
   ),
 }));
-vi.mock('#hooks/use-kernel.js', () => ({ useKernel: () => ({ kernel: 'openscad', setKernel: vi.fn() }) }));
+vi.mock('#hooks/use-file-manager.js', async () => {
+  const { mock } = await import('vitest-mock-extended');
+  const recordFiles = mock<RecordFilesClient>({ exists: async () => false });
+  return { useFileManager: () => ({ recordFiles }) };
+});
 vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({ createProject: mockCreateProject }),
 }));
@@ -137,13 +140,14 @@ describe('NewProjectChatComposer', () => {
 
   // Rewritten (W6): the startup message references the draft's stored
   // attachments; the textarea's data URLs are no longer the source.
-  it('passes exact product selection and the stored draft attachments, then consumes before navigation', async () => {
+  it('starts from the empty SMLib starter with no pinned engine, no kernel picker and the stored draft attachments, then consumes before navigation', async () => {
     const hash = 'a'.repeat(64);
     draftAttachments = [
       { hash, mediaType: 'image/png', byteLength: 3 },
       { hash: 'b'.repeat(64), mediaType: 'application/pdf', byteLength: 9, filename: 'spec.pdf' },
     ];
     render(<NewProjectChatComposer />);
+    expect(screen.queryByText(/kernel/iu)).toBeNull();
     expect(capturedTextarea?.creationLocationControl).toBeDefined();
     expect(capturedTextarea?.isSubmitDisabled).toBe(false);
     expect(screen.getByTestId('location-toolbar')).toHaveAttribute('data-is-inside-focus-trap', 'true');
@@ -153,7 +157,7 @@ describe('NewProjectChatComposer', () => {
     });
 
     expect(mockCreateProject).toHaveBeenCalledWith({
-      kernel: 'openscad',
+      kernel: 'smlib',
       activeExecution: { kind: 'tau', model: 'gpt-test' },
       initialMessage: {
         content: 'Build a bracket',
@@ -259,5 +263,81 @@ describe('NewProjectChatComposer', () => {
     render(<NewProjectChatComposer />);
     expect(capturedTextarea?.creationLocationControl).toBeUndefined();
     expect(screen.queryByText(/Location/)).not.toBeInTheDocument();
+  });
+
+  it('creates in Home without a location control when the picker is off, even before locations load', async () => {
+    locationState = {
+      phase: 'loading',
+      hasWebAccessCapability: true,
+      shouldShowPicker: true,
+      options: [],
+      canCreate: false,
+    };
+    render(<NewProjectChatComposer enableLocationPicker={false} />);
+
+    expect(capturedTextarea?.creationLocationControl).toBeUndefined();
+    expect(capturedTextarea?.isSubmitDisabled).toBe(false);
+    await act(async () => {
+      await capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
+    });
+
+    // The first message becomes the new project's first turn, and its page opens with the agent lane showing.
+    expect(mockCreateProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        location: { kind: 'home' },
+        initialMessage: expect.objectContaining({ content: 'Un anello', attachments: [] }) as unknown,
+        editorState: {
+          panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' }, mobileActiveTab: 'chat' },
+        },
+      }),
+    );
+    expect(mockConsumeDraft).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith('/w/workshop/bracket');
+  });
+
+  it('lets its host focus the composer', () => {
+    const handle = createRef<ChatTextareaHandle>();
+    render(<NewProjectChatComposer ref={handle} enableAutoFocus={false} />);
+
+    handle.current?.focus();
+
+    expect(mockFocus).toHaveBeenCalledOnce();
+  });
+  it('should hide technical configuration on the home composer', () => {
+    render(<NewProjectChatComposer enableLocationPicker={false} />);
+    expect(capturedTextarea?.enableAgentControls).toBe(false);
+  });
+
+  it('should admit only one project creation while the first creation is pending', async () => {
+    let finish: ((value: { slugs: { workspaceSlug: string; projectSlug: string } }) => void) | undefined;
+    mockCreateProject.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<NewProjectChatComposer enableLocationPicker={false} />);
+    await act(async () => {
+      const first = capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
+      await capturedTextarea?.onSubmit({ content: 'Un anello', attachments: [] });
+      await waitFor(() => {
+        expect(mockCreateProject).toHaveBeenCalledOnce();
+      });
+      finish?.({ slugs: { workspaceSlug: 'home', projectSlug: 'anello' } });
+      await first;
+    });
+    expect(mockConsumeDraft).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith('/w/home/anello');
+  });
+  it('should prevent draft editing and attachment gestures during a shared home creation', () => {
+    const view = render(<NewProjectChatComposer enableLocationPicker={false} isSubmitDisabled />);
+    expect(view.container.firstElementChild).toHaveAttribute('inert');
+    expect(view.container.firstElementChild).toHaveAttribute('aria-busy', 'true');
+  });
+  it('should forward the home build gesture through the editor submission handle', async () => {
+    const handle = createRef<ChatTextareaHandle>();
+    render(<NewProjectChatComposer ref={handle} enableLocationPicker={false} />);
+    await handle.current?.submit?.();
+    expect(mockEditorSubmit).toHaveBeenCalledOnce();
+    expect(mockCreateProject).not.toHaveBeenCalled();
   });
 });

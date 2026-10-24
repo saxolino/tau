@@ -47,6 +47,32 @@ vi.mock('#lib/auth-client.js', () => ({
   authClient: { getSession: auth.getSession, $store: { atoms: { $sessionSignal: auth.signal } } },
 }));
 
+/* SinopiaCAD: the Sinopia session whose access token the worker's gateway sends as its bearer credential. */
+const sinopia = vi.hoisted(() => {
+  let token: string | undefined;
+  const listeners = new Set<(token: string | undefined) => void>();
+  return {
+    session: {
+      accessToken: async (): Promise<string | undefined> => token,
+      onAccessToken: (listener: (token: string | undefined) => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    },
+    /** Sign in, refresh or sign out: the session's token changes and its listeners hear it. */
+    changeToken: (next: string | undefined) => {
+      token = next;
+      for (const listener of listeners) {
+        listener(next);
+      }
+    },
+    listening: () => listeners.size,
+  };
+});
+vi.mock('#lib/sinopia-session.js', () => ({ sinopiaSession: () => sinopia.session }));
+
 type FakeRequest = { readonly name: string; readonly args: Record<string, unknown> };
 type ErrorListener = (event: ErrorEvent) => void;
 
@@ -1241,6 +1267,57 @@ describe('the funding principal', () => {
     await startRun(client, 'chat-anonymous', 'run-1', 'Build.');
 
     expect(requestsNamed(worker, 'provide')[0]?.args).not.toHaveProperty('principal');
+    await client.close();
+  });
+});
+
+/* SinopiaCAD: the worker's gateway sends the Sinopia session's current token, which an hourly refresh replaces. */
+describe('the Sinopia access token', () => {
+  afterEach(() => {
+    sinopia.changeToken(undefined);
+  });
+
+  it('should provide the project host with the token of its moment', async () => {
+    sinopia.changeToken('token-at-provide');
+    const worker = new FakeResidentWorker();
+    const client = createTestClient(workerOf(worker));
+
+    await startRun(client, 'chat-token', 'run-1', 'Build.');
+
+    expect(requestsNamed(worker, 'provide')[0]?.args).toMatchObject({ accessToken: 'token-at-provide' });
+    await client.close();
+  });
+
+  it('should deliver a refreshed token, then a sign-out, to the running worker', async () => {
+    sinopia.changeToken('token-one');
+    const worker = new FakeResidentWorker();
+    const client = createTestClient(workerOf(worker));
+    await startRun(client, 'chat-refresh', 'run-1', 'Build.');
+
+    sinopia.changeToken('token-refreshed');
+    await vi.waitFor(() => {
+      expect(requestsNamed(worker, 'accessToken').map((request) => request.args)).toEqual([
+        { token: 'token-refreshed' },
+      ]);
+    });
+    sinopia.changeToken(undefined);
+
+    await vi.waitFor(() => {
+      expect(requestsNamed(worker, 'accessToken').map((request) => request.args)).toEqual([
+        { token: 'token-refreshed' },
+        {},
+      ]);
+    });
+    await client.close();
+  });
+
+  it('should provide no token while nobody is signed in to Sinopia', async () => {
+    const worker = new FakeResidentWorker();
+    const client = createTestClient(workerOf(worker));
+
+    await startRun(client, 'chat-no-token', 'run-1', 'Build.');
+
+    expect(requestsNamed(worker, 'provide')[0]?.args).not.toHaveProperty('accessToken');
     await client.close();
   });
 });

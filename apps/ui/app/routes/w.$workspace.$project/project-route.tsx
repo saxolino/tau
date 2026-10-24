@@ -1,3 +1,4 @@
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { tauCloudIntent } from '#hooks/use-cloud-projects.js';
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useLocation, useMatch, useNavigate } from 'react-router';
@@ -18,7 +19,7 @@ import {
 import type { ProjectRouteSlugs } from '#routes/w.$workspace.$project/project-route-state.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
 import type { ProjectSessionFlushRegistration } from '#routes/w.$workspace.$project/project-live-sessions.js';
-import { isKernelAvailable, nativeKernelRequirementForEntryPath } from '#constants/available-kernel-configurations.js';
+import { isKernelExecutable, nativeKernelRequirementForEntryPath } from '#constants/available-kernel-configurations.js';
 import { useLiveProjectIds, useSessions } from '#hooks/use-sessions.js';
 import { useMemoryRelease } from '#hooks/use-memory-release.js';
 import { isMemoryConstrainedDevice } from '#lib/device-memory-class.js';
@@ -49,6 +50,7 @@ const cloudOpenParameter = stringParameter();
 
 type ResolvedProjectRouteAccess = {
   readonly projectId: string;
+  readonly userScope: string;
   readonly access: ProjectRouteAccess;
   readonly requestedChatId: string | undefined;
 };
@@ -102,7 +104,43 @@ export function ProjectRouteGate({
   const projectManager = useProjectManager();
   const sessions = useSessions();
   const [isConstrainedDevice] = useState(isMemoryConstrainedDevice);
-  const liveProjectIds = useLiveProjectIds();
+  const sinopia = useSinopiaSession();
+  const userScope = sinopia.status === 'signed-in' ? sinopia.user.id : sinopia.status;
+  const rawLiveProjectIds = useLiveProjectIds();
+  const liveSignature = rawLiveProjectIds.join('|');
+  const [admittedLive, setAdmittedLive] = useState<{ scope: string; signature: string; ids: string[] }>();
+  useEffect(() => {
+    if (sinopia.status !== 'signed-in') {
+      return;
+    }
+    let cancelled = false;
+    const admit = async (): Promise<void> => {
+      const ids = liveSignature === '' ? [] : liveSignature.split('|');
+      const checked = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const access = await projectManager.getProjectRouteAccess(id);
+            return access.status === 'ready' ? id : undefined;
+          } catch {
+            return undefined;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setAdmittedLive({ scope: userScope, signature: liveSignature, ids: checked.filter((id) => id !== undefined) });
+      }
+    };
+    void admit();
+    return () => {
+      cancelled = true;
+    };
+  }, [liveSignature, projectManager, sinopia.status, userScope]);
+  const liveProjectIds =
+    sinopia.status === 'disabled'
+      ? rawLiveProjectIds
+      : admittedLive?.scope === userScope
+        ? admittedLive.ids.filter((id) => rawLiveProjectIds.includes(id))
+        : [];
   const closedReason = useSelector(sessions, (state) =>
     requestedProjectId === undefined ? undefined : state.context.closed[requestedProjectId]?.reason,
   );
@@ -117,7 +155,8 @@ export function ProjectRouteGate({
   const latestRequestedProjectIdRef = useRef(requestedProjectId);
   const latestRequestedChatIdRef = useRef(requestedChatId);
   const activeSessionFlushRef = useRef<ProjectSessionFlushRegistration | undefined>(undefined);
-  const [resolved, setResolved] = useState<ResolvedProjectRouteAccess>();
+  const [loadedAccess, setResolved] = useState<ResolvedProjectRouteAccess>();
+  const resolved = loadedAccess?.userScope === userScope ? loadedAccess : undefined;
   const [routeError, setRouteError] = useState<ProjectRouteError>();
   const [loadAttempt, setLoadAttempt] = useState(0);
   useEffect(() => {
@@ -148,7 +187,7 @@ export function ProjectRouteGate({
               kind: 'flush',
               projectId: '',
               loadAttempt,
-              error: new Error('Tau could not save the current project view. Try again before leaving.'),
+              error: new Error('SinopiaCAD could not save the current project view. Try again before leaving.'),
             });
           }
         }
@@ -163,7 +202,7 @@ export function ProjectRouteGate({
             kind: 'access',
             projectId: requestedProjectId,
             loadAttempt,
-            error: new Error('Tau could not check this project. Try again.'),
+            error: new Error('SinopiaCAD could not check this project. Try again.'),
           });
         }
         return;
@@ -194,6 +233,7 @@ export function ProjectRouteGate({
           );
         }
         setResolved({
+          userScope,
           projectId: requestedProjectId,
           access,
           requestedChatId: latestRequestedChatIdRef.current,
@@ -204,7 +244,7 @@ export function ProjectRouteGate({
             kind: 'flush',
             projectId: requestedProjectId,
             loadAttempt,
-            error: new Error('Tau could not save the current project view. Try again before leaving.'),
+            error: new Error('SinopiaCAD could not save the current project view. Try again before leaving.'),
           });
         }
       }
@@ -219,7 +259,7 @@ export function ProjectRouteGate({
      * Finding 2). The manager's value carries `libraryRevision`, so it moves
      * with the library and `projectManager` alone re-runs this effect (P66).
      */
-  }, [requestedProjectId, projectManager, loadAttempt]);
+  }, [requestedProjectId, projectManager, loadAttempt, userScope]);
 
   /*
    * Liveness is orthogonal to navigation (A35, I22).
@@ -302,7 +342,7 @@ export function ProjectRouteGate({
       kernelName: nativeRequirement.configuration.name,
       runtimeKernelId: nativeRequirement.configuration.id,
     },
-    isKernelAvailable,
+    isKernelAvailable: isKernelExecutable,
   });
 
   /*

@@ -1,5 +1,4 @@
-import { PageContent } from '#components/layout/page-content.js';
-import { PageHeader } from '#components/layout/page-header.js';
+import { ToolPage } from '#components/layout/tool-page.js';
 import { Link, useLoaderData, useLocation, useNavigate } from 'react-router';
 import type { MetaDescriptor } from 'react-router';
 import { useEffect, useId, useRef, useState, useCallback, useMemo } from 'react';
@@ -35,6 +34,7 @@ import {
   resolveImportRoute,
   supportedKernelExtensions,
   findMainFile,
+  offersGithubImport,
 } from '#routes/import.$/import.utils.js';
 import { ImportErrorView } from '#routes/import.$/import-error-view.js';
 import { ImportProcessingView } from '#routes/import.$/import-processing-view.js';
@@ -58,6 +58,8 @@ import { prepareLinkedGithubImport, readLinkedGithubManifest } from '#lib/github
 import { GithubRequestError } from '#lib/github-connections.js';
 import { githubNoreplyAuthor, githubProjectBinding } from '#lib/github-project-binding.js';
 import { shareOrigin } from '#lib/share-origin.js';
+import { getLanguage } from '#i18n/language.js';
+import { translate, useTranslation } from '#i18n/translate.js';
 
 export const handle: Handle = {
   enableOverflowY: true,
@@ -93,7 +95,8 @@ const linkedSetupBranch = (repositoryName: string): string => {
 export function meta({ params, location }: Route.MetaArgs): MetaDescriptor[] {
   const target = resolveGitHubImportTarget(readSplatPath(params), location.search);
   if (!target?.owner) {
-    return [{ title: 'Import · Tau' }];
+    // React hoists the title, so a language other than the server's replaces its text instead of failing hydration.
+    return [{ title: `${translate(getLanguage(), 'import.title')} · SinopiaCAD` }];
   }
 
   const { title, description } = describeGitHubImport(target);
@@ -198,6 +201,7 @@ const linkedImportRefusal = (
 // oxlint-disable-next-line complexity -- TODO: consider refactoring.
 export default function ImportRoute(): React.JSX.Element {
   const { owner, repo, ref, path, mainFile, rejectedUrl } = useLoaderData<typeof clientLoader>();
+  const { t } = useTranslation();
   const [arrivalRepository] = useState({ owner, repo });
   const navigate = useNavigate();
   const projectManager = useProjectManager();
@@ -720,7 +724,7 @@ export default function ImportRoute(): React.JSX.Element {
   if (isDiskActive && diskState.matches('selectingMainFile')) {
     return (
       <ImportMainFileView
-        title='Review import'
+        title={t('import.review.title')}
         subtitle={diskImportName}
         files={diskFiles}
         selectedMainFile={diskSelectedMainFile}
@@ -802,8 +806,10 @@ export default function ImportRoute(): React.JSX.Element {
       const isFetchingFiles = gitHubState.matches('fetchingFiles');
 
       return (
-        <PageContent className='space-y-6'>
-          <PageHeader title='Import' />
+        <ToolPage
+          title={t('import.title')}
+          subtitle={isValidRepo || linkedSelection !== undefined ? undefined : t('import.subtitle')}
+        >
           {/* Keep the shared-link offer scoped to the repository named on arrival. */}
           {arrivalRepository.owner.length > 0 &&
           arrivalRepository.owner === repoOwner &&
@@ -971,6 +977,14 @@ export default function ImportRoute(): React.JSX.Element {
                 </div>
               </div>
             </section>
+          ) : linkedSelection === undefined && !offersGithubImport ? (
+            <UploadCard
+              onDataTransfer={handleDataTransfer}
+              onDirectoryHandleSelected={handleDirectoryHandleSelected}
+              onFilesSelected={handleFilesSelected}
+              onFolderSelected={handleFolderSelected}
+              onZipSelected={handleZipSelected}
+            />
           ) : linkedSelection === undefined ? (
             <>
               <div className='grid gap-8 border-t pt-6 md:grid-cols-2'>
@@ -1240,7 +1254,7 @@ export default function ImportRoute(): React.JSX.Element {
               </div>
             </section>
           )}
-        </PageContent>
+        </ToolPage>
       );
     }
 
@@ -1253,7 +1267,7 @@ export default function ImportRoute(): React.JSX.Element {
 
       return (
         <ImportMainFileView
-          title='Review import'
+          title={t('import.review.title')}
           subtitle={`${owner}/${repo}${ref === 'main' ? '' : ` @ ${ref}`}`}
           requestedMainFileWarning={requestedFileWarning}
           files={gitHubFiles}

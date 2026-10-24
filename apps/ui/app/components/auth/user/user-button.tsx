@@ -15,6 +15,8 @@ import {
 import { cn } from '@taucad/ui/utils/cn';
 import { UserAvatar } from '#components/auth/user/user-avatar.js';
 import { UserView } from '#components/auth/user/user-view.js';
+import { SinopiaUserMenu } from '#components/auth/sinopia/sinopia-user-menu.js';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 /** Auth states a `UserButton` link can be visible in. */
 export type UserButtonLinkVisibility = 'authenticated' | 'unauthenticated' | 'always';
 
@@ -90,6 +92,7 @@ export function UserButton({
   const { authClient, basePaths, viewPaths, localization, plugins, Link } = useAuth();
 
   const { data: session, isPending: sessionPending } = useSession(authClient);
+  const sinopia = useSinopiaSession();
   const isCompact = size === 'sm';
 
   const userLinks = links?.flatMap((link, index) => {
@@ -104,6 +107,21 @@ export function UserButton({
     }
     return [renderUserLink(link, Link, `user-button-link-${index.toString()}`)];
   });
+
+  /* SinopiaCAD: with a Sinopia session the menu is Sinopia's account and «Esci»; Tau's sign-in chrome stays unused. */
+  if (sinopia.status === 'signed-in') {
+    return (
+      <SinopiaUserMenu
+        user={sinopia.user}
+        className={className}
+        align={align}
+        side={side}
+        sideOffset={sideOffset}
+        size={size}
+        variant={variant}
+      />
+    );
+  }
 
   return (
     <DropdownMenu>

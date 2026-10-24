@@ -469,7 +469,7 @@ function ParametersPanelHeader({
 
   const isLastEntry = units.length <= 1;
 
-  const { replaceValues, openInViewer, openInEditor, closeEntry, QuickExport, groups } = source;
+  const { replaceValues, openInViewer, openInEditor, closeEntry, QuickExport, groups, entryTitle } = source;
   const handleReset = useCallback(() => {
     if (parameterManifest !== undefined) {
       run(async () => replaceValues(entryPath, parameterManifest, {}));
@@ -510,7 +510,7 @@ function ParametersPanelHeader({
   const hasMenu = entryMenuGroups(items).length > 0;
 
   const header = (
-    <PaneviewHeader api={api} title={entryPath}>
+    <PaneviewHeader api={api} title={entryTitle?.(entryPath) ?? entryPath}>
       {hasModifiedParameters ? (
         /* Status sits beside the file name, as a parameter's mark sits beside its label. */
         <PaneviewHeaderControls className='ml-0'>
@@ -708,8 +708,8 @@ export function ParametersPane(): React.JSX.Element | undefined {
       <div data-slot='parameters-panel-body' className='flex size-full min-h-0 flex-col overflow-hidden bg-sidebar'>
         <div data-slot='parameters-filter' className='shrink-0 bg-sidebar px-2 pt-2'>
           <SearchInput
-            aria-label='Filter parameters'
-            placeholder='Filter parameters…'
+            aria-label={source?.filterLabels?.label ?? 'Filter parameters'}
+            placeholder={source?.filterLabels?.placeholder ?? 'Filter parameters…'}
             value={filterTerm}
             className='h-7 min-w-0 bg-background'
             onChange={(event) => {

@@ -48,6 +48,7 @@ vi.mock('@taucad/ui/components/keyboard', () => ({
 }));
 vi.mock('#components/ui/sidebar.js', () => ({ useSidebar: () => sidebar }));
 vi.mock('react-router', () => ({ useNavigate: () => navigate, Link: () => null }));
+vi.mock('#routes/w.$workspace.$project/chat-switcher.js', () => ({ ChatSwitcher: () => null }));
 vi.mock('#routes/w.$workspace.$project/chat-history-settings.js', () => ({
   ChatHistorySettings: ({ onRename }: { readonly onRename: () => void }) => (
     <>
@@ -74,9 +75,9 @@ vi.mock('#components/ui/floating-panel.js', () => ({
   FloatingPanelButtonGroup: ({ children }: { readonly children: ReactNode }) => <div>{children}</div>,
 }));
 
-/* The toggle has its own suite (`chat-lane-toggle.test.tsx`); here it only has to lead the row. */
+/* The toggle has its own suite (`chat-lane-toggle.test.tsx`); here it only has to end the row. */
 vi.mock('#routes/w.$workspace.$project/chat-lane-toggle.js', () => ({
-  ChatLaneToggle: () => <button type='button'>Toggle Chat lane</button>,
+  ChatLaneToggle: () => <button type='button'>Agente</button>,
 }));
 
 const { ChatTitleBar } = await import('#routes/w.$workspace.$project/chat-title-bar.js');
@@ -115,20 +116,20 @@ describe('ChatTitleBar', () => {
       expect(screen.queryByText(/search chats/i)).not.toBeInTheDocument();
     });
 
-    it('should lead with the chat lane toggle instead of a close control on desktop', () => {
+    it('should end with the agent lane toggle, in the window’s top-right corner, instead of a close control on desktop', () => {
       sidebar.open = false;
       render(withChatLane(<ChatTitleBar closeButton={<button type='button'>Close chat</button>} />));
 
       const buttons = screen.getAllByRole('button');
-      expect(buttons[0]).toHaveAccessibleName('Toggle Chat lane');
-      expect(buttons[1]).toHaveAccessibleName('New chat');
+      expect(buttons[0]).toHaveAccessibleName('New conversation');
+      expect(buttons.at(-1)).toHaveAccessibleName('Agente');
       expect(screen.queryByRole('button', { name: 'Close chat' })).not.toBeInTheDocument();
     });
 
     it('should leave the toggle to the viewer while the lane is hidden', () => {
       render(<ChatTitleBar />);
 
-      expect(screen.queryByRole('button', { name: 'Toggle Chat lane' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Agente' })).not.toBeInTheDocument();
     });
 
     it('should keep the close control on mobile, which has no lanes', () => {
@@ -136,7 +137,7 @@ describe('ChatTitleBar', () => {
       render(withChatLane(<ChatTitleBar closeButton={<button type='button'>Close chat</button>} />));
 
       expect(screen.getByRole('button', { name: 'Close chat' })).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Toggle Chat lane' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Agente' })).not.toBeInTheDocument();
     });
 
     it('should mark the name busy and pulse while it is being generated', () => {
@@ -156,7 +157,7 @@ describe('ChatTitleBar', () => {
 
       await user.dblClick(screen.getByText('Bracket design'));
 
-      const field = screen.getByRole('textbox', { name: 'Chat name' });
+      const field = screen.getByRole('textbox', { name: 'Conversation name' });
       expect(field).toHaveValue('Bracket design');
       expect(screen.queryByText('Bracket design')).not.toBeInTheDocument();
       // The field takes the row (the sidebar's editor preset hides the Save button), and it is
@@ -173,7 +174,7 @@ describe('ChatTitleBar', () => {
       await waitFor(() => {
         expect(updateChatName).toHaveBeenCalledWith('chat_active', 'Gear housing');
       });
-      expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument();
       expect(screen.getByText('Bracket design')).toBeInTheDocument();
     });
 
@@ -182,10 +183,10 @@ describe('ChatTitleBar', () => {
       render(<ChatTitleBar />);
 
       await user.dblClick(screen.getByText('Bracket design'));
-      await user.type(screen.getByRole('textbox', { name: 'Chat name' }), 'x{Escape}');
+      await user.type(screen.getByRole('textbox', { name: 'Conversation name' }), 'x{Escape}');
 
       expect(updateChatName).not.toHaveBeenCalled();
-      expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument();
       expect(screen.getByText('Bracket design')).toBeInTheDocument();
     });
 
@@ -194,12 +195,12 @@ describe('ChatTitleBar', () => {
       render(<ChatTitleBar />);
 
       await user.dblClick(screen.getByText('Bracket design'));
-      const field = screen.getByRole('textbox', { name: 'Chat name' });
+      const field = screen.getByRole('textbox', { name: 'Conversation name' });
       await user.clear(field);
       await user.type(field, '   {Enter}');
 
       expect(updateChatName).not.toHaveBeenCalled();
-      expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument();
     });
 
     it('should open the same editor from the menu', async () => {
@@ -208,7 +209,7 @@ describe('ChatTitleBar', () => {
 
       await user.click(screen.getByRole('button', { name: 'Rename' }));
 
-      expect(screen.getByRole('textbox', { name: 'Chat name' })).toHaveValue('Bracket design');
+      expect(screen.getByRole('textbox', { name: 'Conversation name' })).toHaveValue('Bracket design');
     });
   });
 
@@ -223,11 +224,11 @@ describe('ChatTitleBar', () => {
       });
     });
 
-    it('shows a working new-chat button only with the desktop sidebar collapsed, with no separator', async () => {
+    it('shows a working new-chat button on desktop whether or not the sidebar is open, with no separator', async () => {
       sidebar.open = false;
       const { container, rerender } = render(<ChatTitleBar />);
 
-      fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+      fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
       await waitFor(() => {
         expect(navigate).toHaveBeenCalledWith('/w/home/bracket?chat=chat_new', {
           state: { focusChatComposer: true },
@@ -238,14 +239,15 @@ describe('ChatTitleBar', () => {
       // so a separator would only break the row it now belongs to.
       expect(container.querySelector('[data-slot=separator-root]')).toBeNull();
 
+      // SinopiaCAD's sidebar lists projects only: the header is where a new conversation starts.
       sidebar.open = true;
       rerender(<ChatTitleBar />);
-      expect(screen.queryByRole('button', { name: 'New chat' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
 
       sidebar.open = false;
       sidebar.isMobile = true;
       rerender(<ChatTitleBar />);
-      expect(screen.queryByRole('button', { name: 'New chat' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
     });
   });
 });

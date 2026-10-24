@@ -9,10 +9,7 @@ import type { AcpSessionData } from '@taucad/chat';
 import type { ChatRecord } from '@taucad/chat/schemas';
 import type { FileEntry } from '@taucad/types';
 import type { FileTreeService } from '@taucad/fs-client/file-tree-service';
-import { ChatAgentSheet, ghostPillClass } from '#components/chat/chat-agent-sheet.js';
-import { ChatAgentModeControl } from '#components/chat/chat-mode-selector.js';
-import { useAgentConfig } from '#components/chat/use-agent-config.js';
-import { ChatKernelSelector } from '#components/chat/chat-kernel-selector.js';
+import { ghostPillClass } from '#components/chat/chat-agent-sheet.js';
 import { Button } from '@taucad/ui/components/button';
 import {
   DropdownMenu,
@@ -22,16 +19,13 @@ import {
   DropdownMenuTrigger,
 } from '@taucad/ui/components/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
-import { SvgIcon } from '#components/icons/svg-icon.js';
 import { cn } from '@taucad/ui/utils/cn';
-import { ChatContextIndicator } from '#components/chat/chat-context-indicator.js';
 import { ChatTextareaBorderBeam } from '#components/chat/chat-textarea-border-beam.js';
 import { ChatTextareaAttachmentRail } from '#components/chat/chat-textarea-image-strip.js';
 import { ChatTextareaSubmitButton } from '#components/chat/chat-textarea-submit-button.js';
 import type { ChatAttachmentAddOptions, ChatTextareaDragKind } from '#components/chat/chat-textarea-types.js';
 import type { DraftAttachment } from '#hooks/draft.machine.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
-import { useAgentHostPlacements } from '#hooks/use-cad-agent-config.js';
 import { ChatEditor } from '#components/chat/tiptap/chat-editor.js';
 import type { CadReference } from '@taucad/chat/references';
 import {
@@ -46,6 +40,7 @@ import { createScreenshotContextHandler } from '#components/chat/screenshot-acti
 import { buildPastedContent, commandInvocation } from '#utils/at-reference.utils.js';
 import { skillMetadataToSlashCommand, useSkillsCatalogState } from '#hooks/use-skills-catalog.js';
 import type { ChatContextReference } from '#components/chat/chat-context-insertion.js';
+import { useTranslation } from '#i18n/translate.js';
 
 const dragOverlayCopy: Record<ChatTextareaDragKind, string> = {
   image: 'Add files',
@@ -55,9 +50,11 @@ const dragOverlayCopy: Record<ChatTextareaDragKind, string> = {
 
 type ChatTextareaDesktopProperties = {
   readonly className?: string;
+  /** The empty box's prompt; the project composer's own by default. */
+  readonly placeholder?: string;
   readonly enableAutoFocus?: boolean;
   readonly enableContextActions?: boolean;
-  readonly enableKernelSelector?: boolean;
+  readonly enableAgentControls?: boolean;
   readonly creationLocationControl?: React.ReactNode;
   readonly isSubmitDisabled?: boolean;
   /** Which composer this is: the edit box speaks as one and owns shortcuts only while focused (F6, F19). */
@@ -96,6 +93,8 @@ type ChatTextareaDesktopProperties = {
   readonly containerReference: React.RefObject<HTMLDivElement | null>;
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object for imperative focus
   readonly focusEditorRef: React.RefObject<(() => void) | undefined>;
+  // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- imperative editor submission for the image hero
+  readonly submitEditorRef?: React.RefObject<(() => Promise<void>) | undefined>;
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object populated by this component for parent-driven chip insertion
   readonly addContextChipsRef: React.RefObject<((paths: string[]) => void) | undefined>;
   readonly addContextReferencesRef: React.RefObject<((references: ChatContextReference[]) => void) | undefined>;
@@ -202,10 +201,11 @@ export const ChatTextareaDesktop = memo(function ({
   className,
   enableAutoFocus = true,
   enableContextActions = true,
-  enableKernelSelector = true,
+  enableAgentControls = true,
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
+  placeholder,
   enableMobileCollapse,
   isFocused,
 
@@ -235,6 +235,7 @@ export const ChatTextareaDesktop = memo(function ({
   fileInputReference,
   containerReference,
   focusEditorRef,
+  submitEditorRef,
   addContextChipsRef,
   addContextReferencesRef,
 
@@ -254,6 +255,7 @@ export const ChatTextareaDesktop = memo(function ({
   handleTextareaBlur,
   removeAttachment,
 }: ChatTextareaDesktopProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const catalog = useSkillsCatalogState();
   const skillsCatalog = catalog.status === 'closed' || catalog.status === 'error' ? [] : catalog.commands;
 
@@ -327,6 +329,15 @@ export const ChatTextareaDesktop = memo(function ({
         : [],
     );
   }, [dictation.phase, dictation.stop, draftActorRef, submitWithReferences]);
+  useLayoutEffect(() => {
+    if (!submitEditorRef) {
+      return undefined;
+    }
+    submitEditorRef.current = submitWithDictation;
+    return () => {
+      submitEditorRef.current = undefined;
+    };
+  }, [submitEditorRef, submitWithDictation]);
   const escapeWithDictation = useCallback((): void => {
     if (dictation.phase === 'idle') {
       onEscapePressed?.();
@@ -343,7 +354,7 @@ export const ChatTextareaDesktop = memo(function ({
     chats,
     actionItems,
     slashCommandItems,
-    placeholder: mode === 'edit' ? 'Edit your message' : undefined,
+    placeholder: mode === 'edit' ? t('project.agent.editPlaceholder') : placeholder,
     handleImagePaste: handlePaste,
     onContextAction: createScreenshotContextHandler({
       handleAddImage,
@@ -499,7 +510,7 @@ export const ChatTextareaDesktop = memo(function ({
   const dictationActive = dictation.phase !== 'idle';
   const dictationPending = dictationActive && dictation.phase !== 'recording';
   const sendRefusal = dictationPending
-    ? 'Wait for dictation to finish'
+    ? t('agent.dictationWait')
     : sendRefusalOf({
         sendBlockReason,
         isSubmitting,
@@ -617,7 +628,7 @@ export const ChatTextareaDesktop = memo(function ({
           composerMode={mode}
           containerReference={containerReference}
           enableContextActions={enableContextActions}
-          enableKernelSelector={enableKernelSelector}
+          enableAgentControls={enableAgentControls}
           creationLocationControl={creationLocationControl}
           acpSessionData={acpSessionData}
           status={status}
@@ -693,7 +704,7 @@ const collapseSteps = ['data-hide-kernel', 'data-hide-mode', 'data-hide-level'] 
 
 /**
  * The measured collapse. Before paint, and on every resize or label change,
- * labels leave in a fixed order — the kernel's (or the location's), the mode's,
+ * labels leave in a fixed order — the location's, the mode's,
  * then the level — until the model's name is whole; only then is it cut.
  */
 // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
@@ -743,8 +754,8 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
 
 /**
  * The composer's one bar (D6): `justify-between`, so the two clusters can
- * never overlap (F4). Left: +, the external agent's mode, the kernel (the
- * location on Home). Right: the context meter, the agent-and-model trigger,
+ * never overlap (F4). Left: +, the external agent's mode, the location on
+ * Home. No kernel: the agent chooses the engine for the job. Right: the context meter, the agent-and-model trigger,
  * Send. Every control is ghost; Send alone keeps its fill.
  *
  * Memo'd to isolate Radix `TooltipTrigger asChild` composeRefs loops: every
@@ -755,12 +766,8 @@ function useBarCollapse(barRef: React.RefObject<HTMLDivElement | null>): void {
 export const ChatTextareaBar = memo(function ({
   dictationButton,
   dictationRecording,
-  composerMode,
-  containerReference,
   enableContextActions,
-  enableKernelSelector,
   creationLocationControl,
-  acpSessionData,
   status,
   focusEditor,
   handleAtButtonClick,
@@ -783,7 +790,7 @@ export const ChatTextareaBar = memo(function ({
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React ref object
   readonly containerReference: React.RefObject<HTMLDivElement | null>;
   readonly enableContextActions: boolean;
-  readonly enableKernelSelector: boolean;
+  readonly enableAgentControls?: boolean;
   readonly creationLocationControl?: React.ReactNode;
   readonly acpSessionData?: AcpSessionData;
   readonly status: string;
@@ -805,33 +812,6 @@ export const ChatTextareaBar = memo(function ({
 }): React.JSX.Element {
   const barRef = useRef<HTMLDivElement>(null);
   useBarCollapse(barRef);
-  const { targets: placements } = useAgentHostPlacements();
-  const { execution } = useChatComposer().execution;
-  const discoveredAgent =
-    execution.kind === 'acp'
-      ? placements
-          .find((placement) => placement.hostId === execution.hostId)
-          ?.externalAgents?.find((agent) => agent.id === execution.agentId)
-      : undefined;
-  const selectedModel = execution.kind === 'acp' ? (execution.model ?? discoveredAgent?.defaultModel) : undefined;
-  const discoveredThoughtLevel =
-    selectedModel === undefined
-      ? discoveredAgent?.thoughtLevel
-      : discoveredAgent?.models.find((model) => model.id === selectedModel)?.thoughtLevel;
-  const agentConfig = useAgentConfig(acpSessionData, status, [
-    ...(discoveredAgent?.configOptions ?? []),
-    ...(discoveredThoughtLevel ? [discoveredThoughtLevel] : []),
-  ]);
-  /* F6: only the composer being typed in owns ⌘/ and ⌘. — the edit box while
-   * focus is inside it, the main composer otherwise. */
-  const ownsShortcuts = useCallback(
-    () =>
-      composerMode === 'edit'
-        ? containerReference.current?.contains(document.activeElement) === true
-        : !document.activeElement?.closest('[data-chat-composer=edit]'),
-    [composerMode, containerReference],
-  );
-
   return (
     <div
       ref={barRef}
@@ -848,9 +828,7 @@ export const ChatTextareaBar = memo(function ({
             focusEditor={focusEditor}
           />
           <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-0.5')}>
-            <ChatAgentModeControl agentConfig={agentConfig} focusEditor={focusEditor} enableShortcut={ownsShortcuts} />
             {creationLocationControl}
-            {enableKernelSelector ? <ChatTextareaKernelControl focusEditor={focusEditor} /> : null}
           </div>
           <input
             ref={fileInputReference}
@@ -867,17 +845,6 @@ export const ChatTextareaBar = memo(function ({
         </div>
       )}
       <div data-slot='composer-right' className='pointer-events-auto flex min-w-0 flex-row items-center gap-1'>
-        {dictationRecording === undefined ? (
-          <div data-slot='composer-collapsible' className={cn(collapsibleControlsClassName, 'gap-1')}>
-            <ChatContextIndicator />
-            <ChatAgentSheet
-              agentConfig={agentConfig}
-              placements={placements}
-              focusEditor={focusEditor}
-              enableShortcut={ownsShortcuts}
-            />
-          </div>
-        ) : null}
         {dictationButton}
         <ChatTextareaSubmitButton
           status={status}
@@ -893,41 +860,6 @@ export const ChatTextareaBar = memo(function ({
     </div>
   );
 });
-
-/** The kernel, ghost and glyph first; its label is the first to leave when the bar needs the room. */
-function ChatTextareaKernelControl({ focusEditor }: { readonly focusEditor: () => void }): React.JSX.Element {
-  const {
-    kernel: { kernel: selectedKernel },
-  } = useChatComposer();
-  return (
-    <Tooltip>
-      <ChatKernelSelector
-        data-chat-textarea-focustrap
-        popoverProperties={{ align: 'start' }}
-        onSelect={focusEditor}
-        onClose={focusEditor}
-      >
-        {({ selectedKernel: kernel }) => (
-          <TooltipTrigger asChild>
-            <Button
-              variant='ghost'
-              size='sm'
-              aria-label={`Select kernel (${kernel.name})`}
-              className={cn(
-                ghostPillClass,
-                'min-w-0 gap-1.5 group-data-[hide-kernel]/bar:w-7 group-data-[hide-kernel]/bar:px-0',
-              )}
-            >
-              <SvgIcon id={kernel.id} className='size-4 shrink-0 grayscale' />
-              <span className='truncate text-xs group-data-[hide-kernel]/bar:hidden'>{kernel.name}</span>
-            </Button>
-          </TooltipTrigger>
-        )}
-      </ChatKernelSelector>
-      <TooltipContent>Select kernel ({selectedKernel.name})</TooltipContent>
-    </Tooltip>
-  );
-}
 
 /**
  * One + for everything a turn can carry (F10): attach a file, or — outside
@@ -947,6 +879,7 @@ function ChatAddMenu({
   readonly handleFileSelect: () => void;
   readonly focusEditor: () => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const choseItem = useRef(false);
   return (
     <DropdownMenu modal={false}>
@@ -957,14 +890,16 @@ function ChatAddMenu({
               variant='ghost'
               size='sm'
               data-chat-textarea-focustrap
-              aria-label='Add'
+              aria-label={t('project.agent.add')}
               className={cn(ghostPillClass, 'w-7 shrink-0 px-0')}
             >
               <Plus className='size-4' aria-hidden='true' />
             </Button>
           </TooltipTrigger>
         </DropdownMenuTrigger>
-        <TooltipContent>{enableContextActions ? 'Attach a file or add context' : 'Attach a file'}</TooltipContent>
+        <TooltipContent>
+          {enableContextActions ? t('project.agent.addTooltipWithContext') : t('project.agent.addTooltip')}
+        </TooltipContent>
       </Tooltip>
       <DropdownMenuContent
         align='start'
@@ -989,9 +924,9 @@ function ChatAddMenu({
         >
           <Paperclip aria-hidden='true' className='mt-0.5' />
           <span className='flex flex-col'>
-            Attach image or PDF
+            {t('project.agent.attachImage')}
             {isAttachmentSupported ? null : (
-              <span className='text-xs text-muted-foreground'>This model can&apos;t read images or PDFs</span>
+              <span className='text-xs text-muted-foreground'>{t('project.agent.attachUnsupported')}</span>
             )}
           </span>
         </DropdownMenuItem>
@@ -1003,7 +938,7 @@ function ChatAddMenu({
             }}
           >
             <AtSign aria-hidden='true' />
-            Add context
+            {t('project.agent.addContext')}
             <DropdownMenuShortcut>@</DropdownMenuShortcut>
           </DropdownMenuItem>
         ) : null}

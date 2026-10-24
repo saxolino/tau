@@ -136,10 +136,11 @@ describe('PublicationTopbar', () => {
         </TooltipProvider>,
       );
 
-    it('should lead a builtin example back to its card in the gallery', () => {
+    it('should give a builtin example no way into the hidden Community gallery', () => {
       renderAt('/s/builtin~replicad.birdhouse');
 
-      expect(screen.getByRole('link', { name: 'Examples' })).toHaveAttribute('href', '/community#replicad.birdhouse');
+      expect(screen.queryByRole('link', { name: 'Examples' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Parts' })).not.toBeInTheDocument();
     });
 
     it('should lead a warehouse part back to the Parts catalog', () => {

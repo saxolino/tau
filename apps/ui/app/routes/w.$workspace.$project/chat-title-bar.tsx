@@ -4,6 +4,8 @@ import { SquarePen } from 'lucide-react';
 import { useSelector } from '@xstate/react';
 import { cn } from '@taucad/ui/utils/cn';
 import { ChatHistorySettings } from '#routes/w.$workspace.$project/chat-history-settings.js';
+import { ChatSwitcher } from '#routes/w.$workspace.$project/chat-switcher.js';
+import { displayChatName } from '#routes/w.$workspace.$project/chat-display-name.js';
 import { useActiveChatNaming } from '#routes/w.$workspace.$project/use-active-chat-naming.js';
 import { useOpenNewChat } from '#routes/w.$workspace.$project/use-open-new-chat.js';
 import { useChats } from '#hooks/use-chats.js';
@@ -19,6 +21,7 @@ import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { useSidebar } from '#components/ui/sidebar.js';
 import { ChatLaneToggle } from '#routes/w.$workspace.$project/chat-lane-toggle.js';
 import { useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { useTranslation } from '#i18n/translate.js';
 
 const newChatKeyCombination = {
   key: 'c',
@@ -28,14 +31,16 @@ const newChatKeyCombination = {
 
 /**
  * The chat pane's one header row: the active chat's name, renamed in place the
- * way a sidebar row is, with the chat menu at the end. On desktop the row opens
- * with the chat lane toggle, on the pixel it holds in the viewer's tab bar
- * while the lane is closed, so it replaces a generic close control; mobile has
- * no lanes and keeps `closeButton`. Chat collection navigation lives in the
- * sidebar; with the sidebar collapsed "New chat" follows the toggle.
+ * way a sidebar row is, with the chat menu after it. On desktop the row ends
+ * with the agent lane toggle, in the window's top-right corner where the
+ * viewer's cluster holds it while the lane is closed, so it replaces a generic
+ * close control; mobile has no lanes and keeps `closeButton`. Chat collection
+ * navigation lives in the sidebar; with the sidebar collapsed "New chat" leads
+ * the row.
  */
 export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode }): React.JSX.Element {
-  const { isMobile, open: isSidebarOpen } = useSidebar();
+  const { t } = useTranslation();
+  const { isMobile } = useSidebar();
   // One toggle in the document at a time: the viewer's tab bar holds it while the lane is hidden.
   const { chat: isChatVisible } = useWorkspaceLanes();
   const { openNewChat, isReady: canOpenNewChat } = useOpenNewChat();
@@ -54,7 +59,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
     applyGeneratedChatName,
   });
   const [isRenaming, setIsRenaming] = useState(false);
-  const name = activeChat?.name ?? 'Chat';
+  const name = displayChatName(activeChat?.name, t);
 
   const createAndOpenChat = async (): Promise<void> => openNewChat();
 
@@ -68,12 +73,17 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
 
   return (
     <>
-      {!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null}
-      {!isMobile && !isSidebarOpen ? (
-        <PaneButton aria-label='New chat' disabled={!canOpenNewChat} tooltip='New chat' onClick={createAndOpenChat}>
+      {/* SinopiaCAD's sidebar lists projects only, so a new conversation always starts here. */}
+      {isMobile ? null : (
+        <PaneButton
+          aria-label={t('project.agent.newChat')}
+          disabled={!canOpenNewChat}
+          tooltip={t('project.agent.newChat')}
+          onClick={createAndOpenChat}
+        >
           <SquarePen aria-hidden className='size-3.5 translate-y-[0.5px]' />
         </PaneButton>
-      ) : null}
+      )}
       <div
         className={cn(
           'relative flex min-w-0 flex-1 items-center self-stretch',
@@ -86,7 +96,8 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
             value={activeChat.name}
             variant='ghost'
             shouldStartEditing
-            ariaLabel='Chat name'
+            ariaLabel={t('project.agent.chatName')}
+            saveLabel={t('common.save')}
             // A field inside the desktop drag region cannot be typed into or selected.
             className={cn(sidebarRowEditorClass, '[app-region:no-drag]')}
             onSave={async (next) => {
@@ -114,11 +125,13 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
         )}
         <FloatingPanelContentHeaderActions className={cn(!isRenaming && 'md:absolute md:inset-y-0 md:right-0')}>
           <FloatingPanelButtonGroup>
+            <ChatSwitcher />
             <ChatHistorySettings onRename={startRename} />
           </FloatingPanelButtonGroup>
           {isMobile ? closeButton : null}
         </FloatingPanelContentHeaderActions>
       </div>
+      {!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null}
     </>
   );
 }

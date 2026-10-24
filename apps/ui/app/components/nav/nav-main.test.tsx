@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
@@ -66,4 +67,30 @@ describe('NavMain', () => {
 
     expect(screen.queryByRole('button', { name: 'More' })).toBeNull();
   });
+
+  it.each([
+    ['it', { more: 'Altro', convert: 'Converti', projects: 'Progetti' }],
+    ['en', { more: 'More', convert: 'Convert', projects: 'Projects' }],
+  ] as const)(
+    'should translate the sidebar rows from their message keys in %s',
+    async (language, { more, convert, projects }) => {
+      setLanguage(language);
+      render(
+        <MemoryRouter>
+          <SidebarProvider>
+            <NavMain
+              items={[{ title: 'Projects', titleKey: 'shell.nav.projects', url: '/projects' }]}
+              moreItems={[{ title: 'Convert', titleKey: 'shell.nav.convert', url: '/convert' }]}
+            />
+          </SidebarProvider>
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByRole('link', { name: projects })).toHaveAttribute('href', '/projects');
+      await userEvent.click(screen.getByRole('button', { name: more }));
+      expect(await screen.findByRole('menuitem', { name: convert })).toHaveAttribute('href', '/convert');
+      globalThis.localStorage.clear();
+      resetLanguageForTests();
+    },
+  );
 });

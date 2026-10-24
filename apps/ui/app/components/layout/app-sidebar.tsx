@@ -1,7 +1,9 @@
 import * as React from 'react';
-import { Link } from 'react-router';
-import { ProjectNavigation } from '#components/nav/project-navigation.js';
+import { Link, useMatch } from 'react-router';
+import { Home } from 'lucide-react';
+import { HomeRecentNavigation } from '#components/nav/home-recent-navigation.js';
 import { NavMain } from '#components/nav/nav-main.js';
+import { SinopiaToolsNavigation } from '#components/nav/sinopia-tools-navigation.js';
 import {
   Sidebar,
   SidebarContent,
@@ -11,37 +13,29 @@ import {
   SidebarTrigger,
   useSidebar,
 } from '#components/ui/sidebar.js';
-import { TauTextWordmark } from '#components/icons/tau-text-wordmark.js';
-import { NavChat } from '#components/nav/nav-chat.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { navRoutes } from '#constants/route.constants.js';
-import { useFeatureFlags } from '#flags/use-feature.js';
 import { Commands } from '#components/layout/command-palette.js';
 import { DesktopUpdate } from '#components/nav/desktop-update.js';
 import { NavUser } from '#components/nav/nav-user.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { cn } from '@taucad/ui/utils/cn';
-import { billingNavRoutes } from '#cloud/nav-billing.js';
+import { useTranslation } from '#i18n/translate.js';
 
 export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sidebar>): React.JSX.Element {
+  const { t } = useTranslation();
+  const isHome = useMatch('/') !== null;
   const { state, isMobile } = useSidebar();
-  const flags = useFeatureFlags();
   const desktopTarget = isDesktopTarget();
   const isCompact = desktopTarget && !isMobile;
   const isNonMobileCollapsed = !isMobile && state === 'collapsed';
-  const navMoreItems = React.useMemo(
-    () =>
-      [...navRoutes.navMore, ...billingNavRoutes].filter(
-        (item) => item.featureFlag === undefined || flags[item.featureFlag],
-      ),
-    [flags],
-  );
 
   return (
     <Sidebar
       {...properties}
       id={isMobile ? undefined : 'app-sidebar'}
       role={isMobile ? undefined : 'complementary'}
-      aria-label={isMobile ? undefined : 'Application sidebar'}
+      aria-label={isMobile ? undefined : t('shell.sidebar.label')}
       aria-hidden={isNonMobileCollapsed || undefined}
       inert={isNonMobileCollapsed || undefined}
       variant='sidebar'
@@ -64,12 +58,12 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
         {isMobile ? (
           <SidebarMenuButton
             asChild
-            tooltip='Home'
-            className='min-w-0 flex-1 gap-0 p-1! group-data-[collapsible=icon]:p-0! [&>svg]:h-7 [&>svg]:w-auto'
+            tooltip={t('shell.sidebar.home')}
+            className='min-w-0 flex-1 gap-0 p-1! group-data-[collapsible=icon]:p-0!'
           >
             <Link to='/'>
-              <TauTextWordmark className='py-1 text-primary' />
-              <span className='sr-only'>Home</span>
+              <SinopiaCadWordmark size='md' />
+              <span className='sr-only'>{t('shell.sidebar.home')}</span>
             </Link>
           </SidebarMenuButton>
         ) : null}
@@ -78,12 +72,19 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
         <div className='sticky top-0 z-10 space-y-1 bg-sidebar px-2 pb-1'>
           {/* Global search entries register when search opens. */}
           <Commands />
-          <NavChat isCompact={isCompact} />
+          {/* One frame on every page (UI-UX-SinopiaCAD §1.4): no «New project», no «More», no chat tree. */}
+          <SidebarMenuButton asChild isActive={isHome}>
+            <Link to='/' aria-current={isHome ? 'page' : undefined}>
+              <Home aria-hidden />
+              <span>{t('shell.sidebar.home')}</span>
+            </Link>
+          </SidebarMenuButton>
         </div>
         <div className='flex-1 overflow-y-auto'>
           <div className='flex flex-col justify-between'>
-            <NavMain items={navRoutes.navMain} moreItems={navMoreItems} className={isCompact ? 'py-1' : undefined} />
-            <ProjectNavigation className={isCompact ? 'py-1' : undefined} />
+            <NavMain items={navRoutes.navMain} className={isCompact ? 'py-1' : undefined} />
+            <HomeRecentNavigation />
+            <SinopiaToolsNavigation />
           </div>
         </div>
       </SidebarContent>

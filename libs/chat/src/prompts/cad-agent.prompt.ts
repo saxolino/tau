@@ -47,6 +47,9 @@
 // EVAL(show-model-export-hint): pending benchmark-2026-10-19 — show_model on an export under .tau/artifacts answers a hint naming its source ("… is an export of main.ts, drawn as exported. Call show_model with targetFile main.ts …"), and tau mcp's viewer instructions say a source shows with its parameters and mechanism while an exported file shows only itself, and that @cad[path#componentId] names a part (LRP-10, VUI-4). Validates the agent re-shows the source instead of describing an export's missing parameters or motion as the model's.
 // EVAL(mcp-acceptance-loop): pending benchmark-2026-10-19 — tau mcp's initialize instructions say when a static part is done (evaluate_model ready, summary bounds and componentCount within the brief, the whole test_model suite runStatus passed, undecided requirements not passed), that a moving assembly also needs mechanism declared and admitted and a requested file its export_model validation, and to name the case met (VER-7). Validates the agent never reports done while requirements are undecided and names the acceptance case in its final message.
 // EVAL(export-model-validation): pending benchmark-2026-10-19 — export_model returns validation { units, triangles, watertight } for a GLB or a per-part STL export and { units, solids } for STEP, read from the exported bytes (VER-7). Validates the agent checks watertight or the solid count before delivering a manufacturing file.
+// EVAL(sinopia-persona): pending benchmark-2026-10-23 — SinopiaCAD fork: <role> names the SinopiaCAD agent and its audience (jewelry and accessory designers and pattern makers whose pieces go to casting, setting and finishing) and keeps the deliverable quality bar of EVAL(production-grade-role) in fewer words; one <tone> bullet asks for simple, short Italian in all the person reads, about pieces, millimetres and materials, with no code, file, engine or tool names and plain-text measurements instead of LaTeX; Block 1 stays within the 3,000-token core budget; dynamic_behavior names pieces and values instead of file paths and line numbers, which the no-file-names rule would otherwise contradict. Validates Italian replies without code or tool names on the SinopiaCAD image-to-CAD pilot (collana col ramo) with no loss of dimensional fidelity.
+// EVAL(reply-language): pending benchmark-2026-10-23 — SinopiaCAD fork: the <tone> bullet no longer names Italian; a dynamic reply_language section (after kernel_skill) names the person's interface language from the agent config (`language: it|en`, absent = Italian) for replies and new piece names, with the matching decimal separator. Block 1 stays language-neutral and cached across a language switch. Validates English replies and English piece names when the interface is English, Italian otherwise, with no other behaviour change.
+// EVAL(unpinned-engine): pending benchmark-2026-10-23 — the KS-6 seam: a turn whose agent config pins no kernel gets a kernel_skill line pointing at create-model (choose the engine for the job) unless the main file already builds geometry, which keeps its engine. Block 1 stays byte-identical. Validates that a new SinopiaCAD project's first turn activates create-model and then exactly one cad-* skill, that a sculpted brief lands in PicoVoxel and a setting or clasp in SMLib, and that a later turn on a built model keeps its engine.
 
 import { toolName } from '#constants/index.js';
 import type { ChatMode } from '#constants/index.js';
@@ -54,6 +57,7 @@ import { resolveKernel } from '@taucad/types/constants';
 import type { KernelId } from '@taucad/types/constants';
 import { createSectionRegistry } from '#prompts/prompt-section-registry.js';
 import type { ResolvedSection } from '#prompts/prompt-section-registry.js';
+import type { AgentReplyLanguage } from '#schemas/agent-config.schema.js';
 
 /**
  * Return type for the structured system prompt, split into globally-cacheable
@@ -80,9 +84,18 @@ Stop after creating the plan. Do not begin implementation until the user approve
 </plan_mode>`;
 }
 
+/** The reply-language line for each interface language; piece names the agent creates follow it too (UI-UX §1.1). */
+const replyLanguageLines = {
+  it: 'Reply language: Italian. Write every reply and every new piece name in simple, short Italian; decimals with a comma (0,9 mm).',
+  en: 'Reply language: English. Write every reply and every new piece name in simple, short English; decimals with a point (0.9 mm).',
+} as const satisfies Record<AgentReplyLanguage, string>;
+
+const replyLanguageLine = (language: AgentReplyLanguage): string => replyLanguageLines[language];
+
 /**
  * Generates the CAD system prompt for the specified kernel and mode.
  * Returns separate static (globally cacheable) and dynamic (per-request) sections.
+ * An undefined kernel pins none: the dynamic tail points the agent at the `create-model` skill.
  *
  * Follows docs/policy/context-engineering-policy.md: tool descriptions document HOW,
  * this prompt documents WHEN and workflow sequencing.
@@ -91,7 +104,7 @@ Stop after creating the plan. Do not begin implementation until the user approve
  */
 // oxlint-disable-next-line max-params -- Parameters match independent concerns (kernel, mode, testing, options)
 export function getCadSystemPrompt(
-  kernel: KernelId,
+  kernel: KernelId | undefined,
   mode: ChatMode = 'agent',
   testingEnabled = true,
   options: {
@@ -100,6 +113,10 @@ export function getCadSystemPrompt(
     contextWindow?: number;
     knowledgeCutoff?: string;
     supportsImageInput?: boolean;
+    /**
+     * The person's interface language; every reply is written in it. Absent means Italian, SinopiaCAD's default.
+     */
+    language?: AgentReplyLanguage;
     /**
      * Per-section telemetry hook. Invoked once per non-empty section as
      * the registry assembles the final prompt, with the section name, cache
@@ -110,7 +127,7 @@ export function getCadSystemPrompt(
     onSectionResolved?: (resolved: ResolvedSection) => void;
   } = {},
 ): CadSystemPrompt {
-  const kernelConfiguration = resolveKernel(kernel);
+  const kernelConfiguration = kernel === undefined ? undefined : resolveKernel(kernel);
   const supportsImageInput = options.supportsImageInput ?? true;
 
   const decomposeStep = `0. **Decompose**: For multi-component, real-world, reference-based, high-fidelity, or spec/SysML requests, write a mini design brief before any code: assembly tree, major visible features, parametric relationships, key dimensions/assumptions, materials/surface treatments, and verification targets. Skip when the request is only a single shape or trivial parameter change.`;
@@ -177,7 +194,7 @@ Do not claim visual inspection was performed.
     name: 'role',
     cacheBreak: false,
     compute: () => `<role>
-You are Tau, a CAD agent. Architects, engineers, and product designers will hand your output to manufacturing — treat every model as a real engineering deliverable: dimensionally faithful, fully detailed, manufacturable as-is. The default is production-grade, not a hobbyist sketch. If a visible feature would exist on the real part (fasteners, ribs, fillets, joints, sub-components named or shown in the reference), model it; do not pick the simplest path that compiles or omit detail "for simplicity". Format math with LaTeX ($...$ inline, $$...$$ block).
+You are the SinopiaCAD agent. Jewelry and accessory designers and pattern makers send your models to casting, setting and finishing: each is a real deliverable — dimensionally faithful, fully detailed, manufacturable as-is. Model every visible feature the real piece has (prongs, bezels, jump rings, hinges, parts named or shown in the reference); never omit detail "for simplicity".
 </role>`,
   });
 
@@ -230,6 +247,7 @@ Length limits: keep text between tool calls to <=25 words. Keep final responses 
 - Do not estimate completion times. Do not add filler ("running tests…", "let me think…").
 - Do not write a colon before a tool call.
 - Do not use emojis unless the user explicitly requests them.
+- Write all the person reads simply, in the reply language, about pieces, millimetres and materials; no code, file, engine or tool names (\`@cad[...]\` is fine); plain-text measurements, never LaTeX.
 </tone>`,
   });
 
@@ -362,12 +380,21 @@ For work with three or more steps, keep the person's task list at \`.tau/chats/<
 
   // ── Dynamic sections (per-request, uncached) ──────────────────────
 
-  // KS-6 seam: when the agent config admits Auto, branch here to the
-  // create-model + entitled-kernels pointer without changing Block 1.
+  // KS-6 seam: a config that pins no kernel points at create-model here, without changing Block 1.
   registry.register({
     name: 'kernel_skill',
     cacheBreak: true,
-    compute: () => `This project uses ${kernelConfiguration.name}; activate the cad-${kernelConfiguration.id} skill.`,
+    compute: () =>
+      kernelConfiguration === undefined
+        ? `No engine is pinned for this project: activate the create-model skill and choose the engine for the job before writing geometry. If the main file already builds geometry, keep its engine and activate that engine's cad-* skill.`
+        : `This project uses ${kernelConfiguration.name}; activate the cad-${kernelConfiguration.id} skill.`,
+  });
+
+  // The person's interface language: dynamic, so switching it leaves Block 1 cached.
+  registry.register({
+    name: 'reply_language',
+    cacheBreak: true,
+    compute: () => replyLanguageLine(options.language ?? 'it'),
   });
 
   registry.register({
@@ -400,7 +427,7 @@ Model: ${options.modelId}${modelMeta ? ` (${modelMeta})` : ''}
     name: 'dynamic_behavior',
     cacheBreak: true,
     compute:
-      () => `When using tool results to inform next steps, reference specific file paths, line numbers, and values — never write vague references like "based on the above" or "as shown earlier."
+      () => `When using tool results to inform next steps, name the specific piece, measurement, and value — never write vague references like "based on the above" or "as shown earlier."
 
 For multi-step tasks: acknowledge the task in your first response before beginning work. Send progress updates only when they carry information (a decision made, a problem found), not filler like "running tests...".`,
   });

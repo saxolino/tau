@@ -17,7 +17,7 @@ import {
   FloatingPanelContentTitle,
 } from '#components/ui/floating-panel.js';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
-import { ParametersPane } from '@taucad/workbench-panes/parameters/parameters-pane';
+import { PieceMeasuresPane } from '#routes/w.$workspace.$project/piece-measures-pane.js';
 import type {
   ParametersEntryState,
   ParametersPaneviewPersistence,
@@ -32,7 +32,7 @@ import type { ParameterSetService } from '#services/parameter-set-service.js';
 import { withPointerValue } from '#services/parameter-set-service.js';
 import { usePaneviewPersistence } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
-import { ProjectWorkbenchPanesHost } from '#routes/w.$workspace.$project/workbench-panes-host.js';
+import { useTranslation } from '#i18n/translate.js';
 import type { parameterSetMachine } from '@taucad/parameters/set-machine';
 
 const toggleParametersKeyCombination = projectWorkspaceKeyCombinations.parameters;
@@ -310,15 +310,23 @@ function useProjectParametersSource(): ParametersSource {
   const {
     parameterService,
     projectRef,
-    editorRef,
     setGeometryUnitParameters,
     switchParameterGroup,
     createParameterGroup,
     deleteParameterGroup,
     renameParameterGroup,
+    mainEntryPath,
   } = useProject();
+  const { t } = useTranslation();
   return useMemo(
     (): ParametersSource => ({
+      // SinopiaCAD: no file names in the Misure (UI-UX-SinopiaCAD §3.2): the main entry is «Modello», any other one
+      // its name without the extension.
+      entryTitle: (entryPath) =>
+        entryPath === mainEntryPath
+          ? t('project.measures.model')
+          : (entryPath.split('/').pop() ?? entryPath).replace(/\.[^.]+$/u, ''),
+      filterLabels: { label: t('project.measures.filter'), placeholder: t('project.measures.filterPlaceholder') },
       useEntryPaths: useProjectParameterEntryPaths,
       useEntry: useProjectParameterEntry,
       target: (entryPath) => parameterService.target(entryPath),
@@ -361,9 +369,7 @@ function useProjectParametersSource(): ParametersSource {
       openInViewer: (entryPath) => {
         projectRef.send({ type: 'openInViewer', entryPath });
       },
-      openInEditor: (entryPath) => {
-        editorRef.send({ type: 'openFile', path: entryPath, source: 'user' });
-      },
+      // SinopiaCAD: no "Open in editor" here; the code stays behind the command palette, for developers.
       closeEntry: (entryPath) => {
         projectRef.send({ type: 'destroyGeometryUnit', entryPath });
       },
@@ -373,24 +379,20 @@ function useProjectParametersSource(): ParametersSource {
     [
       createParameterGroup,
       deleteParameterGroup,
-      editorRef,
+      mainEntryPath,
       parameterService,
       projectRef,
       renameParameterGroup,
       setGeometryUnitParameters,
       switchParameterGroup,
+      t,
     ],
   );
 }
 
 function ProjectParametersPane(): React.JSX.Element {
   const parameters = useProjectParametersSource();
-  const sources = useMemo(() => ({ parameters }), [parameters]);
-  return (
-    <ProjectWorkbenchPanesHost sources={sources}>
-      <ParametersPane />
-    </ProjectWorkbenchPanesHost>
-  );
+  return <PieceMeasuresPane source={parameters} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +405,7 @@ export const ChatParameters = memo(function (props: {
   readonly setIsExpanded?: (value: boolean | ((current: boolean) => boolean)) => void;
 }) {
   const { className, isExpanded = true, setIsExpanded } = props;
+  const { t } = useTranslation();
 
   const toggleParametersOpen = useCallback(() => {
     setIsExpanded?.((current) => !current);
@@ -417,13 +420,13 @@ export const ChatParameters = memo(function (props: {
     <FloatingPanel isOpen={isExpanded} side='right' className={className} onOpenChange={setIsExpanded}>
       <FloatingPanelContent>
         <FloatingPanelContentHeader>
-          <FloatingPanelContentTitle>Parameters</FloatingPanelContentTitle>
+          <FloatingPanelContentTitle>{t('project.lanes.measures')}</FloatingPanelContentTitle>
           <FloatingPanelContentHeaderActions>
             <FloatingPanelClose
               icon={XIcon}
               tooltipContent={(isOpen) => (
                 <div className='flex items-center gap-2'>
-                  {isOpen ? 'Close' : 'Open'} Parameters
+                  {t(isOpen ? 'measures.close' : 'measures.open')}
                   <KeyShortcut variant='tooltip'>{formattedParametersKeyCombination}</KeyShortcut>
                 </div>
               )}

@@ -18,6 +18,7 @@ export const settingsSectionSchema = z.enum([
   'compute',
   'machines',
   'models',
+  'tools',
   'agents',
   'experimental',
 ]);

@@ -1,51 +1,16 @@
 import { memo } from 'react';
-import { ArrowUp, Play, Square } from 'lucide-react';
+import { ArrowUp, Play } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
-import { cancelChatStreamKeyCombination } from '#components/chat/chat-textarea-types.js';
-import { ariaKeyShortcuts, formatKeyCombination } from '@taucad/ui/utils/keys';
+import { formatKeyCombination } from '@taucad/ui/utils/keys';
 import { Loader } from '@taucad/ui/components/loader';
+import { useTranslation } from '#i18n/translate.js';
 import { cn } from '@taucad/ui/utils/cn';
 
 /** Monochrome action treatment shared by the composer and question replies. */
 export const chatComposerActionButtonClassName =
   'rounded-full bg-foreground text-background shadow-xs hover:bg-foreground/85 hover:text-background dark:bg-foreground dark:text-background dark:hover:bg-foreground/85 dark:hover:text-background';
-
-type ChatStreamingStopButtonProperties = {
-  readonly formattedCancelKeyCombination: string;
-  readonly onCancel: () => void;
-};
-
-/** Circular composer stop control with its keyboard shortcut exposed (F1). */
-const ChatStreamingStopButton = memo(function ({
-  formattedCancelKeyCombination,
-  onCancel,
-}: ChatStreamingStopButtonProperties): React.JSX.Element {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type='button'
-          variant='ghost'
-          size='icon'
-          aria-label='Stop'
-          aria-keyshortcuts={ariaKeyShortcuts(cancelChatStreamKeyCombination)}
-          className={cn(chatComposerActionButtonClassName, 'size-7')}
-          onClick={(event) => {
-            event.stopPropagation();
-            onCancel();
-          }}
-        >
-          <Square aria-hidden='true' className='size-4 fill-background' />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent className='flex items-center gap-2 align-baseline'>
-        Stop <KeyShortcut variant='tooltip'>{formattedCancelKeyCombination}</KeyShortcut>
-      </TooltipContent>
-    </Tooltip>
-  );
-});
 
 type ChatTextareaSubmitButtonProperties = {
   readonly status: string;
@@ -61,7 +26,7 @@ type ChatTextareaSubmitButtonProperties = {
 };
 
 /**
- * Send a draft, Resume interrupted work, or Stop while a turn runs.
+ * Send a draft, queue it during a turn, or resume interrupted work.
  *
  * A refusing Send stays focusable (F14): it is `aria-disabled`, not
  * `disabled`, so a keyboard reaches it and its tooltip says why.
@@ -72,22 +37,17 @@ export const ChatTextareaSubmitButton = memo(function ({
   isSubmitting,
   refusal,
   describedBy,
-  formattedCancelKeyCombination,
   onSubmit,
-  onCancel,
 }: ChatTextareaSubmitButtonProperties): React.JSX.Element {
-  if (['streaming', 'submitted'].includes(status)) {
-    return (
-      <ChatStreamingStopButton formattedCancelKeyCombination={formattedCancelKeyCombination} onCancel={onCancel} />
+  const { t } = useTranslation();
+  const isLive = ['streaming', 'submitted'].includes(status);
+  const label = !isLive && canResume ? t('project.agent.resume') : t('project.agent.send');
+  const icon =
+    !isLive && canResume ? (
+      <Play aria-hidden='true' className='fill-current' />
+    ) : (
+      <ArrowUp aria-hidden='true' className='size-5' />
     );
-  }
-
-  const label = canResume ? 'Resume' : 'Send';
-  const icon = canResume ? (
-    <Play aria-hidden='true' className='fill-current' />
-  ) : (
-    <ArrowUp aria-hidden='true' className='size-5' />
-  );
 
   return (
     <Tooltip>
@@ -95,7 +55,7 @@ export const ChatTextareaSubmitButton = memo(function ({
         <Button
           type='button'
           variant='ghost'
-          size={canResume ? 'sm' : 'icon-sm'}
+          size={!isLive && canResume ? 'sm' : 'icon-sm'}
           aria-label={label}
           aria-keyshortcuts='Enter'
           aria-disabled={refusal !== undefined}
@@ -112,7 +72,7 @@ export const ChatTextareaSubmitButton = memo(function ({
           }}
         >
           {isSubmitting ? <Loader className='size-4' /> : icon}
-          {canResume ? label : undefined}
+          {!isLive && canResume ? label : undefined}
         </Button>
       </TooltipTrigger>
       <TooltipContent className='flex items-center gap-2 align-baseline'>

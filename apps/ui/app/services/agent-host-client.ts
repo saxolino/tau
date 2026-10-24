@@ -33,6 +33,7 @@ import {
 import type { AgentHostTransport } from '#services/agent-host-transport.js';
 import { createDaemonAgentHostTransport } from '#services/daemon-agent-host-client.js';
 import { createBrowserAgentWorker } from '#services/browser-agent-worker.js';
+import { sinopiaSession } from '#lib/sinopia-session.js';
 
 export type BrowserAgentHostCapability = AgentHostCapabilityReport;
 
@@ -669,6 +670,23 @@ const createResidentAgentWorker = (createWorker: () => Worker): ResidentAgentWor
       });
       report();
     }
+    /* SinopiaCAD: every change of the Sinopia session's access token (sign-in, hourly refresh, sign-out) reaches this
+     * worker, whose gateway reads the latest one on each request; each provide also carries the token of its moment. */
+    const stopTokens = sinopiaSession().onAccessToken((token) => {
+      if (live.dead) {
+        return;
+      }
+      // async-iife: bootstrap -- a token report is best effort; a dead worker is retired by its channel and its
+      // replacement gets the token with its first provide.
+      void (async (): Promise<void> => {
+        try {
+          await channel.call('accessToken', token === undefined ? {} : { token });
+        } catch {
+          /* See above. */
+        }
+      })();
+    });
+    channel.onClose(stopTokens);
     return live;
   };
 
@@ -774,6 +792,8 @@ const createResidentAgentWorker = (createWorker: () => Worker): ResidentAgentWor
   const provideTo = async (live: Incarnation, projectId: string): Promise<string> => {
     const options = registrationOf(projectId);
     const principal = await (options.principal === undefined ? sessionPrincipalIn(live) : options.principal());
+    /* SinopiaCAD: read last, just before the provide is posted, so a later refresh reaches the worker after it. */
+    const accessToken = await sinopiaSession().accessToken();
     const {
       computeMode,
       fileSystemPort,
@@ -810,6 +830,7 @@ const createResidentAgentWorker = (createWorker: () => Worker): ResidentAgentWor
           runtimeConfig: options.runtimeConfig,
           testingEnabled: options.testingEnabled,
           ...(principal === undefined ? {} : { principal }),
+          ...(accessToken === undefined ? {} : { accessToken }),
         },
         transferables,
       });

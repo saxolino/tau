@@ -1,318 +1,158 @@
-import { Profiler } from 'react';
-import { KeyboardProvider } from '@taucad/ui/components/keyboard';
+import { StrictMode } from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { DockviewApi, DockviewPanelApi, IDockviewPanel } from 'dockview-react';
-import { mock } from 'vitest-mock-extended';
+import type { IDockviewHeaderActionsProps } from 'dockview-react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
-import { WorkbenchToggle } from '#routes/w.$workspace.$project/workbench-toggle.js';
+import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { WorkspaceLanesContext } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
-const createPanel = (id: string, path = `${id}.txt`): IDockviewPanel => {
-  const api = mock<DockviewPanelApi>({ id, setActive: vi.fn() });
-  Object.defineProperty(api, 'title', { value: path.split('/').at(-1) });
-  const panel = mock<IDockviewPanel>({ id });
-  Object.defineProperties(panel, { api: { value: api }, params: { value: { filePath: path } } });
-  return panel;
-};
+const state = vi.hoisted(() => ({ isMobile: false, isTopLeft: true }));
+const setWorkbenchOpen = vi.hoisted(() => vi.fn());
 
-/** A workbench Dockview whose panel list can change and announce it. */
-const createApi = (initial: IDockviewPanel[]): { api: DockviewApi; setPanels: (panels: IDockviewPanel[]) => void } => {
-  let panels = initial;
-  const listeners = new Set<() => void>();
-  const on = (listener: () => void): { dispose: () => void } => {
-    listeners.add(listener);
-    return {
-      dispose() {
-        listeners.delete(listener);
-      },
-    };
-  };
-  const api = mock<DockviewApi>();
-  // The toggle only needs to hear that something changed, not the event payloads.
-  for (const event of [
-    'onDidAddPanel',
-    'onDidRemovePanel',
-    'onDidActivePanelChange',
-    'onDidLayoutFromJSON',
-    'onDidLayoutChange',
-  ] as const) {
-    Object.defineProperty(api, event, { value: on });
-  }
-  Object.defineProperties(api, {
-    panels: { get: () => panels },
-    activePanel: { get: () => panels[0] },
-  });
-  return {
-    api,
-    setPanels(next) {
-      panels = next;
-      act(() => {
-        for (const listener of listeners) {
-          listener();
-        }
-      });
-    },
-  };
-};
+vi.mock('#components/panes/use-is-top-right-group.js', () => ({
+  useIsTopLeftGroup: () => state.isTopLeft,
+}));
+vi.mock('#components/ui/sidebar.js', () => ({ useSidebar: () => ({ isMobile: state.isMobile }) }));
+vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof ProjectWorkspaceContext>()),
+  useProjectWorkspace: () => ({ setWorkbenchOpen }),
+}));
 
-const renderToggle = (properties: Partial<React.ComponentProps<typeof WorkbenchToggle>> & { api?: DockviewApi }) => {
-  const onOpenChange = vi.fn();
-  const view = render(
-    <KeyboardProvider>
-      <TooltipProvider delayDuration={0}>
-        <button type='button'>Editor</button>
-        <WorkbenchToggle isOpen={false} onOpenChange={onOpenChange} {...properties} />
-      </TooltipProvider>
-    </KeyboardProvider>,
-  );
-  return { onOpenChange, view, trigger: screen.getByRole('button', { name: 'Toggle Workbench lane' }) };
-};
+const { WorkbenchLaneHead, WorkbenchLaneToggle, toggleWorkbenchKeyCombination } =
+  await import('#routes/w.$workspace.$project/workbench-toggle.js');
 
-const hover = (trigger: HTMLElement): HTMLElement => {
-  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' });
-  return screen.getByRole('dialog');
-};
+const misureOpen = { chat: true, workbench: true };
+const misureHidden = { chat: true, workbench: false };
 
-/** JSDOM has no PointerEvent; a MouseEvent named pointermove carries the coordinates. */
-const moveTo = (clientX: number, clientY: number): void => {
-  fireEvent(document, new MouseEvent('pointermove', { clientX, clientY, bubbles: true }));
-};
+// StrictMode, as the dev server runs it: its double effect once spent the focus claim early.
+const withLanes = (ui: React.ReactElement, isMisureVisible: boolean): React.JSX.Element => (
+  <StrictMode>
+    <TooltipProvider>
+      <WorkspaceLanesContext.Provider value={isMisureVisible ? misureOpen : misureHidden}>
+        {ui}
+      </WorkspaceLanesContext.Provider>
+    </TooltipProvider>
+  </StrictMode>
+);
+const renderWithLanes = (ui: React.ReactElement, isMisureVisible: boolean) => render(withLanes(ui, isMisureVisible));
 
-const scrollDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+const headerProperties = {} as unknown as IDockviewHeaderActionsProps;
 
+// The Italian names; the English ones are checked at the end.
 beforeEach(() => {
-  Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+  setLanguage('it');
 });
 
 afterEach(() => {
-  if (scrollDescriptor) {
-    Object.defineProperty(Element.prototype, 'scrollIntoView', scrollDescriptor);
-  } else {
-    Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
-  }
-  cleanup();
-  vi.useRealTimers();
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
 });
 
-describe('WorkbenchToggle', () => {
-  it('should toggle with Control+W using the current lane state and unregister on unmount', () => {
-    const { trigger, onOpenChange, view } = renderToggle({});
-    expect(trigger).toHaveAttribute('aria-keyshortcuts', 'Control+W');
-    fireEvent.keyDown(document.body, { key: 'w' });
-    fireEvent.keyDown(document.body, { key: 'w', metaKey: true });
-    expect(onOpenChange).not.toHaveBeenCalled();
+describe('WorkbenchLaneToggle', () => {
+  beforeEach(() => {
+    state.isMobile = false;
+    state.isTopLeft = true;
+    vi.clearAllMocks();
+  });
 
-    expect(fireEvent.keyDown(document.body, { key: 'w', ctrlKey: true })).toBe(false);
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
-    view.rerender(
-      <KeyboardProvider>
-        <TooltipProvider>
-          <WorkbenchToggle isOpen onOpenChange={onOpenChange} />
-        </TooltipProvider>
-      </KeyboardProvider>,
+  it.each([
+    ['it', 'Misure'],
+    ['en', 'Measures'],
+  ] as const)('names the lane in %s', (language, name) => {
+    setLanguage(language);
+    renderWithLanes(<WorkbenchLaneToggle place='viewer' />, false);
+
+    expect(screen.getByRole('button', { name })).toHaveTextContent(name);
+  });
+
+  it('folds to its glyph by the container the host names', () => {
+    renderWithLanes(
+      <WorkbenchLaneToggle place='viewer' fold={{ className: 'fold-button', labelClassName: 'fold-label' }} />,
+      false,
     );
-    onOpenChange.mockClear();
-    fireEvent.keyDown(document.body, { key: 'w', ctrlKey: true });
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
 
-    view.unmount();
-    onOpenChange.mockClear();
-    fireEvent.keyDown(document.body, { key: 'w', ctrlKey: true });
-    expect(onOpenChange).not.toHaveBeenCalled();
+    const toggle = screen.getByRole('button', { name: 'Misure' });
+    expect(toggle).toHaveClass('fold-button');
+    expect(screen.getByText('Misure')).toHaveClass('fold-label');
   });
 
-  it('should close the open-tabs list when toggled with Control+W', () => {
-    const { trigger, onOpenChange } = renderToggle({ api: createApi([createPanel('one')]).api });
-    hover(trigger);
-    fireEvent.keyDown(document.body, { key: 'w', ctrlKey: true });
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('should show the shortcut in the tooltip', async () => {
+  it('is pressed at the head of the Misure lane, advertises ⌃W, and hides the lane', async () => {
     const user = userEvent.setup();
-    const { trigger } = renderToggle({});
-    await user.hover(trigger);
-    const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip).toHaveTextContent('Toggle Workbench');
-    expect(within(tooltip).getByText('Ctrl+W')).toBeInTheDocument();
+    renderWithLanes(<WorkbenchLaneToggle place='lane' />, true);
+
+    // The lane's own button only hides it: named for that, no pressed state (the top bar's toggle carries it).
+    const toggle = screen.getByRole('button', { name: 'Nascondi le misure' });
+    expect(toggle).not.toHaveAttribute('aria-pressed');
+    expect(toggle).toHaveAttribute('aria-keyshortcuts', 'Control+W');
+    expect(toggleWorkbenchKeyCombination).toEqual({ key: 'w', ctrlKey: true });
+    // The lane's own header already names it: the icon alone, a 28 px pane button.
+    expect(toggle).toHaveClass('size-7');
+    expect(toggle).not.toHaveTextContent('Misure');
+    await user.click(toggle);
+
+    expect(setWorkbenchOpen).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it('should ignore layout notifications when the tab list is unchanged', () => {
-    const panels = [createPanel('one')];
-    const workbench = createApi(panels);
-    const commit = vi.fn();
+  it('names the hidden lane where the lane is not, folding to its glyph by default with the viewer', async () => {
+    const user = userEvent.setup();
+    renderWithLanes(<WorkbenchLaneToggle place='viewer' />, false);
+
+    const toggle = screen.getByRole('button', { name: 'Misure' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).toHaveTextContent('Misure');
+    expect(toggle).toHaveClass('@max-xl/viewer:w-7');
+    await user.click(toggle);
+
+    expect(setWorkbenchOpen).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it('hands keyboard focus to the other mount (B-2)', async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderWithLanes(<WorkbenchLaneToggle place='viewer' />, false);
+    await user.tab();
+    await user.keyboard('{Enter}');
+    expect(setWorkbenchOpen).toHaveBeenCalledExactlyOnceWith(true);
+
+    rerender(withLanes(<WorkbenchLaneToggle place='lane' />, true));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Nascondi le misure' })).toHaveFocus();
+    });
+  });
+});
+
+describe('WorkbenchLaneHead', () => {
+  beforeEach(() => {
+    state.isMobile = false;
+    state.isTopLeft = true;
+  });
+
+  it('heads the Misure lane’s top-left group only while the lane shows', () => {
+    const { container } = renderWithLanes(<WorkbenchLaneHead {...headerProperties} />, true);
+    const toggle = screen.getByRole('button', { name: 'Nascondi le misure' });
+    expect(toggle.parentElement).toHaveClass('pl-1');
+    container.remove();
+
+    expect(renderWithLanes(<WorkbenchLaneHead {...headerProperties} />, false).container).toBeEmptyDOMElement();
+  });
+
+  it('stays out of split groups and off mobile', () => {
+    state.isTopLeft = false;
+    expect(renderWithLanes(<WorkbenchLaneHead {...headerProperties} />, true).container).toBeEmptyDOMElement();
+
+    state.isTopLeft = true;
+    state.isMobile = true;
+    expect(renderWithLanes(<WorkbenchLaneHead {...headerProperties} />, true).container).toBeEmptyDOMElement();
+  });
+
+  it('stays out of pages without desktop lanes, such as a shared project', () => {
     render(
-      <KeyboardProvider>
-        <TooltipProvider delayDuration={0}>
-          <Profiler id='toggle' onRender={commit}>
-            <WorkbenchToggle isOpen={false} onOpenChange={vi.fn()} api={workbench.api} />
-          </Profiler>
-        </TooltipProvider>
-      </KeyboardProvider>,
+      <TooltipProvider>
+        <WorkbenchLaneHead {...headerProperties} />
+      </TooltipProvider>,
     );
-    commit.mockClear();
-    workbench.setPanels(panels);
-    expect(commit).not.toHaveBeenCalled();
-    workbench.setPanels([...panels, createPanel('two')]);
-    expect(screen.getByRole('button', { name: 'Toggle Workbench lane' })).toHaveTextContent('2');
-  });
-
-  it('should count workbench tabs while closed and follow panel changes', () => {
-    const workbench = createApi(Array.from({ length: 12 }, (_, index) => createPanel(`tab-${index}`)));
-    const { trigger } = renderToggle({ api: workbench.api });
-    expect(trigger).toHaveAttribute('aria-pressed', 'false');
-    expect(trigger).toHaveTextContent('9+');
-    expect(trigger).toHaveAttribute('aria-description', '12 open tabs. Press Down Arrow to list them.');
-
-    workbench.setPanels([createPanel('one'), createPanel('two')]);
-    expect(trigger).toHaveTextContent('2');
-
-    workbench.setPanels([]);
-    expect(trigger).toHaveTextContent('');
-    fireEvent.pointerEnter(trigger, { pointerType: 'mouse' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('should only toggle while open: split glyph, no count and no hover list', () => {
-    const { trigger, onOpenChange } = renderToggle({ isOpen: true, api: createApi([createPanel('one')]).api });
-    expect(trigger).toHaveAttribute('aria-pressed', 'true');
-    expect(trigger).toHaveTextContent('');
-    expect(trigger).not.toHaveAttribute('aria-description');
-    fireEvent.pointerEnter(trigger, { pointerType: 'mouse' });
-    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.click(trigger);
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
-  });
-
-  it('should open the list on hover without stealing focus, and open the lane on the picked tab', () => {
-    const first = createPanel('first', 'src/main.txt');
-    const second = createPanel('second', 'docs/main.txt');
-    const { trigger, onOpenChange } = renderToggle({ api: createApi([first, second]).api });
-    screen.getByRole('button', { name: 'Editor' }).focus();
-    const menu = hover(trigger);
-    expect(screen.getByRole('button', { name: 'Editor' })).toHaveFocus();
-    const rows = within(menu).getAllByRole('option');
-    // The pane chevron's menu: title only, the active tab checked.
-    expect(rows[0]).toHaveTextContent(/^main.txt$/);
-    expect(within(rows[0]!).getByLabelText('Active tab')).toBeInTheDocument();
-    expect(rows[1]).toHaveTextContent(/^main.txt$/);
-    fireEvent.click(rows[1]!);
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
-    expect(second.api.setActive).toHaveBeenCalledOnce();
-    expect(first.api.setActive).not.toHaveBeenCalled();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('should use the workbench tab icons', () => {
-    const utility = createPanel('parameters');
-    renderToggle({
-      api: createApi([utility, createPanel('models/a/main.py', 'models/a/main.py')]).api,
-      getIcon: (panel) => (panel.api.id === utility.api.id ? <span aria-label='Parameters icon' /> : undefined),
-    });
-    const menu = hover(screen.getByRole('button', { name: 'Toggle Workbench lane' }));
-    expect(within(menu).getByLabelText('Parameters icon')).toBeInTheDocument();
-    expect(within(menu).getAllByRole('option')[1]).toHaveTextContent(/^main.py$/);
-  });
-
-  it('should toggle the lane on click and close a hover-opened list until the pointer returns', () => {
-    const { trigger, onOpenChange } = renderToggle({ api: createApi([createPanel('one')]).api });
-    hover(trigger);
-    fireEvent.click(trigger);
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.pointerEnter(trigger, { pointerType: 'mouse' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.pointerLeave(trigger);
-    hover(trigger);
-  });
-
-  it('should stay open across the gap, even after a pause, and close once the pointer settles elsewhere', () => {
-    vi.useFakeTimers();
-    const { trigger } = renderToggle({ api: createApi([createPanel('one')]).api });
-    const menu = hover(trigger);
-    // The header's bottom-right corner: a 28 px button, an 8 px gap, then the list.
-    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(
-      DOMRect.fromRect({ x: 972, y: 4, width: 28, height: 28 }),
-    );
-    vi.spyOn(menu, 'getBoundingClientRect').mockReturnValue(
-      DOMRect.fromRect({ x: 712, y: 40, width: 288, height: 160 }),
-    );
-
-    moveTo(985, 18);
-    fireEvent.pointerLeave(trigger);
-    moveTo(950, 36);
-    act(() => {
-      vi.advanceTimersByTime(1000);
-    });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-
-    // Heading for a far row: across the header, inside the triangle to the list's top edge.
-    moveTo(985, 18);
-    moveTo(900, 25);
-    act(() => {
-      vi.advanceTimersByTime(1000);
-    });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-
-    moveTo(800, 60);
-    moveTo(500, 300);
-    act(() => {
-      vi.advanceTimersByTime(100);
-    });
-    moveTo(800, 60);
-    act(() => {
-      vi.advanceTimersByTime(150);
-    });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-
-    moveTo(500, 300);
-    act(() => {
-      vi.advanceTimersByTime(150);
-    });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  });
-
-  it('should list from the keyboard, filter by path and return focus on Escape', async () => {
-    const first = createPanel('first', 'src/main.txt');
-    const second = createPanel('second', 'docs/main.txt');
-    const { trigger, onOpenChange } = renderToggle({ api: createApi([first, second]).api });
-    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    const input = screen.getByRole('combobox');
-    await waitFor(() => {
-      expect(input).toHaveFocus();
-    });
-    fireEvent.change(input, { target: { value: 'docs/main' } });
-    await waitFor(() => {
-      expect(screen.getAllByRole('option')).toHaveLength(1);
-    });
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    await waitFor(() => {
-      expect(trigger).toHaveFocus();
-    });
-
-    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    const reopened = screen.getByRole('combobox');
-    fireEvent.change(reopened, { target: { value: 'docs/main' } });
-    await waitFor(() => {
-      expect(screen.getAllByRole('option')).toHaveLength(1);
-    });
-    fireEvent.keyDown(reopened, { key: 'Enter' });
-    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
-    expect(second.api.setActive).toHaveBeenCalledOnce();
-  });
-
-  it('should cancel a pending hover dismissal on unmount', () => {
-    vi.useFakeTimers();
-    const { trigger, view } = renderToggle({ api: createApi([createPanel('one')]).api });
-    hover(trigger);
-    moveTo(500, 300);
-    const clearTimer = vi.spyOn(globalThis, 'clearTimeout');
-    view.unmount();
-    expect(clearTimer).toHaveBeenCalled();
-    clearTimer.mockRestore();
+    expect(screen.queryByRole('button', { name: 'Misure' })).not.toBeInTheDocument();
   });
 });

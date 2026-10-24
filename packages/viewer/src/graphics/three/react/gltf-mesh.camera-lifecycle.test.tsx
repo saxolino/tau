@@ -858,6 +858,43 @@ describe('GltfMesh camera lifecycle', () => {
       });
       expect(raycast).toHaveBeenCalledTimes(1);
 
+      // A native touch hold selects through the same clipping-aware picker.
+      const hold = mock<PointerEvent>({
+        offsetX: 400,
+        offsetY: 400,
+        pointerId: 1,
+        button: 2,
+        pointerType: 'touch',
+        target: canvas,
+        preventDefault: vi.fn(),
+      });
+      await act(async () => handlers?.onContextMenu(hold));
+      expect(mocks.graphicsActor.send).toHaveBeenCalledWith({
+        type: 'selectModelComponent',
+        unitId: 'unit:test',
+        componentId: 'near',
+        source: 'viewer',
+      });
+      mocks.graphicsActor.send.mockClear();
+      const touchClick = mock<PointerEvent>({
+        offsetX: 400,
+        offsetY: 400,
+        pointerId: 1,
+        button: 0,
+        pointerType: 'touch',
+        target: canvas,
+      });
+      await act(async () => handlers?.onClick(touchClick));
+      expect(mocks.graphicsActor.send).toHaveBeenCalledWith({
+        type: 'selectModelComponent',
+        unitId: 'unit:test',
+        componentId: 'near',
+        source: 'viewer',
+      });
+      expect(mocks.graphicsActor.send).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'toggleModelComponentSelection' }),
+      );
+
       near.layers.set(1);
       raycast.mockClear();
       await act(async () => handlers?.onPointerDown(secondaryPointerEvent));

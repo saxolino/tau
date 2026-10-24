@@ -17,7 +17,8 @@ export function seedInitialWorkbenchFiles<T extends CreationFile>(
     version: 1,
     lanes: { chat: true, workbench: true },
     viewer: { kind: 'group', tabs: [{ kind: 'view', view: viewId }] },
-    workbench: { kind: 'group', tabs: [] },
+    // SinopiaCAD: a new project's workbench lane is Misure, not Tau's empty launcher.
+    workbench: { kind: 'group', tabs: [{ kind: 'pane', pane: 'parameters' }] },
   });
   const encode = (value: string): CreationFile => ({ content: new TextEncoder().encode(value) });
   return {

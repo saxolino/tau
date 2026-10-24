@@ -1,8 +1,8 @@
 import { StrictMode } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { IDockviewHeaderActionsProps } from 'dockview-react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type * as SidebarStatus from '#hooks/use-sidebar-status.js';
 import type { ChatSidebarStatus } from '#hooks/use-sidebar-status.js';
@@ -10,8 +10,6 @@ import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/pro
 import { WorkspaceLanesContext } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 const state = vi.hoisted(() => ({
-  isMobile: false,
-  isTopLeft: true,
   status: undefined as ChatSidebarStatus | undefined,
 }));
 const setChatOpen = vi.hoisted(() => vi.fn());
@@ -30,16 +28,12 @@ vi.mock('#hooks/use-sidebar-status.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SidebarStatus>()),
   useChatSidebarStatus: () => state.status,
 }));
-vi.mock('#components/panes/use-is-top-right-group.js', () => ({
-  useIsTopLeftGroup: () => state.isTopLeft,
-}));
-vi.mock('#components/ui/sidebar.js', () => ({ useSidebar: () => ({ isMobile: state.isMobile }) }));
 vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (importOriginal) => ({
   ...(await importOriginal<typeof ProjectWorkspaceContext>()),
   useProjectWorkspace: () => ({ setChatOpen }),
 }));
 
-const { ChatLaneToggle, ViewerChatLaneToggle } = await import('#routes/w.$workspace.$project/chat-lane-toggle.js');
+const { ChatLaneToggle } = await import('#routes/w.$workspace.$project/chat-lane-toggle.js');
 
 const approval: ChatSidebarStatus = {
   state: 'approval',
@@ -64,26 +58,68 @@ const withLanes = (ui: React.ReactElement, chat: boolean): React.JSX.Element => 
 );
 const renderWithLanes = (ui: React.ReactElement, chat: boolean) => render(withLanes(ui, chat));
 
-const headerProperties = {} as unknown as IDockviewHeaderActionsProps;
-
 describe('ChatLaneToggle', () => {
   beforeEach(() => {
-    state.isMobile = false;
-    state.isTopLeft = true;
     state.status = undefined;
     vi.clearAllMocks();
+    // The Italian name; the English one is checked below.
+    setLanguage('it');
   });
 
-  it('is pressed in the lane header, advertises ⌃C, and closes the lane', async () => {
+  afterEach(() => {
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
+  });
+
+  it.each([
+    ['it', 'Agente', 'Mostra l’agente'],
+    ['en', 'Agent', 'Show the agent'],
+  ] as const)('names the agent in %s', async (language, name, tooltip) => {
+    setLanguage(language);
+    const user = userEvent.setup();
+    renderWithLanes(<ChatLaneToggle place='viewer' />, false);
+
+    const toggle = screen.getByRole('button', { name });
+    expect(toggle).toHaveTextContent(name);
+    await user.hover(toggle);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(tooltip);
+  });
+
+  it('stays in the top bar while the lane shows, pressed and without a mark (R3)', () => {
+    state.status = approval;
+    const { container } = renderWithLanes(<ChatLaneToggle place='viewer' />, true);
+
+    expect(screen.getByRole('button', { name: 'Agente' })).toHaveAttribute('aria-pressed', 'true');
+    expect(container.querySelector('[data-slot="chat-toggle-mark"]')).toBeNull();
+  });
+
+  it('is pressed in the agent pane header, advertises ⌃C, and closes the lane', async () => {
     const user = userEvent.setup();
     renderWithLanes(<ChatLaneToggle place='lane' />, true);
 
-    const toggle = screen.getByRole('button', { name: 'Toggle Chat lane' });
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // The lane's own button only hides it: named for that, no pressed state (the top bar's toggle carries it).
+    const toggle = screen.getByRole('button', { name: 'Nascondi l’agente' });
+    expect(toggle).not.toHaveAttribute('aria-pressed');
     expect(toggle).toHaveAttribute('aria-keyshortcuts', 'Control+C');
+    // The open pane names itself: the header carries the icon alone, a 28 px pane button.
+    expect(toggle).toHaveClass('size-7');
+    expect(toggle).not.toHaveTextContent('Agente');
     await user.click(toggle);
 
     expect(setChatOpen).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('names the hidden agent, folding to its glyph by default with the viewer', async () => {
+    const user = userEvent.setup();
+    renderWithLanes(<ChatLaneToggle place='viewer' />, false);
+
+    const toggle = screen.getByRole('button', { name: 'Agente' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).toHaveTextContent('Agente');
+    expect(toggle).toHaveClass('@max-xl/viewer:w-7');
+    await user.click(toggle);
+
+    expect(setChatOpen).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it('never marks the open lane: the lane owns its own state (R3)', () => {
@@ -91,14 +127,14 @@ describe('ChatLaneToggle', () => {
     const { container } = renderWithLanes(<ChatLaneToggle place='lane' />, true);
 
     expect(container.querySelector('[data-slot="chat-toggle-mark"]')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Toggle Chat lane' })).not.toHaveAccessibleDescription();
+    expect(screen.getByRole('button', { name: 'Nascondi l’agente' })).not.toHaveAccessibleDescription();
   });
 
   it('carries the sidebar mark and its sentence while the lane is hidden, without the count', () => {
     state.status = approval;
     const { container } = renderWithLanes(<ChatLaneToggle place='viewer' />, false);
 
-    const toggle = screen.getByRole('button', { name: 'Toggle Chat lane' });
+    const toggle = screen.getByRole('button', { name: 'Agente' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(toggle).toHaveAccessibleDescription('Needs your approval · 2');
     const mark = container.querySelector('[data-slot="chat-toggle-mark"]');
@@ -124,35 +160,7 @@ describe('ChatLaneToggle', () => {
     rerender(withLanes(<ChatLaneToggle place='lane' />, true));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Toggle Chat lane' })).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Nascondi l’agente' })).toHaveFocus();
     });
-  });
-});
-
-describe('ViewerChatLaneToggle', () => {
-  beforeEach(() => {
-    state.isMobile = false;
-    state.isTopLeft = true;
-  });
-
-  it('heads the top-left group only while the chat lane is hidden', () => {
-    const { container } = renderWithLanes(<ViewerChatLaneToggle {...headerProperties} />, false);
-    const prefix = screen.getByRole('button', { name: 'Toggle Chat lane' }).parentElement;
-    expect(prefix).toHaveClass('pl-1');
-    // The same hairline the top-right cluster sets between the tabs and its own groups.
-    expect(prefix?.lastElementChild).toHaveAttribute('data-orientation', 'vertical');
-    container.remove();
-
-    const visible = renderWithLanes(<ViewerChatLaneToggle {...headerProperties} />, true);
-    expect(visible.container).toBeEmptyDOMElement();
-  });
-
-  it('stays out of every other group and off mobile', () => {
-    state.isTopLeft = false;
-    expect(renderWithLanes(<ViewerChatLaneToggle {...headerProperties} />, false).container).toBeEmptyDOMElement();
-
-    state.isTopLeft = true;
-    state.isMobile = true;
-    expect(renderWithLanes(<ViewerChatLaneToggle {...headerProperties} />, false).container).toBeEmptyDOMElement();
   });
 });

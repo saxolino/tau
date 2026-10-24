@@ -13,6 +13,7 @@ import { formatDisplayName } from '#components/geometry/converter/converter-util
 import { cn } from '@taucad/ui/utils/cn';
 import { createExportArtifactZip } from '#utils/export-artifact-set.utils.js';
 import type { ConverterExportFormat, ConverterImportFormat } from '@taucad/converter/runtime';
+import { useTranslation } from '#i18n/translate.js';
 
 type UploadedFileInfo = {
   readonly name: string;
@@ -56,6 +57,7 @@ export function Converter({
   formatSelectorProperties,
   className,
 }: ConverterProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const zipId = useId();
   const locationId = useId();
   const projectId = useId();
@@ -91,7 +93,7 @@ export function Converter({
 
   const handleDownload = useCallback(async (): Promise<void> => {
     if (selectedFormats.length === 0) {
-      toast.warning('Cannot export: no formats selected');
+      toast.warning(t('convert.download.chooseFormat'));
       return;
     }
 
@@ -151,14 +153,22 @@ export function Converter({
         }
       })();
 
+      const onlyFormat = selectedFormats.length === 1 ? selectedFormats[0]?.toUpperCase() : undefined;
       toast.promise(operation, {
-        loading: `Exporting ${selectedFormats.length} format(s)...`,
-        success: `Exported ${selectedFormats.length} format(s)`,
+        loading:
+          onlyFormat === undefined
+            ? t('convert.download.preparingMany', { count: selectedFormats.length })
+            : t('convert.download.preparingOne', { format: onlyFormat }),
+        success:
+          onlyFormat === undefined
+            ? t('convert.download.doneMany', { count: selectedFormats.length })
+            : t('convert.download.doneOne', { format: onlyFormat }),
         error(error: unknown) {
           if (error instanceof Error && error.name === 'AbortError') {
-            return 'Export cancelled';
+            return t('convert.download.cancelled');
           }
-          return error instanceof Error ? `Failed to export files: ${error.message}` : 'Failed to export files';
+          // The cause is technical; the toast says how to recover.
+          return t('convert.download.failed');
         },
       });
       await operation;
@@ -176,6 +186,7 @@ export function Converter({
     saveFileWithPicker,
     onExport,
     shouldSaveToProject,
+    t,
   ]);
 
   return (
@@ -198,12 +209,12 @@ export function Converter({
           {isExporting ? <Loader /> : <Download className='size-4 shrink-0' />}
           <span className='min-w-0 wrap-break-word'>
             {selectedFormats.length === 0
-              ? 'Select formats to download'
+              ? t('convert.download.none')
               : selectedFormats.length === 1
-                ? `Download ${selectedFormats[0]?.toUpperCase()}`
+                ? t('convert.download.one', { format: selectedFormats[0]?.toUpperCase() ?? '' })
                 : shouldUseZipForMultiple
-                  ? `Download ${selectedFormats.length} formats as ZIP`
-                  : `Download ${selectedFormats.length} formats`}
+                  ? t('convert.download.manyZip', { count: selectedFormats.length })
+                  : t('convert.download.many', { count: selectedFormats.length })}
           </span>
         </Button>
 
@@ -220,17 +231,17 @@ export function Converter({
               htmlFor={zipId}
               className='cursor-action rounded-sm text-sm leading-none font-normal transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-70 hover:bg-accent'
             >
-              Download as ZIP file
+              {t('convert.download.asZip')}
             </Label>
           </div>
         ) : undefined}
 
         <details className='text-xs text-muted-foreground'>
           <summary className='w-fit rounded-xs select-none focus-visible:focus-outline-outside'>
-            Download options
+            {t('convert.download.options')}
           </summary>
           <div className='mt-3 space-y-3'>
-            <p>Formats with supporting files download together as ZIP.</p>
+            <p>{t('convert.download.linkedZip')}</p>
             {/* Save to project toggle */}
             {onExport ? (
               <div className='flex items-center space-x-2'>
@@ -245,7 +256,7 @@ export function Converter({
                   htmlFor={projectId}
                   className='cursor-action rounded-sm text-sm leading-none font-normal transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-70 hover:bg-accent'
                 >
-                  Save exported files to project
+                  {t('convert.download.saveToProject')}
                 </Label>
               </div>
             ) : undefined}
@@ -265,13 +276,11 @@ export function Converter({
                     htmlFor={locationId}
                     className='cursor-action rounded-sm text-sm leading-none font-normal transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-70 hover:bg-accent'
                   >
-                    Choose download location
+                    {t('convert.download.chooseLocation')}
                   </Label>
                 </div>
                 <p className='pl-6 text-xs text-muted-foreground'>
-                  {shouldChooseLocation
-                    ? 'You will be prompted to choose where to save each file'
-                    : 'Downloads to your default downloads folder'}
+                  {shouldChooseLocation ? t('convert.download.askEach') : t('convert.download.downloadsFolder')}
                 </p>
               </div>
             ) : undefined}

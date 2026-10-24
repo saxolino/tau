@@ -1,5 +1,4 @@
 import type { LinksFunction, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from 'react-router';
-import { lazy, Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { throwRedirectIfSubdomain } from '#lib/react-router.lib.js';
 import { readThemeCookie } from '#theme-cookie.js';
@@ -16,23 +15,11 @@ import { ProductApp, RootErrorBoundary, RootLayout } from '#root-layout.js';
 import { RootCommandPaletteItems } from '#root-command-items.js';
 import type { Handle } from '#types/matches.types.js';
 
-// Every route mounts the palette items, so the example catalog loads on its own
-// chunk instead of joining each route's entry.
-const ExampleCommandPaletteItems = lazy(async () => {
-  const m = await import('#components/nav/example-command-items.js');
-  return { default: m.ExampleCommandPaletteItems };
-});
-
+/* SinopiaCAD: Tau's examples gallery (`ExampleCommandPaletteItems`, «Browse examples» to `/community`) is hidden
+ * with Community until Sinopia redesigns it. */
 export const handle: Handle = {
   commandPalette(match) {
-    return (
-      <>
-        <RootCommandPaletteItems match={match} />
-        <Suspense fallback={null}>
-          <ExampleCommandPaletteItems />
-        </Suspense>
-      </>
-    );
+    return <RootCommandPaletteItems match={match} />;
   },
 };
 
@@ -42,14 +29,14 @@ export const meta: MetaFunction = () => [
   { title: metaConfig.name },
   { name: 'description', content: metaConfig.description },
   // oxlint-disable-next-line tau-lint/no-hardcoded-color -- browser meta tag
-  { name: 'theme-color', content: '#ffffff' },
+  { name: 'theme-color', content: '#f5f3ef' },
   { name: 'apple-mobile-web-app-title', content: metaConfig.name },
   { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' },
   { name: 'apple-mobile-web-app-capable', content: 'yes' },
   { name: 'mobile-web-app-capable', content: 'yes' },
   { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
   { rel: 'icon', href: '/favicon.ico', sizes: 'any' },
-  { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+  { rel: 'icon', href: '/favicon-96x96.png', type: 'image/png', sizes: '96x96' },
 ];
 
 // oxlint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- loaders require type inference

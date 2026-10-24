@@ -22,7 +22,6 @@ import { ViewSettingsSyncHost } from '#routes/w.$workspace.$project/view-setting
 import { EntriesSyncHost } from '#routes/w.$workspace.$project/entries-sync-host.js';
 import { HomeFileManagerProvider, useFileManager } from '#hooks/use-file-manager.js';
 import { useModels } from '#hooks/use-models.js';
-import { useKernel } from '#hooks/use-kernel.js';
 import { useCookie } from '#hooks/use-cookie.js';
 import { cookieName } from '#constants/cookie.constants.js';
 import { isKernelAvailable } from '#constants/available-kernel-configurations.js';
@@ -44,6 +43,7 @@ import {
 } from '#services/agent-host-client.js';
 import { createDaemonAgentHostTransport } from '#services/daemon-agent-host-client.js';
 import { daemonPlacementOf } from '#lib/agent-host-placement.js';
+import { designerExecution } from '#lib/sinopia-agent-execution.js';
 import { dialAgentHost, agentHostClientConfig } from '#chat-clients/_internal/turn-body.js';
 import { getProjectFileSystemConfig } from '#filesystem/handle-store.js';
 import { useComputeReuseMode } from '#lib/compute-reuse-preference.js';
@@ -166,14 +166,13 @@ function ProjectSessionBinding({
 }): React.JSX.Element {
   const { fileManagerRef, workerChangeChannel, workspace } = useFileManager();
   const { defaultExecution, resolveModel } = useModels();
-  const { kernel: defaultKernel } = useKernel();
   const [testingEnabled] = useCookie(cookieName.chatTestingEnabled, true);
   const computeMode = useComputeReuseMode();
   const browserHostRelease = useRef<{ projectId: string; release: () => void } | undefined>(undefined);
-  const choices = useRef({ defaultExecution, defaultKernel, testingEnabled, computeMode, resolveModel });
+  const choices = useRef({ defaultExecution, testingEnabled, computeMode, resolveModel });
   useEffect(() => {
-    choices.current = { defaultExecution, defaultKernel, testingEnabled, computeMode, resolveModel };
-  }, [defaultExecution, defaultKernel, testingEnabled, computeMode, resolveModel]);
+    choices.current = { defaultExecution, testingEnabled, computeMode, resolveModel };
+  }, [defaultExecution, testingEnabled, computeMode, resolveModel]);
   const { parameterService, projectRef, editorRef, flushWorkbenchRecordProducers, retryManifestObservation } =
     useProject();
   const client = useRevisionClientLifecycle();
@@ -221,12 +220,11 @@ function ProjectSessionBinding({
       const stored = await chatSessions.getChatHostSettings(chatId);
       const {
         defaultExecution: fallback,
-        defaultKernel: kernelFallback,
         testingEnabled: tests,
         computeMode: reuse,
         resolveModel: resolve,
       } = choices.current;
-      const execution = stored?.activeExecution ?? fallback;
+      const execution = designerExecution(stored?.activeExecution, fallback);
       const daemonHostId = daemonPlacementOf(execution);
       if (daemonHostId !== undefined) {
         return createAgentHostClient(
@@ -236,10 +234,11 @@ function ProjectSessionBinding({
       if (execution.kind !== 'tau') {
         throw new Error(`Chat ${chatId} has no readable host placement.`);
       }
+      /* A chat row pins an engine only when it names one SinopiaCAD offers; otherwise the agent chooses. */
       const kernel =
         stored?.activeKernel !== undefined && isKernelId(stored.activeKernel) && isKernelAvailable(stored.activeKernel)
           ? stored.activeKernel
-          : kernelFallback;
+          : undefined;
       const config = await getProjectFileSystemConfig(projectId);
       if (config === undefined) {
         throw new Error(`Project ${projectId} has no filesystem configuration.`);
@@ -295,7 +294,14 @@ function ProjectSessionBinding({
         authority: { projectId, workspaceId: 'live' },
         gatewayBaseUrl: ENV.TAU_API_URL,
         ...agentHostClientConfig({
-          agent: { profile: 'cad', execution, kernel, mode: 'agent', toolChoice: 'auto', testingEnabled: tests },
+          agent: {
+            profile: 'cad',
+            execution,
+            ...(kernel === undefined ? {} : { kernel }),
+            mode: 'agent',
+            toolChoice: 'auto',
+            testingEnabled: tests,
+          },
           chatId,
           resolvedModel: resolve(execution.model),
         }),
@@ -307,7 +313,7 @@ function ProjectSessionBinding({
     };
     const unpublish = chatSessions.publishProjectHostConnector(projectId, connect, async (chatId) => {
       const stored = await chatSessions.getChatHostSettings(chatId);
-      const execution = stored?.activeExecution ?? choices.current.defaultExecution;
+      const execution = designerExecution(stored?.activeExecution, choices.current.defaultExecution);
       const daemonHostId = daemonPlacementOf(execution);
       if (daemonHostId !== undefined) {
         try {

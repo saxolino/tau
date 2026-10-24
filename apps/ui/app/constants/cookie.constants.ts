@@ -18,6 +18,8 @@ export const cookieName = {
   codeInlayHints: 'code-inlay-hints',
   // Whether actions use pointer cursors instead of the platform default.
   pointerCursors: 'pointer-cursors',
+  // SinopiaCAD's optional tools the designer switched on or off: only explicit choices, absence follows the default.
+  sinopiaTools: 'sinopia-tools',
 
   /* Layout */
   // Whether the sidebar is open.
@@ -28,6 +30,8 @@ export const cookieName = {
   chatInterfaceFullHeight: 'chat-interface-full-height',
   // Whether the chat interface is transparent.
   chatInterfaceTransparent: 'chat-interface-transparent',
+  // Whether the agent lane is open: the home follows it, and every project page's toggle records it.
+  chatOpLane: 'chat-op-lane',
 
   /* CAD */
   // The last selected kernel.

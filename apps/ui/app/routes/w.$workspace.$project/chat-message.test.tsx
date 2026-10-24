@@ -1,5 +1,6 @@
+import { setAgentTechnicalDetails } from '#hooks/use-agent-technical-details.js';
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { MyUIMessage, SkillMetadata, ToolInvocation } from '@taucad/chat';
 import type { toolName } from '@taucad/chat/constants';
@@ -289,7 +290,11 @@ const getColumnWrapper = (): HTMLDivElement => {
   return wrapper;
 };
 
+beforeEach(() => {
+  setAgentTechnicalDetails(true);
+});
 afterEach(() => {
+  setAgentTechnicalDetails(false);
   cleanup();
   mockMessagesById.clear();
   mockMessageOrder.length = 0;
@@ -1234,5 +1239,27 @@ describe('assistant action row', () => {
     render(<ChatMessage messageId='msg-c' />);
 
     expect(screen.getByTestId('copy-button').parentElement?.className).toContain('items-center');
+  });
+});
+
+describe('designer transcript default', () => {
+  it('should show the answer while hiding tools, raw arguments and reasoning until explicitly inspected', () => {
+    setAgentTechnicalDetails(false);
+    setMessages([
+      {
+        id: 'quiet',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'Ho adattato il castone.' },
+          { type: 'reasoning', text: 'Private implementation', state: 'done' },
+          { type: 'tool-read_file', toolCallId: 'read', state: 'input-available', input: { targetFile: 'main.scad' } },
+        ],
+      },
+    ]);
+    render(<ChatMessage messageId='quiet' />);
+    expect(screen.getByText('Ho adattato il castone.')).toBeInTheDocument();
+    expect(screen.queryByTestId('tool-read-file')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chat-message-reasoning')).not.toBeInTheDocument();
+    expect(screen.queryByText(/main.scad|Private implementation/u)).not.toBeInTheDocument();
   });
 });

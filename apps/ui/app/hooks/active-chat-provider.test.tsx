@@ -8,8 +8,9 @@ import { useSelector } from '@xstate/react';
 import type { ReactNode } from 'react';
 import type * as AiSdk from 'ai';
 import type { Chat, MyUIMessage } from '@taucad/chat';
-import { resolveKernel } from '@taucad/types/constants';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
+import type { SinopiaSessionState } from '#lib/sinopia-session.js';
+import { homeComposerScope } from '#db/home-composer-scope.js';
 import type { DraftAttachmentModel } from '#hooks/draft.machine.js';
 import { lifecycleRow, logRow, publishLogRows, runningRows } from '#machines/chat-projection.fixture.js';
 
@@ -31,6 +32,9 @@ type FakeChat = {
   emitErrorChange: () => void;
 };
 
+const sinopiaHarness = vi.hoisted((): { state: SinopiaSessionState } => ({ state: { status: 'disabled' } }));
+vi.mock('#hooks/use-sinopia-session.js', () => ({ useSinopiaSession: () => sinopiaHarness.state }));
+
 const harness = vi.hoisted(() => ({
   created: [] as FakeChat[],
   patchChat: vi.fn(),
@@ -43,8 +47,6 @@ const harness = vi.hoisted(() => ({
   setSelectedModelId: vi.fn(),
   selectedModelId: 'cookie-model',
   selectedModelName: 'Cookie Model',
-  setKernel: vi.fn(),
-  cookieKernel: 'openscad' as 'openscad' | 'manifold' | 'replicad',
   homeFiles: new Map<string, Uint8Array<ArrayBuffer>>(),
   homeReadFile: vi.fn<(path: string) => Promise<Uint8Array<ArrayBuffer>>>(),
   homeWriteFile: vi.fn<(path: string, bytes: Uint8Array<ArrayBuffer>) => Promise<void>>(),
@@ -209,14 +211,6 @@ vi.mock('#hooks/use-models.js', () => ({
   useModels: () => getStableUseModelsReturn(),
 }));
 
-vi.mock('#hooks/use-kernel.js', () => ({
-  useKernel: () => ({
-    kernel: harness.cookieKernel,
-    setKernel: harness.setKernel,
-    selectedKernel: resolveKernel(harness.cookieKernel),
-  }),
-}));
-
 vi.mock('#hooks/use-file-manager.js', () => {
   /*
    * An in-memory Home workspace: the composer record and its attachment
@@ -315,6 +309,7 @@ function createHomeWrapper() {
 }
 
 beforeEach(() => {
+  sinopiaHarness.state = { status: 'disabled' };
   harness.created = [];
   harness.patchChat.mockReset().mockResolvedValue(undefined);
   harness.touchChatRecency.mockReset().mockResolvedValue(undefined);
@@ -326,8 +321,6 @@ beforeEach(() => {
   harness.setSelectedModelId.mockReset();
   harness.selectedModelId = 'cookie-model';
   harness.selectedModelName = 'Cookie Model';
-  harness.setKernel.mockReset();
-  harness.cookieKernel = 'openscad';
   harness.homeFiles.clear();
   harness.homeReadFile.mockReset().mockImplementation(async (path: string) => {
     const bytes = harness.homeFiles.get(path);
@@ -433,13 +426,12 @@ describe('ChatComposerProvider', () => {
     expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'new-model' });
   });
 
-  it('should expose the cookie-resolved kernel', () => {
+  it('should pin no kernel: the agent chooses the engine for the job', () => {
     const { result } = renderHook(() => useChatComposer(), {
       wrapper: createComposerWrapper(),
     });
 
-    expect(result.current.kernel.kernelId).toBe('openscad');
-    expect(result.current.kernel.kernel.id).toBe('openscad');
+    expect(result.current.kernel).toEqual({ kernelId: undefined });
   });
 
   it('should write only the cookie when setActiveModel is called (no chat row to patch)', () => {
@@ -452,19 +444,6 @@ describe('ChatComposerProvider', () => {
     });
 
     expect(harness.setSelectedModelId).toHaveBeenCalledWith('new-model');
-    expect(harness.patchChat).not.toHaveBeenCalled();
-  });
-
-  it('should write only the cookie when setActiveKernel is called', () => {
-    const { result } = renderHook(() => useChatComposer(), {
-      wrapper: createComposerWrapper(),
-    });
-
-    act(() => {
-      result.current.kernel.setActiveKernel('manifold');
-    });
-
-    expect(harness.setKernel).toHaveBeenCalledWith('manifold');
     expect(harness.patchChat).not.toHaveBeenCalled();
   });
 
@@ -619,6 +598,97 @@ function HomeProbe({ onRender }: { readonly onRender: (draftText: string) => voi
 }
 
 describe('HomeNewProjectComposerProvider', () => {
+  it('should isolate private draft text and image bytes across A → B → A without deleting either account', async () => {
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-a', email: undefined } };
+    const accountA = homeComposerScope('user-a');
+    const accountB = homeComposerScope('user-b');
+    writeRecord({ version: 1, draft: textDraft('legacy private draft') });
+    const { result, rerender } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(accountA.recordPath);
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(result.current.attachmentSource).toBe(accountA.attachmentDirectory);
+    const actorA = result.current.draftActorRef;
+    act(() => {
+      actorA.send({ type: 'setDraftText', text: 'private necklace A' });
+      actorA.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(actorA.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    act(() => {
+      actorA.send({ type: 'flushNow' });
+    });
+    await waitFor(() => {
+      expect(JSON.stringify(readRecord(accountA.recordPath))).toContain('private necklace A');
+    });
+    const attachmentA = actorA.getSnapshot().context.draftAttachments[0]!;
+    const bytesPathA = `${accountA.attachmentDirectory}/${attachmentA.hash}.png`;
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-b', email: undefined } };
+    rerender();
+    await waitFor(() => {
+      expect(harness.homeReadFile).toHaveBeenCalledWith(accountB.recordPath);
+    });
+    expect(result.current.draftActorRef).not.toBe(actorA);
+    expect(result.current.attachmentSource).toBe(accountB.attachmentDirectory);
+    expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('');
+    expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toEqual([]);
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+    act(() => {
+      result.current.draftActorRef.send({ type: 'setDraftText', text: 'private buckle B' });
+      result.current.draftActorRef.send({ type: 'addDraftAttachment', dataUrl: pngDataUrl, model: testModel });
+    });
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toHaveLength(1);
+    });
+    await act(async () => result.current.consumeDraft());
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-a', email: undefined } };
+    rerender();
+    await waitFor(() => {
+      expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('private necklace A');
+    });
+    expect(result.current.draftActorRef.getSnapshot().context.draftAttachments).toEqual([
+      { hash: attachmentA.hash, mediaType: attachmentA.mediaType },
+    ]);
+    expect(result.current.attachmentSource).toBe(accountA.attachmentDirectory);
+    expect(harness.homeFiles.has(bytesPathA)).toBe(true);
+    expect(readRecord()).toMatchObject({ draft: { parts: [{ type: 'text', text: 'legacy private draft' }] } });
+  });
+
+  it('should remove all draft preview descendants while account admission is unresolved', async () => {
+    function DraftPreview(): React.JSX.Element {
+      const composer = useChatComposer();
+      const text = useSelector(composer.draftActorRef, (snapshot) => snapshot.context.draftText);
+      return <p role='status'>{text || 'Empty account draft'}</p>;
+    }
+    const surface = (): React.JSX.Element => (
+      <UnloadProvider>
+        <HomeNewProjectComposerProvider>
+          <DraftPreview />
+        </HomeNewProjectComposerProvider>
+      </UnloadProvider>
+    );
+    const accountA = homeComposerScope('user-a');
+    writeRecord({ version: 1, draft: textDraft('private preview A') }, accountA.recordPath);
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-a', email: undefined } };
+    const view = render(surface());
+    await waitFor(() => {
+      expect(view.getByRole('status')).toHaveTextContent('private preview A');
+    });
+    sinopiaHarness.state = { status: 'checking' };
+    view.rerender(surface());
+    expect(view.queryByRole('status')).not.toBeInTheDocument();
+    sinopiaHarness.state = { status: 'signed-in', user: { id: 'user-b', email: undefined } };
+    view.rerender(surface());
+    expect(view.getByRole('status')).toHaveTextContent('Empty account draft');
+    expect(view.queryByText('private preview A')).not.toBeInTheDocument();
+  });
+
   it('mounts an empty selectable composer without acquiring a chat when the file is absent', async () => {
     const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
     await waitFor(() => {
@@ -659,7 +729,7 @@ describe('HomeNewProjectComposerProvider', () => {
     expect(view.container.textContent).toBe('ready');
   });
 
-  it('hydrates the draft and ACP execution from the exact Home record', async () => {
+  it('should hydrate the exact Home draft and keep automatic execution', async () => {
     writeRecord({
       version: 1,
       draft: textDraft('restored from Home'),
@@ -669,7 +739,7 @@ describe('HomeNewProjectComposerProvider', () => {
     await waitFor(() => {
       expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('restored from Home');
     });
-    expect(result.current.execution.execution).toEqual({ kind: 'acp', hostId: 'origin', agentId: 'codex' });
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
     expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
   });
 
@@ -758,7 +828,7 @@ describe('HomeNewProjectComposerProvider', () => {
       });
     });
     expect(result.current.draftActorRef.getSnapshot().context.draftText).toBe('typed first');
-    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'picked-model' });
+    expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
   });
 
   // Rewritten (W6): the shared record toast replaces the provider's own console.error + toast; still exactly one.
@@ -787,7 +857,8 @@ describe('HomeNewProjectComposerProvider', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { result } = renderHook(() => useChatComposer(), { wrapper: createHomeWrapper() });
     await waitFor(() => {
-      expect(result.current.execution.execution).toMatchObject({ hostId: 'desktop' });
+      expect(harness.homeReadFile).toHaveBeenCalledWith(recordPath);
+      expect(result.current.execution.execution).toEqual({ kind: 'tau', model: 'cookie-model' });
     });
     act(() => {
       result.current.draftActorRef.send({ type: 'setDraftText', text: 'persist me' });
@@ -1060,7 +1131,7 @@ describe('ActiveChatProvider', () => {
   // ── Session-backed model resolver (chat row preferred, cookie fallback,
   // dual-write on set) ──
   describe('model resolver', () => {
-    it('should prefer a Tau Chat.activeExecution when present', async () => {
+    it('should use automatic execution for new requests even when a chat remembers another model', async () => {
       harness.getChat.mockResolvedValue(
         makeChat({
           id: 'chat_with_model',
@@ -1073,9 +1144,9 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(result.current.model.modelId).toBe('chat-local-model');
+        expect(result.current.model.modelId).toBe('cookie-model');
       });
-      expect(result.current.model.model.id).toBe('chat-local-model');
+      expect(result.current.model.model.id).toBe('cookie-model');
     });
 
     it('should fall back to the cookie when Chat.activeExecution is undefined', async () => {
@@ -1125,7 +1196,7 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(result.current.model.modelId).toBe('old-model');
+        expect(result.current.model.modelId).toBe('cookie-model');
       });
 
       act(() => {
@@ -1135,8 +1206,7 @@ describe('ActiveChatProvider', () => {
       await waitFor(() => {
         expect(harness.patchChat).toHaveBeenCalledWith('chat_effort', 'activeExecution', {
           kind: 'tau',
-          model: 'old-model',
-          hostId: 'origin',
+          model: 'cookie-model',
           effort: 'low',
         });
       });
@@ -1156,7 +1226,7 @@ describe('ActiveChatProvider', () => {
       });
 
       await waitFor(() => {
-        expect(result.current.model.modelId).toBe('old-model');
+        expect(result.current.model.modelId).toBe('cookie-model');
       });
       act(() => {
         result.current.model.setActiveModel('new-model');
@@ -1190,10 +1260,9 @@ describe('ActiveChatProvider', () => {
       await waitFor(() => {
         expect(result.current.kernel.kernelId).toBe('manifold');
       });
-      expect(result.current.kernel.kernel.id).toBe('manifold');
     });
 
-    it('should fall back to the cookie when Chat.activeKernel is undefined', async () => {
+    it('should pin no kernel when Chat.activeKernel is undefined', async () => {
       harness.getChat.mockResolvedValue(makeChat({ id: 'chat_no_kernel' }));
 
       const { result } = renderHook(() => useChatComposer(), {
@@ -1203,41 +1272,20 @@ describe('ActiveChatProvider', () => {
       await waitFor(() => {
         expect(harness.getChat).toHaveBeenCalledWith('chat_no_kernel', 'home');
       });
-      expect(result.current.kernel.kernelId).toBe('openscad');
+      expect(result.current.kernel.kernelId).toBeUndefined();
     });
 
-    it('should heal a retired openscad chat value through the cookie fallback', async () => {
-      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_retired_kernel', activeKernel: 'openscad' }));
+    it('should pin no kernel for a chat value SinopiaCAD does not offer', async () => {
+      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_unoffered_kernel', activeKernel: 'openscad' }));
 
       const { result } = renderHook(() => useChatComposer(), {
-        wrapper: createSessionWrapper('chat_retired_kernel'),
+        wrapper: createSessionWrapper('chat_unoffered_kernel'),
       });
 
       await waitFor(() => {
-        expect(result.current.kernel.kernelId).toBe('openscad');
+        expect(result.current.session?.persistenceActorRef.getSnapshot().context.activeKernel).toBe('openscad');
       });
-      expect(result.current.kernel.kernel.id).toBe('openscad');
-    });
-
-    it('should dual-write (chat row + cookie) when setActiveKernel is called', async () => {
-      harness.getChat.mockResolvedValue(makeChat({ id: 'chat_kernel_dual_write' }));
-
-      const { result } = renderHook(() => useChatComposer(), {
-        wrapper: createSessionWrapper('chat_kernel_dual_write'),
-      });
-
-      await waitFor(() => {
-        expect(result.current.kernel.kernelId).toBe('openscad');
-      });
-
-      act(() => {
-        result.current.kernel.setActiveKernel('manifold');
-      });
-
-      await waitFor(() => {
-        expect(harness.patchChat).toHaveBeenCalledWith('chat_kernel_dual_write', 'activeKernel', 'manifold');
-      });
-      expect(harness.setKernel).toHaveBeenCalledWith('manifold');
+      expect(result.current.kernel.kernelId).toBeUndefined();
     });
   });
 

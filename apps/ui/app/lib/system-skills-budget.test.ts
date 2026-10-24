@@ -1,5 +1,5 @@
-import { kernelConfigurations } from '@taucad/types/constants';
 import { describe, expect, it } from 'vitest';
+import { sinopiaKernelIds } from '#lib/sinopia-engines.js';
 import { systemSkillsCatalog } from '#lib/system-skills-catalog.js';
 
 const maxDescriptionCharacters = 160;
@@ -16,7 +16,8 @@ const workbenchBodyTokens = 2400;
  * each package's own manifest, so asserting over it covers exactly what the app
  * actually loads.
  */
-const packageSkills = systemSkillsCatalog.filter(({ slug }) => slug !== 'create-skill' && slug !== 'create-model');
+const appSkillSlugs: ReadonlySet<string> = new Set(['create-skill', 'create-model', 'sinopia-immagine-cad']);
+const packageSkills = systemSkillsCatalog.filter(({ slug }) => !appSkillSlugs.has(slug));
 
 /** Doctrine plus the generated Core API section and reference map (`maxSkillBodyTokens` in api-extractor). */
 const kernelSkillBodyTokens = 6000;
@@ -48,17 +49,19 @@ const assertSkillBudget = (
   }
 };
 
-const getCreateModelSkillMarkdown = (): string => {
-  const skillMarkdown = systemSkillsCatalog.find(({ slug }) => slug === 'create-model')?.skillMarkdown;
+const getSkillMarkdown = (slug: string): string => {
+  const skillMarkdown = systemSkillsCatalog.find((skill) => skill.slug === slug)?.skillMarkdown;
   if (!skillMarkdown) {
-    throw new Error('create-model is not registered');
+    throw new Error(`${slug} is not registered`);
   }
   return skillMarkdown;
 };
 
+const getCreateModelSkillMarkdown = (): string => getSkillMarkdown('create-model');
+
 const assertCreateModelSelectionRows = (skillMarkdown: string): void => {
   const lines = skillMarkdown.split('\n');
-  for (const { id } of kernelConfigurations) {
+  for (const id of sinopiaKernelIds) {
     const rowPrefix = `| \`cad-${id}\` |`;
     if (lines.filter((line) => line.startsWith(rowPrefix)).length !== 1) {
       throw new Error(`create-model requires exactly one selection row for ${id}`);
@@ -79,7 +82,7 @@ describe('progressive-disclosure system skill budgets', () => {
   it('gates every package-owned skill, not a hand-kept subset', () => {
     /* The count this replaced was a literal; if an owner ships a bundle and no
      * row appears above, that is the failure mode worth catching. */
-    expect(packageSkills.length).toBeGreaterThanOrEqual(kernelConfigurations.length);
+    expect(packageSkills.length).toBeGreaterThanOrEqual(sinopiaKernelIds.length);
     expect(packageSkills.map((skill) => skill.slug)).toContain('geospec-authoring');
     expect(packageSkills.every((skill) => skill.skillMarkdown.startsWith('---\n'))).toBe(true);
   });
@@ -90,7 +93,13 @@ describe('progressive-disclosure system skill budgets', () => {
     }).not.toThrow();
   });
 
-  it('should include exactly one generated selection row for every configured kernel', () => {
+  it('should keep sinopia-immagine-cad within its 1,500-token body budget', () => {
+    expect(() => {
+      assertSkillBudget('sinopia-immagine-cad', getSkillMarkdown('sinopia-immagine-cad'), 1500);
+    }).not.toThrow();
+  });
+
+  it('should include exactly one generated selection row for every offered engine', () => {
     expect(() => {
       assertCreateModelSelectionRows(getCreateModelSkillMarkdown());
     }).not.toThrow();
@@ -98,7 +107,7 @@ describe('progressive-disclosure system skill budgets', () => {
 
   it('should reject selection guidance with a deliberately omitted kernel row', () => {
     const skillMarkdown = getCreateModelSkillMarkdown();
-    const omittedKernel = kernelConfigurations[0];
+    const omittedKernel = { id: sinopiaKernelIds[0] };
     const incompleteSkillMarkdown = skillMarkdown
       .split('\n')
       .filter((line) => !line.startsWith(`| \`cad-${omittedKernel.id}\` |`))

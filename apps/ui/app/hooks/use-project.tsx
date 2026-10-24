@@ -55,6 +55,7 @@ import { useProjectManager } from '#hooks/use-project-manager.js';
 import type { LazyKernelOptionsFactory } from '#types/runtime-client.alias.js';
 import type { Chat } from '@taucad/chat';
 import type { ChatStorage } from '#types/storage.types.js';
+import { withoutRestoredFileTabs } from '#utils/panel-state.utils.js';
 import { localKernelOptions } from '#constants/local-kernel-options.js';
 import { useComputeReuseMode } from '#lib/compute-reuse-preference.js';
 import { createParameterSetService } from '#services/parameter-set-service.js';
@@ -542,7 +543,11 @@ export function ProjectProvider({
           }
           const worker = await getReadiedWorker();
           const state = await worker.getEditorState(input.projectId);
-          return { type: 'editorStateRetrieved', state };
+          // SinopiaCAD: a project opens on its model, never on code tabs left from an earlier visit.
+          return {
+            type: 'editorStateRetrieved',
+            state: state === undefined ? undefined : withoutRestoredFileTabs(state),
+          };
         }),
         saveEditorStateActor: fromSafeAsync(async ({ input }) => {
           if (profile === 'shared') {

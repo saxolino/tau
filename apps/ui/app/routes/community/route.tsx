@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
 import { PageContent } from '#components/layout/page-content.js';
-import { NavLink, useLocation, useNavigate } from 'react-router';
+import { NavLink, redirect, useLocation, useNavigate } from 'react-router';
 import { SearchX, X } from 'lucide-react';
 import { z } from 'zod';
 import { getCoreRowModel, getPaginationRowModel, useReactTable } from '@tanstack/react-table';
@@ -32,8 +32,22 @@ export const handle: Handle = {
   enableOverflowY: true,
 };
 
+/**
+ * SinopiaCAD hides Tau's Community gallery until Sinopia redesigns it: `/community` (typed, bookmarked or linked)
+ * goes to the home. The page below stays as it is, unreachable, for that redesign.
+ *
+ * A client loader, not a server one, so the desktop build (SPA) keeps this route; it also runs before the first
+ * render, so the gallery never shows.
+ *
+ * @returns The redirect to the home.
+ */
+export function clientLoader(): Response {
+  return redirect('/');
+}
+clientLoader.hydrate = true;
+
 export const meta: MetaFunction = () => [
-  { title: 'Community · Tau' },
+  { title: 'Community · SinopiaCAD' },
   {
     name: 'description',
     content: 'Open, preview and remix curated CAD examples built with Tau, filtered by kernel.',

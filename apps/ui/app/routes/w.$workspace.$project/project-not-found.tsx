@@ -8,6 +8,7 @@ import {
   FloatingPanelContentTitle,
   FloatingPanelContentBody,
 } from '#components/ui/floating-panel.js';
+import { useTranslation } from '#i18n/translate.js';
 import { cn } from '@taucad/ui/utils/cn';
 
 type ProjectNotFoundProperties = {
@@ -15,6 +16,7 @@ type ProjectNotFoundProperties = {
 };
 
 export function ProjectNotFound({ className }: ProjectNotFoundProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
 
   const goBack = (): void => {
@@ -22,11 +24,11 @@ export function ProjectNotFound({ className }: ProjectNotFoundProperties): React
   };
 
   return (
-    <div className={cn('absolute inset-0 z-20', className)}>
+    <div role='alert' className={cn('absolute inset-0 z-20', className)}>
       <FloatingPanel isOpen side='right' align='start'>
         <FloatingPanelContent>
           <FloatingPanelContentHeader>
-            <FloatingPanelContentTitle>Project Not Found</FloatingPanelContentTitle>
+            <FloatingPanelContentTitle>{t('project.notFound.title')}</FloatingPanelContentTitle>
           </FloatingPanelContentHeader>
 
           <FloatingPanelContentBody className='flex items-center justify-center p-6'>
@@ -42,21 +44,19 @@ export function ProjectNotFound({ className }: ProjectNotFoundProperties): React
 
               {/* Content */}
               <div className='mb-6 rounded-lg border border-border/60 bg-card/80 p-4 text-center shadow-sm dark:border-border/40 dark:bg-card/50'>
-                <p className='text-muted-foreground'>
-                  The project you&apos;re looking for doesn&apos;t exist or may have been deleted.
-                </p>
+                <p className='text-muted-foreground'>{t('project.notFound.text')}</p>
               </div>
 
               {/* Action Buttons */}
               <div className='flex flex-col gap-3 sm:flex-row'>
                 <Button variant='outline' className='flex-1' onClick={goBack}>
                   <ArrowLeft className='mr-2 size-4' />
-                  Go Back
+                  {t('project.notFound.back')}
                 </Button>
 
-                <Link to='/' className={cn(buttonVariants(), 'flex-1')}>
+                <Link to='/projects' className={cn(buttonVariants(), 'flex-1')}>
                   <Home className='mr-2 size-4' />
-                  Go Home
+                  {t('project.notFound.projects')}
                 </Link>
               </div>
             </div>

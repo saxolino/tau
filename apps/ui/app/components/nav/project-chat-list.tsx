@@ -33,6 +33,7 @@ import {
 import type { SidebarFacts } from '#hooks/use-sidebar-status.js';
 import { useChatSessionStore } from '#hooks/chat-session-store-provider.js';
 import { toast } from '#components/ui/sonner.js';
+import { useTranslation } from '#i18n/translate.js';
 
 const chatsPerPage = 5;
 /** Joins chat ids into one effect key; ids never contain it. */
@@ -55,6 +56,7 @@ export function ProjectChatList({
   readonly isProjectActive: boolean;
   readonly isExpanded?: boolean;
 }): React.ReactNode {
+  const { t } = useTranslation();
   const { chats: allChats, isLoading, error, retry } = useChatRecords(project.id);
   const isOpening = useTauCloudIntent(project.id) === 'open';
   const isLoadingCloudChats = useProjectSidebarRow(project.id).sync?.chats === 'loading';
@@ -122,9 +124,9 @@ export function ProjectChatList({
    * today has nothing to disclose. */
   const groupLabels = useMemo(() => {
     const today = startOfToday();
-    const groups = visibleChats.map((entry) => (getChatRecencyAt(entry) >= today ? 'Today' : 'Earlier'));
+    const groups = visibleChats.map((entry) => (getChatRecencyAt(entry) >= today ? 'today' : 'earlier'));
     return groups.map((group, index) =>
-      groups.includes('Today') && groups.includes('Earlier') && group !== groups[index - 1] ? group : undefined,
+      groups.includes('today') && groups.includes('earlier') && group !== groups[index - 1] ? group : undefined,
     );
   }, [visibleChats]);
   const activeChatId = isProjectActive ? projectChatIdFromSearch(location.search) : undefined;
@@ -138,9 +140,9 @@ export function ProjectChatList({
   const handleDelete = async (chat: ChatRecord): Promise<void> => {
     try {
       await deleteChat(chat.id);
-      toast.success(`Moved ${chat.name} to Trash`);
+      toast.success(t('shell.chats.trashed', { name: chat.name }));
     } catch (error) {
-      toast.error(`Could not move ${chat.name} to Trash`);
+      toast.error(t('shell.chats.trashFailed', { name: chat.name }));
       console.error('Error trashing chat:', error);
       return;
     }
@@ -181,7 +183,7 @@ export function ProjectChatList({
       ) : null}
       {!isLoading && !isOpening && !isLoadingCloudChats && !error && chats.length === 0 ? (
         <SidebarMenuSubItem>
-          <div className='flex h-7 items-center pl-7.5 text-xs text-muted-foreground'>No chats yet</div>
+          <div className='flex h-7 items-center pl-7.5 text-xs text-muted-foreground'>{t('shell.chats.none')}</div>
         </SidebarMenuSubItem>
       ) : null}
       {visibleChats.map((chat, index) => (
@@ -189,7 +191,7 @@ export function ProjectChatList({
           {groupLabels[index] === undefined ? null : (
             <SidebarMenuSubItem>
               <div className='flex h-6 items-center pr-1.5 pl-[30px] text-xs text-muted-foreground/70'>
-                {groupLabels[index]}
+                {t(groupLabels[index] === 'today' ? 'shell.chats.today' : 'shell.chats.earlier')}
               </div>
             </SidebarMenuSubItem>
           )}
@@ -223,7 +225,7 @@ export function ProjectChatList({
               setVisibleCount((count) => count + chatsPerPage);
             }}
           >
-            Show more chats
+            {t('shell.chats.showMore')}
           </SidebarMenuButton>
         </SidebarMenuSubItem>
       ) : null}
@@ -252,6 +254,7 @@ function ProjectChatItem({
   readonly onEditingChange: (isEditing: boolean) => void;
   readonly onDelete: () => Promise<void>;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const { closeChat } = useSidebarCommands();
   const status = useChatSidebarStatus(project.id, chat.id);
   const facts: SidebarFacts = status === undefined ? { mark: 'none', sentence: undefined } : selectChatFacts(status);
@@ -263,17 +266,17 @@ function ProjectChatItem({
     <>
       <Item onSelect={onRename}>
         <Pencil aria-hidden />
-        Rename
+        {t('shell.chats.rename')}
       </Item>
       {canStop ? (
         <Item
-          aria-label={`Stop ${chat.name}`}
+          aria-label={t('shell.chats.stopNamed', { name: chat.name })}
           onSelect={() => {
             closeChat(project.id, chat.id);
           }}
         >
           <Square aria-hidden />
-          Stop
+          {t('shell.chats.stop')}
         </Item>
       ) : null}
       <Separator />
@@ -284,7 +287,7 @@ function ProjectChatItem({
         }}
       >
         <Trash2 aria-hidden />
-        Move to Trash
+        {t('shell.chats.moveToTrash')}
       </Item>
     </>
   );

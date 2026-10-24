@@ -6,11 +6,13 @@ import type { GeometryComponentManifest, GeometryComponentNode } from '@taucad/t
  * @internal
  * @param manifest - The unit's component manifest.
  * @param normalizedQuery - The trimmed, lower-cased filter; empty keeps every component.
+ * @param displayName - The name the host shows for a component, matched as well as the manifest's name.
  * @returns The components to list, in tree order.
  */
 export function getVisibleModelComponents(
   manifest: GeometryComponentManifest,
   normalizedQuery: string,
+  displayName?: (node: GeometryComponentNode) => string,
 ): GeometryComponentNode[] {
   const root = manifest.nodesById[manifest.rootId];
   if (!root) {
@@ -36,6 +38,7 @@ export function getVisibleModelComponents(
     const node = ordered[index]!;
     if (
       node.name.toLowerCase().includes(normalizedQuery) ||
+      (displayName?.(node).toLowerCase().includes(normalizedQuery) ?? false) ||
       (node.appearance?.materials?.some((material) => material.name?.toLowerCase().includes(normalizedQuery)) ??
         false) ||
       node.childIds.some((id) => matching.has(id))

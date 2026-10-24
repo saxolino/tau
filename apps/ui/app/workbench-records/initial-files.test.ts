@@ -16,7 +16,8 @@ describe('project creation workbench files', () => {
     if (layout.status !== 'current') {
       return;
     }
-    expect(layout.record.workbench).toEqual({ kind: 'group', tabs: [] });
+    // SinopiaCAD: the workbench lane starts on Misure (the parameters pane).
+    expect(layout.record.workbench).toEqual({ kind: 'group', tabs: [{ kind: 'pane', pane: 'parameters' }] });
     expect(layout.record.viewer).toMatchObject({ kind: 'group', tabs: [{ kind: 'view' }] });
     if (layout.record.viewer.kind !== 'group') {
       return;

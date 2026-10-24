@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as ReactRouter from 'react-router';
@@ -47,5 +48,18 @@ describe('Cookie preferences dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(readConsentCookie(document.cookie)).toBe('declined');
+  });
+
+  it.each([
+    ['it', 'Statistiche di prodotto', 'Salva'],
+    ['en', 'Product analytics', 'Save'],
+  ] as const)('should write the dialog in %s', (language, analytics, save) => {
+    setLanguage(language);
+    render(<CookiePreferencesDialog isOpen onOpenChange={vi.fn()} />);
+
+    expect(screen.getByRole('checkbox', { name: analytics })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: save })).toBeInTheDocument();
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 });

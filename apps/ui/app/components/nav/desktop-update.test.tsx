@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SidebarProvider } from '@taucad/ui/components/sidebar';
@@ -50,7 +51,7 @@ describe('desktop update control', () => {
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Update ready' }));
     expect(await screen.findByText(/Quitting normally leaves the update for later/u)).toBeInTheDocument();
-    expect(screen.queryByText(/installs when you quit Tau/u)).not.toBeInTheDocument();
+    expect(screen.queryByText(/installs when you quit SinopiaCAD/u)).not.toBeInTheDocument();
   });
   it('reveals APT policy without offering an installer action', async () => {
     const source = fixture(Promise.resolve({ ...ready, phase: 'system-managed' }));
@@ -83,7 +84,7 @@ describe('desktop update control', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(source.bridge.install).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Update ready' }));
-    expect(await screen.findByRole('dialog', { name: 'Tau update' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'SinopiaCAD update' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Restart now' }));
     expect(source.bridge.install).toHaveBeenCalledOnce();
     source.emit({ ...ready, revision: 3, phase: 'saving' });
@@ -120,7 +121,7 @@ describe('desktop update control', () => {
     });
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     source.emit({ ...ready, phase: 'current', revision: 3, requestId: 1 });
-    expect(await screen.findByRole('dialog', { name: 'Tau update' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'SinopiaCAD update' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
     await waitFor(() => {
       expect(source.bridge.check).toHaveBeenCalledOnce();
@@ -144,7 +145,7 @@ describe('desktop update control', () => {
     const checked = { ...current, revision: 11, requestId: 8 };
     vi.spyOn(source.bridge, 'snapshot').mockResolvedValue(checked);
     source.emit(checked);
-    expect(await screen.findByRole('dialog', { name: 'Tau update' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'SinopiaCAD update' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close update details' }));
     const draft = screen.getByRole('textbox', { name: 'Model draft' });
     draft.focus();
@@ -157,7 +158,7 @@ describe('desktop update control', () => {
     expect(screen.queryByRole('button', { name: 'You’re up to date' })).not.toBeInTheDocument();
     expect(draft).toHaveFocus();
     source.emit({ ...current, revision: 13, requestId: 9 });
-    expect(await screen.findByRole('dialog', { name: 'Tau update' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'SinopiaCAD update' })).toBeInTheDocument();
   });
   it('should hydrate a historical check quietly and ignore its later background results', async () => {
     const current: DesktopUpdateSnapshot = { ...ready, phase: 'current', requestId: 7, revision: 10 };
@@ -185,7 +186,7 @@ describe('desktop update control', () => {
     );
     const current: DesktopUpdateSnapshot = { ...ready, phase: 'current', requestId: 3, revision: 5 };
     source.emit(current);
-    expect(await screen.findByRole('dialog', { name: 'Tau update' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'SinopiaCAD update' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close update details' }));
     await act(async () => {
       initial.resolve({ ...current, requestId: 2, revision: 4 });
@@ -195,7 +196,7 @@ describe('desktop update control', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'You’re up to date' })).not.toBeInTheDocument();
     source.emit({ ...current, requestId: 4, revision: 7 });
-    expect(await screen.findByRole('dialog', { name: 'Tau update' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'SinopiaCAD update' })).toBeInTheDocument();
   });
   it('should offer a download rather than a restart on manual platforms', async () => {
     const source = fixture(Promise.resolve({ ...ready, phase: 'available' }));
@@ -208,5 +209,24 @@ describe('desktop update control', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Download' }));
     expect(source.bridge.download).toHaveBeenCalledOnce();
     expect(source.bridge.install).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['it', { trigger: 'Aggiornamento pronto', panel: 'Aggiornamento di SinopiaCAD', restart: 'Riavvia ora' }],
+    ['en', { trigger: 'Update ready', panel: 'SinopiaCAD update', restart: 'Restart now' }],
+  ] as const)('writes the update panel in %s', async (language, { trigger, panel, restart }) => {
+    setLanguage(language);
+    const source = fixture();
+    render(
+      <SidebarProvider>
+        <DesktopUpdateControl bridge={source.bridge} />
+      </SidebarProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: trigger }));
+
+    expect(await screen.findByRole('dialog', { name: panel })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: restart })).toBeInTheDocument();
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 });

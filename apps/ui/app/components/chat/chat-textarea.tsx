@@ -1,3 +1,4 @@
+import { SelectedPieceChip } from '#components/chat/selected-piece-chip.js';
 import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { waitFor } from 'xstate';
@@ -19,6 +20,7 @@ import { takeScreenshotGroup } from '#components/chat/tiptap/context-suggestion.
 import { useChatContextInsertion } from '#components/chat/chat-context-insertion.js';
 import type { ChatContextReference } from '#components/chat/chat-context-insertion.js';
 import { ChatApprovalBanner } from '#components/chat/chat-approval-banner.js';
+import { useTranslation } from '#i18n/translate.js';
 import { useChatComposer } from '#hooks/active-chat-provider.js';
 import { useHeadlessImageService } from '#providers/headless-image-provider.js';
 import { useChatSessionSnapshot } from '#hooks/use-chat-session.js';
@@ -42,12 +44,14 @@ export const ChatTextarea = memo(function ({
   onBlur,
   className,
   enableContextActions = true,
-  enableKernelSelector = true,
+  enableAgentControls = true,
   creationLocationControl,
   isSubmitDisabled = false,
   mode = 'main',
+  placeholder,
   enableMobileCollapse = false,
 }: ChatTextareaProperties): React.JSX.Element {
+  const { t } = useTranslation();
   // Mutable refs populated by ChatTextareaDesktop so that drops anywhere on the
   // outer container can route file/editor chips into Tiptap nodes.
   const addContextChipsRef = useRef<((paths: string[]) => void) | undefined>(undefined);
@@ -130,11 +134,13 @@ export const ChatTextarea = memo(function ({
 
   // Mutable ref populated by ChatTextareaDesktop so the imperative handle
   // can focus the Tiptap editor instead of the (non-existent) <textarea>
+  const submitEditorRef = useRef<(() => Promise<void>) | undefined>(undefined);
   const focusEditorRef = useRef<(() => void) | undefined>(undefined);
 
   useImperativeHandle(
     ref,
     () => ({
+      submit: (): Promise<void> | undefined => submitEditorRef.current?.(),
       focus: () => {
         if (focusEditorRef.current) {
           focusEditorRef.current();
@@ -327,14 +333,16 @@ export const ChatTextarea = memo(function ({
   return (
     <ClientOnly fallback={skeleton}>
       {approvalBanner}
+      {projectContext && mode === 'main' ? <SelectedPieceChip location='composer' /> : null}
       <ChatTextareaDesktop
         className={className}
         enableAutoFocus={enableAutoFocus}
         enableContextActions={enableContextActions}
-        enableKernelSelector={enableKernelSelector}
+        enableAgentControls={enableAgentControls}
         creationLocationControl={creationLocationControl}
         isSubmitDisabled={logic.isSubmitDisabled}
         mode={mode}
+        placeholder={placeholder}
         enableMobileCollapse={enableMobileCollapse}
         isFocused={isFocused}
         // State
@@ -345,7 +353,11 @@ export const ChatTextarea = memo(function ({
         inputText={logic.inputText}
         attachments={logic.attachments}
         attachmentDirectory={logic.attachmentDirectory}
-        sendBlockReason={logic.sendBlockReason}
+        sendBlockReason={
+          logic.sendBlockReason !== undefined && !enableAgentControls
+            ? t('home.composer.attachmentsBlocked')
+            : logic.sendBlockReason
+        }
         attachmentAccept={logic.attachmentAccept}
         attachmentInputSupported={logic.attachmentInputSupported}
         status={logic.status}
@@ -361,6 +373,7 @@ export const ChatTextarea = memo(function ({
         fileInputReference={logic.fileInputReference}
         containerReference={logic.containerReference}
         focusEditorRef={focusEditorRef}
+        submitEditorRef={submitEditorRef}
         addContextChipsRef={addContextChipsRef}
         addContextReferencesRef={addContextReferencesRef}
         // Handlers

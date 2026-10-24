@@ -1,11 +1,12 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from 'react-router';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { NavChat } from '#components/nav/nav-chat.js';
 import { SidebarProvider } from '#components/ui/sidebar.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 function NavigationProbe(): React.JSX.Element {
   const location = useLocation() as { state: unknown };
@@ -39,16 +40,31 @@ function renderNavChat(): void {
 }
 
 describe('NavChat', () => {
-  it('should link New Project to the home composer, not the project creation page', () => {
+  afterEach(() => {
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
+  });
+
+  it.each([
+    ['it', 'Nuovo progetto'],
+    ['en', 'New project'],
+  ] as const)('should name the link in %s', (language, name) => {
+    setLanguage(language);
     renderNavChat();
 
-    expect(screen.getByRole('link', { name: /New Project/ })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: new RegExp(name) })).toHaveAttribute('href', '/');
+  });
+
+  it('should link New project to the home composer, not the project creation page', () => {
+    renderNavChat();
+
+    expect(screen.getByRole('link', { name: /New project/ })).toHaveAttribute('href', '/');
   });
 
   it('should ask the home composer for focus when clicked', async () => {
     renderNavChat();
 
-    await userEvent.click(screen.getByRole('link', { name: /New Project/ }));
+    await userEvent.click(screen.getByRole('link', { name: /New project/ }));
 
     expect(await screen.findByText('Home Composer')).toBeInTheDocument();
     expect(screen.getByTestId('focus-request')).toHaveTextContent('true');

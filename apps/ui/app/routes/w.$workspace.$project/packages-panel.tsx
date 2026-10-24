@@ -175,7 +175,7 @@ export function PackagesPanel(): React.JSX.Element {
         </div>
       )}
       <div className='space-y-1 border-t p-3'>
-        <p className='text-xs text-muted-foreground'>Install the same tree outside Tau</p>
+        <p className='text-xs text-muted-foreground'>Install the same tree outside SinopiaCAD</p>
         <div className='flex items-center gap-1 rounded-md bg-muted px-2 py-1'>
           <code className='min-w-0 flex-1 truncate font-mono text-xs'>{standaloneCommand}</code>
           <CopyButton size='icon-xs' tooltip='Copy command' getText={() => standaloneCommand} />
@@ -186,7 +186,7 @@ export function PackagesPanel(): React.JSX.Element {
           rel='noopener noreferrer'
           className='text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline'
         >
-          Run a model outside Tau
+          Run a model outside SinopiaCAD
         </a>
       </div>
     </section>

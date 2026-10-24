@@ -17,15 +17,17 @@ import {
 import { useCookieConsent } from '#hooks/use-cookie-consent.js';
 import { isGlobalPrivacyControlEnabled } from '#lib/global-privacy-control.lib.js';
 import { legalUrl } from '#lib/legal-url.js';
+import { useTranslation } from '#i18n/translate.js';
 
 /**
  * Help-menu entry that opens the dialog. The desktop override (`cookie-preferences.desktop.tsx`) renders none.
  */
 export function CookiePreferencesMenuItem({ onSelect }: { readonly onSelect: () => void }): React.JSX.Element {
+  const { t } = useTranslation();
   return (
     <DropdownMenuItem onSelect={onSelect}>
       <Cookie />
-      Cookie preferences
+      {t('shell.cookies.menuItem')}
     </DropdownMenuItem>
   );
 }
@@ -35,6 +37,7 @@ function CookiePreferencesContent({
 }: {
   readonly onOpenChange: (open: boolean) => void;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const consentStatus = useCookieConsent();
   const globalPrivacyControl = isGlobalPrivacyControlEnabled();
   const [analyticsEnabled, setAnalyticsEnabled] = useState(consentStatus === 'accepted');
@@ -42,11 +45,11 @@ function CookiePreferencesContent({
   return (
     <DialogContent>
       <DialogHeader>
-        <DialogTitle>Cookie preferences</DialogTitle>
+        <DialogTitle>{t('shell.cookies.title')}</DialogTitle>
         <DialogDescription>
-          Tau uses optional analytics only after you allow it. Your choice also applies to the Tau website.{' '}
+          {t('shell.cookies.description')}{' '}
           <a href={legalUrl('cookies')} target='_blank' rel='noopener noreferrer' className='underline'>
-            Learn more
+            {t('shell.cookies.learnMore')}
           </a>
         </DialogDescription>
       </DialogHeader>
@@ -56,9 +59,9 @@ function CookiePreferencesContent({
           <Checkbox checked disabled id='essential-storage' className='mt-0.5' />
           <div className='flex flex-col gap-1'>
             <Label htmlFor='essential-storage' className='font-medium'>
-              Essential storage
+              {t('shell.cookies.essential')}
             </Label>
-            <p className='text-sm text-muted-foreground'>Keeps you signed in and remembers this choice.</p>
+            <p className='text-sm text-muted-foreground'>{t('shell.cookies.essentialDescription')}</p>
           </div>
         </div>
 
@@ -76,15 +79,11 @@ function CookiePreferencesContent({
           />
           <div className='flex flex-col gap-1'>
             <Label htmlFor='product-analytics' className='font-medium'>
-              Product analytics
+              {t('shell.cookies.analytics')}
             </Label>
-            <p className='text-sm text-muted-foreground'>
-              Helps improve Tau through PostHog, including session recording.
-            </p>
+            <p className='text-sm text-muted-foreground'>{t('shell.cookies.analyticsDescription')}</p>
             {globalPrivacyControl ? (
-              <p className='text-sm text-muted-foreground'>
-                Your browser’s Global Privacy Control signal turns analytics off.
-              </p>
+              <p className='text-sm text-muted-foreground'>{t('shell.cookies.globalPrivacyControl')}</p>
             ) : null}
           </div>
         </div>
@@ -97,7 +96,7 @@ function CookiePreferencesContent({
             onOpenChange(false);
           }}
         >
-          Cancel
+          {t('shell.cookies.cancel')}
         </Button>
         <Button
           onClick={() => {
@@ -105,7 +104,7 @@ function CookiePreferencesContent({
             onOpenChange(false);
           }}
         >
-          Save
+          {t('shell.cookies.save')}
         </Button>
       </DialogFooter>
     </DialogContent>

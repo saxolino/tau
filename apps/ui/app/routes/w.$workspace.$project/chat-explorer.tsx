@@ -37,6 +37,7 @@ import { canonicalPartPreviews, sourceGlbDigest } from '#services/part-thumbnail
 import { useProject } from '#hooks/use-project.js';
 import { usePaneviewPersistence } from '#routes/w.$workspace.$project/use-chat-interface-state.js';
 import { ProjectWorkbenchPanesHost } from '#routes/w.$workspace.$project/workbench-panes-host.js';
+import { useModelPanePresentation } from '#routes/w.$workspace.$project/model-pane-presentation.js';
 import { projectWorkspaceKeyCombinations } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 const keyCombinationEditor = projectWorkspaceKeyCombinations.model;
@@ -45,7 +46,7 @@ const componentActions: NonNullable<ModelSource['componentActions']> = {
   Dropdown: ModelComponentActionDropdown,
   ContextContent: ModelComponentActionContextContent,
 };
-const projectlessHost: WorkbenchPanesHost = { useUnits: () => [], model: {} };
+const noUnits: WorkbenchPanesHost['useUnits'] = () => [];
 
 const useModelPanelLayout = (): ModelPanelLayout => usePaneviewPersistence('modelPaneview');
 
@@ -213,9 +214,16 @@ function ModelPanelBodyContent({ onRequestOpen }: { readonly onRequestOpen?: () 
   const project = useProject({ enableNoContext: true });
   const editorRef = project?.editorRef;
   const openPartGallery = useOpenPartGallery();
+  // SinopiaCAD: the «Pezzi» panel in the interface language, by the pieces' readable names, never a file name.
+  const presentation = useModelPanePresentation(project?.mainEntryPath);
+  const projectlessHost = useMemo(
+    (): WorkbenchPanesHost => ({ useUnits: noUnits, model: presentation }),
+    [presentation],
+  );
   const sources = useMemo(
     (): Pick<WorkbenchPanesHost, 'model'> => ({
       model: {
+        ...presentation,
         usePanelLayout: useModelPanelLayout,
         useThumbnails: useExplorerPartThumbnails,
         openPartGallery,
@@ -235,7 +243,7 @@ function ModelPanelBodyContent({ onRequestOpen }: { readonly onRequestOpen?: () 
         },
       },
     }),
-    [editorRef, openPartGallery],
+    [editorRef, openPartGallery, presentation],
   );
 
   if (!project) {

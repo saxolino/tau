@@ -18,10 +18,11 @@ const renderAt = (pathname: string): void => {
 };
 
 describe('useRootGatePlaceholder', () => {
-  it('should give the gallery its own skeleton while Home starts', () => {
+  it('should give hidden Community no skeleton of its own, since it redirects home', () => {
     renderAt('/community');
 
-    expect(screen.getByRole('status', { name: 'Opening examples' })).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Opening examples' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'SinopiaCAD' })).toBeInTheDocument();
   });
 
   it('should keep the workspace skeleton on a project URL', () => {
@@ -30,9 +31,10 @@ describe('useRootGatePlaceholder', () => {
     expect(screen.getByRole('status', { name: 'Opening project' })).toBeInTheDocument();
   });
 
-  it('should leave other routes to the gate’s bare status', () => {
+  it('should show Sinopia’s mark on other routes instead of a blank page', () => {
     renderAt('/projects');
 
-    expect(screen.getByText('No route placeholder')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'SinopiaCAD' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByText('No route placeholder')).not.toBeInTheDocument();
   });
 });

@@ -20,6 +20,10 @@ import { useResolvedAuth } from '#hooks/use-resolved-auth.js';
 import { useCommercialFeatures } from '#cloud/commercial-features.js';
 import { getRevisionSessionUser, useRevisionSessionUser } from '#lib/revision-actor.js';
 import { KeyedMutex } from '#db/keyed-mutex.js';
+import { sinopiaSession } from '#lib/sinopia-session.js';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { listSinopiaCadModels, sinopiaCadLocalId } from '#services/sinopia-cad.js';
+import type { SinopiaCadModel } from '#services/sinopia-cad.js';
 
 /** What this account may do with a project on Tau Cloud (D27). @public */
 export type ProjectRole = 'owner' | 'write' | 'read';
@@ -59,7 +63,13 @@ export const isSyncReadOnly = (remote: RemoteFacet | undefined, role: ProjectAcc
  * `updatedAt` (epoch milliseconds) is what the one library (D20) sorts a
  * project this device does not hold by, under *Last Updated*.
  */
-export type CloudProject = Readonly<{ id: string; name: string; role: ProjectRole; updatedAt?: number }>;
+export type CloudProject = Readonly<{
+  id: string;
+  name: string;
+  role: ProjectRole;
+  updatedAt?: number;
+  sinopia?: SinopiaCadModel;
+}>;
 
 /** The prefix every listing key starts with, so one invalidation reaches every account's listing. */
 export const cloudProjectsQueryKey = ['cloud-projects'] as const;
@@ -106,6 +116,21 @@ const toCloudProject = (value: unknown): CloudProject | undefined => {
  * @returns Every project row the API answered with.
  */
 export const fetchCloudProjects = async (): Promise<readonly CloudProject[]> => {
+  const session = sinopiaSession().getState();
+  if (session.status !== 'disabled') {
+    if (session.status !== 'signed-in') {
+      throw new Error('SINOPIA_SESSION_REQUIRED');
+    }
+    const rows = await listSinopiaCadModels();
+    return rows.map((row) => ({
+      id: sinopiaCadLocalId.get(session.user.id, row.id),
+      name: row.name,
+      role: 'owner',
+      updatedAt: Date.parse(row.updated_at),
+      sinopia: row,
+    }));
+  }
+
   /* Normalised like every other caller of this API (review R6): a deployment
      whose `TAU_API_URL` ends in `/` would otherwise ask for `//v1/projects`. */
   const response = await fetch(`${ENV.TAU_API_URL.replace(/\/$/u, '')}/v1/projects`, {
@@ -144,6 +169,10 @@ export const useCloudProjects = (
   isFetching: boolean;
   retry: () => void;
 }> => {
+  const sinopia = useSinopiaSession();
+  const revisionUser = useRevisionSessionUser();
+  const userId =
+    sinopia.status === 'disabled' ? revisionUser?.id : sinopia.status === 'signed-in' ? sinopia.user.id : undefined;
   const {
     data = [],
     isSuccess,
@@ -151,9 +180,9 @@ export const useCloudProjects = (
     isFetching,
     refetch,
   } = useQuery({
-    queryKey: cloudProjectsQueryKeyFor(useRevisionSessionUser()?.id),
+    queryKey: cloudProjectsQueryKeyFor(userId),
     queryFn: fetchCloudProjects,
-    enabled: options?.enabled ?? true,
+    enabled: (options?.enabled ?? true) && (sinopia.status === 'disabled' || sinopia.status === 'signed-in'),
     /* The set only changes when another device backs something up or an owner
        shares one, and a window focus is when this device is most likely to have
        missed either — which is react-query's `refetchOnWindowFocus` default

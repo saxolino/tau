@@ -139,6 +139,8 @@ const parseFileDragPaths = (raw: string): string[] => {
 
 export type ChatTextareaHandle = {
   focus: () => void;
+  /** Submit through the editor, including dictation; undefined until the editor mounts. */
+  submit?: () => Promise<void> | undefined;
 };
 
 export type ChatTextareaProperties = {
@@ -149,12 +151,15 @@ export type ChatTextareaProperties = {
   readonly enableAutoFocus?: boolean;
   readonly className?: string;
   readonly enableContextActions?: boolean;
-  readonly enableKernelSelector?: boolean;
+  /** Show technical agent configuration controls; the image-first home hides them. */
+  readonly enableAgentControls?: boolean;
   /** Where a project created from this draft goes: Home's location control, in the bar. */
   readonly creationLocationControl?: React.ReactNode;
   /** Blocks every submit path while external prerequisites are unresolved. */
   readonly isSubmitDisabled?: boolean;
   readonly mode?: 'main' | 'edit';
+  /** The empty box's prompt; the project composer's own by default («Scrivi o detta una modifica…»). */
+  readonly placeholder?: string;
   /**
    * Below the `md` breakpoint, rest as one row — +, the editor, dictation and
    * Send — until the composer is focused or holds a draft; the rest of the bar

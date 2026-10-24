@@ -32,8 +32,8 @@ const ChatDetails = lazy(async () => {
   return { default: module.ChatDetails };
 });
 const ChatConverter = lazy(async () => {
-  const module = await import('#routes/w.$workspace.$project/chat-converter.js');
-  return { default: module.ChatConverter };
+  const module = await import('#routes/w.$workspace.$project/project-export-launcher.js');
+  return { default: module.ProjectExportLauncher };
 });
 const ProjectShareWorkbenchPanel = lazy(async () => {
   const module = await import('#routes/w.$workspace.$project/project-share-action.js');

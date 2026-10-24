@@ -59,7 +59,7 @@ test('keeps the task list above the composer in step with update_todos', async (
   try {
     await target.expectVisible(selectors.getByCss(composer), 10_000);
   } catch {
-    await target.click(selectors.getByCss('[aria-label="Toggle Chat lane"]'));
+    await target.click(selectors.getByCss('[aria-label="Agent"]'));
     await target.expectVisible(selectors.getByCss(composer), 60_000);
   }
   await target.click(selectors.getByRole('button', { name: /^decline$/iu }), { timeout: 5000 }).catch(() => undefined);

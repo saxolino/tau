@@ -121,7 +121,7 @@ const conflictSummary = (conflict: ProjectDiscoveryConflict): string => {
         : 'This folder needs a valid tau.json before it can be opened.';
     }
     case 'duplicate-id': {
-      return 'This copied project shares an identity with another directory. Choose which folder Tau opens.';
+      return 'This copied project shares an identity with another directory. Choose which folder SinopiaCAD opens.';
     }
     case 'route-blocked': {
       return 'This project’s workspace is not connected. Reconnect the folder to open it.';
@@ -135,7 +135,7 @@ const conflictSummary = (conflict: ProjectDiscoveryConflict): string => {
           return 'This folder’s saved project identity is damaged. Restore its project metadata before opening it.';
         }
         case 'identity-unavailable': {
-          return 'Tau could not save this folder’s project identity. Check folder access and try again.';
+          return 'SinopiaCAD could not save this folder’s project identity. Check folder access and try again.';
         }
         case 'manifest-unreadable': {
           return 'This project directory could not be read.';
@@ -353,7 +353,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
     async (locator: ProjectLocator, projectId: string, name: string): Promise<void> => {
       try {
         await chooseProjectDirectory(locator, projectId);
-        toast.success(`Tau now opens ${name} from this folder`);
+        toast.success(`SinopiaCAD now opens ${name} from this folder`);
       } catch (error) {
         toast.error(`Could not open ${name} from this folder`, {
           description: error instanceof Error ? error.message : undefined,
@@ -649,14 +649,14 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
                 <div className='truncate font-medium'>{recoveryDirectoryName(recovery)}</div>
                 <div className='text-sm text-muted-foreground'>
                   {recovery.status === 'recovering'
-                    ? 'Tau is finishing this project.'
+                    ? 'SinopiaCAD is finishing this project.'
                     : recovery.reason === 'workspace-unavailable'
-                      ? 'Reconnect its workspace folder so Tau can finish recovery.'
+                      ? 'Reconnect its workspace folder so SinopiaCAD can finish recovery.'
                       : recovery.reason === 'identity-conflict'
                         ? 'The project directory belongs to different or unidentifiable content.'
                         : recovery.reason === 'local-state-error'
                           ? 'The project files committed, but local project state could not be restored.'
-                          : 'Tau could not finish writing the project files.'}
+                          : 'SinopiaCAD could not finish writing the project files.'}
                 </div>
               </div>
               {recovery.status === 'failed' && (

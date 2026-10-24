@@ -5,7 +5,7 @@ import { Auth } from '#components/auth/auth.js';
 import { AuthEmailDraftProvider } from '#components/auth/auth-email-draft.js';
 import { MagicLinkVerify } from '#components/auth/magic-link-verify.js';
 import { sanitizeVerifyEmailRedirectTo, VerifyEmail } from '#components/auth/verify-email.js';
-import { TauWordmark } from '#components/icons/tau-wordmark.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
 import type { Handle } from '#types/matches.types.js';
 import { DesignStory } from '#components/geometry/splash/design-story.js';
@@ -124,7 +124,7 @@ export default function AuthPage(): React.JSX.Element {
   if (shellHandoff === undefined && shouldContinue) {
     return (
       <main className='flex min-h-svh flex-col items-center justify-center gap-6 bg-background p-6 text-foreground'>
-        <TauWordmark className='h-7 text-primary' />
+        <SinopiaCadWordmark size='lg' />
         <div className='w-full max-w-md text-center'>
           {!isSignedIn && (isError || hasWaitExpired) ? (
             <>
@@ -172,7 +172,7 @@ export default function AuthPage(): React.JSX.Element {
             <Tooltip>
               <TooltipTrigger asChild className='flex items-center gap-2 font-medium'>
                 <Link to='/' aria-label='Go home' className={cn(desktopTarget && 'h-7')}>
-                  <TauWordmark className={cn('h-7 text-primary', desktopTarget && 'h-5')} />
+                  <SinopiaCadWordmark size={desktopTarget ? 'sm' : 'lg'} />
                 </Link>
               </TooltipTrigger>
               <TooltipContent side='right'>Go home</TooltipContent>

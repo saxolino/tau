@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type * as ProjectExamplesModule from '#constants/project-examples.js';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
-import CadCommunity, { meta } from '#routes/community/route.js';
+import CadCommunity, { clientLoader, meta } from '#routes/community/route.js';
 
 /* A gallery of 25 so the standard page size (20) leaves a second page: 21 Replicad
    examples led by the featured one, then 4 JSCAD examples. */
@@ -80,7 +80,7 @@ describe('Community route', () => {
   it('should name the document and describe the gallery', () => {
     const tags = meta({} as Parameters<typeof meta>[0]);
 
-    expect(tags).toContainEqual({ title: 'Community · Tau' });
+    expect(tags).toContainEqual({ title: 'Community · SinopiaCAD' });
     expect(tags).toContainEqual(expect.objectContaining({ name: 'description' }));
   });
 
@@ -211,5 +211,15 @@ describe('Community route', () => {
       expect(screen.getAllByRole('listitem')).toHaveLength(4);
       expect(screen.queryByRole('link', { name: 'Open Example 5' })).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('Community while hidden', () => {
+  it('should send /community to the home before anything renders', () => {
+    const response = clientLoader();
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('Location')).toBe('/');
+    expect(clientLoader.hydrate).toBe(true);
   });
 });

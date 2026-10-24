@@ -127,7 +127,7 @@ describe('/s provider dispatch', () => {
         },
       },
     } as Parameters<typeof meta>[0]);
-    expect(tags).toEqual(expect.arrayContaining([{ title: 'Birdhouse · Tau' }]));
+    expect(tags).toEqual(expect.arrayContaining([{ title: 'Birdhouse · SinopiaCAD' }]));
     expect(tags).not.toEqual(expect.arrayContaining([{ name: 'robots', content: 'noindex, nofollow' }]));
   });
 });

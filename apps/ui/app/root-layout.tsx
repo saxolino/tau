@@ -17,7 +17,6 @@ import { cn } from '@taucad/ui/utils/cn';
 import { Toaster } from '#components/ui/sonner.js';
 import { ColorProvider, useColor } from '#hooks/use-color.js';
 import { AppViewerEnvironment } from '#components/geometry/app-viewer-environment.js';
-import { useFavicon } from '#hooks/use-favicon.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { ErrorPage } from '#components/error-page.js';
 import { ProjectManagerProvider } from '#hooks/use-project-manager.js';
@@ -29,13 +28,15 @@ import { ChatSessionStoreProvider } from '#hooks/chat-session-store-provider.js'
 import { SessionsProvider } from '#hooks/use-sessions.js';
 import { ProjectSessionsHost, projectRoutePath } from '#routes/w.$workspace.$project/project-route.js';
 import { WorkspaceSkeleton } from '#routes/w.$workspace.$project/workspace-skeleton.js';
-import { CommunityPageSkeleton } from '#routes/_index/community-page-skeleton.js';
+import { SinopiaCadWordmark } from '#components/icons/sinopiacad-wordmark.js';
 import { GlobalChatFlushGuard } from '#components/global-chat-flush-guard.js';
 import { DocumentMemoryKillReporter } from '#components/memory-kill-reporter.js';
 import { SvgSpriteMount } from '#components/icons/svg-sprite-mount.js';
 import { HeadlessImageProvider } from '#providers/headless-image-provider.js';
 import { authErrorMessage, betterFetchErrorBodyMessage } from '#utils/auth-error.utils.js';
 import { CloudRootBoundary, useCloudPaymentActionReturn } from '#cloud/root-billing.js';
+import { SinopiaSessionGate } from '#components/auth/sinopia/sinopia-session-gate.js';
+import { useLanguage } from '#i18n/language.js';
 
 export type RootLoaderData = {
   readonly env: ClientEnvironment;
@@ -83,11 +84,28 @@ export function configureSessionQueryDefaults(client: QueryClient): void {
  */
 export function useRootGatePlaceholder(): ReactNode {
   const isProjectRoute = useMatch({ path: projectRoutePath, end: true }) !== null;
-  const isCommunityRoute = useMatch({ path: '/community', end: true }) !== null;
-  if (isProjectRoute) {
-    return <WorkspaceSkeleton withShellFrame />;
-  }
-  return isCommunityRoute ? <CommunityPageSkeleton /> : undefined;
+  // SinopiaCAD hides Community: `/community` redirects home, so it has no skeleton of its own.
+  return isProjectRoute ? <WorkspaceSkeleton withShellFrame /> : <AppSplash />;
+}
+
+/**
+ * Every other page's first paint while the Sinopia session and the workspace open: Sinopia's mark on the theme's
+ * ground, still, so the wait reads as the app arriving rather than a blank page. No words: the language is not known
+ * yet on the server render.
+ *
+ * @returns The splash.
+ */
+function AppSplash(): React.JSX.Element {
+  return (
+    <div
+      role='status'
+      aria-busy='true'
+      aria-label='SinopiaCAD'
+      className='flex min-h-dvh items-center justify-center bg-background'
+    >
+      <SinopiaCadWordmark size='lg' className='opacity-80' />
+    </div>
+  );
 }
 
 export function RootLayout({
@@ -180,7 +198,8 @@ export function RootLayout({
             <ColorProvider>
               <AppViewerEnvironment>
                 <LayoutDocument env={data?.env ?? {}} ssrTheme={ssrTheme} documentChrome={documentChrome}>
-                  {application}
+                  {/* SinopiaCAD: nothing of the workspace starts before a Sinopia session exists. */}
+                  <SinopiaSessionGate placeholder={gatePlaceholder}>{application}</SinopiaSessionGate>
                 </LayoutDocument>
               </AppViewerEnvironment>
             </ColorProvider>
@@ -208,19 +227,17 @@ function LayoutDocument({
   // system preference before the page renders (prevents light mode flash on dark systems).
   const { ssrTheme: resolvedTheme } = useTheme();
   const color = useColor();
-  const { setFaviconColor } = useFavicon();
+  // SinopiaCAD: the document speaks the interface language (Italian on the server, the browser's right after).
+  const language = useLanguage();
+  // SinopiaCAD: the favicon is Sinopia's fixed mark (`root.tsx` links), not recoloured with the accent.
   const [usePointerCursors] = useCookie(cookieName.pointerCursors, false);
-
-  useEffect(() => {
-    setFaviconColor(color.serialized.hex);
-  }, [setFaviconColor, color]);
 
   return (
     <html
-      lang='en'
+      lang={language}
       /* Browser page translation rewrites React-owned text nodes, and React's next
        * update then fails with `insertBefore`/`removeChild` NotFoundError. The UI
-       * is English-only and re-renders continuously (chat stream, editor, viewer). */
+       * speaks Italian and English itself and re-renders continuously (chat stream, editor, viewer). */
       translate='no'
       className={cn(
         '[--spacing:0.275rem] md:[--spacing:0.25rem]',

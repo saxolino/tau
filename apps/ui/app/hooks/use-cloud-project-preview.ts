@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ENV } from '#environment.config.js';
 import { useRevisionSessionUser } from '#lib/revision-actor.js';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { downloadSinopiaCadObject } from '#services/sinopia-cad.js';
+import type { SinopiaCadModel } from '#services/sinopia-cad.js';
 
 class PreviewResponseError extends Error {
   public readonly status: number;
@@ -79,6 +82,7 @@ export const fetchCloudProjectPreview = async (projectId: string, signal: AbortS
 export const useCloudProjectPreview = (
   projectId: string,
   isVisible: boolean,
+  sinopiaModel?: SinopiaCadModel,
 ): {
   url: string | undefined;
   isLoading: boolean;
@@ -86,11 +90,22 @@ export const useCloudProjectPreview = (
   canRetry: boolean;
   retry: () => Promise<unknown>;
 } => {
-  const userId = useRevisionSessionUser()?.id;
+  const revisionUser = useRevisionSessionUser();
+  const session = useSinopiaSession();
+  const userId =
+    session.status === 'disabled' ? revisionUser?.id : session.status === 'signed-in' ? session.user.id : undefined;
   const query = useQuery({
-    queryKey: ['cloud-project-preview', userId ?? null, projectId],
-    queryFn: async ({ signal }) => (await fetchCloudProjectPreview(projectId, signal)) ?? null,
-    enabled: isVisible && userId !== undefined,
+    queryKey: ['cloud-project-preview', userId ?? null, projectId, sinopiaModel?.thumbnail_path],
+    queryFn: async ({ signal }) => {
+      if (sinopiaModel !== undefined) {
+        signal.throwIfAborted();
+        return sinopiaModel.thumbnail_path === null
+          ? null
+          : downloadSinopiaCadObject(sinopiaModel, sinopiaModel.thumbnail_path);
+      }
+      return (await fetchCloudProjectPreview(projectId, signal)) ?? null;
+    },
+    enabled: isVisible && userId !== undefined && (session.status === 'disabled' || sinopiaModel?.user_id === userId),
     // Recheck access whenever a card remounts/focus returns; no cross-account placeholder data.
     staleTime: 0,
     gcTime: 0,

@@ -16,6 +16,9 @@ import { toast } from '#components/ui/sonner.js';
 import { tauCloudIntent, withNamedLock } from '#hooks/use-cloud-projects.js';
 import type { CloudProject } from '#hooks/use-cloud-projects.js';
 import type { CreateProjectOptions } from '#hooks/use-project-manager.js';
+import { useFileManager } from '#hooks/use-file-manager.js';
+import { importSinopiaCadModel, readSinopiaCadLink, sinopiaCadLocalId } from '#services/sinopia-cad.js';
+import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
 
 /**
  * What this device creates for a Tau Cloud project before its first pull: the
@@ -66,6 +69,7 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
   const { projects } = useProjects({ includeDeleted: true });
   const { createProject, getProjects } = useProjectManager();
   const navigate = useNavigate();
+  const { recordFiles } = useFileManager();
 
   return useCallback(
     async (entry: CloudProject): Promise<void> => {
@@ -83,6 +87,13 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
         return;
       }
       if (held?.slugs !== undefined) {
+        if (entry.sinopia !== undefined) {
+          await requireSinopiaUser(entry.sinopia.user_id);
+          const link = await readSinopiaCadLink(recordFiles, `/projects/${held.id}`);
+          if (link?.modelId !== entry.sinopia.id || link.userId !== entry.sinopia.user_id) {
+            throw new Error('SINOPIA_MODEL_IDENTITY_MISMATCH');
+          }
+        }
         await navigate(projectUrl(held.slugs));
         return;
       }
@@ -93,7 +104,26 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
           throw new Error('Restore this project from Trash before opening it.');
         }
         if (current?.slugs !== undefined) {
+          if (entry.sinopia !== undefined) {
+            const link = await readSinopiaCadLink(recordFiles, `/projects/${entry.id}`);
+            if (link?.modelId !== entry.sinopia.id || link.userId !== entry.sinopia.user_id) {
+              throw new Error('SINOPIA_MODEL_IDENTITY_MISMATCH');
+            }
+          }
           return { slugs: current.slugs };
+        }
+        if (entry.sinopia !== undefined) {
+          const imported = await importSinopiaCadModel(entry.sinopia);
+          await requireSinopiaUser(entry.sinopia.user_id);
+          const result = await createProject({
+            id: entry.id,
+            chat: false,
+            project: imported.project,
+            files: imported.files,
+            location: { kind: 'home' },
+          });
+          sinopiaCadLocalId.set(entry.sinopia.user_id, entry.sinopia.id, result.id);
+          return result;
         }
         const previous = tauCloudIntent.get(entry.id);
         tauCloudIntent.set(entry.id, 'open');
@@ -116,6 +146,6 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
          the command when the project client replaces the root client. */
       await navigate(projectUrl(created.slugs));
     },
-    [createProject, getProjects, navigate, projects],
+    [createProject, getProjects, navigate, projects, recordFiles],
   );
 };

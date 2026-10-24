@@ -1,5 +1,8 @@
 // @vitest-environment node
 /* eslint-disable @typescript-eslint/naming-convention -- glTF extension keys use standardized names. */
+import { registerTauGltfExtensions } from '@taucad/geometry-core';
+import type { TauCadTopologyPayload, TauCadTopologyRoot } from '@taucad/geometry-core';
+import { tauCadTopologyExtension } from '@taucad/runtime/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
@@ -51,7 +54,7 @@ const source = `
     const copper = ${JSON.stringify(copper)};
     copper.extensions.KHR_materials_anisotropy.anisotropyStrength = p.anisotropy;
     return { shapes: [
-      { name: 'Copper', shape: cylinder, material: copper },
+      { name: 'Copper', shape: cylinder, material: copper, density: 8.96 },
       { name: 'Glass', shape: Pos(30, 0, 0).mul(cylinder), material: ${JSON.stringify(glass)} },
     ] };
   }
@@ -83,6 +86,15 @@ describe('standard physical materials through SMLib and the runtime', () => {
     const bytes = extractGltfFromResult(rendered.rendering)!;
     const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
     const { json } = await io.binaryToJSON(bytes);
+    const topologyDocument = await registerTauGltfExtensions(new NodeIO()).readBinary(bytes);
+    const topology = topologyDocument
+      .getRoot()
+      .getExtension<TauCadTopologyRoot>(tauCadTopologyExtension)
+      ?.getPayload() as TauCadTopologyPayload | undefined;
+    const physical = topology?.components.find((component) => component.name === 'Copper')?.sourceRefs;
+    expect(physical?.['density']).toBe(8.96);
+    expect(physical?.['volumeMm3']).toBeGreaterThan(0);
+    expect(physical?.['massGrams']).toBeCloseTo((Number(physical?.['volumeMm3']) * 8.96) / 1000, 8);
     expect(json.materials).toEqual(expect.arrayContaining([copper, glass]));
     expect(json.meshes?.every((mesh) => mesh.primitives.some((primitive) => primitive.mode === 1))).toBe(true);
 

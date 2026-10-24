@@ -15,7 +15,7 @@ import type {
 } from '#types/editor.types.js';
 import type { GraphicsBackendPreference } from '@taucad/viewer/graphics/graphics-settings';
 import { defaultPanelState } from '#constants/editor.constants.js';
-import { mergePanelState } from '#utils/panel-state.utils.js';
+import { mergePanelState, migratePanelState } from '#utils/panel-state.utils.js';
 
 const maxOpenFiles = 200;
 
@@ -263,9 +263,10 @@ const errorOf = (error: unknown, fallback: string): Error => (error instanceof E
 const loadedStatePatch = ({ event }: EditorArgs<'editorStateRetrieved'>, enq: EditorEnqueue): EditorPatch => {
   const loadedState = event.state;
 
-  // Merge loaded panelState with defaults to handle missing fields from old data
+  // Merge loaded panelState with defaults to handle missing fields from old data; widths measured in an older lane
+  // arrangement give way to the defaults first.
   const mergedPanelState = loadedState?.panelState
-    ? mergePanelState(defaultPanelState, loadedState.panelState)
+    ? mergePanelState(defaultPanelState, migratePanelState(loadedState.panelState))
     : defaultPanelState;
 
   const persistedActivePaneId = loadedState?.activePaneId;

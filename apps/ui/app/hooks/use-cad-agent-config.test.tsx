@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { cadAgentConfigSchema } from '@taucad/chat';
 import type { ChatSnapshot, ContextPayload } from '@taucad/chat';
 import type { KernelId } from '@taucad/types/constants';
-import { resolveKernel } from '@taucad/types/constants';
 import {
   awaitAgentHostAvailability,
   awaitBrowserAgentHostAvailability,
@@ -18,6 +18,7 @@ import { useCookie } from '#hooks/use-cookie.js';
 import { useChatSnapshot } from '#hooks/use-chat-snapshot.js';
 import { useContextPayload } from '#hooks/use-context-payload.js';
 import { probeBrowserAgentHostCapability } from '#services/agent-host-client.js';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 const capabilityHarness = vi.hoisted(() => ({ readError: undefined as Error | undefined, supported: true }));
 const durabilityHarness = vi.hoisted(() => ({ value: 'transactional-rewrite' }) as const);
@@ -135,9 +136,11 @@ const buildComposer = (overrides: {
   modelId?: string;
   providerKind?: 'anthropic' | 'ollama' | 'openai';
   kernelId?: KernelId;
+  /** Build a chat that pins no kernel. */
+  unpinned?: true;
   execution?: ChatComposerContextValue['execution']['execution'];
 }): ChatComposerContextValue => {
-  const kernelId: KernelId = overrides.kernelId ?? 'replicad';
+  const kernelId = overrides.unpinned ? undefined : (overrides.kernelId ?? 'replicad');
   const modelId = overrides.modelId ?? 'openai-gpt-5.5';
   const providerKind = overrides.providerKind ?? 'openai';
   return {
@@ -156,7 +159,7 @@ const buildComposer = (overrides: {
       execution: overrides.execution ?? { kind: 'tau', model: modelId },
       setActiveExecution: noop,
     },
-    kernel: { kernelId, kernel: resolveKernel(kernelId), setActiveKernel: noop },
+    kernel: { kernelId },
     status: 'ready',
     agentActivity: 'ready',
     stop: noop,
@@ -241,12 +244,32 @@ describe('useCadAgentConfig', () => {
       profile: 'cad',
       execution: { kind: 'tau', model: 'openai-gpt-5.5' },
       kernel: 'replicad',
+      // The jsdom browser speaks English.
+      language: 'en',
       mode: 'agent',
       toolChoice: 'auto',
       testingEnabled: true,
       snapshot: undefined,
       contextPayload: undefined,
     });
+  });
+
+  // SinopiaCAD: the agent replies in the interface language (UI-UX-SinopiaCAD §1.1).
+  it('should carry the interface language and follow a switch', () => {
+    act(() => {
+      setLanguage('it');
+    });
+    const { result } = renderHook(() => useCadAgentConfig());
+    expect(result.current.language).toBe('it');
+    expect(cadAgentConfigSchema.parse(result.current).language).toBe('it');
+
+    act(() => {
+      setLanguage('en');
+    });
+
+    expect(result.current.language).toBe('en');
+    globalThis.localStorage.clear();
+    resetLanguageForTests();
   });
 
   it('never downgrades the execution — the browser host is the only Tau placement', async () => {
@@ -293,7 +316,7 @@ describe('useCadAgentConfig', () => {
     await waitFor(() => {
       expect(result.current).toEqual({
         status: 'unavailable',
-        reason: 'Tau cannot run the ollama provider wire in your browser. Pick a different model.',
+        reason: 'SinopiaCAD cannot run the ollama provider wire in your browser. Pick a different model.',
       });
     });
   });
@@ -387,7 +410,8 @@ describe('useCadAgentConfig', () => {
         label: 'This computer',
         workspaceRoot: '',
         online: true,
-        externalAgents: [{ id: 'codex' }],
+        // Claude Code: SinopiaCAD's pickers leave Codex out (see the next test).
+        externalAgents: [{ id: 'claude' }],
       },
     ];
     directoryHarness.listings = [[], recovered];
@@ -406,6 +430,37 @@ describe('useCadAgentConfig', () => {
     expect(directoryHarness.calls).toBe(2);
   });
 
+  it('offers SinopiaCAD’s pickers Claude Code but not Codex or Grok Build', async () => {
+    directoryHarness.listings = [
+      [
+        {
+          hostId: 'desktop',
+          rung: 'in-process',
+          label: 'This computer',
+          workspaceRoot: '',
+          online: true,
+          externalAgents: [{ id: 'claude' }, { id: 'codex' }, { id: 'grok' }],
+        },
+      ],
+    ];
+
+    const { result } = renderHook(() => useAgentHostPlacements());
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.targets).toEqual([
+      {
+        hostId: 'desktop',
+        rung: 'in-process',
+        label: 'This computer',
+        workspaceRoot: '',
+        online: true,
+        externalAgents: [{ id: 'claude' }],
+      },
+    ]);
+  });
+
   it('bounds the dispatch wait rather than hanging a turn forever', async () => {
     const settled = await awaitBrowserAgentHostAvailability('project-never-probed', 1);
 
@@ -421,6 +476,15 @@ describe('useCadAgentConfig', () => {
     const { result } = renderHook(() => useCadAgentConfig());
 
     expect(result.current.kernel).toBe('openscad');
+  });
+
+  it('should leave `kernel` out when the chat pins none, so the agent chooses the engine', () => {
+    useChatComposerMock.mockReturnValue(buildComposer({ unpinned: true }));
+
+    const { result } = renderHook(() => useCadAgentConfig());
+
+    expect(result.current).not.toHaveProperty('kernel');
+    expect(cadAgentConfigSchema.safeParse(result.current).success).toBe(true);
   });
 
   it('should source `mode` and `toolChoice` from the chat draft selector', () => {

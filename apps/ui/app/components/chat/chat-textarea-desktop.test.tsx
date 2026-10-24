@@ -5,7 +5,6 @@ import userEvent from '@testing-library/user-event';
 import type { captureDictation } from '#components/dictation/dictation-capture.js';
 import type { transcribeDictation } from '#components/dictation/dictation-client.js';
 import type { AcpSessionData } from '@taucad/chat';
-import { kernelConfigurations } from '@taucad/types/constants';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { ChatComposerContextValue } from '#hooks/active-chat-provider.js';
 import type { AgentHostPlacementTarget } from '#lib/agent-host-placement.js';
@@ -26,7 +25,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const manifoldKernel = kernelConfigurations.find((k) => k.id === 'manifold')!;
 const execution: { current: ChatComposerContextValue['execution']['execution'] } = {
   current: { kind: 'tau', model: 'm' },
 };
@@ -35,7 +33,7 @@ const placements: { current: readonly AgentHostPlacementTarget[] } = { current: 
 
 vi.mock('#hooks/active-chat-provider.js', () => ({
   useChatComposer: () => ({
-    kernel: { kernelId: manifoldKernel.id, kernel: manifoldKernel, setActiveKernel: vi.fn() },
+    kernel: { kernelId: undefined },
     execution: { execution: execution.current, setActiveExecution },
     contextUsage: undefined,
   }),
@@ -69,14 +67,6 @@ vi.mock('#components/chat/chat-agent-sheet.js', async (importOriginal) => ({
       <span data-slot='trigger-model'>Agent and model</span>
     </button>
   ),
-}));
-
-vi.mock('#components/chat/chat-kernel-selector.js', () => ({
-  ChatKernelSelector: ({
-    children,
-  }: {
-    readonly children: (props: { selectedKernel: typeof manifoldKernel }) => React.ReactNode;
-  }) => <div>{children({ selectedKernel: manifoldKernel })}</div>,
 }));
 
 vi.mock('#components/icons/svg-icon.js', () => ({
@@ -125,6 +115,7 @@ const renderBar = (
   options: {
     readonly acpSessionData?: AcpSessionData;
     readonly enableContextActions?: boolean;
+    readonly enableAgentControls?: boolean;
     readonly attachmentInputSupported?: boolean;
     readonly sendRefusal?: string;
     readonly handleFileSelect?: () => void;
@@ -137,7 +128,7 @@ const renderBar = (
         composerMode='main'
         containerReference={{ current: null }}
         enableContextActions={options.enableContextActions ?? true}
-        enableKernelSelector
+        enableAgentControls={options.enableAgentControls}
         acpSessionData={options.acpSessionData}
         status='ready'
         focusEditor={noop}
@@ -165,17 +156,20 @@ describe('ChatTextareaBar', () => {
     placements.current = [];
   });
 
-  it('lays out +, the kernel, the agent trigger and Send — no branch, balance or Tau mode (D6, Q11, Q16)', () => {
+  it('should hide agent and model configuration on the home while keeping attachment and send actions', () => {
+    renderBar({ enableAgentControls: false, enableContextActions: false });
+    expect(screen.queryByRole('button', { name: 'Agent and model' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+  });
+
+  it('should lay out attachment and send controls without model, engine, credit or mode names', () => {
     const { container } = renderBar();
 
     const left = container.querySelector('[data-slot=composer-left]')!;
     const right = container.querySelector('[data-slot=composer-right]')!;
-    expect([...left.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Add',
-      'Select kernel (Manifold)',
-    ]);
+    expect([...left.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))).toEqual(['Add']);
     expect([...right.querySelectorAll('button')].map((button) => button.textContent || button.ariaLabel)).toEqual([
-      'Agent and model',
       'Send',
     ]);
     expect(screen.queryByRole('button', { name: /branch/iu })).toBeNull();
@@ -183,11 +177,11 @@ describe('ChatTextareaBar', () => {
     expect(screen.queryByRole('button', { name: /^Mode/u })).toBeNull();
   });
 
-  it('lets the kernel label leave first when the bar needs the room', () => {
+  it('offers no kernel choice: the agent chooses the engine for the job', () => {
     renderBar();
 
-    const kernel = screen.getByRole('button', { name: 'Select kernel (Manifold)' });
-    expect(kernel.querySelector('span:not([data-testid])')!.className).toContain('group-data-[hide-kernel]/bar:hidden');
+    expect(screen.queryByRole('button', { name: /kernel/iu })).toBeNull();
+    expect(screen.queryByText(/SMLib|PicoVoxel|Replicad|Manifold/u)).toBeNull();
   });
 
   it('offers attaching and adding context from one + (F10)', async () => {
@@ -210,7 +204,7 @@ describe('ChatTextareaBar', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add' }));
     const attach = screen.getByRole('menuitem', { name: /Attach image or PDF/u });
     expect(attach).toHaveAttribute('aria-disabled', 'true');
-    expect(attach).toHaveTextContent("This model can't read images or PDFs");
+    expect(attach).toHaveTextContent('This agent can’t read images or PDFs');
     expect(screen.queryByRole('menuitem', { name: /Add context/u })).toBeNull();
   });
 
@@ -220,26 +214,15 @@ describe('ChatTextareaBar', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('shows an external agent’s permission mode, named, and steps it with ⌘. (C5)', () => {
+  it('should hide legacy external-agent modes and their composer shortcut', () => {
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
     renderBar({ acpSessionData: codexSession });
-
-    expect(screen.getByRole('button', { name: 'Mode: Ask for approval' })).toBeInTheDocument();
-    act(() => {
-      const binding = keybindings.get('.');
-      if (binding?.enabled()) {
-        binding.callback();
-      }
-    });
-    expect(setActiveExecution).toHaveBeenLastCalledWith({
-      kind: 'acp',
-      hostId: 'desktop',
-      agentId: 'codex',
-      config: { mode: 'agent' },
-    });
+    expect(screen.queryByRole('button', { name: /Mode:/u })).not.toBeInTheDocument();
+    expect(keybindings.get('.')).toBeUndefined();
+    expect(setActiveExecution).not.toHaveBeenCalled();
   });
 
-  it('should offer discovered Grok permissions before the first turn and store the selected execution', async () => {
+  it('should keep discovered developer permissions out of the composer', async () => {
     // JSDOM omits the browser scrolling primitive used by the real command menu.
     globalThis.HTMLElement.prototype.scrollIntoView = vi.fn();
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'grok' };
@@ -273,17 +256,12 @@ describe('ChatTextareaBar', () => {
       },
     ];
     renderBar();
-    await userEvent.click(screen.getByRole('button', { name: 'Mode: Ask' }));
-    await userEvent.click(screen.getByRole('option', { name: 'Always approve' }));
-    expect(setActiveExecution).toHaveBeenLastCalledWith({
-      kind: 'acp',
-      hostId: 'desktop',
-      agentId: 'grok',
-      config: { 'tau.grok.permissions': 'always-approve' },
-    });
+    expect(screen.queryByRole('button', { name: /Mode:/u })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Agent and model/u })).not.toBeInTheDocument();
+    expect(setActiveExecution).not.toHaveBeenCalled();
   });
 
-  it('passes the host-discovered reasoning option to the pre-project agent control', () => {
+  it('should keep model reasoning choices out of the pre-project composer', () => {
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-astra' };
     placements.current = [
       {
@@ -320,7 +298,8 @@ describe('ChatTextareaBar', () => {
       },
     ];
     renderBar();
-    expect(screen.getByRole('button', { name: 'Agent and model' })).toHaveAttribute('data-reasoning', 'medium');
+    expect(screen.queryByRole('button', { name: 'Agent and model' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Astra|medium/u)).not.toBeInTheDocument();
   });
 
   it('leaves ⌘. and ⌘/ to an edit box that has focus (F6)', () => {
@@ -333,7 +312,7 @@ describe('ChatTextareaBar', () => {
     document.body.append(edit);
     input.focus();
 
-    expect(keybindings.get('.')?.enabled()).toBe(false);
+    expect(keybindings.get('.')).toBeUndefined();
     edit.remove();
   });
 });
@@ -355,6 +334,7 @@ describe('ACP slash commands', () => {
 
 describe('ChatTextareaDesktop draft rehydration', () => {
   beforeEach(() => {
+    HTMLElement.prototype.setPointerCapture = vi.fn();
     dictationDependencies.available = false;
     catalogHealth.status = 'ready';
     catalogHealth.retry.mockClear();
@@ -373,6 +353,8 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       enableAutoFocus?: boolean;
       enableMobileCollapse?: boolean;
       isFocused?: boolean;
+      // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- mutable editor handle under test
+      submitEditorRef?: React.RefObject<(() => Promise<void>) | undefined>;
     } = {},
   ) => {
     const { canResume = false, handleSubmit = asyncNoop } = options;
@@ -380,6 +362,7 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       <TooltipProvider>
         <ChatTextareaDesktop
           enableAutoFocus={options.enableAutoFocus ?? false}
+          submitEditorRef={options.submitEditorRef}
           mode={options.mode}
           enableMobileCollapse={options.enableMobileCollapse}
           isFocused={options.isFocused}
@@ -559,66 +542,80 @@ describe('ChatTextareaDesktop draft rehydration', () => {
       });
       expect(submit).not.toHaveBeenCalled();
       expect(cancelChat).not.toHaveBeenCalled();
-      await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
-      expect(cancelChat).toHaveBeenCalledOnce();
+      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+      expect(cancelChat).not.toHaveBeenCalled();
     },
   );
 
-  it('should place the microphone beside Send and send the final transcript exactly once after recording', async () => {
-    const createRange = document.createRange.bind(document);
-    vi.spyOn(document, 'createRange').mockImplementation(() =>
-      Object.assign(createRange(), {
-        getClientRects: () => [],
-        getBoundingClientRect: () => new DOMRect(),
-      }),
-    );
-    const microphone = Promise.withResolvers<{ finish: () => Promise<Blob>; cancel: () => void }>();
-    const transcription = Promise.withResolvers<string>();
-    let preview: ((text: string) => void) | undefined;
-    dictationDependencies.available = true;
-    dictationDependencies.capture.mockReturnValue(microphone.promise);
-    dictationDependencies.transcribe.mockImplementation(async (_wav, options) => {
-      preview = options.onPreview;
-      return transcription.promise;
-    });
-    const submit = vi.fn().mockResolvedValue(undefined);
-    const view = renderComposer('Existing draft.', codexSession, { handleSubmit: submit });
-    const dictate = await screen.findByRole('button', { name: 'Dictate' });
-    expect(
-      [...view.container.querySelectorAll('[data-slot=composer-right] button')]
-        .slice(-2)
-        .map((button) => button.ariaLabel),
-    ).toEqual(['Dictate', 'Send']);
-    await userEvent.click(dictate);
-    await screen.findByRole('button', { name: 'Requesting microphone…' });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
-    act(() => {
-      screen.getByRole('textbox').focus();
-    });
-    await userEvent.keyboard('{Enter}');
-    expect(submit).not.toHaveBeenCalled();
-    await act(async () => {
-      microphone.resolve({ finish: async () => new Blob([], { type: 'audio/wav' }), cancel: noop });
-      await microphone.promise;
-    });
-    await screen.findByRole('button', { name: 'Stop dictation' });
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await waitFor(() => {
-      expect(preview).toBeDefined();
-    });
-    act(() => {
-      preview?.('Build a');
-    });
-    expect(view.container.querySelector('[data-slot=dictation-transcript]')).toHaveTextContent('Build a');
-    expect(submit).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
-    await act(async () => {
-      transcription.resolve('Build a bracket.');
-    });
-    await waitFor(() => {
-      expect(submit).toHaveBeenCalledExactlyOnceWith('Existing draft. Build a bracket.');
-    });
-  });
+  it.each(['composer', 'home'] as const)(
+    'should send the final transcript exactly once through %s after recording',
+    async (surface) => {
+      const createRange = document.createRange.bind(document);
+      vi.spyOn(document, 'createRange').mockImplementation(() =>
+        Object.assign(createRange(), {
+          getClientRects: () => [],
+          getBoundingClientRect: () => new DOMRect(),
+        }),
+      );
+      const microphone = Promise.withResolvers<{ finish: () => Promise<Blob>; cancel: () => void }>();
+      const transcription = Promise.withResolvers<string>();
+      let preview: ((text: string) => void) | undefined;
+      dictationDependencies.available = true;
+      dictationDependencies.capture.mockReturnValue(microphone.promise);
+      dictationDependencies.transcribe.mockImplementation(async (_wav, options) => {
+        preview = options.onPreview;
+        return transcription.promise;
+      });
+      const submit = vi.fn().mockResolvedValue(undefined);
+      const submitEditorRef: { current: (() => Promise<void>) | undefined } = { current: undefined };
+      const view = renderComposer('Existing draft.', codexSession, { handleSubmit: submit, submitEditorRef });
+      const send = async (): Promise<void> => {
+        if (surface === 'home') {
+          act(() => {
+            void submitEditorRef.current?.();
+          });
+        } else {
+          await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+        }
+      };
+      const dictate = await screen.findByRole('button', { name: 'Dictate' });
+      expect(
+        [...view.container.querySelectorAll('[data-slot=composer-right] button')]
+          .slice(-2)
+          .map((button) => button.ariaLabel),
+      ).toEqual(['Dictate', 'Send']);
+      await userEvent.click(dictate);
+      await screen.findByRole('button', { name: 'Requesting microphone…' });
+      await send();
+      act(() => {
+        screen.getByRole('textbox').focus();
+      });
+      await userEvent.keyboard('{Enter}');
+      expect(submit).not.toHaveBeenCalled();
+      await act(async () => {
+        microphone.resolve({ finish: async () => new Blob([], { type: 'audio/wav' }), cancel: noop });
+        await microphone.promise;
+      });
+      await screen.findByRole('button', { name: 'Stop dictation' });
+      await send();
+      await waitFor(() => {
+        expect(preview).toBeDefined();
+      });
+      act(() => {
+        preview?.('Build a');
+      });
+      expect(view.container.querySelector('[data-slot=dictation-transcript]')).toHaveTextContent('Build a');
+      expect(submit).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('aria-disabled', 'true');
+      await act(async () => {
+        transcription.resolve('Build a bracket.');
+      });
+      await waitFor(() => {
+        expect(submit).toHaveBeenCalledExactlyOnceWith('Existing draft. Build a bracket.');
+      });
+    },
+  );
 });
 
 describe('composer bar measurement lifecycle', () => {
@@ -710,7 +707,8 @@ describe('composer bar measurement lifecycle', () => {
   it('should fit labels in order and restore them when widened', () => {
     const { container } = renderBar();
     const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
-    expect(reads.slice(0, 3)).toEqual(['', 'kernel', 'kernel,mode']);
+    expect(reads).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Agent and model' })).not.toBeInTheDocument();
     act(() => {
       notify(bar);
     });
@@ -734,18 +732,18 @@ describe('composer bar measurement lifecycle', () => {
     act(() => {
       notify(bar);
     });
-    expect(reads.length).toBeGreaterThan(0);
+    expect(reads).toHaveLength(0);
     reads = [];
     requiredWidth = 290;
     await act(async () => {
       fonts.resolve(document.fonts);
       await fonts.promise;
     });
-    expect(reads).toEqual(['', 'kernel', 'kernel,mode', 'kernel,mode,level']);
-    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
+    expect(reads).toHaveLength(0);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(false);
   });
 
-  it.each(['model', 'kernel', 'mode'])('should refit a changed %s label without a resize', async (label) => {
+  it.each(['model', 'mode'])('should refit a changed %s label without a resize', async (label) => {
     execution.current = { kind: 'acp', hostId: 'desktop', agentId: 'codex' };
     const { container } = renderBar({ acpSessionData: codexSession });
     const bar = container.querySelector<HTMLElement>('[data-slot=composer-bar]')!;
@@ -755,19 +753,12 @@ describe('composer bar measurement lifecycle', () => {
     reads = [];
     requiredWidth = 290;
     const target =
-      label === 'model'
-        ? bar.querySelector('[data-slot=trigger-model]')
-        : label === 'kernel'
-          ? screen.getByRole('button', { name: 'Select kernel (Manifold)' })
-          : screen.getByRole('button', { name: 'Mode: Ask for approval' });
-    if (!target) {
-      throw new Error('The actual composer label is missing.');
-    }
+      label === 'model' ? screen.getByRole('button', { name: 'Send' }) : screen.getByRole('button', { name: 'Add' });
     await act(async () => {
       target.append(document.createTextNode(' changed label'));
     });
-    expect(reads.length).toBeGreaterThan(0);
-    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(true);
+    expect(reads).toHaveLength(0);
+    expect(Object.hasOwn(bar.dataset, 'hideLevel')).toBe(false);
   });
 
   it('should ignore late font completion after the actual bar unmounts', async () => {

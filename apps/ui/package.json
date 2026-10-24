@@ -17,6 +17,7 @@
     "@react-router/express": "catalog:",
     "@react-router/node": "catalog:",
     "@sentry/react": "catalog:",
+    "@supabase/supabase-js": "catalog:",
     "@tanstack/react-pacer": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@taucad/agent-host": "workspace:*",

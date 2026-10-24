@@ -1,0 +1,96 @@
+import { defineMessages } from '#i18n/define-messages.js';
+
+export const exportMessages = defineMessages({
+  it: {
+    title: 'Esporta «{name}»',
+    description: 'Scegli il formato e i pezzi da esportare.',
+    step: 'Per la produzione (stampo, CNC, fonderia)',
+    stl: 'Per la stampa 3D della cera',
+    glb: 'Per vederlo in 3D su Sinopia e sul web',
+    png: 'La vista attuale in PNG',
+    photo: 'Foto',
+    verified: 'Verificato',
+    ready: 'Pronto',
+    needsFix: 'Da correggere',
+    checking: 'Controllo…',
+    download: 'Scarica {format}',
+    downloadPhoto: 'Scarica foto',
+    anyway: 'Scarica comunque',
+    units: 'Unità: millimetri',
+    scale: 'Scala 1:1',
+    pieces: 'Pezzi',
+    all: 'Tutti',
+    openPieces: '{count} pezzi non chiusi: {names}',
+    differentNames:
+      'Questi nomi non corrispondono tra il file e il modello: {names}. Chiedi all’agente di assegnare un nome diverso a ogni pezzo.',
+    ask: 'Chiedi all’agente di chiuderli',
+    surfacePieces: 'Questi pezzi hanno superfici da correggere: {names}',
+    askSurfaces: 'Chiedi all’agente di correggerli',
+    surfacePrompt:
+      'Correggi le superfici di questi pezzi per lo STEP di produzione: {names}. Ogni bordo deve stare sulle sue superfici entro 0,001 mm; mantieni nomi, misure e posizione dei pezzi.',
+    prompt:
+      'Chiudi questi pezzi per la stampa 3D: {names}. Correggi i bordi aperti e le superfici non valide, mantenendo nomi, misure e posizione dei pezzi.',
+    downloaded: '{format} scaricato',
+    unavailable: 'Attendi che il modello sia pronto, poi riprova.',
+    draftUnavailable: 'Apri l’agente e riprova a preparare la richiesta.',
+    errors: {
+      prepare:
+        'Non sono riuscito a preparare il file. Riprova; se succede ancora, chiedi all’agente di controllare il modello.',
+      read: 'Non sono riuscito a rileggere lo STEP. Riprova; se succede ancora, chiedi all’agente di correggere il modello.',
+      names:
+        'I nomi dei pezzi nel file non corrispondono al modello. Chiedi all’agente di assegnare un nome diverso a ogni pezzo.',
+      solids:
+        'Il numero di solidi non corrisponde ai pezzi. Chiedi all’agente di creare un solido chiuso per ciascun pezzo.',
+      invalid: 'Alcuni pezzi hanno superfici non valide. Chiedi all’agente di correggerli.',
+      independent:
+        'Il controllo indipendente non è disponibile per questo modello. Chiedi all’agente di preparare uno STEP verificabile.',
+      selection: 'Non riesco a separare questi pezzi. Seleziona tutti i pezzi oppure chiedi all’agente di separarli.',
+      changed: 'Il modello è cambiato durante il controllo. Riprova sul modello aggiornato.',
+      capture: 'Non sono riuscito a catturare la vista. Torna al modello, attendi che sia visibile e riprova.',
+    },
+  },
+  en: {
+    title: 'Export "{name}"',
+    description: 'Choose the format and pieces to export.',
+    step: 'For production (mould, CNC, casting)',
+    stl: 'For 3D printing the wax',
+    glb: 'To view it in 3D on Sinopia and the web',
+    png: 'The current view as PNG',
+    photo: 'Snapshot',
+    verified: 'Verified',
+    ready: 'Ready',
+    needsFix: 'Needs fixing',
+    checking: 'Checking…',
+    download: 'Download {format}',
+    downloadPhoto: 'Download snapshot',
+    anyway: 'Download anyway',
+    units: 'Units: millimetres',
+    scale: 'Scale 1:1',
+    pieces: 'Pieces',
+    all: 'All',
+    openPieces: '{count} pieces not closed: {names}',
+    differentNames:
+      'These names don’t match between the file and the model: {names}. Ask the agent to give each piece a different name.',
+    ask: 'Ask the agent to close them',
+    surfacePieces: 'These pieces have surfaces to fix: {names}',
+    askSurfaces: 'Ask the agent to fix them',
+    surfacePrompt:
+      'Fix the surfaces of these pieces for the production STEP: {names}. Every edge must lie on its surfaces within 0.001 mm; keep the names, dimensions and positions of the pieces.',
+    prompt:
+      'Close these pieces for 3D printing: {names}. Fix open edges and invalid surfaces, preserving the names, dimensions and positions of the pieces.',
+    downloaded: '{format} downloaded',
+    unavailable: 'Wait for the model to be ready, then try again.',
+    draftUnavailable: 'Open the agent and try preparing the request again.',
+    errors: {
+      prepare: 'I couldn’t prepare the file. Try again; if it keeps failing, ask the agent to check the model.',
+      read: 'I couldn’t read the STEP back. Try again; if it keeps failing, ask the agent to fix the model.',
+      names: 'The piece names in the file don’t match the model. Ask the agent to give each piece a different name.',
+      solids: 'The number of solids doesn’t match the pieces. Ask the agent to create one closed solid per piece.',
+      invalid: 'Some pieces have invalid surfaces. Ask the agent to fix them.',
+      independent: 'Independent checking is unavailable for this model. Ask the agent to prepare a verifiable STEP.',
+      selection: 'I can’t separate these pieces. Select all pieces or ask the agent to separate them.',
+      changed: 'The model changed during checking. Try again with the updated model.',
+      capture: 'I couldn’t capture the view. Return to the model, wait until it is visible and try again.',
+    },
+  },
+});

@@ -104,6 +104,11 @@ const visibility: ResidentWorkerContext['visibility'] = {
 let tabId: string | undefined;
 let requestRebridge: ResidentWorkerContext['requestRebridge'];
 
+/* SinopiaCAD: the Sinopia session's latest access token, which every host's gateway reads per request. The page sends
+ * it with each provide and again whenever it changes (an hourly refresh, a sign-out). */
+let accessToken: string | undefined;
+const currentAccessToken = (): string | undefined => accessToken;
+
 const requireTab = (): string => {
   if (tabId === undefined) {
     throw Object.assign(new Error('The agent host worker has no tab identity yet.'), {
@@ -116,7 +121,12 @@ const requireTab = (): string => {
 /** One project host per project; a newer `provide` replaces the incarnation, and `release` closes it (RH-R4). */
 const hosts = createProjectHosts<BrowserProjectHost>(async (args) => {
   const loaded = await loadImplementation();
-  return loaded.openBrowserProjectHost(args, { tabId: requireTab(), visibility, requestRebridge });
+  return loaded.openBrowserProjectHost(args, {
+    tabId: requireTab(),
+    visibility,
+    requestRebridge,
+    accessToken: currentAccessToken,
+  });
 });
 
 let connected = false;
@@ -138,7 +148,9 @@ workerScope.addEventListener('message', (event) => {
           return capabilityOf((args as Calls['capabilities']['args']).durability);
         }
         case 'provide': {
-          return hosts.provide(args as Calls['provide']['args']);
+          const { accessToken: providedToken, ...provide } = args as Calls['provide']['args'];
+          accessToken = providedToken;
+          return hosts.provide(provide);
         }
         case 'rebridge': {
           return hosts.rebridge(args as Calls['rebridge']['args']);
@@ -171,6 +183,10 @@ workerScope.addEventListener('message', (event) => {
         case 'visibility': {
           visible = (args as Calls['visibility']['args']).visible;
           visibilityTopic.emit(visible);
+          return undefined;
+        }
+        case 'accessToken': {
+          accessToken = (args as Calls['accessToken']['args']).token;
           return undefined;
         }
         default: {

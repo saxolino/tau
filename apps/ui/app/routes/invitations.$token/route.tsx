@@ -29,7 +29,7 @@ import { authClient } from '#lib/auth-client.js';
 import { cloudProjectsQueryKeyFor, fetchCloudProjects } from '#hooks/use-cloud-projects.js';
 import { useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
 
-export const meta: MetaFunction = () => [{ title: 'Project invitation · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'Project invitation · SinopiaCAD' }];
 export const handle: Handle = { enableOverflowY: true };
 
 /** What the route can end in, once the token has been offered. */

@@ -24,6 +24,8 @@ import {
   onLoopbackAgentHostsChanged,
 } from '#lib/agent-host-placement.js';
 import type { AgentHostPlacementTarget } from '#lib/agent-host-placement.js';
+import { withoutHiddenExternalAgents } from '#lib/sinopia-agents.js';
+import { useLanguage } from '#i18n/language.js';
 import { unknownIconId } from '#components/icons/svg-icon.js';
 
 /**
@@ -52,7 +54,7 @@ const isModelResolved = (providerKind: string): boolean => providerKind !== unkn
 /* eslint-disable @typescript-eslint/naming-convention -- the keys are the host's own capability-probe codes. */
 /** Capability-probe codes rendered as the reason the user reads. */
 const capabilityReasons = {
-  WORKER_UNAVAILABLE: 'This browser cannot start the worker Tau runs the agent in.',
+  WORKER_UNAVAILABLE: 'This browser cannot start the worker SinopiaCAD runs the agent in.',
   WEB_LOCKS_UNAVAILABLE: 'This browser does not provide the Web Locks the agent log needs.',
   BROADCAST_CHANNEL_UNAVAILABLE: 'This browser cannot coordinate tabs for the agent log.',
   STORAGE_NOT_WRITABLE: 'This project’s storage cannot hold a durable agent log.',
@@ -254,7 +256,7 @@ export const useBrowserAgentHostProjectAvailability = (providerKind: string): Br
     ? project
     : {
         status: 'unavailable',
-        reason: `Tau cannot run the ${providerKind} provider wire in your browser. Pick a different model.`,
+        reason: `SinopiaCAD cannot run the ${providerKind} provider wire in your browser. Pick a different model.`,
       };
 };
 
@@ -305,7 +307,8 @@ export const useAgentHostPlacements = (): {
         }
       }
       if (active) {
-        setState({ targets, loading: false });
+        // SinopiaCAD's pickers offer its own agent and Claude Code; the hosts still list every agent they found.
+        setState({ targets: targets.map((target) => withoutHiddenExternalAgents(target)), loading: false });
       }
     };
     void discover();
@@ -364,11 +367,15 @@ export const useCadAgentConfig = (): CadAgentConfigInput => {
   const [testingEnabled] = useCookie(cookieName.chatTestingEnabled, true);
   const snapshot = useChatSnapshot();
   const contextPayload = useContextPayload();
+  // SinopiaCAD: the agent replies in the interface language the person reads.
+  const language = useLanguage();
 
   return {
     profile: 'cad',
     execution,
-    kernel: kernelId,
+    // Absent when the chat pins no engine: the agent chooses one (`create-model`).
+    ...(kernelId === undefined ? {} : { kernel: kernelId }),
+    language,
     mode,
     toolChoice,
     testingEnabled,

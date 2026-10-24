@@ -3,82 +3,33 @@ import type { MetaFunction } from 'react-router';
 import { PageContent } from '#components/layout/page-content.js';
 import { PageHeader } from '#components/layout/page-header.js';
 import { useNavigate } from 'react-router';
-import type { KernelProvider } from '@taucad/runtime';
-import { availableKernelConfigurations } from '#constants/available-kernel-configurations.js';
 import { Button } from '@taucad/ui/components/button';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@taucad/ui/components/card';
+import { Card, CardContent } from '@taucad/ui/components/card';
 import { Input } from '@taucad/ui/components/input';
 import { Label } from '@taucad/ui/components/label';
-import { Badge } from '@taucad/ui/components/badge';
-import { SvgIcon } from '#components/icons/svg-icon.js';
-import { RadioGroup, RadioGroupItem } from '@taucad/ui/components/radio-group';
 import { WorkspaceSelector } from '#components/filesystem/workspace-selector.js';
-
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@taucad/ui/components/accordion';
 import { getKernelOption } from '#utils/kernel.utils.js';
-import { KernelCommercialBadge } from '#cloud/kernel-commerce.js';
 import { toast } from '#components/ui/sonner.js';
 import { encodeTextFile } from '#utils/filesystem.utils.js';
 import type { Handle } from '#types/matches.types.js';
-import { cn } from '@taucad/ui/utils/cn';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { useProjectManager } from '#hooks/use-project-manager.js';
-import { useKernel } from '#hooks/use-kernel.js';
 import { useProjectCreationLocation } from '#hooks/use-project-creation-location.js';
 import { useProjectCreationLocationError } from '#hooks/use-project-creation-location-error.js';
 import type { ProjectCreationLocation } from '#types/project-creation-location.types.js';
 import { projectLocationDescriptor, projectLocationFullLabel } from '#utils/project-creation-location.utils.js';
 import { projectUrl } from '#utils/project-url.utils.js';
 import { isDesktopTarget } from '#lib/build-target.js';
+import { sinopiaStarterKernelId } from '#lib/sinopia-engines.js';
 
 const homeLocationLabel = projectLocationFullLabel(projectLocationDescriptor({ kind: 'home' }));
 
-export const meta: MetaFunction = () => [{ title: 'New project · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'New project · SinopiaCAD' }];
 
 export const handle: Handle = {
   // Mobile: section scrolls as one page. Desktop: route uses h-full flex + inner list scroll (see layout).
   enableOverflowY: true,
 };
-
-// Reusable component for kernel details content
-function KernelDetailsContent({ kernelId }: { readonly kernelId: KernelProvider }): React.JSX.Element {
-  const selectedOption = getKernelOption(kernelId);
-  return (
-    <div className='space-y-4'>
-      <KernelCommercialBadge kernelId={kernelId} />
-      <p className='text-sm leading-relaxed text-muted-foreground'>{selectedOption.longDescription}</p>
-
-      <div className='space-y-3'>
-        <Badge variant='default' className='text-xs font-medium'>
-          Best for: {selectedOption.recommended}
-        </Badge>
-
-        <div className='space-y-2'>
-          <h4 className='text-sm font-medium'>Tags:</h4>
-          <div className='flex flex-wrap gap-1'>
-            {selectedOption.tags.map((tag) => (
-              <Badge key={tag} variant='secondary' className='text-xs'>
-                {tag}
-              </Badge>
-            ))}
-          </div>
-        </div>
-
-        <div className='space-y-2'>
-          <h4 className='text-sm font-medium'>Key Features:</h4>
-          <ul className='space-y-1 text-sm text-muted-foreground'>
-            {selectedOption.features.map((feature) => (
-              <li key={feature} className='flex items-center gap-2'>
-                <div className='size-1.5 shrink-0 rounded-full bg-muted-foreground' />
-                <span>{feature}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // Custom hook for project creation logic
 function useProjectCreation() {
@@ -87,15 +38,11 @@ function useProjectCreation() {
   const projectManager = useProjectManager();
 
   const createProject = useCallback(
-    async (projectData: {
-      name: string;
-      description: string;
-      kernel: KernelProvider;
-      location: ProjectCreationLocation;
-    }) => {
+    async (projectData: { name: string; description: string; location: ProjectCreationLocation }) => {
       setIsCreating(true);
       try {
-        const selectedOption = getKernelOption(projectData.kernel);
+        // SinopiaCAD: the empty starter file only; the chat pins no engine and the agent chooses one for the job.
+        const selectedOption = getKernelOption(sinopiaStarterKernelId);
 
         const createProject = await projectManager.createProject({
           project: {
@@ -115,11 +62,10 @@ function useProjectCreation() {
           },
           chatName: 'Initial design',
           location: projectData.location,
-          // Start in the code-oriented Workbench lane.
+          // SinopiaCAD: start on the model, with Misure and the agent beside it; never on the code.
           editorState: {
             panelState: {
-              desktopLayout: { workbenchOpen: true, compactAuxiliary: 'workbench' },
-              mobileActiveTab: 'editor',
+              desktopLayout: { chatOpen: true, workbenchOpen: true, compactAuxiliary: 'chat' },
             },
           },
         });
@@ -143,7 +89,6 @@ export default function ProjectsNew(): React.JSX.Element {
   const location = useProjectCreationLocation();
   const presentLocationError = useProjectCreationLocationError();
 
-  const { kernel, setKernel: setSelectedKernel } = useKernel();
   const [projectName, setProjectName] = useState('');
   const [projectDescription, setProjectDescription] = useState('');
 
@@ -155,7 +100,6 @@ export default function ProjectsNew(): React.JSX.Element {
       await createProject({
         name: projectName,
         description: projectDescription,
-        kernel,
         location: location.value,
       });
     } catch (error) {
@@ -167,7 +111,7 @@ export default function ProjectsNew(): React.JSX.Element {
       }
       toast.error('Failed to create project. Please try again.');
     }
-  }, [createProject, kernel, location, presentLocationError, projectDescription, projectName]);
+  }, [createProject, location, presentLocationError, projectDescription, projectName]);
 
   const handleCancel = useCallback(() => {
     void navigate('/');
@@ -192,8 +136,8 @@ export default function ProjectsNew(): React.JSX.Element {
       <PageHeader title='New project' />
 
       <div className='md:flex md:min-h-0 md:flex-1 md:flex-col md:overflow-hidden'>
-        <Card className='flex flex-col bg-sidebar/70 md:min-h-0 md:flex-1 md:overflow-hidden'>
-          <CardContent className='shrink-0 space-y-4 border-b pb-6'>
+        <Card className='flex flex-col bg-sidebar/70'>
+          <CardContent className='shrink-0 space-y-4 py-6'>
             <div className='flex flex-col gap-4'>
               <div className='flex-1 space-y-2'>
                 <Label htmlFor='project-name'>Project Name *</Label>
@@ -234,127 +178,6 @@ export default function ProjectsNew(): React.JSX.Element {
                   Browser storage can be cleared or evicted. Export important work.
                 </p>
               )}
-            </div>
-          </CardContent>
-
-          <CardHeader className='shrink-0 text-sm'>
-            <CardTitle className='font-medium'>Choose CAD Kernel *</CardTitle>
-            <CardDescription>Select the technology that best fits your project needs</CardDescription>
-          </CardHeader>
-          <CardContent className='md:flex md:min-h-0 md:flex-1 md:flex-col md:overflow-hidden'>
-            {/* Mobile Accordion Layout */}
-            <div className='block rounded-lg border border-border bg-card md:hidden'>
-              <RadioGroup
-                value={kernel}
-                onValueChange={(value) => {
-                  setSelectedKernel(value as KernelProvider);
-                }}
-              >
-                <Accordion
-                  type='single'
-                  value={kernel}
-                  onValueChange={(value) => {
-                    if (value) {
-                      setSelectedKernel(value as KernelProvider);
-                    }
-                  }}
-                >
-                  {availableKernelConfigurations().map((option) => (
-                    <AccordionItem
-                      key={option.id}
-                      value={option.id}
-                      className={cn(
-                        'border-b border-border last:border-b-0 transition-all',
-                        kernel === option.id && 'bg-accent',
-                      )}
-                    >
-                      <div
-                        className='flex cursor-action items-start gap-3 p-4 transition-colors hover:bg-accent'
-                        onClick={() => {
-                          setSelectedKernel(option.id);
-                        }}
-                      >
-                        <RadioGroupItem value={option.id} id={`mobile-${option.id}`} className='mt-1' />
-                        <div className='min-w-0 flex-1'>
-                          <AccordionTrigger
-                            className={cn(
-                              'flex h-auto w-full items-start justify-between gap-3 border-0 p-0 text-left transition-all hover:no-underline',
-                              'bg-transparent hover:bg-transparent data-[state=open]:bg-transparent',
-                            )}
-                          >
-                            <div className='flex min-w-0 flex-1 items-start gap-3'>
-                              <SvgIcon id={option.id} className='mt-0.5 size-6 shrink-0' />
-                              <div className='flex w-full min-w-0 flex-col gap-1'>
-                                <div className='flex w-full flex-wrap items-start justify-between gap-2'>
-                                  <span className='flex items-center gap-1.5 text-sm font-medium'>
-                                    {option.name}
-                                    <KernelCommercialBadge kernelId={option.id} />
-                                  </span>
-                                  <span className='font-mono text-xs text-muted-foreground/70'>
-                                    {option.backendProvider}
-                                  </span>
-                                </div>
-                                <span className='text-xs leading-relaxed text-muted-foreground'>
-                                  {option.description}
-                                </span>
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                        </div>
-                      </div>
-                      <AccordionContent className='px-4 pb-4'>
-                        <KernelDetailsContent kernelId={option.id} />
-                      </AccordionContent>
-                    </AccordionItem>
-                  ))}
-                </Accordion>
-              </RadioGroup>
-            </div>
-
-            {/* Desktop: only the kernel list column scrolls */}
-            <div className='hidden min-h-0 md:flex md:flex-1 md:gap-6'>
-              <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card md:basis-1/2'>
-                <div className='min-h-0 flex-1 scroll-shadows-y overflow-y-auto'>
-                  <RadioGroup
-                    value={kernel}
-                    className='gap-0'
-                    onValueChange={(value) => {
-                      setSelectedKernel(value as KernelProvider);
-                    }}
-                  >
-                    {availableKernelConfigurations().map((option) => (
-                      <Label
-                        key={option.id}
-                        htmlFor={`kernel-${option.id}`}
-                        className={cn(
-                          'flex h-auto cursor-action items-start justify-start gap-3 border-b border-border p-4 text-left transition-all last:border-b-0 hover:bg-accent',
-                          kernel === option.id && 'bg-accent',
-                        )}
-                        onClick={() => {
-                          setSelectedKernel(option.id);
-                        }}
-                      >
-                        <RadioGroupItem value={option.id} id={`kernel-${option.id}`} className='mt-1' />
-                        <SvgIcon id={option.id} className='mt-0.5 size-6 shrink-0' />
-                        <div className='flex w-full min-w-0 flex-col gap-1'>
-                          <div className='flex w-full items-start justify-between gap-2'>
-                            <span className='flex items-center gap-1.5 text-sm font-medium'>
-                              {option.name}
-                              <KernelCommercialBadge kernelId={option.id} />
-                            </span>
-                            <span className='font-mono text-xs text-muted-foreground/70'>{option.backendProvider}</span>
-                          </div>
-                          <span className='text-xs leading-relaxed text-muted-foreground'>{option.description}</span>
-                        </div>
-                      </Label>
-                    ))}
-                  </RadioGroup>
-                </div>
-              </div>
-
-              <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto rounded-lg border border-border bg-card p-6 md:basis-1/2'>
-                <KernelDetailsContent kernelId={kernel} />
-              </div>
             </div>
           </CardContent>
         </Card>

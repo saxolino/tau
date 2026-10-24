@@ -167,7 +167,7 @@ export const meta: MetaFunction<typeof loader> = (arguments_) => {
   }
   if (loaderData?.kind === 'portable' && loaderData.builtin) {
     return [
-      { title: `${loaderData.builtin.title} · Tau` },
+      { title: `${loaderData.builtin.title} · SinopiaCAD` },
       { name: 'description', content: loaderData.builtin.description },
       { property: 'og:title', content: loaderData.builtin.title },
       { property: 'og:description', content: loaderData.builtin.description },
@@ -175,7 +175,7 @@ export const meta: MetaFunction<typeof loader> = (arguments_) => {
     ];
   }
   return [
-    { title: 'Shared Tau project' },
+    { title: 'Shared SinopiaCAD project' },
     { name: 'robots', content: 'noindex, nofollow' },
     { name: 'referrer', content: 'no-referrer' },
   ];

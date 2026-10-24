@@ -10,8 +10,15 @@ export const panelMinSizeChat = 280;
 /** Minimum width for the Viewer/center panel (main 3D CAD visualization area) */
 export const panelMinSizeViewer = 416;
 
-/** Minimum width for the mixed file/utility Workbench lane at narrow desktop widths. */
-export const panelMinSizeWorkbench = 320;
+/** Minimum width for the Workbench lane, SinopiaCAD's Misure lane on the left, at narrow desktop widths. */
+export const panelMinSizeWorkbench = 240;
+
+/**
+ * Revision of the desktop lane arrangement a device's stored widths were measured in. SinopiaCAD's arrangement is 1:
+ * Misure (the workbench lane) on the left, the viewer, the agent (the chat lane) on the right. Widths stored without it
+ * belong to Tau's code-first arrangement and give way to the defaults once (`migratePanelState`).
+ */
+export const desktopLayoutRevision = 1;
 
 /** Mobile drawer snap points for the projects interface */
 export const mobileDrawerSnapPoints: Array<number | string> = [0.7, 1];
@@ -60,8 +67,9 @@ export const defaultPanelState = {
     chatOpen: true,
     workbenchOpen: true,
     chatWidth: 320,
-    workbenchWidth: 420,
+    workbenchWidth: 280,
     compactAuxiliary: 'chat',
+    layoutRevision: desktopLayoutRevision,
   },
   mobileActiveTab: 'viewer',
   kernelPaneview: {},
@@ -75,6 +83,7 @@ export const defaultPanelState = {
     chatWidth: number;
     workbenchWidth: number;
     compactAuxiliary: 'chat' | 'workbench';
+    layoutRevision: number;
   };
   mobileActiveTab: MobilePanelId;
   kernelPaneview: Record<string, never>;

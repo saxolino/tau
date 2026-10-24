@@ -423,9 +423,9 @@ test('adopts a workbench edit when an inactive project page is reopened', async 
   const projectUrl = await target.currentUrl();
   await target.openSecondary(projectUrl);
   try {
-    await target.expectVisible(selectors.getByRole('button', { name: 'Toggle Chat lane' }), 60_000, 'secondary');
+    await target.expectVisible(selectors.getByRole('button', { name: 'Agent' }), 60_000, 'secondary');
     if (!(await target.isVisible(selectors.getByCss(composer), 'secondary'))) {
-      await target.click(selectors.getByRole('button', { name: 'Toggle Chat lane' }), undefined, 'secondary');
+      await target.click(selectors.getByRole('button', { name: 'Agent' }), undefined, 'secondary');
     }
     await target.expectVisible(selectors.getByCss(composer), 60_000, 'secondary');
     await target.navigate('/projects');

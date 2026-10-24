@@ -1,139 +1,40 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { searchSettings, settingsSections } from '#components/settings/settings-registry.js';
-import { experimentalFeatureFlagNames } from '#flags/flag.constants.js';
+import { describe, expect, it } from 'vitest';
+import { getSettingsSections, searchSettings, tauSettingsSections } from '#components/settings/settings-registry.js';
+import { bindTranslate } from '#i18n/translate.js';
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.doUnmock('#environment.config.js');
-  vi.resetModules();
-});
-
-describe('searchSettings', () => {
-  it('should return no results for an empty query', () => {
-    expect(searchSettings(' \t ')).toEqual([]);
-  });
-
-  it('should normalize case, diacritics, and punctuation', () => {
-    const result = searchSettings('ACCENT---CÓLOR');
-
-    expect(result.flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('accent-color');
-  });
-
-  it('should match every query token across section and setting text', () => {
-    const result = searchSettings('general privacy');
-
-    expect(result).toHaveLength(1);
-    expect(result[0]?.section.id).toBe('general');
-    expect(result[0]?.entries.map(({ id }) => id)).toEqual(['privacy']);
-  });
-
-  it('should reject results when any query token is unmatched', () => {
-    expect(searchSettings('theme storage')).toEqual([]);
-  });
-
-  it('should match setting aliases', () => {
-    expect(searchSettings('colour').flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('accent-color');
-    expect(searchSettings('cache').flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('compute-reuse');
-    expect(searchSettings('dark mode').flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('theme');
-    expect(searchSettings('colour theme').flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('theme');
-    expect(searchSettings('cursor hand').flatMap(({ entries }) => entries.map(({ id }) => id))).toContain(
+describe.each(['it', 'en'] as const)('Sinopia settings in %s', (language) => {
+  const sections = getSettingsSections(bindTranslate(language));
+  it('should expose only operative designer preferences and preserve the hidden Tau catalogue', () => {
+    expect(sections.map(({ id }) => id)).toEqual(['general', 'models', 'tools']);
+    expect(sections.flatMap(({ entries }) => entries.map(({ id }) => id))).toEqual([
+      'theme',
+      'language',
       'pointer-cursors',
-    );
-  });
-
-  it('should include every setting when its section matches', () => {
-    const result = searchSettings('agents');
-
-    expect(result).toHaveLength(1);
-    expect(result[0]?.section.id).toBe('agents');
-    expect(result[0]?.entries.map(({ id }) => id)).toEqual([
-      'show-credits',
-      'filesystem-context',
-      'active-file',
-      'open-tabs',
-      'testing-tools',
+      'units',
+      // Tau functions a designer may switch on; 3D printing waits for the printers feature.
+      'tool-convert',
+      'tool-import',
+      'tool-pieces',
+      'tool-kinematics',
+      'tool-details',
+      'tool-code',
     ]);
-  });
-
-  it('should rank an exact setting label before section-wide matches', () => {
-    const ids = searchSettings('filesystem').flatMap(({ entries }) => entries.map(({ id }) => id));
-
-    expect(ids[0]).toBe('filesystem-context');
-  });
-
-  it('should register every feature flag with globally unique setting ids', () => {
-    const entries = settingsSections.flatMap(({ entries }) => entries);
-    const featureFlagIds = settingsSections.find(({ id }) => id === 'experimental')?.entries.map(({ id }) => id);
-
-    expect(featureFlagIds).toEqual(experimentalFeatureFlagNames.map((flag) => `flag-${flag}`));
-    expect(new Set(entries.map(({ id }) => id)).size).toBe(entries.length);
-  });
-
-  it('omits Machines settings and the deployment flag by default', async () => {
-    vi.stubEnv('TAU_TARGET', 'desktop');
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- environment module and variable names.
-    vi.doMock('#environment.config.js', () => ({ ENV: {} }));
-    vi.resetModules();
-    const desktop = await import('#components/settings/settings-registry.js');
-    expect(desktop.settingsSections.some(({ id }) => id === 'machines')).toBe(false);
-    expect(desktop.searchSettings('machines')).toEqual([]);
-    expect(experimentalFeatureFlagNames).not.toContain('machines');
-  });
-
-  it('should find Machines by the parts and print options its machine details show on desktop', async () => {
-    vi.stubEnv('TAU_TARGET', 'desktop');
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- environment module and variable names.
-    vi.doMock('#environment.config.js', () => ({ ENV: { TAU_MACHINES_ENABLED: true } }));
-    vi.resetModules();
-    const desktop = await import('#components/settings/settings-registry.js');
-
-    for (const query of [
-      'firmware',
-      'nozzle',
-      'build volume',
-      'demo speed',
-      'enclosure',
-      'kinematics',
-      'bed plate',
-      'chamber fan',
-      'ams filament',
-      'camera',
-      'lan mode',
-      'speed profile',
-      'slicing',
-      'bed leveling',
-      'flow calibration',
-      'timelapse',
-      'router',
-      'cnc mill',
-      'grbl',
-      'carvera',
-      'spindle',
-    ]) {
-      expect(desktop.searchSettings(query).flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('machines');
+    expect(tauSettingsSections.some(({ id }) => id === 'security')).toBe(true);
+    for (const query of ['GitHub', 'credits', 'telemetry', 'filesystem', 'API keys', 'machines', 'cloud']) {
+      expect(searchSettings(query, sections)).toEqual([]);
     }
   });
-
-  it('should offer no browser storage setting in the desktop app, where Home is a folder on disk', async () => {
-    vi.stubEnv('TAU_TARGET', 'desktop');
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- environment module and variable names.
-    vi.doMock('#environment.config.js', () => ({ ENV: { TAU_MACHINES_ENABLED: true } }));
-    vi.resetModules();
-    const desktop = await import('#components/settings/settings-registry.js');
-
-    expect(desktop.settingsSections.flatMap(({ entries }) => entries.map(({ id }) => id))).not.toContain(
-      'browser-storage',
-    );
-    expect(settingsSections.flatMap(({ entries }) => entries.map(({ id }) => id))).toContain('browser-storage');
+  it('should find a tool by its designer name', () => {
+    const query = language === 'it' ? 'cerniere' : 'hinges';
+    expect(searchSettings(query, sections).flatMap(({ entries }) => entries.map(({ id }) => id))).toEqual([
+      'tool-kinematics',
+    ]);
   });
-
-  it('should hide automatic reload from search and Experimental', () => {
-    expect(searchSettings('automatic reload')).toEqual([]);
-    expect(experimentalFeatureFlagNames).not.toContain('automaticReload');
-  });
-
-  it('should keep API keys out of navigation and search', () => {
-    expect(settingsSections.map(({ id }) => String(id))).not.toContain('api-keys');
-    expect(searchSettings('API keys')).toEqual([]);
+  it('should search translated names, normalize punctuation and find fixed millimetres', () => {
+    const query = language === 'it' ? 'UNITÀ---MILLIMETRI' : 'UNITS---MILLIMETRES';
+    expect(searchSettings(query, sections).flatMap(({ entries }) => entries.map(({ id }) => id))).toEqual(['units']);
+    expect(searchSettings('mm', sections)).toHaveLength(1);
+    expect(searchSettings('  ', sections)).toEqual([]);
+    expect(searchSettings('theme storage', sections)).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useEditor } from '@tiptap/react';
 import { Document } from '@tiptap/extension-document';
 import { Paragraph } from '@tiptap/extension-paragraph';
@@ -33,6 +33,7 @@ import {
 } from '#components/chat/tiptap/slash-command-suggestion.js';
 import { buildContextItemsFromSearch } from '#components/chat/tiptap/context-suggestion.utils.js';
 import type { ClipboardPasteEvent } from '#components/chat/chat-paste-handler.js';
+import { useTranslation } from '#i18n/translate.js';
 import type {
   ContextSuggestionItem,
   SlashCommandItem,
@@ -223,9 +224,16 @@ export function useChatEditor({
   slashCommandItems,
   onSlashCommand,
   onContextAction,
-  placeholder = 'Ask Tau to build anything...',
+  placeholder,
 }: UseChatEditorOptions): UseChatEditorReturn {
   'use no memo';
+
+  // SinopiaCAD: the prompt follows the interface language («Scrivi o detta una modifica…» · "Type or dictate a
+  // change…"); the long-lived editor reads it through a ref and is told when it changes.
+  const { t } = useTranslation();
+  const shownPlaceholder = placeholder ?? t('project.agent.composerPlaceholder');
+  const placeholderRef = useRef(shownPlaceholder);
+  placeholderRef.current = shownPlaceholder;
 
   const [contextSuggestionState, setContextSuggestionState] = useState<
     SuggestionPopupState<ContextSuggestionItem> | undefined
@@ -327,7 +335,7 @@ export function useChatEditor({
       Text,
       HardBreak,
       History,
-      Placeholder.configure({ placeholder }),
+      Placeholder.configure({ placeholder: () => placeholderRef.current }),
       ContextChipNode,
       ChatInputDropHandler,
       SubmitOnEnter.configure({
@@ -356,7 +364,7 @@ export function useChatEditor({
         // An editable div only takes a name through a role; Shift+Enter adds lines.
         role: 'textbox',
         'aria-multiline': 'true',
-        'aria-label': placeholder,
+        'aria-label': shownPlaceholder,
       },
       handlePaste: (_view: EditorView, event: ClipboardEvent) => {
         const imagePasteEvent: ClipboardPasteEvent = {
@@ -418,6 +426,15 @@ export function useChatEditor({
   const clearEditor = useCallback(() => {
     editor.commands.clearContent();
   }, [editor]);
+
+  // A language switch renames the box and redraws the empty prompt; a meta-only transaction changes no content.
+  useEffect(() => {
+    if (editor.isDestroyed) {
+      return;
+    }
+    editor.view.dom.setAttribute('aria-label', shownPlaceholder);
+    editor.view.dispatch(editor.state.tr.setMeta('addToHistory', false));
+  }, [editor, shownPlaceholder]);
 
   // Catalog settlement is external to Tiptap transactions; derive the open menu without mirroring it in state.
   const popupItems = slashCommandState === undefined ? [] : getSlashCommandItems(slashCommandState.query);

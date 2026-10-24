@@ -35,7 +35,7 @@ import { tauStoreSkills } from '#lib/tau-plugin-store-catalog.js';
 import type { SystemSkill } from '#lib/system-skills-catalog.js';
 import type { TauStoreSkill } from '#lib/tau-plugin-store-catalog.js';
 
-export const meta: MetaFunction = () => [{ title: 'Plugins · Tau' }];
+export const meta: MetaFunction = () => [{ title: 'Plugins · SinopiaCAD' }];
 
 export const handle: Handle = {
   enableOverflowY: true,

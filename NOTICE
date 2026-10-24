@@ -123,3 +123,25 @@ libcascade / Open CASCADE Technology
 GeoSpec (`geospec`) and the `@taucad/picovoxel` adapter surface (the `tau-api-*`
 files beside the picovoxel corpus) are first-party Tau code under the
 Apache-2.0 grant above and carry no separate upstream attribution.
+
+-------------------------------------------------------------------------------
+
+SINOPIACAD — MODIFIED VERSION OF TAU
+
+SinopiaCAD is a modified version of Tau, made by Sinopia (https://sinopialab.com).
+Copyright 2026 Sinopia, for the modifications.
+
+Tau's copyright, licence and attribution notices above are retained unchanged.
+The files Sinopia changed are listed in `MODIFICHE-SINOPIA.md`, as Section 4(b)
+of the Apache License, Version 2.0 requires. The name "Tau" appears only to
+describe the origin of the work; SinopiaCAD is not affiliated with or endorsed
+by the Tau project (Section 6 grants no trademark rights).
+
+The Sinopia name and mark (`apps/ui/public/brand/`, the favicons and the app
+icons in `apps/ui/public/`) identify Sinopia and are not licensed under the
+Apache License, Version 2.0.
+
+Inter (Copyright 2016 The Inter Project Authors) and JetBrains Mono (Copyright
+2020 The JetBrains Mono Project Authors), self-hosted in `apps/ui/public/fonts/`,
+are licensed under the SIL Open Font License, Version 1.1; the licence text is
+`apps/ui/public/fonts/OFL.txt`.

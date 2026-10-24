@@ -7,7 +7,7 @@ export const metaConfig = {
   /**
    * The name of the app. Used for SEO and other metadata such as PWA and app store naming.
    */
-  name: 'Tau',
+  name: 'SinopiaCAD',
   /**
    * The prefix for all database tables.
    */
@@ -38,7 +38,7 @@ export const metaConfig = {
    * The description of the app. Used for SEO and other metadata such as PWA and app store descriptions.
    */
   description:
-    'Tau: the AI-native CAD platform. Describe a part, get verified, manufacturable geometry — in your browser.',
+    'SinopiaCAD, il CAD di Sinopia per accessori e gioielli: descrivi un pezzo e ottieni una geometria parametrica da correggere e produrre, nel browser.',
   /**
    * The version of the app.
    */

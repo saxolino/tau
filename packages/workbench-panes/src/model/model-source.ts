@@ -1,8 +1,75 @@
 import type { ComponentType } from 'react';
 import type { PaneviewApi } from 'dockview-react';
 import type { GeometryComponentManifest, GeometryComponentNode, GeometryComponentReference } from '@taucad/types';
+import { englishPartPropertiesLabels } from '@taucad/viewer/cad/part-properties-panel';
+import type { PartPropertiesLabels } from '@taucad/viewer/cad/part-properties-panel';
 import type { PartThumbnailState } from '@taucad/viewer/cad/part-thumbnail-state';
 import type { GraphicsRef } from '#host/workbench-host.jsx';
+
+/**
+ * Every word the Model pane shows, in the host's language. The pane's own weight count, which a host replaces with
+ * {@link ModelSource.weightSummary}, stays in English.
+ *
+ * @public
+ */
+export type ModelPaneLabels = Readonly<{
+  filter: string;
+  filterPlaceholder: string;
+  /** The Properties section's title. */
+  properties: string;
+  /** The component list's accessible name, by its entry's title. */
+  components: (entryTitle: string) => string;
+  showHiddenComponents: string;
+  showHiddenComponentsIn: (entryTitle: string) => string;
+  /** The row actions' tooltips. */
+  showPart: string;
+  hidePart: string;
+  isolatePart: string;
+  removeIsolation: string;
+  /** The row actions' accessible names, by the component's name. */
+  show: (name: string) => string;
+  hide: (name: string) => string;
+  isolate: (name: string) => string;
+  removeIsolationFor: (name: string) => string;
+  /** A row thumbnail's accessible name. */
+  preview: (name: string) => string;
+  previewLoading: string;
+  previewUnavailable: string;
+  noComponents: string;
+  rendererClosed: string;
+  noMatches: string;
+  /** The Properties panel's words. */
+  part: PartPropertiesLabels;
+}>;
+
+/**
+ * The English words the Model pane uses unless its host passes its own.
+ *
+ * @public
+ */
+export const englishModelPaneLabels: ModelPaneLabels = {
+  filter: 'Filter parts',
+  filterPlaceholder: 'Filter parts…',
+  properties: 'Properties',
+  components: (entryTitle) => `Model components for ${entryTitle}`,
+  showHiddenComponents: 'Show hidden components',
+  showHiddenComponentsIn: (entryTitle) => `Show hidden components in ${entryTitle}`,
+  showPart: 'Show part',
+  hidePart: 'Hide part',
+  isolatePart: 'Isolate part',
+  removeIsolation: 'Remove isolation',
+  show: (name) => `Show ${name}`,
+  hide: (name) => `Hide ${name}`,
+  isolate: (name) => `Isolate ${name}`,
+  removeIsolationFor: (name) => `Remove isolation for ${name}`,
+  preview: (name) => `Preview ${name}`,
+  previewLoading: 'Preview loading',
+  previewUnavailable: 'Preview unavailable',
+  noComponents: 'No model components available',
+  rendererClosed: 'Open renderer to inspect components',
+  noMatches: 'No matching parts',
+  part: englishPartPropertiesLabels,
+};
 
 /**
  * One component of one entry: what a reveal request names.
@@ -141,4 +208,23 @@ export type ModelSource = Readonly<{
   }>;
   /** Called when an entry's selected component changes, with its reference, or `undefined` when it is cleared. */
   onSelect?: (reference: GeometryComponentReference | undefined) => void;
+  /** The pane's words in the host's language. Absent, English ({@link englishModelPaneLabels}). */
+  labels?: ModelPaneLabels;
+  /**
+   * The name a row and the Properties panel show for a component, as the host names its pieces. Absent, the
+   * manifest's name. The filter matches either.
+   */
+  componentName?: (node: GeometryComponentNode) => string;
+  /**
+   * The name an entry shows (its section header, the Properties panel), given every listed entry, main first, for a
+   * host that keeps file names out of sight. Absent, the entry's path.
+   */
+  entryTitle?: (entryPath: string, entryPaths: readonly string[]) => string;
+  /** List a lone entry's components without a section header: one model, one list. Absent, every entry has one. */
+  hideLoneEntryHeader?: boolean;
+  /**
+   * The weight line under an entry's components, from its manifest; `undefined` shows no line, for a weight that is
+   * not known. Absent, the pane counts the parts whose weight it knows and lists the others.
+   */
+  weightSummary?: (manifest: GeometryComponentManifest) => string | undefined;
 }>;

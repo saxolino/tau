@@ -6,8 +6,9 @@
 
 import { act, render, screen } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { describe, expect, it, vi } from 'vitest';
-import { useViewerEnvironment } from '@taucad/viewer/environment/viewer-environment';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useViewerEnvironment, useViewerLabels } from '@taucad/viewer/environment/viewer-environment';
+import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 
 import { AppViewerEnvironment } from '#components/geometry/app-viewer-environment.js';
 
@@ -20,7 +21,17 @@ vi.mock('#hooks/use-color.js', () => ({
 }));
 
 function BackendProbe(): React.JSX.Element {
-  return <output aria-label='graphics backend'>{useViewerEnvironment().graphicsBackend}</output>;
+  const environment = useViewerEnvironment();
+  const labels = useViewerLabels();
+  return (
+    <>
+      <output aria-label='graphics backend'>{environment.graphicsBackend}</output>
+      <output aria-label='fullscreen control'>{String(environment.showFullscreenControl)}</output>
+      <output aria-label='bar words'>
+        {[labels.fitViewLabel, labels.sectionLabel, labels.measureLabel, labels.viewerSettings].join(' · ')}
+      </output>
+    </>
+  );
 }
 
 const mountAt = (path: string): ReturnType<typeof createMemoryRouter> => {
@@ -41,7 +52,24 @@ const mountAt = (path: string): ReturnType<typeof createMemoryRouter> => {
   return router;
 };
 
+afterEach(() => {
+  globalThis.localStorage.clear();
+  resetLanguageForTests();
+});
+
 describe('AppViewerEnvironment', () => {
+  // SinopiaCAD: the bar in the design's words (UI-UX-SinopiaCAD §3.3), no Fullscreen button.
+  it.each([
+    ['it', 'Adatta · Sezione · Misura · Vista…'],
+    ['en', 'Fit · Section · Measure · View…'],
+  ] as const)('gives the viewer bar its %s words and hides Fullscreen', async (language, words) => {
+    setLanguage(language);
+    mountAt('/w/workspace/project');
+
+    expect(await screen.findByLabelText('bar words')).toHaveTextContent(words);
+    expect(screen.getByLabelText('fullscreen control')).toHaveTextContent('false');
+  });
+
   it('switches the backend when a client-side navigation adds the override', async () => {
     const router = mountAt('/__e2e/user-project-thumbnail-generation');
     expect(screen.getByLabelText('graphics backend')).toHaveTextContent('webgl');

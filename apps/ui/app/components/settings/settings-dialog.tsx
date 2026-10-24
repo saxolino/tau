@@ -2,17 +2,21 @@ import { GithubRepositorySettings } from '#components/settings/github-repository
 import { BrowserSettingsPanel } from '#components/browser/browser-settings.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefCallback } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { AccountSettings } from '#components/auth/settings/account/account-settings.js';
 import { SecuritySettings } from '#components/auth/settings/security/security-settings.js';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@taucad/ui/components/dialog';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@taucad/ui/components/dialog';
 import { useSettingsDialog } from '#hooks/use-settings-dialog.js';
 import type { SettingsSection } from '#hooks/use-settings-dialog.js';
 import { CloudBillingSettings } from '#cloud/settings-billing.js';
 import { FileSystemSettings } from '#components/settings/filesystem-settings.js';
-import { GeneralSettings } from '#components/settings/general-settings.js';
+import {
+  SinopiaAppearanceSettings,
+  SinopiaModelSettings,
+  SinopiaToolsSettings,
+} from '#components/settings/sinopia-settings.js';
+import { useTranslation } from '#i18n/translate.js';
 import { ExperimentalSettings } from '#components/settings/experimental-settings.js';
-import { ModelSettings } from '#components/settings/model-settings.js';
 import { AgentSettings } from '#components/settings/agent-settings.js';
 import { SettingsAuthGate } from '#components/settings/settings-auth-gate.js';
 import { RemoteComputeSettings } from '#components/settings/remote-compute-settings.js';
@@ -21,7 +25,7 @@ import { MachinesSettings } from '#components/settings/machines-settings.js';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 
 import { Button } from '@taucad/ui/components/button';
-import { SearchInput } from '@taucad/ui/components/search-input';
+import { Input } from '@taucad/ui/components/input';
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -32,7 +36,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from '#components/ui/sidebar.js';
-import { settingsSections, searchSettings } from '#components/settings/settings-registry.js';
+import { getSettingsSections, searchSettings } from '#components/settings/settings-registry.js';
 import { SettingsItem } from '#components/settings/settings-item.js';
 
 /** Keep authenticated sections behind their existing gate and mount only the active section. */
@@ -46,7 +50,7 @@ function SettingsContent({ section }: { readonly section: SettingsSection }): Re
       );
     }
     case 'general': {
-      return <GeneralSettings />;
+      return <SinopiaAppearanceSettings />;
     }
     case 'account': {
       return (
@@ -100,11 +104,10 @@ function SettingsContent({ section }: { readonly section: SettingsSection }): Re
       );
     }
     case 'models': {
-      return (
-        <SettingsItem settingId='model-picker'>
-          <ModelSettings />
-        </SettingsItem>
-      );
+      return <SinopiaModelSettings />;
+    }
+    case 'tools': {
+      return <SinopiaToolsSettings />;
     }
     case 'agents': {
       return <AgentSettings />;
@@ -120,6 +123,8 @@ function SettingsContent({ section }: { readonly section: SettingsSection }): Re
 
 /** URL-backed settings navigation with a searchable catalogue of individual controls. */
 export function SettingsDialog(): React.JSX.Element {
+  const { t } = useTranslation();
+  const settingsSections = getSettingsSections(t);
   const { isOpen, section: activeSection, open, close } = useSettingsDialog();
   useKeybinding({ key: ',', modKey: true }, () => {
     open();
@@ -144,6 +149,8 @@ export function SettingsDialog(): React.JSX.Element {
 }
 
 function SettingsSurface({ activeSection }: { readonly activeSection: SettingsSection }): React.JSX.Element {
+  const { t } = useTranslation();
+  const settingsSections = getSettingsSections(t);
   const { open: openSection, close, target: linkedSetting } = useSettingsDialog();
   const [query, setQuery] = useState('');
   const [searchDestination, setDestination] = useState<{ section: SettingsSection; id?: string }>();
@@ -154,7 +161,7 @@ function SettingsSurface({ activeSection }: { readonly activeSection: SettingsSe
   const contentRef = useCallback<RefCallback<HTMLDivElement>>((element) => {
     setContent(element ?? undefined);
   }, []);
-  const results = searchSettings(query);
+  const results = searchSettings(query, settingsSections);
   const isSearching = query.trim().length > 0;
   const active = settingsSections.find((section) => section.id === activeSection)!;
   const resultCount = results.reduce((total, group) => total + group.entries.length, 0);
@@ -225,7 +232,7 @@ function SettingsSurface({ activeSection }: { readonly activeSection: SettingsSe
 
   return (
     <DialogContent
-      className='h-[90dvh] max-w-[calc(100%-2rem)] grid-rows-[1fr] gap-0 overflow-hidden p-0 sm:max-w-6xl [&_[data-slot=input-group]]:bg-card [&_[data-slot=input]]:bg-card [&_[data-slot=select-trigger]]:bg-card [&_[data-slot=slider-input]]:bg-card [&_[data-slot=textarea]]:bg-card'
+      className='h-[90dvh] max-w-[calc(100%-2rem)] grid-rows-[1fr] gap-0 overflow-hidden p-0 sm:max-w-6xl [&_[data-slot=input-group]]:bg-card [&_[data-slot=input]]:bg-card [&_[data-slot=select-trigger]]:bg-card [&_[data-slot=slider-input]]:bg-card [&_[data-slot=textarea]]:bg-card [&>button[data-slot=dialog-close]]:hidden'
       onOpenAutoFocus={(event) => {
         // A deep link owns focus: its reveal moves it to the content, not the dialog's first button.
         if (linkedDestination) {
@@ -239,17 +246,24 @@ function SettingsSurface({ activeSection }: { readonly activeSection: SettingsSe
         }
       }}
     >
-      <DialogTitle className='sr-only'>Settings</DialogTitle>
-      <DialogDescription className='sr-only'>Application settings and preferences</DialogDescription>
+      <div className='absolute top-4 right-4 z-10'>
+        <DialogClose asChild>
+          <Button variant='ghost' size='icon-sm' aria-label={t('common.close')}>
+            <X />
+          </Button>
+        </DialogClose>
+      </div>
+      <DialogTitle className='sr-only'>{t('account.settings.title')}</DialogTitle>
+      <DialogDescription className='sr-only'>{t('account.settings.description')}</DialogDescription>
       <div className='flex min-h-0 min-w-0 flex-col md:flex-row'>
         <aside className='flex shrink-0 flex-col gap-4 border-b bg-sidebar p-4 max-md:max-h-[45%] md:w-64 md:border-r md:border-b-0'>
           <Button variant='ghost' className='w-full justify-start' onClick={close}>
-            <ArrowLeft className='size-4' aria-hidden='true' /> Back to app
+            <ArrowLeft className='size-4' aria-hidden='true' /> {t('account.settings.back')}
           </Button>
           <form
             className='relative'
             role='search'
-            aria-label='Search settings'
+            aria-label={t('account.settings.search')}
             onSubmit={(event) => {
               event.preventDefault();
               const first = results[0];
@@ -258,29 +272,40 @@ function SettingsSurface({ activeSection }: { readonly activeSection: SettingsSe
               }
             }}
           >
-            <SearchInput
+            <Input
+              type='search'
+              className='pr-8 [&::-webkit-search-cancel-button]:appearance-none'
               ref={searchRef}
-              aria-label='Search settings'
-              placeholder='Search settings…'
+              aria-label={t('account.settings.search')}
+              placeholder={t('account.settings.searchPlaceholder')}
               value={query}
-              onClear={clearSearch}
               onChange={(event) => {
                 setQuery(event.target.value);
               }}
             />
+            {query ? (
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon-xs'
+                className='absolute top-1/2 right-1 -translate-y-1/2'
+                aria-label={t('account.settings.clear')}
+                onClick={clearSearch}
+              >
+                <X />
+              </Button>
+            ) : null}
           </form>
-          <nav aria-label='Settings navigation' className='min-h-0 overflow-y-auto'>
+          <nav aria-label={t('account.settings.navigation')} className='min-h-0 overflow-y-auto'>
             {isSearching ? (
               <div className='space-y-4'>
                 <p role='status' className='px-2 text-xs text-muted-foreground'>
                   {resultCount === 0
-                    ? 'No settings found'
-                    : `${resultCount} ${resultCount === 1 ? 'setting' : 'settings'} found`}
+                    ? t('account.settings.empty')
+                    : t('account.settings.found', { count: resultCount })}
                 </p>
                 {resultCount === 0 ? (
-                  <p className='px-2 text-sm text-muted-foreground'>
-                    Try a setting name or a word like theme, models, or storage.
-                  </p>
+                  <p className='px-2 text-sm text-muted-foreground'>{t('account.settings.hint')}</p>
                 ) : null}
                 {results.map(({ section, entries }) => (
                   <SidebarGroup key={section.id} role='group' aria-label={section.label} className='px-0'>
@@ -351,12 +376,12 @@ function SettingsSurface({ activeSection }: { readonly activeSection: SettingsSe
         <div
           ref={contentRef}
           role='region'
-          aria-label={`${active.label} settings`}
+          aria-label={active.label}
           tabIndex={-1}
           className='min-h-0 min-w-0 flex-1 overflow-y-auto bg-muted/40 p-6 focus-visible:focus-outline md:p-10'
         >
           <div className='mx-auto flex max-w-3xl flex-col gap-6 [&_[data-settings-section]]:gap-3 [&_[data-settings-section]]:border-0 [&_[data-settings-section]]:bg-transparent [&_[data-settings-section]]:py-0 [&_[data-settings-section]>[data-slot=card-content]]:rounded-xl [&_[data-settings-section]>[data-slot=card-content]]:border [&_[data-settings-section]>[data-slot=card-content]]:bg-card [&_[data-settings-section]>[data-slot=card-content]]:py-4 [&_[data-settings-section]>[data-slot=card-content]:has(>[data-slot=settings-item])]:gap-0 [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:first-child)]:pt-4 [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:first-child)]:before:absolute [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:first-child)]:before:inset-x-0 [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:first-child)]:before:top-0 [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:first-child)]:before:border-t [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:first-child)]:before:content-[""] [&_[data-settings-section]>[data-slot=card-content]>[data-slot=settings-item]:not(:last-child)]:pb-4 [&_[data-settings-section]>[data-slot=card-header]]:px-0 [&_[data-settings-section]>[data-slot=card-header]_[data-slot=card-description]]:hidden [&_[data-settings-section]>[data-slot=card-header]_[data-slot=card-title]]:text-sm [&_[data-settings-section]>[data-slot=card-header]_[data-slot=card-title]]:font-medium [&_[data-slot=card]]:shadow-none [&_h2]:text-sm [&_h2]:font-medium'>
-            <h1 className='text-lg font-medium'>{active.label}</h1>
+            <h2 className='text-lg font-medium'>{active.label}</h2>
             <SettingsContent section={activeSection} />
           </div>
         </div>

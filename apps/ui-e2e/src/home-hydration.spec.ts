@@ -9,11 +9,9 @@ import {
   expectRail,
   fixtureFile,
   homeFileNames,
-  pdfModelName,
   readHomeJson,
   recordDraftText,
   recordPaths,
-  selectModel,
   sha256OfBase64,
 } from '#support/chat-attachments.js';
 import { readProjectStorageState } from '#support/project-storage-state.js';
@@ -37,8 +35,8 @@ test('should retain the app home after a confirmed anonymous session', async () 
     };
   });
   await target.navigate('/');
-  await target.expectVisible(selectors.getByRole('heading', { name: 'What can I help you build?' }), 30_000);
-  await target.expectVisible(selectors.getByRole('heading', { name: 'Projects', level: 2 }));
+  await target.expectVisible(selectors.getByRole('heading', { name: 'From image to CAD' }), 30_000);
+  await target.expectVisible(selectors.getByRole('heading', { name: 'Your projects', level: 2 }));
 });
 
 test('keeps a Home draft with an image and a PDF across a reload and hands both to the new project', async () => {
@@ -46,11 +44,15 @@ test('keeps a Home draft with an image and a PDF across a reload and hands both 
   const script: readonly GatewayScriptTurn[] = [{ text: replyText, usage: { inputTokens: 20, outputTokens: 4 } }];
   await target.installAgentHostGatewayFixture(script);
   await target.setViewport({ width: 1440, height: 960 });
+  // The home has no model selector: seed the deterministic fixture's preference before mounting it.
+  await target.addInitScript(() => {
+    localStorage.setItem('tau-chat-model', JSON.stringify('anthropic-claude-haiku-5.5'));
+  });
   await target.navigate('/');
   await target.expectVisible(selectors.getByRole('main'), 30_000);
   const composer = selectors.getByCss(composerSelector).first();
   await target.expectVisible(composer, 60_000);
-  await selectModel(pdfModelName);
+  await target.expectHidden(selectors.getByRole('button', { name: /^Agent and model:/u }));
 
   const jpeg = await fixtureFile('bracket-photo.jpg');
   const pdf = await fixtureFile('bracket-spec.pdf');

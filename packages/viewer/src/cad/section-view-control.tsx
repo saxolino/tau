@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { FlipHorizontal } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import { useViewerLabels } from '#environment/viewer-environment.jsx';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { useCameraRig, useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
 
@@ -13,6 +14,8 @@ type ToolToggleProps = Readonly<{
   name: string;
   /** The visible label, shown from 520 px of viewer width. */
   label: string;
+  /** The tooltip while the tool runs. */
+  stopLabel: string;
   icon: React.ReactNode;
   isActive: boolean;
   /** The formatted shortcut the tooltip shows. */
@@ -29,6 +32,7 @@ export function ToolToggle({
   tool,
   name,
   label,
+  stopLabel,
   icon,
   isActive,
   shortcut,
@@ -36,6 +40,7 @@ export function ToolToggle({
 }: ToolToggleProps): React.JSX.Element {
   const hasGeometry = useGraphicsSelector((state) => state.context.geometryRadius > 0);
   const unavailable = !hasGeometry && !isActive;
+  const { unavailableWithoutModel } = useViewerLabels();
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -55,7 +60,7 @@ export function ToolToggle({
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        {unavailable ? 'Available when a model is displayed' : isActive ? `Stop ${label.toLowerCase()}` : name}
+        {unavailable ? unavailableWithoutModel : isActive ? stopLabel : name}
         {shortcut ? (
           <KeyShortcut variant='tooltip' className='ml-1'>
             {shortcut}
@@ -82,6 +87,7 @@ export function SectionViewControl({ shortcut, onStart }: SectionViewControlProp
   const graphicsRef = useGraphics();
   const cameraRig = useCameraRig();
   const isSectionViewActive = useGraphicsSelector((state) => state.context.isSectionViewActive);
+  const labels = useViewerLabels();
 
   const handleToggle = useCallback(() => {
     // Synchronous, so the section row exists when `onStart` moves focus into it.
@@ -100,8 +106,9 @@ export function SectionViewControl({ shortcut, onStart }: SectionViewControlProp
   return (
     <ToolToggle
       tool='section'
-      name='Section view'
-      label='Section'
+      name={labels.sectionView}
+      label={labels.sectionLabel}
+      stopLabel={labels.stopSection}
       icon={<FlipHorizontal className='size-4' />}
       isActive={isSectionViewActive}
       shortcut={shortcut}

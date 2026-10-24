@@ -174,8 +174,8 @@ function codedErrorCard({
     return (
       <ChatErrorPausedTurn
         className={className}
-        title='Tau stopped responding'
-        reason='Tau cannot tell whether this turn started.'
+        title='SinopiaCAD stopped responding'
+        reason='SinopiaCAD cannot tell whether this turn started.'
         resumable={false}
         {...raw}
       />
@@ -189,8 +189,8 @@ function codedErrorCard({
         className={className}
         tone='warning'
         icon={CircleAlert}
-        title='Update Tau on this host'
-        description='This host runs a version of Tau this page cannot talk to. Update Tau there, then try again.'
+        title='Update SinopiaCAD on this host'
+        description='This host runs a version of SinopiaCAD this page cannot talk to. Update SinopiaCAD there, then try again.'
         actions={
           <Button variant='outline' size='xs' onClick={onTryAgain}>
             <RefreshCcw className='size-3.5' />
@@ -209,7 +209,7 @@ function codedErrorCard({
         className={className}
         title={
           awaitingApproval
-            ? 'Tau closed while the agent waited for your approval'
+            ? 'SinopiaCAD closed while the agent waited for your approval'
             : code === 'RUN_ABANDONED'
               ? 'Chat paused'
               : code === 'NETWORK_ERROR'
@@ -242,7 +242,7 @@ function codedErrorCard({
       <ChatErrorPausedTurn
         className={className}
         title='This model is paused'
-        reason="Tau's operators have paused this model. Switch to another model to continue."
+        reason="SinopiaCAD's operators have paused this model. Switch to another model to continue."
         resumable={false}
         canSwitchModel
         raw={codedRefusalRaw(error, rawDetail)}
@@ -319,7 +319,7 @@ function codedErrorCard({
         className={className}
         tone='warning'
         icon={CircleAlert}
-        title='Tau could not start this turn'
+        title='SinopiaCAD could not start this turn'
         description={error.message}
         actions={
           <Button variant='outline' size='xs' onClick={onTryAgain}>
@@ -337,7 +337,7 @@ function codedErrorCard({
         className={className}
         tone='neutral'
         icon={Bot}
-        title='Another version of Tau is running this chat'
+        title='Another version of SinopiaCAD is running this chat'
         description='It continues here when that run finishes; if this window is the older version, reload it.'
       />
     );
@@ -363,7 +363,7 @@ function codedErrorCard({
         className={className}
         tone='warning'
         icon={CircleAlert}
-        title='This chat was continued in a newer version of Tau'
+        title='This chat was continued in a newer version of SinopiaCAD'
         actions={
           <Button
             variant='outline'
@@ -385,7 +385,7 @@ function codedErrorCard({
         className={className}
         tone='warning'
         icon={CircleAlert}
-        title="Tau can't read this chat's history"
+        title="SinopiaCAD can't read this chat's history"
         description='Start a new chat to keep working.'
         actions={
           <Button variant='outline' size='xs' disabled={!canOpenNewChat} onClick={onNewChat}>
@@ -402,7 +402,7 @@ function codedErrorCard({
         className={className}
         tone='warning'
         icon={CircleAlert}
-        title="Tau couldn't reopen the agent's session"
+        title="SinopiaCAD couldn't reopen the agent's session"
         description="The agent's earlier session is gone, so this turn can't continue where it stopped. Try again to run it from the start."
         actions={
           <Button variant='outline' size='xs' onClick={onRegenerate}>

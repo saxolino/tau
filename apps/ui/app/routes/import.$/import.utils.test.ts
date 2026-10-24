@@ -1,10 +1,38 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { converterImportFormats } from '@taucad/converter/runtime';
 import {
   describeGitHubImport,
+  findMainFile,
+  importModelExtensions,
   normalizeRepositoryFolder,
   parseGitHubUrl,
   resolveGitHubImportTarget,
 } from '#routes/import.$/import.utils.js';
+
+vi.mock('draco3dgltf', () => ({
+  default: {
+    createDecoderModule: vi.fn(async () => ({})),
+    createEncoderModule: vi.fn(async () => ({})),
+  },
+}));
+
+describe('importModelExtensions', () => {
+  it('offers only models the shared model kernels open', () => {
+    // The converter and the project runtime load the same B-rep, Rhino, glTF and Assimp kernels.
+    const opened = new Set<string>(converterImportFormats);
+    expect(importModelExtensions.filter((extension) => !opened.has(extension.slice(1)))).toEqual([]);
+  });
+});
+
+describe('findMainFile', () => {
+  it('opens the model beside its notes and textures', () => {
+    expect(findMainFile(['anello/note.txt', 'anello/oro.png', 'anello/anello.STEP'])).toBe('anello/anello.STEP');
+  });
+
+  it('keeps a project main file ahead of a model', () => {
+    expect(findMainFile(['ring.stl', 'main.ts'])).toBe('main.ts');
+  });
+});
 
 describe('resolveGitHubImportTarget', () => {
   it('reads owner, repo, ref, and main file out of the URL', () => {

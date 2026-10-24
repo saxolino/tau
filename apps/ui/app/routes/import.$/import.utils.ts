@@ -31,15 +31,57 @@ export const supportedKernelExtensions = [
 ];
 
 /**
+ * 3D model files a designer brings (STEP, Rhino 3DM, STL, OBJ, GLB…). Each opens as a project's main file through the
+ * model kernels the project runtime and the converter share (B-rep, Rhino, glTF, Assimp); drag and drop and folders
+ * already carried them, and the file picker now offers them too.
+ */
+export const importModelExtensions = [
+  '.step',
+  '.stp',
+  '.iges',
+  '.igs',
+  '.brep',
+  '.3dm',
+  '.stl',
+  '.obj',
+  '.3mf',
+  '.amf',
+  '.ply',
+  '.off',
+  '.glb',
+  '.gltf',
+  '.fbx',
+  '.dae',
+  '.3ds',
+  '.usda',
+  '.usdz',
+];
+
+/** Files that travel with a model: OBJ materials and glTF buffers. */
+const importModelCompanionExtensions = ['.mtl', '.bin'];
+
+/**
  * All file extensions accepted for import (kernel files + common project files).
  */
 export const importAcceptedExtensions = [...supportedKernelExtensions, '.json', '.txt', '.md', '.js', '.jsx'];
 
 /**
  * File accept string for HTML file input elements.
- * Includes .zip for archive uploads.
+ * Includes .zip for archive uploads, and 3D models with their companion files.
  */
-export const importFileAcceptString = ['.zip', ...importAcceptedExtensions].join(',');
+export const importFileAcceptString = [
+  '.zip',
+  ...importModelExtensions,
+  ...importModelCompanionExtensions,
+  ...importAcceptedExtensions,
+].join(',');
+
+/**
+ * Whether `/import` offers GitHub: the repository column and its public examples. SinopiaCAD opens models from the
+ * computer only, so neither is shown; the review of a repository address that still arrives (`/i/…` links, the GitHub
+ * connection's return) keeps its code.
+ */
+export const offersGithubImport = false as boolean;
 
 /**
  * GitHub repository info parsed from URL.
@@ -253,6 +295,14 @@ export function findMainFile(filePaths: string[]): string | undefined {
   // Then, try to find any file with a supported kernel extension
   for (const extension of supportedKernelExtensions) {
     const match = filePaths.find((name) => name.endsWith(extension));
+    if (match) {
+      return match;
+    }
+  }
+
+  // Then a 3D model, so a model beside its textures or notes opens as itself
+  for (const extension of importModelExtensions) {
+    const match = filePaths.find((name) => name.toLowerCase().endsWith(extension));
     if (match) {
       return match;
     }

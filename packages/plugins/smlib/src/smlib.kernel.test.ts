@@ -368,6 +368,18 @@ describe('SmlibKernel', () => {
   });
 
   describe('getParameters', () => {
+    it('should transport authored assumptions through the admitted parameter schema', async () => {
+      const { schema, defaults } = await getParameters(
+        {
+          'main.ts': `import { Box } from '@classcad/smlibwasm'; export const defaultParams = { stelo: { spessore: 1.4 } }; export const ipotesi = { 'stelo.spessore': 'Hidden in the image' }; export default function main() { return []; }`,
+        },
+        'main.ts',
+      );
+      expect(defaults).toEqual({ stelo: { spessore: 1.4 } });
+      expect(schema).toMatchObject({
+        properties: { stelo: { properties: { spessore: { description: '[sinopia:assumed] Hidden in the image' } } } },
+      });
+    });
     it('should extract defaultParams from an exported const', async () => {
       const { schema, defaults } = await getParameters({ 'plate.ts': plateCode }, 'plate.ts');
 
