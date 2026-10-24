@@ -1,12 +1,11 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
-import { formatConfigurations } from '@taucad/types/constants';
 import { asKnownArtifact } from '@taucad/runtime';
 import { Cpu, Download, Upload, RotateCcw } from 'lucide-react';
 import { fromSafeAsync } from '#lib/xstate.lib.js';
 import { projectToManifest } from '@taucad/types';
 import type { ProjectLoadInput, ProjectRetrievedEvent } from '#machines/project.machine.js';
-import { Button } from '@taucad/ui/components/button';
+import { Button, buttonVariants } from '@taucad/ui/components/button';
 import { CadViewer } from '@taucad/viewer/cad/cad-viewer';
 import {
   FloatingPanel,
@@ -17,10 +16,8 @@ import {
 } from '#components/ui/floating-panel.js';
 import { Dropzone, DropzoneEmptyState } from '#components/ui/dropzone.js';
 import { FormatsList } from '#routes/convert/formats-list.js';
-import { InfoTooltip } from '@taucad/ui/components/info-tooltip';
 import {
   getFormatFromFilename,
-  formatDisplayName,
   formatFileSize,
   isConfiguredConverterFormat,
 } from '#components/geometry/converter/converter-utils.js';
@@ -32,15 +29,18 @@ import { cn } from '@taucad/ui/utils/cn';
 import { Loader } from '@taucad/ui/components/loader';
 import { ProjectProvider, useProject } from '#hooks/use-project.js';
 import { GraphicsProvider, useGraphicsSelector } from '@taucad/viewer/hooks/use-graphics';
-import { PageContent } from '#components/layout/page-content.js';
-import { PageHeader } from '#components/layout/page-header.js';
+import { ToolPage } from '#components/layout/tool-page.js';
 import { PageNotice } from '#components/layout/page-notice.js';
 import { createConverterSource } from '@taucad/converter/contracts';
 import type { ConverterExportFormat, ConverterImportFormat, ConverterRuntimeClient } from '@taucad/converter/runtime';
 import { createConverterClient } from '#runtime/converter-client-options.js';
 import { beginConverterOperation, createActiveConverterClient } from '#routes/convert/converter-client-lifecycle.js';
+import { getLanguage } from '#i18n/language.js';
+import { translate, useTranslation } from '#i18n/translate.js';
+import type { Translate } from '#i18n/translate.js';
 
-export const meta: MetaFunction = () => [{ title: 'Convert · SinopiaCAD' }];
+// React hoists the title, so a language other than the server's replaces its text instead of failing hydration.
+export const meta: MetaFunction = () => [{ title: `${translate(getLanguage(), 'convert.title')} · SinopiaCAD` }];
 
 type UploadedFileInfo = {
   name: string;
@@ -48,10 +48,23 @@ type UploadedFileInfo = {
   size: number;
 };
 
+/** Why a file could not be converted; `detail` is the cause, shown only behind the notice's details. */
+type ConversionError = {
+  readonly reason: 'start' | 'unsupported' | 'unreadable' | 'tooMany';
+  readonly detail: string;
+};
+
+/** None of the chosen files is in a format the converter opens. */
+class UnsupportedModelError extends Error {
+  public override readonly name = 'UnsupportedModelError';
+}
+
 const converterViewId = 'converter-main';
 const defaultConverterExportFormats: ConverterExportFormat[] = ['stl'];
+const maxConverterFiles = 100;
 
 function ConverterContent(): React.JSX.Element {
+  const { t } = useTranslation();
   const { projectRef, viewGraphics } = useProject();
 
   useEffect(() => {
@@ -64,12 +77,11 @@ function ConverterContent(): React.JSX.Element {
   const graphicsRef = viewGraphics.get(converterViewId);
   if (!graphicsRef) {
     return (
-      <PageContent className='space-y-6'>
-        <PageHeader title='Convert' />
+      <ToolPage title={t('convert.title')} subtitle={t('convert.subtitle')}>
         <p role='status' className='flex items-center gap-2 text-sm text-muted-foreground'>
-          <Loader /> Preparing converter…
+          <Loader /> {t('convert.preparing')}
         </p>
-      </PageContent>
+      </ToolPage>
     );
   }
 
@@ -94,6 +106,7 @@ export const ConverterViewer = memo(function ({
   readonly hash: string;
   readonly fileName: string;
 }): React.JSX.Element {
+  const { t } = useTranslation();
   const enableSurfaces = useGraphicsSelector((state) => state.context.enableSurfaces);
   const enableLines = useGraphicsSelector((state) => state.context.enableLines);
   const enableGizmo = useGraphicsSelector((state) => state.context.enableGizmo);
@@ -106,7 +119,7 @@ export const ConverterViewer = memo(function ({
 
   return (
     <div data-viewer-frame className='fullscreen:bg-background absolute inset-0'>
-      <div role='img' aria-label={`Preview of ${fileName}`} className='absolute inset-0'>
+      <div role='img' aria-label={t('convert.preview', { name: fileName })} className='absolute inset-0'>
         <CadViewer
           enableZoom
           enablePan
@@ -131,10 +144,11 @@ export const ConverterViewer = memo(function ({
 });
 
 /**
- * The export panel. From md up it is always open beside the viewer. Below md it folds away behind an Export toggle, so
- * the viewer and its bar stay in reach, and opens under the toggle over the viewer.
+ * The export panel. From md up it is always open beside the viewer. Below md it folds away behind a «Formati» toggle,
+ * so the viewer and its bar stay in reach, and opens under the toggle over the viewer.
  */
 export function ConverterExportPanel({ children }: Readonly<{ children: React.ReactNode }>): React.JSX.Element {
+  const { t } = useTranslation();
   const [isOpenOnPhone, setIsOpenOnPhone] = useState(false);
   const panelId = useId();
   return (
@@ -149,7 +163,7 @@ export function ConverterExportPanel({ children }: Readonly<{ children: React.Re
         }}
       >
         <Download />
-        Export
+        {t('convert.panel.toggle')}
       </Button>
       <div
         id={panelId}
@@ -163,7 +177,7 @@ export function ConverterExportPanel({ children }: Readonly<{ children: React.Re
         <FloatingPanel isOpen side='right' className='rounded-md border'>
           <FloatingPanelContent className='w-80 max-md:w-full'>
             <FloatingPanelContentHeader className='px-3 text-foreground'>
-              <FloatingPanelContentTitle>Export options</FloatingPanelContentTitle>
+              <FloatingPanelContentTitle>{t('convert.panel.title')}</FloatingPanelContentTitle>
             </FloatingPanelContentHeader>
             {children}
           </FloatingPanelContent>
@@ -174,6 +188,8 @@ export function ConverterExportPanel({ children }: Readonly<{ children: React.Re
 }
 
 function ConverterContentInner(): React.JSX.Element {
+  const { t, language } = useTranslation();
+  const yourFileHeadingId = useId();
   const [uploadedFile, setUploadedFile] = useState<UploadedFileInfo | undefined>(undefined);
   const [glbData, setGlbData] = useState<Uint8Array<ArrayBuffer> | undefined>(undefined);
   const [glbHash, setGlbHash] = useState<string | undefined>(undefined);
@@ -190,7 +206,7 @@ function ConverterContentInner(): React.JSX.Element {
   const [useZipForMultiple, setUseZipForMultiple] = useCookie<boolean>(cookieName.converterMultifileZip, true);
   const [isConverting, setIsConverting] = useState(false);
   const [openingFileName, setOpeningFileName] = useState<string>();
-  const [conversionError, setConversionError] = useState<string>();
+  const [conversionError, setConversionError] = useState<ConversionError>();
   const conversionGeneration = useRef(0);
 
   useEffect(() => {
@@ -234,9 +250,10 @@ function ConverterContentInner(): React.JSX.Element {
         unsubscribe?.();
         runtimeClient?.terminate();
         if (active) {
-          setConversionError(
-            `Could not start the converter: ${error instanceof Error ? error.message : String(error)}`,
-          );
+          setConversionError({
+            reason: 'start',
+            detail: `Could not start the converter: ${error instanceof Error ? error.message : String(error)}`,
+          });
         }
       }
     };
@@ -282,7 +299,7 @@ function ConverterContentInner(): React.JSX.Element {
           }
         });
         if (!entryFile) {
-          throw new Error('No supported model file was selected');
+          throw new UnsupportedModelError('No supported model file was selected');
         }
         setOpeningFileName(entryFile.name);
         const format = getFormatFromFilename(entryFile.name);
@@ -326,11 +343,7 @@ function ConverterContentInner(): React.JSX.Element {
         setGlbHash(preview.rendering.hash);
       } catch (error) {
         if (isCurrentOperation()) {
-          let message = 'Failed to process file';
-          if (error instanceof Error) {
-            message = `${message}: ${error.message}`;
-          }
-          setConversionError(message);
+          setConversionError(fileConversionError(error));
         }
       } finally {
         if (pendingDocumentRef.current && isCurrentOperation()) {
@@ -410,59 +423,36 @@ function ConverterContentInner(): React.JSX.Element {
 
   return (
     <div className='h-full overflow-y-auto'>
-      <PageContent className='flex min-h-full flex-col gap-6'>
-        <div className='shrink-0'>
-          <PageHeader
-            title='Convert'
-            action={
-              hasModel ? (
-                <Button variant='outline' onClick={handleReset}>
-                  <RotateCcw />
-                  Start over
-                </Button>
-              ) : undefined
-            }
-          />
-        </div>
-
-        {conversionError ? (
-          <PageNotice
-            title={client ? 'Model unavailable' : 'Converter unavailable'}
-            message={
-              client
-                ? `${openingFileName ?? 'The selected model'} could not be read. Choose another model to try again.`
-                : 'The converter could not start. Reload the page to try again.'
-            }
-            detail={conversionError}
-          >
-            {client ? undefined : (
-              <Button
-                variant='outline'
-                onClick={() => {
-                  globalThis.location.reload();
-                }}
-              >
-                Reload converter
-              </Button>
-            )}
-          </PageNotice>
-        ) : undefined}
+      <ToolPage
+        className='min-h-full'
+        title={t('convert.title')}
+        subtitle={t('convert.subtitle')}
+        action={
+          hasModel ? (
+            <Button variant='outline' onClick={handleReset}>
+              <RotateCcw />
+              {t('convert.convertAnother')}
+            </Button>
+          ) : undefined
+        }
+      >
+        {conversionError ? <ConversionNotice error={conversionError} fileName={openingFileName} /> : undefined}
 
         <div
           className={cn(
             'relative',
-            (isConverting || hasModel) && 'min-h-144 flex-1 overflow-hidden rounded-lg border bg-muted',
+            (isConverting || hasModel) && 'min-h-144 flex-1 overflow-hidden rounded-xl border bg-muted',
           )}
         >
           {isConverting || hasModel ? (
             <>
               {glbData && glbHash ? (
-                <ConverterViewer glbData={glbData} hash={glbHash} fileName={uploadedFile?.name ?? 'Model'} />
+                <ConverterViewer glbData={glbData} hash={glbHash} fileName={uploadedFile?.name ?? ''} />
               ) : undefined}
               {isConverting ? (
                 <div
                   role='status'
-                  aria-label='Opening model'
+                  aria-label={t('convert.opening')}
                   aria-busy='true'
                   className={cn(
                     'absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 p-4 text-center',
@@ -470,8 +460,8 @@ function ConverterContentInner(): React.JSX.Element {
                   )}
                 >
                   <Loader className='size-5 text-muted-foreground' />
-                  <span className='max-w-full font-mono text-sm break-all'>{openingFileName}</span>
-                  <span className='text-sm text-muted-foreground'>Opening model…</span>
+                  <span className='max-w-full text-sm font-medium break-all'>{openingFileName}</span>
+                  <span className='text-sm text-muted-foreground'>{t('convert.opening')}</span>
                   <Button
                     variant='outline'
                     size='sm'
@@ -480,7 +470,7 @@ function ConverterContentInner(): React.JSX.Element {
                       setIsConverting(false);
                     }}
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </Button>
                 </div>
               ) : (
@@ -489,12 +479,10 @@ function ConverterContentInner(): React.JSX.Element {
                     <div className='space-y-5'>
                       {uploadedFile ? (
                         <div className='space-y-1'>
-                          <div className='flex items-center gap-1'>
-                            <span className='truncate text-sm font-medium'>{uploadedFile.name}</span>
-                            <InfoTooltip>{formatConfigurations[uploadedFile.format].description}</InfoTooltip>
-                          </div>
+                          <p className='truncate text-sm font-medium'>{uploadedFile.name}</p>
                           <p className='text-xs text-muted-foreground'>
-                            {formatDisplayName(uploadedFile.format)} · {formatFileSize(uploadedFile.size)}
+                            <span className='font-mono'>{uploadedFile.format.toUpperCase()}</span> ·{' '}
+                            <span className='tabular-nums'>{formatFileSize(uploadedFile.size, language)}</span>
                           </p>
                         </div>
                       ) : undefined}
@@ -510,20 +498,18 @@ function ConverterContentInner(): React.JSX.Element {
                       />
                     </div>
                     <Dropzone
-                      className='w-full max-md:hidden'
-                      maxFiles={100}
+                      className='w-full rounded-xl bg-card text-wrap max-md:hidden'
+                      maxFiles={maxConverterFiles}
                       onDrop={handleFileDrop}
                       onError={(error) => {
-                        setConversionError(error.message);
+                        setConversionError({ reason: 'tooMany', detail: error.message });
                       }}
                     >
                       <DropzoneEmptyState>
                         <div className='flex flex-col items-center gap-1 py-1 text-wrap'>
-                          <Upload className='size-4 text-muted-foreground' />
-                          <span className='text-sm font-medium'>Open another model</span>
-                          <span className='text-xs font-normal text-muted-foreground'>
-                            Drop files here or click to browse
-                          </span>
+                          <Upload aria-hidden className='size-4 text-muted-foreground' />
+                          <span className='text-sm font-medium'>{t('convert.openAnother')}</span>
+                          <span className='text-xs font-normal text-muted-foreground'>{t('convert.dropAnother')}</span>
                         </div>
                       </DropzoneEmptyState>
                     </Dropzone>
@@ -532,51 +518,131 @@ function ConverterContentInner(): React.JSX.Element {
               )}
             </>
           ) : (
-            <div className='grid items-start gap-8 border-t pt-6 lg:grid-cols-[minmax(0,1fr)_20rem]'>
-              <div className='min-w-0 space-y-4'>
-                <h2 className='text-sm font-medium'>Source model</h2>
+            <div className='grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_20rem]'>
+              <section aria-labelledby={yourFileHeadingId} className='min-w-0 space-y-3'>
+                <h2 id={yourFileHeadingId} className='text-sm font-medium'>
+                  {t('convert.yourFile')}
+                </h2>
+                {/* The home's card (E1, 1 px border, no dashes); the whole card opens the picker. */}
                 <Dropzone
-                  className='min-h-72 rounded-lg border-dashed p-6 text-wrap'
-                  maxFiles={100}
+                  className='min-h-58 gap-4 rounded-xl border-border bg-card p-7 text-wrap shadow-xs'
+                  maxFiles={maxConverterFiles}
                   disabled={!client}
                   onDrop={handleFileDrop}
                   onError={(error) => {
-                    setConversionError(error.message);
+                    setConversionError({ reason: 'tooMany', detail: error.message });
                   }}
                 >
                   <DropzoneEmptyState>
-                    <div className='flex flex-col items-center gap-1 text-center'>
-                      <span className='mb-2 rounded-xl border bg-card p-2'>
+                    <div className='flex flex-col items-center gap-4 text-center'>
+                      <span className='flex size-10 items-center justify-center rounded-lg border bg-muted'>
                         <Upload aria-hidden className='size-5 text-muted-foreground' />
                       </span>
-                      <span className='text-base font-medium'>Open model</span>
-                      <span className='text-sm font-normal text-muted-foreground'>
-                        Drop files here or click to browse
-                      </span>
-                      <span className='mt-3 text-xs font-normal text-muted-foreground'>
-                        Include supporting files, such as textures.
+                      <span className={buttonVariants()}>{t('convert.choose')}</span>
+                      <span className='space-y-1 text-sm font-normal text-muted-foreground'>
+                        <span className='block'>{t('convert.dropHere')}</span>
+                        <span className='block'>{t('convert.linkedFiles')}</span>
                       </span>
                     </div>
                   </DropzoneEmptyState>
                 </Dropzone>
                 <p className='flex items-center gap-2 text-xs text-muted-foreground'>
-                  <Cpu aria-hidden className='size-3.5' /> Processed on this device.
+                  <Cpu aria-hidden className='size-3.5' /> {t('convert.onThisComputer')}
                 </p>
-              </div>
+              </section>
               <div className='min-w-0 space-y-3'>
                 {!client && conversionError ? undefined : (
                   <FormatsList formats={converterImportFormats} isLoading={!client} />
                 )}
-                <p className='border-t pt-4 text-xs leading-relaxed text-muted-foreground'>
-                  Output formats depend on the model. Open a file to see available conversions.
-                </p>
+                <p className='border-t pt-4 text-xs leading-relaxed text-muted-foreground'>{t('convert.outputHint')}</p>
               </div>
             </div>
           )}
         </div>
-      </PageContent>
+      </ToolPage>
     </div>
   );
+}
+
+/**
+ * What stopped the conversion and how to recover; the cause stays behind the notice's details.
+ *
+ * @returns The notice, with a reload when the converter itself did not start.
+ */
+function ConversionNotice({
+  error,
+  fileName,
+}: {
+  readonly error: ConversionError;
+  readonly fileName: string | undefined;
+}): React.JSX.Element {
+  const { t } = useTranslation();
+  const { title, message } = describeConversionError(error, fileName ?? '', t);
+  return (
+    <PageNotice title={title} message={message} detail={error.detail}>
+      {error.reason === 'start' ? (
+        <Button
+          variant='outline'
+          onClick={() => {
+            globalThis.location.reload();
+          }}
+        >
+          {t('common.reload')}
+        </Button>
+      ) : undefined}
+    </PageNotice>
+  );
+}
+
+/**
+ * Classify a file the converter could not open: a format it does not read, or a file it could not read.
+ *
+ * @param error - What opening the file threw.
+ * @returns The conversion error, with the cause as its detail.
+ */
+function fileConversionError(error: unknown): ConversionError {
+  return {
+    reason: error instanceof UnsupportedModelError ? 'unsupported' : 'unreadable',
+    detail: error instanceof Error ? `Failed to process file: ${error.message}` : 'Failed to process file',
+  };
+}
+
+/**
+ * The notice for a file that could not be converted: what went wrong and how to fix it, never the cause itself.
+ *
+ * @param error - Why the conversion stopped.
+ * @param fileName - The file the person chose.
+ * @param t - The translator.
+ * @returns The notice's title and message.
+ */
+function describeConversionError(
+  error: ConversionError,
+  fileName: string,
+  t: Translate,
+): { readonly title: string; readonly message: string } {
+  switch (error.reason) {
+    case 'start': {
+      return { title: t('convert.errors.startTitle'), message: t('convert.errors.startMessage') };
+    }
+    case 'unsupported': {
+      return {
+        title: t('convert.errors.unsupportedTitle'),
+        message: t('convert.errors.unsupportedMessage', { name: fileName }),
+      };
+    }
+    case 'unreadable': {
+      return {
+        title: t('convert.errors.unreadableTitle'),
+        message: t('convert.errors.unreadableMessage', { name: fileName }),
+      };
+    }
+    case 'tooMany': {
+      return {
+        title: t('convert.errors.tooManyTitle'),
+        message: t('convert.errors.tooManyMessage', { max: maxConverterFiles }),
+      };
+    }
+  }
 }
 
 export default function ConverterRoute(): React.JSX.Element {

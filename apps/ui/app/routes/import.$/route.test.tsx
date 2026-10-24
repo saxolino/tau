@@ -14,11 +14,17 @@ import ImportRoute from '#routes/import.$/route.js';
 import { githubProjectBinding } from '#lib/github-project-binding.js';
 import type * as LinkedImportModule from '#lib/github-linked-import.js';
 import type * as ReactRouterModule from 'react-router';
+import type * as ImportUtilsModule from '#routes/import.$/import.utils.js';
+import { setLanguage } from '#i18n/language.js';
+import type { Language } from '#i18n/language.js';
+import { bindTranslate } from '#i18n/translate.js';
 
 type GitHubApiClient = ReturnType<typeof getGitHubClient>;
 
 const existingProjectId = 'proj_existing0000000000000';
 const picker = vi.hoisted(() => ({ available: true as boolean | undefined }));
+/* SinopiaCAD hides the GitHub column; the GitHub tests switch it back on to keep its code covered. */
+const sources = vi.hoisted(() => ({ github: true }));
 const slugs = vi.hoisted(() => ({
   byId: new Map<string, { workspaceSlug: string; projectSlug: string }>(),
 }));
@@ -131,8 +137,14 @@ vi.mock('#hooks/use-project-slug-route.js', () => ({
 vi.mock('#components/desktop/open-in-desktop.js', () => ({
   OpenInDesktop: () => <p>Desktop handoff offer</p>,
 }));
-vi.mock('#routes/import.$/suggested-clones.js', () => ({ SuggestedClones: () => undefined }));
-vi.mock('#routes/import.$/upload-card.js', () => ({ UploadCard: () => undefined }));
+vi.mock('#routes/import.$/import.utils.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof ImportUtilsModule>()),
+  get offersGithubImport() {
+    return sources.github;
+  },
+}));
+vi.mock('#routes/import.$/suggested-clones.js', () => ({ SuggestedClones: () => <p>Public examples</p> }));
+vi.mock('#routes/import.$/upload-card.js', () => ({ UploadCard: () => <p>Local import card</p> }));
 vi.mock('#lib/github-linked-import.js', async (importOriginal) => ({
   ...(await importOriginal<typeof LinkedImportModule>()),
   prepareLinkedGithubImport: linkedImport.prepare,
@@ -215,9 +227,42 @@ const renderImport = async (url = '/import'): Promise<void> => {
   });
 };
 
+describe.each<Language>(['it', 'en'])('ImportRoute in SinopiaCAD (%s)', (language) => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sources.github = false;
+    picker.available = true;
+    slugs.byId.clear();
+    localStorage.clear();
+    setLanguage(language);
+  });
+
+  it('should open a model from the computer only, without GitHub or public examples', async () => {
+    const t = bindTranslate(language);
+    await renderImport();
+
+    expect(screen.getByRole('heading', { level: 1, name: t('import.title') })).toBeInTheDocument();
+    expect(screen.getByText(t('import.subtitle'))).toBeInTheDocument();
+    expect(screen.getByText('Local import card')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pick linked repository' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Public repository URL' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Public examples')).not.toBeInTheDocument();
+    expect(screen.queryByText(/GitHub/u)).not.toBeInTheDocument();
+  });
+
+  it('should hold an address it cannot import without offering GitHub', async () => {
+    await renderImport('/import/not-a-repository');
+
+    expect(screen.getByText('Local import card')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Public repository URL' })).not.toBeInTheDocument();
+  });
+});
+
 describe('ImportRoute GitHub card', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sources.github = true;
+    setLanguage('en');
     picker.available = true;
     slugs.byId.clear();
     localStorage.clear();

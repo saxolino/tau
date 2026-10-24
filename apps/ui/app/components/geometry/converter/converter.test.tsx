@@ -4,6 +4,10 @@ import JSZip from 'jszip';
 import type * as FileUtilsModule from '@taucad/utils/file';
 import type { ConverterExportFormat } from '@taucad/converter/runtime';
 import { isConfiguredConverterFormat } from '#components/geometry/converter/converter-utils.js';
+import { setLanguage } from '#i18n/language.js';
+import { bindTranslate } from '#i18n/translate.js';
+
+const t = bindTranslate('en');
 
 /* oxlint-disable react-js/boolean-prop-naming -- mocks the controlled Checkbox prop API. */
 
@@ -82,6 +86,7 @@ const renderConverter = (format: ConverterExportFormat, onExport = vi.fn()) => {
 describe('Converter dependent export artifacts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setLanguage('en');
   });
 
   it.each<{ format: ConverterExportFormat; names: string[] }>([
@@ -134,11 +139,11 @@ describe('Converter dependent export artifacts', () => {
         onZipToggle={vi.fn()}
       />,
     );
-    expect(screen.queryByLabelText('Download as ZIP file')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText('Download options'));
+    expect(screen.queryByLabelText(t('convert.download.asZip'))).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(t('convert.download.options')));
     expect(screen.getByText('model.stl')).toBeVisible();
     expect(screen.queryByText('model-converted.zip')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Download STL' }));
+    fireEvent.click(screen.getByRole('button', { name: t('convert.download.one', { format: 'STL' }) }));
     await waitFor(() => {
       expect(downloadBlob).toHaveBeenCalledWith(expect.any(Blob), 'model.stl');
     });
@@ -158,8 +163,8 @@ describe('Converter dependent export artifacts', () => {
       },
     ]);
     const onExport = renderConverter('gltf');
-    fireEvent.click(screen.getByText('Download options'));
-    fireEvent.click(screen.getByLabelText('Save exported files to project'));
+    fireEvent.click(screen.getByText(t('convert.download.options')));
+    fireEvent.click(screen.getByLabelText(t('convert.download.saveToProject')));
     fireEvent.click(screen.getByRole('button', { name: /^Download (GLTF|OBJ)$/ }));
 
     await waitFor(() => {

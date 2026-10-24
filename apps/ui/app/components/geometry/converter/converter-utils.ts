@@ -2,6 +2,8 @@ import { formatConfigurations } from '@taucad/types/constants';
 import type { FileExtension } from '@taucad/types';
 import { getFileExtension } from '#utils/filesystem.utils.js';
 import type { ConverterExportFormat, ConverterImportFormat } from '@taucad/converter/runtime';
+import type { Language } from '#i18n/language.js';
+import { formatNumber } from '#i18n/translate.js';
 
 /**
  * Extract file format from filename extension
@@ -28,18 +30,20 @@ export function formatDisplayName(format: FileExtension): string {
 }
 
 /**
- * Format file size in human-readable format
+ * Format file size in human-readable format. Given a language, the number is written the way it writes numbers
+ * (IT `2,5 MB`, EN `2.5 MB`) and bytes are `B`, the same in both.
  */
-export function formatFileSize(bytes: number): string {
+export function formatFileSize(bytes: number, language?: Language): string {
+  const sizes = language === undefined ? ['Bytes', 'KB', 'MB', 'GB'] : ['B', 'KB', 'MB', 'GB'];
   if (bytes === 0) {
-    return '0 Bytes';
+    return `0 ${sizes[0]}`;
   }
 
   const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const value = Number.parseFloat((bytes / k ** i).toFixed(2));
 
-  return `${Number.parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
+  return `${language === undefined ? value : formatNumber(value, language, { maximumFractionDigits: 2 })} ${sizes[i]}`;
 }
 
 /**

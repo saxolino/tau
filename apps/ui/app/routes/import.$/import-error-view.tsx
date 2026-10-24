@@ -1,8 +1,8 @@
-import { PageContent } from '#components/layout/page-content.js';
-import { PageHeader } from '#components/layout/page-header.js';
+import { ToolPage } from '#components/layout/tool-page.js';
 import { PageNotice } from '#components/layout/page-notice.js';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
+import { useTranslation } from '#i18n/translate.js';
 
 type ImportErrorViewProperties = {
   readonly error: Error | undefined;
@@ -13,19 +13,19 @@ type ImportErrorViewProperties = {
 
 /** Shared error view for import failures. */
 export function ImportErrorView({ error, title, message, onRetry }: ImportErrorViewProperties): React.JSX.Element {
+  const { t } = useTranslation();
   return (
-    <PageContent className='space-y-6'>
-      <PageHeader title='Import' />
+    <ToolPage title={t('import.title')}>
       <PageNotice
-        title={title ?? 'Import interrupted'}
-        message={message ?? 'The project could not be imported. Check the source and try again.'}
-        detail={error?.message ?? 'No additional error details are available.'}
+        title={title ?? t('import.error.title')}
+        message={message ?? t('import.error.message')}
+        detail={error?.message ?? t('import.error.noDetail')}
       >
         <Button variant='outline' onClick={onRetry}>
           <RotateCcw />
-          Try again
+          {t('common.retry')}
         </Button>
       </PageNotice>
-    </PageContent>
+    </ToolPage>
   );
 }

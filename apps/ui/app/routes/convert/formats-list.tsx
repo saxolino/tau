@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FileExtension } from '@taucad/types';
 import { SearchInput } from '@taucad/ui/components/search-input';
 import { formatDisplayName } from '#components/geometry/converter/converter-utils.js';
+import { useTranslation } from '#i18n/translate.js';
 
 type FormatsListProps = {
   readonly formats: readonly FileExtension[];
@@ -9,6 +10,7 @@ type FormatsListProps = {
 };
 
 export function FormatsList({ formats, isLoading }: FormatsListProps): React.JSX.Element {
+  const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
   const filteredFormats = formats.filter((format) => {
     const query = searchQuery.toLowerCase();
@@ -18,12 +20,12 @@ export function FormatsList({ formats, isLoading }: FormatsListProps): React.JSX
   return (
     <section className='space-y-4'>
       <div className='flex items-baseline justify-between gap-2'>
-        <h2 className='text-sm font-medium'>Input formats</h2>
+        <h2 className='text-sm font-medium'>{t('convert.inputFormats')}</h2>
         {isLoading ? undefined : <span className='text-xs text-muted-foreground tabular-nums'>{formats.length}</span>}
       </div>
       <SearchInput
-        aria-label='Search input formats'
-        placeholder='Find a format…'
+        aria-label={t('convert.searchFormats')}
+        placeholder={t('convert.findFormat')}
         value={searchQuery}
         onClear={() => {
           setSearchQuery('');
@@ -34,19 +36,20 @@ export function FormatsList({ formats, isLoading }: FormatsListProps): React.JSX
       />
       {isLoading ? (
         <p role='status' className='text-sm text-muted-foreground'>
-          Loading formats…
+          {t('convert.loadingFormats')}
         </p>
       ) : filteredFormats.length > 0 ? (
+        // Format codes are what a designer knows (STEP, STL, 3DM); the long names stay out of the list.
         <ul className='grid grid-cols-3 gap-x-4 gap-y-2'>
           {filteredFormats.map((format) => (
-            <li key={format} className='font-mono text-xs' aria-label={formatDisplayName(format)}>
+            <li key={format} className='font-mono text-xs'>
               {format.toUpperCase()}
             </li>
           ))}
         </ul>
       ) : (
         <p role='status' className='text-sm text-muted-foreground'>
-          No formats match.
+          {t('convert.noFormat')}
         </p>
       )}
     </section>

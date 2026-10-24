@@ -1,11 +1,12 @@
 import { useCallback, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Folder, Files, FolderOpen } from 'lucide-react';
-import { importFileAcceptString, supportedKernelExtensions } from '#routes/import.$/import.utils.js';
+import { FileUp, Folder, Files, FolderOpen } from 'lucide-react';
+import { importFileAcceptString } from '#routes/import.$/import.utils.js';
 import { Button } from '@taucad/ui/components/button';
 import { cn } from '@taucad/ui/utils/cn';
 import { isZipFile } from '#utils/file-reader.utils.js';
 import { webAccessDirectoryPicker } from '#constants/browser.constants.js';
+import { useTranslation } from '#i18n/translate.js';
 
 type UploadCardProperties = {
   readonly onFilesSelected: (files: FileList | File[]) => void;
@@ -27,6 +28,7 @@ export function UploadCard({
   isDisabled = false,
   className,
 }: UploadCardProperties): React.JSX.Element {
+  const { t } = useTranslation();
   const folderInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -140,19 +142,22 @@ export function UploadCard({
   const isDropping = isDragActive || isDraggingOver;
 
   return (
+    // The home's card (E1, 1 px border, no dashes): it darkens and its border strengthens while files are over it.
     <div
       {...getRootProps()}
+      data-dragging={isDropping}
       className={cn(
-        'flex min-w-0 flex-col gap-5 md:border-l md:pl-8',
+        'flex min-h-58 min-w-0 flex-col items-center justify-center gap-4 rounded-xl border bg-card p-7 text-center shadow-xs',
+        isDropping ? 'border-foreground/50 bg-muted' : 'border-border',
         isDisabled && 'pointer-events-none opacity-50',
         className,
       )}
     >
-      <input {...getInputProps()} hidden aria-label='Drop project files' />
+      <input {...getInputProps()} hidden aria-label={t('import.dropInput')} />
 
       {/* Hidden file inputs */}
       <input
-        aria-label='Select project folder'
+        aria-label={t('import.folderInput')}
         ref={folderInputRef}
         multiple
         type='file'
@@ -163,7 +168,7 @@ export function UploadCard({
         onChange={handleFolderChange}
       />
       <input
-        aria-label='Select project files'
+        aria-label={t('import.filesInput')}
         ref={fileInputRef}
         multiple
         type='file'
@@ -173,43 +178,29 @@ export function UploadCard({
         onChange={handleFileChange}
       />
 
-      <div className='space-y-1'>
-        <h2 className='text-base font-medium'>Local files</h2>
-        <p className='text-sm text-muted-foreground'>Open a folder, source files or a ZIP archive.</p>
+      <div className='flex size-10 items-center justify-center rounded-lg border bg-muted'>
+        <FileUp aria-hidden className='size-5 text-muted-foreground' />
       </div>
-      <div
-        className={cn(
-          'flex min-h-40 flex-1 flex-col items-center justify-center gap-1 rounded-lg border border-dashed px-5 py-6 text-center',
-          isDropping && 'border-foreground bg-muted',
-        )}
-      >
-        <span className='mb-2 rounded-xl border bg-card p-2'>
-          <FolderOpen aria-hidden className='size-5 text-muted-foreground' />
-        </span>
-        <span className='text-sm font-medium'>
-          {isDropping ? 'Release to import' : 'Drop a folder, files or a ZIP here'}
-        </span>
-        <span className='text-xs text-muted-foreground'>
-          Sources: <span className='font-mono'>{supportedKernelExtensions.join(' ')}</span> · archives:{' '}
-          <span className='font-mono'>.zip</span>
-        </span>
-      </div>
-      <div className='flex flex-wrap gap-2'>
+      <div className='flex flex-wrap justify-center gap-3'>
+        <Button type='button' disabled={isDisabled} onClick={handleFileClick}>
+          <Files aria-hidden />
+          {t('import.choose')}
+        </Button>
         {webAccessDirectoryPicker() ? (
           <Button type='button' variant='outline' disabled={isDisabled} onClick={handleDirectoryPick}>
-            <FolderOpen />
-            Open folder
+            <FolderOpen aria-hidden />
+            {t('import.chooseFolder')}
           </Button>
         ) : (
           <Button type='button' variant='outline' disabled={isDisabled} onClick={handleFolderClick}>
-            <Folder />
-            Select folder
+            <Folder aria-hidden />
+            {t('import.chooseFolder')}
           </Button>
         )}
-        <Button type='button' variant='outline' disabled={isDisabled} onClick={handleFileClick}>
-          <Files />
-          Select files
-        </Button>
+      </div>
+      <div className='space-y-1 text-sm text-muted-foreground'>
+        <p>{isDropping ? t('import.release') : t('import.dropHere')}</p>
+        <p>{t('import.formats')}</p>
       </div>
     </div>
   );

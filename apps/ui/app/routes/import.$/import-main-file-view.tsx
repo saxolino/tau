@@ -1,12 +1,11 @@
-import { PageContent } from '#components/layout/page-content.js';
-import { PageHeader } from '#components/layout/page-header.js';
 import { useId, useMemo } from 'react';
 import { Button } from '@taucad/ui/components/button';
+import { ToolPage } from '#components/layout/tool-page.js';
 import { FileSelector, createStaticDataSource } from '#components/files/file-selector.js';
 import { ImportViewer } from '#routes/import.$/import-viewer.js';
 import { formatFileSize } from '#components/geometry/converter/converter-utils.js';
-import { supportedKernelExtensions } from '#routes/import.$/import.utils.js';
 import type { FileMap } from '#utils/file-reader.utils.js';
+import { useTranslation } from '#i18n/translate.js';
 
 type ImportMainFileViewProperties = {
   readonly title: string;
@@ -36,29 +35,27 @@ export function ImportMainFileView({
   onConfirm,
   onCancel,
 }: ImportMainFileViewProperties): React.JSX.Element {
+  const { t, language } = useTranslation();
   const mainFileLabelId = useId();
-  const fileNames = [...files.keys()];
-  const cadSourceCount = fileNames.filter((path) =>
-    supportedKernelExtensions.some((extension) => path.toLowerCase().endsWith(extension)),
-  ).length;
   let byteLength = 0;
   for (const file of files.values()) {
     byteLength += file.content.byteLength;
   }
+  const size = formatFileSize(byteLength, language);
   const dataSource = useMemo(() => createStaticDataSource([...files.keys()].map((path) => ({ path }))), [files]);
 
   return (
-    <PageContent className='space-y-6'>
-      <PageHeader title='Import' />
-      <div className='space-y-4 border-t pt-6'>
+    <ToolPage title={t('import.title')}>
+      <div className='space-y-4'>
         <div className='flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1'>
           <div className='space-y-1'>
             <h2 className='text-base font-medium'>{title}</h2>
-            <p className='font-mono text-sm break-all text-muted-foreground'>{subtitle}</p>
+            <p className='text-sm break-all text-muted-foreground'>{subtitle}</p>
           </div>
           <p className='text-xs text-muted-foreground tabular-nums'>
-            {files.size} {files.size === 1 ? 'file' : 'files'} · {cadSourceCount}{' '}
-            {cadSourceCount === 1 ? 'CAD source' : 'CAD sources'} · {formatFileSize(byteLength)}
+            {files.size === 1
+              ? t('import.review.filesOne', { size })
+              : t('import.review.filesMany', { count: files.size, size })}
           </p>
           {requestedMainFileWarning ? (
             <p role='alert' className='pt-2 text-sm'>
@@ -67,42 +64,43 @@ export function ImportMainFileView({
           ) : undefined}
         </div>
         <div className='grid gap-6 md:grid-cols-[minmax(0,1fr)_16rem]'>
-          {/* Left: CAD Preview */}
-          <div className='h-[60vh] min-h-0 min-w-0 overflow-hidden rounded-lg border bg-muted'>
+          {/* Left: the model as it will open */}
+          <div className='h-[60vh] min-h-0 min-w-0 overflow-hidden rounded-xl border bg-muted'>
             <ImportViewer files={files} mainFile={selectedMainFile} owner={owner} repo={repo} />
           </div>
 
-          {/* Right: Main file Selection */}
+          {/* Right: the file the project opens */}
           <div className='flex min-w-0 flex-col gap-4'>
             <div role='group' aria-labelledby={mainFileLabelId} className='space-y-2'>
               <span id={mainFileLabelId} className='block text-sm font-medium'>
-                Main file
+                {t('import.review.fileToOpen')}
               </span>
               <FileSelector
                 dataSource={dataSource}
                 selectedFile={selectedMainFile}
-                placeholder='Select main file…'
-                title='Select main file'
-                description='Choose the main entry path for your project'
-                emptyMessage='No files found'
+                placeholder={t('import.review.placeholder')}
+                title={t('import.review.pickerTitle')}
+                description={t('import.review.pickerDescription')}
+                searchPlaceholder={t('import.review.search')}
+                emptyMessage={t('import.review.noFiles')}
                 onSelect={onSelectMainFile}
               />
               {selectedMainFile ? (
-                <p className='font-mono text-xs break-all text-muted-foreground'>{selectedMainFile}</p>
+                <p className='text-xs break-all text-muted-foreground'>{selectedMainFile}</p>
               ) : undefined}
             </div>
 
             <Button className='w-full' disabled={!selectedMainFile} onClick={onConfirm}>
-              Import project
+              {t('import.review.confirm')}
             </Button>
 
             <Button variant='outline' className='w-full' onClick={onCancel}>
-              Cancel
+              {t('common.cancel')}
             </Button>
-            <p className='text-xs text-muted-foreground'>A copy is added to your projects.</p>
+            <p className='text-xs text-muted-foreground'>{t('import.review.copy')}</p>
           </div>
         </div>
       </div>
-    </PageContent>
+    </ToolPage>
   );
 }
