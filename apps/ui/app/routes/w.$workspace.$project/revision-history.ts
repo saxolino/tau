@@ -1,5 +1,8 @@
 import { requireParameterRecord } from '@taucad/parameters';
-import type { JSONValue } from '@taucad/types';
+import { parameterEntryPath } from '@taucad/types';
+import type { GeometryComponentManifest, JSONValue } from '@taucad/types';
+import { manualHistoryChanges } from '#lib/inspector-selection.js';
+import { turnModelChanges } from '#lib/turn-model-changes.js';
 import { bindTranslate, formatNumber } from '#i18n/translate.js';
 import type { Translate } from '#i18n/translate.js';
 import { languageLocales } from '#i18n/language.js';
@@ -112,4 +115,73 @@ export function parameterChangeSentence({
   } catch {
     return undefined;
   }
+}
+
+/** One file a version changed, before and after, as the revision client compares it. */
+export type VersionFileChange = Readonly<{ path: string; original: string; modified: string }>;
+
+/**
+ * What a version changed, in a designer's sentences: each measure with its piece and its values before → after
+ * («Telaio fibbia · spessore: 4 → 5 mm»), each manual operation added, removed, switched or edited («Raccordo r 0,5
+ * mm · 2 spigoli · Ardiglione»). Pieces are named from the current model; a measure of a piece that is gone keeps its
+ * own key. Files that are neither measures nor manual histories say nothing.
+ *
+ * @param input - The compared files, the models by entry path, the translator and the language.
+ * @returns The sentences, measures first, in file order.
+ */
+export function versionChangeSentences({
+  files,
+  manifests,
+  language,
+}: Readonly<{
+  files: readonly VersionFileChange[];
+  manifests: ReadonlyMap<string, GeometryComponentManifest>;
+  language: Language;
+}>): string[] {
+  const t = bindTranslate(language);
+  const sentences: string[] = [];
+  for (const file of files) {
+    const entry = [...manifests.keys()].find((path) => parameterEntryPath(path) === file.path);
+    if (file.path.startsWith('.tau/parameters/')) {
+      const changes = turnModelChanges({
+        original: file.original,
+        modified: file.modified,
+        manifest: entry === undefined ? undefined : manifests.get(entry),
+        language,
+      });
+      if (changes.length === 0) {
+        const fallback = parameterChangeSentence({ original: file.original, modified: file.modified, language });
+        if (fallback !== undefined) {
+          sentences.push(fallback);
+        }
+      }
+      for (const change of changes) {
+        const subject = change.field ? `${change.name} · ${change.field.toLocaleLowerCase()}` : change.name;
+        sentences.push(`${subject}: ${change.before ?? '—'} → ${change.after ?? '—'}`);
+      }
+    } else if (file.path.endsWith('.manual.json')) {
+      sentences.push(...manualHistoryChanges({ original: file.original, modified: file.modified, t, language }));
+    }
+  }
+  return sentences;
+}
+
+/**
+ * A version's line: its first change, and how many more there are.
+ *
+ * @param sentences - From {@link versionChangeSentences}.
+ * @param language - The language.
+ * @returns The line, or undefined when nothing could be said.
+ */
+export function versionChangeLine(sentences: readonly string[], language: Language): string | undefined {
+  const [first, ...others] = sentences;
+  if (first === undefined) {
+    return undefined;
+  }
+  const t = bindTranslate(language);
+  return others.length === 0
+    ? first
+    : others.length === 1
+      ? t('manualEdit.describe.moreOne', { change: first })
+      : t('manualEdit.describe.more', { change: first, count: others.length });
 }
