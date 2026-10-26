@@ -1,3 +1,4 @@
+import { manualFaceGeometry } from '#manual-evaluator.js';
 import type * as SmlibModule from '@classcad/smlibwasm';
 import type { GeometrySvg, KernelIssue, RuntimeSpanTracer, TessellationReport } from '@taucad/runtime/types';
 import {
@@ -11,6 +12,7 @@ import type { GlbMaterial } from '@taucad/geometry-core';
 
 import type { ShapeConfig, SmlibShape } from '#model.js';
 import type { GeometrySmlib } from '#smlib.types.js';
+import type { ManualShapeInfo } from '#manual-evaluator.js';
 import { normalizeColor } from '#utils/normalize-color.js';
 import { projectSurfaceCoordinates } from '#utils/surface-coordinates.js';
 
@@ -30,7 +32,12 @@ type RenderOptions = {
 export type InputShape = { [Key in keyof ShapeConfig]: ShapeConfig[Key] };
 
 /** An input shape whose display name has been resolved and de-duplicated. @public */
-export type NamedInputShape = InputShape & { name: string };
+export type NamedInputShape = InputShape & {
+  name: string;
+  /** Original explicit name, before display de-duplication; absence disables stable manual targeting. */
+  manualTargetName?: string;
+  manual?: ManualShapeInfo;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -153,7 +160,8 @@ export function normalizeRenderShapes(library: SmlibLibrary, output: unknown, de
       resolveShapeName({ index, name: config.name ?? ownName(config.shape) ?? defaultName, source: 'authored' }),
       usedNames,
     );
-    return { ...normalized, name };
+    const manualTargetName = config.name ?? ownName(config.shape);
+    return { ...normalized, name, ...(manualTargetName ? { manualTargetName } : {}) };
   });
 }
 
@@ -467,6 +475,7 @@ function emptyGeometry(config: NamedInputShape): GeometrySmlib {
   return {
     format: 'smlib',
     ...(physical ? { physical } : {}),
+    ...(config.manual ? { manual: config.manual } : {}),
     name,
     color,
     opacity,
@@ -499,6 +508,7 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
     collectBrepEdges,
   };
 
+  const faceMapping = { trusted: false };
   withSpan({ tracer, name: 'smlib.tessellate.faces', attributes: { ...attributes, output: 'faces' } }, () => {
     if (shape instanceof library.Mesh) {
       appendFaceMesh(geometry.faces, shape, 0);
@@ -513,6 +523,7 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
         library.tessellate(face, tessellation.linearTolerance, tessellation.angularTolerance),
       );
       if (countOpenEdges(faceMeshes) < countOpenEdges([mesh])) {
+        faceMapping.trusted = true;
         for (const [faceId, faceMesh] of faceMeshes.entries()) {
           appendFaceMesh(geometry.faces, faceMesh, faceId);
         }
@@ -529,10 +540,21 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
       appendFaceMesh(geometry.faces, mesh, 0);
       return;
     }
+    faceMapping.trusted = true;
     for (const run of runs) {
       appendFaceMesh(geometry.faces, sliceFaceMesh(mesh, run), run.faceId);
     }
   });
+
+  if (faceMapping.trusted && config.manual && shape instanceof library.Part) {
+    geometry.manualFaces = [...shape.faces()].flatMap((face, index): NonNullable<GeometrySmlib['manualFaces']> => {
+      if (!face.isPlanar) {
+        return [];
+      }
+      const descriptor = manualFaceGeometry(face);
+      return [{ index, isPlanar: true, center: descriptor.center, normal: descriptor.normal, geometry: descriptor }];
+    });
+  }
 
   if (needsSurfaceCoordinates(config.material) && geometry.faces.triangles.length > 0) {
     const projected = projectSurfaceCoordinates({

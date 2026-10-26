@@ -19,7 +19,7 @@ describe('@taucad/smlib', () => {
     expect(importedPlugin).toBe(plugin);
     const { capabilities } = plugin();
     expect(capabilities.kernels.map(({ id }) => id)).toEqual(['smlib']);
-    expect(capabilities.middleware.map(({ id }) => id)).toEqual([]);
+    expect(capabilities.middleware.map(({ id }) => id)).toEqual(['smlibManualSidecar']);
     expect(capabilities.bundlers.map(({ id }) => id)).toEqual([]);
     expect(capabilities.transcoders.map(({ id }) => id)).toEqual([]);
     expect(capabilities.jobs.map(({ id }) => id)).toEqual([]);

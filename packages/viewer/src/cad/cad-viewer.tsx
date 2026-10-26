@@ -1,3 +1,4 @@
+import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import { memo } from 'react';
 import type { CanvasProps } from '@react-three/fiber';
 import { asKnownArtifact } from '@taucad/runtime';
@@ -18,6 +19,7 @@ type CadViewerCanvasEventProperties = Pick<CanvasProps, 'eventSource' | 'eventPr
 type CadViewerProperties = Omit<ThreeViewerProperties, 'graphicsBackend'> &
   CadViewerCanvasEventProperties & {
     readonly artifact?: Artifact;
+    readonly planarFaceTool?: PlanarFaceTool;
     readonly artifactHash?: string;
     readonly sourceFile?: string;
     readonly enableSurfaces?: boolean;
@@ -36,6 +38,7 @@ type CadViewerProperties = Omit<ThreeViewerProperties, 'graphicsBackend'> &
 export const CadViewer = memo(
   ({
     artifact,
+    planarFaceTool,
     artifactHash,
     sourceFile,
     enableSurfaces = true,
@@ -60,6 +63,7 @@ export const CadViewer = memo(
       scene = (
         <GltfMesh
           gltfFile={known.content}
+          planarFaceTool={planarFaceTool}
           sourceFile={sourceFile}
           geometryHash={artifactHash}
           presentationRevision={requestedGltfRevision}

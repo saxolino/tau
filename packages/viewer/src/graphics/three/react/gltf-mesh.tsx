@@ -1,3 +1,7 @@
+import type { ModelPickResult } from '#graphics/three/utils/model-gpu-pick.js';
+import { fromRenderPoint } from '@taucad/spatial';
+import { PlanarFaceControls } from '#graphics/three/react/planar-face-controls.jsx';
+import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import { installSectionClip, transferSectionClip } from '#graphics/three/materials/section-clip.js';
 import {
   createGltfSurfaceBatches,
@@ -332,6 +336,7 @@ export function restoreOriginalMaterials(scene: Group, saved: Map<number, Materi
 }
 
 type GltfMeshDisplayProperties = {
+  readonly planarFaceTool?: PlanarFaceTool;
   /**
    * The GLTF file to load.
    */
@@ -2038,6 +2043,7 @@ export function applyGltfEdgeThemeColor(scene: Group, edgeColor: number): void {
  */
 export function GltfMesh({
   gltfFile,
+  planarFaceTool,
   sourceFile,
   geometryHash,
   presentationRevision = 0,
@@ -2081,9 +2087,11 @@ export function GltfMesh({
   const unitId = presentation?.unitId ?? requestedUnitId;
   const sectionBarrierRef = useRef<GltfPresentationBarrier>(sectionView.isActive ? 'analysis-ready' : 'display-ready');
   const materialOptionsRef = useRef({ enableMatcap, matcapTint, enableLines });
-  const needsMeasurementFeatures = useGraphicsSelector(
+  const hasMeasurementDemand = useGraphicsSelector(
     (state) => state.context.isMeasureActive || state.context.measurements.some((measurement) => measurement.isPinned),
   );
+  const activePlanarFaceTool = componentManifest?.mechanism ? undefined : planarFaceTool;
+  const needsMeasurementFeatures = hasMeasurementDemand || activePlanarFaceTool !== undefined;
   const measurementDemandRef = useRef(needsMeasurementFeatures);
   useLayoutEffect(() => {
     measurementDemandRef.current = needsMeasurementFeatures;
@@ -2156,7 +2164,10 @@ export function GltfMesh({
       }
 
       // The GPU pick answers a pointer ray; another ray, or a renderer that cannot pick, asks the trees.
-      const gpu = modelPick.pick(raycaster);
+      // GPU ID/depth hits identify a piece but carry no triangle faceIndex. Native face
+      // editing requires the exact clipping-aware BVH hit; its pending result already
+      // replays the pointer after an off-thread tree becomes ready.
+      const gpu: ModelPickResult = activePlanarFaceTool ? { status: 'unavailable' } : modelPick.pick(raycaster);
       let hit: Intersection<Mesh> | undefined;
       let pending: boolean;
       if (gpu.status === 'unavailable') {
@@ -2194,7 +2205,7 @@ export function GltfMesh({
     return () => {
       scene.raycast = previousRaycast;
     };
-  }, [getModelPickableMeshes, graphicsActor, modelPick, renderFrame, scene]);
+  }, [activePlanarFaceTool, getModelPickableMeshes, graphicsActor, modelPick, renderFrame, scene]);
 
   const handleKinematicsPointerDown = useKinematicsViewer({
     unitId,
@@ -2624,6 +2635,33 @@ export function GltfMesh({
         return;
       }
       const graphicsContext = graphicsActor.getSnapshot().context;
+      if (
+        activePlanarFaceTool &&
+        !graphicsContext.suppressNextModelPointerClick &&
+        graphicsContext.modelPointerClickSuppressionReasons.length === 0 &&
+        !hasModelHitBlockingSceneUiHit(event.intersections)
+      ) {
+        const features = event.object.userData['measurementFeatures'] as GltfMeasurementFeatures | undefined;
+        const offset = event.faceIndex === undefined || event.faceIndex === null ? undefined : event.faceIndex * 3;
+        const face =
+          offset === undefined
+            ? undefined
+            : features?.faces?.find(
+                (candidate) => offset >= candidate.start && offset < candidate.start + candidate.count,
+              );
+        const faceId = face ? Number(face.id.slice('face:'.length)) : Number.NaN;
+        if (features && Number.isInteger(faceId) && presentation) {
+          event.stopPropagation();
+          const point = fromRenderPoint({ renderFrame, point: [event.point.x, event.point.y, event.point.z] });
+          activePlanarFaceTool.onPick({
+            componentId: features.componentId,
+            faceId,
+            point,
+            artifactKey: presentation.key,
+          });
+          return;
+        }
+      }
       const clickAction = resolveModelPointerClickAction({
         intersections: event.intersections,
         modelComponentId: getObjectComponentId(event.object),
@@ -2658,7 +2696,7 @@ export function GltfMesh({
         graphicsActor.send(dispatchEvent);
       }
     },
-    [graphicsActor, unitId],
+    [activePlanarFaceTool, graphicsActor, presentation, renderFrame, unitId],
   );
 
   const resolveContextMenuActionFromEvent = useCallback(
@@ -2780,16 +2818,19 @@ export function GltfMesh({
   }
 
   return (
-    <group matrix={assetMatrix} matrixAutoUpdate={false}>
-      <primitive
-        object={scene}
-        onPointerMove={handlePointerMove}
-        onPointerDown={handlePointerDown}
-        onPointerOut={handlePointerOut}
-        onClick={handleClick}
-        onContextMenu={handleContextMenu}
-        onPointerMissed={handlePointerMissed}
-      />
-    </group>
+    <>
+      {activePlanarFaceTool ? <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} /> : null}
+      <group matrix={assetMatrix} matrixAutoUpdate={false}>
+        <primitive
+          object={scene}
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          onPointerOut={handlePointerOut}
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+          onPointerMissed={handlePointerMissed}
+        />
+      </group>
+    </>
   );
 }

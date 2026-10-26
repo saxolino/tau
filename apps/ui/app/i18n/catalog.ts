@@ -16,6 +16,7 @@ import { versionsMessages } from '#i18n/messages/versions.js';
 import { sinopiaImagesMessages } from '#i18n/messages/sinopia-images.js';
 import { sinopiaSendMessages } from '#i18n/messages/sinopia-send.js';
 import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
+import { manualEditMessages } from '#i18n/messages/manual-edit.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -40,6 +41,7 @@ export const areas = {
   sinopiaImages: sinopiaImagesMessages,
   sinopiaSend: sinopiaSendMessages,
   sinopiaSync: sinopiaSyncMessages,
+  manualEdit: manualEditMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

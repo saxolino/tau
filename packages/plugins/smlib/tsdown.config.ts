@@ -2,7 +2,7 @@ import { defineConfig } from 'tsdown';
 import type { UserConfig } from 'tsdown';
 
 const baseConfig: UserConfig = {
-  entry: ['src/index.ts', 'src/model.ts'],
+  entry: ['src/index.ts', 'src/model.ts', 'src/manual-operations.ts'],
   sourcemap: false,
   clean: true,
   dts: true,

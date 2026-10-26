@@ -4,3 +4,5 @@ export { smlib, smlib as plugin } from '#smlib.plugin.js';
 
 export { smlibKernel } from '#smlib.kernel.js';
 export type { SmlibOptions } from '#smlib.kernel.js';
+
+export { smlibManualSidecar } from '#smlib-manual.middleware.js';

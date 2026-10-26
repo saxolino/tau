@@ -31,6 +31,7 @@ const workerUrlPlugin = {
 const baseConfig: UserConfig = {
   entry: [
     'src/cad/cad-viewer.tsx',
+    'src/graphics/three/react/planar-face-tool.ts',
     'src/cad/fit-view-control.tsx',
     'src/cad/fullscreen-view-control.tsx',
     'src/cad/grid-control.tsx',

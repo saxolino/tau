@@ -121,7 +121,8 @@
     "./parameters/rjsf-validator": "./src/parameters/rjsf-validator.ts",
     "./services/graphics-camera-registry": "./src/services/graphics-camera-registry.ts",
     "./utils/inspect-glb": "./src/utils/inspect-glb.ts",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cad/planar-face-tool": "./src/graphics/three/react/planar-face-tool.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -556,7 +557,12 @@
         "import": "./dist/utils/inspect-glb.mjs",
         "default": "./dist/utils/inspect-glb.mjs"
       },
-      "./package.json": "./package.json"
+      "./package.json": "./package.json",
+      "./cad/planar-face-tool": {
+        "types": "./dist/graphics/three/react/planar-face-tool.d.mts",
+        "import": "./dist/graphics/three/react/planar-face-tool.mjs",
+        "default": "./dist/graphics/three/react/planar-face-tool.mjs"
+      }
     },
     "imports": {}
   },

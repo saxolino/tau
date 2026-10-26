@@ -1,4 +1,6 @@
+import type { ManualFaceInfo } from '#manual-operations.js';
 import type { GlbMaterial } from '@taucad/geometry-core';
+import type { ManualShapeInfo } from '#manual-evaluator.js';
 
 /**
  * Tessellated 3D geometry produced by the SMLib kernel: an indexed triangle mesh grouped by B-rep
@@ -6,6 +8,10 @@ import type { GlbMaterial } from '@taucad/geometry-core';
  */
 export type GeometrySmlib = {
   format: 'smlib';
+  /** Manual history and an exact-state guard for picked edges. */
+  manual?: ManualShapeInfo;
+  /** Native planar face descriptors, only when tessellation retained a trusted face mapping. */
+  manualFaces?: Array<Omit<ManualFaceInfo, 'faceId'>>;
   /** Exact solid volume (mm³) and authored density (g/cm³), never mesh-derived estimates. */
   physical?: { volumeMm3: number; density: number; massGrams: number };
   faces: {

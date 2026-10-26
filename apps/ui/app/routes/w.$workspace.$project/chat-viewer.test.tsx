@@ -206,6 +206,21 @@ function createModelInteractionContext(): ModelInteractionContext {
   };
 }
 
+/** The project and its graphics pane share the same model interaction owner. */
+let mockModelInteractionSnapshot: { context: ModelInteractionContext } | undefined;
+let mockModelInteractionSnapshotKey: string | undefined;
+const mockModelInteractionActor = {
+  getSnapshot: () => {
+    const key = JSON.stringify([mockHoveredComponentId, mockPreviewEnabled]);
+    if (!mockModelInteractionSnapshot || key !== mockModelInteractionSnapshotKey) {
+      mockModelInteractionSnapshot = { context: createModelInteractionContext() };
+      mockModelInteractionSnapshotKey = key;
+    }
+    return mockModelInteractionSnapshot;
+  },
+  subscribe: () => ({ unsubscribe: () => undefined }),
+};
+
 type MockCadActorOptions = {
   readonly rendering?: Rendering;
   readonly latestRenderingOutcome?: 'success' | 'failure';
@@ -311,10 +326,7 @@ const mockGraphicsActor = {
       units: undefined,
       // The shared part menu reads the presented unit and its interaction state from the actor itself.
       modelInteractionUnitId: helperUnitId,
-      modelInteractionRef: {
-        getSnapshot: () => ({ context: createModelInteractionContext() }),
-        subscribe: () => ({ unsubscribe: () => undefined }),
-      },
+      modelInteractionRef: mockModelInteractionActor,
       artifactKey: mockGraphicsProjection.artifactKey,
     },
   })),
@@ -327,6 +339,7 @@ const mockViewGraphics = new Map([['view-1', mockGraphicsActor]]);
 
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({
+    modelInteractionRef: mockModelInteractionActor,
     projectRef: {
       getSnapshot: vi.fn(() => ({ context: {} })),
       subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })),
@@ -361,6 +374,9 @@ vi.mock('#hooks/use-project.js', () => ({
     mainEntryPath: mockMainEntryPath,
   }),
 }));
+
+// These baseline viewers use non-SMLib sources; the disabled authoring hook has no file authority to open.
+vi.mock('#hooks/use-file-manager.js', () => ({ useOptionalFileManager: () => undefined }));
 
 vi.mock('#providers/part-thumbnail-provider.js', () => ({
   useOptionalPartThumbnailService: () => mockPreviewService,
@@ -614,6 +630,8 @@ describe('ChatViewer reopen-renderer overlay', () => {
     mockSyncListeners.clear();
     mockUnitSettings = {};
     mockHoveredComponentId = undefined;
+    mockModelInteractionSnapshot = undefined;
+    mockModelInteractionSnapshotKey = undefined;
     mockPreviewService = undefined;
     mockPreviewEnabled = false;
     mockCanonicalPartPreviews.mockReset();

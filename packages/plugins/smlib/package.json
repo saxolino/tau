@@ -43,7 +43,8 @@
     },
     "./agent/*": "./agent/*",
     "./package.json": "./package.json",
-    "./model": "./src/model.ts"
+    "./model": "./src/model.ts",
+    "./manual-operations": "./src/manual-operations.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -63,6 +64,11 @@
         "types": "./dist/model.d.mts",
         "import": "./dist/model.mjs",
         "default": "./dist/model.mjs"
+      },
+      "./manual-operations": {
+        "types": "./dist/manual-operations.d.mts",
+        "import": "./dist/manual-operations.mjs",
+        "default": "./dist/manual-operations.mjs"
       }
     },
     "imports": {}

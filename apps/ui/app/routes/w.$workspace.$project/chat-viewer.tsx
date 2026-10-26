@@ -3,6 +3,12 @@ import { useProjectAvailability } from '#hooks/use-project-availability.js';
 import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
 import { interactiveViewContent } from '#lib/interactive-view-content.js';
 import type { AppCapabilitiesManifest } from '#types/runtime-client.alias.js';
+import { useSelector } from '@xstate/react';
+import { useManualEdits } from '#hooks/use-manual-edits.js';
+import { useManualFaceTool } from '#hooks/use-manual-face-tool.js';
+import { matchesManualSidecarRevision } from '#services/manual-face-draft.js';
+import { ManualEditPanel } from '#routes/w.$workspace.$project/manual-edit-panel.js';
+import { useTranslation } from '#i18n/translate.js';
 import { memo, useEffect, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { FileEntry } from '@taucad/types';
 import { asKnownArtifact } from '@taucad/runtime';
@@ -510,7 +516,24 @@ const ViewerContent = memo(function ({
   readonly entryPath: string;
   readonly profile: 'editor' | 'shared';
 }): React.JSX.Element {
-  const { projectRef, entriesRecord, viewRecords } = useProject();
+  const { projectRef, entriesRecord, viewRecords, modelInteractionRef } = useProject();
+  const { t } = useTranslation();
+  const [isManualEditOpen, setIsManualEditOpen] = useState(false);
+  const manualManifest = useSelector(
+    modelInteractionRef,
+    (state) => state.context.unitsById[deriveModelInteractionUnitId({ sourceFile: entryPath })]?.manifest,
+  );
+  const manualTargets = useMemo(
+    () => [
+      ...new Set(
+        Object.values(manualManifest?.nodesById ?? {}).flatMap((node) => {
+          const name = node.extras?.['manualTargetName'];
+          return typeof name === 'string' && name.length > 0 ? [name] : [];
+        }),
+      ),
+    ],
+    [manualManifest],
+  );
   const viewCommands = useWorkbenchViewCommands();
   const cadRef = useCad();
   const evaluation = useCadSelector(selectCadEvaluation, undefined);
@@ -518,6 +541,8 @@ const ViewerContent = memo(function ({
   const runtimeDocument = useCadSelector(selectCadDocument, undefined);
   const capabilities = useCadSelector(selectCadCapabilities, undefined);
   const kernelId = useCadSelector(selectCadActiveKernelId, undefined);
+  const manualEdits = useManualEdits(entryPath, profile === 'editor' && kernelId === 'smlib');
+  const isCadLoading = useCadSelector(selectIsCadLoading, false);
   const savedView = viewRecords.get(viewId);
   const selectedKernelView = savedView?.selectedKernelView;
   const offeredViewId = selectedKernelView ?? (evaluation?.success ? evaluation.views[0]?.id : undefined);
@@ -653,6 +678,33 @@ const ViewerContent = memo(function ({
   const presentedArtifactKey = useGraphicsSelector((state) => state.context.artifactKey);
   const presentedSourceFile = useGraphicsSelector((state) => state.context.artifactSourceFile);
   const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation.presentedKey);
+  const gltfPresentation = useGraphicsSelector((state) => state.context.gltfPresentation);
+  const faceReady =
+    profile === 'editor' &&
+    kernelId === 'smlib' &&
+    !isCadLoading &&
+    !failureIssues?.length &&
+    !unavailable &&
+    evaluation?.success === true &&
+    !evaluation.transient &&
+    rendering?.success === true &&
+    !rendering.transient &&
+    rendering.evaluationId === evaluation.id &&
+    rendering.hash === presentedArtifactKey &&
+    presentedSourceFile === entryPath &&
+    gltfPresentation.phase === 'presented' &&
+    gltfPresentation.requestedRevision === gltfPresentation.presentedRevision &&
+    gltfPresentation.presentedKey === rendering.hash &&
+    matchesManualSidecarRevision(manualEdits.contentDigest, rendering.sourceRevision, entryPath);
+  const faceTool = useManualFaceTool({
+    edits: manualEdits,
+    manifest: manualManifest,
+    runtimeDocument,
+    renderStamp: rendering?.success ? `${rendering.evaluationId}:${rendering.requestId}:${rendering.hash}` : undefined,
+    artifactKey: presentedKey,
+    ready: faceReady,
+    open: isManualEditOpen,
+  });
   const viewerActionMenuData = partMenu.openMenuData;
   const viewerPart =
     viewerActionMenuData?.node.kind === 'part' && viewerActionMenuData.node.primitiveRefs?.length
@@ -769,144 +821,186 @@ const ViewerContent = memo(function ({
   }, [closePartMenu, isGeometryUnitClosed]);
 
   return (
-    <ViewerStage
-      graphicsRef={graphicsActor}
-      regionId={`viewport-gizmo-container-${viewId}`}
-      data-testid='chat-viewer-layout'
-      partMenu={partMenu}
-      decoratePartMenu={decoratePartMenu}
-      isModelShown={!isGeometryUnitClosed && Boolean(artifact && presentedArtifact)}
-      status={overlayFailureMessage ? { kind: 'failed', message: overlayFailureMessage } : undefined}
-      statusExtra={
-        <>
-          <ChatViewerStatus />
-          {unavailable && profile !== 'editor' ? (
-            <div role='alert' className='rounded-md border border-border bg-background/95 p-3 text-sm shadow-sm'>
-              <p>{unavailable}</p>
-              <Button size='sm' variant='outline' className='mt-2' onClick={restoreDefaultView}>
-                Use default view
-              </Button>
-            </div>
-          ) : null}
-        </>
-      }
-      onKeyDown={(event) => {
-        if (
-          event.altKey ||
-          event.ctrlKey ||
-          event.metaKey ||
-          event.nativeEvent.isComposing ||
-          evaluation?.success !== true ||
-          evaluation.views.length < 2
-        ) {
-          return;
-        }
-        const { target } = event;
-        if (
-          !(target instanceof HTMLElement) ||
-          target.isContentEditable ||
-          target.closest('input, textarea, select, [contenteditable], [role="textbox"], .monaco-editor')
-        ) {
-          return;
-        }
-        const index = Number(event.key) - 1;
-        const next = Number.isInteger(index) && index >= 0 && index < 3 ? evaluation.views[index] : undefined;
-        if (!next) {
-          return;
-        }
-        event.preventDefault();
-        setLocalInstanceChoice(viewId, undefined);
-        void viewCommands.edit(viewId, (current) => ({
-          ...(current ?? newViewRecord(entryPath)),
-          selectedKernelView: next.id,
-        }));
-      }}
-      renderCanvas={({ eventSource, gizmoContainer, onComponentSecondaryPointerCandidate }) =>
-        isGeometryUnitClosed ? null : (
-          <CadViewer
-            enableZoom
-            enablePan
-            secondaryMouseButtonMode='camera-pan'
-            enableGizmo={enableGizmo}
-            enableGrid={enableGrid}
-            enableAxes={enableAxes}
-            enableSurfaces={enableSurfaces}
-            enableLines={enableLines}
-            enableMatcap={enableMatcap}
-            upDirection={upDirection}
-            artifact={artifact ? presentedArtifact : undefined}
-            artifactHash={presentedArtifactKey}
-            sourceFile={presentedSourceFile}
-            // Keep R3F on default offsetX/Y compute; eventPrefix='client'
-            // is window-relative and mis-rays docked panels.
-            eventSource={eventSource}
-            gizmoContainer={gizmoContainer}
-            onModelComponentSecondaryPointerCandidate={onComponentSecondaryPointerCandidate}
-          />
-        )
-      }
-      /* Bottom controls: the bar is centred on the last line and grows upward as tools start. In the editor it starts
+    <div className='@container/manual-viewer h-full min-h-0 min-w-0'>
+      <div className='flex h-full min-h-0 min-w-0 flex-col @2xl/manual-viewer:flex-row'>
+        <ViewerStage
+          className='min-h-0 min-w-0 flex-1'
+          graphicsRef={graphicsActor}
+          regionId={`viewport-gizmo-container-${viewId}`}
+          data-testid='chat-viewer-layout'
+          partMenu={partMenu}
+          decoratePartMenu={decoratePartMenu}
+          isModelShown={!isGeometryUnitClosed && Boolean(artifact && presentedArtifact)}
+          status={overlayFailureMessage ? { kind: 'failed', message: overlayFailureMessage } : undefined}
+          statusExtra={
+            <>
+              <ChatViewerStatus />
+              {unavailable && profile !== 'editor' ? (
+                <div role='alert' className='rounded-md border border-border bg-background/95 p-3 text-sm shadow-sm'>
+                  <p>{unavailable}</p>
+                  <Button size='sm' variant='outline' className='mt-2' onClick={restoreDefaultView}>
+                    Use default view
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          }
+          onKeyDown={(event) => {
+            if (
+              event.altKey ||
+              event.ctrlKey ||
+              event.metaKey ||
+              event.nativeEvent.isComposing ||
+              evaluation?.success !== true ||
+              evaluation.views.length < 2
+            ) {
+              return;
+            }
+            const { target } = event;
+            if (
+              !(target instanceof HTMLElement) ||
+              target.isContentEditable ||
+              target.closest('input, textarea, select, [contenteditable], [role="textbox"], .monaco-editor')
+            ) {
+              return;
+            }
+            const index = Number(event.key) - 1;
+            const next = Number.isInteger(index) && index >= 0 && index < 3 ? evaluation.views[index] : undefined;
+            if (!next) {
+              return;
+            }
+            event.preventDefault();
+            setLocalInstanceChoice(viewId, undefined);
+            void viewCommands.edit(viewId, (current) => ({
+              ...(current ?? newViewRecord(entryPath)),
+              selectedKernelView: next.id,
+            }));
+          }}
+          renderCanvas={({ eventSource, gizmoContainer, onComponentSecondaryPointerCandidate }) =>
+            isGeometryUnitClosed ? null : (
+              <CadViewer
+                planarFaceTool={faceTool.tool}
+                enableZoom
+                enablePan
+                secondaryMouseButtonMode='camera-pan'
+                enableGizmo={enableGizmo}
+                enableGrid={enableGrid}
+                enableAxes={enableAxes}
+                enableSurfaces={enableSurfaces}
+                enableLines={enableLines}
+                enableMatcap={enableMatcap}
+                upDirection={upDirection}
+                artifact={artifact ? presentedArtifact : undefined}
+                artifactHash={presentedArtifactKey}
+                sourceFile={presentedSourceFile}
+                // Keep R3F on default offsetX/Y compute; eventPrefix='client'
+                // is window-relative and mis-rays docked panels.
+                eventSource={eventSource}
+                gizmoContainer={gizmoContainer}
+                onModelComponentSecondaryPointerCandidate={onComponentSecondaryPointerCandidate}
+              />
+            )
+          }
+          /* Bottom controls: the bar is centred on the last line and grows upward as tools start. In the editor it starts
          with the view menus and the build status, and the issues list unfolds above its controls. The AR button
          (mobile iOS only) has the line above it, so the bar never covers it. In a pane narrower than the bar, the
          bar starts at the left edge, keeping the grid readout and Section in view. */
-      controls={
-        <>
-          <div className='flex w-full items-end gap-2 [&>*]:pointer-events-auto'>
-            <ArButton artifact={artifact} runtimeDocument={runtimeDocument} className='ml-auto shrink-0' />
-          </div>
-          {profile === 'editor' ? (
-            <ViewerIssues
-              entryPath={entryPath}
-              notice={
-                unavailable
-                  ? { message: unavailable, actionLabel: 'Use default view', onAct: restoreDefaultView }
-                  : undefined
-              }
-            >
-              {({ segment, list }) => (
-                <ChatViewerControls
-                  captureRendering={captureRendering}
-                  kernelSettings={
-                    cadRef ? (
-                      <ViewerKernelSettings viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
-                    ) : undefined
+          controls={
+            <>
+              <div className='flex w-full items-end gap-2 [&>*]:pointer-events-auto'>
+                <ArButton artifact={artifact} runtimeDocument={runtimeDocument} className='ml-auto shrink-0' />
+              </div>
+              {profile === 'editor' ? (
+                <ViewerIssues
+                  entryPath={entryPath}
+                  notice={
+                    unavailable
+                      ? { message: unavailable, actionLabel: 'Use default view', onAct: restoreDefaultView }
+                      : undefined
                   }
-                  leading={
-                    <>
-                      {cadRef ? (
-                        <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
-                      ) : null}
-                      {segment}
-                    </>
-                  }
-                  aboveControls={list}
-                />
+                >
+                  {({ segment, list }) => (
+                    <ChatViewerControls
+                      captureRendering={captureRendering}
+                      kernelSettings={
+                        cadRef ? (
+                          <ViewerKernelSettings viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
+                        ) : undefined
+                      }
+                      leading={
+                        <>
+                          {cadRef ? (
+                            <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
+                          ) : null}
+                          {kernelId === 'smlib' ? (
+                            <Button
+                              size='sm'
+                              variant={isManualEditOpen ? 'secondary' : 'ghost'}
+                              aria-pressed={isManualEditOpen}
+                              onClick={() => {
+                                setIsManualEditOpen((open) => !open);
+                              }}
+                            >
+                              {t('manualEdit.title')}
+                            </Button>
+                          ) : null}
+                          {segment}
+                        </>
+                      }
+                      aboveControls={list}
+                    />
+                  )}
+                </ViewerIssues>
+              ) : (
+                <ChatViewerControls shouldEnableCapture={false} captureRendering={captureRendering} />
               )}
-            </ViewerIssues>
-          ) : (
-            <ChatViewerControls shouldEnableCapture={false} captureRendering={captureRendering} />
+            </>
+          }
+        >
+          <SelectedPieceChip entryPath={entryPath} location='viewer' />
+          {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
+          {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
+          {isGeometryUnitClosed && (
+            <div className='pointer-events-none absolute inset-0 z-20 flex items-center justify-center'>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                className='pointer-events-auto shadow-lg'
+                onClick={handleReopenRenderer}
+              >
+                <PlayCircle />
+                Reopen renderer
+              </Button>
+            </div>
           )}
-        </>
-      }
-    >
-      <SelectedPieceChip entryPath={entryPath} location='viewer' />
-      {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
-      {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
-      {isGeometryUnitClosed && (
-        <div className='pointer-events-none absolute inset-0 z-20 flex items-center justify-center'>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            className='pointer-events-auto shadow-lg'
-            onClick={handleReopenRenderer}
+        </ViewerStage>
+        {profile === 'editor' && kernelId === 'smlib' ? (
+          <div
+            hidden={!isManualEditOpen}
+            className='h-1/2 min-h-0 shrink-0 @2xl/manual-viewer:h-full @2xl/manual-viewer:w-80'
           >
-            <PlayCircle />
-            Reopen renderer
-          </Button>
-        </div>
-      )}
-    </ViewerStage>
+            <ManualEditPanel
+              key={entryPath}
+              document={manualEdits.document}
+              targets={manualTargets}
+              onCommit={manualEdits.commit}
+              onUndo={manualEdits.undo}
+              onRedo={manualEdits.redo}
+              canUndo={manualEdits.canUndo}
+              canRedo={manualEdits.canRedo}
+              isLoading={manualEdits.loading}
+              isSaving={manualEdits.saving}
+              error={manualEdits.error}
+              faceControls={faceTool.controls}
+              onClose={() => {
+                setIsManualEditOpen(false);
+              }}
+            />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 });
 

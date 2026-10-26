@@ -2,8 +2,16 @@
 /* oxlint-disable max-lines -- comprehensive kernel test suite */
 /* oxlint-disable @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matchers return any */
 /* eslint-disable @typescript-eslint/naming-convention -- File names use extensions like 'box.ts' */
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRuntimeClient } from '@taucad/runtime';
+import { fromNodeFs } from '@taucad/runtime/filesystem/node';
+import { inProcessTransport } from '@taucad/runtime/transport/in-process';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { z } from 'zod';
+import { manualFaceGeometrySchema } from '@taucad/smlib/manual-operations';
+import type { ManualOperation } from '@taucad/smlib/manual-operations';
 import { NodeIO } from '@gltf-transform/core';
 import { Window } from 'happy-dom';
 import type { RuntimeContentInput, TelemetryEntry } from '@taucad/runtime/types';
@@ -27,6 +35,7 @@ import {
 import { resolveRuntimePluginDefinition } from '@taucad/runtime/plugin';
 import { esbuildBundler } from '@taucad/esbuild';
 import { defineRuntime } from '@taucad/runtime/worker';
+import { smlib } from '#smlib.plugin.js';
 import { offersFor, smlibKernel } from '#smlib.kernel.js';
 import { normalizeRenderShapes } from '#utils/render-output.js';
 
@@ -42,7 +51,7 @@ type SmlibTestOptions = {
 
 const createSmlibRuntime = (options?: SmlibTestOptions) =>
   defineRuntime({
-    kernels: [smlibKernel(options?.workerOptions)],
+    plugins: [smlib(options?.workerOptions ? { kernels: { default: options.workerOptions } } : undefined)],
     bundlers: [esbuildBundler()],
   });
 
@@ -1692,6 +1701,11 @@ describe('serializeNativeHandle', () => {
       mechanism,
     } as unknown as SmlibSerializeInput;
 
+    handle.shapes[0]!.manual = {
+      targetName: 'Block',
+      bodySignature: 'geometry-witness',
+      operationIds: ['manual-move'],
+    };
     const { snapshot, restored } = await roundTrip(handle);
 
     expect(snapshot.shapes.map((shape) => shape.kind)).toEqual(['brep', 'mesh']);
@@ -1702,6 +1716,8 @@ describe('serializeNativeHandle', () => {
       roughness: 0.3,
     });
     expect(restored.shapes.map((entry) => entry.name)).toEqual(['Block', 'Tri']);
+    expect(restored.shapes[0]!.manual).toEqual(handle.shapes[0]!.manual);
+    expect(restored.shapes[0]!.manualTargetName).toBe('Block');
     const block = restored.shapes[0]?.shape;
     expect(block).toBeInstanceOf(library.Part);
     expect((block as InstanceType<typeof library.Part>).volume).toBeCloseTo(6000, 3);
@@ -1735,3 +1751,245 @@ describe('No kernel matched', () => {
 });
 
 /* eslint-enable @typescript-eslint/naming-convention -- End of file */
+
+describe('manual sidecar integration', () => {
+  const code = `import { Box } from '@classcad/smlibwasm'; export default function main() { return { shape: Box(10, 10, 10), name: 'piece' }; }`;
+  const sidecar = JSON.stringify({
+    version: 1,
+    operations: [{ id: 'move', type: 'translate', target: { name: 'piece' }, delta: [20, 0, 0] }],
+  });
+
+  it('evaluates the sidecar into the exported native STEP body', async () => {
+    const client = createClient({ 'main.ts': code, 'main.ts.manual.json': sidecar });
+    const rendering = await renderGeometry(client, {
+      file: createGeometryFile('main.ts'),
+      parameters: {},
+      content: { includeTopology: true },
+    });
+    assertRenderingSuccess(rendering);
+    const exported = await exportLastRender(client, 'step');
+    assertExportSuccess(exported);
+    const library = await import('@classcad/smlibwasm');
+    const restored = library.fromStep(exported.files[0].bytes);
+    expect(restored).toBeInstanceOf(library.Part);
+    if (!(restored instanceof library.Part)) {
+      throw new Error('Expected a STEP solid');
+    }
+    expect(restored.volume).toBeCloseTo(1000, 4);
+    expect(restored.bbox().min.x).toBeCloseTo(15, 4);
+    expect(restored.bbox().max.x).toBeCloseTo(25, 4);
+    const payload = await readTopologyPayload(extractGltfFromResult(rendering));
+    expect(JSON.stringify(payload)).toContain('manualTargetName');
+    expect(JSON.stringify(payload)).toContain('manualBodySignature');
+    expect(payload.components[0]?.sourceRefs).toMatchObject({
+      manualFaces: expect.arrayContaining([
+        expect.objectContaining({
+          faceId: expect.any(Number),
+          index: expect.any(Number),
+          isPlanar: true,
+          center: [expect.closeTo(20, 6), expect.closeTo(0, 6), expect.closeTo(5, 6)],
+          normal: [0, 0, 1],
+        }),
+      ]),
+    });
+  });
+
+  it('rejects a malformed sidecar without showing unedited source geometry', async () => {
+    const client = createClient({ 'main.ts': code, 'main.ts.manual.json': '{' });
+    const rendering = await renderGeometry(client, { file: createGeometryFile('main.ts'), parameters: {} });
+    assertRenderingFailure(rendering);
+  });
+});
+
+describe('manual dependency resolution', () => {
+  it.each([false, true])('snapshots an optional sidecar without warnings when its presence is %s', async (present) => {
+    const client = createClient({
+      'main.ts': `import { Box } from '@classcad/smlibwasm'; export default function main() { return { shape: Box(2, 2, 2), name: 'piece' }; }`,
+      ...(present ? { 'main.ts.manual.json': JSON.stringify({ version: 1, operations: [] }) } : {}),
+    });
+    const snapshot = await client.snapshotSource({ source: { path: 'main.ts' } });
+    expect(snapshot.success).toBe(true);
+    if (!snapshot.success) {
+      throw new Error('Expected source snapshot');
+    }
+    expect(snapshot.data.unresolvedPaths).toEqual([]);
+    expect(snapshot.issues).toEqual([]);
+    expect(snapshot.data.files.map(({ path }) => path)).toEqual(
+      present ? ['main.ts', 'main.ts.manual.json'] : ['main.ts'],
+    );
+  });
+});
+
+describe('manual sidecar live filesystem watch', () => {
+  it('automatically reevaluates one open document when manual history is created, modified and deleted', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'smlib-manual-watch-'));
+    const entry = `import { Box } from '@classcad/smlibwasm'; export default function main() { return { shape: Box(10, 10, 10), name: 'piece' }; }`;
+    await writeFile(join(directory, 'main.ts'), entry);
+    const client = createRuntimeClient({
+      transport: inProcessTransport({ runtime: createSmlibRuntime(), fileSystem: fromNodeFs(directory) }),
+    });
+    const document = client.open({ source: { path: 'main.ts' }, parameters: {} });
+    const view = document.view('model');
+    try {
+      const initial = await view.rendering();
+      expect(initial.superseded).toBe(false);
+      const library = await import('@classcad/smlibwasm');
+      const expectNativeBounds = async (minimumX: number): Promise<void> => {
+        const exported = await document.export('step');
+        if (!exported.success) {
+          throw new Error(exported.issues.map(({ message }) => message).join('; '));
+        }
+        assertExportSuccess(exported);
+        const restored = library.fromStep(exported.files[0].bytes);
+        if (!(restored instanceof library.Part)) {
+          throw new Error('Expected exact solid');
+        }
+        expect(restored.bbox().min.x).toBeCloseTo(minimumX, 5);
+        expect(restored.bbox().max.x).toBeCloseTo(minimumX + 10, 5);
+      };
+      const nextAutomaticRendering = async (minimumX: number): Promise<void> => {
+        let notification = Promise.withResolvers<void>();
+        const state = { timedOut: false };
+        const pending: Rendering[] = [];
+        const seen: number[] = [];
+        const timer = setTimeout(() => {
+          state.timedOut = true;
+          notification.resolve();
+        }, 5000);
+        const unsubscribe = view.on('rendered', (rendering) => {
+          pending.push(rendering);
+          notification.resolve();
+        });
+        try {
+          for (;;) {
+            // oxlint-disable-next-line no-await-in-loop -- wait for actual automatic renderer events in order.
+            await notification.promise;
+            notification = Promise.withResolvers<void>();
+            if (state.timedOut) {
+              throw new Error(`No automatic rendering at x=${minimumX}; received ${seen.join(', ')}`);
+            }
+            while (pending.length > 0) {
+              const rendering = pending.shift()!;
+              assertRenderingSuccess(rendering);
+              const bytes = extractGltfFromResult(rendering);
+              if (!bytes) {
+                throw new Error('Expected rendered GLB');
+              }
+              // oxlint-disable-next-line no-await-in-loop -- inspect each delivered artifact before accepting its bounds.
+              const evidence = await readCoordinateEvidence({ bytes });
+              const actual = Math.min(...evidence.flatMap(({ positions }) => positions.map(([x]) => x))) * 1000;
+              seen.push(actual);
+              if (Math.abs(actual - minimumX) < 1e-4) {
+                return;
+              }
+            }
+          }
+        } finally {
+          clearTimeout(timer);
+          unsubscribe();
+        }
+      };
+      const history = (x: number): string =>
+        JSON.stringify({
+          version: 1,
+          operations: [{ id: 'move', type: 'translate', target: { name: 'piece' }, delta: [x, 0, 0] }],
+        });
+      await expectNativeBounds(-5);
+      const created = nextAutomaticRendering(15);
+      await writeFile(join(directory, 'main.ts.manual.json'), history(20));
+      await created;
+      await expectNativeBounds(15);
+      const modified = nextAutomaticRendering(35);
+      await writeFile(join(directory, 'main.ts.manual.json'), history(40));
+      await modified;
+      await expectNativeBounds(35);
+      const deleted = nextAutomaticRendering(-5);
+      await unlink(join(directory, 'main.ts.manual.json'));
+      await deleted;
+      await expectNativeBounds(-5);
+    } finally {
+      view.close();
+      document.close();
+      await client.shutdown();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('actual plate chained face replay', () => {
+  it('replays hole, outward face extrusion and inward face cut on fresh native snapshots', async () => {
+    const code = await readFile(
+      new URL('../../../../libs/tau-examples/src/kernels/smlib/parametric-plate/main.ts', import.meta.url),
+      'utf8',
+    );
+    const hole: ManualOperation = {
+      id: 'hole-seven',
+      type: 'hole',
+      target: { name: 'Mounting plate' },
+      center: [0, 0, -10],
+      axis: [0, 0, 1],
+      diameter: 7,
+      depth: 20,
+    };
+    const metadataSchema = z.object({
+      manualBodySignature: z.string(),
+      manualReplayWitness: z.string(),
+      manualFaces: z.array(z.object({ index: z.number(), geometry: manualFaceGeometrySchema })),
+    });
+    const evaluate = async (operations: ManualOperation[]) => {
+      const client = createClient({
+        'main.ts': code,
+        'main.ts.manual.json': JSON.stringify({ version: 1, operations }),
+      });
+      const rendering = await renderGeometry(client, {
+        file: createGeometryFile('main.ts'),
+        parameters: { width: 64 },
+        content: { includeTopology: true },
+      });
+      assertRenderingSuccess(rendering);
+      const topology = await readTopologyPayload(extractGltfFromResult(rendering));
+      return { client, metadata: metadataSchema.parse(topology.components[0]!.sourceRefs) };
+    };
+    const selected = (metadata: z.infer<typeof metadataSchema>, distance: number, id: string): ManualOperation => {
+      const face = metadata.manualFaces.find(({ geometry }) => geometry.normal[2] > 0.9);
+      if (!face) {
+        throw new Error('Expected top planar face');
+      }
+      return {
+        id,
+        type: 'faceExtrude',
+        target: { name: 'Mounting plate' },
+        distance,
+        face: {
+          index: face.index,
+          bodySignature: metadata.manualBodySignature,
+          replayWitness: metadata.manualReplayWitness,
+          geometry: face.geometry,
+          point: [6, 5, face.geometry.center[2]],
+        },
+      };
+    };
+    const initial = await evaluate([hole]);
+    const push = selected(initial.metadata, 3, 'push-three');
+    const grown = await evaluate([hole, push]);
+    const pull = selected(grown.metadata, -1, 'pull-one');
+    let witness: string | undefined;
+    for (let iteration = 0; iteration < 3; iteration++) {
+      // oxlint-disable-next-line no-await-in-loop -- independent fresh clients expose Boolean serialization instability.
+      const final = await evaluate([hole, push, pull]);
+      witness ??= final.metadata.manualReplayWitness;
+      expect(final.metadata.manualReplayWitness).toBe(witness);
+      // oxlint-disable-next-line no-await-in-loop -- export the exact native snapshot corresponding to this replay.
+      const exported = await exportLastRender(final.client, 'step');
+      assertExportSuccess(exported);
+      // oxlint-disable-next-line no-await-in-loop -- use the same installed native library for exact STEP reimport.
+      const library = await import('@classcad/smlibwasm');
+      const body = library.fromStep(exported.files[0].bytes);
+      if (!(body instanceof library.Part)) {
+        throw new Error('Expected exact plate solid');
+      }
+      expect(body.isValid()).toBe(true);
+      expect(body.bbox().max.z).toBeCloseTo(10, 4);
+    }
+  });
+});

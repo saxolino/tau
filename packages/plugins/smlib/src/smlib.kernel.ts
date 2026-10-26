@@ -49,7 +49,10 @@ import {
 } from '@taucad/geometry-core';
 import type { GlbResources } from '@taucad/geometry-core';
 
-import type { ShapeConfig } from '#model.js';
+import { createManualReplaySource } from '#manual-replay.js';
+import { applyManualOperations } from '#manual-evaluator.js';
+import type { ManualDocument } from '#manual-operations.js';
+import { manualEntryPath, parseManualDocument } from '#manual-operations.js';
 import { smlibDetectPattern, smlibModuleName } from '#smlib.constants.js';
 import { smlibExportSchemas, smlibOptionsSchema, smlibRenderSchema } from '#smlib.schemas.js';
 import {
@@ -66,6 +69,7 @@ import type { DrawingEntry, NamedInputShape, SmlibLibrary } from '#utils/render-
 import { convertSmlibGeometriesToGltf } from '#utils/smlib-to-gltf.js';
 
 const kernelId = 'smlib';
+const kernelVersion = '1.3.0';
 
 /**
  * Live SMLib native handle: the shapes `main` returned, the model's GLB resources and the entry
@@ -80,7 +84,7 @@ type NativeHandle = GlbResources & {
   mechanism?: unknown;
 };
 
-type ShapeMetadata = Omit<ShapeConfig, 'shape'> & { name: string };
+type ShapeMetadata = Omit<NamedInputShape, 'shape'>;
 
 /** Structured-cloneable shape snapshot: exact B-rep in SMLib's lossless `.smb` text, or mesh arrays. */
 type SerializedShape =
@@ -245,7 +249,7 @@ export const smlibKernel = defineKernel({
     [smlibModuleName]: { name: smlibPackage.name, version: smlibPackage.version },
   },
   name: 'SmlibKernel',
-  version: '1.0.0',
+  version: kernelVersion,
   optionsSchema: smlibOptionsSchema,
   views: {
     model: {
@@ -302,7 +306,14 @@ export const smlibKernel = defineKernel({
   },
 
   async resolve({ entryPath }, runtime) {
-    return runtime.bundler.resolveDependencies(entryPath);
+    const dependencies = await runtime.bundler.resolveDependencies(entryPath);
+    const sidecar = manualEntryPath(entryPath);
+    return {
+      ...dependencies,
+      resolved: (await runtime.filesystem.exists(sidecar))
+        ? [...new Set([...dependencies.resolved, sidecar])]
+        : dependencies.resolved,
+    };
   },
 
   async describe({ entryPath }, runtime) {
@@ -398,11 +409,31 @@ export const smlibKernel = defineKernel({
           formatError: (error) => formatSmlibError(error, errorContext),
         });
 
-        const entries = normalizeRenderShapes(
+        const sourceEntries = normalizeRenderShapes(
           context.library,
           model ? modelShapes : shapes,
           extractDefaultName(executeResult.value),
         );
+        const sidecar = manualEntryPath(entryPath);
+        const document: ManualDocument = (await runtime.filesystem.exists(sidecar))
+          ? parseManualDocument(await runtime.filesystem.readFile(sidecar, 'utf8'))
+          : { version: 1, operations: [] };
+        const replaySource = await createManualReplaySource({
+          entryPath,
+          dependencies: bundleResult.dependencies,
+          unresolvedPaths: bundleResult.unresolvedPaths,
+          parameters,
+          kernelVersion,
+          libraryVersion: smlibPackage.version,
+          runtime,
+        });
+        const entries = await applyManualOperations({
+          library: context.library,
+          entries: sourceEntries,
+          document,
+          replaySource,
+        });
+        runtime.signal.throwIfAborted();
         const handle: NativeHandle = {
           shapes: entries.filter(({ shape }) => !isDrawingShape(context.library, shape)),
           drawings: entries

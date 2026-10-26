@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { readFile } from 'node:fs/promises';
+import { z } from 'zod';
+import { manualFaceGeometrySchema } from '@taucad/smlib/manual-operations';
+import type { ManualOperation } from '@taucad/smlib/manual-operations';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import initialize from 'libcascade/single/init';
 import type { OpenCascadeInstance } from 'libcascade/init';
@@ -402,5 +406,99 @@ describe('STL closure', () => {
     expect(isClosedStl(new TextEncoder().encode('not an STL'))).toBe(false);
     const facet = new TextDecoder().decode(openStl).split('solid Open\n')[1]!.split('endsolid')[0]!;
     expect(isClosedStl(new TextEncoder().encode(`solid Open\n${facet.repeat(3)}endsolid Open`))).toBe(false);
+  });
+});
+
+describe('independent STEP qualification of manual plate edits', () => {
+  it('preserves the existing fillet refusal while verifying hole and fractional face edits without that fillet', async () => {
+    const code = await readFile(
+      new URL('../../../../libs/tau-examples/src/kernels/smlib/parametric-plate/main.ts', import.meta.url),
+      'utf8',
+    );
+    const metadataSchema = z.object({
+      manualBodySignature: z.string(),
+      manualReplayWitness: z.string(),
+      manualFaces: z.array(z.object({ index: z.number(), geometry: manualFaceGeometrySchema })),
+    });
+    const productionRuntime = defineRuntime({ kernels: [smlibKernel()], bundlers: [esbuildBundler()] });
+    const evaluate = async (edgeRadius: number, operations: ManualOperation[]) => {
+      const runtimeClient = createTestRuntimeClient({
+        runtime: productionRuntime,
+        files: {
+          'main.ts': code,
+          'main.ts.manual.json': JSON.stringify({ version: 1, operations }),
+        },
+      });
+      const document = runtimeClient.open({
+        source: { path: 'main.ts' },
+        parameters: { width: 64, edgeRadius },
+        watch: false,
+      });
+      const view = document.view('model', { content: { includeTopology: true } });
+      try {
+        const rendered = await view.rendering();
+        if (rendered.superseded || !rendered.rendering.success) {
+          throw new Error('Expected production plate rendering');
+        }
+        const artifact = asKnownArtifact(rendered.rendering.artifact);
+        if (artifact?.mimeType !== 'model/gltf-binary') {
+          throw new Error('Expected production plate GLB');
+        }
+        const pieces = exportPieces(buildGltfComponentManifest(artifact.content));
+        const metadata = metadataSchema.parse(pieces[0]?.extras);
+        const exported = await document.export('step');
+        if (!exported.success) {
+          throw new Error('Expected exact plate STEP export');
+        }
+        return { bytes: exported.files[0].bytes, metadata };
+      } finally {
+        view.close();
+        document.close();
+        await runtimeClient.shutdown();
+      }
+    };
+    const names = ['Mounting plate'];
+    const existingFillet = await evaluate(1, []);
+    expect(occtChecks(existingFillet.bytes)).toEqual([{ standard: true, exact: false }]);
+    expect(checkStepExport(oc, { bytes: existingFillet.bytes, expectedNames: names })).toEqual({
+      status: 'needsFix',
+      problem: 'invalid',
+      pieces: names,
+    });
+    const hole: ManualOperation = {
+      id: 'hole-seven',
+      type: 'hole',
+      target: { name: names[0]! },
+      center: [0, 0, -10],
+      axis: [0, 0, 1],
+      diameter: 7,
+      depth: 20,
+    };
+    const drilled = await evaluate(0, [hole]);
+    const faceOperation = (metadata: z.infer<typeof metadataSchema>, distance: number, id: string): ManualOperation => {
+      const face = metadata.manualFaces.find(({ geometry }) => geometry.normal[2] > 0.9);
+      if (!face) {
+        throw new Error('Expected native top face');
+      }
+      return {
+        id,
+        type: 'faceExtrude',
+        target: { name: names[0]! },
+        distance,
+        face: {
+          index: face.index,
+          bodySignature: metadata.manualBodySignature,
+          replayWitness: metadata.manualReplayWitness,
+          geometry: face.geometry,
+          point: [6, 5, face.geometry.center[2]],
+        },
+      };
+    };
+    const push = faceOperation(drilled.metadata, 2.656510805040839, 'fractional-push');
+    const grown = await evaluate(0, [hole, push]);
+    const pull = faceOperation(grown.metadata, -1.2553900877316408, 'fractional-pull');
+    const final = await evaluate(0, [hole, push, pull]);
+    expect(inspectStep(oc, final.bytes)).toEqual([{ name: names[0], solids: 1, valid: true }]);
+    expect(checkStepExport(oc, { bytes: final.bytes, expectedNames: names })).toMatchObject({ status: 'verified' });
   });
 });
