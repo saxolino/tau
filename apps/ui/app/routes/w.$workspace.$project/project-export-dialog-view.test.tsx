@@ -29,6 +29,56 @@ const results: Record<ProjectExportFormat, PreparedExport> = {
 const capture = vi.fn(async (): Promise<PreparedExport> => ({ status: 'ready', files: [photo] }));
 
 describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
+  it('should explain that sketches stay in the project when mixed-model solids are exported', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        sketches='mixed'
+        prepare={async (format) => results[format]}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(t('export.sketchesExcluded'))).toBeInTheDocument();
+    expect(
+      await within(screen.getByRole('region', { name: 'STEP' })).findByText(t('export.verified')),
+    ).toBeInTheDocument();
+  });
+  it('should disable sketch-only 3D downloads with an extrusion reason while retaining the photo', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    const prepare = vi.fn(
+      async (format: ProjectExportFormat): Promise<PreparedExport> =>
+        format === 'png' ? results.png : { status: 'needsFix', problem: 'sketchOnly' },
+    );
+    render(
+      <ExportDialogView
+        name='Profilo'
+        pieces={[]}
+        sketches='only'
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      expect(prepare).toHaveBeenCalledTimes(4);
+    });
+    for (const format of ['STEP', 'STL', 'GLB']) {
+      const row = within(screen.getByRole('region', { name: format }));
+      expect(row.getByText(t('export.errors.sketchOnly'))).toBeInTheDocument();
+      expect(row.getByRole('button', { name: t('export.download', { format }) })).toBeDisabled();
+      expect(row.queryByText(t('export.errors.selection'))).not.toBeInTheDocument();
+    }
+    await user.click(screen.getByRole('button', { name: t('export.downloadPhoto') }));
+    expect(capture).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal));
+  });
   it('should show independent format states, download anyway and prepare an agent draft', async () => {
     setLanguage(language);
     const t = bindTranslate(language);

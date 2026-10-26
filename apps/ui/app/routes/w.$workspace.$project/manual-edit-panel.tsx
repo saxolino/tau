@@ -1,6 +1,6 @@
 import { randomUuid } from '@taucad/utils/id';
 import { useState } from 'react';
-import { manualDocumentSchema } from '@taucad/smlib/manual-operations';
+import { isManualProfileClosed, manualDocumentSchema } from '@taucad/smlib/manual-operations';
 import type { ManualDocument, ManualOperation } from '@taucad/smlib/manual-operations';
 import { Button } from '@taucad/ui/components/button';
 import { Input } from '@taucad/ui/components/input';
@@ -13,10 +13,11 @@ import {
   ManualVectorFields,
   manualPlanes,
 } from '#routes/w.$workspace.$project/manual-edit-fields.js';
+import { nextManualProfileName } from '#services/manual-profile-editor.js';
 import { ManualProfileEditor } from '#routes/w.$workspace.$project/manual-edit-profile.js';
 
 const toolTypes = ['extrude', 'translate', 'rotate', 'scale', 'mirror', 'hole', 'fillet', 'chamfer'] as const;
-type Tool = (typeof toolTypes)[number];
+type Tool = (typeof toolTypes)[number] | 'sketch';
 type Commit = (document: ManualDocument) => Promise<boolean>;
 type Draft = { base: ManualDocument; operation: ManualOperation; commit: Commit; isNew: boolean };
 type DirectMode = DirectEditTool['mode'];
@@ -54,24 +55,29 @@ function newOperation(type: Tool, targetName: string, name: string): ManualOpera
   const id = randomUuid();
   const target = { name: targetName };
   switch (type) {
+    case 'sketch':
     case 'extrude': {
+      const profile: Extract<ManualOperation, { type: 'extrude' }>['profile'] = {
+        kind: 'polygon',
+        plane: 'xy',
+        origin: [0, 0, 0],
+        points: [
+          { id: randomUuid(), x: -10, y: -10 },
+          { id: randomUuid(), x: 10, y: -10 },
+          { id: randomUuid(), x: 10, y: 10 },
+          { id: randomUuid(), x: -10, y: 10 },
+        ],
+      };
+      if (type === 'sketch') {
+        return { id, type, name, profile };
+      }
       return {
         id,
         type,
         mode: 'new',
         name,
         distance: 10,
-        profile: {
-          kind: 'polygon',
-          plane: 'xy',
-          origin: [0, 0, 0],
-          points: [
-            { id: randomUuid(), x: -10, y: -10 },
-            { id: randomUuid(), x: 10, y: -10 },
-            { id: randomUuid(), x: 10, y: 10 },
-            { id: randomUuid(), x: -10, y: 10 },
-          ],
-        },
+        profile,
       };
     }
     case 'translate': {
@@ -99,11 +105,13 @@ function newOperation(type: Tool, targetName: string, name: string): ManualOpera
 function OperationFields({
   operation,
   targets,
+  defaultName,
   onChange,
   t,
 }: Readonly<{
   operation: ManualOperation;
   targets: readonly string[];
+  defaultName: string;
   onChange: (operation: ManualOperation) => void;
   t: Translate;
 }>): React.JSX.Element {
@@ -115,10 +123,12 @@ function OperationFields({
   const targetChoice = (
     <ManualChoice
       label={t('manualEdit.target')}
-      value={operation.target?.name ?? ''}
+      value={operation.type === 'sketch' ? '' : (operation.target?.name ?? '')}
       choices={targets.map((name) => ({ value: name, label: name }))}
       onChange={(name) => {
-        onChange({ ...operation, target: { name } });
+        if (operation.type !== 'sketch') {
+          onChange({ ...operation, target: { name } });
+        }
       }}
     />
   );
@@ -307,32 +317,46 @@ function OperationFields({
           </>
         );
       }
+      case 'sketch':
       case 'extrude': {
+        const closed = isManualProfileClosed(operation.profile);
         return (
           <>
             <ManualChoice
               label={t('manualEdit.mode')}
-              value={operation.mode}
+              value={operation.type === 'sketch' ? 'sketch' : operation.mode}
               choices={[
-                { value: 'new', label: t('manualEdit.new') },
-                ...(targets.length > 0
+                { value: 'sketch', label: t('manualEdit.saveProfile') },
+                ...(closed
                   ? [
-                      { value: 'add', label: t('manualEdit.add') },
-                      { value: 'cut', label: t('manualEdit.cut') },
+                      { value: 'new', label: t('manualEdit.new') },
+                      ...(targets.length > 0
+                        ? [
+                            { value: 'add', label: t('manualEdit.add') },
+                            { value: 'cut', label: t('manualEdit.cut') },
+                          ]
+                        : []),
                     ]
                   : []),
               ]}
               onChange={(mode) => {
-                const { name: _name, target: _target, ...rest } = operation;
-                if (mode === 'new') {
-                  onChange({ ...rest, mode, name: t('manualEdit.newName') });
-                }
-                if (mode === 'add' || mode === 'cut') {
-                  onChange({ ...rest, mode, target: { name: targets[0] ?? '' } });
+                const common = { id: operation.id, enabled: operation.enabled, profile: operation.profile };
+                if (mode === 'sketch') {
+                  onChange({ ...common, type: 'sketch', name: operation.name ?? defaultName });
+                } else if (closed && (mode === 'new' || mode === 'add' || mode === 'cut')) {
+                  onChange({
+                    ...common,
+                    type: 'extrude',
+                    mode,
+                    distance: operation.type === 'extrude' ? operation.distance : 10,
+                    ...(mode === 'new'
+                      ? { name: operation.name ?? defaultName }
+                      : { target: { name: targets[0] ?? '' } }),
+                  });
                 }
               }}
             />
-            {operation.mode === 'new' ? (
+            {operation.type === 'sketch' || operation.mode === 'new' ? (
               <label className='block space-y-1 text-xs'>
                 {t('manualEdit.name')}
                 <Input
@@ -345,13 +369,15 @@ function OperationFields({
             ) : (
               targetChoice
             )}
-            <ManualNumberField
-              label={t('manualEdit.depth')}
-              value={operation.distance}
-              onChange={(distance) => {
-                onChange({ ...operation, distance });
-              }}
-            />
+            {operation.type === 'extrude' ? (
+              <ManualNumberField
+                label={t('manualEdit.depth')}
+                value={operation.distance}
+                onChange={(distance) => {
+                  onChange({ ...operation, distance });
+                }}
+              />
+            ) : null}
             <ManualChoice
               label={t('manualEdit.plane')}
               value={operation.profile.plane}
@@ -372,7 +398,17 @@ function OperationFields({
             <ManualProfileEditor
               profile={operation.profile}
               onChange={(profile) => {
-                onChange({ ...operation, profile });
+                if (operation.type === 'extrude' && !isManualProfileClosed(profile)) {
+                  onChange({
+                    id: operation.id,
+                    type: 'sketch',
+                    enabled: operation.enabled,
+                    name: operation.name ?? defaultName,
+                    profile,
+                  });
+                } else {
+                  onChange({ ...operation, profile });
+                }
               }}
             />
           </>
@@ -386,7 +422,7 @@ function OperationFields({
         <p className='text-xs text-muted-foreground'>
           {operation.target.name} · {t('manualEdit.guardedEdges')}
         </p>
-      ) : operation.type === 'extrude' || operation.type === 'faceExtrude' ? null : (
+      ) : operation.type === 'extrude' || operation.type === 'sketch' || operation.type === 'faceExtrude' ? null : (
         targetChoice
       )}
       {fields()}
@@ -427,6 +463,8 @@ export function ManualEditPanel({
   onClose,
   faceControls,
   directControls,
+  onShowProfiles,
+  onShowModel,
 }: Readonly<{
   document: ManualDocument | undefined;
   targets: readonly string[];
@@ -441,15 +479,28 @@ export function ManualEditPanel({
   onClose?: () => void;
   faceControls?: ManualFaceControls;
   directControls?: ManualDirectControls;
+  onShowProfiles?: () => void;
+  onShowModel?: () => void;
 }>): React.JSX.Element {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft>();
+  const [showAllTools, setShowAllTools] = useState(false);
   const [localError, setLocalError] = useState<string>();
   const [hasSaved, setHasSaved] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
   const busy = isLoading || isSaving || isCommitting;
   const stale = draft !== undefined && document !== draft.base;
   const choices = operationTargets(document, draft, targets);
+  const edgeMode = directControls?.mode === 'fillet' || directControls?.mode === 'chamfer';
+  const visibleTools = toolTypes.filter((type) => {
+    if (showAllTools || !directControls || type === 'extrude') {
+      return true;
+    }
+    if (faceControls?.enabled) {
+      return false;
+    }
+    return edgeMode ? type === 'fillet' || type === 'chamfer' : type !== 'fillet' && type !== 'chamfer';
+  });
   const startDraft = (operation: ManualOperation, isNew: boolean): void => {
     if (!document) {
       return;
@@ -521,6 +572,34 @@ export function ManualEditPanel({
         }}
       >
         <p className='text-xs text-muted-foreground'>{t('manualEdit.intro')}</p>
+        {onShowProfiles !== undefined || onShowModel !== undefined ? (
+          <div className='flex flex-wrap gap-1'>
+            {onShowProfiles ? (
+              <Button
+                size='xs'
+                variant='outline'
+                disabled={busy || Boolean(draft)}
+                onClick={() => {
+                  onShowProfiles();
+                }}
+              >
+                {t('manualEdit.showProfiles')}
+              </Button>
+            ) : null}
+            {onShowModel ? (
+              <Button
+                size='xs'
+                variant='outline'
+                disabled={busy || Boolean(draft)}
+                onClick={() => {
+                  onShowModel();
+                }}
+              >
+                {t('manualEdit.showModel')}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <div className='flex flex-wrap gap-1'>
           <Button
             size='xs'
@@ -559,8 +638,53 @@ export function ManualEditPanel({
           </p>
         ) : null}
         {choices.length === 0 ? <p className='text-xs text-muted-foreground'>{t('manualEdit.noTargets')}</p> : null}
+        {directControls && faceControls ? (
+          <section aria-label={t('manualEdit.selection')} className='space-y-2'>
+            <h3 className='text-xs font-medium'>{t('manualEdit.selection')}</h3>
+            <div className='flex flex-wrap gap-1'>
+              {(['body', 'face', 'edge'] as const).map((filter) => {
+                const edgeMode = directControls.mode === 'fillet' || directControls.mode === 'chamfer';
+                const active =
+                  filter === 'face'
+                    ? faceControls.enabled
+                    : filter === 'edge'
+                      ? edgeMode
+                      : Boolean(directControls.mode) && !edgeMode;
+                return (
+                  <Button
+                    key={filter}
+                    size='xs'
+                    variant={active ? 'secondary' : 'outline'}
+                    aria-pressed={active}
+                    disabled={busy || Boolean(draft) || !document}
+                    onClick={() => {
+                      if (active) {
+                        return;
+                      }
+                      if (filter === 'face') {
+                        directControls.onModeChange(undefined);
+                        faceControls.onEnableChange(true);
+                      } else {
+                        faceControls.onEnableChange(false);
+                        directControls.onModeChange(filter === 'edge' ? 'fillet' : 'translate');
+                      }
+                    }}
+                  >
+                    {t(`manualEdit.${filter}Filter`)}
+                  </Button>
+                );
+              })}
+            </div>
+            <p className='text-xs text-muted-foreground'>{t('manualEdit.selectionHelp')}</p>
+            {(faceControls.enabled ? faceControls.available : directControls.available) ? null : (
+              <p role='status' className='text-xs text-muted-foreground'>
+                {t('manualEdit.selectionUnavailable')}
+              </p>
+            )}
+          </section>
+        ) : null}
         <section aria-label={t('manualEdit.tools')} className='grid grid-cols-2 gap-1'>
-          {faceControls ? (
+          {faceControls && (showAllTools || faceControls.enabled || !directControls) ? (
             <Button
               size='sm'
               variant={faceControls.enabled ? 'secondary' : 'outline'}
@@ -568,13 +692,13 @@ export function ManualEditPanel({
               disabled={busy || Boolean(draft) || !document || !faceControls.available}
               onClick={() => {
                 directControls?.onModeChange(undefined);
-                faceControls.onEnableChange(!faceControls.enabled);
+                faceControls.onEnableChange(true);
               }}
             >
               {t('manualEdit.faceExtrude')}
             </Button>
           ) : null}
-          {toolTypes.map((type) => (
+          {visibleTools.map((type) => (
             <Button
               key={type}
               size='sm'
@@ -584,27 +708,36 @@ export function ManualEditPanel({
               onClick={() => {
                 if (directControls && isDirectMode(type)) {
                   faceControls?.onEnableChange(false);
-                  directControls.onModeChange(directControls.mode === type ? undefined : type);
+                  directControls.onModeChange(type);
                   return;
                 }
-                const names = new Set([
-                  ...targets,
-                  ...(document?.operations.flatMap((operation) =>
-                    operation.type === 'extrude' && operation.name ? [operation.name] : [],
-                  ) ?? []),
-                ]);
-                let count = 1;
-                let name = t('manualEdit.newName');
-                while (names.has(name)) {
-                  name = `${t('manualEdit.newName')} ${++count}`;
-                }
-                startDraft(newOperation(type, choices[0] ?? '', name), true);
+                const name = nextManualProfileName({ document, targets, defaultName: t('manualEdit.newName') });
+                startDraft(
+                  newOperation(
+                    type,
+                    directControls?.selected?.name ?? faceControls?.selected?.name ?? choices[0] ?? '',
+                    name,
+                  ),
+                  true,
+                );
               }}
             >
               {t(`manualEdit.${type}`)}
             </Button>
           ))}
         </section>
+        {directControls ? (
+          <Button
+            size='xs'
+            variant='ghost'
+            aria-pressed={showAllTools}
+            onClick={() => {
+              setShowAllTools(!showAllTools);
+            }}
+          >
+            {t(showAllTools ? 'manualEdit.contextTools' : 'manualEdit.allTools')}
+          </Button>
+        ) : null}
         {directControls?.mode && !draft ? (
           <section aria-label={t('manualEdit.directTool')} className='space-y-3 border-t border-border pt-3'>
             <p className='text-xs text-muted-foreground'>
@@ -734,6 +867,12 @@ export function ManualEditPanel({
                 key={draft.operation.id}
                 operation={draft.operation}
                 targets={choices}
+                defaultName={nextManualProfileName({
+                  document: draft.base,
+                  targets,
+                  defaultName: t('manualEdit.newName'),
+                  excludeId: draft.operation.id,
+                })}
                 t={t}
                 onChange={(operation) => {
                   setDraft({ ...draft, operation });
@@ -788,7 +927,9 @@ export function ManualEditPanel({
                   />
                   <span>
                     {index + 1}. {t(`manualEdit.${operation.type}`)} ·{' '}
-                    {operation.type === 'extrude' && operation.mode === 'new' ? operation.name : operation.target?.name}
+                    {operation.type === 'sketch' || (operation.type === 'extrude' && operation.mode === 'new')
+                      ? operation.name
+                      : operation.target?.name}
                   </span>
                 </label>
                 <div className='flex flex-wrap gap-1'>

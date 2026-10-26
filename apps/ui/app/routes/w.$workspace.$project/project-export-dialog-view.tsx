@@ -15,7 +15,7 @@ import type { ExportFile } from '@taucad/types';
 import { toast } from '#components/ui/sonner.js';
 import { downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { projectExportFormats } from '#services/project-export.types.js';
-import type { PreparedExport, ProjectExportFormat } from '#services/project-export.types.js';
+import type { PreparedExport, ProjectExportFormat, ProjectExportSketches } from '#services/project-export.types.js';
 import type { ProjectExportRows } from '#services/project-export.js';
 
 const isAborted = (signal: AbortSignal): boolean => signal.aborted;
@@ -61,6 +61,7 @@ const downloadLabel = (t: Translate, format: ProjectExportFormat, hasOpenPieces:
 type ExportDialogProps = {
   readonly name: string;
   readonly pieces: ReadonlyArray<{ name: string }>;
+  readonly sketches?: ProjectExportSketches;
   readonly prepare: (
     format: ProjectExportFormat,
     selectedNames: string[] | undefined,
@@ -75,6 +76,7 @@ type ExportDialogProps = {
 export function ExportDialogView({
   name,
   pieces,
+  sketches,
   prepare,
   capture,
   onAskAgent,
@@ -166,6 +168,7 @@ export function ExportDialogView({
           <DialogTitle className='pr-8 break-words'>{t('export.title', { name })}</DialogTitle>
           <DialogDescription>{t('export.description')}</DialogDescription>
         </DialogHeader>
+        {sketches === 'mixed' ? <p className='text-sm text-muted-foreground'>{t('export.sketchesExcluded')}</p> : null}
         <div className='divide-y'>
           {projectExportFormats.map((format) => {
             const result = rows[format];

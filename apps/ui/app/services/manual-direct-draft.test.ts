@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GeometryComponentManifest, GeometryComponentNode } from '@taucad/types';
 import type { ManualDocument, ManualEdgeGeometry } from '@taucad/smlib/manual-operations';
 import type { DirectEditChange, DirectEditPick } from '@taucad/viewer/cad/direct-edit-tool';
-import { createManualDirectDraft } from '#services/manual-direct-draft.js';
+import { createManualDirectDraft, retargetManualDirectDraft } from '#services/manual-direct-draft.js';
 import type { ManualDirectWitness } from '#services/manual-direct-draft.js';
 
 const geometry = (offset: number): ManualEdgeGeometry => ({
@@ -116,6 +116,28 @@ describe('manual direct draft', () => {
         'directStale',
       );
     }
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('should refuse retargeting a selection after any captured authority changes', () => {
+    const { witness, commit } = fixture();
+    const draft = createManualDirectDraft(witness, pick)!;
+    const changed: Array<Partial<ManualDirectWitness>> = [
+      { available: false },
+      { document: { version: 1, operations: [] } },
+      { runtimeDocument: {} },
+      { renderStamp: 'render-b' },
+      { artifactKey: 'mesh-b' },
+      { manifest: undefined },
+      { commit: async () => true },
+    ];
+    for (const change of changed) {
+      expect(retargetManualDirectDraft(draft, { ...witness, mode: 'rotate', ...change })).toBeUndefined();
+    }
+    expect(retargetManualDirectDraft(draft, { ...witness, mode: 'fillet' })).toBeUndefined();
+    const rotated = retargetManualDirectDraft(draft, { ...witness, mode: 'rotate' });
+    expect(rotated?.selection).toEqual(draft.selection);
+    expect(rotated?.isCurrent({ ...witness, mode: 'rotate' })).toBe(true);
     expect(commit).not.toHaveBeenCalled();
   });
 

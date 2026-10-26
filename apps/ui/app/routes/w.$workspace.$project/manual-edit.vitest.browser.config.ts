@@ -28,7 +28,7 @@ export default defineConfig({
       instances: [{ browser: 'chromium' }],
       screenshotDirectory: '../../out/test-results/vitest-browser/manual-edit',
       commands: {
-        async dragManualPoint(context, label: string, movement: { x: number; y: number }) {
+        async dragManualPoint(context, label: string, movement: { x: number; y: number; cancel?: boolean }) {
           const point = context.iframe.getByRole('button', { name: label, exact: true });
           const bounds = await point.boundingBox();
           if (!bounds) {
@@ -39,6 +39,9 @@ export default defineConfig({
           await context.page.mouse.move(x, y);
           await context.page.mouse.down();
           await context.page.mouse.move(x + movement.x, y + movement.y, { steps: 8 });
+          if (movement.cancel) {
+            await context.page.keyboard.press('Escape');
+          }
           await context.page.mouse.up();
         },
       },

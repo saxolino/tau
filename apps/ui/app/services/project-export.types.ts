@@ -1,6 +1,8 @@
 import type { ExportFile } from '@taucad/types';
 
 export const projectExportFormats = ['step', 'stl', 'glb', 'png'] as const;
+/** Present only when the current evaluated model actually offers saved drawings. */
+export type ProjectExportSketches = 'mixed' | 'only';
 export type ProjectExportFormat = (typeof projectExportFormats)[number];
 export type ExportProblem =
   | 'prepare'
@@ -10,6 +12,7 @@ export type ExportProblem =
   | 'invalid'
   | 'independent'
   | 'selection'
+  | 'sketchOnly'
   | 'changed'
   | 'capture';
 /** A ready photo has no files yet: the PNG is taken when it is asked for. */

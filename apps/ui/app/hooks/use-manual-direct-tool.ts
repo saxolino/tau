@@ -3,7 +3,11 @@ import type { GeometryComponentManifest } from '@taucad/types';
 import type { DirectEditChange, DirectEditTool } from '@taucad/viewer/cad/direct-edit-tool';
 import type { ManualEdits } from '#hooks/use-manual-edits.js';
 import type { ManualDirectControls } from '#routes/w.$workspace.$project/manual-edit-panel.js';
-import { createManualDirectDraft, hasManualDirectTargets } from '#services/manual-direct-draft.js';
+import {
+  createManualDirectDraft,
+  hasManualDirectTargets,
+  retargetManualDirectDraft,
+} from '#services/manual-direct-draft.js';
 import type {
   ManualDirectDraft,
   ManualDirectFailure,
@@ -34,7 +38,7 @@ export function useManualDirectTool({
   open: boolean;
 }>): ManualDirectToolResult {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<DirectEditMode>();
+  const [mode, setMode] = useState<DirectEditMode | undefined>(open ? 'translate' : undefined);
   const [draft, setDraft] = useState<ManualDirectDraft>();
   const [size, setSize] = useState(1);
   const [preview, setPreview] = useState<DirectEditChange>();
@@ -57,6 +61,11 @@ export function useManualDirectTool({
   const current = useRef(witness);
   const selected = draft?.isCurrent(witness) ? draft : undefined;
   const selectedRef = useRef(draft);
+  const [previousOpen, setPreviousOpen] = useState(open);
+  if (previousOpen !== open) {
+    setPreviousOpen(open);
+    setMode(open ? 'translate' : undefined);
+  }
   const [previousWitness, setPreviousWitness] = useState(witness);
   if (previousWitness !== witness) {
     setPreviousWitness(witness);
@@ -76,8 +85,11 @@ export function useManualDirectTool({
     selectedRef.current = selected;
   }, [witness, selected]);
   const changeMode = useCallback((next: DirectEditMode | undefined) => {
+    const witness = { ...current.current, mode: next };
+    const retained = retargetManualDirectDraft(selectedRef.current, witness);
+    selectedRef.current = retained;
     setMode(next);
-    setDraft(undefined);
+    setDraft(retained);
     setPreview(undefined);
     setFailure(undefined);
   }, []);

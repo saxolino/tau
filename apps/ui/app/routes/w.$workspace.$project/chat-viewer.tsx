@@ -680,6 +680,51 @@ const ViewerContent = memo(function ({
   const presentedSourceFile = useGraphicsSelector((state) => state.context.artifactSourceFile);
   const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation.presentedKey);
   const gltfPresentation = useGraphicsSelector((state) => state.context.gltfPresentation);
+  const manualProjectionReady =
+    profile === 'editor' &&
+    kernelId === 'smlib' &&
+    !isCadLoading &&
+    !failureIssues?.length &&
+    !unavailable &&
+    evaluation?.success === true &&
+    !evaluation.transient &&
+    rendering?.success === true &&
+    !rendering.transient &&
+    rendering.evaluationId === evaluation.id &&
+    rendering.view === offeredViewId &&
+    canonicalJson(rendering.sourceRevision ?? {}) === canonicalJson(evaluation.sourceRevision ?? {}) &&
+    matchesManualSidecarRevision(manualEdits.contentDigest, rendering.sourceRevision, entryPath);
+  const showManualProjection = (nextId: 'drawing' | 'model'): void => {
+    const snapshot = cadRef?.getSnapshot();
+    const current = snapshot?.context;
+    if (
+      !manualProjectionReady ||
+      !snapshot ||
+      selectIsCadLoading(snapshot) ||
+      current?.document !== runtimeDocument ||
+      current?.evaluation !== evaluation ||
+      !evaluation.views.some((view) => view.id === nextId)
+    ) {
+      return;
+    }
+    setLocalInstanceChoice(viewId, undefined);
+    void viewCommands.edit(viewId, (current) => {
+      const record = current ?? newViewRecord(entryPath);
+      return {
+        ...record,
+        selectedKernelView: nextId === evaluation.views[0]?.id ? undefined : nextId,
+        kernelViews: record.kernelViews?.map((view) =>
+          view.id === nextId ? { ...view, authoredInstance: undefined } : view,
+        ),
+      };
+    });
+  };
+  const hasManualDrawing =
+    manualProjectionReady &&
+    evaluation.views.some((view) => view.id === 'drawing' && view.mimeType === 'image/svg+xml');
+  const hasManualModel =
+    manualProjectionReady &&
+    evaluation.views.some((view) => view.id === 'model' && view.mimeType === 'model/gltf-binary');
   const faceReady =
     profile === 'editor' &&
     kernelId === 'smlib' &&
@@ -1005,6 +1050,20 @@ const ViewerContent = memo(function ({
               error={manualEdits.error}
               faceControls={faceTool.controls}
               directControls={directTool.controls}
+              onShowProfiles={
+                hasManualDrawing && offeredViewId !== 'drawing'
+                  ? () => {
+                      showManualProjection('drawing');
+                    }
+                  : undefined
+              }
+              onShowModel={
+                hasManualModel && offeredViewId === 'drawing'
+                  ? () => {
+                      showManualProjection('model');
+                    }
+                  : undefined
+              }
               onClose={() => {
                 setIsManualEditOpen(false);
               }}

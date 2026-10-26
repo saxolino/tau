@@ -1,6 +1,6 @@
 import type { ExportFile, GeometryComponentNode } from '@taucad/types';
 import { createExportFile } from '@taucad/types/constants';
-import type { RuntimeDocument, Rendering } from '@taucad/runtime';
+import type { Evaluation, RuntimeDocument, Rendering } from '@taucad/runtime';
 import type { AppRuntimeClient } from '#types/runtime-client.alias.js';
 import { bestRouteForActiveKernel, exportDocumentWithValidatedInput } from '#utils/export-formats.utils.js';
 import { prepareStl, selectGlbPieces, exportPieces } from './project-export-mesh.js';
@@ -9,6 +9,7 @@ import type {
   PreparedExport,
   PreparedProjectExport,
   ProjectExportFormat,
+  ProjectExportSketches,
   StepCheckRequest,
   StepCheckResult,
 } from './project-export.types.js';
@@ -19,12 +20,40 @@ export type ProjectExportSource = {
   kernelId: string;
   rendering: Extract<Rendering, { success: true }>;
   pieces: GeometryComponentNode[];
+  sketches?: ProjectExportSketches;
   isCurrent: () => boolean;
   /** Whether the current view can be captured now, without rendering it. */
   canCapture: () => boolean;
   capture: (signal: AbortSignal) => Promise<ExportFile[]>;
   verifyStep: (request: StepCheckRequest, signal: AbortSignal) => Promise<StepCheckResult>;
 };
+
+/** Describe drawings only from the successful committed evaluation that produced this render. */
+export function projectExportSketches({
+  kernelId,
+  evaluation,
+  rendering,
+}: {
+  kernelId: string | undefined;
+  evaluation: Evaluation | undefined;
+  rendering: Rendering | undefined;
+}): ProjectExportSketches | undefined {
+  if (
+    kernelId !== 'smlib' ||
+    !evaluation?.success ||
+    evaluation.transient ||
+    !rendering?.success ||
+    rendering.transient ||
+    evaluation.id !== rendering.evaluationId ||
+    JSON.stringify(evaluation.sourceRevision) !== JSON.stringify(rendering.sourceRevision) ||
+    !evaluation.views.some((view) => view.id === 'drawing' && view.mimeType === 'image/svg+xml')
+  ) {
+    return undefined;
+  }
+  return evaluation.views.some((view) => view.id === 'model' && view.mimeType === 'model/gltf-binary')
+    ? 'mixed'
+    : 'only';
+}
 
 /** Longest wait for one current-view PNG; a headless render that never returns ends as a capture problem. */
 export const photoCaptureTimeout = 60_000;
@@ -54,6 +83,9 @@ export async function prepareProjectExport(input: {
     // The photo has nothing to verify: it is ready once the view can be captured, and taken at the click.
     if (format === 'png') {
       return source.canCapture() ? { status: 'ready', files: [] } : { status: 'needsFix', problem: 'capture' };
+    }
+    if (source.sketches === 'only') {
+      return { status: 'needsFix', problem: 'sketchOnly' };
     }
     if (!selectionMatches(names, selected)) {
       return { status: 'needsFix', problem: 'selection' };

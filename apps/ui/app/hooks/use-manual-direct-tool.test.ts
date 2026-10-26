@@ -6,7 +6,7 @@ import type { ManualEdits } from '#hooks/use-manual-edits.js';
 import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
 
 vi.mock('#i18n/translate.js', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-function fixture(mode: 'translate' | 'fillet' = 'translate') {
+function fixture(mode: 'translate' | 'fillet' | 'default' = 'translate') {
   const commit = vi.fn<(next: ManualDocument) => Promise<boolean>>(async () => true);
   const edits: ManualEdits = {
     document: { version: 1, operations: [] },
@@ -79,10 +79,15 @@ function fixture(mode: 'translate' | 'fillet' = 'translate') {
     ready: true,
     open: true,
   };
-  const hook = renderHook(({ ready }) => useManualDirectTool({ ...options, ready }), { initialProps: { ready: true } });
-  act(() => {
-    hook.result.current.controls.onModeChange(mode);
-  });
+  const hook = renderHook<ReturnType<typeof useManualDirectTool>, { ready: boolean; open?: boolean }>(
+    ({ ready, open = true }: { ready: boolean; open?: boolean }) => useManualDirectTool({ ...options, ready, open }),
+    { initialProps: { ready: true } },
+  );
+  if (mode !== 'default') {
+    act(() => {
+      hook.result.current.controls.onModeChange(mode);
+    });
+  }
   act(() => {
     hook.result.current.tool?.onPick({
       componentId: 'body',
@@ -96,6 +101,94 @@ function fixture(mode: 'translate' | 'fillet' = 'translate') {
 afterEach(cleanup);
 
 describe('useManualDirectTool', () => {
+  it('should select a body immediately on opening and retain it through rotate and scale', async () => {
+    const { result, commit } = fixture('default');
+    const move = result.current.tool!;
+    expect(move.mode).toBe('translate');
+    expect(move.selection?.componentId).toBe('body');
+    act(() => {
+      result.current.controls.onModeChange('rotate');
+    });
+    expect(result.current.tool?.mode).toBe('rotate');
+    expect(result.current.tool?.selection?.pivot).toEqual(move.selection?.pivot);
+    act(() => {
+      result.current.controls.onModeChange('scale');
+    });
+    expect(result.current.controls.selected?.name).toBe('Body');
+    await act(async () => {
+      move.onCommit({ type: 'translate', delta: [1, 0, 0] });
+      await Promise.resolve();
+    });
+    expect(commit).not.toHaveBeenCalled();
+    expect(result.current.controls.selected?.name).toBe('Body');
+    await act(async () => {
+      result.current.tool?.onCommit({ type: 'scale', origin: [0.005, 0.005, 0.005], factor: 1.5 });
+      await Promise.resolve();
+    });
+    expect(commit).toHaveBeenCalledOnce();
+    expect(commit.mock.calls[0]?.[0].operations[0]).toMatchObject({
+      type: 'scale',
+      factor: 1.5,
+      target: { name: 'Body' },
+    });
+  });
+  it('should preserve selected native edges when switching from fillet to chamfer', async () => {
+    const { result, commit } = fixture('fillet');
+    act(() => {
+      result.current.tool?.onPick({ componentId: 'body', point: [0, 0.01, 0], artifactKey: 'mesh-a', edgeId: 7 });
+    });
+    act(() => {
+      result.current.controls.onModeChange('chamfer');
+    });
+    expect(result.current.tool?.selection?.edgeIds).toEqual([3, 7]);
+    expect(result.current.controls.selected?.edgeCount).toBe(2);
+    await act(async () => {
+      result.current.controls.onApply();
+      await Promise.resolve();
+    });
+    expect(commit.mock.calls[0]?.[0].operations[0]).toMatchObject({
+      type: 'chamfer',
+      edges: { kind: 'indices', indices: [10, 20] },
+    });
+  });
+  it('should clear incompatible selections and never revive them after a stale evaluation', () => {
+    const { result, rerender, commit } = fixture('default');
+    act(() => {
+      result.current.controls.onModeChange('fillet');
+    });
+    expect(result.current.controls.selected).toBeUndefined();
+    act(() => {
+      result.current.tool?.onPick({ componentId: 'body', point: [0, 0, 0], artifactKey: 'mesh-a' });
+    });
+    expect(result.current.controls.selected).toBeUndefined();
+    act(() => {
+      result.current.tool?.onPick({ componentId: 'body', point: [0, 0, 0], artifactKey: 'mesh-a', edgeId: 3 });
+    });
+    expect(result.current.controls.selected?.edgeCount).toBe(1);
+    act(() => {
+      result.current.controls.onModeChange('translate');
+    });
+    expect(result.current.controls.selected).toBeUndefined();
+    act(() => {
+      result.current.tool?.onPick({ componentId: 'body', point: [0, 0, 0], artifactKey: 'mesh-a' });
+    });
+    rerender({ ready: false });
+    act(() => {
+      result.current.controls.onModeChange('rotate');
+    });
+    rerender({ ready: true });
+    expect(result.current.controls.selected).toBeUndefined();
+    expect(commit).not.toHaveBeenCalled();
+  });
+  it('should reopen in body selection mode without reviving the previous selection', () => {
+    const { result, rerender, commit } = fixture('fillet');
+    rerender({ ready: true, open: false });
+    expect(result.current.tool).toBeUndefined();
+    rerender({ ready: true, open: true });
+    expect(result.current.tool?.mode).toBe('translate');
+    expect(result.current.tool?.selection).toBeUndefined();
+    expect(commit).not.toHaveBeenCalled();
+  });
   it('should preview without writes and append one transform on pointer release', async () => {
     const { result, commit } = fixture();
     const tool = result.current.tool!;

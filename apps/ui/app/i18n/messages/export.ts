@@ -8,6 +8,8 @@ export const exportMessages = defineMessages({
     stl: 'Per la stampa 3D della cera',
     glb: 'Per vederlo in 3D su Sinopia e sul web',
     png: 'La vista attuale in PNG',
+    sketchesExcluded:
+      'STEP, STL e GLB includono i solidi. I profili disegnati restano nel progetto e non sono inclusi.',
     photo: 'Foto',
     verified: 'Verificato',
     ready: 'Pronto',
@@ -44,6 +46,7 @@ export const exportMessages = defineMessages({
       invalid: 'Alcuni pezzi hanno superfici non valide. Chiedi all’agente di correggerli.',
       independent:
         'Il controllo indipendente non è disponibile per questo modello. Chiedi all’agente di preparare uno STEP verificabile.',
+      sketchOnly: 'Estrudi un profilo chiuso per creare un solido da esportare in 3D.',
       selection: 'Non riesco a separare questi pezzi. Seleziona tutti i pezzi oppure chiedi all’agente di separarli.',
       changed: 'Il modello è cambiato durante il controllo. Riprova sul modello aggiornato.',
       capture: 'Non sono riuscito a catturare la vista. Torna al modello, attendi che sia visibile e riprova.',
@@ -56,6 +59,7 @@ export const exportMessages = defineMessages({
     stl: 'For 3D printing the wax',
     glb: 'To view it in 3D on Sinopia and the web',
     png: 'The current view as PNG',
+    sketchesExcluded: 'STEP, STL and GLB include solids. Drawn profiles stay in the project and are not included.',
     photo: 'Snapshot',
     verified: 'Verified',
     ready: 'Ready',
@@ -88,6 +92,7 @@ export const exportMessages = defineMessages({
       solids: 'The number of solids doesn’t match the pieces. Ask the agent to create one closed solid per piece.',
       invalid: 'Some pieces have invalid surfaces. Ask the agent to fix them.',
       independent: 'Independent checking is unavailable for this model. Ask the agent to prepare a verifiable STEP.',
+      sketchOnly: 'Extrude a closed profile to create a solid for 3D export.',
       selection: 'I can’t separate these pieces. Select all pieces or ask the agent to separate them.',
       changed: 'The model changed during checking. Try again with the updated model.',
       capture: 'I couldn’t capture the view. Return to the model, wait until it is visible and try again.',

@@ -24,6 +24,7 @@ import {
   photoCaptureTimeout,
   prepareProjectExport,
   prepareSinopiaFiles,
+  projectExportSketches,
 } from './project-export.js';
 import type { ProjectExportSource } from './project-export.js';
 
@@ -324,6 +325,129 @@ describe('STEP from a kernel that names each solid inside one product', () => {
         expectedNames: ['Castone marquise', 'Pietrina più'],
       }),
     ).toEqual({ status: 'needsFix', problem: 'solids' });
+  });
+});
+
+describe('saved sketches and solid exports', () => {
+  const sketch = {
+    id: 'saved-outline',
+    type: 'sketch',
+    name: 'Profilo aperto',
+    profile: {
+      kind: 'polygon',
+      plane: 'xy',
+      origin: [0, 0, 0],
+      closed: false,
+      points: [
+        { id: 'a', x: 0, y: 0 },
+        { id: 'b', x: 10, y: 0 },
+        { id: 'c', x: 10, y: 5 },
+      ],
+    },
+  } satisfies ManualOperation;
+
+  const withSketch = async (mixed: boolean, run: (input: ProjectExportSource) => Promise<void>): Promise<void> => {
+    const sketchRuntime: RuntimeDefinition = defineRuntime({ kernels: [smlibKernel()], bundlers: [esbuildBundler()] });
+    const runtimeClient = createTestRuntimeClient({
+      runtime: sketchRuntime,
+      files: {
+        'main.ts': `import { Box } from '@classcad/smlibwasm'; export default function main() { return ${mixed ? "[{ name: 'Corpo', shape: Box(10, 10, 10) }]" : '[]'}; }`,
+        'main.ts.manual.json': JSON.stringify({ version: 1, operations: [sketch] }),
+      },
+    });
+    await runtimeClient.connect();
+    const document = runtimeClient.open({ source: { path: 'main.ts' }, watch: false });
+    const view = document.view(mixed ? 'model' : 'drawing');
+    try {
+      const rendered = await view.rendering();
+      const evaluated = await document.evaluation();
+      if (rendered.superseded || !rendered.rendering.success || evaluated.superseded || !evaluated.evaluation.success) {
+        throw new Error('Expected saved sketch evaluation and render');
+      }
+      const { rendering } = rendered;
+      const { evaluation } = evaluated;
+      expect(evaluation.views.find((offered) => offered.id === 'drawing')?.instances).toEqual([
+        { id: 'Profilo aperto', title: 'Profilo aperto' },
+      ]);
+      const sketches = projectExportSketches({ kernelId: 'smlib', evaluation, rendering });
+      expect(sketches).toBe(mixed ? 'mixed' : 'only');
+      expect(
+        projectExportSketches({ kernelId: 'smlib', evaluation: { ...evaluation, id: 'newer' }, rendering }),
+      ).toBeUndefined();
+      expect(
+        projectExportSketches({ kernelId: 'smlib', evaluation: { ...evaluation, transient: true }, rendering }),
+      ).toBeUndefined();
+      expect(
+        projectExportSketches({ kernelId: 'smlib', evaluation: { ...evaluation, success: false }, rendering }),
+      ).toBeUndefined();
+      expect(
+        projectExportSketches({
+          kernelId: 'smlib',
+          evaluation: { ...evaluation, sourceRevision: { entry: 'other.ts', files: {} } },
+          rendering,
+        }),
+      ).toBeUndefined();
+      expect(
+        projectExportSketches({
+          kernelId: 'smlib',
+          evaluation: { ...evaluation, views: evaluation.views.filter((offered) => offered.id !== 'drawing') },
+          rendering,
+        }),
+      ).toBeUndefined();
+      const artifact = asKnownArtifact(rendering.artifact);
+      await run({
+        ...source,
+        document,
+        client: runtimeClient,
+        kernelId: 'smlib',
+        rendering,
+        sketches,
+        pieces:
+          artifact?.mimeType === 'model/gltf-binary' ? exportPieces(buildGltfComponentManifest(artifact.content)) : [],
+      });
+    } finally {
+      view.close();
+      document.close();
+      await runtimeClient.shutdown();
+    }
+  };
+
+  it('should refuse every 3D file before invoking export for a saved open sketch and keep photo available', async () => {
+    await withSketch(false, async (drawing) => {
+      const nativeExport = vi.spyOn(drawing.document, 'export');
+      const verifyStep = vi.fn(drawing.verifyStep);
+      const prepared = await Promise.all(
+        (['step', 'stl', 'glb'] as const).map(async (format) =>
+          prepareProjectExport({ source: { ...drawing, verifyStep }, format, signal: new AbortController().signal }),
+        ),
+      );
+      expect(prepared).toEqual(Array.from({ length: 3 }, () => ({ status: 'needsFix', problem: 'sketchOnly' })));
+      expect(nativeExport).not.toHaveBeenCalled();
+      expect(verifyStep).not.toHaveBeenCalled();
+      expect(
+        await prepareProjectExport({ source: drawing, format: 'png', signal: new AbortController().signal }),
+      ).toEqual({ status: 'ready', files: [] });
+      expect(await captureProjectPhoto({ source: drawing, signal: new AbortController().signal })).toMatchObject({
+        status: 'ready',
+        files: [{ mimeType: 'image/png' }],
+      });
+    });
+  });
+
+  it('should exclude a saved sketch while independently verifying the actual mixed-model solids', async () => {
+    await withSketch(true, async (mixed) => {
+      expect(mixed.pieces.map((piece) => piece.name)).toEqual(['Corpo']);
+      const step = await prepareProjectExport({ source: mixed, format: 'step', signal: new AbortController().signal });
+      expect(step.status).toBe('verified');
+      expect(inspectStep(oc, step.files![0]!.bytes)).toEqual([{ name: 'Corpo', solids: 1, valid: true }]);
+      const glb = await prepareProjectExport({ source: mixed, format: 'glb', signal: new AbortController().signal });
+      expect(glb.status).toBe('ready');
+      expect(exportPieces(buildGltfComponentManifest(glb.files![0]!.bytes)).map((piece) => piece.name)).toEqual([
+        'Corpo',
+      ]);
+      const stl = await prepareProjectExport({ source: mixed, format: 'stl', signal: new AbortController().signal });
+      expect(stl).toMatchObject({ status: 'verified', files: [{ name: 'Corpo.stl' }] });
+    });
   });
 });
 

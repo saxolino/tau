@@ -183,6 +183,37 @@ export function createManualDirectDraft(
   };
 }
 
+/** Retain a selection across compatible tools only while every captured authority remains current. */
+export function retargetManualDirectDraft(
+  previous: ManualDirectDraft | undefined,
+  witness: ManualDirectWitness,
+): ManualDirectDraft | undefined {
+  if (
+    !previous ||
+    !witness.mode ||
+    isEdgeMode(previous.mode) !== isEdgeMode(witness.mode) ||
+    !previous.isCurrent({ ...witness, mode: previous.mode })
+  ) {
+    return undefined;
+  }
+  const pick: DirectEditPick = {
+    componentId: previous.selection.componentId,
+    point: previous.selection.pivot,
+    artifactKey: witness.artifactKey ?? '',
+  };
+  if (!isEdgeMode(witness.mode)) {
+    return createManualDirectDraft(witness, pick);
+  }
+  let next: ManualDirectDraft | undefined;
+  for (const edge of previous.edges) {
+    next = createManualDirectDraft(witness, { ...pick, edgeId: edge.edgeId }, next);
+    if (!next) {
+      return undefined;
+    }
+  }
+  return next;
+}
+
 /** Articulated models and metadata-free occurrences cannot admit direct geometry edits. */
 export function hasManualDirectTargets(
   manifest: GeometryComponentManifest | undefined,
