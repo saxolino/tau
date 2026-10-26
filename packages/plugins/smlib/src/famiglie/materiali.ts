@@ -12,7 +12,7 @@ export type Materiale = {
   metalness: number;
   roughness: number;
   /** Metallo (per il peso del gioiello) o polimero/organico. */
-  tipo: 'metallo_prezioso' | 'metallo' | 'polimero' | 'organico';
+  tipo: 'metallo_prezioso' | 'metallo' | 'polimero' | 'organico' | 'pietra';
 };
 
 const metallo = (
@@ -29,7 +29,7 @@ const nonMetallo = (
   nome: string,
   densita: number,
   colore: string,
-  tipo: 'polimero' | 'organico' = 'polimero',
+  tipo: 'polimero' | 'organico' | 'pietra' = 'polimero',
   roughness = 0.6,
 ): Materiale => ({ chiave, nome, densita, colore, metalness: 0, roughness, tipo });
 
@@ -60,6 +60,8 @@ const elenco: readonly Materiale[] = [
   nonMetallo('eva', 'EVA', 0.2, '#d9d4cc', 'polimero', 0.85),
   nonMetallo('pu_espanso', 'PU espanso', 0.55, '#e1ddd5', 'polimero', 0.85),
   nonMetallo('cuoio', 'Cuoio', 0.9, '#8b5a2b', 'organico', 0.7),
+  // Pietra di prova del castone (brillante): resa e densità, esclusa dal peso del metallo.
+  nonMetallo('diamante', 'Diamante', 3.52, '#e8f1fb', 'pietra', 0.05),
 ];
 
 /** Materiali per chiave. */

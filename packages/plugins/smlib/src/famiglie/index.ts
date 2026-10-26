@@ -19,4 +19,8 @@ export { occhiello, volumeOcchiello } from '#famiglie/occhiello.js';
 export type { ParametriOcchiello } from '#famiglie/occhiello.js';
 export { borchia, raggioCalotta } from '#famiglie/borchia.js';
 export type { ParametriBorchia, VarianteBorchia } from '#famiglie/borchia.js';
+export { anello } from '#famiglie/anello.js';
+export type { ParametriAnello, VarianteAnello } from '#famiglie/anello.js';
+export { diametroInterno, intervalliTaglia, tagliaDaDiametro } from '#famiglie/taglie-anello.js';
+export type { SistemaTaglia } from '#famiglie/taglie-anello.js';
 export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco.js';

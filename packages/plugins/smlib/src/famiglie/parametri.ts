@@ -171,7 +171,8 @@ export function normalizzaConParametri<P>(definizioni: readonly DefinizioneParam
       }
       default: {
         if (typeof grezzo === 'number' && Number.isFinite(grezzo)) {
-          let numero = definizione.unita === 'n' ? Math.round(grezzo) : grezzo;
+          const passo = definizione.passo ?? 1;
+          let numero = definizione.unita === 'n' ? Math.round(grezzo / passo) * passo : grezzo;
           numero = definizione.min === undefined ? numero : Math.max(definizione.min, numero);
           numero = definizione.max === undefined ? numero : Math.min(definizione.max, numero);
           valore = numero;
