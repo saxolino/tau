@@ -74,8 +74,9 @@ describe('famiglia anello', () => {
     const p = anello.normalizza({ griffe: { numero } });
     const metallo = pezzo(valutaFamiglia(lib, anello, p, { verifiche: false }), 'Anello');
     expect(metallo.isValid()).toBe(true);
-    // Count the prong tips cut by a plane just under their tops.
-    const quota = 17.19 / 2 + 1.8 - 0.5 + (0.61 * 5 * 0.9 + 0.5 - 0.45 * 0.61 * 5) + 0.8 - 0.6;
+    // Count the prong tips cut by a plane just under their tops (the girdle is 0.2 mm above the band + pavilion).
+    const cintura = 17.19 / 2 + 1.8 + 0.2 + 0.43 * 5;
+    const quota = cintura + 0.8 - 0.6;
     expect(metallo.section(lib.Plane.XY.offset(quota)).faces()).toHaveLength(numero);
   });
 
@@ -83,9 +84,8 @@ describe('famiglia anello', () => {
     const chiuso = valutaFamiglia(lib, anello, anello.predefiniti('chiuso'), { variante: 'chiuso' });
     expect(pezzo(chiuso, 'Anello').isValid()).toBe(true);
     expect(codice(chiuso, 'PIETRA_BUCA_FONDO')?.livello).toBe('ok');
-    // The prong setting of a 10 mm stone with a high seat: the pavilion tip reaches into the band.
-    const profonda = anello.normalizza({ pietra: { diametro: 10 }, castone: { sede: 0.3 } });
-    expect(codice(valutaFamiglia(lib, anello, profonda), 'PIETRA_BUCA_FONDO')?.livello).toBe('avviso');
+    // The prong gallery rises so that the pavilion tip clears the band: no warning for the default stone.
+    expect(codice(valutaFamiglia(lib, anello, anello.predefiniti()), 'PIETRA_BUCA_FONDO')?.livello).toBe('ok');
   });
 
   it('should build a plain band of every profile, revolved when it does not taper', () => {

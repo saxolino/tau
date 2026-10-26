@@ -339,11 +339,12 @@ function costruisciTesta(lib: Lib, p: ParametriAnello): Smlib.Part | undefined {
   }
   if (p.castone.tipo === 'griffe') {
     const r = p.griffe.diametro / 2;
-    // Galleria aperta al centro: il padiglione della pietra ci passa.
+    // Galleria aperta al centro (il padiglione ci passa), alzata quanto serve perché la punta resti sopra il gambo.
+    const alzata = rialzo(p);
     const base = lib
-      .Cylinder(rp + parete, 1.2, centrato)
-      .cut(lib.Pos(0, 0, -0.5).mul(lib.Cylinder(Math.max(0.3, rp - 0.3), 2.2, centrato)));
-    const altezzaGriffa = quotaCintura(p) + p.griffe.altezzaSopraCintura;
+      .Cylinder(rp + parete, 1.2 + alzata, centrato)
+      .cut(lib.Pos(0, 0, -0.5).mul(lib.Cylinder(Math.max(0.3, rp - 0.3), 2.2 + alzata, centrato)));
+    const altezzaGriffa = cinturaTesta(p) + p.griffe.altezzaSopraCintura;
     let griffa = lib.Cylinder(r, altezzaGriffa, centrato);
     griffa = griffa.fillet(griffa.edges().top(), r * 0.9);
     const griffe = lib.PolarLocations(rp + r - 0.1, p.griffe.numero).mul(griffa) as Smlib.Part[];
@@ -367,6 +368,17 @@ function costruisciPietra(lib: Lib, p: ParametriAnello): Smlib.Part {
 /** Quota della base della testa: 0,5 mm dentro il gambo, in alto. */
 const quotaTesta = (p: ParametriAnello): number => diametroDi(p) / 2 + p.gambo.spessore - 0.5;
 
+/**
+ * Rialzo della galleria a griffe: la punta del padiglione (0,43 × diametro sotto la cintura) deve stare 0,2 mm sopra
+ * il gambo, che la testa compenetra di 0,5 mm (per un brillante di 5 mm: ≈ 1 mm).
+ */
+function rialzo(p: ParametriAnello): number {
+  return p.castone.tipo === 'griffe' ? Math.max(0, 0.5 + 0.2 - quotaCintura(p) + 0.43 * p.pietra.diametro) : 0;
+}
+
+/** Quota della cintura della pietra sopra la base della testa. */
+const cinturaTesta = (p: ParametriAnello): number => rialzo(p) + quotaCintura(p);
+
 function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione {
   const esiti: Esito[] = [];
   const pezzi: PezzoFamiglia[] = [];
@@ -382,7 +394,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione 
     }
     pezzi.push({ name: 'Anello', shape: anello, ruolo: 'metallo', materiale: p.lega, ...aspettoMateriale(p.lega) });
     if (testa) {
-      const pietra = costruisciPietra(lib, p).translate(0, 0, quotaTesta(p) + quotaCintura(p));
+      const pietra = costruisciPietra(lib, p).translate(0, 0, quotaTesta(p) + cinturaTesta(p));
       // La pietra non entra nel peso del metallo: senza densità.
       pezzi.push({
         name: 'Pietra',
@@ -428,7 +440,7 @@ function verifiche(
   }
   if (p.castone.tipo !== 'nessuno') {
     // Punta del padiglione rispetto alla base del castone (negativa = sotto).
-    const punta = quotaCintura(p) - 0.43 * p.pietra.diametro;
+    const punta = cinturaTesta(p) - 0.43 * p.pietra.diametro;
     const anello = pezzi.find((pezzo) => pezzo.ruolo === 'metallo')?.shape;
     if (p.castone.tipo === 'chiuso') {
       esiti.push(
