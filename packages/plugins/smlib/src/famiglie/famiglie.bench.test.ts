@@ -6,10 +6,10 @@ import { famiglie } from '#famiglie/registro.js';
 import type { FamigliaQualsiasi } from '#famiglie/famiglia.js';
 
 /**
- * T-D1-12: ogni famiglia con i predefiniti (la sua prima variante) si ricostruisce entro 300 ms, il budget che rende
- * possibile l'ottimizzatore di D3; in CI la soglia raddoppia. Le altre varianti si misurano e si stampano: quelle
- * ovali (fibbia, placca) superano il budget perché `extrude` sformato e raccordi su pareti ellittiche B-spline costano
- * centinaia di millisecondi nel kernel. Si misura il migliore di tre costruzioni dopo un giro a vuoto.
+ * T-D1-12: ogni famiglia con i predefiniti, e ogni variante ovale, si ricostruisce entro 300 ms (il budget che rende
+ * possibile l'ottimizzatore di D3); doppio in CI e con la macchina carica; le altre varianti entro 450 ms. Si misura il migliore di tre costruzioni
+ * dopo un giro a vuoto e si stampa la tabella. Le varianti ovali stanno nel budget con l'ovale a quattro centri e lo
+ * sformo per `draft` dei fianchi (`profili.ts`): con l'ellisse e il `taper` erano 325–870 ms.
  */
 // Costruzioni B-rep ripetute: sulla macchina carica una prova supera i 5 s predefiniti.
 vi.setConfig({ testTimeout: 60_000 });
@@ -29,7 +29,7 @@ const casi = Object.values(famiglie).flatMap((famiglia: FamigliaQualsiasi) =>
 describe('tempo di ricostruzione delle famiglie', () => {
   const tempi: string[] = [];
 
-  it.each(casi)('should rebuild %s (%s) and time it', (_id, variante, famiglia, predefinita) => {
+  it.each(casi)('should rebuild %s (%s) within the budget', (_id, variante, famiglia, predefinita) => {
     const p: unknown = famiglia.normalizza(famiglia.predefiniti(variante), { variante });
     famiglia.costruisci(lib, p, { variante });
     const misure: number[] = [];
@@ -43,9 +43,9 @@ describe('tempo di ricostruzione delle famiglie', () => {
     tempi.push(
       `${famiglia.id.padEnd(10)} ${variante.padEnd(13)} ${migliore.toFixed(0).padStart(5)} ms${predefinita ? '  (predefinita)' : ''}`,
     );
-    if (predefinita) {
-      expect(migliore).toBeLessThan(soglia);
-    }
+    // Predefinite e ovali entro il budget; le altre varianti (tacchi bassi, 260–300 ms) con il 50 % di margine.
+    const stretta = predefinita || variante === 'ovale' || variante === 'a_d';
+    expect(migliore).toBeLessThan(stretta ? soglia : soglia * 1.5);
   });
 
   it('should print the timing table', () => {

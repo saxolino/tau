@@ -10,6 +10,7 @@ import type {
   RisultatoCostruzione,
 } from '#famiglie/famiglia.js';
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
+import { estrudiSformato, ovale } from '#famiglie/profili.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
 import { sogliaParete, sogliaSformo, soglieProcessi } from '#famiglie/processi.js';
@@ -28,8 +29,10 @@ import {
  * barra del perno sta sul lato −Y e l'ardiglione (filo tondo) vi si avvolge attorno, oppure attorno al traversino
  * centrale nella variante `doppia` (come il pilota «Fibbia · strumenti manuali»).
  *
- * Telaio da z = 0 a z = sezioneSpessore; in pressofusione lo sformo è dato nell'estrusione attorno al piano di
- * divisione a metà spessore (le due metà si sformano in versi opposti), poi i raccordi.
+ * Telaio da z = 0 a z = sezioneSpessore; in pressofusione lo sformo è dato nell'estrusione dal piano di divisione
+ * (sul retro per il profilo bombato, a metà spessore per il piatto: le due metà si sformano in versi opposti), poi i
+ * raccordi. L'ovale e la D sono ovali a
+ * quattro centri (`profili.ts`): con l'ellisse vera le pareti B-spline portavano la ricostruzione a 560–870 ms.
  */
 
 type Lib = typeof Smlib;
@@ -276,7 +279,7 @@ function sagomaEsterna(lib: Lib, variante: VarianteFibbia, p: ParametriFibbia): 
   const altezza = p.telaio.altezzaInterna + 2 * w;
   const raggio = p.telaio.raggioAngoli + w;
   if (variante === 'ovale') {
-    return lib.Ellipse(larghezza / 2, altezza / 2);
+    return ovale(lib, larghezza / 2, altezza / 2);
   }
   if (variante === 'a_d') {
     let barra = lib.Rectangle(larghezza, altezza / 2).translate(0, -altezza / 4);
@@ -286,9 +289,9 @@ function sagomaEsterna(lib: Lib, variante: VarianteFibbia, p: ParametriFibbia): 
         [larghezza / 2, -altezza / 2],
       ]);
     }
-    const arco = lib
-      .Ellipse(larghezza / 2, altezza / 2)
-      .intersect(lib.Rectangle(larghezza, altezza / 2).translate(0, altezza / 4));
+    const arco = ovale(lib, larghezza / 2, altezza / 2).intersect(
+      lib.Rectangle(larghezza, altezza / 2).translate(0, altezza / 4),
+    );
     return barra.fuse(arco);
   }
   return lib.Rectangle(larghezza, altezza, raggio > 0 ? { fillet: raggio } : {});
@@ -338,6 +341,30 @@ function raccorda(
   return forma;
 }
 
+/**
+ * Quota del piano di divisione dello stampo: sul retro (z = 0) per il profilo bombato, che ha il dorso piatto e la
+ * faccia a vista tonda (un semistampo è una piastra); a metà spessore per il piatto, sformato in versi opposti.
+ * @param p - Parametri della fibbia.
+ * @returns La quota in mm.
+ */
+export const pianoDivisioneFibbia = (p: ParametriFibbia): number =>
+  p.telaio.profilo === 'bombato' ? 0 : p.telaio.sezioneSpessore / 2;
+
+/**
+ * Un anello del telaio sformato verso il semistampo: `taper` dove i fianchi alternano rette e archi (rettangolo),
+ * estrusione dritta + `draft` dove gli archi si toccano fra loro (ovale, D), che col `taper` diventerebbero B-spline.
+ */
+function sformato(
+  lib: Lib,
+  schizzo: Smlib.Sketch,
+  altezza: number,
+  opzioni: { sformo: number; archiTangenti: boolean },
+): Smlib.Part {
+  return opzioni.archiTangenti
+    ? estrudiSformato(lib, schizzo, altezza, opzioni.sformo)
+    : schizzo.extrude(altezza, { taper: opzioni.sformo });
+}
+
 /** Il telaio con l'eventuale traversino, sformato in pressofusione e raccordato. */
 function costruisciTelaio(lib: Lib, p: ParametriFibbia, variante: VarianteFibbia, esiti: Esito[]): Smlib.Part {
   const { telaio, traversino, costruzione } = p;
@@ -346,33 +373,44 @@ function costruisciTelaio(lib: Lib, p: ParametriFibbia, variante: VarianteFibbia
   const luce = luceDi(p);
   const sformo = costruzione.processo === 'pressofusione_zama' ? costruzione.sformo : 0;
   const esterno = sagomaEsterna(lib, variante, p);
+  const opzioniSformo = { sformo, archiTangenti: variante === 'ovale' || variante === 'a_d' };
+  const piano = pianoDivisioneFibbia(p);
+  /** Estrude dal piano di divisione: verso l'alto di `sopra`, verso il basso di `sotto` (sformati). */
+  const dalPiano = (schizzo: Smlib.Sketch, sopra: number, sotto: number): Smlib.Part => {
+    if (sformo <= 0) {
+      return lib
+        .Pos(0, 0, piano - sotto)
+        .mul(schizzo)
+        .extrude(sopra + sotto);
+    }
+    const posato = lib.Pos(0, 0, piano).mul(schizzo);
+    const alto = sformato(lib, posato, sopra, opzioniSformo);
+    return sotto > 0 ? alto.fuse(sformato(lib, posato, -sotto, opzioniSformo)) : alto;
+  };
   let corpo: Smlib.Part;
   if (telaio.profilo === 'tondo') {
     const percorso = esterno.offset(-w / 2, { corners: 'round' }).wires()[0]!;
     corpo = lib.sweep(lib.Circle(s / 2), percorso).translate(0, 0, s / 2);
   } else {
-    const anello = esterno.cut(esterno.offset(-w, { corners: 'round' }));
-    corpo =
-      sformo > 0
-        ? lib
-            .Pos(0, 0, s / 2)
-            .mul(anello)
-            .extrude(s / 2, { both: true, taper: sformo })
-        : anello.extrude(s);
+    corpo = dalPiano(esterno.cut(esterno.offset(-w, { corners: 'round' })), s - piano, piano);
   }
   if (traversino.abilitato) {
-    const barra =
-      traversino.profilo === 'tondo'
-        ? lib.Pos(0, 0, s / 2).mul(lib.Rot(0, 90, 0).mul(lib.Cylinder(traversino.larghezza / 2, luce + 2)))
-        : sformo > 0
-          ? lib
-              .Pos(0, 0, s / 2)
-              .mul(lib.Rectangle(luce + 1.6, traversino.larghezza))
-              .extrude(0.45 * s, { both: true, taper: sformo })
+    const sezione = lib.Rectangle(luce + 1.6, traversino.larghezza);
+    // Traversino: 90 % dello spessore, centrato; col piano sul retro parte dal retro.
+    let barra: Smlib.Part;
+    if (traversino.profilo === 'tondo') {
+      barra = lib.Pos(0, 0, s / 2).mul(lib.Rot(0, 90, 0).mul(lib.Cylinder(traversino.larghezza / 2, luce + 2)));
+    } else if (piano === 0) {
+      barra = dalPiano(sezione, 0.9 * s, 0);
+    } else {
+      barra =
+        sformo > 0
+          ? dalPiano(sezione, 0.45 * s, 0.45 * s)
           : lib
               .Pos(0, 0, 0.05 * s)
-              .mul(lib.Rectangle(luce + 1.6, traversino.larghezza))
+              .mul(sezione)
               .extrude(0.9 * s);
+    }
     corpo = normalizzaForma(lib, corpo.fuse(barra));
   } else {
     corpo = normalizzaForma(lib, corpo);
@@ -505,7 +543,7 @@ function verifiche(
     } else {
       esiti.push(
         ...esitiSformo(
-          sformoDuePiani(telaio.shape, t.sezioneSpessore / 2, sformoMinimo - 1e-3),
+          sformoDuePiani(telaio.shape, pianoDivisioneFibbia(p), sformoMinimo - 1e-3),
           sformoMinimo,
           'Telaio',
           'Telaio',

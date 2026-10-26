@@ -10,6 +10,7 @@ import type {
   RisultatoCostruzione,
 } from '#famiglie/famiglia.js';
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
+import { estrudiSformato, ovale } from '#famiglie/profili.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, radianti, schemaDaParametri } from '#famiglie/parametri.js';
 import { sogliaParete, sogliaSformo } from '#famiglie/processi.js';
@@ -27,6 +28,7 @@ import {
  * Famiglia `placca` (specifica §1.5): piastra su XY con la faccia a vista +Z, testo centrato in rilievo o inciso,
  * bordo in rilievo, perni o fori di fissaggio sotto.
  *
+ * L'ovale è a quattro centri (`profili.ts`): archi tangenti invece dell'ellisse, sformo e offset esatti e rapidi.
  * In pressofusione la piastra e il bordo sono sformati nell'estrusione (piano di divisione sul retro, z = 0) e i
  * perni sono coni. Il testo no: `extrude` con `taper` rifiuta le lettere Lato con spigoli collineari (H, T, 1…) e
  * costa ≈ 270 ms quando riesce (esiti T-D1-02), quindi le lettere hanno i fianchi dritti e la verifica lo dice.
@@ -297,7 +299,7 @@ function sagoma(lib: Lib, p: ParametriPlacca): Smlib.Sketch {
   const { forma, lunghezza, larghezza, raggioAngoli } = p.piastra;
   const r = Math.min(raggioAngoli, 0.49 * Math.min(lunghezza, larghezza));
   if (forma === 'ovale') {
-    return lib.Ellipse(lunghezza / 2, larghezza / 2);
+    return ovale(lib, lunghezza / 2, larghezza / 2);
   }
   if (forma === 'cerchio') {
     return lib.Circle(lunghezza / 2);
@@ -319,19 +321,14 @@ function sagoma(lib: Lib, p: ParametriPlacca): Smlib.Sketch {
 }
 
 /**
- * Il contorno ristretto di `distanza`: offset per rettangolo e scudo; ellisse e cerchio a semiassi ridotti
- * (`Sketch.offset` di un'ellisse rifiuta le distanze piccole: «removes the whole region» a 0,026 mm).
+ * Il contorno ristretto di `distanza`: offset (esatto: archi e rette restano tali; l'ovale è a quattro centri) e il
+ * cerchio a raggio ridotto.
  */
 function sagomaRistretta(lib: Lib, p: ParametriPlacca, sagomaPiena: Smlib.Sketch, distanza: number): Smlib.Sketch {
   if (distanza <= 0) {
     return sagomaPiena;
   }
-  const { forma, lunghezza, larghezza } = p.piastra;
-  if (forma === 'ovale') {
-    // L'ellisse a semiassi ridotti sporge di poco dall'offset vero fra i vertici: un margine la tiene dentro.
-    const margine = 0.2 * distanza + 0.005;
-    return lib.Ellipse(lunghezza / 2 - distanza - margine, larghezza / 2 - distanza - margine);
-  }
+  const { forma, lunghezza } = p.piastra;
   if (forma === 'cerchio') {
     return lib.Circle(lunghezza / 2 - distanza);
   }
@@ -373,7 +370,15 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
   const base = sagoma(lib, p);
   const bombata = piastra.bombatura > 0;
   const altezzaPiastra = piastra.spessore + piastra.bombatura;
-  let corpo = base.extrude(altezzaPiastra, sformo > 0 ? { taper: sformo } : {});
+  // Ovale: archi che si toccano fra loro, sformati col draft dei fianchi (col taper diventerebbero B-spline).
+  const archiTangenti = piastra.forma === 'ovale';
+  const sformata = (schizzo: Smlib.Sketch, altezza: number): Smlib.Part =>
+    sformo <= 0
+      ? schizzo.extrude(altezza)
+      : archiTangenti
+        ? estrudiSformato(lib, schizzo, altezza, sformo)
+        : schizzo.extrude(altezza, { taper: sformo });
+  let corpo = sformata(base, altezzaPiastra);
   // Calotta: sfera di corda = lunghezza e freccia = bombatura, appoggiata allo spessore sul bordo.
   const raggioCalotta = bombata ? (piastra.lunghezza ** 2 / 4 + piastra.bombatura ** 2) / (2 * piastra.bombatura) : 0;
   const centroCalotta = piastra.spessore + piastra.bombatura - raggioCalotta;
@@ -386,10 +391,10 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
   const rilievi: Smlib.Part[] = [];
   if (bordo.rilievo > 0) {
     const cornice = cima.cut(sagomaRistretta(lib, p, base, ritiroCima + bordo.larghezza));
-    let solido = lib
-      .Pos(0, 0, piastra.spessore - 0.05)
-      .mul(cornice)
-      .extrude(bordo.rilievo + 0.05 + piastra.bombatura, sformo > 0 ? { taper: sformo } : {});
+    let solido = sformata(
+      lib.Pos(0, 0, piastra.spessore - 0.05).mul(cornice),
+      bordo.rilievo + 0.05 + piastra.bombatura,
+    );
     if (bombata) {
       solido = solido.intersect(calotta(bordo.rilievo));
     }
