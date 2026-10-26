@@ -532,4 +532,86 @@ describe('modelInteractionMachine', () => {
     expect(unit.hiddenComponentIds).toEqual([]);
     actor.stop();
   });
+
+  it('should dress one piece or every piece in a material, keep it across a new manifest and persist it', () => {
+    const actor = createActor(modelInteractionMachine, { input: {} });
+    actor.start();
+    actor.send({ type: 'loadManifest', unitId: mainUnitId, manifest: createManifest() });
+    const before = actor.getSnapshot().context.displayRevision;
+
+    actor.send({
+      type: 'setComponentMaterial',
+      unitId: mainUnitId,
+      componentId: housingComponentId,
+      choice: { material: 'gold-18k-yellow', finish: 'satin' },
+    });
+    let unit = getModelInteractionUnitState(actor.getSnapshot().context, mainUnitId);
+    expect(unit.materialByComponentId).toEqual({
+      [housingComponentId]: { material: 'gold-18k-yellow', finish: 'satin' },
+    });
+    expect(actor.getSnapshot().context.displayRevision).toBe(before + 1);
+
+    // The whole model: every part, the root and groups untouched.
+    actor.send({ type: 'setComponentMaterial', unitId: mainUnitId, choice: { material: 'silver-925' } });
+    unit = getModelInteractionUnitState(actor.getSnapshot().context, mainUnitId);
+    expect(unit.materialByComponentId).toEqual({
+      [housingComponentId]: { material: 'silver-925' },
+      [gearComponentId]: { material: 'silver-925' },
+    });
+
+    // A rebuilt model with the same pieces keeps the choices.
+    actor.send({ type: 'loadManifest', unitId: mainUnitId, manifest: { ...createManifest(), geometryHash: 'next' } });
+    expect(serializeModelComponentDisplayState(actor.getSnapshot().context)?.unitsById[mainUnitId]).toEqual({
+      materialByComponentId: {
+        [gearComponentId]: { material: 'silver-925' },
+        [housingComponentId]: { material: 'silver-925' },
+      },
+    });
+
+    actor.send({ type: 'setComponentMaterial', unitId: mainUnitId, componentId: gearComponentId, choice: undefined });
+    unit = getModelInteractionUnitState(actor.getSnapshot().context, mainUnitId);
+    expect(Object.keys(unit.materialByComponentId)).toEqual([housingComponentId]);
+    actor.stop();
+  });
+
+  it('should drop a finish on a non-metal and ignore unknown materials and pieces', () => {
+    const actor = createActor(modelInteractionMachine, {
+      input: {
+        componentDisplay: {
+          schemaVersion: 1,
+          unitsById: {
+            [mainUnitId]: {
+              materialByComponentId: {
+                [housingComponentId]: { material: 'unobtainium' },
+                [gearComponentId]: { material: 'leather', finish: 'polished' },
+              },
+            },
+          },
+        },
+      },
+    });
+    actor.start();
+    actor.send({ type: 'loadManifest', unitId: mainUnitId, manifest: createManifest() });
+    let unit = getModelInteractionUnitState(actor.getSnapshot().context, mainUnitId);
+    expect(unit.materialByComponentId).toEqual({ [gearComponentId]: { material: 'leather' } });
+
+    const { revision } = actor.getSnapshot().context;
+    actor.send({
+      type: 'setComponentMaterial',
+      unitId: mainUnitId,
+      componentId: missingComponentId,
+      choice: { material: 'brass' },
+    });
+    actor.send({
+      type: 'setComponentMaterial',
+      unitId: mainUnitId,
+      componentId: housingComponentId,
+      // @ts-expect-error -- a stored or typed id outside the table must never dress a piece.
+      choice: { material: 'unobtainium' },
+    });
+    unit = getModelInteractionUnitState(actor.getSnapshot().context, mainUnitId);
+    expect(unit.materialByComponentId).toEqual({ [gearComponentId]: { material: 'leather' } });
+    expect(actor.getSnapshot().context.revision).toBe(revision);
+    actor.stop();
+  });
 });

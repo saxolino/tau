@@ -15,6 +15,7 @@ import {
   serializeModelComponentDisplayState,
 } from '@taucad/viewer/machines/model-interaction.machine';
 import type { modelInteractionMachine } from '@taucad/viewer/machines/model-interaction.machine';
+import type { PieceFinish, PieceMaterialChoice } from '@taucad/viewer/cad/piece-materials';
 import type { cadMachine } from '#machines/cad.machine.js';
 import { createWorkbenchEntriesStore } from '#workbench-records/entries-store.js';
 import type { EntryRecordPatch } from '#workbench-records/entries-store.js';
@@ -28,6 +29,22 @@ type Entry = WorkbenchEntries['entries'][string];
 const storeMounts = new WeakMap<ReturnType<typeof createWorkbenchEntriesStore>, number>();
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 const emptyEntries = (): WorkbenchEntries => workbenchRecords.entries.schema.parse({ version: 1, entries: {} });
+
+type MaterialRow = { id: string; material: string; finish?: PieceFinish };
+
+/** The `materials` field, present only when a piece has a material, so older records compare equal. */
+const materialRowsOf = (rows: readonly MaterialRow[] | undefined): { materials?: MaterialRow[] } =>
+  rows && rows.length > 0 ? { materials: [...rows] } : {};
+
+/** The record's material rows, sorted, for the live material choices of one model. */
+const materialRows = (
+  materials: Readonly<Record<string, PieceMaterialChoice>> | undefined,
+): { materials?: MaterialRow[] } =>
+  materialRowsOf(
+    Object.entries(materials ?? {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, { material, finish }]) => (finish ? { id, material, finish } : { id, material })),
+  );
 
 /** One project-lifetime reader and writer for shared per-file workbench settings. */
 export function EntriesSyncHost(): React.JSX.Element {
@@ -268,6 +285,7 @@ export function EntryOwner({
         .filter(([, opacity]) => opacity !== 1)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([id, opacity]) => ({ id, opacity })),
+      ...materialRows(componentUnit?.materialByComponentId),
     }),
     [componentUnit],
   );
@@ -288,7 +306,7 @@ export function EntryOwner({
     ) {
       cadRef.send({ type: 'setOperationTimeout', operationTimeout: targetTimeout });
     }
-    const defaults = { hidden: [], isolated: [], opacity: [] };
+    const defaults: NonNullable<Entry['components']> = { hidden: [], isolated: [], opacity: [] };
     const target = entry?.components ?? defaults;
     const before = previous?.components ?? defaults;
     if (!first && same(before, target)) {
@@ -303,6 +321,7 @@ export function EntryOwner({
         .filter(([, opacity]) => opacity !== 1)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([id, opacity]) => ({ id, opacity })),
+      ...materialRows(live?.materialByComponentId),
     };
     const merged = {
       ...current,
@@ -318,6 +337,11 @@ export function EntryOwner({
         first || (!Object.hasOwn(localPatch?.components ?? {}, 'opacity') && !same(before.opacity, target.opacity))
           ? target.opacity
           : current.opacity,
+      ...(first ||
+      (!Object.hasOwn(localPatch?.components ?? {}, 'materials') &&
+        !same(before.materials ?? [], target.materials ?? []))
+        ? materialRowsOf(target.materials)
+        : materialRowsOf(current.materials)),
     };
     if (same(current, merged)) {
       return;
@@ -327,6 +351,9 @@ export function EntryOwner({
       hiddenComponentIds: merged.hidden,
       isolatedComponentIds: merged.isolated,
       opacityByComponentId: Object.fromEntries(merged.opacity.map(({ id, opacity }) => [id, opacity])),
+      materialByComponentId: Object.fromEntries(
+        (merged.materials ?? []).map(({ id, material, finish }) => [id, finish ? { material, finish } : { material }]),
+      ),
     };
     modelInteractionRef.send({ type: 'restoreComponentDisplay', componentDisplay: { schemaVersion: 1, unitsById } });
   }, [cadRef, entry, localPatch, modelInteractionRef, recordPresent, unitId]);

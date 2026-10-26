@@ -197,6 +197,7 @@ function createModelInteractionContext(): ModelInteractionContext {
         hiddenComponentIds: [],
         isolatedComponentIds: [],
         opacityByComponentId: {},
+        materialByComponentId: {},
       },
     },
     unitOrder: [helperUnitId],

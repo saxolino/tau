@@ -26,6 +26,7 @@ import {
 } from '@taucad/ui/components/dropdown-menu';
 import { cn } from '@taucad/ui/utils/cn';
 import { AxisLabel } from '#cad/section-tool-row.jsx';
+import { ModelMaterialMenuRows } from '#cad/model-material-menu.jsx';
 import { InfoTooltip } from '@taucad/ui/components/info-tooltip';
 import {
   DropdownMenuSelectItem,
@@ -328,6 +329,7 @@ export function ViewerSettings({
             >
               {settings.postProcessing} <InfoTooltip>{settings.postProcessingInfo}</InfoTooltip>
             </DropdownMenuSwitchItem>
+            <ModelMaterialMenuRows />
             <DropdownMenuSeparator />
           </>
         )}

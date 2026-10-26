@@ -1,4 +1,6 @@
 import React, { useMemo } from 'react';
+import { pieceFinishes, pieceMaterials } from '@taucad/viewer/cad/piece-materials';
+import type { PieceFinish, PieceMaterialId } from '@taucad/viewer/cad/piece-materials';
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router';
 import { ViewerEnvironmentProvider } from '@taucad/viewer/environment/viewer-environment';
@@ -47,6 +49,20 @@ export const buildViewerLabels = (t: Translate): ViewerLabels => ({
   grid: t('viewer.grid'),
   lockGridSize: (size) => t('viewer.lockGridSize', { size }),
   gridZoomHint: t('viewer.gridZoomHint'),
+  materials: {
+    modelMaterial: t('materials.modelMaterial'),
+    modelFinish: t('materials.modelFinish'),
+    asModelled: t('materials.asModelled'),
+    mixed: t('materials.mixed'),
+    names: Object.fromEntries(pieceMaterials.map(({ id }) => [id, t(`materials.names.${id}`)])) as Record<
+      PieceMaterialId,
+      string
+    >,
+    finishes: Object.fromEntries(pieceFinishes.map((id) => [id, t(`materials.finishes.${id}`)])) as Record<
+      PieceFinish,
+      string
+    >,
+  },
   settings: {
     model: t('viewer.settings.model'),
     surfaces: t('viewer.settings.surfaces'),

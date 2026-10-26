@@ -46,6 +46,7 @@
     "./cad/part-preview-image": "./src/cad/part-preview-image.tsx",
     "./cad/part-properties-panel": "./src/cad/part-properties-panel.tsx",
     "./cad/part-quantities": "./src/cad/part-quantities.ts",
+    "./cad/piece-materials": "./src/cad/piece-materials.ts",
     "./cad/part-thumbnail-state": "./src/cad/part-thumbnail-state.ts",
     "./cad/section-tool-row": "./src/cad/section-tool-row.tsx",
     "./cad/section-view-control": "./src/cad/section-view-control.tsx",
@@ -182,6 +183,11 @@
         "types": "./dist/cad/part-quantities.d.mts",
         "import": "./dist/cad/part-quantities.mjs",
         "default": "./dist/cad/part-quantities.mjs"
+      },
+      "./cad/piece-materials": {
+        "types": "./dist/cad/piece-materials.d.mts",
+        "import": "./dist/cad/piece-materials.mjs",
+        "default": "./dist/cad/piece-materials.mjs"
       },
       "./cad/part-thumbnail-state": {
         "types": "./dist/cad/part-thumbnail-state.d.mts",

@@ -95,6 +95,11 @@ describe('standard physical materials through SMLib and the runtime', () => {
     expect(physical?.['density']).toBe(8.96);
     expect(physical?.['volumeMm3']).toBeGreaterThan(0);
     expect(physical?.['massGrams']).toBeCloseTo((Number(physical?.['volumeMm3']) * 8.96) / 1000, 8);
+    // Without a density the solid still carries its exact volume, so the interface can weigh it in any material.
+    const glassFacts = topology?.components.find((component) => component.name === 'Glass')?.sourceRefs;
+    expect(glassFacts?.['volumeMm3']).toBeCloseTo(Number(physical?.['volumeMm3']), 6);
+    expect(glassFacts).not.toHaveProperty('density');
+    expect(glassFacts).not.toHaveProperty('massGrams');
     expect(json.materials).toEqual(expect.arrayContaining([copper, glass]));
     expect(json.meshes?.every((mesh) => mesh.primitives.some((primitive) => primitive.mode === 1))).toBe(true);
 

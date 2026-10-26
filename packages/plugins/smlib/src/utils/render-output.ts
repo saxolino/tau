@@ -464,17 +464,25 @@ function countOpenEdges(meshes: readonly FaceMesh[]): number {
   return open;
 }
 
+/** A body's enclosed volume in mm³, or nothing when the kernel cannot measure it (an open or degenerate body). */
+function readVolume(shape: { readonly volume: number }): number | undefined {
+  try {
+    return shape.volume;
+  } catch {
+    return undefined;
+  }
+}
+
 function emptyGeometry(config: NamedInputShape): GeometrySmlib {
   const { name, color, opacity, metalness, roughness, material, density, shape } = config;
-  const volume = density !== undefined && 'volume' in shape ? shape.volume : undefined;
+  // The solid's exact volume travels with every piece, so the interface can weigh it in any material the person picks;
+  // a density from the model adds the authored mass.
+  const volume = 'volume' in shape ? readVolume(shape) : undefined;
   const physical =
-    typeof density === 'number' &&
-    Number.isFinite(density) &&
-    density > 0 &&
-    typeof volume === 'number' &&
-    Number.isFinite(volume) &&
-    volume > 0
-      ? { volumeMm3: volume, density, massGrams: (volume * density) / 1000 }
+    typeof volume === 'number' && Number.isFinite(volume) && volume > 0
+      ? typeof density === 'number' && Number.isFinite(density) && density > 0
+        ? { volumeMm3: volume, density, massGrams: (volume * density) / 1000 }
+        : { volumeMm3: volume }
       : undefined;
   return {
     format: 'smlib',

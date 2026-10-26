@@ -36,6 +36,7 @@ import { Vector2, Box3, Vector3, Raycaster } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 import { applyMatcap } from '#graphics/three/materials/gltf-matcap.js';
+import { applyPieceMaterialChoice } from '#graphics/three/materials/piece-material-override.js';
 import {
   applyModelMaterialAppearance,
   getOrCaptureModelMaterialAppearance,
@@ -1851,8 +1852,11 @@ export type ApplyModelComponentVisualStateToSceneOptions = Readonly<{
   > & {
     /** Parts the Kinematics pane points at; they light as a hovered part does. */
     readonly kinematicsHoveredComponentIds?: readonly string[];
+    /** The material each piece is dressed in; absent, every piece keeps the model's own. */
+    readonly materialByComponentId?: ModelInteractionUnitState['materialByComponentId'];
   };
   enableSurfaces: boolean;
+  /** Every edge. Off, only the selected or focused piece shows its edges. */
   enableLines: boolean;
 }>;
 
@@ -1921,7 +1925,10 @@ export function applyModelComponentVisualStateToScene({
     previous.modelVisualState.hiddenComponentIds !== modelVisualState.hiddenComponentIds ||
     previous.modelVisualState.isolatedComponentIds !== modelVisualState.isolatedComponentIds ||
     previous.modelVisualState.focusedComponentId !== modelVisualState.focusedComponentId ||
-    previous.modelVisualState.opacityByComponentId !== modelVisualState.opacityByComponentId;
+    previous.modelVisualState.opacityByComponentId !== modelVisualState.opacityByComponentId ||
+    previous.modelVisualState.materialByComponentId !== modelVisualState.materialByComponentId ||
+    // Without global edges, a selection change shows or hides the selected piece's edges.
+    (!enableLines && previous.modelVisualState.selectedComponentIds !== modelVisualState.selectedComponentIds);
   appliedAppearance.set(scene, {
     scene,
     componentManifest,
@@ -1955,17 +1962,24 @@ export function applyModelComponentVisualStateToScene({
       }
     });
   }
+  const materialByComponentId = modelVisualState.materialByComponentId ?? {};
   for (const object of inventory ?? currentObjects) {
     const isLine = isLineObject(object);
     const isSurface = isSurfaceObject(object);
-    const globallyVisible = isLine ? enableLines : isSurface ? enableSurfaces : true;
     const componentId = getObjectComponentId(object);
     if (!componentId) {
       if (applyAppearance && (isLine || isSurface)) {
-        object.visible = globallyVisible;
+        object.visible = isLine ? enableLines : isSurface ? enableSurfaces : true;
       }
       continue;
     }
+    const emphasis = resolveModelComponentEmphasisWithManifest(emphasisComponents, componentManifest, componentId);
+    // Edges are a drawing aid: with global edges off they stay on the piece being worked on, never on the rest.
+    const globallyVisible = isLine
+      ? enableLines || emphasis === 'selected' || emphasis === 'focused'
+      : isSurface
+        ? enableSurfaces
+        : true;
     const visualState = applyAppearance
       ? resolveComponentVisualStateWithManifest({
           componentId,
@@ -1980,7 +1994,6 @@ export function applyModelComponentVisualStateToScene({
       object.visible = globallyVisible && visualState.visible;
     }
 
-    const emphasis = resolveModelComponentEmphasisWithManifest(emphasisComponents, componentManifest, componentId);
     if (isLine) {
       // Edges share one base material per presentation, so emphasis is a per-object material
       // swap rather than a tint on the shared material (which would let the last-visited
@@ -1999,6 +2012,9 @@ export function applyModelComponentVisualStateToScene({
     }
 
     for (const material of visualState ? getObjectMaterials(object) : []) {
+      if (isSurface) {
+        applyPieceMaterialChoice(material, materialByComponentId[componentId]);
+      }
       const snapshot = getOrCaptureModelMaterialAppearance(material);
       applyModelMaterialAppearance(material, snapshot, visualState!.opacity);
     }
@@ -2880,7 +2896,9 @@ export function GltfMesh({
   return (
     <>
       {activePlanarFaceTool ? <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} /> : null}
-      {activeDirectEditTool ? (
+      {/* A tool's handles belong to the piece being worked on: with nothing selected they would float inside the model. */}
+      {activeDirectEditTool &&
+      (modelVisualState.selectedComponentIds.length > 0 || modelVisualState.focusedComponentId !== undefined) ? (
         <DirectEditControls tool={activeDirectEditTool} artifactKey={presentation.key} scene={scene} />
       ) : null}
       <group matrix={assetMatrix} matrixAutoUpdate={false}>

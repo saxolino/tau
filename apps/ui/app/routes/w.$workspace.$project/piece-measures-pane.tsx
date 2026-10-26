@@ -28,6 +28,8 @@ import {
   valueAtPath,
 } from '#lib/piece-measures.js';
 import type { PieceMeasureGroup } from '#lib/piece-measures.js';
+import { modelWeight } from '#lib/piece-weight.js';
+import { PieceMaterialRow } from '#routes/w.$workspace.$project/piece-material-row.js';
 
 const units = { length: { displaySymbol: 'mm' } } as const;
 
@@ -38,15 +40,24 @@ export function ModelSummaryRow(): React.JSX.Element {
   const { t, language } = useTranslation();
   const pieces = context.unitOrder.flatMap((id) => modelPieces(context.unitsById[id]?.manifest));
   const summary = modelMeasureSummary(pieces);
+  const materials = Object.fromEntries(
+    context.unitOrder.flatMap((id) => Object.entries(context.unitsById[id]?.materialByComponentId ?? {})),
+  );
+  const weight = modelWeight(pieces, materials);
+  const mass = (grams: number): string => formatNumber(grams, language, { maximumFractionDigits: 2 });
   return (
     <p className='px-3 py-3 text-xs text-muted-foreground tabular-nums'>
       {t('measures.counts', {
         pieces: t(summary.pieces === 1 ? 'measures.onePiece' : 'measures.manyPieces', { count: summary.pieces }),
         stones: t(summary.stones === 1 ? 'measures.oneStone' : 'measures.manyStones', { count: summary.stones }),
       })}
-      {summary.goldMass === undefined
-        ? null
-        : ` · ${t('measures.goldMass', { mass: formatNumber(summary.goldMass, language, { maximumFractionDigits: 2 }) })}`}
+      {weight?.material
+        ? ` · ${t('materials.weightOf', { material: t(`materials.names.${weight.material}`), mass: mass(weight.grams) })}`
+        : summary.goldMass === undefined
+          ? weight
+            ? ` · ${t('materials.weight', { mass: mass(weight.grams) })}`
+            : null
+          : ` · ${t('measures.goldMass', { mass: mass(summary.goldMass) })}`}
     </p>
   );
 }
@@ -247,6 +258,7 @@ const PieceGroup = memo(function PieceGroup({
           </Button>
         ) : null}
       </div>
+      {isOpen && group.node ? <PieceMaterialRow unitId={unitId} node={group.node} name={name} /> : null}
       {(isOpen || query) && group.keys.length > 0 && manifest && edit ? (
         <Parameters
           parameters={values}

@@ -43,6 +43,7 @@ const baseConfig: UserConfig = {
     'src/cad/part-preview-image.tsx',
     'src/cad/part-properties-panel.tsx',
     'src/cad/part-quantities.ts',
+    'src/cad/piece-materials.ts',
     'src/cad/part-thumbnail-state.ts',
     'src/cad/section-tool-row.tsx',
     'src/cad/section-view-control.tsx',

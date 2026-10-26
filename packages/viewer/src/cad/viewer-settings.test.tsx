@@ -57,6 +57,11 @@ vi.mock('#hooks/use-graphics.jsx', () => ({
   useCameraRig: () => ({ actorRef: { send: mocks.cameraSend } }),
   useCameraSelector: <T,>(selector: (state: CameraState) => T): T =>
     selector({ context: { view: { requestedVerticalFieldOfView: mocks.fieldOfView } } }),
+  // No presented model: the model material rows stay out of the menu.
+  useModelInteractionRef: () => ({ send: vi.fn() }),
+  useModelInteractionSelector: <T,>(
+    selector: (state: { context: { unitsById: Record<string, unknown>; unitOrder: string[] } }) => T,
+  ): T => selector({ context: { unitsById: {}, unitOrder: [] } }),
 }));
 
 const fieldOfViewName = 'Field of view, 0° is orthographic';

@@ -139,6 +139,7 @@ describe('projectViewerSelection', () => {
     hiddenComponentIds: [],
     isolatedComponentIds: [],
     opacityByComponentId: {},
+    materialByComponentId: {},
   });
 
   it('carries the selected components as structured references, preferring the active entry', () => {
