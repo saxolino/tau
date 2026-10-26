@@ -23,12 +23,14 @@ export type StageOptions = {
 };
 
 /**
- * Default stage options: a 10% fit margin and a camera turned 45 degrees to the side and 30 degrees upwards.
+ * Default stage options: a 6% fit margin and a camera turned 45 degrees to the side and 30 degrees upwards.
  *
  * @public
  */
 export const defaultStageOptions = {
-  fitMargin: 0.1,
+  // The fit measures the bounding box's corners, which a rounded piece never reaches: 6% puts a ring or a buckle at
+  // about 60% of the view.
+  fitMargin: 0.06,
   rotation: {
     side: -Math.PI / 4, // Default rotation is 45 degrees counter-clockwise
     vertical: Math.PI / 6, // Default rotation is 30 degrees upwards

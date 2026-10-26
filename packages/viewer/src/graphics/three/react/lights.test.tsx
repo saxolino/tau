@@ -111,10 +111,11 @@ describe('Lights', () => {
 
   afterEach(cleanup);
 
-  it('uses the calibrated room and display energy by default', () => {
+  it('uses the jewellery light tent and the calibrated display energy by default', () => {
     render(<Lights />);
     expect(screen.getAllByTestId('environment')).toHaveLength(1);
-    expect(screen.queryByTestId('lightformer')).toBeNull();
+    // The tent's two rim strips; its dome and soft boxes are graded meshes, not flat cards.
+    expect(screen.getAllByTestId('lightformer')).toHaveLength(2);
     expect(renderer.toneMappingExposure).toBe(1);
     vi.mocked(useFrame).mock.calls.at(-1)?.[0](mock<RootState>(), 0);
     expect(vi.mocked(applyLightingForCamera).mock.calls.at(-1)?.[0].config).toMatchObject({
