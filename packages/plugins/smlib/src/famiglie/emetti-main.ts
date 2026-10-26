@@ -1,7 +1,9 @@
 import type { IdFamiglia, ParametriAnnidati, ValoreParametro } from '#famiglie/famiglia.js';
 
-/** Il modulo built-in da cui il `main.ts` di un progetto importa le famiglie (registrato in T-D1-10). */
-export const moduloFamiglie = '@sinopia/famiglie';
+import { sinopiaFamiglieModuleName } from '#smlib.constants.js';
+
+/** Il modulo built-in da cui il `main.ts` di un progetto importa le famiglie (registrato dal kernel SMLib). */
+export const moduloFamiglie = sinopiaFamiglieModuleName;
 
 const identificatore = /^[A-Za-z_$][\w$]*$/;
 

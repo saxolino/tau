@@ -10,6 +10,8 @@ export { rileggiStep } from '#famiglie/verifiche-comuni.js';
 export { valutaFamiglia } from '#famiglie/valuta-famiglia.js';
 export type { Valutazione } from '#famiglie/valuta-famiglia.js';
 export { famiglie } from '#famiglie/registro.js';
+export { creaModuloFamiglie } from '#famiglie/modulo.js';
+export type { FamigliaLegata } from '#famiglie/modulo.js';
 export { fibbia, presetPilotaFibbia } from '#famiglie/fibbia.js';
 export type { ParametriFibbia, VarianteFibbia } from '#famiglie/fibbia.js';
 export { tacco } from '#famiglie/tacco.js';

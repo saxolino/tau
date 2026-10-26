@@ -53,7 +53,8 @@ import { createManualReplaySource } from '#manual-replay.js';
 import { applyManualOperations } from '#manual-evaluator.js';
 import type { ManualDocument } from '#manual-operations.js';
 import { manualEntryPath, parseManualDocument } from '#manual-operations.js';
-import { smlibDetectPattern, smlibModuleName } from '#smlib.constants.js';
+import { sinopiaFamiglieModuleName, smlibDetectPattern, smlibModuleName } from '#smlib.constants.js';
+import { creaModuloFamiglie } from '#famiglie/modulo.js';
 import { smlibExportSchemas, smlibOptionsSchema, smlibRenderSchema } from '#smlib.schemas.js';
 import {
   countMesh,
@@ -170,6 +171,20 @@ function registerSmlibModule(runtime: KernelServices, library: SmlibLibrary): vo
     exports: library,
     package: smlibPackage,
     globalName: 'smlib',
+  });
+}
+
+/**
+ * Register the SinopiaCAD parametric families as `@sinopia/famiglie`, bound to the untraced library: a family builds
+ * many intermediate bodies, and its result reaches the kernel as plain shape configs of that same library.
+ * @param runtime - Kernel services.
+ * @param library - The loaded SMLib library facade.
+ */
+function registerFamiglieModule(runtime: KernelServices, library: SmlibLibrary): void {
+  registerKernelModule(runtime, {
+    name: sinopiaFamiglieModuleName,
+    exports: creaModuloFamiglie(library),
+    version: '1.0.0',
   });
 }
 
@@ -305,6 +320,7 @@ export const smlibKernel = defineKernel({
       defaultScope: 'kernel-setup',
     });
     registerSmlibModule(runtime, libraryTrace.tracedLibrary);
+    registerFamiglieModule(runtime, library);
     logger.debug(`SMLib kernel initialized (smlibwasm ${module.version}, libraryTracing: ${options.libraryTracing})`);
     return { library, libraryTrace };
   },
