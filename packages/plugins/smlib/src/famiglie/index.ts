@@ -15,4 +15,8 @@ export type { ParametriFibbia, VarianteFibbia } from '#famiglie/fibbia.js';
 export { tacco } from '#famiglie/tacco.js';
 export { placca, TRATTO_LATO } from '#famiglie/placca.js';
 export type { ParametriPlacca, VariantePlacca } from '#famiglie/placca.js';
+export { occhiello, volumeOcchiello } from '#famiglie/occhiello.js';
+export type { ParametriOcchiello } from '#famiglie/occhiello.js';
+export { borchia, raggioCalotta } from '#famiglie/borchia.js';
+export type { ParametriBorchia, VarianteBorchia } from '#famiglie/borchia.js';
 export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco.js';
